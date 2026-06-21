@@ -94,6 +94,8 @@ void printUsage(const char* progname) {
               << "                                       OpenSSL). report: print the strip analysis. off: opt out.\n"
               << "  --classpath=a.cja,b.cja              Cajeta archives to ingest as dependencies\n"
               << "                                       (repeatable; comma-separates inside each occurrence).\n"
+              << "  --skill-root=<dir>                   Package root holding skills/ to embed in the .cja\n"
+              << "                                       (defaults to the source root; build tool passes project root).\n"
               << "  --prune-uber=on|off                  When --emit=uber, only bundle classpath entries\n"
               << "                                       transitively referenced by user / stdlib bitcode.\n"
               << "                                       Default on; --prune-uber=off bundles everything.\n"
@@ -372,6 +374,13 @@ int main(int argc, const char* argv[]) {
                 if (comma == std::string::npos) break;
                 start = comma + 1;
             }
+        } else if (match(arg, "skill-root", value)) {
+            // Where the package's hand-authored skills/ dir lives (skill-
+            // discovery D.3). The build tool passes the PROJECT root here so
+            // skills/ next to cajeta.json is embedded — the positional source
+            // root is the deeper src/main/cajeta. Without it, skill embedding
+            // falls back to the source root.
+            compiler.setSkillRootOverride(value);
         } else if (match(arg, "target", value)) {
             compiler.setTargetTriple(value);
         } else if (match(arg, "cpu", value)) {

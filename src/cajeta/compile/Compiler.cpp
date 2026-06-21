@@ -939,9 +939,15 @@ namespace cajeta {
             archiveRootPath.append("/");
         }
 
-        // Remember the package source root so emitArchive can embed the
-        // package's hand-authored skills/ into the .cja (skill-discovery D.3).
-        this->skillSourceRoot = sourceRootPath;
+        // Remember where the package's hand-authored skills/ lives so
+        // emitArchive can embed them into the .cja (skill-discovery D.3). The
+        // build tool passes --skill-root=<project-root> (skills/ sits next to
+        // cajeta.json, not under the deeper src/main/cajeta source root); the
+        // low-level compile form has no override and falls back to the source
+        // root.
+        this->skillSourceRoot =
+            this->skillRootOverride.empty() ? sourceRootPath
+                                            : this->skillRootOverride;
 
 //        std::filesystem::path cwd = std::filesystem::current_path();
 

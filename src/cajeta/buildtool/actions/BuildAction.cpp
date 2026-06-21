@@ -353,6 +353,20 @@ namespace cajeta::buildtool {
                     argv.push_back(std::move(f));
                 }
             }
+            // Point skill embedding (skill-discovery D.3) at the PROJECT root
+            // (where cajeta.json and the hand-authored skills/ dir live) — the
+            // positional source root below is the deeper src/main/cajeta, which
+            // has no skills/. Reuse the project-root derivation above.
+            {
+                std::string skillRoot = ".";
+                if (ctx.manifest() && !ctx.manifest()->sourcePath.empty()) {
+                    auto parent = fs::path(ctx.manifest()->sourcePath)
+                                      .parent_path();
+                    if (!parent.empty()) skillRoot = parent.string();
+                }
+                argv.push_back("--skill-root=" + skillRoot);
+            }
+
             // Positional args: <entry-method> <source-root> <archive-root>
             argv.push_back(entry->empty() ? std::string("*") : *entry);
             argv.push_back(sourceRoot);
