@@ -220,6 +220,100 @@ TEST(XpuVectorLoadStoreTests, vloadVstoreFloat32Width4) {
     for (int i = 0; i < N; ++i) EXPECT_FLOAT_EQ(c[i], 2.0f * c0[i]) << "at " << i;
 }
 
+namespace {
+const char* kI32Source =
+    "package test;\n"
+    "import cajeta.gpu.KernelBuffer;\n"
+    "import cajeta.gpu.KernelThread;\n"
+    "public class M {\n"
+    "    @Kernel\n"
+    "    public static void dbli32(KernelBuffer<int32> c) {\n"
+    "        uint32 t = KernelThread.globalIdX();\n"
+    "        uint32 base = t * 8;\n"
+    "        Vector<int32,8> v = c.vload<8>(base);\n"
+    "        c.vstore(base, v + v);\n"
+    "    }\n"
+    "}\n";
+const char* kI64Source =
+    "package test;\n"
+    "import cajeta.gpu.KernelBuffer;\n"
+    "import cajeta.gpu.KernelThread;\n"
+    "public class M {\n"
+    "    @Kernel\n"
+    "    public static void dbli64(KernelBuffer<int64> c) {\n"
+    "        uint32 t = KernelThread.globalIdX();\n"
+    "        uint32 base = t * 4;\n"
+    "        Vector<int64,4> v = c.vload<4>(base);\n"
+    "        c.vstore(base, v + v);\n"
+    "    }\n"
+    "}\n";
+using I32Fn = void (*)(int32_t*, int32_t, int32_t, int32_t, int32_t, int32_t,
+                       int32_t, int32_t, int32_t, int32_t, int32_t, int32_t,
+                       int32_t);
+using I64Fn = void (*)(int64_t*, int32_t, int32_t, int32_t, int32_t, int32_t,
+                       int32_t, int32_t, int32_t, int32_t, int32_t, int32_t,
+                       int32_t);
+
+// Lower `entry` in `M`, JIT it, return the symbol. Asserts packed-IR substr.
+template <class Fn>
+Fn lowerAndJit(Compiler& compiler, const char* src, const char* entry,
+               const char* irNeedle,
+               std::unique_ptr<llvm::orc::LLJIT>& keep) {
+    auto module = compileForInspection(compiler, src);
+    auto k = findMethod(module->getStructures()["test.M"], entry);
+    EXPECT_NE(k, nullptr);
+    auto tm = cajeta::xpu::cpu::createCpuTargetMachine();
+    auto ctx = std::make_unique<llvm::LLVMContext>();
+    auto host = std::make_unique<llvm::Module>("vls_int", *ctx);
+    cajeta::xpu::cpu::configureHostModule(*host, *tm);
+    EXPECT_NE(cajeta::xpu::cpu::lowerKernel(k, *host), nullptr);
+    std::string ir;
+    llvm::raw_string_ostream os(ir);
+    host->print(os, nullptr);
+    os.flush();
+    EXPECT_NE(ir.find(irNeedle), std::string::npos)
+        << "expected '" << irNeedle << "' in IR";
+    keep = std::move(*llvm::orc::LLJITBuilder().create());
+    auto err = keep->addIRModule(
+        llvm::orc::ThreadSafeModule(std::move(host), std::move(ctx)));
+    EXPECT_FALSE(static_cast<bool>(err)) << llvm::toString(std::move(err));
+    return keep->lookup(entry)->template toPtr<Fn>();
+}
+} // namespace
+
+// 4.1.1 — integer element types round-trip (int32 x 8). vload/vstore are
+// element-type-generic; a packed <8 x i32> load/store and a correct double.
+TEST(XpuVectorLoadStoreTests, vloadVstoreInt32) {
+    Compiler compiler;
+    std::unique_ptr<llvm::orc::LLJIT> jit;
+    auto dbl = lowerAndJit<I32Fn>(compiler, kI32Source, "dbli32",
+                                  "load <8 x i32>", jit);
+    const int32_t B = 8, G = 2;
+    const int blocks = B * G, N = 8 * blocks;
+    std::vector<int32_t> c(N), c0(N);
+    for (int i = 0; i < N; ++i) c[i] = c0[i] = i + 1;
+    for (int32_t ctaid = 0; ctaid < G; ++ctaid)
+        for (int32_t tid = 0; tid < B; ++tid)
+            dbl(c.data(), tid, 0, 0, ctaid, 0, 0, B, 1, 1, G, 1, 1);
+    for (int i = 0; i < N; ++i) EXPECT_EQ(c[i], 2 * c0[i]) << "at " << i;
+}
+
+// 4.1.1 — int64 x 4 round-trips with a packed <4 x i64> load/store.
+TEST(XpuVectorLoadStoreTests, vloadVstoreInt64) {
+    Compiler compiler;
+    std::unique_ptr<llvm::orc::LLJIT> jit;
+    auto dbl = lowerAndJit<I64Fn>(compiler, kI64Source, "dbli64",
+                                  "load <4 x i64>", jit);
+    const int32_t B = 8, G = 2;
+    const int blocks = B * G, N = 4 * blocks;
+    std::vector<int64_t> c(N), c0(N);
+    for (int i = 0; i < N; ++i) c[i] = c0[i] = (int64_t) (i + 1);
+    for (int32_t ctaid = 0; ctaid < G; ++ctaid)
+        for (int32_t tid = 0; tid < B; ++tid)
+            dbl(c.data(), tid, 0, 0, ctaid, 0, 0, B, 1, 1, G, 1, 1);
+    for (int i = 0; i < N; ++i) EXPECT_EQ(c[i], 2 * c0[i]) << "at " << i;
+}
+
 // 2.1.4 — vload/vstore are kernel-only: calling vload on a KernelBuffer from a
 // non-kernel (host) method does not resolve to a method and is a compile error.
 TEST(XpuVectorLoadStoreTests, vloadOutsideKernelIsCompileError) {
