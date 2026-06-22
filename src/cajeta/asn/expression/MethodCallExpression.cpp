@@ -4418,6 +4418,23 @@ namespace cajeta {
             targetClass = module->getStructureStack().back();
         }
 
+        // Kernel-only operations. `buf.vload<N>(i)` / `buf.vstore(i, v)` are
+        // lowered inside an @Kernel body by KernelLowering (a kernel's host body
+        // is stubbed at Method::generateCode, so a kernel's vload never reaches
+        // here). Reaching this point means they were called from a HOST method,
+        // where a KernelBuffer has no host address — reject with a clear
+        // kernel-only diagnostic instead of silently emitting nothing.
+        // (kernel-vector-loadstore-spec.md §3.1.4, §4.1.4.)
+        if ((methodCallName == "vload" || methodCallName == "vstore")
+                && targetClass->getQName()
+                && targetClass->getQName()->toCanonical().rfind(
+                       "cajeta.gpu.KernelBuffer", 0) == 0) {
+            throw Exception(
+                "'" + methodCallName + "' is a kernel-only operation on a "
+                "KernelBuffer and can only be called inside an @Kernel body",
+                "CAJETA_ERROR_KERNEL_ONLY_OP");
+        }
+
         // Resolve `this`. For cross-object calls the receiver IS the `this`. For
         // bare calls we look it up from the active method's scope.
         //
