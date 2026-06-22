@@ -238,4 +238,73 @@ public final class Ewise {
         }
         return #out;
     }
+
+    /**
+     * One compare-exchange stage of a bitonic sort over `data` (numpy-porting Phase
+     * 7, 7b — the GPU sort primitive). Each thread `i` pairs with `i ^ j`; the
+     * partner with the higher index does the swap, ascending when `(i & k) == 0`
+     * and descending otherwise — the standard bitonic network. The host drives the
+     * `(k, j)` stage schedule (`k` doubling, `j` halving) and re-launches this once
+     * per stage. `n` must be a power of two.
+     */
+    @Kernel
+    public static void bitonicStepF32(GpuBuffer<float32> data, uint32 n, uint32 k, uint32 j) {
+        uint32 i = GpuThread.globalIdX();
+        if (i < n) {
+            uint32 ixj = i ^ j;
+            if (ixj > i) {
+                float32 vi = data[i];
+                float32 vj = data[ixj];
+                boolean ascending = (i & k) == 0;
+                boolean swap = false;
+                if (ascending) { if (vi > vj) { swap = true; } }
+                else { if (vi < vj) { swap = true; } }
+                if (swap) {
+                    data[i] = vj;
+                    data[ixj] = vi;
+                }
+            }
+        }
+    }
+
+    /**
+     * Ascending sort of a 1-D **power-of-two-length** `float32` tensor, routed on
+     * placement: on-device → the {@link #bitonicStepF32} bitonic network (the host
+     * issues the `O(log^2 n)` compare-exchange stages over the device buffer);
+     * otherwise the {@link Tensor#sort} CPU floor. The two agree (the Phase-7 sort
+     * cross-check). Returns a fresh 1-D `float32` tensor; on the device path the
+     * sort runs on the device (host staging of the input is incidental data
+     * movement). The bitonic network is not stable — fine for distinct keys.
+     */
+    public static #Tensor<float32> sortF32Op(Tensor<float32> t) {
+        int64 n = t.size();
+        if (t.isOnGpu()) {
+            t.cpu();                                   // stage input to host to seed the copy
+            int64[] shp = heap int64[1];
+            shp[0] = n;
+            Tensor<float32> out = Tensor.zeros<float32>(shp);
+            int64 c = 0;
+            while (c < n) {
+                out.flatSet(c, t.flatGet(c));
+                c = c + 1;
+            }
+            t.gpu();                                   // restore caller's placement invariant
+            out.gpu();
+            uint32 un = (uint32) n;
+            GpuStream s = GpuStream.current();
+            uint32 k = 2;
+            while (k <= un) {
+                uint32 j = k / 2;
+                while (j > 0) {
+                    bitonicStepF32.launch(s, grid: [(un + 63) / 64], block: [64])
+                        (out.deviceBuffer(), un, k, j);
+                    s.sync();
+                    j = j / 2;
+                }
+                k = k * 2;
+            }
+            return #out;
+        }
+        return Tensor.sort<float32>(t, 0);
+    }
 }

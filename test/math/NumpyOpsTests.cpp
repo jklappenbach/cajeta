@@ -1710,3 +1710,40 @@ TEST(NumpyOpsTests, uniqueNonzeroMatchNumpy) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 7b — GPU sort: Ewise.sortF32Op routes on placement, lowering to the bitonic-sort
+// network (host-driven O(log^2 n) compare-exchange stages over the device buffer) on
+// device. Cross-check: the device bitonic result == the Tensor.sort CPU floor, exact
+// (distinct float32 keys). Length 8 (power of two) → 6 stages.
+TEST(NumpyOpsTests, sortCpuGpuAgree) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.math.Tensor;\n"
+        "import cajeta.math.Ewise;\n"
+        "public final class D {\n"
+        "    public static #Tensor<float32> mk() {\n"
+        "        float32[] d = heap float32[8];\n"
+        "        d[0] = 5.0f; d[1] = 2.0f; d[2] = 8.0f; d[3] = 1.0f;\n"
+        "        d[4] = 9.0f; d[5] = 3.0f; d[6] = 7.0f; d[7] = 4.0f;\n"
+        "        int64[] s = heap int64[1]; s[0] = 8;\n"
+        "        return Tensor.of<float32>(d, s);\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Tensor<float32> tRef = D.mk();\n"
+        "        Tensor<float32> cpuRef = Tensor.sort<float32>(tRef, 0);\n"   // [1,2,3,4,5,7,8,9]
+        "        Tensor<float32> tg = D.mk();\n"
+        "        tg.gpu();\n"
+        "        Tensor<float32> gpuSorted = Ewise.sortF32Op(tg);\n"          // bitonic on device
+        "        gpuSorted.cpu();\n"
+        "        int64 i = 0;\n"
+        "        while (i < 8) {\n"
+        "            if (gpuSorted.get1(i) != cpuRef.get1(i)) { return -1; }\n"  // GPU == CPU floor
+        "            i = i + 1;\n"
+        "        }\n"
+        // sanity: the floor is actually ascending and spans the data
+        "        if (cpuRef.get1(0) != 1.0f || cpuRef.get1(7) != 9.0f) { return -2; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Xpu(src), 1);
+}
