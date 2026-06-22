@@ -191,6 +191,17 @@ public class HttpTransport {
         return false;
     }
 
+    /** True if `b[0..len)` begins with a gzip member (magic `1F 8B 08`, full trailer). */
+    public static boolean looksLikeGzip(int8[] b, int32 len) {
+        if (b == null || len < 18) {
+            return false;
+        }
+        int32 m0 = ((int32) b[0]) & 0xFF;
+        int32 m1 = ((int32) b[1]) & 0xFF;
+        int32 m2 = ((int32) b[2]) & 0xFF;
+        return m0 == 0x1F && m1 == 0x8B && m2 == 0x08;
+    }
+
     /** Route one parsed request: POST /mcp → dispatch; else → an error reply. */
     public static #HttpResponse handle(HttpRequest req) {
         String method = req.method;
@@ -203,8 +214,27 @@ public class HttpTransport {
         }
         int8[] body = req.body;
         int32 blen = req.bodyLength();
+        // Inbound gzip (mcp-compression U4): a `Content-Encoding: gzip` request
+        // body is gunzipped before dispatch; a body that claims gzip but isn't
+        // fails loud (HTTP 400) rather than feeding garbage to the parser.
+        String ce = req.getHeaders().get("Content-Encoding");
+        boolean inGzip = HttpTransport.hasGzipToken(ce);
+        int8[] decoded = null;
+        int32 decodedLen = 0;
+        if (inGzip) {
+            if (HttpTransport.looksLikeGzip(body, blen) == false) {
+                return HttpTransport.jsonRpcError(400, -32700,
+                    "invalid gzip request body");
+            }
+            decoded = Gzip.decompress(body, (int64) blen);
+            decodedLen = (int32) decoded.count();
+        }
         ResponseSink sink = heap ResponseSink(false, null);
-        if (body != null && blen > 0) {
+        if (inGzip) {
+            if (decodedLen > 0) {
+                Server.handleLine(decoded, decodedLen, sink);
+            }
+        } else if (body != null && blen > 0) {
             Server.handleLine(body, blen, sink);
         }
         if (sink.haveMessage) {

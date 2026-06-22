@@ -93,4 +93,24 @@ gz_sz=$(curl -s -H 'Accept-Encoding: gzip' --output - -X POST --data "$big" "$UR
     || fail "gzip not smaller ($gz_sz >= $plain_sz) — stored-block no-op?"
 echo "ok: gzip smaller than plain ($gz_sz < $plain_sz bytes)"
 
+# 10) Inbound Content-Encoding: gzip — a gzipped request body is gunzipped and
+#     dispatched, answering exactly as the plain request would (U4).
+in="$(printf '%s' "$gzreq" | gzip -c \
+    | curl -s -H 'Content-Encoding: gzip' --data-binary @- "$URL")"
+[[ "$in" == "$plain" ]] || fail "gzipped request body not handled as plain"
+echo "ok: inbound Content-Encoding: gzip -> gunzip + dispatch"
+
+# 11) Declared-gzip but invalid body -> HTTP 400 (fail loud).
+code_in="$(curl -s -o /dev/null -w '%{http_code}' \
+    -H 'Content-Encoding: gzip' --data 'not-actually-gzip' "$URL")"
+[[ "$code_in" == 400 ]] || fail "invalid gzip body should be HTTP 400 (got $code_in)"
+echo "ok: invalid gzip request -> 400"
+
+# 12) Full round-trip: gzip request in + gzip response out.
+rt="$(printf '%s' "$gzreq" | gzip -c \
+    | curl -s --compressed -H 'Content-Encoding: gzip' -H 'Accept-Encoding: gzip' \
+        --data-binary @- "$URL")"
+[[ "$rt" == "$plain" ]] || fail "gzip in+out round-trip failed"
+echo "ok: gzip request + gzip response round-trip"
+
 echo "ALL HTTP TRANSPORT TESTS PASSED"
