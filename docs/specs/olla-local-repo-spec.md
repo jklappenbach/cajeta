@@ -58,9 +58,13 @@ This blocks `tools/mcp` from linking `dev.cajeta.codec.compress.Gzip`
   `~/.olla/<name>/<version>/<name>-<version>.cja`, with a cached
   `manifest.json` beside each artifact (for offline transitive resolution) and a
   per-package `versions.json`.
-- `~/.olla/` replaces `.cajeta/cache/artifacts/<sha256>.cja` as the artifact
-  landing store. The per-project `.cajeta/cache/` retains only build IR (`ir/`)
-  and git clones (`git/`).
+- `~/.olla/` is the machine-global artifact store for cross-project /
+  cross-machine persistence. The redundant **workstation** content-hash tier
+  (`~/.cajeta/cache/artifacts/<sha256>.cja`) is retired in favor of it. The
+  per-project `.cajeta/cache/artifacts/<sha256>.cja` is **retained** purely as
+  the stable content-hash path handed to `--classpath` (and wiped by
+  `clean --deep`); `~/.olla/` makes the prior re-fetch-per-checkout unnecessary.
+  *(Scope decision 2026-06-21: retire the workstation tier only — see plan U3b.)*
 - The store survives `cajeta clean`; only an explicit deep clean clears it.
 
 ### 2.2 Use cases

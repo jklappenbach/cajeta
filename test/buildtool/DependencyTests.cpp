@@ -346,9 +346,13 @@ TEST(DependencyTests, artifactCacheRoundTrips) {
     // The cached path should live in the project cache.
     EXPECT_NE(looked->find(projectDir.string()), std::string::npos);
 
-    // Workstation copy should also exist.
-    auto wsPath = std::filesystem::path(cache.workstationCacheDir());
-    EXPECT_TRUE(std::filesystem::exists(wsPath));
+    // U3b: the workstation content-hash tier is retired — ~/.olla is the
+    // single cross-project store now, so insert must NOT write
+    // <home>/.cajeta/cache/artifacts/.
+    auto wsArtifacts =
+        homeDir / ".cajeta" / "cache" / "artifacts";
+    EXPECT_FALSE(std::filesystem::exists(wsArtifacts))
+        << "workstation content-hash tier should be retired (U3b)";
 
     rmTree(projectDir);
     rmTree(homeDir);

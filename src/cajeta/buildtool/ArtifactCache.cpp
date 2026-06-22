@@ -34,22 +34,12 @@ namespace cajeta::buildtool {
     } // namespace
 
     ArtifactCache::ArtifactCache(std::string projectRoot,
-                                 std::optional<std::string> homeOverride) {
+                                 std::optional<std::string> /*homeOverride*/) {
         namespace fs = std::filesystem;
         projectDir_ = (fs::path(projectRoot) / ".cajeta" / "cache" /
                        "artifacts").string();
-        std::string home;
-        if (homeOverride) {
-            home = *homeOverride;
-        } else if (const char* h = std::getenv("HOME")) {
-            home = h;
-        } else {
-            // Fall back to /tmp so the workstation tier still has
-            // a writable location (degraded but functional).
-            home = "/tmp";
-        }
-        workstationDir_ = (fs::path(home) / ".cajeta" / "cache" /
-                           "artifacts").string();
+        // homeOverride is unused since U3b: the workstation tier it
+        // parameterized was retired in favor of ~/.olla (OllaStore).
     }
 
     std::string ArtifactCache::sha256OfFile(const std::string& path) {
@@ -82,11 +72,7 @@ namespace cajeta::buildtool {
         std::string key = keyFromSha(sha256);
         std::string filename = key + ".cja";
         std::error_code ec;
-        // Project tier first (closer + more likely fresh).
         fs::path p = fs::path(projectDir_) / filename;
-        if (fs::is_regular_file(p, ec)) return p.string();
-        // Workstation tier next.
-        p = fs::path(workstationDir_) / filename;
         if (fs::is_regular_file(p, ec)) return p.string();
         return std::nullopt;
     }
@@ -106,18 +92,15 @@ namespace cajeta::buildtool {
         std::string key = keyFromSha(sha);
         std::string filename = key + ".cja";
 
-        // Ensure both tier directories exist.
         fs::create_directories(projectDir_, ec);
         if (ec) {
             return err("cache.insert: cannot create project cache '" +
                        projectDir_ + "': " + ec.message());
         }
-        fs::create_directories(workstationDir_, ec);
-        // Workstation create failure is recoverable — the project
-        // tier still works. Log via an output later if desired.
 
-        // Copy to project tier. Use overwrite_existing so re-inserts
-        // are idempotent.
+        // Copy into the project cache. overwrite_existing keeps
+        // re-inserts idempotent. Cross-project persistence is ~/.olla
+        // (OllaStore), not a second cache tier here (U3b).
         fs::path projectDst = fs::path(projectDir_) / filename;
         fs::copy_file(sourcePath, projectDst,
                       fs::copy_options::overwrite_existing, ec);
@@ -125,13 +108,6 @@ namespace cajeta::buildtool {
             return err("cache.insert: copy to '" + projectDst.string() +
                        "': " + ec.message());
         }
-        // Write-through to workstation tier (best-effort).
-        fs::path wsDst = fs::path(workstationDir_) / filename;
-        std::error_code wsEc;
-        fs::copy_file(sourcePath, wsDst,
-                      fs::copy_options::overwrite_existing, wsEc);
-        // wsEc ignored — workstation tier is a courtesy.
-
         return projectDst.string();
     }
 

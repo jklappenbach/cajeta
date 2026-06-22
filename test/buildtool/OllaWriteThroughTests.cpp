@@ -121,6 +121,32 @@ TEST(OllaWriteThroughTest, RemoteFetchWritesThroughThenServesLocally) {
     EXPECT_EQ((*r2)[0].resolvedFromRepo, "olla");
 }
 
+// 3b.1.2 — U3b: resolving from/through ~/.olla never writes the retired
+// workstation content-hash tier (<home>/.cajeta/cache/artifacts/). The
+// per-project tier under proj stays; the workstation tier is gone.
+TEST(OllaWriteThroughTest, ResolveWritesNoWorkstationCacheTier) {
+    OllaHomeUnset guard;
+    auto home = tempDir("home");
+    auto proj = tempDir("proj");
+    auto remote = makeRemote("y.pkg", "2.0.0", "REMOTE-BYTES-2");
+
+    auto m = loadManifestString(
+        "{\"details\":{\"name\":\"c\",\"version\":\"0.1.0\"},\"settings\":{"
+        "\"dependencies\":{\"y.pkg\":\"2.0.0\"},"
+        "\"repositories\":[{\"name\":\"remote\",\"type\":\"filesystem\","
+        "\"path\":\"" + remote.string() + "\"}]}}");
+    ASSERT_TRUE(static_cast<bool>(m)) << errorText(m.takeError());
+    auto r = resolveProjectDependencies(*m, proj.string(), home.string());
+    ASSERT_TRUE(static_cast<bool>(r)) << errorText(r.takeError());
+
+    // Write-through populated ~/.olla …
+    OllaStore store((home / ".olla").string());
+    EXPECT_TRUE(store.read("y.pkg", "2.0.0").has_value());
+    // … but the workstation content-hash tier was never created.
+    EXPECT_FALSE(fs::exists(home / ".cajeta" / "cache" / "artifacts"))
+        << "workstation tier must be retired (U3b)";
+}
+
 // 3.1.2 — writeVerified rejects a sha256 mismatch (store untouched) and
 // trusts-on-first-use when no expected hash is given.
 TEST(OllaWriteThroughTest, WriteVerifiedRejectsHashMismatch) {
