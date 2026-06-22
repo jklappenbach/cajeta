@@ -128,3 +128,116 @@ TEST(GfxRenderGraphTests, lastWriterTracksNearestProducer) {
         "        if (RenderGraph.lastWriterBefore(writes, 4, r0, 0) != -1) { return -5; }\n"
         "        return 0;\n"), 0);
 }
+
+// 5a (slice 2) — topological order: Kahn's over a prerequisite-bitmask array
+// (deps[j] = bits of passes that must precede j) writes a valid execution order
+// into the caller's outOrder, picking the lowest-index ready pass each round. A
+// graph whose deps point backward (pass 0 needs pass 2) is REORDERED so producers
+// run first; an all-independent graph keeps declaration order.
+TEST(GfxRenderGraphTests, topologicalOrderRespectsDependencies) {
+    EXPECT_EQ(runI32(IMP,
+        "        int32[] deps = heap int32[3];\n"
+        "        deps[0] = 4;\n"   // pass 0 needs pass 2 (bit 2)
+        "        deps[1] = 1;\n"   // pass 1 needs pass 0 (bit 0)
+        "        deps[2] = 0;\n"   // pass 2 independent
+        "        int32[] order = heap int32[3];\n"
+        "        if (RenderGraph.topologicalOrder(deps, 3, order) != 3) { return -1; }\n"
+        "        if (order[0] != 2) { return -2; }\n"   // 2 before 0
+        "        if (order[1] != 0) { return -3; }\n"   // 0 before 1
+        "        if (order[2] != 1) { return -4; }\n"
+        "        deps[0] = 0; deps[1] = 0; deps[2] = 0;\n"  // all independent
+        "        if (RenderGraph.topologicalOrder(deps, 3, order) != 3) { return -5; }\n"
+        "        if (order[0] != 0) { return -6; }\n"   // stable declaration order
+        "        if (order[1] != 1) { return -7; }\n"
+        "        if (order[2] != 2) { return -8; }\n"
+        "        return 0;\n"), 0);
+}
+
+// 5a (slice 2) — cycle detection: a mutual dependency (0 needs 1, 1 needs 0) has
+// no valid order, so topologicalOrder returns -1; a self-dependency (pass needs
+// itself) is likewise a cycle.
+TEST(GfxRenderGraphTests, topologicalOrderDetectsCycle) {
+    EXPECT_EQ(runI32(IMP,
+        "        int32[] deps = heap int32[2];\n"
+        "        deps[0] = 2;\n"   // pass 0 needs pass 1
+        "        deps[1] = 1;\n"   // pass 1 needs pass 0  -> cycle
+        "        int32[] order = heap int32[2];\n"
+        "        if (RenderGraph.topologicalOrder(deps, 2, order) != -1) { return -1; }\n"
+        "        int32[] d2 = heap int32[1];\n"
+        "        d2[0] = 1;\n"   // pass 0 needs pass 0 (bit 0) -> self cycle
+        "        int32[] o2 = heap int32[1];\n"
+        "        if (RenderGraph.topologicalOrder(d2, 1, o2) != -1) { return -2; }\n"
+        "        return 0;\n"), 0);
+}
+
+// 5a (slice 2) — the bridge: dependenciesOf builds a pass's prerequisite bitmask
+// from the read/write sets (a pass depends on the EARLIER passes it conflicts
+// with), and that feeds topologicalOrder end-to-end. Graph: pass 0 writes r0,
+// pass 1 writes r1 (independent), pass 2 reads r0 (depends on pass 0 only).
+TEST(GfxRenderGraphTests, dependenciesOfBuildsPrereqsThenSorts) {
+    EXPECT_EQ(runI32(IMP,
+        "        int32 r0 = RenderGraph.resourceBit(0);\n"
+        "        int32 r1 = RenderGraph.resourceBit(1);\n"
+        "        int32[] reads  = heap int32[3];\n"
+        "        int32[] writes = heap int32[3];\n"
+        "        reads[0] = 0;  writes[0] = r0;\n"
+        "        reads[1] = 0;  writes[1] = r1;\n"
+        "        reads[2] = r0; writes[2] = 0;\n"
+        "        if (RenderGraph.dependenciesOf(reads, writes, 3, 0) != 0) { return -1; }\n"  // no earlier deps
+        "        if (RenderGraph.dependenciesOf(reads, writes, 3, 1) != 0) { return -2; }\n"  // independent of pass 0
+        "        if (RenderGraph.dependenciesOf(reads, writes, 3, 2) != 1) { return -3; }\n"  // depends on pass 0 (bit 0)
+        "        int32[] deps = heap int32[3];\n"
+        "        deps[0] = RenderGraph.dependenciesOf(reads, writes, 3, 0);\n"
+        "        deps[1] = RenderGraph.dependenciesOf(reads, writes, 3, 1);\n"
+        "        deps[2] = RenderGraph.dependenciesOf(reads, writes, 3, 2);\n"
+        "        int32[] order = heap int32[3];\n"
+        "        if (RenderGraph.topologicalOrder(deps, 3, order) != 3) { return -4; }\n"
+        "        if (order[0] != 0) { return -5; }\n"   // producer pass 0 first
+        "        if (order[1] != 1) { return -6; }\n"
+        "        if (order[2] != 2) { return -7; }\n"   // consumer pass 2 last
+        "        return 0;\n"), 0);
+}
+
+// 5b (slice 3) — pass-kind → VkPipelineStageFlags: a pass executes in its kind's
+// stage (compute shader / all-graphics / transfer), the src/dst of a barrier.
+TEST(GfxRenderGraphTests, pipelineStageMasksPerKind) {
+    EXPECT_EQ(runI32(IMP,
+        "        if (RenderGraph.pipelineStageForKind(RenderGraph.kindCompute())  != 2048)  { return -1; }\n"
+        "        if (RenderGraph.pipelineStageForKind(RenderGraph.kindGraphics()) != 32768) { return -2; }\n"
+        "        if (RenderGraph.pipelineStageForKind(RenderGraph.kindTransfer()) != 4096)  { return -3; }\n"
+        "        if (RenderGraph.kindCompute() != 0) { return -4; }\n"
+        "        if (RenderGraph.kindGraphics() != 1) { return -5; }\n"
+        "        if (RenderGraph.kindTransfer() != 2) { return -6; }\n"
+        "        return 0;\n"), 0);
+}
+
+// 5b (slice 3) — pass-kind → VkAccessFlags: the write (producer) and read
+// (consumer) access bits. Compute reads/writes via the shader bits; graphics
+// writes a color attachment and reads via sampling; transfer uses the transfer
+// bits.
+TEST(GfxRenderGraphTests, accessMasksPerKind) {
+    EXPECT_EQ(runI32(IMP,
+        "        if (RenderGraph.writeAccessForKind(RenderGraph.kindCompute())  != 64)   { return -1; }\n"  // SHADER_WRITE
+        "        if (RenderGraph.writeAccessForKind(RenderGraph.kindGraphics()) != 256)  { return -2; }\n"  // COLOR_ATTACHMENT_WRITE
+        "        if (RenderGraph.writeAccessForKind(RenderGraph.kindTransfer()) != 4096) { return -3; }\n"  // TRANSFER_WRITE
+        "        if (RenderGraph.readAccessForKind(RenderGraph.kindCompute())   != 32)   { return -4; }\n"  // SHADER_READ
+        "        if (RenderGraph.readAccessForKind(RenderGraph.kindGraphics())  != 32)   { return -5; }\n"  // SHADER_READ (sample)
+        "        if (RenderGraph.readAccessForKind(RenderGraph.kindTransfer())  != 2048) { return -6; }\n"  // TRANSFER_READ
+        "        return 0;\n"), 0);
+}
+
+// 5b (slice 3) — the headline: a COMPUTE pass producing a resource read by a
+// GRAPHICS (draw) pass derives the correct barrier — src = compute-shader stage /
+// shader-write access, dst = all-graphics stage / shader-read access. This is the
+// "compute pass gets correct sync vs the draw passes" case, composed from the
+// per-kind stage/access derivations.
+TEST(GfxRenderGraphTests, computeToGraphicsBarrierDerivation) {
+    EXPECT_EQ(runI32(IMP,
+        "        int32 producer = RenderGraph.kindCompute();\n"
+        "        int32 consumer = RenderGraph.kindGraphics();\n"
+        "        if (RenderGraph.pipelineStageForKind(producer) != 2048)  { return -1; }\n"  // srcStage COMPUTE
+        "        if (RenderGraph.pipelineStageForKind(consumer) != 32768) { return -2; }\n"  // dstStage ALL_GRAPHICS
+        "        if (RenderGraph.writeAccessForKind(producer)   != 64)    { return -3; }\n"  // srcAccess SHADER_WRITE
+        "        if (RenderGraph.readAccessForKind(consumer)    != 32)    { return -4; }\n"  // dstAccess SHADER_READ
+        "        return 0;\n"), 0);
+}

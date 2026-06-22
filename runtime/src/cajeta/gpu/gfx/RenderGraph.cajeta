@@ -92,4 +92,120 @@ public class RenderGraph {
         }
         return last;
     }
+
+    /**
+     * The prerequisite bitmask for pass `j` in DECLARATION-order semantics: the set
+     * of EARLIER passes (index < j) that `j` conflicts with (any RAW/WAR/WAW
+     * hazard), as a bitmask of pass indices. Bridges {@link #dependsOn} to
+     * {@link #topologicalOrder} — the caller builds a deps[] array by calling this
+     * for each pass, then sorts. (A read sees the most recent earlier write, so
+     * dependencies only point backward; the resulting graph is acyclic by
+     * construction.)
+     */
+    public static int32 dependenciesOf(int32[] passReads, int32[] passWrites,
+                                       int32 passCount, int32 j) {
+        int32 deps = 0;
+        // Load the indexed elements into locals before the call: passing an array
+        // subscript directly as a call argument emits the element POINTER, not the
+        // loaded value (a cajeta codegen trap) — see [[cajeta-interface-codegen-gotchas]].
+        int32 jReads = passReads[j];
+        int32 jWrites = passWrites[j];
+        int32 i = 0;
+        while (i < j) {
+            if (i < passCount) {
+                int32 iReads = passReads[i];
+                int32 iWrites = passWrites[i];
+                if (dependsOn(iReads, iWrites, jReads, jWrites)) {
+                    deps = deps | (1 << i);
+                }
+            }
+            i = i + 1;
+        }
+        return deps;
+    }
+
+    /**
+     * A topological EXECUTION ORDER of the passes by Kahn's algorithm:
+     * `deps[j]` is a bitmask of the pass indices that must run BEFORE pass `j`
+     * (its prerequisites — build it with {@link #dependenciesOf}, or from explicit
+     * producer/consumer edges). The order is written into the caller-provided
+     * `outOrder` (so no fresh-array return); each round emits the LOWEST-index pass
+     * whose prerequisites are all already emitted (a stable, deterministic order).
+     * Returns the number of passes ordered (== `passCount` on success), or -1 if
+     * the graph has a CYCLE (some pass's prerequisites can never all be met).
+     * v1 addresses up to 31 passes (the bitmask width).
+     */
+    public static int32 topologicalOrder(int32[] deps, int32 passCount,
+                                         int32[] outOrder) {
+        int32 emitted = 0;        // bitmask of already-emitted pass indices
+        int32 emittedCount = 0;
+        while (emittedCount < passCount) {
+            int32 picked = -1;
+            int32 j = 0;
+            while (j < passCount) {
+                int32 bit = 1 << j;
+                if ((emitted & bit) == 0) {                  // j not yet emitted
+                    // ready iff every prerequisite is already emitted
+                    // (deps[j] is a subset of emitted).
+                    if ((deps[j] & emitted) == deps[j]) {
+                        if (picked < 0) { picked = j; }
+                    }
+                }
+                j = j + 1;
+            }
+            if (picked < 0) { return -1; }   // no ready pass -> a cycle
+            outOrder[emittedCount] = picked;
+            emitted = emitted | (1 << picked);
+            emittedCount = emittedCount + 1;
+        }
+        return emittedCount;
+    }
+
+    // --- barrier stage/access masks (VkPipelineStageFlags / VkAccessFlags) ---
+    //
+    // A barrier between a PRODUCER (writes a resource) and a CONSUMER (reads it)
+    // carries src/dst pipeline-stage masks + src/dst access masks, derived from
+    // each pass's KIND: srcStage = pipelineStageForKind(producer),
+    // dstStage = pipelineStageForKind(consumer), srcAccess = writeAccessForKind
+    // (producer), dstAccess = readAccessForKind(consumer). This is the §5.b
+    // "compute pass gets correct sync vs the draw passes" derivation. v1 uses the
+    // COMMON-case access per kind (graphics write = color-attachment write,
+    // shader read for sampling); a per-resource-usage refinement is a follow-on.
+
+    // Pass kinds (cajeta's own small enum).
+    public static int32 kindCompute()  { return 0; }
+    public static int32 kindGraphics() { return 1; }
+    public static int32 kindTransfer() { return 2; }
+
+    /**
+     * The {@code VkPipelineStageFlagBits} a pass of `passKind` executes in:
+     * Compute → COMPUTE_SHADER_BIT (2048), Graphics → ALL_GRAPHICS_BIT (32768, the
+     * conservative whole-graphics scope), Transfer → TRANSFER_BIT (4096).
+     */
+    public static int32 pipelineStageForKind(int32 passKind) {
+        if (passKind == 0) { return 2048; }    // VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+        if (passKind == 1) { return 32768; }   // VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT
+        return 4096;                            // VK_PIPELINE_STAGE_TRANSFER_BIT
+    }
+
+    /**
+     * The {@code VkAccessFlagBits} for a pass of `passKind` WRITING its output:
+     * Compute → SHADER_WRITE_BIT (64), Graphics → COLOR_ATTACHMENT_WRITE_BIT (256),
+     * Transfer → TRANSFER_WRITE_BIT (4096). The producer-side access of a barrier.
+     */
+    public static int32 writeAccessForKind(int32 passKind) {
+        if (passKind == 0) { return 64; }     // VK_ACCESS_SHADER_WRITE_BIT
+        if (passKind == 1) { return 256; }    // VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+        return 4096;                           // VK_ACCESS_TRANSFER_WRITE_BIT
+    }
+
+    /**
+     * The {@code VkAccessFlagBits} for a pass of `passKind` READING an input:
+     * Transfer → TRANSFER_READ_BIT (2048); Compute and Graphics both sample via
+     * SHADER_READ_BIT (32). The consumer-side access of a barrier.
+     */
+    public static int32 readAccessForKind(int32 passKind) {
+        if (passKind == 2) { return 2048; }   // VK_ACCESS_TRANSFER_READ_BIT
+        return 32;                             // VK_ACCESS_SHADER_READ_BIT
+    }
 }
