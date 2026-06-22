@@ -1,0 +1,87 @@
+package mcp;
+
+import cajeta.io.file.FileWriter;
+import cajeta.codec.json.JsonWriter;
+
+/**
+ * The response-write seam: dispatch handlers build a `JsonWriter` and hand it to
+ * `emit`, which either writes a newline-framed line to fd 1 (stdio) or captures
+ * the JSON bytes into an in-memory buffer (the Streamable-HTTP transport reads
+ * them back as the response body). One dispatch core serves both transports.
+ *
+ * A capturing sink records whether any message was emitted (`haveMessage`) so
+ * the HTTP transport can distinguish a real response (200 + body) from a
+ * notification that produces none (202, no body).
+ */
+public class ResponseSink {
+    boolean stdio;
+    FileWriter out;     // stdio target (fd 1)
+    int8[] buf;         // capture buffer (HTTP)
+    int32 buflen;
+    int32 cap;
+    public boolean haveMessage;
+
+    public ResponseSink(boolean stdio, FileWriter out) {
+        this.stdio = stdio;
+        this.out = out;
+        this.cap = 4096;
+        this.buf = heap int8[4096];
+        this.buflen = 0;
+        this.haveMessage = false;
+    }
+
+    /** Emit one response message built into `w`. */
+    public void emit(JsonWriter w) {
+        if (this.stdio) {
+            FileWriter o = this.out;
+            w.writeLineTo(o);
+        } else {
+            int8[] b = w.toBytes();
+            int32 n = (int32) b.count();   // capture before any further use
+            this.append(b, n);
+            this.haveMessage = true;
+        }
+    }
+
+    void append(int8[] b, int32 n) {
+        int32 need = this.buflen + n;
+        if (need > this.cap) {
+            int32 newCap = this.cap * 2;
+            while (newCap < need) {
+                newCap = newCap * 2;
+            }
+            int8[] grown = heap int8[newCap];
+            int32 k = 0;
+            while (k < this.buflen) {
+                grown[k] = this.buf[k];
+                k = k + 1;
+            }
+            this.buf = #grown;
+            this.cap = newCap;
+        }
+        int8[] dst = this.buf;
+        int32 base = this.buflen;
+        int32 i = 0;
+        while (i < n) {
+            dst[base + i] = b[i];
+            i = i + 1;
+        }
+        this.buflen = base + n;
+    }
+
+    /** Number of captured body bytes. */
+    public int32 bodyLen() {
+        return this.buflen;
+    }
+
+    /** An owned copy of the captured response bytes. */
+    public #int8[] body() {
+        int8[] r = heap int8[this.buflen];
+        int32 i = 0;
+        while (i < this.buflen) {
+            r[i] = this.buf[i];
+            i = i + 1;
+        }
+        return r;
+    }
+}

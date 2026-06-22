@@ -1,0 +1,207 @@
+package mcp;
+
+import cajeta.io.net.SocketAddress;
+import cajeta.io.net.TcpListener;
+import cajeta.io.net.TcpStream;
+import cajeta.io.net.http.HttpServer;
+import cajeta.io.net.http.HttpRequest;
+import cajeta.io.net.http.HttpResponse;
+import cajeta.lang.String;
+
+/**
+ * Streamable-HTTP transport for the MCP server: a single `POST /mcp` endpoint
+ * that runs the same `dispatch` core as stdio (mcp-compression unit 2). The
+ * request body is one JSON-RPC message; the response body is its JSON-RPC reply
+ * (200), or empty (202) for a notification that produces no reply. Selected with
+ * `--http=PORT`; stdio stays the default. gzip negotiation lands in units 3/4.
+ *
+ * A blocking single-connection accept loop (`TcpListener`) drives the stdlib's
+ * pure `HttpServer.handleRequestBytes` byte path — `HttpServer.serve()` itself
+ * needs the fiber reactor, which a plain `main` doesn't bootstrap. Concurrency /
+ * keep-alive / SSE are deferred (P-MCP-SSE); one request per connection is
+ * plenty for a local toolchain MCP server.
+ */
+public class HttpTransport {
+
+    /** Bind 127.0.0.1:PORT and serve `POST /mcp` until the process is killed. */
+    public static void serve(int32 port) {
+        String addrStr = Server.concat(Server.dup("127.0.0.1:"), Server.intToStr((int64) port));
+        SocketAddress addr = SocketAddress.parse(addrStr);
+        TcpListener listener = TcpListener.bind(addr);
+        boolean running = true;
+        while (running) {
+            TcpStream conn = listener.accept();
+            HttpTransport.serveConn(conn);
+            conn.close();
+        }
+    }
+
+    /** Read one full HTTP request off `conn`, dispatch it, write the reply. */
+    public static void serveConn(TcpStream conn) {
+        int8[] acc = heap int8[8192];
+        int32 cap = 8192;
+        int32 acclen = 0;
+        int8[] chunk = heap int8[8192];
+        boolean reading = true;
+        while (reading) {
+            int32 total = HttpTransport.requestEnd(acc, acclen);
+            if (total >= 0 && acclen >= total) {
+                reading = false;
+            } else {
+                int64 n = conn.read(chunk, (int64) 0, (int64) 8192);
+                if (n <= 0) {
+                    reading = false;
+                } else {
+                    int32 nn = (int32) n;
+                    if (acclen + nn > cap) {
+                        int32 newCap = cap * 2;
+                        while (newCap < acclen + nn) {
+                            newCap = newCap * 2;
+                        }
+                        int8[] grown = heap int8[newCap];
+                        int32 k = 0;
+                        while (k < acclen) {
+                            grown[k] = acc[k];
+                            k = k + 1;
+                        }
+                        acc = #grown;
+                        cap = newCap;
+                    }
+                    int32 i = 0;
+                    while (i < nn) {
+                        acc[acclen + i] = chunk[i];
+                        i = i + 1;
+                    }
+                    acclen = acclen + nn;
+                }
+            }
+        }
+        if (acclen == 0) {
+            return;
+        }
+        int8[] resp = HttpServer.handleRequestBytes(
+            (HttpRequest req) -> HttpTransport.handle(req), acc, acclen);
+        int32 rlen = (int32) resp.count();
+        conn.write(resp, (int64) 0, (int64) rlen);
+    }
+
+    /**
+     * Total bytes a complete request occupies in `b[0..len)` (head + body via
+     * Content-Length), or -1 if the head (`\r\n\r\n`) isn't buffered yet.
+     */
+    public static int32 requestEnd(int8[] b, int32 len) {
+        int32 h = -1;
+        int32 i = 0;
+        while (i + 3 < len) {
+            int32 i1 = i + 1;
+            int32 i2 = i + 2;
+            int32 i3 = i + 3;
+            int32 c0 = ((int32) b[i]) & 0xFF;
+            int32 c1 = ((int32) b[i1]) & 0xFF;
+            int32 c2 = ((int32) b[i2]) & 0xFF;
+            int32 c3 = ((int32) b[i3]) & 0xFF;
+            if (c0 == 13 && c1 == 10 && c2 == 13 && c3 == 10) {
+                h = i;
+                i = len;
+            }
+            i = i + 1;
+        }
+        if (h < 0) {
+            return -1;
+        }
+        int32 headEnd = h + 4;
+        int32 cl = HttpTransport.contentLength(b, headEnd);
+        return headEnd + cl;
+    }
+
+    /** Content-Length value in the header block `b[0..headEnd)`, or 0 if absent. */
+    public static int32 contentLength(int8[] b, int32 headEnd) {
+        int32 i = 0;
+        while (i < headEnd) {
+            if (HttpTransport.ciEq(b, i, headEnd, "content-length:")) {
+                int32 j = i + 15;
+                boolean sp = true;
+                while (sp && j < headEnd) {
+                    int32 c = ((int32) b[j]) & 0xFF;
+                    if (c == 32) { j = j + 1; } else { sp = false; }
+                }
+                int32 v = 0;
+                boolean dig = true;
+                while (dig && j < headEnd) {
+                    int32 c = ((int32) b[j]) & 0xFF;
+                    if (c >= 48 && c <= 57) {
+                        v = v * 10 + (c - 48);
+                        j = j + 1;
+                    } else {
+                        dig = false;
+                    }
+                }
+                return v;
+            }
+            i = i + 1;
+        }
+        return 0;
+    }
+
+    /** Case-insensitive match of `lit` against `b` at `pos` (within `end`). */
+    public static boolean ciEq(int8[] b, int32 pos, int32 end, String lit) {
+        int32 n = lit.byteLength;
+        if (pos + n > end) {
+            return false;
+        }
+        int32 i = 0;
+        while (i < n) {
+            int32 p = pos + i;
+            int32 c = ((int32) b[p]) & 0xFF;
+            int32 l = ((int32) lit.bytes[i]) & 0xFF;
+            if (c >= 65 && c <= 90) {
+                c = c + 32;
+            }
+            if (c != l) {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+
+    /** Route one parsed request: POST /mcp → dispatch; else → an error reply. */
+    public static #HttpResponse handle(HttpRequest req) {
+        String method = req.method;
+        String target = req.target;
+        if (method.equals("POST") == false) {
+            return HttpTransport.jsonRpcError(405, -32600, "POST required");
+        }
+        if (target.equals("/mcp") == false) {
+            return HttpTransport.jsonRpcError(404, -32600, "unknown endpoint");
+        }
+        int8[] body = req.body;
+        int32 blen = req.bodyLength();
+        ResponseSink sink = heap ResponseSink(false, null);
+        if (body != null && blen > 0) {
+            Server.handleLine(body, blen, sink);
+        }
+        if (sink.haveMessage) {
+            int8[] rb = sink.body();
+            int32 rl = sink.bodyLen();
+            HttpResponse resp = HttpResponse.of(200);
+            resp.setHeader("Content-Type", "application/json");
+            resp.body(rb, rl);
+            return #resp;
+        }
+        // A notification (no id) produces no reply — 202 Accepted, empty body.
+        return HttpResponse.of(202);
+    }
+
+    /** An HTTP error carrying a JSON-RPC error object body. */
+    public static #HttpResponse jsonRpcError(int32 httpStatus, int32 code, String message) {
+        ResponseSink sink = heap ResponseSink(false, null);
+        Server.writeError(sink, null, code, message);
+        int8[] rb = sink.body();
+        int32 rl = sink.bodyLen();
+        HttpResponse resp = HttpResponse.of(httpStatus);
+        resp.setHeader("Content-Type", "application/json");
+        resp.body(rb, rl);
+        return #resp;
+    }
+}
