@@ -2536,6 +2536,43 @@ namespace cajeta {
                     st->setAlignment(llvm::Align(1));
                     return st;
                 }
+                // f32ToBits(float32 x) -> int32: reinterpret a float's IEEE-754
+                // bits as a 32-bit integer (LLVM bitcast — NOT a value
+                // conversion; `(int32) x` would truncate the numeric value).
+                // The inverse of bitsToF32. Enables binary float serialization
+                // (little-endian float32 .npy) that the value-cast cannot express.
+                if (ns == "Cajeta" && methodCallName == "f32ToBits" && parameters.size() == 1) {
+                    llvm::Value* x = loadValue(0);
+                    llvm::Value* b = builder->CreateBitCast(x, i32Ty, "f32_bits");
+                    resolvedType = CajetaType::of("int32");
+                    return b;
+                }
+                // bitsToF32(int32 b) -> float32: reinterpret 32 integer bits as an
+                // IEEE-754 float (LLVM bitcast). Inverse of f32ToBits; the float32
+                // .npy reader uses it.
+                if (ns == "Cajeta" && methodCallName == "bitsToF32" && parameters.size() == 1) {
+                    auto* f32Ty = llvm::Type::getFloatTy(llvmCtx);
+                    llvm::Value* b = loadValue(0);
+                    llvm::Value* x = builder->CreateBitCast(b, f32Ty, "bits_f32");
+                    resolvedType = CajetaType::of("float32");
+                    return x;
+                }
+                // f64ToBits(float64 x) -> int64: reinterpret a double's IEEE-754
+                // bits as a 64-bit integer (LLVM bitcast). Inverse of bitsToF64.
+                if (ns == "Cajeta" && methodCallName == "f64ToBits" && parameters.size() == 1) {
+                    llvm::Value* x = loadValue(0);
+                    llvm::Value* b = builder->CreateBitCast(x, i64Ty, "f64_bits");
+                    resolvedType = CajetaType::of("int64");
+                    return b;
+                }
+                // bitsToF64(int64 b) -> float64: reinterpret 64 integer bits as a
+                // double (LLVM bitcast). Inverse of f64ToBits.
+                if (ns == "Cajeta" && methodCallName == "bitsToF64" && parameters.size() == 1) {
+                    llvm::Value* b = loadValue(0);
+                    llvm::Value* x = builder->CreateBitCast(b, f64Ty, "bits_f64");
+                    resolvedType = CajetaType::of("float64");
+                    return x;
+                }
                 // ctz64(int64 x): count trailing zero bits, 0..64 (x==0 -> 64).
                 // Maps to @llvm.cttz.i64; result truncated to int32.
                 if (ns == "Cajeta" && methodCallName == "ctz64" && parameters.size() == 1) {

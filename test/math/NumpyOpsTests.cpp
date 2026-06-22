@@ -2334,6 +2334,41 @@ TEST(NumpyOpsTests, linalgConditioningAndEdgeCases) {
     EXPECT_EQ(runI32(src), 1);
 }
 
+// 10.5 precursor — float<->raw-bits reinterpret intrinsics (Cajeta.f32ToBits/bitsToF32,
+// f64ToBits/bitsToF64): LLVM bitcast, NOT a value conversion. Unblocks binary float .npy.
+TEST(NumpyOpsTests, floatBitsIntrinsicRoundTrip) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        // 1.0f IEEE-754 bits == 0x3F800000 == 1065353216 (a reinterpret, not (int32)1)
+        "        int32 b = Cajeta.f32ToBits(1.0f);\n"
+        "        if (b != 1065353216) { return -1; }\n"
+        // bitsToF32 is the exact inverse
+        "        float32 x = Cajeta.bitsToF32(b);\n"
+        "        if (x != 1.0f) { return -2; }\n"
+        // arbitrary value round-trips bit-exactly
+        "        float32 y = 3.14159f;\n"
+        "        int32 yb = Cajeta.f32ToBits(y);\n"
+        "        float32 y2 = Cajeta.bitsToF32(yb);\n"
+        "        if (y2 != y) { return -3; }\n"
+        // negative value (sign bit set) round-trips
+        "        float32 z = -42.5f;\n"
+        "        float32 z2 = Cajeta.bitsToF32(Cajeta.f32ToBits(z));\n"
+        "        if (z2 != z) { return -4; }\n"
+        // f64 round-trip
+        "        float64 dv = 2.5;\n"
+        "        int64 db = Cajeta.f64ToBits(dv);\n"
+        "        float64 dx = Cajeta.bitsToF64(db);\n"
+        "        if (dx != dv) { return -5; }\n"
+        // a (int32) cast CONVERTS (truncates) — must differ from the bit reinterpret
+        "        int32 conv = (int32) 1.0f;\n"
+        "        if (conv == 1065353216) { return -6; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
 // 11b — native symmetric eig (Jacobi) + SVD (via eigh of A^T A). Eigenvalues ascending,
 // singular values descending; verified by spectrum + A·v=λ·v and U·diag(S)·Vt==A.
 TEST(NumpyOpsTests, linalgEighSvdMatchNumpy) {
