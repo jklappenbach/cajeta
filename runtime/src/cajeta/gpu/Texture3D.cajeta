@@ -7,7 +7,7 @@ package cajeta.gpu;
  * plane, a 3-D texture indexes a (width, height, depth) volume — the natural
  * carrier for scalar/vector fields, voxel grids, and 3-D lookup tables.
  *
- * Like {@link GpuBuffer}/{@link Texture2D}, this is a small host-side handle
+ * Like {@link KernelBuffer}/{@link Texture2D}, this is a small host-side handle
  * (deviceHandle + the width/height/depth) over a device image resource. Backends
  * tag the underlying storage (HIP 3-D array / Vulkan 3-D sampled image + view);
  * from the user's perspective it is one opaque type with the standard
@@ -16,8 +16,8 @@ package cajeta.gpu;
  *
  * MEMORY MODEL. The handle (this struct) is governed by the drop chain; the
  * device image is acquired by the constructor and released by ~Texture3D() at
- * scope exit (the GpuBuffer/Texture2D RAII convention). A launch borrows each
- * Texture3D argument until the next GpuStream.sync().
+ * scope exit (the KernelBuffer/Texture2D RAII convention). A launch borrows each
+ * Texture3D argument until the next KernelStream.sync().
  *
  * TEXEL TYPE. The type parameter `T` is the scalar a fetch/sample yields per
  * channel; it **defaults to `float32`**, so every bare `Texture3D` spelling is
@@ -147,7 +147,7 @@ public final class Texture3D<T = float32> {
         return result;
     }
 
-    // Device-image primitives. Instance @Native methods (the GpuBuffer convention):
+    // Device-image primitives. Instance @Native methods (the KernelBuffer convention):
     // pointer-shaped at the ABI boundary, so one C symbol per name serves the
     // type. The leading `this` the forwarder passes is ignored by the C side.
     // Distinct __cajeta_xpu_texture3d_* symbols from the 2-D set: the 2-D vs 3-D

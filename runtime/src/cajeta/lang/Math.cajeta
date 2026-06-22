@@ -34,7 +34,7 @@ package cajeta.lang;
  * `libdevice` (`__nv_*`):
  * ```
  * @Kernel
- * public static void rotate(GpuBuffer<float32> out, float32 angle, uint32 n) {
+ * public static void rotate(KernelBuffer<float32> out, float32 angle, uint32 n) {
  *     uint32 i = Thread.globalIdX();
  *     if (i < n) { out[i] = Math.cos(angle) - Math.sin(angle); }
  * }
@@ -58,7 +58,7 @@ package cajeta.lang;
  * speed:
  * ```
  * @Kernel @FastMath
- * public static void saxpy(GpuBuffer<float32> y, GpuBuffer<float32> x,
+ * public static void saxpy(KernelBuffer<float32> y, KernelBuffer<float32> x,
  *                          float32 a, uint32 n) {
  *     uint32 i = Thread.globalIdX();
  *     if (i < n) { y[i] = a * x[i] + y[i]; }   // may contract to one fma

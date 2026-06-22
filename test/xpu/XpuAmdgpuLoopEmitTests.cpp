@@ -91,13 +91,13 @@ std::string printModule(llvm::Module& m) {
 TEST(XpuAmdgpuLoopEmitTests, lowersSaxpyToIsaAndIr) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.GpuBuffer;\n"
-        "import cajeta.gpu.GpuThread;\n"
+        "import cajeta.gpu.KernelBuffer;\n"
+        "import cajeta.gpu.KernelThread;\n"
         "public class M {\n"
         "    @Kernel\n"
-        "    public static void saxpy(GpuBuffer<float32> y, GpuBuffer<float32> x,\n"
+        "    public static void saxpy(KernelBuffer<float32> y, KernelBuffer<float32> x,\n"
         "                              float32 a, uint32 n) {\n"
-        "        uint32 i = GpuThread.globalIdX();\n"
+        "        uint32 i = KernelThread.globalIdX();\n"
         "        if (i < n) {\n"
         "            y[i] = a * x[i] + y[i];\n"
         "        }\n"
@@ -126,7 +126,7 @@ TEST(XpuAmdgpuLoopEmitTests, lowersSaxpyToIsaAndIr) {
     std::string ir = printModule(deviceModule);
     // Seam: mutable scalar slots allocate in the private address space (5).
     EXPECT_NE(ir.find("addrspace(5)"), std::string::npos) << ir;
-    // GpuBuffer params are device global memory (addrspace(1)).
+    // KernelBuffer params are device global memory (addrspace(1)).
     EXPECT_NE(ir.find("ptr addrspace(1)"), std::string::npos) << ir;
     // Coordinate reads use the amdgcn intrinsics; global id needs workitem +
     // workgroup id AND the dispatch-packet block-dim read.
@@ -148,13 +148,13 @@ TEST(XpuAmdgpuLoopEmitTests, lowersSaxpyToIsaAndIr) {
 TEST(XpuAmdgpuLoopEmitTests, lowersStridedSumLoop) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.GpuBuffer;\n"
-        "import cajeta.gpu.GpuThread;\n"
+        "import cajeta.gpu.KernelBuffer;\n"
+        "import cajeta.gpu.KernelThread;\n"
         "public class M {\n"
         "    @Kernel\n"
-        "    public static void strideSum(GpuBuffer<int32> out, GpuBuffer<int32> in,\n"
+        "    public static void strideSum(KernelBuffer<int32> out, KernelBuffer<int32> in,\n"
         "                                  uint32 n, uint32 stride) {\n"
-        "        uint32 i = GpuThread.globalIdX();\n"
+        "        uint32 i = KernelThread.globalIdX();\n"
         "        int32 acc = 0;\n"
         "        for (uint32 j = i; j < n; j += stride) {\n"
         "            acc += in[j];\n"
@@ -191,29 +191,29 @@ namespace {
 // A 2-D texture sampled through a Sampler — the Item 8 Stage C kernel.
 const char* kTextureSampleSource =
     "package test;\n"
-    "import cajeta.gpu.GpuBuffer;\n"
+    "import cajeta.gpu.KernelBuffer;\n"
     "import cajeta.gpu.Texture2D;\n"
     "import cajeta.gpu.Sampler;\n"
-    "import cajeta.gpu.GpuThread;\n"
+    "import cajeta.gpu.KernelThread;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void sampleTex(Texture2D tex, Sampler s,\n"
-    "                                 GpuBuffer<float32> out, uint32 n) {\n"
-    "        uint32 i = GpuThread.globalIdX();\n"
+    "                                 KernelBuffer<float32> out, uint32 n) {\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
     "        if (i < n) { Vector<float32,4> c = tex.sample(s, 0.5, 0.5); out[i] = c.x; }\n"
     "    }\n"
     "}\n";
 
 const char* kTextureFetchSource =
     "package test;\n"
-    "import cajeta.gpu.GpuBuffer;\n"
+    "import cajeta.gpu.KernelBuffer;\n"
     "import cajeta.gpu.Texture2D;\n"
-    "import cajeta.gpu.GpuThread;\n"
+    "import cajeta.gpu.KernelThread;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void fetchTex(Texture2D tex,\n"
-    "                                GpuBuffer<float32> out, uint32 n) {\n"
-    "        uint32 i = GpuThread.globalIdX();\n"
+    "                                KernelBuffer<float32> out, uint32 n) {\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
     "        if (i < n) { Vector<float32,4> c = tex.fetch(i, 0); out[i] = c.x; }\n"
     "    }\n"
     "}\n";
@@ -222,14 +222,14 @@ const char* kTextureFetchSource =
 // __ockl_image_load_2D (v4f32) then bitcasts the raw result to <4 x i32>.
 const char* kIntTextureFetchSource =
     "package test;\n"
-    "import cajeta.gpu.GpuBuffer;\n"
+    "import cajeta.gpu.KernelBuffer;\n"
     "import cajeta.gpu.Texture2D;\n"
-    "import cajeta.gpu.GpuThread;\n"
+    "import cajeta.gpu.KernelThread;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void fetchTex(Texture2D<int32> tex,\n"
-    "                                GpuBuffer<int32> out, uint32 n) {\n"
-    "        uint32 i = GpuThread.globalIdX();\n"
+    "                                KernelBuffer<int32> out, uint32 n) {\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
     "        if (i < n) { Vector<int32,4> c = tex.fetch(i, 0); out[i] = c.x; }\n"
     "    }\n"
     "}\n";
@@ -342,19 +342,19 @@ TEST(XpuAmdgpuLoopEmitTests, intTextureFetchBitcastsToI32) {
 TEST(XpuAmdgpuLoopEmitTests, lowers3dTextureToOckl3D) {
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.GpuBuffer;\n"
+        "import cajeta.gpu.KernelBuffer;\n"
         "import cajeta.gpu.Texture3D;\n"
         "import cajeta.gpu.Sampler;\n"
-        "import cajeta.gpu.GpuThread;\n"
+        "import cajeta.gpu.KernelThread;\n"
         "public class M {\n"
         "    @Kernel\n"
-        "    public static void fetchVol(Texture3D vol, GpuBuffer<float32> out, uint32 n) {\n"
-        "        uint32 i = GpuThread.globalIdX();\n"
+        "    public static void fetchVol(Texture3D vol, KernelBuffer<float32> out, uint32 n) {\n"
+        "        uint32 i = KernelThread.globalIdX();\n"
         "        if (i < n) { Vector<float32,4> c = vol.fetch(i, 0, 0); out[i] = c.x; }\n"
         "    }\n"
         "    @Kernel\n"
-        "    public static void sampVol(Texture3D vol, Sampler s, GpuBuffer<float32> out, uint32 n) {\n"
-        "        uint32 i = GpuThread.globalIdX();\n"
+        "    public static void sampVol(Texture3D vol, Sampler s, KernelBuffer<float32> out, uint32 n) {\n"
+        "        uint32 i = KernelThread.globalIdX();\n"
         "        if (i < n) { Vector<float32,4> c = vol.sample(s, 0.5f, 0.5f, 0.5f); out[i] = c.x; }\n"
         "    }\n"
         "}\n";
@@ -415,8 +415,8 @@ TEST(XpuAmdgpuLoopEmitTests, textureFetchEmitsImageLoadIsa) {
 TEST(XpuAmdgpuLoopEmitTests, lowersPodStructArg) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.GpuBuffer;\n"
-        "import cajeta.gpu.GpuThread;\n"
+        "import cajeta.gpu.KernelBuffer;\n"
+        "import cajeta.gpu.KernelThread;\n"
         "public class Params {\n"
         "    int32 mul;\n"
         "    int32 add;\n"
@@ -425,8 +425,8 @@ TEST(XpuAmdgpuLoopEmitTests, lowersPodStructArg) {
         "}\n"
         "public class M {\n"
         "    @Kernel\n"
-        "    public static void k(GpuBuffer<int32> out, Params p) {\n"
-        "        uint32 i = GpuThread.globalIdX();\n"
+        "    public static void k(KernelBuffer<int32> out, Params p) {\n"
+        "        uint32 i = KernelThread.globalIdX();\n"
         "        out[i] = (int32)i * p.mul + p.add;\n"
         "    }\n"
         "}\n";

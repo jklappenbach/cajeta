@@ -66,12 +66,12 @@ constexpr unsigned TILE = N * N;  // 256 elements
 // subgroup cooperates on one tile (the dispatch's 64 threads = full subgroups).
 const char* kMatmulSource =
     "package test;\n"
-    "import cajeta.gpu.GpuBuffer;\n"
+    "import cajeta.gpu.KernelBuffer;\n"
     "import cajeta.gpu.xpu.CooperativeMatrix;\n"
     "public class M {\n"
     "    @Kernel\n"
-    "    public static void matmul(GpuBuffer<float16> a, GpuBuffer<float16> b,\n"
-    "                              GpuBuffer<float32> c) {\n"
+    "    public static void matmul(KernelBuffer<float16> a, KernelBuffer<float16> b,\n"
+    "                              KernelBuffer<float32> c) {\n"
     "        CooperativeMatrix<float16,16,16,0> ma;\n"
     "        ma.load(a, 0, 0, 16);\n"           // layout 0 = row-major, stride 16
     "        CooperativeMatrix<float16,16,16,1> mb;\n"
@@ -413,12 +413,12 @@ TEST(XpuCooperativeMatrixDeviceTests, nvptxCoopMatrixLowersToWmma) {
 // workgroup (M/N tiling is GEMM-2). Exact integer check.
 const char* kKAccumSource =
     "package test;\n"
-    "import cajeta.gpu.GpuBuffer;\n"
+    "import cajeta.gpu.KernelBuffer;\n"
     "import cajeta.gpu.xpu.CooperativeMatrix;\n"
     "public class M {\n"
     "    @Kernel\n"
-    "    public static void gemm2k(GpuBuffer<float16> a, GpuBuffer<float16> b,\n"
-    "                              GpuBuffer<float32> c) {\n"
+    "    public static void gemm2k(KernelBuffer<float16> a, KernelBuffer<float16> b,\n"
+    "                              KernelBuffer<float32> c) {\n"
     "        CooperativeMatrix<float32,16,16,2> mc;\n"
     "        mc.splat(0.0f);\n"
     "        CooperativeMatrix<float16,16,16,0> ma;\n"
@@ -508,13 +508,13 @@ TEST(XpuCooperativeMatrixDeviceTests, kAccumulationMatmulOnDevice) {
 // matmul SPELA/Toffee can call. Exact integer check over a 64×64×64 problem.
 const char* kGemmSource =
     "package test;\n"
-    "import cajeta.gpu.GpuBuffer;\n"
+    "import cajeta.gpu.KernelBuffer;\n"
     "import cajeta.gpu.xpu.CooperativeMatrix;\n"
     "import cajeta.gpu.Workgroup;\n"
     "public class M {\n"
     "    @Kernel\n"
-    "    public static void gemm(GpuBuffer<float16> a, GpuBuffer<float16> b,\n"
-    "                            GpuBuffer<float32> c,\n"
+    "    public static void gemm(KernelBuffer<float16> a, KernelBuffer<float16> b,\n"
+    "                            KernelBuffer<float32> c,\n"
     "                            uint32 rows, uint32 cols, uint32 depth) {\n"
     // Tile offsets are written naturally inline (mi*16*depth etc.). The shared
     // loop-invariant subexpressions (mi*16, nj*16) used in both the loop body and
@@ -640,12 +640,12 @@ TEST(XpuCooperativeMatrixDeviceTests, tiledGemmOnDevice) {
 // (A in 0..4, B in 0..3: products <= 12, 16-term sum <= 192 < 256 — exact in bf16).
 const char* kBf16SoftwareSource =
     "package test;\n"
-    "import cajeta.gpu.GpuBuffer;\n"
+    "import cajeta.gpu.KernelBuffer;\n"
     "import cajeta.gpu.xpu.CooperativeMatrix;\n"
     "public class M {\n"
     "    @Kernel\n"
-    "    public static void bmatmul(GpuBuffer<bfloat16> a, GpuBuffer<bfloat16> b,\n"
-    "                               GpuBuffer<bfloat16> c) {\n"
+    "    public static void bmatmul(KernelBuffer<bfloat16> a, KernelBuffer<bfloat16> b,\n"
+    "                               KernelBuffer<bfloat16> c) {\n"
     "        CooperativeMatrix<bfloat16,16,16,0> ma;\n"
     "        ma.load(a, 0, 0, 16);\n"
     "        CooperativeMatrix<bfloat16,16,16,1> mb;\n"
@@ -734,14 +734,14 @@ TEST(XpuCooperativeMatrixDeviceTests, bf16SoftwareMatmulOnDevice) {
 // Same exact-integer non-uniform check as the global-source path.
 const char* kStagedSource =
     "package test;\n"
-    "import cajeta.gpu.GpuBuffer;\n"
+    "import cajeta.gpu.KernelBuffer;\n"
     "import cajeta.gpu.xpu.CooperativeMatrix;\n"
     "import cajeta.gpu.xpu.CoopStage;\n"
     "import cajeta.gpu.Barrier;\n"
     "public class M {\n"
     "    @Kernel\n"
-    "    public static void staged(GpuBuffer<float16> a, GpuBuffer<float16> b,\n"
-    "                              GpuBuffer<float32> c) {\n"
+    "    public static void staged(KernelBuffer<float16> a, KernelBuffer<float16> b,\n"
+    "                              KernelBuffer<float32> c) {\n"
     "        Shared<float16> sa = shared float16[16 * 16];\n"
     "        Shared<float16> sb = shared float16[16 * 16];\n"
     "        CoopStage.panel(sa, a, 0, 0, 16, 16, 16);\n"

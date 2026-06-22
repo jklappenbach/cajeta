@@ -1,6 +1,6 @@
 package cajeta.math;
 
-import cajeta.gpu.GpuBuffer;
+import cajeta.gpu.KernelBuffer;
 
 /**
  * `Tensor<T>` — the keystone n-dimensional array (tensor-spec.md). A **strided
@@ -405,7 +405,7 @@ public class Tensor<T> {
      * the handle an op's GPU path binds into a `cajeta.gpu` kernel launch. The
      * host side of the op-dispatch seam.
      */
-    public GpuBuffer<T> deviceBuffer() {
+    public KernelBuffer<T> deviceBuffer() {
         return this.store.deviceBuffer();
     }
 

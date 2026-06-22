@@ -137,11 +137,11 @@ So the primitive modules below are scoped against *what already exists* vs *what
 | Foundation (`cajeta.gpu`, present today) | Relevance to gfx |
 |---|---|
 | `Vector<T,N>` (compiler builtin), `Matrix<T,R,C>` (`cajeta.math`) | transform math — **but no `Quaternion`/`Transform`/bounding volumes/`Frustum`/`Ray` yet** (gap, §4.1) |
-| `GpuBuffer<T>`, `MemoryKind`, `GpuStream`, `Fence`/`Event` | vertex/index/uniform buffers, frame sync |
+| `KernelBuffer<T>`, `MemoryKind`, `KernelStream`, `Fence`/`Event` | vertex/index/uniform buffers, frame sync |
 | `Texture1D/2D/3D/Cube`, `Texture2DArray`, `Sampler`, `TextureFormat` | sampling exists; **mip-gen, anisotropic, virtual-texture cache are gfx** |
 | `Image2D` (writable storage image) | render-target / visibility-buffer write surface |
 | `AccelerationStructure` (AABB + triangle), `RayQuery`, `SoftwareRayQuery`, `AsImpl`, `Capability` | **inline ray query is GPU-owned**; the **RT *pipeline* (raygen/hit/miss/SBT) is gfx-owned** (the GPU↔GFX seam) |
-| `Wave`, `Quad`, `Barrier`, atomics, `Workgroup`, `GpuThread` | software rasterizer, BVH build, sort, reductions |
+| `Wave`, `Quad`, `Barrier`, atomics, `Workgroup`, `KernelThread` | software rasterizer, BVH build, sort, reductions |
 | `CooperativeMatrix`, `CoopStage` (`cajeta.gpu.xpu`) | compute-only; gfx does **not** use them |
 | `cajeta.math`: `Tensor<T>`, `Matrix`, `DType`, fp16/bf16/fp8 element types | shared numeric substrate; FFT/Poisson-grade solvers are math-side |
 
@@ -772,7 +772,7 @@ result. *(Shader-I/O spelling is illustrative; the point is where the opinions l
 // package gloria.ui  — NOT stdlib. Built on gfx + math primitives.
 import cajeta.gpu.gfx.GraphicsPipeline;
 import cajeta.gpu.gfx.RenderPass;
-import cajeta.gpu.GpuBuffer;
+import cajeta.gpu.KernelBuffer;
 import cajeta.gpu.Texture2D;
 import cajeta.gpu.Sampler;
 import cajeta.math.Matrix;            // ortho()/perspective() builders (§4.1)
@@ -797,7 +797,7 @@ static void spriteFS(Vector<float32,2> vUv, Texture2D atlas, Sampler s,
 // so makes every 2-D opinion explicitly, in engine code, not in stdlib:
 public final class SpriteBatch {
     GraphicsPipeline pipe;
-    GpuBuffer<float32> quads;
+    KernelBuffer<float32> quads;
     Texture2D atlas;
     Sampler sampler;
     Matrix<float32,4,4> proj;
@@ -807,7 +807,7 @@ public final class SpriteBatch {
         this.atlas   = atlas;
         this.sampler = stack Sampler(1, 0);                  // linear, clamp
         this.proj    = Matrix.ortho(0.0, w, h, 0.0, -1.0, 1.0);  // y-down, top-left origin: engine's UI convention
-        this.quads   = heap GpuBuffer<float32>(4096);        // vertex layout + batching: engine's choice
+        this.quads   = heap KernelBuffer<float32>(4096);        // vertex layout + batching: engine's choice
     }
     public void draw(float32 x, float32 y, float32 w, float32 h, Rect uv) { /* append a quad */ }
     public void flush(RenderPass pass) { /* upload quads; pipe.draw(pass, quads, this.proj) */ }

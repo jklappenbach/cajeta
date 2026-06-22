@@ -53,14 +53,14 @@ namespace {
 
 const char* kBitsSource =
     "package test;\n"
-    "import cajeta.gpu.GpuBuffer;\n"
-    "import cajeta.gpu.GpuThread;\n"
+    "import cajeta.gpu.KernelBuffer;\n"
+    "import cajeta.gpu.KernelThread;\n"
     "import cajeta.gpu.Bits;\n"
     "public class M {\n"
     "    @Kernel\n"
-    "    public static void bitops(GpuBuffer<uint32> out, GpuBuffer<uint32> in,\n"
+    "    public static void bitops(KernelBuffer<uint32> out, KernelBuffer<uint32> in,\n"
     "                              uint32 n) {\n"
-    "        uint32 i = GpuThread.globalIdX();\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
     "        if (i < n) {\n"
     "            uint32 v = in[i];\n"
     "            out[i] = Bits.reverse(v);\n"

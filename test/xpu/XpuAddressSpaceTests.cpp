@@ -4,7 +4,7 @@
 // Verifies that the canonical-name → AddressSpace mapping in
 // AddressSpace.h plus the buildParams hook in XpuMirBuilder
 // correctly classify parameter types into address spaces, and
-// that kernels using GpuBuffer<T> (the conventional global-memory
+// that kernels using KernelBuffer<T> (the conventional global-memory
 // view) flow through cleanly.
 //
 // The AddressSpaceLowerPass that emits `addrspace(N)` decorations
@@ -73,18 +73,18 @@ cajeta::MethodPtr findMethod(const cajeta::CajetaClassPtr& klass,
 
 } // namespace
 
-// Saxpy-shaped kernel: GpuBuffer<float32> y, GpuBuffer<float32> x, float32 a,
+// Saxpy-shaped kernel: KernelBuffer<float32> y, KernelBuffer<float32> x, float32 a,
 // uint32 n. MIR builder captures all four parameters with the right
-// underlying types and Generic (default) address space — GpuBuffer<T>'s
+// underlying types and Generic (default) address space — KernelBuffer<T>'s
 // implicit "lives in global memory" handling happens at backend lower
 // time, not at MIR-builder time.
 TEST(XpuAddressSpaceTests, saxpyKernelParametersFlowThrough) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.GpuBuffer;\n"
+        "import cajeta.gpu.KernelBuffer;\n"
         "public class K {\n"
         "    @Kernel\n"
-        "    public static void saxpy(GpuBuffer<float32> y, GpuBuffer<float32> x,\n"
+        "    public static void saxpy(KernelBuffer<float32> y, KernelBuffer<float32> x,\n"
         "                             float32 a, uint32 n) { }\n"
         "}\n";
     Compiler compiler;
@@ -103,7 +103,7 @@ TEST(XpuAddressSpaceTests, saxpyKernelParametersFlowThrough) {
     EXPECT_EQ(k->params[2].name, "a");
     EXPECT_EQ(k->params[3].name, "n");
 
-    // All four default to Generic at MIR-build time. GpuBuffer<T> →
+    // All four default to Generic at MIR-build time. KernelBuffer<T> →
     // Global lowering is a per-backend decision (step 9+); the MIR
     // doesn't lock it in.
     for (auto& p : k->params) {
@@ -111,11 +111,11 @@ TEST(XpuAddressSpaceTests, saxpyKernelParametersFlowThrough) {
         ASSERT_NE(p.type.underlying, nullptr);
     }
 
-    // Parameter type canonicals should reflect GpuBuffer<float32> +
+    // Parameter type canonicals should reflect KernelBuffer<float32> +
     // primitives; this is the surface step 9 will translate into
-    // addrspace(1) for the GpuBuffer pointers.
+    // addrspace(1) for the KernelBuffer pointers.
     EXPECT_NE(k->params[0].type.underlying->toCanonical()
-                .find("GpuBuffer"), std::string::npos);
+                .find("KernelBuffer"), std::string::npos);
     EXPECT_NE(k->params[2].type.underlying->toCanonical()
                 .find("float32"), std::string::npos);
 }

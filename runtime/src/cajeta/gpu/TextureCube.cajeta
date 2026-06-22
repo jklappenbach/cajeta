@@ -20,8 +20,8 @@ package cajeta.gpu;
  *
  * MEMORY MODEL. The handle (this struct) is governed by the drop chain; the
  * device image is acquired by the constructor and released by ~TextureCube() at
- * scope exit (the GpuBuffer/Texture2D RAII convention). A launch borrows each
- * TextureCube argument until the next GpuStream.sync().
+ * scope exit (the KernelBuffer/Texture2D RAII convention). A launch borrows each
+ * TextureCube argument until the next KernelStream.sync().
  *
  * TEXEL TYPE. The type parameter `T` is the scalar a sample yields per channel;
  * it **defaults to `float32`**, so every bare `TextureCube` spelling is exactly
@@ -117,7 +117,7 @@ public final class TextureCube<T = float32> {
         return result;
     }
 
-    // Device-image primitives. Instance @Native methods (the GpuBuffer convention):
+    // Device-image primitives. Instance @Native methods (the KernelBuffer convention):
     // pointer-shaped at the ABI boundary, so one C symbol per name serves the
     // type. The leading `this` the forwarder passes is ignored by the C side.
     // Distinct __cajeta_xpu_texturecube_* symbols: the cube image type (a cube VK

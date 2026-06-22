@@ -578,8 +578,8 @@ A material that needs custom shading writes a Cajeta function in the
 
 ```cajeta
 public class Mesh {
-    public GpuBuffer<Vertex> vertices;
-    public GpuBuffer<uint32> indices;
+    public KernelBuffer<Vertex> vertices;
+    public KernelBuffer<uint32> indices;
     public Array<Submesh> submeshes;          // grouped by material
     public BoundingBox    bounds;
 }
@@ -590,9 +590,9 @@ public class MeshLOD {
 }
 
 public class MeshletCluster {
-    public GpuBuffer<Meshlet>  meshlets;         // 64 verts / 124 prims each
-    public GpuBuffer<uint32>   meshletVertices;
-    public GpuBuffer<uint8>    meshletTriangles;
+    public KernelBuffer<Meshlet>  meshlets;         // 64 verts / 124 prims each
+    public KernelBuffer<uint32>   meshletVertices;
+    public KernelBuffer<uint8>    meshletTriangles;
     public BoundingSphere   bounds;
 }
 ```

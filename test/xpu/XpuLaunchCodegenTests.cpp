@@ -4,7 +4,7 @@
 //
 // CallExpression::generateCode lowers a launch site to a host runtime call
 //   __cajeta_xpu_launch(name, gridX, blockX, argv)
-// marshalling kernel args into a CUDA-style argv (GpuBuffer<T> -> deviceHandle,
+// marshalling kernel args into a CUDA-style argv (KernelBuffer<T> -> deviceHandle,
 // scalars by value). This test drives Phase-2 codegen on a host method that
 // launches a kernel and confirms the lowering emits that call (rather than the
 // old NOT_IMPLEMENTED throw). The kernel body is empty so host codegen of the
@@ -82,18 +82,18 @@ std::string moduleIR(const CajetaModulePtr& m) {
 } // namespace
 
 // A host method that launches a kernel codegens without error and emits a
-// call to __cajeta_xpu_launch. The kernel takes a GpuBuffer and two scalars, so
-// the marshalling exercises both the GpuBuffer-deviceHandle and scalar paths.
+// call to __cajeta_xpu_launch. The kernel takes a KernelBuffer and two scalars, so
+// the marshalling exercises both the KernelBuffer-deviceHandle and scalar paths.
 TEST(XpuLaunchCodegenTests, launchLowersToRuntimeCall) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.GpuBuffer;\n"
-        "import cajeta.gpu.GpuStream;\n"
+        "import cajeta.gpu.KernelBuffer;\n"
+        "import cajeta.gpu.KernelStream;\n"
         "public class M {\n"
         "    @Kernel\n"
-        "    public static void k(GpuBuffer<float32> y, float32 a, uint32 n) { }\n"
-        "    public static void run(GpuBuffer<float32> y, float32 a, uint32 n) {\n"
-        "        k.launch(GpuStream.current(),\n"
+        "    public static void k(KernelBuffer<float32> y, float32 a, uint32 n) { }\n"
+        "    public static void run(KernelBuffer<float32> y, float32 a, uint32 n) {\n"
+        "        k.launch(KernelStream.current(),\n"
         "                 grid: [(n + 255) / 256], block: [256])(y, a, n);\n"
         "    }\n"
         "}\n";
@@ -112,13 +112,13 @@ TEST(XpuLaunchCodegenTests, launchLowersToRuntimeCall) {
 TEST(XpuLaunchCodegenTests, sharedConfigLowersByteCount) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.GpuBuffer;\n"
-        "import cajeta.gpu.GpuStream;\n"
+        "import cajeta.gpu.KernelBuffer;\n"
+        "import cajeta.gpu.KernelStream;\n"
         "public class M {\n"
         "    @Kernel\n"
-        "    public static void k(GpuBuffer<int32> out, uint32 n) { }\n"
-        "    public static void run(GpuBuffer<int32> out, uint32 n) {\n"
-        "        k.launch(GpuStream.current(),\n"
+        "    public static void k(KernelBuffer<int32> out, uint32 n) { }\n"
+        "    public static void run(KernelBuffer<int32> out, uint32 n) {\n"
+        "        k.launch(KernelStream.current(),\n"
         "                 grid: [1], block: [256], sharedBytes: [2048])(out, n);\n"
         "    }\n"
         "}\n";
@@ -128,7 +128,7 @@ TEST(XpuLaunchCodegenTests, sharedConfigLowersByteCount) {
 
     std::string ir = moduleIR(module);
     // 10-arg runtime signature: name, gridX/Y/Z, blockX/Y/Z, sharedBytes, argv,
-    // streamHandle (the GpuStream's i64 handle, threaded for stream-ordered launch).
+    // streamHandle (the KernelStream's i64 handle, threaded for stream-ordered launch).
     EXPECT_NE(ir.find(
                   "@__cajeta_xpu_launch(ptr, i32, i32, i32, i32, i32, i32, i32, ptr, i64)"),
               std::string::npos) << ir;

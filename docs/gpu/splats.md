@@ -10,7 +10,7 @@ meshfree methods, tomographic back-projection). For that reason splats belong in
 sibling consumers**.
 
 ```
-cajeta-gpu  (foundation: value types, GpuBuffer, Image, AccelerationStructure, atomics,
+cajeta-gpu  (foundation: value types, KernelBuffer, Image, AccelerationStructure, atomics,
    ▲   ▲     sort/scan, ray query)  ──  cajeta.gpu.splat lives here, on core
    │   │
    │   └────────────────────────────┐
@@ -75,7 +75,7 @@ to reimplement it — exactly the anti-pattern the foundation exists to prevent.
 
 | Seam | Splat instance | Native tier | Portable tier |
 |------|----------------|-------------|---------------|
-| **Noun** | `SplatCloud` — build-description (SoA attribute buffers + metadata); built acceleration (depth order, tile bins, AABB BVH, octree LOD) follows the build, never converted | compressed/octree GPU residency; hardware-BVH for the ray path | uncompressed SoA in `GpuBuffer<T>`; software LBVH; CPU reference |
+| **Noun** | `SplatCloud` — build-description (SoA attribute buffers + metadata); built acceleration (depth order, tile bins, AABB BVH, octree LOD) follows the build, never converted | compressed/octree GPU residency; hardware-BVH for the ray path | uncompressed SoA in `KernelBuffer<T>`; software LBVH; CPU reference |
 | **Verb** | `splatRasterize`, `splatScatter`, depth-`sort`, `rayQueryOverSplats` | vendor radix sort; wave-optimized tile blend; HW ray query | core compute kernels (sort/scan/atomics/EWA) — the floor |
 
 The implementation tier is chosen **once at build/dispatch** and is override-able with
@@ -91,7 +91,7 @@ bit-identical — same rule as coop-matrix tiers).
 
 ### 2.1 Per-splat attributes & on-device encoding
 
-Stored **Structure-of-Arrays** (one `GpuBuffer<T>` per attribute) — required for the sort
+Stored **Structure-of-Arrays** (one `KernelBuffer<T>` per attribute) — required for the sort
 (sort an index permutation, gather attributes) and for per-attribute compression.
 
 | Attribute | Live type | Disk encoding (§3.2) | Notes |
@@ -126,10 +126,10 @@ under dynamic lighting rather than baking the capture's lighting in.
 // cajeta.gpu.splat
 class SplatCloud<A extends SplatAppearance> {
     // --- build-description: SoA attribute buffers (heap = ref) ---
-    GpuBuffer<Vector<float32,3>>  positions
-    GpuBuffer<Vector<float32,3>>  scales        // log-scale
-    GpuBuffer<Quaternion<float32>> rotations
-    GpuBuffer<float32>        opacities     // logit
+    KernelBuffer<Vector<float32,3>>  positions
+    KernelBuffer<Vector<float32,3>>  scales        // log-scale
+    KernelBuffer<Quaternion<float32>> rotations
+    KernelBuffer<float32>        opacities     // logit
     A.Storage              appearance    // SH bands / material channels / payload
 
     AABB                   bounds
@@ -169,8 +169,8 @@ SplatView v = cloud.lod().select(camera, screen, budget)   // active splat set f
 
 > **Scope: `splat` defines the *format* and a *codec*, not file I/O.** The byte layout is
 > intrinsic to the data structure, so it belongs here; but the splat package only
-> encodes/decodes a `SplatCloud` **to and from an abstract byte stream** (`GpuStream` /
-> `GpuBuffer<uint8>`) — it never opens files, mmaps, walks paths, or manages residency. The
+> encodes/decodes a `SplatCloud` **to and from an abstract byte stream** (`KernelStream` /
+> `KernelBuffer<uint8>`) — it never opens files, mmaps, walks paths, or manages residency. The
 > **actual file/stream/mmap I/O and streaming residency live in the asset / `cajeta.io`
 > layer** (canela's residency manager), which *composes* this codec with real I/O. Same
 > split as any other stdlib codec: the codec knows bytes, the io layer knows files.

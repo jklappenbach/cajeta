@@ -215,8 +215,8 @@ device-verified · **◐** emit-only (NVIDIA) · **◷** intended-core, fallback
 | Verb | CPU | VK | AMD | NV | Metal |
 |------|:--:|:--:|:--:|:--:|:--:|
 | `bufferElementPtr` / `bufferParamType` | ● | ● | ● | ◐ | ✗ |
-| `bufferArrayElement` (bindless `GpuBuffer<T>[]`) | ● | ● | ● | — | ✗ |
-| `GpuBuffer<T>` alloc/upload/download · `MemoryKind` (Device/Pinned/Unified) · `slice` | ● | ● | ● | ◐ | ✗ |
+| `bufferArrayElement` (bindless `KernelBuffer<T>[]`) | ● | ● | ● | — | ✗ |
+| `KernelBuffer<T>` alloc/upload/download · `MemoryKind` (Device/Pinned/Unified) · `slice` | ● | ● | ● | ◐ | ✗ |
 
 ### 3.3 Value types & math ([`ValueTypeCatalog.md`](ValueTypeCatalog.md))
 
@@ -255,7 +255,7 @@ unsupported on gfx1151/ROCm 7.2.2 — degrades gracefully, device test SKIPs.
 
 ## 4. Core nouns — and ray query as the worked example
 
-The datastructures core owns: `GpuBuffer<T>`, `Texture2D`/`Image2D`, and `AccelerationStructure`.
+The datastructures core owns: `KernelBuffer<T>`, `Texture2D`/`Image2D`, and `AccelerationStructure`.
 Each goes through the **noun seam** (§1.2): a core build-description with per-backend
 representations. Ray query is the case that *defines* the seam, because its noun (the scene)
 is the heavy part.
@@ -296,7 +296,7 @@ Build description = the geometry — **triangle (vertex + index buffers) and/or 
 (`(min, max)` × N)** — plus build params. Today it has one representation: a Vulkan
 `VK_KHR_acceleration_structure` BVH over AABBs only — so the noun is doubly narrow
 (Vulkan-locked *and* AABB-only). To be core it needs a **portable software BVH** built
-(LBVH / binned-SAH) over both geometry kinds into a plain `GpuBuffer<T>` (node array + primitive
+(LBVH / binned-SAH) over both geometry kinds into a plain `KernelBuffer<T>` (node array + primitive
 refs), runnable on host or as a build kernel. Same description, two builds; the hardware BVH
 is the *acceleration*, the software BVH is what makes it core.
 

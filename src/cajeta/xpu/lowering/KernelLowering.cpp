@@ -188,7 +188,7 @@ llvm::Type* deviceQuaternionType(const CajetaTypePtr& t, llvm::LLVMContext& ctx)
 bool isBufferType(const CajetaTypePtr& t) {
     if (!t) return false;
     const std::string& c = t->toCanonical();
-    static const std::string kPrefix = "cajeta.gpu.GpuBuffer";
+    static const std::string kPrefix = "cajeta.gpu.KernelBuffer";
     return c.compare(0, kPrefix.size(), kPrefix) == 0;
 }
 
@@ -2114,7 +2114,7 @@ private:
                                             mc->getParameters());
         }
 
-        if (recv == "GpuThread") {
+        if (recv == "KernelThread") {
             if (name == "x") return target.threadId(builder, mod, 0);
             if (name == "y") return target.threadId(builder, mod, 1);
             if (name == "z") return target.threadId(builder, mod, 2);
