@@ -1251,19 +1251,36 @@ public:
 
     llvm::Function* createKernel(
         llvm::Module& m, const std::string& kname,
-        const std::vector<KernelParam>& /*params*/) override {
+        const std::vector<KernelParam>& params) override {
         llvm::LLVMContext& ctx = m.getContext();
         auto* fnTy = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
                                              /*vararg=*/false);
         auto* fn = llvm::Function::Create(fnTy, llvm::Function::ExternalLinkage,
                                           kname, &m);
         fn->addFnAttr("hlsl.shader", hlslShaderAttr(stage_));
+        buildPushConstantBlock(m, params);
         return fn;
     }
 
     llvm::Value* materializeParam(llvm::IRBuilderBase& b, llvm::Module& m,
                                   llvm::Function* fn, unsigned idx,
                                   const KernelParam& p) override {
+        // A @PushConstant param: read its member from the stage's single push-
+        // constant block (GEP into the struct global + load). The fork's
+        // SPIRVPushConstantAccess pass rewrites the global access into an
+        // OpAccessChain on the laid-out PushConstant Block. All @PushConstant
+        // params share one block (Vulkan permits exactly one per stage) — see
+        // buildPushConstantBlock.
+        if (p.isPushConstant && pcGlobal_ && idx < pcMemberOf_.size() &&
+            pcMemberOf_[idx] >= 0) {
+            llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+            llvm::Value* member = b.CreateGEP(
+                pcStructTy_, pcGlobal_,
+                {llvm::ConstantInt::get(i32, 0),
+                 llvm::ConstantInt::get(i32, (uint32_t) pcMemberOf_[idx])},
+                p.name + ".pc");
+            return b.CreateLoad(p.type, member, p.name);
+        }
         // Resource params (buffers/textures/images/samplers/accel structs) still
         // bind as descriptors — only plain value inputs become interface vars.
         if (p.isBuffer || p.isTexture || p.isImage || p.isSampler ||
@@ -1296,9 +1313,35 @@ public:
     }
 
 private:
+    // Collect every @PushConstant param into ONE struct-typed global in the
+    // PushConstant address space (Vulkan allows exactly one push-constant block per
+    // stage). pcMemberOf_[i] is the struct-member index of param i (or -1 if param
+    // i is not a push constant), so materializeParam can GEP the right field. Called
+    // once from createKernel, which receives the full param list before the body
+    // lowerer materializes any param.
+    void buildPushConstantBlock(llvm::Module& m,
+                                const std::vector<KernelParam>& params) {
+        pcMemberOf_.assign(params.size(), -1);
+        std::vector<llvm::Type*> members;
+        for (unsigned i = 0; i < params.size(); ++i) {
+            if (params[i].isPushConstant && params[i].type) {
+                pcMemberOf_[i] = (int) members.size();
+                members.push_back(params[i].type);
+            }
+        }
+        if (members.empty()) return;
+        pcStructTy_ = llvm::StructType::create(m.getContext(), members,
+                                               "cajeta.pushconst");
+        pcGlobal_ = createPushConstantBlock(m, pcStructTy_, "cajeta_pc");
+    }
+
     ShaderStage stage_;
     unsigned nextInputLocation_ = 0;
     llvm::GlobalVariable* outputVar_ = nullptr;
+    // The stage's single push-constant block (null when no @PushConstant params).
+    llvm::StructType* pcStructTy_ = nullptr;
+    llvm::GlobalVariable* pcGlobal_ = nullptr;
+    std::vector<int> pcMemberOf_;
 };
 
 } // namespace

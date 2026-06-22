@@ -264,6 +264,16 @@ namespace xpu {
                                      // indexed with NonUniformEXT. Appended last (after
                                      // textureDim) so existing positional inits are
                                      // unaffected.
+            bool isPushConstant = false;  // @PushConstant (cajeta-gfx §4.b-rest) — a
+                                     // by-value scalar/vector/matrix that, on a GRAPHICS
+                                     // stage, rides the stage's single PushConstant block
+                                     // (the small per-draw uniforms) instead of a
+                                     // per-vertex Location interface variable. Vulkan-only;
+                                     // the compute path and non-Spirv backends ignore it
+                                     // and keep the ordinary by-value param. Set only on
+                                     // non-resource params (a Buffer/Texture/… @PushConstant
+                                     // is rejected upstream). Appended last so positional
+                                     // KernelParam inits are unaffected.
         };
 
         // Create the kernel function for `name`. Default: a void-returning

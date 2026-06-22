@@ -64,6 +64,23 @@ llvm::GlobalVariable* createBuiltInVar(llvm::Module& m, llvm::Type* ty,
                               static_cast<uint32_t>(builtIn), name);
 }
 
+llvm::GlobalVariable* createPushConstantBlock(llvm::Module& m, llvm::Type* blockTy,
+                                              const std::string& name) {
+    // The same external, externally-initialized, hidden, thread-local global shape
+    // the interface vars use (the position.{vs,ps}.ll form the backend recognizes)
+    // — but in the PushConstant address space and read-only, and WITHOUT a
+    // spirv.Decorations node: the SPIRVPushConstantAccess pass keys off the address
+    // space alone, then it + the backend lay the struct out as a Block (member
+    // Offsets) and rewrite member access into OpAccessChain.
+    auto* gv = new llvm::GlobalVariable(
+        m, blockTy, /*isConstant=*/true, llvm::GlobalValue::ExternalLinkage,
+        /*Initializer=*/nullptr, name, /*InsertBefore=*/nullptr,
+        llvm::GlobalValue::GeneralDynamicTLSModel, kPushConstantAS,
+        /*isExternallyInitialized=*/true);
+    gv->setVisibility(llvm::GlobalValue::HiddenVisibility);
+    return gv;
+}
+
 } // namespace vulkan
 } // namespace xpu
 } // namespace cajeta

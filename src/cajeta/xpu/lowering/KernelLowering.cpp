@@ -4941,6 +4941,20 @@ static std::vector<LoweringTarget::KernelParam> collectParams(
             unsupported("kernel parameter type '" +
                         (t ? t->toCanonical() : std::string("?")) + "'");
         }
+        // @PushConstant (cajeta-gfx §4.b-rest): mark a by-value param so a graphics
+        // stage routes it through its single PushConstant block instead of a
+        // per-vertex interface variable. Only by-value params qualify — a resource
+        // (Buffer/Texture/Image/Sampler/AccelStruct) has no push-constant meaning,
+        // so the flag is left off there (the annotation is silently inert on them in
+        // v1). Backend-neutral here; only SpirvGraphicsTarget consumes the flag.
+        if (!params.empty() &&
+            p->findAnnotation(XpuAttr::PushConstant) != nullptr) {
+            LoweringTarget::KernelParam& last = params.back();
+            if (!last.isBuffer && !last.isTexture && !last.isImage &&
+                !last.isSampler && !last.isAccelStruct && !last.isBufferArray) {
+                last.isPushConstant = true;
+            }
+        }
     }
     return params;
 }

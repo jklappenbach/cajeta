@@ -81,6 +81,24 @@ namespace vulkan {
                                            SpirvBuiltIn builtIn,
                                            const std::string& name);
 
+    // The PushConstant storage class, as the address space the in-tree SPIR-V
+    // backend maps to StorageClass PushConstant (SPIRVUtils addressSpaceToStorage
+    // Class case 13). Push constants are a stage's small per-draw uniforms — a
+    // third interface flavor beside Input/Output, but ROUTED BY ADDRESS SPACE
+    // rather than a Location/BuiltIn decoration.
+    constexpr unsigned kPushConstantAS = 13;
+
+    // Create a push-constant block: a GlobalVariable of struct type `blockTy` in
+    // the PushConstant address space. Vulkan permits exactly ONE such block per
+    // stage, so all of a shader's @PushConstant params share this one struct (one
+    // member each, in declaration order; read via a GEP-into-member + load). NO
+    // manual Block/Offset decoration: the fork's SPIRVPushConstantAccess pass +
+    // backend rewrite the access into an OpAccessChain and lay the struct out as a
+    // Block with member Offsets. `blockTy` must be an llvm::StructType.
+    llvm::GlobalVariable* createPushConstantBlock(llvm::Module& m,
+                                                  llvm::Type* blockTy,
+                                                  const std::string& name);
+
 } // namespace vulkan
 } // namespace xpu
 } // namespace cajeta
