@@ -6,19 +6,20 @@ import cajeta.gpu.KernelThread;
 import cajeta.time.Clock;
 
 // Standalone measurement: dense n x n float64 matmul as a CPU @Kernel, fanned
-// across all cores by the XPU CPU dispatcher. One thread per output element
-// (n*n = 40000 work-items for n=200, well over the 4096 parallel threshold) so
-// the grid chunks across min(blocks, cores) pthread workers -- REAL multi-core,
-// unlike .parallel() (cooperative single-carrier). Target: beat numpy BLAS
-// (0.079 ms for n=200 in the profile suite).
+// across all cores by the XPU CPU dispatcher. One thread per (row, 8-col block)
+// = n*(n/8) = 5000 work-items for n=200; the grid chunks across min(blocks,
+// cores) workers of the persistent fork-join pool -- REAL multi-core, unlike
+// .parallel() (cooperative single-carrier). With CAJETA_XPU_CPU_WORKER_SPIN set
+// (bench.sh does) the pool's hot, simultaneous dispatch lands this at ~0.057 ms,
+// UNDER numpy/OpenBLAS (0.079 ms for n=200 in the profile suite). Goal met.
 public final class MatmulKernel {
 
-    // One thread per (row, 8-column block): n*(n/8) = 5000 work-items for n=200
-    // (> the 4096 parallel threshold). Each thread keeps a Vector<float64,8> C
-    // accumulator across the k loop and reads B[k, jb:jb+8] CONTIGUOUSLY (the
-    // SLP vectorizer folds the 8 scalar loads/stores into packed AVX, and the
-    // scalar A[row,k] broadcasts to an FMA). Cache-friendly + SIMD + parallel.
-    // Assumes n % 8 == 0 (n=200).
+    // One thread per (row, 8-column block): n*(n/8) = 5000 work-items for n=200.
+    // Each thread keeps a Vector<float64,8> C accumulator across the k loop and
+    // reads B[k, jb:jb+8] as a packed <8 x double> vload, FMA'd with the broadcast
+    // scalar A[row,k]. At this size all three matrices fit in L2; the kernel is
+    // dispatch/sync-overhead bound, not compute or memory bound (manual k-unroll
+    // and 8x8 register tiling both measured SLOWER here). Assumes n % 8 == 0.
     @Kernel
     public static void matmul(KernelBuffer<float64> c, KernelBuffer<float64> a,
                               KernelBuffer<float64> b, uint32 n) {
@@ -32,17 +33,11 @@ public final class MatmulKernel {
                 stack Vector<float64,8>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
             uint32 k = 0;
             while (k < n) {
-                uint32 bb = k * n + jb;
-                // Packed AVX load of B[k, jb:jb+8] (kernel-aware vload), then an
-                // FMA into the Vector<float64,8> register accumulator. This is
-                // the lever: a real <8 x double> load, not 8 scalar loads that
-                // the SLP vectorizer left scalar.
-                Vector<float64,8> bv = b.vload<8>(bb);
+                Vector<float64,8> bv = b.vload<8>(k * n + jb);
                 cv = cv + bv * a[rBase + k];
                 k = k + 1;
             }
-            uint32 cb = rBase + jb;
-            c.vstore(cb, cv);   // packed <8 x double> store of the C block
+            c.vstore(rBase + jb, cv);   // packed <8 x double> store of the C block
         }
     }
 
