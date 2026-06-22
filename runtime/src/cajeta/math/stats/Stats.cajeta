@@ -190,4 +190,59 @@ public final class Stats {
         }
         return #out;
     }
+
+    /**
+     * The `q`-th quantile of the flattened input (`q` in `[0,1]`, numpy `quantile`
+     * with the default linear interpolation): sorts, then linearly interpolates at
+     * position `q·(n-1)`. Returns a scalar `E` (`Floating`).
+     */
+    public static E quantile<E extends Floating>(Tensor<E> t, E q) {
+        int64 n = t.size();
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<E> flat = Tensor.zeros<E>(sh);
+        int32 nd = t.ndim();
+        int64[] idx = heap int64[nd];
+        int32 z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        int64 c = 0;
+        while (c < n) {
+            flat.set1(c, t.getAt(idx));
+            c = c + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeAt(ax)) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        Tensor<E> s = Tensor.sort<E>(flat, 0);
+        int64 nm1 = n - 1;
+        E en = (E) nm1;
+        E pos = q * en;
+        int64 lo = (int64) pos;
+        E elo = (E) lo;
+        E frac = pos - elo;
+        E vlo = s.get1(lo);
+        int64 hi = lo + 1;
+        if (hi >= n) {
+            return vlo;
+        }
+        E vhi = s.get1(hi);
+        return vlo + frac * (vhi - vlo);
+    }
+
+    /** The `p`-th percentile (`p` in `[0,100]`, numpy `percentile`) — `quantile(t, p/100)`. */
+    public static E percentile<E extends Floating>(Tensor<E> t, E p) {
+        E hundred = (E) 100;
+        E q = p / hundred;
+        return Stats.quantile<E>(t, q);
+    }
+
+    /** The median of the flattened input (numpy `median`) — `quantile(t, 0.5)`. */
+    public static E median<E extends Floating>(Tensor<E> t) {
+        E half = (E) 0.5f;
+        return Stats.quantile<E>(t, half);
+    }
 }

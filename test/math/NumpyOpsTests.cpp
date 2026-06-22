@@ -2086,3 +2086,36 @@ TEST(NumpyOpsTests, covCorrMatchNumpy) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 10a — quantile (linear interp), percentile, median (incl. even-length + unsorted input).
+TEST(NumpyOpsTests, quantileMedianMatchNumpy) {
+    std::string src = std::string(PRE) +
+        "import cajeta.math.stats.Stats;\n"
+        "public final class D {\n"
+        "    public static boolean close(float32 a, float32 b) {\n"
+        "        float32 d = a - b; if (d < 0.0f) { d = -d; } return d < 0.001f;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        // [1,2,3,4,5]: median 3, q0.25=2, q0.75=4
+        "        float32[] d5 = { 1.0f, 2.0f, 3.0f, 4.0f, 5.0f };\n"
+        "        int64[] s5 = heap int64[1]; s5[0] = 5;\n"
+        "        Tensor<float32> a = Tensor.of<float32>(d5, s5);\n"
+        "        if (!D.close(Stats.median<float32>(a), 3.0f)) { return -1; }\n"
+        "        if (!D.close(Stats.quantile<float32>(a, 0.25f), 2.0f)) { return -2; }\n"
+        "        if (!D.close(Stats.quantile<float32>(a, 0.75f), 4.0f)) { return -3; }\n"
+        "        if (!D.close(Stats.percentile<float32>(a, 50.0f), 3.0f)) { return -4; }\n"
+        // even-length [1,2,3,4]: median 2.5
+        "        float32[] d4 = { 1.0f, 2.0f, 3.0f, 4.0f };\n"
+        "        int64[] s4 = heap int64[1]; s4[0] = 4;\n"
+        "        Tensor<float32> b = Tensor.of<float32>(d4, s4);\n"
+        "        if (!D.close(Stats.median<float32>(b), 2.5f)) { return -5; }\n"
+        // unsorted [3,1,4,1,5,9,2,6]: sorted [1,1,2,3,4,5,6,9], median 3.5
+        "        float32[] d8 = { 3.0f, 1.0f, 4.0f, 1.0f, 5.0f, 9.0f, 2.0f, 6.0f };\n"
+        "        int64[] s8 = heap int64[1]; s8[0] = 8;\n"
+        "        Tensor<float32> c = Tensor.of<float32>(d8, s8);\n"
+        "        if (!D.close(Stats.median<float32>(c), 3.5f)) { return -6; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
