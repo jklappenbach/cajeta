@@ -1887,3 +1887,105 @@ TEST(NumpyOpsTests, fftCpuGpuAgree) {
         "}\n";
     EXPECT_EQ(runI32Xpu(src), 1);
 }
+
+// 9a — rngReproducible: the Philox4x32-10 counter-based Generator yields the SAME stream
+// for the same seed, a DIFFERENT stream for a different seed, values in [0,1), and a
+// roughly-uniform mean. Counter-based ⇒ deterministic + element-independent.
+TEST(NumpyOpsTests, rngReproducibleMatchNumpy) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.math.Tensor;\n"
+        "import cajeta.math.random.Generator;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Generator g1 = heap Generator(42);\n"
+        "        Tensor<float32> a = g1.uniform(64);\n"
+        "        Generator g2 = heap Generator(42);\n"
+        "        Tensor<float32> b = g2.uniform(64);\n"
+        // same seed → identical stream
+        "        int64 i = 0;\n"
+        "        while (i < 64) {\n"
+        "            if (a.get1(i) != b.get1(i)) { return -1; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        // different seed → at least one differs
+        "        Generator g3 = heap Generator(43);\n"
+        "        Tensor<float32> c = g3.uniform(64);\n"
+        "        boolean anyDiff = false;\n"
+        "        i = 0;\n"
+        "        while (i < 64) {\n"
+        "            if (a.get1(i) != c.get1(i)) { anyDiff = true; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        if (!anyDiff) { return -2; }\n"
+        // range [0,1) + rough uniformity (mean of 64 well within 0.3..0.7)
+        "        float32 sum = 0.0f;\n"
+        "        i = 0;\n"
+        "        while (i < 64) {\n"
+        "            float32 v = a.get1(i);\n"
+        "            if (v < 0.0f || v >= 1.0f) { return -3; }\n"
+        "            sum = sum + v;\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        float32 mean = sum / 64.0f;\n"
+        "        if (mean < 0.3f || mean > 0.7f) { return -4; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// 9b — distributionMoments: sampled mean/variance match each distribution's theory.
+// uniform → mean 0.5, var 1/12; normal → mean 0, var 1; integers[0,10) → mean ~4.5,
+// all in range. 4096 samples → tight tolerances.
+TEST(NumpyOpsTests, distributionMomentsMatchNumpy) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.math.Tensor;\n"
+        "import cajeta.math.random.Generator;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Generator g = heap Generator(12345);\n"
+        // uniform: mean ~0.5, var ~0.0833
+        "        Tensor<float32> u = g.uniform(4096);\n"
+        "        float32 su = 0.0f;\n"
+        "        int64 i = 0;\n"
+        "        while (i < 4096) { su = su + u.get1(i); i = i + 1; }\n"
+        "        float32 mu = su / 4096.0f;\n"
+        "        if (mu < 0.47f || mu > 0.53f) { return -1; }\n"
+        "        float32 vu = 0.0f;\n"
+        "        i = 0;\n"
+        "        while (i < 4096) { float32 d = u.get1(i) - mu; vu = vu + d * d; i = i + 1; }\n"
+        "        vu = vu / 4096.0f;\n"
+        "        if (vu < 0.07f || vu > 0.097f) { return -2; }\n"
+        // normal: mean ~0, var ~1
+        "        Generator g2 = heap Generator(777);\n"
+        "        Tensor<float32> z = g2.normal(4096);\n"
+        "        float32 sz = 0.0f;\n"
+        "        i = 0;\n"
+        "        while (i < 4096) { sz = sz + z.get1(i); i = i + 1; }\n"
+        "        float32 mz = sz / 4096.0f;\n"
+        "        if (mz < -0.1f || mz > 0.1f) { return -3; }\n"
+        "        float32 vz = 0.0f;\n"
+        "        i = 0;\n"
+        "        while (i < 4096) { float32 d = z.get1(i) - mz; vz = vz + d * d; i = i + 1; }\n"
+        "        vz = vz / 4096.0f;\n"
+        "        if (vz < 0.85f || vz > 1.15f) { return -4; }\n"
+        // integers [0,10): all in range, mean ~4.5
+        "        Generator g3 = heap Generator(999);\n"
+        "        Tensor<int64> ii = g3.integers(0, 10, 4096);\n"
+        "        int64 si = 0;\n"
+        "        i = 0;\n"
+        "        while (i < 4096) {\n"
+        "            int64 v = ii.get1(i);\n"
+        "            if (v < 0 || v >= 10) { return -5; }\n"
+        "            si = si + v;\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        float32 mi = (float32) si / 4096.0f;\n"
+        "        if (mi < 4.0f || mi > 5.0f) { return -6; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
