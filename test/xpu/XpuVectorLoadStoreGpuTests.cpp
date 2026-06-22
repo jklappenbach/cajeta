@@ -20,6 +20,10 @@
 #include "cajeta/xpu/nvidia/NvptxKernelLowering.h"
 #include "cajeta/xpu/amd/AmdgpuBackend.h"
 #include "cajeta/xpu/amd/AmdgpuKernelLowering.h"
+#include "cajeta/xpu/vulkan/SpirvBackend.h"
+#include "cajeta/xpu/vulkan/SpirvKernelLowering.h"
+
+#include "llvm/Support/Program.h"
 
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CajetaModule.h"
@@ -79,6 +83,26 @@ cajeta::MethodPtr findMethod(const cajeta::CajetaClassPtr& klass,
     return nullptr;
 }
 
+// Run spirv-val on the binary; nullopt if the tool isn't installed.
+std::optional<bool> validateSpirv(const std::vector<uint8_t>& spirv) {
+    auto tool = llvm::sys::findProgramByName("spirv-val");
+    if (!tool) return std::nullopt;
+    static std::mt19937_64 rng(std::random_device{}());
+    auto path = std::filesystem::temp_directory_path()
+              / ("cajeta_spv_vls_" + std::to_string(rng()) + ".spv");
+    {
+        std::ofstream out(path, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(spirv.data()),
+                  (std::streamsize) spirv.size());
+    }
+    std::string fileStr = path.string();
+    llvm::SmallVector<llvm::StringRef, 4> args = {
+        *tool, "--target-env", "vulkan1.3", fileStr};
+    int rc = llvm::sys::ExecuteAndWait(*tool, args);
+    std::filesystem::remove(path);
+    return rc == 0;
+}
+
 } // namespace
 
 // 5.x — NVPTX: a vload/vstore kernel lowers to valid PTX with a global
@@ -122,4 +146,30 @@ TEST(XpuVectorLoadStoreGpuTests, lowersToValidAmdgpu) {
     EXPECT_NE(isa.find("vadd"), std::string::npos);
     EXPECT_NE(isa.find("global_load"), std::string::npos) << isa;
     EXPECT_NE(isa.find("global_store"), std::string::npos) << isa;
+}
+
+// 6.x — Vulkan/SPIR-V: a vload<4>/vstore kernel lowers to a VALID SPIR-V module.
+// SPIR-V uses logical addressing (a buffer is a runtime array of scalars), so
+// the SpirvTarget must materialize the `<N x T>` from per-lane loads/stores
+// rather than a single packed memory op — this asserts the result validates.
+TEST(XpuVectorLoadStoreGpuTests, lowersToValidVulkan) {
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kVaddSource);
+    auto k = findMethod(module->getStructures()["test.M"], "vadd");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_vls_vk", deviceCtx);
+    cajeta::xpu::vulkan::configureDeviceModule(deviceModule, *tm);
+    ASSERT_NE(cajeta::xpu::vulkan::lowerKernel(k, deviceModule), nullptr);
+
+    std::vector<uint8_t> spirv = cajeta::xpu::vulkan::emitSpirv(deviceModule, *tm);
+    ASSERT_GE(spirv.size(), 4u);
+    EXPECT_EQ(spirv[0], 0x03u);  // SPIR-V magic 0x07230203 (LE)
+    if (auto valid = validateSpirv(spirv))
+        EXPECT_TRUE(*valid) << "spirv-val rejected the vload/vstore module";
+    else
+        GTEST_SUCCEED() << "spirv-val not installed; skipped validation";
 }
