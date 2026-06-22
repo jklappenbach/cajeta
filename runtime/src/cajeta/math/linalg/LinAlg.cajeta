@@ -1,0 +1,169 @@
+package cajeta.math.linalg;
+
+import cajeta.math.Tensor;
+
+/**
+ * `cajeta.math.linalg` — native-cajeta linear-algebra factorizations (numpy-porting-plan
+ * Phase 11). Per the approved decision, the backend is **native cajeta over the Tensor/
+ * GEMM core — no foreign BLAS/LAPACK** (the "cajeta owns its math" ethos). This unit is
+ * the Gaussian-elimination foundation: `solve` (Ax=b), `det`, `inv` — LU with partial
+ * pivoting. `qr`/`cholesky`/`lu`/`svd`/`eig` build on this in later units.
+ *
+ * CPU floor; `E` is `Floating` (elimination needs division). Matrices are 2-D `(n,n)`
+ * row-major `Tensor<E>`; the work copies are contiguous so `flatSet(r*n+c, …)` writes
+ * and `get2(r,c)` reads address the same layout.
+ */
+public final class LinAlg {
+
+    /**
+     * Solve the square linear system `A·x = b` (numpy `linalg.solve`) by Gaussian
+     * elimination with partial pivoting + back-substitution. `A` is `(n,n)`, `b` is
+     * `(n,)`; returns the solution vector `x` `(n,)`. The inputs are not modified
+     * (works on copies).
+     */
+    public static #Tensor<E> solve<E extends Floating>(Tensor<E> a, Tensor<E> b) {
+        int64 n = a.shapeAt(0);
+        Tensor<E> m = a.copy();
+        Tensor<E> x = b.copy();
+        int64 col = 0;
+        while (col < n) {
+            // partial pivot: row with the largest |m[r,col]| at or below the diagonal
+            int64 piv = col;
+            E maxv = LinAlg.absE<E>(m.get2(col, col));
+            int64 r = col + 1;
+            while (r < n) {
+                E av = LinAlg.absE<E>(m.get2(r, col));
+                if (av > maxv) { maxv = av; piv = r; }
+                r = r + 1;
+            }
+            if (piv != col) {
+                LinAlg.swapRows<E>(m, n, piv, col);
+                E xp = x.get1(piv);
+                E xc = x.get1(col);
+                x.set1(piv, xc);
+                x.set1(col, xp);
+            }
+            E diag = m.get2(col, col);
+            r = col + 1;
+            while (r < n) {
+                E factor = m.get2(r, col) / diag;
+                int64 c = col;
+                while (c < n) {
+                    E v = m.get2(r, c) - factor * m.get2(col, c);
+                    m.flatSet(r * n + c, v);
+                    c = c + 1;
+                }
+                E xv = x.get1(r) - factor * x.get1(col);
+                x.set1(r, xv);
+                r = r + 1;
+            }
+            col = col + 1;
+        }
+        // back-substitution
+        int64 i = n - 1;
+        while (i >= 0) {
+            E s = x.get1(i);
+            int64 c = i + 1;
+            while (c < n) {
+                s = s - m.get2(i, c) * x.get1(c);
+                c = c + 1;
+            }
+            E xi = s / m.get2(i, i);
+            x.set1(i, xi);
+            i = i - 1;
+        }
+        return #x;
+    }
+
+    /**
+     * Determinant of a square `A` (numpy `linalg.det`) — the product of the pivots from
+     * LU with partial pivoting, with the sign flipped once per row swap. Returns a
+     * scalar `E`.
+     */
+    public static E det<E extends Floating>(Tensor<E> a) {
+        int64 n = a.shapeAt(0);
+        Tensor<E> m = a.copy();
+        E sign = (E) 1;
+        int64 col = 0;
+        while (col < n) {
+            int64 piv = col;
+            E maxv = LinAlg.absE<E>(m.get2(col, col));
+            int64 r = col + 1;
+            while (r < n) {
+                E av = LinAlg.absE<E>(m.get2(r, col));
+                if (av > maxv) { maxv = av; piv = r; }
+                r = r + 1;
+            }
+            if (piv != col) {
+                LinAlg.swapRows<E>(m, n, piv, col);
+                sign = (E) 0 - sign;          // flip sign per row swap
+            }
+            E diag = m.get2(col, col);
+            r = col + 1;
+            while (r < n) {
+                E factor = m.get2(r, col) / diag;
+                int64 c = col;
+                while (c < n) {
+                    E v = m.get2(r, c) - factor * m.get2(col, c);
+                    m.flatSet(r * n + c, v);
+                    c = c + 1;
+                }
+                r = r + 1;
+            }
+            col = col + 1;
+        }
+        E prod = sign;
+        int64 d = 0;
+        while (d < n) {
+            prod = prod * m.get2(d, d);
+            d = d + 1;
+        }
+        return prod;
+    }
+
+    /**
+     * Inverse of a square `A` (numpy `linalg.inv`) — solve `A·X = I` column by column.
+     * Returns the `(n,n)` inverse.
+     */
+    public static #Tensor<E> inv<E extends Floating>(Tensor<E> a) {
+        int64 n = a.shapeAt(0);
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = n;
+        Tensor<E> out = Tensor.zeros<E>(sh);
+        int64[] bsh = heap int64[1];
+        bsh[0] = n;
+        int64 j = 0;
+        while (j < n) {
+            Tensor<E> e = Tensor.zeros<E>(bsh);
+            e.set1(j, (E) 1);
+            Tensor<E> colx = LinAlg.solve<E>(a, e);
+            int64 i = 0;
+            while (i < n) {
+                E v = colx.get1(i);
+                out.flatSet(i * n + j, v);
+                i = i + 1;
+            }
+            j = j + 1;
+        }
+        return #out;
+    }
+
+    /** Absolute value of a `Floating` scalar (local helper — `Math.abs` per `E`). */
+    static E absE<E extends Floating>(E v) {
+        if (v < (E) 0) { return (E) 0 - v; }
+        return v;
+    }
+
+    /** Swap rows `r0` and `r1` of the contiguous `(n,n)` matrix `m` in place. */
+    static void swapRows<E extends Floating>(Tensor<E> m, int64 n, int64 r0, int64 r1) {
+        int64 c = 0;
+        while (c < n) {
+            E a = m.get2(r0, c);
+            E b = m.get2(r1, c);
+            m.flatSet(r0 * n + c, b);
+            m.flatSet(r1 * n + c, a);
+            c = c + 1;
+        }
+    }
+}

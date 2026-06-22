@@ -2155,3 +2155,52 @@ TEST(NumpyOpsTests, polyMatchNumpy) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 11b — native linalg: solve (Gaussian elimination + partial pivoting), det, inv.
+TEST(NumpyOpsTests, linalgSolveDetInvMatchNumpy) {
+    std::string src = std::string(PRE) +
+        "import cajeta.math.linalg.LinAlg;\n"
+        "public final class D {\n"
+        "    public static boolean close(float32 a, float32 b) {\n"
+        "        float32 d = a - b; if (d < 0.0f) { d = -d; } return d < 0.001f;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        // A=[[2,1],[1,3]], b=[3,4] → x=[1,1]; det=5
+        "        float32[] da = { 2.0f, 1.0f, 1.0f, 3.0f };\n"
+        "        int64[] s22 = heap int64[2]; s22[0] = 2; s22[1] = 2;\n"
+        "        Tensor<float32> a = Tensor.of<float32>(da, s22);\n"
+        "        float32[] db = { 3.0f, 4.0f };\n"
+        "        int64[] s2 = heap int64[1]; s2[0] = 2;\n"
+        "        Tensor<float32> b = Tensor.of<float32>(db, s2);\n"
+        "        Tensor<float32> x = LinAlg.solve<float32>(a, b);\n"
+        "        if (!D.close(x.get1(0), 1.0f) || !D.close(x.get1(1), 1.0f)) { return -1; }\n"
+        "        if (!D.close(LinAlg.det<float32>(a), 5.0f)) { return -2; }\n"
+        // A2=[[1,2],[3,4]], b2=[5,11] → x=[1,2]; det=-2
+        "        float32[] dc = { 1.0f, 2.0f, 3.0f, 4.0f };\n"
+        "        int64[] s22b = heap int64[2]; s22b[0] = 2; s22b[1] = 2;\n"
+        "        Tensor<float32> a2 = Tensor.of<float32>(dc, s22b);\n"
+        "        float32[] dd = { 5.0f, 11.0f };\n"
+        "        int64[] s2b = heap int64[1]; s2b[0] = 2;\n"
+        "        Tensor<float32> b2 = Tensor.of<float32>(dd, s2b);\n"
+        "        Tensor<float32> x2 = LinAlg.solve<float32>(a2, b2);\n"
+        "        if (!D.close(x2.get1(0), 1.0f) || !D.close(x2.get1(1), 2.0f)) { return -3; }\n"
+        "        if (!D.close(LinAlg.det<float32>(a2), -2.0f)) { return -4; }\n"
+        // inv(a2) = [[-2,1],[1.5,-0.5]]
+        "        Tensor<float32> inv = LinAlg.inv<float32>(a2);\n"
+        "        if (!D.close(inv.get2(0, 0), -2.0f) || !D.close(inv.get2(0, 1), 1.0f)) { return -5; }\n"
+        "        if (!D.close(inv.get2(1, 0), 1.5f) || !D.close(inv.get2(1, 1), -0.5f)) { return -6; }\n"
+        // 3x3 needing a pivot: A=[[0,1,1],[1,0,1],[1,1,0]], b=[2,2,2] → x=[1,1,1]; det=2
+        "        float32[] de = { 0.0f, 1.0f, 1.0f, 1.0f, 0.0f, 1.0f, 1.0f, 1.0f, 0.0f };\n"
+        "        int64[] s33 = heap int64[2]; s33[0] = 3; s33[1] = 3;\n"
+        "        Tensor<float32> a3 = Tensor.of<float32>(de, s33);\n"
+        "        float32[] df = { 2.0f, 2.0f, 2.0f };\n"
+        "        int64[] s3 = heap int64[1]; s3[0] = 3;\n"
+        "        Tensor<float32> b3 = Tensor.of<float32>(df, s3);\n"
+        "        Tensor<float32> x3 = LinAlg.solve<float32>(a3, b3);\n"
+        "        if (!D.close(x3.get1(0), 1.0f) || !D.close(x3.get1(1), 1.0f) || !D.close(x3.get1(2), 1.0f)) { return -7; }\n"
+        "        if (!D.close(LinAlg.det<float32>(a3), 2.0f)) { return -8; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
