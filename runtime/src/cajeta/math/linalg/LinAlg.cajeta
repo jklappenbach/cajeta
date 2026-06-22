@@ -314,6 +314,197 @@ public final class LinAlg {
         return #out;
     }
 
+    /**
+     * Symmetric eigendecomposition (numpy `linalg.eigh`) by the cyclic **Jacobi**
+     * rotation method: for a symmetric `A`, returns `[w, V]` with ascending eigenvalues
+     * `w` (length-`n` vector) and orthonormal eigenvector columns `V` (`n,n`), so
+     * `A·V = V·diag(w)`. Each sweep zeros every off-diagonal in turn via a 2-sided
+     * Givens rotation; converges quadratically. Native — no foreign LAPACK.
+     */
+    public static #Tensor<E>[] eigh<E extends Floating>(Tensor<E> a) {
+        int64 n = a.shapeAt(0);
+        Tensor<E> m = a.copy();
+        Tensor<E> v = Tensor.eye<E>(n);
+        E eps = (E) 1 / (E) 10000000;            // off-diagonal convergence floor (~1e-7)
+        E eps2 = (E) 1 / (E) 100000000;          // per-element skip floor (~1e-8)
+        int64 sweep = 0;
+        while (sweep < 100) {
+            E off = (E) 0;
+            int64 p = 0;
+            while (p < n) {
+                int64 q = p + 1;
+                while (q < n) {
+                    E mpq = m.get2(p, q);
+                    E ampq = mpq;
+                    if (ampq < (E) 0) { ampq = (E) 0 - ampq; }
+                    off = off + ampq;
+                    q = q + 1;
+                }
+                p = p + 1;
+            }
+            if (off < eps) {
+                sweep = 100;                       // converged → exit the sweep loop
+            } else {
+                p = 0;
+                while (p < n) {
+                    int64 q = p + 1;
+                    while (q < n) {
+                        E apq = m.get2(p, q);
+                        E aapq = apq;
+                        if (aapq < (E) 0) { aapq = (E) 0 - aapq; }
+                        if (aapq > eps2) {
+                            E app = m.get2(p, p);
+                            E aqq = m.get2(q, q);
+                            E tau = (aqq - app) / (apq + apq);
+                            E denom = Math.sqrt((E) 1 + tau * tau);
+                            E t = (E) 0;
+                            if (tau >= (E) 0) { t = (E) 1 / (tau + denom); }
+                            else { t = (E) 0 - ((E) 1 / (denom - tau)); }
+                            E c = (E) 1 / Math.sqrt((E) 1 + t * t);
+                            E s = t * c;
+                            // rotate columns p,q of m
+                            int64 i = 0;
+                            while (i < n) {
+                                E mip = m.get2(i, p);
+                                E miq = m.get2(i, q);
+                                m.flatSet(i * n + p, c * mip - s * miq);
+                                m.flatSet(i * n + q, s * mip + c * miq);
+                                i = i + 1;
+                            }
+                            // rotate rows p,q of m
+                            i = 0;
+                            while (i < n) {
+                                E mpi = m.get2(p, i);
+                                E mqi = m.get2(q, i);
+                                m.flatSet(p * n + i, c * mpi - s * mqi);
+                                m.flatSet(q * n + i, s * mpi + c * mqi);
+                                i = i + 1;
+                            }
+                            // accumulate the rotation into the eigenvector matrix
+                            i = 0;
+                            while (i < n) {
+                                E vip = v.get2(i, p);
+                                E viq = v.get2(i, q);
+                                v.flatSet(i * n + p, c * vip - s * viq);
+                                v.flatSet(i * n + q, s * vip + c * viq);
+                                i = i + 1;
+                            }
+                        }
+                        q = q + 1;
+                    }
+                    p = p + 1;
+                }
+            }
+            sweep = sweep + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = n;
+        int64[] vs = heap int64[1];
+        vs[0] = n;
+        Tensor<E>[] out = heap Tensor<E>[2];
+        out[0] = Tensor.zeros<E>(vs);            // eigenvalues w
+        out[1] = Tensor.zeros<E>(sh);            // eigenvectors V (columns)
+        int64 d = 0;
+        while (d < n) {
+            E dv = m.get2(d, d);
+            out[0].set1(d, dv);
+            int64 rr = 0;
+            while (rr < n) {
+                E vv = v.get2(rr, d);
+                out[1].flatSet(rr * n + d, vv);
+                rr = rr + 1;
+            }
+            d = d + 1;
+        }
+        // sort eigenvalues ascending, carrying eigenvector columns (numpy eigh order)
+        int64 ii = 0;
+        while (ii < n) {
+            int64 mn = ii;
+            E mnv = out[0].get1(ii);
+            int64 jj = ii + 1;
+            while (jj < n) {
+                E cand = out[0].get1(jj);
+                if (cand < mnv) { mnv = cand; mn = jj; }
+                jj = jj + 1;
+            }
+            if (mn != ii) {
+                E a0 = out[0].get1(ii);
+                E a1 = out[0].get1(mn);
+                out[0].set1(ii, a1);
+                out[0].set1(mn, a0);
+                int64 rr = 0;
+                while (rr < n) {
+                    E c0 = out[1].get2(rr, ii);
+                    E c1 = out[1].get2(rr, mn);
+                    out[1].flatSet(rr * n + ii, c1);
+                    out[1].flatSet(rr * n + mn, c0);
+                    rr = rr + 1;
+                }
+            }
+            ii = ii + 1;
+        }
+        return #out;
+    }
+
+    /**
+     * Singular value decomposition (numpy `linalg.svd`, full square case): returns
+     * `[U, S, Vt]` with `A = U·diag(S)·Vt`, `U`/`Vt` orthonormal and `S` the singular
+     * values in **descending** order. Computed natively from the symmetric eigenproblem
+     * of `AᵀA` (right vectors `V` and σ²), then `U = A·V/σ`. (General nonsymmetric `eig`
+     * — complex spectra — is deferred; it needs the interleaved-complex tier.)
+     */
+    public static #Tensor<E>[] svd<E extends Floating>(Tensor<E> a) {
+        int64 n = a.shapeAt(0);
+        Tensor<E> at = a.transpose();
+        Tensor<E> gram = Tensor.matmul<E>(at, a);
+        Tensor<E>[] eig = LinAlg.eigh<E>(gram);
+        Tensor<E> evals = eig[0];
+        Tensor<E> vmat = eig[1];
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = n;
+        int64[] vs = heap int64[1];
+        vs[0] = n;
+        Tensor<E>[] out = heap Tensor<E>[3];
+        out[0] = Tensor.zeros<E>(sh);            // U
+        out[1] = Tensor.zeros<E>(vs);            // S (descending)
+        out[2] = Tensor.zeros<E>(sh);            // Vt = Vᵀ
+        E tiny = (E) 1 / (E) 1000000000;
+        int64 k = 0;
+        while (k < n) {
+            int64 sidx = n - 1 - k;              // eigh is ascending → take from the top
+            E lam = evals.get1(sidx);
+            if (lam < (E) 0) { lam = (E) 0; }
+            E sigma = Math.sqrt(lam);
+            out[1].set1(k, sigma);
+            // Vt row k = V column sidx
+            int64 r = 0;
+            while (r < n) {
+                E vrk = vmat.get2(r, sidx);
+                out[2].flatSet(k * n + r, vrk);
+                r = r + 1;
+            }
+            // U column k = A·(V col sidx) / sigma
+            if (sigma > tiny) {
+                r = 0;
+                while (r < n) {
+                    E acc = (E) 0;
+                    int64 c = 0;
+                    while (c < n) {
+                        acc = acc + a.get2(r, c) * vmat.get2(c, sidx);
+                        c = c + 1;
+                    }
+                    E uval = acc / sigma;
+                    out[0].flatSet(r * n + k, uval);
+                    r = r + 1;
+                }
+            }
+            k = k + 1;
+        }
+        return #out;
+    }
+
     /** Absolute value of a `Floating` scalar (local helper — `Math.abs` per `E`). */
     static E absE<E extends Floating>(E v) {
         if (v < (E) 0) { return (E) 0 - v; }

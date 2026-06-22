@@ -2276,6 +2276,74 @@ TEST(NumpyOpsTests, linalgLuQrMatchNumpy) {
     EXPECT_EQ(runI32(src), 1);
 }
 
+// 11b — native symmetric eig (Jacobi) + SVD (via eigh of A^T A). Eigenvalues ascending,
+// singular values descending; verified by spectrum + A·v=λ·v and U·diag(S)·Vt==A.
+TEST(NumpyOpsTests, linalgEighSvdMatchNumpy) {
+    std::string src = std::string(PRE) +
+        "import cajeta.math.linalg.LinAlg;\n"
+        "public final class D {\n"
+        "    public static boolean close(float32 a, float32 b) {\n"
+        "        float32 d = a - b; if (d < 0.0f) { d = -d; } return d < 0.003f;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        // ---- eigh: A=[[2,1],[1,2]] → eigenvalues [1,3] (ascending) ----
+        "        float32[] da = { 2.0f, 1.0f, 1.0f, 2.0f };\n"
+        "        int64[] s22 = heap int64[2]; s22[0] = 2; s22[1] = 2;\n"
+        "        Tensor<float32> a = Tensor.of<float32>(da, s22);\n"
+        "        Tensor<float32>[] eg = LinAlg.eigh<float32>(a);\n"
+        "        Tensor<float32> w = eg[0];\n"
+        "        Tensor<float32> v = eg[1];\n"
+        "        if (!D.close(w.get1(0), 1.0f) || !D.close(w.get1(1), 3.0f)) { return -1; }\n"
+        // A·v_k == λ_k·v_k for each eigenpair (column k of V)
+        "        int64 k = 0;\n"
+        "        while (k < 2) {\n"
+        "            float32 lam = w.get1(k);\n"
+        "            int64 r = 0;\n"
+        "            while (r < 2) {\n"
+        "                float32 av = 0.0f;\n"
+        "                int64 c = 0;\n"
+        "                while (c < 2) {\n"
+        "                    av = av + a.get2(r, c) * v.get2(c, k);\n"
+        "                    c = c + 1;\n"
+        "                }\n"
+        "                float32 lv = lam * v.get2(r, k);\n"
+        "                if (!D.close(av, lv)) { return -2; }\n"
+        "                r = r + 1;\n"
+        "            }\n"
+        "            k = k + 1;\n"
+        "        }\n"
+        // ---- svd: A2=[[1,2],[3,4]] → S≈[5.4650, 0.3660] (descending), U·diag(S)·Vt==A2 ----
+        "        float32[] db = { 1.0f, 2.0f, 3.0f, 4.0f };\n"
+        "        int64[] s22b = heap int64[2]; s22b[0] = 2; s22b[1] = 2;\n"
+        "        Tensor<float32> a2 = Tensor.of<float32>(db, s22b);\n"
+        "        Tensor<float32>[] sv = LinAlg.svd<float32>(a2);\n"
+        "        Tensor<float32> u = sv[0];\n"
+        "        Tensor<float32> sg = sv[1];\n"
+        "        Tensor<float32> vt = sv[2];\n"
+        "        if (!D.close(sg.get1(0), 5.4649858f) || !D.close(sg.get1(1), 0.3659662f)) { return -3; }\n"
+        // reconstruct A2 = U·diag(S)·Vt
+        "        int64 i = 0;\n"
+        "        while (i < 2) {\n"
+        "            int64 j = 0;\n"
+        "            while (j < 2) {\n"
+        "                float32 acc = 0.0f;\n"
+        "                int64 t = 0;\n"
+        "                while (t < 2) {\n"
+        "                    acc = acc + u.get2(i, t) * sg.get1(t) * vt.get2(t, j);\n"
+        "                    t = t + 1;\n"
+        "                }\n"
+        "                float32 orig = a2.get2(i, j);\n"
+        "                if (!D.close(acc, orig)) { return -4; }\n"
+        "                j = j + 1;\n"
+        "            }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
 // 11b — native Cholesky: L·L^T = A for symmetric positive-definite A (lower triangular).
 TEST(NumpyOpsTests, linalgCholeskyMatchNumpy) {
     std::string src = std::string(PRE) +
