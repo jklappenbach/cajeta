@@ -20,6 +20,7 @@
 #include "../asn/expression/AggregateInitializerExpression.h"
 #include "../type/FormalParameter.h"
 #include "../field/ParameterField.h"
+#include "../field/BoundClosureField.h"
 #include "cajeta/dbg/DebugCodegen.h"
 #include "../util/Printer.h"
 #include "../xpu/core/KernelArgTrait.h"
@@ -1452,6 +1453,17 @@ namespace cajeta {
             module->getScopeStack().peek()->putField(parameterField);
         }
 
+        // cajeta-ir Unit 4 (closure specialization): a specialized instance had
+        // its function-typed parameter(s) dropped from the signature above and
+        // bound to a statically-known function. Inject a BoundClosureField for
+        // each so a call to that name lowers to a DIRECT call (no closure record,
+        // no indirect dispatch). No-op on every ordinary method.
+        for (auto& bc : boundClosures) {
+            auto boundField = make_shared<BoundClosureField>(
+                module, bc.name, bc.fnType, bc.fn, bc.record);
+            module->getScopeStack().peek()->putField(boundField);
+        }
+
         // R5-A' implicit function-body scope: capture the scope_top from the
         // caller's perspective into an alloca, then push the function-body
         // frame. Every return path (synthetic, explicit ReturnStatement)
@@ -2319,14 +2331,19 @@ namespace cajeta {
         // refactor.
         string base = const_cast<Method*>(this)->toCanonical(labeled);
         if (methodTypeParameters.empty()) {
-            // Ordinary (non-templated) method — plain canonical.
-            return base;
+            // Ordinary (non-templated) method — plain canonical (+ any
+            // closure-specialization tag, normally empty).
+            return base + specializationTag;
         }
         if (!methodTypeArguments.empty()) {
             // Concrete instantiation — append the resolved type-args
             // so distinct instantiations of the same template have
-            // distinct keys. See § two-layer naming below.
-            return base + buildMethodTypeArgSuffix(methodTypeArguments);
+            // distinct keys. See § two-layer naming below. The
+            // specialization tag (cajeta-ir Unit 4) further distinguishes a
+            // closure-specialized instance from its base instantiation and
+            // from a sibling specialized over a different lambda.
+            return base + buildMethodTypeArgSuffix(methodTypeArguments)
+                 + specializationTag;
         }
         // Method-template declaration (template params declared, no
         // concrete args bound yet). Suffix with the T-var NAMES so
@@ -2352,6 +2369,19 @@ namespace cajeta {
 
     const string Method::getLlvmSymbolName() const {
         return getMapKey(true);
+    }
+
+    // cajeta-ir Unit 4: drop a (closure-specialized-away) parameter from both the
+    // ordered list and the by-name map so the specialized instance's signature
+    // and canonical name omit it.
+    void Method::dropParameter(const string& paramName) {
+        for (auto it = parameterList.begin(); it != parameterList.end(); ++it) {
+            if (*it && (*it)->getName() == paramName) {
+                parameterList.erase(it);
+                break;
+            }
+        }
+        parameters.erase(paramName);
     }
 
     string Method::buildCanonical(CajetaClassPtr parent, const string& name, vector<FormalParameterPtr> parameters, bool labeled) {

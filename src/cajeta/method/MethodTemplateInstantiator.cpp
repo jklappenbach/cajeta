@@ -92,7 +92,24 @@ namespace cajeta {
         return inst;
     }
 
-    MethodPtr Method::instantiateMethodTemplateInternal(std::vector<CajetaTypePtr> args) {
+    // cajeta-ir Unit 4a — build (or cache-hit) the closure-specialized instance
+    // F<args>$fn. Mirrors instantiateMethodTemplate's choke point; the post-parse
+    // transform (drop the bound param, record the binding, tag the symbol) lives
+    // in the internal below, gated on `spec`.
+    MethodPtr Method::instantiateSpecializedClosure(std::vector<CajetaTypePtr> args,
+            const std::string& paramName, llvm::Function* fn, CajetaTypePtr fnType,
+            llvm::Constant* record) {
+        ClosureSpecialization spec{paramName, fn, std::move(fnType), record};
+        MethodPtr inst = instantiateMethodTemplateInternal(std::move(args), &spec);
+        if (inst) {
+            CajetaModule::noteCrossModuleMethodInstantiation(
+                CajetaModule::getCurrentCodegenModule(), inst);
+        }
+        return inst;
+    }
+
+    MethodPtr Method::instantiateMethodTemplateInternal(std::vector<CajetaTypePtr> args,
+            const ClosureSpecialization* spec) {
         if (!isMethodTemplate()) {
             throw Exception(
                 "instantiateMethodTemplate invoked on non-template method "
@@ -192,8 +209,11 @@ namespace cajeta {
             methodInstantiationCacheEpoch = epoch;
         }
 
-        // Cache hit?
+        // Cache hit? A closure specialization (Unit 4a) keys a SEPARATE cache
+        // slot — distinct per (type-args, bound lambda fn) — so it re-parses its
+        // own fresh AST and never aliases the base instantiation.
         std::string suffix = buildMethodArgSuffix(args);
+        if (spec && spec->fn) suffix += "$spec$" + spec->fn->getName().str();
         auto cached = methodInstantiationCache.find(suffix);
         if (cached != methodInstantiationCache.end()) {
             return cached->second;
@@ -454,6 +474,22 @@ namespace cajeta {
         // LLVM module symbol space. The lambda-expectedType propagator
         // still works because it skips method-template instantiations
         // entirely (looks up the template, not its specializations).
+
+        // cajeta-ir Unit 4a — closure specialization transform. Drop the bound
+        // function-typed parameter from the signature, record the binding (codegen
+        // injects a BoundClosureField so calls to it go direct), and tag the symbol
+        // so this instance is distinct from the base and from a sibling specialized
+        // over a different lambda. The instance is NOT registered in the class
+        // method maps; the call-site redirect (Unit 4c) drives its codegen.
+        // Back-pointer so the Unit 4c redirect can request a specialization of
+        // this template from an instance handle. (`this` is the template Method.)
+        inst->setTemplateOrigin(this);
+
+        if (spec) {
+            inst->dropParameter(spec->paramName);
+            inst->addBoundClosure(spec->paramName, spec->fnType, spec->fn, spec->record);
+            inst->setSpecializationTag("$spec$" + spec->fn->getName().str());
+        }
 
         methodInstantiationCache[suffix] = inst;
         return inst;

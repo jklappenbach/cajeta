@@ -27,6 +27,7 @@
 #include "cajeta/type/Scope.h"
 #include "cajeta/field/Field.h"
 #include "cajeta/field/ParameterField.h"
+#include "cajeta/field/BoundClosureField.h"
 #include <llvm/IR/IntrinsicInst.h>
 #include <llvm/IR/Intrinsics.h>
 
@@ -175,7 +176,8 @@ namespace cajeta {
                                  llvm::Value* closurePtr,
                                  const std::shared_ptr<CajetaFunctionType>& fnType,
                                  const vector<MethodCallParameter>& args,
-                                 CajetaTypePtr& outResolvedType) {
+                                 CajetaTypePtr& outResolvedType,
+                                 llvm::Function* directFn) {
         auto& llvmCtx = *module->getLlvmContext();
         auto* builder = module->getBuilder();
         llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
@@ -185,13 +187,22 @@ namespace cajeta {
         // LambdaExpression / MethodReferenceExpression emit so GEPs stay valid.
         llvm::StructType* closureTy = llvm::StructType::get(
             llvmCtx, {ptrTy, ptrTy, ptrTy});
-        llvm::Value* fnSlot = builder->CreateStructGEP(
-            closureTy, closurePtr, 0, "closure.fn");
-        llvm::Value* callee = builder->CreateLoad(ptrTy, fnSlot, "fn_ptr");
-        llvm::Value* capSlot = builder->CreateStructGEP(
-            closureTy, closurePtr, 1, "closure.captures");
-        llvm::Value* captures = builder->CreateLoad(
-            ptrTy, capSlot, "captures_ptr");
+        // Specialization fast path (cajeta-ir Unit 4): a statically-known target
+        // calls direct, with captures folded to null (the non-capturing lambda
+        // ignores them). Otherwise load fn + captures from the closure record.
+        llvm::Value* callee;
+        llvm::Value* captures;
+        if (directFn) {
+            callee = directFn;
+            captures = llvm::ConstantPointerNull::get(ptrTy);
+        } else {
+            llvm::Value* fnSlot = builder->CreateStructGEP(
+                closureTy, closurePtr, 0, "closure.fn");
+            callee = builder->CreateLoad(ptrTy, fnSlot, "fn_ptr");
+            llvm::Value* capSlot = builder->CreateStructGEP(
+                closureTy, closurePtr, 1, "closure.captures");
+            captures = builder->CreateLoad(ptrTy, capSlot, "captures_ptr");
+        }
 
         // M5(b) — sret form: caller allocates the result slot in its own frame
         // and threads it as the closure's hidden arg 0. The call returns void;
@@ -1012,6 +1023,18 @@ namespace cajeta {
             auto scope = module->getScopeStack().peek();
             FieldPtr field = scope ? scope->getField(methodCallName) : nullptr;
             if (field) {
+                // cajeta-ir Unit 4b: a specialized instance binds the (dropped)
+                // function-typed parameter to a known function. Dispatch direct —
+                // no closure record, no indirect load.
+                if (auto bound = dynamic_pointer_cast<BoundClosureField>(field)) {
+                    auto fnType = dynamic_pointer_cast<CajetaFunctionType>(
+                        bound->getType());
+                    if (fnType) {
+                        return emitClosureCall(module, /*closurePtr=*/nullptr,
+                            fnType, parameters, resolvedType,
+                            bound->getBoundFunction());
+                    }
+                }
                 auto fnType = dynamic_pointer_cast<CajetaFunctionType>(field->getType());
                 if (fnType) {
                     // The field's slot holds a `ptr` to the closure record;
