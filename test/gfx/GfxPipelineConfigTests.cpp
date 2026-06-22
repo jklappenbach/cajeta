@@ -106,3 +106,52 @@ TEST(GfxPipelineConfigTests, rasterAndInputAssemblyDefaults) {
         "        if (PipelineConfig.topologyTriangleList() != 3) { return -4; }\n"
         "        return 0;\n"), 0);
 }
+
+// 4d (slice 2) — VkFormat byte sizing: the R32 families size by channel count
+// (4/8/12/16), packed RGBA8_UNORM is 4, and the 16-bit floats size 2/4/8; an
+// unsupported format returns -1. Composes with vertexStride (formats → bytes →
+// stride): a vec3(R32G32B32_SFLOAT) + a packed RGBA8 color = 12 + 4 = 16.
+TEST(GfxPipelineConfigTests, vertexFormatBytesMapsVkFormats) {
+    EXPECT_EQ(runI32(IMP,
+        "        if (PipelineConfig.vertexFormatBytes(100) != 4)  { return -1; }\n"  // R32_SFLOAT
+        "        if (PipelineConfig.vertexFormatBytes(103) != 8)  { return -2; }\n"  // R32G32_SFLOAT
+        "        if (PipelineConfig.vertexFormatBytes(106) != 12) { return -3; }\n"  // R32G32B32_SFLOAT
+        "        if (PipelineConfig.vertexFormatBytes(109) != 16) { return -4; }\n"  // R32G32B32A32_SFLOAT
+        "        if (PipelineConfig.vertexFormatBytes(37)  != 4)  { return -5; }\n"  // R8G8B8A8_UNORM
+        "        if (PipelineConfig.vertexFormatBytes(76)  != 2)  { return -6; }\n"  // R16_SFLOAT
+        "        if (PipelineConfig.vertexFormatBytes(97)  != 8)  { return -7; }\n"  // R16G16B16A16_SFLOAT
+        "        if (PipelineConfig.vertexFormatBytes(9999) != -1) { return -8; }\n" // unsupported
+        "        int32[] b = heap int32[2];\n"
+        "        b[0] = PipelineConfig.vertexFormatBytes(106);\n"  // 12
+        "        b[1] = PipelineConfig.vertexFormatBytes(37);\n"   // 4
+        "        if (PipelineConfig.vertexStride(b, 2) != 16) { return -9; }\n"
+        "        return 0;\n"), 0);
+}
+
+// 4d (slice 2) — viewport Y-flip: with flipY the origin moves to the bottom edge
+// (y = extentHeight) and the height goes negative (the VK_KHR_maintenance1 trick
+// for an RH/Y-up renderer); without it the viewport is the plain top-left origin.
+TEST(GfxPipelineConfigTests, viewportYFlipPolicy) {
+    EXPECT_EQ(runI32(IMP,
+        "        if (PipelineConfig.viewportY(720, false) != 0)      { return -1; }\n"
+        "        if (PipelineConfig.viewportHeight(720, false) != 720) { return -2; }\n"
+        "        if (PipelineConfig.viewportY(720, true) != 720)     { return -3; }\n"
+        "        if (PipelineConfig.viewportHeight(720, true) != -720) { return -4; }\n"
+        "        return 0;\n"), 0);
+}
+
+// 4d (slice 2) — render-pass attachment ops: a color target clears (LOAD_OP_CLEAR
+// 1) or is fully overwritten (DONT_CARE 2), and stores (0) only when kept; depth
+// clears at frame start and is usually discarded after the pass (STORE_OP DONT_CARE
+// 1). VkAttachmentLoadOp {LOAD 0, CLEAR 1, DONT_CARE 2}; StoreOp {STORE 0, DONT_CARE 1}.
+TEST(GfxPipelineConfigTests, attachmentLoadStoreOps) {
+    EXPECT_EQ(runI32(IMP,
+        "        if (PipelineConfig.colorLoadOp(true)  != 1) { return -1; }\n"   // CLEAR
+        "        if (PipelineConfig.colorLoadOp(false) != 2) { return -2; }\n"   // DONT_CARE
+        "        if (PipelineConfig.colorStoreOp(true)  != 0) { return -3; }\n"  // STORE (presented)
+        "        if (PipelineConfig.colorStoreOp(false) != 1) { return -4; }\n"  // DONT_CARE
+        "        if (PipelineConfig.depthLoadOp(true)  != 1) { return -5; }\n"   // CLEAR
+        "        if (PipelineConfig.depthStoreOp(false) != 1) { return -6; }\n"  // discarded after pass
+        "        if (PipelineConfig.depthStoreOp(true)  != 0) { return -7; }\n"  // STORE (reused later)
+        "        return 0;\n"), 0);
+}

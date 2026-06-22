@@ -129,4 +129,95 @@ public class PipelineConfig {
      * The default input-assembly topology: TRIANGLE_LIST (3).
      */
     public static int32 topologyTriangleList() { return 3; }
+
+    // --- vertex attribute format sizing (VkFormat) -------------------------
+
+    /**
+     * The byte size of a vertex-attribute {@code VkFormat} — so a caller can feed
+     * formats (not raw byte sizes) and derive the layout via
+     * {@link #vertexAttributeOffset} / {@link #vertexStride}. Covers the formats a
+     * vertex buffer actually uses: the 32-bit-per-channel R32 families
+     * ({@code R32*} ordinals 98..109 → 4/8/12/16 for 1/2/3/4 channels), the packed
+     * 8-bit RGBA8_UNORM (37 → 4), and the 16-bit-float families (R16_SFLOAT 76 → 2,
+     * R16G16_SFLOAT 83 → 4, R16G16B16A16_SFLOAT 97 → 8). Returns -1 for a format
+     * not supported as a vertex attribute here.
+     */
+    public static int32 vertexFormatBytes(int32 vkFormat) {
+        if (vkFormat >= 98) {
+            if (vkFormat <= 100) { return 4; }    // R32 {UINT,SINT,SFLOAT}
+            if (vkFormat <= 103) { return 8; }    // R32G32 {UINT,SINT,SFLOAT}
+            if (vkFormat <= 106) { return 12; }   // R32G32B32 {UINT,SINT,SFLOAT}
+            if (vkFormat <= 109) { return 16; }   // R32G32B32A32 {UINT,SINT,SFLOAT}
+        }
+        if (vkFormat == 37) { return 4; }   // R8G8B8A8_UNORM
+        if (vkFormat == 76) { return 2; }   // R16_SFLOAT
+        if (vkFormat == 83) { return 4; }   // R16G16_SFLOAT
+        if (vkFormat == 97) { return 8; }   // R16G16B16A16_SFLOAT
+        return -1;
+    }
+
+    // --- viewport (the Vulkan Y-flip) --------------------------------------
+
+    /**
+     * The {@code VkViewport.y} for a framebuffer of height `extentHeight`: when
+     * `flipY` is set the viewport origin moves to the bottom edge (`extentHeight`)
+     * and {@link #viewportHeight} returns a NEGATIVE height — the
+     * VK_KHR_maintenance1 negative-viewport trick that flips clip-space Y so a
+     * right-handed / Y-up renderer (cajeta.math {@link cajeta.math.Camera}'s
+     * convention) draws upright without a projection hack. Without `flipY` the
+     * viewport is the plain top-left origin.
+     */
+    public static int32 viewportY(int32 extentHeight, boolean flipY) {
+        if (flipY) { return extentHeight; }
+        return 0;
+    }
+
+    /**
+     * The {@code VkViewport.height}: NEGATIVE `extentHeight` when `flipY` (paired
+     * with {@link #viewportY}), else the plain positive height.
+     */
+    public static int32 viewportHeight(int32 extentHeight, boolean flipY) {
+        if (flipY) { return 0 - extentHeight; }
+        return extentHeight;
+    }
+
+    // --- render-pass attachment ops (VkAttachmentLoadOp / StoreOp) ----------
+
+    /**
+     * The color attachment {@code VkAttachmentLoadOp}: CLEAR (1) when the target
+     * is cleared at the start of the pass, else DONT_CARE (2) — a color target is
+     * fully overwritten by the draws, so its prior contents are never LOADed (0).
+     */
+    public static int32 colorLoadOp(boolean clear) {
+        if (clear) { return 1; }   // VK_ATTACHMENT_LOAD_OP_CLEAR
+        return 2;                   // VK_ATTACHMENT_LOAD_OP_DONT_CARE
+    }
+
+    /**
+     * The color attachment {@code VkAttachmentStoreOp}: STORE (0) when the result
+     * is kept (presented or sampled by a later pass), else DONT_CARE (1).
+     */
+    public static int32 colorStoreOp(boolean keep) {
+        if (keep) { return 0; }    // VK_ATTACHMENT_STORE_OP_STORE
+        return 1;                   // VK_ATTACHMENT_STORE_OP_DONT_CARE
+    }
+
+    /**
+     * The depth attachment {@code VkAttachmentLoadOp}: CLEAR (1) when cleared at
+     * frame start (the usual case), else DONT_CARE (2).
+     */
+    public static int32 depthLoadOp(boolean clear) {
+        if (clear) { return 1; }   // VK_ATTACHMENT_LOAD_OP_CLEAR
+        return 2;                   // VK_ATTACHMENT_LOAD_OP_DONT_CARE
+    }
+
+    /**
+     * The depth attachment {@code VkAttachmentStoreOp}: STORE (0) when depth is
+     * reused by a later pass, else DONT_CARE (1) — depth is usually discarded once
+     * the pass that wrote it finishes.
+     */
+    public static int32 depthStoreOp(boolean keep) {
+        if (keep) { return 0; }    // VK_ATTACHMENT_STORE_OP_STORE
+        return 1;                   // VK_ATTACHMENT_STORE_OP_DONT_CARE
+    }
 }
