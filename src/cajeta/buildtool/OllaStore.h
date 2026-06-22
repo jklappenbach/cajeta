@@ -54,6 +54,21 @@ namespace cajeta::buildtool {
             const std::string& sourceArtifactPath,
             std::optional<std::string> sourceManifestPath);
 
+        // Write-through with integrity: when `expectedSha256` is
+        // non-empty (format "sha256:<hex>", as ArtifactCache produces),
+        // verify the source matches before writing — a mismatch errors
+        // and leaves the store unchanged. An empty `expectedSha256`
+        // trusts-on-first-use. When `manifestJson` is non-empty it is
+        // written atomically to the cajeta.json sidecar (so offline
+        // transitive resolution sees the dep's manifest). Returns the
+        // final artifact path.
+        llvm::Expected<std::string> writeVerified(
+            const std::string& name,
+            const std::string& version,
+            const std::string& sourceArtifactPath,
+            const std::string& expectedSha256,
+            const std::string& manifestJson);
+
     private:
         std::string root_;
     };

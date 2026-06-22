@@ -571,7 +571,8 @@ namespace cajeta::buildtool {
             const std::vector<std::string>& constraints,
             const std::optional<std::string>& fromRepo,
             const std::vector<RepositoryPtr>& repos,
-            ArtifactCache& cache) {
+            ArtifactCache& cache,
+            const std::string& ollaWriteThroughRoot) {
             for (const auto& repo : repos) {
                 if (fromRepo && repo->name() != *fromRepo) continue;
                 auto versions = repo->listVersions(name);
@@ -591,6 +592,18 @@ namespace cajeta::buildtool {
                 out.artifactPath = *cached;
                 out.sha256 = ArtifactCache::sha256OfFile(*cached);
                 if (sidecar->has_value()) out.manifestJson = **sidecar;
+
+                // Write-through: a dep fetched from a remote is mirrored
+                // into ~/.olla so the next resolve is a local hit. Skip
+                // when the hit came from the olla repo itself.
+                // Trust-on-first-use — the fetched bytes define the hash.
+                if (!ollaWriteThroughRoot.empty() && repo->name() != "olla") {
+                    OllaStore ollaStore(ollaWriteThroughRoot);
+                    auto wt = ollaStore.writeVerified(
+                        name, v, *cached, /*expectedSha256=*/"",
+                        out.manifestJson);
+                    if (!wt) return wt.takeError();
+                }
                 return out;
             }
             std::string joined;
@@ -618,7 +631,8 @@ namespace cajeta::buildtool {
         ArtifactCache& cache,
         const std::vector<OverrideSpec>& overrides,
         ResolverTimings* timings,
-        const std::string& gitOverrideStageDir) {
+        const std::string& gitOverrideStageDir,
+        const std::string& ollaWriteThroughRoot) {
 
         // Pre-flight: split overrides into version / path / git forms.
         // Path and git overrides both land in Phase 6c.
@@ -746,7 +760,7 @@ namespace cajeta::buildtool {
                 } else {
                     pick = pickLowestForAll(
                         name, effectiveConstraints(s), s.fromRepo,
-                        repos, cache);
+                        repos, cache, ollaWriteThroughRoot);
                 }
                 if (!pick) return pick.takeError();
 
@@ -817,7 +831,8 @@ namespace cajeta::buildtool {
             // unsatisfiable, the override RESCUED the build — not
             // a downgrade situation.
             auto baseline = pickLowestForAll(
-                name, s.constraints, s.fromRepo, repos, cache);
+                name, s.constraints, s.fromRepo, repos, cache,
+                /*ollaWriteThroughRoot=*/"");  // hypothetical — no write-through
             if (!baseline) {
                 consumeError(baseline.takeError());
                 continue;
@@ -954,9 +969,9 @@ namespace cajeta::buildtool {
         // on the first repo with a satisfying version, so a local hit
         // never touches a declared remote. Root honors $OLLA_HOME, then
         // homeOverride/$HOME (mirrors the workstation cache override).
+        std::string ollaRoot = OllaStore::resolveRoot(homeOverride);
         repos->insert(repos->begin(),
-            std::make_shared<FilesystemRepository>(
-                "olla", OllaStore::resolveRoot(homeOverride)));
+            std::make_shared<FilesystemRepository>("olla", ollaRoot));
 
         // When timings are requested, decorate each repo with the
         // recording wrapper. `wrapWithTimings(...,nullptr)` is a
@@ -965,7 +980,8 @@ namespace cajeta::buildtool {
             wrapWithTimings(*repos, timings);
 
         auto result = resolveMvs(
-            *deps, repoList, cache, *overrides, timings, downloadStage);
+            *deps, repoList, cache, *overrides, timings, downloadStage,
+            /*ollaWriteThroughRoot=*/ollaRoot);
         if (result && timings) {
             timings->depsResolved = static_cast<int>(result->size());
         }

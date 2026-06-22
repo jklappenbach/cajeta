@@ -115,7 +115,12 @@ namespace cajeta::buildtool {
         // on demand. Empty when no git overrides are declared (the
         // pick step errors clearly if one is encountered with an
         // empty stage dir).
-        const std::string& gitOverrideStageDir = "");
+        const std::string& gitOverrideStageDir = "",
+        // When non-empty, the ~/.olla local-repository root that
+        // artifacts fetched from a remote are written through into, so
+        // a later resolve is a local hit. Empty disables write-through
+        // (e.g. the resolveMvs unit tests that pass explicit repos).
+        const std::string& ollaWriteThroughRoot = "");
 
     // Compare just the major-version component of two semver
     // strings. Returns <0 if a's major is lower, 0 if equal, >0

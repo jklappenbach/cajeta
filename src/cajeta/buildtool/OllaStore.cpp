@@ -1,5 +1,7 @@
 #include "cajeta/buildtool/OllaStore.h"
 
+#include "cajeta/buildtool/ArtifactCache.h"
+
 #include <llvm/Support/Error.h>
 #include <llvm/Support/JSON.h>
 
@@ -176,6 +178,30 @@ namespace cajeta::buildtool {
             return std::move(e);
         }
         return dst.string();
+    }
+
+    llvm::Expected<std::string> OllaStore::writeVerified(
+        const std::string& name, const std::string& version,
+        const std::string& sourceArtifactPath,
+        const std::string& expectedSha256, const std::string& manifestJson) {
+        if (!expectedSha256.empty()) {
+            std::string actual = ArtifactCache::sha256OfFile(sourceArtifactPath);
+            if (actual != expectedSha256) {
+                return err("olla store: integrity check failed for '" + name +
+                           "@" + version + "': expected " + expectedSha256 +
+                           ", got " + actual + " (store left unchanged)");
+            }
+        }
+        auto written = write(name, version, sourceArtifactPath, std::nullopt);
+        if (!written) return written.takeError();
+        if (!manifestJson.empty()) {
+            fs::path sidecar =
+                fs::path(root_) / name / version / "cajeta.json";
+            if (auto e = atomicWriteText(sidecar, manifestJson)) {
+                return std::move(e);
+            }
+        }
+        return *written;
     }
 
 } // namespace cajeta::buildtool

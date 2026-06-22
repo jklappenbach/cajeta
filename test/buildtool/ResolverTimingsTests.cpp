@@ -113,7 +113,7 @@ TEST(ResolverTimingsTests, nullTimingsDoesNotCrashOrAlter) {
     auto m = mustLoad(src);
     auto proj = makeTempDir("nullptimings");
     auto result = resolveProjectDependencies(
-        m, proj.string(), std::nullopt, nullptr);
+        m, proj.string(), proj.string(), nullptr);  // pin olla root (hermetic)
     ASSERT_TRUE(static_cast<bool>(result)) << errorText(result.takeError());
     EXPECT_EQ(result->size(), 1u);
 }
@@ -170,7 +170,7 @@ TEST(ResolverTimingsTests, transitiveGraphBumpsCounters) {
 
     ResolverTimings t;
     auto result = resolveProjectDependencies(
-        m, proj.string(), std::nullopt, &t);
+        m, proj.string(), proj.string(), &t);  // pin olla root (hermetic)
     ASSERT_TRUE(static_cast<bool>(result)) << errorText(result.takeError());
 
     EXPECT_EQ(t.depsResolved, 2);
@@ -197,7 +197,7 @@ TEST(ResolverTimingsTests, depsResolvedEqualsOutputCount) {
 
     ResolverTimings t;
     auto result = resolveProjectDependencies(
-        m, proj.string(), std::nullopt, &t);
+        m, proj.string(), proj.string(), &t);  // pin olla root (hermetic)
     ASSERT_TRUE(static_cast<bool>(result)) << errorText(result.takeError());
     EXPECT_EQ(static_cast<int>(result->size()), t.depsResolved);
     EXPECT_EQ(t.depsResolved, 2);
@@ -214,7 +214,7 @@ TEST(ResolverTimingsTests, noDepsLeavesCountersZero) {
 
     ResolverTimings t;
     auto result = resolveProjectDependencies(
-        m, proj.string(), std::nullopt, &t);
+        m, proj.string(), proj.string(), &t);  // pin olla root (hermetic)
     ASSERT_TRUE(static_cast<bool>(result)) << errorText(result.takeError());
     EXPECT_EQ(result->size(), 0u);
     EXPECT_EQ(t.depsResolved, 0);
