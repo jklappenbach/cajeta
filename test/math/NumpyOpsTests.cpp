@@ -15,6 +15,10 @@
 
 #include <cstdint>
 #include <string>
+#include <filesystem>
+#include <algorithm>
+#include <fstream>
+#include <cstdlib>
 
 using cajeta_test::CajetaJit;
 
@@ -2328,6 +2332,95 @@ TEST(NumpyOpsTests, linalgConditioningAndEdgeCases) {
         "            }\n"
         "            i = i + 1;\n"
         "        }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// 10.5 — npio numpy-interop harness: numpy writes a .npy → cajeta reads + verifies →
+// cajeta writes a .npy → real numpy reads + verifies. Skips if python/numpy is absent.
+TEST(NumpyOpsTests, npyNumpyInteropF32) {
+    namespace fs = std::filesystem;
+    fs::path dir = fs::temp_directory_path();
+    std::string script = (dir / "cajeta_npy_harness.py").string();
+    std::string fromNp = (dir / "cajeta_interop_from_np.npy").string();
+    std::string toCj   = (dir / "cajeta_interop_to_cj.npy").string();
+    // shared oracle script: `write <path>` saves the known array; `verify <path>`
+    // loads it and exits 0 iff dtype/shape/values match.
+    {
+        std::ofstream f(script);
+        f << "import numpy as np, sys\n"
+             "mode, path = sys.argv[1], sys.argv[2]\n"
+             "exp = np.array([[10.0, 20.5], [-3.5, 4.0], [7.0, 8.0]], dtype=np.float32)\n"
+             "if mode == 'write':\n"
+             "    np.save(path, exp)\n"
+             "else:\n"
+             "    a = np.load(path)\n"
+             "    ok = a.dtype == np.float32 and a.shape == (3, 2) and np.array_equal(a, exp)\n"
+             "    sys.exit(0 if ok else 1)\n";
+    }
+    // Prefer an explicit interpreter via $CAJETA_PYTHON (the one with numpy) — the bare
+    // `python` cmd.exe resolves can be a different install without numpy.
+    const char* pyEnv = std::getenv("CAJETA_PYTHON");
+    std::string py = pyEnv ? std::string(pyEnv) : std::string("python");
+    auto run = [&](const std::string& mode, const std::string& path) {
+        // Wrap the whole command in an extra quote pair (cmd /c "...") so quoted
+        // exe/script/path tokens survive on Windows.
+        std::string inner = "\"" + py + "\" \"" + script + "\" " + mode + " \"" + path + "\"";
+        std::string cmd = "\"" + inner + "\"";
+        return std::system(cmd.c_str());
+    };
+    // 1. numpy writes the array. If python/numpy unavailable, skip the harness.
+    if (run("write", fromNp) != 0) {
+        GTEST_SKIP() << "python/numpy unavailable — skipping npio interop harness";
+    }
+    std::string fromNpC = fromNp, toCjC = toCj;
+    std::replace(fromNpC.begin(), fromNpC.end(), '\\', '/');
+    std::replace(toCjC.begin(), toCjC.end(), '\\', '/');
+    // 2. cajeta reads numpy's file, verifies values, and writes its own .npy.
+    std::string src = std::string(PRE) +
+        "import cajeta.math.npio.Npy;\n"
+        "public final class D {\n"
+        "    public static boolean close(float32 a, float32 b) {\n"
+        "        float32 d = a - b; if (d < 0.0f) { d = -d; } return d < 0.0001f;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Tensor<float32> a = Npy.loadF32(\"" + fromNpC + "\");\n"
+        "        if (a.ndim() != 2 || a.shapeAt(0) != 3 || a.shapeAt(1) != 2) { return -1; }\n"
+        "        if (!D.close(a.get2(0, 0), 10.0f) || !D.close(a.get2(0, 1), 20.5f)) { return -2; }\n"
+        "        if (!D.close(a.get2(1, 0), -3.5f) || !D.close(a.get2(1, 1), 4.0f)) { return -3; }\n"
+        "        if (!D.close(a.get2(2, 0), 7.0f) || !D.close(a.get2(2, 1), 8.0f)) { return -4; }\n"
+        "        Npy.saveF32(\"" + toCjC + "\", a);\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+    // 3. real numpy reads cajeta's output and asserts equality.
+    EXPECT_EQ(run("verify", toCj), 0);
+}
+
+// 10.5 — npio: cajeta round-trip of a float32 .npy (write then read back in cajeta).
+TEST(NumpyOpsTests, npyFloat32RoundTrip) {
+    std::string path = (std::filesystem::temp_directory_path() / "cajeta_npy_rt.npy").string();
+    std::replace(path.begin(), path.end(), '\\', '/');
+    std::string src = std::string(PRE) +
+        "import cajeta.math.npio.Npy;\n"
+        "public final class D {\n"
+        "    public static boolean close(float32 a, float32 b) {\n"
+        "        float32 d = a - b; if (d < 0.0f) { d = -d; } return d < 0.0001f;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        float32[] da = { 1.5f, -2.25f, 3.0f, 4.75f, 5.0f, 6.5f };\n"
+        "        int64[] s23 = heap int64[2]; s23[0] = 2; s23[1] = 3;\n"
+        "        Tensor<float32> t = Tensor.of<float32>(da, s23);\n"
+        "        Npy.saveF32(\"" + path + "\", t);\n"
+        "        Tensor<float32> r = Npy.loadF32(\"" + path + "\");\n"
+        "        if (r.ndim() != 2) { return -1; }\n"
+        "        if (r.shapeAt(0) != 2 || r.shapeAt(1) != 3) { return -2; }\n"
+        "        if (!D.close(r.get2(0, 0), 1.5f) || !D.close(r.get2(0, 1), -2.25f)) { return -3; }\n"
+        "        if (!D.close(r.get2(0, 2), 3.0f) || !D.close(r.get2(1, 0), 4.75f)) { return -4; }\n"
+        "        if (!D.close(r.get2(1, 1), 5.0f) || !D.close(r.get2(1, 2), 6.5f)) { return -5; }\n"
         "        return 1;\n"
         "    }\n"
         "}\n";

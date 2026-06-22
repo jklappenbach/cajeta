@@ -1,0 +1,182 @@
+package cajeta.math.npio;
+
+import cajeta.math.Tensor;
+import cajeta.io.file.File;
+import cajeta.lang.String;
+
+/**
+ * `cajeta.math.npio` — NumPy `.npy` binary array I/O (numpy-porting-plan Phase 10.5).
+ * Reads/writes the NumPy v1.0 `.npy` format: a 6-byte magic `\x93NUMPY`, a 2-byte
+ * version, a little-endian `uint16` header length, then an ASCII Python-dict header
+ * (`descr`/`fortran_order`/`shape`) padded with spaces to a 64-byte boundary and
+ * terminated by `\n`, followed by the raw little-endian element bytes in C-order.
+ *
+ * Float element bytes use the `Cajeta.f32ToBits`/`bitsToF32` reinterpret intrinsics
+ * (commit that added them closed the float-serialization gap); there is no value
+ * conversion. This unit covers `float32` (`'<f4'`); `float64`/`int32`/`int64`
+ * (`'<f8'`/`'<i4'`/`'<i8'`) follow the same machinery.
+ */
+public final class Npy {
+
+    /** Write one ASCII byte; return the next offset. */
+    static int64 putByte(int8[] buf, int64 off, int32 b) {
+        buf[off] = (int8) b;
+        return off + 1;
+    }
+
+    /** Write the ASCII bytes of `s` into `buf` at `off`; return the next offset. */
+    static int64 putStr(int8[] buf, int64 off, String s) {
+        int64 n = s.count();
+        int32 i = 0;
+        while ((int64) i < n) {
+            int8 c = s.charAt(i);
+            buf[off] = c;
+            off = off + 1;
+            i = i + 1;
+        }
+        return off;
+    }
+
+    /** Write the decimal digits of `v` (`v >= 0`); return the next offset. */
+    static int64 putDecimal(int8[] buf, int64 off, int64 v) {
+        if (v == 0) {
+            buf[off] = (int8) 48;                 // '0'
+            return off + 1;
+        }
+        int64 nd = 0;
+        int64 tmp = v;
+        while (tmp > 0) { nd = nd + 1; tmp = tmp / 10; }
+        int64 i = nd - 1;
+        while (i >= 0) {
+            int64 d = v % 10;
+            buf[off + i] = (int8) (48 + d);
+            v = v / 10;
+            i = i - 1;
+        }
+        return off + nd;
+    }
+
+    /**
+     * Save a `float32` tensor to `path` as a NumPy `.npy` file (`'<f4'`, C-order).
+     * The tensor's data is taken from a contiguous copy.
+     */
+    public static void saveF32(String path, Tensor<float32> t) {
+        int32 nd = t.ndim();
+        int64 n = t.size();
+        // --- build the ASCII header dict into a scratch buffer ---
+        int8[] hdr = heap int8[256];
+        int64 off = 0;
+        off = Npy.putStr(hdr, off, "{'descr': '<f4', 'fortran_order': False, 'shape': (");
+        int32 i = 0;
+        while (i < nd) {
+            off = Npy.putDecimal(hdr, off, t.shapeAt(i));
+            if (i < nd - 1) { off = Npy.putStr(hdr, off, ", "); }
+            i = i + 1;
+        }
+        if (nd == 1) { off = Npy.putStr(hdr, off, ","); }
+        off = Npy.putStr(hdr, off, "), }");
+        int64 dlen = off;                          // dict length (no padding/newline yet)
+        // header total = 10 + dict + spaces + '\n', rounded up to a multiple of 64
+        int64 base = 10 + dlen + 1;
+        int64 total = ((base + 63) / 64) * 64;
+        int64 hlen = total - 10;                    // value stored in the 2-byte length
+        // --- assemble the full file buffer ---
+        int64 fileLen = total + n * 4;
+        int8[] buf = heap int8[fileLen];
+        // magic + version
+        buf[0] = (int8) 147;                        // 0x93
+        int64 p = Npy.putStr(buf, 1, "NUMPY");
+        buf[6] = (int8) 1;                          // major
+        buf[7] = (int8) 0;                          // minor
+        // header length (uint16 LE)
+        buf[8] = (int8) (hlen & 255);
+        buf[9] = (int8) ((hlen / 256) & 255);
+        // dict bytes
+        int64 d = 0;
+        while (d < dlen) { buf[10 + d] = hdr[d]; d = d + 1; }
+        // pad with spaces, terminate with '\n'
+        int64 q = 10 + dlen;
+        while (q < total - 1) { buf[q] = (int8) 32; q = q + 1; }   // ' '
+        buf[total - 1] = (int8) 10;                 // '\n'
+        // --- element data: little-endian float32 bits, C-order ---
+        Tensor<float32> c = t.copy();
+        int64 e = 0;
+        while (e < n) {
+            float32 x = c.flatGet(e);
+            int32 bits = Cajeta.f32ToBits(x);
+            int64 bo = total + e * 4;
+            buf[bo + 0] = (int8) (bits & 255);
+            buf[bo + 1] = (int8) ((bits >> 8) & 255);
+            buf[bo + 2] = (int8) ((bits >> 16) & 255);
+            buf[bo + 3] = (int8) ((bits >> 24) & 255);
+            e = e + 1;
+        }
+        File.writeAllBytes(path, buf, (int32) fileLen);
+    }
+
+    /**
+     * Load a NumPy `.npy` `float32` array from `path` into a new `Tensor<float32>`.
+     * Parses the shape from the header dict and reads the little-endian element bytes.
+     */
+    public static #Tensor<float32> loadF32(String path) {
+        int8[] buf = File.readAllBytes(path);
+        // header length (uint16 LE at bytes 8..9)
+        int32 hlen = ((int32) buf[8] & 255) | (((int32) buf[9] & 255) << 8);
+        int64 dataOff = 10 + (int64) hlen;
+        // --- parse the shape tuple from the header dict ---
+        int64 p = 10;
+        while (buf[p] != (int8) 40) { p = p + 1; }   // scan to '('
+        p = p + 1;
+        int64[] dims = heap int64[8];
+        int32 ndp = 0;
+        boolean done = false;
+        while (!done) {
+            int8 ch = buf[p];
+            if (ch == (int8) 41) {                   // ')'
+                done = true;
+            } else if (ch >= (int8) 48 && ch <= (int8) 57) {  // a digit run
+                int64 v = 0;
+                boolean inNum = true;
+                while (inNum) {
+                    int8 dch = buf[p];
+                    if (dch >= (int8) 48 && dch <= (int8) 57) {
+                        int32 digit = (int32) dch - 48;
+                        v = v * 10 + (int64) digit;
+                        p = p + 1;
+                    } else {
+                        inNum = false;
+                    }
+                }
+                dims[ndp] = v;
+                ndp = ndp + 1;
+            } else {
+                p = p + 1;                           // skip space / comma
+            }
+        }
+        // --- build the shape + element count ---
+        int64[] shape = heap int64[ndp];
+        int64 n = 1;
+        int32 a = 0;
+        while (a < ndp) {
+            int64 dv = dims[a];
+            shape[a] = dv;
+            n = n * dv;
+            a = a + 1;
+        }
+        Tensor<float32> out = Tensor.zeros<float32>(shape);
+        // --- read little-endian float32 elements (C-order) ---
+        int64 e = 0;
+        while (e < n) {
+            int64 bo = dataOff + e * 4;
+            int32 b0 = (int32) buf[bo + 0] & 255;
+            int32 b1 = (int32) buf[bo + 1] & 255;
+            int32 b2 = (int32) buf[bo + 2] & 255;
+            int32 b3 = (int32) buf[bo + 3] & 255;
+            int32 bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+            float32 x = Cajeta.bitsToF32(bits);
+            out.flatSet(e, x);
+            e = e + 1;
+        }
+        return #out;
+    }
+}
