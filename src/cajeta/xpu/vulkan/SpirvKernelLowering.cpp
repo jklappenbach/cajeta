@@ -1298,18 +1298,19 @@ public:
 
     void storeShaderOutput(llvm::IRBuilderBase& b, llvm::Module& m,
                            llvm::Function* /*fn*/, llvm::Value* value) override {
-        if (!outputVar_) {
-            llvm::Type* ty = value->getType();
-            if (stage_ == ShaderStage::Vertex) {
-                outputVar_ = createBuiltInVar(m, ty, InterfaceStorage::Output,
-                                              SpirvBuiltIn::Position, "gl_Position");
-            } else {
-                // Fragment (and the other stages for now): a Location-0 output.
-                outputVar_ = createLocationVar(m, ty, InterfaceStorage::Output, 0,
-                                               "out_color");
+        // Multi-output (cajeta-gfx §4.b-rest B-2): a @ValueType STRUCT return is
+        // one output per field — the shader's outputs/varyings. Positional mapping:
+        // vertex field 0 → BuiltIn Position, fields 1.. → sequential Location
+        // varyings; fragment (& others) every field → a sequential Location color
+        // target. A single scalar/vector return is the one-field case.
+        if (auto* st = llvm::dyn_cast<llvm::StructType>(value->getType())) {
+            for (unsigned i = 0; i < st->getNumElements(); ++i) {
+                llvm::Value* field = b.CreateExtractValue(value, i, "out.field");
+                b.CreateStore(field, shaderOutputVar(m, i, field->getType()));
             }
+            return;
         }
-        b.CreateStore(value, outputVar_);
+        b.CreateStore(value, shaderOutputVar(m, 0, value->getType()));
     }
 
 private:
@@ -1335,9 +1336,32 @@ private:
         pcGlobal_ = createPushConstantBlock(m, pcStructTy_, "cajeta_pc");
     }
 
+    // The Output interface variable for output `index` (a struct field, or the
+    // sole output), created+cached on first use. Vertex field 0 is BuiltIn
+    // Position; every other output is a sequential Location (vertex varyings begin
+    // at Location 0 for field 1; fragment color targets begin at Location 0 for
+    // field 0). The vertex varying Location and the matching fragment input
+    // Location line up positionally (fragment inputs count up from 0 too).
+    llvm::GlobalVariable* shaderOutputVar(llvm::Module& m, unsigned index,
+                                          llvm::Type* ty) {
+        if (outputVars_.size() <= index) outputVars_.resize(index + 1, nullptr);
+        if (outputVars_[index]) return outputVars_[index];
+        llvm::GlobalVariable* ov;
+        if (stage_ == ShaderStage::Vertex && index == 0) {
+            ov = createBuiltInVar(m, ty, InterfaceStorage::Output,
+                                  SpirvBuiltIn::Position, "gl_Position");
+        } else {
+            unsigned loc = (stage_ == ShaderStage::Vertex) ? index - 1 : index;
+            ov = createLocationVar(m, ty, InterfaceStorage::Output, loc,
+                                   "out_" + std::to_string(loc));
+        }
+        outputVars_[index] = ov;
+        return ov;
+    }
+
     ShaderStage stage_;
     unsigned nextInputLocation_ = 0;
-    llvm::GlobalVariable* outputVar_ = nullptr;
+    std::vector<llvm::GlobalVariable*> outputVars_;
     // The stage's single push-constant block (null when no @PushConstant params).
     llvm::StructType* pcStructTy_ = nullptr;
     llvm::GlobalVariable* pcGlobal_ = nullptr;

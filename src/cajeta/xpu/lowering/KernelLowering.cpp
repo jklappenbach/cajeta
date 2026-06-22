@@ -238,6 +238,26 @@ DeviceStructInfo deviceStructInfo(const CajetaTypePtr& t, llvm::LLVMContext& ctx
             ++idx;
             continue;
         }
+        // A Vector<T,N> / Matrix<T,R,C> field — a flat <N x T> / <R*C x T> by-value
+        // lane aggregate (cajeta-gfx §4.b-rest: a graphics output/varying struct is
+        // {vec4 position, vec2 uv, ...}; also unblocks cajeta.math @ValueType device
+        // parity — Ray/Aabb hold Vector fields). Like a scalar field it has no named
+        // subfields, so `sub` stays empty: component/`[i]` access on the field goes
+        // through the vector/matrix path, not a struct-field walk. Builtin Vector/
+        // Matrix carry PRIMITIVE_FLAG but not VALUE_TYPE_FLAG, so they do NOT take
+        // the nested-@ValueType branch below — they are handled here.
+        if (llvm::Type* vty = deviceVectorType(pt, ctx)) {
+            info.fields[prop->getName()] = {idx, vty, false, {}};
+            ftys.push_back(vty);
+            ++idx;
+            continue;
+        }
+        if (llvm::Type* mty = deviceMatrixType(pt, ctx)) {
+            info.fields[prop->getName()] = {idx, mty, false, {}};
+            ftys.push_back(mty);
+            ++idx;
+            continue;
+        }
         // S5: a nested @ValueType field is itself a flat by-value POD — recurse
         // into a nested device struct and remember its field map for two-level
         // reads. A value-type-containing struct stays POD all the way down.
