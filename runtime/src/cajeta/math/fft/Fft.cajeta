@@ -1,0 +1,125 @@
+package cajeta.math.fft;
+
+import cajeta.math.Tensor;
+
+/**
+ * `cajeta.math.fft` — the discrete Fourier transform surface (numpy-porting-plan
+ * Phase 8). Complex signals are carried as an **interleaved `float32` tensor**: a
+ * length-`N` complex signal is a `Tensor<float32>` of length `2N` with `[2i]` = real
+ * and `[2i+1]` = imaginary (the forever-API decision for Milestone B — cajeta has no
+ * complex primitive yet; this is exactly the byte layout a future `complex64` dtype
+ * would use, so a typed view can layer on later). See the plan §8.
+ *
+ * `fft`/`ifft` are the radix-2 Cooley-Tukey core (length a power of two): an
+ * in-place iterative transform — bit-reversal permutation, then `log2(N)` butterfly
+ * stages with twiddle factors `exp(∓2πi·k/len)`. `ifft` conjugates the twiddles
+ * (positive sign) and scales by `1/N`, so `ifft(fft(x)) ≈ x`. The CPU floor; the
+ * GPU butterfly lowering is a later cross-checked unit. Accumulates in `float32`, so
+ * results match a reference DFT to a float tolerance (not bit-exact).
+ */
+public final class Fft {
+
+    static final float32 TWO_PI = 6.2831853071795864769f;
+
+    /** Forward DFT of an interleaved-`float32` complex signal (length `2N`, `N` a
+     *  power of two) → interleaved `float32` of the same length. */
+    public static #Tensor<float32> fft(Tensor<float32> x) {
+        return Fft.transform(x, false);
+    }
+
+    /** Inverse DFT (numpy `ifft`): conjugate twiddles + `1/N` scaling, so
+     *  `ifft(fft(x)) ≈ x`. Interleaved `float32` in and out. */
+    public static #Tensor<float32> ifft(Tensor<float32> x) {
+        return Fft.transform(x, true);
+    }
+
+    /** Radix-2 Cooley-Tukey core over an interleaved-`float32` buffer; `inverse`
+     *  selects the twiddle sign and the `1/N` epilogue. */
+    static #Tensor<float32> transform(Tensor<float32> x, boolean inverse) {
+        int64 len2 = x.size();
+        int64 n = len2 / 2;
+        int64[] shp = heap int64[1];
+        shp[0] = len2;
+        Tensor<float32> out = Tensor.zeros<float32>(shp);
+        int64 c = 0;
+        while (c < len2) {
+            out.set1(c, x.get1(c));
+            c = c + 1;
+        }
+        // bits = log2(n)
+        int32 bits = 0;
+        int64 tmp = n;
+        while (tmp > 1) {
+            tmp = tmp / 2;
+            bits = bits + 1;
+        }
+        // bit-reversal permutation over the n complex samples
+        int64 i = 0;
+        while (i < n) {
+            int64 rev = 0;
+            int64 xx = i;
+            int32 b = 0;
+            while (b < bits) {
+                rev = (rev << 1) | (xx & 1);
+                xx = xx >> 1;
+                b = b + 1;
+            }
+            if (i < rev) {
+                int64 ia = 2 * i;
+                int64 ib = 2 * rev;
+                float32 ar = out.get1(ia);
+                float32 ai = out.get1(ia + 1);
+                float32 br = out.get1(ib);
+                float32 bi = out.get1(ib + 1);
+                out.set1(ia, br);
+                out.set1(ia + 1, bi);
+                out.set1(ib, ar);
+                out.set1(ib + 1, ai);
+            }
+            i = i + 1;
+        }
+        // butterfly stages: len = 2, 4, ..., n
+        float32 sign = -1.0f;
+        if (inverse) { sign = 1.0f; }
+        int64 len = 2;
+        while (len <= n) {
+            int64 half = len / 2;
+            float32 flen = (float32) len;
+            int64 start = 0;
+            while (start < n) {
+                int64 k = 0;
+                while (k < half) {
+                    float32 fk = (float32) k;
+                    float32 theta = sign * Fft.TWO_PI * fk / flen;
+                    float32 wr = Math.cos(theta);
+                    float32 wi = Math.sin(theta);
+                    int64 ai = 2 * (start + k);
+                    int64 bi = 2 * (start + k + half);
+                    float32 ur = out.get1(ai);
+                    float32 ui = out.get1(ai + 1);
+                    float32 vr = out.get1(bi);
+                    float32 vi = out.get1(bi + 1);
+                    float32 tr = wr * vr - wi * vi;
+                    float32 ti = wr * vi + wi * vr;
+                    out.set1(ai, ur + tr);
+                    out.set1(ai + 1, ui + ti);
+                    out.set1(bi, ur - tr);
+                    out.set1(bi + 1, ui - ti);
+                    k = k + 1;
+                }
+                start = start + len;
+            }
+            len = len * 2;
+        }
+        if (inverse) {
+            float32 invN = 1.0f / (float32) n;
+            int64 d = 0;
+            while (d < len2) {
+                float32 v = out.get1(d) * invN;
+                out.set1(d, v);
+                d = d + 1;
+            }
+        }
+        return #out;
+    }
+}

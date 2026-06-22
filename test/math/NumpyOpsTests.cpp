@@ -1747,3 +1747,57 @@ TEST(NumpyOpsTests, sortCpuGpuAgree) {
         "}\n";
     EXPECT_EQ(runI32Xpu(src), 1);
 }
+
+// 8a — fft/ifft round trip + reference-DFT spot checks (Phase 8, cajeta.math.fft).
+// Complex signals are interleaved float32 ([2i]=re,[2i+1]=im). Radix-2 Cooley-Tukey,
+// power-of-two length. impulse→flat ones; constant→DC only; ifft(fft(x))≈x. float32
+// accumulation, so checked within tolerance.
+TEST(NumpyOpsTests, fftRoundTripMatchNumpy) {
+    std::string src = std::string(PRE) +
+        "import cajeta.math.fft.Fft;\n"
+        "public final class D {\n"
+        "    public static boolean close(float32 a, float32 b) {\n"
+        "        float32 d = a - b; if (d < 0.0f) { d = -d; } return d < 0.01f;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        // impulse [1,0,0,0] (N=4) → flat ones spectrum
+        "        float32[] di = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };\n"
+        "        int64[] s8 = heap int64[1]; s8[0] = 8;\n"
+        "        Tensor<float32> imp = Tensor.of<float32>(di, s8);\n"
+        "        Tensor<float32> fi = Fft.fft(imp);\n"
+        "        int64 i = 0;\n"
+        "        while (i < 4) {\n"
+        "            if (!D.close(fi.get1(2 * i), 1.0f)) { return -1; }\n"
+        "            if (!D.close(fi.get1(2 * i + 1), 0.0f)) { return -2; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        // constant [1,1,1,1] (N=4) → DC = 4, rest 0
+        "        float32[] dc = { 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f };\n"
+        "        int64[] s8b = heap int64[1]; s8b[0] = 8;\n"
+        "        Tensor<float32> con = Tensor.of<float32>(dc, s8b);\n"
+        "        Tensor<float32> fc = Fft.fft(con);\n"
+        "        if (!D.close(fc.get1(0), 4.0f) || !D.close(fc.get1(1), 0.0f)) { return -3; }\n"
+        "        i = 1;\n"
+        "        while (i < 4) {\n"
+        "            if (!D.close(fc.get1(2 * i), 0.0f) || !D.close(fc.get1(2 * i + 1), 0.0f)) { return -4; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        // round trip ifft(fft(x)) ≈ x for an arbitrary complex signal
+        "        float32[] dx = { 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f };\n"
+        "        int64[] s8c = heap int64[1]; s8c[0] = 8;\n"
+        "        Tensor<float32> x = Tensor.of<float32>(dx, s8c);\n"
+        "        Tensor<float32> fx = Fft.fft(x);\n"
+        "        Tensor<float32> rt = Fft.ifft(fx);\n"
+        "        float32[] want = { 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f };\n"
+        "        i = 0;\n"
+        "        while (i < 8) {\n"
+        "            float32 wv = want[(int32) i];\n"
+        "            float32 gv = rt.get1(i);\n"
+        "            if (!D.close(gv, wv)) { return -5; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
