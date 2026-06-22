@@ -129,6 +129,26 @@ namespace cajeta {
         // declared bound must hold for the supplied arg.
         for (size_t i = 0; i < methodTypeParameters.size(); ++i) {
             const auto& param = methodTypeParameters[i];
+            // Parameter-kind check — mirrors the class-level guard in
+            // TemplateInstantiator.cpp. A non-type (integer) parameter
+            // (`<uint32 N>`) requires a compile-time integer-constant argument
+            // (a CajetaConstantType, tagged CONSTANT_FLAG); a type parameter
+            // must NOT receive one. Non-type params carry no bounds, so they
+            // fall through the bound check below.
+            bool argIsConst = args[i] && (args[i]->getTypeFlags() & CONSTANT_FLAG);
+            if (param.isNonType && !argIsConst) {
+                throw Exception(
+                    "method template '" + name + "': non-type parameter '"
+                        + param.name + "' (" + param.nonTypePrimitive
+                        + ") requires an integer-constant argument",
+                    "CAJETA_ERROR_TYPE_PARAMETER_KIND");
+            }
+            if (!param.isNonType && argIsConst) {
+                throw Exception(
+                    "method template '" + name + "': type parameter '"
+                        + param.name + "' cannot take an integer-constant argument",
+                    "CAJETA_ERROR_TYPE_PARAMETER_KIND");
+            }
             if (param.bounds.empty()) continue;
             auto argClass = std::dynamic_pointer_cast<CajetaClass>(args[i]);
             for (auto& bound : param.bounds) {

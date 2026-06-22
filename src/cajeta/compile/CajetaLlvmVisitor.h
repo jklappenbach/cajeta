@@ -1314,7 +1314,13 @@ namespace cajeta {
                 isMethodTemplate = true;
                 for (auto* tp : tps->typeParameter()) {
                     TypeParameter param(tp->identifier()->getText());
-                    if (auto* bound = tp->typeBound()) {
+                    if (auto* pt = tp->primitiveType()) {
+                        // Non-type (integer-constant) method parameter:
+                        // `primitiveType identifier` (e.g. `<uint32 N>`).
+                        // Mirrors the class-level capture in Compiler.cpp.
+                        param.isNonType = true;
+                        param.nonTypePrimitive = pt->getText();
+                    } else if (auto* bound = tp->typeBound()) {
                         for (auto* tt : bound->typeType()) {
                             if (auto* coi = tt->classOrInterfaceType()) {
                                 param.bounds.push_back(QualifiedName::fromContext(coi));

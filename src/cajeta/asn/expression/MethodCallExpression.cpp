@@ -12,6 +12,7 @@
 #include "cajeta/type/CajetaQuaternion.h"
 #include "cajeta/type/QuaternionOps.h"
 #include "cajeta/type/CajetaClass.h"
+#include "cajeta/type/CajetaConstantType.h"
 #include "cajeta/type/CajetaTask.h"
 #include "cajeta/type/CajetaView.h"
 #include "cajeta/type/CajetaFunctionType.h"
@@ -301,15 +302,25 @@ namespace cajeta {
                 parameters.push_back(entry);
             }
         }
-        // Form C call-site type args. Each typeType resolves through
+        // Form C call-site type args. Each typeArgument resolves through
         // CajetaType::fromContext under the active module's substitution
         // stack so a `<T>` referenced from inside a templated class body
-        // still resolves to the bound T.
-        if (auto* tl = ctx->typeList()) {
+        // still resolves to the bound T. A non-type (integer-constant)
+        // argument — `m<8>(...)` — resolves to a CajetaConstantType,
+        // exactly as the type-use site does for `Vector<T, 8>` / a
+        // user template's `uint32 N` parameter (CajetaType.cpp).
+        if (auto* targs = ctx->typeArguments()) {
             auto activeMod = CajetaModule::getActiveModule();
-            for (auto* tt : tl->typeType()) {
-                auto t = CajetaType::fromContext(tt, activeMod);
-                if (t) explicitMethodTypeArgs.push_back(t);
+            for (auto* ta : targs->typeArgument()) {
+                if (ta->integerLiteral() != nullptr) {
+                    explicitMethodTypeArgs.push_back(CajetaConstantType::of(
+                        CajetaConstantType::parseLiteral(ta->integerLiteral())));
+                } else if (ta->typeType()) {
+                    auto t = CajetaType::fromContext(ta->typeType(), activeMod);
+                    if (t) explicitMethodTypeArgs.push_back(t);
+                }
+                // typeArgument's primitiveType alt is subsumed by typeType;
+                // the wildcard `?` alt is not valid in a call-site arg list.
             }
         }
     }
