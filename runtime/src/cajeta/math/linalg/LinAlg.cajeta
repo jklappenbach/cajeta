@@ -149,6 +149,43 @@ public final class LinAlg {
         return #out;
     }
 
+    /**
+     * Cholesky factorization of a symmetric positive-definite `A` (numpy
+     * `linalg.cholesky`): the lower-triangular `L` with `L·Lᵀ = A`. Computed by the
+     * standard Cholesky-Banachiewicz recurrence; the strict upper triangle is zero.
+     * Returns the `(n,n)` `L`.
+     */
+    public static #Tensor<E> cholesky<E extends Floating>(Tensor<E> a) {
+        int64 n = a.shapeAt(0);
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = n;
+        Tensor<E> l = Tensor.zeros<E>(sh);
+        int64 i = 0;
+        while (i < n) {
+            int64 j = 0;
+            while (j <= i) {
+                E sum = a.get2(i, j);
+                int64 k = 0;
+                while (k < j) {
+                    sum = sum - l.get2(i, k) * l.get2(j, k);
+                    k = k + 1;
+                }
+                if (i == j) {
+                    E d = Math.sqrt(sum);
+                    l.flatSet(i * n + j, d);
+                } else {
+                    E ljj = l.get2(j, j);
+                    E v = sum / ljj;
+                    l.flatSet(i * n + j, v);
+                }
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return #l;
+    }
+
     /** Absolute value of a `Floating` scalar (local helper — `Math.abs` per `E`). */
     static E absE<E extends Floating>(E v) {
         if (v < (E) 0) { return (E) 0 - v; }

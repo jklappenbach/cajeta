@@ -2204,3 +2204,34 @@ TEST(NumpyOpsTests, linalgSolveDetInvMatchNumpy) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 11b — native Cholesky: L·L^T = A for symmetric positive-definite A (lower triangular).
+TEST(NumpyOpsTests, linalgCholeskyMatchNumpy) {
+    std::string src = std::string(PRE) +
+        "import cajeta.math.linalg.LinAlg;\n"
+        "public final class D {\n"
+        "    public static boolean close(float32 a, float32 b) {\n"
+        "        float32 d = a - b; if (d < 0.0f) { d = -d; } return d < 0.002f;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        // A=[[4,2],[2,3]] → L=[[2,0],[1,sqrt(2)]]
+        "        float32[] da = { 4.0f, 2.0f, 2.0f, 3.0f };\n"
+        "        int64[] s22 = heap int64[2]; s22[0] = 2; s22[1] = 2;\n"
+        "        Tensor<float32> a = Tensor.of<float32>(da, s22);\n"
+        "        Tensor<float32> l = LinAlg.cholesky<float32>(a);\n"
+        "        if (!D.close(l.get2(0, 0), 2.0f) || !D.close(l.get2(0, 1), 0.0f)) { return -1; }\n"
+        "        if (!D.close(l.get2(1, 0), 1.0f) || !D.close(l.get2(1, 1), 1.4142136f)) { return -2; }\n"
+        // 3x3 classic: A=[[4,12,-16],[12,37,-43],[-16,-43,98]] → L=[[2,0,0],[6,1,0],[-8,5,3]]
+        "        float32[] db = { 4.0f, 12.0f, -16.0f, 12.0f, 37.0f, -43.0f, -16.0f, -43.0f, 98.0f };\n"
+        "        int64[] s33 = heap int64[2]; s33[0] = 3; s33[1] = 3;\n"
+        "        Tensor<float32> a3 = Tensor.of<float32>(db, s33);\n"
+        "        Tensor<float32> l3 = LinAlg.cholesky<float32>(a3);\n"
+        "        if (!D.close(l3.get2(0, 0), 2.0f) || !D.close(l3.get2(1, 0), 6.0f) || !D.close(l3.get2(1, 1), 1.0f)) { return -3; }\n"
+        "        if (!D.close(l3.get2(2, 0), -8.0f) || !D.close(l3.get2(2, 1), 5.0f) || !D.close(l3.get2(2, 2), 3.0f)) { return -4; }\n"
+        // upper triangle is zero
+        "        if (!D.close(l3.get2(0, 1), 0.0f) || !D.close(l3.get2(0, 2), 0.0f) || !D.close(l3.get2(1, 2), 0.0f)) { return -5; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
