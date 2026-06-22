@@ -1,0 +1,95 @@
+package cajeta.gpu.gfx;
+
+/**
+ * RenderGraph — the minimal, opinion-free render-graph DEPENDENCY + HAZARD policy
+ * (cajeta-gfx §5, spec §6/§8.2).
+ *
+ * A render graph lets passes declare the resources they READ and WRITE, then
+ * derives a correct execution order and the barriers between passes — WITHOUT any
+ * scheduling opinion (transient aliasing / memory budget / reordering heuristics
+ * live in the consumer, e.g. Glorias). The atomic decision underneath all of it is
+ * pure set logic over each pass's read/write sets: does a later pass conflict with
+ * an earlier one, what KIND of hazard it is, and therefore what barrier is needed.
+ * That logic is backend-independent and lives here, host-testable; the live
+ * {@code vkCmdPipelineBarrier} recording is the device noun (§5-rest).
+ *
+ * Resource sets are int32 BITMASKS — resource {@code r} is bit {@code r}, so a
+ * graph addresses up to 32 resources in v1 (use {@link #resourceBit}). Hazard
+ * kinds are a small bit enum: RAW=1 (read-after-write), WAR=2 (write-after-read),
+ * WAW=4 (write-after-write). Barrier ENCODING (Vk pipeline-stage / access masks)
+ * and the topological ORDER are follow-on slices; this is the dependency core.
+ */
+public class RenderGraph {
+
+    // The single-resource bitmask for resource `index` (0..31): bit `index` set.
+    // A pass's read/write set is the OR of the resourceBits it touches.
+    public static int32 resourceBit(int32 index) {
+        return 1 << index;
+    }
+
+    // Hazard-kind bits (a pass-pair may carry several at once).
+    public static int32 hazardRaw() { return 1; }   // read-after-write
+    public static int32 hazardWar() { return 2; }   // write-after-read
+    public static int32 hazardWaw() { return 4; }   // write-after-write
+
+    /**
+     * The hazards between an EARLIER pass (`priorReads`/`priorWrites`) and a LATER
+     * pass (`nextReads`/`nextWrites`), as the OR of the kind bits:
+     *   RAW (1) — `next` reads a resource `prior` wrote (must see the producer's data);
+     *   WAR (2) — `next` writes a resource `prior` read (must not clobber it early);
+     *   WAW (4) — both write the same resource (the writes must be ordered).
+     * Returns 0 when the passes are independent (disjoint, or both read-only on the
+     * shared resources).
+     */
+    public static int32 hazardMask(int32 priorReads, int32 priorWrites,
+                                   int32 nextReads, int32 nextWrites) {
+        int32 h = 0;
+        if ((nextReads & priorWrites) != 0)  { h = h | 1; }   // RAW
+        if ((nextWrites & priorReads) != 0)  { h = h | 2; }   // WAR
+        if ((nextWrites & priorWrites) != 0) { h = h | 4; }   // WAW
+        return h;
+    }
+
+    /**
+     * Whether the later pass DEPENDS on the earlier one — i.e. any hazard exists,
+     * so the graph must order `next` after `prior` (and emit a barrier). Disjoint
+     * or both-read-only pass pairs are independent (reorderable / concurrent).
+     */
+    public static boolean dependsOn(int32 priorReads, int32 priorWrites,
+                                    int32 nextReads, int32 nextWrites) {
+        return hazardMask(priorReads, priorWrites, nextReads, nextWrites) != 0;
+    }
+
+    /**
+     * Whether the dependency needs a MEMORY barrier (make the producer's writes
+     * available + visible — a cache flush/invalidate) rather than only an
+     * EXECUTION barrier (ordering, no cache op). RAW and WAW need a memory barrier
+     * (the consumer/overwriter must see / order the prior writes); a WAR hazard
+     * ALONE needs only execution ordering (the prior pass merely read, so there is
+     * nothing to flush). `hazards` is a {@link #hazardMask} result.
+     */
+    public static boolean needsMemoryBarrier(int32 hazards) {
+        // RAW (1) or WAW (4) -> memory barrier; mask = 5.
+        return (hazards & 5) != 0;
+    }
+
+    /**
+     * The NEAREST earlier pass that wrote `resourceBit`, scanning passes
+     * [0, beforePass) of `passWrites` (each entry a pass's write bitmask), or -1
+     * when none produced it (an external / first-use resource). A consumer
+     * synchronizes against only this last writer, not every prior producer — the
+     * minimal-barrier rule. `count` guards the array length.
+     */
+    public static int32 lastWriterBefore(int32[] passWrites, int32 count,
+                                         int32 resourceBit, int32 beforePass) {
+        int32 last = -1;
+        int32 i = 0;
+        while (i < beforePass) {
+            if (i < count) {
+                if ((passWrites[i] & resourceBit) != 0) { last = i; }
+            }
+            i = i + 1;
+        }
+        return last;
+    }
+}
