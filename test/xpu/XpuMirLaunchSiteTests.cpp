@@ -4,7 +4,7 @@
 //
 // XpuMirBuilder now does two things beyond the step-4 envelope:
 //   1. collectBodyOps — walks a @Kernel body for leaf builtins
-//      (GpuThread / Workgroup / Barrier calls) and records them as
+//      (KernelThread / Workgroup / Barrier calls) and records them as
 //      XpuMirOp leaves in XpuMirKernel::bodyOps.
 //   2. launch-site recognition — walks host method bodies for the
 //      `kernel.launch(stream, grid: [...], block: [...])(args)` shape
@@ -100,13 +100,13 @@ XpuMirKernelPtr findKernel(const XpuMirModulePtr& m, const std::string& suffix) 
 TEST(XpuMirLaunchSiteTests, kernelBodyOpsCaptureThreadReads) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.GpuBuffer;\n"
-        "import cajeta.gpu.GpuThread;\n"
+        "import cajeta.gpu.KernelBuffer;\n"
+        "import cajeta.gpu.KernelThread;\n"
         "public class M {\n"
         "    @Kernel\n"
-        "    public static void saxpy(GpuBuffer<float32> y, GpuBuffer<float32> x,\n"
+        "    public static void saxpy(KernelBuffer<float32> y, KernelBuffer<float32> x,\n"
         "                              float32 a, uint32 n) {\n"
-        "        uint32 i = GpuThread.globalIdX();\n"
+        "        uint32 i = KernelThread.globalIdX();\n"
         "    }\n"
         "}\n";
     Compiler compiler;
@@ -166,15 +166,15 @@ TEST(XpuMirLaunchSiteTests, plainKernelHasNoBodyOps) {
 TEST(XpuMirLaunchSiteTests, launchSiteRecognizedInHostBody) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.GpuBuffer;\n"
-        "import cajeta.gpu.GpuStream;\n"
+        "import cajeta.gpu.KernelBuffer;\n"
+        "import cajeta.gpu.KernelStream;\n"
         "public class M {\n"
         "    @Kernel\n"
-        "    public static void saxpy(GpuBuffer<float32> y, GpuBuffer<float32> x,\n"
+        "    public static void saxpy(KernelBuffer<float32> y, KernelBuffer<float32> x,\n"
         "                              float32 a, uint32 n) { }\n"
-        "    public static void run(GpuBuffer<float32> y, GpuBuffer<float32> x,\n"
+        "    public static void run(KernelBuffer<float32> y, KernelBuffer<float32> x,\n"
         "                           uint32 n) {\n"
-        "        saxpy.launch(GpuStream.current(),\n"
+        "        saxpy.launch(KernelStream.current(),\n"
         "                     grid: [(n + 255) / 256], block: [256])"
         "(y, x, 2.0f, n);\n"
         "    }\n"
@@ -188,7 +188,7 @@ TEST(XpuMirLaunchSiteTests, launchSiteRecognizedInHostBody) {
     auto& site = mir->launchSites[0];
     // Receiver `saxpy` resolved to the kernel canonical.
     EXPECT_EQ(site->kernelCanonicalName, "test.M.saxpy");
-    // GpuStream is the first positional launch() arg.
+    // KernelStream is the first positional launch() arg.
     EXPECT_NE(site->stream, nullptr);
     // 1-D grid and block, each one element.
     EXPECT_EQ(site->grid.size(), 1u);

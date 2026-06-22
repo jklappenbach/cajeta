@@ -68,14 +68,14 @@ std::string compileToIr(const char* source, const std::string& entry) {
 // and returns a success sentinel, or 100+i / 1000+i on the first wrong lane.
 const char* kTwoStageSource = R"CJ(
 package test;
-import cajeta.gpu.GpuBuffer;
-import cajeta.gpu.GpuStream;
-import cajeta.gpu.GpuThread;
+import cajeta.gpu.KernelBuffer;
+import cajeta.gpu.KernelStream;
+import cajeta.gpu.KernelThread;
 import cajeta.gpu.Barrier;
 public class M {
     @Kernel
-    public static void twostage(GpuBuffer<uint32> a, GpuBuffer<uint32> b) {
-        uint32 t = GpuThread.globalIdX();
+    public static void twostage(KernelBuffer<uint32> a, KernelBuffer<uint32> b) {
+        uint32 t = KernelThread.globalIdX();
         a[t] = t;
         Barrier.workgroup();
         b[t] = t + 100;
@@ -85,11 +85,11 @@ public class M {
         uint32[] ha = heap uint32[n];
         uint32[] hb = heap uint32[n];
         for (uint32 i = 0; i < n; i = i + 1) { ha[i] = 0; hb[i] = 0; }
-        GpuBuffer<uint32> a = heap GpuBuffer<uint32>(n);
-        GpuBuffer<uint32> b = heap GpuBuffer<uint32>(n);
+        KernelBuffer<uint32> a = heap KernelBuffer<uint32>(n);
+        KernelBuffer<uint32> b = heap KernelBuffer<uint32>(n);
         a.upload(ha);
         b.upload(hb);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         twostage.launch(s, grid: [1], block: [256])(a, b);
         s.sync();
         a.download(ha);
@@ -109,16 +109,16 @@ public class M {
 // buffer work. out[t] == in[255-t] == 255-t.
 const char* kSharedStageSource = R"CJ(
 package test;
-import cajeta.gpu.GpuBuffer;
-import cajeta.gpu.GpuStream;
-import cajeta.gpu.GpuThread;
+import cajeta.gpu.KernelBuffer;
+import cajeta.gpu.KernelStream;
+import cajeta.gpu.KernelThread;
 import cajeta.gpu.Barrier;
 import cajeta.gpu.Shared;
 public class M {
     @Kernel
-    public static void stageback(GpuBuffer<uint32> out, GpuBuffer<uint32> in) {
+    public static void stageback(KernelBuffer<uint32> out, KernelBuffer<uint32> in) {
         Shared<uint32> tile = shared uint32[256];
-        uint32 t = GpuThread.x();
+        uint32 t = KernelThread.x();
         tile[t] = in[t];
         Barrier.workgroup();
         out[t] = tile[255 - t];
@@ -128,11 +128,11 @@ public class M {
         uint32[] hin = heap uint32[n];
         uint32[] hout = heap uint32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hin[i] = i; hout[i] = 0; }
-        GpuBuffer<uint32> in = heap GpuBuffer<uint32>(n);
-        GpuBuffer<uint32> out = heap GpuBuffer<uint32>(n);
+        KernelBuffer<uint32> in = heap KernelBuffer<uint32>(n);
+        KernelBuffer<uint32> out = heap KernelBuffer<uint32>(n);
         in.upload(hin);
         out.upload(hout);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         stageback.launch(s, grid: [1], block: [256])(out, in);
         s.sync();
         out.download(hout);
@@ -151,18 +151,18 @@ public class M {
 // in[i]=i over a 256 block ⇒ out[0] = 0+1+…+255 = 32640.
 const char* kReduceSource = R"CJ(
 package test;
-import cajeta.gpu.GpuBuffer;
-import cajeta.gpu.GpuStream;
-import cajeta.gpu.GpuThread;
+import cajeta.gpu.KernelBuffer;
+import cajeta.gpu.KernelStream;
+import cajeta.gpu.KernelThread;
 import cajeta.gpu.Workgroup;
 import cajeta.gpu.Barrier;
 import cajeta.gpu.Shared;
 public class M {
     @Kernel
-    public static void reduce(GpuBuffer<int32> out, GpuBuffer<int32> in, uint32 n) {
+    public static void reduce(KernelBuffer<int32> out, KernelBuffer<int32> in, uint32 n) {
         Shared<int32> tile = shared int32[256];
-        uint32 t = GpuThread.x();
-        uint32 g = GpuThread.globalIdX();
+        uint32 t = KernelThread.x();
+        uint32 g = KernelThread.globalIdX();
         if (g < n) { tile[t] = in[g]; } else { tile[t] = 0; }
         Barrier.workgroup();
         for (uint32 s = 128; s > 0; s >>= 1) {
@@ -177,11 +177,11 @@ public class M {
         int32[] hout = heap int32[1];
         for (uint32 i = 0; i < n; i = i + 1) { hin[i] = (int32) i; }
         hout[0] = 0;
-        GpuBuffer<int32> in = heap GpuBuffer<int32>(n);
-        GpuBuffer<int32> out = heap GpuBuffer<int32>(1);
+        KernelBuffer<int32> in = heap KernelBuffer<int32>(n);
+        KernelBuffer<int32> out = heap KernelBuffer<int32>(1);
         in.upload(hin);
         out.upload(hout);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         reduce.launch(s, grid: [1], block: [256])(out, in, n);
         s.sync();
         out.download(hout);
@@ -198,11 +198,11 @@ public class M {
         int32[] hout = heap int32[blocks];
         for (uint32 i = 0; i < n; i = i + 1) { hin[i] = (int32) i; }
         for (uint32 b = 0; b < blocks; b = b + 1) { hout[b] = 0; }
-        GpuBuffer<int32> in = heap GpuBuffer<int32>(n);
-        GpuBuffer<int32> out = heap GpuBuffer<int32>(blocks);
+        KernelBuffer<int32> in = heap KernelBuffer<int32>(n);
+        KernelBuffer<int32> out = heap KernelBuffer<int32>(blocks);
         in.upload(hin);
         out.upload(hout);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         reduce.launch(s, grid: [32], block: [256])(out, in, n);
         s.sync();
         out.download(hout);
@@ -222,17 +222,17 @@ public class M {
 // computes the same recurrence on the host and compares every lane.
 const char* kPingPongSource = R"CJ(
 package test;
-import cajeta.gpu.GpuBuffer;
-import cajeta.gpu.GpuStream;
-import cajeta.gpu.GpuThread;
+import cajeta.gpu.KernelBuffer;
+import cajeta.gpu.KernelStream;
+import cajeta.gpu.KernelThread;
 import cajeta.gpu.Barrier;
 import cajeta.gpu.Shared;
 public class M {
     @Kernel
-    public static void pingpong(GpuBuffer<int32> out, GpuBuffer<int32> in, uint32 k) {
+    public static void pingpong(KernelBuffer<int32> out, KernelBuffer<int32> in, uint32 k) {
         Shared<int32> a = shared int32[256];
         Shared<int32> b = shared int32[256];
-        uint32 t = GpuThread.x();
+        uint32 t = KernelThread.x();
         a[t] = in[t];
         Barrier.workgroup();
         for (uint32 i = 0; i < k; i = i + 1) {
@@ -255,11 +255,11 @@ public class M {
             for (uint32 i = 0; i < n; i = i + 1) { rb[i] = ra[i] + ra[(i + 1) & 255]; }
             for (uint32 i = 0; i < n; i = i + 1) { ra[i] = rb[i]; }
         }
-        GpuBuffer<int32> in = heap GpuBuffer<int32>(n);
-        GpuBuffer<int32> out = heap GpuBuffer<int32>(n);
+        KernelBuffer<int32> in = heap KernelBuffer<int32>(n);
+        KernelBuffer<int32> out = heap KernelBuffer<int32>(n);
         in.upload(hin);
         out.upload(hout);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         pingpong.launch(s, grid: [1], block: [256])(out, in, k);
         s.sync();
         out.download(hout);
@@ -279,16 +279,16 @@ public class M {
 // values that cross a barrier *inside* a loop, not just the straight-line case.
 const char* kLocalCarrySource = R"CJ(
 package test;
-import cajeta.gpu.GpuBuffer;
-import cajeta.gpu.GpuStream;
-import cajeta.gpu.GpuThread;
+import cajeta.gpu.KernelBuffer;
+import cajeta.gpu.KernelStream;
+import cajeta.gpu.KernelThread;
 import cajeta.gpu.Barrier;
 import cajeta.gpu.Shared;
 public class M {
     @Kernel
-    public static void localcarry(GpuBuffer<int32> out, GpuBuffer<int32> in, uint32 k) {
+    public static void localcarry(KernelBuffer<int32> out, KernelBuffer<int32> in, uint32 k) {
         Shared<int32> a = shared int32[256];
-        uint32 t = GpuThread.x();
+        uint32 t = KernelThread.x();
         a[t] = in[t];
         Barrier.workgroup();
         for (uint32 i = 0; i < k; i = i + 1) {
@@ -311,11 +311,11 @@ public class M {
             for (uint32 i = 0; i < n; i = i + 1) { rb[i] = ra[i] + ra[(i + 1) & 255]; }
             for (uint32 i = 0; i < n; i = i + 1) { ra[i] = rb[i]; }
         }
-        GpuBuffer<int32> in = heap GpuBuffer<int32>(n);
-        GpuBuffer<int32> out = heap GpuBuffer<int32>(n);
+        KernelBuffer<int32> in = heap KernelBuffer<int32>(n);
+        KernelBuffer<int32> out = heap KernelBuffer<int32>(n);
         in.upload(hin);
         out.upload(hout);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         localcarry.launch(s, grid: [1], block: [256])(out, in, k);
         s.sync();
         out.download(hout);
@@ -336,16 +336,16 @@ public class M {
 // i in [0,k) of tile[(t+i)&255], with tile[j]=in[j]=j.
 const char* kAccumSource = R"CJ(
 package test;
-import cajeta.gpu.GpuBuffer;
-import cajeta.gpu.GpuStream;
-import cajeta.gpu.GpuThread;
+import cajeta.gpu.KernelBuffer;
+import cajeta.gpu.KernelStream;
+import cajeta.gpu.KernelThread;
 import cajeta.gpu.Barrier;
 import cajeta.gpu.Shared;
 public class M {
     @Kernel
-    public static void accum(GpuBuffer<int32> out, GpuBuffer<int32> in, uint32 k) {
+    public static void accum(KernelBuffer<int32> out, KernelBuffer<int32> in, uint32 k) {
         Shared<int32> tile = shared int32[256];
-        uint32 t = GpuThread.x();
+        uint32 t = KernelThread.x();
         int32 acc = 0;
         tile[t] = in[t];
         Barrier.workgroup();
@@ -367,11 +367,11 @@ public class M {
             for (uint32 i = 0; i < k; i = i + 1) { acc = acc + hin[(t + i) & 255]; }
             ref[t] = acc;
         }
-        GpuBuffer<int32> in = heap GpuBuffer<int32>(n);
-        GpuBuffer<int32> out = heap GpuBuffer<int32>(n);
+        KernelBuffer<int32> in = heap KernelBuffer<int32>(n);
+        KernelBuffer<int32> out = heap KernelBuffer<int32>(n);
         in.upload(hin);
         out.upload(hout);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         accum.launch(s, grid: [1], block: [256])(out, in, k);
         s.sync();
         out.download(hout);
@@ -392,17 +392,17 @@ public class M {
 // times for every lane.
 const char* kNestedSource = R"CJ(
 package test;
-import cajeta.gpu.GpuBuffer;
-import cajeta.gpu.GpuStream;
-import cajeta.gpu.GpuThread;
+import cajeta.gpu.KernelBuffer;
+import cajeta.gpu.KernelStream;
+import cajeta.gpu.KernelThread;
 import cajeta.gpu.Barrier;
 import cajeta.gpu.Shared;
 public class M {
     @Kernel
-    public static void nested(GpuBuffer<int32> out, GpuBuffer<int32> in,
+    public static void nested(KernelBuffer<int32> out, KernelBuffer<int32> in,
                               uint32 ki, uint32 kj) {
         Shared<int32> tile = shared int32[256];
-        uint32 t = GpuThread.x();
+        uint32 t = KernelThread.x();
         tile[t] = in[t];
         Barrier.workgroup();
         for (uint32 i = 0; i < ki; i = i + 1) {
@@ -428,11 +428,11 @@ public class M {
             for (uint32 i = 0; i < n; i = i + 1) { rb[i] = ra[i] + ra[(i + 1) & 255]; }
             for (uint32 i = 0; i < n; i = i + 1) { ra[i] = rb[i]; }
         }
-        GpuBuffer<int32> in = heap GpuBuffer<int32>(n);
-        GpuBuffer<int32> out = heap GpuBuffer<int32>(n);
+        KernelBuffer<int32> in = heap KernelBuffer<int32>(n);
+        KernelBuffer<int32> out = heap KernelBuffer<int32>(n);
         in.upload(hin);
         out.upload(hout);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         nested.launch(s, grid: [1], block: [256])(out, in, ki, kj);
         s.sync();
         out.download(hout);
@@ -452,17 +452,17 @@ public class M {
 // Recurrence R(tile)[t] = tile[t] + tile[(t+1)&255] applied ki*(kj+1) times.
 const char* kNested2Source = R"CJ(
 package test;
-import cajeta.gpu.GpuBuffer;
-import cajeta.gpu.GpuStream;
-import cajeta.gpu.GpuThread;
+import cajeta.gpu.KernelBuffer;
+import cajeta.gpu.KernelStream;
+import cajeta.gpu.KernelThread;
 import cajeta.gpu.Barrier;
 import cajeta.gpu.Shared;
 public class M {
     @Kernel
-    public static void nested2(GpuBuffer<int32> out, GpuBuffer<int32> in,
+    public static void nested2(KernelBuffer<int32> out, KernelBuffer<int32> in,
                                uint32 ki, uint32 kj) {
         Shared<int32> tile = shared int32[256];
-        uint32 t = GpuThread.x();
+        uint32 t = KernelThread.x();
         tile[t] = in[t];
         Barrier.workgroup();
         for (uint32 i = 0; i < ki; i = i + 1) {
@@ -493,11 +493,11 @@ public class M {
             for (uint32 i = 0; i < n; i = i + 1) { rb[i] = ra[i] + ra[(i + 1) & 255]; }
             for (uint32 i = 0; i < n; i = i + 1) { ra[i] = rb[i]; }
         }
-        GpuBuffer<int32> in = heap GpuBuffer<int32>(n);
-        GpuBuffer<int32> out = heap GpuBuffer<int32>(n);
+        KernelBuffer<int32> in = heap KernelBuffer<int32>(n);
+        KernelBuffer<int32> out = heap KernelBuffer<int32>(n);
         in.upload(hin);
         out.upload(hout);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         nested2.launch(s, grid: [1], block: [256])(out, in, ki, kj);
         s.sync();
         out.download(hout);
@@ -519,17 +519,17 @@ public class M {
 // barrier coexist (the wave op vectorizes each fission region at W).
 const char* kBlockReduceSource = R"CJ(
 package test;
-import cajeta.gpu.GpuBuffer;
-import cajeta.gpu.GpuStream;
-import cajeta.gpu.GpuThread;
+import cajeta.gpu.KernelBuffer;
+import cajeta.gpu.KernelStream;
+import cajeta.gpu.KernelThread;
 import cajeta.gpu.Wave;
 import cajeta.gpu.Barrier;
 import cajeta.gpu.Shared;
 public class M {
     @Kernel
-    public static void blockReduce(GpuBuffer<int32> out, GpuBuffer<int32> in) {
+    public static void blockReduce(KernelBuffer<int32> out, KernelBuffer<int32> in) {
         Shared<int32> partials = shared int32[256];
-        uint32 t = GpuThread.x();
+        uint32 t = KernelThread.x();
         int32 wsum = Wave.reduceSum(in[t]);
         uint32 w = Wave.width();
         if (t % w == 0) { partials[t / w] = wsum; }
@@ -547,11 +547,11 @@ public class M {
         int32[] hout = heap int32[1];
         for (uint32 i = 0; i < n; i = i + 1) { hin[i] = (int32) i; }
         hout[0] = 0;
-        GpuBuffer<int32> in = heap GpuBuffer<int32>(n);
-        GpuBuffer<int32> out = heap GpuBuffer<int32>(1);
+        KernelBuffer<int32> in = heap KernelBuffer<int32>(n);
+        KernelBuffer<int32> out = heap KernelBuffer<int32>(1);
         in.upload(hin);
         out.upload(hout);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         blockReduce.launch(s, grid: [1], block: [256])(out, in);
         s.sync();
         out.download(hout);
@@ -568,22 +568,22 @@ public class M {
 // at 16/8/4 without hardcoding.
 const char* kWaveBarMembershipSource = R"CJ(
 package test;
-import cajeta.gpu.GpuBuffer;
-import cajeta.gpu.GpuStream;
-import cajeta.gpu.GpuThread;
+import cajeta.gpu.KernelBuffer;
+import cajeta.gpu.KernelStream;
+import cajeta.gpu.KernelThread;
 import cajeta.gpu.Wave;
 import cajeta.gpu.Barrier;
 import cajeta.gpu.Shared;
 public class M {
     @Kernel
-    public static void widthk(GpuBuffer<uint32> out) {
-        uint32 t = GpuThread.globalIdX();
+    public static void widthk(KernelBuffer<uint32> out) {
+        uint32 t = KernelThread.globalIdX();
         out[t] = Wave.width();
     }
     @Kernel
-    public static void wavebar(GpuBuffer<int32> out, GpuBuffer<int32> in) {
+    public static void wavebar(KernelBuffer<int32> out, KernelBuffer<int32> in) {
         Shared<int32> tile = shared int32[256];
-        uint32 t = GpuThread.x();
+        uint32 t = KernelThread.x();
         int32 s = Wave.reduceSum(in[t]);
         tile[t] = s;
         Barrier.workgroup();
@@ -593,9 +593,9 @@ public class M {
         uint32 n = 256;
         uint32[] hw = heap uint32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hw[i] = 0; }
-        GpuBuffer<uint32> wbuf = heap GpuBuffer<uint32>(n);
+        KernelBuffer<uint32> wbuf = heap KernelBuffer<uint32>(n);
         wbuf.upload(hw);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         widthk.launch(s, grid: [1], block: [256])(wbuf);
         s.sync();
         wbuf.download(hw);
@@ -605,8 +605,8 @@ public class M {
         int32[] hin = heap int32[n];
         int32[] hout = heap int32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hin[i] = 1; hout[i] = 0; }
-        GpuBuffer<int32> in = heap GpuBuffer<int32>(n);
-        GpuBuffer<int32> out = heap GpuBuffer<int32>(n);
+        KernelBuffer<int32> in = heap KernelBuffer<int32>(n);
+        KernelBuffer<int32> out = heap KernelBuffer<int32>(n);
         in.upload(hin);
         out.upload(hout);
         wavebar.launch(s, grid: [1], block: [256])(out, in);
@@ -627,17 +627,17 @@ public class M {
 // sharedBytes = 256*4 ⇒ out[0] = 32640.
 const char* kDynSharedSource = R"CJ(
 package test;
-import cajeta.gpu.GpuBuffer;
-import cajeta.gpu.GpuStream;
-import cajeta.gpu.GpuThread;
+import cajeta.gpu.KernelBuffer;
+import cajeta.gpu.KernelStream;
+import cajeta.gpu.KernelThread;
 import cajeta.gpu.Workgroup;
 import cajeta.gpu.Barrier;
 import cajeta.gpu.Shared;
 public class M {
     @Kernel
-    public static void dynreduce(GpuBuffer<int32> out, GpuBuffer<int32> in, uint32 n) {
+    public static void dynreduce(KernelBuffer<int32> out, KernelBuffer<int32> in, uint32 n) {
         Shared<int32> tile = shared int32[n];
-        uint32 t = GpuThread.x();
+        uint32 t = KernelThread.x();
         if (t < n) { tile[t] = in[t]; } else { tile[t] = 0; }
         Barrier.workgroup();
         for (uint32 s = 128; s > 0; s >>= 1) {
@@ -652,11 +652,11 @@ public class M {
         int32[] hout = heap int32[1];
         for (uint32 i = 0; i < n; i = i + 1) { hin[i] = (int32) i; }
         hout[0] = 0;
-        GpuBuffer<int32> in = heap GpuBuffer<int32>(n);
-        GpuBuffer<int32> out = heap GpuBuffer<int32>(1);
+        KernelBuffer<int32> in = heap KernelBuffer<int32>(n);
+        KernelBuffer<int32> out = heap KernelBuffer<int32>(1);
         in.upload(hin);
         out.upload(hout);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         dynreduce.launch(s, grid: [1], block: [256], sharedBytes: [1024])(out, in, n);
         s.sync();
         out.download(hout);
@@ -674,17 +674,17 @@ public class M {
 // 3-D work-item nest (tid.x AND tid.y) inside the barrier regions.
 const char* kTranspose2dSource = R"CJ(
 package test;
-import cajeta.gpu.GpuBuffer;
-import cajeta.gpu.GpuStream;
-import cajeta.gpu.GpuThread;
+import cajeta.gpu.KernelBuffer;
+import cajeta.gpu.KernelStream;
+import cajeta.gpu.KernelThread;
 import cajeta.gpu.Barrier;
 import cajeta.gpu.Shared;
 public class M {
     @Kernel
-    public static void transpose2d(GpuBuffer<int32> out, GpuBuffer<int32> in) {
+    public static void transpose2d(KernelBuffer<int32> out, KernelBuffer<int32> in) {
         Shared<int32> tile = shared int32[64];
-        uint32 tx = GpuThread.x();
-        uint32 ty = GpuThread.y();
+        uint32 tx = KernelThread.x();
+        uint32 ty = KernelThread.y();
         tile[ty * 8 + tx] = in[ty * 8 + tx];
         Barrier.workgroup();
         out[ty * 8 + tx] = tile[tx * 8 + ty];
@@ -694,11 +694,11 @@ public class M {
         int32[] hin = heap int32[n];
         int32[] hout = heap int32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hin[i] = (int32) i; hout[i] = 0; }
-        GpuBuffer<int32> in = heap GpuBuffer<int32>(n);
-        GpuBuffer<int32> out = heap GpuBuffer<int32>(n);
+        KernelBuffer<int32> in = heap KernelBuffer<int32>(n);
+        KernelBuffer<int32> out = heap KernelBuffer<int32>(n);
         in.upload(hin);
         out.upload(hout);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         transpose2d.launch(s, grid: [1], block: [8, 8])(out, in);
         s.sync();
         out.download(hout);
@@ -764,13 +764,13 @@ TEST(XpuCpuBarrierExecTests, multiBlockReductionNoSharedAliasing) {
 TEST(XpuCpuBarrierExecTests, divergentBarrierFallsBackCleanly) {
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.GpuBuffer;\n"
-        "import cajeta.gpu.GpuThread;\n"
+        "import cajeta.gpu.KernelBuffer;\n"
+        "import cajeta.gpu.KernelThread;\n"
         "import cajeta.gpu.Barrier;\n"
         "public class M {\n"
         "    @Kernel\n"
-        "    public static void divergent(GpuBuffer<uint32> a) {\n"
-        "        uint32 t = GpuThread.globalIdX();\n"
+        "    public static void divergent(KernelBuffer<uint32> a) {\n"
+        "        uint32 t = KernelThread.globalIdX();\n"
         "        if (t < 4) { Barrier.workgroup(); a[t] = t; }\n"
         "    }\n"
         "}\n";
@@ -787,16 +787,16 @@ TEST(XpuCpuBarrierExecTests, divergentBarrierFallsBackCleanly) {
 TEST(XpuCpuBarrierExecTests, nestedTidDependentTripCountFallsBack) {
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.GpuBuffer;\n"
-        "import cajeta.gpu.GpuThread;\n"
+        "import cajeta.gpu.KernelBuffer;\n"
+        "import cajeta.gpu.KernelThread;\n"
         "import cajeta.gpu.Barrier;\n"
         "import cajeta.gpu.Shared;\n"
         "public class M {\n"
         "    @Kernel\n"
-        "    public static void nesttid(GpuBuffer<int32> out, GpuBuffer<int32> in,\n"
+        "    public static void nesttid(KernelBuffer<int32> out, KernelBuffer<int32> in,\n"
         "                               uint32 ki) {\n"
         "        Shared<int32> tile = shared int32[256];\n"
-        "        uint32 t = GpuThread.x();\n"
+        "        uint32 t = KernelThread.x();\n"
         "        tile[t] = in[t];\n"
         "        Barrier.workgroup();\n"
         "        for (uint32 i = 0; i < ki; i = i + 1) {\n"

@@ -72,20 +72,20 @@ cajeta::MethodPtr findMethod(const cajeta::CajetaClassPtr& klass,
 }
 
 // The canonical AABB candidate-count kernel (the kRqMinDriver shape): an AS, three
-// GpuBuffer origins, a GpuBuffer<uint32> output, a count scalar.
+// KernelBuffer origins, a KernelBuffer<uint32> output, a count scalar.
 const char* kCountKernel =
     "package test;\n"
     "import cajeta.gpu.AccelerationStructure;\n"
-    "import cajeta.gpu.GpuBuffer;\n"
+    "import cajeta.gpu.KernelBuffer;\n"
     "import cajeta.gpu.RayQuery;\n"
-    "import cajeta.gpu.GpuThread;\n"
+    "import cajeta.gpu.KernelThread;\n"
     "public class RqCount {\n"
     "    @Kernel\n"
     "    public static void countHits(AccelerationStructure scene,\n"
-    "                                 GpuBuffer<float32> qx, GpuBuffer<float32> qy,\n"
-    "                                 GpuBuffer<float32> qz, GpuBuffer<uint32> out,\n"
+    "                                 KernelBuffer<float32> qx, KernelBuffer<float32> qy,\n"
+    "                                 KernelBuffer<float32> qz, KernelBuffer<uint32> out,\n"
     "                                 uint32 n) {\n"
-    "        uint32 i = GpuThread.globalIdX();\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
     "        if (i < n) {\n"
     "            RayQuery rq;\n"
     "            rq.initialize(scene, 0, 255, qx[i], qy[i], qz[i], 0.0f,\n"
@@ -100,19 +100,19 @@ const char* kCountKernel =
     "}\n";
 
 // The canonical triangle nearest-hit kernel (the kNearestDriver shape): an AS, a
-// GpuBuffer<float32> outT, a GpuBuffer<uint32> outI; confirms triangle candidates and
+// KernelBuffer<float32> outT, a KernelBuffer<uint32> outI; confirms triangle candidates and
 // reads committed getters; a compile-time-constant ray (one with a unary-minus dz).
 const char* kNearestKernel =
     "package test;\n"
     "import cajeta.gpu.AccelerationStructure;\n"
-    "import cajeta.gpu.GpuBuffer;\n"
+    "import cajeta.gpu.KernelBuffer;\n"
     "import cajeta.gpu.RayQuery;\n"
-    "import cajeta.gpu.GpuThread;\n"
+    "import cajeta.gpu.KernelThread;\n"
     "public class RqNear {\n"
     "    @Kernel\n"
     "    public static void nearest(AccelerationStructure scene,\n"
-    "                               GpuBuffer<float32> outT, GpuBuffer<uint32> outI) {\n"
-    "        uint32 i = GpuThread.globalIdX();\n"
+    "                               KernelBuffer<float32> outT, KernelBuffer<uint32> outI) {\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
     "        if (i == 0) {\n"
     "            RayQuery rq;\n"
     "            rq.initialize(scene, 0, 255,\n"
@@ -129,18 +129,18 @@ const char* kNearestKernel =
     "}\n";
 
 // The canonical triangle candidate-getter kernel (the kBaryDriver shape): an AS and
-// a single GpuBuffer<float32> out; reads candidate distance + barycentrics inside the
+// a single KernelBuffer<float32> out; reads candidate distance + barycentrics inside the
 // proceed loop (no confirm); a compile-time-constant ray.
 const char* kBaryKernel =
     "package test;\n"
     "import cajeta.gpu.AccelerationStructure;\n"
-    "import cajeta.gpu.GpuBuffer;\n"
+    "import cajeta.gpu.KernelBuffer;\n"
     "import cajeta.gpu.RayQuery;\n"
-    "import cajeta.gpu.GpuThread;\n"
+    "import cajeta.gpu.KernelThread;\n"
     "public class RqBary {\n"
     "    @Kernel\n"
-    "    public static void getBary(AccelerationStructure scene, GpuBuffer<float32> out) {\n"
-    "        uint32 i = GpuThread.globalIdX();\n"
+    "    public static void getBary(AccelerationStructure scene, KernelBuffer<float32> out) {\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
     "        if (i == 0) {\n"
     "            RayQuery rq;\n"
     "            rq.initialize(scene, 0, 255,\n"
@@ -158,22 +158,22 @@ const char* kBaryKernel =
     "}\n";
 
 // The committed-triangle per-launch kernel (the kFrontDriver shape): an AS, two
-// GpuBuffer<float32> ray-component buffers (origin-z + dir-z, indexed by launch index),
-// a GpuBuffer<uint32> out, a count; confirms triangle candidates and reads committed
+// KernelBuffer<float32> ray-component buffers (origin-z + dir-z, indexed by launch index),
+// a KernelBuffer<uint32> out, a count; confirms triangle candidates and reads committed
 // front-face. Per-launch DYNAMIC ray (oz[i] origin-z, dz[i] dir-z; x/y + tMin/tMax
 // constant) — exercises the const-or-buffer[i] ray resolver.
 const char* kCommittedTriKernel =
     "package test;\n"
     "import cajeta.gpu.AccelerationStructure;\n"
-    "import cajeta.gpu.GpuBuffer;\n"
+    "import cajeta.gpu.KernelBuffer;\n"
     "import cajeta.gpu.RayQuery;\n"
-    "import cajeta.gpu.GpuThread;\n"
+    "import cajeta.gpu.KernelThread;\n"
     "public class RqFront {\n"
     "    @Kernel\n"
     "    public static void getFront(AccelerationStructure scene,\n"
-    "                                GpuBuffer<float32> oz, GpuBuffer<float32> dz,\n"
-    "                                GpuBuffer<uint32> out, uint32 n) {\n"
-    "        uint32 i = GpuThread.globalIdX();\n"
+    "                                KernelBuffer<float32> oz, KernelBuffer<float32> dz,\n"
+    "                                KernelBuffer<uint32> out, uint32 n) {\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
     "        if (i < n) {\n"
     "            RayQuery rq;\n"
     "            rq.initialize(scene, 0, 255,\n"
@@ -196,20 +196,20 @@ const char* kCommittedTriKernel =
 const char* kNonCanonicalKernel =
     "package test;\n"
     "import cajeta.gpu.AccelerationStructure;\n"
-    "import cajeta.gpu.GpuBuffer;\n"
-    "import cajeta.gpu.GpuThread;\n"
+    "import cajeta.gpu.KernelBuffer;\n"
+    "import cajeta.gpu.KernelThread;\n"
     "public class RqOther {\n"
     "    @Kernel\n"
     "    public static void odd(AccelerationStructure scene,\n"
-    "                           GpuBuffer<float32> outT, uint32 n) {\n"
-    "        uint32 i = GpuThread.globalIdX();\n"
+    "                           KernelBuffer<float32> outT, uint32 n) {\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
     "        if (i < n) { outT[i] = 0.0f; }\n"
     "    }\n"
     "}\n";
 
 // A kernel that genuinely USES the ray query (a proceed loop + committed getters) but
-// with a non-canonical arity — (AS, one GpuBuffer, count) is neither the nearest-hit
-// (AS, 2 GpuBuffer) nor the committed-triangle (AS, 3 GpuBuffer, count) shape. It is the
+// with a non-canonical arity — (AS, one KernelBuffer, count) is neither the nearest-hit
+// (AS, 2 KernelBuffer) nor the committed-triangle (AS, 3 KernelBuffer, count) shape. It is the
 // "unsupported general-loop case" (cuda-plan 4a): classifyRayQueryShape returns
 // Unsupported, so NvptxRegistration emits NO OptiX program and the kernel runs on the
 // software floor (the M3 graceful fallback — no fault). Distinct from
@@ -217,14 +217,14 @@ const char* kNonCanonicalKernel =
 const char* kUnsupportedRqKernel =
     "package test;\n"
     "import cajeta.gpu.AccelerationStructure;\n"
-    "import cajeta.gpu.GpuBuffer;\n"
+    "import cajeta.gpu.KernelBuffer;\n"
     "import cajeta.gpu.RayQuery;\n"
-    "import cajeta.gpu.GpuThread;\n"
+    "import cajeta.gpu.KernelThread;\n"
     "public class RqUnsupShape {\n"
     "    @Kernel\n"
     "    public static void odd(AccelerationStructure scene,\n"
-    "                           GpuBuffer<float32> out, uint32 n) {\n"
-    "        uint32 i = GpuThread.globalIdX();\n"
+    "                           KernelBuffer<float32> out, uint32 n) {\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
     "        if (i < n) {\n"
     "            RayQuery rq;\n"
     "            rq.initialize(scene, 0, 255,\n"
@@ -434,6 +434,6 @@ TEST(XpuNvptxOptixEmitTests, unsupportedRayQueryShapeClassifiesUnsupported) {
     ASSERT_NE(odd, nullptr);
     // It IS a ray query (so it is not simply skipped as a non-RQ kernel)...
     EXPECT_TRUE(nvptxKernelUsesRayQuery(odd));
-    // ...but its (AS, 1 GpuBuffer, count) arity matches no canonical shape -> Unsupported.
+    // ...but its (AS, 1 KernelBuffer, count) arity matches no canonical shape -> Unsupported.
     EXPECT_EQ((int) classifyRayQueryShape(odd), (int) OptixRqShape::Unsupported);
 }

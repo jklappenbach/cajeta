@@ -1,14 +1,14 @@
 # In-kernel timing: the shader clock
 
-`GpuThread.clock()` reads a free-running hardware counter from **inside a running
+`KernelThread.clock()` reads a free-running hardware counter from **inside a running
 kernel** — a 64-bit tick value. You read it before and after a region and diff
 the two to measure how long that region took, *on the device, per invocation*,
 without a CPU round-trip.
 
 ```
-uint64 t0 = GpuThread.clock();
+uint64 t0 = KernelThread.clock();
 // ... work to measure ...
-uint64 t1 = GpuThread.clock();
+uint64 t1 = KernelThread.clock();
 uint64 elapsed = t1 - t0;   // device ticks
 ```
 
@@ -59,7 +59,7 @@ frontend that would emit such an intrinsic.
 
 ---
 
-**Rules.** `GpuThread.clock()` returns a `uint64` device tick, device-only (inside
+**Rules.** `KernelThread.clock()` returns a `uint64` device tick, device-only (inside
 an `@Kernel`). Diff two reads for an elapsed-cycle count; the value is for
 relative measurement, not seconds, and is non-deterministic. Runnable in
 `samples/tour/gpu` (the `shader clock` section). See `CajetaXPU.md` for the kernel

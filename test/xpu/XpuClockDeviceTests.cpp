@@ -1,7 +1,7 @@
 //
 // CajetaXPU shader clock — device codegen, end to end.
 //
-// `GpuThread.clock()` reads a free-running hardware counter (uint64) for in-kernel
+// `KernelThread.clock()` reads a free-running hardware counter (uint64) for in-kernel
 // timing. On Vulkan it is OpReadClockKHR at Subgroup scope (SPV_KHR_shader_clock,
 // reached via the fork's llvm.spv.read.clock intrinsic); on AMD s_memrealtime, on
 // NVPTX clock64, on CPU rdtsc. The tick value is non-deterministic, so the
@@ -46,14 +46,14 @@ namespace {
 
 const char* kClockSource =
     "package test;\n"
-    "import cajeta.gpu.GpuBuffer;\n"
-    "import cajeta.gpu.GpuThread;\n"
+    "import cajeta.gpu.KernelBuffer;\n"
+    "import cajeta.gpu.KernelThread;\n"
     "public class M {\n"
     "    @Kernel\n"
-    "    public static void stamp(GpuBuffer<uint64> out, uint32 n) {\n"
-    "        uint32 i = GpuThread.globalIdX();\n"
+    "    public static void stamp(KernelBuffer<uint64> out, uint32 n) {\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
     "        if (i < n) {\n"
-    "            out[i] = GpuThread.clock();\n"
+    "            out[i] = KernelThread.clock();\n"
     "        }\n"
     "    }\n"
     "}\n";

@@ -15,7 +15,7 @@ The exclusive prefix sum is the workhorse of **lane compaction / allocation**:
 each lane computes how many items it wants to emit, and `prefixSum` gives it the
 exact slot offset where its items go — no atomics, no contention.
 
-- **GpuStream compaction** — keep the lanes that pass a predicate, packed: `slot =
+- **KernelStream compaction** — keep the lanes that pass a predicate, packed: `slot =
   prefixSum(keep ? 1 : 0)`.
 - **Per-wave allocation** — sub-allocate from a shared buffer by reserving
   `reduceSum(n)` once and indexing with `prefixSum(n)`.

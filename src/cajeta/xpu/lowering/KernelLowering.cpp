@@ -188,7 +188,7 @@ llvm::Type* deviceQuaternionType(const CajetaTypePtr& t, llvm::LLVMContext& ctx)
 bool isBufferType(const CajetaTypePtr& t) {
     if (!t) return false;
     const std::string& c = t->toCanonical();
-    static const std::string kPrefix = "cajeta.gpu.GpuBuffer";
+    static const std::string kPrefix = "cajeta.gpu.KernelBuffer";
     return c.compare(0, kPrefix.size(), kPrefix) == 0;
 }
 
@@ -2081,6 +2081,49 @@ private:
         }
         const std::string& name = mc->getMethodCallName();
 
+        // Kernel-aware vectorized load/store on a kernel-buffer param:
+        // `buf.vload<N>(i) -> Vector<T,N>` and `buf.vstore(i, v)`. Gated on
+        // `recv` being a bound buffer, so it never shadows an ordinary method.
+        // Routes through the per-backend vectorLoad/vectorStore seam
+        // (bufferElementPtr + packed <N x T> memory op). N comes from the call's
+        // const type-arg on load, and is implicit in the value's vector type on
+        // store. (kernel-vector-loadstore-spec.md §3, §4.)
+        if ((name == "vload" || name == "vstore")
+                && bufferBases.count(recv) && bufferElems.count(recv)) {
+            llvm::Type* elemTy = bufferElems[recv];
+            llvm::Value* base = bufferBases[recv];
+            const auto& params = mc->getParameters();
+            auto toI64 = [&](const ExpressionPtr& e) {
+                llvm::Value* v = lowerExpr(e);
+                if (v->getType() != llvm::Type::getInt64Ty(ctx))
+                    v = builder.CreateIntCast(
+                        v, llvm::Type::getInt64Ty(ctx), exprSigned(e));
+                return v;
+            };
+            if (name == "vload") {
+                const auto& targs = mc->getExplicitMethodTypeArgs();
+                if (targs.size() != 1)
+                    unsupported("vload<N> requires one const lane-count arg");
+                auto cN = std::dynamic_pointer_cast<CajetaConstantType>(targs[0]);
+                if (!cN) unsupported("vload<N>: N must be an integer constant");
+                if (params.size() != 1) unsupported("vload<N> expects (index)");
+                llvm::Value* idx = toI64(params[0].expression);
+                return target.vectorLoad(builder, mod, base, elemTy,
+                                         (unsigned) cN->getValue(), idx);
+            }
+            // vstore(index, value) — N is implicit in the value's <N x T> type.
+            if (params.size() != 2)
+                unsupported("vstore expects (index, value)");
+            llvm::Value* idx = toI64(params[0].expression);
+            llvm::Value* val = lowerExpr(params[1].expression);
+            if (!val->getType()->isVectorTy())
+                unsupported("vstore value must be a Vector<T,N>");
+            unsigned lanes = llvm::cast<llvm::FixedVectorType>(
+                val->getType())->getNumElements();
+            target.vectorStore(builder, mod, base, elemTy, lanes, idx, val);
+            return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
+        }
+
         // Inline comparison-mask methods: `(a OP b).all()/.any()/.select(x,y)`.
         // The receiver is a non-identifier expression yielding a `<N x i1>` mask
         // (vector/matrix comparisons lower to masks via applyBinOp). all/any
@@ -2114,7 +2157,7 @@ private:
                                             mc->getParameters());
         }
 
-        if (recv == "GpuThread") {
+        if (recv == "KernelThread") {
             if (name == "x") return target.threadId(builder, mod, 0);
             if (name == "y") return target.threadId(builder, mod, 1);
             if (name == "z") return target.threadId(builder, mod, 2);
@@ -4266,6 +4309,33 @@ llvm::Value* LoweringTarget::bufferElementPtr(llvm::IRBuilderBase& b,
     // addrspace-preserving GEP — the base pointer carries its address space
     // (1 for global buffers, 3 for shared globals); correct on NVPTX/AMDGPU.
     return b.CreateGEP(elemTy, base, {index}, "idx");
+}
+
+llvm::Value* LoweringTarget::vectorLoad(llvm::IRBuilderBase& b, llvm::Module& m,
+                                        llvm::Value* base, llvm::Type* elemTy,
+                                        unsigned lanes, llvm::Value* index) {
+    // Packed contiguous load of `lanes` elements starting at element `index`,
+    // through the same per-backend addressing seam as a scalar subscript
+    // (bufferElementPtr). The base is element-aligned, so the natural element
+    // alignment is valid. CPU/NVPTX/AMD inherit this (raw GEP + packed vector
+    // load); Vulkan/SPIR-V overrides to split for the <=4-component OpTypeVector
+    // cap (kernel-vector-loadstore plan Unit 6).
+    llvm::Value* ptr = bufferElementPtr(b, m, base, elemTy, index);
+    auto* vecTy = llvm::FixedVectorType::get(elemTy, lanes);
+    auto* ld = b.CreateLoad(vecTy, ptr, "vload");
+    ld->setAlignment(m.getDataLayout().getABITypeAlign(elemTy));
+    return ld;
+}
+
+void LoweringTarget::vectorStore(llvm::IRBuilderBase& b, llvm::Module& m,
+                                 llvm::Value* base, llvm::Type* elemTy,
+                                 unsigned /*lanes*/, llvm::Value* index,
+                                 llvm::Value* value) {
+    // Symmetric packed store of a `<N x T>` value to `lanes` contiguous elements
+    // from element `index`. N is implicit in `value`'s vector type.
+    llvm::Value* ptr = bufferElementPtr(b, m, base, elemTy, index);
+    auto* st = b.CreateStore(value, ptr);
+    st->setAlignment(m.getDataLayout().getABITypeAlign(elemTy));
 }
 
 llvm::Value* LoweringTarget::bufferArrayElement(llvm::IRBuilderBase& b,

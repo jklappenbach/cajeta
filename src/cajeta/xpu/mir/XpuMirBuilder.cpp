@@ -92,7 +92,7 @@ void emitBuiltinOp(const std::string& recv, const std::string& name,
         out.push_back(std::move(op));
     };
 
-    if (recv == "GpuThread") {
+    if (recv == "KernelThread") {
         if (name == "x" || name == "y" || name == "z") {
             push(OpKind::ThreadId, axisOf(name[0]));
         } else if (name == "globalIdX") {

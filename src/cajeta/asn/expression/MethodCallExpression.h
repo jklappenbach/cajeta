@@ -31,11 +31,15 @@ namespace cajeta {
     // (`op(args)` in MethodCallExpression) and the postfix expression/indexed
     // call (`arr[i](args)` in CallExpression) so the closure ABI lives in one
     // place. See docs/specification/lang/Lambdas.md.
+    // When `directFn` is non-null the call targets that known function directly
+    // (closure-specialization fast path, cajeta-ir Unit 4): captures fold to
+    // null and `closurePtr` is ignored — no indirect load-through-record.
     llvm::Value* emitClosureCall(CajetaModulePtr module,
                                  llvm::Value* closurePtr,
                                  const std::shared_ptr<CajetaFunctionType>& fnType,
                                  const vector<MethodCallParameter>& args,
-                                 CajetaTypePtr& outResolvedType);
+                                 CajetaTypePtr& outResolvedType,
+                                 llvm::Function* directFn = nullptr);
 
     class MethodCallExpression : public Expression {
         string methodCallName;

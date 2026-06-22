@@ -6,8 +6,8 @@
 // component access, arithmetic, and dot/length/normalize are exercised by the
 // Stage 4 host-codegen tests (VectorTests.cpp).
 //
-// Resolution + layout are forced by wrapping the vector as a GpuBuffer<T> element
-// (GpuBuffer<Vector<...>> monomorphizes, re-parsing Buffer's body with
+// Resolution + layout are forced by wrapping the vector as a KernelBuffer<T> element
+// (KernelBuffer<Vector<...>> monomorphizes, re-parsing Buffer's body with
 // T=Vector<...> and laying out the vector's LLVM type); the 2-arg Buffer ctor
 // stores a handle/count without touching a device, so this runs under the host
 // JIT.
@@ -31,7 +31,7 @@ int32_t runI32(const std::string& src) {
 }
 
 const char* IMPORTS =
-    "import cajeta.gpu.GpuBuffer;\n";
+    "import cajeta.gpu.KernelBuffer;\n";
 
 } // namespace
 
@@ -40,7 +40,7 @@ TEST(VectorTypeTests, float4ResolvesAsBufferElement) {
     std::string src = std::string("package test;\n") + IMPORTS +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        GpuBuffer<Vector<float32,4>> b = heap GpuBuffer<Vector<float32,4>>(0, 5);\n"
+        "        KernelBuffer<Vector<float32,4>> b = heap KernelBuffer<Vector<float32,4>>(0, 5);\n"
         "        return (int32) b.length();\n"
         "    }\n"
         "}\n";
@@ -53,9 +53,9 @@ TEST(VectorTypeTests, multipleShapesResolveDistinctly) {
     std::string src = std::string("package test;\n") + IMPORTS +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        GpuBuffer<Vector<float32,4>> a = heap GpuBuffer<Vector<float32,4>>(0, 2);\n"
-        "        GpuBuffer<Vector<int32,3>>   b = heap GpuBuffer<Vector<int32,3>>(0, 3);\n"
-        "        GpuBuffer<Vector<float32,4>> c = heap GpuBuffer<Vector<float32,4>>(0, 5);\n"
+        "        KernelBuffer<Vector<float32,4>> a = heap KernelBuffer<Vector<float32,4>>(0, 2);\n"
+        "        KernelBuffer<Vector<int32,3>>   b = heap KernelBuffer<Vector<int32,3>>(0, 3);\n"
+        "        KernelBuffer<Vector<float32,4>> c = heap KernelBuffer<Vector<float32,4>>(0, 5);\n"
         "        return (int32)(a.length() + b.length() + c.length());\n"
         "    }\n"
         "}\n";
@@ -68,7 +68,7 @@ TEST(VectorTypeTests, nonNumericElementRejected) {
         "public class Thing { public Thing() { return; } }\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        GpuBuffer<Vector<Thing,4>> b = heap GpuBuffer<Vector<Thing,4>>(0, 1);\n"
+        "        KernelBuffer<Vector<Thing,4>> b = heap KernelBuffer<Vector<Thing,4>>(0, 1);\n"
         "        return 0;\n"
         "    }\n"
         "}\n";
@@ -85,7 +85,7 @@ TEST(VectorTypeTests, boolElementRejected) {
     std::string src = std::string("package test;\n") + IMPORTS +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        GpuBuffer<Vector<boolean,4>> b = heap GpuBuffer<Vector<boolean,4>>(0, 1);\n"
+        "        KernelBuffer<Vector<boolean,4>> b = heap KernelBuffer<Vector<boolean,4>>(0, 1);\n"
         "        return 0;\n"
         "    }\n"
         "}\n";
@@ -102,7 +102,7 @@ TEST(VectorTypeTests, zeroLengthRejected) {
     std::string src = std::string("package test;\n") + IMPORTS +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        GpuBuffer<Vector<float32,0>> b = heap GpuBuffer<Vector<float32,0>>(0, 1);\n"
+        "        KernelBuffer<Vector<float32,0>> b = heap KernelBuffer<Vector<float32,0>>(0, 1);\n"
         "        return 0;\n"
         "    }\n"
         "}\n";
