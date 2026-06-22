@@ -66,24 +66,35 @@ public class MatMulBench extends Benchmark {
 
     public void run(int32 iterations) {
         int32 nd = this.nDim;
+        int32 sz = nd * nd;
+        // ikj loop order (was ijk). The inner j loop now updates C[i, :] and reads
+        // B[k, :] CONTIGUOUSLY (stride 1) -- a row SAXPY -- instead of striding B
+        // column-wise (stride n) on every multiply. Cache-friendly + autovectorizable.
+        // Bit-exact: for each (i,j) the k-contributions still accumulate in k order.
+        // C is accumulated into, so zero it first.
+        int32 z = 0;
+        while (z < sz) {
+            this.c[z] = 0.0;
+            z = z + 1;
+        }
         int32 i = 0;
         while (i < nd) {
-            int32 j = 0;
-            while (j < nd) {
-                float64 acc = 0.0;
-                int32 k = 0;
-                while (k < nd) {
-                    acc = acc + this.a[i * nd + k] * this.b[k * nd + j];
-                    k = k + 1;
+            int32 iBase = i * nd;
+            int32 k = 0;
+            while (k < nd) {
+                float64 aik = this.a[iBase + k];
+                int32 kBase = k * nd;
+                int32 j = 0;
+                while (j < nd) {
+                    this.c[iBase + j] = this.c[iBase + j] + aik * this.b[kBase + j];
+                    j = j + 1;
                 }
-                this.c[i * nd + j] = acc;
-                j = j + 1;
+                k = k + 1;
             }
             i = i + 1;
         }
         float64 s = 0.0;
         int32 m = 0;
-        int32 sz = nd * nd;
         while (m < sz) {
             s = s + this.c[m];
             m = m + 1;
