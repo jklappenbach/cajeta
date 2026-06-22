@@ -1562,3 +1562,53 @@ TEST(NumpyOpsTests, einsumMatchesNumpy) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 7a — sort + argsort along an axis (numpy default ascending). sort returns a fresh
+// sorted copy; argsort returns the Tensor<int64> permutation. Both STABLE (ties keep
+// original order — numpy `kind='stable'`). Default numpy axis is the last; tested here
+// with an explicit axis arg for 1-D, axis 0 and axis 1.
+TEST(NumpyOpsTests, sortArgsortMatchNumpy) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        // 1-D sort [3,1,2] → [1,2,3]; argsort → [1,2,0]
+        "        int32[] d3 = { 3, 1, 2 };\n"
+        "        int64[] s3 = heap int64[1]; s3[0] = 3;\n"
+        "        Tensor<int32> v = Tensor.of<int32>(d3, s3);\n"
+        "        Tensor<int32> sv = Tensor.sort<int32>(v, 0);\n"
+        "        if (sv.get1(0) != 1 || sv.get1(1) != 2 || sv.get1(2) != 3) { return -1; }\n"
+        "        Tensor<int64> av = Tensor.argsort<int32>(v, 0);\n"
+        "        if (av.get1(0) != 1 || av.get1(1) != 2 || av.get1(2) != 0) { return -2; }\n"
+        // 2-D sort axis=1: [[3,1,2],[6,4,5]] → [[1,2,3],[4,5,6]]
+        "        int32[] d6 = { 3, 1, 2, 6, 4, 5 };\n"
+        "        int64[] s23 = heap int64[2]; s23[0] = 2; s23[1] = 3;\n"
+        "        Tensor<int32> m = Tensor.of<int32>(d6, s23);\n"
+        "        Tensor<int32> sm1 = Tensor.sort<int32>(m, 1);\n"
+        "        if (sm1.get2(0, 0) != 1 || sm1.get2(0, 2) != 3 || sm1.get2(1, 0) != 4 || sm1.get2(1, 2) != 6) { return -3; }\n"
+        "        Tensor<int64> am1 = Tensor.argsort<int32>(m, 1);\n"
+        "        if (am1.get2(0, 0) != 1 || am1.get2(0, 1) != 2 || am1.get2(0, 2) != 0) { return -4; }\n"
+        // 2-D sort axis=0: [[3,1],[1,2]] → [[1,1],[3,2]]; argsort axis=0 → [[1,0],[0,1]]
+        "        int32[] d4 = { 3, 1, 1, 2 };\n"
+        "        int64[] s22 = heap int64[2]; s22[0] = 2; s22[1] = 2;\n"
+        "        Tensor<int32> m2 = Tensor.of<int32>(d4, s22);\n"
+        "        Tensor<int32> sm0 = Tensor.sort<int32>(m2, 0);\n"
+        "        if (sm0.get2(0, 0) != 1 || sm0.get2(0, 1) != 1 || sm0.get2(1, 0) != 3 || sm0.get2(1, 1) != 2) { return -5; }\n"
+        "        Tensor<int64> am0 = Tensor.argsort<int32>(m2, 0);\n"
+        "        if (am0.get2(0, 0) != 1 || am0.get2(0, 1) != 0 || am0.get2(1, 0) != 0 || am0.get2(1, 1) != 1) { return -6; }\n"
+        // stability with ties: [2,1,2,1] argsort stable → [1,3,0,2]
+        "        int32[] dt = { 2, 1, 2, 1 };\n"
+        "        int64[] s4 = heap int64[1]; s4[0] = 4;\n"
+        "        Tensor<int32> vt = Tensor.of<int32>(dt, s4);\n"
+        "        Tensor<int64> at = Tensor.argsort<int32>(vt, 0);\n"
+        "        if (at.get1(0) != 1 || at.get1(1) != 3 || at.get1(2) != 0 || at.get1(3) != 2) { return -7; }\n"
+        // float sort
+        "        float32[] df = { 2.5f, -1.0f, 0.0f };\n"
+        "        int64[] s3f = heap int64[1]; s3f[0] = 3;\n"
+        "        Tensor<float32> vf = Tensor.of<float32>(df, s3f);\n"
+        "        Tensor<float32> svf = Tensor.sort<float32>(vf, 0);\n"
+        "        if (svf.get1(0) != -1.0f || svf.get1(1) != 0.0f || svf.get1(2) != 2.5f) { return -8; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}

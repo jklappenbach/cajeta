@@ -2002,6 +2002,140 @@ public class Tensor<T> {
         return heap Tensor<E>(#st, 0, outShape, outStrides);
     }
 
+    // ────────────────────────────── sort / search (Phase 7) ──────────────────
+
+    /**
+     * Sorted copy of `t` along `axis`, ascending (numpy `sort`). Each 1-D lane along
+     * `axis` is sorted independently; all other axes are preserved. **Stable** —
+     * equal elements keep their original relative order (numpy `kind='stable'`). A
+     * stable insertion sort over each lane (the test-sized CPU floor; a GPU radix/
+     * bitonic lowering is the later cross-checked unit). Returns a fresh C-order
+     * tensor; the input is untouched.
+     */
+    public static #Tensor<E> sort<E extends Numeric>(Tensor<E> t, int32 axis) {
+        Tensor<E> out = t.copy();
+        int32 nd = t.ndim();
+        int64 axisLen = t.shapeAt(axis);
+        int64[] idx = heap int64[nd];
+        int32 z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        int64 outer = 1;
+        int32 d = 0;
+        while (d < nd) {
+            if (d != axis) { outer = outer * t.shapeAt(d); }
+            d = d + 1;
+        }
+        int64 oc = 0;
+        while (oc < outer) {
+            // stable insertion sort of this lane (idx[axis] sweeps the lane)
+            int64 a = 1;
+            while (a < axisLen) {
+                idx[axis] = a;
+                E key = out.getAt(idx);
+                int64 b = a - 1;
+                boolean placed = false;
+                while (b >= 0 && !placed) {
+                    idx[axis] = b;
+                    E vb = out.getAt(idx);
+                    if (vb > key) {
+                        idx[axis] = b + 1;
+                        out.setAt(idx, vb);
+                        b = b - 1;
+                    } else {
+                        placed = true;
+                    }
+                }
+                idx[axis] = b + 1;
+                out.setAt(idx, key);
+                a = a + 1;
+            }
+            oc = oc + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                if (ax == axis) { ax = ax - 1; }
+                else {
+                    idx[ax] = idx[ax] + 1;
+                    if (idx[ax] >= t.shapeAt(ax)) { idx[ax] = 0; ax = ax - 1; }
+                    else { carry = false; }
+                }
+            }
+        }
+        return #out;
+    }
+
+    /**
+     * Index permutation that sorts `t` along `axis`, ascending (numpy `argsort`):
+     * `out[..., r, ...]` is the position along `axis` of the `r`-th smallest lane
+     * element. **Stable** (ties keep original order). Returns a `Tensor<int64>` of
+     * the same shape; the input is untouched. Stable insertion sort over each lane's
+     * index list (the CPU floor).
+     */
+    public static #Tensor<int64> argsort<E extends Numeric>(Tensor<E> t, int32 axis) {
+        int32 nd = t.ndim();
+        int64 axisLen = t.shapeAt(axis);
+        int64[] shp = heap int64[nd];
+        int32 c = 0;
+        while (c < nd) { shp[c] = t.shapeAt(c); c = c + 1; }
+        Tensor<int64> out = Tensor.zeros<int64>(shp);
+        int64[] idx = heap int64[nd];
+        int32 z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        int64[] perm = heap int64[axisLen];
+        int64 outer = 1;
+        int32 d = 0;
+        while (d < nd) {
+            if (d != axis) { outer = outer * t.shapeAt(d); }
+            d = d + 1;
+        }
+        int64 oc = 0;
+        while (oc < outer) {
+            int64 p = 0;
+            while (p < axisLen) { perm[p] = p; p = p + 1; }
+            // stable insertion sort of perm by the lane values t[..., perm[x], ...]
+            int64 a = 1;
+            while (a < axisLen) {
+                int64 keyIdx = perm[a];
+                idx[axis] = keyIdx;
+                E key = t.getAt(idx);
+                int64 b = a - 1;
+                boolean placed = false;
+                while (b >= 0 && !placed) {
+                    idx[axis] = perm[b];
+                    E vb = t.getAt(idx);
+                    if (vb > key) {
+                        perm[b + 1] = perm[b];
+                        b = b - 1;
+                    } else {
+                        placed = true;
+                    }
+                }
+                perm[b + 1] = keyIdx;
+                a = a + 1;
+            }
+            // write the lane's permutation into the output
+            int64 w = 0;
+            while (w < axisLen) {
+                idx[axis] = w;
+                int64 pv = perm[w];
+                out.setAt(idx, pv);
+                w = w + 1;
+            }
+            oc = oc + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                if (ax == axis) { ax = ax - 1; }
+                else {
+                    idx[ax] = idx[ax] + 1;
+                    if (idx[ax] >= t.shapeAt(ax)) { idx[ax] = 0; ax = ax - 1; }
+                    else { carry = false; }
+                }
+            }
+        }
+        return #out;
+    }
+
     // ────────────────────────────── elementwise ufuncs (Phase 3) ─────────────
 
     /**
