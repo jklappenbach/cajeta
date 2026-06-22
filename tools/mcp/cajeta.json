@@ -10,7 +10,9 @@
 
     "settings": {
         "capabilities": ["filesystem"],
-        "dependencies": {},
+        "dependencies": {
+            "dev.cajeta.codec": "0.5.0"
+        },
         "build": {
             "source-root":  "src/main/cajeta",
             "target":       "host",
