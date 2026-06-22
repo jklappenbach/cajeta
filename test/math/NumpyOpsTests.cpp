@@ -1847,3 +1847,43 @@ TEST(NumpyOpsTests, fftFreqShiftRealMatchNumpy) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 8b — GPU FFT: FftGpu.fftF32Op routes on placement, lowering to the butterfly-stage
+// network (host-driven log2(N) stages over the device buffer). Cross-check: the device
+// FFT == the Fft.fft CPU floor within a float tolerance. N=8 (interleaved length 16).
+TEST(NumpyOpsTests, fftCpuGpuAgree) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.math.Tensor;\n"
+        "import cajeta.math.fft.Fft;\n"
+        "import cajeta.math.fft.FftGpu;\n"
+        "public final class D {\n"
+        "    public static boolean close(float32 a, float32 b) {\n"
+        "        float32 d = a - b; if (d < 0.0f) { d = -d; } return d < 0.01f;\n"
+        "    }\n"
+        "    public static #Tensor<float32> mk() {\n"
+        "        float32[] d = heap float32[16];\n"
+        "        int32 i = 0;\n"
+        "        while (i < 16) { d[i] = (float32) ((i * 7 + 3) % 11) - 5.0f; i = i + 1; }\n"
+        "        int64[] s = heap int64[1]; s[0] = 16;\n"
+        "        return Tensor.of<float32>(d, s);\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Tensor<float32> xRef = D.mk();\n"
+        "        Tensor<float32> cpuF = Fft.fft(xRef);\n"           // CPU floor
+        "        Tensor<float32> xg = D.mk();\n"
+        "        xg.gpu();\n"
+        "        Tensor<float32> gpuF = FftGpu.fftF32Op(xg);\n"     // butterfly network on device
+        "        gpuF.cpu();\n"
+        "        int64 i = 0;\n"
+        "        while (i < 16) {\n"
+        "            if (!D.close(gpuF.get1(i), cpuF.get1(i))) { return -1; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        // sanity: spectrum isn't trivially all-equal (guard a degenerate false pass)
+        "        if (D.close(cpuF.get1(0), cpuF.get1(2)) && D.close(cpuF.get1(2), cpuF.get1(4))) { return -2; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Xpu(src), 1);
+}

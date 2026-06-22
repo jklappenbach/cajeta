@@ -1,0 +1,108 @@
+package cajeta.math.fft;
+
+import cajeta.math.Tensor;
+import cajeta.gpu.GpuBuffer;
+import cajeta.gpu.GpuStream;
+import cajeta.gpu.GpuThread;
+
+/**
+ * GPU lowering of the radix-2 FFT (numpy-porting-plan Phase 8, 8b — the FFT butterfly
+ * cross-check). One `@Kernel` per Cooley-Tukey stage: each thread owns one butterfly
+ * and applies the twiddle compare-combine in place over the interleaved-`float32`
+ * device buffer; the host drives the `log2(N)` stage schedule (`len` doubling),
+ * exactly as the bitonic sort and the tiled GEMM drive their device kernels. The
+ * bit-reversal permutation is staged on the host (incidental data movement) — the
+ * butterfly arithmetic, the part that matters, runs on the device.
+ *
+ * Isolated from {@link Fft} (the pure-CPU floor) so importing `Fft` alone stays
+ * kernel-free; `fftF32Op` routes on placement and falls back to {@link Fft#fft} on
+ * the host. float32, power-of-two length — the workhorse config; the agreement with
+ * the CPU floor is the Phase-8 cross-check. [[cajeta-kernel-no-generic-monomorph]]
+ */
+public final class FftGpu {
+
+    /**
+     * One radix-2 butterfly stage over an interleaved-`float32` buffer: thread `bf`
+     * (0..N/2-1) combines element `i` with its partner `i + len/2` within its block
+     * using twiddle `exp(sign·2πi·k/len)`. `data` must already be in bit-reversed
+     * order; the host re-launches this with `len = 2, 4, …, N`.
+     */
+    @Kernel
+    public static void fftStageF32(GpuBuffer<float32> data, uint32 n, uint32 len, float32 sign) {
+        uint32 bf = GpuThread.globalIdX();
+        uint32 nbf = n / 2;
+        if (bf < nbf) {
+            uint32 half = len / 2;
+            uint32 block = bf / half;
+            uint32 k = bf % half;
+            uint32 i = block * len + k;
+            uint32 j = i + half;
+            float32 theta = sign * 6.2831853071795864769f * (float32) k / (float32) len;
+            float32 wr = Math.cos(theta);
+            float32 wi = Math.sin(theta);
+            uint32 i2 = 2 * i;
+            uint32 j2 = 2 * j;
+            float32 ur = data[i2];
+            float32 ui = data[i2 + 1];
+            float32 vr = data[j2];
+            float32 vi = data[j2 + 1];
+            float32 tr = wr * vr - wi * vi;
+            float32 ti = wr * vi + wi * vr;
+            data[i2] = ur + tr;
+            data[i2 + 1] = ui + ti;
+            data[j2] = ur - tr;
+            data[j2 + 1] = ui - ti;
+        }
+    }
+
+    /**
+     * Forward FFT of an interleaved-`float32` signal, routed on placement: on-device
+     * → the bit-reversed buffer is transformed by the {@link #fftStageF32} butterfly
+     * network (host-driven `log2(N)` stages); otherwise the {@link Fft#fft} CPU floor.
+     * The two agree within a float tolerance (the Phase-8 cross-check). Returns a
+     * fresh interleaved-`float32` tensor on the device; the butterflies run on the
+     * device (host staging of the bit-reversal is incidental data movement).
+     */
+    public static #Tensor<float32> fftF32Op(Tensor<float32> x) {
+        int64 len2 = x.size();
+        int64 n = len2 / 2;
+        if (x.isOnGpu()) {
+            x.cpu();
+            int64[] shp = heap int64[1];
+            shp[0] = len2;
+            Tensor<float32> out = Tensor.zeros<float32>(shp);
+            int32 bits = 0;
+            int64 tmp = n;
+            while (tmp > 1) { tmp = tmp / 2; bits = bits + 1; }
+            int64 i = 0;
+            while (i < n) {
+                int64 rev = 0;
+                int64 xx = i;
+                int32 b = 0;
+                while (b < bits) {
+                    rev = (rev << 1) | (xx & 1);
+                    xx = xx >> 1;
+                    b = b + 1;
+                }
+                float32 re = x.get1(2 * i);
+                float32 im = x.get1(2 * i + 1);
+                out.set1(2 * rev, re);
+                out.set1(2 * rev + 1, im);
+                i = i + 1;
+            }
+            x.gpu();
+            out.gpu();
+            uint32 un = (uint32) n;
+            GpuStream s = GpuStream.current();
+            uint32 len = 2;
+            while (len <= un) {
+                fftStageF32.launch(s, grid: [(un / 2 + 63) / 64], block: [64])
+                    (out.deviceBuffer(), un, len, -1.0f);
+                s.sync();
+                len = len * 2;
+            }
+            return #out;
+        }
+        return Fft.fft(x);
+    }
+}
