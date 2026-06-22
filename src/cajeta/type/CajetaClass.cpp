@@ -4757,9 +4757,35 @@ namespace cajeta {
     // Returns null for a captured / stored / runtime closure (a loaded slot, or
     // non-null captures) — the caller then keeps the ordinary indirect path.
     static llvm::Function* extractClosureTargetFn(llvm::Value* closureArg,
-                                                  llvm::Constant** outRecord = nullptr) {
-        if (!closureArg) return nullptr;
-        auto* gv = llvm::dyn_cast<llvm::GlobalVariable>(closureArg->stripPointerCasts());
+                                                  llvm::Constant** outRecord = nullptr,
+                                                  int depth = 0) {
+        if (!closureArg || depth > 8) return nullptr;
+        llvm::Value* v = closureArg->stripPointerCasts();
+
+        // Phase B Unit 1 (forwarding chains): a specialized instance forwards its
+        // bound comparator to another generic callee, so the closure argument is a
+        // LOAD from a slot that is written exactly once with the constant record
+        // (a BoundClosureField slot, or a function-typed local). Trace through it to
+        // recover the known target -> the forwarded call specializes too.
+        if (auto* load = llvm::dyn_cast<llvm::LoadInst>(v)) {
+            auto* slot = llvm::dyn_cast<llvm::AllocaInst>(
+                load->getPointerOperand()->stripPointerCasts());
+            if (!slot) return nullptr;
+            llvm::StoreInst* onlyStore = nullptr;
+            for (auto* u : slot->users()) {
+                if (auto* st = llvm::dyn_cast<llvm::StoreInst>(u)) {
+                    if (st->getValueOperand() == slot) return nullptr;   // address escapes
+                    if (onlyStore) return nullptr;                       // >1 store: not stable
+                    onlyStore = st;
+                } else if (!llvm::isa<llvm::LoadInst>(u)) {
+                    return nullptr;                                      // some other use
+                }
+            }
+            if (!onlyStore) return nullptr;
+            return extractClosureTargetFn(onlyStore->getValueOperand(), outRecord, depth + 1);
+        }
+
+        auto* gv = llvm::dyn_cast<llvm::GlobalVariable>(v);
         if (!gv || !gv->isConstant() || !gv->hasInitializer()) return nullptr;
         auto* cs = llvm::dyn_cast<llvm::ConstantStruct>(gv->getInitializer());
         if (!cs || cs->getNumOperands() < 2) return nullptr;
