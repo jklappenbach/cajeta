@@ -6,7 +6,9 @@ import cajeta.io.net.TcpStream;
 import cajeta.io.net.http.HttpServer;
 import cajeta.io.net.http.HttpRequest;
 import cajeta.io.net.http.HttpResponse;
+import cajeta.io.net.Headers;
 import cajeta.lang.String;
+import dev.cajeta.codec.compress.Gzip;
 
 /**
  * Streamable-HTTP transport for the MCP server: a single `POST /mcp` endpoint
@@ -165,6 +167,30 @@ public class HttpTransport {
         return true;
     }
 
+    /** True if the (possibly null) Accept-Encoding value contains a `gzip` token. */
+    public static boolean hasGzipToken(String v) {
+        if (v == null) {
+            return false;
+        }
+        int32 n = v.byteLength;
+        int32 i = 0;
+        while (i + 4 <= n) {
+            int32 c0 = ((int32) v.bytes[i]) & 0xFF;
+            int32 c1 = ((int32) v.bytes[i + 1]) & 0xFF;
+            int32 c2 = ((int32) v.bytes[i + 2]) & 0xFF;
+            int32 c3 = ((int32) v.bytes[i + 3]) & 0xFF;
+            if (c0 >= 65 && c0 <= 90) { c0 = c0 + 32; }
+            if (c1 >= 65 && c1 <= 90) { c1 = c1 + 32; }
+            if (c2 >= 65 && c2 <= 90) { c2 = c2 + 32; }
+            if (c3 >= 65 && c3 <= 90) { c3 = c3 + 32; }
+            if (c0 == 103 && c1 == 122 && c2 == 105 && c3 == 112) {
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+
     /** Route one parsed request: POST /mcp → dispatch; else → an error reply. */
     public static #HttpResponse handle(HttpRequest req) {
         String method = req.method;
@@ -186,7 +212,19 @@ public class HttpTransport {
             int32 rl = sink.bodyLen();
             HttpResponse resp = HttpResponse.of(200);
             resp.setHeader("Content-Type", "application/json");
-            resp.body(rb, rl);
+            // Negotiate gzip on the response body (mcp-compression U3). The
+            // request's Accept-Encoding gates it; the body is DEFLATE-backed
+            // gzip via the cajeta-codec Gzip codec.
+            Headers h = req.getHeaders();
+            String ae = h.get("Accept-Encoding");
+            if (HttpTransport.hasGzipToken(ae)) {
+                int8[] gz = Gzip.compress(rb, (int64) rl);
+                int32 gzlen = (int32) gz.count();
+                resp.setHeader("Content-Encoding", "gzip");
+                resp.body(gz, gzlen);
+            } else {
+                resp.body(rb, rl);
+            }
             return #resp;
         }
         // A notification (no id) produces no reply — 202 Accepted, empty body.

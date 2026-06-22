@@ -66,4 +66,31 @@ echo "ok: wrong path -> 404"
     || fail "notification should be HTTP 202"
 echo "ok: notification -> 202 empty"
 
+# 7) Accept-Encoding: gzip -> gzip body (magic 1f8b) + Content-Encoding header,
+#    and it gunzips back to the exact plain response (mcp-compression U3).
+gzreq='{"jsonrpc":"2.0","id":1,"method":"initialize"}'
+magic="$(curl -s -H 'Accept-Encoding: gzip' --output - -X POST --data "$gzreq" "$URL" \
+    | od -An -tx1 -N2 | tr -d ' \n')"
+[[ "$magic" == "1f8b" ]] || fail "expected gzip magic 1f8b, got '$magic'"
+curl -s -D - -o /dev/null -H 'Accept-Encoding: gzip' -X POST --data "$gzreq" "$URL" \
+    | grep -qi '^content-encoding: gzip' || fail "missing Content-Encoding: gzip header"
+dec="$(curl -s --compressed -H 'Accept-Encoding: gzip' -X POST --data "$gzreq" "$URL")"
+plain="$(post "$gzreq")"
+[[ "$dec" == "$plain" ]] || fail "gzip body did not gunzip to the plain response"
+echo "ok: Accept-Encoding gzip -> gzip body + Content-Encoding + round-trip"
+
+# 8) No Accept-Encoding -> plain body, no Content-Encoding header.
+curl -s -D - -o /dev/null -X POST --data "$gzreq" "$URL" \
+    | grep -qi '^content-encoding:' && fail "plain request must not set Content-Encoding"
+echo "ok: no Accept-Encoding -> plain, no Content-Encoding"
+
+# 9) A larger response is materially smaller gzipped (guards the stored-block
+#    no-op: real DEFLATE must shrink repetitive JSON).
+big='{"jsonrpc":"2.0","id":9,"method":"tools/list"}'
+plain_sz=$(post "$big" | wc -c)
+gz_sz=$(curl -s -H 'Accept-Encoding: gzip' --output - -X POST --data "$big" "$URL" | wc -c)
+[[ "$gz_sz" -lt "$plain_sz" ]] \
+    || fail "gzip not smaller ($gz_sz >= $plain_sz) — stored-block no-op?"
+echo "ok: gzip smaller than plain ($gz_sz < $plain_sz bytes)"
+
 echo "ALL HTTP TRANSPORT TESTS PASSED"
