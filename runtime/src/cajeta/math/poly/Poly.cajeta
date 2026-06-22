@@ -1,0 +1,76 @@
+package cajeta.math.poly;
+
+import cajeta.math.Tensor;
+
+/**
+ * `cajeta.math.poly` — polynomial operations (numpy-porting-plan Phase 10, the `poly`
+ * row). Coefficients are a 1-D `Tensor<E>` in **numpy order: highest degree first**
+ * (`[a_n, …, a_1, a_0]` represents `a_n·x^n + … + a_0`). `polyval` (Horner), `polyadd`
+ * (degree-aligned sum), `polymul` (convolution). Root-finding / fitting build on the
+ * Phase-11 linalg tier and are deferred.
+ */
+public final class Poly {
+
+    /** Evaluate the polynomial `coeffs` (highest degree first) at `x` via Horner's
+     *  method (numpy `polyval`): `((a_n·x + a_{n-1})·x + …)·x + a_0`. */
+    public static E polyval<E extends Numeric>(Tensor<E> coeffs, E x) {
+        int64 n = coeffs.size();
+        E acc = (E) 0;
+        int64 i = 0;
+        while (i < n) {
+            acc = acc * x + coeffs.get1(i);
+            i = i + 1;
+        }
+        return acc;
+    }
+
+    /** Sum of two polynomials (numpy `polyadd`): coefficients aligned by degree (the
+     *  shorter is padded on the high-degree end). Result length `max(len_a, len_b)`. */
+    public static #Tensor<E> polyadd<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        int64 la = a.size();
+        int64 lb = b.size();
+        int64 lo = la;
+        if (lb > lo) { lo = lb; }
+        int64[] sh = heap int64[1];
+        sh[0] = lo;
+        Tensor<E> out = Tensor.zeros<E>(sh);
+        int64 i = 0;
+        while (i < la) {
+            int64 p = lo - la + i;
+            E cur = out.get1(p);
+            out.set1(p, cur + a.get1(i));
+            i = i + 1;
+        }
+        int64 j = 0;
+        while (j < lb) {
+            int64 p = lo - lb + j;
+            E cur = out.get1(p);
+            out.set1(p, cur + b.get1(j));
+            j = j + 1;
+        }
+        return #out;
+    }
+
+    /** Product of two polynomials (numpy `polymul`): the convolution of the coefficient
+     *  sequences, `out[i+j] += a[i]·b[j]`. Result length `len_a + len_b - 1`. */
+    public static #Tensor<E> polymul<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        int64 la = a.size();
+        int64 lb = b.size();
+        int64[] sh = heap int64[1];
+        sh[0] = la + lb - 1;
+        Tensor<E> out = Tensor.zeros<E>(sh);
+        int64 i = 0;
+        while (i < la) {
+            E av = a.get1(i);
+            int64 j = 0;
+            while (j < lb) {
+                int64 p = i + j;
+                E cur = out.get1(p);
+                out.set1(p, cur + av * b.get1(j));
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+}

@@ -2119,3 +2119,39 @@ TEST(NumpyOpsTests, quantileMedianMatchNumpy) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 10c — poly: polyval (Horner), polyadd (degree-aligned), polymul (convolution).
+// Coefficients highest-degree-first (numpy order).
+TEST(NumpyOpsTests, polyMatchNumpy) {
+    std::string src = std::string(PRE) +
+        "import cajeta.math.poly.Poly;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        // polyval([1,2,3], 2) = x^2+2x+3 at 2 = 11
+        "        int32[] dp = { 1, 2, 3 };\n"
+        "        int64[] s3 = heap int64[1]; s3[0] = 3;\n"
+        "        Tensor<int32> p = Tensor.of<int32>(dp, s3);\n"
+        "        if (Poly.polyval<int32>(p, 2) != 11) { return -1; }\n"
+        // polyadd([1,2,3],[4,5]) → [1,6,8]
+        "        int32[] da = { 1, 2, 3 };\n"
+        "        int64[] s3b = heap int64[1]; s3b[0] = 3;\n"
+        "        Tensor<int32> a = Tensor.of<int32>(da, s3b);\n"
+        "        int32[] db = { 4, 5 };\n"
+        "        int64[] s2 = heap int64[1]; s2[0] = 2;\n"
+        "        Tensor<int32> b = Tensor.of<int32>(db, s2);\n"
+        "        Tensor<int32> sum = Poly.polyadd<int32>(a, b);\n"
+        "        if (sum.size() != 3 || sum.get1(0) != 1 || sum.get1(1) != 6 || sum.get1(2) != 8) { return -2; }\n"
+        // polymul([1,1],[1,1]) → [1,2,1]
+        "        int32[] dc = { 1, 1 };\n"
+        "        int64[] s2b = heap int64[1]; s2b[0] = 2;\n"
+        "        Tensor<int32> c = Tensor.of<int32>(dc, s2b);\n"
+        "        int32[] dd = { 1, 1 };\n"
+        "        int64[] s2c = heap int64[1]; s2c[0] = 2;\n"
+        "        Tensor<int32> d = Tensor.of<int32>(dd, s2c);\n"
+        "        Tensor<int32> mul = Poly.polymul<int32>(c, d);\n"
+        "        if (mul.size() != 3 || mul.get1(0) != 1 || mul.get1(1) != 2 || mul.get1(2) != 1) { return -3; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
