@@ -14609,6 +14609,43 @@ int32_t __cajeta_xpu_accel_impl_set(void* self, int64_t handle, int32_t primaryI
     return set;
 }
 
+// --- gfx swapchain (cajeta.gpu.gfx.Swapchain, cajeta-gfx §4.c) --------------
+//
+// The presentable-image-chain noun. The instance @Native convention (leading
+// `self`, ignored): create is handed the opaque cajeta.ifx.Surface object (as a
+// void*) plus the resolved description and returns a swapchain handle; acquire/
+// present/free operate on it.
+//
+// HOST FLOOR ONLY (this build). The live VK_KHR_swapchain create / acquire /
+// queue-present (and the headless offscreen image ring) are device-machine work
+// over a real Vulkan WSI surface + a window backend (the separate cajeta-ifx-*
+// repos) — none of that exists here. These stubs let the noun construct and its
+// acquire/present plumb on the host so the API + frames-in-flight pacing
+// (cajeta.gpu.gfx.FrameSync) are exercisable; they hold no pixels and present
+// nothing. The real WSI backend replaces them on the device machine.
+int64_t __cajeta_gfx_swapchain_create(void* self, void* surface, int32_t format,
+                                      int32_t colorSpace, int32_t presentMode,
+                                      uint32_t imageCount) {
+    (void) self; (void) surface; (void) format; (void) colorSpace;
+    (void) presentMode; (void) imageCount;
+    // A non-null opaque token so the noun reads as constructed; the real backend
+    // returns the VkSwapchainKHR / offscreen-ring pointer here.
+    return (int64_t) 1;
+}
+
+uint32_t __cajeta_gfx_swapchain_acquire(void* self, int64_t handle) {
+    (void) self; (void) handle;
+    return 0u;   // host floor: always image 0 (no real acquire)
+}
+
+void __cajeta_gfx_swapchain_present(void* self, int64_t handle, uint32_t imageIndex) {
+    (void) self; (void) handle; (void) imageIndex;   // host floor: nothing presented
+}
+
+void __cajeta_gfx_swapchain_free(void* self, int64_t handle) {
+    (void) self; (void) handle;   // host floor: nothing to release
+}
+
 // Address one axis: clamp-to-edge (addressMode 0) or repeat/wrap (1). `n` > 0.
 static inline int cajeta_tex_addr(int c, int n, int32_t addressMode) {
     if (addressMode == 1) {                 // repeat (wrap)

@@ -1,0 +1,49 @@
+package cajeta.gpu.gfx;
+
+/**
+ * FrameSync — the pure FRAMES-IN-FLIGHT bookkeeping a {@link Swapchain} present
+ * loop runs on (cajeta-gfx §4.2 / GP-1, TDD 4.d).
+ *
+ * To keep the GPU fed without stalling, the CPU records and submits a bounded
+ * number of frames ahead of what the GPU has finished: frame N uses ring slot
+ * {@code N % framesInFlight} (its own command buffer + per-frame
+ * sync objects), and must wait on that slot's fence before reusing it. The CPU
+ * may be at most {@code framesInFlight} frames ahead of the last presented frame.
+ *
+ * That is pure arithmetic — separated here so the loop's correctness is testable
+ * on the host with no device, while the actual acquire / queue-present and the
+ * VkFence/VkSemaphore waits live behind {@link Swapchain}'s native primitives.
+ * {@code framesInFlight} is typically 2 (double) or 3 (triple-buffered CPU lead).
+ */
+public class FrameSync {
+
+    /**
+     * The next ring slot after `slot`, wrapping at `framesInFlight`. The loop
+     * advances its slot once per presented frame: 0→1→0 for double buffering,
+     * 0→1→2→0 for triple.
+     */
+    public static uint32 nextSlot(uint32 slot, uint32 framesInFlight) {
+        uint32 n = slot + 1;
+        if (n >= framesInFlight) { n = 0; }
+        return n;
+    }
+
+    /**
+     * The ring slot an absolute frame index maps to — `frameIndex %
+     * framesInFlight`. Equivalent to repeated {@link #nextSlot} from slot 0, but
+     * computed directly for a known frame number.
+     */
+    public static uint32 slotForFrame(uint32 frameIndex, uint32 framesInFlight) {
+        return frameIndex % framesInFlight;
+    }
+
+    /**
+     * Whether the CPU may acquire/begin another frame without waiting: true while
+     * fewer than `framesInFlight` frames are still outstanding (submitted but not
+     * yet finished/presented). When `inFlight == framesInFlight` the loop must
+     * first wait on the oldest frame's fence.
+     */
+    public static boolean canAcquire(uint32 inFlight, uint32 framesInFlight) {
+        return inFlight < framesInFlight;
+    }
+}
