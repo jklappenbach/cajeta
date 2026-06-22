@@ -1989,3 +1989,32 @@ TEST(NumpyOpsTests, distributionMomentsMatchNumpy) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 9c — rngCpuGpuParity: the counter-based Philox stream is bit-identical on CPU and GPU
+// for the same seed (per-element kernel, no sequential state). GeneratorGpu.uniformF32
+// (device) == Generator.uniform (CPU floor) exactly.
+TEST(NumpyOpsTests, rngCpuGpuParity) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.math.Tensor;\n"
+        "import cajeta.math.random.Generator;\n"
+        "import cajeta.math.random.GeneratorGpu;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Generator g = heap Generator(2024);\n"
+        "        Tensor<float32> cpu = g.uniform(256);\n"               // CPU floor
+        "        Tensor<float32> gpu = GeneratorGpu.uniformF32(2024, 256);\n"  // device kernel
+        "        gpu.cpu();\n"
+        "        int64 i = 0;\n"
+        "        boolean anyNonzero = false;\n"
+        "        while (i < 256) {\n"
+        "            if (cpu.get1(i) != gpu.get1(i)) { return -1; }\n"  // bit-identical parity
+        "            if (cpu.get1(i) > 0.0f) { anyNonzero = true; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        if (!anyNonzero) { return -2; }\n"                     // guard degenerate all-zero
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Xpu(src), 1);
+}

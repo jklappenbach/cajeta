@@ -1,0 +1,85 @@
+package cajeta.math.random;
+
+import cajeta.math.Tensor;
+import cajeta.gpu.GpuBuffer;
+import cajeta.gpu.GpuStream;
+import cajeta.gpu.GpuThread;
+
+/**
+ * GPU lowering of the Philox uniform generator (numpy-porting-plan Phase 9, 9c — the
+ * CPU/GPU parity path). Because the generator is **counter-based** (each draw is a
+ * stateless `philox(counter, key)`), the device kernel needs no sequential state: each
+ * thread computes the draw for its own counter (`globalIdX`) and writes it out, so the
+ * stream is **bit-identical** to {@link Generator#uniform} for the same seed — that is
+ * the whole point of choosing Philox over a sequential generator.
+ *
+ * Isolated from {@link Generator} (the CPU class) so importing `Generator` alone stays
+ * kernel-free. The kernel inlines the same Philox4x32-10 round and the same low-24-bit
+ * mask as the CPU path. [[cajeta-kernel-no-generic-monomorph]]
+ */
+public final class GeneratorGpu {
+
+    /** Per-element Philox uniform draw: thread `idx` runs Philox4x32-10 on counter
+     *  `idx` keyed by `(k0,k1)` and writes `[0,1)` (low 24 bits / 2^24) to `out[idx]`. */
+    @Kernel
+    public static void philoxUniformF32(GpuBuffer<float32> out, uint32 k0, uint32 k1, uint32 n) {
+        uint32 idx = GpuThread.globalIdX();
+        if (idx < n) {
+            uint32 c0 = idx;
+            uint32 c1 = 0;
+            uint32 c2 = 0;
+            uint32 c3 = 0;
+            uint32 kk0 = k0;
+            uint32 kk1 = k1;
+            uint32 m0 = 0xD2511F53;
+            uint32 m1 = 0xCD9E8D57;
+            uint32 w0 = 0x9E3779B9;
+            uint32 w1 = 0xBB67AE85;
+            int32 r = 0;
+            while (r < 10) {
+                if (r > 0) {
+                    kk0 = kk0 + w0;
+                    kk1 = kk1 + w1;
+                }
+                uint64 p0 = (uint64) m0 * (uint64) c0;
+                uint64 p1 = (uint64) m1 * (uint64) c2;
+                uint32 hi0 = (uint32) (p0 >>> 32);
+                uint32 lo0 = (uint32) p0;
+                uint32 hi1 = (uint32) (p1 >>> 32);
+                uint32 lo1 = (uint32) p1;
+                uint32 t0 = hi1 ^ c1 ^ kk0;
+                uint32 t1 = lo1;
+                uint32 t2 = hi0 ^ c3 ^ kk1;
+                uint32 t3 = lo0;
+                c0 = t0;
+                c1 = t1;
+                c2 = t2;
+                c3 = t3;
+                r = r + 1;
+            }
+            uint32 b24 = c0 & 16777215;
+            float32 u = (float32) b24 * (1.0f / 16777216.0f);
+            out[idx] = u;
+        }
+    }
+
+    /**
+     * `n` uniform `[0,1)` draws for `seed` computed on the device — bit-identical to
+     * {@link Generator#uniform} for the same seed (the Phase-9 CPU/GPU parity). Returns
+     * a `float32` tensor on the device (call `cpu()` to read on the host).
+     */
+    public static #Tensor<float32> uniformF32(uint64 seed, int64 n) {
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<float32> out = Tensor.zeros<float32>(sh);
+        out.gpu();
+        uint32 k0 = (uint32) seed;
+        uint32 k1 = (uint32) (seed >>> 32);
+        uint32 un = (uint32) n;
+        GpuStream s = GpuStream.current();
+        philoxUniformF32.launch(s, grid: [(un + 63) / 64], block: [64])
+            (out.deviceBuffer(), k0, k1, un);
+        s.sync();
+        return #out;
+    }
+}
