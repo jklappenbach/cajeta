@@ -1801,3 +1801,49 @@ TEST(NumpyOpsTests, fftRoundTripMatchNumpy) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 8a/8c — fftfreq (DFT sample frequencies, numpy order), fftshift (zero-freq to centre),
+// rfft (real → half spectrum) + irfft (Hermitian reconstruct → real), real round trip.
+TEST(NumpyOpsTests, fftFreqShiftRealMatchNumpy) {
+    std::string src = std::string(PRE) +
+        "import cajeta.math.fft.Fft;\n"
+        "public final class D {\n"
+        "    public static boolean close(float32 a, float32 b) {\n"
+        "        float32 d = a - b; if (d < 0.0f) { d = -d; } return d < 0.01f;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        // fftfreq(4, 1.0) → [0, 0.25, -0.5, -0.25]
+        "        Tensor<float32> fr = Fft.fftfreq(4, 1.0f);\n"
+        "        if (!D.close(fr.get1(0), 0.0f) || !D.close(fr.get1(1), 0.25f)) { return -1; }\n"
+        "        if (!D.close(fr.get1(2), -0.5f) || !D.close(fr.get1(3), -0.25f)) { return -2; }\n"
+        // fftshift([0,0.25,-0.5,-0.25]) → [-0.5,-0.25,0,0.25]
+        "        Tensor<float32> sh = Fft.fftshift(fr);\n"
+        "        if (!D.close(sh.get1(0), -0.5f) || !D.close(sh.get1(1), -0.25f)) { return -3; }\n"
+        "        if (!D.close(sh.get1(2), 0.0f) || !D.close(sh.get1(3), 0.25f)) { return -4; }\n"
+        // rfft of real [1,1,1,1] (N=4) → 3 bins: DC=4, rest 0
+        "        float32[] dr = { 1.0f, 1.0f, 1.0f, 1.0f };\n"
+        "        int64[] s4 = heap int64[1]; s4[0] = 4;\n"
+        "        Tensor<float32> r = Tensor.of<float32>(dr, s4);\n"
+        "        Tensor<float32> rf = Fft.rfft(r);\n"
+        "        if (rf.size() != 6) { return -5; }\n"                  // 2*(4/2+1)=6
+        "        if (!D.close(rf.get1(0), 4.0f) || !D.close(rf.get1(1), 0.0f)) { return -6; }\n"
+        "        if (!D.close(rf.get1(2), 0.0f) || !D.close(rf.get1(4), 0.0f)) { return -7; }\n"
+        // real round trip irfft(rfft([1,2,3,4]),4) ≈ [1,2,3,4]
+        "        float32[] dx = { 1.0f, 2.0f, 3.0f, 4.0f };\n"
+        "        int64[] s4b = heap int64[1]; s4b[0] = 4;\n"
+        "        Tensor<float32> x = Tensor.of<float32>(dx, s4b);\n"
+        "        Tensor<float32> xf = Fft.rfft(x);\n"
+        "        Tensor<float32> xb = Fft.irfft(xf, 4);\n"
+        "        float32[] want = { 1.0f, 2.0f, 3.0f, 4.0f };\n"
+        "        int64 i = 0;\n"
+        "        while (i < 4) {\n"
+        "            float32 wv = want[(int32) i];\n"
+        "            float32 gv = xb.get1(i);\n"
+        "            if (!D.close(gv, wv)) { return -8; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}

@@ -122,4 +122,123 @@ public final class Fft {
         }
         return #out;
     }
+
+    /**
+     * Sample frequencies for an `n`-point DFT with sample spacing `d` (numpy
+     * `fftfreq`): a real `float32` tensor `[0, 1, …, ⌈n/2⌉-1, -⌊n/2⌋, …, -1] / (n·d)`.
+     * The non-negative frequencies come first, then the negative ones (numpy order).
+     */
+    public static #Tensor<float32> fftfreq(int64 n, float32 d) {
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<float32> out = Tensor.zeros<float32>(sh);
+        float32 scale = 1.0f / ((float32) n * d);
+        int64 half = (n + 1) / 2;          // count of non-negative freqs
+        int64 i = 0;
+        while (i < n) {
+            int64 fval = i;
+            if (i >= half) { fval = i - n; }
+            float32 v = (float32) fval * scale;
+            out.set1(i, v);
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /**
+     * Shift the zero-frequency component to the centre of a 1-D real spectrum
+     * (numpy `fftshift`): a right roll by `⌊n/2⌋`, so `out[i] = x[(i - ⌊n/2⌋) mod n]`.
+     * The `fftfreq` companion for plotting a centred spectrum.
+     */
+    public static #Tensor<float32> fftshift(Tensor<float32> x) {
+        int64 n = x.size();
+        int64 s = n / 2;
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<float32> out = Tensor.zeros<float32>(sh);
+        int64 i = 0;
+        while (i < n) {
+            int64 src = (i + n - s) % n;
+            float32 v = x.get1(src);
+            out.set1(i, v);
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /**
+     * Forward DFT of a **real** `float32` signal of length `n` (numpy `rfft`): widens
+     * to interleaved (imag = 0), transforms, and returns the non-redundant half
+     * spectrum — the first `n/2 + 1` complex bins, as interleaved `float32` of length
+     * `2·(n/2+1)`. (`n` a power of two.)
+     */
+    public static #Tensor<float32> rfft(Tensor<float32> real) {
+        int64 n = real.size();
+        int64[] ish = heap int64[1];
+        ish[0] = 2 * n;
+        Tensor<float32> inter = Tensor.zeros<float32>(ish);
+        int64 i = 0;
+        while (i < n) {
+            float32 rv = real.get1(i);
+            inter.set1(2 * i, rv);
+            i = i + 1;
+        }
+        Tensor<float32> full = Fft.fft(inter);
+        int64 nb = n / 2 + 1;
+        int64[] osh = heap int64[1];
+        osh[0] = 2 * nb;
+        Tensor<float32> out = Tensor.zeros<float32>(osh);
+        int64 k = 0;
+        while (k < nb) {
+            float32 re = full.get1(2 * k);
+            float32 im = full.get1(2 * k + 1);
+            out.set1(2 * k, re);
+            out.set1(2 * k + 1, im);
+            k = k + 1;
+        }
+        return #out;
+    }
+
+    /**
+     * Inverse of {@link #rfft} (numpy `irfft`): reconstructs the `n` real samples
+     * from the half spectrum `half` (`n/2+1` interleaved complex bins) by restoring
+     * the Hermitian-symmetric upper half (`bin[n-k] = conj(bin[k])`), running
+     * {@link #ifft}, and taking the real parts. `n` is the original (power-of-two)
+     * real length.
+     */
+    public static #Tensor<float32> irfft(Tensor<float32> half, int64 n) {
+        int64[] fsh = heap int64[1];
+        fsh[0] = 2 * n;
+        Tensor<float32> full = Tensor.zeros<float32>(fsh);
+        int64 nh = n / 2;
+        int64 k = 0;
+        while (k <= nh) {
+            float32 re = half.get1(2 * k);
+            float32 im = half.get1(2 * k + 1);
+            full.set1(2 * k, re);
+            full.set1(2 * k + 1, im);
+            k = k + 1;
+        }
+        k = 1;
+        while (k < nh) {
+            int64 dst = n - k;
+            float32 re = half.get1(2 * k);
+            float32 im = half.get1(2 * k + 1);
+            float32 nim = -im;
+            full.set1(2 * dst, re);
+            full.set1(2 * dst + 1, nim);
+            k = k + 1;
+        }
+        Tensor<float32> time = Fft.ifft(full);
+        int64[] rsh = heap int64[1];
+        rsh[0] = n;
+        Tensor<float32> out = Tensor.zeros<float32>(rsh);
+        int64 i = 0;
+        while (i < n) {
+            float32 rv = time.get1(2 * i);
+            out.set1(i, rv);
+            i = i + 1;
+        }
+        return #out;
+    }
 }
