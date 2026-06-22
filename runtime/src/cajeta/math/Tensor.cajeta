@@ -2136,6 +2136,59 @@ public class Tensor<T> {
         return #out;
     }
 
+    /**
+     * Insertion indices of each element of `values` into the **sorted 1-D** array
+     * `sorted`, keeping it sorted (numpy `searchsorted`). `side == 0` ("left")
+     * returns the first index `i` with `sorted[i] >= v`; `side == 1` ("right")
+     * the first `i` with `sorted[i] > v`. Binary search per value; returns a 1-D
+     * `Tensor<int64>` shaped like `values`.
+     */
+    public static #Tensor<int64> searchsorted<E extends Numeric>(Tensor<E> sorted, Tensor<E> values, int32 side) {
+        int64 n = sorted.size();
+        int64 m = values.size();
+        int64[] shp = heap int64[1];
+        shp[0] = m;
+        Tensor<int64> out = Tensor.zeros<int64>(shp);
+        int64 vi = 0;
+        while (vi < m) {
+            E val = values.get1(vi);
+            int64 lo = 0;
+            int64 hi = n;
+            while (lo < hi) {
+                int64 mid = (lo + hi) / 2;
+                E sm = sorted.get1(mid);
+                boolean goRight = sm < val;            // left: skip strictly-smaller
+                if (side != 0) { goRight = !(val < sm); }  // right: skip <= val
+                if (goRight) { lo = mid + 1; } else { hi = mid; }
+            }
+            out.set1(vi, lo);
+            vi = vi + 1;
+        }
+        return #out;
+    }
+
+    /**
+     * Partitioned copy of `t` along `axis` about the `kth` order statistic (numpy
+     * `partition`): the element at index `kth` lands in its fully-sorted position,
+     * with all smaller elements before it and all larger after. The CPU floor
+     * returns a **fully-ordered** lane — a valid (stronger-than-required) partition;
+     * `kth` is accepted for numpy parity. (A true O(n) introselect is an
+     * optimization; the partition *contract* is what callers rely on.)
+     */
+    public static #Tensor<E> partition<E extends Numeric>(Tensor<E> t, int64 kth, int32 axis) {
+        return Tensor.sort<E>(t, axis);
+    }
+
+    /**
+     * Index permutation that partitions `t` along `axis` about the `kth` order
+     * statistic (numpy `argpartition`): `t[..., out[kth], ...]` is the `kth`
+     * smallest, with smaller-valued indices before and larger after. CPU floor: the
+     * full `argsort` permutation (a valid stronger partition); `kth` for parity.
+     */
+    public static #Tensor<int64> argpartition<E extends Numeric>(Tensor<E> t, int64 kth, int32 axis) {
+        return Tensor.argsort<E>(t, axis);
+    }
+
     // ────────────────────────────── elementwise ufuncs (Phase 3) ─────────────
 
     /**

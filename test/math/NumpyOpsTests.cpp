@@ -1612,3 +1612,50 @@ TEST(NumpyOpsTests, sortArgsortMatchNumpy) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 7a — searchsorted (binary-search insertion indices into a sorted 1-D array; side
+// 0=left → first i with a[i] >= v, 1=right → first i with a[i] > v) + partition /
+// argpartition (the kth element lands in its sorted slot, smaller before / larger
+// after; the CPU floor returns a fully-ordered lane, a valid stronger partition).
+TEST(NumpyOpsTests, searchPartitionMatchNumpy) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] da = { 1, 3, 5, 7 };\n"
+        "        int64[] s4 = heap int64[1]; s4[0] = 4;\n"
+        "        Tensor<int32> a = Tensor.of<int32>(da, s4);\n"
+        "        int32[] dv = { 0, 1, 4, 5, 8 };\n"
+        "        int64[] s5 = heap int64[1]; s5[0] = 5;\n"
+        "        Tensor<int32> v = Tensor.of<int32>(dv, s5);\n"
+        // left:  [0,0,2,2,4]
+        "        Tensor<int64> il = Tensor.searchsorted<int32>(a, v, 0);\n"
+        "        if (il.get1(0) != 0 || il.get1(1) != 0 || il.get1(2) != 2 || il.get1(3) != 2 || il.get1(4) != 4) { return -1; }\n"
+        // right: [0,1,2,3,4]
+        "        int32[] dv2 = { 0, 1, 4, 5, 8 };\n"
+        "        int64[] s5b = heap int64[1]; s5b[0] = 5;\n"
+        "        Tensor<int32> v2 = Tensor.of<int32>(dv2, s5b);\n"
+        "        Tensor<int64> ir = Tensor.searchsorted<int32>(a, v2, 1);\n"
+        "        if (ir.get1(0) != 0 || ir.get1(1) != 1 || ir.get1(2) != 2 || ir.get1(3) != 3 || ir.get1(4) != 4) { return -2; }\n"
+        // partition t=[3,1,2,5,4], kth=2 → out[2] is the 3rd smallest (==3), and the
+        // partition property holds around it.
+        "        int32[] dt = { 3, 1, 2, 5, 4 };\n"
+        "        int64[] s5c = heap int64[1]; s5c[0] = 5;\n"
+        "        Tensor<int32> t = Tensor.of<int32>(dt, s5c);\n"
+        "        Tensor<int32> pt = Tensor.partition<int32>(t, 2, 0);\n"
+        "        int32 piv = pt.get1(2);\n"
+        "        if (piv != 3) { return -3; }\n"
+        "        int64 i = 0;\n"
+        "        while (i < 2) { if (pt.get1(i) > piv) { return -4; } i = i + 1; }\n"
+        "        i = 3;\n"
+        "        while (i < 5) { if (pt.get1(i) < piv) { return -5; } i = i + 1; }\n"
+        // argpartition: t[at[2]] is the 3rd smallest (==3)
+        "        int32[] dt2 = { 3, 1, 2, 5, 4 };\n"
+        "        int64[] s5d = heap int64[1]; s5d[0] = 5;\n"
+        "        Tensor<int32> t2 = Tensor.of<int32>(dt2, s5d);\n"
+        "        Tensor<int64> at = Tensor.argpartition<int32>(t2, 2, 0);\n"
+        "        if (t2.get1(at.get1(2)) != 3) { return -6; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
