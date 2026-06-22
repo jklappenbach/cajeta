@@ -7430,6 +7430,23 @@ int32_t __cajeta_file_open(const char* path, int32_t mode) {
 // `&data[0]`, which is `arrayPtr + 8` past the count word.
 int32_t __cajeta_file_read(int32_t fd, void* buf, int32_t max) {
     if (fd < 0 || !buf || max <= 0) return 0;
+    // Streams (pipes, sockets, FIFOs, ttys) must return as soon as ANY
+    // bytes are available: looping to fill `max` would block an interactive
+    // peer (e.g. a line-delimited JSON-RPC client over stdio) forever waiting
+    // for bytes it will never send until it sees our reply. Only regular
+    // files keep the fill-to-max loop — there a caller asking for `max` past
+    // a short read wants the rest up to EOF. "Fills up to max" already permits
+    // a short return, so streaming readers loop on the count themselves.
+    struct stat st;
+    bool fillToMax = (fstat(fd, &st) == 0 && S_ISREG(st.st_mode));
+    if (!fillToMax) {
+        ssize_t n;
+        do {
+            n = read(fd, buf, (size_t) max);
+        } while (n < 0 && errno == EINTR);
+        if (n < 0) return -1;
+        return (int32_t) n;  // 0 == EOF; otherwise bytes available now.
+    }
     int32_t got = 0;
     while (got < max) {
         ssize_t n = read(fd, ((char*) buf) + got, (size_t) (max - got));
