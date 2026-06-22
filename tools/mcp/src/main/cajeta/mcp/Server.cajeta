@@ -189,6 +189,8 @@ public class Server {
         w.key("version");
         w.writeString("0.1.0");
         w.endObject();
+        w.key("instructions");
+        w.writeString("This server provides skills: authoritative, hand-written implementation guides for cajeta libraries. Before you write or edit cajeta code that uses a library, package, class, or method, first call searchSkills with its name (fuzzy and typo-tolerant). If a relevant skill is returned, call getSkills to fetch its payload and follow that guidance over your prior assumptions. Use listSkills to browse what is available, and follow a skill's references to related skills.");
         w.key("cacheConfig");
         w.beginObject();
         w.key("enabled");

@@ -171,6 +171,9 @@ TEST(CajetaMcpServerTests, lifecycleAndErrors) {
     EXPECT_EQ(r[0].at("id").asInt(), 1);
     EXPECT_EQ(r[0].at("result").at("serverInfo").at("name").asString(), "cajeta-mcp");
     EXPECT_TRUE(r[0].at("result").at("capabilities").has("tools"));
+    // skill-first trigger: initialize carries instructions naming searchSkills.
+    EXPECT_NE(r[0].at("result").at("instructions").asString().find("searchSkills"),
+              std::string::npos);
 
     // tools/list — the five tool names
     const Json& tools = r[1].at("result").at("tools");
