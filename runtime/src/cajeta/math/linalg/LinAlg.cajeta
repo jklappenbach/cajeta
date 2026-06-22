@@ -456,8 +456,10 @@ public final class LinAlg {
      */
     public static #Tensor<E>[] svd<E extends Floating>(Tensor<E> a) {
         int64 n = a.shapeAt(0);
-        Tensor<E> at = a.transpose();
-        Tensor<E> gram = Tensor.matmul<E>(at, a);
+        // NB: a.transpose() is a non-owning VIEW sharing a's Storage — binding it to a
+        // local would free that shared Storage when this scope ends (borrow-drop UAF,
+        // [[cajeta-wildcard-field-drop-hazard]]). Pass it inline so no droppable local owns it.
+        Tensor<E> gram = Tensor.matmul<E>(a.transpose(), a);
         Tensor<E>[] eig = LinAlg.eigh<E>(gram);
         Tensor<E> evals = eig[0];
         Tensor<E> vmat = eig[1];
@@ -503,6 +505,129 @@ public final class LinAlg {
             k = k + 1;
         }
         return #out;
+    }
+
+    /**
+     * Moore-Penrose pseudo-inverse (numpy `linalg.pinv`): `A⁺ = V·diag(1/σ)·Uᵀ`, with
+     * singular values `σ ≤ tol` zeroed (`tol = σmax·1e-4`, relative to our float Jacobi
+     * accuracy). Equals `inv` for a nonsingular square `A`, and gives the least-squares
+     * minimum-norm solution for rank-deficient `A`. Square case.
+     */
+    public static #Tensor<E> pinv<E extends Floating>(Tensor<E> a) {
+        int64 n = a.shapeAt(0);
+        Tensor<E>[] sv = LinAlg.svd<E>(a);
+        Tensor<E> u = sv[0];
+        Tensor<E> s = sv[1];
+        Tensor<E> vt = sv[2];
+        E smax = s.get1(0);                       // svd S is descending → [0] is largest
+        E tol = smax / (E) 10000;
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = n;
+        Tensor<E> out = Tensor.zeros<E>(sh);
+        int64 i = 0;
+        while (i < n) {
+            int64 j = 0;
+            while (j < n) {
+                E acc = (E) 0;
+                int64 k = 0;
+                while (k < n) {
+                    E sk = s.get1(k);
+                    if (sk > tol) {
+                        E sinv = (E) 1 / sk;
+                        // A⁺[i][j] = Σ_k V[i][k]·(1/σ_k)·Uᵀ[k][j] = Σ Vt[k][i]·sinv·U[j][k]
+                        E vki = vt.get2(k, i);
+                        E ujk = u.get2(j, k);
+                        E term = vki * sinv * ujk;
+                        acc = acc + term;
+                    }
+                    k = k + 1;
+                }
+                int64 oidx = i * n + j;
+                out.flatSet(oidx, acc);
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /**
+     * Least-squares solution of `A·x ≈ b` (numpy `linalg.lstsq`) via the pseudo-inverse:
+     * `x = A⁺·b`. For a nonsingular square `A` this equals `solve`; for rank-deficient
+     * `A` it returns the minimum-norm solution. `b` is a length-`n` vector.
+     */
+    public static #Tensor<E> lstsq<E extends Floating>(Tensor<E> a, Tensor<E> b) {
+        int64 n = a.shapeAt(0);
+        Tensor<E> p = LinAlg.pinv<E>(a);
+        int64[] vs = heap int64[1];
+        vs[0] = n;
+        Tensor<E> x = Tensor.zeros<E>(vs);
+        int64 i = 0;
+        while (i < n) {
+            E acc = (E) 0;
+            int64 j = 0;
+            while (j < n) {
+                acc = acc + p.get2(i, j) * b.get1(j);
+                j = j + 1;
+            }
+            x.set1(i, acc);
+            i = i + 1;
+        }
+        return #x;
+    }
+
+    /**
+     * Rank of a square `A` (numpy `linalg.matrix_rank`): the count of singular values
+     * above `tol = σmax·1e-4`. Detects rank deficiency / singularity.
+     */
+    public static int64 matrixRank<E extends Floating>(Tensor<E> a) {
+        int64 n = a.shapeAt(0);
+        Tensor<E>[] sv = LinAlg.svd<E>(a);
+        Tensor<E> s = sv[1];
+        E smax = s.get1(0);
+        E tol = smax / (E) 10000;
+        int64 rank = 0;
+        int64 k = 0;
+        while (k < n) {
+            E sk = s.get1(k);
+            if (sk > tol) { rank = rank + 1; }
+            k = k + 1;
+        }
+        return rank;
+    }
+
+    /**
+     * 2-norm condition number (numpy `linalg.cond`): `σmax / σmin`. Large ⇒
+     * ill-conditioned; infinite (very large here) for a singular matrix.
+     */
+    public static E cond<E extends Floating>(Tensor<E> a) {
+        int64 n = a.shapeAt(0);
+        Tensor<E>[] sv = LinAlg.svd<E>(a);
+        Tensor<E> s = sv[1];
+        E smax = s.get1(0);
+        E smin = s.get1(n - 1);
+        return smax / smin;
+    }
+
+    /**
+     * Frobenius norm of a square `A` (numpy `linalg.norm` default for matrices):
+     * `sqrt(Σ aᵢⱼ²)`. No factorization needed.
+     */
+    public static E normFro<E extends Floating>(Tensor<E> a) {
+        int64 n = a.shapeAt(0);
+        E acc = (E) 0;
+        int64 i = 0;
+        while (i < n) {
+            int64 j = 0;
+            while (j < n) {
+                E v = a.get2(i, j);
+                acc = acc + v * v;
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return Math.sqrt(acc);
     }
 
     /** Absolute value of a `Floating` scalar (local helper — `Math.abs` per `E`). */

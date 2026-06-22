@@ -2276,6 +2276,64 @@ TEST(NumpyOpsTests, linalgLuQrMatchNumpy) {
     EXPECT_EQ(runI32(src), 1);
 }
 
+// 11c — conditioning / edge cases: pinv, lstsq, matrix_rank, cond, Frobenius norm
+// (svd-derived), incl. a singular matrix (rank-deficient) handled gracefully.
+TEST(NumpyOpsTests, linalgConditioningAndEdgeCases) {
+    std::string src = std::string(PRE) +
+        "import cajeta.math.linalg.LinAlg;\n"
+        "public final class D {\n"
+        "    public static boolean close(float32 a, float32 b) {\n"
+        "        float32 d = a - b; if (d < 0.0f) { d = -d; } return d < 0.01f;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        // ---- full-rank A=[[1,2],[3,4]] ----
+        "        float32[] da = { 1.0f, 2.0f, 3.0f, 4.0f };\n"
+        "        int64[] s22 = heap int64[2]; s22[0] = 2; s22[1] = 2;\n"
+        "        Tensor<float32> a = Tensor.of<float32>(da, s22);\n"
+        "        if (LinAlg.matrixRank<float32>(a) != 2) { return -1; }\n"
+        // Frobenius norm = sqrt(30) ≈ 5.477226
+        "        if (!D.close(LinAlg.normFro<float32>(a), 5.477226f)) { return -2; }\n"
+        // cond = σmax/σmin ≈ 5.4649858/0.3659662 ≈ 14.9330 (loose: σmin sensitive in f32)
+        "        float32 cnd = LinAlg.cond<float32>(a);\n"
+        "        float32 cdiff = cnd - 14.9330f; if (cdiff < 0.0f) { cdiff = -cdiff; }\n"
+        "        if (cdiff > 0.5f) { return -3; }\n"
+        // pinv == inv for nonsingular: A·pinv == I
+        "        Tensor<float32> pa = LinAlg.pinv<float32>(a);\n"
+        "        Tensor<float32> ident = Tensor.matmul<float32>(a, pa);\n"
+        "        if (!D.close(ident.get2(0, 0), 1.0f) || !D.close(ident.get2(1, 1), 1.0f)) { return -4; }\n"
+        "        if (!D.close(ident.get2(0, 1), 0.0f) || !D.close(ident.get2(1, 0), 0.0f)) { return -5; }\n"
+        // lstsq on a nonsingular system A·x=b, b=[5,11] → x=[1,2]
+        "        float32[] db = { 5.0f, 11.0f };\n"
+        "        int64[] s2 = heap int64[1]; s2[0] = 2;\n"
+        "        Tensor<float32> b = Tensor.of<float32>(db, s2);\n"
+        "        Tensor<float32> x = LinAlg.lstsq<float32>(a, b);\n"
+        "        if (!D.close(x.get1(0), 1.0f) || !D.close(x.get1(1), 2.0f)) { return -6; }\n"
+        // ---- singular A2=[[1,2],[2,4]] (rank 1): graceful pseudo-inverse ----
+        "        float32[] dc = { 1.0f, 2.0f, 2.0f, 4.0f };\n"
+        "        int64[] s22b = heap int64[2]; s22b[0] = 2; s22b[1] = 2;\n"
+        "        Tensor<float32> a2 = Tensor.of<float32>(dc, s22b);\n"
+        "        if (LinAlg.matrixRank<float32>(a2) != 1) { return -7; }\n"
+        // pseudo-inverse property: A·A⁺·A == A
+        "        Tensor<float32> p2 = LinAlg.pinv<float32>(a2);\n"
+        "        Tensor<float32> ap = Tensor.matmul<float32>(a2, p2);\n"
+        "        Tensor<float32> apa = Tensor.matmul<float32>(ap, a2);\n"
+        "        int64 i = 0;\n"
+        "        while (i < 2) {\n"
+        "            int64 j = 0;\n"
+        "            while (j < 2) {\n"
+        "                float32 orig = a2.get2(i, j);\n"
+        "                float32 rc = apa.get2(i, j);\n"
+        "                if (!D.close(rc, orig)) { return -8; }\n"
+        "                j = j + 1;\n"
+        "            }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
 // 11b — native symmetric eig (Jacobi) + SVD (via eigh of A^T A). Eigenvalues ascending,
 // singular values descending; verified by spectrum + A·v=λ·v and U·diag(S)·Vt==A.
 TEST(NumpyOpsTests, linalgEighSvdMatchNumpy) {
