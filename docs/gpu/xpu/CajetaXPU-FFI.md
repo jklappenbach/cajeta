@@ -156,7 +156,7 @@ order**. What each slot points at is determined by that parameter's
   `> 0` on CUDA/Vulkan needs per-device contexts not yet built and is a defined
   *"not yet implemented"* (a diagnostic + no-op), **not** a silent wrong-device
   launch.
-- **GpuBuffer-affinity contract (caller's responsibility):** every buffer/texture/
+- **KernelBuffer-affinity contract (caller's responsibility):** every buffer/texture/
   image handle passed to a launch must already reside on the target device.
   Cross-device residency/migration is a `cajeta-gpu` concern; this layer does
   **not** silently migrate.
@@ -180,7 +180,7 @@ order**. What each slot points at is determined by that parameter's
 
 assert(__cajeta_xpu_abi_version() == CAJETA_XPU_ABI_VERSION);
 
-// saxpy(GpuBuffer<float> y, GpuBuffer<float> x, float a, uint32 n)
+// saxpy(KernelBuffer<float> y, KernelBuffer<float> x, float a, uint32 n)
 __cajeta_xpu_register_module("saxpy", image, image_len);
 const uint8_t  kinds[4] = { CAJETA_XPU_KP_BUFFER, CAJETA_XPU_KP_BUFFER,
                             CAJETA_XPU_KP_SCALAR, CAJETA_XPU_KP_SCALAR };

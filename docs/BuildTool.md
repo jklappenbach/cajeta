@@ -1622,6 +1622,38 @@ consulted when the project-local cache misses, before falling
 back to the network. Useful for cold-clone CI runs that pre-warm
 the workstation cache.
 
+### Local repository (`~/.olla/`)
+
+`~/.olla/` is the machine-global **local repository** — the
+Maven-`.m2` analog. It uses the filesystem-repository layout
+(`<name>/<version>/<name>-<version>.cja` + a `cajeta.json` manifest
+sidecar + per-package `versions.json`) and is consulted **first** on
+every resolution, ahead of any declared remote: a local hit
+short-circuits the network entirely. Artifacts fetched from a remote
+are **written through** into `~/.olla/` so the next resolve — in this
+or any other project — is a local hit. The root honours `$OLLA_HOME`,
+defaulting to `~/.olla`.
+
+Because `~/.olla/` is always an available source, a project may
+declare a dependency with **no** `settings.repositories` at all and
+still resolve it, provided it was installed locally first.
+
+`cajeta install` publishes the current project's library `.cja` into
+`~/.olla/` (the local sibling of `cajeta publish`, which uploads to a
+remote registry):
+
+```
+$ cd my-lib && cajeta install        # build → ~/.olla/<name>/<version>/
+$ cajeta install ./some-lib.cja      # verify a built archive, then install it
+```
+
+A plain `cajeta build` never writes to `~/.olla/`; only `install`
+and resolver write-through do. Installing an executable project (one
+that declares an `entry-method`) is rejected — only libraries are
+installable. The legacy `path` override still works for local
+development but `cajeta install` is now the recommended way to
+consume an unpublished sibling library.
+
 ### Repository protocol — v2 enhancements (deferred)
 
 The v1 protocol above (one GET per artifact) is what cajeta's

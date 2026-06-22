@@ -1,7 +1,7 @@
 package cajeta.math.random;
 
 import cajeta.math.Tensor;
-import cajeta.gpu.GpuBuffer;
+import cajeta.gpu.KernelBuffer;
 import cajeta.gpu.GpuStream;
 import cajeta.gpu.GpuThread;
 
@@ -22,7 +22,7 @@ public final class GeneratorGpu {
     /** Per-element Philox uniform draw: thread `idx` runs Philox4x32-10 on counter
      *  `idx` keyed by `(k0,k1)` and writes `[0,1)` (low 24 bits / 2^24) to `out[idx]`. */
     @Kernel
-    public static void philoxUniformF32(GpuBuffer<float32> out, uint32 k0, uint32 k1, uint32 n) {
+    public static void philoxUniformF32(KernelBuffer<float32> out, uint32 k0, uint32 k1, uint32 n) {
         uint32 idx = GpuThread.globalIdX();
         if (idx < n) {
             uint32 c0 = idx;

@@ -34,13 +34,13 @@ namespace fs = std::filesystem;
 // XpuNvptxEmitTests. Lives at <root>/src/test/M.cajeta.
 const char* kKernelSource =
     "package test;\n"
-    "import cajeta.gpu.GpuBuffer;\n"
-    "import cajeta.gpu.GpuThread;\n"
+    "import cajeta.gpu.KernelBuffer;\n"
+    "import cajeta.gpu.KernelThread;\n"
     "public class M {\n"
     "    @Kernel\n"
-    "    public static void saxpy(GpuBuffer<float32> y, GpuBuffer<float32> x,\n"
+    "    public static void saxpy(KernelBuffer<float32> y, KernelBuffer<float32> x,\n"
     "                             float32 a, uint32 n) {\n"
-    "        uint32 i = GpuThread.globalIdX();\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
     "        if (i < n) {\n"
     "            y[i] = a * x[i] + y[i];\n"
     "        }\n"

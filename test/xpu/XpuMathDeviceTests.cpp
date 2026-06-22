@@ -53,12 +53,12 @@ namespace {
 
 const char* kMathSource =
     "package test;\n"
-    "import cajeta.gpu.GpuBuffer;\n"
-    "import cajeta.gpu.GpuThread;\n"
+    "import cajeta.gpu.KernelBuffer;\n"
+    "import cajeta.gpu.KernelThread;\n"
     "public class M {\n"
     "    @Kernel\n"
-    "    public static void mathk(GpuBuffer<float32> out, uint32 n) {\n"
-    "        uint32 i = GpuThread.globalIdX();\n"
+    "    public static void mathk(KernelBuffer<float32> out, uint32 n) {\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
     "        if (i < n) {\n"
     "            float32 x = (float32) i;\n"
     "            float32 r = Math.sqrt(x)\n"
@@ -80,12 +80,12 @@ const char* kMathSource =
 //   rsqrt(0.25)=2 acos1=0  -> sum 16 ;  out[i] = 16 + i
 const char* kTranscendentalSource =
     "package test;\n"
-    "import cajeta.gpu.GpuBuffer;\n"
-    "import cajeta.gpu.GpuThread;\n"
+    "import cajeta.gpu.KernelBuffer;\n"
+    "import cajeta.gpu.KernelThread;\n"
     "public class T {\n"
     "    @Kernel\n"
-    "    public static void trans(GpuBuffer<float32> out, uint32 n) {\n"
-    "        uint32 i = GpuThread.globalIdX();\n"
+    "    public static void trans(KernelBuffer<float32> out, uint32 n) {\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
     "        if (i < n) {\n"
     "            out[i] = Math.sin(0.0f) + Math.cos(0.0f) + Math.tan(0.0f)\n"
     "                   + Math.exp(0.0f) + Math.log(1.0f) + Math.pow(2.0f, 3.0f)\n"
@@ -103,13 +103,13 @@ float transExpectedAt(uint32_t i) { return 16.0f + (float) i; }
 //          = 0 + 1 + 1 + 1 + 2+3+4+5 = 17 ;  out[i] = 17 + i
 const char* kVectorMathSource =
     "package test;\n"
-    "import cajeta.gpu.GpuBuffer;\n"
-    "import cajeta.gpu.GpuThread;\n"
+    "import cajeta.gpu.KernelBuffer;\n"
+    "import cajeta.gpu.KernelThread;\n"
     "import cajeta.lang.Math;\n"
     "public class V {\n"
     "    @Kernel\n"
-    "    public static void vmath(GpuBuffer<float32> out, uint32 n) {\n"
-    "        uint32 i = GpuThread.globalIdX();\n"
+    "    public static void vmath(KernelBuffer<float32> out, uint32 n) {\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
     "        if (i < n) {\n"
     "            Vector<float32,4> z = heap Vector<float32,4>(0.0f, 0.0f, 0.0f, 0.0f);\n"
     "            Vector<float32,4> s = Math.sin(z);\n"
@@ -129,25 +129,25 @@ float vectorMathExpectedAt(uint32_t i) { return 17.0f + (float) i; }
 // reciprocals, and approximate transcendentals. out[i] = 2*i + 1 (exact).
 const char* kFastMathSource =
     "package test;\n"
-    "import cajeta.gpu.GpuBuffer;\n"
-    "import cajeta.gpu.GpuThread;\n"
+    "import cajeta.gpu.KernelBuffer;\n"
+    "import cajeta.gpu.KernelThread;\n"
     "public class F {\n"
     "    @Kernel\n"
     "    @FastMath\n"
-    "    public static void fastk(GpuBuffer<float32> out, uint32 n) {\n"
-    "        uint32 i = GpuThread.globalIdX();\n"
+    "    public static void fastk(KernelBuffer<float32> out, uint32 n) {\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
     "        if (i < n) { out[i] = (float32) i * 2.0f + 1.0f; }\n"
     "    }\n"
     "}\n";
 // Same kernel without @FastMath — the FP ops are emitted IEEE-strict (no flags).
 const char* kPreciseSource =
     "package test;\n"
-    "import cajeta.gpu.GpuBuffer;\n"
-    "import cajeta.gpu.GpuThread;\n"
+    "import cajeta.gpu.KernelBuffer;\n"
+    "import cajeta.gpu.KernelThread;\n"
     "public class P {\n"
     "    @Kernel\n"
-    "    public static void precisek(GpuBuffer<float32> out, uint32 n) {\n"
-    "        uint32 i = GpuThread.globalIdX();\n"
+    "    public static void precisek(KernelBuffer<float32> out, uint32 n) {\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
     "        if (i < n) { out[i] = (float32) i * 2.0f + 1.0f; }\n"
     "    }\n"
     "}\n";
@@ -227,13 +227,13 @@ TEST(XpuMathDeviceTests, lowersToMathIntrinsics) {
 TEST(XpuMathDeviceTests, lowersNumericLiteralsCorrectly) {
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.GpuBuffer;\n"
-        "import cajeta.gpu.GpuThread;\n"
+        "import cajeta.gpu.KernelBuffer;\n"
+        "import cajeta.gpu.KernelThread;\n"
         "public class L {\n"
         "    @Kernel\n"
-        "    public static void litk(GpuBuffer<int32> out, GpuBuffer<int64> out64,\n"
+        "    public static void litk(KernelBuffer<int32> out, KernelBuffer<int64> out64,\n"
         "                            uint32 n) {\n"
-        "        uint32 i = GpuThread.globalIdX();\n"
+        "        uint32 i = KernelThread.globalIdX();\n"
         "        if (i == 0) {\n"
         "            out[0] = 0xDEAD;\n"          // hex     -> 57005 (bug: 0)
         "            out[1] = 9_999_999;\n"       // _ group -> 9999999 (bug: 9)

@@ -387,8 +387,57 @@ namespace cajeta {
         // CajetaClass::instantiate / instantiateInternal split.
         MethodPtr instantiateMethodTemplate(vector<CajetaTypePtr> args);
 
+        // cajeta-ir Unit 4 (closure specialization, Approach A). A function-typed
+        // parameter dropped from a specialized instance's signature and bound, in
+        // the body scope, to a statically-known function (a non-capturing lambda).
+        // Codegen pushes a BoundClosureField for each so a call to `name` lowers
+        // to a DIRECT call. Empty on every ordinary method.
+        struct BoundClosureBinding {
+            string name;
+            CajetaTypePtr fnType;
+            llvm::Function* fn;
+            llvm::Constant* record;   // the { fn, null, null } closure global
+        };
+        // Request passed to the instantiator to build the above.
+        struct ClosureSpecialization {
+            string paramName;
+            llvm::Function* fn;
+            CajetaTypePtr fnType;
+            llvm::Constant* record;
+        };
+
+        // Build (or cache-hit) the specialized instance F<args>$fn: re-parses
+        // like a normal instantiation, then drops `paramName` and binds it to
+        // `fn` (with `record` = its closure global for forwarded reads). Generic-
+        // only (needs methodSource). NOT registered in the class method maps —
+        // the call-site redirect (Unit 4c) drives its codegen and calls it.
+        MethodPtr instantiateSpecializedClosure(vector<CajetaTypePtr> args,
+            const string& paramName, llvm::Function* fn, CajetaTypePtr fnType,
+            llvm::Constant* record);
+
+        const vector<BoundClosureBinding>& getBoundClosures() const { return boundClosures; }
+        const string& getSpecializationTag() const { return specializationTag; }
+        // The template Method this instance was instantiated from (Unit 4c: the
+        // call-site redirect needs it to request a closure specialization, since
+        // instantiateSpecializedClosure lives on the template). Null on templates
+        // and ordinary methods.
+        Method* getTemplateOrigin() const { return templateOrigin; }
+        void setTemplateOrigin(Method* t) { templateOrigin = t; }
+        // Specialization-build mutators (used by the instantiator post-parse).
+        void dropParameter(const string& name);
+        void addBoundClosure(const string& name, CajetaTypePtr fnType,
+                             llvm::Function* fn, llvm::Constant* record) {
+            boundClosures.push_back({name, std::move(fnType), fn, record});
+        }
+        void setSpecializationTag(const string& tag) { specializationTag = tag; }
+
     private:
-        MethodPtr instantiateMethodTemplateInternal(vector<CajetaTypePtr> args);
+        MethodPtr instantiateMethodTemplateInternal(vector<CajetaTypePtr> args,
+            const ClosureSpecialization* spec = nullptr);
+        // Closure-specialization state (empty/blank on every ordinary method).
+        vector<BoundClosureBinding> boundClosures;
+        string specializationTag;
+        Method* templateOrigin = nullptr;
 
     public:
 

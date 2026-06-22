@@ -4,6 +4,7 @@
 //
 #include "cajeta/buildtool/skill/SkillGet.h"
 
+#include "cajeta/buildtool/skill/EmbeddedStdlibSkills.h"
 #include "cajeta/buildtool/skill/SkillUri.h"
 #include "cajeta/compile/CajetaArchive.h"
 
@@ -25,6 +26,15 @@ namespace cajeta::buildtool::skill {
             if (!uri) {
                 out.error = llvm::toString(uri.takeError());
                 return;
+            }
+            // Always-available stdlib skills (spec §2.5): resolve embedded stdlib
+            // payloads before any lockfile archive lookup.
+            if (uri->version == kStdlibSkillVersion) {
+                if (auto payload =
+                        embeddedStdlibSkillPayload(uri->library, uri->skillId)) {
+                    out.payload = std::move(*payload);
+                    return;
+                }
             }
             auto archivePath = resolveSkillArchive(*uri, packages, lookupArtifact);
             if (!archivePath) {

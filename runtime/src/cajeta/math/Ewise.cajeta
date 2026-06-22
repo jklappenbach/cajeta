@@ -1,6 +1,6 @@
 package cajeta.math;
 
-import cajeta.gpu.GpuBuffer;
+import cajeta.gpu.KernelBuffer;
 import cajeta.gpu.GpuStream;
 import cajeta.gpu.GpuThread;
 import cajeta.gpu.Workgroup;
@@ -30,8 +30,8 @@ public final class Ewise {
 
     /** Fused float32 elementwise-arithmetic kernel: `out[i] = a[i] <op> b[i]`. */
     @Kernel
-    public static void arithF32(GpuBuffer<float32> out, GpuBuffer<float32> a,
-                                GpuBuffer<float32> b, uint32 n, int32 op) {
+    public static void arithF32(KernelBuffer<float32> out, KernelBuffer<float32> a,
+                                KernelBuffer<float32> b, uint32 n, int32 op) {
         uint32 i = GpuThread.globalIdX();
         if (i < n) {
             float32 va = a[i];
@@ -84,7 +84,7 @@ public final class Ewise {
      * atomic RMW). The accumulator must be pre-zeroed.
      */
     @Kernel
-    public static void reduceSumF32(GpuBuffer<float32> out, GpuBuffer<float32> in, uint32 n) {
+    public static void reduceSumF32(KernelBuffer<float32> out, KernelBuffer<float32> in, uint32 n) {
         uint32 i = GpuThread.globalIdX();
         if (i < n) { out.atomicAdd(0, in[i]); }
     }
@@ -125,8 +125,8 @@ public final class Ewise {
      * indexing primitive; each thread reads one source element through its index).
      */
     @Kernel
-    public static void gatherF32(GpuBuffer<float32> out, GpuBuffer<float32> in,
-                                 GpuBuffer<int64> idx, uint32 n) {
+    public static void gatherF32(KernelBuffer<float32> out, KernelBuffer<float32> in,
+                                 KernelBuffer<int64> idx, uint32 n) {
         uint32 i = GpuThread.globalIdX();
         if (i < n) { out[i] = in[idx[i]]; }
     }
@@ -171,8 +171,8 @@ public final class Ewise {
      * exposes (f16/bf16/int8 WMMA on AMD). [[cajeta-kernel-no-generic-monomorph]]
      */
     @Kernel
-    public static void matmulF32(GpuBuffer<float32> c, GpuBuffer<float32> a,
-                                 GpuBuffer<float32> b, uint32 rows, uint32 cols, uint32 depth) {
+    public static void matmulF32(KernelBuffer<float32> c, KernelBuffer<float32> a,
+                                 KernelBuffer<float32> b, uint32 rows, uint32 cols, uint32 depth) {
         uint32 ntiles = cols / 16;
         uint32 wid = Workgroup.x();
         uint32 mi = wid / ntiles;          // output row-tile
@@ -248,7 +248,7 @@ public final class Ewise {
      * per stage. `n` must be a power of two.
      */
     @Kernel
-    public static void bitonicStepF32(GpuBuffer<float32> data, uint32 n, uint32 k, uint32 j) {
+    public static void bitonicStepF32(KernelBuffer<float32> data, uint32 n, uint32 k, uint32 j) {
         uint32 i = GpuThread.globalIdX();
         if (i < n) {
             uint32 ixj = i ^ j;

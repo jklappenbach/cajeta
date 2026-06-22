@@ -69,6 +69,19 @@ const char* kProgram =
     "        }\n"
     "        return check(w, n, sum);\n"
     "    }\n"
+    // All-equal: the 3-way partition must collapse the whole range into the
+    // equal band in one pass (the Lomuto O(n^2) worst case).
+    "    public static int32 allequal() {\n"
+    "        int32 n = 50000; int64[] w = heap int64[n]; int64 sum = 0; int32 i = 0;\n"
+    "        while (i < n) { w[i] = 42; sum = sum + 42; i = i + 1; }\n"
+    "        return check(w, n, sum);\n"
+    "    }\n"
+    // Few distinct values (heavy duplicates): i % 4.
+    "    public static int32 fewvalues() {\n"
+    "        int32 n = 50000; int64[] w = heap int64[n]; int64 sum = 0; int32 i = 0;\n"
+    "        while (i < n) { int64 v = (int64)(i % 4); w[i] = v; sum = sum + v; i = i + 1; }\n"
+    "        return check(w, n, sum);\n"
+    "    }\n"
     "}\n";
 
 int32_t call(CajetaJit* jit, const char* sym) {
@@ -87,4 +100,6 @@ TEST(SortAdversarialTests, AllPatternsSortCorrectly) {
     EXPECT_EQ(call(jit.get(), "dups"), 0);
     EXPECT_EQ(call(jit.get(), "random"), 0);
     EXPECT_EQ(call(jit.get(), "organpipe"), 0);
+    EXPECT_EQ(call(jit.get(), "allequal"), 0);
+    EXPECT_EQ(call(jit.get(), "fewvalues"), 0);
 }

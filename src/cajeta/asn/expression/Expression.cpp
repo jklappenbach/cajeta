@@ -2537,9 +2537,24 @@ namespace cajeta {
             capturesTy = llvm::StructType::get(llvmCtx, capLlvmTypes);
         }
 
+        // A non-capturing lambda's synthesized function is referenced ONLY
+        // through its (private constant) closure record — never by external
+        // symbol name — so it can have INTERNAL linkage. That lets the
+        // optimizer treat it as the sole definition: when the constant closure
+        // record flows into a generic callee (e.g. `Sort.sort`'s `cmp`),
+        // IPSCCP / function-specialization can fold the loaded `fn` to this
+        // constant and devirtualize the indirect closure call to a direct,
+        // inlinable call (the monomorphization C++/Rust get for free). Indirect
+        // calls go through the fn's ADDRESS (held in the record), which stays
+        // valid across modules in the final binary regardless of linkage.
+        // Capturing closures keep external linkage (the heap record + drop_fn
+        // path is unchanged).
+        llvm::GlobalValue::LinkageTypes lambdaLinkage =
+            captures.empty() ? llvm::Function::InternalLinkage
+                             : llvm::Function::ExternalLinkage;
         llvm::Function* fn = llvm::Function::Create(
             fnType->getLlvmFunctionType(),
-            llvm::Function::ExternalLinkage,
+            lambdaLinkage,
             synthesizedName,
             lmod);
 

@@ -1,6 +1,6 @@
 package cajeta.gpu;
 
-import cajeta.gpu.GpuBuffer;
+import cajeta.gpu.KernelBuffer;
 
 /**
  * SoftwareRayQuery — the portable, backend-agnostic ray-query traversal
@@ -12,7 +12,7 @@ import cajeta.gpu.GpuBuffer;
  * cajeta, of the software BVH the {@link AccelerationStructure} software builder
  * produced (runtime/native/cajeta_bvh.c).
  *
- * THE BVH IS A `GpuBuffer<float32>`. The acceleration structure on a software
+ * THE BVH IS A `KernelBuffer<float32>`. The acceleration structure on a software
  * backend is a flat float32 block (see cajeta-docs/gpu/RayQuery.md §3 for the
  * frozen layout): an 8-word header, then 9-word threaded depth-first nodes, then
  * a primRef table. Structural integers (counts, indices, escape links) are stored
@@ -44,9 +44,9 @@ public final class SoftwareRayQuery {
     //   node (stride 9): [0..5]=aabb [6]=escape [7]=firstPrim [8]=primCount
     //
     // `initialize` (seeding the cursor from the ray) is built directly at the
-    // kernel call site (an insertvalue chain) — it has no GpuBuffer parameter, so a
+    // kernel call site (an insertvalue chain) — it has no KernelBuffer parameter, so a
     // cajeta body here would be host-compiled (Method::generateCode only stubs
-    // device-only methods that take a GpuBuffer<T>) and choke on value-type
+    // device-only methods that take a KernelBuffer<T>) and choke on value-type
     // construction; the trivial seed is cheaper inline anyway. The traversal — the
     // actual work — stays here in `step`.
 
@@ -58,7 +58,7 @@ public final class SoftwareRayQuery {
      * processed leaf) jumps to the node's escape index. Mirrors
      * `OpRayQueryProceedKHR`.
      */
-    @Device public static SwRayCursor step(SwRayCursor cursor, GpuBuffer<float32> bvh) {
+    @Device public static SwRayCursor step(SwRayCursor cursor, KernelBuffer<float32> bvh) {
         uint32 nodeCount   = (uint32) bvh[1];
         uint32 primCountTot = (uint32) bvh[2];
         uint32 nodesOff    = (uint32) bvh[4];

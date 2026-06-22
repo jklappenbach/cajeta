@@ -1,7 +1,7 @@
 package cajeta.math.fft;
 
 import cajeta.math.Tensor;
-import cajeta.gpu.GpuBuffer;
+import cajeta.gpu.KernelBuffer;
 import cajeta.gpu.GpuStream;
 import cajeta.gpu.GpuThread;
 
@@ -28,7 +28,7 @@ public final class FftGpu {
      * order; the host re-launches this with `len = 2, 4, …, N`.
      */
     @Kernel
-    public static void fftStageF32(GpuBuffer<float32> data, uint32 n, uint32 len, float32 sign) {
+    public static void fftStageF32(KernelBuffer<float32> data, uint32 n, uint32 len, float32 sign) {
         uint32 bf = GpuThread.globalIdX();
         uint32 nbf = n / 2;
         if (bf < nbf) {

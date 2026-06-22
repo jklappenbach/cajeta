@@ -61,13 +61,14 @@ Skills are **members of the package archive** (`.cja`), alongside the compiled `
 members. They are built and published as part of the package, travel with the dependency,
 and are therefore available **offline** once the package is resolved — Get never needs
 the network. Updating a skill means republishing the package version (skills are versioned
-exactly as the code they describe).
+exactly as the code they describe). Skill members are stored **compressed** (§2.4).
 
 ### 2.2 URI — a logical, resolvable identifier
 Every skill has a **URI** that is its stable identity. The URI is *logical*, not a
 network location: it names a **library** coordinate, a version, and a skill id, and is
 **resolved against the locally-resolved archive** (via the lockfile) to the in-archive
-member. Proposed form _(exact grammar settled at plan unit D.4)_:
+member. Form _(**ratified**; grammar settled at plan unit D.4, implemented in
+`src/cajeta/buildtool/skill/SkillUri`)_:
 
 ```
 cja-skill://<library>@<version>/<skill-id>
@@ -81,11 +82,49 @@ e.g.  cja-skill://cajeta.io@1.4.2/file-open
 - The URI is stable across machines for the same resolved version, so a held URI is a
   valid cache key — the agent skips Get when it already holds the payload for a URI.
 
-### 2.3 Open points
-- Exact URI scheme/grammar (host-less `cja-skill://` vs. another form).
-- In-archive member layout (e.g. `skills/<id>.<ext>` + a `skills/index`).
-- How version is pinned in a returned URI — the resolved (lockfile) version vs. the
-  declared range.
+### 2.3 Resolved (formerly open)
+These were settled during planning/implementation (plan units D.1–D.4):
+- **URI scheme/grammar** — host-less `cja-skill://<library>@<version>/<skill-id>`
+  (`src/cajeta/buildtool/skill/SkillUri`).
+- **In-archive member layout** — skill bodies are `skills/<id>.md` members, plus a
+  per-package `skills/index.json` whose schema is canonical-name → `[id]` and
+  `id → {title, member-path}` (plan §D.2, `skill/SkillIndex`). The index carries **no
+  per-skill version** (§3.4).
+- **Version pinning** — a returned URI pins the **resolved (lockfile) version**, not a
+  declared range, so it is a stable cross-machine identity (§2.2, §3.4).
+
+### 2.4 Compression (protocol)
+Skill payloads and the per-package `skills/index.json` are stored **compressed**, and
+decompressed only when read to build the index or return a payload — so the on-disk /
+in-binary footprint stays small while access stays transparent.
+
+- **In a `.cja`** this is automatic: the `CAJETA01` archive zstd-compresses every entry's
+  data block (and the manifest), framed `uint64 uncompressed_length || zstd_bytes`
+  (default level 3). Skill members ride that path with no special handling — the packager
+  adds raw bytes, the archive compresses on write and decompresses on read.
+- **In the embedded stdlib corpus** (§2.5) the same scheme applies: the corpus is
+  zstd-compressed at compiler-build time and decompressed on first access to build the
+  index / serve payloads.
+- **Implementation note:** compiler and build-tool internals are C++ and compress/
+  decompress with **libzstd** (`zstd.h`, the same dependency `CajetaArchive` uses). The
+  cajeta-language `cajeta.wire` decompressor is for cajeta *programs*, not compiler
+  internals.
+
+### 2.5 Always-available stdlib skills
+The cajeta standard library is **not** a resolved `.cja` dependency — its source is
+embedded in the compiler binary (`cmake/EmbedStdlib.cmake`). Its skills must therefore be
+available in **every** project, with **no lockfile and no dependencies present**.
+
+- Stdlib skills are authored under `runtime/src/cajeta/<pkg>/skills/<id>.md`, one library
+  per top-level package (`cajeta.<pkg>`), and **embedded into the compiler** as a
+  zstd-compressed corpus (§2.4) at build time, tagged with the stdlib version.
+- The discovery context is **always seeded** with the embedded stdlib archives *before*
+  any lockfile packages, so `search-skill` / `list-skills` / `get-skills` return stdlib
+  skills even outside a project. A missing `cajeta.lock` is **not an error** — it means an
+  empty resolved set plus the always-present stdlib.
+- Embedded stdlib skills resolve through the same
+  `cja-skill://cajeta.<pkg>@<stdlib-version>/<id>` URIs; `get` reads the embedded
+  (decompressed) payload.
 
 ## 3. Canonical-name model & match semantics
 
@@ -119,8 +158,9 @@ ancestor). One query surfaces the neighborhood before the agent writes code.
 ### 3.3 First-party scoping
 Because skills ship inside one library's `.cja` (§2.1), a library carries skills only for
 the canonical names **it defines**. A search is assembled **across all archives in the
-resolved dependency set** (via the lockfile), each contributing skills for its own
-symbols. There is no mechanism to attach skills to names you do not own.
+resolved dependency set** (via the lockfile) **plus the always-present embedded stdlib
+archives (§2.5)**, each contributing skills for its own symbols. There is no mechanism to
+attach skills to names you do not own.
 
 ### 3.4 Version resolution in multi-version builds (diamond dependencies)
 A build may resolve **multiple versions of the same library** side-by-side (e.g. `foo@1.2`

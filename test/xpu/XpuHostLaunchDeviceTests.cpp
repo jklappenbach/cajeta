@@ -7,7 +7,7 @@
 // orchestration (allocate, upload, launch, sync, download, free) is written
 // in Cajeta and lowered by the compiler:
 //
-//   GpuBuffer.alloc      -> __cajeta_xpu_buffer_alloc -> cuMemAlloc
+//   KernelBuffer.alloc      -> __cajeta_xpu_buffer_alloc -> cuMemAlloc
 //   buf.upload        -> __cajeta_xpu_buffer_upload -> cuMemcpyHtoD
 //   kernel.launch(..) -> __cajeta_xpu_launch        -> cuLaunchKernel
 //   stream.sync       -> __cajeta_xpu_stream_sync    -> cuCtxSynchronize
@@ -19,7 +19,7 @@
 // initialize() time, before run() executes.
 //
 // This is the variance-discipline payoff in full: one source, one memory
-// model — the launch borrows each GpuBuffer until stream.sync(), and freeing
+// model — the launch borrows each KernelBuffer until stream.sync(), and freeing
 // before the sync would be a compile error (XPU-K02) — compiling to a real
 // device launch. Skips cleanly when no CUDA device/driver is present.
 //
@@ -35,13 +35,13 @@ using cajeta::xpu::nvidia::CudaDriver;
 // The step-11 milestone, live: BOTH the @Kernel AND the host driver are Cajeta
 // source, compiled through the LLJIT, running SAXPY on the real GPU. The full
 // NVPTX host-launch infrastructure backs it — the CUDA-backed runtime
-// (cajeta_runtime.c), the GpuBuffer<T>.elementBytes() intrinsic, the
+// (cajeta_runtime.c), the KernelBuffer<T>.elementBytes() intrinsic, the
 // cubin-registration global-ctor pass (NvptxRegistration) wired into
 // JitTestHelper, and the device kernel host stub.
 //
 // Lighting this up required one frontend codegen fix, surfaced here because
 // this is the first code to actually orchestrate a kernel from Cajeta source:
-// GpuStream.current() returns a NULL handle (the CUDA default-stream sentinel),
+// KernelStream.current() returns a NULL handle (the CUDA default-stream sentinel),
 // but `s.sync()` was virtually dispatched, loading the vtable from the null
 // receiver and segfaulting. @Native methods are leaf forwarders to a fixed C
 // symbol — inherently non-polymorphic — so CajetaClass::invokeMethod now
@@ -54,14 +54,14 @@ TEST(XpuHostLaunchDeviceTests, saxpyHostSourceOnDevice) {
 
     auto src =
         "package test;\n"
-        "import cajeta.gpu.GpuBuffer;\n"
-        "import cajeta.gpu.GpuStream;\n"
-        "import cajeta.gpu.GpuThread;\n"
+        "import cajeta.gpu.KernelBuffer;\n"
+        "import cajeta.gpu.KernelStream;\n"
+        "import cajeta.gpu.KernelThread;\n"
         "public class Saxpy {\n"
         "    @Kernel\n"
-        "    public static void saxpy(GpuBuffer<float32> y, GpuBuffer<float32> x,\n"
+        "    public static void saxpy(KernelBuffer<float32> y, KernelBuffer<float32> x,\n"
         "                             float32 a, uint32 n) {\n"
-        "        uint32 i = GpuThread.globalIdX();\n"
+        "        uint32 i = KernelThread.globalIdX();\n"
         "        if (i < n) { y[i] = a * x[i] + y[i]; }\n"
         "    }\n"
         "    public static float32 run() {\n"
@@ -72,13 +72,13 @@ TEST(XpuHostLaunchDeviceTests, saxpyHostSourceOnDevice) {
         "            hx[i] = 1.0f;\n"
         "            hy[i] = 2.0f;\n"
         "        }\n"
-        "        GpuBuffer<float32> x = heap GpuBuffer<float32>(0, n);\n"
-        "        GpuBuffer<float32> y = heap GpuBuffer<float32>(0, n);\n"
+        "        KernelBuffer<float32> x = heap KernelBuffer<float32>(0, n);\n"
+        "        KernelBuffer<float32> y = heap KernelBuffer<float32>(0, n);\n"
         "        x.allocate();\n"
         "        y.allocate();\n"
         "        x.upload(hx);\n"
         "        y.upload(hy);\n"
-        "        GpuStream s = GpuStream.current();\n"
+        "        KernelStream s = KernelStream.current();\n"
         "        saxpy.launch(s, grid: [4], block: [256])(y, x, 2.0f, n);\n"
         "        s.sync();\n"
         "        y.download(hy);\n"

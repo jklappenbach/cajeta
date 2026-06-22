@@ -17,7 +17,7 @@ Four design choices, made deliberately:
    "CPU emulation" — `XpuLaunchTests.saxpyCpuEmulationEndToEnd` — is *not* an XPU
    backend; it compiles a `@Kernel` as an ordinary host method with an explicit
    `uint32 i` index param and a serial host loop. It cannot run a portable GPU-style
-   kernel (`GpuBuffer<T>` + `GpuThread.globalIdX()`), so it is the legacy path, separate from
+   kernel (`KernelBuffer<T>` + `KernelThread.globalIdX()`), so it is the legacy path, separate from
    this backend.)
 
 2. **Fall-to-CPU triggers on *availability at startup*, cached — no mid-run recovery.**
@@ -72,7 +72,7 @@ body is untouched. This is the same ~90% core, now spanning four backends.
   the grid→threads coordinate model above; `cpu::lowerKernel(method, module)` wrapper;
   `cpu::configureHostModule` (native triple + DataLayout) + `createCpuTargetMachine`.
 - Test `test/xpu/XpuCpuEmitTests.cpp` — lower the **portable** SAXPY
-  (`GpuBuffer<float32>` + `GpuThread.globalIdX()`) and assert: addrspace-0 buffer params, the
+  (`KernelBuffer<float32>` + `KernelThread.globalIdX()`) and assert: addrspace-0 buffer params, the
   9 trailing coordinate params, coordinate reads come from args (no `nvvm`/`amdgcn`/
   `spv` intrinsics), plain GEP, `ret void`. First CPU overlap data point.
 - Stretch (same increment if the JIT infra is light): `XpuCpuDeviceTests.cpp` —
@@ -285,7 +285,7 @@ that crosses an in-loop barrier**.
 - **The bug.** Fission widens a per-work-item local that lives across a barrier into a
   `[ntid.x × T]` context array, deciding "per-work-item" by tainting transitively from the
   work-item-index placeholder. But the taint walked **SSA def-use only**, and Cajeta lowers
-  `uint32 t = GpuThread.x()` as a *store to `t`'s slot* followed by a *load* at each use — so the
+  `uint32 t = KernelThread.x()` as a *store to `t`'s slot* followed by a *load* at each use — so the
   SSA chain breaks at the slot. A local like `int x = a[t] + a[(t+1)&255]` is therefore stored
   from a value the taint never reached; `x`'s slot stayed a **single scalar** shared by every
   work-item, so the last lane's `x` clobbered all others (lane 0 read the wrong value). The
@@ -410,7 +410,7 @@ GPU-idiomatic launch shapes. Inherited from the barrier-free 5C path; Inc 9 adds
 ## 3. Findings & limitations
 
 - **Inc 1 — landed 2026-05-30.** `CpuTarget` over the shared lowerer; the portable
-  SAXPY kernel (`GpuBuffer<float32>` + `GpuThread.globalIdX()`) lowers to a host function and
+  SAXPY kernel (`KernelBuffer<float32>` + `KernelThread.globalIdX()`) lowers to a host function and
   **runs correctly on the CPU** over a grid.
   - **The seam held with a single new fork: the coordinate *source*.** The CPU reuses
     `materializeParam`, `bufferElementPtr`, and `globalId`'s default verbatim — the only
@@ -418,7 +418,7 @@ GPU-idiomatic launch shapes. Inherited from the barrier-free 5C path; Inc 9 adds
     and the three coordinate reads (pull from those args). The body walk is untouched —
     the same ~90% core now spans four backends.
   - **The existing "CPU emulation" is confirmed orthogonal.** It compiles a `@Kernel` as
-    an ordinary host method with an explicit index param; it cannot run a `GpuThread.x()`-
+    an ordinary host method with an explicit index param; it cannot run a `KernelThread.x()`-
     style portable kernel. `CpuTarget` is the actual portable path.
   - Wave ops are width-1 (honest single-lane), barriers raise `XPU-N01` — both as
     designed; Inc 5/6 lift them.
@@ -444,7 +444,7 @@ GPU-idiomatic launch shapes. Inherited from the barrier-free 5C path; Inc 9 adds
     single-backend behavior (and `--xpu-arch`) is preserved, multi-backend uses
     per-backend default arches.
 - **Inc 3 — landed 2026-05-31.** `CpuDriver` launches a registered kernel **by name**
-  over a grid, serial. A portable SAXPY (`GpuBuffer<float32>` + `GpuThread.globalIdX()`) lowers,
+  over a grid, serial. A portable SAXPY (`KernelBuffer<float32>` + `KernelThread.globalIdX()`) lowers,
   registers, and runs correctly on the CPU end-to-end through the runtime registry.
   - **The launcher-thunk is the measured CPU launch fork.** GPU drivers hand a flat
     `void** kernelParams` to `cuLaunchKernel`/`hipModuleLaunchKernel`, which the hardware
@@ -481,7 +481,7 @@ GPU-idiomatic launch shapes. Inherited from the barrier-free 5C path; Inc 9 adds
     the runtime's in-C CUDA — a deliberately duplicated pattern, not redundancy.
   - **One cached selector, then per-backend branches.** `cajeta_xpu_active_backend()` picks
     the highest-priority backend that is both bundled and available (env-forceable), caches
-    it, and every device entry point switches on it. The int64 `GpuBuffer<T>` handle is
+    it, and every device entry point switches on it. The int64 `KernelBuffer<T>` handle is
     backend-specific (CUDA/HIP device ptr, Vulkan buffer index, CPU host block) but coherent
     within a run because the backend is fixed at first device touch (locked decision #2 — a
     GPU lost mid-run is a hard error, not a silent CPU re-run).
@@ -521,7 +521,7 @@ GPU-idiomatic launch shapes. Inherited from the barrier-free 5C path; Inc 9 adds
     the Vulkan registration ctor from the shared `collectKernelParamInfo`) and **(2) an
     argv→descriptor-set translation** in the launch: buffer args bind their storage buffers,
     scalar args are copied into transient SSBOs (allocated, bound, freed per dispatch).
-  - **The Vulkan buffer handle is a table index, not a pointer** — `GpuBuffer<T>.deviceHandle`
+  - **The Vulkan buffer handle is a table index, not a pointer** — `KernelBuffer<T>.deviceHandle`
     on Vulkan is a 1-based slot in the runtime's `VkBuffer`/`VkDeviceMemory`/mapped table;
     upload/download memcpy through the host-coherent mapping. The per-run-fixed backend keeps
     the handle's meaning consistent (decision #2).
@@ -564,35 +564,35 @@ runs anywhere with no GPU). `./run-gpu.sh amdgpu,cpu` / `vulkan,cpu` target a de
 CPU fallback; `CAJETA_XPU_BACKEND=cpu ./run-gpu.sh amdgpu,cpu` forces the fall-to-CPU path
 on a box that has the GPU. It sits beside the stdlib/language tour in `samples/tour/`.
 
-## 5. `GpuBuffer<T>` is RAII (2026-05-31)
+## 5. `KernelBuffer<T>` is RAII (2026-05-31)
 
-The XPU tour exposed that `GpuBuffer<T>` used a manual `allocate()`/`free()` pattern with **no
+The XPU tour exposed that `KernelBuffer<T>` used a manual `allocate()`/`free()` pattern with **no
 destructor** — the drop chain freed the 16-byte handle struct but the device memory leaked
 unless you remembered `free()`, working *against* the language. It also diverged from the
 stdlib's own resource-handle convention (`FileReader`/`File`/`Path`: acquire in the ctor,
 release in `~Dtor()`, idempotent `close()` as an escape hatch). Reworked to match:
 
-- **`heap GpuBuffer<T>(n)`** allocates device memory in the constructor; **`~GpuBuffer()`** frees
+- **`heap KernelBuffer<T>(n)`** allocates device memory in the constructor; **`~KernelBuffer()`** frees
   it via the drop chain at scope exit. `free()`/`allocate()` are now idempotent + null-
   guarded escape hatches. Move-out (`#buf`) transfers ownership (the source's drop entry is
   marked inactive, so its destructor no-ops). The tour uses the RAII form — no
   `allocate()`/`free()` — and runs identically on CPU, AMD (HIP), and Vulkan (RADV).
-- Resize isn't a GpuBuffer concern: GPU buffers are fixed-size; a different size is just a new
-  `heap GpuBuffer<T>(m)` (the old one drops). So in-place re-allocate is a rarely-needed escape
+- Resize isn't a KernelBuffer concern: GPU buffers are fixed-size; a different size is just a new
+  `heap KernelBuffer<T>(m)` (the old one drops). So in-place re-allocate is a rarely-needed escape
   hatch, not the model.
 
-**Launch-borrow gate extended (XPU-K02).** A `kernel.launch(...)` borrows each GpuBuffer until
-`GpuStream.sync()`. The checker already errored on an explicit `free()` before sync; with a
+**Launch-borrow gate extended (XPU-K02).** A `kernel.launch(...)` borrows each KernelBuffer until
+`KernelStream.sync()`. The checker already errored on an explicit `free()` before sync; with a
 destructor, an *implicit drop* before sync is the same use-after-free. `Method::destroyScope`
-now also gates it: an owned, launch-borrowed GpuBuffer that leaves scope before a sync is
+now also gates it: an owned, launch-borrowed KernelBuffer that leaves scope before a sync is
 XPU-K02. Only owned locals with a live drop entry trip it — borrowed params and `#`-moved
 buffers are skipped, and a sync clears the borrow, so there are no false positives (verified:
 `XpuLaunchBorrowTests.dropBeforeSyncRejected` / `dropAfterSyncAccepted`).
 
 **Two compiler bugs fixed in passing:**
-- **Generic-class destructor names.** `~GpuBuffer()` was rejected because the validator compared
-  the declared name against the *monomorphized* type name (`GpuBuffer<float32>`) rather than the
-  base name. `GpuBuffer<T>` is the first generic stdlib class with a user destructor, so nothing
+- **Generic-class destructor names.** `~KernelBuffer()` was rejected because the validator compared
+  the declared name against the *monomorphized* type name (`KernelBuffer<float32>`) rather than the
+  base name. `KernelBuffer<T>` is the first generic stdlib class with a user destructor, so nothing
   had exercised it. Fix: strip the `<…>` type arguments before comparing
   (`CajetaLlvmVisitor.h`).
 - **Stale-stdlib gotcha (recorded).** The stdlib `.cajeta` sources are *embedded into the

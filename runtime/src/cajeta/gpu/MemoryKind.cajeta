@@ -1,9 +1,9 @@
 package cajeta.gpu;
 
 /**
- * Memory residency of a {@link GpuBuffer} — where the device storage physically
+ * Memory residency of a {@link KernelBuffer} — where the device storage physically
  * lives and how the host and device share it. Selected once at construction
- * (`heap GpuBuffer<float32>(n, MemoryKind.Unified)`); the default constructor uses
+ * (`heap KernelBuffer<float32>(n, MemoryKind.Unified)`); the default constructor uses
  * {@link #Device}, preserving the original explicit-transfer model.
  *
  * This mirrors {@link TextureFormat}: a single clean axis whose **ordinal is the
@@ -20,7 +20,7 @@ package cajeta.gpu;
  *   - {@link #Pinned} — page-locked, device-accessible host memory (CUDA/HIP
  *     "host alloc"). Faster, asynchronous DMA than pageable host memory, and the
  *     kernel can read it directly via the unified address space. Use {@link
- *     GpuBuffer#hostStore}/{@link GpuBuffer#hostLoad} for zero-copy host access.
+ *     KernelBuffer#hostStore}/{@link KernelBuffer#hostLoad} for zero-copy host access.
  *   - {@link #Unified} — managed memory backed by one pointer the host AND device
  *     both address (CUDA/HIP "managed alloc"). On an integrated GPU/APU (e.g.
  *     Strix Halo, where CPU and GPU share physical RAM) this is genuine

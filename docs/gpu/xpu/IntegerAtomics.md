@@ -1,7 +1,7 @@
 # Integer atomics: the universal concurrency primitive
 
 Where [float atomics](FloatAtomics.md) cover lock-free *reductions*, integer
-atomics on `GpuBuffer<int32>` / `GpuBuffer<uint32>` are the broader concurrency
+atomics on `KernelBuffer<int32>` / `KernelBuffer<uint32>` are the broader concurrency
 toolkit — counters, histograms, bitsets, flags, work queues, and (with
 compare-exchange) arbitrary lock-free updates. Every form is one hardware
 instruction that returns the **old** value.
@@ -25,8 +25,8 @@ forms are **core** — no extension, on every backend.
 
 ```
 @Kernel
-public static void histogram(GpuBuffer<uint32> bins, GpuBuffer<uint32> data, uint32 n) {
-    uint32 i = GpuThread.globalIdX();
+public static void histogram(KernelBuffer<uint32> bins, KernelBuffer<uint32> data, uint32 n) {
+    uint32 i = KernelThread.globalIdX();
     if (i < n) {
         bins.atomicAdd(data[i], 1);   // ++bins[data[i]] atomically
     }
@@ -78,7 +78,7 @@ acc.atomicAdd(0, 1);     // a Workgroup-scope LDS atomic, not a global one
 The atomic's **memory scope follows the pointer's storage**: a `shared` array is
 Workgroup storage (LLVM addrspace 3), so its atomics emit at **Workgroup** scope
 (`ds_add_u32` on AMD; `OpAtomicIAdd` with Workgroup scope on Vulkan), while a
-global `GpuBuffer<T>` atomic stays at Device scope. The scope is derived from the
+global `KernelBuffer<T>` atomic stays at Device scope. The scope is derived from the
 pointer address space — no separate API. Device-verified on RADV + gfx1151
 (`Xpu*SharedDeviceTests.sharedAtomicCounterRunsOnDevice`).
 
@@ -135,7 +135,7 @@ cast); upstream-reportable.
 
 ---
 
-**Rules.** `GpuBuffer<int32|uint32>.atomic{Add,Sub,Min,Max,And,Or,Xor,Exchange}
+**Rules.** `KernelBuffer<int32|uint32>.atomic{Add,Sub,Min,Max,And,Or,Xor,Exchange}
 (index, value)` and `.atomicCompareExchange(index, expected, desired)` are
 device atomic read-modify-writes returning the old value — core
 `OpAtomicI*`/`OpAtomicCompareExchange` (no extension), Device scope +

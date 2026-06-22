@@ -660,6 +660,38 @@ set_source_files_properties(${CAJETA_STDLIB_EMBED} PROPERTIES GENERATED TRUE)
 list(APPEND GENERATED_SOURCES ${CAJETA_STDLIB_EMBED})
 # ------------------------------------------------------------------------------
 
+# --- Embedded stdlib SKILL corpus (skill-discovery §2.4/§2.5) ----------------
+# A tiny host codegen tool (links libzstd) packs every
+# runtime/src/cajeta/<pkg>/skills/*.md into ONE zstd-compressed blob, embedded
+# into the compiler so stdlib skills are ALWAYS available (no .cja / lockfile)
+# while the binary carries them compressed. Decompressed on first access by
+# src/cajeta/buildtool/skill/EmbeddedStdlibSkills.cpp.
+add_executable(skillembed ${PROJECT_SOURCE_DIR}/tools/skillembed/SkillEmbed.cpp)
+target_link_libraries(skillembed PRIVATE zstd::libzstd_shared)
+
+file(GLOB CAJETA_STDLIB_SKILLS CONFIGURE_DEPENDS
+     ${CAJETA_STDLIB_ROOT}/cajeta/*/skills/*.md)
+list(SORT CAJETA_STDLIB_SKILLS)
+list(LENGTH CAJETA_STDLIB_SKILLS CAJETA_STDLIB_SKILLS_COUNT)
+set(CAJETA_STDLIB_SKILLS_EMBED ${CMAKE_CURRENT_BINARY_DIR}/cajeta_stdlib_skills_embedded.cpp)
+set(CAJETA_STDLIB_SKILLS_MANIFEST ${CMAKE_CURRENT_BINARY_DIR}/cajeta_stdlib_skills_manifest.txt)
+file(WRITE "${CAJETA_STDLIB_SKILLS_MANIFEST}" "")
+foreach(skill_path ${CAJETA_STDLIB_SKILLS})
+    file(APPEND "${CAJETA_STDLIB_SKILLS_MANIFEST}" "${skill_path}\n")
+endforeach()
+
+add_custom_command(
+    OUTPUT ${CAJETA_STDLIB_SKILLS_EMBED}
+    COMMAND skillembed ${CAJETA_STDLIB_SKILLS_MANIFEST} ${CAJETA_STDLIB_ROOT}
+            ${CAJETA_STDLIB_SKILLS_EMBED}
+    DEPENDS skillembed ${CAJETA_STDLIB_SKILLS} ${CAJETA_STDLIB_SKILLS_MANIFEST}
+    COMMENT "Embedding ${CAJETA_STDLIB_SKILLS_COUNT} stdlib skills (zstd) into ${CAJETA_STDLIB_SKILLS_EMBED}"
+    VERBATIM
+)
+set_source_files_properties(${CAJETA_STDLIB_SKILLS_EMBED} PROPERTIES GENERATED TRUE)
+list(APPEND GENERATED_SOURCES ${CAJETA_STDLIB_SKILLS_EMBED})
+# ------------------------------------------------------------------------------
+
 # --- Embedded IntelliJ IDEA plugin (plan §7) ---------------------------------
 # Embed the plugin distribution zip into the compiler binary via xxd -i (same
 # mechanism as the runtime bitcode), so `cajeta ide install` can extract it

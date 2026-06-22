@@ -1,0 +1,98 @@
+package mcp;
+
+import cajeta.io.file.FileReader;
+import cajeta.io.file.FileWriter;
+
+/**
+ * stdio JSON-RPC transport — newline-delimited framing over fd 0/1.
+ *
+ * `readMessage()` is the transport seam the dispatch loop is driven over: it
+ * yields one request line's bytes (no trailing '\n'), or null at EOF, hiding the
+ * read / grow / shift buffer bookkeeping that used to live inline in `main`.
+ * Responses are framed by the handlers' `JsonWriter.writeLineTo(out)` (the '\n'
+ * is the message boundary). The Streamable-HTTP transport (mcp-compression
+ * unit 2) implements the same `readMessage` seam over request bodies, with a
+ * buffering response sink layered on top.
+ */
+public class StdioTransport {
+    FileReader in;
+    public FileWriter out;
+    int8[] buf;
+    int32 cap;
+    int32 buflen;
+    int8[] chunk;
+
+    public StdioTransport(int32 inFd, int32 outFd) {
+        this.in = heap FileReader(inFd);
+        this.out = heap FileWriter(outFd);
+        this.cap = 65536;
+        this.buf = heap int8[65536];
+        this.buflen = 0;
+        this.chunk = heap int8[65536];
+    }
+
+    /**
+     * Next non-empty request line's bytes (no trailing '\n'), or null at EOF.
+     * Blank lines are skipped (no message). Reads more from `in` until a newline
+     * is buffered, growing `buf` on demand and shifting the remainder down after
+     * each extracted line.
+     */
+    public #int8[] readMessage() {
+        boolean searching = true;
+        while (searching) {
+            int32 nl = Server.findNewline(this.buf, this.buflen);
+            if (nl < 0) {
+                // The intrinsic FileReader.read only loads alloca (local) args —
+                // a field array reaches the runtime as a raw pointer and reads
+                // 0 bytes (same lowering quirk as FileWriter.write). Hoist first.
+                FileReader rd = this.in;
+                int8[] ch = this.chunk;
+                int32 n = rd.read(ch, 65536);
+                if (n <= 0) {
+                    return null;
+                }
+                if (this.buflen + n > this.cap) {
+                    int32 newCap = this.cap * 2;
+                    while (newCap < this.buflen + n) {
+                        newCap = newCap * 2;
+                    }
+                    int8[] grown = heap int8[newCap];
+                    int32 k = 0;
+                    while (k < this.buflen) {
+                        grown[k] = this.buf[k];
+                        k = k + 1;
+                    }
+                    this.buf = #grown;
+                    this.cap = newCap;
+                }
+                int32 i = 0;
+                while (i < n) {
+                    this.buf[this.buflen + i] = ch[i];
+                    i = i + 1;
+                }
+                this.buflen = this.buflen + n;
+            } else {
+                int8[] line = null;
+                if (nl > 0) {
+                    line = heap int8[nl];
+                    int32 c = 0;
+                    while (c < nl) {
+                        line[c] = this.buf[c];
+                        c = c + 1;
+                    }
+                }
+                int32 rem = this.buflen - (nl + 1);
+                int32 s = 0;
+                while (s < rem) {
+                    this.buf[s] = this.buf[nl + 1 + s];
+                    s = s + 1;
+                }
+                this.buflen = rem;
+                if (line != null) {
+                    return #line;
+                }
+            }
+        }
+        return null;
+    }
+}

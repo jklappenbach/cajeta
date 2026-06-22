@@ -88,11 +88,11 @@ reports 16 on an AVX-512 CPU, 8 on AVX2, and 32/64 on a GPU:
 
 At first device touch the runtime picks the active backend among the **bundled**
 set (the manifest) ∩ the **available** set (it probes each), caches the choice,
-and routes the whole orchestration — the `GpuBuffer<T>` constructor (allocate) and
-destructor (free), `upload` / `kernel.launch` / `GpuStream.sync` / `download` — to
-it. `GpuBuffer<T>` is RAII: `heap GpuBuffer<T>(n)` allocates device memory and the drop
+and routes the whole orchestration — the `KernelBuffer<T>` constructor (allocate) and
+destructor (free), `upload` / `kernel.launch` / `KernelStream.sync` / `download` — to
+it. `KernelBuffer<T>` is RAII: `heap KernelBuffer<T>(n)` allocates device memory and the drop
 chain frees it at scope exit, so the demos never call `allocate()`/`free()` (a
-launch-borrowed buffer that would drop before `GpuStream.sync()` is a compile error,
+launch-borrowed buffer that would drop before `KernelStream.sync()` is a compile error,
 XPU-K02). If nothing is available it
 prints a precise *"no available backend among {…}; rebuild with `cpu`…"*
 diagnostic instead of crashing (explicit-only bundling is a build-time contract).
@@ -103,9 +103,9 @@ diagnostic instead of crashing (explicit-only bundling is a build-time contract)
 and one wave-cooperative kernel (correct everywhere, at the hardware's wave width):
 
 - `saxpy(y, x, a, n)` — `y[i] = a*x[i] + y[i]`, the canonical accelerator
-  "hello world". Uses **`heap GpuBuffer<T>(n)`**.
+  "hello world". Uses **`heap KernelBuffer<T>(n)`**.
 - `vecAdd(c, a, b, n)` — `c[i] = a[i] + b[i]`, element-wise. Uses
-  **`stack GpuBuffer<T>(n)`**.
+  **`stack KernelBuffer<T>(n)`**.
 - `transform(outx, outy, px, py, m, tx, ty, n)` — `out[i] = M·p[i] + t`, a 2-D
   affine transform that showcases the **intrinsic linear-algebra value types on
   the device**: a `Matrix<float32,2,2>` passed **by value** as a kernel parameter
@@ -176,15 +176,15 @@ and one wave-cooperative kernel (correct everywhere, at the hardware's wave widt
   16 (AVX-512), 8 (AVX2), 32 (NVIDIA), or 64 (AMD). With all-ones input each
   lane's wave-sum *is* the wave width, so the demo prints the width it discovered.
 
-The two demos deliberately use the two `GpuBuffer<T>` forms. `GpuBuffer<T>` is RAII —
-the constructor allocates device memory, `~GpuBuffer()` frees it via the drop chain
+The two demos deliberately use the two `KernelBuffer<T>` forms. `KernelBuffer<T>` is RAII —
+the constructor allocates device memory, `~KernelBuffer()` frees it via the drop chain
 at scope exit, and `#buf` transfers ownership. The handle is a fixed 24-byte
 struct `{ptr, deviceHandle, elementCount}`; the element count sizes the *device*
-allocation, which lives off-stack — so `stack GpuBuffer<T>(n)` reserves only the
+allocation, which lives off-stack — so `stack KernelBuffer<T>(n)` reserves only the
 handle on the frame (like a `std::vector` / Rust `Vec` header on the stack over
 off-stack data) and is the cheaper, preferred form for the common same-scope
 case. `heap` is for handles that must outlive the frame (returned/stored/moved).
-A launch-borrowed buffer that would drop before `GpuStream.sync()` is a compile
+A launch-borrowed buffer that would drop before `KernelStream.sync()` is a compile
 error (XPU-K02) for either form.
 
 `block = 64` is used because Vulkan bakes its workgroup size into the SPIR-V at 64;

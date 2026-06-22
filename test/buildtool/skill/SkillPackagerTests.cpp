@@ -14,7 +14,9 @@
 #include <llvm/Support/Path.h>
 #include <llvm/Support/raw_ostream.h>
 
+#include <cstdint>
 #include <fstream>
+#include <iterator>
 #include <string>
 
 using cajeta::CajetaArchive;
@@ -98,6 +100,55 @@ TEST(SkillPackagerTests, packagesSkillsIntoArchive) {
     auto ids = idx->query("cajeta/io/A", false);
     ASSERT_EQ(ids.size(), 1u);
     EXPECT_EQ(ids[0], "alpha");
+
+    llvm::sys::fs::remove_directories(out);
+}
+
+// F.1.1 — compression protocol (spec §2.4): skill members are stored
+// zstd-compressed in the .cja and returned decompressed by the reader. Guards
+// that skill members ride the archive's entry-compression path unchanged.
+TEST(SkillPackagerTests, skillMembersStoredCompressedDecompressedOnRead) {
+    TempPackage pkg;
+    // Large, highly compressible body so zstd definitely shrinks it and the
+    // plaintext cannot appear verbatim on disk.
+    const std::string sentinel = "CAJETA_SKILL_COMPRESSION_SENTINEL repeated line\n";
+    std::string body;
+    for (int i = 0; i < 4000; ++i) body += sentinel;
+    const std::string full =
+        "---\nid: big\napplies-to: [cajeta/io/Big]\ntitle: Big\n---\n" + body;
+    pkg.write("skills/big.md", full);
+
+    CajetaArchive arc("pkg", "1.0.0", CajetaArchive::Kind::Cja);
+    ASSERT_FALSE((bool)addSkillMembersToArchive(arc, pkg.path()));
+
+    llvm::SmallString<128> out;
+    llvm::sys::fs::createUniqueDirectory("cajeta-cja", out);
+    std::string cja = (out + "/pkg.cja").str();
+    arc.writeTo(cja);
+
+    // Raw on-disk bytes.
+    std::ifstream in(cja, std::ios::binary);
+    std::string raw((std::istreambuf_iterator<char>(in)),
+                    std::istreambuf_iterator<char>());
+    in.close();
+    ASSERT_GE(raw.size(), (size_t) 16);
+
+    // (a) the entries-compressed flag is set (flags u32 at header offset 12, LE).
+    uint32_t flags = (uint8_t) raw[12] | ((uint8_t) raw[13] << 8)
+                   | ((uint8_t) raw[14] << 16) | ((uint8_t) raw[15] << 24);
+    EXPECT_NE(flags & 0x2u, 0u) << "FLAG_ENTRIES_COMPRESSED must be set";
+
+    // (b) genuinely compressed on disk: plaintext sentinel absent, file tiny.
+    EXPECT_EQ(raw.find(sentinel), std::string::npos)
+        << "skill body must be compressed, not stored verbatim";
+    EXPECT_LT(raw.size(), body.size() / 4);
+
+    // (c) transparent decompression on read.
+    CajetaArchive read = CajetaArchive::readFrom(cja);
+    const auto* e = read.findEntry("skills/big.md");
+    ASSERT_NE(e, nullptr);
+    std::string got(e->data.begin(), e->data.end());
+    EXPECT_EQ(got, full) << "reader must return the decompressed payload verbatim";
 
     llvm::sys::fs::remove_directories(out);
 }

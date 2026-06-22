@@ -185,23 +185,65 @@ TEST(CajetaMcpServerTests, lifecycleAndErrors) {
     EXPECT_EQ(r[3].at("error").at("code").asInt(), -32700);
 }
 
-// C2.1.3 + mechanism — skill tools validate params and return well-formed,
-// shape-correct results. (A real-uri assertion needs an on-disk skill fixture
-// with a cajeta.lock; without one in cwd the cores return empty sets, which is
-// what we assert here. Real-fixture coverage is a follow-up.)
-TEST(CajetaMcpServerTests, skillToolsValidationAndShape) {
+// mcp-compression U1 — the transport seam (StdioTransport.readMessage) frames
+// requests independently of dispatch: blank lines between framed requests are
+// skipped, and each request still gets exactly one framed response in order.
+TEST(CajetaMcpServerTests, transportSeamSkipsBlankLinesAndFrames) {
+    if (!ensureServerBuilt()) return;
+    auto r = drive(
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n"
+        "\n"
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n");
+    ASSERT_EQ(r.size(), 2u);
+    EXPECT_EQ(r[0].at("id").asInt(), 1);
+    EXPECT_EQ(r[1].at("id").asInt(), 2);
+    EXPECT_TRUE(r[1].at("result").has("tools"));
+}
+
+// C2.1.3 — skill tools validate their params (missing name / missing uris).
+TEST(CajetaMcpServerTests, skillToolsValidation) {
     if (!ensureServerBuilt()) return;
     auto r = drive(
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\","
         "\"params\":{\"name\":\"searchSkills\",\"arguments\":{}}}\n"
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\","
-        "\"params\":{\"name\":\"searchSkills\",\"arguments\":{\"name\":\"cajeta/io/File\"}}}\n"
-        "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\","
         "\"params\":{\"name\":\"getSkills\",\"arguments\":{}}}\n");
-    ASSERT_EQ(r.size(), 3u);
+    ASSERT_EQ(r.size(), 2u);
     EXPECT_EQ(r[0].at("error").at("code").asInt(), -32602);   // missing name
-    EXPECT_TRUE(r[1].at("result").at("results").isArray());   // well-formed shape
-    EXPECT_EQ(r[2].at("error").at("code").asInt(), -32602);   // missing uris
+    EXPECT_EQ(r[1].at("error").at("code").asInt(), -32602);   // missing uris
+}
+
+// F.4.1 — the MCP skill tools shell out to the CLI, which always seeds the
+// embedded stdlib corpus (spec §2.5). So with NO project / cajeta.lock,
+// searchSkills surfaces a stdlib URI and getSkills returns its payload.
+TEST(CajetaMcpServerTests, skillToolsReturnStdlibWithNoProject) {
+    if (!ensureServerBuilt()) return;
+    auto r = drive(
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\","
+        "\"params\":{\"name\":\"searchSkills\",\"arguments\":{\"name\":\"cajeta.process\"}}}\n"
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{"
+        "\"name\":\"getSkills\",\"arguments\":{\"uris\":["
+        "\"cja-skill://cajeta.process@1.0/process-overview\"]}}}\n");
+    ASSERT_EQ(r.size(), 2u);
+
+    // searchSkills → non-empty results carrying an embedded stdlib URI.
+    const Json& results = r[0].at("result").at("results");
+    ASSERT_TRUE(results.isArray());
+    ASSERT_GT(results.size(), 0u);
+    bool sawProcess = false;
+    for (size_t i = 0; i < results.size(); i++) {
+        const std::string uri = results[i].at("uri").asString();
+        if (uri.find("cja-skill://cajeta.process@") != std::string::npos) sawProcess = true;
+    }
+    EXPECT_TRUE(sawProcess);
+
+    // getSkills → the decompressed payload for the embedded URI.
+    const Json& skills = r[1].at("result").at("skills");
+    ASSERT_TRUE(skills.isArray());
+    ASSERT_EQ(skills.size(), 1u);
+    EXPECT_TRUE(skills[0].at("ok").asBool());
+    EXPECT_NE(skills[0].at("payload").asString().find("id: process-overview"),
+              std::string::npos);
 }
 
 // C3.1.1 — compile of a valid package ⇒ exitStatus 0, empty diagnostics, artifact present.

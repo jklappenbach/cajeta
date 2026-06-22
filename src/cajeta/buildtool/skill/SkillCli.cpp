@@ -4,6 +4,7 @@
 //
 #include "cajeta/buildtool/skill/SkillCli.h"
 
+#include "cajeta/buildtool/skill/EmbeddedStdlibSkills.h"
 #include "cajeta/buildtool/skill/SkillIndex.h"
 #include "cajeta/compile/CajetaArchive.h"
 
@@ -122,6 +123,11 @@ namespace cajeta::buildtool::skill {
         llvm::function_ref<std::optional<std::string>(llvm::StringRef)>
             lookupArtifact) {
         SkillSearchContext ctx;
+        // Always-available stdlib skills (spec §2.5): seed the embedded stdlib
+        // archives before any lockfile packages, so discovery returns stdlib
+        // skills with no project / lockfile / dependencies present.
+        const auto& embedded = embeddedStdlibSkillArchives();
+        ctx.archives.insert(ctx.archives.end(), embedded.begin(), embedded.end());
         for (const ResolvedPackageEntry& p : packages) {
             // Consumer-scoping map: a workspace member sees its own resolutions.
             if (!p.memberOwner.empty()) {

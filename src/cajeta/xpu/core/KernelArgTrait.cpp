@@ -19,10 +19,10 @@ namespace xpu {
 namespace {
 
 // Buffer<T> instantiations have canonical names of the form
-// "cajeta.gpu.GpuBuffer<...>". The plain template (uninstantiated)
-// is just "cajeta.gpu.GpuBuffer". Match the prefix to admit both.
+// "cajeta.gpu.KernelBuffer<...>". The plain template (uninstantiated)
+// is just "cajeta.gpu.KernelBuffer". Match the prefix to admit both.
 bool isBufferInstantiation(const std::string& canonical) {
-    static const std::string kPrefix = "cajeta.gpu.GpuBuffer";
+    static const std::string kPrefix = "cajeta.gpu.KernelBuffer";
     if (canonical.size() < kPrefix.size()) return false;
     if (canonical.compare(0, kPrefix.size(), kPrefix) != 0) return false;
     // Exact match or `Buffer<...>` follow-on
@@ -273,7 +273,7 @@ void validateKernelParams(const MethodPtr& method) {
                 << (t ? t->toCanonical() : std::string("<unknown>"))
                 << "' which is not admissible as a kernel argument. "
                 << "Admissible types: primitives, "
-                << "cajeta.gpu.GpuBuffer<T>, cajeta.gpu.Texture2D, "
+                << "cajeta.gpu.KernelBuffer<T>, cajeta.gpu.Texture2D, "
                 << "cajeta.gpu.Image2D, cajeta.gpu.Sampler, "
                 << "cajeta.gpu.AccelerationStructure, POD structs (a class with "
                 << "only primitive fields and no inheritance), or any type "

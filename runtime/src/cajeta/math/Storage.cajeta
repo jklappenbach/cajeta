@@ -1,6 +1,6 @@
 package cajeta.math;
 
-import cajeta.gpu.GpuBuffer;
+import cajeta.gpu.KernelBuffer;
 
 /**
  * `Storage<T>` — the owning host backing of a `Tensor<T>` (tensor-spec.md §4).
@@ -11,7 +11,7 @@ import cajeta.gpu.GpuBuffer;
  *
  * ## Device residency (Phase 6)
  * A `Storage` also carries an optional **device mirror** — a `cajeta.gpu`
- * `GpuBuffer<T>` (null until first placed on a device). {@link #toDevice} mirrors
+ * `KernelBuffer<T>` (null until first placed on a device). {@link #toDevice} mirrors
  * the host buffer onto the device and flips `onDevice`; {@link #toHost} brings it
  * back. This is the host side of the op-dispatch seam: an op reads
  * {@link #isOnDevice}/{@link #deviceBuffer} to pick its CPU vs GPU path. v1 policy
@@ -23,7 +23,7 @@ import cajeta.gpu.GpuBuffer;
 public class Storage<T> {
     T[] host;
     int64 length;
-    GpuBuffer<T> dev;       // device mirror; null until placed on a device
+    KernelBuffer<T> dev;       // device mirror; null until placed on a device
     boolean onDevice;       // true when the live data is on the device
 
     /** Allocate a zero-initialized host buffer of `length` elements (host-resident). */
@@ -50,7 +50,7 @@ public class Storage<T> {
     }
 
     /**
-     * Mirror the host buffer onto the device (allocating the `GpuBuffer` on first
+     * Mirror the host buffer onto the device (allocating the `KernelBuffer` on first
      * call) and mark the data device-resident. Idempotent. Eager-transfer (v1).
      */
     public void toDevice() {
@@ -58,7 +58,7 @@ public class Storage<T> {
             return;
         }
         if (this.dev == null) {
-            this.dev = heap GpuBuffer<T>((uint64) this.length);
+            this.dev = heap KernelBuffer<T>((uint64) this.length);
         }
         this.dev.upload(this.host);
         this.onDevice = true;
@@ -79,7 +79,7 @@ public class Storage<T> {
     }
 
     /** The device buffer (null until {@link #toDevice}) — for the op-dispatch seam. */
-    public GpuBuffer<T> deviceBuffer() {
+    public KernelBuffer<T> deviceBuffer() {
         return this.dev;
     }
 }

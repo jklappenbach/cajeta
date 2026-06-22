@@ -8,6 +8,7 @@
 #include "cajeta/buildtool/Manifest.h"
 #include "cajeta/buildtool/ManifestEditor.h"
 #include "cajeta/buildtool/Melt.h"
+#include "cajeta/buildtool/OllaStore.h"
 #include "cajeta/buildtool/Properties.h"
 #include "cajeta/buildtool/Provenance.h"
 #include "cajeta/buildtool/Reproducibility.h"
@@ -2264,26 +2265,147 @@ namespace cajeta::buildtool {
         // the archive into the user's local cache lives alongside
         // the existing ArtifactCache and lands when first-party
         // package consumption flows do.
-        int installCommand(int argc, const char* argv[]) {
-            if (argc < 3) {
-                std::cerr << "Usage: cajeta install <archive> "
-                             "[--require-signature] [--require-attestation]\n";
+        // `cajeta install` (no archive arg): build the current project's
+        // library .cja and install it into the local ~/.olla repository
+        // (the Maven `mvn install` analog). Errors if the project builds an
+        // executable (declares an entry-method) rather than a library.
+        int installProjectMode(const std::string& ollaRoot) {
+            namespace fs = std::filesystem;
+            const std::string manifestPath = "./cajeta.json";
+            auto m = loadManifestFile(manifestPath);
+            if (!m) {
+                std::string msg; llvm::raw_string_ostream os(msg);
+                os << m.takeError();
+                std::cerr << "cajeta install: " << msg << "\n";
                 return 1;
             }
-            std::string archive = argv[2];
+            auto sb = parseSettingsBuild(*m);
+            if (!sb) {
+                std::string msg; llvm::raw_string_ostream os(msg);
+                os << sb.takeError();
+                std::cerr << "cajeta install: " << msg << "\n";
+                return 1;
+            }
+            if (sb->entryMethod.has_value()) {
+                std::cerr << "cajeta install: only libraries can be installed "
+                             "into ~/.olla; this project declares an entry-method "
+                             "('" << *sb->entryMethod << "') and builds an "
+                             "executable, not a .cja library\n";
+                return 1;
+            }
+            const std::string name = m->details.name;
+            const std::string version = m->details.version;
+
+            // Build the project (its `build` task), capturing the artifact path.
+            PropertyOverrides overrides;
+            loadEnvOverrides(overrides);
+            auto project = loadProject(manifestPath, overrides);
+            if (!project) {
+                std::string msg; llvm::raw_string_ostream os(msg);
+                os << project.takeError();
+                std::cerr << "cajeta install: " << msg << "\n";
+                return 1;
+            }
+            ActionRegistry registry;
+            TaskInvocationParams cliParams;
+            auto outputs = runTask(project->tasks, "build", cliParams,
+                                   project->props, registry, &project->manifest);
+            if (!outputs) {
+                std::string msg; llvm::raw_string_ostream os(msg);
+                os << outputs.takeError();
+                std::cerr << "cajeta install: build failed — " << msg << "\n";
+                return 1;
+            }
+            std::string archivePath;
+            auto it = outputs->find("path");
+            if (it != outputs->end()) archivePath = it->second;
+            if (archivePath.empty()) {
+                std::string outDir = sb->outputDir.value_or("build");
+                archivePath = outDir + "/archive/" + name + "-" + version + ".cja";
+            }
+            if (!fs::exists(archivePath)) {
+                std::cerr << "cajeta install: built archive not found at '"
+                          << archivePath << "'\n";
+                return 1;
+            }
+            OllaStore store(ollaRoot);
+            auto installed = store.write(
+                name, version, archivePath,
+                std::optional<std::string>(manifestPath));
+            if (!installed) {
+                std::string msg; llvm::raw_string_ostream os(msg);
+                os << installed.takeError();
+                std::cerr << "cajeta install: " << msg << "\n";
+                return 1;
+            }
+            std::cout << "Installed " << name << "@" << version << " -> "
+                      << *installed << "\n";
+            return 0;
+        }
+
+        // Copy an already-verified archive into ~/.olla, deriving
+        // name/version from its `<name>-<version>.cja` filename (plus an
+        // optional sibling cajeta.json sidecar).
+        int installArchiveIntoOlla(const std::string& ollaRoot,
+                                   const std::string& archive) {
+            namespace fs = std::filesystem;
+            std::string stem = fs::path(archive).filename().string();
+            if (stem.size() > 4 &&
+                stem.compare(stem.size() - 4, 4, ".cja") == 0) {
+                stem = stem.substr(0, stem.size() - 4);
+            }
+            auto dash = stem.rfind('-');
+            if (dash == std::string::npos || dash == 0 ||
+                dash + 1 >= stem.size()) {
+                std::cerr << "cajeta install: cannot derive name/version from '"
+                          << archive << "' (expected <name>-<version>.cja)\n";
+                return 1;
+            }
+            std::string name = stem.substr(0, dash);
+            std::string version = stem.substr(dash + 1);
+            std::optional<std::string> sidecar;
+            auto sc = fs::path(archive).parent_path() / "cajeta.json";
+            if (fs::exists(sc)) sidecar = sc.string();
+            OllaStore store(ollaRoot);
+            auto installed = store.write(name, version, archive, sidecar);
+            if (!installed) {
+                std::string msg; llvm::raw_string_ostream os(msg);
+                os << installed.takeError();
+                std::cerr << "cajeta install: " << msg << "\n";
+                return 1;
+            }
+            std::cout << "Installed " << name << "@" << version << " -> "
+                      << *installed << "\n";
+            return 0;
+        }
+
+        int installCommand(int argc, const char* argv[]) {
+            namespace fs = std::filesystem;
+            // Modes: `cajeta install` (build cwd library → ~/.olla) and
+            // `cajeta install <archive.cja>` (verify the file, then → ~/.olla).
+            std::string archive;
             bool requireSig = false;
             bool requireAtt = false;
-            for (int i = 3; i < argc; ++i) {
+            for (int i = 2; i < argc; ++i) {
                 std::string_view a = argv[i];
                 if (a == "--require-signature") requireSig = true;
                 else if (a == "--require-attestation") requireAtt = true;
-                else {
+                else if (!a.empty() && a[0] == '-') {
                     std::cerr << "cajeta install: unknown argument '"
+                              << a << "'\n";
+                    return 1;
+                } else if (archive.empty()) {
+                    archive = std::string(a);
+                } else {
+                    std::cerr << "cajeta install: unexpected extra argument '"
                               << a << "'\n";
                     return 1;
                 }
             }
-            namespace fs = std::filesystem;
+            const std::string ollaRoot = OllaStore::resolveRoot();
+            if (archive.empty()) {
+                return installProjectMode(ollaRoot);
+            }
             if (!fs::exists(archive)) {
                 std::cerr << "cajeta install: archive not found: '"
                           << archive << "'\n";
@@ -2370,8 +2492,8 @@ namespace cajeta::buildtool {
                 std::cout << "Attestation: (none — not required)\n";
             }
 
-            std::cout << "OK — archive verified, ready to install\n";
-            return 0;
+            std::cout << "OK — archive verified\n";
+            return installArchiveIntoOlla(ollaRoot, archive);
         }
 
         // Phase 11: `cajeta verify-reproducible <archive-a>
@@ -2641,15 +2763,21 @@ namespace cajeta::buildtool {
             bool json = takeJsonFlag(tail);
             auto a = skill::parseSearchSkillArgs(tail);
             if (!a.valid) { std::cerr << skill::searchSkillUsage(); return 2; }
-            auto lf = readLockfile("./cajeta.lock");
-            if (!lf) {
-                std::cerr << "cajeta search-skill: " << llvm::toString(lf.takeError())
-                          << "\n";
-                return 1;
+            // Lockfile is optional: with none, discovery still returns the
+            // always-available embedded stdlib skills (spec §2.5).
+            std::vector<ResolvedPackageEntry> packages;
+            if (std::filesystem::exists("./cajeta.lock")) {
+                auto lf = readLockfile("./cajeta.lock");
+                if (!lf) {
+                    std::cerr << "cajeta search-skill: " << llvm::toString(lf.takeError())
+                              << "\n";
+                    return 1;
+                }
+                packages = std::move(lf->packagesTyped);
             }
             ArtifactCache cache(".");
             auto ctx = skill::loadSkillSearchContext(
-                lf->packagesTyped,
+                packages,
                 [&](llvm::StringRef s) { return cache.lookup(s.str()); });
             if (!ctx) {
                 std::cerr << "cajeta search-skill: " << llvm::toString(ctx.takeError())
@@ -2669,15 +2797,20 @@ namespace cajeta::buildtool {
             bool json = takeJsonFlag(tail);
             auto a = skill::parseListSkillsArgs(tail);
             if (!a.valid) { std::cerr << skill::listSkillsUsage(); return 2; }
-            auto lf = readLockfile("./cajeta.lock");
-            if (!lf) {
-                std::cerr << "cajeta list-skills: " << llvm::toString(lf.takeError())
-                          << "\n";
-                return 1;
+            // Lockfile optional (spec §2.5): embedded stdlib skills always listed.
+            std::vector<ResolvedPackageEntry> packages;
+            if (std::filesystem::exists("./cajeta.lock")) {
+                auto lf = readLockfile("./cajeta.lock");
+                if (!lf) {
+                    std::cerr << "cajeta list-skills: " << llvm::toString(lf.takeError())
+                              << "\n";
+                    return 1;
+                }
+                packages = std::move(lf->packagesTyped);
             }
             ArtifactCache cache(".");
             auto ctx = skill::loadSkillSearchContext(
-                lf->packagesTyped,
+                packages,
                 [&](llvm::StringRef s) { return cache.lookup(s.str()); });
             if (!ctx) {
                 std::cerr << "cajeta list-skills: " << llvm::toString(ctx.takeError())
@@ -2696,15 +2829,20 @@ namespace cajeta::buildtool {
             if (tail.size() < 2) { std::cerr << skill::getSkillsUsage(); return 2; }
             auto uris = skill::splitCommaUris(tail[1]);
             if (uris.empty()) { std::cerr << skill::getSkillsUsage(); return 2; }
-            auto lf = readLockfile("./cajeta.lock");
-            if (!lf) {
-                std::cerr << "cajeta get-skills: " << llvm::toString(lf.takeError())
-                          << "\n";
-                return 1;
+            // Lockfile optional (spec §2.5): embedded stdlib URIs resolve with none.
+            std::vector<ResolvedPackageEntry> packages;
+            if (std::filesystem::exists("./cajeta.lock")) {
+                auto lf = readLockfile("./cajeta.lock");
+                if (!lf) {
+                    std::cerr << "cajeta get-skills: " << llvm::toString(lf.takeError())
+                              << "\n";
+                    return 1;
+                }
+                packages = std::move(lf->packagesTyped);
             }
             ArtifactCache cache(".");
             auto results = skill::getSkills(
-                uris, lf->packagesTyped,
+                uris, packages,
                 [&](llvm::StringRef s) { return cache.lookup(s.str()); });
             bool anyErr = false;
             for (const auto& r : results) if (!r.ok()) anyErr = true;

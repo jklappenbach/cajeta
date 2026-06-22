@@ -5,7 +5,7 @@ package cajeta.gpu;
  *
  * Per CajetaXPU.md §3.1.1, @Kernel functions take only parameters
  * whose types satisfy this trait: primitives, POD structs,
- * GpuBuffer<T>, Texture<...>, Sampler, and @PushConstant structs
+ * KernelBuffer<T>, Texture<...>, Sampler, and @PushConstant structs
  * (Vulkan only).
  *
  * v1 surfaces the trait as a marker interface. Step 3 wires the

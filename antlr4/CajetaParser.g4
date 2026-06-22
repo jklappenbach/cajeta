@@ -684,7 +684,12 @@ arrayLiteral
 // `Type.<TypeArgs>name(args)` alternative — that form was removed in
 // favor of one syntax that mirrors `Type<args>` at the type-use site.
 methodCall
-    : identifier ('<' typeList '>')? '(' parameterList? ')'
+    // The optional type-arg list uses `typeArguments` (the same production as a
+    // type-use site `Foo<...>`), not `typeList`, so a method-level non-type
+    // (integer-constant) argument parses: `m<8>(args)` — `typeArgument` admits
+    // `integerLiteral` where `typeList`'s `typeType` does not. The visitor
+    // resolves an integerLiteral arg to a CajetaConstantType.
+    : identifier typeArguments? '(' parameterList? ')'
     | THIS '(' parameterList? ')'
     | SUPER '(' parameterList? ')'
     ;

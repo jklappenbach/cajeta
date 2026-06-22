@@ -1,7 +1,7 @@
 package cajeta.gpu;
 
 /**
- * GpuThread — per-thread coordinate builtins. Only meaningful inside
+ * KernelThread — per-thread coordinate builtins. Only meaningful inside
  * @Kernel / @Device functions. See CajetaXPU.md §3.2.
  *
  * Each backend's lowering substitutes these calls with the native
@@ -17,7 +17,7 @@ package cajeta.gpu;
  * Vulkan backends replace the call sites entirely before the
  * forwarder ever fires.
  */
-public final class GpuThread {
+public final class KernelThread {
 
     @Native("__cajeta_xpu_thread_x")
     public static uint32 x();
