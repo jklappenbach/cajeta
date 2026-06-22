@@ -5073,6 +5073,15 @@ namespace cajeta {
                     method->getMethodTypeArguments(), plist[k]->getName(),
                     lambdaFn, fnType, record);
                 if (!spec) continue;
+                // The specialized body references the lambda's fn (internal) and
+                // its closure record (private) — both module-LOCAL. So it MUST be
+                // emitted into the caller's module where they live, not the
+                // template's (stdlib) module. Otherwise the ThinLTO summary gets a
+                // cross-module reference to an internal symbol and ld.lld crashes
+                // in computeDeadSymbols. (Resolution module stays the template's;
+                // only the emit target moves — same split as a stdlib-template
+                // instantiation over a user type, MethodTemplateInstantiator.cpp.)
+                if (emitMod) spec->setEmitModule(emitMod);
                 CajetaClass* host = spec->getParent() ? spec->getParent().get() : this;
                 bringMethodTemplateInstantiationToLife(host, spec, emitMod);
                 methodArgs.erase(methodArgs.begin() + argPos);
