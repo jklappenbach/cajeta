@@ -1192,7 +1192,12 @@ TEST(DependencyTests, projectResolutionEndToEnd) {
     rmTree(homeDir);
 }
 
-TEST(DependencyTests, projectResolutionErrorsWhenDepsDeclaredButNoRepos) {
+TEST(DependencyTests, projectResolutionErrorsWhenDepUnavailableEverywhere) {
+    // With the implicit ~/.olla local repository always prepended,
+    // declaring a dep without any remote `repositories` is no longer an
+    // error by itself — it only fails when the dep is in neither the
+    // local store nor a remote. The error then names the package and
+    // the repos tried (which always includes "olla").
     auto m = mustLoad(R"({
         "details": { "name": "a.b", "version": "0.1" },
         "settings": {
@@ -1200,13 +1205,15 @@ TEST(DependencyTests, projectResolutionErrorsWhenDepsDeclaredButNoRepos) {
         }
     })");
     auto projectDir = makeTempDir("proj-norepo-proj");
-    auto homeDir    = makeTempDir("proj-norepo-home");
+    auto homeDir    = makeTempDir("proj-norepo-home");  // empty <home>/.olla
     auto resolved = resolveProjectDependencies(
         m, projectDir.string(), homeDir.string());
     ASSERT_FALSE((bool)resolved);
     auto msg = errorText(resolved.takeError());
-    EXPECT_NE(msg.find("repositories"), std::string::npos)
-        << "expected guidance toward settings.repositories, got: " << msg;
+    EXPECT_NE(msg.find("missing"), std::string::npos)
+        << "expected the missing package named, got: " << msg;
+    EXPECT_NE(msg.find("olla"), std::string::npos)
+        << "expected the olla local repo among those tried, got: " << msg;
     rmTree(projectDir);
     rmTree(homeDir);
 }

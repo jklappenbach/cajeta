@@ -1,6 +1,8 @@
 #include "cajeta/buildtool/Resolver.h"
 
 #include "cajeta/buildtool/Melt.h"
+#include "cajeta/buildtool/OllaStore.h"
+#include "cajeta/buildtool/repo/FilesystemRepository.h"
 #include "cajeta/buildtool/repo/GitRepository.h"
 #include "cajeta/buildtool/repo/TimingRepository.h"
 
@@ -883,15 +885,12 @@ namespace cajeta::buildtool {
 
         auto repoSpecs = parseRepositories(m);
         if (!repoSpecs) { closeTotal(); return repoSpecs.takeError(); }
-        // Deps are declared but no repos to fetch them from → hard error
-        // with a pointer at the user-fixable cause.
-        if (!deps->empty() && repoSpecs->empty()) {
-            closeTotal();
-            return err("settings.dependencies declares " +
-                       std::to_string(deps->size()) +
-                       " dependency(ies) but settings.repositories is "
-                       "empty — add at least one repository to fetch from");
-        }
+        // No early "deps but no repositories" error: the implicit
+        // ~/.olla local repository (prepended below) is always an
+        // available source, so a dependency satisfied by a prior
+        // `cajeta install` resolves with no declared remotes. A dep
+        // present neither locally nor remotely surfaces a clear
+        // per-package error from the pick step.
         // Remote drivers stage downloads under .cajeta/cache/downloads/
         // before the ArtifactCache content-addresses them. Living
         // under the project's own .cajeta keeps interrupted fetches
@@ -949,6 +948,15 @@ namespace cajeta::buildtool {
 
         auto overrides = parseOverrides(m);
         if (!overrides) { closeTotal(); return overrides.takeError(); }
+
+        // Local-first: prepend the implicit ~/.olla local repository as
+        // the highest-priority source. pickLowestForAll short-circuits
+        // on the first repo with a satisfying version, so a local hit
+        // never touches a declared remote. Root honors $OLLA_HOME, then
+        // homeOverride/$HOME (mirrors the workstation cache override).
+        repos->insert(repos->begin(),
+            std::make_shared<FilesystemRepository>(
+                "olla", OllaStore::resolveRoot(homeOverride)));
 
         // When timings are requested, decorate each repo with the
         // recording wrapper. `wrapWithTimings(...,nullptr)` is a
