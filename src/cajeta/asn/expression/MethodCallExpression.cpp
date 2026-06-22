@@ -2623,6 +2623,61 @@ namespace cajeta {
                     st->setAlignment(llvm::Align(1));
                     return st;
                 }
+                // --- float64 SIMD (Vector<float64,8> = 512-bit / AVX-512) ----
+                // The numeric-kernel path (matmul / dot-product) lives on these,
+                // the float64 analogue of vload8i64. Unlike vload8i64 (int8[] byte
+                // buffer, BYTE offset), these take a float64[] and an ELEMENT index
+                // -- the array header is `{ i64 size, [0 x double] data }`, so the
+                // data starts 8 bytes in and element idx is a double-stride GEP.
+                // simd-numeric-kernels-spec.md §2.
+                // vload8f64(float64[] arr, int32 idx) -> Vector<float64,8>.
+                if (ns == "Cajeta" && methodCallName == "vload8f64" && parameters.size() == 2) {
+                    auto* i8Ty = builder->getInt8Ty();
+                    auto* dblTy = builder->getDoubleTy();
+                    auto* v8 = llvm::FixedVectorType::get(dblTy, 8);
+                    llvm::Value* hdr = loadValue(0);
+                    llvm::Value* idx = loadValue(1);
+                    idx = builder->CreateIntCast(idx, builder->getInt64Ty(), /*isSigned=*/true);
+                    llvm::Value* data = builder->CreateGEP(
+                        i8Ty, hdr, builder->getInt64(8), "f64_data");
+                    llvm::Value* ptr = builder->CreateGEP(dblTy, data, idx, "v8f64_ptr");
+                    llvm::LoadInst* ld = builder->CreateLoad(v8, ptr, "vload8f64");
+                    ld->setAlignment(llvm::Align(1));
+                    resolvedType = CajetaVector::validateAndCreate(
+                        module, CajetaType::of("float64"), 8);
+                    return ld;
+                }
+                // vstore8f64(Vector<float64,8> v, float64[] arr, int32 idx).
+                if (ns == "Cajeta" && methodCallName == "vstore8f64" && parameters.size() == 3) {
+                    auto* i8Ty = builder->getInt8Ty();
+                    auto* dblTy = builder->getDoubleTy();
+                    llvm::Value* vec = loadValue(0);
+                    llvm::Value* hdr = loadValue(1);
+                    llvm::Value* idx = loadValue(2);
+                    idx = builder->CreateIntCast(idx, builder->getInt64Ty(), /*isSigned=*/true);
+                    llvm::Value* data = builder->CreateGEP(
+                        i8Ty, hdr, builder->getInt64(8), "f64_data");
+                    llvm::Value* ptr = builder->CreateGEP(dblTy, data, idx, "v8f64_st_ptr");
+                    llvm::StoreInst* st = builder->CreateStore(vec, ptr);
+                    st->setAlignment(llvm::Align(1));
+                    return st;
+                }
+                // vsum8f64(Vector<float64,8> v) -> float64: horizontal sum. Uses a
+                // fast (reassociating) tree reduction -- the reduction order is not
+                // significant for these kernels (the dot-product check tolerates FP
+                // reassociation; matmul never reduces a vector).
+                if (ns == "Cajeta" && methodCallName == "vsum8f64" && parameters.size() == 1) {
+                    llvm::Value* vec = loadValue(0);
+                    llvm::Value* acc0 = llvm::ConstantFP::get(builder->getDoubleTy(), 0.0);
+                    llvm::Value* red = builder->CreateFAddReduce(acc0, vec);
+                    if (auto* inst = llvm::dyn_cast<llvm::Instruction>(red)) {
+                        llvm::FastMathFlags fmf;
+                        fmf.setFast();
+                        inst->setFastMathFlags(fmf);
+                    }
+                    resolvedType = CajetaType::of("float64");
+                    return red;
+                }
                 // vswapPairs(Vector<int64,8> v) -> Vector<int64,8>: swap adjacent
                 // lanes (0<->1, 2<->3, 4<->5, 6<->7) — XXH3's `acc[lane^1]` swap.
                 if (ns == "Cajeta" && methodCallName == "vswapPairs" && parameters.size() == 1) {
