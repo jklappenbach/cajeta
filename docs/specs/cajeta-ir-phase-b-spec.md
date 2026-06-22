@@ -16,10 +16,14 @@ mostly-measured* gaps that the same mechanism can reach — and gates the one ex
 unmeasured idea (a middle-end optimization pass) behind a probe.
 
 ### 1.2 Problem (what Phase A left, with evidence)
-- **Forwarding chains (MEASURED gap).** `binary-search` did **not** improve (~same, 3.61ms
-  before and after) because `binarySearch` *forwards* its comparator to `lowerBound`/
-  `upperBound`. The comparator escapes the directly-invoking frame, so Phase A's
-  escape-robust path keeps it indirect-on-constant rather than devirtualized.
+- **Forwarding chains (gap).** A specialized generic that passes its now-known comparator on
+  to ANOTHER generic callee leaves that forwarded call indirect — the comparator escapes the
+  directly-invoking frame, so Phase A's escape-robust path keeps it indirect-on-constant. The
+  most impactful instance is **recursion**: a quicksort/mergesort recurses forwarding its
+  comparator, so the recursive calls stay indirect. (Note: `binary-search`, initially assumed
+  to be a forwarding case, is NOT — `Sort.binarySearch` uses its comparator directly and is
+  memory-bound; its benchmark plateau is unrelated to dispatch. The real forwarding wins are
+  recursion + genuine helper chains.)
 - **Capturing lambdas (BLOCKED gap).** A lambda that captures state is not specialized; the
   Phase-A builder records the capture flag but the **frontend rejects captures entirely**
   (`Expression.h:589`), so the case is unreachable today.
@@ -75,16 +79,18 @@ When a specialized instance `F$fn` passes its now-known closure to another gener
   emit a forwarded specialization request `(G, types', P↦fn)` so `G` is specialized over the
   same known target.
 - 2.2 As the compiler, the forwarded closure value is statically known (it is the bound `fn`,
-  not a runtime value), so `G`'s specialization uses the same constant target — `binarySearch
-  $fn` forwards to `lowerBound$fn` / `upperBound$fn`, each with direct comparator calls.
+  not a runtime value), so `G`'s specialization uses the same constant target — including a
+  **recursive** call (a quicksort recursing with its comparator specializes the recursion).
 - 2.3 As the compiler, forwarding-chain specialization is **transitive but terminating**:
   follow forwarded-known-closure edges through the call graph, with a depth/visited guard so
-  a cycle or a deep chain can't loop or explode code size.
+  a cycle or a deep chain can't loop or explode code size (the instance cache also short-
+  circuits, since the AST instance is cached before its body codegens).
 - 2.4 As the compiler, when a forwarded call's closure operand is **not** statically known
-  (a runtime value, a different closure), the forwarded call is left indirect — only the
+  (a runtime value, a reassigned slot), the forwarded call is left indirect — only the
   known-closure edges propagate.
-- 2.5 As a developer, `binary-search` (and any forward-then-invoke generic) **measurably
-  improves** over the Phase-A baseline, with identical results.
+- 2.5 As a developer, a forward-then-invoke (or recursive) generic **measurably improves**
+  over the Phase-A baseline, with identical results — measured: sort ascending/descending
+  ~12-18% faster from the comparator recursion devirtualizing.
 
 ## 3. Feature: capturing-lambda specialization
 
