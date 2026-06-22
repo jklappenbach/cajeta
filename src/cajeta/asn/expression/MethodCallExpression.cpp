@@ -4405,6 +4405,73 @@ namespace cajeta {
             }
         }
 
+        // Host-array vectorized load/store — the width-generic parity surface
+        // for `Cajeta.vload8f64`/`vstore8f64` (kernel-vector-loadstore-spec.md
+        // §7). `arr.vload<N>(i)` / `arr.vstore(i, v)` on a CajetaArray receiver
+        // read identically to the kernel-buffer form (only the receiver type
+        // differs). The host array header is `{ i64 size, [0 x elem] data }`,
+        // so data starts at byte +8 and `i` is an element-stride GEP. T and N
+        // are generic: T from the array's element type, N from `<N>` (vload) or
+        // the value's vector width (vstore). A packed `<N x T>` memory op at the
+        // element's natural alignment (safe for any index) — the legacy
+        // fixed-name intrinsics remain as deprecated aliases above.
+        if (receiver && (methodCallName == "vload" || methodCallName == "vstore")) {
+            if (auto arrayType = dynamic_pointer_cast<CajetaArray>(receiverType)) {
+                auto* i8Ty = builder->getInt8Ty();
+                CajetaTypePtr elemCT = arrayType->getElementType();
+                llvm::Type* elemTy = elemCT->getLlvmType();
+                const llvm::DataLayout& dl =
+                    module->getLlvmModule()->getDataLayout();
+                llvm::Align elemAlign = dl.getABITypeAlign(elemTy);
+                auto evalArg = [&](size_t i) -> llvm::Value* {
+                    auto& p = parameters[i].expression;
+                    llvm::Value* v = p->generateCode(module);
+                    auto ast = dynamic_pointer_cast<Expression>(p);
+                    if (ast && !ast->getResolvedType()) ast->resolveTypes(module);
+                    return loadIfLValue(module, v, ast);
+                };
+
+                if (methodCallName == "vload" && parameters.size() == 1
+                        && explicitMethodTypeArgs.size() == 1) {
+                    auto cN = dynamic_pointer_cast<CajetaConstantType>(
+                        explicitMethodTypeArgs[0]);
+                    if (cN) {
+                        unsigned lanes = (unsigned) cN->getValue();
+                        llvm::Value* idx = builder->CreateIntCast(
+                            evalArg(0), builder->getInt64Ty(), /*isSigned=*/true);
+                        llvm::Value* data = builder->CreateGEP(
+                            i8Ty, receiver, builder->getInt64(8), "varr_data");
+                        llvm::Value* ptr = builder->CreateGEP(
+                            elemTy, data, idx, "vload_ptr");
+                        auto* vTy = llvm::FixedVectorType::get(elemTy, lanes);
+                        llvm::LoadInst* ld = builder->CreateLoad(vTy, ptr, "vload");
+                        ld->setAlignment(elemAlign);
+                        resolvedType = CajetaVector::validateAndCreate(
+                            module, elemCT, lanes);
+                        return ld;
+                    }
+                }
+
+                if (methodCallName == "vstore" && parameters.size() == 2) {
+                    llvm::Value* idx = builder->CreateIntCast(
+                        evalArg(0), builder->getInt64Ty(), /*isSigned=*/true);
+                    llvm::Value* vec = evalArg(1);
+                    if (!vec->getType()->isVectorTy()) {
+                        throw Exception(
+                            "'vstore' requires a Vector value; got a non-vector "
+                            "argument", "CAJETA_ERROR_VSTORE_NOT_VECTOR");
+                    }
+                    llvm::Value* data = builder->CreateGEP(
+                        i8Ty, receiver, builder->getInt64(8), "varr_data");
+                    llvm::Value* ptr = builder->CreateGEP(
+                        elemTy, data, idx, "vstore_ptr");
+                    llvm::StoreInst* st = builder->CreateStore(vec, ptr);
+                    st->setAlignment(elemAlign);
+                    return st;
+                }
+            }
+        }
+
         // Resolve the target class either from the receiver (cross-object call) or from
         // the enclosing class on the structure stack (bare call).
         CajetaClassPtr targetClass;
