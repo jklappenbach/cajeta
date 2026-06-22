@@ -1,0 +1,112 @@
+package cajeta.math.stats;
+
+import cajeta.math.Tensor;
+
+/**
+ * `cajeta.math.stats` — the descriptive-statistics surface (numpy-porting-plan Phase 10):
+ * `histogram`/`bincount`/`digitize` (this unit), then `cov`/`corrcoef` and the
+ * order-statistics (`quantile`/`percentile`/`median`) in later units. CPU floor; the
+ * scatter-heavy ops (`bincount`) have a GPU atomic-scatter lowering as a follow-on.
+ */
+public final class Stats {
+
+    /**
+     * Histogram of `t` over `bins` equal-width buckets spanning `[lo, hi]` (numpy
+     * `histogram` counts): a `Tensor<int64>` of length `bins`. Values outside `[lo, hi]`
+     * are dropped; a value equal to `hi` falls in the last bin (numpy's closed-right
+     * final edge). Flattens the input in C-order.
+     */
+    public static #Tensor<int64> histogram<E extends Numeric>(Tensor<E> t, int32 bins, E lo, E hi) {
+        int64[] sh = heap int64[1];
+        sh[0] = bins;
+        Tensor<int64> counts = Tensor.zeros<int64>(sh);
+        E span = hi - lo;
+        float32 fspan = (float32) span;
+        float32 fbins = (float32) bins;
+        int32 nd = t.ndim();
+        int64[] idx = heap int64[nd];
+        int32 z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        int64 n = t.size();
+        int64 c = 0;
+        while (c < n) {
+            E x = t.getAt(idx);
+            if (x >= lo && x <= hi) {
+                E diff = x - lo;
+                float32 fd = (float32) diff;
+                float32 frac = fd / fspan;
+                float32 scaled = frac * fbins;
+                int32 b = (int32) scaled;
+                if (b == bins) { b = bins - 1; }
+                if (b >= 0 && b < bins) {
+                    int64 cur = counts.get1(b);
+                    counts.set1(b, cur + 1);
+                }
+            }
+            c = c + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeAt(ax)) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return #counts;
+    }
+
+    /**
+     * Count of each non-negative integer value in the 1-D `t` (numpy `bincount`): a
+     * `Tensor<int64>` of length `max(t)+1` where `out[v]` is the number of times `v`
+     * appears. (Atomic-scatter on the GPU is a later lowering.)
+     */
+    public static #Tensor<int64> bincount(Tensor<int64> t) {
+        int64 n = t.size();
+        int64 mx = 0;
+        int64 i = 0;
+        while (i < n) {
+            int64 v = t.get1(i);
+            if (v > mx) { mx = v; }
+            i = i + 1;
+        }
+        int64[] sh = heap int64[1];
+        sh[0] = mx + 1;
+        Tensor<int64> counts = Tensor.zeros<int64>(sh);
+        i = 0;
+        while (i < n) {
+            int64 v = t.get1(i);
+            int64 cur = counts.get1(v);
+            counts.set1(v, cur + 1);
+            i = i + 1;
+        }
+        return #counts;
+    }
+
+    /**
+     * Bin index of each element of the 1-D `t` relative to the monotonically-increasing
+     * `edges` (numpy `digitize`, `right=False`): `out[i]` is the count of edges `<= t[i]`,
+     * i.e. the `j` with `edges[j-1] <= t[i] < edges[j]`. Returns a `Tensor<int64>` of the
+     * same length as `t`.
+     */
+    public static #Tensor<int64> digitize<E extends Numeric>(Tensor<E> t, Tensor<E> edges) {
+        int64 n = t.size();
+        int64 ne = edges.size();
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<int64> out = Tensor.zeros<int64>(sh);
+        int64 i = 0;
+        while (i < n) {
+            E x = t.get1(i);
+            int64 cnt = 0;
+            int64 e = 0;
+            while (e < ne) {
+                E ev = edges.get1(e);
+                if (ev <= x) { cnt = cnt + 1; }
+                e = e + 1;
+            }
+            out.set1(i, cnt);
+            i = i + 1;
+        }
+        return #out;
+    }
+}

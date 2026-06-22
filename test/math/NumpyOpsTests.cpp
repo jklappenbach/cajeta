@@ -2018,3 +2018,39 @@ TEST(NumpyOpsTests, rngCpuGpuParity) {
         "}\n";
     EXPECT_EQ(runI32Xpu(src), 1);
 }
+
+// 10a — binning stats: histogram (equal-width counts over [lo,hi]), bincount (count of
+// each non-negative int), digitize (bin index vs increasing edges, right=False).
+TEST(NumpyOpsTests, binningStatsMatchNumpy) {
+    std::string src = std::string(PRE) +
+        "import cajeta.math.stats.Stats;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        // histogram: [0.5,1.5,1.7,3.9] into 4 bins over [0,4] → [1,2,0,1]
+        "        float32[] dh = { 0.5f, 1.5f, 1.7f, 3.9f };\n"
+        "        int64[] s4 = heap int64[1]; s4[0] = 4;\n"
+        "        Tensor<float32> h = Tensor.of<float32>(dh, s4);\n"
+        "        Tensor<int64> hc = Stats.histogram<float32>(h, 4, 0.0f, 4.0f);\n"
+        "        if (hc.size() != 4) { return -1; }\n"
+        "        if (hc.get1(0) != 1 || hc.get1(1) != 2 || hc.get1(2) != 0 || hc.get1(3) != 1) { return -2; }\n"
+        // bincount: [0,1,1,3,3,3] → [1,2,0,3]
+        "        int64[] db = { 0, 1, 1, 3, 3, 3 };\n"
+        "        int64[] s6 = heap int64[1]; s6[0] = 6;\n"
+        "        Tensor<int64> b = Tensor.of<int64>(db, s6);\n"
+        "        Tensor<int64> bc = Stats.bincount(b);\n"
+        "        if (bc.size() != 4) { return -3; }\n"
+        "        if (bc.get1(0) != 1 || bc.get1(1) != 2 || bc.get1(2) != 0 || bc.get1(3) != 3) { return -4; }\n"
+        // digitize: [0.2,6.4,3.0] vs edges [0,1,2.5,4,10] → [1,4,3]
+        "        float32[] dt = { 0.2f, 6.4f, 3.0f };\n"
+        "        int64[] s3 = heap int64[1]; s3[0] = 3;\n"
+        "        Tensor<float32> dv = Tensor.of<float32>(dt, s3);\n"
+        "        float32[] de = { 0.0f, 1.0f, 2.5f, 4.0f, 10.0f };\n"
+        "        int64[] s5 = heap int64[1]; s5[0] = 5;\n"
+        "        Tensor<float32> ed = Tensor.of<float32>(de, s5);\n"
+        "        Tensor<int64> dg = Stats.digitize<float32>(dv, ed);\n"
+        "        if (dg.get1(0) != 1 || dg.get1(1) != 4 || dg.get1(2) != 3) { return -5; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
