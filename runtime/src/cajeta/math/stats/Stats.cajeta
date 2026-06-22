@@ -109,4 +109,85 @@ public final class Stats {
         }
         return #out;
     }
+
+    /**
+     * Covariance matrix of `m` shaped `(variables, observations)` (numpy `cov`,
+     * `rowvar=True`): a `(variables, variables)` `Tensor<E>` with
+     * `cov[i,j] = Σ_k (x_i[k]-μ_i)(x_j[k]-μ_j) / (N-1)` (the unbiased `ddof=1`
+     * estimator). `E` is `Floating` (the division and means need it).
+     */
+    public static #Tensor<E> cov<E extends Floating>(Tensor<E> m) {
+        int64 v = m.shapeAt(0);
+        int64 nobs = m.shapeAt(1);
+        int64[] msh = heap int64[1];
+        msh[0] = v;
+        Tensor<E> means = Tensor.zeros<E>(msh);
+        int64 i = 0;
+        while (i < v) {
+            E s = (E) 0;
+            int64 k = 0;
+            while (k < nobs) {
+                s = s + m.get2(i, k);
+                k = k + 1;
+            }
+            E mv = s / (E) nobs;
+            means.set1(i, mv);
+            i = i + 1;
+        }
+        int64 denom = nobs - 1;
+        int64[] sh = heap int64[2];
+        sh[0] = v;
+        sh[1] = v;
+        Tensor<E> out = Tensor.zeros<E>(sh);
+        i = 0;
+        while (i < v) {
+            E mi = means.get1(i);
+            int64 j = 0;
+            while (j < v) {
+                E mj = means.get1(j);
+                E acc = (E) 0;
+                int64 k = 0;
+                while (k < nobs) {
+                    E a = m.get2(i, k) - mi;
+                    E b = m.get2(j, k) - mj;
+                    acc = acc + a * b;
+                    k = k + 1;
+                }
+                E val = acc / (E) denom;
+                out.flatSet(i * v + j, val);
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /**
+     * Pearson correlation matrix of `m` `(variables, observations)` (numpy
+     * `corrcoef`): the covariance normalized by the per-variable standard deviations,
+     * `corr[i,j] = cov[i,j] / sqrt(cov[i,i]·cov[j,j])`, so the diagonal is 1 and all
+     * entries lie in `[-1, 1]`.
+     */
+    public static #Tensor<E> corrcoef<E extends Floating>(Tensor<E> m) {
+        Tensor<E> c = Stats.cov<E>(m);
+        int64 v = c.shapeAt(0);
+        int64[] sh = heap int64[2];
+        sh[0] = v;
+        sh[1] = v;
+        Tensor<E> out = Tensor.zeros<E>(sh);
+        int64 i = 0;
+        while (i < v) {
+            E cii = c.get2(i, i);
+            int64 j = 0;
+            while (j < v) {
+                E cjj = c.get2(j, j);
+                E denom = Math.sqrt(cii * cjj);
+                E val = c.get2(i, j) / denom;
+                out.flatSet(i * v + j, val);
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
 }

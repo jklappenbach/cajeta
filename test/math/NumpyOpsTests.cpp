@@ -2054,3 +2054,35 @@ TEST(NumpyOpsTests, binningStatsMatchNumpy) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 10a — cov (covariance matrix, ddof=1, rowvar) + corrcoef (Pearson correlation).
+TEST(NumpyOpsTests, covCorrMatchNumpy) {
+    std::string src = std::string(PRE) +
+        "import cajeta.math.stats.Stats;\n"
+        "public final class D {\n"
+        "    public static boolean close(float32 a, float32 b) {\n"
+        "        float32 d = a - b; if (d < 0.0f) { d = -d; } return d < 0.001f;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        // m = [[1,2,3],[6,5,4]] (2 vars, 3 obs): cov=[[1,-1],[-1,1]], corr=[[1,-1],[-1,1]]
+        "        float32[] dm = { 1.0f, 2.0f, 3.0f, 6.0f, 5.0f, 4.0f };\n"
+        "        int64[] s23 = heap int64[2]; s23[0] = 2; s23[1] = 3;\n"
+        "        Tensor<float32> m = Tensor.of<float32>(dm, s23);\n"
+        "        Tensor<float32> c = Stats.cov<float32>(m);\n"
+        "        if (c.ndim() != 2 || c.shapeAt(0) != 2 || c.shapeAt(1) != 2) { return -1; }\n"
+        "        if (!D.close(c.get2(0, 0), 1.0f) || !D.close(c.get2(1, 1), 1.0f)) { return -2; }\n"
+        "        if (!D.close(c.get2(0, 1), -1.0f) || !D.close(c.get2(1, 0), -1.0f)) { return -3; }\n"
+        "        Tensor<float32> r = Stats.corrcoef<float32>(m);\n"
+        "        if (!D.close(r.get2(0, 0), 1.0f) || !D.close(r.get2(1, 1), 1.0f)) { return -4; }\n"
+        "        if (!D.close(r.get2(0, 1), -1.0f) || !D.close(r.get2(1, 0), -1.0f)) { return -5; }\n"
+        // a positively-correlated pair: [[1,2,3],[2,4,6]] → cov[0,1]>0, corr[0,1]=1
+        "        float32[] dp = { 1.0f, 2.0f, 3.0f, 2.0f, 4.0f, 6.0f };\n"
+        "        int64[] s23b = heap int64[2]; s23b[0] = 2; s23b[1] = 3;\n"
+        "        Tensor<float32> mp = Tensor.of<float32>(dp, s23b);\n"
+        "        Tensor<float32> rp = Stats.corrcoef<float32>(mp);\n"
+        "        if (!D.close(rp.get2(0, 1), 1.0f)) { return -6; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
