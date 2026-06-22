@@ -1659,3 +1659,54 @@ TEST(NumpyOpsTests, searchPartitionMatchNumpy) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 7a — unique (sorted distinct values over the flattened input), flatnonzero (C-order
+// flat indices where != 0), nonzero (per-dimension coordinate arrays, the numpy tuple),
+// extract (arr elements where a condition is nonzero). All return fresh tensors.
+TEST(NumpyOpsTests, uniqueNonzeroMatchNumpy) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        // unique 1-D [3,1,2,3,1] → [1,2,3]
+        "        int32[] du = { 3, 1, 2, 3, 1 };\n"
+        "        int64[] s5 = heap int64[1]; s5[0] = 5;\n"
+        "        Tensor<int32> u = Tensor.of<int32>(du, s5);\n"
+        "        Tensor<int32> uq = Tensor.unique<int32>(u);\n"
+        "        if (uq.ndim() != 1 || uq.size() != 3) { return -1; }\n"
+        "        if (uq.get1(0) != 1 || uq.get1(1) != 2 || uq.get1(2) != 3) { return -2; }\n"
+        // unique 2-D [[3,1],[1,2]] → [1,2,3]
+        "        int32[] d4 = { 3, 1, 1, 2 };\n"
+        "        int64[] s22 = heap int64[2]; s22[0] = 2; s22[1] = 2;\n"
+        "        Tensor<int32> m = Tensor.of<int32>(d4, s22);\n"
+        "        Tensor<int32> uq2 = Tensor.unique<int32>(m);\n"
+        "        if (uq2.size() != 3 || uq2.get1(0) != 1 || uq2.get1(1) != 2 || uq2.get1(2) != 3) { return -3; }\n"
+        // flatnonzero 2-D [[0,3],[4,0]] → C-order flat [1,2]
+        "        int32[] dz = { 0, 3, 4, 0 };\n"
+        "        int64[] s22b = heap int64[2]; s22b[0] = 2; s22b[1] = 2;\n"
+        "        Tensor<int32> z = Tensor.of<int32>(dz, s22b);\n"
+        "        Tensor<int64> fz = Tensor.flatnonzero<int32>(z);\n"
+        "        if (fz.size() != 2 || fz.get1(0) != 1 || fz.get1(1) != 2) { return -4; }\n"
+        // nonzero 2-D [[0,3],[4,0]] → ([0,1],[1,0])
+        "        int32[] dz2 = { 0, 3, 4, 0 };\n"
+        "        int64[] s22c = heap int64[2]; s22c[0] = 2; s22c[1] = 2;\n"
+        "        Tensor<int32> z2 = Tensor.of<int32>(dz2, s22c);\n"
+        "        Tensor<int64>[] nz = Tensor.nonzero<int32>(z2);\n"
+        "        Tensor<int64> rows = nz[0];\n"
+        "        Tensor<int64> cols = nz[1];\n"
+        "        if (rows.size() != 2 || cols.size() != 2) { return -5; }\n"
+        "        if (rows.get1(0) != 0 || rows.get1(1) != 1) { return -6; }\n"
+        "        if (cols.get1(0) != 1 || cols.get1(1) != 0) { return -7; }\n"
+        // extract condition=[1,0,2,0,3], arr=[10,20,30,40,50] → [10,30,50]
+        "        int32[] dc = { 1, 0, 2, 0, 3 };\n"
+        "        int64[] s5b = heap int64[1]; s5b[0] = 5;\n"
+        "        Tensor<int32> cond = Tensor.of<int32>(dc, s5b);\n"
+        "        int32[] dar = { 10, 20, 30, 40, 50 };\n"
+        "        int64[] s5c = heap int64[1]; s5c[0] = 5;\n"
+        "        Tensor<int32> arr = Tensor.of<int32>(dar, s5c);\n"
+        "        Tensor<int32> ex = Tensor.extract<int32>(cond, arr);\n"
+        "        if (ex.size() != 3 || ex.get1(0) != 10 || ex.get1(1) != 30 || ex.get1(2) != 50) { return -8; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}

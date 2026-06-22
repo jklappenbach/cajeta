@@ -2189,6 +2189,199 @@ public class Tensor<T> {
         return Tensor.argsort<E>(t, axis);
     }
 
+    /**
+     * Sorted distinct values over the **flattened** input (numpy `unique`): a 1-D
+     * `Tensor<E>` of the unique elements in ascending order. Flattens via a C-order
+     * walk, sorts, then drops adjacent duplicates.
+     */
+    public static #Tensor<E> unique<E extends Numeric>(Tensor<E> t) {
+        int64 n = t.size();
+        int64[] s1 = heap int64[1];
+        s1[0] = n;
+        Tensor<E> flat = Tensor.zeros<E>(s1);
+        int32 nd = t.ndim();
+        int64[] idx = heap int64[nd];
+        int32 z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        int64 lin = 0;
+        while (lin < n) {
+            flat.set1(lin, t.getAt(idx));
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeAt(ax)) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        Tensor<E> sorted = Tensor.sort<E>(flat, 0);
+        int64 cnt = 0;
+        if (n > 0) {
+            cnt = 1;
+            int64 i = 1;
+            while (i < n) {
+                if (sorted.get1(i) != sorted.get1(i - 1)) { cnt = cnt + 1; }
+                i = i + 1;
+            }
+        }
+        int64[] os = heap int64[1];
+        os[0] = cnt;
+        Tensor<E> out = Tensor.zeros<E>(os);
+        if (n > 0) {
+            out.set1(0, sorted.get1(0));
+            int64 w = 1;
+            int64 i = 1;
+            while (i < n) {
+                if (sorted.get1(i) != sorted.get1(i - 1)) {
+                    out.set1(w, sorted.get1(i));
+                    w = w + 1;
+                }
+                i = i + 1;
+            }
+        }
+        return #out;
+    }
+
+    /**
+     * C-order flat indices of the nonzero elements (numpy `flatnonzero`): a 1-D
+     * `Tensor<int64>` of the positions (in row-major flattened order) where the
+     * element is not the zero of `E`. Two walks — count, then fill.
+     */
+    public static #Tensor<int64> flatnonzero<E extends Numeric>(Tensor<E> t) {
+        int64 n = t.size();
+        int32 nd = t.ndim();
+        E zero = (E) 0;
+        int64[] idx = heap int64[nd];
+        int32 z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        int64 cnt = 0;
+        int64 lin = 0;
+        while (lin < n) {
+            if (t.getAt(idx) != zero) { cnt = cnt + 1; }
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeAt(ax)) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        int64[] os = heap int64[1];
+        os[0] = cnt;
+        Tensor<int64> out = Tensor.zeros<int64>(os);
+        z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        int64 w = 0;
+        lin = 0;
+        while (lin < n) {
+            if (t.getAt(idx) != zero) {
+                out.set1(w, lin);
+                w = w + 1;
+            }
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeAt(ax)) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return #out;
+    }
+
+    /**
+     * Per-dimension coordinate arrays of the nonzero elements (numpy `nonzero`): an
+     * array of `ndim` 1-D `Tensor<int64>`s, each of length = the nonzero count, where
+     * `result[d][k]` is the `d`-th coordinate of the `k`-th nonzero (C-order). The
+     * numpy tuple-of-index-arrays, as a cajeta array.
+     */
+    public static #Tensor<int64>[] nonzero<E extends Numeric>(Tensor<E> t) {
+        int64 n = t.size();
+        int32 nd = t.ndim();
+        E zero = (E) 0;
+        int64[] idx = heap int64[nd];
+        int32 z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        int64 cnt = 0;
+        int64 lin = 0;
+        while (lin < n) {
+            if (t.getAt(idx) != zero) { cnt = cnt + 1; }
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeAt(ax)) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        Tensor<int64>[] result = heap Tensor<int64>[nd];
+        int32 d = 0;
+        while (d < nd) {
+            int64[] os = heap int64[1];
+            os[0] = cnt;
+            result[d] = Tensor.zeros<int64>(os);
+            d = d + 1;
+        }
+        z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        int64 w = 0;
+        lin = 0;
+        while (lin < n) {
+            if (t.getAt(idx) != zero) {
+                int32 dd = 0;
+                while (dd < nd) {
+                    int64 cv = idx[dd];
+                    result[dd].set1(w, cv);
+                    dd = dd + 1;
+                }
+                w = w + 1;
+            }
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeAt(ax)) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return #result;
+    }
+
+    /**
+     * The elements of the 1-D `arr` where the 1-D `condition` (same length) is
+     * nonzero (numpy `extract`): a 1-D `Tensor<E>` in order. Equivalent to
+     * `arr[condition != 0]`; the boolean-mask form is {@link #maskedSelect}.
+     */
+    public static #Tensor<E> extract<E extends Numeric>(Tensor<E> condition, Tensor<E> arr) {
+        int64 n = arr.size();
+        E zero = (E) 0;
+        int64 cnt = 0;
+        int64 i = 0;
+        while (i < n) {
+            if (condition.get1(i) != zero) { cnt = cnt + 1; }
+            i = i + 1;
+        }
+        int64[] os = heap int64[1];
+        os[0] = cnt;
+        Tensor<E> out = Tensor.zeros<E>(os);
+        int64 w = 0;
+        i = 0;
+        while (i < n) {
+            if (condition.get1(i) != zero) {
+                E av = arr.get1(i);
+                out.set1(w, av);
+                w = w + 1;
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
     // ────────────────────────────── elementwise ufuncs (Phase 3) ─────────────
 
     /**
