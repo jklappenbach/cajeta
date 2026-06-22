@@ -186,6 +186,134 @@ public final class LinAlg {
         return #l;
     }
 
+    /**
+     * LU factorization with partial pivoting (numpy/scipy `lu`): returns `[P, L, U]`
+     * with `A = P·L·U`, where `P` is a permutation matrix, `L` is unit lower-triangular
+     * (1s on the diagonal), and `U` is upper-triangular. Native Doolittle elimination on
+     * a contiguous copy, storing the multipliers in the strict lower triangle.
+     */
+    public static #Tensor<E>[] lu<E extends Floating>(Tensor<E> a) {
+        int64 n = a.shapeAt(0);
+        Tensor<E> m = a.copy();
+        int64[] perm = heap int64[n];
+        int64 t = 0;
+        while (t < n) { perm[t] = t; t = t + 1; }
+        int64 col = 0;
+        while (col < n) {
+            // partial pivot
+            int64 piv = col;
+            E maxv = LinAlg.absE<E>(m.get2(col, col));
+            int64 r = col + 1;
+            while (r < n) {
+                E av = LinAlg.absE<E>(m.get2(r, col));
+                if (av > maxv) { maxv = av; piv = r; }
+                r = r + 1;
+            }
+            if (piv != col) {
+                LinAlg.swapRows<E>(m, n, piv, col);
+                int64 pp = perm[piv];
+                int64 pc = perm[col];
+                perm[piv] = pc;
+                perm[col] = pp;
+            }
+            E diag = m.get2(col, col);
+            r = col + 1;
+            while (r < n) {
+                E factor = m.get2(r, col) / diag;
+                m.flatSet(r * n + col, factor);          // multiplier stored in L's slot
+                int64 c = col + 1;
+                while (c < n) {
+                    E v = m.get2(r, c) - factor * m.get2(col, c);
+                    m.flatSet(r * n + c, v);
+                    c = c + 1;
+                }
+                r = r + 1;
+            }
+            col = col + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = n;
+        Tensor<E>[] out = heap Tensor<E>[3];
+        out[0] = Tensor.zeros<E>(sh);                    // P
+        out[1] = Tensor.zeros<E>(sh);                    // L
+        out[2] = Tensor.zeros<E>(sh);                    // U
+        int64 i = 0;
+        while (i < n) {
+            int64 j = 0;
+            while (j < n) {
+                E mij = m.get2(i, j);
+                if (i > j) {
+                    out[1].flatSet(i * n + j, mij);
+                } else {
+                    out[2].flatSet(i * n + j, mij);
+                    if (i == j) { out[1].flatSet(i * n + j, (E) 1); }
+                }
+                j = j + 1;
+            }
+            // A = P·L·U with (L·U) = the row-permuted A, so P[perm[i]][i] = 1
+            int64 pr = perm[i];
+            out[0].flatSet(pr * n + i, (E) 1);
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /**
+     * QR factorization (numpy `linalg.qr`, reduced/`'reduced'` for square `A`): returns
+     * `[Q, R]` with `A = Q·R`, `Q` having orthonormal columns and `R` upper-triangular.
+     * Native modified Gram-Schmidt in place over a copy (numerically the stable MGS
+     * variant). Sign of the diagonal is not normalized (matches numpy's free sign).
+     */
+    public static #Tensor<E>[] qr<E extends Floating>(Tensor<E> a) {
+        int64 n = a.shapeAt(0);
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = n;
+        Tensor<E>[] out = heap Tensor<E>[2];
+        out[0] = a.copy();                               // Q (orthogonalized in place)
+        out[1] = Tensor.zeros<E>(sh);                    // R
+        int64 j = 0;
+        while (j < n) {
+            int64 i = 0;
+            while (i < j) {
+                // r_ij = q_i · (current) col_j, then subtract the projection (MGS)
+                E dot = (E) 0;
+                int64 k = 0;
+                while (k < n) {
+                    dot = dot + out[0].get2(k, i) * out[0].get2(k, j);
+                    k = k + 1;
+                }
+                out[1].flatSet(i * n + j, dot);
+                k = 0;
+                while (k < n) {
+                    E v = out[0].get2(k, j) - dot * out[0].get2(k, i);
+                    out[0].flatSet(k * n + j, v);
+                    k = k + 1;
+                }
+                i = i + 1;
+            }
+            // normalize column j → q_j, R[j][j] = ‖col_j‖
+            E ss = (E) 0;
+            int64 k2 = 0;
+            while (k2 < n) {
+                E qv = out[0].get2(k2, j);
+                ss = ss + qv * qv;
+                k2 = k2 + 1;
+            }
+            E nrm = Math.sqrt(ss);
+            out[1].flatSet(j * n + j, nrm);
+            k2 = 0;
+            while (k2 < n) {
+                E qn = out[0].get2(k2, j) / nrm;
+                out[0].flatSet(k2 * n + j, qn);
+                k2 = k2 + 1;
+            }
+            j = j + 1;
+        }
+        return #out;
+    }
+
     /** Absolute value of a `Floating` scalar (local helper — `Math.abs` per `E`). */
     static E absE<E extends Floating>(E v) {
         if (v < (E) 0) { return (E) 0 - v; }

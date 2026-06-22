@@ -2205,6 +2205,77 @@ TEST(NumpyOpsTests, linalgSolveDetInvMatchNumpy) {
     EXPECT_EQ(runI32(src), 1);
 }
 
+// 11b — native LU (A=P·L·U, unit-lower L, upper U) + QR (A=Q·R, orthonormal Q).
+// Verified by reconstruction (matmul) + structure; pivoting/sign are free per numpy.
+TEST(NumpyOpsTests, linalgLuQrMatchNumpy) {
+    std::string src = std::string(PRE) +
+        "import cajeta.math.linalg.LinAlg;\n"
+        "public final class D {\n"
+        "    public static boolean close(float32 a, float32 b) {\n"
+        "        float32 d = a - b; if (d < 0.0f) { d = -d; } return d < 0.002f;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        // ---- LU: A=[[4,3],[6,3]] (needs a pivot since |6|>|4|) ----
+        "        float32[] da = { 4.0f, 3.0f, 6.0f, 3.0f };\n"
+        "        int64[] s22 = heap int64[2]; s22[0] = 2; s22[1] = 2;\n"
+        "        Tensor<float32> a = Tensor.of<float32>(da, s22);\n"
+        "        Tensor<float32>[] plu = LinAlg.lu<float32>(a);\n"
+        "        Tensor<float32> p = plu[0];\n"
+        "        Tensor<float32> l = plu[1];\n"
+        "        Tensor<float32> u = plu[2];\n"
+        // L unit lower-triangular; U upper-triangular
+        "        if (!D.close(l.get2(0, 0), 1.0f) || !D.close(l.get2(1, 1), 1.0f) || !D.close(l.get2(0, 1), 0.0f)) { return -1; }\n"
+        "        if (!D.close(u.get2(1, 0), 0.0f)) { return -2; }\n"
+        // reconstruct P·L·U == A
+        "        Tensor<float32> pl = Tensor.matmul<float32>(p, l);\n"
+        "        Tensor<float32> recon = Tensor.matmul<float32>(pl, u);\n"
+        "        if (!D.close(recon.get2(0, 0), 4.0f) || !D.close(recon.get2(0, 1), 3.0f)) { return -3; }\n"
+        "        if (!D.close(recon.get2(1, 0), 6.0f) || !D.close(recon.get2(1, 1), 3.0f)) { return -4; }\n"
+        // ---- LU 3x3 needing pivoting: A=[[2,1,1],[4,3,3],[8,7,9]] ----
+        "        float32[] db = { 2.0f, 1.0f, 1.0f, 4.0f, 3.0f, 3.0f, 8.0f, 7.0f, 9.0f };\n"
+        "        int64[] s33 = heap int64[2]; s33[0] = 3; s33[1] = 3;\n"
+        "        Tensor<float32> a3 = Tensor.of<float32>(db, s33);\n"
+        "        Tensor<float32>[] plu3 = LinAlg.lu<float32>(a3);\n"
+        "        Tensor<float32> p3 = plu3[0];\n"
+        "        Tensor<float32> l3 = plu3[1];\n"
+        "        Tensor<float32> u3 = plu3[2];\n"
+        "        Tensor<float32> pl3 = Tensor.matmul<float32>(p3, l3);\n"
+        "        Tensor<float32> recon3 = Tensor.matmul<float32>(pl3, u3);\n"
+        "        int64 i = 0;\n"
+        "        while (i < 3) {\n"
+        "            int64 j = 0;\n"
+        "            while (j < 3) {\n"
+        "                float32 orig = a3.get2(i, j);\n"
+        "                float32 rc = recon3.get2(i, j);\n"
+        "                if (!D.close(rc, orig)) { return -5; }\n"
+        "                j = j + 1;\n"
+        "            }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        // ---- QR: A=[[1,2],[3,4]] → A=Q·R, Q^T·Q=I, R upper ----
+        "        float32[] dc = { 1.0f, 2.0f, 3.0f, 4.0f };\n"
+        "        int64[] s22b = heap int64[2]; s22b[0] = 2; s22b[1] = 2;\n"
+        "        Tensor<float32> aq = Tensor.of<float32>(dc, s22b);\n"
+        "        Tensor<float32>[] qr = LinAlg.qr<float32>(aq);\n"
+        "        Tensor<float32> q = qr[0];\n"
+        "        Tensor<float32> r = qr[1];\n"
+        // R upper-triangular
+        "        if (!D.close(r.get2(1, 0), 0.0f)) { return -6; }\n"
+        // reconstruct Q·R == A
+        "        Tensor<float32> qrec = Tensor.matmul<float32>(q, r);\n"
+        "        if (!D.close(qrec.get2(0, 0), 1.0f) || !D.close(qrec.get2(0, 1), 2.0f)) { return -7; }\n"
+        "        if (!D.close(qrec.get2(1, 0), 3.0f) || !D.close(qrec.get2(1, 1), 4.0f)) { return -8; }\n"
+        // orthonormal columns: Q^T·Q == I
+        "        Tensor<float32> qt = q.transpose();\n"
+        "        Tensor<float32> qtq = Tensor.matmul<float32>(qt, q);\n"
+        "        if (!D.close(qtq.get2(0, 0), 1.0f) || !D.close(qtq.get2(1, 1), 1.0f)) { return -9; }\n"
+        "        if (!D.close(qtq.get2(0, 1), 0.0f) || !D.close(qtq.get2(1, 0), 0.0f)) { return -10; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
 // 11b — native Cholesky: L·L^T = A for symmetric positive-definite A (lower triangular).
 TEST(NumpyOpsTests, linalgCholeskyMatchNumpy) {
     std::string src = std::string(PRE) +
