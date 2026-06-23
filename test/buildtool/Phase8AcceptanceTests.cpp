@@ -219,12 +219,13 @@ TEST(Phase8AcceptanceTests, resolvedFlavorProducesCompilerFlagArgv) {
 
     auto flags = toCompilerFlags(*eff);
     // Only properties that map to a compiler frontend flag are lowered, using
-    // the MAPPED name (bounds-check -> --bounds). lto / debug-info /
-    // strip-symbols / analytics have no frontend flag — they're honored at the
-    // emit/link stage — so they do not appear in the compiler argv.
+    // the MAPPED name (bounds-check -> --bounds). lto lowers to the real
+    // --lto frontend flag (ThinLTO for --emit=exe; vocab entry's mapped name
+    // is "lto"). debug-info / strip-symbols / analytics have no frontend flag
+    // — they're honored at the emit/link stage — so they do not appear.
     EXPECT_TRUE(contains(flags, "--opt=O2"));
     EXPECT_TRUE(contains(flags, "--bounds=off"));
-    EXPECT_FALSE(contains(flags, "--lto=thin"));
+    EXPECT_TRUE(contains(flags, "--lto=thin"));
     EXPECT_FALSE(contains(flags, "--debug-info=full"));
     EXPECT_FALSE(contains(flags, "--strip-symbols=true"));
     EXPECT_FALSE(contains(flags, "--analytics=true"));

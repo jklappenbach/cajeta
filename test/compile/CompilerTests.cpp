@@ -78,7 +78,11 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // (cajeta.math.{Ray,Aabb,Sphere,Plane,Transform,Camera,Rotation,Frustum,Color}),
 // but cajeta.math is LAZILY parsed (loads only when imported), so it does not
 // change the fresh-process prelude count this test anchors to.
-static constexpr size_t STDLIB_STRUCTURE_COUNT = 374;
+// 2026-06-22: re-anchored 374 → 383 — main-lineage prelude growth that merged in
+// alongside the numpy-phase3 work. The numpy batch itself is all cajeta.math
+// (verified absent from the eager prelude — still lazy); the +9 are non-math
+// stdlib structures. Self-anchored to the live modules.size()-1 on a fresh build.
+static constexpr size_t STDLIB_STRUCTURE_COUNT = 383;
 
 TEST(CompilerTests, canParseOnValidShortPackage) {
     string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");
