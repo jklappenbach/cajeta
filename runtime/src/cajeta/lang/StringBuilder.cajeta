@@ -139,13 +139,12 @@ public final class StringBuilder {
         }
         int8[] grown = heap int8[newCap];
         // Copy the live bytes over from whichever buffer currently holds them.
-        int32 i = 0;
+        // The heap buffer (`large`) goes 8 bytes at a time via blit; the inline
+        // buffer can't decay to an int8[] argument, so it stays scalar (<= 64 B).
         if (this.spilled) {
-            while (i < this.len) {
-                grown[i] = this.large[i];
-                i = i + 1;
-            }
+            StringBuilder.blit(grown, 0, this.large, 0, (int64) this.len);
         } else {
+            int32 i = 0;
             while (i < this.len) {
                 grown[i] = this.small[i];
                 i = i + 1;
@@ -167,13 +166,10 @@ public final class StringBuilder {
      */
     public #String toString() {
         int8[] out = heap int8[this.len];
-        int32 i = 0;
         if (this.spilled) {
-            while (i < this.len) {
-                out[i] = this.large[i];
-                i = i + 1;
-            }
+            StringBuilder.blit(out, 0, this.large, 0, (int64) this.len);
         } else {
+            int32 i = 0;
             while (i < this.len) {
                 out[i] = this.small[i];
                 i = i + 1;
