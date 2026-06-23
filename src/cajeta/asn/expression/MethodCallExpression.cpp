@@ -2620,6 +2620,41 @@ namespace cajeta {
                     resolvedType = CajetaType::of("int64");
                     return builder->CreateCall(fn, {});
                 }
+                // dropValue(x): drop an owned value of generic type by its STATIC
+                // type — class -> __cajeta_class_virtual_drop, heap array ->
+                // __cajeta_free_array, primitive / @ValueType POD / view -> no-op.
+                // The enabler for a container to reclaim owned K/V it took via `#`
+                // (HashMap teardown/remove). Idempotent at runtime via the live-set
+                // claim, so a no-op on a non-owned value is harmless.
+                if (ns == "Cajeta" && methodCallName == "dropValue" && parameters.size() == 1) {
+                    llvm::Value* v = loadValue(0);
+                    auto argAst = dynamic_pointer_cast<Expression>(parameters[0].expression);
+                    CajetaTypePtr at = argAst ? argAst->getResolvedType() : nullptr;
+                    if (at) {
+                        if (auto arr = std::dynamic_pointer_cast<CajetaArray>(at)) {
+                            if (!arr->isInlineArray()) {
+                                if (llvm::Function* fn = module->getRuntimeFunction(
+                                        "__cajeta_free_array")) {
+                                    builder->CreateCall(fn, {v});
+                                }
+                            }
+                        } else if (auto klass = std::dynamic_pointer_cast<CajetaClass>(at)) {
+                            // Reference classes (vtable at slot 0); skip interfaces,
+                            // views, and @ValueType PODs (no vtable -> by value).
+                            if (!std::dynamic_pointer_cast<CajetaView>(at)
+                                    && !klass->isInterface()
+                                    && klass->hasVtablePointerAtSlotZero()) {
+                                klass->patchVirtualTableDropFn();
+                                if (llvm::Function* fn = module->getRuntimeFunction(
+                                        "__cajeta_class_virtual_drop")) {
+                                    builder->CreateCall(fn, {v});
+                                }
+                            }
+                        }
+                        // primitives / pointers / unresolved -> no-op
+                    }
+                    return nullptr;
+                }
                 // f32ToBits(float32 x) -> int32: reinterpret a float's IEEE-754
                 // bits as a 32-bit integer (LLVM bitcast — NOT a value
                 // conversion; `(int32) x` would truncate the numeric value).
