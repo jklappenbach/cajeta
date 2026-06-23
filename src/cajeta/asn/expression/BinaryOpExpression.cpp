@@ -163,6 +163,28 @@ namespace cajeta {
     //       LLVM type and bswap if the receiver's endianness differs from host.
     // Constants and intermediate r-values pass through unchanged.
     //
+    // Decide whether an integer binary op (+, -, *, +=, -=) should use a
+    // SIGNED overflow check. The signedness must follow the operation's
+    // result type, which tracks the TYPED operand: a bare integer literal
+    // adapts to its sibling (`u - 1` is unsigned when `u` is unsigned). The
+    // literal's own default-signed type must NOT force a signed check —
+    // otherwise valid unsigned arithmetic (e.g. the SWAR `m = m & (m - 1)`
+    // popcount idiom, where m can legitimately reach 0x8000…0) traps on a
+    // spurious signed overflow. A literal only counts when BOTH operands are
+    // literals (no typed operand to defer to). See String.indexOfFrom.
+    inline bool binaryOverflowIsSigned(ExpressionPtr a, ExpressionPtr b) {
+        auto flags = [](ExpressionPtr e) -> long {
+            if (!e) return 0;
+            auto t = e->getResolvedType();
+            return t ? (long) t->getTypeFlags() : 0;
+        };
+        bool aLit = dynamic_pointer_cast<IntegerLiteralExpression>(a) != nullptr;
+        bool bLit = dynamic_pointer_cast<IntegerLiteralExpression>(b) != nullptr;
+        if (aLit && !bLit) return (flags(b) & SIGNED_FLAG) != 0;
+        if (bLit && !aLit) return (flags(a) & SIGNED_FLAG) != 0;
+        return ((flags(a) | flags(b)) & SIGNED_FLAG) != 0;
+    }
+
     // The AllocaInst → load mapping is gated on the AST being an
     // IdentifierExpression (or absent — legacy callers without an AST). Other
     // expression types that legitimately produce AllocaInst values that are
@@ -1828,12 +1850,7 @@ namespace cajeta {
                 // can't distinguish int32 from uint32 — both lower to
                 // i32). Used by the +/-/* overflow-checked path below.
                 auto signedFromAst = [](ExpressionPtr a, ExpressionPtr b) -> bool {
-                    auto pick = [](ExpressionPtr e) -> long {
-                        if (!e) return 0;
-                        auto t = e->getResolvedType();
-                        return t ? (long) t->getTypeFlags() : 0;
-                    };
-                    return ((pick(a) | pick(b)) & SIGNED_FLAG) != 0;
+                    return binaryOverflowIsSigned(a, b);
                 };
                 auto [pl, pr] = coerceArithPair(module, l, r);
                 if (pl->getType()->isFPOrFPVectorTy()) {
@@ -1851,12 +1868,7 @@ namespace cajeta {
             case BINARY_OP_SUB: {
                 auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
                 auto signedFromAst = [](ExpressionPtr a, ExpressionPtr b) -> bool {
-                    auto pick = [](ExpressionPtr e) -> long {
-                        if (!e) return 0;
-                        auto t = e->getResolvedType();
-                        return t ? (long) t->getTypeFlags() : 0;
-                    };
-                    return ((pick(a) | pick(b)) & SIGNED_FLAG) != 0;
+                    return binaryOverflowIsSigned(a, b);
                 };
                 if (l->getType()->isFPOrFPVectorTy()) {
                     result = emitFpBinOp(module, l, r, llvm::Instruction::FSub);
@@ -1873,12 +1885,7 @@ namespace cajeta {
             case BINARY_OP_MUL: {
                 auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
                 auto signedFromAst = [](ExpressionPtr a, ExpressionPtr b) -> bool {
-                    auto pick = [](ExpressionPtr e) -> long {
-                        if (!e) return 0;
-                        auto t = e->getResolvedType();
-                        return t ? (long) t->getTypeFlags() : 0;
-                    };
-                    return ((pick(a) | pick(b)) & SIGNED_FLAG) != 0;
+                    return binaryOverflowIsSigned(a, b);
                 };
                 if (l->getType()->isFPOrFPVectorTy()) {
                     result = emitFpBinOp(module, l, r, llvm::Instruction::FMul);
@@ -2077,12 +2084,7 @@ namespace cajeta {
                 // the AST's resolvedType so a uint*-typed lhs/rhs skips
                 // the check (modular wrap is well-defined for unsigned).
                 auto signedFromAst = [](ExpressionPtr a, ExpressionPtr b) -> bool {
-                    auto pick = [](ExpressionPtr e) -> long {
-                        if (!e) return 0;
-                        auto t = e->getResolvedType();
-                        return t ? (long) t->getTypeFlags() : 0;
-                    };
-                    return ((pick(a) | pick(b)) & SIGNED_FLAG) != 0;
+                    return binaryOverflowIsSigned(a, b);
                 };
                 bool emitOfTrap = !isFp && l->getType()->isIntegerTy()
                     && module->getFlags().overflowChecks == OverflowChecks::On
@@ -2186,12 +2188,7 @@ namespace cajeta {
                 // the AST knows is signed — a genuine uint32 carries no SIGNED_FLAG in
                 // either source, so unsigned compares are unaffected.
                 auto signedFromAst = [](ExpressionPtr a, ExpressionPtr b) -> bool {
-                    auto pick = [](ExpressionPtr e) -> long {
-                        if (!e) return 0;
-                        auto t = e->getResolvedType();
-                        return t ? (long) t->getTypeFlags() : 0;
-                    };
-                    return ((pick(a) | pick(b)) & SIGNED_FLAG) != 0;
+                    return binaryOverflowIsSigned(a, b);
                 };
                 bool isSigned = ((lhsTypeFlags | rhsTypeFlags) & SIGNED_FLAG) != 0
                     || signedFromAst(lhsAst, rhsAst);

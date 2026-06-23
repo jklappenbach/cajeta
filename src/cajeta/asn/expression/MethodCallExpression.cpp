@@ -4795,7 +4795,18 @@ namespace cajeta {
             // c.accumulator)` inside `Stream<T>.collect<R>` passes
             // the field-GEPs to fold, mismatching fold's
             // seed:int32 / fn:fn-typed signature at JIT verify.
-            if (dynamic_pointer_cast<DotExpression>(param.expression)) {
+            //
+            // Array element reads (ArrayIndexExpression, `arr[i]`) have the
+            // same shape: generateCode returns the element GEP slot, so a bare
+            // `f(arr[i])` would pass the element ADDRESS (ptr) where the value
+            // is wanted — a JIT verify failure ("Call parameter type does not
+            // match function signature!") for a primitive element. loadIfLValue's
+            // ArrayIndexExpression branch loads primitives to their value and
+            // leaves reference/interface elements as the (correct) pointer/body,
+            // so it's safe to apply here too. (Previously only a named-local or
+            // arithmetic-wrapped element worked; `f(arr[i])` directly did not.)
+            if (dynamic_pointer_cast<DotExpression>(param.expression)
+                    || dynamic_pointer_cast<ArrayIndexExpression>(param.expression)) {
                 value = loadIfLValue(module, value, param.expression);
             }
             CajetaTypePtr et = param.expression->getResolvedType();
