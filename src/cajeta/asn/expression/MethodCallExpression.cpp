@@ -2610,6 +2610,16 @@ namespace cajeta {
                     resolvedType = arrTy;
                     return builder->CreateCall(allocFn, {headerSize, elemSize, count});
                 }
+                // moveMask() -> int64: the caller-side ownership-transfer mask for
+                // THIS call (bit i set iff user-arg i was passed `#x`). Read once at
+                // method entry; the compiler sets the TLS before a `#`-bearing call
+                // and clears it after (see the call-site emission). Lets a plain-`T`
+                // param method (e.g. HashMap.put) learn which args it owns.
+                if (ns == "Cajeta" && methodCallName == "moveMask" && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_move_mask_get");
+                    resolvedType = CajetaType::of("int64");
+                    return builder->CreateCall(fn, {});
+                }
                 // f32ToBits(float32 x) -> int32: reinterpret a float's IEEE-754
                 // bits as a 32-bit integer (LLVM bitcast — NOT a value
                 // conversion; `(int32) x` would truncate the numeric value).

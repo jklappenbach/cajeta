@@ -543,6 +543,18 @@ int __cajeta_live_set_claim(void* p) {
     return r;
 }
 
+// Per-thread "ownership transfer" mask for the caller-side `#x` -> plain-`T`
+// param protocol (OwnershipTransfer.md). At a call site with one or more `#`
+// arguments the compiler stores a bitmask here (bit i set iff user-arg i was
+// transferred) immediately before the call, and clears it to 0 immediately
+// after. The callee reads it once at entry via Cajeta.moveMask() to learn which
+// of its parameters it OWNS (and must drop) vs merely borrows. Thread-local so
+// concurrent callers don't clobber each other; 0 between calls, so a call with
+// no `#` args correctly reads 0.
+static __thread int64_t __cajeta_move_mask_tls = 0;
+int64_t __cajeta_move_mask_get(void) { return __cajeta_move_mask_tls; }
+void __cajeta_move_mask_set(int64_t m) { __cajeta_move_mask_tls = m; }
+
 // Allocate and zero-fill a buffer holding total_count elements of elem_size bytes.
 // Used for primitive-element arrays.
 void* __cajeta_new_array(uint64_t elem_size, uint64_t total_count) {
