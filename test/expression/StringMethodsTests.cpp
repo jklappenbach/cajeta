@@ -136,6 +136,40 @@ TEST(StringMethodsTests, indexOfNotFound) {
         "return 0;"), 1);
 }
 
+// SIMD memmem path: haystack > 32 bytes so the 32-wide scan runs; match lands
+// well past the first vector block.
+TEST(StringMethodsTests, indexOfLongHaystackMatchPastBlock) {
+    EXPECT_EQ(runJit(
+        "String s = \"0123456789abcdefghijABCDEFGHIJxyzNEEDLEtail\";\n"
+        "if (s.indexOf(\"NEEDLE\") == 33) return 1;\n"
+        "return 0;"), 1);
+}
+
+// Match at the very tail (last full window) — exercises the block/tail boundary.
+TEST(StringMethodsTests, indexOfMatchAtTail) {
+    EXPECT_EQ(runJit(
+        "String s = \"the quick brown fox jumps over the lazy dogZ\";\n"
+        "if (s.indexOf(\"dogZ\") == 40) return 1;\n"
+        "return 0;"), 1);
+}
+
+// Absent long needle over a > 32-byte haystack whose first byte recurs (the
+// two-byte prefilter must reject every candidate; result -1).
+TEST(StringMethodsTests, indexOfAbsentLongNeedleLongHaystack) {
+    EXPECT_EQ(runJit(
+        "String s = \"aXaXaXaXaXaXaXaXaXaXaXaXaXaXaXaXaXaXaXaXaXaX\";\n"
+        "if (s.indexOf(\"aXaXaXaXaQ\") == -1) return 1;\n"
+        "return 0;"), 1);
+}
+
+// Single-byte needle on a long haystack (nlen==1 path: last==first).
+TEST(StringMethodsTests, indexOfSingleByteLongHaystack) {
+    EXPECT_EQ(runJit(
+        "String s = \"00000000000000000000000000000000000000Q0\";\n"
+        "if (s.indexOf(\"Q\") == 38) return 1;\n"
+        "return 0;"), 1);
+}
+
 TEST(StringMethodsTests, startsWithTrue) {
     EXPECT_EQ(runJit(
         "String s = \"hello world\";\n"

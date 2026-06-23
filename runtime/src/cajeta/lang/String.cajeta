@@ -314,31 +314,31 @@ public final class String {
         int64 hlen = (int64) this.byteLength;
         int64 lim = hlen - (int64) nlen;          // last valid start offset
         int8 first = needle.bytes[0];
-        // SWAR first-byte scan: load 8 bytes at a time and locate every byte
-        // equal to the needle's first byte (broadcast `cc`, zero-byte detect via
-        // (x-ones)&~x&high — same idiom as the JSON string scanner). Only the
-        // candidate offsets get a full-needle verify, so a needle whose first
-        // byte is rare in the haystack skips ~8 bytes per load instead of one.
-        uint64 ones = 0x0101010101010101;
-        uint64 high = 0x8080808080808080;
-        uint64 cc = ((uint64) ((int32) first & 0xFF)) * ones;
+        int8 last = needle.bytes[nlen - 1];
+        // SIMD memmem (two-byte prefilter, 32 bytes/iter -> AVX2 under cpu=native).
+        // For each block, vector-compare the first-byte window bytes[i..i+31] to
+        // `first` AND the last-byte window bytes[i+nlen-1..+31] to `last`; only
+        // positions matching BOTH (cand) get a full verify. A needle whose first
+        // and last bytes rarely co-occur (the common case) clears `cand` to 0 most
+        // iterations, so the loop runs at vector-load bandwidth. nlen==1 reduces to
+        // a single-window scan (last==first, both windows alias) automatically.
         int64 i = start;
-        int64 scanEnd = hlen - 8;                  // last offset with a full 8-byte load
-        while (i <= scanEnd) {
-            uint64 w = (uint64) Cajeta.loadU64(this.bytes, i);
-            uint64 x = w ^ cc;
-            uint64 m = (x - ones) & (~x) & high;
-            while (m != 0) {
-                int32 idx = Cajeta.ctz64((int64) m) >> 3;
-                int64 at = i + (int64) idx;
-                if (at <= lim && this.regionMatches(at, needle, nlen)) {
+        int64 blockEnd = lim - 31;                 // last i with both 32-byte loads in bounds
+        int64 nm1 = (int64) nlen - 1;
+        while (i <= blockEnd) {
+            Vector<int8,32> va = this.bytes.vload<32>(i);
+            Vector<int8,32> vb = this.bytes.vload<32>(i + nm1);
+            int32 cand = va.eqMask(first) & vb.eqMask(last);
+            while (cand != 0) {
+                int64 at = i + (int64) Cajeta.ctz64((int64) cand);
+                if (this.regionMatches(at, needle, nlen)) {
                     return at;
                 }
-                m = m & (m - 1);                   // clear this candidate byte, find the next
+                cand = cand & (cand - 1);          // clear this candidate, find the next
             }
-            i = i + 8;
+            i = i + 32;
         }
-        // Tail (haystacks < 8 bytes, or the final partial window): scalar scan.
+        // Tail (short haystacks, or the final < 32-byte window): scalar scan.
         while (i <= lim) {
             if (this.bytes[i] == first && this.regionMatches(i, needle, nlen)) {
                 return i;
