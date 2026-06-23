@@ -210,6 +210,23 @@ TEST(StringMethodsTests, toLowerCaseAscii) {
         "return 0;"), 1);
 }
 
+TEST(StringMethodsTests, toUpperCaseLong) {
+    // 46 bytes: exercises the 32-byte SWAR path + 8-byte word + scalar tail.
+    EXPECT_EQ(runJit(
+        "String s = \"the quick brown fox jumps over the lazy dog 123\";\n"
+        "String u = s.toUpperCase();\n"
+        "if (u.equals(\"THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG 123\")) return 1;\n"
+        "return 0;"), 1);
+}
+
+TEST(StringMethodsTests, toLowerCaseLong) {
+    EXPECT_EQ(runJit(
+        "String s = \"THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG 123\";\n"
+        "String l = s.toLowerCase();\n"
+        "if (l.equals(\"the quick brown fox jumps over the lazy dog 123\")) return 1;\n"
+        "return 0;"), 1);
+}
+
 TEST(StringMethodsTests, trimBothSides) {
     EXPECT_EQ(runJit(
         "String s = \"   spaced   \";\n"
