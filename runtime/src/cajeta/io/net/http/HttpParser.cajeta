@@ -149,7 +149,14 @@ public class HttpParser {
     public static #HttpParser forRequestWithLimits(HttpParserLimits limits) {
         HttpParser p = heap HttpParser();
         p.isRequest = true;
-        p.limits = limits;
+        // `limits` is BORROWED — copy its values into the parser's own
+        // (ctor-allocated) limits rather than aliasing it into this owning
+        // field. Aliasing would make the parser's scope-exit drop free the
+        // caller's object (a double-free of a borrow), and would leak the
+        // ctor's `heap HttpParserLimits()`.
+        p.limits.maxHeadBytes = limits.maxHeadBytes;
+        p.limits.maxLineBytes = limits.maxLineBytes;
+        p.limits.maxHeaderCount = limits.maxHeaderCount;
         return #p;
     }
 
@@ -157,7 +164,11 @@ public class HttpParser {
     public static #HttpParser forResponseWithLimits(HttpParserLimits limits) {
         HttpParser p = heap HttpParser();
         p.isRequest = false;
-        p.limits = limits;
+        // Copy borrowed limit values into the parser's own object (see
+        // forRequestWithLimits — never alias a borrow into an owning field).
+        p.limits.maxHeadBytes = limits.maxHeadBytes;
+        p.limits.maxLineBytes = limits.maxLineBytes;
+        p.limits.maxHeaderCount = limits.maxHeaderCount;
         return #p;
     }
 
