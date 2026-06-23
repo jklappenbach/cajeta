@@ -43,28 +43,28 @@ and `onDevice = false`. The `#st` at the `Tensor(...)` call site **moves** the o
 - `int64 size()` — element count (`length`).
 - `T get(int64 i)` / `void set(int64 i, T v)` — flat **host** access by linear buffer
   index (callers add the tensor's offset). Returns a value copy; no null.
-- `void toDevice()` — mirror host → device, allocating the `GpuBuffer<T>` on first
+- `void toDevice()` — mirror host → device, allocating the `KernelBuffer<T>` on first
   call, then set `onDevice = true`. Idempotent (no-op if already on device). Eager
   (v1 policy).
 - `void toHost()` — copy device → host, set `onDevice = false`. No-op if already host.
 - `boolean isOnDevice()` — true when live data is on the device.
-- `GpuBuffer<T> deviceBuffer()` — the device mirror, **borrowed, nullable**: `null`
+- `KernelBuffer<T> deviceBuffer()` — the device mirror, **borrowed, nullable**: `null`
   until the first `toDevice()`. Owned by this `Storage`; do not free it. See
-  `cajeta/gpu/GpuBuffer`.
+  `cajeta/gpu/KernelBuffer`.
 
 ## The device-dispatch seam
 An op chooses its path by reading the seam (via the owning `Tensor`, which delegates:
 `Tensor.gpu()→toDevice`, `cpu()→toHost`, `isOnGpu()→isOnDevice`, `deviceBuffer()`):
 ```
 import cajeta.math.Tensor;
-import cajeta.gpu.GpuBuffer;
-import cajeta.gpu.GpuStream;
+import cajeta.gpu.KernelBuffer;
+import cajeta.gpu.KernelStream;
 
 public static Tensor<float32> add(Tensor<float32> a, Tensor<float32> b) {
     if (a.isOnGpu() && b.isOnGpu()) {        // both device-resident → GPU kernel
         Tensor<float32> out = Tensor.zeros<float32>(a.shape());
         out.gpu();
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         // dispatch a @Kernel over a.deviceBuffer(), b.deviceBuffer(), out.deviceBuffer()
         return out;
     }
@@ -95,8 +95,8 @@ job. `toDevice`/`toHost` are idempotent but mutate residency state.
 ## Errors
 The methods raise no `cajeta.math` exceptions themselves. Out-of-range `get`/`set`
 indices are undefined (no bounds check). Device transfer surfaces failures from
-`cajeta.gpu.GpuBuffer` (`upload`/`download`).
+`cajeta.gpu.KernelBuffer` (`upload`/`download`).
 
 ## See also
 - `cajeta/math/Tensor` — the view that owns and exposes this `Storage`.
-- `cajeta/gpu/GpuBuffer` — the device mirror type and its upload/download contract.
+- `cajeta/gpu/KernelBuffer` — the device mirror type and its upload/download contract.

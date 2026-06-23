@@ -1,0 +1,650 @@
+package cajeta.math.linalg;
+
+import cajeta.math.Tensor;
+
+/**
+ * `cajeta.math.linalg` — native-cajeta linear-algebra factorizations (numpy-porting-plan
+ * Phase 11). Per the approved decision, the backend is **native cajeta over the Tensor/
+ * GEMM core — no foreign BLAS/LAPACK** (the "cajeta owns its math" ethos). This unit is
+ * the Gaussian-elimination foundation: `solve` (Ax=b), `det`, `inv` — LU with partial
+ * pivoting. `qr`/`cholesky`/`lu`/`svd`/`eig` build on this in later units.
+ *
+ * CPU floor; `E` is `Floating` (elimination needs division). Matrices are 2-D `(n,n)`
+ * row-major `Tensor<E>`; the work copies are contiguous so `flatSet(r*n+c, …)` writes
+ * and `get2(r,c)` reads address the same layout.
+ */
+public final class LinAlg {
+
+    /**
+     * Solve the square linear system `A·x = b` (numpy `linalg.solve`) by Gaussian
+     * elimination with partial pivoting + back-substitution. `A` is `(n,n)`, `b` is
+     * `(n,)`; returns the solution vector `x` `(n,)`. The inputs are not modified
+     * (works on copies).
+     */
+    public static #Tensor<E> solve<E extends Floating>(Tensor<E> a, Tensor<E> b) {
+        int64 n = a.shapeAt(0);
+        Tensor<E> m = a.copy();
+        Tensor<E> x = b.copy();
+        int64 col = 0;
+        while (col < n) {
+            // partial pivot: row with the largest |m[r,col]| at or below the diagonal
+            int64 piv = col;
+            E maxv = LinAlg.absE<E>(m.get2(col, col));
+            int64 r = col + 1;
+            while (r < n) {
+                E av = LinAlg.absE<E>(m.get2(r, col));
+                if (av > maxv) { maxv = av; piv = r; }
+                r = r + 1;
+            }
+            if (piv != col) {
+                LinAlg.swapRows<E>(m, n, piv, col);
+                E xp = x.get1(piv);
+                E xc = x.get1(col);
+                x.set1(piv, xc);
+                x.set1(col, xp);
+            }
+            E diag = m.get2(col, col);
+            r = col + 1;
+            while (r < n) {
+                E factor = m.get2(r, col) / diag;
+                int64 c = col;
+                while (c < n) {
+                    E v = m.get2(r, c) - factor * m.get2(col, c);
+                    m.flatSet(r * n + c, v);
+                    c = c + 1;
+                }
+                E xv = x.get1(r) - factor * x.get1(col);
+                x.set1(r, xv);
+                r = r + 1;
+            }
+            col = col + 1;
+        }
+        // back-substitution
+        int64 i = n - 1;
+        while (i >= 0) {
+            E s = x.get1(i);
+            int64 c = i + 1;
+            while (c < n) {
+                s = s - m.get2(i, c) * x.get1(c);
+                c = c + 1;
+            }
+            E xi = s / m.get2(i, i);
+            x.set1(i, xi);
+            i = i - 1;
+        }
+        return #x;
+    }
+
+    /**
+     * Determinant of a square `A` (numpy `linalg.det`) — the product of the pivots from
+     * LU with partial pivoting, with the sign flipped once per row swap. Returns a
+     * scalar `E`.
+     */
+    public static E det<E extends Floating>(Tensor<E> a) {
+        int64 n = a.shapeAt(0);
+        Tensor<E> m = a.copy();
+        E sign = (E) 1;
+        int64 col = 0;
+        while (col < n) {
+            int64 piv = col;
+            E maxv = LinAlg.absE<E>(m.get2(col, col));
+            int64 r = col + 1;
+            while (r < n) {
+                E av = LinAlg.absE<E>(m.get2(r, col));
+                if (av > maxv) { maxv = av; piv = r; }
+                r = r + 1;
+            }
+            if (piv != col) {
+                LinAlg.swapRows<E>(m, n, piv, col);
+                sign = (E) 0 - sign;          // flip sign per row swap
+            }
+            E diag = m.get2(col, col);
+            r = col + 1;
+            while (r < n) {
+                E factor = m.get2(r, col) / diag;
+                int64 c = col;
+                while (c < n) {
+                    E v = m.get2(r, c) - factor * m.get2(col, c);
+                    m.flatSet(r * n + c, v);
+                    c = c + 1;
+                }
+                r = r + 1;
+            }
+            col = col + 1;
+        }
+        E prod = sign;
+        int64 d = 0;
+        while (d < n) {
+            prod = prod * m.get2(d, d);
+            d = d + 1;
+        }
+        return prod;
+    }
+
+    /**
+     * Inverse of a square `A` (numpy `linalg.inv`) — solve `A·X = I` column by column.
+     * Returns the `(n,n)` inverse.
+     */
+    public static #Tensor<E> inv<E extends Floating>(Tensor<E> a) {
+        int64 n = a.shapeAt(0);
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = n;
+        Tensor<E> out = Tensor.zeros<E>(sh);
+        int64[] bsh = heap int64[1];
+        bsh[0] = n;
+        int64 j = 0;
+        while (j < n) {
+            Tensor<E> e = Tensor.zeros<E>(bsh);
+            e.set1(j, (E) 1);
+            Tensor<E> colx = LinAlg.solve<E>(a, e);
+            int64 i = 0;
+            while (i < n) {
+                E v = colx.get1(i);
+                out.flatSet(i * n + j, v);
+                i = i + 1;
+            }
+            j = j + 1;
+        }
+        return #out;
+    }
+
+    /**
+     * Cholesky factorization of a symmetric positive-definite `A` (numpy
+     * `linalg.cholesky`): the lower-triangular `L` with `L·Lᵀ = A`. Computed by the
+     * standard Cholesky-Banachiewicz recurrence; the strict upper triangle is zero.
+     * Returns the `(n,n)` `L`.
+     */
+    public static #Tensor<E> cholesky<E extends Floating>(Tensor<E> a) {
+        int64 n = a.shapeAt(0);
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = n;
+        Tensor<E> l = Tensor.zeros<E>(sh);
+        int64 i = 0;
+        while (i < n) {
+            int64 j = 0;
+            while (j <= i) {
+                E sum = a.get2(i, j);
+                int64 k = 0;
+                while (k < j) {
+                    sum = sum - l.get2(i, k) * l.get2(j, k);
+                    k = k + 1;
+                }
+                if (i == j) {
+                    E d = Math.sqrt(sum);
+                    l.flatSet(i * n + j, d);
+                } else {
+                    E ljj = l.get2(j, j);
+                    E v = sum / ljj;
+                    l.flatSet(i * n + j, v);
+                }
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return #l;
+    }
+
+    /**
+     * LU factorization with partial pivoting (numpy/scipy `lu`): returns `[P, L, U]`
+     * with `A = P·L·U`, where `P` is a permutation matrix, `L` is unit lower-triangular
+     * (1s on the diagonal), and `U` is upper-triangular. Native Doolittle elimination on
+     * a contiguous copy, storing the multipliers in the strict lower triangle.
+     */
+    public static #Tensor<E>[] lu<E extends Floating>(Tensor<E> a) {
+        int64 n = a.shapeAt(0);
+        Tensor<E> m = a.copy();
+        int64[] perm = heap int64[n];
+        int64 t = 0;
+        while (t < n) { perm[t] = t; t = t + 1; }
+        int64 col = 0;
+        while (col < n) {
+            // partial pivot
+            int64 piv = col;
+            E maxv = LinAlg.absE<E>(m.get2(col, col));
+            int64 r = col + 1;
+            while (r < n) {
+                E av = LinAlg.absE<E>(m.get2(r, col));
+                if (av > maxv) { maxv = av; piv = r; }
+                r = r + 1;
+            }
+            if (piv != col) {
+                LinAlg.swapRows<E>(m, n, piv, col);
+                int64 pp = perm[piv];
+                int64 pc = perm[col];
+                perm[piv] = pc;
+                perm[col] = pp;
+            }
+            E diag = m.get2(col, col);
+            r = col + 1;
+            while (r < n) {
+                E factor = m.get2(r, col) / diag;
+                m.flatSet(r * n + col, factor);          // multiplier stored in L's slot
+                int64 c = col + 1;
+                while (c < n) {
+                    E v = m.get2(r, c) - factor * m.get2(col, c);
+                    m.flatSet(r * n + c, v);
+                    c = c + 1;
+                }
+                r = r + 1;
+            }
+            col = col + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = n;
+        Tensor<E>[] out = heap Tensor<E>[3];
+        out[0] = Tensor.zeros<E>(sh);                    // P
+        out[1] = Tensor.zeros<E>(sh);                    // L
+        out[2] = Tensor.zeros<E>(sh);                    // U
+        int64 i = 0;
+        while (i < n) {
+            int64 j = 0;
+            while (j < n) {
+                E mij = m.get2(i, j);
+                if (i > j) {
+                    out[1].flatSet(i * n + j, mij);
+                } else {
+                    out[2].flatSet(i * n + j, mij);
+                    if (i == j) { out[1].flatSet(i * n + j, (E) 1); }
+                }
+                j = j + 1;
+            }
+            // A = P·L·U with (L·U) = the row-permuted A, so P[perm[i]][i] = 1
+            int64 pr = perm[i];
+            out[0].flatSet(pr * n + i, (E) 1);
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /**
+     * QR factorization (numpy `linalg.qr`, reduced/`'reduced'` for square `A`): returns
+     * `[Q, R]` with `A = Q·R`, `Q` having orthonormal columns and `R` upper-triangular.
+     * Native modified Gram-Schmidt in place over a copy (numerically the stable MGS
+     * variant). Sign of the diagonal is not normalized (matches numpy's free sign).
+     */
+    public static #Tensor<E>[] qr<E extends Floating>(Tensor<E> a) {
+        int64 n = a.shapeAt(0);
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = n;
+        Tensor<E>[] out = heap Tensor<E>[2];
+        out[0] = a.copy();                               // Q (orthogonalized in place)
+        out[1] = Tensor.zeros<E>(sh);                    // R
+        int64 j = 0;
+        while (j < n) {
+            int64 i = 0;
+            while (i < j) {
+                // r_ij = q_i · (current) col_j, then subtract the projection (MGS)
+                E dot = (E) 0;
+                int64 k = 0;
+                while (k < n) {
+                    dot = dot + out[0].get2(k, i) * out[0].get2(k, j);
+                    k = k + 1;
+                }
+                out[1].flatSet(i * n + j, dot);
+                k = 0;
+                while (k < n) {
+                    E v = out[0].get2(k, j) - dot * out[0].get2(k, i);
+                    out[0].flatSet(k * n + j, v);
+                    k = k + 1;
+                }
+                i = i + 1;
+            }
+            // normalize column j → q_j, R[j][j] = ‖col_j‖
+            E ss = (E) 0;
+            int64 k2 = 0;
+            while (k2 < n) {
+                E qv = out[0].get2(k2, j);
+                ss = ss + qv * qv;
+                k2 = k2 + 1;
+            }
+            E nrm = Math.sqrt(ss);
+            out[1].flatSet(j * n + j, nrm);
+            k2 = 0;
+            while (k2 < n) {
+                E qn = out[0].get2(k2, j) / nrm;
+                out[0].flatSet(k2 * n + j, qn);
+                k2 = k2 + 1;
+            }
+            j = j + 1;
+        }
+        return #out;
+    }
+
+    /**
+     * Symmetric eigendecomposition (numpy `linalg.eigh`) by the cyclic **Jacobi**
+     * rotation method: for a symmetric `A`, returns `[w, V]` with ascending eigenvalues
+     * `w` (length-`n` vector) and orthonormal eigenvector columns `V` (`n,n`), so
+     * `A·V = V·diag(w)`. Each sweep zeros every off-diagonal in turn via a 2-sided
+     * Givens rotation; converges quadratically. Native — no foreign LAPACK.
+     */
+    public static #Tensor<E>[] eigh<E extends Floating>(Tensor<E> a) {
+        int64 n = a.shapeAt(0);
+        Tensor<E> m = a.copy();
+        Tensor<E> v = Tensor.eye<E>(n);
+        E eps = (E) 1 / (E) 10000000;            // off-diagonal convergence floor (~1e-7)
+        E eps2 = (E) 1 / (E) 100000000;          // per-element skip floor (~1e-8)
+        int64 sweep = 0;
+        while (sweep < 100) {
+            E off = (E) 0;
+            int64 p = 0;
+            while (p < n) {
+                int64 q = p + 1;
+                while (q < n) {
+                    E mpq = m.get2(p, q);
+                    E ampq = mpq;
+                    if (ampq < (E) 0) { ampq = (E) 0 - ampq; }
+                    off = off + ampq;
+                    q = q + 1;
+                }
+                p = p + 1;
+            }
+            if (off < eps) {
+                sweep = 100;                       // converged → exit the sweep loop
+            } else {
+                p = 0;
+                while (p < n) {
+                    int64 q = p + 1;
+                    while (q < n) {
+                        E apq = m.get2(p, q);
+                        E aapq = apq;
+                        if (aapq < (E) 0) { aapq = (E) 0 - aapq; }
+                        if (aapq > eps2) {
+                            E app = m.get2(p, p);
+                            E aqq = m.get2(q, q);
+                            E tau = (aqq - app) / (apq + apq);
+                            E denom = Math.sqrt((E) 1 + tau * tau);
+                            E t = (E) 0;
+                            if (tau >= (E) 0) { t = (E) 1 / (tau + denom); }
+                            else { t = (E) 0 - ((E) 1 / (denom - tau)); }
+                            E c = (E) 1 / Math.sqrt((E) 1 + t * t);
+                            E s = t * c;
+                            // rotate columns p,q of m
+                            int64 i = 0;
+                            while (i < n) {
+                                E mip = m.get2(i, p);
+                                E miq = m.get2(i, q);
+                                m.flatSet(i * n + p, c * mip - s * miq);
+                                m.flatSet(i * n + q, s * mip + c * miq);
+                                i = i + 1;
+                            }
+                            // rotate rows p,q of m
+                            i = 0;
+                            while (i < n) {
+                                E mpi = m.get2(p, i);
+                                E mqi = m.get2(q, i);
+                                m.flatSet(p * n + i, c * mpi - s * mqi);
+                                m.flatSet(q * n + i, s * mpi + c * mqi);
+                                i = i + 1;
+                            }
+                            // accumulate the rotation into the eigenvector matrix
+                            i = 0;
+                            while (i < n) {
+                                E vip = v.get2(i, p);
+                                E viq = v.get2(i, q);
+                                v.flatSet(i * n + p, c * vip - s * viq);
+                                v.flatSet(i * n + q, s * vip + c * viq);
+                                i = i + 1;
+                            }
+                        }
+                        q = q + 1;
+                    }
+                    p = p + 1;
+                }
+            }
+            sweep = sweep + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = n;
+        int64[] vs = heap int64[1];
+        vs[0] = n;
+        Tensor<E>[] out = heap Tensor<E>[2];
+        out[0] = Tensor.zeros<E>(vs);            // eigenvalues w
+        out[1] = Tensor.zeros<E>(sh);            // eigenvectors V (columns)
+        int64 d = 0;
+        while (d < n) {
+            E dv = m.get2(d, d);
+            out[0].set1(d, dv);
+            int64 rr = 0;
+            while (rr < n) {
+                E vv = v.get2(rr, d);
+                out[1].flatSet(rr * n + d, vv);
+                rr = rr + 1;
+            }
+            d = d + 1;
+        }
+        // sort eigenvalues ascending, carrying eigenvector columns (numpy eigh order)
+        int64 ii = 0;
+        while (ii < n) {
+            int64 mn = ii;
+            E mnv = out[0].get1(ii);
+            int64 jj = ii + 1;
+            while (jj < n) {
+                E cand = out[0].get1(jj);
+                if (cand < mnv) { mnv = cand; mn = jj; }
+                jj = jj + 1;
+            }
+            if (mn != ii) {
+                E a0 = out[0].get1(ii);
+                E a1 = out[0].get1(mn);
+                out[0].set1(ii, a1);
+                out[0].set1(mn, a0);
+                int64 rr = 0;
+                while (rr < n) {
+                    E c0 = out[1].get2(rr, ii);
+                    E c1 = out[1].get2(rr, mn);
+                    out[1].flatSet(rr * n + ii, c1);
+                    out[1].flatSet(rr * n + mn, c0);
+                    rr = rr + 1;
+                }
+            }
+            ii = ii + 1;
+        }
+        return #out;
+    }
+
+    /**
+     * Singular value decomposition (numpy `linalg.svd`, full square case): returns
+     * `[U, S, Vt]` with `A = U·diag(S)·Vt`, `U`/`Vt` orthonormal and `S` the singular
+     * values in **descending** order. Computed natively from the symmetric eigenproblem
+     * of `AᵀA` (right vectors `V` and σ²), then `U = A·V/σ`. (General nonsymmetric `eig`
+     * — complex spectra — is deferred; it needs the interleaved-complex tier.)
+     */
+    public static #Tensor<E>[] svd<E extends Floating>(Tensor<E> a) {
+        int64 n = a.shapeAt(0);
+        // NB: a.transpose() is a non-owning VIEW sharing a's Storage — binding it to a
+        // local would free that shared Storage when this scope ends (borrow-drop UAF,
+        // [[cajeta-wildcard-field-drop-hazard]]). Pass it inline so no droppable local owns it.
+        Tensor<E> gram = Tensor.matmul<E>(a.transpose(), a);
+        Tensor<E>[] eig = LinAlg.eigh<E>(gram);
+        Tensor<E> evals = eig[0];
+        Tensor<E> vmat = eig[1];
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = n;
+        int64[] vs = heap int64[1];
+        vs[0] = n;
+        Tensor<E>[] out = heap Tensor<E>[3];
+        out[0] = Tensor.zeros<E>(sh);            // U
+        out[1] = Tensor.zeros<E>(vs);            // S (descending)
+        out[2] = Tensor.zeros<E>(sh);            // Vt = Vᵀ
+        E tiny = (E) 1 / (E) 1000000000;
+        int64 k = 0;
+        while (k < n) {
+            int64 sidx = n - 1 - k;              // eigh is ascending → take from the top
+            E lam = evals.get1(sidx);
+            if (lam < (E) 0) { lam = (E) 0; }
+            E sigma = Math.sqrt(lam);
+            out[1].set1(k, sigma);
+            // Vt row k = V column sidx
+            int64 r = 0;
+            while (r < n) {
+                E vrk = vmat.get2(r, sidx);
+                out[2].flatSet(k * n + r, vrk);
+                r = r + 1;
+            }
+            // U column k = A·(V col sidx) / sigma
+            if (sigma > tiny) {
+                r = 0;
+                while (r < n) {
+                    E acc = (E) 0;
+                    int64 c = 0;
+                    while (c < n) {
+                        acc = acc + a.get2(r, c) * vmat.get2(c, sidx);
+                        c = c + 1;
+                    }
+                    E uval = acc / sigma;
+                    out[0].flatSet(r * n + k, uval);
+                    r = r + 1;
+                }
+            }
+            k = k + 1;
+        }
+        return #out;
+    }
+
+    /**
+     * Moore-Penrose pseudo-inverse (numpy `linalg.pinv`): `A⁺ = V·diag(1/σ)·Uᵀ`, with
+     * singular values `σ ≤ tol` zeroed (`tol = σmax·1e-4`, relative to our float Jacobi
+     * accuracy). Equals `inv` for a nonsingular square `A`, and gives the least-squares
+     * minimum-norm solution for rank-deficient `A`. Square case.
+     */
+    public static #Tensor<E> pinv<E extends Floating>(Tensor<E> a) {
+        int64 n = a.shapeAt(0);
+        Tensor<E>[] sv = LinAlg.svd<E>(a);
+        Tensor<E> u = sv[0];
+        Tensor<E> s = sv[1];
+        Tensor<E> vt = sv[2];
+        E smax = s.get1(0);                       // svd S is descending → [0] is largest
+        E tol = smax / (E) 10000;
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = n;
+        Tensor<E> out = Tensor.zeros<E>(sh);
+        int64 i = 0;
+        while (i < n) {
+            int64 j = 0;
+            while (j < n) {
+                E acc = (E) 0;
+                int64 k = 0;
+                while (k < n) {
+                    E sk = s.get1(k);
+                    if (sk > tol) {
+                        E sinv = (E) 1 / sk;
+                        // A⁺[i][j] = Σ_k V[i][k]·(1/σ_k)·Uᵀ[k][j] = Σ Vt[k][i]·sinv·U[j][k]
+                        E vki = vt.get2(k, i);
+                        E ujk = u.get2(j, k);
+                        E term = vki * sinv * ujk;
+                        acc = acc + term;
+                    }
+                    k = k + 1;
+                }
+                int64 oidx = i * n + j;
+                out.flatSet(oidx, acc);
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /**
+     * Least-squares solution of `A·x ≈ b` (numpy `linalg.lstsq`) via the pseudo-inverse:
+     * `x = A⁺·b`. For a nonsingular square `A` this equals `solve`; for rank-deficient
+     * `A` it returns the minimum-norm solution. `b` is a length-`n` vector.
+     */
+    public static #Tensor<E> lstsq<E extends Floating>(Tensor<E> a, Tensor<E> b) {
+        int64 n = a.shapeAt(0);
+        Tensor<E> p = LinAlg.pinv<E>(a);
+        int64[] vs = heap int64[1];
+        vs[0] = n;
+        Tensor<E> x = Tensor.zeros<E>(vs);
+        int64 i = 0;
+        while (i < n) {
+            E acc = (E) 0;
+            int64 j = 0;
+            while (j < n) {
+                acc = acc + p.get2(i, j) * b.get1(j);
+                j = j + 1;
+            }
+            x.set1(i, acc);
+            i = i + 1;
+        }
+        return #x;
+    }
+
+    /**
+     * Rank of a square `A` (numpy `linalg.matrix_rank`): the count of singular values
+     * above `tol = σmax·1e-4`. Detects rank deficiency / singularity.
+     */
+    public static int64 matrixRank<E extends Floating>(Tensor<E> a) {
+        int64 n = a.shapeAt(0);
+        Tensor<E>[] sv = LinAlg.svd<E>(a);
+        Tensor<E> s = sv[1];
+        E smax = s.get1(0);
+        E tol = smax / (E) 10000;
+        int64 rank = 0;
+        int64 k = 0;
+        while (k < n) {
+            E sk = s.get1(k);
+            if (sk > tol) { rank = rank + 1; }
+            k = k + 1;
+        }
+        return rank;
+    }
+
+    /**
+     * 2-norm condition number (numpy `linalg.cond`): `σmax / σmin`. Large ⇒
+     * ill-conditioned; infinite (very large here) for a singular matrix.
+     */
+    public static E cond<E extends Floating>(Tensor<E> a) {
+        int64 n = a.shapeAt(0);
+        Tensor<E>[] sv = LinAlg.svd<E>(a);
+        Tensor<E> s = sv[1];
+        E smax = s.get1(0);
+        E smin = s.get1(n - 1);
+        return smax / smin;
+    }
+
+    /**
+     * Frobenius norm of a square `A` (numpy `linalg.norm` default for matrices):
+     * `sqrt(Σ aᵢⱼ²)`. No factorization needed.
+     */
+    public static E normFro<E extends Floating>(Tensor<E> a) {
+        int64 n = a.shapeAt(0);
+        E acc = (E) 0;
+        int64 i = 0;
+        while (i < n) {
+            int64 j = 0;
+            while (j < n) {
+                E v = a.get2(i, j);
+                acc = acc + v * v;
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return Math.sqrt(acc);
+    }
+
+    /** Absolute value of a `Floating` scalar (local helper — `Math.abs` per `E`). */
+    static E absE<E extends Floating>(E v) {
+        if (v < (E) 0) { return (E) 0 - v; }
+        return v;
+    }
+
+    /** Swap rows `r0` and `r1` of the contiguous `(n,n)` matrix `m` in place. */
+    static void swapRows<E extends Floating>(Tensor<E> m, int64 n, int64 r0, int64 r1) {
+        int64 c = 0;
+        while (c < n) {
+            E a = m.get2(r0, c);
+            E b = m.get2(r1, c);
+            m.flatSet(r0 * n + c, b);
+            m.flatSet(r1 * n + c, a);
+            c = c + 1;
+        }
+    }
+}

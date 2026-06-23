@@ -49,44 +49,44 @@ namespace fs = std::filesystem;
 // cross-lane math is correct at the real width".
 const char* kWaveSource = R"CJ(
 package test;
-import cajeta.gpu.GpuBuffer;
-import cajeta.gpu.GpuStream;
-import cajeta.gpu.GpuThread;
+import cajeta.gpu.KernelBuffer;
+import cajeta.gpu.KernelStream;
+import cajeta.gpu.KernelThread;
 import cajeta.gpu.Wave;
 public class M {
     @Kernel
-    public static void widthk(GpuBuffer<uint32> out) {
-        uint32 t = GpuThread.globalIdX();
+    public static void widthk(KernelBuffer<uint32> out) {
+        uint32 t = KernelThread.globalIdX();
         out[t] = Wave.width();
     }
     @Kernel
-    public static void sumk(GpuBuffer<uint32> out, GpuBuffer<uint32> in) {
-        uint32 t = GpuThread.globalIdX();
+    public static void sumk(KernelBuffer<uint32> out, KernelBuffer<uint32> in) {
+        uint32 t = KernelThread.globalIdX();
         out[t] = Wave.reduceSum(in[t]);
     }
     @Kernel
-    public static void divsumk(GpuBuffer<uint32> out, GpuBuffer<uint32> in, uint32 active) {
-        uint32 t = GpuThread.globalIdX();
+    public static void divsumk(KernelBuffer<uint32> out, KernelBuffer<uint32> in, uint32 active) {
+        uint32 t = KernelThread.globalIdX();
         if (t < active) { out[t] = Wave.reduceSum(in[t]); }
     }
     @Kernel
-    public static void ballotk(GpuBuffer<uint32> out) {
-        uint32 t = GpuThread.globalIdX();
+    public static void ballotk(KernelBuffer<uint32> out) {
+        uint32 t = KernelThread.globalIdX();
         out[t] = (uint32) Wave.ballotSync(t < 4);
     }
     @Kernel
-    public static void shufflek(GpuBuffer<uint32> out, GpuBuffer<uint32> in) {
-        uint32 t = GpuThread.globalIdX();
+    public static void shufflek(KernelBuffer<uint32> out, KernelBuffer<uint32> in) {
+        uint32 t = KernelThread.globalIdX();
         out[t] = Wave.shuffleSync(in[t], 0);
     }
     @Kernel
-    public static void lanek(GpuBuffer<uint32> out) {
-        uint32 t = GpuThread.globalIdX();
+    public static void lanek(KernelBuffer<uint32> out) {
+        uint32 t = KernelThread.globalIdX();
         out[t] = Wave.laneId();
     }
     @Kernel
-    public static void firstk(GpuBuffer<uint32> out) {
-        uint32 t = GpuThread.globalIdX();
+    public static void firstk(KernelBuffer<uint32> out) {
+        uint32 t = KernelThread.globalIdX();
         if (Wave.isFirstLane()) { out[t] = 1; } else { out[t] = 0; }
     }
 
@@ -95,8 +95,8 @@ public class M {
         uint32 n = 256;
         uint32[] h = heap uint32[n];
         for (uint32 i = 0; i < n; i = i + 1) { h[i] = 0; }
-        GpuBuffer<uint32> b = heap GpuBuffer<uint32>(n);
-        GpuStream s = GpuStream.current();
+        KernelBuffer<uint32> b = heap KernelBuffer<uint32>(n);
+        KernelStream s = KernelStream.current();
         widthk.launch(s, grid: [1], block: [256])(b);
         s.sync();
         b.download(h);
@@ -106,8 +106,8 @@ public class M {
     public static uint32 runWidth() {
         uint32 n = 256;
         uint32[] h = heap uint32[n];
-        GpuBuffer<uint32> b = heap GpuBuffer<uint32>(n);
-        GpuStream s = GpuStream.current();
+        KernelBuffer<uint32> b = heap KernelBuffer<uint32>(n);
+        KernelStream s = KernelStream.current();
         widthk.launch(s, grid: [1], block: [256])(b);
         s.sync();
         b.download(h);
@@ -126,10 +126,10 @@ public class M {
         uint32[] hin = heap uint32[n];
         uint32[] hout = heap uint32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hin[i] = 1; hout[i] = 0; }
-        GpuBuffer<uint32> bin = heap GpuBuffer<uint32>(n);
-        GpuBuffer<uint32> bout = heap GpuBuffer<uint32>(n);
+        KernelBuffer<uint32> bin = heap KernelBuffer<uint32>(n);
+        KernelBuffer<uint32> bout = heap KernelBuffer<uint32>(n);
         bin.upload(hin);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         sumk.launch(s, grid: [1], block: [256])(bout, bin);
         s.sync();
         bout.download(hout);
@@ -151,11 +151,11 @@ public class M {
         uint32[] hin = heap uint32[n];
         uint32[] hout = heap uint32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hin[i] = 1; hout[i] = 0; }
-        GpuBuffer<uint32> bin = heap GpuBuffer<uint32>(n);
-        GpuBuffer<uint32> bout = heap GpuBuffer<uint32>(n);
+        KernelBuffer<uint32> bin = heap KernelBuffer<uint32>(n);
+        KernelBuffer<uint32> bout = heap KernelBuffer<uint32>(n);
         bin.upload(hin);
         bout.upload(hout);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         divsumk.launch(s, grid: [1], block: [256])(bout, bin, active);
         s.sync();
         bout.download(hout);
@@ -177,8 +177,8 @@ public class M {
         if (w < 2) { return 0; }
         uint32 n = 256;
         uint32[] hout = heap uint32[n];
-        GpuBuffer<uint32> bout = heap GpuBuffer<uint32>(n);
-        GpuStream s = GpuStream.current();
+        KernelBuffer<uint32> bout = heap KernelBuffer<uint32>(n);
+        KernelStream s = KernelStream.current();
         ballotk.launch(s, grid: [1], block: [256])(bout);
         s.sync();
         bout.download(hout);
@@ -200,8 +200,8 @@ public class M {
         if (w < 2) { return 0; }
         uint32 n = 256;
         uint32[] hout = heap uint32[n];
-        GpuBuffer<uint32> bout = heap GpuBuffer<uint32>(n);
-        GpuStream s = GpuStream.current();
+        KernelBuffer<uint32> bout = heap KernelBuffer<uint32>(n);
+        KernelStream s = KernelStream.current();
         lanek.launch(s, grid: [1], block: [256])(bout);
         s.sync();
         bout.download(hout);
@@ -217,8 +217,8 @@ public class M {
         if (w < 2) { return 0; }
         uint32 n = 256;
         uint32[] hout = heap uint32[n];
-        GpuBuffer<uint32> bout = heap GpuBuffer<uint32>(n);
-        GpuStream s = GpuStream.current();
+        KernelBuffer<uint32> bout = heap KernelBuffer<uint32>(n);
+        KernelStream s = KernelStream.current();
         firstk.launch(s, grid: [1], block: [256])(bout);
         s.sync();
         bout.download(hout);
@@ -238,10 +238,10 @@ public class M {
         uint32[] hin = heap uint32[n];
         uint32[] hout = heap uint32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hin[i] = i + 100; hout[i] = 0; }
-        GpuBuffer<uint32> bin = heap GpuBuffer<uint32>(n);
-        GpuBuffer<uint32> bout = heap GpuBuffer<uint32>(n);
+        KernelBuffer<uint32> bin = heap KernelBuffer<uint32>(n);
+        KernelBuffer<uint32> bout = heap KernelBuffer<uint32>(n);
         bin.upload(hin);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         shufflek.launch(s, grid: [1], block: [256])(bout, bin);
         s.sync();
         bout.download(hout);

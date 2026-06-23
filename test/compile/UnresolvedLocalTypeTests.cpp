@@ -4,7 +4,7 @@
 // used to flow straight into LocalVariableDeclaration::generateCode and crash at
 // the first deref (type->hasValueSemantics()). This guards the fail-loud check
 // added in CajetaLlvmVisitor::visitLocalVariableDeclaration. The historical
-// trigger was a renamed class (cajeta.gpu.Buffer -> GpuBuffer) still spelled the
+// trigger was a renamed class (cajeta.gpu.Buffer -> KernelBuffer) still spelled the
 // old way in a declaration — see MatrixTests / VectorTypeTests.
 //
 

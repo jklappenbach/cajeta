@@ -4748,6 +4748,53 @@ namespace cajeta {
         return true;
     }
 
+    // cajeta-ir Unit 4c — pull the target llvm::Function out of a closure
+    // argument IFF it is a directly-supplied non-capturing lambda. Such a lambda
+    // is emitted as a private CONSTANT global `{ ptr fn, ptr null, ptr null }`
+    // (LambdaExpression::generateCode) — so the value being a constant global
+    // record with a NULL captures slot is exactly the "directly-written,
+    // non-capturing" condition the specialization requires; fn is operand 0.
+    // Returns null for a captured / stored / runtime closure (a loaded slot, or
+    // non-null captures) — the caller then keeps the ordinary indirect path.
+    static llvm::Function* extractClosureTargetFn(llvm::Value* closureArg,
+                                                  llvm::Constant** outRecord = nullptr,
+                                                  int depth = 0) {
+        if (!closureArg || depth > 8) return nullptr;
+        llvm::Value* v = closureArg->stripPointerCasts();
+
+        // Phase B Unit 1 (forwarding chains): a specialized instance forwards its
+        // bound comparator to another generic callee, so the closure argument is a
+        // LOAD from a slot that is written exactly once with the constant record
+        // (a BoundClosureField slot, or a function-typed local). Trace through it to
+        // recover the known target -> the forwarded call specializes too.
+        if (auto* load = llvm::dyn_cast<llvm::LoadInst>(v)) {
+            auto* slot = llvm::dyn_cast<llvm::AllocaInst>(
+                load->getPointerOperand()->stripPointerCasts());
+            if (!slot) return nullptr;
+            llvm::StoreInst* onlyStore = nullptr;
+            for (auto* u : slot->users()) {
+                if (auto* st = llvm::dyn_cast<llvm::StoreInst>(u)) {
+                    if (st->getValueOperand() == slot) return nullptr;   // address escapes
+                    if (onlyStore) return nullptr;                       // >1 store: not stable
+                    onlyStore = st;
+                } else if (!llvm::isa<llvm::LoadInst>(u)) {
+                    return nullptr;                                      // some other use
+                }
+            }
+            if (!onlyStore) return nullptr;
+            return extractClosureTargetFn(onlyStore->getValueOperand(), outRecord, depth + 1);
+        }
+
+        auto* gv = llvm::dyn_cast<llvm::GlobalVariable>(v);
+        if (!gv || !gv->isConstant() || !gv->hasInitializer()) return nullptr;
+        auto* cs = llvm::dyn_cast<llvm::ConstantStruct>(gv->getInitializer());
+        if (!cs || cs->getNumOperands() < 2) return nullptr;
+        if (!cs->getOperand(1)->isNullValue()) return nullptr;   // non-capturing only
+        auto* fn = llvm::dyn_cast<llvm::Function>(cs->getOperand(0)->stripPointerCasts());
+        if (fn && outRecord) *outRecord = gv;
+        return fn;
+    }
+
     llvm::Value* CajetaClass::invokeMethod(string& methodName, vector<ParameterEntry> parameters, bool isConstructor, llvm::Value* thisValue,
                                             CajetaModulePtr callerModule, bool forceDirectCall,
                                             const vector<CajetaTypePtr>& explicitMethodTypeArgs,
@@ -5023,6 +5070,52 @@ namespace cajeta {
         // actually picks the override-correct function in a subclass.
         auto* builder = emitMod->getBuilder();
         auto& llvmCtx = *emitMod->getLlvmContext();
+
+        // cajeta-ir Unit 4c — closure-specialization redirect. When this is a
+        // generic-method instantiation receiving a directly-supplied,
+        // non-capturing lambda for a function-typed parameter, retarget the call
+        // to a specialized instance F<args>$fn that binds the parameter to the
+        // lambda (body calls it directly) and drops the closure argument. Tightly
+        // gated: only an instantiation (templateOrigin set) with a function-typed
+        // param whose codegen'd argument is a constant non-capturing closure
+        // record (extractClosureTargetFn — i.e. a directly-written lambda)
+        // qualifies; every other call falls through unchanged (parity).
+        if (Method* tmpl = method->getTemplateOrigin()) {
+            const auto plist = method->getParameterList();
+            for (size_t k = 0; k < plist.size(); ++k) {
+                if (!plist[k]) continue;
+                auto fnType = std::dynamic_pointer_cast<CajetaFunctionType>(
+                    plist[k]->getType());
+                if (!fnType) continue;
+                // methodArgs index aligns with the parameter index past the
+                // hidden sret slot (the `this` arg, when present, occupies the
+                // parameterList[0] slot the same way).
+                size_t argPos = (size_t) sretOffset + k;
+                if (argPos >= methodArgs.size()) continue;
+                llvm::Constant* record = nullptr;
+                llvm::Function* lambdaFn = extractClosureTargetFn(methodArgs[argPos], &record);
+                if (!lambdaFn) continue;
+                MethodPtr spec = tmpl->instantiateSpecializedClosure(
+                    method->getMethodTypeArguments(), plist[k]->getName(),
+                    lambdaFn, fnType, record);
+                if (!spec) continue;
+                // The specialized body references the lambda's fn (internal) and
+                // its closure record (private) — both module-LOCAL. So it MUST be
+                // emitted into the caller's module where they live, not the
+                // template's (stdlib) module. Otherwise the ThinLTO summary gets a
+                // cross-module reference to an internal symbol and ld.lld crashes
+                // in computeDeadSymbols. (Resolution module stays the template's;
+                // only the emit target moves — same split as a stdlib-template
+                // instantiation over a user type, MethodTemplateInstantiator.cpp.)
+                if (emitMod) spec->setEmitModule(emitMod);
+                CajetaClass* host = spec->getParent() ? spec->getParent().get() : this;
+                bringMethodTemplateInstantiationToLife(host, spec, emitMod);
+                methodArgs.erase(methodArgs.begin() + argPos);
+                method = spec;   // downstream callee lookup + sig use the instance
+                break;
+            }
+        }
+
         // Cross-module dispatch: when the receiver class lives in a
         // different llvm::Module than where the call is being
         // emitted (e.g. App's run() calling Provider's __cajeta_inject

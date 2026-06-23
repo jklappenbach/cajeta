@@ -333,6 +333,21 @@ namespace xpu {
             unsigned binding, llvm::Value* arrayBase, llvm::Type* elemTy,
             llvm::Value* descIndex);
 
+        // Kernel-aware vectorized load/store: `buf.vload<N>(i)` reads `lanes`
+        // contiguous elements from element `index` into a packed `<N x T>`;
+        // `buf.vstore(i, v)` writes one back. Default routes through
+        // bufferElementPtr + a packed vector load/store (correct on CPU / NVPTX
+        // / AMD where the buffer is a raw pointer); Vulkan/SPIR-V overrides to
+        // split for the <=4-component OpTypeVector cap. `index` is i64.
+        // (kernel-vector-loadstore-spec.md §3, §4, §6.)
+        virtual llvm::Value* vectorLoad(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* base,
+            llvm::Type* elemTy, unsigned lanes, llvm::Value* index);
+        virtual void vectorStore(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* base,
+            llvm::Type* elemTy, unsigned lanes, llvm::Value* index,
+            llvm::Value* value);
+
         // Sample the 2-D texture `texHandle` at normalized coords (u, v) in
         // [0, 1] through `samplerHandle`, returning the filtered texel (f32) —
         // the lowering of `tex.sample(sampler, u, v)` (Item 8). `texHandle` and

@@ -1,9 +1,9 @@
 //
 // CajetaXPU §3.5 / §11 — launch borrow scope checking.
 //
-// A `kernel.launch(...)(args)` borrows each GpuBuffer argument for the duration
+// A `kernel.launch(...)(args)` borrows each KernelBuffer argument for the duration
 // of the asynchronous launch; the borrow is released at the next
-// GpuStream.sync() / Event.waitHost(). Freeing a buffer that a launch still
+// KernelStream.sync() / Event.waitHost(). Freeing a buffer that a launch still
 // references — before syncing — is a compile error (XPU-K02): a real
 // use-after-free of device memory an in-flight kernel reads/writes.
 //
@@ -78,8 +78,8 @@ std::string codegenErrorId(Compiler& compiler) {
 
 const char* kHeader =
     "package test;\n"
-    "import cajeta.gpu.GpuBuffer;\n"
-    "import cajeta.gpu.GpuStream;\n";
+    "import cajeta.gpu.KernelBuffer;\n"
+    "import cajeta.gpu.KernelStream;\n";
 
 } // namespace
 
@@ -87,8 +87,8 @@ const char* kHeader =
 TEST(XpuLaunchBorrowTests, freeBeforeSyncRejected) {
     std::string src = std::string(kHeader) +
         "public class M {\n"
-        "    @Kernel public static void k(GpuBuffer<float32> y, uint32 n) { }\n"
-        "    public static void run(GpuBuffer<float32> y, GpuStream s, uint32 n) {\n"
+        "    @Kernel public static void k(KernelBuffer<float32> y, uint32 n) { }\n"
+        "    public static void run(KernelBuffer<float32> y, KernelStream s, uint32 n) {\n"
         "        k.launch(s, grid: [1], block: [1])(y, n);\n"
         "        y.free();\n"   // ERROR: still borrowed by the launch
         "    }\n"
@@ -102,8 +102,8 @@ TEST(XpuLaunchBorrowTests, freeBeforeSyncRejected) {
 TEST(XpuLaunchBorrowTests, freeAfterSyncAccepted) {
     std::string src = std::string(kHeader) +
         "public class M {\n"
-        "    @Kernel public static void k(GpuBuffer<float32> y, uint32 n) { }\n"
-        "    public static void run(GpuBuffer<float32> y, GpuStream s, uint32 n) {\n"
+        "    @Kernel public static void k(KernelBuffer<float32> y, uint32 n) { }\n"
+        "    public static void run(KernelBuffer<float32> y, KernelStream s, uint32 n) {\n"
         "        k.launch(s, grid: [1], block: [1])(y, n);\n"
         "        s.sync();\n"
         "        y.free();\n"   // OK: borrow released at sync
@@ -118,7 +118,7 @@ TEST(XpuLaunchBorrowTests, freeAfterSyncAccepted) {
 TEST(XpuLaunchBorrowTests, freeWithoutLaunchAccepted) {
     std::string src = std::string(kHeader) +
         "public class M {\n"
-        "    public static void run(GpuBuffer<float32> y) {\n"
+        "    public static void run(KernelBuffer<float32> y) {\n"
         "        y.free();\n"
         "    }\n"
         "}\n";
@@ -128,15 +128,15 @@ TEST(XpuLaunchBorrowTests, freeWithoutLaunchAccepted) {
 }
 
 // Letting a launch-borrowed OWNED buffer leave scope before syncing is XPU-K02
-// — the implicit-drop counterpart to freeBeforeSyncRejected. With GpuBuffer<T>'s
+// — the implicit-drop counterpart to freeBeforeSyncRejected. With KernelBuffer<T>'s
 // RAII destructor, the scope-exit drop would free device memory an in-flight
 // kernel still references.
 TEST(XpuLaunchBorrowTests, dropBeforeSyncRejected) {
     std::string src = std::string(kHeader) +
         "public class M {\n"
-        "    @Kernel public static void k(GpuBuffer<float32> y, uint32 n) { }\n"
-        "    public static void run(GpuStream s, uint32 n) {\n"
-        "        GpuBuffer<float32> y = heap GpuBuffer<float32>(n);\n"
+        "    @Kernel public static void k(KernelBuffer<float32> y, uint32 n) { }\n"
+        "    public static void run(KernelStream s, uint32 n) {\n"
+        "        KernelBuffer<float32> y = heap KernelBuffer<float32>(n);\n"
         "        k.launch(s, grid: [1], block: [1])(y, n);\n"
         "        // no sync — y's drop at scope exit would use-after-free\n"
         "    }\n"
@@ -151,9 +151,9 @@ TEST(XpuLaunchBorrowTests, dropBeforeSyncRejected) {
 TEST(XpuLaunchBorrowTests, dropAfterSyncAccepted) {
     std::string src = std::string(kHeader) +
         "public class M {\n"
-        "    @Kernel public static void k(GpuBuffer<float32> y, uint32 n) { }\n"
-        "    public static void run(GpuStream s, uint32 n) {\n"
-        "        GpuBuffer<float32> y = heap GpuBuffer<float32>(n);\n"
+        "    @Kernel public static void k(KernelBuffer<float32> y, uint32 n) { }\n"
+        "    public static void run(KernelStream s, uint32 n) {\n"
+        "        KernelBuffer<float32> y = heap KernelBuffer<float32>(n);\n"
         "        k.launch(s, grid: [1], block: [1])(y, n);\n"
         "        s.sync();\n"
         "        // y dropped here by RAII — OK, borrow released at sync\n"

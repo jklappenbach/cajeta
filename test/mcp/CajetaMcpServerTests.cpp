@@ -171,6 +171,9 @@ TEST(CajetaMcpServerTests, lifecycleAndErrors) {
     EXPECT_EQ(r[0].at("id").asInt(), 1);
     EXPECT_EQ(r[0].at("result").at("serverInfo").at("name").asString(), "cajeta-mcp");
     EXPECT_TRUE(r[0].at("result").at("capabilities").has("tools"));
+    // skill-first trigger: initialize carries instructions naming searchSkills.
+    EXPECT_NE(r[0].at("result").at("instructions").asString().find("searchSkills"),
+              std::string::npos);
 
     // tools/list — the five tool names
     const Json& tools = r[1].at("result").at("tools");
@@ -183,6 +186,21 @@ TEST(CajetaMcpServerTests, lifecycleAndErrors) {
     // unknown method → -32601; bad JSON → -32700
     EXPECT_EQ(r[2].at("error").at("code").asInt(), -32601);
     EXPECT_EQ(r[3].at("error").at("code").asInt(), -32700);
+}
+
+// mcp-compression U1 — the transport seam (StdioTransport.readMessage) frames
+// requests independently of dispatch: blank lines between framed requests are
+// skipped, and each request still gets exactly one framed response in order.
+TEST(CajetaMcpServerTests, transportSeamSkipsBlankLinesAndFrames) {
+    if (!ensureServerBuilt()) return;
+    auto r = drive(
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n"
+        "\n"
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n");
+    ASSERT_EQ(r.size(), 2u);
+    EXPECT_EQ(r[0].at("id").asInt(), 1);
+    EXPECT_EQ(r[1].at("id").asInt(), 2);
+    EXPECT_TRUE(r[1].at("result").has("tools"));
 }
 
 // C2.1.3 — skill tools validate their params (missing name / missing uris).

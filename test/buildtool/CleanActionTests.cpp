@@ -126,6 +126,41 @@ TEST(CleanActionTests, deepWithYesAlsoRemovesCache) {
     std::filesystem::current_path(savedCwd);
 }
 
+// 3b.1.1 — a deep clean wipes the per-project .cajeta/cache but never the
+// machine-global ~/.olla store (a separate root; clean has no path into it).
+TEST(CleanActionTests, deepCleanLeavesOllaUntouched) {
+    auto root = tempProject("olla-safe");
+    auto olla = tempProject("olla-store");
+    auto savedCwd = std::filesystem::current_path();
+    std::filesystem::current_path(root);
+
+    writeFile(root / ".cajeta" / "cache" / "ir" / "x.bc", "ir");
+    auto kept = olla / "dev.codec" / "0.5.0" / "dev.codec-0.5.0.cja";
+    writeFile(kept, "OLLA-ARTIFACT");
+
+    ActionRegistry reg;
+    const auto* clean = reg.get("clean");
+    ASSERT_NE(clean, nullptr);
+
+    auto m = makeManifest();
+    auto props = resolveProperties(m);
+    ASSERT_TRUE((bool)props);
+    TaskContext ctx(*props, &m);
+
+    llvm::json::Object params;
+    params["deep"] = true;
+    params["yes"]  = true;
+    auto r = clean->run(params, ctx);
+    ASSERT_TRUE((bool)r) << errorText(r.takeError());
+    EXPECT_FALSE(std::filesystem::exists(root / ".cajeta" / "cache"));
+    EXPECT_TRUE(std::filesystem::exists(kept))
+        << "~/.olla must survive cajeta clean (U3b / spec 2.2.4)";
+
+    std::filesystem::current_path(savedCwd);
+    std::filesystem::remove_all(root);
+    std::filesystem::remove_all(olla);
+}
+
 TEST(CleanActionTests, defaultOnEmptyProjectIsBenign) {
     auto root = tempProject("empty");
     auto savedCwd = std::filesystem::current_path();

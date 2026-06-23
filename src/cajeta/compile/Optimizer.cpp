@@ -19,9 +19,51 @@
 #include "llvm/Transforms/Vectorize/LoopVectorize.h"
 #include "llvm/Transforms/Vectorize/SLPVectorizer.h"
 
+#include "llvm/Support/CommandLine.h"
+
 namespace cajeta {
 
 namespace {
+
+// PARKED EXPERIMENT (closure-devirt via LLVM function specialization). Forcing
+// IPSCCP function-specialization devirtualizes a generic callee's constant
+// non-capturing closure argument (the comparator) -> direct, inlinable call.
+// VALIDATED the ceiling in the NON-LTO pipeline: sort-int64 ascending
+// 0.78->0.21ms (beats std::sort), random 2.80->1.94ms. LIMITATIONS that drove
+// us to build Cajeta IR instead: (1) narrow — LLVM's cost model fired only for
+// `sort`, not binarySearch/streams; (2) version-fragile `force-specialization`
+// debug flag; (3) ThinLTO conflict — funcspec runs in the ld.lld backend
+// cross-module where it doesn't fire, and a pre-link IPSCCP breaks the link
+// (private-symbol/summary desync). Kept here as a reference probe; the real
+// solution is deterministic, total specialization in CIR. See
+// docs/specs/cajeta-ir-spec.md §1.2.
+//
+// TO RE-ENABLE (the validated non-LTO probe): call tuneFunctionSpecialization()
+// at the top of optimizeModule() (the O1/O2/O3 path). For ThinLTO the backend
+// runs in ld.lld, so the equivalent attempt was passing the same flags via
+// `-Wl,-mllvm,-force-specialization` (+ -funcspec-for-literal-constant=true,
+// -funcspec-min-function-size=1, -funcspec-max-clones=8) in Compiler.cpp's
+// ThinLTO link args — which did NOT devirtualize cross-module (limitation 3).
+[[maybe_unused]] void tuneFunctionSpecialization() {
+    static bool done = false;
+    if (done) return;
+    done = true;
+    auto& opts = llvm::cl::getRegisteredOptions();
+    auto setBool = [&](const char* name, bool v) {
+        auto it = opts.find(name);
+        if (it != opts.end())
+            static_cast<llvm::cl::opt<bool>*>(it->second)->setValue(v);
+    };
+    auto setUInt = [&](const char* name, unsigned v) {
+        auto it = opts.find(name);
+        if (it != opts.end())
+            static_cast<llvm::cl::opt<unsigned>*>(it->second)->setValue(v);
+    };
+    setBool("force-specialization", true);
+    setBool("funcspec-for-literal-constant", true);
+    setUInt("funcspec-min-function-size", 1);
+    setUInt("funcspec-max-clones", 8);
+}
 
 // Build + cross-register the four analysis managers a new-PM run needs.
 struct PassEnv {

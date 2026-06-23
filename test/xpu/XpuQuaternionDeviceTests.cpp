@@ -41,12 +41,12 @@ namespace {
 //   s = ij.dot(k) + r.y + q.length() = 1 + 1 + 1 = 3 ;  out[i] = 3 + i
 const char* kQuatSource =
     "package test;\n"
-    "import cajeta.gpu.GpuBuffer;\n"
-    "import cajeta.gpu.GpuThread;\n"
+    "import cajeta.gpu.KernelBuffer;\n"
+    "import cajeta.gpu.KernelThread;\n"
     "public class Q {\n"
     "    @Kernel\n"
-    "    public static void quatk(GpuBuffer<float32> out, uint32 n) {\n"
-    "        uint32 idx = GpuThread.globalIdX();\n"
+    "    public static void quatk(KernelBuffer<float32> out, uint32 n) {\n"
+    "        uint32 idx = KernelThread.globalIdX();\n"
     "        if (idx < n) {\n"
     "            Quaternion<float32> i = heap Quaternion<float32>(0.0f, 1.0f, 0.0f, 0.0f);\n"
     "            Quaternion<float32> j = heap Quaternion<float32>(0.0f, 0.0f, 1.0f, 0.0f);\n"
@@ -68,12 +68,12 @@ float quatExpectedAt(uint32_t i) { return 3.0f + (float) i; }
 // slerp(id, q90, 1) -> (0,1,0).  out[i] = r.x + r.y + r1.y ~ 0.707+0.707+1 = 2.414
 const char* kSlerpSource =
     "package test;\n"
-    "import cajeta.gpu.GpuBuffer;\n"
-    "import cajeta.gpu.GpuThread;\n"
+    "import cajeta.gpu.KernelBuffer;\n"
+    "import cajeta.gpu.KernelThread;\n"
     "public class S {\n"
     "    @Kernel\n"
-    "    public static void slerpk(GpuBuffer<float32> out, uint32 n) {\n"
-    "        uint32 idx = GpuThread.globalIdX();\n"
+    "    public static void slerpk(KernelBuffer<float32> out, uint32 n) {\n"
+    "        uint32 idx = KernelThread.globalIdX();\n"
     "        if (idx < n) {\n"
     "            Quaternion<float32> a = heap Quaternion<float32>(1.0f, 0.0f, 0.0f, 0.0f);\n"
     "            Quaternion<float32> b = heap Quaternion<float32>(0.70710678f, 0.0f, 0.0f, 0.70710678f);\n"

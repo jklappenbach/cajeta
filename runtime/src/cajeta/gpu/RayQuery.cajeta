@@ -6,7 +6,7 @@ package cajeta.gpu;
  * inside a compute kernel (the `SPV_KHR_ray_query` "ray query in a shader"
  * model — no separate ray-tracing pipeline or hit shaders).
  *
- * Unlike GpuBuffer / Texture2D / AccelerationStructure, a RayQuery is NOT a host
+ * Unlike KernelBuffer / Texture2D / AccelerationStructure, a RayQuery is NOT a host
  * handle: it is a device-only, function-local object (lowered to an
  * `OpVariable Function` of `OpTypeRayQueryKHR`). It is constructed on the kernel
  * stack, initialized against a bound AccelerationStructure, then advanced:

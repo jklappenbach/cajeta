@@ -3,7 +3,6 @@ package mcp;
 import cajeta.lang.String;
 import cajeta.lang.Optional;
 import cajeta.io.file.File;
-import cajeta.io.file.FileReader;
 import cajeta.io.file.FileWriter;
 import cajeta.codec.Base64;
 import cajeta.hash.Sha256;
@@ -55,56 +54,27 @@ public class Server {
         if (Server.cacheEnabled) {
             Server.mkdirp(Server.cacheDir);
         }
-        FileReader in = heap FileReader(0);
-        FileWriter out = heap FileWriter(1);
-
-        // Pending-bytes buffer (grows on demand). Newline-delimited framing:
-        // accumulate reads, dispatch each complete line, shift the rest down.
-        int8[] buf = heap int8[65536];
-        int32 cap = 65536;
-        int32 buflen = 0;
-        int8[] chunk = heap int8[65536];
-
+        // --http=PORT selects the Streamable-HTTP transport; stdio is default.
+        String httpPort = Server.flagValue(args, "--http=");
+        if (httpPort != null) {
+            int32 port = (int32) Server.parseInt(httpPort);
+            HttpTransport.serve(port);
+            return 0;
+        }
+        // Transport seam: pull one request message at a time and dispatch it.
+        // The read/grow/shift framing now lives in StdioTransport.readMessage;
+        // dispatch stays transport-agnostic (parsed request + response writer).
+        StdioTransport t = heap StdioTransport(0, 1);
+        FileWriter fw = t.out;
+        ResponseSink out = heap ResponseSink(true, fw);
         boolean running = true;
         while (running) {
-            int32 nl = Server.findNewline(buf, buflen);
-            if (nl < 0) {
-                int32 n = in.read(chunk, 65536);
-                if (n <= 0) {
-                    running = false;
-                } else {
-                    if (buflen + n > cap) {
-                        int32 newCap = cap * 2;
-                        while (newCap < buflen + n) {
-                            newCap = newCap * 2;
-                        }
-                        int8[] grown = heap int8[newCap];
-                        int32 k = 0;
-                        while (k < buflen) {
-                            grown[k] = buf[k];
-                            k = k + 1;
-                        }
-                        buf = #grown;
-                        cap = newCap;
-                    }
-                    int32 i = 0;
-                    while (i < n) {
-                        buf[buflen + i] = chunk[i];
-                        i = i + 1;
-                    }
-                    buflen = buflen + n;
-                }
+            int8[] msg = t.readMessage();
+            if (msg == null) {
+                running = false;
             } else {
-                if (nl > 0) {
-                    Server.handleLine(buf, nl, out);
-                }
-                int32 rem = buflen - (nl + 1);
-                int32 s = 0;
-                while (s < rem) {
-                    buf[s] = buf[nl + 1 + s];
-                    s = s + 1;
-                }
-                buflen = rem;
+                int32 mlen = (int32) msg.count();
+                Server.handleLine(msg, mlen, out);
             }
         }
         return 0;
@@ -123,7 +93,7 @@ public class Server {
     }
 
     /** Parse one JSON-RPC request (`bytes[0..len)`) and write its response. */
-    public static void handleLine(int8[] bytes, int32 len, FileWriter out) {
+    public static void handleLine(int8[] bytes, int32 len, ResponseSink out) {
         // Hand the reader a fresh, owned copy of the line — the persistent
         // input `buf` must survive across requests.
         int8[] lineCopy = heap int8[len];
@@ -142,7 +112,7 @@ public class Server {
     }
 
     /** Dispatch a parsed JSON-RPC request object to its method handler. */
-    public static void dispatch(JsonValue req, FileWriter out) {
+    public static void dispatch(JsonValue req, ResponseSink out) {
         if (req == null || req.kind() != JsonValue.OBJECT) {
             Server.writeError(out, null, -32600, "Invalid Request");
             return;
@@ -184,7 +154,7 @@ public class Server {
         }
     }
 
-    public static void writeError(FileWriter out, JsonValue id, int32 code,
+    public static void writeError(ResponseSink out, JsonValue id, int32 code,
                                   String message) {
         JsonWriter w = heap JsonWriter();
         Server.writeHead(w, id);
@@ -196,10 +166,10 @@ public class Server {
         w.writeString(message);
         w.endObject();
         w.endObject();
-        w.writeLineTo(out);
+        out.emit(w);
     }
 
-    public static void writeInitialize(FileWriter out, JsonValue id) {
+    public static void writeInitialize(ResponseSink out, JsonValue id) {
         JsonWriter w = heap JsonWriter();
         Server.writeHead(w, id);
         w.key("result");
@@ -219,6 +189,8 @@ public class Server {
         w.key("version");
         w.writeString("0.1.0");
         w.endObject();
+        w.key("instructions");
+        w.writeString("This server provides skills: authoritative, hand-written implementation guides for cajeta libraries. Before you write or edit cajeta code that uses a library, package, class, or method, first call searchSkills with its name (fuzzy and typo-tolerant). If a relevant skill is returned, call getSkills to fetch its payload and follow that guidance over your prior assumptions. Use listSkills to browse what is available, and follow a skill's references to related skills.");
         w.key("cacheConfig");
         w.beginObject();
         w.key("enabled");
@@ -234,7 +206,7 @@ public class Server {
         w.endObject();
         w.endObject();
         w.endObject();
-        w.writeLineTo(out);
+        out.emit(w);
     }
 
     /** One tool descriptor: {name, description, inputSchema:{type:object}}. */
@@ -252,7 +224,7 @@ public class Server {
         w.endObject();
     }
 
-    public static void writeToolsList(FileWriter out, JsonValue id) {
+    public static void writeToolsList(ResponseSink out, JsonValue id) {
         JsonWriter w = heap JsonWriter();
         Server.writeHead(w, id);
         w.key("result");
@@ -272,7 +244,7 @@ public class Server {
         w.endArray();
         w.endObject();
         w.endObject();
-        w.writeLineTo(out);
+        out.emit(w);
     }
 
     /** Resolve the cajeta exe path: `--cajeta=PATH` > `$CAJETA_BIN` > "cajeta". */
@@ -622,7 +594,7 @@ public class Server {
      * cacheHit field (the cached form); we splice cacheHit in here so one blob
      * serves both fresh and cached emits.
      */
-    public static void emitResultLine(FileWriter out, JsonValue id, int8[] objBytes,
+    public static void emitResultLine(ResponseSink out, JsonValue id, int8[] objBytes,
                                       boolean hit) {
         int32 len = (int32) objBytes.count();
         String suffix = ",\"cacheHit\":false}";
@@ -649,7 +621,7 @@ public class Server {
         w.key("result");
         w.writeRaw(full, o);
         w.endObject();
-        w.writeLineTo(out);
+        out.emit(w);
     }
 
     /** Run `cajeta <args[0..argc)>` with captured stdout/stderr. */
@@ -686,7 +658,7 @@ public class Server {
     }
 
     /** Run a skill subcommand and wrap its parsed JSON array under `field`. */
-    public static void runSkill(FileWriter out, JsonValue id, String[] args,
+    public static void runSkill(ResponseSink out, JsonValue id, String[] args,
                                 int32 argc, String field) {
         ProcessResult r = Server.runCajeta(args, argc);
         if (r.launched() == false) {
@@ -711,10 +683,10 @@ public class Server {
         }
         w.endObject();
         w.endObject();
-        w.writeLineTo(out);
+        out.emit(w);
     }
 
-    public static void writeToolCall(FileWriter out, JsonObject req, JsonValue id) {
+    public static void writeToolCall(ResponseSink out, JsonObject req, JsonValue id) {
         JsonValue params = req.get("params");
         if (params == null || params.kind() != JsonValue.OBJECT) {
             Server.writeError(out, id, -32602, "tools/call requires params");
@@ -1176,7 +1148,7 @@ public class Server {
      * root, run `cajeta --emit=cja <entry> <srcRoot> <outDir>`, and return
      * `{exitStatus, diagnostics:[stderr lines], artifact?}` (base64 .cja).
      */
-    public static void writeCompile(FileWriter out, JsonObject toolArgs, JsonValue id) {
+    public static void writeCompile(ResponseSink out, JsonObject toolArgs, JsonValue id) {
         if (toolArgs == null) {
             Server.writeError(out, id, -32602, "compile requires 'files'");
             return;
@@ -1266,7 +1238,7 @@ public class Server {
      * becomes the process exit code; the program's stdout is clean (jit-run
      * chatter is on stderr).
      */
-    public static void writeJitExecute(FileWriter out, JsonObject toolArgs, JsonValue id) {
+    public static void writeJitExecute(ResponseSink out, JsonObject toolArgs, JsonValue id) {
         if (toolArgs == null) {
             Server.writeError(out, id, -32602, "jit_execute requires 'files'");
             return;
@@ -1336,7 +1308,7 @@ public class Server {
         Server.emitResultLine(out, id, obj, false);
     }
 
-    public static void writeStub(FileWriter out, JsonValue id) {
+    public static void writeStub(ResponseSink out, JsonValue id) {
         JsonWriter w = heap JsonWriter();
         Server.writeHead(w, id);
         w.key("result");
@@ -1354,6 +1326,6 @@ public class Server {
         w.writeBoolean(true);
         w.endObject();
         w.endObject();
-        w.writeLineTo(out);
+        out.emit(w);
     }
 }

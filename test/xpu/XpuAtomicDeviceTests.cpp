@@ -1,7 +1,7 @@
 //
 // CajetaXPU float atomics — device codegen, end to end.
 //
-// `GpuBuffer<float32>.atomicAdd/atomicMin/atomicMax(index, value)` lower to an
+// `KernelBuffer<float32>.atomicAdd/atomicMin/atomicMax(index, value)` lower to an
 // atomic read-modify-write on the buffer element pointer. The same @Kernel
 // source runs a concurrent reduction on every backend: a parallel sum (atomicAdd
 // into out[0]) plus running max/min (out[1]/out[2]). On Vulkan this is
@@ -52,13 +52,13 @@ namespace {
 
 const char* kAtomicSource =
     "package test;\n"
-    "import cajeta.gpu.GpuBuffer;\n"
-    "import cajeta.gpu.GpuThread;\n"
+    "import cajeta.gpu.KernelBuffer;\n"
+    "import cajeta.gpu.KernelThread;\n"
     "public class M {\n"
     "    @Kernel\n"
-    "    public static void reduce(GpuBuffer<float32> out, GpuBuffer<float32> in,\n"
+    "    public static void reduce(KernelBuffer<float32> out, KernelBuffer<float32> in,\n"
     "                              uint32 n) {\n"
-    "        uint32 i = GpuThread.globalIdX();\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
     "        if (i < n) {\n"
     "            out.atomicAdd(0, in[i]);\n"
     "            out.atomicMax(1, in[i]);\n"
@@ -72,13 +72,13 @@ const char* kAtomicSource =
 // must skip (no VK_EXT_shader_atomic_float2). Same parallel-sum reduction.
 const char* kAtomicAddSource =
     "package test;\n"
-    "import cajeta.gpu.GpuBuffer;\n"
-    "import cajeta.gpu.GpuThread;\n"
+    "import cajeta.gpu.KernelBuffer;\n"
+    "import cajeta.gpu.KernelThread;\n"
     "public class M {\n"
     "    @Kernel\n"
-    "    public static void reduceAdd(GpuBuffer<float32> out, GpuBuffer<float32> in,\n"
+    "    public static void reduceAdd(KernelBuffer<float32> out, KernelBuffer<float32> in,\n"
     "                                 uint32 n) {\n"
-    "        uint32 i = GpuThread.globalIdX();\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
     "        if (i < n) {\n"
     "            out.atomicAdd(0, in[i]);\n"
     "        }\n"
@@ -307,7 +307,7 @@ TEST(XpuAtomicDeviceTests, floatAtomicsRunOnAmdDevice) {
 }
 
 // ---- Integer atomics ------------------------------------------------------
-// GpuBuffer<uint32> integer atomics — core OpAtomicI*/CompareExchange (no SPV_EXT).
+// KernelBuffer<uint32> integer atomics — core OpAtomicI*/CompareExchange (no SPV_EXT).
 // Run concurrently across 4096 work-items on every backend. The first four slots
 // are CONTENDED hardware RMWs; the compare-exchange is exercised UNCONTENDED —
 // each thread CAS's its own slot 4+i (a spin-CAS on a shared slot is a classic
@@ -320,12 +320,12 @@ TEST(XpuAtomicDeviceTests, floatAtomicsRunOnAmdDevice) {
 namespace {
 const char* kIntAtomicSource =
     "package test;\n"
-    "import cajeta.gpu.GpuBuffer;\n"
-    "import cajeta.gpu.GpuThread;\n"
+    "import cajeta.gpu.KernelBuffer;\n"
+    "import cajeta.gpu.KernelThread;\n"
     "public class M {\n"
     "    @Kernel\n"
-    "    public static void ireduce(GpuBuffer<uint32> out, uint32 n) {\n"
-    "        uint32 i = GpuThread.globalIdX();\n"
+    "    public static void ireduce(KernelBuffer<uint32> out, uint32 n) {\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
     "        if (i < n) {\n"
     "            out.atomicAdd(0, i);\n"
     "            out.atomicMax(1, i);\n"

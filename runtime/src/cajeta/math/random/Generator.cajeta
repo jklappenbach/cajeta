@@ -1,0 +1,147 @@
+package cajeta.math.random;
+
+import cajeta.math.Tensor;
+
+/**
+ * `cajeta.math.random` — the random-number surface (numpy-porting-plan Phase 9) over a
+ * **counter-based BitGenerator (Philox4x32-10)**. Counter-based means each output is a
+ * stateless function `philox(counter, key)` of its index and the seed — so the stream
+ * is reproducible, and element `i` can be computed independently of all others
+ * (embarrassingly parallel, identical on CPU and GPU — the point of choosing Philox
+ * over a sequential generator like PCG64).
+ *
+ * A `Generator` holds the 64-bit `key` (the seed). `uniform(n)` produces `n` floats in
+ * `[0, 1)`: element `i` uses counter `i` and takes the top 24 bits of the first Philox
+ * word (float32 has a 24-bit mantissa). Distributions (normal/integers) and the GPU
+ * parity path layer on this core in later units.
+ */
+public final class Generator {
+
+    uint32 key0;
+    uint32 key1;
+
+    public Generator(uint64 seed) {
+        this.key0 = (uint32) seed;
+        this.key1 = (uint32) (seed >>> 32);
+    }
+
+    /**
+     * Philox4x32-10 block function: 10 rounds over the 128-bit counter
+     * `(c0,c1,c2,c3)` keyed by `(k0,k1)`, writing the four 32-bit results into `out`.
+     * The round multiplies-and-mixes with the Philox constants; the key is bumped by
+     * the golden-ratio words before each round after the first.
+     */
+    static void philox(uint32 c0, uint32 c1, uint32 c2, uint32 c3,
+                       uint32 k0, uint32 k1, uint32[] out) {
+        uint32 m0 = 0xD2511F53;
+        uint32 m1 = 0xCD9E8D57;
+        uint32 w0 = 0x9E3779B9;
+        uint32 w1 = 0xBB67AE85;
+        int32 r = 0;
+        while (r < 10) {
+            if (r > 0) {
+                k0 = k0 + w0;
+                k1 = k1 + w1;
+            }
+            uint64 p0 = (uint64) m0 * (uint64) c0;
+            uint64 p1 = (uint64) m1 * (uint64) c2;
+            uint32 hi0 = (uint32) (p0 >>> 32);
+            uint32 lo0 = (uint32) p0;
+            uint32 hi1 = (uint32) (p1 >>> 32);
+            uint32 lo1 = (uint32) p1;
+            uint32 n0 = hi1 ^ c1 ^ k0;
+            uint32 n1 = lo1;
+            uint32 n2 = hi0 ^ c3 ^ k1;
+            uint32 n3 = lo0;
+            c0 = n0;
+            c1 = n1;
+            c2 = n2;
+            c3 = n3;
+            r = r + 1;
+        }
+        out[0] = c0;
+        out[1] = c1;
+        out[2] = c2;
+        out[3] = c3;
+    }
+
+    /**
+     * The first Philox word for counter `i` under this generator's key — the raw
+     * 32-bit draw used by the samplers. Stateless: depends only on `i` and the seed.
+     */
+    uint32 bits(int64 i) {
+        uint32 c0 = (uint32) i;
+        uint32 c1 = (uint32) (i >> 32);
+        uint32[] o = heap uint32[4];
+        Generator.philox(c0, c1, 0, 0, this.key0, this.key1, o);
+        return o[0];
+    }
+
+    /**
+     * `n` samples from the uniform distribution over `[0, 1)` (numpy `random`): a 1-D
+     * `Tensor<float32>` where element `i` is the top 24 bits of `philox(i, key)[0]`
+     * scaled to `[0, 1)`. Reproducible for a given seed; each element is independent.
+     */
+    public #Tensor<float32> uniform(int64 n) {
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<float32> t = Tensor.zeros<float32>(sh);
+        int64 i = 0;
+        while (i < n) {
+            uint32 w = this.bits(i);
+            uint32 b24 = w & 16777215;                      // low 24 bits (0xFFFFFF)
+            float32 u = (float32) b24 * (1.0f / 16777216.0f);
+            t.set1(i, u);
+            i = i + 1;
+        }
+        return #t;
+    }
+
+    /**
+     * `n` samples from the standard normal distribution `N(0, 1)` (numpy `standard_
+     * normal`) via the Box-Muller transform: element `i` draws two uniforms from
+     * counters `2i` and `2i+1` and returns `sqrt(-2·ln u1)·cos(2π·u2)`. `u1` is mapped
+     * to `(0, 1]` so the log is finite. Reproducible and element-independent.
+     */
+    public #Tensor<float32> normal(int64 n) {
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<float32> t = Tensor.zeros<float32>(sh);
+        int64 i = 0;
+        while (i < n) {
+            uint32 w1 = this.bits(2 * i);
+            uint32 w2 = this.bits(2 * i + 1);
+            uint32 b1 = (w1 & 16777215) + 1;               // (0, 2^24]
+            uint32 b2 = w2 & 16777215;                      // [0, 2^24)
+            float32 u1 = (float32) b1 * (1.0f / 16777216.0f);   // (0,1]
+            float32 u2 = (float32) b2 * (1.0f / 16777216.0f);   // [0,1)
+            float32 rad = Math.sqrt(-2.0f * Math.log(u1));
+            float32 z = rad * Math.cos(6.2831853071795864769f * u2);
+            t.set1(i, z);
+            i = i + 1;
+        }
+        return #t;
+    }
+
+    /**
+     * `n` uniform integers in `[low, high)` (numpy `integers`): element `i` is
+     * `low + (philox(i) mod (high-low))`, as a `Tensor<int64>`. Uses the low 32 bits
+     * (a small modulo bias for ranges that don't divide 2^32 — acceptable for the
+     * floor; rejection sampling is a later refinement).
+     */
+    public #Tensor<int64> integers(int64 low, int64 high, int64 n) {
+        int64 range = high - low;
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<int64> t = Tensor.zeros<int64>(sh);
+        int64 i = 0;
+        while (i < n) {
+            uint32 w = this.bits(i);
+            int64 r = (int64) w % range;
+            int64 v = low + r;
+            t.set1(i, v);
+            i = i + 1;
+        }
+        return #t;
+    }
+}

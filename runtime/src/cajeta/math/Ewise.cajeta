@@ -1,0 +1,310 @@
+package cajeta.math;
+
+import cajeta.gpu.KernelBuffer;
+import cajeta.gpu.KernelStream;
+import cajeta.gpu.KernelThread;
+import cajeta.gpu.Workgroup;
+import cajeta.gpu.xpu.CooperativeMatrix;
+
+/**
+ * Elementwise GPU lowering for the `Tensor` ufunc surface (numpy-porting-plan
+ * Phase 3, deliverable 3f) — a `cajeta.gpu` device kernel plus the portable CPU
+ * floor, the two cross-checked (3c). It is the reusable op+lowering pattern every
+ * later kernel-expressible phase follows: an op routes on **operand placement** —
+ * both tensors on-device → the GPU kernel over their device buffers; otherwise the
+ * CPU loop — and a `cajeta.gpu` CPU backend backs the buffer when no GPU is present,
+ * so it runs everywhere.
+ *
+ * The lowering is **per-concrete-dtype**: a generic `@Kernel` does not monomorphize
+ * at the launch site (the launch receiver takes no explicit type args, and an
+ * inferred generic instantiation lowers to a no-op), so each dtype family member is
+ * its own kernel. `float32` is the first member — the workhorse dtype. The generic,
+ * broadcasting, dtype-promoting surface stays the `Tensor` CPU binop family; this
+ * fast-path requires **equal-shaped** operands (no broadcast, contiguous).
+ *
+ * `op` selects the arithmetic: `0`=add, `1`=sub, `2`=mul, `3`=div — the same op
+ * codes as the CPU `Tensor.binop`, so device and host compute the identical IEEE
+ * operation and agree bit-for-bit on the exact ops (and to the last ULP on div).
+ */
+public final class Ewise {
+
+    /** Fused float32 elementwise-arithmetic kernel: `out[i] = a[i] <op> b[i]`. */
+    @Kernel
+    public static void arithF32(KernelBuffer<float32> out, KernelBuffer<float32> a,
+                                KernelBuffer<float32> b, uint32 n, int32 op) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            float32 va = a[i];
+            float32 vb = b[i];
+            float32 vc = va + vb;
+            if (op == 1) { vc = va - vb; }
+            if (op == 2) { vc = va * vb; }
+            if (op == 3) { vc = va / vb; }
+            out[i] = vc;
+        }
+    }
+
+    /**
+     * Elementwise arithmetic on two equal-shaped `float32` tensors, routed on
+     * placement: both on-device → the {@link #arithF32} GPU kernel; otherwise the
+     * CPU loop. Returns a fresh C-order `float32` tensor (on the device when the
+     * GPU path ran — call {@code cpu()} to read it on the host). `op`: 0=add,
+     * 1=sub, 2=mul, 3=div.
+     */
+    public static #Tensor<float32> arithF32Op(Tensor<float32> a, Tensor<float32> b, int32 op) {
+        Tensor<float32> out = Tensor.zerosLike<float32>(a);
+        int64 n = a.size();
+        if (a.isOnGpu() && b.isOnGpu()) {
+            out.gpu();
+            uint32 un = (uint32) n;
+            KernelStream s = KernelStream.current();
+            arithF32.launch(s, grid: [(un + 63) / 64], block: [64])
+                (out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), un, op);
+            s.sync();
+        } else {
+            int64 i = 0;
+            while (i < n) {
+                float32 va = a.flatGet(i);
+                float32 vb = b.flatGet(i);
+                float32 vc = va + vb;
+                if (op == 1) { vc = va - vb; }
+                if (op == 2) { vc = va * vb; }
+                if (op == 3) { vc = va / vb; }
+                out.flatSet(i, vc);
+                i = i + 1;
+            }
+        }
+        return #out;
+    }
+
+    /**
+     * Atomic parallel-sum reduction kernel: every thread adds its element into the
+     * single accumulator `out[0]` via `atomicAdd` (numpy-porting Phase 4, 4e — the
+     * GPU reduction primitive; the cajeta.gpu CPU backend lowers it to a native
+     * atomic RMW). The accumulator must be pre-zeroed.
+     */
+    @Kernel
+    public static void reduceSumF32(KernelBuffer<float32> out, KernelBuffer<float32> in, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) { out.atomicAdd(0, in[i]); }
+    }
+
+    /**
+     * Full-array sum of a **contiguous** `float32` tensor, routed on placement: when
+     * on-device → the {@link #reduceSumF32} atomic GPU reduction over a 1-element
+     * accumulator; otherwise the CPU loop. The two agree (the Phase-4 reduction
+     * cross-check). Sum is exact (order-independent) for integer-valued floats whose
+     * total stays below 2^24, so the atomic order does not perturb agreement there.
+     */
+    public static float32 sumF32(Tensor<float32> t) {
+        int64 n = t.size();
+        if (t.isOnGpu()) {
+            int64[] os = heap int64[1];
+            os[0] = 1;
+            Tensor<float32> acc = Tensor.zeros<float32>(os);   // accumulator out[0] = 0
+            acc.gpu();
+            uint32 un = (uint32) n;
+            KernelStream s = KernelStream.current();
+            reduceSumF32.launch(s, grid: [(un + 63) / 64], block: [64])
+                (acc.deviceBuffer(), t.deviceBuffer(), un);
+            s.sync();
+            acc.cpu();
+            return acc.get1(0);
+        }
+        float32 sum = 0.0f;
+        int64 i = 0;
+        while (i < n) {
+            sum = sum + t.flatGet(i);
+            i = i + 1;
+        }
+        return sum;
+    }
+
+    /**
+     * Gather kernel: `out[i] = in[idx[i]]` (numpy-porting Phase 5, 5e — the GPU
+     * indexing primitive; each thread reads one source element through its index).
+     */
+    @Kernel
+    public static void gatherF32(KernelBuffer<float32> out, KernelBuffer<float32> in,
+                                 KernelBuffer<int64> idx, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) { out[i] = in[idx[i]]; }
+    }
+
+    /**
+     * Gather along axis 0 of a **contiguous** `float32` tensor by an index tensor
+     * (numpy `take`), routed on placement: both on-device → the {@link #gatherF32}
+     * GPU kernel; otherwise the CPU loop. The two agree (the Phase-5 indexing
+     * cross-check). Returns a 1-D `float32` tensor of length `idx.size()`.
+     */
+    public static #Tensor<float32> takeF32(Tensor<float32> t, Tensor<int64> idx) {
+        int64 m = idx.size();
+        int64[] os = heap int64[1];
+        os[0] = m;
+        Tensor<float32> out = Tensor.zeros<float32>(os);
+        if (t.isOnGpu() && idx.isOnGpu()) {
+            out.gpu();
+            uint32 um = (uint32) m;
+            KernelStream s = KernelStream.current();
+            gatherF32.launch(s, grid: [(um + 63) / 64], block: [64])
+                (out.deviceBuffer(), t.deviceBuffer(), idx.deviceBuffer(), um);
+            s.sync();
+        } else {
+            int64 i = 0;
+            while (i < m) {
+                out.flatSet(i, t.flatGet(idx.flatGet(i)));
+                i = i + 1;
+            }
+        }
+        return #out;
+    }
+
+    /**
+     * Tiled float32 GEMM `C = A·B` on the matrix cores (numpy-porting Phase 6, 6e
+     * — the `matmul` GPU lowering). Each workgroup owns one 16x16 output tile,
+     * decoded from {@link Workgroup#x()}: zero an accumulator tile, then K-loop
+     * one `mma` per 16-wide depth slice — the canonical {@link CooperativeMatrix}
+     * matmul. `rows`/`cols`/`depth` (M/N/K) must be multiples of 16. float32 has no
+     * native matrix-core config, so it takes the **portable software tile-matmul
+     * tier** (a `note: [mma-tiering]`) — bit-identical to the CPU floor, and the
+     * SAME kernel auto-promotes to the hardware cores for the configs a backend
+     * exposes (f16/bf16/int8 WMMA on AMD). [[cajeta-kernel-no-generic-monomorph]]
+     */
+    @Kernel
+    public static void matmulF32(KernelBuffer<float32> c, KernelBuffer<float32> a,
+                                 KernelBuffer<float32> b, uint32 rows, uint32 cols, uint32 depth) {
+        uint32 ntiles = cols / 16;
+        uint32 wid = Workgroup.x();
+        uint32 mi = wid / ntiles;          // output row-tile
+        uint32 nj = wid % ntiles;          // output col-tile
+        uint32 ktiles = depth / 16;
+        CooperativeMatrix<float32,16,16,2> mc;
+        mc.splat(0.0f);
+        CooperativeMatrix<float32,16,16,0> ma;
+        CooperativeMatrix<float32,16,16,1> mb;
+        uint32 kk = 0;
+        while (kk < ktiles) {
+            ma.load(a, mi * 16 * depth + kk * 16, 0, depth);   // A tile (mi,kk), stride K
+            mb.load(b, kk * 16 * cols + nj * 16, 0, cols);     // B tile (kk,nj), stride N
+            mc.mma(ma, mb);                                     // C += A_k · B_k
+            kk = kk + 1;
+        }
+        mc.store(c, mi * 16 * cols + nj * 16, 0, cols);
+    }
+
+    /**
+     * 2-D float32 matrix product `(m,k)·(k,n) → (m,n)`, routed on placement: both
+     * on-device → the {@link #matmulF32} cooperative-matrix tiled GEMM (one
+     * workgroup per 16x16 output tile); otherwise the CPU triple-loop floor. The
+     * two agree (the Phase-6 contraction cross-check), and the device result equals
+     * the generic {@link Tensor#matmul} floor. The GPU path requires `m`/`n`/`k`
+     * to be multiples of 16 (the tile size); the CPU path has no such restriction.
+     * Returns a fresh C-order `float32` tensor (on the device when the GPU path ran
+     * — call `cpu()` to read it on the host).
+     */
+    public static #Tensor<float32> matmulF32Op(Tensor<float32> a, Tensor<float32> b) {
+        int64 m = a.shapeAt(0);
+        int64 k = a.shapeAt(1);
+        int64 n = b.shapeAt(1);
+        int64[] shp = heap int64[2];
+        shp[0] = m;
+        shp[1] = n;
+        Tensor<float32> out = Tensor.zeros<float32>(shp);
+        if (a.isOnGpu() && b.isOnGpu()) {
+            out.gpu();
+            uint32 um = (uint32) m;
+            uint32 un = (uint32) n;
+            uint32 uk = (uint32) k;
+            KernelStream s = KernelStream.current();
+            matmulF32.launch(s, grid: [(um / 16) * (un / 16)], block: [64])
+                (out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), um, un, uk);
+            s.sync();
+        } else {
+            int64 i = 0;
+            while (i < m) {
+                int64 j = 0;
+                while (j < n) {
+                    float32 acc = 0.0f;
+                    int64 p = 0;
+                    while (p < k) {
+                        acc = acc + a.get2(i, p) * b.get2(p, j);
+                        p = p + 1;
+                    }
+                    out.flatSet(i * n + j, acc);
+                    j = j + 1;
+                }
+                i = i + 1;
+            }
+        }
+        return #out;
+    }
+
+    /**
+     * One compare-exchange stage of a bitonic sort over `data` (numpy-porting Phase
+     * 7, 7b — the GPU sort primitive). Each thread `i` pairs with `i ^ j`; the
+     * partner with the higher index does the swap, ascending when `(i & k) == 0`
+     * and descending otherwise — the standard bitonic network. The host drives the
+     * `(k, j)` stage schedule (`k` doubling, `j` halving) and re-launches this once
+     * per stage. `n` must be a power of two.
+     */
+    @Kernel
+    public static void bitonicStepF32(KernelBuffer<float32> data, uint32 n, uint32 k, uint32 j) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            uint32 ixj = i ^ j;
+            if (ixj > i) {
+                float32 vi = data[i];
+                float32 vj = data[ixj];
+                boolean ascending = (i & k) == 0;
+                boolean swap = false;
+                if (ascending) { if (vi > vj) { swap = true; } }
+                else { if (vi < vj) { swap = true; } }
+                if (swap) {
+                    data[i] = vj;
+                    data[ixj] = vi;
+                }
+            }
+        }
+    }
+
+    /**
+     * Ascending sort of a 1-D **power-of-two-length** `float32` tensor, routed on
+     * placement: on-device → the {@link #bitonicStepF32} bitonic network (the host
+     * issues the `O(log^2 n)` compare-exchange stages over the device buffer);
+     * otherwise the {@link Tensor#sort} CPU floor. The two agree (the Phase-7 sort
+     * cross-check). Returns a fresh 1-D `float32` tensor; on the device path the
+     * sort runs on the device (host staging of the input is incidental data
+     * movement). The bitonic network is not stable — fine for distinct keys.
+     */
+    public static #Tensor<float32> sortF32Op(Tensor<float32> t) {
+        int64 n = t.size();
+        if (t.isOnGpu()) {
+            t.cpu();                                   // stage input to host to seed the copy
+            int64[] shp = heap int64[1];
+            shp[0] = n;
+            Tensor<float32> out = Tensor.zeros<float32>(shp);
+            int64 c = 0;
+            while (c < n) {
+                out.flatSet(c, t.flatGet(c));
+                c = c + 1;
+            }
+            t.gpu();                                   // restore caller's placement invariant
+            out.gpu();
+            uint32 un = (uint32) n;
+            KernelStream s = KernelStream.current();
+            uint32 k = 2;
+            while (k <= un) {
+                uint32 j = k / 2;
+                while (j > 0) {
+                    bitonicStepF32.launch(s, grid: [(un + 63) / 64], block: [64])
+                        (out.deviceBuffer(), un, k, j);
+                    s.sync();
+                    j = j / 2;
+                }
+                k = k * 2;
+            }
+            return #out;
+        }
+        return Tensor.sort<float32>(t, 0);
+    }
+}

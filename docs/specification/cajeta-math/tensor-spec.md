@@ -22,7 +22,7 @@ expensive to revisit.
 ### 2.1 Element dtype — **static generic `Tensor<T>`** (RESOLVED), runtime dtype via wildcards
 numpy/torch make dtype a **runtime** property (one `ndarray` type; `x.dtype` is a field) —
 largely a side-effect of Python being dynamically typed. cajeta is statically typed and
-already has: element-generic types (`GpuBuffer<T>`, `Vector<T,N>`,
+already has: element-generic types (`KernelBuffer<T>`, `Vector<T,N>`,
 `cajeta.gpu.xpu.CooperativeMatrix<T,…>`); **reified, monomorphized generics**
 (`docs/Embedded.md`; `cajeta.reflect.TemplateArgument`); and **first-class wildcards**
 (`Stream<?>` in the stdlib; bounded `<? extends …>` — `docs/CaptureConversion.md`). So the
@@ -30,7 +30,7 @@ element type is a **compile-time parameter `Tensor<T>`**, and the runtime-dtype 
 served by the language's own wildcards — **no separate erased `AnyTensor` type.**
 
 - **`Tensor<T>`** — the concrete, static, monomorphized common case. Type-safe, no
-  per-element dispatch, consistent with `GpuBuffer<T>` etc.
+  per-element dispatch, consistent with `KernelBuffer<T>` etc.
 - **Mixed-dtype arithmetic is *not* a runtime-dtype problem.** `Tensor<int32> +
   Tensor<float64> → Tensor<float64>` resolves the result from the two *static* types via
   NEP-50 promotion (§2.3) + overloads. Static `Tensor<T>` covers it — this is the bulk of
@@ -86,7 +86,7 @@ cast brick.
   non-contiguous view → **copies**. The contract is explicit per-op and documented; a
   `Tensor` exposes `isView()`/`base()`/`isContiguous()`.
 - **Ownership / RAII (cajeta storage-class axis):** `Storage<T>` is the owning,
-  reference-counted backing (host buffer, + optional device `GpuBuffer<T>`); multiple
+  reference-counted backing (host buffer, + optional device `KernelBuffer<T>`); multiple
   `Tensor` views share one `Storage` via refcount; the buffer is released when the last
   view drops (the scope-exit drop chain). Per CajetaGPU.md's "one axis, one model": stack
   = copy / heap = ref; a `Tensor` value is an ordinary RAII handle over `Storage`.
@@ -110,7 +110,7 @@ cast brick.
 - **Default = host.** A `Tensor<T>` allocates host `Storage`; every operation has a CPU
   path; a build with no GPU is fully functional.
 - **Device placement.** `Storage<T>` can additionally hold a `cajeta.gpu` device buffer
-  (`GpuBuffer<T>`). `tensor.to(Device)`, `.cpu()`, `.gpu()` move/mirror; `.device()` reports
+  (`KernelBuffer<T>`). `tensor.to(Device)`, `.cpu()`, `.gpu()` move/mirror; `.device()` reports
   placement. v1 policy: explicit placement (eager transfer); a lazy/auto-migrate policy is
   a later option, not v1.
 - **The op-dispatch seam (defined here, exercised by the op phases).** A `Tensor` op
@@ -133,7 +133,7 @@ it must exist in v1.
 ## 8. Public API surface (v1 — the type, not the op library)
 Construction/factories sufficient to *exist and be tested*: `Tensor.of(...)`,
 `zeros`/`ones`/`full`/`empty` (+`_like`), `arange`, `fromProtocol`, `fromBuffer` (wrap a
-`GpuBuffer`/host buffer). Accessors: `shape`/`strides`/`ndim`/`size`/`dtype`/`device`/
+`KernelBuffer`/host buffer). Accessors: `shape`/`strides`/`ndim`/`size`/`dtype`/`device`/
 `isContiguous`/`isView`/`base`. Structural (view-producing): `reshape`, `transpose`/`.T`,
 `view`/slicing, `squeeze`/`expand_dims`, `broadcast_to`, `astype`/`cast`, `copy`,
 `to`/`cpu`/`gpu`, indexing (basic/boolean/fancy), `protocol`/`fromProtocol`. **No

@@ -1,6 +1,7 @@
 package cajeta.math;
 
-import cajeta.gpu.GpuBuffer;
+import cajeta.gpu.KernelBuffer;
+import cajeta.lang.String;
 
 /**
  * `Tensor<T>` — the keystone n-dimensional array (tensor-spec.md). A **strided
@@ -174,6 +175,31 @@ public class Tensor<T> {
         return heap Tensor<E>(#st, 0, shape, strides);
     }
 
+    /**
+     * 1-D tensor over the **half-open** interval `[start, stop)` in steps of `step`
+     * (numpy 3-arg `arange`): `count = ceil((stop-start)/step)` clamped to `>= 0`,
+     * `value[i] = start + i*step`. Works with a negative `step` (descending range);
+     * an empty range yields a length-0 tensor. Coexists with {@link #arange(int64)}
+     * (the `[0,n)` form) by value-parameter arity.
+     */
+    public static #Tensor<E> arange<E>(E start, E stop, E step) {
+        float64 raw = ((float64) stop - (float64) start) / (float64) step;
+        int64 count = (int64) Math.ceil(raw);
+        if (count < 0) { count = 0; }
+        Storage<E> st = heap Storage<E>(count);
+        int64 i = 0;
+        while (i < count) {
+            E v = start + (E) i * step;
+            st.set(i, v);
+            i = i + 1;
+        }
+        int64[] shape = heap int64[1];
+        shape[0] = count;
+        int64[] strides = heap int64[1];
+        strides[0] = 1;
+        return heap Tensor<E>(#st, 0, shape, strides);
+    }
+
     /** Tensor of `shape` (C-order) holding a copy of the first `size` of `data`. */
     public static #Tensor<E> of<E>(E[] data, int64[] shape) {
         int64 n = Tensor.productOf(shape);
@@ -234,6 +260,92 @@ public class Tensor<T> {
         }
         int64[] strides = Tensor.contigStrides(shp, MemoryOrder.C);
         return heap Tensor<E>(#st, 0, shp, strides);
+    }
+
+    /**
+     * `num` evenly spaced samples over the **closed** interval `[start, stop]`
+     * (numpy `linspace`, endpoint=true): `step = (stop-start)/(num-1)`, the last
+     * sample is `stop` exactly. `num == 1` → `[start]`. Computed in `float64` then
+     * cast to `E`, so it is meaningful for numeric element types.
+     */
+    public static #Tensor<E> linspace<E>(E start, E stop, int64 num) {
+        Storage<E> st = heap Storage<E>(num);
+        if (num == 1) {
+            st.set(0, start);
+        } else {
+            float64 a = (float64) start;
+            float64 b = (float64) stop;
+            float64 step = (b - a) / (float64) (num - 1);
+            int64 i = 0;
+            while (i < num) {
+                float64 val = a + (float64) i * step;
+                E v = (E) val;
+                st.set(i, v);
+                i = i + 1;
+            }
+            st.set(num - 1, stop);   // endpoint exact (no rounding drift)
+        }
+        int64[] shape = heap int64[1];
+        shape[0] = num;
+        int64[] strides = heap int64[1];
+        strides[0] = 1;
+        return heap Tensor<E>(#st, 0, shape, strides);
+    }
+
+    /** `n` x `n` identity matrix — `1` on the main diagonal, `0` elsewhere
+     *  (numpy `eye(n)`). C-order. */
+    public static #Tensor<E> eye<E>(int64 n) {
+        int64[] shape = heap int64[2];
+        shape[0] = n;
+        shape[1] = n;
+        Storage<E> st = heap Storage<E>(n * n);   // calloc → off-diagonal already 0
+        E one = (E) 1;
+        int64 i = 0;
+        while (i < n) {
+            st.set(i * n + i, one);                // flat C-order index of [i][i]
+            i = i + 1;
+        }
+        int64[] strides = Tensor.contigStrides(shape, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, shape, strides);
+    }
+
+    /**
+     * Coordinate grids from two 1-D coordinate vectors (numpy `meshgrid`, default
+     * 'xy' indexing). For `x` of length Nx and `y` of length Ny, returns `[X, Y]`,
+     * each of shape `(Ny, Nx)`: `X[i,j] = x[j]` (varies across columns) and
+     * `Y[i,j] = y[i]` (varies down rows). Each output owns its own shape/strides.
+     */
+    public static #Tensor<E>[] meshgrid<E>(Tensor<E> x, Tensor<E> y) {
+        int64 nx = x.size();
+        int64 ny = y.size();
+        int64 total = nx * ny;
+        Storage<E> sx = heap Storage<E>(total);
+        Storage<E> sy = heap Storage<E>(total);
+        int64 i = 0;
+        while (i < ny) {
+            E yv = y.get1(i);
+            int64 j = 0;
+            while (j < nx) {
+                E xv = x.get1(j);
+                int64 flat = i * nx + j;
+                sx.set(flat, xv);
+                sy.set(flat, yv);
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        int64[] shapeX = heap int64[2];
+        shapeX[0] = ny;
+        shapeX[1] = nx;
+        int64[] shapeY = heap int64[2];
+        shapeY[0] = ny;
+        shapeY[1] = nx;
+        int64[] stridesX = Tensor.contigStrides(shapeX, MemoryOrder.C);
+        int64[] stridesY = Tensor.contigStrides(shapeY, MemoryOrder.C);
+        Tensor<E>[] out = heap Tensor<E>[2];
+        out[0] = heap Tensor<E>(#sx, 0, shapeX, stridesX);
+        out[1] = heap Tensor<E>(#sy, 0, shapeY, stridesY);
+        return #out;
     }
 
     // ────────────────────────────── accessors ────────────────────────────────
@@ -405,7 +517,7 @@ public class Tensor<T> {
      * the handle an op's GPU path binds into a `cajeta.gpu` kernel launch. The
      * host side of the op-dispatch seam.
      */
-    public GpuBuffer<T> deviceBuffer() {
+    public KernelBuffer<T> deviceBuffer() {
         return this.store.deviceBuffer();
     }
 
@@ -894,6 +1006,3119 @@ public class Tensor<T> {
             i = i + 1;
         }
         return this.makeView(this.offsetVal, ns, nst);
+    }
+
+    // Reshape-family axis ops (Phase 5 unit 1). `ravel` is view-if-contiguous (numpy
+    // ravel); `flatten` always copies. `swapaxes`/`moveaxis`/`transposeAxes`/`flipAll`
+    // are pure **views** — they only re-order/negate shape+stride metadata and share
+    // `Storage` (numpy gives views for all of these).
+
+    /** 1-D contiguous flattening (numpy `ravel`): a **view** when already contiguous,
+     *  otherwise a fresh contiguous **copy**. */
+    public #Tensor<T> ravel() {
+        int64[] ns = heap int64[1];
+        ns[0] = this.size();
+        return this.reshape(ns);
+    }
+
+    /** 1-D **copy** (numpy `flatten`): always independent contiguous storage. */
+    public #Tensor<T> flatten() {
+        int64[] ns = heap int64[1];
+        ns[0] = this.size();
+        return this.materialize(ns);
+    }
+
+    /** Swap axes `a` and `b` (numpy `swapaxes`): a **view** with their shape+stride
+     *  exchanged. Negative axes wrap. */
+    public #Tensor<T> swapaxes(int32 a, int32 b) {
+        int32 nd = (int32) this.shapeDims.count();
+        int32 ax = a;
+        if (ax < 0) { ax = ax + nd; }
+        int32 bx = b;
+        if (bx < 0) { bx = bx + nd; }
+        int64[] ns = heap int64[nd];
+        int64[] nst = heap int64[nd];
+        int32 i = 0;
+        while (i < nd) {
+            ns[i] = this.shapeDims[i];
+            nst[i] = this.strideDims[i];
+            i = i + 1;
+        }
+        ns[ax] = this.shapeDims[bx];
+        nst[ax] = this.strideDims[bx];
+        ns[bx] = this.shapeDims[ax];
+        nst[bx] = this.strideDims[ax];
+        return this.makeView(this.offsetVal, ns, nst);
+    }
+
+    /** Move axis `src` to position `dst` (numpy `moveaxis`), other axes keeping their
+     *  relative order: a **view**. Negative axes wrap. */
+    public #Tensor<T> moveaxis(int32 src, int32 dst) {
+        int32 nd = (int32) this.shapeDims.count();
+        int32 s = src;
+        if (s < 0) { s = s + nd; }
+        int32 d = dst;
+        if (d < 0) { d = d + nd; }
+        // remaining axes (all but src), in order; then splice src in at position d
+        int32[] rem = heap int32[nd - 1];
+        int32 r = 0;
+        int32 i = 0;
+        while (i < nd) {
+            if (i != s) { rem[r] = i; r = r + 1; }
+            i = i + 1;
+        }
+        int32[] perm = heap int32[nd];
+        int32 w = 0;
+        int32 j = 0;
+        while (j < d) { perm[w] = rem[j]; w = w + 1; j = j + 1; }
+        perm[w] = s;
+        w = w + 1;
+        while (j < nd - 1) { perm[w] = rem[j]; w = w + 1; j = j + 1; }
+        int64[] ns = heap int64[nd];
+        int64[] nst = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            ns[k] = this.shapeDims[perm[k]];
+            nst[k] = this.strideDims[perm[k]];
+            k = k + 1;
+        }
+        return this.makeView(this.offsetVal, ns, nst);
+    }
+
+    /** General axis permutation (numpy `transpose(axes)`): a **view** whose axis `i`
+     *  is the input's axis `perm[i]`. `perm` must be a permutation of `0..ndim-1`. */
+    public #Tensor<T> transposeAxes(int32[] perm) {
+        int32 nd = (int32) this.shapeDims.count();
+        int64[] ns = heap int64[nd];
+        int64[] nst = heap int64[nd];
+        int32 i = 0;
+        while (i < nd) {
+            int32 p = perm[i];
+            ns[i] = this.shapeDims[p];
+            nst[i] = this.strideDims[p];
+            i = i + 1;
+        }
+        return this.makeView(this.offsetVal, ns, nst);
+    }
+
+    /** Reverse element order along **every** axis (numpy `flip(m)` with `axis=None`):
+     *  a **view** with all strides negated and the offset at the far corner. */
+    public #Tensor<T> flipAll() {
+        int32 nd = (int32) this.shapeDims.count();
+        int64[] ns = heap int64[nd];
+        int64[] nst = heap int64[nd];
+        int64 newOff = this.offsetVal;
+        int32 i = 0;
+        while (i < nd) {
+            ns[i] = this.shapeDims[i];
+            nst[i] = -this.strideDims[i];
+            newOff = newOff + (this.shapeDims[i] - 1) * this.strideDims[i];
+            i = i + 1;
+        }
+        return this.makeView(newOff, ns, nst);
+    }
+
+    // Join / split (Phase 5 unit 2) — these produce fresh C-contiguous storage
+    // (numpy concatenate/stack copy; split returns views, but we return copies to
+    // avoid shared-Storage drop hazards). Inputs/outputs are passed as `Tensor<E>[]`.
+
+    /** Join `parts` along an existing `axis` (numpy `concatenate`): every part must
+     *  match on all other axes; the result's `axis` extent is the sum. Fresh copy. */
+    public static #Tensor<E> concatenate<E>(Tensor<E>[] parts, int32 axis) {
+        int32 np = (int32) parts.count();
+        Tensor<E> p0 = parts[0];
+        int32 nd = p0.ndim();
+        int32 ax = axis;
+        if (ax < 0) { ax = ax + nd; }
+        int64 axisTotal = 0;
+        int32 q = 0;
+        while (q < np) { axisTotal = axisTotal + parts[q].shapeAt(ax); q = q + 1; }
+        int64[] outShape = heap int64[nd];
+        int32 i = 0;
+        while (i < nd) { outShape[i] = p0.shapeAt(i); i = i + 1; }
+        outShape[ax] = axisTotal;
+        int64 n = Tensor.productOf(outShape);
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        Storage<E> st = heap Storage<E>(n);
+        int64[] idx = heap int64[nd];
+        int32 z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        int64 lin = 0;
+        while (lin < n) {
+            int64 a = idx[ax];
+            int32 pk = 0;
+            while (a >= parts[pk].shapeAt(ax)) { a = a - parts[pk].shapeAt(ax); pk = pk + 1; }
+            int64 saved = idx[ax];
+            idx[ax] = a;
+            E e = parts[pk].readBroadcast(idx);
+            idx[ax] = saved;
+            st.set(lin, e);
+            lin = lin + 1;
+            int32 ax2 = nd - 1;
+            boolean carry = true;
+            while (ax2 >= 0 && carry) {
+                idx[ax2] = idx[ax2] + 1;
+                if (idx[ax2] >= outShape[ax2]) { idx[ax2] = 0; ax2 = ax2 - 1; }
+                else { carry = false; }
+            }
+        }
+        return heap Tensor<E>(#st, 0, outShape, outStrides);
+    }
+
+    /** Join equal-shaped `parts` along a **new** `axis` (numpy `stack`): result ndim
+     *  is one more than the inputs, the new axis having extent `parts.count()`. */
+    public static #Tensor<E> stackTensors<E>(Tensor<E>[] parts, int32 axis) {
+        int32 np = (int32) parts.count();
+        Tensor<E> p0 = parts[0];
+        int32 m = p0.ndim();
+        int32 outNd = m + 1;
+        int32 ax = axis;
+        if (ax < 0) { ax = ax + outNd; }
+        int64[] outShape = heap int64[outNd];
+        int32 w = 0;
+        int32 i = 0;
+        while (i < outNd) {
+            if (i == ax) { outShape[i] = (int64) np; }
+            else { outShape[i] = p0.shapeAt(w); w = w + 1; }
+            i = i + 1;
+        }
+        int64 n = Tensor.productOf(outShape);
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        Storage<E> st = heap Storage<E>(n);
+        int64[] idx = heap int64[outNd];
+        int32 z = 0;
+        while (z < outNd) { idx[z] = 0; z = z + 1; }
+        int64[] pidx = heap int64[m];
+        int64 lin = 0;
+        while (lin < n) {
+            int32 pk = (int32) idx[ax];
+            int32 pw = 0;
+            int32 d = 0;
+            while (d < outNd) {
+                if (d != ax) { pidx[pw] = idx[d]; pw = pw + 1; }
+                d = d + 1;
+            }
+            E e = parts[pk].readBroadcast(pidx);
+            st.set(lin, e);
+            lin = lin + 1;
+            int32 ax2 = outNd - 1;
+            boolean carry = true;
+            while (ax2 >= 0 && carry) {
+                idx[ax2] = idx[ax2] + 1;
+                if (idx[ax2] >= outShape[ax2]) { idx[ax2] = 0; ax2 = ax2 - 1; }
+                else { carry = false; }
+            }
+        }
+        return heap Tensor<E>(#st, 0, outShape, outStrides);
+    }
+
+    /** Split `t` into `nparts` equal sections along `axis` (numpy `split`): returns an
+     *  array of independent copies; `axis` extent must be divisible by `nparts`. */
+    public static #Tensor<E>[] split<E>(Tensor<E> t, int32 nparts, int32 axis) {
+        int32 nd = t.ndim();
+        int32 ax = axis;
+        if (ax < 0) { ax = ax + nd; }
+        int64 axisLen = t.shapeAt(ax);
+        int64 partLen = axisLen / (int64) nparts;
+        Tensor<E>[] out = heap Tensor<E>[nparts];
+        int32 k = 0;
+        while (k < nparts) {
+            int64 start = (int64) k * partLen;
+            // inline the slice borrow (don't bind to a droppable local — a bound view
+            // can free the shared Storage early; see the borrowed-Storage drop hazard)
+            out[k] = t.slice(ax, start, start + partLen).copy();
+            k = k + 1;
+        }
+        return #out;
+    }
+
+    // Replication / shift / pad (Phase 5 unit 3) — copy-producing ops that remap each
+    // output multi-index back into the source (modulo, divide, offset, or wrap). All
+    // walk the output in C-order and read the source via `readBroadcast`.
+
+    /** Tile `t` by `reps[i]` along each axis (numpy `tile`, per-axis reps matching
+     *  ndim): result axis `i` has extent `shape[i] * reps[i]`; element wraps modulo. */
+    public static #Tensor<E> tile<E>(Tensor<E> t, int64[] reps) {
+        int32 nd = t.ndim();
+        int64[] outShape = heap int64[nd];
+        int32 i = 0;
+        while (i < nd) { outShape[i] = t.shapeAt(i) * reps[i]; i = i + 1; }
+        int64 n = Tensor.productOf(outShape);
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        Storage<E> st = heap Storage<E>(n);
+        int64[] idx = heap int64[nd];
+        int64[] lidx = heap int64[nd];
+        int32 z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        int64 lin = 0;
+        while (lin < n) {
+            int32 d = 0;
+            while (d < nd) { lidx[d] = idx[d] % t.shapeAt(d); d = d + 1; }
+            E e = t.readBroadcast(lidx);
+            st.set(lin, e);
+            lin = lin + 1;
+            int32 a2 = nd - 1;
+            boolean carry = true;
+            while (a2 >= 0 && carry) {
+                idx[a2] = idx[a2] + 1;
+                if (idx[a2] >= outShape[a2]) { idx[a2] = 0; a2 = a2 - 1; }
+                else { carry = false; }
+            }
+        }
+        return heap Tensor<E>(#st, 0, outShape, outStrides);
+    }
+
+    /** Repeat each element `n` times along `axis` (numpy `repeat`): result axis extent
+     *  is `shape[axis] * n`; output index `j` maps to source `j / n`. */
+    public static #Tensor<E> repeat<E>(Tensor<E> t, int32 n, int32 axis) {
+        int32 nd = t.ndim();
+        int32 ax = axis;
+        if (ax < 0) { ax = ax + nd; }
+        int64[] outShape = heap int64[nd];
+        int32 i = 0;
+        while (i < nd) { outShape[i] = t.shapeAt(i); i = i + 1; }
+        outShape[ax] = t.shapeAt(ax) * (int64) n;
+        int64 cnt = Tensor.productOf(outShape);
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        Storage<E> st = heap Storage<E>(cnt);
+        int64[] idx = heap int64[nd];
+        int64[] lidx = heap int64[nd];
+        int32 z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        int64 lin = 0;
+        while (lin < cnt) {
+            int32 d = 0;
+            while (d < nd) { lidx[d] = idx[d]; d = d + 1; }
+            lidx[ax] = idx[ax] / (int64) n;
+            E e = t.readBroadcast(lidx);
+            st.set(lin, e);
+            lin = lin + 1;
+            int32 a2 = nd - 1;
+            boolean carry = true;
+            while (a2 >= 0 && carry) {
+                idx[a2] = idx[a2] + 1;
+                if (idx[a2] >= outShape[a2]) { idx[a2] = 0; a2 = a2 - 1; }
+                else { carry = false; }
+            }
+        }
+        return heap Tensor<E>(#st, 0, outShape, outStrides);
+    }
+
+    /** Constant-pad each axis by `before[i]`/`after[i]` with `value` (numpy `pad`,
+     *  mode='constant'): result axis extent is `before[i] + shape[i] + after[i]`. */
+    public static #Tensor<E> pad<E>(Tensor<E> t, int64[] before, int64[] after, E value) {
+        int32 nd = t.ndim();
+        int64[] outShape = heap int64[nd];
+        int32 i = 0;
+        while (i < nd) { outShape[i] = before[i] + t.shapeAt(i) + after[i]; i = i + 1; }
+        int64 n = Tensor.productOf(outShape);
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        Storage<E> st = heap Storage<E>(n);
+        int64[] idx = heap int64[nd];
+        int64[] lidx = heap int64[nd];
+        int32 z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        int64 lin = 0;
+        while (lin < n) {
+            boolean inside = true;
+            int32 d = 0;
+            while (d < nd) {
+                int64 li = idx[d] - before[d];
+                if (li < 0 || li >= t.shapeAt(d)) { inside = false; }
+                lidx[d] = li;
+                d = d + 1;
+            }
+            E e = value;
+            if (inside) { e = t.readBroadcast(lidx); }
+            st.set(lin, e);
+            lin = lin + 1;
+            int32 a2 = nd - 1;
+            boolean carry = true;
+            while (a2 >= 0 && carry) {
+                idx[a2] = idx[a2] + 1;
+                if (idx[a2] >= outShape[a2]) { idx[a2] = 0; a2 = a2 - 1; }
+                else { carry = false; }
+            }
+        }
+        return heap Tensor<E>(#st, 0, outShape, outStrides);
+    }
+
+    /** Cyclically shift elements by `shift` along `axis` (numpy `roll`): output index
+     *  `j` maps to source `(j - shift) mod L`. Same shape as the input. */
+    public static #Tensor<E> roll<E>(Tensor<E> t, int64 shift, int32 axis) {
+        int32 nd = t.ndim();
+        int32 ax = axis;
+        if (ax < 0) { ax = ax + nd; }
+        int64 len = t.shapeAt(ax);
+        int64[] outShape = Tensor.shapeOf<E>(t);
+        int64 n = Tensor.productOf(outShape);
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        Storage<E> st = heap Storage<E>(n);
+        int64[] idx = heap int64[nd];
+        int64[] lidx = heap int64[nd];
+        int32 z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        int64 lin = 0;
+        while (lin < n) {
+            int32 d = 0;
+            while (d < nd) { lidx[d] = idx[d]; d = d + 1; }
+            int64 src = ((idx[ax] - shift) % len + len) % len;
+            lidx[ax] = src;
+            E e = t.readBroadcast(lidx);
+            st.set(lin, e);
+            lin = lin + 1;
+            int32 a2 = nd - 1;
+            boolean carry = true;
+            while (a2 >= 0 && carry) {
+                idx[a2] = idx[a2] + 1;
+                if (idx[a2] >= outShape[a2]) { idx[a2] = 0; a2 = a2 - 1; }
+                else { carry = false; }
+            }
+        }
+        return heap Tensor<E>(#st, 0, outShape, outStrides);
+    }
+
+    // Matrix extraction (Phase 5 unit 4) — 2-D. `diagonal` copies the k-th diagonal
+    // into a 1-D tensor; `tril`/`triu` copy the matrix with the elements above/below
+    // the k-th diagonal zeroed. (numpy gives a diagonal view; we copy.)
+
+    /** The `offset`-th diagonal of a 2-D tensor as a 1-D **copy** (numpy `diagonal`):
+     *  `offset > 0` is above the main diagonal, `< 0` below. */
+    public static #Tensor<E> diagonal<E>(Tensor<E> t, int64 offset) {
+        int64 m = t.shapeAt(0);
+        int64 n = t.shapeAt(1);
+        int64 r0 = 0;
+        int64 c0 = 0;
+        if (offset >= 0) { c0 = offset; } else { r0 = -offset; }
+        int64 len = m - r0;
+        if (n - c0 < len) { len = n - c0; }
+        if (len < 0) { len = 0; }
+        Storage<E> st = heap Storage<E>(len);
+        int64 i = 0;
+        while (i < len) {
+            st.set(i, t.get2(r0 + i, c0 + i));
+            i = i + 1;
+        }
+        int64[] shp = heap int64[1];
+        shp[0] = len;
+        int64[] strd = heap int64[1];
+        strd[0] = 1;
+        return heap Tensor<E>(#st, 0, shp, strd);
+    }
+
+    /** Lower triangle of a 2-D tensor (numpy `tril`): elements with `col <= row + k`
+     *  are kept, the rest zeroed. Fresh copy, same shape. */
+    public static #Tensor<E> tril<E extends Numeric>(Tensor<E> t, int64 k) {
+        int64 m = t.shapeAt(0);
+        int64 n = t.shapeAt(1);
+        Storage<E> st = heap Storage<E>(m * n);
+        E zero = (E) 0;
+        int64 r = 0;
+        while (r < m) {
+            int64 c = 0;
+            while (c < n) {
+                E v = zero;
+                if (c <= r + k) { v = t.get2(r, c); }
+                st.set(r * n + c, v);
+                c = c + 1;
+            }
+            r = r + 1;
+        }
+        int64[] shp = heap int64[2];
+        shp[0] = m;
+        shp[1] = n;
+        int64[] strd = Tensor.contigStrides(shp, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, shp, strd);
+    }
+
+    /** Upper triangle of a 2-D tensor (numpy `triu`): elements with `col >= row + k`
+     *  are kept, the rest zeroed. Fresh copy, same shape. */
+    public static #Tensor<E> triu<E extends Numeric>(Tensor<E> t, int64 k) {
+        int64 m = t.shapeAt(0);
+        int64 n = t.shapeAt(1);
+        Storage<E> st = heap Storage<E>(m * n);
+        E zero = (E) 0;
+        int64 r = 0;
+        while (r < m) {
+            int64 c = 0;
+            while (c < n) {
+                E v = zero;
+                if (c >= r + k) { v = t.get2(r, c); }
+                st.set(r * n + c, v);
+                c = c + 1;
+            }
+            r = r + 1;
+        }
+        int64[] shp = heap int64[2];
+        shp[0] = m;
+        shp[1] = n;
+        int64[] strd = Tensor.contigStrides(shp, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, shp, strd);
+    }
+
+    // Conditional / fancy selection (Phase 5 unit 5). Boolean-mask compaction read
+    // (`maskedSelect`) and write (`maskedAssign`) already exist; these add `compress`
+    // (keep slices along an axis where a 1-D condition is true) and `choose` (pick
+    // each element from one of several choice tensors by an index tensor).
+
+    /** Keep the slices of `t` along `axis` where the 1-D boolean `cond` (length =
+     *  `t.shapeAt(axis)`) is true (numpy `compress`): a fresh copy whose `axis`
+     *  extent is the number of true entries. */
+    public static #Tensor<E> compress<E>(Tensor<E> t, Tensor<boolean> cond, int32 axis) {
+        int32 nd = t.ndim();
+        int32 ax = axis;
+        if (ax < 0) { ax = ax + nd; }
+        int64 len = t.shapeAt(ax);
+        int64 keptN = 0;
+        int64 i = 0;
+        while (i < len) { if (cond.get1(i)) { keptN = keptN + 1; } i = i + 1; }
+        int64[] keep = heap int64[keptN];
+        int64 w = 0;
+        i = 0;
+        while (i < len) { if (cond.get1(i)) { keep[w] = i; w = w + 1; } i = i + 1; }
+        int64[] outShape = heap int64[nd];
+        int32 j = 0;
+        while (j < nd) { outShape[j] = t.shapeAt(j); j = j + 1; }
+        outShape[ax] = keptN;
+        int64 n = Tensor.productOf(outShape);
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        Storage<E> st = heap Storage<E>(n);
+        int64[] idx = heap int64[nd];
+        int64[] lidx = heap int64[nd];
+        int32 z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        int64 lin = 0;
+        while (lin < n) {
+            int32 d = 0;
+            while (d < nd) { lidx[d] = idx[d]; d = d + 1; }
+            lidx[ax] = keep[idx[ax]];
+            E e = t.getAt(lidx);
+            st.set(lin, e);
+            lin = lin + 1;
+            int32 a2 = nd - 1;
+            boolean carry = true;
+            while (a2 >= 0 && carry) {
+                idx[a2] = idx[a2] + 1;
+                if (idx[a2] >= outShape[a2]) { idx[a2] = 0; a2 = a2 - 1; }
+                else { carry = false; }
+            }
+        }
+        return heap Tensor<E>(#st, 0, outShape, outStrides);
+    }
+
+    /** Pick each element from one of `choices` by an `indices` tensor (numpy `choose`):
+     *  all same shape; `out[e] = choices[indices[e]][e]`. Fresh copy. */
+    public static #Tensor<E> choose<E>(Tensor<int64> indices, Tensor<E>[] choices) {
+        int32 nd = indices.ndim();
+        int64[] outShape = Tensor.shapeOf<int64>(indices);
+        int64 n = Tensor.productOf(outShape);
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        Storage<E> st = heap Storage<E>(n);
+        int64[] idx = heap int64[nd];
+        int32 z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        int64 lin = 0;
+        while (lin < n) {
+            int32 ci = (int32) indices.getAt(idx);
+            E e = choices[ci].getAt(idx);
+            st.set(lin, e);
+            lin = lin + 1;
+            int32 a2 = nd - 1;
+            boolean carry = true;
+            while (a2 >= 0 && carry) {
+                idx[a2] = idx[a2] + 1;
+                if (idx[a2] >= outShape[a2]) { idx[a2] = 0; a2 = a2 - 1; }
+                else { carry = false; }
+            }
+        }
+        return heap Tensor<E>(#st, 0, outShape, outStrides);
+    }
+
+    // Contraction (Phase 6) — the CPU GEMM floor. `matmul` is the 2-D matrix product
+    // (m,k)·(k,n)→(m,n); `dot` is the 1-D inner product (scalar). Triple-loop GEMM,
+    // accumulating in the element dtype; the GPU CooperativeMatrix/tiled lowering rides
+    // the Ewise seam (later unit). cajeta owns GEMM — no BLAS.
+
+    /** 2-D matrix product `(m,k)·(k,n) → (m,n)` (numpy `matmul`/`@` for matrices):
+     *  `out[i,j] = Σ_p a[i,p] * b[p,j]`. */
+    public static #Tensor<E> matmul<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        int64 m = a.shapeAt(0);
+        int64 k = a.shapeAt(1);
+        int64 n = b.shapeAt(1);
+        Storage<E> st = heap Storage<E>(m * n);
+        int64 i = 0;
+        while (i < m) {
+            int64 j = 0;
+            while (j < n) {
+                E acc = (E) 0;
+                int64 p = 0;
+                while (p < k) {
+                    acc = acc + a.get2(i, p) * b.get2(p, j);
+                    p = p + 1;
+                }
+                st.set(i * n + j, acc);
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        int64[] shp = heap int64[2];
+        shp[0] = m;
+        shp[1] = n;
+        int64[] strd = Tensor.contigStrides(shp, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, shp, strd);
+    }
+
+    /** 1-D inner product `Σ a[i] * b[i]` as a scalar (numpy `dot` of two vectors). */
+    public static E dot<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        int64 n = a.size();
+        E acc = (E) 0;
+        int64 i = 0;
+        while (i < n) {
+            acc = acc + a.get1(i) * b.get1(i);
+            i = i + 1;
+        }
+        return acc;
+    }
+
+    /** Inner product over the **flattened** elements of two equal-shaped tensors as a
+     *  scalar (numpy `vdot`, real case): `Σ a·b` over the full C-order walk. */
+    public static E vdot<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        int64 n = a.size();
+        int32 nd = a.ndim();
+        int64[] idx = heap int64[nd];
+        int32 z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        E acc = (E) 0;
+        int64 lin = 0;
+        while (lin < n) {
+            acc = acc + a.getAt(idx) * b.getAt(idx);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= a.shapeAt(ax)) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return acc;
+    }
+
+    /** Outer product of two 1-D vectors → 2-D `(m,n)` (numpy `outer`):
+     *  `out[i,j] = a[i] * b[j]`. */
+    public static #Tensor<E> outer<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        int64 m = a.size();
+        int64 n = b.size();
+        Storage<E> st = heap Storage<E>(m * n);
+        int64 i = 0;
+        while (i < m) {
+            E av = a.get1(i);
+            int64 j = 0;
+            while (j < n) {
+                st.set(i * n + j, av * b.get1(j));
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        int64[] shp = heap int64[2];
+        shp[0] = m;
+        shp[1] = n;
+        int64[] strd = Tensor.contigStrides(shp, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, shp, strd);
+    }
+
+    /** Sum of the `offset`-th diagonal of a 2-D tensor as a scalar (numpy `trace`). */
+    public static E trace<E extends Numeric>(Tensor<E> a, int64 offset) {
+        int64 m = a.shapeAt(0);
+        int64 n = a.shapeAt(1);
+        int64 r0 = 0;
+        int64 c0 = 0;
+        if (offset >= 0) { c0 = offset; } else { r0 = -offset; }
+        int64 len = m - r0;
+        if (n - c0 < len) { len = n - c0; }
+        if (len < 0) { len = 0; }
+        E acc = (E) 0;
+        int64 i = 0;
+        while (i < len) {
+            acc = acc + a.get2(r0 + i, c0 + i);
+            i = i + 1;
+        }
+        return acc;
+    }
+
+    /** Kronecker product of two 2-D tensors `(m,n)⊗(p,q) → (m*p, n*q)` (numpy `kron`):
+     *  `out[i*p+r, j*q+s] = a[i,j] * b[r,s]`. */
+    public static #Tensor<E> kron<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        int64 m = a.shapeAt(0);
+        int64 n = a.shapeAt(1);
+        int64 p = b.shapeAt(0);
+        int64 q = b.shapeAt(1);
+        int64 oc = n * q;
+        Storage<E> st = heap Storage<E>(m * p * n * q);
+        int64 i = 0;
+        while (i < m) {
+            int64 j = 0;
+            while (j < n) {
+                E av = a.get2(i, j);
+                int64 r = 0;
+                while (r < p) {
+                    int64 s = 0;
+                    while (s < q) {
+                        int64 row = i * p + r;
+                        int64 col = j * q + s;
+                        st.set(row * oc + col, av * b.get2(r, s));
+                        s = s + 1;
+                    }
+                    r = r + 1;
+                }
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        int64[] shp = heap int64[2];
+        shp[0] = m * p;
+        shp[1] = oc;
+        int64[] strd = Tensor.contigStrides(shp, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, shp, strd);
+    }
+
+    /** Integer matrix power of a square 2-D tensor (numpy `matrix_power`, `n >= 0`):
+     *  `n == 0` is the identity; otherwise repeated `matmul`. (Negative powers need the
+     *  inverse — Phase 11.) */
+    public static #Tensor<E> matrixPower<E extends Numeric>(Tensor<E> a, int32 n) {
+        int64 d = a.shapeAt(0);
+        if (n == 0) { return Tensor.eye<E>(d); }
+        Tensor<E> result = a.copy();
+        int32 step = 1;
+        while (step < n) {
+            result = Tensor.matmul<E>(result, a);
+            step = step + 1;
+        }
+        return #result;
+    }
+
+    /**
+     * General tensor contraction over the **last `naxes`** of `a` and the **first
+     * `naxes`** of `b` (numpy `tensordot` with an integer `axes`): result shape is
+     * `a.shape[:-naxes] ++ b.shape[naxes:]`, with `out[ia, ib] = Σ_k a[ia, k]*b[k, ib]`
+     * over the shared contracted block `k`. `naxes == 1` over `(m,k)·(k,n)` reproduces
+     * `matmul`. The contracted dims of `a` and `b` must match.
+     */
+    public static #Tensor<E> tensordot<E extends Numeric>(Tensor<E> a, Tensor<E> b, int32 naxes) {
+        int32 ndA = a.ndim();
+        int32 ndB = b.ndim();
+        int32 freeAn = ndA - naxes;
+        int32 freeBn = ndB - naxes;
+        int64 contractN = 1;
+        int64[] cShape = heap int64[naxes];
+        int32 t = 0;
+        while (t < naxes) {
+            int64 dimv = a.shapeAt(freeAn + t);
+            cShape[t] = dimv;
+            contractN = contractN * dimv;
+            t = t + 1;
+        }
+        int32 outNd = freeAn + freeBn;
+        int64[] outShape = heap int64[outNd];
+        int32 w = 0;
+        int32 i = 0;
+        while (i < freeAn) { outShape[w] = a.shapeAt(i); w = w + 1; i = i + 1; }
+        i = 0;
+        while (i < freeBn) { outShape[w] = b.shapeAt(naxes + i); w = w + 1; i = i + 1; }
+        int64 outN = Tensor.productOf(outShape);
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        Storage<E> st = heap Storage<E>(outN);
+        int64[] oidx = heap int64[outNd];
+        int64[] aIdx = heap int64[ndA];
+        int64[] bIdx = heap int64[ndB];
+        int64[] kIdx = heap int64[naxes];
+        int32 z = 0;
+        while (z < outNd) { oidx[z] = 0; z = z + 1; }
+        int64 lin = 0;
+        while (lin < outN) {
+            int32 d = 0;
+            while (d < freeAn) { aIdx[d] = oidx[d]; d = d + 1; }
+            d = 0;
+            while (d < freeBn) { bIdx[naxes + d] = oidx[freeAn + d]; d = d + 1; }
+            E acc = (E) 0;
+            int32 kz = 0;
+            while (kz < naxes) { kIdx[kz] = 0; kz = kz + 1; }
+            int64 kl = 0;
+            while (kl < contractN) {
+                int32 c = 0;
+                while (c < naxes) { aIdx[freeAn + c] = kIdx[c]; bIdx[c] = kIdx[c]; c = c + 1; }
+                acc = acc + a.getAt(aIdx) * b.getAt(bIdx);
+                kl = kl + 1;
+                int32 ka = naxes - 1;
+                boolean kcarry = true;
+                while (ka >= 0 && kcarry) {
+                    kIdx[ka] = kIdx[ka] + 1;
+                    if (kIdx[ka] >= cShape[ka]) { kIdx[ka] = 0; ka = ka - 1; }
+                    else { kcarry = false; }
+                }
+            }
+            st.set(lin, acc);
+            lin = lin + 1;
+            int32 ax = outNd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                oidx[ax] = oidx[ax] + 1;
+                if (oidx[ax] >= outShape[ax]) { oidx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return heap Tensor<E>(#st, 0, outShape, outStrides);
+    }
+
+    /**
+     * Inner product over the **last axis** of each operand (numpy `inner`): for `a`
+     * of shape `(...i, k)` and `b` of shape `(...j, k)` with equal last axis `k`,
+     * returns shape `(...i, ...j)` with `out[i, j] = Σ_k a[i, k] * b[j, k]`. Two
+     * 1-D vectors give a 0-D scalar tensor (read it with `getAt`, any index — its
+     * `ndim` is 0). Unlike `dot`, `inner` contracts the last axis of *both* operands.
+     */
+    public static #Tensor<E> inner<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        int32 ndA = a.ndim();
+        int32 ndB = b.ndim();
+        int64 k = a.shapeAt(ndA - 1);
+        int32 freeAn = ndA - 1;
+        int32 freeBn = ndB - 1;
+        int32 outNd = freeAn + freeBn;
+        int64[] outShape = heap int64[outNd];
+        int32 w = 0;
+        int32 i = 0;
+        while (i < freeAn) { outShape[w] = a.shapeAt(i); w = w + 1; i = i + 1; }
+        i = 0;
+        while (i < freeBn) { outShape[w] = b.shapeAt(i); w = w + 1; i = i + 1; }
+        int64 outN = Tensor.productOf(outShape);
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        Storage<E> st = heap Storage<E>(outN);
+        int64[] oidx = heap int64[outNd];
+        int64[] aIdx = heap int64[ndA];
+        int64[] bIdx = heap int64[ndB];
+        int32 z = 0;
+        while (z < outNd) { oidx[z] = 0; z = z + 1; }
+        int64 lin = 0;
+        while (lin < outN) {
+            int32 d = 0;
+            while (d < freeAn) { aIdx[d] = oidx[d]; d = d + 1; }
+            d = 0;
+            while (d < freeBn) { bIdx[d] = oidx[freeAn + d]; d = d + 1; }
+            E acc = (E) 0;
+            int64 kk = 0;
+            while (kk < k) {
+                aIdx[freeAn] = kk;
+                bIdx[freeBn] = kk;
+                acc = acc + a.getAt(aIdx) * b.getAt(bIdx);
+                kk = kk + 1;
+            }
+            st.set(lin, acc);
+            lin = lin + 1;
+            int32 ax = outNd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                oidx[ax] = oidx[ax] + 1;
+                if (oidx[ax] >= outShape[ax]) { oidx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return heap Tensor<E>(#st, 0, outShape, outStrides);
+    }
+
+    /**
+     * Einstein-summation contraction (numpy `einsum`) over an explicit subscript
+     * `spec` and a list of `operands`. The spec is `in0,in1,...->out`
+     * (explicit `->` required), each label a single ASCII letter naming an axis;
+     * a label repeated within one operand selects its diagonal, a label absent from
+     * the output is summed over, and the output label order fixes the result axes.
+     * This covers transpose (`ij->ji`), trace (`ii->`), diagonal (`ii->i`), sum
+     * (`ij->`), reductions (`ij->i`), matmul (`ij,jk->ik`), batched matmul
+     * (`bij,bjk->bik`) and the inner product (`i,i->`).
+     *
+     * The engine is the general nested walk: for every output multi-index it sums,
+     * over every summed multi-index, the product of one element from each operand
+     * (each operand indexed by mapping its labels through the current per-label
+     * values). A label→size table and a label→value scratch (ASCII-indexed) carry
+     * the plan; per-operand axes read through {@link #getAt} so any stride/view is
+     * honoured. O(∏ all label sizes) — the test-sized floor; the GPU/matmul-routed
+     * fast path is a later unit. Accumulates in the element dtype `E`.
+     */
+    public static #Tensor<E> einsum<E extends Numeric>(String spec, Tensor<E>[] operands) {
+        int32 specLen = (int32) spec.count();
+        // Locate the explicit "->" (45='-', 62='>'); fall back to sum-all if absent.
+        int32 arrow = -1;
+        int32 fp = 0;
+        while (fp < specLen - 1) {
+            if (spec.charAt(fp) == (int8) 45 && spec.charAt(fp + 1) == (int8) 62) {
+                arrow = fp;
+                fp = specLen;
+            } else {
+                fp = fp + 1;
+            }
+        }
+        if (arrow < 0) { arrow = specLen; }
+
+        // Per-operand label offsets into a flat label buffer; widest operand rank.
+        int32 nOps = (int32) operands.count();
+        int32[] opOff = heap int32[nOps + 1];
+        opOff[0] = 0;
+        int32 maxNd = 0;
+        int32 oi = 0;
+        while (oi < nOps) {
+            int32 nd = operands[oi].ndim();
+            opOff[oi + 1] = opOff[oi] + nd;
+            if (nd > maxNd) { maxNd = nd; }
+            oi = oi + 1;
+        }
+        int32 totalLab = opOff[nOps];
+        int32[] labFlat = heap int32[totalLab];
+
+        // label (ASCII code) → axis size, filled as the input subscripts are walked.
+        int64[] dimOf = heap int64[128];
+
+        // Parse the input subscripts: 44=',' advances to the next operand; any other
+        // non-space char is an axis label for the current operand's next axis.
+        int32 curOp = 0;
+        int32 axisPos = 0;
+        int32 lp = 0;
+        while (lp < arrow) {
+            int8 cb = spec.charAt(lp);
+            if (cb == (int8) 44) {
+                curOp = curOp + 1;
+                axisPos = 0;
+            } else {
+                if (cb != (int8) 32) {
+                    int32 code = (int32) cb;
+                    labFlat[opOff[curOp] + axisPos] = code;
+                    dimOf[code] = operands[curOp].shapeAt(axisPos);
+                    axisPos = axisPos + 1;
+                }
+            }
+            lp = lp + 1;
+        }
+
+        // Output labels (in the order written) → result shape.
+        int32 outNd = 0;
+        int32 rp = arrow + 2;
+        while (rp < specLen) {
+            if (spec.charAt(rp) != (int8) 32) { outNd = outNd + 1; }
+            rp = rp + 1;
+        }
+        int32[] outLab = heap int32[outNd];
+        int64[] outShape = heap int64[outNd];
+        int32 op2 = 0;
+        rp = arrow + 2;
+        while (rp < specLen) {
+            int8 rcb = spec.charAt(rp);
+            if (rcb != (int8) 32) {
+                int32 rc = (int32) rcb;
+                outLab[op2] = rc;
+                outShape[op2] = dimOf[rc];
+                op2 = op2 + 1;
+            }
+            rp = rp + 1;
+        }
+
+        // Mark output labels; the rest (distinct input labels) are summed over.
+        boolean[] isOut = heap boolean[128];
+        int32 zz = 0;
+        while (zz < 128) { isOut[zz] = false; zz = zz + 1; }
+        int32 oj = 0;
+        while (oj < outNd) { isOut[outLab[oj]] = true; oj = oj + 1; }
+
+        boolean[] seenSum = heap boolean[128];
+        zz = 0;
+        while (zz < 128) { seenSum[zz] = false; zz = zz + 1; }
+        int32[] sumLab = heap int32[totalLab];
+        int64[] sumShape = heap int64[totalLab];
+        int32 sumNd = 0;
+        int32 li = 0;
+        while (li < totalLab) {
+            int32 code = labFlat[li];
+            if (!isOut[code] && !seenSum[code]) {
+                seenSum[code] = true;
+                sumLab[sumNd] = code;
+                sumShape[sumNd] = dimOf[code];
+                sumNd = sumNd + 1;
+            }
+            li = li + 1;
+        }
+        int64 sumN = 1;
+        int32 si = 0;
+        while (si < sumNd) { sumN = sumN * sumShape[si]; si = si + 1; }
+
+        // Nested walk: each output cell ← Σ over the summed indices of the product
+        // of one element from every operand.
+        int64 outN = Tensor.productOf(outShape);
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        Storage<E> st = heap Storage<E>(outN);
+        int64[] valOf = heap int64[128];      // label code → current index value
+        int64[] eidx = heap int64[maxNd];     // reused per-operand index (getAt reads ndim)
+        int64[] oidx = heap int64[outNd];
+        int64[] sidx = heap int64[sumNd];
+        int32 zo = 0;
+        while (zo < outNd) { oidx[zo] = 0; zo = zo + 1; }
+        int64 lin = 0;
+        while (lin < outN) {
+            oj = 0;
+            while (oj < outNd) { valOf[outLab[oj]] = oidx[oj]; oj = oj + 1; }
+            int32 sr = 0;
+            while (sr < sumNd) { sidx[sr] = 0; sr = sr + 1; }
+            E acc = (E) 0;
+            int64 sl = 0;
+            while (sl < sumN) {
+                int32 ss = 0;
+                while (ss < sumNd) { valOf[sumLab[ss]] = sidx[ss]; ss = ss + 1; }
+                E term = (E) 1;
+                int32 oi2 = 0;
+                while (oi2 < nOps) {
+                    int32 base = opOff[oi2];
+                    int32 nd2 = opOff[oi2 + 1] - base;
+                    int32 ai = 0;
+                    while (ai < nd2) { eidx[ai] = valOf[labFlat[base + ai]]; ai = ai + 1; }
+                    term = term * operands[oi2].getAt(eidx);
+                    oi2 = oi2 + 1;
+                }
+                acc = acc + term;
+                sl = sl + 1;
+                int32 sa = sumNd - 1;
+                boolean scarry = true;
+                while (sa >= 0 && scarry) {
+                    sidx[sa] = sidx[sa] + 1;
+                    if (sidx[sa] >= sumShape[sa]) { sidx[sa] = 0; sa = sa - 1; }
+                    else { scarry = false; }
+                }
+            }
+            st.set(lin, acc);
+            lin = lin + 1;
+            int32 ax = outNd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                oidx[ax] = oidx[ax] + 1;
+                if (oidx[ax] >= outShape[ax]) { oidx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return heap Tensor<E>(#st, 0, outShape, outStrides);
+    }
+
+    // ────────────────────────────── sort / search (Phase 7) ──────────────────
+
+    /**
+     * Sorted copy of `t` along `axis`, ascending (numpy `sort`). Each 1-D lane along
+     * `axis` is sorted independently; all other axes are preserved. **Stable** —
+     * equal elements keep their original relative order (numpy `kind='stable'`). A
+     * stable insertion sort over each lane (the test-sized CPU floor; a GPU radix/
+     * bitonic lowering is the later cross-checked unit). Returns a fresh C-order
+     * tensor; the input is untouched.
+     */
+    public static #Tensor<E> sort<E extends Numeric>(Tensor<E> t, int32 axis) {
+        Tensor<E> out = t.copy();
+        int32 nd = t.ndim();
+        int64 axisLen = t.shapeAt(axis);
+        int64[] idx = heap int64[nd];
+        int32 z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        int64 outer = 1;
+        int32 d = 0;
+        while (d < nd) {
+            if (d != axis) { outer = outer * t.shapeAt(d); }
+            d = d + 1;
+        }
+        int64 oc = 0;
+        while (oc < outer) {
+            // stable insertion sort of this lane (idx[axis] sweeps the lane)
+            int64 a = 1;
+            while (a < axisLen) {
+                idx[axis] = a;
+                E key = out.getAt(idx);
+                int64 b = a - 1;
+                boolean placed = false;
+                while (b >= 0 && !placed) {
+                    idx[axis] = b;
+                    E vb = out.getAt(idx);
+                    if (vb > key) {
+                        idx[axis] = b + 1;
+                        out.setAt(idx, vb);
+                        b = b - 1;
+                    } else {
+                        placed = true;
+                    }
+                }
+                idx[axis] = b + 1;
+                out.setAt(idx, key);
+                a = a + 1;
+            }
+            oc = oc + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                if (ax == axis) { ax = ax - 1; }
+                else {
+                    idx[ax] = idx[ax] + 1;
+                    if (idx[ax] >= t.shapeAt(ax)) { idx[ax] = 0; ax = ax - 1; }
+                    else { carry = false; }
+                }
+            }
+        }
+        return #out;
+    }
+
+    /**
+     * Index permutation that sorts `t` along `axis`, ascending (numpy `argsort`):
+     * `out[..., r, ...]` is the position along `axis` of the `r`-th smallest lane
+     * element. **Stable** (ties keep original order). Returns a `Tensor<int64>` of
+     * the same shape; the input is untouched. Stable insertion sort over each lane's
+     * index list (the CPU floor).
+     */
+    public static #Tensor<int64> argsort<E extends Numeric>(Tensor<E> t, int32 axis) {
+        int32 nd = t.ndim();
+        int64 axisLen = t.shapeAt(axis);
+        int64[] shp = heap int64[nd];
+        int32 c = 0;
+        while (c < nd) { shp[c] = t.shapeAt(c); c = c + 1; }
+        Tensor<int64> out = Tensor.zeros<int64>(shp);
+        int64[] idx = heap int64[nd];
+        int32 z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        int64[] perm = heap int64[axisLen];
+        int64 outer = 1;
+        int32 d = 0;
+        while (d < nd) {
+            if (d != axis) { outer = outer * t.shapeAt(d); }
+            d = d + 1;
+        }
+        int64 oc = 0;
+        while (oc < outer) {
+            int64 p = 0;
+            while (p < axisLen) { perm[p] = p; p = p + 1; }
+            // stable insertion sort of perm by the lane values t[..., perm[x], ...]
+            int64 a = 1;
+            while (a < axisLen) {
+                int64 keyIdx = perm[a];
+                idx[axis] = keyIdx;
+                E key = t.getAt(idx);
+                int64 b = a - 1;
+                boolean placed = false;
+                while (b >= 0 && !placed) {
+                    idx[axis] = perm[b];
+                    E vb = t.getAt(idx);
+                    if (vb > key) {
+                        perm[b + 1] = perm[b];
+                        b = b - 1;
+                    } else {
+                        placed = true;
+                    }
+                }
+                perm[b + 1] = keyIdx;
+                a = a + 1;
+            }
+            // write the lane's permutation into the output
+            int64 w = 0;
+            while (w < axisLen) {
+                idx[axis] = w;
+                int64 pv = perm[w];
+                out.setAt(idx, pv);
+                w = w + 1;
+            }
+            oc = oc + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                if (ax == axis) { ax = ax - 1; }
+                else {
+                    idx[ax] = idx[ax] + 1;
+                    if (idx[ax] >= t.shapeAt(ax)) { idx[ax] = 0; ax = ax - 1; }
+                    else { carry = false; }
+                }
+            }
+        }
+        return #out;
+    }
+
+    /**
+     * Insertion indices of each element of `values` into the **sorted 1-D** array
+     * `sorted`, keeping it sorted (numpy `searchsorted`). `side == 0` ("left")
+     * returns the first index `i` with `sorted[i] >= v`; `side == 1` ("right")
+     * the first `i` with `sorted[i] > v`. Binary search per value; returns a 1-D
+     * `Tensor<int64>` shaped like `values`.
+     */
+    public static #Tensor<int64> searchsorted<E extends Numeric>(Tensor<E> sorted, Tensor<E> values, int32 side) {
+        int64 n = sorted.size();
+        int64 m = values.size();
+        int64[] shp = heap int64[1];
+        shp[0] = m;
+        Tensor<int64> out = Tensor.zeros<int64>(shp);
+        int64 vi = 0;
+        while (vi < m) {
+            E val = values.get1(vi);
+            int64 lo = 0;
+            int64 hi = n;
+            while (lo < hi) {
+                int64 mid = (lo + hi) / 2;
+                E sm = sorted.get1(mid);
+                boolean goRight = sm < val;            // left: skip strictly-smaller
+                if (side != 0) { goRight = !(val < sm); }  // right: skip <= val
+                if (goRight) { lo = mid + 1; } else { hi = mid; }
+            }
+            out.set1(vi, lo);
+            vi = vi + 1;
+        }
+        return #out;
+    }
+
+    /**
+     * Partitioned copy of `t` along `axis` about the `kth` order statistic (numpy
+     * `partition`): the element at index `kth` lands in its fully-sorted position,
+     * with all smaller elements before it and all larger after. The CPU floor
+     * returns a **fully-ordered** lane — a valid (stronger-than-required) partition;
+     * `kth` is accepted for numpy parity. (A true O(n) introselect is an
+     * optimization; the partition *contract* is what callers rely on.)
+     */
+    public static #Tensor<E> partition<E extends Numeric>(Tensor<E> t, int64 kth, int32 axis) {
+        return Tensor.sort<E>(t, axis);
+    }
+
+    /**
+     * Index permutation that partitions `t` along `axis` about the `kth` order
+     * statistic (numpy `argpartition`): `t[..., out[kth], ...]` is the `kth`
+     * smallest, with smaller-valued indices before and larger after. CPU floor: the
+     * full `argsort` permutation (a valid stronger partition); `kth` for parity.
+     */
+    public static #Tensor<int64> argpartition<E extends Numeric>(Tensor<E> t, int64 kth, int32 axis) {
+        return Tensor.argsort<E>(t, axis);
+    }
+
+    /**
+     * Sorted distinct values over the **flattened** input (numpy `unique`): a 1-D
+     * `Tensor<E>` of the unique elements in ascending order. Flattens via a C-order
+     * walk, sorts, then drops adjacent duplicates.
+     */
+    public static #Tensor<E> unique<E extends Numeric>(Tensor<E> t) {
+        int64 n = t.size();
+        int64[] s1 = heap int64[1];
+        s1[0] = n;
+        Tensor<E> flat = Tensor.zeros<E>(s1);
+        int32 nd = t.ndim();
+        int64[] idx = heap int64[nd];
+        int32 z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        int64 lin = 0;
+        while (lin < n) {
+            flat.set1(lin, t.getAt(idx));
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeAt(ax)) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        Tensor<E> sorted = Tensor.sort<E>(flat, 0);
+        int64 cnt = 0;
+        if (n > 0) {
+            cnt = 1;
+            int64 i = 1;
+            while (i < n) {
+                if (sorted.get1(i) != sorted.get1(i - 1)) { cnt = cnt + 1; }
+                i = i + 1;
+            }
+        }
+        int64[] os = heap int64[1];
+        os[0] = cnt;
+        Tensor<E> out = Tensor.zeros<E>(os);
+        if (n > 0) {
+            out.set1(0, sorted.get1(0));
+            int64 w = 1;
+            int64 i = 1;
+            while (i < n) {
+                if (sorted.get1(i) != sorted.get1(i - 1)) {
+                    out.set1(w, sorted.get1(i));
+                    w = w + 1;
+                }
+                i = i + 1;
+            }
+        }
+        return #out;
+    }
+
+    /**
+     * C-order flat indices of the nonzero elements (numpy `flatnonzero`): a 1-D
+     * `Tensor<int64>` of the positions (in row-major flattened order) where the
+     * element is not the zero of `E`. Two walks — count, then fill.
+     */
+    public static #Tensor<int64> flatnonzero<E extends Numeric>(Tensor<E> t) {
+        int64 n = t.size();
+        int32 nd = t.ndim();
+        E zero = (E) 0;
+        int64[] idx = heap int64[nd];
+        int32 z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        int64 cnt = 0;
+        int64 lin = 0;
+        while (lin < n) {
+            if (t.getAt(idx) != zero) { cnt = cnt + 1; }
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeAt(ax)) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        int64[] os = heap int64[1];
+        os[0] = cnt;
+        Tensor<int64> out = Tensor.zeros<int64>(os);
+        z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        int64 w = 0;
+        lin = 0;
+        while (lin < n) {
+            if (t.getAt(idx) != zero) {
+                out.set1(w, lin);
+                w = w + 1;
+            }
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeAt(ax)) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return #out;
+    }
+
+    /**
+     * Per-dimension coordinate arrays of the nonzero elements (numpy `nonzero`): an
+     * array of `ndim` 1-D `Tensor<int64>`s, each of length = the nonzero count, where
+     * `result[d][k]` is the `d`-th coordinate of the `k`-th nonzero (C-order). The
+     * numpy tuple-of-index-arrays, as a cajeta array.
+     */
+    public static #Tensor<int64>[] nonzero<E extends Numeric>(Tensor<E> t) {
+        int64 n = t.size();
+        int32 nd = t.ndim();
+        E zero = (E) 0;
+        int64[] idx = heap int64[nd];
+        int32 z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        int64 cnt = 0;
+        int64 lin = 0;
+        while (lin < n) {
+            if (t.getAt(idx) != zero) { cnt = cnt + 1; }
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeAt(ax)) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        Tensor<int64>[] result = heap Tensor<int64>[nd];
+        int32 d = 0;
+        while (d < nd) {
+            int64[] os = heap int64[1];
+            os[0] = cnt;
+            result[d] = Tensor.zeros<int64>(os);
+            d = d + 1;
+        }
+        z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        int64 w = 0;
+        lin = 0;
+        while (lin < n) {
+            if (t.getAt(idx) != zero) {
+                int32 dd = 0;
+                while (dd < nd) {
+                    int64 cv = idx[dd];
+                    result[dd].set1(w, cv);
+                    dd = dd + 1;
+                }
+                w = w + 1;
+            }
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeAt(ax)) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return #result;
+    }
+
+    /**
+     * The elements of the 1-D `arr` where the 1-D `condition` (same length) is
+     * nonzero (numpy `extract`): a 1-D `Tensor<E>` in order. Equivalent to
+     * `arr[condition != 0]`; the boolean-mask form is {@link #maskedSelect}.
+     */
+    public static #Tensor<E> extract<E extends Numeric>(Tensor<E> condition, Tensor<E> arr) {
+        int64 n = arr.size();
+        E zero = (E) 0;
+        int64 cnt = 0;
+        int64 i = 0;
+        while (i < n) {
+            if (condition.get1(i) != zero) { cnt = cnt + 1; }
+            i = i + 1;
+        }
+        int64[] os = heap int64[1];
+        os[0] = cnt;
+        Tensor<E> out = Tensor.zeros<E>(os);
+        int64 w = 0;
+        i = 0;
+        while (i < n) {
+            if (condition.get1(i) != zero) {
+                E av = arr.get1(i);
+                out.set1(w, av);
+                w = w + 1;
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    // ────────────────────────────── elementwise ufuncs (Phase 3) ─────────────
+
+    /**
+     * Read the element of `this` that broadcasts to result multi-index `idx` (length
+     * = `rshape.count()`, right-aligned). Axes `this` lacks, or where its extent is 1,
+     * contribute 0 offset (stride-0 broadcast). Reads **directly** from `this.store` —
+     * no intermediate `broadcastTo` view (which, dropped early, would free the shared
+     * `Storage`; see tensor-plan §8 borrowed-Storage UAF).
+     */
+    T readBroadcast(int64[] idx) {
+        int32 nd = (int32) idx.count();
+        int32 xnd = (int32) this.shapeDims.count();
+        int32 lead = nd - xnd;
+        int64 off = this.offsetVal;
+        int32 ax = lead;
+        while (ax < nd) {
+            int32 xax = ax - lead;
+            if (this.shapeDims[xax] != 1) {
+                off = off + idx[ax] * this.strideDims[xax];
+            }
+            ax = ax + 1;
+        }
+        return this.store.get(off);
+    }
+
+    /**
+     * Auto-promote dispatch for arithmetic (NEP-50 spec §5). Computes the result dtype
+     * `R = DType.promote(of<A>(), of<B>())` at **runtime**, switches to the matching
+     * `binop<A,B,Rconcrete>` instantiation, and returns a **bounded wildcard**
+     * `Tensor<? extends Numeric>` (kind static, exact width runtime — the value→type gap).
+     * Callers capture to the concrete dtype (`(Tensor<float64>) r`). `op`: 0=add 1=sub
+     * 2=mul. Mirrors `fromProtocol`'s dtype switch. `null` for a dtype outside the set.
+     *
+     * Declared **before** the same-dtype `add<E>`/explicit `add<A,B,R>`: the 2-type-param
+     * inference candidate must precede the 1-param shorthand because the resolver's
+     * method-template unifier lets `add<E>` accept a mixed `(int32,float32)` pair (it binds
+     * `E` from the first arg and defers — "first binding wins"), so the bare `add(a,b)`
+     * call must reach this 2-param overload first. Explicit-type-arg calls (`add<int32>`,
+     * `add<int32,float32,float64>`) still resolve by arity regardless of order.
+     */
+    static #Tensor<? extends Numeric> autoBinop<A extends Numeric, B extends Numeric>(
+            Tensor<A> a, Tensor<B> b, int32 op) {
+        DType rr = DType.promote(DType.of<A>(), DType.of<B>());
+        int32 k = rr.kind();
+        int32 bits = rr.bits();
+        int32 var = rr.variant();
+        if (k == DType.KIND_INT) {
+            if (bits == 8)  { return Tensor.binop<A, B, int8>(a, b, op); }
+            if (bits == 16) { return Tensor.binop<A, B, int16>(a, b, op); }
+            if (bits == 32) { return Tensor.binop<A, B, int32>(a, b, op); }
+            if (bits == 64) { return Tensor.binop<A, B, int64>(a, b, op); }
+        }
+        if (k == DType.KIND_UINT) {
+            if (bits == 8)  { return Tensor.binop<A, B, uint8>(a, b, op); }
+            if (bits == 16) { return Tensor.binop<A, B, uint16>(a, b, op); }
+            if (bits == 32) { return Tensor.binop<A, B, uint32>(a, b, op); }
+            if (bits == 64) { return Tensor.binop<A, B, uint64>(a, b, op); }
+        }
+        if (k == DType.KIND_FLOAT && var == DType.VAR_STD) {
+            if (bits == 32) { return Tensor.binop<A, B, float32>(a, b, op); }
+            if (bits == 64) { return Tensor.binop<A, B, float64>(a, b, op); }
+        }
+        return null;
+    }
+
+    /**
+     * Auto-promote dispatch for true division (NEP-50 spec §5 + §6 true-div). Result is
+     * **floating**: a float promote keeps its width; an integer (or other) promote bumps
+     * to `float64`. Returns `Tensor<? extends Floating>`.
+     */
+    static #Tensor<? extends Floating> autoDiv<A extends Numeric, B extends Numeric>(
+            Tensor<A> a, Tensor<B> b) {
+        DType pr = DType.promote(DType.of<A>(), DType.of<B>());
+        int32 k = pr.kind();
+        int32 bits = pr.bits();
+        int32 var = pr.variant();
+        if (k == DType.KIND_FLOAT && var == DType.VAR_STD) {
+            if (bits == 32) { return Tensor.binop<A, B, float32>(a, b, 3); }
+            if (bits == 64) { return Tensor.binop<A, B, float64>(a, b, 3); }
+        }
+        return Tensor.binop<A, B, float64>(a, b, 3);
+    }
+
+    /** Auto-promote `a + b` (NEP-50): result dtype `= promote(A,B)`, returned as a bounded
+     *  wildcard. Capture to the concrete dtype, e.g. `(Tensor<float64>) Tensor.add(ai, bf)`. */
+    public static #Tensor<? extends Numeric> add<A extends Numeric, B extends Numeric>(
+            Tensor<A> a, Tensor<B> b) { return Tensor.autoBinop<A, B>(a, b, 0); }
+    /** Auto-promote `a - b` (NEP-50); bounded-wildcard result. */
+    public static #Tensor<? extends Numeric> sub<A extends Numeric, B extends Numeric>(
+            Tensor<A> a, Tensor<B> b) { return Tensor.autoBinop<A, B>(a, b, 1); }
+    /** Auto-promote `a * b` (NEP-50); bounded-wildcard result. */
+    public static #Tensor<? extends Numeric> mul<A extends Numeric, B extends Numeric>(
+            Tensor<A> a, Tensor<B> b) { return Tensor.autoBinop<A, B>(a, b, 2); }
+    /** Auto-promote true division `a / b` (NEP-50); `Tensor<? extends Floating>` result
+     *  (int/int → float64). */
+    public static #Tensor<? extends Floating> div<A extends Numeric, B extends Numeric>(
+            Tensor<A> a, Tensor<B> b) { return Tensor.autoDiv<A, B>(a, b); }
+
+    /**
+     * Elementwise `a + b` with right-aligned broadcasting (numpy `+`), producing a
+     * fresh C-contiguous `Tensor<E>`. A **static method-type-param** op: the dtype `E`
+     * must be concrete at the call (`Tensor.add<float32>(a, b)`) so the `+` selects the
+     * correct typed operator — arithmetic on the bare class param `T` inside `Tensor<T>`
+     * stays symbolic and mis-emits integer ops. Operands are read directly (broadcast),
+     * never wrapped in droppable views (no early free of the inputs' `Storage`).
+     */
+    public static #Tensor<E> add<E>(Tensor<E> a, Tensor<E> b) {
+        int64[] rshape = Tensor.broadcastShape<E>(a.shapeDims, b.shapeDims);
+        int64 n = Tensor.productOf(rshape);
+        Storage<E> st = heap Storage<E>(n);
+        int32 nd = (int32) rshape.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            E va = a.readBroadcast(idx);
+            E vb = b.readBroadcast(idx);
+            E vc = va + vb;
+            st.set(lin, vc);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= rshape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        int64[] rstrides = Tensor.contigStrides(rshape, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, rshape, rstrides);
+    }
+
+    /** Elementwise `a - b` with broadcasting (numpy `-`). See {@link #add} on why the
+     *  arithmetic lives in a static method-type-param op (concrete dtype at the call). */
+    public static #Tensor<E> sub<E>(Tensor<E> a, Tensor<E> b) {
+        int64[] rshape = Tensor.broadcastShape<E>(a.shapeDims, b.shapeDims);
+        int64 n = Tensor.productOf(rshape);
+        Storage<E> st = heap Storage<E>(n);
+        int32 nd = (int32) rshape.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            E va = a.readBroadcast(idx);
+            E vb = b.readBroadcast(idx);
+            E vc = va - vb;
+            st.set(lin, vc);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= rshape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        int64[] rstrides = Tensor.contigStrides(rshape, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, rshape, rstrides);
+    }
+
+    /** Elementwise `a * b` with broadcasting (numpy `*`). See {@link #add} on why the
+     *  arithmetic lives in a static method-type-param op (concrete dtype at the call). */
+    public static #Tensor<E> mul<E>(Tensor<E> a, Tensor<E> b) {
+        int64[] rshape = Tensor.broadcastShape<E>(a.shapeDims, b.shapeDims);
+        int64 n = Tensor.productOf(rshape);
+        Storage<E> st = heap Storage<E>(n);
+        int32 nd = (int32) rshape.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            E va = a.readBroadcast(idx);
+            E vb = b.readBroadcast(idx);
+            E vc = va * vb;
+            st.set(lin, vc);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= rshape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        int64[] rstrides = Tensor.contigStrides(rshape, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, rshape, rstrides);
+    }
+
+    /**
+     * Shared bounded **cross-cast** binary kernel (NEP-50 spec §3). Inputs are
+     * marker-bounded (`A`,`B extends Numeric`); the result element type `R` is an
+     * explicit (caller-supplied) width. Each operand is read by broadcast index,
+     * cross-cast to `R`, and the op (`0`=add, `1`=sub, `2`=mul) performed **in `R`** —
+     * a static method-type-param op with `R` concrete at the call, so `+`/`-`/`*`/`/`
+     * select the correct typed instruction (no symbolic-integer mis-emit). `op`: `0`=add
+     * `1`=sub `2`=mul `3`=div (true division — `/` is `fdiv` only when `R` is floating, so
+     * the public `div` bounds `R extends Floating`). Operands are read directly; only the
+     * fresh C-contiguous `Tensor<R>` owns storage. One kernel covers every numeric
+     * `(A,B,R)`; only those instantiated are monomorphized.
+     */
+    static #Tensor<R> binop<A extends Numeric, B extends Numeric, R extends Numeric>(
+            Tensor<A> a, Tensor<B> b, int32 op) {
+        int64[] rshape = Tensor.broadcastShape<R>(a.shapeDims, b.shapeDims);
+        int64 n = Tensor.productOf(rshape);
+        Storage<R> st = heap Storage<R>(n);
+        int32 nd = (int32) rshape.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            A ra = a.readBroadcast(idx);
+            B rb = b.readBroadcast(idx);
+            R va = (R) ra;
+            R vb = (R) rb;
+            R vc = va + vb;
+            if (op == 1) { vc = va - vb; }
+            if (op == 2) { vc = va * vb; }
+            if (op == 3) { vc = va / vb; }
+            st.set(lin, vc);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= rshape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        int64[] rstrides = Tensor.contigStrides(rshape, MemoryOrder.C);
+        return heap Tensor<R>(#st, 0, rshape, rstrides);
+    }
+
+    /** Cross-dtype `a + b` with broadcasting; result element type `R` is explicit
+     *  (NEP-50 `R = promote(A,B)` when the caller passes it). See {@link #binop}. */
+    public static #Tensor<R> add<A extends Numeric, B extends Numeric, R extends Numeric>(
+            Tensor<A> a, Tensor<B> b) {
+        return Tensor.binop<A, B, R>(a, b, 0);
+    }
+
+    /** Cross-dtype `a - b` with broadcasting; explicit result width `R`. See {@link #binop}. */
+    public static #Tensor<R> sub<A extends Numeric, B extends Numeric, R extends Numeric>(
+            Tensor<A> a, Tensor<B> b) {
+        return Tensor.binop<A, B, R>(a, b, 1);
+    }
+
+    /** Cross-dtype `a * b` with broadcasting; explicit result width `R`. See {@link #binop}. */
+    public static #Tensor<R> mul<A extends Numeric, B extends Numeric, R extends Numeric>(
+            Tensor<A> a, Tensor<B> b) {
+        return Tensor.binop<A, B, R>(a, b, 2);
+    }
+
+    /**
+     * Shared **comparison** kernel (NEP-50 spec §6). The result is **always**
+     * `Tensor<boolean>` regardless of operand dtypes; each operand is read by broadcast
+     * index and cross-cast to the explicit compare width `C` (`= promote(A,B)` when the
+     * caller picks it), so mixed pairs compare at the promoted value without a
+     * width-induced false mismatch. `op`: `0`=eq `1`=ne `2`=lt `3`=le `4`=gt `5`=ge.
+     */
+    static #Tensor<boolean> cmp<A extends Numeric, B extends Numeric, C extends Numeric>(
+            Tensor<A> a, Tensor<B> b, int32 op) {
+        int64[] rshape = Tensor.broadcastShape<C>(a.shapeDims, b.shapeDims);
+        int64 n = Tensor.productOf(rshape);
+        Storage<boolean> st = heap Storage<boolean>(n);
+        int32 nd = (int32) rshape.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            A ra = a.readBroadcast(idx);
+            B rb = b.readBroadcast(idx);
+            C ca = (C) ra;
+            C cb = (C) rb;
+            boolean res = ca == cb;
+            if (op == 1) { res = ca != cb; }
+            if (op == 2) { res = ca < cb; }
+            if (op == 3) { res = ca <= cb; }
+            if (op == 4) { res = ca > cb; }
+            if (op == 5) { res = ca >= cb; }
+            st.set(lin, res);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= rshape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        int64[] rstrides = Tensor.contigStrides(rshape, MemoryOrder.C);
+        return heap Tensor<boolean>(#st, 0, rshape, rstrides);
+    }
+
+    /** Elementwise `a == b` → `Tensor<boolean>` (same-dtype). See {@link #cmp}. */
+    public static #Tensor<boolean> eq<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        return Tensor.cmp<E, E, E>(a, b, 0);
+    }
+    /** Elementwise `a != b` → `Tensor<boolean>` (same-dtype). */
+    public static #Tensor<boolean> ne<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        return Tensor.cmp<E, E, E>(a, b, 1);
+    }
+    /** Elementwise `a < b` → `Tensor<boolean>` (same-dtype). */
+    public static #Tensor<boolean> lt<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        return Tensor.cmp<E, E, E>(a, b, 2);
+    }
+    /** Elementwise `a <= b` → `Tensor<boolean>` (same-dtype). */
+    public static #Tensor<boolean> le<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        return Tensor.cmp<E, E, E>(a, b, 3);
+    }
+    /** Elementwise `a > b` → `Tensor<boolean>` (same-dtype). */
+    public static #Tensor<boolean> gt<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        return Tensor.cmp<E, E, E>(a, b, 4);
+    }
+    /** Elementwise `a >= b` → `Tensor<boolean>` (same-dtype). */
+    public static #Tensor<boolean> ge<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        return Tensor.cmp<E, E, E>(a, b, 5);
+    }
+
+    /** Cross-dtype `a == b` at explicit compare width `C` → `Tensor<boolean>`. */
+    public static #Tensor<boolean> eq<A extends Numeric, B extends Numeric, C extends Numeric>(
+            Tensor<A> a, Tensor<B> b) {
+        return Tensor.cmp<A, B, C>(a, b, 0);
+    }
+    /** Cross-dtype `a != b` at explicit compare width `C` → `Tensor<boolean>`. */
+    public static #Tensor<boolean> ne<A extends Numeric, B extends Numeric, C extends Numeric>(
+            Tensor<A> a, Tensor<B> b) {
+        return Tensor.cmp<A, B, C>(a, b, 1);
+    }
+    /** Cross-dtype `a < b` at explicit compare width `C` → `Tensor<boolean>`. */
+    public static #Tensor<boolean> lt<A extends Numeric, B extends Numeric, C extends Numeric>(
+            Tensor<A> a, Tensor<B> b) {
+        return Tensor.cmp<A, B, C>(a, b, 2);
+    }
+    /** Cross-dtype `a <= b` at explicit compare width `C` → `Tensor<boolean>`. */
+    public static #Tensor<boolean> le<A extends Numeric, B extends Numeric, C extends Numeric>(
+            Tensor<A> a, Tensor<B> b) {
+        return Tensor.cmp<A, B, C>(a, b, 3);
+    }
+    /** Cross-dtype `a > b` at explicit compare width `C` → `Tensor<boolean>`. */
+    public static #Tensor<boolean> gt<A extends Numeric, B extends Numeric, C extends Numeric>(
+            Tensor<A> a, Tensor<B> b) {
+        return Tensor.cmp<A, B, C>(a, b, 4);
+    }
+    /** Cross-dtype `a >= b` at explicit compare width `C` → `Tensor<boolean>`. */
+    public static #Tensor<boolean> ge<A extends Numeric, B extends Numeric, C extends Numeric>(
+            Tensor<A> a, Tensor<B> b) {
+        return Tensor.cmp<A, B, C>(a, b, 5);
+    }
+
+    /** True division `a / b` with broadcasting; result `R` is **floating** (NEP-50 true
+     *  division — `int/int → float`, spec 6.2.1). Cross-dtype explicit width; for the
+     *  same-dtype float case use `div<E,E,E>` (no `div<E>` shorthand — a `Floating`-bounded
+     *  1-param overload is hard-rejected when the resolver unification-tests it against
+     *  integer operands during type-pinning; the explicit 3-param form is unambiguous). */
+    public static #Tensor<R> div<A extends Numeric, B extends Numeric, R extends Floating>(
+            Tensor<A> a, Tensor<B> b) {
+        return Tensor.binop<A, B, R>(a, b, 3);
+    }
+
+    /**
+     * Shared **floor-division / mod** kernel (numpy `//` / `%` semantics, spec 6.2.2).
+     * numpy floors toward −∞ (not C's truncate-toward-zero) and `mod` takes the sign of
+     * the **divisor**. Computed uniformly for integral and floating `R` via a float64
+     * intermediate: `fd = (R) floor((float64)a / (float64)b)`; `op 0` = `fd` (floorDiv),
+     * `op 1` = `a − fd*b` (mod). The float64 mediation is exact for the int magnitudes a
+     * CPU floor cares about (< 2^53); wider exactness is a later refinement. Operands are
+     * read directly; only the fresh `Tensor<R>` owns storage.
+     */
+    static #Tensor<R> fdivmod<A extends Numeric, B extends Numeric, R extends Numeric>(
+            Tensor<A> a, Tensor<B> b, int32 op) {
+        int64[] rshape = Tensor.broadcastShape<R>(a.shapeDims, b.shapeDims);
+        int64 n = Tensor.productOf(rshape);
+        Storage<R> st = heap Storage<R>(n);
+        int32 nd = (int32) rshape.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            A ra = a.readBroadcast(idx);
+            B rb = b.readBroadcast(idx);
+            R va = (R) ra;
+            R vb = (R) rb;
+            float64 qf = Math.floor(((float64) va) / ((float64) vb));
+            R fd = (R) qf;
+            R vc = fd;
+            if (op == 1) { vc = va - fd * vb; }
+            st.set(lin, vc);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= rshape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        int64[] rstrides = Tensor.contigStrides(rshape, MemoryOrder.C);
+        return heap Tensor<R>(#st, 0, rshape, rstrides);
+    }
+
+    /** Cross-dtype floor division `a // b` (toward −∞); explicit result width `R`. */
+    public static #Tensor<R> floorDiv<A extends Numeric, B extends Numeric, R extends Numeric>(
+            Tensor<A> a, Tensor<B> b) {
+        return Tensor.fdivmod<A, B, R>(a, b, 0);
+    }
+    /** Same-dtype floor division `a // b`. See {@link #fdivmod}. */
+    public static #Tensor<E> floorDiv<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        return Tensor.fdivmod<E, E, E>(a, b, 0);
+    }
+    /** Cross-dtype modulo `a % b` (sign of divisor); explicit result width `R`. */
+    public static #Tensor<R> mod<A extends Numeric, B extends Numeric, R extends Numeric>(
+            Tensor<A> a, Tensor<B> b) {
+        return Tensor.fdivmod<A, B, R>(a, b, 1);
+    }
+    /** Same-dtype modulo `a % b` (sign of divisor). See {@link #fdivmod}. */
+    public static #Tensor<E> mod<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        return Tensor.fdivmod<E, E, E>(a, b, 1);
+    }
+
+    /**
+     * Shared **bitwise** kernel (spec §6 bitwise, `Integral` domain). Operands are read
+     * by broadcast index, cross-cast to the explicit integral result width `R`, and the
+     * op applied in `R`. `op`: `0`=and `1`=or `2`=xor `3`=shiftL `4`=shiftR (`>>` is
+     * arithmetic for signed `R`, matching numpy). All of `A`,`B`,`R` are bounded
+     * `Integral`, so a floating type argument is a compile-time error (6.2.4).
+     */
+    static #Tensor<R> bitop<A extends Integral, B extends Integral, R extends Integral>(
+            Tensor<A> a, Tensor<B> b, int32 op) {
+        int64[] rshape = Tensor.broadcastShape<R>(a.shapeDims, b.shapeDims);
+        int64 n = Tensor.productOf(rshape);
+        Storage<R> st = heap Storage<R>(n);
+        int32 nd = (int32) rshape.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            A ra = a.readBroadcast(idx);
+            B rb = b.readBroadcast(idx);
+            R va = (R) ra;
+            R vb = (R) rb;
+            R vc = va & vb;
+            if (op == 1) { vc = va | vb; }
+            if (op == 2) { vc = va ^ vb; }
+            if (op == 3) { vc = va << vb; }
+            if (op == 4) { vc = va >> vb; }
+            st.set(lin, vc);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= rshape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        int64[] rstrides = Tensor.contigStrides(rshape, MemoryOrder.C);
+        return heap Tensor<R>(#st, 0, rshape, rstrides);
+    }
+
+    /** Cross-dtype bitwise AND; explicit integral result width `R`. */
+    public static #Tensor<R> bitAnd<A extends Integral, B extends Integral, R extends Integral>(
+            Tensor<A> a, Tensor<B> b) { return Tensor.bitop<A, B, R>(a, b, 0); }
+    /** Same-dtype bitwise AND. */
+    public static #Tensor<E> bitAnd<E extends Integral>(Tensor<E> a, Tensor<E> b) {
+        return Tensor.bitop<E, E, E>(a, b, 0);
+    }
+    /** Cross-dtype bitwise OR; explicit integral result width `R`. */
+    public static #Tensor<R> bitOr<A extends Integral, B extends Integral, R extends Integral>(
+            Tensor<A> a, Tensor<B> b) { return Tensor.bitop<A, B, R>(a, b, 1); }
+    /** Same-dtype bitwise OR. */
+    public static #Tensor<E> bitOr<E extends Integral>(Tensor<E> a, Tensor<E> b) {
+        return Tensor.bitop<E, E, E>(a, b, 1);
+    }
+    /** Cross-dtype bitwise XOR; explicit integral result width `R`. */
+    public static #Tensor<R> bitXor<A extends Integral, B extends Integral, R extends Integral>(
+            Tensor<A> a, Tensor<B> b) { return Tensor.bitop<A, B, R>(a, b, 2); }
+    /** Same-dtype bitwise XOR. */
+    public static #Tensor<E> bitXor<E extends Integral>(Tensor<E> a, Tensor<E> b) {
+        return Tensor.bitop<E, E, E>(a, b, 2);
+    }
+    /** Cross-dtype left shift `a << b`; explicit integral result width `R`. */
+    public static #Tensor<R> shiftL<A extends Integral, B extends Integral, R extends Integral>(
+            Tensor<A> a, Tensor<B> b) { return Tensor.bitop<A, B, R>(a, b, 3); }
+    /** Same-dtype left shift `a << b`. */
+    public static #Tensor<E> shiftL<E extends Integral>(Tensor<E> a, Tensor<E> b) {
+        return Tensor.bitop<E, E, E>(a, b, 3);
+    }
+    /** Cross-dtype right shift `a >> b` (arithmetic for signed); explicit width `R`. */
+    public static #Tensor<R> shiftR<A extends Integral, B extends Integral, R extends Integral>(
+            Tensor<A> a, Tensor<B> b) { return Tensor.bitop<A, B, R>(a, b, 4); }
+    /** Same-dtype right shift `a >> b` (arithmetic for signed). */
+    public static #Tensor<E> shiftR<E extends Integral>(Tensor<E> a, Tensor<E> b) {
+        return Tensor.bitop<E, E, E>(a, b, 4);
+    }
+
+    /**
+     * Shared **logical** kernel over `Tensor<boolean>` (spec §6 logical). Reads boolean
+     * operands by broadcast index; `op`: `0`=and (`&&`), `1`=or (`||`), `2`=xor (`!=`).
+     * `boolean` is not `Numeric`, so these are concrete (non-generic) over boolean.
+     */
+    static #Tensor<boolean> logic(Tensor<boolean> a, Tensor<boolean> b, int32 op) {
+        int64[] rshape = Tensor.broadcastShape<boolean>(a.shapeDims, b.shapeDims);
+        int64 n = Tensor.productOf(rshape);
+        Storage<boolean> st = heap Storage<boolean>(n);
+        int32 nd = (int32) rshape.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            boolean ba = a.readBroadcast(idx);
+            boolean bb = b.readBroadcast(idx);
+            boolean vc = ba && bb;
+            if (op == 1) { vc = ba || bb; }
+            if (op == 2) { vc = ba != bb; }
+            st.set(lin, vc);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= rshape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        int64[] rstrides = Tensor.contigStrides(rshape, MemoryOrder.C);
+        return heap Tensor<boolean>(#st, 0, rshape, rstrides);
+    }
+
+    /** Elementwise logical AND of two boolean tensors (broadcasting). */
+    public static #Tensor<boolean> and(Tensor<boolean> a, Tensor<boolean> b) {
+        return Tensor.logic(a, b, 0);
+    }
+    /** Elementwise logical OR of two boolean tensors (broadcasting). */
+    public static #Tensor<boolean> or(Tensor<boolean> a, Tensor<boolean> b) {
+        return Tensor.logic(a, b, 1);
+    }
+    /** Elementwise logical XOR of two boolean tensors (broadcasting). */
+    public static #Tensor<boolean> xor(Tensor<boolean> a, Tensor<boolean> b) {
+        return Tensor.logic(a, b, 2);
+    }
+    /** Elementwise logical NOT of a boolean tensor. */
+    public static #Tensor<boolean> not(Tensor<boolean> a) {
+        int32 nd = (int32) a.shapeDims.count();
+        int64[] rshape = heap int64[nd];
+        int32 c = 0;
+        while (c < nd) {
+            rshape[c] = a.shapeDims[c];
+            c = c + 1;
+        }
+        int64 n = Tensor.productOf(rshape);
+        Storage<boolean> st = heap Storage<boolean>(n);
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            boolean v = a.readBroadcast(idx);
+            st.set(lin, !v);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= rshape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        int64[] rstrides = Tensor.contigStrides(rshape, MemoryOrder.C);
+        return heap Tensor<boolean>(#st, 0, rshape, rstrides);
+    }
+
+    /**
+     * Shared **unary floating** kernel (spec §6 transcendental/rounding). Maps each
+     * element of `a` (read by index over `a`'s own shape) through a `cajeta.lang.Math`
+     * intrinsic, producing a fresh contiguous `Tensor<E>`. `op`: `0`=sqrt `1`=sin `2`=cos
+     * `3`=exp `4`=log `5`=floor `6`=ceil `7`=round. `E` is `Floating`, so an integer type
+     * argument is a compile-time error (6.2.5).
+     */
+    static #Tensor<E> ufloat<E extends Floating>(Tensor<E> a, int32 op) {
+        int32 nd = (int32) a.shapeDims.count();
+        int64[] rshape = heap int64[nd];
+        int32 c = 0;
+        while (c < nd) {
+            rshape[c] = a.shapeDims[c];
+            c = c + 1;
+        }
+        int64 n = Tensor.productOf(rshape);
+        Storage<E> st = heap Storage<E>(n);
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            E v = a.readBroadcast(idx);
+            E r = Math.sqrt(v);
+            if (op == 1) { r = Math.sin(v); }
+            if (op == 2) { r = Math.cos(v); }
+            if (op == 3) { r = Math.exp(v); }
+            if (op == 4) { r = Math.log(v); }
+            if (op == 5) { r = Math.floor(v); }
+            if (op == 6) { r = Math.ceil(v); }
+            if (op == 7) { r = Math.round(v); }
+            st.set(lin, r);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= rshape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        int64[] rstrides = Tensor.contigStrides(rshape, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, rshape, rstrides);
+    }
+
+    /**
+     * Shared **unary numeric** kernel (neg / abs). `op`: `0`=neg (`-v`), `1`=abs
+     * (`Math.abs`). `E` is `Numeric` — these are valid on integers and floats alike.
+     */
+    static #Tensor<E> unum<E extends Numeric>(Tensor<E> a, int32 op) {
+        int32 nd = (int32) a.shapeDims.count();
+        int64[] rshape = heap int64[nd];
+        int32 c = 0;
+        while (c < nd) {
+            rshape[c] = a.shapeDims[c];
+            c = c + 1;
+        }
+        int64 n = Tensor.productOf(rshape);
+        Storage<E> st = heap Storage<E>(n);
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            E v = a.readBroadcast(idx);
+            E r = -v;
+            if (op == 1) { r = Math.abs(v); }
+            st.set(lin, r);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= rshape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        int64[] rstrides = Tensor.contigStrides(rshape, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, rshape, rstrides);
+    }
+
+    /** Elementwise square root (floating). */
+    public static #Tensor<E> sqrt<E extends Floating>(Tensor<E> a) { return Tensor.ufloat<E>(a, 0); }
+    /** Elementwise sine (floating). */
+    public static #Tensor<E> sin<E extends Floating>(Tensor<E> a) { return Tensor.ufloat<E>(a, 1); }
+    /** Elementwise cosine (floating). */
+    public static #Tensor<E> cos<E extends Floating>(Tensor<E> a) { return Tensor.ufloat<E>(a, 2); }
+    /** Elementwise exponential (floating). */
+    public static #Tensor<E> exp<E extends Floating>(Tensor<E> a) { return Tensor.ufloat<E>(a, 3); }
+    /** Elementwise natural log (floating). */
+    public static #Tensor<E> log<E extends Floating>(Tensor<E> a) { return Tensor.ufloat<E>(a, 4); }
+    /** Elementwise floor (floating). */
+    public static #Tensor<E> floor<E extends Floating>(Tensor<E> a) { return Tensor.ufloat<E>(a, 5); }
+    /** Elementwise ceil (floating). */
+    public static #Tensor<E> ceil<E extends Floating>(Tensor<E> a) { return Tensor.ufloat<E>(a, 6); }
+    /** Elementwise round (floating; round-half-up per `Math.round`). */
+    public static #Tensor<E> round<E extends Floating>(Tensor<E> a) { return Tensor.ufloat<E>(a, 7); }
+    /** Elementwise negation (any numeric). */
+    public static #Tensor<E> neg<E extends Numeric>(Tensor<E> a) { return Tensor.unum<E>(a, 0); }
+    /** Elementwise absolute value (any numeric). */
+    public static #Tensor<E> abs<E extends Numeric>(Tensor<E> a) { return Tensor.unum<E>(a, 1); }
+
+    /**
+     * Elementwise select (spec §6 `where`): `result = cond ? a : b`, with three-way
+     * right-aligned broadcasting of `cond`/`a`/`b`. The chosen operand is cross-cast to
+     * the explicit result width `R` (`= promote(A,B)` when the caller picks it). Both
+     * operands are read each step (cheap) so the result is definitely assigned on both
+     * branches; operands are read directly (no early free).
+     */
+    public static #Tensor<R> where<A extends Numeric, B extends Numeric, R extends Numeric>(
+            Tensor<boolean> cond, Tensor<A> a, Tensor<B> b) {
+        int64[] s1 = Tensor.broadcastShape<R>(cond.shapeDims, a.shapeDims);
+        int64[] rshape = Tensor.broadcastShape<R>(s1, b.shapeDims);
+        int64 n = Tensor.productOf(rshape);
+        Storage<R> st = heap Storage<R>(n);
+        int32 nd = (int32) rshape.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            boolean cv = cond.readBroadcast(idx);
+            A av = a.readBroadcast(idx);
+            B bv = b.readBroadcast(idx);
+            R rv = (R) bv;
+            if (cv) { rv = (R) av; }
+            st.set(lin, rv);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= rshape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        int64[] rstrides = Tensor.contigStrides(rshape, MemoryOrder.C);
+        return heap Tensor<R>(#st, 0, rshape, rstrides);
+    }
+
+    /**
+     * Elementwise clamp (spec §6 `clip`): each element is bounded to `[lo, hi]`, keeping
+     * the operand dtype `E`. Inlined `< / >` compares (no nested `Math.clamp` generic).
+     */
+    public static #Tensor<E> clip<E extends Numeric>(Tensor<E> t, E lo, E hi) {
+        int32 nd = (int32) t.shapeDims.count();
+        int64[] rshape = heap int64[nd];
+        int32 c = 0;
+        while (c < nd) {
+            rshape[c] = t.shapeDims[c];
+            c = c + 1;
+        }
+        int64 n = Tensor.productOf(rshape);
+        Storage<E> st = heap Storage<E>(n);
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            E v = t.readBroadcast(idx);
+            E r = v;
+            if (r < lo) { r = lo; }
+            if (r > hi) { r = hi; }
+            st.set(lin, r);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= rshape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        int64[] rstrides = Tensor.contigStrides(rshape, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, rshape, rstrides);
+    }
+
+    /**
+     * Shared **weak-scalar** kernel for the same-or-lower category case (NEP-50 §7,
+     * spec 7.2.1/7.2.2): a tensor combined with a bare literal whose category is ≤ the
+     * tensor's adopts the tensor's dtype `E` — the scalar is converted to `E` inline (no
+     * `DType.promote`, no dispatch). `op`: `0`=add `1`=sub `2`=mul. Value-irrelevant: an
+     * out-of-range int literal simply wraps (NEP-50 weak semantics).
+     */
+    static #Tensor<E> scalarOp<E extends Numeric>(Tensor<E> t, E s, int32 op) {
+        int32 nd = (int32) t.shapeDims.count();
+        int64[] rshape = heap int64[nd];
+        int32 c = 0;
+        while (c < nd) {
+            rshape[c] = t.shapeDims[c];
+            c = c + 1;
+        }
+        int64 n = Tensor.productOf(rshape);
+        Storage<E> st = heap Storage<E>(n);
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            E v = t.readBroadcast(idx);
+            E r = v + s;
+            if (op == 1) { r = v - s; }
+            if (op == 2) { r = v * s; }
+            st.set(lin, r);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= rshape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        int64[] rstrides = Tensor.contigStrides(rshape, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, rshape, rstrides);
+    }
+
+    /**
+     * Shared **weak-scalar category-bump** kernel (NEP-50 §7, spec 7.2.3): a weak **float**
+     * literal over an **integer** tensor bumps the result to the default float `float64`.
+     * Each int element is widened to `float64`, combined with the `float64` scalar. `op`:
+     * `0`=add `1`=sub `2`=mul. `E` is `Integral` (the float-tensor + float-scalar case is the
+     * same-category {@link #scalarOp}).
+     */
+    static #Tensor<float64> scalarOpF<E extends Integral>(Tensor<E> t, float64 s, int32 op) {
+        int32 nd = (int32) t.shapeDims.count();
+        int64[] rshape = heap int64[nd];
+        int32 c = 0;
+        while (c < nd) {
+            rshape[c] = t.shapeDims[c];
+            c = c + 1;
+        }
+        int64 n = Tensor.productOf(rshape);
+        Storage<float64> st = heap Storage<float64>(n);
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            E v = t.readBroadcast(idx);
+            float64 fv = (float64) v;
+            float64 r = fv + s;
+            if (op == 1) { r = fv - s; }
+            if (op == 2) { r = fv * s; }
+            st.set(lin, r);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= rshape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        int64[] rstrides = Tensor.contigStrides(rshape, MemoryOrder.C);
+        return heap Tensor<float64>(#st, 0, rshape, rstrides);
+    }
+
+    /** Weak scalar `t + s` (same/lower category → keeps `E`). See {@link #scalarOp}. */
+    public static #Tensor<E> addScalar<E extends Numeric>(Tensor<E> t, E s) {
+        return Tensor.scalarOp<E>(t, s, 0);
+    }
+    /** Weak scalar `t - s` (keeps `E`). */
+    public static #Tensor<E> subScalar<E extends Numeric>(Tensor<E> t, E s) {
+        return Tensor.scalarOp<E>(t, s, 1);
+    }
+    /** Weak scalar `t * s` (keeps `E`). */
+    public static #Tensor<E> mulScalar<E extends Numeric>(Tensor<E> t, E s) {
+        return Tensor.scalarOp<E>(t, s, 2);
+    }
+    /** Weak **float** scalar over an integer tensor `t + s` → `Tensor<float64>` (category
+     *  bump). See {@link #scalarOpF}. */
+    public static #Tensor<float64> addScalarF<E extends Integral>(Tensor<E> t, float64 s) {
+        return Tensor.scalarOpF<E>(t, s, 0);
+    }
+    /** Weak float scalar over an int tensor `t - s` → `Tensor<float64>`. */
+    public static #Tensor<float64> subScalarF<E extends Integral>(Tensor<E> t, float64 s) {
+        return Tensor.scalarOpF<E>(t, s, 1);
+    }
+    /** Weak float scalar over an int tensor `t * s` → `Tensor<float64>`. */
+    public static #Tensor<float64> mulScalarF<E extends Integral>(Tensor<E> t, float64 s) {
+        return Tensor.scalarOpF<E>(t, s, 2);
+    }
+
+    // ────────────────────────────── reductions (Phase 4) ─────────────────────
+    //
+    // Full-array reductions to a scalar (numpy `a.sum()` etc. with no axis — cajeta
+    // has no 0-d scalar tensor in v1, so a whole-tensor reduction returns a value).
+    // Each walks the full multi-index in C-order, so it is correct for strided
+    // **views**, not just contiguous tensors. The accumulator dtype `R` is explicit
+    // (numpy's `dtype=` kwarg / default-accumulator rule): pass a wider `R` than the
+    // element dtype `E` to avoid overflow (e.g. `sum<int8, int64>`). Axis/keepdims
+    // and nan-variants are later units.
+
+    /** Σ of all elements, accumulated in `R` (numpy `a.sum(dtype=R)`). Empty → `0`. */
+    public static R sum<E extends Numeric, R extends Numeric>(Tensor<E> t) {
+        R acc = (R) 0;
+        int64 n = Tensor.productOf(t.shapeDims);
+        int32 nd = (int32) t.shapeDims.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        int64 lin = 0;
+        while (lin < n) {
+            E e = t.readBroadcast(idx);
+            acc = acc + (R) e;
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeDims[ax]) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return acc;
+    }
+
+    /** Π of all elements, accumulated in `R` (numpy `a.prod(dtype=R)`). Empty → `1`. */
+    public static R prod<E extends Numeric, R extends Numeric>(Tensor<E> t) {
+        R acc = (R) 1;
+        int64 n = Tensor.productOf(t.shapeDims);
+        int32 nd = (int32) t.shapeDims.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        int64 lin = 0;
+        while (lin < n) {
+            E e = t.readBroadcast(idx);
+            acc = acc * (R) e;
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeDims[ax]) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return acc;
+    }
+
+    /** Minimum over all elements (numpy `a.min()`). Requires a non-empty tensor. */
+    public static E min<E extends Numeric>(Tensor<E> t) {
+        int64 n = Tensor.productOf(t.shapeDims);
+        int32 nd = (int32) t.shapeDims.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        E acc = (E) 0;
+        int64 lin = 0;
+        while (lin < n) {
+            E e = t.readBroadcast(idx);
+            if (lin == 0) { acc = e; } else { acc = Math.min(acc, e); }
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeDims[ax]) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return acc;
+    }
+
+    /** Maximum over all elements (numpy `a.max()`). Requires a non-empty tensor. */
+    public static E max<E extends Numeric>(Tensor<E> t) {
+        int64 n = Tensor.productOf(t.shapeDims);
+        int32 nd = (int32) t.shapeDims.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        E acc = (E) 0;
+        int64 lin = 0;
+        while (lin < n) {
+            E e = t.readBroadcast(idx);
+            if (lin == 0) { acc = e; } else { acc = Math.max(acc, e); }
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeDims[ax]) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return acc;
+    }
+
+    /** Arithmetic mean over all elements in floating `R` (numpy `a.mean(dtype=R)`):
+     *  `Σ / n`. Empty → `0/0` (nan), matching numpy's empty-mean. */
+    public static R mean<E extends Numeric, R extends Floating>(Tensor<E> t) {
+        R acc = (R) 0;
+        int64 n = Tensor.productOf(t.shapeDims);
+        int32 nd = (int32) t.shapeDims.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        int64 lin = 0;
+        while (lin < n) {
+            E e = t.readBroadcast(idx);
+            acc = acc + (R) e;
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeDims[ax]) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return acc / (R) n;
+    }
+
+    // Axis reductions (Phase 4 unit 2). Each reduces a single `axis` (negative wraps),
+    // producing a `Tensor`: with `keepdims=false` the axis is removed (`ndim-1`); with
+    // `keepdims=true` it becomes size 1 (`ndim` preserved, broadcastable back). The
+    // outer walk advances every dim EXCEPT the reduced axis in C-order, so the
+    // sequential output index matches the C-contiguous result layout; the inner loop
+    // folds along the axis. Correct for strided views (reads via `readBroadcast`).
+
+    /** Result shape for reducing `ax` of `shape` (`ax` already normalized): the axis
+     *  removed, or set to 1 when `keepdims`. */
+    static #int64[] reducedShape(int64[] shape, int32 ax, boolean keepdims) {
+        int32 nd = (int32) shape.count();
+        int32 outNd = nd - 1;
+        if (keepdims) { outNd = nd; }
+        int64[] out = heap int64[outNd];
+        if (keepdims) {
+            int32 i = 0;
+            while (i < nd) {
+                if (i == ax) { out[i] = 1; } else { out[i] = shape[i]; }
+                i = i + 1;
+            }
+        } else {
+            int32 w = 0;
+            int32 i = 0;
+            while (i < nd) {
+                if (i != ax) { out[w] = shape[i]; w = w + 1; }
+                i = i + 1;
+            }
+        }
+        return #out;
+    }
+
+    /** Σ along `axis` accumulated in `R` (numpy `a.sum(axis=, dtype=R, keepdims=)`). */
+    public static #Tensor<R> sumAxis<E extends Numeric, R extends Numeric>(
+            Tensor<E> t, int32 axis, boolean keepdims) {
+        int32 nd = (int32) t.shapeDims.count();
+        int32 ax = axis;
+        if (ax < 0) { ax = ax + nd; }
+        int64 axisLen = t.shapeDims[ax];
+        int64[] outShape = Tensor.reducedShape(t.shapeDims, ax, keepdims);
+        int64 outN = Tensor.productOf(outShape);
+        Storage<R> st = heap Storage<R>(outN);
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        int64 outLin = 0;
+        while (outLin < outN) {
+            R acc = (R) 0;
+            int64 j = 0;
+            while (j < axisLen) {
+                idx[ax] = j;
+                E e = t.readBroadcast(idx);
+                acc = acc + (R) e;
+                j = j + 1;
+            }
+            st.set(outLin, acc);
+            outLin = outLin + 1;
+            idx[ax] = 0;
+            int32 a2 = nd - 1;
+            boolean carry = true;
+            while (a2 >= 0 && carry) {
+                if (a2 == ax) { a2 = a2 - 1; }
+                else {
+                    idx[a2] = idx[a2] + 1;
+                    if (idx[a2] >= t.shapeDims[a2]) { idx[a2] = 0; a2 = a2 - 1; }
+                    else { carry = false; }
+                }
+            }
+        }
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        return heap Tensor<R>(#st, 0, outShape, outStrides);
+    }
+
+    /** Π along `axis` accumulated in `R` (numpy `a.prod(axis=, dtype=R, keepdims=)`). */
+    public static #Tensor<R> prodAxis<E extends Numeric, R extends Numeric>(
+            Tensor<E> t, int32 axis, boolean keepdims) {
+        int32 nd = (int32) t.shapeDims.count();
+        int32 ax = axis;
+        if (ax < 0) { ax = ax + nd; }
+        int64 axisLen = t.shapeDims[ax];
+        int64[] outShape = Tensor.reducedShape(t.shapeDims, ax, keepdims);
+        int64 outN = Tensor.productOf(outShape);
+        Storage<R> st = heap Storage<R>(outN);
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        int64 outLin = 0;
+        while (outLin < outN) {
+            R acc = (R) 1;
+            int64 j = 0;
+            while (j < axisLen) {
+                idx[ax] = j;
+                E e = t.readBroadcast(idx);
+                acc = acc * (R) e;
+                j = j + 1;
+            }
+            st.set(outLin, acc);
+            outLin = outLin + 1;
+            idx[ax] = 0;
+            int32 a2 = nd - 1;
+            boolean carry = true;
+            while (a2 >= 0 && carry) {
+                if (a2 == ax) { a2 = a2 - 1; }
+                else {
+                    idx[a2] = idx[a2] + 1;
+                    if (idx[a2] >= t.shapeDims[a2]) { idx[a2] = 0; a2 = a2 - 1; }
+                    else { carry = false; }
+                }
+            }
+        }
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        return heap Tensor<R>(#st, 0, outShape, outStrides);
+    }
+
+    /** Minimum along `axis` (numpy `a.min(axis=, keepdims=)`); requires axis length >= 1. */
+    public static #Tensor<E> minAxis<E extends Numeric>(
+            Tensor<E> t, int32 axis, boolean keepdims) {
+        int32 nd = (int32) t.shapeDims.count();
+        int32 ax = axis;
+        if (ax < 0) { ax = ax + nd; }
+        int64 axisLen = t.shapeDims[ax];
+        int64[] outShape = Tensor.reducedShape(t.shapeDims, ax, keepdims);
+        int64 outN = Tensor.productOf(outShape);
+        Storage<E> st = heap Storage<E>(outN);
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        int64 outLin = 0;
+        while (outLin < outN) {
+            E acc = (E) 0;
+            int64 j = 0;
+            while (j < axisLen) {
+                idx[ax] = j;
+                E e = t.readBroadcast(idx);
+                if (j == 0) { acc = e; } else { acc = Math.min(acc, e); }
+                j = j + 1;
+            }
+            st.set(outLin, acc);
+            outLin = outLin + 1;
+            idx[ax] = 0;
+            int32 a2 = nd - 1;
+            boolean carry = true;
+            while (a2 >= 0 && carry) {
+                if (a2 == ax) { a2 = a2 - 1; }
+                else {
+                    idx[a2] = idx[a2] + 1;
+                    if (idx[a2] >= t.shapeDims[a2]) { idx[a2] = 0; a2 = a2 - 1; }
+                    else { carry = false; }
+                }
+            }
+        }
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, outShape, outStrides);
+    }
+
+    /** Maximum along `axis` (numpy `a.max(axis=, keepdims=)`); requires axis length >= 1. */
+    public static #Tensor<E> maxAxis<E extends Numeric>(
+            Tensor<E> t, int32 axis, boolean keepdims) {
+        int32 nd = (int32) t.shapeDims.count();
+        int32 ax = axis;
+        if (ax < 0) { ax = ax + nd; }
+        int64 axisLen = t.shapeDims[ax];
+        int64[] outShape = Tensor.reducedShape(t.shapeDims, ax, keepdims);
+        int64 outN = Tensor.productOf(outShape);
+        Storage<E> st = heap Storage<E>(outN);
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        int64 outLin = 0;
+        while (outLin < outN) {
+            E acc = (E) 0;
+            int64 j = 0;
+            while (j < axisLen) {
+                idx[ax] = j;
+                E e = t.readBroadcast(idx);
+                if (j == 0) { acc = e; } else { acc = Math.max(acc, e); }
+                j = j + 1;
+            }
+            st.set(outLin, acc);
+            outLin = outLin + 1;
+            idx[ax] = 0;
+            int32 a2 = nd - 1;
+            boolean carry = true;
+            while (a2 >= 0 && carry) {
+                if (a2 == ax) { a2 = a2 - 1; }
+                else {
+                    idx[a2] = idx[a2] + 1;
+                    if (idx[a2] >= t.shapeDims[a2]) { idx[a2] = 0; a2 = a2 - 1; }
+                    else { carry = false; }
+                }
+            }
+        }
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        return heap Tensor<E>(#st, 0, outShape, outStrides);
+    }
+
+    /** Arithmetic mean along `axis` in floating `R` (numpy `a.mean(axis=, dtype=R,
+     *  keepdims=)`): `Σ / axisLen`. */
+    public static #Tensor<R> meanAxis<E extends Numeric, R extends Floating>(
+            Tensor<E> t, int32 axis, boolean keepdims) {
+        int32 nd = (int32) t.shapeDims.count();
+        int32 ax = axis;
+        if (ax < 0) { ax = ax + nd; }
+        int64 axisLen = t.shapeDims[ax];
+        int64[] outShape = Tensor.reducedShape(t.shapeDims, ax, keepdims);
+        int64 outN = Tensor.productOf(outShape);
+        Storage<R> st = heap Storage<R>(outN);
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        int64 outLin = 0;
+        while (outLin < outN) {
+            R acc = (R) 0;
+            int64 j = 0;
+            while (j < axisLen) {
+                idx[ax] = j;
+                E e = t.readBroadcast(idx);
+                acc = acc + (R) e;
+                j = j + 1;
+            }
+            st.set(outLin, acc / (R) axisLen);
+            outLin = outLin + 1;
+            idx[ax] = 0;
+            int32 a2 = nd - 1;
+            boolean carry = true;
+            while (a2 >= 0 && carry) {
+                if (a2 == ax) { a2 = a2 - 1; }
+                else {
+                    idx[a2] = idx[a2] + 1;
+                    if (idx[a2] >= t.shapeDims[a2]) { idx[a2] = 0; a2 = a2 - 1; }
+                    else { carry = false; }
+                }
+            }
+        }
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        return heap Tensor<R>(#st, 0, outShape, outStrides);
+    }
+
+    // Index/predicate reductions (Phase 4 unit 3) — full-array, scalar result. arg*
+    // return the C-order **flattened** index (numpy `a.argmin()`/`argmax()` with no
+    // axis); ties resolve to the first occurrence. `any`/`all`/`countNonzero` use the
+    // numeric nonzero test (`e != 0`, so NaN counts as truthy, matching numpy);
+    // `anyTrue`/`allTrue` reduce a boolean mask (the `(a > b).any()` case).
+
+    /** Flattened (C-order) index of the minimum element (numpy `a.argmin()`); first
+     *  occurrence on ties. Requires a non-empty tensor. */
+    public static int64 argmin<E extends Numeric>(Tensor<E> t) {
+        int64 n = Tensor.productOf(t.shapeDims);
+        int32 nd = (int32) t.shapeDims.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        E best = (E) 0;
+        int64 bestIdx = 0;
+        int64 lin = 0;
+        while (lin < n) {
+            E e = t.readBroadcast(idx);
+            if (lin == 0) { best = e; bestIdx = 0; }
+            else { if (e < best) { best = e; bestIdx = lin; } }
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeDims[ax]) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return bestIdx;
+    }
+
+    /** Flattened (C-order) index of the maximum element (numpy `a.argmax()`); first
+     *  occurrence on ties. Requires a non-empty tensor. */
+    public static int64 argmax<E extends Numeric>(Tensor<E> t) {
+        int64 n = Tensor.productOf(t.shapeDims);
+        int32 nd = (int32) t.shapeDims.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        E best = (E) 0;
+        int64 bestIdx = 0;
+        int64 lin = 0;
+        while (lin < n) {
+            E e = t.readBroadcast(idx);
+            if (lin == 0) { best = e; bestIdx = 0; }
+            else { if (e > best) { best = e; bestIdx = lin; } }
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeDims[ax]) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return bestIdx;
+    }
+
+    /** Count of nonzero elements (numpy `count_nonzero(a)`). */
+    public static int64 countNonzero<E extends Numeric>(Tensor<E> t) {
+        int64 n = Tensor.productOf(t.shapeDims);
+        int32 nd = (int32) t.shapeDims.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        E zero = (E) 0;
+        int64 cnt = 0;
+        int64 lin = 0;
+        while (lin < n) {
+            E e = t.readBroadcast(idx);
+            if (e != zero) { cnt = cnt + 1; }
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeDims[ax]) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return cnt;
+    }
+
+    /** `true` iff any element is nonzero (numpy `a.any()`). Empty → `false`. */
+    public static boolean any<E extends Numeric>(Tensor<E> t) {
+        return Tensor.countNonzero<E>(t) > 0;
+    }
+
+    /** `true` iff every element is nonzero (numpy `a.all()`). Empty → `true`. */
+    public static boolean all<E extends Numeric>(Tensor<E> t) {
+        return Tensor.countNonzero<E>(t) == Tensor.productOf(t.shapeDims);
+    }
+
+    /** `true` iff any element of a boolean mask is `true` (numpy `(a > b).any()`). */
+    public static boolean anyTrue(Tensor<boolean> t) {
+        int64 n = Tensor.productOf(t.shapeDims);
+        int32 nd = (int32) t.shapeDims.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        int64 lin = 0;
+        while (lin < n) {
+            boolean e = t.readBroadcast(idx);
+            if (e) { return true; }
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeDims[ax]) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return false;
+    }
+
+    /** `true` iff every element of a boolean mask is `true` (numpy `(a > b).all()`). */
+    public static boolean allTrue(Tensor<boolean> t) {
+        int64 n = Tensor.productOf(t.shapeDims);
+        int32 nd = (int32) t.shapeDims.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        int64 lin = 0;
+        while (lin < n) {
+            boolean e = t.readBroadcast(idx);
+            if (!e) { return false; }
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeDims[ax]) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return true;
+    }
+
+    // Statistical + nan-aware reductions (Phase 4 unit 4) — full-array, floating
+    // result. `var`/`std` take `ddof` (numpy delta-degrees-of-freedom: divide by
+    // n-ddof; ddof=0 is the population variance, ddof=1 the sample). The nan-variants
+    // skip NaN (detected by `e != e`), so they need a floating element type.
+
+    /** Variance over all elements in floating `R` (numpy `a.var(ddof=, dtype=R)`):
+     *  `Σ(x-μ)² / (n - ddof)`. Two passes (mean, then squared deviations). */
+    public static R variance<E extends Numeric, R extends Floating>(Tensor<E> t, int32 ddof) {
+        int64 n = Tensor.productOf(t.shapeDims);
+        int32 nd = (int32) t.shapeDims.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        R s = (R) 0;
+        int64 lin = 0;
+        while (lin < n) {
+            E e = t.readBroadcast(idx);
+            s = s + (R) e;
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeDims[ax]) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        R mean = s / (R) n;
+        k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        R ss = (R) 0;
+        lin = 0;
+        while (lin < n) {
+            E e = t.readBroadcast(idx);
+            R d = (R) e - mean;
+            ss = ss + d * d;
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeDims[ax]) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        int64 denom = n - ddof;
+        return ss / (R) denom;
+    }
+
+    /** Standard deviation over all elements in floating `R` (numpy `a.std(ddof=)`):
+     *  `sqrt(var)`. */
+    public static R std<E extends Numeric, R extends Floating>(Tensor<E> t, int32 ddof) {
+        return Math.sqrt(Tensor.variance<E, R>(t, ddof));
+    }
+
+    /** Σ over the non-NaN elements (numpy `nansum`); NaN treated as zero. */
+    public static R nansum<E extends Floating, R extends Floating>(Tensor<E> t) {
+        int64 n = Tensor.productOf(t.shapeDims);
+        int32 nd = (int32) t.shapeDims.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        R acc = (R) 0;
+        int64 lin = 0;
+        while (lin < n) {
+            E e = t.readBroadcast(idx);
+            if (e == e) { acc = acc + (R) e; }   // skip NaN (NaN != NaN)
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeDims[ax]) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return acc;
+    }
+
+    /** Mean of the non-NaN elements (numpy `nanmean`): `Σ_notnan / count_notnan`. */
+    public static R nanmean<E extends Floating, R extends Floating>(Tensor<E> t) {
+        int64 n = Tensor.productOf(t.shapeDims);
+        int32 nd = (int32) t.shapeDims.count();
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        R acc = (R) 0;
+        int64 cnt = 0;
+        int64 lin = 0;
+        while (lin < n) {
+            E e = t.readBroadcast(idx);
+            if (e == e) { acc = acc + (R) e; cnt = cnt + 1; }
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeDims[ax]) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return acc / (R) cnt;
+    }
+
+    // Scans (Phase 4 unit 5) — cumulative sum/product. The flattened forms (no axis)
+    // walk the full C-order traversal into a 1-D result (numpy `cumsum(a)`); the axis
+    // forms keep the input shape and run the scan along one axis (numpy
+    // `cumsum(a, axis=)`), writing every prefix.
+
+    /** Cumulative sum over the C-order flattening, in `R` (numpy `cumsum(a)`): a 1-D
+     *  result of length `size`. */
+    public static #Tensor<R> cumsum<E extends Numeric, R extends Numeric>(Tensor<E> t) {
+        int64 n = Tensor.productOf(t.shapeDims);
+        int32 nd = (int32) t.shapeDims.count();
+        Storage<R> st = heap Storage<R>(n);
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        R acc = (R) 0;
+        int64 lin = 0;
+        while (lin < n) {
+            E e = t.readBroadcast(idx);
+            acc = acc + (R) e;
+            st.set(lin, acc);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeDims[ax]) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        int64[] shape = heap int64[1];
+        shape[0] = n;
+        int64[] strides = heap int64[1];
+        strides[0] = 1;
+        return heap Tensor<R>(#st, 0, shape, strides);
+    }
+
+    /** Cumulative product over the C-order flattening, in `R` (numpy `cumprod(a)`):
+     *  a 1-D result of length `size`. */
+    public static #Tensor<R> cumprod<E extends Numeric, R extends Numeric>(Tensor<E> t) {
+        int64 n = Tensor.productOf(t.shapeDims);
+        int32 nd = (int32) t.shapeDims.count();
+        Storage<R> st = heap Storage<R>(n);
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        R acc = (R) 1;
+        int64 lin = 0;
+        while (lin < n) {
+            E e = t.readBroadcast(idx);
+            acc = acc * (R) e;
+            st.set(lin, acc);
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeDims[ax]) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        int64[] shape = heap int64[1];
+        shape[0] = n;
+        int64[] strides = heap int64[1];
+        strides[0] = 1;
+        return heap Tensor<R>(#st, 0, shape, strides);
+    }
+
+    /** Cumulative sum along `axis` in `R` (numpy `cumsum(a, axis=)`): same shape as
+     *  the input, each position holding the prefix sum along the axis. */
+    public static #Tensor<R> cumsumAxis<E extends Numeric, R extends Numeric>(Tensor<E> t, int32 axis) {
+        int32 nd = (int32) t.shapeDims.count();
+        int32 ax = axis;
+        if (ax < 0) { ax = ax + nd; }
+        int64 axisLen = t.shapeDims[ax];
+        int64[] outShape = Tensor.shapeOf<E>(t);
+        int64 n = Tensor.productOf(outShape);
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        Storage<R> st = heap Storage<R>(n);
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        int64 lines = 1;
+        if (axisLen > 0) { lines = n / axisLen; }
+        int64 lc = 0;
+        while (lc < lines) {
+            R acc = (R) 0;
+            int64 j = 0;
+            while (j < axisLen) {
+                idx[ax] = j;
+                E e = t.readBroadcast(idx);
+                acc = acc + (R) e;
+                int64 ofs = 0;
+                int32 d = 0;
+                while (d < nd) { ofs = ofs + idx[d] * outStrides[d]; d = d + 1; }
+                st.set(ofs, acc);
+                j = j + 1;
+            }
+            idx[ax] = 0;
+            lc = lc + 1;
+            int32 a2 = nd - 1;
+            boolean carry = true;
+            while (a2 >= 0 && carry) {
+                if (a2 == ax) { a2 = a2 - 1; }
+                else {
+                    idx[a2] = idx[a2] + 1;
+                    if (idx[a2] >= outShape[a2]) { idx[a2] = 0; a2 = a2 - 1; }
+                    else { carry = false; }
+                }
+            }
+        }
+        return heap Tensor<R>(#st, 0, outShape, outStrides);
+    }
+
+    /** Cumulative product along `axis` in `R` (numpy `cumprod(a, axis=)`): same shape
+     *  as the input, each position holding the prefix product along the axis. */
+    public static #Tensor<R> cumprodAxis<E extends Numeric, R extends Numeric>(Tensor<E> t, int32 axis) {
+        int32 nd = (int32) t.shapeDims.count();
+        int32 ax = axis;
+        if (ax < 0) { ax = ax + nd; }
+        int64 axisLen = t.shapeDims[ax];
+        int64[] outShape = Tensor.shapeOf<E>(t);
+        int64 n = Tensor.productOf(outShape);
+        int64[] outStrides = Tensor.contigStrides(outShape, MemoryOrder.C);
+        Storage<R> st = heap Storage<R>(n);
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { idx[k] = 0; k = k + 1; }
+        int64 lines = 1;
+        if (axisLen > 0) { lines = n / axisLen; }
+        int64 lc = 0;
+        while (lc < lines) {
+            R acc = (R) 1;
+            int64 j = 0;
+            while (j < axisLen) {
+                idx[ax] = j;
+                E e = t.readBroadcast(idx);
+                acc = acc * (R) e;
+                int64 ofs = 0;
+                int32 d = 0;
+                while (d < nd) { ofs = ofs + idx[d] * outStrides[d]; d = d + 1; }
+                st.set(ofs, acc);
+                j = j + 1;
+            }
+            idx[ax] = 0;
+            lc = lc + 1;
+            int32 a2 = nd - 1;
+            boolean carry = true;
+            while (a2 >= 0 && carry) {
+                if (a2 == ax) { a2 = a2 - 1; }
+                else {
+                    idx[a2] = idx[a2] + 1;
+                    if (idx[a2] >= outShape[a2]) { idx[a2] = 0; a2 = a2 - 1; }
+                    else { carry = false; }
+                }
+            }
+        }
+        return heap Tensor<R>(#st, 0, outShape, outStrides);
     }
 
     // ────────────────────────────── indexing (Phase 5) ───────────────────────

@@ -12,6 +12,7 @@
 #include "cajeta/type/CajetaQuaternion.h"
 #include "cajeta/type/QuaternionOps.h"
 #include "cajeta/type/CajetaClass.h"
+#include "cajeta/type/CajetaConstantType.h"
 #include "cajeta/type/CajetaTask.h"
 #include "cajeta/type/CajetaView.h"
 #include "cajeta/type/CajetaFunctionType.h"
@@ -27,6 +28,7 @@
 #include "cajeta/type/Scope.h"
 #include "cajeta/field/Field.h"
 #include "cajeta/field/ParameterField.h"
+#include "cajeta/field/BoundClosureField.h"
 #include <llvm/IR/IntrinsicInst.h>
 #include <llvm/IR/Intrinsics.h>
 
@@ -175,7 +177,8 @@ namespace cajeta {
                                  llvm::Value* closurePtr,
                                  const std::shared_ptr<CajetaFunctionType>& fnType,
                                  const vector<MethodCallParameter>& args,
-                                 CajetaTypePtr& outResolvedType) {
+                                 CajetaTypePtr& outResolvedType,
+                                 llvm::Function* directFn) {
         auto& llvmCtx = *module->getLlvmContext();
         auto* builder = module->getBuilder();
         llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
@@ -185,13 +188,22 @@ namespace cajeta {
         // LambdaExpression / MethodReferenceExpression emit so GEPs stay valid.
         llvm::StructType* closureTy = llvm::StructType::get(
             llvmCtx, {ptrTy, ptrTy, ptrTy});
-        llvm::Value* fnSlot = builder->CreateStructGEP(
-            closureTy, closurePtr, 0, "closure.fn");
-        llvm::Value* callee = builder->CreateLoad(ptrTy, fnSlot, "fn_ptr");
-        llvm::Value* capSlot = builder->CreateStructGEP(
-            closureTy, closurePtr, 1, "closure.captures");
-        llvm::Value* captures = builder->CreateLoad(
-            ptrTy, capSlot, "captures_ptr");
+        // Specialization fast path (cajeta-ir Unit 4): a statically-known target
+        // calls direct, with captures folded to null (the non-capturing lambda
+        // ignores them). Otherwise load fn + captures from the closure record.
+        llvm::Value* callee;
+        llvm::Value* captures;
+        if (directFn) {
+            callee = directFn;
+            captures = llvm::ConstantPointerNull::get(ptrTy);
+        } else {
+            llvm::Value* fnSlot = builder->CreateStructGEP(
+                closureTy, closurePtr, 0, "closure.fn");
+            callee = builder->CreateLoad(ptrTy, fnSlot, "fn_ptr");
+            llvm::Value* capSlot = builder->CreateStructGEP(
+                closureTy, closurePtr, 1, "closure.captures");
+            captures = builder->CreateLoad(ptrTy, capSlot, "captures_ptr");
+        }
 
         // M5(b) — sret form: caller allocates the result slot in its own frame
         // and threads it as the closure's hidden arg 0. The call returns void;
@@ -290,15 +302,25 @@ namespace cajeta {
                 parameters.push_back(entry);
             }
         }
-        // Form C call-site type args. Each typeType resolves through
+        // Form C call-site type args. Each typeArgument resolves through
         // CajetaType::fromContext under the active module's substitution
         // stack so a `<T>` referenced from inside a templated class body
-        // still resolves to the bound T.
-        if (auto* tl = ctx->typeList()) {
+        // still resolves to the bound T. A non-type (integer-constant)
+        // argument — `m<8>(...)` — resolves to a CajetaConstantType,
+        // exactly as the type-use site does for `Vector<T, 8>` / a
+        // user template's `uint32 N` parameter (CajetaType.cpp).
+        if (auto* targs = ctx->typeArguments()) {
             auto activeMod = CajetaModule::getActiveModule();
-            for (auto* tt : tl->typeType()) {
-                auto t = CajetaType::fromContext(tt, activeMod);
-                if (t) explicitMethodTypeArgs.push_back(t);
+            for (auto* ta : targs->typeArgument()) {
+                if (ta->integerLiteral() != nullptr) {
+                    explicitMethodTypeArgs.push_back(CajetaConstantType::of(
+                        CajetaConstantType::parseLiteral(ta->integerLiteral())));
+                } else if (ta->typeType()) {
+                    auto t = CajetaType::fromContext(ta->typeType(), activeMod);
+                    if (t) explicitMethodTypeArgs.push_back(t);
+                }
+                // typeArgument's primitiveType alt is subsumed by typeType;
+                // the wildcard `?` alt is not valid in a call-site arg list.
             }
         }
     }
@@ -673,7 +695,7 @@ namespace cajeta {
                 auto parent = cm->getParent();
                 if (parent && parent->isInstantiation()
                         && parent->toCanonical().rfind(
-                               "cajeta.gpu.GpuBuffer", 0) == 0
+                               "cajeta.gpu.KernelBuffer", 0) == 0
                         && !parent->getTypeArguments().empty()) {
                     auto elemT = parent->getTypeArguments()[0];
                     llvm::Type* lt = elemT ? elemT->getLlvmType() : nullptr;
@@ -896,10 +918,10 @@ namespace cajeta {
                             if (f->getType()) canonical = f->getType()->toCanonical();
                         }
                     }
-                    bool isStream = canonical == "cajeta.gpu.GpuStream";
+                    bool isStream = canonical == "cajeta.gpu.KernelStream";
                     bool isEvent  = canonical == "cajeta.gpu.Event";
                     bool isBuffer =
-                        canonical.rfind("cajeta.gpu.GpuBuffer", 0) == 0;
+                        canonical.rfind("cajeta.gpu.KernelBuffer", 0) == 0;
                     if ((isStream && methodCallName == "sync") ||
                         (isEvent && methodCallName == "waitHost")) {
                         sc->releaseLaunchBorrows();
@@ -1012,6 +1034,18 @@ namespace cajeta {
             auto scope = module->getScopeStack().peek();
             FieldPtr field = scope ? scope->getField(methodCallName) : nullptr;
             if (field) {
+                // cajeta-ir Unit 4b: a specialized instance binds the (dropped)
+                // function-typed parameter to a known function. Dispatch direct —
+                // no closure record, no indirect load.
+                if (auto bound = dynamic_pointer_cast<BoundClosureField>(field)) {
+                    auto fnType = dynamic_pointer_cast<CajetaFunctionType>(
+                        bound->getType());
+                    if (fnType) {
+                        return emitClosureCall(module, /*closurePtr=*/nullptr,
+                            fnType, parameters, resolvedType,
+                            bound->getBoundFunction());
+                    }
+                }
                 auto fnType = dynamic_pointer_cast<CajetaFunctionType>(field->getType());
                 if (fnType) {
                     // The field's slot holds a `ptr` to the closure record;
@@ -2536,6 +2570,43 @@ namespace cajeta {
                     st->setAlignment(llvm::Align(1));
                     return st;
                 }
+                // f32ToBits(float32 x) -> int32: reinterpret a float's IEEE-754
+                // bits as a 32-bit integer (LLVM bitcast — NOT a value
+                // conversion; `(int32) x` would truncate the numeric value).
+                // The inverse of bitsToF32. Enables binary float serialization
+                // (little-endian float32 .npy) that the value-cast cannot express.
+                if (ns == "Cajeta" && methodCallName == "f32ToBits" && parameters.size() == 1) {
+                    llvm::Value* x = loadValue(0);
+                    llvm::Value* b = builder->CreateBitCast(x, i32Ty, "f32_bits");
+                    resolvedType = CajetaType::of("int32");
+                    return b;
+                }
+                // bitsToF32(int32 b) -> float32: reinterpret 32 integer bits as an
+                // IEEE-754 float (LLVM bitcast). Inverse of f32ToBits; the float32
+                // .npy reader uses it.
+                if (ns == "Cajeta" && methodCallName == "bitsToF32" && parameters.size() == 1) {
+                    auto* f32Ty = llvm::Type::getFloatTy(llvmCtx);
+                    llvm::Value* b = loadValue(0);
+                    llvm::Value* x = builder->CreateBitCast(b, f32Ty, "bits_f32");
+                    resolvedType = CajetaType::of("float32");
+                    return x;
+                }
+                // f64ToBits(float64 x) -> int64: reinterpret a double's IEEE-754
+                // bits as a 64-bit integer (LLVM bitcast). Inverse of bitsToF64.
+                if (ns == "Cajeta" && methodCallName == "f64ToBits" && parameters.size() == 1) {
+                    llvm::Value* x = loadValue(0);
+                    llvm::Value* b = builder->CreateBitCast(x, i64Ty, "f64_bits");
+                    resolvedType = CajetaType::of("int64");
+                    return b;
+                }
+                // bitsToF64(int64 b) -> float64: reinterpret 64 integer bits as a
+                // double (LLVM bitcast). Inverse of f64ToBits.
+                if (ns == "Cajeta" && methodCallName == "bitsToF64" && parameters.size() == 1) {
+                    llvm::Value* b = loadValue(0);
+                    llvm::Value* x = builder->CreateBitCast(b, f64Ty, "bits_f64");
+                    resolvedType = CajetaType::of("float64");
+                    return x;
+                }
                 // ctz64(int64 x): count trailing zero bits, 0..64 (x==0 -> 64).
                 // Maps to @llvm.cttz.i64; result truncated to int32.
                 if (ns == "Cajeta" && methodCallName == "ctz64" && parameters.size() == 1) {
@@ -2599,6 +2670,61 @@ namespace cajeta {
                     llvm::StoreInst* st = builder->CreateStore(vec, ptr);
                     st->setAlignment(llvm::Align(1));
                     return st;
+                }
+                // --- float64 SIMD (Vector<float64,8> = 512-bit / AVX-512) ----
+                // The numeric-kernel path (matmul / dot-product) lives on these,
+                // the float64 analogue of vload8i64. Unlike vload8i64 (int8[] byte
+                // buffer, BYTE offset), these take a float64[] and an ELEMENT index
+                // -- the array header is `{ i64 size, [0 x double] data }`, so the
+                // data starts 8 bytes in and element idx is a double-stride GEP.
+                // simd-numeric-kernels-spec.md §2.
+                // vload8f64(float64[] arr, int32 idx) -> Vector<float64,8>.
+                if (ns == "Cajeta" && methodCallName == "vload8f64" && parameters.size() == 2) {
+                    auto* i8Ty = builder->getInt8Ty();
+                    auto* dblTy = builder->getDoubleTy();
+                    auto* v8 = llvm::FixedVectorType::get(dblTy, 8);
+                    llvm::Value* hdr = loadValue(0);
+                    llvm::Value* idx = loadValue(1);
+                    idx = builder->CreateIntCast(idx, builder->getInt64Ty(), /*isSigned=*/true);
+                    llvm::Value* data = builder->CreateGEP(
+                        i8Ty, hdr, builder->getInt64(8), "f64_data");
+                    llvm::Value* ptr = builder->CreateGEP(dblTy, data, idx, "v8f64_ptr");
+                    llvm::LoadInst* ld = builder->CreateLoad(v8, ptr, "vload8f64");
+                    ld->setAlignment(llvm::Align(1));
+                    resolvedType = CajetaVector::validateAndCreate(
+                        module, CajetaType::of("float64"), 8);
+                    return ld;
+                }
+                // vstore8f64(Vector<float64,8> v, float64[] arr, int32 idx).
+                if (ns == "Cajeta" && methodCallName == "vstore8f64" && parameters.size() == 3) {
+                    auto* i8Ty = builder->getInt8Ty();
+                    auto* dblTy = builder->getDoubleTy();
+                    llvm::Value* vec = loadValue(0);
+                    llvm::Value* hdr = loadValue(1);
+                    llvm::Value* idx = loadValue(2);
+                    idx = builder->CreateIntCast(idx, builder->getInt64Ty(), /*isSigned=*/true);
+                    llvm::Value* data = builder->CreateGEP(
+                        i8Ty, hdr, builder->getInt64(8), "f64_data");
+                    llvm::Value* ptr = builder->CreateGEP(dblTy, data, idx, "v8f64_st_ptr");
+                    llvm::StoreInst* st = builder->CreateStore(vec, ptr);
+                    st->setAlignment(llvm::Align(1));
+                    return st;
+                }
+                // vsum8f64(Vector<float64,8> v) -> float64: horizontal sum. Uses a
+                // fast (reassociating) tree reduction -- the reduction order is not
+                // significant for these kernels (the dot-product check tolerates FP
+                // reassociation; matmul never reduces a vector).
+                if (ns == "Cajeta" && methodCallName == "vsum8f64" && parameters.size() == 1) {
+                    llvm::Value* vec = loadValue(0);
+                    llvm::Value* acc0 = llvm::ConstantFP::get(builder->getDoubleTy(), 0.0);
+                    llvm::Value* red = builder->CreateFAddReduce(acc0, vec);
+                    if (auto* inst = llvm::dyn_cast<llvm::Instruction>(red)) {
+                        llvm::FastMathFlags fmf;
+                        fmf.setFast();
+                        inst->setFastMathFlags(fmf);
+                    }
+                    resolvedType = CajetaType::of("float64");
+                    return red;
                 }
                 // vswapPairs(Vector<int64,8> v) -> Vector<int64,8>: swap adjacent
                 // lanes (0<->1, 2<->3, 4<->5, 6<->7) — XXH3's `acc[lane^1]` swap.
@@ -4316,6 +4442,73 @@ namespace cajeta {
             }
         }
 
+        // Host-array vectorized load/store — the width-generic parity surface
+        // for `Cajeta.vload8f64`/`vstore8f64` (kernel-vector-loadstore-spec.md
+        // §7). `arr.vload<N>(i)` / `arr.vstore(i, v)` on a CajetaArray receiver
+        // read identically to the kernel-buffer form (only the receiver type
+        // differs). The host array header is `{ i64 size, [0 x elem] data }`,
+        // so data starts at byte +8 and `i` is an element-stride GEP. T and N
+        // are generic: T from the array's element type, N from `<N>` (vload) or
+        // the value's vector width (vstore). A packed `<N x T>` memory op at the
+        // element's natural alignment (safe for any index) — the legacy
+        // fixed-name intrinsics remain as deprecated aliases above.
+        if (receiver && (methodCallName == "vload" || methodCallName == "vstore")) {
+            if (auto arrayType = dynamic_pointer_cast<CajetaArray>(receiverType)) {
+                auto* i8Ty = builder->getInt8Ty();
+                CajetaTypePtr elemCT = arrayType->getElementType();
+                llvm::Type* elemTy = elemCT->getLlvmType();
+                const llvm::DataLayout& dl =
+                    module->getLlvmModule()->getDataLayout();
+                llvm::Align elemAlign = dl.getABITypeAlign(elemTy);
+                auto evalArg = [&](size_t i) -> llvm::Value* {
+                    auto& p = parameters[i].expression;
+                    llvm::Value* v = p->generateCode(module);
+                    auto ast = dynamic_pointer_cast<Expression>(p);
+                    if (ast && !ast->getResolvedType()) ast->resolveTypes(module);
+                    return loadIfLValue(module, v, ast);
+                };
+
+                if (methodCallName == "vload" && parameters.size() == 1
+                        && explicitMethodTypeArgs.size() == 1) {
+                    auto cN = dynamic_pointer_cast<CajetaConstantType>(
+                        explicitMethodTypeArgs[0]);
+                    if (cN) {
+                        unsigned lanes = (unsigned) cN->getValue();
+                        llvm::Value* idx = builder->CreateIntCast(
+                            evalArg(0), builder->getInt64Ty(), /*isSigned=*/true);
+                        llvm::Value* data = builder->CreateGEP(
+                            i8Ty, receiver, builder->getInt64(8), "varr_data");
+                        llvm::Value* ptr = builder->CreateGEP(
+                            elemTy, data, idx, "vload_ptr");
+                        auto* vTy = llvm::FixedVectorType::get(elemTy, lanes);
+                        llvm::LoadInst* ld = builder->CreateLoad(vTy, ptr, "vload");
+                        ld->setAlignment(elemAlign);
+                        resolvedType = CajetaVector::validateAndCreate(
+                            module, elemCT, lanes);
+                        return ld;
+                    }
+                }
+
+                if (methodCallName == "vstore" && parameters.size() == 2) {
+                    llvm::Value* idx = builder->CreateIntCast(
+                        evalArg(0), builder->getInt64Ty(), /*isSigned=*/true);
+                    llvm::Value* vec = evalArg(1);
+                    if (!vec->getType()->isVectorTy()) {
+                        throw Exception(
+                            "'vstore' requires a Vector value; got a non-vector "
+                            "argument", "CAJETA_ERROR_VSTORE_NOT_VECTOR");
+                    }
+                    llvm::Value* data = builder->CreateGEP(
+                        i8Ty, receiver, builder->getInt64(8), "varr_data");
+                    llvm::Value* ptr = builder->CreateGEP(
+                        elemTy, data, idx, "vstore_ptr");
+                    llvm::StoreInst* st = builder->CreateStore(vec, ptr);
+                    st->setAlignment(elemAlign);
+                    return st;
+                }
+            }
+        }
+
         // Resolve the target class either from the receiver (cross-object call) or from
         // the enclosing class on the structure stack (bare call).
         CajetaClassPtr targetClass;
@@ -4327,6 +4520,23 @@ namespace cajeta {
                 return nullptr;
             }
             targetClass = module->getStructureStack().back();
+        }
+
+        // Kernel-only operations. `buf.vload<N>(i)` / `buf.vstore(i, v)` are
+        // lowered inside an @Kernel body by KernelLowering (a kernel's host body
+        // is stubbed at Method::generateCode, so a kernel's vload never reaches
+        // here). Reaching this point means they were called from a HOST method,
+        // where a KernelBuffer has no host address — reject with a clear
+        // kernel-only diagnostic instead of silently emitting nothing.
+        // (kernel-vector-loadstore-spec.md §3.1.4, §4.1.4.)
+        if ((methodCallName == "vload" || methodCallName == "vstore")
+                && targetClass->getQName()
+                && targetClass->getQName()->toCanonical().rfind(
+                       "cajeta.gpu.KernelBuffer", 0) == 0) {
+            throw Exception(
+                "'" + methodCallName + "' is a kernel-only operation on a "
+                "KernelBuffer and can only be called inside an @Kernel body",
+                "CAJETA_ERROR_KERNEL_ONLY_OP");
         }
 
         // Resolve `this`. For cross-object calls the receiver IS the `this`. For
@@ -4585,7 +4795,18 @@ namespace cajeta {
             // c.accumulator)` inside `Stream<T>.collect<R>` passes
             // the field-GEPs to fold, mismatching fold's
             // seed:int32 / fn:fn-typed signature at JIT verify.
-            if (dynamic_pointer_cast<DotExpression>(param.expression)) {
+            //
+            // Array element reads (ArrayIndexExpression, `arr[i]`) have the
+            // same shape: generateCode returns the element GEP slot, so a bare
+            // `f(arr[i])` would pass the element ADDRESS (ptr) where the value
+            // is wanted — a JIT verify failure ("Call parameter type does not
+            // match function signature!") for a primitive element. loadIfLValue's
+            // ArrayIndexExpression branch loads primitives to their value and
+            // leaves reference/interface elements as the (correct) pointer/body,
+            // so it's safe to apply here too. (Previously only a named-local or
+            // arithmetic-wrapped element worked; `f(arr[i])` directly did not.)
+            if (dynamic_pointer_cast<DotExpression>(param.expression)
+                    || dynamic_pointer_cast<ArrayIndexExpression>(param.expression)) {
                 value = loadIfLValue(module, value, param.expression);
             }
             CajetaTypePtr et = param.expression->getResolvedType();

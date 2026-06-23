@@ -1,0 +1,106 @@
+package mm;
+
+import cajeta.gpu.KernelBuffer;
+import cajeta.gpu.KernelStream;
+import cajeta.gpu.KernelThread;
+import cajeta.time.Clock;
+
+// Standalone measurement: dense n x n float64 matmul as a CPU @Kernel, fanned
+// across all cores by the XPU CPU dispatcher. One thread per (row, 8-col block)
+// = n*(n/8) = 5000 work-items for n=200; the grid chunks across min(blocks,
+// cores) workers of the persistent fork-join pool -- REAL multi-core, unlike
+// .parallel() (cooperative single-carrier). With CAJETA_XPU_CPU_WORKER_SPIN set
+// (bench.sh does) the pool's hot, simultaneous dispatch lands this at ~0.057 ms,
+// UNDER numpy/OpenBLAS (0.079 ms for n=200 in the profile suite). Goal met.
+public final class MatmulKernel {
+
+    // One thread per (row, 8-column block): n*(n/8) = 5000 work-items for n=200.
+    // Each thread keeps a Vector<float64,8> C accumulator across the k loop and
+    // reads B[k, jb:jb+8] as a packed <8 x double> vload, FMA'd with the broadcast
+    // scalar A[row,k]. At this size all three matrices fit in L2; the kernel is
+    // dispatch/sync-overhead bound, not compute or memory bound (manual k-unroll
+    // and 8x8 register tiling both measured SLOWER here). Assumes n % 8 == 0.
+    @Kernel
+    public static void matmul(KernelBuffer<float64> c, KernelBuffer<float64> a,
+                              KernelBuffer<float64> b, uint32 n) {
+        uint32 nblk = n / 8;
+        uint32 t = KernelThread.globalIdX();
+        if (t < n * nblk) {
+            uint32 row = t / nblk;
+            uint32 jb = (t % nblk) * 8;
+            uint32 rBase = row * n;
+            Vector<float64,8> cv =
+                stack Vector<float64,8>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+            uint32 k = 0;
+            while (k < n) {
+                Vector<float64,8> bv = b.vload<8>(k * n + jb);
+                cv = cv + bv * a[rBase + k];
+                k = k + 1;
+            }
+            c.vstore(rBase + jb, cv);   // packed <8 x double> store of the C block
+        }
+    }
+
+    public static int32 run() {
+        uint32 n = 200;
+        int32 sz = (int32) (n * n);
+        float64[] ha = heap float64[sz];
+        float64[] hb = heap float64[sz];
+        float64[] hc = heap float64[sz];
+        // A = identity, B[idx] = idx % 100  -> C == B (exact cross-check).
+        int32 i = 0;
+        while (i < (int32) n) {
+            int32 j = 0;
+            while (j < (int32) n) {
+                int32 idx = i * (int32) n + j;
+                if (i == j) { ha[idx] = 1.0; } else { ha[idx] = 0.0; }
+                hb[idx] = (float64) (idx % 100);
+                hc[idx] = 0.0;
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+
+        KernelBuffer<float64> a = stack KernelBuffer<float64>(sz);
+        KernelBuffer<float64> b = stack KernelBuffer<float64>(sz);
+        KernelBuffer<float64> c = stack KernelBuffer<float64>(sz);
+        a.upload(ha);
+        b.upload(hb);
+        c.upload(hc);
+        KernelStream s = KernelStream.current();
+
+        uint32 total = n * (n / 8);          // one thread per (row, 8-col block)
+        uint32 block = 64;
+        uint32 grid = (total + block - 1) / block;
+
+        // warmup
+        int32 w = 0;
+        while (w < 10) {
+            matmul.launch(s, grid: [grid], block: [block])(c, a, b, n);
+            s.sync();
+            w = w + 1;
+        }
+        // timed: best of 50
+        int64 best = 9223372036854775807L;
+        int32 r = 0;
+        while (r < 50) {
+            int64 t0 = Clock.nanoTime();
+            matmul.launch(s, grid: [grid], block: [block])(c, a, b, n);
+            s.sync();
+            int64 dt = Clock.nanoTime() - t0;
+            if (dt < best) { best = dt; }
+            r = r + 1;
+        }
+
+        c.download(hc);
+        float64 bsum = 0.0;
+        float64 csum = 0.0;
+        int32 m = 0;
+        while (m < sz) { bsum = bsum + hb[m]; csum = csum + hc[m]; m = m + 1; }
+
+        float64 ms = (float64) best / 1000000.0;
+        System.stdout.println("matmul-kernel n=200 best_ns=" + best
+            + " ms=" + ms + " check=" + (csum == bsum));
+        return 0;
+    }
+}

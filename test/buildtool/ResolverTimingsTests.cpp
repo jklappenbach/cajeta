@@ -113,7 +113,7 @@ TEST(ResolverTimingsTests, nullTimingsDoesNotCrashOrAlter) {
     auto m = mustLoad(src);
     auto proj = makeTempDir("nullptimings");
     auto result = resolveProjectDependencies(
-        m, proj.string(), std::nullopt, nullptr);
+        m, proj.string(), proj.string(), nullptr);  // pin olla root (hermetic)
     ASSERT_TRUE(static_cast<bool>(result)) << errorText(result.takeError());
     EXPECT_EQ(result->size(), 1u);
 }
@@ -128,16 +128,20 @@ TEST(ResolverTimingsTests, countersOnSingleDirectDep) {
     auto proj = makeTempDir("counters-1");
 
     ResolverTimings t;
+    // Pin the olla root to an empty temp dir (proj/.olla) so the
+    // implicit local repo deterministically misses and we don't read
+    // the developer's real ~/.olla.
     auto result = resolveProjectDependencies(
-        m, proj.string(), std::nullopt, &t);
+        m, proj.string(), proj.string(), &t);
     ASSERT_TRUE(static_cast<bool>(result)) << errorText(result.takeError());
 
     EXPECT_EQ(t.depsResolved, 1);
     EXPECT_GE(t.mvsIterations, 1);
-    // resolveMvs's pickLowestForAll walks repos and calls
-    // listVersions once per repo until a match. For a single
-    // direct dep against one repo: exactly 1 list call.
-    EXPECT_EQ(t.listVersionsCalls, 1);
+    // pickLowestForAll walks repos calling listVersions once per repo
+    // until a match. The implicit ~/.olla repo is consulted first and
+    // misses (empty), then the declared repo hits: 2 list calls. Only
+    // the hitting repo is fetched, so fetch/manifest stay at 1.
+    EXPECT_EQ(t.listVersionsCalls, 2);
     EXPECT_EQ(t.fetchCalls, 1);
     EXPECT_EQ(t.fetchManifestCalls, 1);
 
@@ -166,7 +170,7 @@ TEST(ResolverTimingsTests, transitiveGraphBumpsCounters) {
 
     ResolverTimings t;
     auto result = resolveProjectDependencies(
-        m, proj.string(), std::nullopt, &t);
+        m, proj.string(), proj.string(), &t);  // pin olla root (hermetic)
     ASSERT_TRUE(static_cast<bool>(result)) << errorText(result.takeError());
 
     EXPECT_EQ(t.depsResolved, 2);
@@ -193,7 +197,7 @@ TEST(ResolverTimingsTests, depsResolvedEqualsOutputCount) {
 
     ResolverTimings t;
     auto result = resolveProjectDependencies(
-        m, proj.string(), std::nullopt, &t);
+        m, proj.string(), proj.string(), &t);  // pin olla root (hermetic)
     ASSERT_TRUE(static_cast<bool>(result)) << errorText(result.takeError());
     EXPECT_EQ(static_cast<int>(result->size()), t.depsResolved);
     EXPECT_EQ(t.depsResolved, 2);
@@ -210,7 +214,7 @@ TEST(ResolverTimingsTests, noDepsLeavesCountersZero) {
 
     ResolverTimings t;
     auto result = resolveProjectDependencies(
-        m, proj.string(), std::nullopt, &t);
+        m, proj.string(), proj.string(), &t);  // pin olla root (hermetic)
     ASSERT_TRUE(static_cast<bool>(result)) << errorText(result.takeError());
     EXPECT_EQ(result->size(), 0u);
     EXPECT_EQ(t.depsResolved, 0);

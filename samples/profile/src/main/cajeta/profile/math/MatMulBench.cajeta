@@ -66,24 +66,45 @@ public class MatMulBench extends Benchmark {
 
     public void run(int32 iterations) {
         int32 nd = this.nDim;
+        int32 sz = nd * nd;
+        int32 jLimit = nd - (nd % 8);
+        // Register-accumulated, vectorized matmul. For each (i, j-block of 8) keep
+        // the C accumulator in ONE zmm register across the whole k loop, store it
+        // once -- so C is written n²/8 times instead of streamed n³/8 times.
+        // cv += B[k, j:j+8] * A[i,k] (scalar broadcast -> FMA). Explicit vload/
+        // vstore bypass the per-element bounds checks + aliasing the autovectorizer
+        // couldn't see past. Each C element is written exactly once (from a zeroed
+        // accumulator), so no pre-zeroing is needed.
         int32 i = 0;
         while (i < nd) {
-            int32 j = 0;
-            while (j < nd) {
+            int32 iBase = i * nd;
+            int32 jb = 0;
+            while (jb < jLimit) {
+                Vector<float64,8> cv =
+                    stack Vector<float64,8>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+                int32 k = 0;
+                while (k < nd) {
+                    cv = cv + Cajeta.vload8f64(this.b, k * nd + jb) * this.a[iBase + k];
+                    k = k + 1;
+                }
+                Cajeta.vstore8f64(cv, this.c, iBase + jb);
+                jb = jb + 8;
+            }
+            // scalar tail columns (n % 8), also register-accumulated
+            while (jb < nd) {
                 float64 acc = 0.0;
                 int32 k = 0;
                 while (k < nd) {
-                    acc = acc + this.a[i * nd + k] * this.b[k * nd + j];
+                    acc = acc + this.a[iBase + k] * this.b[k * nd + jb];
                     k = k + 1;
                 }
-                this.c[i * nd + j] = acc;
-                j = j + 1;
+                this.c[iBase + jb] = acc;
+                jb = jb + 1;
             }
             i = i + 1;
         }
         float64 s = 0.0;
         int32 m = 0;
-        int32 sz = nd * nd;
         while (m < sz) {
             s = s + this.c[m];
             m = m + 1;

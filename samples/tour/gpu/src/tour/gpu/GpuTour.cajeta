@@ -1,8 +1,8 @@
 package tour.gpu;
 
-import cajeta.gpu.GpuBuffer;
-import cajeta.gpu.GpuStream;
-import cajeta.gpu.GpuThread;
+import cajeta.gpu.KernelBuffer;
+import cajeta.gpu.KernelStream;
+import cajeta.gpu.KernelThread;
 import cajeta.gpu.Wave;
 import cajeta.gpu.Quad;
 import cajeta.gpu.Bits;
@@ -38,9 +38,9 @@ public final class GpuTour {
 
     // y[i] = a*x[i] + y[i] — the canonical accelerator "hello world".
     @Kernel
-    public static void saxpy(GpuBuffer<float32> y, GpuBuffer<float32> x,
+    public static void saxpy(KernelBuffer<float32> y, KernelBuffer<float32> x,
                              float32 a, uint32 n) {
-        uint32 i = GpuThread.globalIdX();
+        uint32 i = KernelThread.globalIdX();
         if (i < n) {
             y[i] = a * x[i] + y[i];
         }
@@ -48,9 +48,9 @@ public final class GpuTour {
 
     // c[i] = a[i] + b[i] — element-wise vector add.
     @Kernel
-    public static void vecAdd(GpuBuffer<float32> c, GpuBuffer<float32> a,
-                              GpuBuffer<float32> b, uint32 n) {
-        uint32 i = GpuThread.globalIdX();
+    public static void vecAdd(KernelBuffer<float32> c, KernelBuffer<float32> a,
+                              KernelBuffer<float32> b, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
         if (i < n) {
             c[i] = a[i] + b[i];
         }
@@ -65,11 +65,11 @@ public final class GpuTour {
     // `<2 x float>` vector on every backend; the matmul/matVec is honest
     // extract/insert/fma IR, so the result is bit-exact on CPU, Vulkan, and AMD.
     @Kernel
-    public static void transform(GpuBuffer<float32> outx, GpuBuffer<float32> outy,
-                                 GpuBuffer<float32> px, GpuBuffer<float32> py,
+    public static void transform(KernelBuffer<float32> outx, KernelBuffer<float32> outy,
+                                 KernelBuffer<float32> px, KernelBuffer<float32> py,
                                  Matrix<float32,2,2> m,
                                  float32 tx, float32 ty, uint32 n) {
-        uint32 i = GpuThread.globalIdX();
+        uint32 i = KernelThread.globalIdX();
         if (i < n) {
             Vector<float32,2> p = stack Vector<float32,2>(px[i], py[i]);
             Vector<float32,2> t = stack Vector<float32,2>(tx, ty);
@@ -89,8 +89,8 @@ public final class GpuTour {
     // reluReg: per-thread ReLU on a 4-vector via (v > 0).select(v, zeros).
     // v = (i-2, -1, 3, -4)  ->  relu = (max(i-2,0), 0, 3, 0).
     @Kernel
-    public static void reluReg(GpuBuffer<float32> out, uint32 n) {
-        uint32 i = GpuThread.globalIdX();
+    public static void reluReg(KernelBuffer<float32> out, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
         if (i < n) {
             Vector<float32,4> v = stack Vector<float32,4>(
                 (float32) i - 2.0f, -1.0f, 3.0f, -4.0f);
@@ -104,8 +104,8 @@ public final class GpuTour {
     // (w > 1).select(w, 0) — keep only the large-magnitude weights.
     // w = [0.1 i; -3 0.05]  ->  pruned keeps i only when i > 1.
     @Kernel
-    public static void pruneReg(GpuBuffer<float32> out, uint32 n) {
-        uint32 i = GpuThread.globalIdX();
+    public static void pruneReg(KernelBuffer<float32> out, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
         if (i < n) {
             Matrix<float32,2,2> w = stack Matrix<float32,2,2>(
                 0.1f, (float32) i, -3.0f, 0.05f);
@@ -127,8 +127,8 @@ public final class GpuTour {
     //     (unsigned: the signed reading of 200/100 would be negative)
     //   out[i] = 70 + 170 + 1025 = 1265
     @Kernel
-    public static void dp4aReg(GpuBuffer<int32> out, uint32 n) {
-        uint32 i = GpuThread.globalIdX();
+    public static void dp4aReg(KernelBuffer<int32> out, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
         if (i < n) {
             Vector<int8,4> a = stack Vector<int8,4>(1, 2, 3, 4);
             Vector<int8,4> b = stack Vector<int8,4>(5, 6, 7, 8);
@@ -148,9 +148,9 @@ public final class GpuTour {
     //   in[i] = i, i in [0, n).  out starts {0, 0, BIG}.
     //   out[0] = sum(0..n-1) = n*(n-1)/2;  out[1] = max = n-1;  out[2] = min = 0
     @Kernel
-    public static void reduceAtomic(GpuBuffer<float32> out, GpuBuffer<float32> in,
+    public static void reduceAtomic(KernelBuffer<float32> out, KernelBuffer<float32> in,
                                     uint32 n) {
-        uint32 i = GpuThread.globalIdX();
+        uint32 i = KernelThread.globalIdX();
         if (i < n) {
             out.atomicAdd(0, in[i]);     // lock-free sum
             out.atomicMax(1, in[i]);     // running max
@@ -164,30 +164,30 @@ public final class GpuTour {
     // float path); the native atomicrmw on AMD/NVIDIA/CPU. See
     // docs/IntegerAtomics.md.
     @Kernel
-    public static void histogram(GpuBuffer<uint32> bins, GpuBuffer<uint32> data,
+    public static void histogram(KernelBuffer<uint32> bins, KernelBuffer<uint32> data,
                                  uint32 n) {
-        uint32 i = GpuThread.globalIdX();
+        uint32 i = KernelThread.globalIdX();
         if (i < n) {
             bins.atomicAdd(data[i], 1);   // ++bins[data[i]] atomically
         }
     }
 
     // ---- Shader clock: in-kernel timing --------------------------------------
-    // clockProbe: each thread brackets a small compute loop with GpuThread.clock()
+    // clockProbe: each thread brackets a small compute loop with KernelThread.clock()
     // and stores the elapsed DEVICE cycles. The clock is a free-running hardware
     // counter — Vulkan OpReadClockKHR (Subgroup scope), s_getreg shader-cycles on
     // AMD, rdtsc on CPU. Non-deterministic by nature: ticks for *relative*
     // measurement, not wall-clock seconds.
     @Kernel
-    public static void clockProbe(GpuBuffer<uint64> out, uint32 n) {
-        uint32 i = GpuThread.globalIdX();
+    public static void clockProbe(KernelBuffer<uint64> out, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
         if (i < n) {
-            uint64 t0 = GpuThread.clock();
+            uint64 t0 = KernelThread.clock();
             uint32 acc = i;
             for (uint32 k = 0; k < 256; k = k + 1) {
                 acc = acc * 1664525 + 1013904223;   // a little dependent work
             }
-            uint64 t1 = GpuThread.clock();
+            uint64 t1 = KernelThread.clock();
             out[i] = (t1 - t0) + (uint64) (acc & 0); // acc&0=0 keeps the loop live
         }
     }
@@ -199,8 +199,8 @@ public final class GpuTour {
     //   v = 0x12345678: popcount = 13; rotate and reverse are self-inverse, so
     //   out[i] = 13*10 + (rotr(rotl)==v) + (reverse(reverse)==v) = 132.
     @Kernel
-    public static void bitOps(GpuBuffer<uint32> out, uint32 n) {
-        uint32 i = GpuThread.globalIdX();
+    public static void bitOps(KernelBuffer<uint32> out, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
         if (i < n) {
             uint32 v = 305419896;                  // 0x12345678
             uint32 pc = Bits.count(v);             // 13
@@ -222,8 +222,8 @@ public final class GpuTour {
     //   out[i] = c.x + c.y + c.z + c.w  ->  {0.3, 1.1, 1.9, 2.7}, sum 6.0
     @Kernel
     public static void texSample(Texture2D tex, Sampler s,
-                                 GpuBuffer<float32> out, uint32 n) {
-        uint32 i = GpuThread.globalIdX();
+                                 KernelBuffer<float32> out, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
         if (i < n) {
             float32 u = 0.25f + 0.5f * (float32)(i & 1);          // texel-center u
             float32 v = 0.25f + 0.5f * (float32)((i >> 1) & 1);   // texel-center v
@@ -238,9 +238,9 @@ public final class GpuTour {
     // stored. No Sampler; integer texel coords. Vulkan OpImageFetch / AMD
     // __ockl_image_load / CPU exact read. See cajeta-docs/gpu (texture fetch).
     @Kernel
-    public static void texFetch(Texture2D tex, GpuBuffer<float32> out,
+    public static void texFetch(Texture2D tex, KernelBuffer<float32> out,
                                 uint32 w, uint32 n) {
-        uint32 i = GpuThread.globalIdX();
+        uint32 i = KernelThread.globalIdX();
         if (i < n) {
             uint32 y = i / w;
             uint32 x = i - y * w;
@@ -254,9 +254,9 @@ public final class GpuTour {
     // integer texels). fetch returns the stored integer verbatim as a
     // Vector<int32,4>. The texel type parameter selects float- vs integer-valued.
     @Kernel
-    public static void texFetchInt(Texture2D<int32> tex, GpuBuffer<int32> out,
+    public static void texFetchInt(Texture2D<int32> tex, KernelBuffer<int32> out,
                                    uint32 w, uint32 n) {
-        uint32 i = GpuThread.globalIdX();
+        uint32 i = KernelThread.globalIdX();
         if (i < n) {
             uint32 y = i / w;
             uint32 x = i - y * w;
@@ -273,8 +273,8 @@ public final class GpuTour {
     // curves / 1-D LUTs. fetch reads the exact texel; sample lerps between
     // adjacent entries.
     @Kernel
-    public static void tex1d(Texture1D row, Sampler lin, GpuBuffer<float32> out) {
-        uint32 i = GpuThread.globalIdX();
+    public static void tex1d(Texture1D row, Sampler lin, KernelBuffer<float32> out) {
+        uint32 i = KernelThread.globalIdX();
         if (i < 1) {
             Vector<float32,4> a = row.fetch(0);          // first texel (exact)
             Vector<float32,4> b = row.fetch(3);          // last texel (exact)
@@ -288,8 +288,8 @@ public final class GpuTour {
     // tex3d: a volumetric (3-D) texture — fetch reads the exact voxel, sample
     // trilinearly interpolates across all three axes.
     @Kernel
-    public static void tex3d(Texture3D vol, Sampler lin, GpuBuffer<float32> out) {
-        uint32 i = GpuThread.globalIdX();
+    public static void tex3d(Texture3D vol, Sampler lin, KernelBuffer<float32> out) {
+        uint32 i = KernelThread.globalIdX();
         if (i < 1) {
             Vector<float32,4> a = vol.fetch(0, 0, 0);                // first voxel
             Vector<float32,4> b = vol.fetch(1, 1, 1);                // last voxel
@@ -305,8 +305,8 @@ public final class GpuTour {
     // WITHIN the selected layer (no cross-layer blend).
     @Kernel
     public static void texArray(Texture2DArray arr, Sampler lin,
-                                GpuBuffer<float32> out) {
-        uint32 i = GpuThread.globalIdX();
+                                KernelBuffer<float32> out) {
+        uint32 i = KernelThread.globalIdX();
         if (i < 1) {
             Vector<float32,4> a = arr.fetch(0, 0, 0);              // layer 0, first texel
             Vector<float32,4> b = arr.fetch(1, 1, 2);              // layer 2, last texel
@@ -322,8 +322,8 @@ public final class GpuTour {
     // six faces. A cube has no fetch (no single integer texel for a direction).
     @Kernel
     public static void texCube(TextureCube cube, Sampler near,
-                               GpuBuffer<float32> out) {
-        uint32 i = GpuThread.globalIdX();
+                               KernelBuffer<float32> out) {
+        uint32 i = KernelThread.globalIdX();
         if (i < 1) {
             Vector<float32,4> px = cube.sample(near, 1.0f, 0.0f, 0.0f);    // +X face
             Vector<float32,4> nx = cube.sample(near, -1.0f, 0.0f, 0.0f);   // -X face
@@ -345,8 +345,8 @@ public final class GpuTour {
     // a chosen LOD explicitly (vs implicit derivative LOD, which is fragment-only
     // and N/A for compute). level L is max(1, w>>L) x max(1, h>>L).
     @Kernel
-    public static void texMip(Texture2D tex, Sampler lin, GpuBuffer<float32> out) {
-        uint32 i = GpuThread.globalIdX();
+    public static void texMip(Texture2D tex, Sampler lin, KernelBuffer<float32> out) {
+        uint32 i = KernelThread.globalIdX();
         if (i < 1) {
             Vector<float32,4> a = tex.fetchLod(1, 1, 0);                 // level 0 texel (1,1)
             Vector<float32,4> b = tex.fetchLod(0, 0, 1);                 // level 1 texel (0,0)
@@ -363,8 +363,8 @@ public final class GpuTour {
     // each materializing its own descriptor.
     @Kernel
     public static void texTwoSamplers(Texture2D tex, Sampler near, Sampler lin,
-                                      GpuBuffer<float32> out) {
-        uint32 i = GpuThread.globalIdX();
+                                      KernelBuffer<float32> out) {
+        uint32 i = KernelThread.globalIdX();
         if (i < 1) {
             Vector<float32,4> a = tex.sample(near, 0.5f, 0.5f);   // nearest -> one texel
             Vector<float32,4> b = tex.sample(lin, 0.5f, 0.5f);    // linear  -> 4-texel avg
@@ -373,14 +373,14 @@ public final class GpuTour {
         }
     }
 
-    // ---- Sub-buffer views (B4): GpuBuffer.slice ---------------------------------
+    // ---- Sub-buffer views (B4): KernelBuffer.slice ---------------------------------
     // sliceFill: write the global index through a non-owning SLICE of a parent
     // buffer. The view shares the parent's storage (allocates/frees nothing);
     // writes land at parent[offset + i]. The offset is folded into the device
-    // address at slice() time, so the kernel sees an ordinary GpuBuffer.
+    // address at slice() time, so the kernel sees an ordinary KernelBuffer.
     @Kernel
-    public static void sliceFill(GpuBuffer<int32> b, uint32 n) {
-        uint32 i = GpuThread.globalIdX();
+    public static void sliceFill(KernelBuffer<int32> b, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
         if (i < n) {
             b[i] = (int32) i;
         }
@@ -395,8 +395,8 @@ public final class GpuTour {
     // a rotation; a unit quaternion has length 1.
     //   out[i] = rot.y + comp.y + back.x + len = 1 + 1 + 1 + 1 = 4
     @Kernel
-    public static void quatk(GpuBuffer<float32> out, uint32 n) {
-        uint32 i = GpuThread.globalIdX();
+    public static void quatk(KernelBuffer<float32> out, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
         if (i < n) {
             Vector<float32,3> x = stack Vector<float32,3>(1.0f, 0.0f, 0.0f);
             Quaternion<float32> qz90 = heap Quaternion<float32>(0.70710678f, 0.0f, 0.0f, 0.70710678f);
@@ -414,8 +414,8 @@ public final class GpuTour {
     // g = [4 7; 2 6]; det = 10; g*g^-1 = I; solve g*x = (18,14) -> x = (1,2).
     //   out[i] = det + p[0][0] + p[1][1] + x[0] + x[1] = 10 + 1 + 1 + 1 + 2 = 15
     @Kernel
-    public static void linalgk(GpuBuffer<float32> out, uint32 n) {
-        uint32 i = GpuThread.globalIdX();
+    public static void linalgk(KernelBuffer<float32> out, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
         if (i < n) {
             Matrix<float32,2,2> g = stack Matrix<float32,2,2>(4.0f, 7.0f, 2.0f, 6.0f);
             float32 det = g.determinant();          // 10
@@ -436,8 +436,8 @@ public final class GpuTour {
     // whole body. out[i] = sqrt(i*i)*2 + 1 = 2*i + 1 (i >= 0).
     @Kernel
     @FastMath
-    public static void fastMath(GpuBuffer<float32> out, uint32 n) {
-        uint32 i = GpuThread.globalIdX();
+    public static void fastMath(KernelBuffer<float32> out, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
         if (i < n) {
             float32 x = (float32) i;
             out[i] = Math.sqrt(x * x) * 2.0f + 1.0f;
@@ -447,8 +447,8 @@ public final class GpuTour {
     // Vectorized math: Math.<fn> applies elementwise to a Vector<T,N>.
     // sqrt((4,9,16,25)) = (2,3,4,5); sum = 14.  out[i] = 14 + i.
     @Kernel
-    public static void vecMath(GpuBuffer<float32> out, uint32 n) {
-        uint32 i = GpuThread.globalIdX();
+    public static void vecMath(KernelBuffer<float32> out, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
         if (i < n) {
             Vector<float32,4> q = stack Vector<float32,4>(4.0f, 9.0f, 16.0f, 25.0f);
             Vector<float32,4> r = Math.sqrt(q);
@@ -460,8 +460,8 @@ public final class GpuTour {
     // Both portable: bfloat16 is a storage format computed in f32. h=(1,2,3,4),
     // h+h=(2,4,6,8) -> h2.w=8; b=(10,20), b+b=(20,40) -> b2.y=40; out = 48 + i.
     @Kernel
-    public static void floatTypes(GpuBuffer<float32> out, uint32 n) {
-        uint32 i = GpuThread.globalIdX();
+    public static void floatTypes(KernelBuffer<float32> out, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
         if (i < n) {
             Vector<float16,4> h = stack Vector<float16,4>(1.0f, 2.0f, 3.0f, 4.0f);
             Vector<float16,4> h2 = h + h;
@@ -491,8 +491,8 @@ public final class GpuTour {
     // warning; the software path is correct, and it auto-promotes to the cores
     // where the device exposes the config — e.g. bf16 WMMA on AMD).
     @Kernel
-    public static void coopGemm(GpuBuffer<float16> a, GpuBuffer<float16> b,
-                                GpuBuffer<float32> c) {
+    public static void coopGemm(KernelBuffer<float16> a, KernelBuffer<float16> b,
+                                KernelBuffer<float32> c) {
         CooperativeMatrix<float16,16,16,0> ma;
         ma.load(a, 0, 0, 16);                  // A tile: row-major, stride 16
         CooperativeMatrix<float16,16,16,1> mb;
@@ -515,8 +515,8 @@ public final class GpuTour {
     // on the CPU a per-block stack buffer + the software tile-matmul (the workgroup
     // barrier lowers via CPU loop fission).
     @Kernel
-    public static void coopGemmStaged(GpuBuffer<float16> a, GpuBuffer<float16> b,
-                                      GpuBuffer<float32> c) {
+    public static void coopGemmStaged(KernelBuffer<float16> a, KernelBuffer<float16> b,
+                                      KernelBuffer<float32> c) {
         Shared<float16> sa = shared float16[16 * 16];   // LDS A tile
         Shared<float16> sb = shared float16[16 * 16];   // LDS B tile
         CoopStage.panel(sa, a, 0, 0, 16, 16, 16);       // stage A: global -> LDS
@@ -537,9 +537,9 @@ public final class GpuTour {
     // it queries the environment (Wave.reduceSum / width() / laneId()) rather
     // than assuming any particular wave size.
     @Kernel
-    public static void waveReduce(GpuBuffer<uint32> sums, GpuBuffer<uint32> in,
+    public static void waveReduce(KernelBuffer<uint32> sums, KernelBuffer<uint32> in,
                                   uint32 n) {
-        uint32 i = GpuThread.globalIdX();
+        uint32 i = KernelThread.globalIdX();
         if (i < n) {
             // The wave-wide sum of in[]; every lane of the wave receives it.
             sums[i] = Wave.reduceSum(in[i]);
@@ -552,8 +552,8 @@ public final class GpuTour {
     // (SPV_KHR_subgroup_rotate); AMD uses ds_bpermute; NVIDIA/CPU a shuffle. See
     // docs/SubgroupRotate.md.
     @Kernel
-    public static void waveRotate(GpuBuffer<uint32> out, uint32 n) {
-        uint32 i = GpuThread.globalIdX();
+    public static void waveRotate(KernelBuffer<uint32> out, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
         if (i < n) {
             out[i] = Wave.rotate(Wave.laneId(), 1);
         }
@@ -566,8 +566,8 @@ public final class GpuTour {
     // SPV_KHR_quad_control vote); AMD/NVIDIA/CPU use the portable shuffle/ballot
     // form over the same lane layout. See cajeta-docs/gpu/xpu/QuadControl.md.
     @Kernel
-    public static void quadOps(GpuBuffer<uint32> out, uint32 n) {
-        uint32 i = GpuThread.globalIdX();
+    public static void quadOps(KernelBuffer<uint32> out, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
         if (i < n) {
             out[i] = Quad.broadcast(i, 0);
         }
@@ -579,8 +579,8 @@ public final class GpuTour {
     // and Vulkan alike. Native on every backend (GroupNonUniform* / wave.reduce.*
     // / redux.sync.*). See docs/WaveReductions.md.
     @Kernel
-    public static void waveReduceOps(GpuBuffer<uint32> out, uint32 n) {
-        uint32 t = GpuThread.globalIdX();
+    public static void waveReduceOps(KernelBuffer<uint32> out, uint32 n) {
+        uint32 t = KernelThread.globalIdX();
         uint32 vmax = 5;   if (t == 0) { vmax = 100; }
         uint32 vmin = 100; if (t == 0) { vmin = 5; }
         uint32 vand = 7;   if (t == 0) { vand = 3; }
@@ -603,8 +603,8 @@ public final class GpuTour {
     // Vulkan; ds_bpermute / shfl Hillis-Steele on AMD/NVIDIA; VFABI scan on CPU.
     // See docs/WavePrefixScan.md.
     @Kernel
-    public static void wavePrefix(GpuBuffer<uint32> out, uint32 n) {
-        uint32 t = GpuThread.globalIdX();
+    public static void wavePrefix(KernelBuffer<uint32> out, uint32 n) {
+        uint32 t = KernelThread.globalIdX();
         if (t < n) {
             out[t] = Wave.prefixSum(1);
         }
@@ -659,16 +659,16 @@ public final class GpuTour {
             hx[i] = (float32) i;
             hy[i] = 1.0f;
         }
-        // `heap` GpuBuffer<T> — RAII: the constructor allocates device memory and
+        // `heap` KernelBuffer<T> — RAII: the constructor allocates device memory and
         // the drop chain frees it at scope exit (no allocate()/free() needed).
         // The handle itself is heap-allocated; use this form when the handle
         // must outlive the current frame (returned, stored, moved with `#`).
         // (runVecAdd below shows the `stack` form for the same-scope case.)
-        GpuBuffer<float32> x = heap GpuBuffer<float32>(n);
-        GpuBuffer<float32> y = heap GpuBuffer<float32>(n);
+        KernelBuffer<float32> x = heap KernelBuffer<float32>(n);
+        KernelBuffer<float32> y = heap KernelBuffer<float32>(n);
         x.upload(hx);
         y.upload(hy);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         saxpy.launch(s, grid: [(n + 63) / 64], block: [64])(y, x, 2.0f, n);
         s.sync();
         y.download(hy);
@@ -693,19 +693,19 @@ public final class GpuTour {
             hb[i] = (float32) (2 * i);
             hc[i] = 0.0f;
         }
-        // `stack` GpuBuffer<T> — same RAII semantics, but the 24-byte handle lives
+        // `stack` KernelBuffer<T> — same RAII semantics, but the 24-byte handle lives
         // in this frame (no host-heap allocation for it). The element count only
         // sizes the *device* allocation, which lives off-stack, so the handle is
         // fixed-size regardless of `n` — like a std::vector / Rust Vec header on
         // the stack pointing at off-stack data. Prefer `stack` for the common
         // same-scope case; the drop chain still frees the device memory at exit.
-        GpuBuffer<float32> a = stack GpuBuffer<float32>(n);
-        GpuBuffer<float32> b = stack GpuBuffer<float32>(n);
-        GpuBuffer<float32> c = stack GpuBuffer<float32>(n);
+        KernelBuffer<float32> a = stack KernelBuffer<float32>(n);
+        KernelBuffer<float32> b = stack KernelBuffer<float32>(n);
+        KernelBuffer<float32> c = stack KernelBuffer<float32>(n);
         a.upload(ha);
         b.upload(hb);
         c.upload(hc);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         vecAdd.launch(s, grid: [(n + 63) / 64], block: [64])(c, a, b, n);
         s.sync();
         c.download(hc);
@@ -734,10 +734,10 @@ public final class GpuTour {
             hox[i] = 0.0f;
             hoy[i] = 0.0f;
         }
-        GpuBuffer<float32> px = stack GpuBuffer<float32>(n);
-        GpuBuffer<float32> py = stack GpuBuffer<float32>(n);
-        GpuBuffer<float32> outx = stack GpuBuffer<float32>(n);
-        GpuBuffer<float32> outy = stack GpuBuffer<float32>(n);
+        KernelBuffer<float32> px = stack KernelBuffer<float32>(n);
+        KernelBuffer<float32> py = stack KernelBuffer<float32>(n);
+        KernelBuffer<float32> outx = stack KernelBuffer<float32>(n);
+        KernelBuffer<float32> outy = stack KernelBuffer<float32>(n);
         px.upload(hpx);
         py.upload(hpy);
         outx.upload(hox);
@@ -745,7 +745,7 @@ public final class GpuTour {
         // The matrix is a value: stack-constructed, then passed BY VALUE to the
         // kernel launch alongside the buffers and the translation scalars.
         Matrix<float32,2,2> m = stack Matrix<float32,2,2>(0.0f, -1.0f, 1.0f, 0.0f);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         transform.launch(s, grid: [(n + 63) / 64], block: [64])(
             outx, outy, px, py, m, 100.0f, 200.0f, n);
         s.sync();
@@ -767,11 +767,11 @@ public final class GpuTour {
         float32[] hrelu = heap float32[n];
         float32[] hprune = heap float32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hrelu[i] = 0.0f; hprune[i] = 0.0f; }
-        GpuBuffer<float32> relu = stack GpuBuffer<float32>(n);
-        GpuBuffer<float32> prune = stack GpuBuffer<float32>(n);
+        KernelBuffer<float32> relu = stack KernelBuffer<float32>(n);
+        KernelBuffer<float32> prune = stack KernelBuffer<float32>(n);
         relu.upload(hrelu);
         prune.upload(hprune);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         // ReLU: v=(i-2,-1,3,-4) -> (max(i-2,0),0,3,0); sum = max(i-2,0)+3.
         reluReg.launch(s, grid: [(n + 63) / 64], block: [64])(relu, n);
         // Prune: keep w>1 -> i kept only when i>1; sum = (i>1 ? i : 0).
@@ -794,9 +794,9 @@ public final class GpuTour {
         uint32 n = 256;
         int32[] hout = heap int32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 0; }
-        GpuBuffer<int32> out = stack GpuBuffer<int32>(n);
+        KernelBuffer<int32> out = stack KernelBuffer<int32>(n);
         out.upload(hout);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         dp4aReg.launch(s, grid: [(n + 63) / 64], block: [64])(out, n);
         s.sync();
         out.download(hout);
@@ -816,11 +816,11 @@ public final class GpuTour {
         for (uint32 i = 0; i < n; i = i + 1) { hin[i] = (float32) i; }
         float32[] hout = heap float32[3];
         hout[0] = 0.0f; hout[1] = 0.0f; hout[2] = 1.0e9f;
-        GpuBuffer<float32> in = stack GpuBuffer<float32>(n);
-        GpuBuffer<float32> out = stack GpuBuffer<float32>(3);
+        KernelBuffer<float32> in = stack KernelBuffer<float32>(n);
+        KernelBuffer<float32> out = stack KernelBuffer<float32>(3);
         in.upload(hin);
         out.upload(hout);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         reduceAtomic.launch(s, grid: [(n + 63) / 64], block: [64])(out, in, n);
         s.sync();
         out.download(hout);
@@ -842,11 +842,11 @@ public final class GpuTour {
         for (uint32 i = 0; i < n; i = i + 1) { hdata[i] = i % nb; }
         uint32[] hbins = heap uint32[nb];
         for (uint32 i = 0; i < nb; i = i + 1) { hbins[i] = 0; }
-        GpuBuffer<uint32> data = stack GpuBuffer<uint32>(n);
-        GpuBuffer<uint32> bins = stack GpuBuffer<uint32>(nb);
+        KernelBuffer<uint32> data = stack KernelBuffer<uint32>(n);
+        KernelBuffer<uint32> bins = stack KernelBuffer<uint32>(nb);
         data.upload(hdata);
         bins.upload(hbins);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         histogram.launch(s, grid: [(n + 63) / 64], block: [64])(bins, data, n);
         s.sync();
         bins.download(hbins);
@@ -867,9 +867,9 @@ public final class GpuTour {
         uint32 n = 256;
         uint64[] hout = heap uint64[n];
         for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 0; }
-        GpuBuffer<uint64> out = stack GpuBuffer<uint64>(n);
+        KernelBuffer<uint64> out = stack KernelBuffer<uint64>(n);
         out.upload(hout);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         clockProbe.launch(s, grid: [(n + 63) / 64], block: [64])(out, n);
         s.sync();
         out.download(hout);
@@ -886,9 +886,9 @@ public final class GpuTour {
         uint32 n = 256;
         uint32[] hout = heap uint32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 0; }
-        GpuBuffer<uint32> out = stack GpuBuffer<uint32>(n);
+        KernelBuffer<uint32> out = stack KernelBuffer<uint32>(n);
         out.upload(hout);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         bitOps.launch(s, grid: [(n + 63) / 64], block: [64])(out, n);
         s.sync();
         out.download(hout);
@@ -917,9 +917,9 @@ public final class GpuTour {
         uint32 n = 4;
         float32[] hout = heap float32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 0.0f; }
-        GpuBuffer<float32> out = stack GpuBuffer<float32>(n);
+        KernelBuffer<float32> out = stack KernelBuffer<float32>(n);
         out.upload(hout);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         texSample.launch(s, grid: [1], block: [64])(tex, samp, out, n);
         s.sync();
         out.download(hout);
@@ -942,16 +942,16 @@ public final class GpuTour {
         Texture2D ftex = heap Texture2D(w, hgt);   // R32F (default)
         ftex.upload(fpix);
         float32[] fout = heap float32[n];
-        GpuBuffer<float32> fb = heap GpuBuffer<float32>(n);
+        KernelBuffer<float32> fb = heap KernelBuffer<float32>(n);
         fb.upload(fout);
         int32[] ipix = heap int32[n];
         for (uint32 t = 0; t < n; t = t + 1) { ipix[t] = (int32)((t + 1) * 10); }
         Texture2D<int32> itex = heap Texture2D<int32>(w, hgt, TextureFormat.R32I);
         itex.upload(ipix);
         int32[] iout = heap int32[n];
-        GpuBuffer<int32> ib = heap GpuBuffer<int32>(n);
+        KernelBuffer<int32> ib = heap KernelBuffer<int32>(n);
         ib.upload(iout);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         texFetch.launch(s, grid: [1], block: [64])(ftex, fb, w, n);
         texFetchInt.launch(s, grid: [1], block: [64])(itex, ib, w, n);
         s.sync();
@@ -975,9 +975,9 @@ public final class GpuTour {
         row.upload(texels);
         Sampler lin = heap Sampler(1, 0);   // linear, clamp
         float32[] hout = heap float32[3];
-        GpuBuffer<float32> out = heap GpuBuffer<float32>(3);
+        KernelBuffer<float32> out = heap KernelBuffer<float32>(3);
         out.upload(hout);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         tex1d.launch(s, grid: [1], block: [64])(row, lin, out);
         s.sync();
         out.download(hout);
@@ -1000,9 +1000,9 @@ public final class GpuTour {
         vol.upload(voxels);
         Sampler lin = heap Sampler(1, 0);
         float32[] hout = heap float32[3];
-        GpuBuffer<float32> out = heap GpuBuffer<float32>(3);
+        KernelBuffer<float32> out = heap KernelBuffer<float32>(3);
         out.upload(hout);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         tex3d.launch(s, grid: [1], block: [64])(vol, lin, out);
         s.sync();
         out.download(hout);
@@ -1025,9 +1025,9 @@ public final class GpuTour {
         arr.upload(texels);
         Sampler lin = heap Sampler(1, 0);
         float32[] hout = heap float32[3];
-        GpuBuffer<float32> out = heap GpuBuffer<float32>(3);
+        KernelBuffer<float32> out = heap KernelBuffer<float32>(3);
         out.upload(hout);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         texArray.launch(s, grid: [1], block: [64])(arr, lin, out);
         s.sync();
         out.download(hout);
@@ -1053,9 +1053,9 @@ public final class GpuTour {
         cube.upload(faces);
         Sampler near = heap Sampler(0, 0);   // nearest, clamp
         float32[] hout = heap float32[6];
-        GpuBuffer<float32> out = heap GpuBuffer<float32>(6);
+        KernelBuffer<float32> out = heap KernelBuffer<float32>(6);
         out.upload(hout);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         texCube.launch(s, grid: [1], block: [64])(cube, near, out);
         s.sync();
         out.download(hout);
@@ -1081,9 +1081,9 @@ public final class GpuTour {
         tex.uploadLevel(1, l1);
         Sampler lin = heap Sampler(1, 0);
         float32[] hout = heap float32[3];
-        GpuBuffer<float32> out = heap GpuBuffer<float32>(3);
+        KernelBuffer<float32> out = heap KernelBuffer<float32>(3);
         out.upload(hout);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         texMip.launch(s, grid: [1], block: [64])(tex, lin, out);
         s.sync();
         out.download(hout);
@@ -1107,9 +1107,9 @@ public final class GpuTour {
         Sampler near = heap Sampler(0, 0);   // nearest
         Sampler lin = heap Sampler(1, 0);    // linear
         float32[] hout = heap float32[2];
-        GpuBuffer<float32> out = heap GpuBuffer<float32>(2);
+        KernelBuffer<float32> out = heap KernelBuffer<float32>(2);
         out.upload(hout);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         texTwoSamplers.launch(s, grid: [1], block: [64])(tex, near, lin, out);
         s.sync();
         out.download(hout);
@@ -1117,20 +1117,20 @@ public final class GpuTour {
                             + " linear=" + (int32) hout[1] + "  (expect 30, 15)");
     }
 
-    // GpuBuffer.slice: a non-owning sub-view over a parent buffer. A view of the
+    // KernelBuffer.slice: a non-owning sub-view over a parent buffer. A view of the
     // second half is filled by a kernel (b[i]=i over the view), landing at
     // parent[64+i]; the head stays untouched. Shares storage, frees nothing.
     static void runBufferSlice() {
         System.stdout.println("");
-        System.stdout.println("-- GpuBuffer.slice: a non-owning sub-view of a parent buffer --");
+        System.stdout.println("-- KernelBuffer.slice: a non-owning sub-view of a parent buffer --");
         uint32 n = 128;
         uint32 half = 64;
         int32[] h = heap int32[n];
         for (uint32 i = 0; i < n; i = i + 1) { h[i] = -1; }
-        GpuBuffer<int32> all = heap GpuBuffer<int32>(n);
+        KernelBuffer<int32> all = heap KernelBuffer<int32>(n);
         all.upload(h);
-        GpuBuffer<int32> tail = all.slice(half, half);   // second-half view
-        GpuStream s = GpuStream.current();
+        KernelBuffer<int32> tail = all.slice(half, half);   // second-half view
+        KernelStream s = KernelStream.current();
         sliceFill.launch(s, grid: [1], block: [64])(tail, half);
         s.sync();
         all.download(h);
@@ -1149,11 +1149,11 @@ public final class GpuTour {
         float32[] hq = heap float32[n];
         float32[] hl = heap float32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hq[i] = 0.0f; hl[i] = 0.0f; }
-        GpuBuffer<float32> q = stack GpuBuffer<float32>(n);
-        GpuBuffer<float32> l = stack GpuBuffer<float32>(n);
+        KernelBuffer<float32> q = stack KernelBuffer<float32>(n);
+        KernelBuffer<float32> l = stack KernelBuffer<float32>(n);
         q.upload(hq);
         l.upload(hl);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         quatk.launch(s, grid: [(n + 63) / 64], block: [64])(q, n);
         linalgk.launch(s, grid: [(n + 63) / 64], block: [64])(l, n);
         s.sync();
@@ -1175,13 +1175,13 @@ public final class GpuTour {
         float32[] hv = heap float32[n];
         float32[] hd = heap float32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hf[i] = 0.0f; hv[i] = 0.0f; hd[i] = 0.0f; }
-        GpuBuffer<float32> f = stack GpuBuffer<float32>(n);
-        GpuBuffer<float32> v = stack GpuBuffer<float32>(n);
-        GpuBuffer<float32> d = stack GpuBuffer<float32>(n);
+        KernelBuffer<float32> f = stack KernelBuffer<float32>(n);
+        KernelBuffer<float32> v = stack KernelBuffer<float32>(n);
+        KernelBuffer<float32> d = stack KernelBuffer<float32>(n);
         f.upload(hf);
         v.upload(hv);
         d.upload(hd);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         fastMath.launch(s, grid: [(n + 63) / 64], block: [64])(f, n);
         vecMath.launch(s, grid: [(n + 63) / 64], block: [64])(v, n);
         floatTypes.launch(s, grid: [(n + 63) / 64], block: [64])(d, n);
@@ -1213,13 +1213,13 @@ public final class GpuTour {
             hb[i] = 1.0f;
             hc[i] = 0.0f;
         }
-        GpuBuffer<float16> a = stack GpuBuffer<float16>(tile);
-        GpuBuffer<float16> b = stack GpuBuffer<float16>(tile);
-        GpuBuffer<float32> c = stack GpuBuffer<float32>(tile);
+        KernelBuffer<float16> a = stack KernelBuffer<float16>(tile);
+        KernelBuffer<float16> b = stack KernelBuffer<float16>(tile);
+        KernelBuffer<float32> c = stack KernelBuffer<float32>(tile);
         a.upload(ha);
         b.upload(hb);
         c.upload(hc);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         // One workgroup owns the single output tile (block 64 = the subgroup that
         // cooperates on it natively; the software path computes it per-invocation).
         coopGemm.launch(s, grid: [1], block: [64])(a, b, c);
@@ -1234,7 +1234,7 @@ public final class GpuTour {
         // Identical result — it exercises the workgroup-shared staging path.
         float32[] hcs = heap float32[tile];
         for (uint32 i = 0; i < tile; i = i + 1) { hcs[i] = 0.0f; }
-        GpuBuffer<float32> cs = stack GpuBuffer<float32>(tile);
+        KernelBuffer<float32> cs = stack KernelBuffer<float32>(tile);
         cs.upload(hcs);
         coopGemmStaged.launch(s, grid: [1], block: [64])(a, b, cs);
         s.sync();
@@ -1251,11 +1251,11 @@ public final class GpuTour {
         uint32[] hin = heap uint32[n];
         uint32[] hsums = heap uint32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hin[i] = 1; hsums[i] = 0; }
-        GpuBuffer<uint32> in = stack GpuBuffer<uint32>(n);
-        GpuBuffer<uint32> sums = stack GpuBuffer<uint32>(n);
+        KernelBuffer<uint32> in = stack KernelBuffer<uint32>(n);
+        KernelBuffer<uint32> sums = stack KernelBuffer<uint32>(n);
         in.upload(hin);
         sums.upload(hsums);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         waveReduce.launch(s, grid: [(n + 63) / 64], block: [64])(sums, in, n);
         s.sync();
         sums.download(hsums);
@@ -1276,9 +1276,9 @@ public final class GpuTour {
         uint32 n = 256;
         uint32[] hout = heap uint32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 0; }
-        GpuBuffer<uint32> out = stack GpuBuffer<uint32>(n);
+        KernelBuffer<uint32> out = stack KernelBuffer<uint32>(n);
         out.upload(hout);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         waveRotate.launch(s, grid: [(n + 63) / 64], block: [64])(out, n);
         s.sync();
         out.download(hout);
@@ -1296,9 +1296,9 @@ public final class GpuTour {
         uint32 n = 256;
         uint32[] hout = heap uint32[5 * n];
         for (uint32 i = 0; i < 5 * n; i = i + 1) { hout[i] = 0; }
-        GpuBuffer<uint32> out = stack GpuBuffer<uint32>(5 * n);
+        KernelBuffer<uint32> out = stack KernelBuffer<uint32>(5 * n);
         out.upload(hout);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         waveReduceOps.launch(s, grid: [(n + 63) / 64], block: [64])(out, n);
         s.sync();
         out.download(hout);
@@ -1319,9 +1319,9 @@ public final class GpuTour {
         uint32 n = 256;
         uint32[] hout = heap uint32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 0; }
-        GpuBuffer<uint32> out = stack GpuBuffer<uint32>(n);
+        KernelBuffer<uint32> out = stack KernelBuffer<uint32>(n);
         out.upload(hout);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         wavePrefix.launch(s, grid: [(n + 63) / 64], block: [64])(out, n);
         s.sync();
         out.download(hout);
@@ -1342,9 +1342,9 @@ public final class GpuTour {
         uint32 n = 256;
         uint32[] hout = heap uint32[n];
         for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 0; }
-        GpuBuffer<uint32> out = stack GpuBuffer<uint32>(n);
+        KernelBuffer<uint32> out = stack KernelBuffer<uint32>(n);
         out.upload(hout);
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         quadOps.launch(s, grid: [(n + 63) / 64], block: [64])(out, n);
         s.sync();
         out.download(hout);

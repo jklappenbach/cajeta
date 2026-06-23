@@ -1038,6 +1038,44 @@ public:
         return b.CreateGEP(elemTy, base, {index}, "idx");
     }
 
+    // SPIR-V uses LOGICAL addressing: a buffer is a runtime array of scalars, so
+    // there is no packed `<N x T>` load from a scalar element pointer (the
+    // default, which the pointer backends use, produces invalid SPIR-V). Build
+    // the vector from per-lane scalar loads through bufferElementPtr
+    // (OpCompositeConstruct via insertelement); the store extracts each lane and
+    // writes it scalar. This is the granular form of the spec's §6.1.4
+    // "split into <=4-component ops" — valid for any width SPIR-V admits.
+    llvm::Value* vectorLoad(llvm::IRBuilderBase& b, llvm::Module& m,
+                            llvm::Value* base, llvm::Type* elemTy,
+                            unsigned lanes, llvm::Value* index) override {
+        auto* vecTy = llvm::FixedVectorType::get(elemTy, lanes);
+        llvm::Value* vec = llvm::UndefValue::get(vecTy);
+        llvm::Type* idxTy = index->getType();
+        for (unsigned j = 0; j < lanes; ++j) {
+            llvm::Value* jIdx = b.CreateAdd(
+                index, llvm::ConstantInt::get(idxTy, j));
+            llvm::Value* ptr = bufferElementPtr(b, m, base, elemTy, jIdx);
+            llvm::Value* sc = b.CreateLoad(elemTy, ptr, "vl.lane");
+            vec = b.CreateInsertElement(
+                vec, sc, llvm::ConstantInt::get(b.getInt32Ty(), j), "vl.ins");
+        }
+        return vec;
+    }
+
+    void vectorStore(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* base,
+                     llvm::Type* elemTy, unsigned lanes, llvm::Value* index,
+                     llvm::Value* value) override {
+        llvm::Type* idxTy = index->getType();
+        for (unsigned j = 0; j < lanes; ++j) {
+            llvm::Value* jIdx = b.CreateAdd(
+                index, llvm::ConstantInt::get(idxTy, j));
+            llvm::Value* ptr = bufferElementPtr(b, m, base, elemTy, jIdx);
+            llvm::Value* sc = b.CreateExtractElement(
+                value, llvm::ConstantInt::get(b.getInt32Ty(), j), "vs.lane");
+            b.CreateStore(sc, ptr);
+        }
+    }
+
     // bufs[idx] → the idx-th descriptor of the runtime descriptor array bound at
     // `binding`. handlefrombinding(set 0, binding, range = kMaxBindlessBuffers,
     // index = nonuniformindex(idx)) yields the per-buffer spirv.VulkanBuffer

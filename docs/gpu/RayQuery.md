@@ -104,7 +104,7 @@ Ray query takes the same trichotomy, with the noun added:
 
 | | **Native** | **Software** (new — this work) |
 |---|---|---|
-| **Noun** (`AccelerationStructure`) | Vulkan BLAS (`VK_KHR_acceleration_structure`) | a portable **BVH packed in a `GpuBuffer<T>`** |
+| **Noun** (`AccelerationStructure`) | Vulkan BLAS (`VK_KHR_acceleration_structure`) | a portable **BVH packed in a `KernelBuffer<T>`** |
 | **Verb** (`RayQuery` ops) | `OpRayQuery*KHR` | a portable **stackless traversal** the lowerer emits over the BVH buffer |
 | **Default** | where the driver advertises ray query | **everywhere** (the floor — CPU, and any GPU without native RQ) |
 
@@ -123,7 +123,7 @@ Two changes from the CoopMatrix precedent:
 
 ---
 
-## 3. The noun: a portable BVH packed in a `GpuBuffer<T>`
+## 3. The noun: a portable BVH packed in a `KernelBuffer<T>`
 
 This is the substance. The deliverable is a **build-from-description** provider: it
 consumes the geometry *description* (the AABBs and/or triangles a caller hands in) and
@@ -133,7 +133,7 @@ same description independently.
 
 ### 3.1 Layout (the contract between build and traversal)
 
-A flat, pointer-free, GPU-friendly layout in one `GpuBuffer<T>` (so it uploads/binds like
+A flat, pointer-free, GPU-friendly layout in one `KernelBuffer<T>` (so it uploads/binds like
 any other buffer, on any backend). Two regions, both `uint32`/`float32` words:
 
 ```
@@ -167,7 +167,7 @@ emit against it.
   static scenes; the capability heuristic can pick it when build cost is amortized over
   many queries. Same layout, different builder — slots in behind the same noun seam.
 - **Build location.** Host-side C builder first (`__cajeta_xpu_bvh_build_*`, the
-  `accel_build_aabbs` precedent) writing into a mapped `GpuBuffer<T>`, because it is the
+  `accel_build_aabbs` precedent) writing into a mapped `KernelBuffer<T>`, because it is the
   fastest path to a *correct, cross-checkable* noun. The on-device cajeta build kernel
   (the dogfooding ideal) is a follow-up once the layout and traversal are proven —
   correctness first, then move the build onto the device.
@@ -317,7 +317,7 @@ Legend: `[ ]` not started · `[~]` partial · `[x]` done.
 - [x] **Cross-check:** `ToffeeSpatialIndexDeviceTests` `fixedRadius` (777) + `exactL2` (888)
       pass on the **CPU** backend, matching the Vulkan native path; plus a self-contained
       `minimalRayQueryOnCpuSoftwareBvh` and the `SoftwareBvhBuilderTests` noun unit tests.
-- Incidental fixes this slice surfaced (pre-existing, off-path): `GpuBuffer.upload/downloadAsync`
+- Incidental fixes this slice surfaced (pre-existing, off-path): `KernelBuffer.upload/downloadAsync`
   class-param-field idiom; `Quad` host @Native stubs (missing since the quad commit — it
   also un-broke the Vulkan native Toffee test); boolean literals in the device lowerer.
 
@@ -428,7 +428,7 @@ verb (the pipeline is internal, never user-authored; cf. §9). See
 
 `cajeta.gpu` inline ray query runs on **every** backend: native `OpRayQuery*KHR`
 over a Vulkan BLAS where the device advertises it, a portable stackless BVH walk over a
-`GpuBuffer<T>`-packed BVH (Möller-Trumbore for triangles, slab for AABBs) everywhere else —
+`KernelBuffer<T>`-packed BVH (Möller-Trumbore for triangles, slab for AABBs) everywhere else —
 the **Software default**, mirroring `CooperativeMatrix`. The noun impl is chosen once at
 build time by the capability heuristic (overridable) and determines the verb lowering.
 Software is always a valid answer, never a failure (XPU-N02 stops being thrown for ray

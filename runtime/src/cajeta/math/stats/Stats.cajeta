@@ -1,0 +1,248 @@
+package cajeta.math.stats;
+
+import cajeta.math.Tensor;
+
+/**
+ * `cajeta.math.stats` — the descriptive-statistics surface (numpy-porting-plan Phase 10):
+ * `histogram`/`bincount`/`digitize` (this unit), then `cov`/`corrcoef` and the
+ * order-statistics (`quantile`/`percentile`/`median`) in later units. CPU floor; the
+ * scatter-heavy ops (`bincount`) have a GPU atomic-scatter lowering as a follow-on.
+ */
+public final class Stats {
+
+    /**
+     * Histogram of `t` over `bins` equal-width buckets spanning `[lo, hi]` (numpy
+     * `histogram` counts): a `Tensor<int64>` of length `bins`. Values outside `[lo, hi]`
+     * are dropped; a value equal to `hi` falls in the last bin (numpy's closed-right
+     * final edge). Flattens the input in C-order.
+     */
+    public static #Tensor<int64> histogram<E extends Numeric>(Tensor<E> t, int32 bins, E lo, E hi) {
+        int64[] sh = heap int64[1];
+        sh[0] = bins;
+        Tensor<int64> counts = Tensor.zeros<int64>(sh);
+        E span = hi - lo;
+        float32 fspan = (float32) span;
+        float32 fbins = (float32) bins;
+        int32 nd = t.ndim();
+        int64[] idx = heap int64[nd];
+        int32 z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        int64 n = t.size();
+        int64 c = 0;
+        while (c < n) {
+            E x = t.getAt(idx);
+            if (x >= lo && x <= hi) {
+                E diff = x - lo;
+                float32 fd = (float32) diff;
+                float32 frac = fd / fspan;
+                float32 scaled = frac * fbins;
+                int32 b = (int32) scaled;
+                if (b == bins) { b = bins - 1; }
+                if (b >= 0 && b < bins) {
+                    int64 cur = counts.get1(b);
+                    counts.set1(b, cur + 1);
+                }
+            }
+            c = c + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeAt(ax)) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return #counts;
+    }
+
+    /**
+     * Count of each non-negative integer value in the 1-D `t` (numpy `bincount`): a
+     * `Tensor<int64>` of length `max(t)+1` where `out[v]` is the number of times `v`
+     * appears. (Atomic-scatter on the GPU is a later lowering.)
+     */
+    public static #Tensor<int64> bincount(Tensor<int64> t) {
+        int64 n = t.size();
+        int64 mx = 0;
+        int64 i = 0;
+        while (i < n) {
+            int64 v = t.get1(i);
+            if (v > mx) { mx = v; }
+            i = i + 1;
+        }
+        int64[] sh = heap int64[1];
+        sh[0] = mx + 1;
+        Tensor<int64> counts = Tensor.zeros<int64>(sh);
+        i = 0;
+        while (i < n) {
+            int64 v = t.get1(i);
+            int64 cur = counts.get1(v);
+            counts.set1(v, cur + 1);
+            i = i + 1;
+        }
+        return #counts;
+    }
+
+    /**
+     * Bin index of each element of the 1-D `t` relative to the monotonically-increasing
+     * `edges` (numpy `digitize`, `right=False`): `out[i]` is the count of edges `<= t[i]`,
+     * i.e. the `j` with `edges[j-1] <= t[i] < edges[j]`. Returns a `Tensor<int64>` of the
+     * same length as `t`.
+     */
+    public static #Tensor<int64> digitize<E extends Numeric>(Tensor<E> t, Tensor<E> edges) {
+        int64 n = t.size();
+        int64 ne = edges.size();
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<int64> out = Tensor.zeros<int64>(sh);
+        int64 i = 0;
+        while (i < n) {
+            E x = t.get1(i);
+            int64 cnt = 0;
+            int64 e = 0;
+            while (e < ne) {
+                E ev = edges.get1(e);
+                if (ev <= x) { cnt = cnt + 1; }
+                e = e + 1;
+            }
+            out.set1(i, cnt);
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /**
+     * Covariance matrix of `m` shaped `(variables, observations)` (numpy `cov`,
+     * `rowvar=True`): a `(variables, variables)` `Tensor<E>` with
+     * `cov[i,j] = Σ_k (x_i[k]-μ_i)(x_j[k]-μ_j) / (N-1)` (the unbiased `ddof=1`
+     * estimator). `E` is `Floating` (the division and means need it).
+     */
+    public static #Tensor<E> cov<E extends Floating>(Tensor<E> m) {
+        int64 v = m.shapeAt(0);
+        int64 nobs = m.shapeAt(1);
+        int64[] msh = heap int64[1];
+        msh[0] = v;
+        Tensor<E> means = Tensor.zeros<E>(msh);
+        int64 i = 0;
+        while (i < v) {
+            E s = (E) 0;
+            int64 k = 0;
+            while (k < nobs) {
+                s = s + m.get2(i, k);
+                k = k + 1;
+            }
+            E mv = s / (E) nobs;
+            means.set1(i, mv);
+            i = i + 1;
+        }
+        int64 denom = nobs - 1;
+        int64[] sh = heap int64[2];
+        sh[0] = v;
+        sh[1] = v;
+        Tensor<E> out = Tensor.zeros<E>(sh);
+        i = 0;
+        while (i < v) {
+            E mi = means.get1(i);
+            int64 j = 0;
+            while (j < v) {
+                E mj = means.get1(j);
+                E acc = (E) 0;
+                int64 k = 0;
+                while (k < nobs) {
+                    E a = m.get2(i, k) - mi;
+                    E b = m.get2(j, k) - mj;
+                    acc = acc + a * b;
+                    k = k + 1;
+                }
+                E val = acc / (E) denom;
+                out.flatSet(i * v + j, val);
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /**
+     * Pearson correlation matrix of `m` `(variables, observations)` (numpy
+     * `corrcoef`): the covariance normalized by the per-variable standard deviations,
+     * `corr[i,j] = cov[i,j] / sqrt(cov[i,i]·cov[j,j])`, so the diagonal is 1 and all
+     * entries lie in `[-1, 1]`.
+     */
+    public static #Tensor<E> corrcoef<E extends Floating>(Tensor<E> m) {
+        Tensor<E> c = Stats.cov<E>(m);
+        int64 v = c.shapeAt(0);
+        int64[] sh = heap int64[2];
+        sh[0] = v;
+        sh[1] = v;
+        Tensor<E> out = Tensor.zeros<E>(sh);
+        int64 i = 0;
+        while (i < v) {
+            E cii = c.get2(i, i);
+            int64 j = 0;
+            while (j < v) {
+                E cjj = c.get2(j, j);
+                E denom = Math.sqrt(cii * cjj);
+                E val = c.get2(i, j) / denom;
+                out.flatSet(i * v + j, val);
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /**
+     * The `q`-th quantile of the flattened input (`q` in `[0,1]`, numpy `quantile`
+     * with the default linear interpolation): sorts, then linearly interpolates at
+     * position `q·(n-1)`. Returns a scalar `E` (`Floating`).
+     */
+    public static E quantile<E extends Floating>(Tensor<E> t, E q) {
+        int64 n = t.size();
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<E> flat = Tensor.zeros<E>(sh);
+        int32 nd = t.ndim();
+        int64[] idx = heap int64[nd];
+        int32 z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        int64 c = 0;
+        while (c < n) {
+            flat.set1(c, t.getAt(idx));
+            c = c + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= t.shapeAt(ax)) { idx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        Tensor<E> s = Tensor.sort<E>(flat, 0);
+        int64 nm1 = n - 1;
+        E en = (E) nm1;
+        E pos = q * en;
+        int64 lo = (int64) pos;
+        E elo = (E) lo;
+        E frac = pos - elo;
+        E vlo = s.get1(lo);
+        int64 hi = lo + 1;
+        if (hi >= n) {
+            return vlo;
+        }
+        E vhi = s.get1(hi);
+        return vlo + frac * (vhi - vlo);
+    }
+
+    /** The `p`-th percentile (`p` in `[0,100]`, numpy `percentile`) — `quantile(t, p/100)`. */
+    public static E percentile<E extends Floating>(Tensor<E> t, E p) {
+        E hundred = (E) 100;
+        E q = p / hundred;
+        return Stats.quantile<E>(t, q);
+    }
+
+    /** The median of the flattened input (numpy `median`) — `quantile(t, 0.5)`. */
+    public static E median<E extends Floating>(Tensor<E> t) {
+        E half = (E) 0.5f;
+        return Stats.quantile<E>(t, half);
+    }
+}
