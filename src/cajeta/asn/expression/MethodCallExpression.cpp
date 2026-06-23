@@ -2570,6 +2570,21 @@ namespace cajeta {
                     st->setAlignment(llvm::Align(1));
                     return st;
                 }
+                // hashBytes(int8[] buf, int64 len) -> int64: XXH3-64 (seeded) over
+                // the first `len` bytes of the array. Bridges int8[] -> uint8_t*
+                // (data at header+8, same ABI as loadU64) and calls the runtime
+                // __cajeta_hash_bytes. Backs String.hash(); len<=0 is the empty-
+                // input hash (the runtime clamps negative len to 0).
+                if (ns == "Cajeta" && methodCallName == "hashBytes" && parameters.size() == 2) {
+                    auto* i8Ty = builder->getInt8Ty();
+                    llvm::Value* hdr = loadValue(0);
+                    llvm::Value* len = loadValue(1);
+                    llvm::Value* data = builder->CreateGEP(
+                        i8Ty, hdr, builder->getInt64(8), "hash_data");
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_hash_bytes");
+                    resolvedType = CajetaType::of("int64");
+                    return builder->CreateCall(fn, {data, len});
+                }
                 // f32ToBits(float32 x) -> int32: reinterpret a float's IEEE-754
                 // bits as a 32-bit integer (LLVM bitcast — NOT a value
                 // conversion; `(int32) x` would truncate the numeric value).

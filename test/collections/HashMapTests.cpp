@@ -445,3 +445,30 @@ TEST(HashMapTests, classTypedValueWorks) {
     auto fn = jit->lookup<int32_t (*)()>("run");
     EXPECT_EQ(fn(), 99);
 }
+
+// String keys, 1000 distinct entries: exercises XXH3 string hashing and
+// the SwissTable group probe / resize / wraparound under many collisions.
+// Build with a small initial capacity (16) so the table resizes repeatedly.
+TEST(HashMapTests, stringKeysThousandRoundTrip) {
+    auto src =
+        "package test;\n"
+        "import cajeta.collection.HashMap;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        HashMap<String, int32> m = heap HashMap<String, int32>(16);\n"
+        "        int32 i = 0;\n"
+        "        while (i < 1000) { m.put(\"k\" + i, i); i = i + 1; }\n"
+        "        int32 hits = 0;\n"
+        "        int32 j = 0;\n"
+        "        while (j < 1000) {\n"
+        "            if (m.get(\"k\" + j) == j) { hits = hits + 1; }\n"
+        "            j = j + 1;\n"
+        "        }\n"
+        "        if (m.count() != 1000) { return -1; }\n"
+        "        return hits;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 1000);
+}

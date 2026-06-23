@@ -131,36 +131,21 @@ public final class String {
      * String. String does NOT override operator== — the semantic shift
      * is carried entirely by this hash() override.
      *
-     * v1 algorithm is FNV-1a (Fowler–Noll–Vo, 1a variant): start with
-     * the 64-bit offset basis 0xCBF29CE484222325, then for each byte
-     * `b` of the payload `h = (h XOR b) * FNV_PRIME` where the FNV
-     * prime is 0x100000001B3 = 1099511628211. Deterministic,
-     * content-sensitive, no per-process seed mixing yet — DoS-resistant
-     * seeded hashing (XXH3-64 + processSeed, matching the rest of
-     * cajeta.hash) is a follow-up that needs the int8[]→uint8_t*
-     * @Native bridge to materialize. The runtime symbol
-     * (__cajeta_hash_bytes) already exists.
+     * Backed by the runtime XXH3-64 (seeded with the per-process hash-
+     * flood seed) via the Cajeta.hashBytes intrinsic — multi-GB/s vs the
+     * old byte-at-a-time FNV-1a dependency chain, and the same DoS-
+     * resistant seeded construction the primitive and cajeta.hash hashers
+     * use.
      *
-     * The empty-bytes case hashes to the offset basis itself, since
-     * the for-each loop runs zero times. This is what callers get from
-     * `heap String()` (no-arg ctor) and from `heap String(b, 0)`.
+     * The empty/null-bytes case hashes via the len == 0 path (a stable
+     * seed-derived value), so `heap String()` and `heap String(b, 0)`
+     * agree.
      */
     public int64 hash() {
-        // FNV-1a accumulates in uint64 so the multiplication chain
-        // wraps cleanly under --overflow-checks=on (modular by design,
-        // per the FNV spec). Returned as int64 for the Hasher contract.
-        uint64 h = (uint64) 0xCBF29CE484222325;
-        if (this.bytes == null) {
-            return (int64) h;
-        }
-        int32 i = 0;
-        while (i < this.byteLength) {
-            uint64 b = (uint64) (((int32) this.bytes[i]) & 0xff);
-            h = h ^ b;
-            h = h * (uint64) 0x100000001B3;
-            i = i + 1;
-        }
-        return (int64) h;
+        // bytes==null implies byteLength==0 (both ctors), and the XXH3
+        // len==0 path never dereferences the data pointer, so the null
+        // and empty cases yield the same seed-derived value with no guard.
+        return Cajeta.hashBytes(this.bytes, (int64) this.byteLength);
     }
 
     /**

@@ -265,3 +265,36 @@ TEST(StringMethodsTests, replaceNoMatch) {
         "if (r.equals(\"hello\")) return 1;\n"
         "return 0;"), 1);
 }
+
+// --- hash() (XXH3) -------------------------------------------------------
+
+TEST(StringMethodsTests, hashEqualContentEqual) {
+    EXPECT_EQ(runJit(
+        "String a = \"foo\";\n"
+        "String b = \"foo\";\n"
+        "if (a.hash() == b.hash()) return 1;\n"
+        "return 0;"), 1);
+}
+
+TEST(StringMethodsTests, hashConcatEqualsLiteral) {
+    EXPECT_EQ(runJit(
+        "String a = \"foo\" + \"bar\";\n"
+        "if (a.hash() == \"foobar\".hash()) return 1;\n"
+        "return 0;"), 1);
+}
+
+TEST(StringMethodsTests, hashEmptyEqualsDefault) {
+    EXPECT_EQ(runJit(
+        "String a = \"\";\n"
+        "String b = \"\";\n"
+        "if (a.hash() == b.hash()) return 1;\n"
+        "return 0;"), 1);
+}
+
+TEST(StringMethodsTests, hashDifferentContentDiffers) {
+    EXPECT_EQ(runJit(
+        "String a = \"foo\";\n"
+        "String b = \"bar\";\n"
+        "if (a.hash() != b.hash()) return 1;\n"
+        "return 0;"), 1);
+}
