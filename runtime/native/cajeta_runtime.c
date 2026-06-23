@@ -505,7 +505,26 @@ static int __cajeta_live_set_remove_locked(void* p) {
     return 0;
 }
 
+// Single-threaded fast path. The live-set mutex only guards against a SECOND
+// thread; until one exists every alloc/drop is on the main thread, so the
+// lock/unlock is pure overhead (a hot cost — alloc-heavy code does millions).
+// This flag is one-way 0->1, flipped on the main thread (release barrier) BEFORE
+// any worker carrier / timer / reactor / kernel-pool thread is pthread_create'd
+// (see __cajeta_live_set_go_multithreaded). While 0, the only thread that can
+// touch the set is the one reading the flag, so the table op is safe lock-free;
+// once 1, every caller — including the just-spawned thread, which sees 1 through
+// the spawn's barrier — takes the mutex.
+static volatile int __cajeta_live_set_mt = 0;
+
+void __cajeta_live_set_go_multithreaded(void) {
+    __atomic_store_n(&__cajeta_live_set_mt, 1, __ATOMIC_RELEASE);
+}
+
 void __cajeta_live_set_add(void* p) {
+    if (__atomic_load_n(&__cajeta_live_set_mt, __ATOMIC_ACQUIRE) == 0) {
+        __cajeta_live_set_add_locked(p);
+        return;
+    }
     pthread_mutex_lock(&__cajeta_live_set_mu);
     __cajeta_live_set_add_locked(p);
     pthread_mutex_unlock(&__cajeta_live_set_mu);
@@ -515,6 +534,9 @@ void __cajeta_live_set_add(void* p) {
 // This is the atomic "claim" used by drop dispatchers: only the first caller
 // gets a 1 and is responsible for running the destructor + free.
 int __cajeta_live_set_claim(void* p) {
+    if (__atomic_load_n(&__cajeta_live_set_mt, __ATOMIC_ACQUIRE) == 0) {
+        return __cajeta_live_set_remove_locked(p);
+    }
     pthread_mutex_lock(&__cajeta_live_set_mu);
     int r = __cajeta_live_set_remove_locked(p);
     pthread_mutex_unlock(&__cajeta_live_set_mu);
@@ -1874,6 +1896,9 @@ void __cajeta_task_run(void* arg, cajeta_task_trampoline_fn trampoline,
             pthread_mutex_init(&__cajeta_carriers[i].deque_mutex, NULL);
             __cajeta_deque_init(&__cajeta_carriers[i].deque);
         }
+        // Second-thread barrier: switch the live-set to its locked path before
+        // any carrier can allocate (release-ordered, on the main thread).
+        __cajeta_live_set_go_multithreaded();
         for (int i = 0; i < n; ++i) {
             pthread_create(&__cajeta_carriers[i].thread, NULL,
                            __cajeta_carrier_loop, &__cajeta_carriers[i]);
@@ -2117,6 +2142,7 @@ static void* __cajeta_timer_loop(void* arg) {
 static void __cajeta_timer_ensure_started_locked(void) {
     if (__cajeta_timer_started) return;
     __cajeta_timer_started = 1;
+    __cajeta_live_set_go_multithreaded();   // second-thread barrier (see live-set)
     pthread_create(&__cajeta_timer_thread, NULL, __cajeta_timer_loop, NULL);
 }
 
@@ -2353,6 +2379,7 @@ static void __cajeta_reactor_ensure_started_locked(void) {
         return;
     }
     __cajeta_reactor_started = 1;
+    __cajeta_live_set_go_multithreaded();   // second-thread barrier (see live-set)
     pthread_create(&__cajeta_reactor_thread, NULL,
                     __cajeta_reactor_loop, NULL);
 }
@@ -12117,6 +12144,7 @@ static void caj_kpool_ensure(int cap) {
     // mu/go/done are all valid via static zero-init (PTHREAD_*_INITIALIZER is
     // all-zero on glibc); do NOT pthread_mutex_init(&mu) here -- we hold it.
     g_caj_kpool.started = 1;
+    __cajeta_live_set_go_multithreaded();     // second-thread barrier (see live-set)
     while (g_caj_kpool.nthreads < want) {
         long id = g_caj_kpool.nthreads;
         if (pthread_create(&g_caj_kpool.threads[id], NULL,
