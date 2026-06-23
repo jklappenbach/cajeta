@@ -34,7 +34,7 @@ public class StringReplaceBench extends Benchmark {
             this.text = this.text + this.text;
             k = k + 1;
         }
-        this.textLen = (int64) this.text.count();
+        this.textLen = (int64) this.text.size();
     }
 
     public int64 inputSize() {
@@ -43,7 +43,7 @@ public class StringReplaceBench extends Benchmark {
 
     public void run(int32 iterations) {
         String out = this.text.replace("fox", "feline");
-        this.outLen = (int64) out.count();
+        this.outLen = (int64) out.size();
     }
 
     public boolean checkResult() {

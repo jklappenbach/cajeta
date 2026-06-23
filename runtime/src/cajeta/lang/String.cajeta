@@ -131,36 +131,21 @@ public final class String {
      * String. String does NOT override operator== — the semantic shift
      * is carried entirely by this hash() override.
      *
-     * v1 algorithm is FNV-1a (Fowler–Noll–Vo, 1a variant): start with
-     * the 64-bit offset basis 0xCBF29CE484222325, then for each byte
-     * `b` of the payload `h = (h XOR b) * FNV_PRIME` where the FNV
-     * prime is 0x100000001B3 = 1099511628211. Deterministic,
-     * content-sensitive, no per-process seed mixing yet — DoS-resistant
-     * seeded hashing (XXH3-64 + processSeed, matching the rest of
-     * cajeta.hash) is a follow-up that needs the int8[]→uint8_t*
-     * @Native bridge to materialize. The runtime symbol
-     * (__cajeta_hash_bytes) already exists.
+     * Backed by the runtime XXH3-64 (seeded with the per-process hash-
+     * flood seed) via the Cajeta.hashBytes intrinsic — multi-GB/s vs the
+     * old byte-at-a-time FNV-1a dependency chain, and the same DoS-
+     * resistant seeded construction the primitive and cajeta.hash hashers
+     * use.
      *
-     * The empty-bytes case hashes to the offset basis itself, since
-     * the for-each loop runs zero times. This is what callers get from
-     * `heap String()` (no-arg ctor) and from `heap String(b, 0)`.
+     * The empty/null-bytes case hashes via the len == 0 path (a stable
+     * seed-derived value), so `heap String()` and `heap String(b, 0)`
+     * agree.
      */
     public int64 hash() {
-        // FNV-1a accumulates in uint64 so the multiplication chain
-        // wraps cleanly under --overflow-checks=on (modular by design,
-        // per the FNV spec). Returned as int64 for the Hasher contract.
-        uint64 h = (uint64) 0xCBF29CE484222325;
-        if (this.bytes == null) {
-            return (int64) h;
-        }
-        int32 i = 0;
-        while (i < this.byteLength) {
-            uint64 b = (uint64) (((int32) this.bytes[i]) & 0xff);
-            h = h ^ b;
-            h = h * (uint64) 0x100000001B3;
-            i = i + 1;
-        }
-        return (int64) h;
+        // bytes==null implies byteLength==0 (both ctors), and the XXH3
+        // len==0 path never dereferences the data pointer, so the null
+        // and empty cases yield the same seed-derived value with no guard.
+        return Cajeta.hashBytes(this.bytes, (int64) this.byteLength);
     }
 
     /**
@@ -329,31 +314,31 @@ public final class String {
         int64 hlen = (int64) this.byteLength;
         int64 lim = hlen - (int64) nlen;          // last valid start offset
         int8 first = needle.bytes[0];
-        // SWAR first-byte scan: load 8 bytes at a time and locate every byte
-        // equal to the needle's first byte (broadcast `cc`, zero-byte detect via
-        // (x-ones)&~x&high — same idiom as the JSON string scanner). Only the
-        // candidate offsets get a full-needle verify, so a needle whose first
-        // byte is rare in the haystack skips ~8 bytes per load instead of one.
-        uint64 ones = 0x0101010101010101;
-        uint64 high = 0x8080808080808080;
-        uint64 cc = ((uint64) ((int32) first & 0xFF)) * ones;
+        int8 last = needle.bytes[nlen - 1];
+        // SIMD memmem (two-byte prefilter, 32 bytes/iter -> AVX2 under cpu=native).
+        // For each block, vector-compare the first-byte window bytes[i..i+31] to
+        // `first` AND the last-byte window bytes[i+nlen-1..+31] to `last`; only
+        // positions matching BOTH (cand) get a full verify. A needle whose first
+        // and last bytes rarely co-occur (the common case) clears `cand` to 0 most
+        // iterations, so the loop runs at vector-load bandwidth. nlen==1 reduces to
+        // a single-window scan (last==first, both windows alias) automatically.
         int64 i = start;
-        int64 scanEnd = hlen - 8;                  // last offset with a full 8-byte load
-        while (i <= scanEnd) {
-            uint64 w = (uint64) Cajeta.loadU64(this.bytes, i);
-            uint64 x = w ^ cc;
-            uint64 m = (x - ones) & (~x) & high;
-            while (m != 0) {
-                int32 idx = Cajeta.ctz64((int64) m) >> 3;
-                int64 at = i + (int64) idx;
-                if (at <= lim && this.regionMatches(at, needle, nlen)) {
+        int64 blockEnd = lim - 31;                 // last i with both 32-byte loads in bounds
+        int64 nm1 = (int64) nlen - 1;
+        while (i <= blockEnd) {
+            Vector<int8,32> va = this.bytes.vload<32>(i);
+            Vector<int8,32> vb = this.bytes.vload<32>(i + nm1);
+            int32 cand = va.eqMask(first) & vb.eqMask(last);
+            while (cand != 0) {
+                int64 at = i + (int64) Cajeta.ctz64((int64) cand);
+                if (this.regionMatches(at, needle, nlen)) {
                     return at;
                 }
-                m = m & (m - 1);                   // clear this candidate byte, find the next
+                cand = cand & (cand - 1);          // clear this candidate, find the next
             }
-            i = i + 8;
+            i = i + 32;
         }
-        // Tail (haystacks < 8 bytes, or the final partial window): scalar scan.
+        // Tail (short haystacks, or the final < 32-byte window): scalar scan.
         while (i <= lim) {
             if (this.bytes[i] == first && this.regionMatches(i, needle, nlen)) {
                 return i;
@@ -451,13 +436,38 @@ public final class String {
             end = begin;
         }
         int32 len = end - begin;
-        int8[] out = heap int8[len];
+        int8[] out = Cajeta.allocBytes((int64) len);   // fully written below
         int32 i = 0;
         while (i < len) {
             out[i] = this.bytes[begin + i];
             i = i + 1;
         }
         return heap String(#out, len);
+    }
+
+    // 0x80 in each byte of `v` whose value lies in [lo, hi]. Valid only when
+    // every byte of `v` is < 0x80 (no inter-byte carry): byte+0x80-lo sets the
+    // high bit iff byte >= lo, and the same for hi+1 gives byte > hi.
+    @Inline
+    private static uint64 asciiRangeMask(uint64 v, uint64 lo, uint64 hi) {
+        uint64 high = (uint64) 0x8080808080808080;
+        uint64 ones = (uint64) 0x0101010101010101;
+        uint64 ge = (v + ones * ((uint64) 0x80 - lo)) & high;
+        uint64 gt = (v + ones * ((uint64) 0x80 - (hi + (uint64) 1))) & high;
+        return ge & ~gt;
+    }
+
+    // Uppercase/lowercase an all-ASCII 8-byte word. The bit-5 mask is confined
+    // with & 0x2020..20 so the result is correct regardless of >> signedness.
+    @Inline
+    private static uint64 swarUpper(uint64 v) {
+        uint64 m = String.asciiRangeMask(v, (uint64) 0x61, (uint64) 0x7A);
+        return v & ~((m >> 2) & (uint64) 0x2020202020202020);
+    }
+    @Inline
+    private static uint64 swarLower(uint64 v) {
+        uint64 m = String.asciiRangeMask(v, (uint64) 0x41, (uint64) 0x5A);
+        return v | ((m >> 2) & (uint64) 0x2020202020202020);
     }
 
     /**
@@ -468,16 +478,49 @@ public final class String {
      */
     public #String toUpperCase() {
         int32 n = this.byteLength;
-        int8[] out = heap int8[n];
-        int32 i = 0;
-        while (i < n) {
-            int32 b = ((int32) this.bytes[i]) & 0xff;
-            if (b >= 0x61 && b <= 0x7A) {
-                out[i] = (int8) (b - 32);
+        int8[] out = Cajeta.allocBytes((int64) n);   // every byte written below
+        int8[] src = this.bytes;
+        uint64 high = (uint64) 0x8080808080808080;
+        int32 k = 0;
+        // 32 bytes/iter (4 words, one ASCII guard); clears bit 5 ([a-z]->[A-Z]).
+        while (k + 32 <= n) {
+            uint64 v0 = (uint64) Cajeta.loadU64(src, (int64) k);
+            uint64 v1 = (uint64) Cajeta.loadU64(src, (int64) (k + 8));
+            uint64 v2 = (uint64) Cajeta.loadU64(src, (int64) (k + 16));
+            uint64 v3 = (uint64) Cajeta.loadU64(src, (int64) (k + 24));
+            if ((((v0 | v1) | (v2 | v3)) & high) == (uint64) 0) {
+                Cajeta.storeU64(out, (int64) k, (int64) String.swarUpper(v0));
+                Cajeta.storeU64(out, (int64) (k + 8), (int64) String.swarUpper(v1));
+                Cajeta.storeU64(out, (int64) (k + 16), (int64) String.swarUpper(v2));
+                Cajeta.storeU64(out, (int64) (k + 24), (int64) String.swarUpper(v3));
             } else {
-                out[i] = this.bytes[i];
+                int32 j = 0;
+                while (j < 32) {
+                    int32 b = ((int32) src[k + j]) & 0xff;
+                    out[k + j] = (b >= 0x61 && b <= 0x7A) ? (int8) (b - 32) : src[k + j];
+                    j = j + 1;
+                }
             }
-            i = i + 1;
+            k = k + 32;
+        }
+        while (k + 8 <= n) {
+            uint64 v = (uint64) Cajeta.loadU64(src, (int64) k);
+            if ((v & high) == (uint64) 0) {
+                Cajeta.storeU64(out, (int64) k, (int64) String.swarUpper(v));
+            } else {
+                int32 j = 0;
+                while (j < 8) {
+                    int32 b = ((int32) src[k + j]) & 0xff;
+                    out[k + j] = (b >= 0x61 && b <= 0x7A) ? (int8) (b - 32) : src[k + j];
+                    j = j + 1;
+                }
+            }
+            k = k + 8;
+        }
+        while (k < n) {
+            int32 b = ((int32) src[k]) & 0xff;
+            out[k] = (b >= 0x61 && b <= 0x7A) ? (int8) (b - 32) : src[k];
+            k = k + 1;
         }
         return heap String(#out, n);
     }
@@ -489,16 +532,49 @@ public final class String {
      */
     public #String toLowerCase() {
         int32 n = this.byteLength;
-        int8[] out = heap int8[n];
-        int32 i = 0;
-        while (i < n) {
-            int32 b = ((int32) this.bytes[i]) & 0xff;
-            if (b >= 0x41 && b <= 0x5A) {
-                out[i] = (int8) (b + 32);
+        int8[] out = Cajeta.allocBytes((int64) n);   // every byte written below
+        int8[] src = this.bytes;
+        uint64 high = (uint64) 0x8080808080808080;
+        int32 k = 0;
+        // 32 bytes/iter (4 words, one ASCII guard); sets bit 5 ([A-Z]->[a-z]).
+        while (k + 32 <= n) {
+            uint64 v0 = (uint64) Cajeta.loadU64(src, (int64) k);
+            uint64 v1 = (uint64) Cajeta.loadU64(src, (int64) (k + 8));
+            uint64 v2 = (uint64) Cajeta.loadU64(src, (int64) (k + 16));
+            uint64 v3 = (uint64) Cajeta.loadU64(src, (int64) (k + 24));
+            if ((((v0 | v1) | (v2 | v3)) & high) == (uint64) 0) {
+                Cajeta.storeU64(out, (int64) k, (int64) String.swarLower(v0));
+                Cajeta.storeU64(out, (int64) (k + 8), (int64) String.swarLower(v1));
+                Cajeta.storeU64(out, (int64) (k + 16), (int64) String.swarLower(v2));
+                Cajeta.storeU64(out, (int64) (k + 24), (int64) String.swarLower(v3));
             } else {
-                out[i] = this.bytes[i];
+                int32 j = 0;
+                while (j < 32) {
+                    int32 b = ((int32) src[k + j]) & 0xff;
+                    out[k + j] = (b >= 0x41 && b <= 0x5A) ? (int8) (b + 32) : src[k + j];
+                    j = j + 1;
+                }
             }
-            i = i + 1;
+            k = k + 32;
+        }
+        while (k + 8 <= n) {
+            uint64 v = (uint64) Cajeta.loadU64(src, (int64) k);
+            if ((v & high) == (uint64) 0) {
+                Cajeta.storeU64(out, (int64) k, (int64) String.swarLower(v));
+            } else {
+                int32 j = 0;
+                while (j < 8) {
+                    int32 b = ((int32) src[k + j]) & 0xff;
+                    out[k + j] = (b >= 0x41 && b <= 0x5A) ? (int8) (b + 32) : src[k + j];
+                    j = j + 1;
+                }
+            }
+            k = k + 8;
+        }
+        while (k < n) {
+            int32 b = ((int32) src[k]) & 0xff;
+            out[k] = (b >= 0x41 && b <= 0x5A) ? (int8) (b + 32) : src[k];
+            k = k + 1;
         }
         return heap String(#out, n);
     }
@@ -520,7 +596,7 @@ public final class String {
             end = end - 1;
         }
         int32 len = end - start;
-        int8[] out = heap int8[len];
+        int8[] out = Cajeta.allocBytes((int64) len);   // fully written below
         int32 i = 0;
         while (i < len) {
             out[i] = this.bytes[start + i];
@@ -562,7 +638,7 @@ public final class String {
             return this;        // no match — hand back the receiver unchanged
         }
         int64 outLen = hlen + count * (tlen - flen64);
-        int8[] out = heap int8[(int32) outLen];
+        int8[] out = Cajeta.allocBytes(outLen);   // every byte written below
         // Pass 2: walk matches with the SWAR indexOfFrom, bulk-copying each
         // segment + replacement into the exact buffer (8-byte stores via the
         // @Inline copyRange). (A hand-inlined continuous SWAR scan here measured

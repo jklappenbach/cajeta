@@ -589,6 +589,37 @@ void* __cajeta_new_array_header(uint64_t header_size, uint64_t elem_size, uint64
     return hdr;
 }
 
+// Same as __cajeta_new_array_header but the data region is left UNINITIALIZED
+// (malloc, not calloc). For buffers the caller fully overwrites before reading
+// — e.g. StringBuilder grow/toString, String concat payloads — the calloc
+// zero-fill is pure waste (O(bytes) stores immediately clobbered). The count
+// header is still set and the block is still live-set tracked, so drop / free
+// behave identically to a zeroed array; only the zeroing is skipped.
+void* __cajeta_new_array_header_uninit(uint64_t header_size, uint64_t elem_size, uint64_t count) {
+    if (elem_size != 0 && count > (UINT64_MAX - header_size) / elem_size) {
+        fprintf(stderr, "cajeta: __cajeta_new_array_header_uninit overflow (header=%llu elem=%llu count=%llu)\n",
+                (unsigned long long) header_size,
+                (unsigned long long) elem_size,
+                (unsigned long long) count);
+        abort();
+    }
+    uint64_t total = header_size + count * elem_size;
+    if (total == 0) {
+        return NULL;
+    }
+    void* hdr = malloc((size_t) total);
+    if (hdr == NULL) {
+        fprintf(stderr, "cajeta: __cajeta_new_array_header_uninit failed (header=%llu elem=%llu count=%llu)\n",
+                (unsigned long long) header_size,
+                (unsigned long long) elem_size,
+                (unsigned long long) count);
+        abort();
+    }
+    *((int64_t*) hdr) = (int64_t) count;
+    __cajeta_live_set_add(hdr);
+    return hdr;
+}
+
 void* __cajeta_alloc(uint64_t size);  // defined below; used by __cajeta_args_make
 
 // Materialize a cajeta `String[]` from C `argv` for a `main(String[] args)`
@@ -702,6 +733,22 @@ void* __cajeta_alloc(uint64_t size) {
     void* p = calloc(1, (size_t) size);
     if (p == NULL) {
         fprintf(stderr, "cajeta: __cajeta_alloc failed (size=%llu)\n",
+                (unsigned long long) size);
+        abort();
+    }
+    __cajeta_live_set_add(p);
+    return p;
+}
+
+// Uninitialized counterpart of __cajeta_alloc (malloc, not calloc) for blocks
+// the emitter fully overwrites before any read — e.g. the String-concat byte
+// buffer, which stores its count word and memcpys data+NUL across the whole
+// block. Still live-set tracked, so __cajeta_free reclaims it identically.
+void* __cajeta_alloc_uninit(uint64_t size) {
+    if (size == 0) return NULL;
+    void* p = malloc((size_t) size);
+    if (p == NULL) {
+        fprintf(stderr, "cajeta: __cajeta_alloc_uninit failed (size=%llu)\n",
                 (unsigned long long) size);
         abort();
     }
@@ -6211,14 +6258,25 @@ static inline uint64_t splitmix64_finalize(uint64_t x) {
     return x;
 }
 
+// Cheaper integer mix than splitmix64_finalize (1 mul + 1 xorshift vs 2 mul +
+// 3 xorshift). Still a BIJECTION on uint64 (odd-constant multiply and xorshift
+// are both invertible), so distinct keys always hash distinctly. The `>> 29`
+// fold pushes the well-mixed high bits down into the low bits the SwissTable
+// uses for its bucket index. Hot path for every int-keyed HashMap/HashSet.
+static inline uint64_t fast_int_mix(uint64_t x) {
+    x *= 0x9E3779B97F4A7C15ULL;
+    x ^= x >> 29;
+    return x;
+}
+
 int64_t __cajeta_hash_int64(int64_t value) {
-    return (int64_t) splitmix64_finalize((uint64_t) value ^ __cajeta_hash_seed_load());
+    return (int64_t) fast_int_mix((uint64_t) value ^ __cajeta_hash_seed_load());
 }
 
 int64_t __cajeta_hash_int32(int32_t value) {
     // Sign-extend so all-ones int32 doesn't hash like ~0 int64 just by
     // happening to share the low bits.
-    return (int64_t) splitmix64_finalize(
+    return (int64_t) fast_int_mix(
         (uint64_t) (int64_t) value ^ __cajeta_hash_seed_load());
 }
 

@@ -33,7 +33,7 @@ public class StringUpperBench extends Benchmark {
             this.text = this.text + this.text;
             k = k + 1;
         }
-        this.textLen = (int64) this.text.count();
+        this.textLen = (int64) this.text.size();
     }
 
     public int64 inputSize() {
@@ -42,7 +42,7 @@ public class StringUpperBench extends Benchmark {
 
     public void run(int32 iterations) {
         String out = this.text.toUpperCase();
-        this.outLen = (int64) out.count();
+        this.outLen = (int64) out.size();
     }
 
     public boolean checkResult() {

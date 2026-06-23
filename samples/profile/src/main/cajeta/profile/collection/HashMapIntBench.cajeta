@@ -37,7 +37,7 @@ public class HashMapIntBench extends Benchmark {
     }
 
     public void run(int32 iterations) {
-        HashMap<int32, int32> m = heap HashMap<int32, int32>(64);
+        HashMap<int32, int32> m = heap HashMap<int32, int32>(131072);
         int32 i = 0;
         while (i < this.n) {
             m.put(i, i * 2);
