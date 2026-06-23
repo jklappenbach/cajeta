@@ -2585,6 +2585,31 @@ namespace cajeta {
                     resolvedType = CajetaType::of("int64");
                     return builder->CreateCall(fn, {data, len});
                 }
+                // allocBytes(int64 n) -> int8[]: allocate an owned int8[] of n
+                // elements with the data region LEFT UNINITIALIZED (no calloc
+                // zeroing). For buffers fully overwritten before any read
+                // (StringBuilder grow/toString, concat payloads); the array is
+                // live-set tracked and drops/frees exactly like a zeroed one.
+                if (ns == "Cajeta" && methodCallName == "allocBytes" && parameters.size() == 1) {
+                    auto* i64Ty = builder->getInt64Ty();
+                    llvm::Value* count = loadValue(0);
+                    if (count->getType() != i64Ty) {
+                        count = builder->CreateIntCast(count, i64Ty, /*isSigned=*/true);
+                    }
+                    CajetaTypePtr i8 = CajetaType::of("int8");
+                    auto arrTy = std::make_shared<CajetaArray>(module, i8);
+                    module->getStructures()[arrTy->toCanonical()] =
+                        std::static_pointer_cast<CajetaClass>(arrTy);
+                    const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
+                    llvm::Value* headerSize = builder->getInt64(
+                        dl.getTypeAllocSize(arrTy->getLlvmType()));
+                    llvm::Value* elemSize = builder->getInt64(
+                        dl.getTypeAllocSize(arrTy->getElementLlvmType(&llvmCtx)));
+                    llvm::Function* allocFn =
+                        module->getRuntimeFunction("__cajeta_new_array_header_uninit");
+                    resolvedType = arrTy;
+                    return builder->CreateCall(allocFn, {headerSize, elemSize, count});
+                }
                 // f32ToBits(float32 x) -> int32: reinterpret a float's IEEE-754
                 // bits as a 32-bit integer (LLVM bitcast — NOT a value
                 // conversion; `(int32) x` would truncate the numeric value).

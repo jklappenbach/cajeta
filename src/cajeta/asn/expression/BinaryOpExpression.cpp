@@ -1782,23 +1782,27 @@ namespace cajeta {
                     // runtime from the concat result's strlen.
                     llvm::Value* arrSize = builder->CreateAdd(lenI64,
                         llvm::ConstantInt::get(i64Ty, 9), "concat.arr_size");
+                    // Uninitialized alloc: the count-word store + the data/NUL
+                    // memcpy below cover every byte of the block, so the old
+                    // calloc-then-memset double zero-fill was pure waste.
                     llvm::FunctionType* allocTy = llvm::FunctionType::get(
                         ptrTy, {i64Ty}, false);
                     llvm::FunctionCallee allocFn =
                         module->getLlvmModule()->getOrInsertFunction(
-                            "__cajeta_alloc", allocTy);
+                            "__cajeta_alloc_uninit", allocTy);
                     llvm::Value* arrPtr = builder->CreateCall(
                         allocFn, {arrSize}, "concat.arr_alloc");
-                    builder->CreateMemSet(arrPtr,
-                        llvm::ConstantInt::get(i8Ty, 0),
-                        arrSize, llvm::MaybeAlign(8));
                     builder->CreateStore(lenI64, arrPtr);
                     llvm::Value* dataPtr = builder->CreateInBoundsGEP(
                         i8Ty, arrPtr,
                         llvm::ConstantInt::get(i64Ty, 8),
                         "concat.arr_data");
+                    // Copy len+1 bytes — the concat result is NUL-terminated, so
+                    // this also lays down the trailing NUL the buffer needs.
+                    llvm::Value* copyLen = builder->CreateAdd(lenI64,
+                        llvm::ConstantInt::get(i64Ty, 1), "concat.copy_len");
                     builder->CreateMemCpy(dataPtr, llvm::MaybeAlign(1),
-                        concatResult, llvm::MaybeAlign(1), lenI64);
+                        concatResult, llvm::MaybeAlign(1), copyLen);
 
                     const llvm::DataLayout& dl =
                         module->getLlvmModule()->getDataLayout();

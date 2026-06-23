@@ -436,7 +436,7 @@ public final class String {
             end = begin;
         }
         int32 len = end - begin;
-        int8[] out = heap int8[len];
+        int8[] out = Cajeta.allocBytes((int64) len);   // fully written below
         int32 i = 0;
         while (i < len) {
             out[i] = this.bytes[begin + i];
@@ -478,7 +478,7 @@ public final class String {
      */
     public #String toUpperCase() {
         int32 n = this.byteLength;
-        int8[] out = heap int8[n];
+        int8[] out = Cajeta.allocBytes((int64) n);   // every byte written below
         int8[] src = this.bytes;
         uint64 high = (uint64) 0x8080808080808080;
         int32 k = 0;
@@ -532,7 +532,7 @@ public final class String {
      */
     public #String toLowerCase() {
         int32 n = this.byteLength;
-        int8[] out = heap int8[n];
+        int8[] out = Cajeta.allocBytes((int64) n);   // every byte written below
         int8[] src = this.bytes;
         uint64 high = (uint64) 0x8080808080808080;
         int32 k = 0;
@@ -596,7 +596,7 @@ public final class String {
             end = end - 1;
         }
         int32 len = end - start;
-        int8[] out = heap int8[len];
+        int8[] out = Cajeta.allocBytes((int64) len);   // fully written below
         int32 i = 0;
         while (i < len) {
             out[i] = this.bytes[start + i];
@@ -638,7 +638,7 @@ public final class String {
             return this;        // no match — hand back the receiver unchanged
         }
         int64 outLen = hlen + count * (tlen - flen64);
-        int8[] out = heap int8[(int32) outLen];
+        int8[] out = Cajeta.allocBytes(outLen);   // every byte written below
         // Pass 2: walk matches with the SWAR indexOfFrom, bulk-copying each
         // segment + replacement into the exact buffer (8-byte stores via the
         // @Inline copyRange). (A hand-inlined continuous SWAR scan here measured

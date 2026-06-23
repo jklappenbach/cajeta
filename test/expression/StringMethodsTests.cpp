@@ -298,3 +298,18 @@ TEST(StringMethodsTests, hashDifferentContentDiffers) {
         "if (a.hash() != b.hash()) return 1;\n"
         "return 0;"), 1);
 }
+
+// --- Cajeta.allocBytes (uninitialized int8[]) ---------------------------
+
+TEST(StringMethodsTests, allocBytesWriteReadRoundTrip) {
+    // allocBytes returns an owned, indexable int8[] of the given length;
+    // we fully overwrite then read back (data is uninitialized on alloc).
+    EXPECT_EQ(runJit(
+        "int8[] b = Cajeta.allocBytes(10);\n"
+        "int32 i = 0;\n"
+        "while (i < 10) { b[i] = (int8) i; i = i + 1; }\n"
+        "int32 sum = 0;\n"
+        "i = 0;\n"
+        "while (i < 10) { sum = sum + (int32) b[i]; i = i + 1; }\n"
+        "return sum;"), 45);
+}
