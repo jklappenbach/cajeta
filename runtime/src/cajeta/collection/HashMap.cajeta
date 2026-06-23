@@ -62,6 +62,10 @@ public final class HashMap<K, V> {
 
     // Dense entry storage: one inline {key, val} struct per slot.
     private MapEntry<K, V>[] slots;
+    // Per-slot ownership bits for entries the map TOOK via `#` transfer and must
+    // drop: bit0 = key owned, bit1 = val owned. Borrowed entries (plain `put`)
+    // leave 0 and are never dropped. Parallel to slots; length cap.
+    private int8[] owned;
     // Control bytes: length cap + 16. ctrl[cap+i] mirrors ctrl[i] for i in [0,16)
     // so a group load near the end never overruns.
     private int8[] ctrl;
@@ -83,6 +87,7 @@ public final class HashMap<K, V> {
         this.cap = c;
         this.slots = heap MapEntry<K, V>[c];
         this.ctrl = heap int8[c + 16];
+        this.owned = heap int8[c];   // calloc 0 = nothing owned yet
         this.sizeCount = 0;
         this.usedSlots = 0;
         this.fillCtrlEmpty();
@@ -120,6 +125,12 @@ public final class HashMap<K, V> {
      * Insert or replace the value at `key`.
      */
     public void put(K key, V value) {
+        // Ownership taken via `#` (read once at entry, before any other call):
+        // bit0 = key, bit1 = val. Plain (borrow) calls read 0.
+        int64 mvm = Cajeta.moveMask();
+        boolean keyOwned = (mvm & 1) != 0;
+        boolean valOwned = (mvm & 2) != 0;
+        int8 ownBits = (int8) (mvm & 3);
         int64 h = key.hash();
         int64 mask = this.cap - 1;
         int8 h2 = (int8) ((h >> 57) & 0x7F);
@@ -133,7 +144,20 @@ public final class HashMap<K, V> {
             while (mm != 0) {
                 int64 i = (pos + Cajeta.ctz64((int64) (mm & 65535))) & mask;
                 if (this.slots[i].key == key) {
+                    // Replace: drop the old owned value, keep the existing key.
+                    if ((this.owned[i] & 2) != 0) {
+                        Cajeta.dropValue(this.slots[i].val);
+                    }
                     this.slots[i].val = value;
+                    // The new key duplicates the stored one; drop it if we took it.
+                    if (keyOwned) {
+                        Cajeta.dropValue(key);
+                    }
+                    if (valOwned) {
+                        this.owned[i] = (int8) (this.owned[i] | 2);
+                    } else {
+                        this.owned[i] = (int8) (this.owned[i] & 1);
+                    }
                     return;
                 }
                 mm = mm & (mm - 1);
@@ -159,6 +183,7 @@ public final class HashMap<K, V> {
         boolean wasEmpty = (this.ctrl[insertAt] == (int8) 0x80);
         this.slots[insertAt].key = key;
         this.slots[insertAt].val = value;
+        this.owned[insertAt] = ownBits;
         this.setCtrl(insertAt, h2);
         this.sizeCount = this.sizeCount + 1;
         // Reusing a DELETED slot doesn't consume a fresh empty, so usedSlots
@@ -183,6 +208,7 @@ public final class HashMap<K, V> {
         int64 newMask = newCap - 1;
         MapEntry<K, V>[] newSlots = heap MapEntry<K, V>[newCap];
         int8[] newCtrl = heap int8[newCap + 16];
+        int8[] newOwned = heap int8[newCap];
         int64 nlen = newCap + 16;
         int64 word = (int64) 0x8080808080808080;
         int64 k = 0;
@@ -213,6 +239,7 @@ public final class HashMap<K, V> {
                         int64 i = (pos + Cajeta.ctz64((int64) emptyM)) & newMask;
                         newSlots[i].key = kk;
                         newSlots[i].val = vv;
+                        newOwned[i] = this.owned[s];   // carry ownership across resize
                         newCtrl[i] = h2;
                         if (i < 16) {
                             newCtrl[newCap + i] = h2;
@@ -229,6 +256,7 @@ public final class HashMap<K, V> {
         }
         this.slots = #newSlots;
         this.ctrl = #newCtrl;
+        this.owned = #newOwned;
         this.cap = newCap;
         this.sizeCount = newSize;
         this.usedSlots = newSize;
@@ -317,6 +345,13 @@ public final class HashMap<K, V> {
             while (mm != 0) {
                 int64 i = (pos + Cajeta.ctz64((int64) (mm & 65535))) & mask;
                 if (this.slots[i].key == key) {
+                    if ((this.owned[i] & 1) != 0) {
+                        Cajeta.dropValue(this.slots[i].key);
+                    }
+                    if ((this.owned[i] & 2) != 0) {
+                        Cajeta.dropValue(this.slots[i].val);
+                    }
+                    this.owned[i] = (int8) 0;
                     this.setCtrl(i, (int8) 0xFE);
                     this.sizeCount = this.sizeCount - 1;
                     return true;
@@ -336,6 +371,24 @@ public final class HashMap<K, V> {
     @Inline
     public int64 count() {
         return this.sizeCount;
+    }
+
+    // Drop the keys/values the map OWNS (took via `#`). Runs before the auto
+    // field-drops free the slots/ctrl/owned buffers. Borrowed entries (owned
+    // bit clear) are left alone — their lifetime belongs to the caller.
+    ~HashMap() {
+        int64 k = 0;
+        while (k < this.cap) {
+            if (this.ctrl[k] >= (int8) 0) {   // FULL slot
+                if ((this.owned[k] & 1) != 0) {
+                    Cajeta.dropValue(this.slots[k].key);
+                }
+                if ((this.owned[k] & 2) != 0) {
+                    Cajeta.dropValue(this.slots[k].val);
+                }
+            }
+            k = k + 1;
+        }
     }
 
     // ----- Subscript-syntax sugar over get/put -------------------------
