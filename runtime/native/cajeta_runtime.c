@@ -6258,14 +6258,25 @@ static inline uint64_t splitmix64_finalize(uint64_t x) {
     return x;
 }
 
+// Cheaper integer mix than splitmix64_finalize (1 mul + 1 xorshift vs 2 mul +
+// 3 xorshift). Still a BIJECTION on uint64 (odd-constant multiply and xorshift
+// are both invertible), so distinct keys always hash distinctly. The `>> 29`
+// fold pushes the well-mixed high bits down into the low bits the SwissTable
+// uses for its bucket index. Hot path for every int-keyed HashMap/HashSet.
+static inline uint64_t fast_int_mix(uint64_t x) {
+    x *= 0x9E3779B97F4A7C15ULL;
+    x ^= x >> 29;
+    return x;
+}
+
 int64_t __cajeta_hash_int64(int64_t value) {
-    return (int64_t) splitmix64_finalize((uint64_t) value ^ __cajeta_hash_seed_load());
+    return (int64_t) fast_int_mix((uint64_t) value ^ __cajeta_hash_seed_load());
 }
 
 int64_t __cajeta_hash_int32(int32_t value) {
     // Sign-extend so all-ones int32 doesn't hash like ~0 int64 just by
     // happening to share the low bits.
-    return (int64_t) splitmix64_finalize(
+    return (int64_t) fast_int_mix(
         (uint64_t) (int64_t) value ^ __cajeta_hash_seed_load());
 }
 
