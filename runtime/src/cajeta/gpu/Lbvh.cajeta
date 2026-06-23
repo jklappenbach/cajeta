@@ -1,0 +1,92 @@
+package cajeta.gpu;
+
+/**
+ * Lbvh — a pure-cajeta software LBVH builder (cajeta-gfx §3, the acceleration/
+ * sampling/residency foundation; spec §8.7). The build-from-description half of
+ * the portable software acceleration structure whose traversal already lives in
+ * {@link SoftwareRayQuery}: where the existing C builder (runtime/native/
+ * cajeta_bvh.c) does a median split, this builds the SAME frozen threaded-DFS
+ * flat float32 layout by the linear-BVH method (Lauterbach et al. 2009) —
+ * primitives ordered along a Morton (Z-order) space-filling curve, then a
+ * binary radix tree (Karras 2012) over the sorted codes. Because it emits the
+ * identical layout, traversal reuses {@link SoftwareRayQuery#step} unchanged and
+ * a built tree cross-checks nearest hits against the C builder.
+ *
+ * This file is grown in slices; this slice is the MORTON CODE primitive:
+ * {@link #quantize} (coordinate -> 10-bit lattice cell), {@link #expandBits}
+ * (spread 10 bits across every 3rd bit), and {@link #morton3D} (interleave three
+ * cells into one 30-bit Z-order code that fits a positive int32). Radix sort and
+ * the Karras hierarchy + DFS flatten are the sibling slices.
+ *
+ * CODEGEN DISCIPLINE (see the value-type-codegen-gotchas memory). The bit spread
+ * uses LEFT shifts + or + and only: an int32 `>>>` mis-lowers to an ARITHMETIC
+ * shift in the current codegen, so no logical right shift on int32 appears here.
+ * Float -> int goes through the float64 -> int64 -> int32 cast chain
+ * ({@link #floorToInt}); a direct float32 -> int32 cast mis-lowers to an illegal
+ * instruction.
+ */
+public class Lbvh {
+
+    /**
+     * Spread the 10 low bits of `v` so that input bit i lands at output bit 3i
+     * (the interleave half of a 3-D Morton code). Pure left-shift / or / and:
+     * after masking to 10 bits the value never sets bit 28+, so no shift
+     * overflows int32's sign bit, and no int32 logical right shift is needed
+     * (which would mis-lower). The four magic masks are the standard 10-bit
+     * bit-spreading constants (0x030000FF, 0x0300F00F, 0x030C30C3, 0x09249249).
+     */
+    public static int32 expandBits(int32 v) {
+        int32 x = v & 1023;                       // 0x3FF — keep 10 bits
+        x = (x | (x << 16)) & 50331903;           // 0x030000FF
+        x = (x | (x << 8))  & 50393103;           // 0x0300F00F
+        x = (x | (x << 4))  & 51130563;           // 0x030C30C3
+        x = (x | (x << 2))  & 153391689;          // 0x09249249
+        return x;
+    }
+
+    /**
+     * Interleave three 10-bit lattice cells into one 30-bit Morton (Z-order)
+     * code: x bits land at 2,5,..,29; y at 1,4,..,28; z at 0,3,..,27. The result
+     * is < 2^30, a positive int32. Z-order preserves per-axis ordering when the
+     * other two axes are held fixed, which is what makes the sorted order a
+     * spatially-coherent leaf layout.
+     */
+    public static int32 morton3D(int32 qx, int32 qy, int32 qz) {
+        int32 xx = Lbvh.expandBits(qx);
+        int32 yy = Lbvh.expandBits(qy);
+        int32 zz = Lbvh.expandBits(qz);
+        return (xx << 2) | (yy << 1) | zz;
+    }
+
+    /**
+     * Floor `x` to an int32 via the float64 -> int64 -> int32 cast chain (the
+     * route {@link Noise#floorToInt} uses); a direct float32 -> int32 cast
+     * mis-lowers to an illegal instruction in the current codegen.
+     */
+    public static int32 floorToInt(float32 x) {
+        float64 xd = x;          // float32 -> float64 (widen)
+        int64 t = (int64) xd;    // float64 -> int64 (truncates toward zero; x >= 0 here)
+        return (int32) t;        // int64 -> int32
+    }
+
+    /**
+     * Map a coordinate `v` in the span [lo, hi] onto a 10-bit lattice cell in
+     * [0, 1023], clamped at both ends (so an out-of-bounds primitive never
+     * indexes past the lattice). A degenerate span (hi <= lo) collapses to cell
+     * 0. This is the per-axis quantization that precedes {@link #morton3D}.
+     */
+    public static int32 quantize(float32 v, float32 lo, float32 hi) {
+        float32 span = hi - lo;
+        float32 t = 0.0f;
+        if (span > 0.0000001f) {
+            t = (v - lo) / span;
+        }
+        if (t < 0.0f) { t = 0.0f; }
+        if (t > 1.0f) { t = 1.0f; }
+        float32 scaled = t * 1023.0f;
+        int32 q = Lbvh.floorToInt(scaled);
+        if (q < 0) { q = 0; }
+        if (q > 1023) { q = 1023; }
+        return q;
+    }
+}

@@ -82,7 +82,15 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // alongside the numpy-phase3 work. The numpy batch itself is all cajeta.math
 // (verified absent from the eager prelude — still lazy); the +9 are non-math
 // stdlib structures. Self-anchored to the live modules.size()-1 on a fresh build.
-static constexpr size_t STDLIB_STRUCTURE_COUNT = 383;
+// 2026-06-23: re-anchored 383 → 440 on feature/ifx. The 383 anchor was stale on
+// THIS branch: the eager cajeta.gpu §3 foundation classes added here
+// (LowDiscrepancy, Rng, Sdf, Noise, Octahedral) plus the branch's ifx-lineage
+// prelude growth had drifted the live count well past 383 (cajeta.gpu is eager;
+// only cajeta.math is lazy), so this test was already red before §3-a. +1 of the
+// jump is cajeta.gpu.Lbvh (the §3-a software-LBVH builder, Morton-code slice);
+// the rest absorbs the pre-existing drift. Self-anchored to the live
+// modules.size()-1 on a fresh build.
+static constexpr size_t STDLIB_STRUCTURE_COUNT = 440;
 
 TEST(CompilerTests, canParseOnValidShortPackage) {
     string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");
