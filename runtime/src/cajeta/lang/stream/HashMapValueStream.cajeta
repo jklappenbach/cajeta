@@ -51,7 +51,7 @@ public class HashMapValueStream<K, V> extends Stream<V> implements Splittable<V>
      */
     public Optional<V> next() {
         while (this.idx < this.cap) {
-            if (this.state[this.idx] == 1) {
+            if (this.state[this.idx] >= (int8) 0) {   // FULL: top bit clear
                 V v = this.vals[this.idx];
                 this.idx = this.idx + 1;
                 return stack Optional<V>(true, #v);

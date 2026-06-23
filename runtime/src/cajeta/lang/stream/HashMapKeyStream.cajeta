@@ -59,7 +59,7 @@ public class HashMapKeyStream<K, V> extends Stream<K> implements Splittable<K> {
      */
     public Optional<K> next() {
         while (this.idx < this.cap) {
-            if (this.state[this.idx] == 1) {
+            if (this.state[this.idx] >= (int8) 0) {   // FULL: top bit clear
                 K k = this.keys[this.idx];
                 this.idx = this.idx + 1;
                 return stack Optional<K>(true, #k);

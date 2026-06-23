@@ -146,3 +146,80 @@ TEST(PrimitiveHashMapTests, int64KeyedPutThenGet) {
     auto fn = jit->lookup<int32_t (*)()>("run");
     EXPECT_EQ(fn(), 42);
 }
+
+// --- SwissTable engine correctness -------------------------------------
+
+// Insert 1000 distinct int keys into a small (16) table: forces ~6 resizes.
+// Every key must round-trip and count() must be exact.
+TEST(PrimitiveHashMapTests, swissResizeThousandInts) {
+    auto src =
+        "package test;\n"
+        "import cajeta.collection.HashMap;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        HashMap<int32, int32> m = heap HashMap<int32, int32>(16);\n"
+        "        int32 i = 0;\n"
+        "        while (i < 1000) { m.put(i, i * 3); i = i + 1; }\n"
+        "        int32 hits = 0;\n"
+        "        int32 j = 0;\n"
+        "        while (j < 1000) { if (m.get(j) == j * 3) { hits = hits + 1; } j = j + 1; }\n"
+        "        if (m.count() != 1000) { return -1; }\n"
+        "        return hits;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 1000);
+}
+
+// Remove then re-insert: tombstone reuse + probe-past-tombstone correctness.
+// Remove half the keys, confirm absent + count, re-insert them, confirm all back.
+TEST(PrimitiveHashMapTests, swissTombstoneReuse) {
+    auto src =
+        "package test;\n"
+        "import cajeta.collection.HashMap;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        HashMap<int32, int32> m = heap HashMap<int32, int32>(256);\n"
+        "        int32 i = 0;\n"
+        "        while (i < 200) { m.put(i, i + 1); i = i + 1; }\n"
+        "        int32 r = 0;\n"
+        "        while (r < 200) { if (m.remove(r) == false) { return -1; } r = r + 2; }\n"
+        "        if (m.count() != 100) { return -2; }\n"
+        "        // odds still present, evens absent\n"
+        "        if (m.containsKey(4)) { return -3; }\n"
+        "        if (m.containsKey(5) == false) { return -4; }\n"
+        "        // re-insert evens (reuse tombstones)\n"
+        "        int32 e = 0;\n"
+        "        while (e < 200) { m.put(e, e + 1); e = e + 2; }\n"
+        "        if (m.count() != 200) { return -5; }\n"
+        "        int32 hits = 0;\n"
+        "        int32 j = 0;\n"
+        "        while (j < 200) { if (m.get(j) == j + 1) { hits = hits + 1; } j = j + 1; }\n"
+        "        return hits;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 200);
+}
+
+// remove() of an absent key returns false; present key returns true once.
+TEST(PrimitiveHashMapTests, swissRemoveReturnValue) {
+    auto src =
+        "package test;\n"
+        "import cajeta.collection.HashMap;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        HashMap<int32, int32> m = heap HashMap<int32, int32>(16);\n"
+        "        m.put(11, 1);\n"
+        "        if (m.remove(999) != false) { return -1; }\n"
+        "        if (m.remove(11) != true) { return -2; }\n"
+        "        if (m.remove(11) != false) { return -3; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 1);
+}
