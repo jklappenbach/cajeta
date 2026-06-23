@@ -460,6 +460,18 @@ public final class String {
         return heap String(#out, len);
     }
 
+    // 0x80 in each byte of `v` whose value lies in [lo, hi]. Valid only when
+    // every byte of `v` is < 0x80 (no inter-byte carry): byte+0x80-lo sets the
+    // high bit iff byte >= lo, and the same for hi+1 gives byte > hi.
+    @Inline
+    private static uint64 asciiRangeMask(uint64 v, uint64 lo, uint64 hi) {
+        uint64 high = (uint64) 0x8080808080808080;
+        uint64 ones = (uint64) 0x0101010101010101;
+        uint64 ge = (v + ones * ((uint64) 0x80 - lo)) & high;
+        uint64 gt = (v + ones * ((uint64) 0x80 - (hi + (uint64) 1))) & high;
+        return ge & ~gt;
+    }
+
     /**
      * Returns a new String with all ASCII lowercase letters mapped
      * to uppercase. Non-ASCII bytes pass through unchanged — full
@@ -469,15 +481,30 @@ public final class String {
     public #String toUpperCase() {
         int32 n = this.byteLength;
         int8[] out = heap int8[n];
-        int32 i = 0;
-        while (i < n) {
-            int32 b = ((int32) this.bytes[i]) & 0xff;
-            if (b >= 0x61 && b <= 0x7A) {
-                out[i] = (int8) (b - 32);
+        int8[] src = this.bytes;
+        uint64 high = (uint64) 0x8080808080808080;
+        int32 k = 0;
+        // 8 bytes/word; ASCII words clear bit 5 ([a-z] -> [A-Z]) branchlessly.
+        while (k + 8 <= n) {
+            uint64 v = (uint64) Cajeta.loadU64(src, (int64) k);
+            if ((v & high) == (uint64) 0) {
+                uint64 m = String.asciiRangeMask(v, (uint64) 0x61, (uint64) 0x7A);
+                uint64 bit5 = (m >> 2) & (uint64) 0x2020202020202020;
+                Cajeta.storeU64(out, (int64) k, (int64) (v & ~bit5));
             } else {
-                out[i] = this.bytes[i];
+                int32 j = 0;
+                while (j < 8) {
+                    int32 b = ((int32) src[k + j]) & 0xff;
+                    out[k + j] = (b >= 0x61 && b <= 0x7A) ? (int8) (b - 32) : src[k + j];
+                    j = j + 1;
+                }
             }
-            i = i + 1;
+            k = k + 8;
+        }
+        while (k < n) {
+            int32 b = ((int32) src[k]) & 0xff;
+            out[k] = (b >= 0x61 && b <= 0x7A) ? (int8) (b - 32) : src[k];
+            k = k + 1;
         }
         return heap String(#out, n);
     }
@@ -490,15 +517,30 @@ public final class String {
     public #String toLowerCase() {
         int32 n = this.byteLength;
         int8[] out = heap int8[n];
-        int32 i = 0;
-        while (i < n) {
-            int32 b = ((int32) this.bytes[i]) & 0xff;
-            if (b >= 0x41 && b <= 0x5A) {
-                out[i] = (int8) (b + 32);
+        int8[] src = this.bytes;
+        uint64 high = (uint64) 0x8080808080808080;
+        int32 k = 0;
+        // 8 bytes/word; ASCII words set bit 5 ([A-Z] -> [a-z]) branchlessly.
+        while (k + 8 <= n) {
+            uint64 v = (uint64) Cajeta.loadU64(src, (int64) k);
+            if ((v & high) == (uint64) 0) {
+                uint64 m = String.asciiRangeMask(v, (uint64) 0x41, (uint64) 0x5A);
+                uint64 bit5 = (m >> 2) & (uint64) 0x2020202020202020;
+                Cajeta.storeU64(out, (int64) k, (int64) (v | bit5));
             } else {
-                out[i] = this.bytes[i];
+                int32 j = 0;
+                while (j < 8) {
+                    int32 b = ((int32) src[k + j]) & 0xff;
+                    out[k + j] = (b >= 0x41 && b <= 0x5A) ? (int8) (b + 32) : src[k + j];
+                    j = j + 1;
+                }
             }
-            i = i + 1;
+            k = k + 8;
+        }
+        while (k < n) {
+            int32 b = ((int32) src[k]) & 0xff;
+            out[k] = (b >= 0x41 && b <= 0x5A) ? (int8) (b + 32) : src[k];
+            k = k + 1;
         }
         return heap String(#out, n);
     }
