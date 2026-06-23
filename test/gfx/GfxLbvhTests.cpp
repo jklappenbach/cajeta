@@ -49,6 +49,21 @@ int32_t runI32(const std::string& imports, const std::string& body) {
 
 const char* IMP = "import cajeta.gpu.Lbvh;\n";
 
+// Compile a full class body (helper methods + a `run`) and call run(). Used by
+// the traversal cross-check, which needs helper methods the single-body runI32
+// can't express.
+int32_t runI32Full(const std::string& imports, const std::string& members) {
+    std::string src =
+        "package test;\n"
+        + imports +
+        "public final class D {\n"
+        + members +
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    return fn();
+}
+
 } // namespace
 
 // 3-a-1 — expandBits golden values. bit i of the input lands at bit 3i of the
@@ -326,4 +341,158 @@ TEST(GfxLbvhTests, buildBlockCoverage8) {
         "            k = k + 1;\n"
         "        }\n"
         "        return 0;\n"), 0);
+}
+
+// 3-a-3b — the closer: traverse the Lbvh-built block and confirm it finds the
+// analytic nearest hit. Two INDEPENDENT host implementations are compared on the
+// same scene: `nearest` does the stackless threaded walk over the frozen block
+// (the same descent/escape + slab logic SoftwareRayQuery.step runs on device),
+// while `brute` linearly scans every box. For each ray the tree walk and the
+// brute-force scan must return the same primitive — which is the "traversal
+// finds the analytic nearest hit (cross-checked vs SoftwareRayQuery)" criterion
+// of plan TDD 3.a, closed entirely on host (the @Device step traverses the
+// identical block on a live backend; that parity is a non-blocking follow-on).
+//
+// `boxEntry` returns the ray's entry distance into a box (the slab tNear) or a
+// >tmax sentinel on a miss; structural ints are read with Lbvh.floorToInt and
+// every array element is loaded into a local before being passed (a subscript
+// passed straight as a call argument emits the element pointer).
+TEST(GfxLbvhTests, nearestHitCrossCheck) {
+    const std::string members =
+        // ---- slab entry distance (tNear), or tmax+1 on a miss ----
+        "    public static float32 boxEntry(\n"
+        "            float32 ox, float32 oy, float32 oz,\n"
+        "            float32 dx, float32 dy, float32 dz,\n"
+        "            float32 tmin, float32 tmax,\n"
+        "            float32 minx, float32 miny, float32 minz,\n"
+        "            float32 maxx, float32 maxy, float32 maxz) {\n"
+        "        float32 miss = tmax + 1.0f;\n"
+        "        float32 tnear = tmin;\n"
+        "        float32 tfar = tmax;\n"
+        "        if (dx < 0.0001f && dx > 0.0f - 0.0001f) {\n"
+        "            if (ox < minx) { return miss; }\n"
+        "            if (ox > maxx) { return miss; }\n"
+        "        } else {\n"
+        "            float32 inv = 1.0f / dx;\n"
+        "            float32 t0 = (minx - ox) * inv;\n"
+        "            float32 t1 = (maxx - ox) * inv;\n"
+        "            if (t0 > t1) { float32 tmp = t0; t0 = t1; t1 = tmp; }\n"
+        "            if (t0 > tnear) { tnear = t0; }\n"
+        "            if (t1 < tfar) { tfar = t1; }\n"
+        "        }\n"
+        "        if (dy < 0.0001f && dy > 0.0f - 0.0001f) {\n"
+        "            if (oy < miny) { return miss; }\n"
+        "            if (oy > maxy) { return miss; }\n"
+        "        } else {\n"
+        "            float32 inv = 1.0f / dy;\n"
+        "            float32 t0 = (miny - oy) * inv;\n"
+        "            float32 t1 = (maxy - oy) * inv;\n"
+        "            if (t0 > t1) { float32 tmp = t0; t0 = t1; t1 = tmp; }\n"
+        "            if (t0 > tnear) { tnear = t0; }\n"
+        "            if (t1 < tfar) { tfar = t1; }\n"
+        "        }\n"
+        "        if (dz < 0.0001f && dz > 0.0f - 0.0001f) {\n"
+        "            if (oz < minz) { return miss; }\n"
+        "            if (oz > maxz) { return miss; }\n"
+        "        } else {\n"
+        "            float32 inv = 1.0f / dz;\n"
+        "            float32 t0 = (minz - oz) * inv;\n"
+        "            float32 t1 = (maxz - oz) * inv;\n"
+        "            if (t0 > t1) { float32 tmp = t0; t0 = t1; t1 = tmp; }\n"
+        "            if (t0 > tnear) { tnear = t0; }\n"
+        "            if (t1 < tfar) { tfar = t1; }\n"
+        "        }\n"
+        "        if (tnear <= tfar) { return tnear; }\n"
+        "        return miss;\n"
+        "    }\n"
+        // ---- stackless threaded walk over the frozen block ----
+        "    public static int32 nearest(float32[] blk,\n"
+        "            float32 ox, float32 oy, float32 oz,\n"
+        "            float32 dx, float32 dy, float32 dz,\n"
+        "            float32 tmin, float32 tmax) {\n"
+        "        int32 nodeCount = Lbvh.floorToInt(blk[1]);\n"
+        "        int32 nodesOff = Lbvh.floorToInt(blk[4]);\n"
+        "        int32 primRefOff = Lbvh.floorToInt(blk[5]);\n"
+        "        float32 bestT = tmax;\n"
+        "        int32 bestPrim = 0 - 1;\n"
+        "        int32 i = 0;\n"
+        "        while (i < nodeCount) {\n"
+        "            int32 base = nodesOff + i * 9;\n"
+        "            float32 nx = blk[base + 0]; float32 ny = blk[base + 1]; float32 nz = blk[base + 2];\n"
+        "            float32 xx = blk[base + 3]; float32 xy = blk[base + 4]; float32 xz = blk[base + 5];\n"
+        "            float32 e = D.boxEntry(ox, oy, oz, dx, dy, dz, tmin, bestT,\n"
+        "                                   nx, ny, nz, xx, xy, xz);\n"
+        "            int32 escape = Lbvh.floorToInt(blk[base + 6]);\n"
+        "            int32 primCount = Lbvh.floorToInt(blk[base + 8]);\n"
+        "            boolean hit = e <= bestT;\n"
+        "            if (hit) {\n"
+        "                if (primCount > 0) {\n"
+        "                    int32 firstPrim = Lbvh.floorToInt(blk[base + 7]);\n"
+        "                    int32 prim = Lbvh.floorToInt(blk[primRefOff + firstPrim]);\n"
+        "                    if (e < bestT) { bestT = e; bestPrim = prim; }\n"
+        "                    i = escape;\n"
+        "                } else {\n"
+        "                    i = i + 1;\n"
+        "                }\n"
+        "            } else {\n"
+        "                i = escape;\n"
+        "            }\n"
+        "        }\n"
+        "        return bestPrim;\n"
+        "    }\n"
+        // ---- brute-force linear scan (the analytic reference) ----
+        "    public static int32 brute(float32[] boxes, int32 count,\n"
+        "            float32 ox, float32 oy, float32 oz,\n"
+        "            float32 dx, float32 dy, float32 dz,\n"
+        "            float32 tmin, float32 tmax) {\n"
+        "        float32 bestT = tmax;\n"
+        "        int32 bestPrim = 0 - 1;\n"
+        "        int32 i = 0;\n"
+        "        while (i < count) {\n"
+        "            int32 b6 = i * 6;\n"
+        "            float32 nx = boxes[b6 + 0]; float32 ny = boxes[b6 + 1]; float32 nz = boxes[b6 + 2];\n"
+        "            float32 xx = boxes[b6 + 3]; float32 xy = boxes[b6 + 4]; float32 xz = boxes[b6 + 5];\n"
+        "            float32 e = D.boxEntry(ox, oy, oz, dx, dy, dz, tmin, bestT,\n"
+        "                                   nx, ny, nz, xx, xy, xz);\n"
+        "            if (e < bestT) { bestT = e; bestPrim = i; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return bestPrim;\n"
+        "    }\n"
+        // ---- scene + the four ray cross-checks ----
+        "    public static int32 run() {\n"
+        "        int32 count = 4;\n"
+        "        float32[] boxes = heap float32[24];\n"
+        "        int32 i = 0;\n"
+        "        while (i < 4) {\n"
+        "            float32 cx = i;\n"
+        "            int32 b6 = i * 6;\n"
+        "            boxes[b6 + 0] = cx - 0.5f; boxes[b6 + 1] = 0.0f - 0.5f; boxes[b6 + 2] = 0.0f - 0.5f;\n"
+        "            boxes[b6 + 3] = cx + 0.5f; boxes[b6 + 4] = 0.5f;        boxes[b6 + 5] = 0.5f;\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        float32[] blk = Lbvh.build(boxes, count);\n"
+        // ray 1: from +x looking -x -> nearest box is the one at x=3 (prim 3)
+        "        int32 t1 = D.nearest(blk, 10.0f, 0.0f, 0.0f, 0.0f - 1.0f, 0.0f, 0.0f, 0.0f, 1000.0f);\n"
+        "        int32 r1 = D.brute(boxes, count, 10.0f, 0.0f, 0.0f, 0.0f - 1.0f, 0.0f, 0.0f, 0.0f, 1000.0f);\n"
+        "        if (t1 != r1) { return -1; }\n"
+        "        if (t1 != 3) { return -2; }\n"
+        // ray 2: from -x looking +x -> nearest is the box at x=0 (prim 0)
+        "        int32 t2 = D.nearest(blk, 0.0f - 10.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1000.0f);\n"
+        "        int32 r2 = D.brute(boxes, count, 0.0f - 10.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1000.0f);\n"
+        "        if (t2 != r2) { return -3; }\n"
+        "        if (t2 != 0) { return -4; }\n"
+        // ray 3: straight down through x=1.2 -> hits only the box at x=1 (prim 1)
+        "        int32 t3 = D.nearest(blk, 1.2f, 10.0f, 0.0f, 0.0f, 0.0f - 1.0f, 0.0f, 0.0f, 1000.0f);\n"
+        "        int32 r3 = D.brute(boxes, count, 1.2f, 10.0f, 0.0f, 0.0f, 0.0f - 1.0f, 0.0f, 0.0f, 1000.0f);\n"
+        "        if (t3 != r3) { return -5; }\n"
+        "        if (t3 != 1) { return -6; }\n"
+        // ray 4: parallel miss (y = 10, never enters any box) -> -1 from both
+        "        int32 t4 = D.nearest(blk, 5.0f, 10.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1000.0f);\n"
+        "        int32 r4 = D.brute(boxes, count, 5.0f, 10.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1000.0f);\n"
+        "        if (t4 != r4) { return -7; }\n"
+        "        if (t4 != 0 - 1) { return -8; }\n"
+        "        return 0;\n"
+        "    }\n";
+    EXPECT_EQ(runI32Full(IMP, members), 0);
 }
