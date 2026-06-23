@@ -7227,10 +7227,30 @@ namespace cajeta {
         bool targetIsFinalClass = targetClass
             && !targetClass->isInterface()
             && targetClass->getModifiers().count(FINAL) > 0;
+        // Ownership-transfer move-mask (OwnershipTransfer.md): tell the callee
+        // which args arrived as `#x` so a plain-`T`-param method (HashMap.put)
+        // can take ownership of exactly those via Cajeta.moveMask(). Compile-time
+        // constant; set the thread-local before the call and clear after, so a
+        // later call with no `#` reads 0. Only emitted when a transfer is present.
+        int64_t moveMask = 0;
+        for (size_t mmi = 0; mmi < parameters.size(); ++mmi) {
+            if (parameters[mmi].callerTransferred) moveMask |= ((int64_t) 1) << mmi;
+        }
+        llvm::Function* moveSetFn = nullptr;
+        if (moveMask != 0) {
+            moveSetFn = module->getRuntimeFunction("__cajeta_move_mask_set");
+            if (moveSetFn) {
+                builder->CreateCall(moveSetFn,
+                    {builder->getInt64((uint64_t) moveMask)});
+            }
+        }
         llvm::Value* callResult = targetClass->invokeMethod(methodCallName, entries,
             /*isConstructor=*/false, thisValue, /*callerModule=*/module,
             /*forceDirectCall=*/(isSuperCall || targetIsFinalClass),
             /*explicitMethodTypeArgs=*/explicitMethodTypeArgs);
+        if (moveSetFn) {
+            builder->CreateCall(moveSetFn, {builder->getInt64(0)});
+        }
 
         if (nullSafeStringMethod) {
             // Close all three null-safety blocks unconditionally so the
