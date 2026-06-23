@@ -16,7 +16,7 @@ operators run on CPU, Vulkan, and AMD device kernels. For a 1-D run of lanes use
 
 This is a **value type you construct directly** with `stack` — not an access point you
 receive from a factory, and not something you `heap`-allocate (though
-`GpuBuffer<Matrix<...>>` stores them by value).
+`KernelBuffer<Matrix<...>>` stores them by value).
 
 ## The hybrid: declared surface vs. what actually runs
 
@@ -93,7 +93,7 @@ Vector<float32,2>   x   = gi * rhs;            // solves g*x = rhs -> (1, 2)
 
 It is a **by-value** type: assignment/return/parameter passing **copies the lanes**,
 there is no aliasing and **nothing to free** — no `#` transfer, no `close()`/dispose, no
-drop chain. Storing in `GpuBuffer<Matrix<...>>` likewise copies by value. Element type
+drop chain. Storing in `KernelBuffer<Matrix<...>>` likewise copies by value. Element type
 `T` is itself a scalar (e.g. `float32`, `int32`, `boolean`); a `Matrix` over a class `T`
 is not the intended use.
 

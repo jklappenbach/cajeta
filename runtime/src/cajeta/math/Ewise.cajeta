@@ -1,8 +1,8 @@
 package cajeta.math;
 
 import cajeta.gpu.KernelBuffer;
-import cajeta.gpu.GpuStream;
-import cajeta.gpu.GpuThread;
+import cajeta.gpu.KernelStream;
+import cajeta.gpu.KernelThread;
 import cajeta.gpu.Workgroup;
 import cajeta.gpu.xpu.CooperativeMatrix;
 
@@ -32,7 +32,7 @@ public final class Ewise {
     @Kernel
     public static void arithF32(KernelBuffer<float32> out, KernelBuffer<float32> a,
                                 KernelBuffer<float32> b, uint32 n, int32 op) {
-        uint32 i = GpuThread.globalIdX();
+        uint32 i = KernelThread.globalIdX();
         if (i < n) {
             float32 va = a[i];
             float32 vb = b[i];
@@ -57,7 +57,7 @@ public final class Ewise {
         if (a.isOnGpu() && b.isOnGpu()) {
             out.gpu();
             uint32 un = (uint32) n;
-            GpuStream s = GpuStream.current();
+            KernelStream s = KernelStream.current();
             arithF32.launch(s, grid: [(un + 63) / 64], block: [64])
                 (out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), un, op);
             s.sync();
@@ -85,7 +85,7 @@ public final class Ewise {
      */
     @Kernel
     public static void reduceSumF32(KernelBuffer<float32> out, KernelBuffer<float32> in, uint32 n) {
-        uint32 i = GpuThread.globalIdX();
+        uint32 i = KernelThread.globalIdX();
         if (i < n) { out.atomicAdd(0, in[i]); }
     }
 
@@ -104,7 +104,7 @@ public final class Ewise {
             Tensor<float32> acc = Tensor.zeros<float32>(os);   // accumulator out[0] = 0
             acc.gpu();
             uint32 un = (uint32) n;
-            GpuStream s = GpuStream.current();
+            KernelStream s = KernelStream.current();
             reduceSumF32.launch(s, grid: [(un + 63) / 64], block: [64])
                 (acc.deviceBuffer(), t.deviceBuffer(), un);
             s.sync();
@@ -127,7 +127,7 @@ public final class Ewise {
     @Kernel
     public static void gatherF32(KernelBuffer<float32> out, KernelBuffer<float32> in,
                                  KernelBuffer<int64> idx, uint32 n) {
-        uint32 i = GpuThread.globalIdX();
+        uint32 i = KernelThread.globalIdX();
         if (i < n) { out[i] = in[idx[i]]; }
     }
 
@@ -145,7 +145,7 @@ public final class Ewise {
         if (t.isOnGpu() && idx.isOnGpu()) {
             out.gpu();
             uint32 um = (uint32) m;
-            GpuStream s = GpuStream.current();
+            KernelStream s = KernelStream.current();
             gatherF32.launch(s, grid: [(um + 63) / 64], block: [64])
                 (out.deviceBuffer(), t.deviceBuffer(), idx.deviceBuffer(), um);
             s.sync();
@@ -215,7 +215,7 @@ public final class Ewise {
             uint32 um = (uint32) m;
             uint32 un = (uint32) n;
             uint32 uk = (uint32) k;
-            GpuStream s = GpuStream.current();
+            KernelStream s = KernelStream.current();
             matmulF32.launch(s, grid: [(um / 16) * (un / 16)], block: [64])
                 (out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), um, un, uk);
             s.sync();
@@ -249,7 +249,7 @@ public final class Ewise {
      */
     @Kernel
     public static void bitonicStepF32(KernelBuffer<float32> data, uint32 n, uint32 k, uint32 j) {
-        uint32 i = GpuThread.globalIdX();
+        uint32 i = KernelThread.globalIdX();
         if (i < n) {
             uint32 ixj = i ^ j;
             if (ixj > i) {
@@ -291,7 +291,7 @@ public final class Ewise {
             t.gpu();                                   // restore caller's placement invariant
             out.gpu();
             uint32 un = (uint32) n;
-            GpuStream s = GpuStream.current();
+            KernelStream s = KernelStream.current();
             uint32 k = 2;
             while (k <= un) {
                 uint32 j = k / 2;

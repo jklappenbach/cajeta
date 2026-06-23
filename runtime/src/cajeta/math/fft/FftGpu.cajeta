@@ -2,8 +2,8 @@ package cajeta.math.fft;
 
 import cajeta.math.Tensor;
 import cajeta.gpu.KernelBuffer;
-import cajeta.gpu.GpuStream;
-import cajeta.gpu.GpuThread;
+import cajeta.gpu.KernelStream;
+import cajeta.gpu.KernelThread;
 
 /**
  * GPU lowering of the radix-2 FFT (numpy-porting-plan Phase 8, 8b — the FFT butterfly
@@ -29,7 +29,7 @@ public final class FftGpu {
      */
     @Kernel
     public static void fftStageF32(KernelBuffer<float32> data, uint32 n, uint32 len, float32 sign) {
-        uint32 bf = GpuThread.globalIdX();
+        uint32 bf = KernelThread.globalIdX();
         uint32 nbf = n / 2;
         if (bf < nbf) {
             uint32 half = len / 2;
@@ -93,7 +93,7 @@ public final class FftGpu {
             x.gpu();
             out.gpu();
             uint32 un = (uint32) n;
-            GpuStream s = GpuStream.current();
+            KernelStream s = KernelStream.current();
             uint32 len = 2;
             while (len <= un) {
                 fftStageF32.launch(s, grid: [(un / 2 + 63) / 64], block: [64])

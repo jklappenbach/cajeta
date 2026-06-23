@@ -2,8 +2,8 @@ package cajeta.math.random;
 
 import cajeta.math.Tensor;
 import cajeta.gpu.KernelBuffer;
-import cajeta.gpu.GpuStream;
-import cajeta.gpu.GpuThread;
+import cajeta.gpu.KernelStream;
+import cajeta.gpu.KernelThread;
 
 /**
  * GPU lowering of the Philox uniform generator (numpy-porting-plan Phase 9, 9c — the
@@ -23,7 +23,7 @@ public final class GeneratorGpu {
      *  `idx` keyed by `(k0,k1)` and writes `[0,1)` (low 24 bits / 2^24) to `out[idx]`. */
     @Kernel
     public static void philoxUniformF32(KernelBuffer<float32> out, uint32 k0, uint32 k1, uint32 n) {
-        uint32 idx = GpuThread.globalIdX();
+        uint32 idx = KernelThread.globalIdX();
         if (idx < n) {
             uint32 c0 = idx;
             uint32 c1 = 0;
@@ -76,7 +76,7 @@ public final class GeneratorGpu {
         uint32 k0 = (uint32) seed;
         uint32 k1 = (uint32) (seed >>> 32);
         uint32 un = (uint32) n;
-        GpuStream s = GpuStream.current();
+        KernelStream s = KernelStream.current();
         philoxUniformF32.launch(s, grid: [(un + 63) / 64], block: [64])
             (out.deviceBuffer(), k0, k1, un);
         s.sync();

@@ -20,7 +20,7 @@ enums where a method asks for one.
   `reshape`/views/broadcast are expressible. You only ever construct `Tensor`.
 - **`Storage<T>`** — the owning host buffer (one contiguous `T[]`) that one *or more*
   `Tensor`s share. Internal: built by the `Tensor` factories, never by user code. Also
-  holds the optional device mirror (`GpuBuffer<T>`, null until placed).
+  holds the optional device mirror (`KernelBuffer<T>`, null until placed).
 - **`DType`** — runtime dtype descriptor `(kind, bits, variant)`. Bridges the static
   `T` to a value via `DType.of<T>()`, and owns the **NEP-50 `promote(a,b)`** table that
   the (separately-shipped) op library reasons over.
@@ -36,7 +36,7 @@ enums where a method asks for one.
 
 ```
  Tensor<T> ──store──▶ Storage<T> ──host──▶ T[]   (owning)
-   │                       └──dev──▶ GpuBuffer<T> (device mirror, lazy)
+   │                       └──dev──▶ KernelBuffer<T> (device mirror, lazy)
    └─ alias()/reshape(view)/transpose/slice/... ─▶ Tensor<T> (sharing the SAME Storage)
 ```
 
@@ -129,7 +129,7 @@ otherwise.
 ### Device seam (the op-dispatch routing point)
 ```cajeta
 a.gpu();                  // eager mirror host->device; a.isOnGpu() now true, a.device()==1
-GpuBuffer<float32> buf = a.deviceBuffer();   // null until gpu(); bind into a @Kernel launch
+KernelBuffer<float32> buf = a.deviceBuffer();   // null until gpu(); bind into a @Kernel launch
 a.cpu();                  // bring back to host
 ```
 An op picks its path by reading `isOnGpu()`/`deviceBuffer()` (GPU) vs `flatGet`/`flatSet`
