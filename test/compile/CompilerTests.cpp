@@ -90,7 +90,9 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // jump is cajeta.gpu.Lbvh (the §3-a software-LBVH builder, Morton-code slice);
 // the rest absorbs the pre-existing drift. Self-anchored to the live
 // modules.size()-1 on a fresh build.
-static constexpr size_t STDLIB_STRUCTURE_COUNT = 440;
+// 2026-06-23: 440 → 441 — cajeta.gpu.PageCache (the §3 3.d residency cache, eager
+// cajeta.gpu prelude; +1).
+static constexpr size_t STDLIB_STRUCTURE_COUNT = 441;
 
 TEST(CompilerTests, canParseOnValidShortPackage) {
     string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");
