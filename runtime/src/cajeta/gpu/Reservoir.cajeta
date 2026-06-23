@@ -1,0 +1,41 @@
+package cajeta.gpu;
+
+/**
+ * Reservoir — the by-value state of a size-1 weighted reservoir / RIS sampler
+ * (cajeta-gfx §3, the acceleration/sampling/residency foundation; spec §8.7).
+ * A flat `@ValueType` POD carried by value through the {@link Ris} static
+ * helpers, exactly as {@link SwRayCursor} is carried through
+ * {@link SoftwareRayQuery}: value types are immutable, so a streaming update
+ * CONSTRUCTS a new reservoir rather than mutating one.
+ *
+ * It holds the running state of Resampled Importance Sampling (Talbot 2005 /
+ * the ReSTIR reservoir, Bitterli 2020): the currently-selected sample `y`, the
+ * sum of candidate weights `wSum`, the count of streamed candidates `m` (M), and
+ * the resolved unbiased contribution weight `w` (W, computed by
+ * {@link Ris#resolve}). One candidate is kept with probability proportional to
+ * its weight, so a single pass over a stream yields a sample distributed by the
+ * source weights — the importance-sampling primitive under reservoir path
+ * resampling and light selection.
+ *
+ * Scalar fields only (no vector value types) so it dodges the value-type codegen
+ * traps and stays host-testable; reads of these scalar fields off a param/local
+ * are the safe path. The companion {@link Rng#weightedReservoirChoice} does the
+ * same selection without carrying the resumable state.
+ */
+@ValueType public final class Reservoir {
+    /** The selected sample id; -1 when the reservoir is empty. */
+    public int32 y;
+    /** Running sum of candidate weights seen. */
+    public float32 wSum;
+    /** Number of candidates streamed so far (M). */
+    public int32 m;
+    /** Resolved RIS weight W = wSum / (M * targetPdf); 0 until {@link Ris#resolve}. */
+    public float32 w;
+
+    public Reservoir(int32 y, float32 wSum, int32 m, float32 w) {
+        this.y = y;
+        this.wSum = wSum;
+        this.m = m;
+        this.w = w;
+    }
+}

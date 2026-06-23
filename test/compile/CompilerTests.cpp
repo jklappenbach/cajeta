@@ -92,7 +92,9 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // modules.size()-1 on a fresh build.
 // 2026-06-23: 440 → 441 — cajeta.gpu.PageCache (the §3 3.d residency cache, eager
 // cajeta.gpu prelude; +1).
-static constexpr size_t STDLIB_STRUCTURE_COUNT = 441;
+// 2026-06-23: 441 → 443 — cajeta.gpu.Reservoir + cajeta.gpu.Ris (the §3 3.b-rest
+// RIS reservoir value type + RIS/MIS estimators; eager cajeta.gpu prelude; +2).
+static constexpr size_t STDLIB_STRUCTURE_COUNT = 443;
 
 TEST(CompilerTests, canParseOnValidShortPackage) {
     string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");
