@@ -1,0 +1,179 @@
+package cajeta.gpu;
+
+import cajeta.lang.Math;
+
+/**
+ * Noise — procedural gradient noise (cajeta-gfx §3, the acceleration/sampling/
+ * residency foundation; spec §8.7). The deterministic-field companion to the
+ * stream {@link Rng} and the quasi-random {@link LowDiscrepancy}: where those
+ * draw samples, noise is a smooth, repeatable scalar field over space — the
+ * basis for procedural texturing, terrain/displacement, clouds and fog, and
+ * detail breakup.
+ *
+ * {@link #perlin3} is Ken Perlin's improved 3-D GRADIENT noise. Each integer-
+ * lattice corner is assigned one of 12 pseudo-random gradient directions, hashed
+ * from the corner's coordinates and the seed; the value at a point is the
+ * quintic-fade-weighted trilinear blend of each surrounding corner's gradient
+ * dotted with the offset from that corner to the point. Two consequences make
+ * it ideal for host testing: it is EXACTLY 0 on the integer lattice (the offset
+ * to the containing corner is the zero vector, so every dot is 0), and it is a
+ * pure deterministic function of (x, y, z, seed) — the same seed replays the
+ * same field on CPU and GPU alike.
+ *
+ * The corner hash combines the int64 coordinates by a Teschner spatial hash
+ * (each coord times a distinct prime, XORed) and an inlined xorshift64
+ * avalanche. Both shapes dodge codegen traps: CHAINED int64 multiplies by one
+ * constant mis-lower to an illegal instruction (so the multiplies are kept
+ * independent and XOR-combined), as does a stdlib->stdlib cross-class call (so
+ * the avalanche is inlined rather than calling Rng). See the value-type-codegen
+ * gotchas memory. Worley/cellular and simplex noise are the sibling slices.
+ */
+public class Noise {
+
+    /**
+     * Hash an integer lattice corner (ix, iy, iz) + seed to 32 well-mixed bits.
+     * Folds the coordinates with a positive odd constant (Knuth's multiplicative
+     * hash factor) then runs one xorshift64 avalanche round via {@link Rng}.
+     */
+    public static int32 hashCorner(int32 ix, int32 iy, int32 iz, int32 seed) {
+        // Teschner et al. spatial hash: each coordinate times a distinct large
+        // prime, XORed together. The multiplies are INDEPENDENT (no product
+        // feeds another) and then combined by xor — CHAINING int64 multiplies by
+        // the same constant mis-lowers to an illegal instruction (the optimizer
+        // appears to fuse them into a multiply by a sign-bit-set constant, the
+        // codegen bug recorded in the value-type-codegen gotchas memory).
+        int64 a = ix;
+        int64 b = iy;
+        int64 c = iz;
+        int64 s = seed;
+        int64 pa = a * 73856093L;
+        int64 pb = b * 19349663L;
+        int64 pc = c * 83492791L;
+        int64 ps = s * 2654435761L;
+        int64 h = pa ^ pb ^ pc ^ ps;
+        // xorshift64 avalanche, inlined (the same mix Rng.next does; a stdlib->
+        // stdlib cross-class call to Rng from here also mis-lowers).
+        int64 x = h;
+        x = x ^ (x << 13);
+        x = x ^ (x >>> 7);
+        x = x ^ (x << 17);
+        int64 lo = x & 0xFFFFFFFFL;
+        return (int32) lo;
+    }
+
+    /**
+     * Perlin's gradient selector: pick one of 12 edge-of-cube gradient
+     * directions by the low bits of `hash` and return its dot product with the
+     * offset (x, y, z). (The improved-noise `grad` from "Improving Noise",
+     * Perlin 2002, expressed with branches since cajeta has no ternary.)
+     */
+    public static float32 grad(int32 hash, float32 x, float32 y, float32 z) {
+        int32 h = hash & 15;
+        float32 u = 0.0f;
+        if (h < 8) {
+            u = x;
+        } else {
+            u = y;
+        }
+        float32 v = 0.0f;
+        if (h < 4) {
+            v = y;
+        } else if (h == 12) {
+            v = x;
+        } else if (h == 14) {
+            v = x;
+        } else {
+            v = z;
+        }
+        float32 ru = u;
+        if ((h & 1) != 0) {
+            ru = 0.0f - u;
+        }
+        float32 rv = v;
+        if ((h & 2) != 0) {
+            rv = 0.0f - v;
+        }
+        return ru + rv;
+    }
+
+    /** The quintic fade curve 6t^5 - 15t^4 + 10t^3 (zero 1st & 2nd derivatives at 0,1). */
+    public static float32 fade(float32 t) {
+        return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+    }
+
+    /** Linear interpolation a + t*(b - a). */
+    public static float32 lerp(float32 a, float32 b, float32 t) {
+        return a + t * (b - a);
+    }
+
+    /**
+     * Floor `x` to an int32. Routes through float64 -> int64 -> int32 (the cast
+     * chain `cajeta.math.Cast` uses); a direct float32 -> int32 cast mis-lowers
+     * to an illegal instruction in the current codegen.
+     */
+    public static int32 floorToInt(float32 x) {
+        float64 xd = x;                  // float32 -> float64 (widen)
+        float64 fd = Math.floor(xd);     // floor in float64
+        int64 t = (int64) fd;            // float64 -> int64 (proven cast)
+        return (int32) t;                // int64 -> int32 (proven cast)
+    }
+
+    /**
+     * Improved 3-D Perlin gradient noise at (x, y, z) for `seed`. Returns a
+     * smooth value bounded near [-1, 1] and EXACTLY 0 at integer coordinates.
+     */
+    public static float32 perlin3(float32 x, float32 y, float32 z, int32 seed) {
+        int32 ix = Noise.floorToInt(x);
+        int32 iy = Noise.floorToInt(y);
+        int32 iz = Noise.floorToInt(z);
+
+        float32 gx = ix;
+        float32 gy = iy;
+        float32 gz = iz;
+        float32 fx = x - gx;
+        float32 fy = y - gy;
+        float32 fz = z - gz;
+
+        float32 u = Noise.fade(fx);
+        float32 v = Noise.fade(fy);
+        float32 w = Noise.fade(fz);
+
+        int32 ix1 = ix + 1;
+        int32 iy1 = iy + 1;
+        int32 iz1 = iz + 1;
+
+        // 8 corner gradient hashes.
+        int32 h000 = Noise.hashCorner(ix,  iy,  iz,  seed);
+        int32 h100 = Noise.hashCorner(ix1, iy,  iz,  seed);
+        int32 h010 = Noise.hashCorner(ix,  iy1, iz,  seed);
+        int32 h110 = Noise.hashCorner(ix1, iy1, iz,  seed);
+        int32 h001 = Noise.hashCorner(ix,  iy,  iz1, seed);
+        int32 h101 = Noise.hashCorner(ix1, iy,  iz1, seed);
+        int32 h011 = Noise.hashCorner(ix,  iy1, iz1, seed);
+        int32 h111 = Noise.hashCorner(ix1, iy1, iz1, seed);
+
+        // Offsets to each corner (the point relative to that corner).
+        float32 fx1 = fx - 1.0f;
+        float32 fy1 = fy - 1.0f;
+        float32 fz1 = fz - 1.0f;
+
+        // Gradient dotted with the offset at each corner.
+        float32 n000 = Noise.grad(h000, fx,  fy,  fz);
+        float32 n100 = Noise.grad(h100, fx1, fy,  fz);
+        float32 n010 = Noise.grad(h010, fx,  fy1, fz);
+        float32 n110 = Noise.grad(h110, fx1, fy1, fz);
+        float32 n001 = Noise.grad(h001, fx,  fy,  fz1);
+        float32 n101 = Noise.grad(h101, fx1, fy,  fz1);
+        float32 n011 = Noise.grad(h011, fx,  fy1, fz1);
+        float32 n111 = Noise.grad(h111, fx1, fy1, fz1);
+
+        // Trilinear blend with the faded weights.
+        float32 x00 = Noise.lerp(n000, n100, u);
+        float32 x10 = Noise.lerp(n010, n110, u);
+        float32 x01 = Noise.lerp(n001, n101, u);
+        float32 x11 = Noise.lerp(n011, n111, u);
+        float32 y0 = Noise.lerp(x00, x10, v);
+        float32 y1 = Noise.lerp(x01, x11, v);
+        return Noise.lerp(y0, y1, w);
+    }
+}
