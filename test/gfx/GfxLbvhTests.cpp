@@ -206,3 +206,124 @@ TEST(GfxLbvhTests, radixSortMortonOrder) {
         "        if (vals[3] != 0) { return -5; }\n"
         "        return 0;\n"), 0);
 }
+
+// 3-a-3a — Lbvh.build emits the frozen threaded-DFS block. Four unit boxes along
+// x (centres 0,1,2,3): assert the header words, the root node's AABB (= the
+// scene union) and escape (= nodeCount), and that the primRef table lists every
+// primitive exactly once. nodeCount = 2*4-1 = 7; nodesOff = 8; primRefOff =
+// 8 + 7*9 = 71. Structural integers are compared as floats (exact small ints);
+// prim indices are read back via Lbvh.floorToInt (direct float32->int32 casts
+// mis-lower).
+TEST(GfxLbvhTests, buildBlockStructure4) {
+    EXPECT_EQ(runI32(IMP,
+        "        int32 count = 4;\n"
+        "        float32[] boxes = heap float32[24];\n"
+        "        int32 i = 0;\n"
+        "        while (i < 4) {\n"
+        "            float32 cx = i;\n"
+        "            int32 b6 = i * 6;\n"
+        "            boxes[b6 + 0] = cx - 0.5f;\n"
+        "            boxes[b6 + 1] = 0.0f - 0.5f;\n"
+        "            boxes[b6 + 2] = 0.0f - 0.5f;\n"
+        "            boxes[b6 + 3] = cx + 0.5f;\n"
+        "            boxes[b6 + 4] = 0.5f;\n"
+        "            boxes[b6 + 5] = 0.5f;\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        float32[] blk = Lbvh.build(boxes, count);\n"
+        // header
+        "        if (blk[0] != 1.0f) { return -1; }\n"
+        "        if (blk[1] != 7.0f) { return -2; }\n"      // nodeCount
+        "        if (blk[2] != 4.0f) { return -3; }\n"      // primCount
+        "        if (blk[4] != 8.0f) { return -4; }\n"      // nodesOffset
+        "        if (blk[5] != 71.0f) { return -5; }\n"     // primRefOffset
+        "        if (blk[6] != 1.0f) { return -6; }\n"      // AABB flag
+        "        if (blk[7] != 9.0f) { return -7; }\n"      // stride
+        // root node (base 8): AABB = scene union, escape = nodeCount
+        "        if (blk[8] != 0.0f - 0.5f) { return -8; }\n"   // minX
+        "        if (blk[11] != 3.5f) { return -9; }\n"         // maxX
+        "        if (blk[12] != 0.5f) { return -10; }\n"        // maxY
+        "        if (blk[14] != 7.0f) { return -11; }\n"        // root escape == nodeCount
+        // primRef coverage: each prim 0..3 appears exactly once in [71, 75)
+        "        int32[] seen = heap int32[4];\n"
+        "        int32 k = 0;\n"
+        "        while (k < 4) {\n"
+        "            int32 p = Lbvh.floorToInt(blk[71 + k]);\n"
+        "            if (p < 0) { return -12; }\n"
+        "            if (p > 3) { return -13; }\n"
+        "            seen[p] = seen[p] + 1;\n"
+        "            k = k + 1;\n"
+        "        }\n"
+        "        k = 0;\n"
+        "        while (k < 4) {\n"
+        "            if (seen[k] != 1) { return -14; }\n"
+        "            k = k + 1;\n"
+        "        }\n"
+        "        return 0;\n"), 0);
+}
+
+// 3-a-3a — single-primitive edge case: count = 1 -> one leaf root. nodeCount = 1,
+// primRefOff = 8 + 1*9 = 17, the root is a leaf (primCount 1, firstPrim 0,
+// escape 1) whose AABB is exactly the one box.
+TEST(GfxLbvhTests, buildBlockSinglePrim) {
+    EXPECT_EQ(runI32(IMP,
+        "        float32[] boxes = heap float32[6];\n"
+        "        boxes[0] = 1.0f; boxes[1] = 2.0f; boxes[2] = 3.0f;\n"
+        "        boxes[3] = 4.0f; boxes[4] = 5.0f; boxes[5] = 6.0f;\n"
+        "        float32[] blk = Lbvh.build(boxes, 1);\n"
+        "        if (blk[1] != 1.0f) { return -1; }\n"      // nodeCount
+        "        if (blk[2] != 1.0f) { return -2; }\n"      // primCount
+        "        if (blk[5] != 17.0f) { return -3; }\n"     // primRefOffset
+        // root leaf node at base 8
+        "        if (blk[8] != 1.0f) { return -4; }\n"      // minX
+        "        if (blk[13] != 6.0f) { return -5; }\n"     // maxZ
+        "        if (blk[14] != 1.0f) { return -6; }\n"     // escape == nodeCount
+        "        if (blk[15] != 0.0f) { return -7; }\n"     // firstPrim
+        "        if (blk[16] != 1.0f) { return -8; }\n"     // primCount = leaf
+        "        if (Lbvh.floorToInt(blk[17]) != 0) { return -9; }\n"  // primRef[0] = 0
+        "        return 0;\n"), 0);
+}
+
+// 3-a-3a — a larger scene (8 boxes on a 2x2x2 lattice) exercises multi-level
+// recursion. Assert nodeCount = 2*8-1 = 15, the root AABB spans the whole
+// lattice, the root escape = 15, and every primitive appears exactly once.
+TEST(GfxLbvhTests, buildBlockCoverage8) {
+    EXPECT_EQ(runI32(IMP,
+        "        int32 count = 8;\n"
+        "        float32[] boxes = heap float32[48];\n"
+        "        int32 i = 0;\n"
+        "        while (i < 8) {\n"
+        "            int32 ax = i % 2;\n"
+        "            int32 ay = (i / 2) % 2;\n"
+        "            int32 az = (i / 4) % 2;\n"
+        "            float32 fx = ax;\n"
+        "            float32 fy = ay;\n"
+        "            float32 fz = az;\n"
+        "            int32 b6 = i * 6;\n"
+        "            boxes[b6 + 0] = fx;        boxes[b6 + 1] = fy;        boxes[b6 + 2] = fz;\n"
+        "            boxes[b6 + 3] = fx + 0.5f; boxes[b6 + 4] = fy + 0.5f; boxes[b6 + 5] = fz + 0.5f;\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        float32[] blk = Lbvh.build(boxes, count);\n"
+        "        if (blk[1] != 15.0f) { return -1; }\n"     // nodeCount = 2*8-1
+        "        if (blk[2] != 8.0f) { return -2; }\n"
+        "        if (blk[8] != 0.0f) { return -3; }\n"      // root minX
+        "        if (blk[11] != 1.5f) { return -4; }\n"     // root maxX (1.0 + 0.5)
+        "        if (blk[14] != 15.0f) { return -5; }\n"    // root escape == nodeCount
+        "        int32 primRefOff = Lbvh.floorToInt(blk[5]);\n"
+        "        int32[] seen = heap int32[8];\n"
+        "        int32 k = 0;\n"
+        "        while (k < 8) {\n"
+        "            int32 p = Lbvh.floorToInt(blk[primRefOff + k]);\n"
+        "            if (p < 0) { return -6; }\n"
+        "            if (p > 7) { return -7; }\n"
+        "            seen[p] = seen[p] + 1;\n"
+        "            k = k + 1;\n"
+        "        }\n"
+        "        k = 0;\n"
+        "        while (k < 8) {\n"
+        "            if (seen[k] != 1) { return -8; }\n"
+        "            k = k + 1;\n"
+        "        }\n"
+        "        return 0;\n"), 0);
+}
