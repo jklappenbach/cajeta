@@ -89,4 +89,69 @@ public class Lbvh {
         if (q > 1023) { q = 1023; }
         return q;
     }
+
+    /**
+     * Sort the first `n` entries of `keys` ascending, carrying `payload` along
+     * (so payload ends as the argsort — the primitive permutation that orders
+     * leaves by Morton code). In place, STABLE, O(n) via LSD radix: four
+     * counting-sort passes of 8 bits each, which covers the full 30-bit positive
+     * Morton range. Both arrays are mutated; scratch is heap-allocated.
+     *
+     * The digit extraction uses ARITHMETIC `>>`, not `>>>`: Morton codes are
+     * always non-negative (< 2^30), so the sign bit is never set and arithmetic
+     * and logical right shift coincide — which sidesteps the int32 `>>>` ->
+     * arithmetic-shift mis-lowering (value-type-codegen-gotchas memory).
+     */
+    public static void radixSort(int32[] keys, int32[] payload, int32 n) {
+        int32[] tmpKey = heap int32[n];
+        int32[] tmpVal = heap int32[n];
+        int32[] count  = heap int32[256];   // histogram / running offsets
+
+        int32 shift = 0;
+        int32 pass = 0;
+        while (pass < 4) {
+            // Zero the histogram for this pass.
+            int32 b = 0;
+            while (b < 256) {
+                count[b] = 0;
+                b = b + 1;
+            }
+            // Count occurrences of each 8-bit digit.
+            int32 i = 0;
+            while (i < n) {
+                int32 d = (keys[i] >> shift) & 255;
+                count[d] = count[d] + 1;
+                i = i + 1;
+            }
+            // Exclusive prefix sum -> the start offset of each digit bucket.
+            int32 sum = 0;
+            b = 0;
+            while (b < 256) {
+                int32 c = count[b];
+                count[b] = sum;
+                sum = sum + c;
+                b = b + 1;
+            }
+            // Stable scatter into scratch at the bucket cursors.
+            i = 0;
+            while (i < n) {
+                int32 k = keys[i];
+                int32 d = (k >> shift) & 255;
+                int32 pos = count[d];
+                count[d] = pos + 1;
+                tmpKey[pos] = k;
+                tmpVal[pos] = payload[i];
+                i = i + 1;
+            }
+            // Copy the pass result back into the caller's arrays.
+            i = 0;
+            while (i < n) {
+                keys[i] = tmpKey[i];
+                payload[i] = tmpVal[i];
+                i = i + 1;
+            }
+            shift = shift + 8;
+            pass = pass + 1;
+        }
+    }
 }
