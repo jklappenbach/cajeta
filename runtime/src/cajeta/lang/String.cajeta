@@ -278,6 +278,26 @@ public final class String {
     }
 
     /**
+     * Value `==` for Strings. SEMANTICALLY IDENTICAL to the inherited
+     * Object.operator== (null-safe hash() comparison) — this overload exists
+     * purely for speed: because both parameters are statically `String` (a
+     * `final` class), the `a.hash()`/`b.hash()` calls below devirtualize to
+     * direct calls, whereas the inherited form takes `Object` params and pays
+     * a virtual `__cajeta_vtable_lookup` per hash() on every comparison. That
+     * cost showed up as ~7.6% of hashmap-string (two vtable lookups per probe).
+     * resolveMethod prefers this more-specific overload for String operands; a
+     * `String == Object` comparison still falls through to Object.operator==.
+     * Behavior is unchanged (hash-based, not byte-exact — use equals() for the
+     * collision-proof byte walk).
+     */
+    public static boolean operator== (String a, String b) {
+        if (a == null || b == null) {
+            return a == null && b == null;
+        }
+        return a.hash() == b.hash();
+    }
+
+    /**
      * Returns the byte at the given byte index, or 0 if the index is
      * out of range. v1 charAt is byte-indexed and returns int8
      * (ASCII-equivalent code unit), matching the legacy intrinsic-
