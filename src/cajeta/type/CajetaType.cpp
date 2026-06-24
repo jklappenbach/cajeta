@@ -25,6 +25,31 @@ namespace cajeta {
     #define CAJETA_NATIVE_PACKAGE ""
     #define NATIVE_TYPE_ENTRY(typeName, llvmType, typeFlags) CajetaType::create(QualifiedName::getOrInsert(typeName, CAJETA_NATIVE_PACKAGE), llvmType, typeFlags);
 
+    // A built-in Vector/Matrix non-type dimension argument: either a syntactic
+    // integer literal (`Vector<float32,4>`) or a bound const generic parameter
+    // (`Vector<float32,N>` inside a `<uint32 N>` method/class), the latter resolved
+    // through the active substitution map to a CajetaConstantType — the same path
+    // user templates already use for `Box<N>`. Lets one generic source monomorphize
+    // per width (cajeta-accel §4.5). Throws `errId` if it is neither.
+    static int64_t vectorLengthArg(CajetaParser::TypeArgumentContext* arg,
+                                   CajetaModulePtr module,
+                                   const char* errId, const char* what) {
+        if (arg->integerLiteral() != nullptr) {
+            return CajetaConstantType::parseLiteral(arg->integerLiteral());
+        }
+        CajetaTypePtr resolved;
+        if (arg->typeType()) {
+            resolved = CajetaType::fromContext(arg->typeType(), module);
+        }
+        if (auto c = std::dynamic_pointer_cast<CajetaConstantType>(resolved)) {
+            return c->getValue();
+        }
+        throw Exception(
+            std::string(what) + " must be a positive integer literal constant "
+            "or a bound const generic parameter",
+            errId);
+    }
+
     map<string, CajetaTypePtr> CajetaType::canonicalMap;
     map<string, map<string, int32_t>> CajetaType::enumConstants;
     map<TypeKey, CajetaTypePtr> CajetaType::typeMap;
@@ -964,14 +989,15 @@ namespace cajeta {
                             "CAJETA_ERROR_VECTOR_ELEMENT_TYPE");
                     }
                     CajetaTypePtr elemT = fromContext(elemArg->typeType(), module);
-                    if (lenArg->integerLiteral() == nullptr) {
-                        throw Exception(
-                            "Vector length N must be a positive integer "
-                            "literal constant",
-                            "CAJETA_ERROR_VECTOR_LENGTH");
-                    }
-                    int64_t n = CajetaConstantType::parseLiteral(
-                        lenArg->integerLiteral());
+                    // N is either a syntactic integer literal (`Vector<float32,4>`)
+                    // or a bound const generic parameter (`Vector<float32,N>` inside
+                    // a `<uint32 N>` method/class) — the latter resolves through the
+                    // active substitution map to a CajetaConstantType, the same path
+                    // user templates use for `Box<N>`. This is what lets one generic
+                    // source monomorphize per width (cajeta-accel §4.5).
+                    int64_t n = vectorLengthArg(lenArg, module,
+                                                "CAJETA_ERROR_VECTOR_LENGTH",
+                                                "Vector length N");
                     // Semantic checks (numeric/non-bool element, positive N)
                     // are shared with the construction path. See CajetaVector.
                     type = CajetaVector::validateAndCreate(module, elemT, n);
@@ -1007,17 +1033,14 @@ namespace cajeta {
                             "CAJETA_ERROR_MATRIX_ELEMENT_TYPE");
                     }
                     CajetaTypePtr elemT = fromContext(elemArg->typeType(), module);
-                    if (rowArg->integerLiteral() == nullptr ||
-                            colArg->integerLiteral() == nullptr) {
-                        throw Exception(
-                            "Matrix dimensions R and C must be positive integer "
-                            "literal constants",
-                            "CAJETA_ERROR_MATRIX_DIMENSIONS");
-                    }
-                    int64_t r = CajetaConstantType::parseLiteral(
-                        rowArg->integerLiteral());
-                    int64_t c = CajetaConstantType::parseLiteral(
-                        colArg->integerLiteral());
+                    // R and C accept a literal or a bound const generic parameter
+                    // (mirrors the Vector length path above).
+                    int64_t r = vectorLengthArg(rowArg, module,
+                                                "CAJETA_ERROR_MATRIX_DIMENSIONS",
+                                                "Matrix dimension R");
+                    int64_t c = vectorLengthArg(colArg, module,
+                                                "CAJETA_ERROR_MATRIX_DIMENSIONS",
+                                                "Matrix dimension C");
                     type = CajetaMatrix::validateAndCreate(module, elemT, r, c);
                 } else if (qName->getTypeName() == "Quaternion"
                         && targs->typeArgument().size() == 1) {

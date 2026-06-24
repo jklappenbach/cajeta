@@ -112,6 +112,20 @@ GPU does both build and query.
   strategies onto hardware RT cores, stays out — the native `RayQuery` tier owns HW.
 - **A third encoding strategy.** Only `Exact` and `Quantized`; OBB is the DOBB *tier* on
   `Quantized`, not a peer strategy.
+- **A grid sort-and-sweep broad phase.** v1's broad phase is BVH-vs-BVH (§7.5). A uniform-grid
+  spatial-subdivision broad phase — cell-ID/object-ID pairs, **parallel radix sort by cell
+  ID**, then sweep equal-cell runs for candidate pairs, with the home-cell/phantom-cell
+  scheme + multi-pass cell coloring to dedupe pairs and avoid write hazards (Le Grand,
+  *GPU Gems 3* ch. 32) — is a **peer broad-phase facility**, not a BVH encoding: it is a
+  sibling acceleration structure selected by scene/query shape, **not** a `Strategy` (which
+  names only the BVH bound representation, §3). Its sweet spot is the BVH's blind spot —
+  many small, similarly-sized, uniformly-distributed **dynamic** movers (particles, cloth,
+  granular), where a grid rebuild is just re-hash + re-sort and a tree's refit/quality
+  doesn't pay — while BVH-vs-BVH keeps the heterogeneous-size / sparse / mostly-static
+  cases. It reuses the §6 parallel-radix-sort primitive directly and is a natural entry in
+  the benchmark harness (§9) head-to-head against BVH-vs-BVH. **Out of scope for v1** (the
+  13-unit path is correctness-first on the BVH); factored in here as the next broad-phase
+  direction.
 
 ---
 
@@ -279,7 +293,9 @@ strict depth-first output for locality).
 ## 7. Query surface — rays + broad-phase collision
 
 Rays + broad-phase overlap; narrow-phase is a non-goal. All query kinds run per-thread in
-parallel on the GPU and on the CPU device-backend.
+parallel on the GPU and on the CPU device-backend. v1's broad phase is BVH-based
+(BVH-vs-BVH, §7.5); a uniform-grid sort-and-sweep broad phase is a future *peer* facility
+for dense uniform mover sets — see §1.5 non-goals.
 
 **Query kinds (requirements)**
 - **Ray closest-hit** — nearest primitive along `[tMin, tMax]` (today's `SoftwareRayQuery`
