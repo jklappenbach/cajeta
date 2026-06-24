@@ -894,6 +894,24 @@ namespace cajeta {
             bool isCajetaString = klass && klass->getQName()
                 && klass->getQName()->getTypeName() == "String"
                 && klass->getQName()->getPackageName() == "cajeta.lang";
+            // Owned cajeta.lang.String locals: register the mode-aware string
+            // drop (docs/specification/lang/String.md § Memory model — the
+            // owned/view distinction the drop chain was designed for). At scope
+            // exit __cajeta_string_drop frees the byte buffer ONLY for owned
+            // (mode 0) strings — concat results (`"k" + i`), substring/upper/
+            // lower/trim/replace copies — and is a no-op for view-mode literals
+            // and slices (mode 1, bytes borrowed) and static wrappers (live-set
+            // claim fails). Borrowed aliases (`String b = a;`, field/element
+            // reads) set initIsBorrow above and skip here, so no double-free.
+            // `#`-transfer into a container deactivates this entry (the container
+            // takes the drop). Returning the local deactivates it too
+            // (ReturnStatement), transferring ownership to the caller. This
+            // retires the former never-drop policy that leaked every dynamically
+            // built String.
+            if (isCajetaString && !isArray && !isStructType
+                    && !initIsBorrow && !initIsStackAlloc && initializer) {
+                emitDropEntryFor(module, field, "__cajeta_string_drop", getSourceLine());
+            }
             // @ValueType locals are Copy PODs living inline in their slot —
             // never heap-backed, no owned fields, no destructor. They must NOT
             // enter the drop chain: a drop-push here would load the slot's

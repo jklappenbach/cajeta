@@ -450,13 +450,24 @@ void __cajeta_dbg_reset_safepoint_count(void) {
 // excess (correctness-preserving — leaked entries just mean future double-
 // frees on those addresses won't be caught).
 // ============================================================================
-#define CAJETA_LIVE_SET_CAPACITY (1 << 16)   // 64K slots; 512KB total
+#define CAJETA_LIVE_SET_CAPACITY (1 << 18)   // 256K slots; 2MB total. Sized for the
+                                             // peak working set of a large owned-key
+                                             // map (e.g. a 30K-entry HashMap<String,V>
+                                             // holds ~60K live allocations — wrapper +
+                                             // byte buffer per key — simultaneously).
 #define CAJETA_LIVE_SET_LOAD_CAP ((CAJETA_LIVE_SET_CAPACITY * 3) / 4)
 #define CAJETA_LIVE_SET_TOMBSTONE ((void*) 1)  // page 0 unmapped; safe sentinel
 
 static void* __cajeta_live_set[CAJETA_LIVE_SET_CAPACITY];
 static int __cajeta_live_set_count = 0;
 static pthread_mutex_t __cajeta_live_set_mu = PTHREAD_MUTEX_INITIALIZER;
+
+// Current live-object population. Test-only introspection (Cajeta.liveCount()):
+// lets a JIT test assert that an owning container actually reclaimed its #-taken
+// keys/values on drop (count shrinks) rather than leaking them.
+int64_t __cajeta_live_set_population(void) {
+    return (int64_t) __cajeta_live_set_count;
+}
 
 static void __cajeta_live_set_add_locked(void* p) {
     if (!p || p == CAJETA_LIVE_SET_TOMBSTONE) return;
@@ -803,6 +814,37 @@ void __cajeta_free(void* ptr) {
     __cajeta_live_set_claim(ptr);  // remove if present; ignore result
     __cajeta_poison_buffer(ptr);
     free(ptr);
+}
+
+// cajeta.lang.String wrapper layout (generatePrototype embed order, mirrored by
+// the concat lowering in BinaryOpExpression). mode: 0 = owned (bytes is a heap
+// array header this String owns), 1 = view (bytes borrowed from static/shared
+// storage — string literals, slices).
+typedef struct {
+    void*   vtable;
+    void*   bytes;        // CajetaArray header: 8-byte count word + data
+    int32_t byteLength;
+    int32_t mode;
+    int32_t cachedCpLength;
+} cajeta_string_layout;
+
+// Mode-aware drop for cajeta.lang.String locals/owned values
+// (docs/specification/lang/String.md § Memory model — the owned/view distinction
+// the drop chain was always designed for). Frees the byte buffer ONLY for owned
+// strings (mode 0); view strings borrow their bytes and must never free them.
+// The live-set claim makes this idempotent and a no-op on static literal
+// wrappers (which aren't tracked). Drop-fn shape: void(*)(void*).
+void __cajeta_string_drop(void* s) {
+    if (!s) return;
+    cajeta_string_layout* str = (cajeta_string_layout*) s;
+    int32_t mode = str->mode;
+    void* bytes = str->bytes;
+    if (!__cajeta_live_set_claim(s)) return;   // static literal / already freed
+    if (mode == 0) {
+        __cajeta_free_array(bytes);            // owned buffer
+    }
+    __cajeta_poison_buffer(s);
+    free(s);
 }
 
 // Drop dispatcher for function-typed locals. The drop chain registers

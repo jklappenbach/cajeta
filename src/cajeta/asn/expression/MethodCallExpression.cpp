@@ -2620,6 +2620,14 @@ namespace cajeta {
                     resolvedType = CajetaType::of("int64");
                     return builder->CreateCall(fn, {});
                 }
+                // liveCount() -> int64: current live-object population (test-only
+                // introspection). Lets a test assert an owning container reclaimed
+                // its #-taken keys/values on drop instead of leaking them.
+                if (ns == "Cajeta" && methodCallName == "liveCount" && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_live_set_population");
+                    resolvedType = CajetaType::of("int64");
+                    return builder->CreateCall(fn, {});
+                }
                 // dropValue(x): drop an owned value of generic type by its STATIC
                 // type — class -> __cajeta_class_virtual_drop, heap array ->
                 // __cajeta_free_array, primitive / @ValueType POD / view -> no-op.
@@ -2639,11 +2647,24 @@ namespace cajeta {
                                 }
                             }
                         } else if (auto klass = std::dynamic_pointer_cast<CajetaClass>(at)) {
-                            // Reference classes (vtable at slot 0); skip interfaces,
-                            // views, and @ValueType PODs (no vtable -> by value).
-                            if (!std::dynamic_pointer_cast<CajetaView>(at)
+                            bool isStr = klass->getQName()
+                                && klass->getQName()->getTypeName() == "String"
+                                && klass->getQName()->getPackageName() == "cajeta.lang";
+                            if (isStr) {
+                                // String drop must be mode-aware (free bytes only
+                                // for owned mode 0); the synthesized class wrapper
+                                // frees bytes unconditionally and would crash on a
+                                // view-mode key/value. Route through the dedicated
+                                // helper.
+                                if (llvm::Function* fn = module->getRuntimeFunction(
+                                        "__cajeta_string_drop")) {
+                                    builder->CreateCall(fn, {v});
+                                }
+                            } else if (!std::dynamic_pointer_cast<CajetaView>(at)
                                     && !klass->isInterface()
                                     && klass->hasVtablePointerAtSlotZero()) {
+                                // Reference classes (vtable at slot 0); skip
+                                // interfaces, views, @ValueType PODs (by value).
                                 klass->patchVirtualTableDropFn();
                                 if (llvm::Function* fn = module->getRuntimeFunction(
                                         "__cajeta_class_virtual_drop")) {
