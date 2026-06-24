@@ -53,7 +53,7 @@ first-class function types, closures, **closure specialization**, method-level t
 | `trees-spec.md` | Gradient-boosted trees (XGBoost lineage) — closed-form grad/Hessian, never touches autodiff; rides the frame. |
 
 ## Cross-cutting conventions (all specs)
-- **Namespaces:** `dev.cajeta.nucleo.*` (core) · `dev.cajeta.{torch,keras,scipy,pandas}` (façades). Stdlib `cajeta.math.*` is the substrate.
+- **Namespaces:** `dev.cajeta.nucleo.*` (core) · `dev.cajeta.{numpy,torch,keras,scipy,pandas}` (façades). Stdlib `cajeta.math.*` is the substrate — numpy's **core lives there** (curated, C-order-only); `dev.cajeta.numpy` is a thin `np.*`-named recognizability skin over it (consistent with the other façades), deferred until Python-porting demands it.
 - **Annotations:** Cajeta PascalCase — `@Grad`, `@Jit`, `@Vmap`, `@Pmap`, `@NoGrad`, `@Checkpoint`, `@Autocast`, `@Einsum`. Transforms are value-level combinators first; annotations are sugar.
 - **Storage:** Arrow in-memory layout + C Data Interface (no `libarrow`, no Arrow compute). Non-null column == tensor buffer.
 - **Dataframe:** Polars-shaped (lazy, expression, no implicit index, typed schema, nullable types) — *not* pandas.

@@ -65,8 +65,11 @@ model directly. Both intuitions map onto Cajeta's two uses: a record *as a value
 > **Resolved:** [F6] A `record` **lowers to a `@ValueType` class with no virtual methods** —
 > i.e. a class with **no vtable** and no per-instance header. It is *not* `@Sealed`: records
 > remain statically composable (§2.6), and sealing would block the vtable-free reuse we *do*
-> want. Plan-time detail: whether the `record` keyword is pure sugar over `@ValueType` or a
-> recognized distinct surface that lowers to it.
+> want. **`record` and `@ValueType` are co-equal, first-class surfaces** (decided 2026-06-24):
+> `record` is **convenience sugar over the `@ValueType` machinery with extra constraints**
+> (immutable-by-default, value-only fields, no-override static inheritance, no interfaces/virtuals,
+> synthesized `with`); plain `@ValueType` stays available for value types that need what records
+> forbid (e.g. implementing an interface, or compiler-intercepted types like `Matrix`).
 
 ## 2. Declaration and structure
 

@@ -47,13 +47,12 @@ const char* PRE =
     "package test;\n"
     "import cajeta.math.Tensor;\n"
     "import cajeta.math.DType;\n"
-    "import cajeta.math.MemoryOrder;\n"
     "import cajeta.math.BroadcastException;\n";
 
 } // namespace
 
 // 2a — of/zeros/ones/full/arange (+ _like) produce the right shape/strides/ndim/
-// size; C-order default + F-order.
+// size; C-order (the only layout).
 TEST(TensorTests, tensorConstructionAndShape) {
     std::string src = std::string(PRE) +
         "public final class D {\n"
@@ -88,9 +87,6 @@ TEST(TensorTests, tensorConstructionAndShape) {
         "        if (zl.get2(1, 0) != 0) { return -18; }\n"
         "        Tensor<int32> ol = Tensor.onesLike<int32>(t);\n"
         "        if (ol.get2(1, 2) != 1) { return -19; }\n"
-        "        Tensor<float32> ff = Tensor.emptyOrdered<float32>(shp, MemoryOrder.F);\n"
-        "        if (ff.strideAt(0) != 1) { return -20; }\n"  // F-order: [1, 2]
-        "        if (ff.strideAt(1) != 2) { return -21; }\n"
         "        return 1;\n"
         "    }\n"
         "}\n";
@@ -127,7 +123,7 @@ TEST(TensorTests, storageRefcountDropChain) {
 }
 
 // 2c — itemsize/nbytes/isContiguous/dtype + element read on a freshly-built
-// contiguous tensor; F-order is not C-contiguous.
+// contiguous tensor.
 TEST(TensorTests, tensorAccessors) {
     std::string src = std::string(PRE) +
         "public final class D {\n"
@@ -150,8 +146,6 @@ TEST(TensorTests, tensorAccessors) {
         "        Tensor<int16> s = Tensor.zeros<int16>(shp2);\n"
         "        if (s.itemsize() != 2) { return -8; }\n"
         "        if (s.nbytes() != 16) { return -9; }\n"
-        "        Tensor<float32> ff = Tensor.emptyOrdered<float32>(shp, MemoryOrder.F);\n"
-        "        if (ff.isContiguous()) { return -10; }\n"       // F-order, ndim>1 → not C-contig
         "        return 1;\n"
         "    }\n"
         "}\n";

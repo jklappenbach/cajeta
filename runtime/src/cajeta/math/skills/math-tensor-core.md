@@ -1,6 +1,6 @@
 ---
 id: math-tensor-core
-applies-to: [cajeta/math/Tensor, cajeta/math/Storage, cajeta/math/TensorProtocol, cajeta/math/DType, cajeta/math/Cast, cajeta/math/MemoryOrder, cajeta/math/RoundingMode, cajeta/math/BroadcastException]
+applies-to: [cajeta/math/Tensor, cajeta/math/Storage, cajeta/math/TensorProtocol, cajeta/math/DType, cajeta/math/Cast, cajeta/math/RoundingMode, cajeta/math/BroadcastException]
 title: Tensor core — strided Tensor over refcounted Storage, with dtype/cast/interop policies
 description: How Tensor, Storage, TensorProtocol, DType and the policy enums cooperate — who owns the buffer, view-vs-copy, and the device/interop seams.
 ---
@@ -27,7 +27,7 @@ enums where a method asks for one.
 - **`TensorProtocol`** — the dtype-erased interop seam (DLPack analogue). Carries a
   *borrow* of a `Storage` + offset/shape/strides/dtype/device/read-only for zero-copy
   hand-off. Built by `Tensor.protocol()`, consumed by `Tensor.fromProtocol(...)`.
-- **`MemoryOrder`** (`C`/`F`), **`RoundingMode`** (cast policy enum),
+- **`RoundingMode`** (cast policy enum),
   **`Cast`** (`roundToInt<I>(float64, RoundingMode)` — explicit rounding when the
   hardware default won't do), **`BroadcastException`** (recoverable; thrown by
   `broadcastShape`/`broadcastTo` on incompatible shapes).
@@ -79,7 +79,6 @@ are well-defined, in-place writes through it are **not**.
 ### Construct + access (the everyday path)
 ```cajeta
 import cajeta.math.Tensor;
-import cajeta.math.MemoryOrder;
 
 int64[] shp = heap int64[2];
 shp[0] = 2;
@@ -88,7 +87,6 @@ Tensor<float32> z = Tensor.zeros<float32>(shp);      // owned #Tensor, C-order, 
 Tensor<int32>   r = Tensor.arange<int32>(5);         // 1-D [0,1,2,3,4]
 z.set2(1, 2, 9.0f);                                  // in-place write
 Tensor<float32> v = z.transpose();                   // view: v.isView()==true, shares z's Storage
-Tensor<float32> ff = Tensor.emptyOrdered<float32>(shp, MemoryOrder.F);  // F-order strides [1,2]
 ```
 Factories are **method-templated statics** — pass the element type explicitly:
 `Tensor.zeros<float32>(shp)`, `Tensor.full<int32>(shp, 7)`, `Tensor.of<int32>(data, shp)`,

@@ -25,7 +25,6 @@ variable. C-order (row-major) is the layout default.
 
 ```cajeta
 import cajeta.math.Tensor;
-import cajeta.math.MemoryOrder;
 
 int64[] shp = heap int64[2];
 shp[0] = 2;
@@ -36,12 +35,10 @@ Tensor<int32>   f = Tensor.full<int32>(shp, 7);   // value arg typed E
 Tensor<int32>   r = Tensor.arange<int32>(6);      // 1-D [0,1,2,3,4,5]
 int32[] data = { 10, 20, 30, 40, 50, 60 };
 Tensor<int32>   t = Tensor.of<int32>(data, shp);  // copies data into fresh Storage
-Tensor<float32> ff = Tensor.emptyOrdered<float32>(shp, MemoryOrder.F); // F-order, strides [1,2]
 ```
 
 The factory set: `zeros<E>(shape)`, `ones<E>(shape)`, `full<E>(shape, value)`,
-`empty<E>(shape)` (host buffer is zero-filled despite the name),
-`emptyOrdered<E>(shape, order)` (the only C/F-order knob), `arange<E>(n)` (1-D),
+`empty<E>(shape)` (host buffer is zero-filled despite the name), `arange<E>(n)` (1-D),
 `of<E>(data, shape)` (copies the leading `productOf(shape)` elements of `data`). The
 `_like` forms take a source tensor and **also require the explicit element type**:
 `zerosLike<E>(src)`, `onesLike<E>(src)`, `fullLike<E>(src, value)`.

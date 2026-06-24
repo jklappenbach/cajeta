@@ -149,7 +149,14 @@ effort & risk · núcleo mapping.*
 - **Status.** Complete in stdlib `cajeta.math`: `Tensor<T>`, `DType` (NEP-50 *type-based*
   promotion — numpy's value-based promotion mistake already corrected), 11 phases
   (creation/elementwise/reductions/shape/contraction/sort/fft/random/stats/linalg),
-  GPU-lowered, `.npy` I/O for f32/f64/i32/i64.
+  GPU-lowered, `.npy` I/O for f32/f64/i32/i64. **C-order only** — the F-order/column-major
+  creation knob (`MemoryOrder.F`/`emptyOrdered`) was dropped 2026-06-24 (we own GEMM/linalg, no
+  column-major BLAS/LAPACK dependency; strided/transposed views and `.npy` F-read are kept). A
+  type-level layout tag (annotation sugar) can reintroduce an `FContig` variant later if a
+  concrete workload needs it.
+- **Façade.** numpy's *core* is `cajeta.math` itself; a thin `dev.cajeta.numpy` `np.*`-named skin
+  over it is **optional/deferred** (added only if Python-porting ergonomics demand the literal
+  `np.` surface).
 - **What it gives núcleo.** The tensor substrate. `Storage<T>` is already a single
   contiguous, C-order, **dense/null-free** buffer — i.e. already the non-null-column case
   of §2.3. `TensorProtocol` is a DLPack-style strided seam.

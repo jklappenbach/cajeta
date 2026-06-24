@@ -76,7 +76,6 @@ in *first* — the rules below differ between them:
 
 ```cajeta
 import cajeta.math.Tensor;
-import cajeta.math.MemoryOrder;
 
 // 2x3 float tensor, C-order; shapes are built as int64[] (heap + assign).
 int64[] shp = heap int64[2];
