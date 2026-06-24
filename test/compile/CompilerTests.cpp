@@ -94,7 +94,10 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // cajeta.gpu prelude; +1).
 // 2026-06-23: 441 → 443 — cajeta.gpu.Reservoir + cajeta.gpu.Ris (the §3 3.b-rest
 // RIS reservoir value type + RIS/MIS estimators; eager cajeta.gpu prelude; +2).
-static constexpr size_t STDLIB_STRUCTURE_COUNT = 443;
+// 2026-06-23: 443 → 445 — cajeta.gpu.Sobol (the §3 3.b-rest-sobol low-discrepancy
+// (0,2)-sequence) + cajeta.gpu.BvhCodec (the §3 3.a-rest reinterpret/quantized-node
+// codec); both eager cajeta.gpu prelude; +2.
+static constexpr size_t STDLIB_STRUCTURE_COUNT = 445;
 
 TEST(CompilerTests, canParseOnValidShortPackage) {
     string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");
