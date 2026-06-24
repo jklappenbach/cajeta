@@ -120,3 +120,46 @@ TEST(GfxSdfTests, sphereTraceMisses) {
         "        if (t > -0.5f) { return -1; }\n"               // must be the -1 sentinel
         "        return 0;\n"), 0);
 }
+
+// 3c-rest — grid-sampled SDF: trilinear fetch from a flat float32[] volume. A
+// 2x2x2 volume whose voxel (x,y,z) holds value x + 2y + 4z: integer corners read
+// back exactly, the centre (0.5,0.5,0.5) is the mean of the 8 corners (3.5), and
+// out-of-range samples clamp to the nearest face.
+TEST(GfxSdfTests, sampleGridTrilinear) {
+    EXPECT_EQ(runI32(IMP,
+        "        float32[] vol = heap float32[8];\n"
+        "        int32 z = 0;\n"
+        "        while (z < 2) {\n"
+        "            int32 y = 0;\n"
+        "            while (y < 2) {\n"
+        "                int32 x = 0;\n"
+        "                while (x < 2) {\n"
+        "                    int32 idx = x + y * 2 + z * 4;\n"
+        "                    float32 val = x + 2 * y + 4 * z;\n"
+        "                    vol[idx] = val;\n"
+        "                    x = x + 1;\n"
+        "                }\n"
+        "                y = y + 1;\n"
+        "            }\n"
+        "            z = z + 1;\n"
+        "        }\n"
+        // exact corners
+        "        if (Sdf.sampleGrid(vol, 2, 2, 2, 0.0f, 0.0f, 0.0f) != 0.0f) { return -1; }\n"
+        "        if (Sdf.sampleGrid(vol, 2, 2, 2, 1.0f, 0.0f, 0.0f) != 1.0f) { return -2; }\n"
+        "        if (Sdf.sampleGrid(vol, 2, 2, 2, 0.0f, 1.0f, 0.0f) != 2.0f) { return -3; }\n"
+        "        if (Sdf.sampleGrid(vol, 2, 2, 2, 1.0f, 1.0f, 1.0f) != 7.0f) { return -4; }\n"
+        // centre = mean of all 8 = 3.5
+        "        float32 mid = Sdf.sampleGrid(vol, 2, 2, 2, 0.5f, 0.5f, 0.5f);\n"
+        "        float32 em = mid - 3.5f;\n"
+        "        if (em < 0.0f) { em = 0.0f - em; }\n"
+        "        if (em > 0.001f) { return -5; }\n"
+        // a face midpoint along x at (0.5,0,0) = mean(0,1) = 0.5
+        "        float32 fx = Sdf.sampleGrid(vol, 2, 2, 2, 0.5f, 0.0f, 0.0f);\n"
+        "        float32 ef = fx - 0.5f;\n"
+        "        if (ef < 0.0f) { ef = 0.0f - ef; }\n"
+        "        if (ef > 0.001f) { return -6; }\n"
+        // clamp-to-edge: beyond max -> (1,1,1)=7; below 0 -> (0,0,0)=0
+        "        if (Sdf.sampleGrid(vol, 2, 2, 2, 5.0f, 5.0f, 5.0f) != 7.0f) { return -7; }\n"
+        "        if (Sdf.sampleGrid(vol, 2, 2, 2, 0.0f - 3.0f, 0.0f, 0.0f) != 0.0f) { return -8; }\n"
+        "        return 0;\n"), 0);
+}

@@ -82,7 +82,26 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // alongside the numpy-phase3 work. The numpy batch itself is all cajeta.math
 // (verified absent from the eager prelude — still lazy); the +9 are non-math
 // stdlib structures. Self-anchored to the live modules.size()-1 on a fresh build.
-static constexpr size_t STDLIB_STRUCTURE_COUNT = 383;
+// 2026-06-23: re-anchored 383 → 440 on feature/ifx. The 383 anchor was stale on
+// THIS branch: the eager cajeta.gpu §3 foundation classes added here
+// (LowDiscrepancy, Rng, Sdf, Noise, Octahedral) plus the branch's ifx-lineage
+// prelude growth had drifted the live count well past 383 (cajeta.gpu is eager;
+// only cajeta.math is lazy), so this test was already red before §3-a. +1 of the
+// jump is cajeta.gpu.Lbvh (the §3-a software-LBVH builder, Morton-code slice);
+// the rest absorbs the pre-existing drift. Self-anchored to the live
+// modules.size()-1 on a fresh build.
+// 2026-06-23: 440 → 441 — cajeta.gpu.PageCache (the §3 3.d residency cache, eager
+// cajeta.gpu prelude; +1).
+// 2026-06-23: 441 → 443 — cajeta.gpu.Reservoir + cajeta.gpu.Ris (the §3 3.b-rest
+// RIS reservoir value type + RIS/MIS estimators; eager cajeta.gpu prelude; +2).
+// 2026-06-23: 443 → 445 — cajeta.gpu.Sobol (the §3 3.b-rest-sobol low-discrepancy
+// (0,2)-sequence) + cajeta.gpu.BvhCodec (the §3 3.a-rest reinterpret/quantized-node
+// codec); both eager cajeta.gpu prelude; +2.
+// 2026-06-24: 445 → 446 — cajeta.gpu.Bvh (the cajeta-accel contract facade +
+// Reference adapter, plan unit 1) registers a structure; the sibling
+// cajeta.gpu.Strategy ENUM does not add a separate module, so the eager prelude
+// grew net +1.
+static constexpr size_t STDLIB_STRUCTURE_COUNT = 446;
 
 TEST(CompilerTests, canParseOnValidShortPackage) {
     string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");

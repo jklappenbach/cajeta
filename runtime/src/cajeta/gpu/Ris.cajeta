@@ -1,0 +1,108 @@
+package cajeta.gpu;
+
+/**
+ * Ris — Resampled Importance Sampling + Multiple Importance Sampling estimators
+ * (cajeta-gfx §3, the sampling foundation; spec §8.7). The static-operations
+ * companion to the {@link Reservoir} value type — the same split as
+ * {@link SoftwareRayQuery} over {@link SwRayCursor}: the reservoir is immutable
+ * data, so every streaming op here returns a NEW reservoir (a fresh value-type
+ * return, the proven lowering).
+ *
+ * {@link #update} folds one weighted candidate into a size-1 reservoir (keep the
+ * incoming sample with probability wi / wSum), so a single pass over a stream of
+ * candidates draws one in proportion to its weight (Talbot's RIS / the ReSTIR
+ * reservoir). {@link #resolve} computes the unbiased contribution weight
+ * W = wSum / (M * targetPdf) for the chosen sample. {@link #balanceHeuristic} and
+ * {@link #powerHeuristic} are Veach's MIS weights for combining two sampling
+ * techniques (e.g. BSDF vs light sampling) without variance blow-up.
+ *
+ * Pure scalar float math over the value type; the caller supplies the random
+ * decision value (from {@link Rng}) and the target pdf, so these stay
+ * deterministic and host-testable.
+ */
+public class Ris {
+
+    /** An empty reservoir: no sample selected, zero weight, zero count. */
+    public static Reservoir empty() {
+        return stack Reservoir(0 - 1, 0.0f, 0, 0.0f);
+    }
+
+    /**
+     * Stream one candidate `xi` with weight `wi` into reservoir `r`, using `rand`
+     * in [0, 1) for the replacement test, and return the updated reservoir. The
+     * incoming candidate becomes the selected sample with probability
+     * wi / (wSum + wi); otherwise the previous selection is kept. `m` increments
+     * and `wSum` accumulates regardless. The resolved weight `w` is cleared (call
+     * {@link #resolve} once the stream is done).
+     */
+    public static Reservoir update(Reservoir r, int32 xi, float32 wi, float32 rand) {
+        float32 oldSum = r.wSum;
+        int32 oldM = r.m;
+        int32 oldY = r.y;
+        float32 newSum = oldSum + wi;
+        int32 newM = oldM + 1;
+        int32 newY = oldY;
+        if (newSum > 0.0f) {
+            float32 threshold = wi / newSum;
+            if (rand < threshold) {
+                newY = xi;
+            }
+        }
+        return stack Reservoir(newY, newSum, newM, 0.0f);
+    }
+
+    /**
+     * Resolve the unbiased RIS contribution weight W = wSum / (M * targetPdf) for
+     * the selected sample, where `targetPdf` is the target function evaluated at
+     * that sample. Returns a new reservoir with `w` set (0 when degenerate —
+     * empty reservoir or non-positive target).
+     */
+    public static Reservoir resolve(Reservoir r, float32 targetPdf) {
+        int32 ry = r.y;
+        float32 rsum = r.wSum;
+        int32 rm = r.m;
+        float32 fm = rm;
+        float32 denom = fm * targetPdf;
+        float32 wOut = 0.0f;
+        if (denom > 0.0f) {
+            wOut = rsum / denom;
+        }
+        return stack Reservoir(ry, rsum, rm, wOut);
+    }
+
+    /**
+     * Veach's BALANCE heuristic MIS weight for technique f (nf samples, pdf fPdf
+     * at the point) against technique g (ng samples, pdf gPdf):
+     * (nf*fPdf) / (nf*fPdf + ng*gPdf). 0 when both contributions vanish.
+     */
+    public static float32 balanceHeuristic(int32 nf, float32 fPdf, int32 ng, float32 gPdf) {
+        float32 fnf = nf;
+        float32 fng = ng;
+        float32 f = fnf * fPdf;
+        float32 g = fng * gPdf;
+        float32 denom = f + g;
+        if (denom <= 0.0f) {
+            return 0.0f;
+        }
+        return f / denom;
+    }
+
+    /**
+     * Veach's POWER heuristic (exponent beta = 2) MIS weight:
+     * (nf*fPdf)^2 / ((nf*fPdf)^2 + (ng*gPdf)^2). Sharper than the balance
+     * heuristic at suppressing the higher-variance technique. 0 when degenerate.
+     */
+    public static float32 powerHeuristic(int32 nf, float32 fPdf, int32 ng, float32 gPdf) {
+        float32 fnf = nf;
+        float32 fng = ng;
+        float32 f = fnf * fPdf;
+        float32 g = fng * gPdf;
+        float32 f2 = f * f;
+        float32 g2 = g * g;
+        float32 denom = f2 + g2;
+        if (denom <= 0.0f) {
+            return 0.0f;
+        }
+        return f2 / denom;
+    }
+}

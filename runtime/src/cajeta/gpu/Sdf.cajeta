@@ -113,4 +113,94 @@ public class Sdf {
         }
         return 0.0f - 1.0f;
     }
+
+    /**
+     * Floor `x` to an int32 via the float64 -> int64 -> int32 chain (a direct
+     * float32 -> int32 cast mis-lowers in the current codegen). `Math.floor`
+     * keeps it correct for negative coordinates.
+     */
+    public static int32 floorToInt(float32 x) {
+        float64 xd = x;
+        float64 fd = Math.floor(xd);
+        int64 t = (int64) fd;
+        return (int32) t;
+    }
+
+    /**
+     * Trilinearly sample a grid-sampled SDF (or any scalar volume) stored as a
+     * flat `float32[]` of `nx*ny*nz` voxels in x-fastest order
+     * (`vol[x + y*nx + z*nx*ny]`). The sample coordinate (x, y, z) is in lattice
+     * units (voxel index space) and is clamped into `[0, n-1]` per axis, so a
+     * sample outside the volume reads the nearest face (the standard clamp-to-edge
+     * addressing). This is the grid companion to the analytic primitives: a
+     * baked/fused SDF volume (e.g. from `Tsdf`) sampled continuously for sphere
+     * tracing or collision queries.
+     */
+    public static float32 sampleGrid(float32[] vol, int32 nx, int32 ny, int32 nz,
+                                     float32 x, float32 y, float32 z) {
+        int32 xm = nx - 1;
+        int32 ym = ny - 1;
+        int32 zm = nz - 1;
+        float32 fxm = xm;
+        float32 fym = ym;
+        float32 fzm = zm;
+        float32 cx = x;
+        float32 cy = y;
+        float32 cz = z;
+        if (cx < 0.0f) { cx = 0.0f; }
+        if (cx > fxm) { cx = fxm; }
+        if (cy < 0.0f) { cy = 0.0f; }
+        if (cy > fym) { cy = fym; }
+        if (cz < 0.0f) { cz = 0.0f; }
+        if (cz > fzm) { cz = fzm; }
+
+        int32 x0 = Sdf.floorToInt(cx);
+        int32 y0 = Sdf.floorToInt(cy);
+        int32 z0 = Sdf.floorToInt(cz);
+        if (x0 > xm) { x0 = xm; }
+        if (y0 > ym) { y0 = ym; }
+        if (z0 > zm) { z0 = zm; }
+        int32 x1 = x0 + 1;
+        int32 y1 = y0 + 1;
+        int32 z1 = z0 + 1;
+        if (x1 > xm) { x1 = xm; }
+        if (y1 > ym) { y1 = ym; }
+        if (z1 > zm) { z1 = zm; }
+
+        float32 gx0 = x0;
+        float32 gy0 = y0;
+        float32 gz0 = z0;
+        float32 fx = cx - gx0;
+        float32 fy = cy - gy0;
+        float32 fz = cz - gz0;
+
+        int32 sy = nx;
+        int32 sz = nx * ny;
+        // Eight corner fetches (each subscript loaded into a local).
+        int32 i000 = x0 + y0 * sy + z0 * sz;
+        int32 i100 = x1 + y0 * sy + z0 * sz;
+        int32 i010 = x0 + y1 * sy + z0 * sz;
+        int32 i110 = x1 + y1 * sy + z0 * sz;
+        int32 i001 = x0 + y0 * sy + z1 * sz;
+        int32 i101 = x1 + y0 * sy + z1 * sz;
+        int32 i011 = x0 + y1 * sy + z1 * sz;
+        int32 i111 = x1 + y1 * sy + z1 * sz;
+        float32 c000 = vol[i000];
+        float32 c100 = vol[i100];
+        float32 c010 = vol[i010];
+        float32 c110 = vol[i110];
+        float32 c001 = vol[i001];
+        float32 c101 = vol[i101];
+        float32 c011 = vol[i011];
+        float32 c111 = vol[i111];
+
+        // Trilinear blend: lerp along x, then y, then z.
+        float32 c00 = c000 + (c100 - c000) * fx;
+        float32 c10 = c010 + (c110 - c010) * fx;
+        float32 c01 = c001 + (c101 - c001) * fx;
+        float32 c11 = c011 + (c111 - c011) * fx;
+        float32 c0 = c00 + (c10 - c00) * fy;
+        float32 c1 = c01 + (c11 - c01) * fy;
+        return c0 + (c1 - c0) * fz;
+    }
 }

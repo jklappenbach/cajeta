@@ -114,3 +114,78 @@ TEST(GfxNoiseTests, boundedRange) {
         "        if (sawBig == 0) { return -3; }\n"
         "        return 0;\n"), 0);
 }
+
+// 3c-rest — Worley (cellular) F1 noise: the distance to the nearest jittered
+// feature point. Over a grid it stays non-negative and bounded (a feature lives
+// within the 3x3x3 neighbourhood, so F1 < ~1.8), and it is deterministic per
+// (point, seed) while varying across both.
+TEST(GfxNoiseTests, worleyF1BoundedDeterministic) {
+    EXPECT_EQ(runI32(IMP,
+        "        int32 i = 0;\n"
+        "        int32 sawDiff = 0;\n"
+        "        float32 prev = 0.0f - 1.0f;\n"
+        "        while (i < 343) {\n"
+        "            int32 a = i % 7;\n"
+        "            int32 b = (i / 7) % 7;\n"
+        "            int32 c = (i / 49) % 7;\n"
+        "            float32 fa = a;\n"
+        "            float32 fb = b;\n"
+        "            float32 fc = c;\n"
+        "            float32 x = fa * 0.37f - 1.0f;\n"
+        "            float32 y = fb * 0.37f - 1.0f;\n"
+        "            float32 z = fc * 0.37f - 1.0f;\n"
+        "            float32 f = Noise.worleyF1(x, y, z, 1234);\n"
+        "            if (f < 0.0f) { return -1; }\n"
+        "            if (f > 1.8f) { return -2; }\n"
+        // determinism: same args -> same value
+        "            float32 f2 = Noise.worleyF1(x, y, z, 1234);\n"
+        "            if (f != f2) { return -3; }\n"
+        "            if (i > 0) { if (f != prev) { sawDiff = 1; } }\n"
+        "            prev = f;\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        if (sawDiff == 0) { return -4; }\n"           // field is non-constant
+        // seed changes the field at a fixed point
+        "        float32 s1 = Noise.worleyF1(0.3f, 0.7f, 0.1f, 1);\n"
+        "        float32 s2 = Noise.worleyF1(0.3f, 0.7f, 0.1f, 999);\n"
+        "        if (s1 == s2) { return -5; }\n"
+        "        return 0;\n"), 0);
+}
+
+// 3c-rest — 3-D simplex noise: deterministic per (point, seed), bounded near
+// [-1, 1], and non-constant across position and seed (the tetrahedral-lattice
+// alternative to perlin3).
+TEST(GfxNoiseTests, simplex3BoundedDeterministic) {
+    EXPECT_EQ(runI32(IMP,
+        "        int32 i = 0;\n"
+        "        int32 sawBig = 0;\n"
+        "        int32 sawDiff = 0;\n"
+        "        float32 prev = 0.0f;\n"
+        "        while (i < 343) {\n"
+        "            int32 a = i % 7;\n"
+        "            int32 b = (i / 7) % 7;\n"
+        "            int32 c = (i / 49) % 7;\n"
+        "            float32 fa = a;\n"
+        "            float32 fb = b;\n"
+        "            float32 fc = c;\n"
+        "            float32 x = fa * 0.43f - 1.5f;\n"
+        "            float32 y = fb * 0.43f - 1.5f;\n"
+        "            float32 z = fc * 0.43f - 1.5f;\n"
+        "            float32 v = Noise.simplex3(x, y, z, 7);\n"
+        "            float32 av = v;\n"
+        "            if (av < 0.0f) { av = 0.0f - av; }\n"
+        "            if (av > 1.2f) { return -1; }\n"
+        "            if (av > 0.05f) { sawBig = 1; }\n"
+        "            float32 v2 = Noise.simplex3(x, y, z, 7);\n"
+        "            if (v != v2) { return -2; }\n"
+        "            if (i > 0) { if (v != prev) { sawDiff = 1; } }\n"
+        "            prev = v;\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        if (sawBig == 0) { return -3; }\n"
+        "        if (sawDiff == 0) { return -4; }\n"
+        "        float32 s1 = Noise.simplex3(0.3f, 0.7f, 0.1f, 1);\n"
+        "        float32 s2 = Noise.simplex3(0.3f, 0.7f, 0.1f, 999);\n"
+        "        if (s1 == s2) { return -5; }\n"
+        "        return 0;\n"), 0);
+}

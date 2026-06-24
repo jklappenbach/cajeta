@@ -1,0 +1,183 @@
+package cajeta.gpu;
+
+import cajeta.collection.HashMap;
+import cajeta.collection.CacheNode;
+
+/**
+ * PageCache — generic feedback-driven residency cache with LRU eviction
+ * (cajeta-gfx §3, the acceleration/sampling/residency foundation; spec §250).
+ * The shared streaming floor under both the virtual-geometry tile streamer and
+ * the virtual-texture page cache: a capacity-bounded set of resident tiles where
+ * the consumer reports the tiles it needs each frame ({@link #touch}), loads the
+ * misses ({@link #admit}), and the cache evicts the least-recently-used tile when
+ * it overflows — reporting the victim key ({@link #evictedKey}) so the consumer
+ * can release that tile's GPU page.
+ *
+ * It reuses the same LRU machinery as {@link cajeta.collection.Cache}: a
+ * {@link HashMap} from key to {@link CacheNode} for O(1) lookup, paired with a
+ * doubly-linked list whose head is the most-recently-used tile and whose tail is
+ * the least. {@link #touch} / {@link #admit} splice the node to the head; an
+ * overflowing {@link #admit} drops the tail. The difference from `Cache` is the
+ * RESIDENCY-feedback surface — `touch` returns hit/miss so the caller knows when
+ * to load, and an eviction publishes the victim key — versus `Cache`'s
+ * memoization surface (Optional get + TTL). There is no TTL: a page is resident
+ * until it is the LRU victim, which is the streaming contract.
+ *
+ * v1: K must be a CLASS type (HashMap keys on `hash()`/`equals()`, which
+ * primitives lack) and keys match by identity unless K overrides them; the
+ * natural TileKey is a small packed-id class. Not thread-safe (same posture as
+ * `HashMap`/`Cache`); a frame's feedback pass is single-threaded.
+ */
+public final class PageCache<K, V> {
+
+    HashMap<K, CacheNode<K, V>> entries;
+    CacheNode<K, V> mruHead;
+    CacheNode<K, V> lruTail;
+    int32 capacity;
+    /** The key dropped by the most recent overflowing {@link #admit}, or null. */
+    K evicted;
+
+    /**
+     * Build a residency cache that keeps at most `capacity` tiles. `capacity`
+     * must be positive — a cache of size 0 evicts every tile on admit.
+     */
+    public PageCache(int32 capacity) {
+        // HashMap has no no-arg constructor; seed an explicit power-of-2 table.
+        this.entries = heap HashMap<K, CacheNode<K, V>>(16);
+        this.mruHead = null;
+        this.lruTail = null;
+        this.capacity = capacity;
+        this.evicted = null;
+    }
+
+    /** Number of resident tiles. */
+    @Inline
+    public int32 count() {
+        return this.entries.count();
+    }
+
+    /** The configured residency bound. */
+    @Inline
+    public int32 capacity() {
+        return this.capacity;
+    }
+
+    /** True when `key`'s tile is resident. Does NOT promote it (a pure query). */
+    public boolean isResident(K key) {
+        CacheNode<K, V> node = this.entries.get(key);
+        return node != null;
+    }
+
+    /**
+     * Feedback that the consumer needs `key`'s tile this frame. Returns true and
+     * promotes the tile to MRU when it is resident (a hit); returns false when it
+     * is a miss — the consumer should then load the tile and {@link #admit} it.
+     */
+    public boolean touch(K key) {
+        CacheNode<K, V> node = this.entries.get(key);
+        if (node == null) {
+            return false;
+        }
+        this.moveToHead(node);
+        return true;
+    }
+
+    /**
+     * Value of a resident tile, or `fallback` on a miss. Promotes the tile on a
+     * hit. Takes an explicit fallback so it stays generic over any V (there is no
+     * null/zero sentinel for an arbitrary value type).
+     */
+    public V getOrDefault(K key, V fallback) {
+        CacheNode<K, V> node = this.entries.get(key);
+        if (node == null) {
+            return fallback;
+        }
+        this.moveToHead(node);
+        return node.value;
+    }
+
+    /**
+     * Bring `key`'s tile into residency with `value` (the consumer loaded it).
+     * If the tile is already resident its value is replaced and it is promoted —
+     * no eviction. Otherwise it is inserted at the MRU head; if that pushes the
+     * cache over `capacity` the LRU tail is evicted and its key is published via
+     * {@link #evictedKey}. Returns true exactly when a tile was evicted.
+     */
+    public boolean admit(K key, V value) {
+        CacheNode<K, V> node = this.entries.get(key);
+        if (node != null) {
+            node.value = value;
+            this.moveToHead(node);
+            return false;
+        }
+        CacheNode<K, V> fresh = heap CacheNode<K, V>(key, value, 0);
+        this.entries.put(key, #fresh);
+        this.linkAtHead(fresh);
+        if (this.entries.count() > this.capacity) {
+            this.evictLru();
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * The key dropped by the most recent overflowing {@link #admit} (valid only
+     * when that admit returned true) — the tile whose GPU page the consumer
+     * should now free. Null before any eviction.
+     */
+    @Inline
+    public K evictedKey() {
+        return this.evicted;
+    }
+
+    /** Splice `node` in as the new MRU head, seeding the tail if the list is empty. */
+    @Inline
+    void linkAtHead(CacheNode<K, V> node) {
+        node.prev = null;
+        node.next = this.mruHead;
+        if (this.mruHead != null) {
+            this.mruHead.prev = node;
+        }
+        this.mruHead = node;
+        if (this.lruTail == null) {
+            this.lruTail = node;
+        }
+    }
+
+    /** Promote `node` to MRU head; no-op when it is already the head. */
+    @Inline
+    void moveToHead(CacheNode<K, V> node) {
+        if (node == this.mruHead) {
+            return;
+        }
+        this.unlinkOnly(node);
+        this.linkAtHead(node);
+    }
+
+    /** Detach `node` from the LRU list, mending head/tail and its neighbours. */
+    void unlinkOnly(CacheNode<K, V> node) {
+        if (node.prev != null) {
+            node.prev.next = node.next;
+        } else {
+            this.mruHead = node.next;
+        }
+        if (node.next != null) {
+            node.next.prev = node.prev;
+        } else {
+            this.lruTail = node.prev;
+        }
+        node.prev = null;
+        node.next = null;
+    }
+
+    /** Drop the LRU tail tile (the overflow victim), publishing its key. */
+    void evictLru() {
+        if (this.lruTail == null) {
+            return;
+        }
+        CacheNode<K, V> victim = this.lruTail;
+        this.evicted = victim.key;
+        this.unlinkOnly(victim);
+        this.entries.remove(victim.key);
+    }
+}
