@@ -28,8 +28,8 @@ package cajeta.lang.stream;
  * ```
  */
 public class HashMapKeyStream<K, V> extends Stream<K> implements Splittable<K> {
-    K[] keys;
-    int8[] state;
+    MapEntry<K, V>[] slots;
+    int8[] ctrl;
     int64 cap;
     int64 idx;
 
@@ -44,9 +44,9 @@ public class HashMapKeyStream<K, V> extends Stream<K> implements Splittable<K> {
      * #Stream<K> s = heap HashMapKeyStream<K, V>(map.keys, map.state, map.cap);
      * ```
      */
-    public HashMapKeyStream(K[] keys, int8[] state, int64 cap) {
-        this.keys = keys;
-        this.state = state;
+    public HashMapKeyStream(MapEntry<K, V>[] slots, int8[] ctrl, int64 cap) {
+        this.slots = slots;
+        this.ctrl = ctrl;
         this.cap = cap;
         this.idx = 0;
     }
@@ -59,8 +59,8 @@ public class HashMapKeyStream<K, V> extends Stream<K> implements Splittable<K> {
      */
     public Optional<K> next() {
         while (this.idx < this.cap) {
-            if (this.state[this.idx] == 1) {
-                K k = this.keys[this.idx];
+            if (this.ctrl[this.idx] >= (int8) 0) {   // FULL: top bit clear
+                K k = this.slots[this.idx].key;
                 this.idx = this.idx + 1;
                 return stack Optional<K>(true, #k);
             }
@@ -82,7 +82,7 @@ public class HashMapKeyStream<K, V> extends Stream<K> implements Splittable<K> {
             return null;
         }
         int64 mid = this.idx + remaining / 2L;
-        HashMapKeyStream<K, V> upper = heap HashMapKeyStream<K, V>(this.keys, this.state, this.cap);
+        HashMapKeyStream<K, V> upper = heap HashMapKeyStream<K, V>(this.slots, this.ctrl, this.cap);
         upper.idx = mid;
         this.cap = mid;
         return upper;

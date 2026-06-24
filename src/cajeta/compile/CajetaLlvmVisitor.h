@@ -532,33 +532,41 @@ namespace cajeta {
             // has placeholder fields and must validate at instantiation: future work.
             // Interfaces are rejected in visitInterfaceDeclaration.)
             if (structure->findAnnotation("ValueType")) {
-                if (structure->countInheritedFields() != 0) {
-                    throw Exception(
-                        "@ValueType class '" + structure->toCanonical()
-                            + "' must not inherit fields — value types are flat POD",
-                        "CAJETA_ERROR_VALUE_TYPE");
-                }
-                bool sawField = false;
-                for (auto& prop : structure->getPropertyList()) {
-                    if (!prop || prop->isStatic()) continue;
-                    sawField = true;
-                    auto ft = prop->getType();
-                    bool ok = ft
-                        && (((ft->getTypeFlags() & PRIMITIVE_FLAG) != 0)
-                            || ((ft->getTypeFlags() & VALUE_TYPE_FLAG) != 0));
-                    if (!ok) {
+                // A generic @ValueType template (e.g. Entry<K,V>) carries
+                // placeholder field types that aren't yet known to be POD, so the
+                // POD-ness check below can't run on the template — it validates at
+                // each concrete instantiation instead (where K/V are bound). The
+                // template still gets the value-type flags so its instantiations
+                // and array storage are treated by value.
+                if (!structure->isTemplate()) {
+                    if (structure->countInheritedFields() != 0) {
                         throw Exception(
-                            "@ValueType field '" + prop->getName()
-                                + "' must be a primitive, Vector, or another "
-                                  "@ValueType (got a non-POD type)",
+                            "@ValueType class '" + structure->toCanonical()
+                                + "' must not inherit fields — value types are flat POD",
                             "CAJETA_ERROR_VALUE_TYPE");
                     }
-                }
-                if (!sawField) {
-                    throw Exception(
-                        "@ValueType class '" + structure->toCanonical()
-                            + "' must declare at least one field",
-                        "CAJETA_ERROR_VALUE_TYPE");
+                    bool sawField = false;
+                    for (auto& prop : structure->getPropertyList()) {
+                        if (!prop || prop->isStatic()) continue;
+                        sawField = true;
+                        auto ft = prop->getType();
+                        bool ok = ft
+                            && (((ft->getTypeFlags() & PRIMITIVE_FLAG) != 0)
+                                || ((ft->getTypeFlags() & VALUE_TYPE_FLAG) != 0));
+                        if (!ok) {
+                            throw Exception(
+                                "@ValueType field '" + prop->getName()
+                                    + "' must be a primitive, Vector, or another "
+                                      "@ValueType (got a non-POD type)",
+                                "CAJETA_ERROR_VALUE_TYPE");
+                        }
+                    }
+                    if (!sawField) {
+                        throw Exception(
+                            "@ValueType class '" + structure->toCanonical()
+                                + "' must declare at least one field",
+                            "CAJETA_ERROR_VALUE_TYPE");
+                    }
                 }
                 // VALUE_TYPE_FLAG = the @ValueType kind (relaxes the operator-
                 // dispatch !PRIMITIVE_FLAG gate); BY_VALUE_FLAG = the storage

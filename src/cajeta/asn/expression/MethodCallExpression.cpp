@@ -2570,6 +2570,120 @@ namespace cajeta {
                     st->setAlignment(llvm::Align(1));
                     return st;
                 }
+                // hashBytes(int8[] buf, int64 len) -> int64: XXH3-64 (seeded) over
+                // the first `len` bytes of the array. Bridges int8[] -> uint8_t*
+                // (data at header+8, same ABI as loadU64) and calls the runtime
+                // __cajeta_hash_bytes. Backs String.hash(); len<=0 is the empty-
+                // input hash (the runtime clamps negative len to 0).
+                if (ns == "Cajeta" && methodCallName == "hashBytes" && parameters.size() == 2) {
+                    auto* i8Ty = builder->getInt8Ty();
+                    llvm::Value* hdr = loadValue(0);
+                    llvm::Value* len = loadValue(1);
+                    llvm::Value* data = builder->CreateGEP(
+                        i8Ty, hdr, builder->getInt64(8), "hash_data");
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_hash_bytes");
+                    resolvedType = CajetaType::of("int64");
+                    return builder->CreateCall(fn, {data, len});
+                }
+                // allocBytes(int64 n) -> int8[]: allocate an owned int8[] of n
+                // elements with the data region LEFT UNINITIALIZED (no calloc
+                // zeroing). For buffers fully overwritten before any read
+                // (StringBuilder grow/toString, concat payloads); the array is
+                // live-set tracked and drops/frees exactly like a zeroed one.
+                if (ns == "Cajeta" && methodCallName == "allocBytes" && parameters.size() == 1) {
+                    auto* i64Ty = builder->getInt64Ty();
+                    llvm::Value* count = loadValue(0);
+                    if (count->getType() != i64Ty) {
+                        count = builder->CreateIntCast(count, i64Ty, /*isSigned=*/true);
+                    }
+                    CajetaTypePtr i8 = CajetaType::of("int8");
+                    auto arrTy = std::make_shared<CajetaArray>(module, i8);
+                    module->getStructures()[arrTy->toCanonical()] =
+                        std::static_pointer_cast<CajetaClass>(arrTy);
+                    const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
+                    llvm::Value* headerSize = builder->getInt64(
+                        dl.getTypeAllocSize(arrTy->getLlvmType()));
+                    llvm::Value* elemSize = builder->getInt64(
+                        dl.getTypeAllocSize(arrTy->getElementLlvmType(&llvmCtx)));
+                    llvm::Function* allocFn =
+                        module->getRuntimeFunction("__cajeta_new_array_header_uninit");
+                    resolvedType = arrTy;
+                    return builder->CreateCall(allocFn, {headerSize, elemSize, count});
+                }
+                // moveMask() -> int64: the caller-side ownership-transfer mask for
+                // THIS call (bit i set iff user-arg i was passed `#x`). Read once at
+                // method entry; the compiler sets the TLS before a `#`-bearing call
+                // and clears it after (see the call-site emission). Lets a plain-`T`
+                // param method (e.g. HashMap.put) learn which args it owns.
+                if (ns == "Cajeta" && methodCallName == "moveMask" && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_move_mask_get");
+                    resolvedType = CajetaType::of("int64");
+                    return builder->CreateCall(fn, {});
+                }
+                // liveCount() -> int64: current live-object population (test-only
+                // introspection). Lets a test assert an owning container reclaimed
+                // its #-taken keys/values on drop instead of leaking them.
+                if (ns == "Cajeta" && methodCallName == "liveCount" && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_live_set_population");
+                    resolvedType = CajetaType::of("int64");
+                    return builder->CreateCall(fn, {});
+                }
+                // arenaInUse() -> int64: current frame-arena bytes in use (test-only
+                // introspection). Lets a test assert non-escaping owned locals were
+                // bump-allocated and reclaimed by the scope-exit reset.
+                if (ns == "Cajeta" && methodCallName == "arenaInUse" && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_arena_bytes");
+                    resolvedType = CajetaType::of("int64");
+                    return builder->CreateCall(fn, {});
+                }
+                // dropValue(x): drop an owned value of generic type by its STATIC
+                // type — class -> __cajeta_class_virtual_drop, heap array ->
+                // __cajeta_free_array, primitive / @ValueType POD / view -> no-op.
+                // The enabler for a container to reclaim owned K/V it took via `#`
+                // (HashMap teardown/remove). Idempotent at runtime via the live-set
+                // claim, so a no-op on a non-owned value is harmless.
+                if (ns == "Cajeta" && methodCallName == "dropValue" && parameters.size() == 1) {
+                    llvm::Value* v = loadValue(0);
+                    auto argAst = dynamic_pointer_cast<Expression>(parameters[0].expression);
+                    CajetaTypePtr at = argAst ? argAst->getResolvedType() : nullptr;
+                    if (at) {
+                        if (auto arr = std::dynamic_pointer_cast<CajetaArray>(at)) {
+                            if (!arr->isInlineArray()) {
+                                if (llvm::Function* fn = module->getRuntimeFunction(
+                                        "__cajeta_free_array")) {
+                                    builder->CreateCall(fn, {v});
+                                }
+                            }
+                        } else if (auto klass = std::dynamic_pointer_cast<CajetaClass>(at)) {
+                            bool isStr = klass->getQName()
+                                && klass->getQName()->getTypeName() == "String"
+                                && klass->getQName()->getPackageName() == "cajeta.lang";
+                            if (isStr) {
+                                // String drop must be mode-aware (free bytes only
+                                // for owned mode 0); the synthesized class wrapper
+                                // frees bytes unconditionally and would crash on a
+                                // view-mode key/value. Route through the dedicated
+                                // helper.
+                                if (llvm::Function* fn = module->getRuntimeFunction(
+                                        "__cajeta_string_drop")) {
+                                    builder->CreateCall(fn, {v});
+                                }
+                            } else if (!std::dynamic_pointer_cast<CajetaView>(at)
+                                    && !klass->isInterface()
+                                    && klass->hasVtablePointerAtSlotZero()) {
+                                // Reference classes (vtable at slot 0); skip
+                                // interfaces, views, @ValueType PODs (by value).
+                                klass->patchVirtualTableDropFn();
+                                if (llvm::Function* fn = module->getRuntimeFunction(
+                                        "__cajeta_class_virtual_drop")) {
+                                    builder->CreateCall(fn, {v});
+                                }
+                            }
+                        }
+                        // primitives / pointers / unresolved -> no-op
+                    }
+                    return nullptr;
+                }
                 // f32ToBits(float32 x) -> int32: reinterpret a float's IEEE-754
                 // bits as a 32-bit integer (LLVM bitcast — NOT a value
                 // conversion; `(int32) x` would truncate the numeric value).
@@ -7177,10 +7291,30 @@ namespace cajeta {
         bool targetIsFinalClass = targetClass
             && !targetClass->isInterface()
             && targetClass->getModifiers().count(FINAL) > 0;
+        // Ownership-transfer move-mask (OwnershipTransfer.md): tell the callee
+        // which args arrived as `#x` so a plain-`T`-param method (HashMap.put)
+        // can take ownership of exactly those via Cajeta.moveMask(). Compile-time
+        // constant; set the thread-local before the call and clear after, so a
+        // later call with no `#` reads 0. Only emitted when a transfer is present.
+        int64_t moveMask = 0;
+        for (size_t mmi = 0; mmi < parameters.size(); ++mmi) {
+            if (parameters[mmi].callerTransferred) moveMask |= ((int64_t) 1) << mmi;
+        }
+        llvm::Function* moveSetFn = nullptr;
+        if (moveMask != 0) {
+            moveSetFn = module->getRuntimeFunction("__cajeta_move_mask_set");
+            if (moveSetFn) {
+                builder->CreateCall(moveSetFn,
+                    {builder->getInt64((uint64_t) moveMask)});
+            }
+        }
         llvm::Value* callResult = targetClass->invokeMethod(methodCallName, entries,
             /*isConstructor=*/false, thisValue, /*callerModule=*/module,
             /*forceDirectCall=*/(isSuperCall || targetIsFinalClass),
             /*explicitMethodTypeArgs=*/explicitMethodTypeArgs);
+        if (moveSetFn) {
+            builder->CreateCall(moveSetFn, {builder->getInt64(0)});
+        }
 
         if (nullSafeStringMethod) {
             // Close all three null-safety blocks unconditionally so the

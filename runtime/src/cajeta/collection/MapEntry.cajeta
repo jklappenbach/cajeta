@@ -1,0 +1,14 @@
+package cajeta.collection;
+
+/**
+ * A by-value (key, value) slot for the dense open-addressing maps. `@ValueType`
+ * so a `MapEntry<K,V>[]` stores entries INLINE (one `{key, val}` struct per
+ * element, struct-stride packed) rather than as boxed pointers — a probe then
+ * touches a single `slots[i]` cache line for both the key and the value, the
+ * abseil/ankerl dense layout. Distinct from `Pair<K,V>` (a heap reference class
+ * used for public stream/entry results).
+ */
+@ValueType public final class MapEntry<K, V> {
+    public K key;
+    public V val;
+}

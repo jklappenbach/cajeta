@@ -1108,14 +1108,22 @@ namespace cajeta {
         if (auto* vt = klass->getVirtualTableGlobal()) {
             vtableRef = CajetaModule::ensureGlobalInModule(mod, vt);
         }
+        std::vector<llvm::Constant*> instFields = {
+            vtableRef, bytesGv,
+            llvm::ConstantInt::get(i32Ty,
+                llvm::APInt(32, (uint64_t) len, true)),
+            llvm::ConstantInt::get(i32Ty, llvm::APInt(32, 1, true)),
+            llvm::ConstantInt::get(i32Ty,
+                llvm::APInt(32, (uint64_t) -1, true))};
+        // Zero-init any trailing fields (inline SSO region: ssoCount, ssoData) —
+        // a literal is view-mode with bytes pointing at the static buffer.
+        for (unsigned fi = (unsigned) instFields.size();
+                fi < structTy->getNumElements(); ++fi) {
+            instFields.push_back(
+                llvm::Constant::getNullValue(structTy->getElementType(fi)));
+        }
         auto* instInit = llvm::ConstantStruct::get(structTy,
-            llvm::ArrayRef<llvm::Constant*>{
-                vtableRef, bytesGv,
-                llvm::ConstantInt::get(i32Ty,
-                    llvm::APInt(32, (uint64_t) len, true)),
-                llvm::ConstantInt::get(i32Ty, llvm::APInt(32, 1, true)),
-                llvm::ConstantInt::get(i32Ty,
-                    llvm::APInt(32, (uint64_t) -1, true))});
+            llvm::ArrayRef<llvm::Constant*>(instFields));
         auto* instGv = new llvm::GlobalVariable(*mod, structTy,
             /*isConst=*/false, llvm::GlobalValue::PrivateLinkage, instInit,
             ".str.inst");

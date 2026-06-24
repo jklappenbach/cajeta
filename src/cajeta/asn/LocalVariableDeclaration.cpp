@@ -13,6 +13,7 @@
 #include "../type/CajetaView.h"
 #include "../type/CajetaFunctionType.h"
 #include "expression/Expression.h"
+#include "expression/LiteralExpression.h"
 #include "expression/DotExpression.h"
 #include "expression/Identifier.h"
 #include "expression/MethodCallExpression.h"
@@ -518,6 +519,17 @@ namespace cajeta {
                 auto& children = varInit->getChildren();
                 if (!children.empty()) {
                     auto rhsExpr = dynamic_pointer_cast<Expression>(children[0]);
+                    // A string-literal initializer (`String s = "x";`) aliases
+                    // static/.rodata storage — a view (mode 1) that owns nothing.
+                    // It must NOT get an owned-String drop entry: the drop would
+                    // fire as a no-op (live-set claim fails) but is wasteful and
+                    // semantically wrong (a literal alias is a borrow). Mark borrow.
+                    if (auto litExpr = dynamic_pointer_cast<TextLiteralExpression>(children[0])) {
+                        LiteralType lt = litExpr->getLiteralType();
+                        if (lt == LITERAL_TYPE_STRING || lt == LITERAL_TYPE_TEXT_BLOCK) {
+                            initIsBorrow = true;
+                        }
+                    }
                     if (auto newExpr = dynamic_pointer_cast<NewExpression>(children[0])) {
                         if (newExpr->getStackAlloc()) {
                             initIsStackAlloc = true;
@@ -696,12 +708,21 @@ namespace cajeta {
                 }
             }
 
+            // Arena-eligible locals (frame-arena-plan U2/U3) register NO drop entry
+            // — the scope-exit arena reset reclaims them in bulk. The escape pre-pass
+            // guarantees they don't leave the frame. Name-keyed, so it covers both
+            // the owned-String concat case (U2) and the primitive-array case (U3).
+            bool arenaEligible = false;
+            if (auto cm = module->getCurrentMethod()) {
+                arenaEligible = cm->isArenaEligibleLocal(declarator->getIdentifier());
+            }
+
             // Array-typed locals own the heap header; register
             // __cajeta_free_array unless this local is a borrow.
             // The borrow case (e.g. `T[] alias = paramArr` or
             // `T[] xs = obj.field`) already has an owner upstream;
             // duplicating the drop here double-frees at scope exit.
-            if (isArray && !initIsBorrow) {
+            if (isArray && !initIsBorrow && !arenaEligible) {
                 emitDropEntryFor(module, field, "__cajeta_free_array", getSourceLine());
             }
 
@@ -894,6 +915,29 @@ namespace cajeta {
             bool isCajetaString = klass && klass->getQName()
                 && klass->getQName()->getTypeName() == "String"
                 && klass->getQName()->getPackageName() == "cajeta.lang";
+            // Owned cajeta.lang.String locals: register the mode-aware string
+            // drop (docs/specification/lang/String.md § Memory model — the
+            // owned/view distinction the drop chain was designed for). At scope
+            // exit __cajeta_string_drop frees the byte buffer ONLY for owned
+            // (mode 0) strings — concat results (`"k" + i`), substring/upper/
+            // lower/trim/replace copies — and is a no-op for view-mode literals
+            // and slices (mode 1, bytes borrowed) and static wrappers (live-set
+            // claim fails). Borrowed aliases (`String b = a;`, field/element
+            // reads) set initIsBorrow above and skip here, so no double-free.
+            // `#`-transfer into a container deactivates this entry (the container
+            // takes the drop). Returning the local deactivates it too
+            // (ReturnStatement), transferring ownership to the caller. This
+            // retires the former never-drop policy that leaked every dynamically
+            // built String.
+            // Arena-eligible concat locals (frame-arena-plan U2) register NO drop
+            // entry — the scope-exit arena reset reclaims them in bulk. The escape
+            // pre-pass guarantees they don't leave the frame. `arenaEligible` was
+            // computed once above (name-keyed; covers String U2 + array U3).
+            if (isCajetaString && !isArray && !isStructType
+                    && !initIsBorrow && !initIsStackAlloc && initializer
+                    && !arenaEligible) {
+                emitDropEntryFor(module, field, "__cajeta_string_drop", getSourceLine());
+            }
             // @ValueType locals are Copy PODs living inline in their slot —
             // never heap-backed, no owned fields, no destructor. They must NOT
             // enter the drop chain: a drop-push here would load the slot's
