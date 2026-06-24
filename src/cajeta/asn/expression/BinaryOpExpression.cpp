@@ -1753,14 +1753,38 @@ namespace cajeta {
                     if (rhsAst && !rhsAst->getResolvedType()) rhsAst->resolveTypes(module);
                     CajetaTypePtr lhsRT = lhsAst ? lhsAst->getResolvedType() : nullptr;
                     CajetaTypePtr rhsRT = rhsAst ? rhsAst->getResolvedType() : nullptr;
-                    llvm::Value* ls = stringify(l, lhsRT);
-                    llvm::Value* rs = stringify(r, rhsRT);
+                    // Lever #1: classify each operand instead of eagerly
+                    // stringifying. An integer operand is kept as its i64 value and
+                    // later formatted DIRECTLY into the result buffer
+                    // (__cajeta_i64_to_buf) — no per-concat __cajeta_i64_to_str
+                    // malloc/free. Non-integer operands (class String, char*, float,
+                    // bool) still go through `stringify` to a char* and are memcpy'd.
+                    struct ConcatOp { bool isInt; llvm::Value* iv; llvm::Value* cstr; };
+                    auto classify = [&](llvm::Value* v, CajetaTypePtr vt) -> ConcatOp {
+                        if (!isClassStringType(vt)) {
+                            llvm::Type* t = v->getType();
+                            if (t->isIntegerTy() && !t->isIntegerTy(1)) {
+                                return { true,
+                                    builder->CreateIntCast(v, i64Ty, /*isSigned=*/true),
+                                    nullptr };
+                            }
+                        }
+                        return { false, nullptr, stringify(v, vt) };
+                    };
+                    ConcatOp opL = classify(l, lhsRT);
+                    ConcatOp opR = classify(r, rhsRT);
                     if (!stringStructTy || !stringKlass) {
                         // Bootstrap fallback (class String not loaded yet): keep
-                        // the legacy char* concat.
+                        // the legacy char* concat. Int operands take the malloc
+                        // stringify here (rare runtime-parse window only).
+                        auto toCStr = [&](const ConcatOp& o) -> llvm::Value* {
+                            if (!o.isInt) return o.cstr;
+                            return builder->CreateCall(
+                                module->getRuntimeFunction("__cajeta_i64_to_str"), {o.iv});
+                        };
                         llvm::Function* concat = module->getRuntimeFunction(
                             "__cajeta_str_concat");
-                        result = builder->CreateCall(concat, {ls, rs});
+                        result = builder->CreateCall(concat, {toCStr(opL), toCStr(opR)});
                         break;
                     }
 
@@ -1785,8 +1809,14 @@ namespace cajeta {
                     const char* bufAllocName =
                         arena ? "__cajeta_arena_alloc_uninit" : "__cajeta_alloc_uninit";
                     llvm::Function* strlenFn = module->getRuntimeFunction("__cajeta_str_len");
-                    llvm::Value* lenL = builder->CreateCall(strlenFn, {ls}, "concat.lenL");
-                    llvm::Value* lenR = builder->CreateCall(strlenFn, {rs}, "concat.lenR");
+                    llvm::Function* i64LenFn = module->getRuntimeFunction("__cajeta_i64_str_len");
+                    auto lenOf = [&](const ConcatOp& o, const char* nm) -> llvm::Value* {
+                        return o.isInt
+                            ? builder->CreateCall(i64LenFn, {o.iv}, nm)
+                            : builder->CreateCall(strlenFn, {o.cstr}, nm);
+                    };
+                    llvm::Value* lenL = lenOf(opL, "concat.lenL");
+                    llvm::Value* lenR = lenOf(opR, "concat.lenR");
                     llvm::Value* total = builder->CreateAdd(lenL, lenR, "concat.total");
                     llvm::Value* totalI32 = builder->CreateIntCast(
                         total, i32Ty, /*isSigned=*/true, "concat.total32");
@@ -1866,13 +1896,23 @@ namespace cajeta {
                     dataPtr->addIncoming(ssoData, ssoBB);
                     dataPtr->addIncoming(heapData, heapBB);
 
-                    // Copy both operands + NUL-terminate.
-                    builder->CreateMemCpy(dataPtr, llvm::MaybeAlign(1),
-                        ls, llvm::MaybeAlign(1), lenL);
+                    // Copy both operands + NUL-terminate. An int operand is
+                    // formatted straight into its destination slot (no malloc); a
+                    // char* operand is memcpy'd.
+                    llvm::Function* i64BufFn = module->getRuntimeFunction("__cajeta_i64_to_buf");
+                    auto copyInto = [&](const ConcatOp& o, llvm::Value* dst,
+                                        llvm::Value* len) {
+                        if (o.isInt) {
+                            builder->CreateCall(i64BufFn, {o.iv, dst});
+                        } else {
+                            builder->CreateMemCpy(dst, llvm::MaybeAlign(1),
+                                o.cstr, llvm::MaybeAlign(1), len);
+                        }
+                    };
+                    copyInto(opL, dataPtr, lenL);
                     llvm::Value* dstR = builder->CreateInBoundsGEP(
                         i8Ty, dataPtr, lenL, "concat.dst_r");
-                    builder->CreateMemCpy(dstR, llvm::MaybeAlign(1),
-                        rs, llvm::MaybeAlign(1), lenR);
+                    copyInto(opR, dstR, lenR);
                     llvm::Value* nulSlot = builder->CreateInBoundsGEP(
                         i8Ty, dataPtr, total, "concat.nul");
                     builder->CreateStore(llvm::ConstantInt::get(i8Ty, 0), nulSlot);

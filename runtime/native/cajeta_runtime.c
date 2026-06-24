@@ -5930,13 +5930,22 @@ int64_t __cajeta_i64_str_len(int64_t v) {
 // allocation) and return the byte count. The concat lowering calls this to format
 // an integer operand directly into the result String's byte storage, eliminating
 // the per-concat __cajeta_i64_to_str malloc/free (60k/iter in the hashmap-string
-// bench). `dst` must hold __cajeta_i64_str_len(v) bytes.
+// bench). `dst` must hold __cajeta_i64_str_len(v) bytes. Hand-rolled decimal — NOT
+// snprintf: profiling showed snprintf's printf machinery (__printf_buffer/_itoa_word/
+// __vsnprintf) dominating the bench; a digit loop is ~5x cheaper and locale-free.
 int64_t __cajeta_i64_to_buf(int64_t v, char* dst) {
-    char buf[32];
-    int n = snprintf(buf, sizeof(buf), "%lld", (long long) v);
-    if (n < 0) n = 0;
-    memcpy(dst, buf, (size_t) n);
-    return (int64_t) n;
+    char tmp[20];
+    int i = 0;
+    int neg = 0;
+    uint64_t u;
+    if (v < 0) { neg = 1; u = (uint64_t) (-(v + 1)) + 1u; }
+    else       { u = (uint64_t) v; }
+    if (u == 0) { dst[0] = '0'; return 1; }
+    while (u) { tmp[i++] = (char) ('0' + (int) (u % 10u)); u /= 10u; }
+    int64_t n = 0;
+    if (neg) dst[n++] = '-';
+    while (i > 0) { dst[n++] = tmp[--i]; }
+    return n;
 }
 
 char* __cajeta_f64_to_str(double v) {
