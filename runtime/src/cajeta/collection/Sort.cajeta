@@ -288,16 +288,561 @@ public class Sort {
     // Natural-order entry points (by `<` / `>` on T) — thin seam wrappers
     // ─────────────────────────────────────────────────────────────────────
 
+    // ─────────────────────────────────────────────────────────────────────
+    // Natural-order pattern-defeating quicksort (pdqsort) — the hot path the
+    // benchmarks and the numeric Tensor sort hit. This is a port of Orson
+    // Peters' pdqsort: median-of-3 / pseudomedian-of-9 (ninther) pivots, a
+    // BlockQuicksort-style *branchless* partition (no data-dependent branch in
+    // the partition inner loop — the dominant win on random input), a
+    // pattern-breaking shuffle on unbalanced splits, an introsort heapsort
+    // fallback for O(n log n) worst case, and partial-insertion-sort on
+    // already-partitioned runs (O(n) on sorted/structured input). Comparisons
+    // are inlined `<` so a monomorphized `sort<int64>` lowers each to a native
+    // `icmp`/`fcmp` (no comparator closure on this path).
+    //
+    // The helpers below are `public static` only because the toolchain has no
+    // proven internal-visibility for templated statics yet; they are not part
+    // of the intended Sort API. TODO: tighten to internal once available.
+    // ─────────────────────────────────────────────────────────────────────
+
+    public static void pdqSwap<T>(T[] a, int32 i, int32 j) {
+        T t = a[i];
+        a[i] = a[j];
+        a[j] = t;
+    }
+
+    // Order a[i] <= a[j].
+    public static void pdqSort2<T>(T[] a, int32 i, int32 j) {
+        if (a[j] < a[i]) {
+            T t = a[i];
+            a[i] = a[j];
+            a[j] = t;
+        }
+    }
+
+    // Order a[i] <= a[j] <= a[k].
+    public static void pdqSort3<T>(T[] a, int32 i, int32 j, int32 k) {
+        pdqSort2<T>(a, i, j);
+        pdqSort2<T>(a, j, k);
+        pdqSort2<T>(a, i, j);
+    }
+
+    // Guarded insertion sort of a[begin..end) (end exclusive).
+    public static void pdqInsertion<T>(T[] a, int32 begin, int32 end) {
+        if (begin >= end) {
+            return;
+        }
+        int32 cur = begin + 1;
+        while (cur < end) {
+            int32 sift = cur;
+            if (a[sift] < a[sift - 1]) {
+                T tmp = a[sift];
+                boolean go = true;
+                while (go) {
+                    a[sift] = a[sift - 1];
+                    sift = sift - 1;
+                    if (sift == begin) {
+                        go = false;
+                    } else if (!(tmp < a[sift - 1])) {
+                        go = false;
+                    }
+                }
+                a[sift] = tmp;
+            }
+            cur = cur + 1;
+        }
+    }
+
+    // Insertion sort of a[begin..end) assuming a[begin-1] <= every element in
+    // the range, so the inner shift never needs the `sift == begin` guard.
+    public static void pdqUnguardedInsertion<T>(T[] a, int32 begin, int32 end) {
+        if (begin >= end) {
+            return;
+        }
+        int32 cur = begin + 1;
+        while (cur < end) {
+            int32 sift = cur;
+            if (a[sift] < a[sift - 1]) {
+                T tmp = a[sift];
+                boolean go = true;
+                while (go) {
+                    a[sift] = a[sift - 1];
+                    sift = sift - 1;
+                    if (!(tmp < a[sift - 1])) {
+                        go = false;
+                    }
+                }
+                a[sift] = tmp;
+            }
+            cur = cur + 1;
+        }
+    }
+
+    // Insertion sort of a[begin..end) that gives up (returns false) after more
+    // than 8 element moves — the cheap "is this run already nearly sorted?" probe.
+    public static boolean pdqPartialInsertion<T>(T[] a, int32 begin, int32 end) {
+        if (begin >= end) {
+            return true;
+        }
+        int32 limit = 0;
+        int32 cur = begin + 1;
+        while (cur < end) {
+            int32 sift = cur;
+            if (a[sift] < a[sift - 1]) {
+                T tmp = a[sift];
+                boolean go = true;
+                while (go) {
+                    a[sift] = a[sift - 1];
+                    sift = sift - 1;
+                    if (sift == begin) {
+                        go = false;
+                    } else if (!(tmp < a[sift - 1])) {
+                        go = false;
+                    }
+                }
+                a[sift] = tmp;
+                limit = limit + (cur - sift);
+            }
+            if (limit > 8) {
+                return false;
+            }
+            cur = cur + 1;
+        }
+        return true;
+    }
+
+    // Sift a[begin+root] down a binary max-heap of `count` elements rooted at
+    // a[begin].
+    public static void pdqSiftDown<T>(T[] a, int32 begin, int32 root, int32 count) {
+        boolean go = true;
+        while (go) {
+            int32 child = 2 * root + 1;
+            if (child >= count) {
+                go = false;
+            } else {
+                if (child + 1 < count) {
+                    if (a[begin + child] < a[begin + child + 1]) {
+                        child = child + 1;
+                    }
+                }
+                if (a[begin + root] < a[begin + child]) {
+                    pdqSwap<T>(a, begin + root, begin + child);
+                    root = child;
+                } else {
+                    go = false;
+                }
+            }
+        }
+    }
+
+    // In-place heapsort of a[begin..end) — the introsort fallback that caps the
+    // worst case at O(n log n).
+    public static void pdqHeapSort<T>(T[] a, int32 begin, int32 end) {
+        int32 count = end - begin;
+        if (count < 2) {
+            return;
+        }
+        int32 start = count / 2;
+        while (start > 0) {
+            start = start - 1;
+            pdqSiftDown<T>(a, begin, start, count);
+        }
+        int32 e = count;
+        while (e > 1) {
+            e = e - 1;
+            pdqSwap<T>(a, begin, begin + e);
+            pdqSiftDown<T>(a, begin, 0, e);
+        }
+    }
+
+    // The non-branchless swap step shared by the block partition: move `num`
+    // pairs identified by the offset blocks to their correct sides.
+    public static void pdqSwapOffsets<T>(T[] a, int32 firstBase, int32 lastBase,
+            int32[] offL, int32 startL, int32[] offR, int32 startR,
+            int32 num, boolean useSwaps) {
+        if (useSwaps) {
+            int32 i = 0;
+            while (i < num) {
+                pdqSwap<T>(a, firstBase + offL[startL + i], lastBase - offR[startR + i]);
+                i = i + 1;
+            }
+        } else if (num > 0) {
+            int32 l = firstBase + offL[startL];
+            int32 r = lastBase - offR[startR];
+            T tmp = a[l];
+            a[l] = a[r];
+            int32 i = 1;
+            while (i < num) {
+                l = firstBase + offL[startL + i];
+                a[r] = a[l];
+                r = lastBase - offR[startR + i];
+                a[l] = a[r];
+                i = i + 1;
+            }
+            a[r] = tmp;
+        }
+    }
+
+    // Branchless partition of a[begin..end) around pivot a[begin] (elements
+    // equal to the pivot go right). Writes 1/0 into apOut[0] for "was already
+    // correctly partitioned" and returns the final pivot index. `offL`/`offR`
+    // are caller-owned scratch of length >= 64 (reused across every call).
+    public static int32 pdqPartitionRight<T>(T[] a, int32 begin, int32 end,
+            int32[] offL, int32[] offR, int32[] apOut) {
+        T pivot = a[begin];
+        int32 first = begin;
+        int32 last = end;
+
+        boolean go = true;
+        while (go) {
+            first = first + 1;
+            if (!(a[first] < pivot)) {
+                go = false;
+            }
+        }
+
+        if (first - 1 == begin) {
+            go = true;
+            while (go) {
+                if (first < last) {
+                    last = last - 1;
+                    if (a[last] < pivot) {
+                        go = false;
+                    }
+                } else {
+                    go = false;
+                }
+            }
+        } else {
+            go = true;
+            while (go) {
+                last = last - 1;
+                if (a[last] < pivot) {
+                    go = false;
+                }
+            }
+        }
+
+        boolean alreadyPartitioned = first >= last;
+        if (first < last) {
+            pdqSwap<T>(a, first, last);
+            first = first + 1;
+
+            int32 offLBase = first;
+            int32 offRBase = last;
+            int32 numL = 0;
+            int32 numR = 0;
+            int32 startL = 0;
+            int32 startR = 0;
+
+            while (first < last) {
+                int32 numUnknown = last - first;
+                int32 leftSplit;
+                int32 rightSplit;
+                if (numL == 0) {
+                    if (numR == 0) {
+                        leftSplit = numUnknown / 2;
+                    } else {
+                        leftSplit = numUnknown;
+                    }
+                } else {
+                    leftSplit = 0;
+                }
+                if (numR == 0) {
+                    rightSplit = numUnknown - leftSplit;
+                } else {
+                    rightSplit = 0;
+                }
+
+                // Each iteration processes at most block_size (64) elements per
+                // side — the split only says how many are *eligible*; the offset
+                // buffers hold 64.
+                int32 leftCount;
+                if (leftSplit >= 64) {
+                    leftCount = 64;
+                } else {
+                    leftCount = leftSplit;
+                }
+                int32 li = 0;
+                while (li < leftCount) {
+                    offL[numL] = li;
+                    numL = numL + ((a[first] < pivot) ? 0 : 1);
+                    first = first + 1;
+                    li = li + 1;
+                }
+
+                int32 rightCount;
+                if (rightSplit >= 64) {
+                    rightCount = 64;
+                } else {
+                    rightCount = rightSplit;
+                }
+                int32 ri = 0;
+                while (ri < rightCount) {
+                    ri = ri + 1;
+                    offR[numR] = ri;
+                    last = last - 1;
+                    numR = numR + ((a[last] < pivot) ? 1 : 0);
+                }
+
+                int32 num;
+                if (numL < numR) {
+                    num = numL;
+                } else {
+                    num = numR;
+                }
+                pdqSwapOffsets<T>(a, offLBase, offRBase, offL, startL, offR, startR, num, numL == numR);
+                numL = numL - num;
+                numR = numR - num;
+                startL = startL + num;
+                startR = startR + num;
+                if (numL == 0) {
+                    startL = 0;
+                    offLBase = first;
+                }
+                if (numR == 0) {
+                    startR = 0;
+                    offRBase = last;
+                }
+            }
+
+            if (numL > 0) {
+                int32 k = numL;
+                while (k > 0) {
+                    k = k - 1;
+                    last = last - 1;
+                    pdqSwap<T>(a, offLBase + offL[startL + k], last);
+                }
+                first = last;
+            }
+            if (numR > 0) {
+                int32 k = numR;
+                while (k > 0) {
+                    k = k - 1;
+                    pdqSwap<T>(a, offRBase - offR[startR + k], first);
+                    first = first + 1;
+                }
+                last = first;
+            }
+        }
+
+        int32 pivotPos = first - 1;
+        a[begin] = a[pivotPos];
+        a[pivotPos] = pivot;
+        if (alreadyPartitioned) {
+            apOut[0] = 1;
+        } else {
+            apOut[0] = 0;
+        }
+        return pivotPos;
+    }
+
+    // Partition of a[begin..end) putting elements equal to the pivot to its
+    // LEFT — used only when a partition is full of pivot-equal keys, where
+    // pdqsort is already O(n) so a simple (non-block) partition suffices.
+    public static int32 pdqPartitionLeft<T>(T[] a, int32 begin, int32 end) {
+        T pivot = a[begin];
+        int32 first = begin;
+        int32 last = end;
+
+        boolean go = true;
+        while (go) {
+            last = last - 1;
+            if (!(pivot < a[last])) {
+                go = false;
+            }
+        }
+
+        if (last + 1 == end) {
+            go = true;
+            while (go) {
+                if (first < last) {
+                    first = first + 1;
+                    if (pivot < a[first]) {
+                        go = false;
+                    }
+                } else {
+                    go = false;
+                }
+            }
+        } else {
+            go = true;
+            while (go) {
+                first = first + 1;
+                if (pivot < a[first]) {
+                    go = false;
+                }
+            }
+        }
+
+        while (first < last) {
+            pdqSwap<T>(a, first, last);
+            go = true;
+            while (go) {
+                last = last - 1;
+                if (!(pivot < a[last])) {
+                    go = false;
+                }
+            }
+            go = true;
+            while (go) {
+                first = first + 1;
+                if (pivot < a[first]) {
+                    go = false;
+                }
+            }
+        }
+
+        int32 pivotPos = last;
+        a[begin] = a[pivotPos];
+        a[pivotPos] = pivot;
+        return pivotPos;
+    }
+
+    // The pdqsort driver over a[begin0..end0). Non-recursive: an explicit work
+    // stack (st*) holds deferred partitions, and at each split we *continue* the
+    // larger side and *push* the smaller — bounding the stack to O(log n) frames.
+    // `leftmost` is not threaded as state: a segment is leftmost exactly when
+    // `begin == 0` (every right partition starts past a pivot known <= its
+    // elements, so its unguarded small-sort is safe). `badAllowed` counts
+    // unbalanced partitions down to the heapsort fallback (O(n log n) worst case).
+    public static void pdqRun<T>(T[] a, int32 begin0, int32 end0, int32 bad0,
+            int32[] offL, int32[] offR, int32[] apOut,
+            int32[] stB, int32[] stE, int32[] stBad) {
+        int32 sp = 0;
+        int32 begin = begin0;
+        int32 end = end0;
+        int32 badAllowed = bad0;
+        boolean run = true;
+        while (run) {
+            boolean popNext = false;
+            int32 size = end - begin;
+            if (size < 24) {
+                if (begin == 0) {
+                    pdqInsertion<T>(a, begin, end);
+                } else {
+                    pdqUnguardedInsertion<T>(a, begin, end);
+                }
+                popNext = true;
+            } else {
+                int32 s2 = size / 2;
+                if (size > 128) {
+                    pdqSort3<T>(a, begin, begin + s2, end - 1);
+                    pdqSort3<T>(a, begin + 1, begin + (s2 - 1), end - 2);
+                    pdqSort3<T>(a, begin + 2, begin + (s2 + 1), end - 3);
+                    pdqSort3<T>(a, begin + (s2 - 1), begin + s2, begin + (s2 + 1));
+                    pdqSwap<T>(a, begin, begin + s2);
+                } else {
+                    pdqSort3<T>(a, begin + s2, begin, end - 1);
+                }
+
+                boolean doLeft = false;
+                if (begin != 0) {
+                    if (!(a[begin - 1] < a[begin])) {
+                        doLeft = true;
+                    }
+                }
+                if (doLeft) {
+                    begin = pdqPartitionLeft<T>(a, begin, end) + 1;
+                } else {
+                    int32 pivotPos = pdqPartitionRight<T>(a, begin, end, offL, offR, apOut);
+                    boolean alreadyPartitioned = apOut[0] == 1;
+                    int32 lSize = pivotPos - begin;
+                    int32 rSize = end - (pivotPos + 1);
+                    int32 eighth = size / 8;
+                    boolean highlyUnbalanced = (lSize < eighth) || (rSize < eighth);
+
+                    if (highlyUnbalanced) {
+                        badAllowed = badAllowed - 1;
+                        if (badAllowed == 0) {
+                            pdqHeapSort<T>(a, begin, end);
+                            popNext = true;
+                        } else {
+                            if (lSize >= 24) {
+                                pdqSwap<T>(a, begin, begin + lSize / 4);
+                                pdqSwap<T>(a, pivotPos - 1, pivotPos - lSize / 4);
+                                if (lSize > 128) {
+                                    pdqSwap<T>(a, begin + 1, begin + (lSize / 4 + 1));
+                                    pdqSwap<T>(a, begin + 2, begin + (lSize / 4 + 2));
+                                    pdqSwap<T>(a, pivotPos - 2, pivotPos - (lSize / 4 + 1));
+                                    pdqSwap<T>(a, pivotPos - 3, pivotPos - (lSize / 4 + 2));
+                                }
+                            }
+                            if (rSize >= 24) {
+                                pdqSwap<T>(a, pivotPos + 1, pivotPos + (1 + rSize / 4));
+                                pdqSwap<T>(a, end - 1, end - rSize / 4);
+                                if (rSize > 128) {
+                                    pdqSwap<T>(a, pivotPos + 2, pivotPos + (2 + rSize / 4));
+                                    pdqSwap<T>(a, pivotPos + 3, pivotPos + (3 + rSize / 4));
+                                    pdqSwap<T>(a, end - 2, end - (1 + rSize / 4));
+                                    pdqSwap<T>(a, end - 3, end - (2 + rSize / 4));
+                                }
+                            }
+                        }
+                    } else {
+                        if (alreadyPartitioned) {
+                            if (pdqPartialInsertion<T>(a, begin, pivotPos)) {
+                                if (pdqPartialInsertion<T>(a, pivotPos + 1, end)) {
+                                    popNext = true;
+                                }
+                            }
+                        }
+                    }
+
+                    if (!popNext) {
+                        // Split: continue the larger partition, push the smaller.
+                        int32 lb = begin;
+                        int32 le = pivotPos;
+                        int32 rb = pivotPos + 1;
+                        int32 re = end;
+                        if ((le - lb) > (re - rb)) {
+                            stB[sp] = rb;
+                            stE[sp] = re;
+                            stBad[sp] = badAllowed;
+                            sp = sp + 1;
+                            end = le;
+                        } else {
+                            stB[sp] = lb;
+                            stE[sp] = le;
+                            stBad[sp] = badAllowed;
+                            sp = sp + 1;
+                            begin = rb;
+                        }
+                    }
+                }
+            }
+            if (popNext) {
+                if (sp == 0) {
+                    run = false;
+                } else {
+                    sp = sp - 1;
+                    begin = stB[sp];
+                    end = stE[sp];
+                    badAllowed = stBad[sp];
+                }
+            }
+        }
+    }
+
+    // Natural-order unstable sort (numpy `kind='quicksort'`): pattern-defeating
+    // quicksort. See the helper block above.
     public static void sort<T>(T[] a, int32 n) {
-        sort<T>(a, n, (x, y) -> {
-            if (x < y) {
-                return -1;
-            }
-            if (x > y) {
-                return 1;
-            }
-            return 0;
-        });
+        if (n < 2) {
+            return;
+        }
+        int32[] offL = heap int32[64];
+        int32[] offR = heap int32[64];
+        int32[] apOut = heap int32[1];
+        int32[] stB = heap int32[64];
+        int32[] stE = heap int32[64];
+        int32[] stBad = heap int32[64];
+        int32 badAllowed = 0;
+        int32 m = n;
+        while (m > 1) {
+            m = m >> 1;
+            badAllowed = badAllowed + 1;
+        }
+        pdqRun<T>(a, 0, n, badAllowed, offL, offR, apOut, stB, stE, stBad);
     }
 
     public static void sortStable<T>(T[] a, int32 n) {
