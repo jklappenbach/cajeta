@@ -74,6 +74,16 @@ public final class String {
     public int32  byteLength;
     public int32  mode;
     public int32  cachedCpLength;
+    // Small-string optimization (SSO). For short owned strings the compiler
+    // points `bytes` at this inline region instead of a separate heap buffer,
+    // so a build like `"key" + i` costs no buffer allocation. The two fields
+    // are contiguous and shaped exactly like a CajetaArray header
+    // ({ i64 count; i8 data[] }), so every `bytes` reader works unchanged:
+    // ssoCount is the count word, ssoData is the data. ssoData length is the
+    // SSO capacity (compiler caps inline at length-1 to leave room for a NUL).
+    // Untouched (left zero) for view-mode literals and heap-buffer strings.
+    private int64    ssoCount;
+    private int8[24] ssoData;
 
     /**
      * Constructs the empty String — `bytes` null, `byteLength` 0,
@@ -265,6 +275,32 @@ public final class String {
             i = i + 1;
         }
         return true;
+    }
+
+    /**
+     * Value `==` for Strings: null-safe, BYTE-EXACT equality. Two non-null
+     * Strings are equal iff they have identical UTF-8 payloads (delegates to
+     * equals()). This is a more-specific overload of the inherited
+     * Object.operator==(Object,Object) (resolveMethod prefers it for two String
+     * operands; `String == Object` still falls through to Object's hash form).
+     *
+     * Byte-exact, not the inherited hash-only compare, for two reasons:
+     *   1. Correctness — hash equality admits collisions, so hash-based `==`
+     *      could report two distinct strings equal. Hash-keyed collections
+     *      confirm a probe with `==`, so a collision there returned the WRONG
+     *      value; the byte walk closes that latent hole.
+     *   2. Speed — both params are statically `String` (a `final` class), so the
+     *      equals() call (and the byteLength/byte loop inside it) devirtualizes
+     *      to a direct, inlinable call. The old hash form recomputed BOTH
+     *      operands' XXH3 every comparison — in a map probe the key was hashed
+     *      for the bucket and then re-hashed twice more inside `==` (~3 XXH3 per
+     *      lookup); a short-key byte compare is far cheaper.
+     */
+    public static boolean operator== (String a, String b) {
+        if (a == null || b == null) {
+            return a == null && b == null;
+        }
+        return a.equals(b);
     }
 
     /**

@@ -362,6 +362,15 @@ namespace cajeta {
                 ccr->setStackAlloc(true);
             }
         }
+        // U3: propagate arena-eligibility to the array creator so the header is
+        // bump-allocated from the frame arena. Only array creators are arena-routed
+        // in this unit (class instances stay heap — their drop reclaims owned
+        // fields / runs user destructors; see frame-arena-plan 3.2.3).
+        if (arenaEligible) {
+            if (auto acr = dynamic_pointer_cast<ArrayCreatorRest>(creatorRest)) {
+                acr->setArenaEligible(true);
+            }
+        }
         // NRVO: when this construction is the returned value of a value-
         // returning method, build straight into the caller's sret slot.
         if (nrvoTarget) {

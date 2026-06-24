@@ -1,8 +1,8 @@
 package cajeta.collection;
 
 /**
- * Hash-based map from keys to values, backed by a SwissTable (SSE2-style
- * open addressing with SIMD metadata probing).
+ * Hash-based map from keys to values, backed by a SwissTable (SSE2-style open
+ * addressing with SIMD metadata probing) over a DENSE entry array.
  *
  * ## Usage
  *
@@ -26,30 +26,32 @@ package cajeta.collection;
  * - Primitive K lowers `.hash()` to a `__cajeta_hash_X` runtime helper; both
  *   `HashMap<Tag,int32>` and `HashMap<int32,V>` work without boxing.
  *
- * **Views are NOT allowed as K or V** — the `K[] keys` / `V[] vals` fields would
- * become arrays-of-view (`CAJETA_ERROR_VIEW_AS_CLASS_FIELD`).
+ * **Views are NOT allowed as K or V** — the `MapEntry<K,V>` fields would become
+ * arrays-of-view (`CAJETA_ERROR_VIEW_AS_CLASS_FIELD`).
  *
- * ## Storage: SwissTable
+ * ## Storage: dense SwissTable
  *
- * Parallel `keys` / `vals` arrays plus a `ctrl` metadata array, one control byte
- * per slot: `EMPTY` (0x80), `DELETED` (0xFE), or a 7-bit hash fragment `h2` in
- * [0,127] (top bit clear) for a FULL slot. `ctrl` is `cap + 16` long; the last 16
- * bytes mirror the first 16 so a 16-wide group load starting at any slot reads a
- * valid window.
+ * One `MapEntry<K,V>[] slots` array (each element an inline `{key, val}` value
+ * struct) plus a `ctrl` metadata array, one control byte per slot: `EMPTY`
+ * (0x80), `DELETED` (0xFE), or a 7-bit hash fragment `h2` in [0,127] (top bit
+ * clear) for a FULL slot. `ctrl` is `cap + 16` long; the last 16 bytes mirror
+ * the first 16 so a 16-wide group load starting at any slot reads a valid window.
  *
  * A lookup loads 16 control bytes at once (`Cajeta.vload16`) and compares all of
- * them to `h2` with one SIMD op (`eqMask`); set bits in the mask are the slots
- * worth a full key compare. A group containing an `EMPTY` byte ends the probe.
- * Probing advances by groups of 16 with a triangular stride, which visits every
- * slot for a power-of-two capacity.
+ * them to `h2` with one SIMD op (`eqMask`); set bits are the slots worth a full
+ * key compare. Because key and value live together in one `slots[i]` element, a
+ * confirmed probe touches just two cache lines (the `ctrl` group + the entry),
+ * the dense abseil/ankerl layout. A group containing an `EMPTY` byte ends the
+ * probe. Probing advances by groups of 16 with a triangular stride, which visits
+ * every slot for a power-of-two capacity.
  *
  * `cap` is a power of two `>= 16` (the constructor rounds up). The table doubles
- * when non-empty slots (FULL + DELETED, both cost probe steps) exceed 0.75 of
- * `cap`; a resize rebuilds into a fresh table and clears tombstones. `remove`
- * leaves a `DELETED` tombstone that `put` reuses and `get` probes past.
+ * when non-empty slots (FULL + DELETED) exceed 0.75 of `cap`; a resize rebuilds
+ * into a fresh table and clears tombstones. `remove` leaves a `DELETED` tombstone
+ * that `put` reuses and `get` probes past.
  *
+ * @See cajeta.collection.MapEntry
  * @See cajeta.lang.Object
- * @See cajeta.hash.Hash
  */
 public final class HashMap<K, V> {
 
@@ -58,8 +60,12 @@ public final class HashMap<K, V> {
     //   DELETED = 0xFE   (-2)  removed entry; probe past, slot is reusable
     // FULL slots have the top bit clear (>= 0 as signed int8).
 
-    private K[] keys;
-    private V[] vals;
+    // Dense entry storage: one inline {key, val} struct per slot.
+    private MapEntry<K, V>[] slots;
+    // Per-slot ownership bits for entries the map TOOK via `#` transfer and must
+    // drop: bit0 = key owned, bit1 = val owned. Borrowed entries (plain `put`)
+    // leave 0 and are never dropped. Parallel to slots; length cap.
+    private int8[] owned;
     // Control bytes: length cap + 16. ctrl[cap+i] mirrors ctrl[i] for i in [0,16)
     // so a group load near the end never overruns.
     private int8[] ctrl;
@@ -79,9 +85,9 @@ public final class HashMap<K, V> {
             c = c * 2;
         }
         this.cap = c;
-        this.keys = heap K[c];
-        this.vals = heap V[c];
+        this.slots = heap MapEntry<K, V>[c];
         this.ctrl = heap int8[c + 16];
+        this.owned = heap int8[c];   // calloc 0 = nothing owned yet
         this.sizeCount = 0;
         this.usedSlots = 0;
         this.fillCtrlEmpty();
@@ -119,6 +125,12 @@ public final class HashMap<K, V> {
      * Insert or replace the value at `key`.
      */
     public void put(K key, V value) {
+        // Ownership taken via `#` (read once at entry, before any other call):
+        // bit0 = key, bit1 = val. Plain (borrow) calls read 0.
+        int64 mvm = Cajeta.moveMask();
+        boolean keyOwned = (mvm & 1) != 0;
+        boolean valOwned = (mvm & 2) != 0;
+        int8 ownBits = (int8) (mvm & 3);
         int64 h = key.hash();
         int64 mask = this.cap - 1;
         int8 h2 = (int8) ((h >> 57) & 0x7F);
@@ -130,10 +142,22 @@ public final class HashMap<K, V> {
             Vector<int8,16> g = Cajeta.vload16(this.ctrl, pos);
             int32 mm = g.eqMask(h2);
             while (mm != 0) {
-                int64 lane = Cajeta.ctz64((int64) (mm & 65535));
-                int64 i = (pos + lane) & mask;
-                if (this.keys[i] == key) {
-                    this.vals[i] = value;
+                int64 i = (pos + Cajeta.ctz64((int64) (mm & 65535))) & mask;
+                if (this.slots[i].key == key) {
+                    // Replace: drop the old owned value, keep the existing key.
+                    if ((this.owned[i] & 2) != 0) {
+                        Cajeta.dropValue(this.slots[i].val);
+                    }
+                    this.slots[i].val = value;
+                    // The new key duplicates the stored one; drop it if we took it.
+                    if (keyOwned) {
+                        Cajeta.dropValue(key);
+                    }
+                    if (valOwned) {
+                        this.owned[i] = (int8) (this.owned[i] | 2);
+                    } else {
+                        this.owned[i] = (int8) (this.owned[i] & 1);
+                    }
                     return;
                 }
                 mm = mm & (mm - 1);
@@ -157,8 +181,9 @@ public final class HashMap<K, V> {
             }
         }
         boolean wasEmpty = (this.ctrl[insertAt] == (int8) 0x80);
-        this.keys[insertAt] = key;
-        this.vals[insertAt] = value;
+        this.slots[insertAt].key = key;
+        this.slots[insertAt].val = value;
+        this.owned[insertAt] = ownBits;
         this.setCtrl(insertAt, h2);
         this.sizeCount = this.sizeCount + 1;
         // Reusing a DELETED slot doesn't consume a fresh empty, so usedSlots
@@ -181,9 +206,9 @@ public final class HashMap<K, V> {
         int64 oldCap = this.cap;
         int64 newCap = oldCap * 2;
         int64 newMask = newCap - 1;
-        K[] newKeys = heap K[newCap];
-        V[] newVals = heap V[newCap];
+        MapEntry<K, V>[] newSlots = heap MapEntry<K, V>[newCap];
         int8[] newCtrl = heap int8[newCap + 16];
+        int8[] newOwned = heap int8[newCap];
         int64 nlen = newCap + 16;
         int64 word = (int64) 0x8080808080808080;
         int64 k = 0;
@@ -200,8 +225,8 @@ public final class HashMap<K, V> {
         while (s < oldCap) {
             int8 c = this.ctrl[s];
             if (c >= (int8) 0) {   // FULL: reinsert (all keys unique, no eq check)
-                K kk = this.keys[s];
-                V vv = this.vals[s];
+                K kk = this.slots[s].key;
+                V vv = this.slots[s].val;
                 int64 h = kk.hash();
                 int8 h2 = (int8) ((h >> 57) & 0x7F);
                 int64 pos = h & newMask;
@@ -212,8 +237,9 @@ public final class HashMap<K, V> {
                     int32 emptyM = g.eqMask((int8) 0x80) & 65535;
                     if (emptyM != 0) {
                         int64 i = (pos + Cajeta.ctz64((int64) emptyM)) & newMask;
-                        newKeys[i] = kk;
-                        newVals[i] = vv;
+                        newSlots[i].key = kk;
+                        newSlots[i].val = vv;
+                        newOwned[i] = this.owned[s];   // carry ownership across resize
                         newCtrl[i] = h2;
                         if (i < 16) {
                             newCtrl[newCap + i] = h2;
@@ -228,9 +254,9 @@ public final class HashMap<K, V> {
             }
             s = s + 1;
         }
-        this.keys = #newKeys;
-        this.vals = #newVals;
+        this.slots = #newSlots;
         this.ctrl = #newCtrl;
+        this.owned = #newOwned;
         this.cap = newCap;
         this.sizeCount = newSize;
         this.usedSlots = newSize;
@@ -252,8 +278,8 @@ public final class HashMap<K, V> {
             int32 mm = g.eqMask(h2);
             while (mm != 0) {
                 int64 i = (pos + Cajeta.ctz64((int64) (mm & 65535))) & mask;
-                if (this.keys[i] == key) {
-                    return this.vals[i];
+                if (this.slots[i].key == key) {
+                    return this.slots[i].val;
                 }
                 mm = mm & (mm - 1);
             }
@@ -285,7 +311,7 @@ public final class HashMap<K, V> {
             int32 mm = g.eqMask(h2);
             while (mm != 0) {
                 int64 i = (pos + Cajeta.ctz64((int64) (mm & 65535))) & mask;
-                if (this.keys[i] == key) {
+                if (this.slots[i].key == key) {
                     return true;
                 }
                 mm = mm & (mm - 1);
@@ -318,7 +344,14 @@ public final class HashMap<K, V> {
             int32 mm = g.eqMask(h2);
             while (mm != 0) {
                 int64 i = (pos + Cajeta.ctz64((int64) (mm & 65535))) & mask;
-                if (this.keys[i] == key) {
+                if (this.slots[i].key == key) {
+                    if ((this.owned[i] & 1) != 0) {
+                        Cajeta.dropValue(this.slots[i].key);
+                    }
+                    if ((this.owned[i] & 2) != 0) {
+                        Cajeta.dropValue(this.slots[i].val);
+                    }
+                    this.owned[i] = (int8) 0;
                     this.setCtrl(i, (int8) 0xFE);
                     this.sizeCount = this.sizeCount - 1;
                     return true;
@@ -340,6 +373,24 @@ public final class HashMap<K, V> {
         return this.sizeCount;
     }
 
+    // Drop the keys/values the map OWNS (took via `#`). Runs before the auto
+    // field-drops free the slots/ctrl/owned buffers. Borrowed entries (owned
+    // bit clear) are left alone — their lifetime belongs to the caller.
+    ~HashMap() {
+        int64 k = 0;
+        while (k < this.cap) {
+            if (this.ctrl[k] >= (int8) 0) {   // FULL slot
+                if ((this.owned[k] & 1) != 0) {
+                    Cajeta.dropValue(this.slots[k].key);
+                }
+                if ((this.owned[k] & 2) != 0) {
+                    Cajeta.dropValue(this.slots[k].val);
+                }
+            }
+            k = k + 1;
+        }
+    }
+
     // ----- Subscript-syntax sugar over get/put -------------------------
 
     /** Subscript read: `v = m[key]` → `get(key)`. */
@@ -359,17 +410,16 @@ public final class HashMap<K, V> {
 
     /** Stream over the live keys, slot-walk order. */
     public #Stream<K> keys() {
-        return heap HashMapKeyStream<K, V>(this.keys, this.ctrl, this.cap);
+        return heap HashMapKeyStream<K, V>(this.slots, this.ctrl, this.cap);
     }
 
     /** Stream over the live values, slot-walk order. */
     public #Stream<V> values() {
-        return heap HashMapValueStream<K, V>(this.vals, this.ctrl, this.cap);
+        return heap HashMapValueStream<K, V>(this.slots, this.ctrl, this.cap);
     }
 
     /** Stream of (key, value) pairs, one fresh Pair per live slot. */
     public #Stream<Pair<K, V>> entries() {
-        return heap HashMapEntryStream<K, V>(
-            this.keys, this.vals, this.ctrl, this.cap);
+        return heap HashMapEntryStream<K, V>(this.slots, this.ctrl, this.cap);
     }
 }
