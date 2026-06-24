@@ -2628,6 +2628,14 @@ namespace cajeta {
                     resolvedType = CajetaType::of("int64");
                     return builder->CreateCall(fn, {});
                 }
+                // arenaInUse() -> int64: current frame-arena bytes in use (test-only
+                // introspection). Lets a test assert non-escaping owned locals were
+                // bump-allocated and reclaimed by the scope-exit reset.
+                if (ns == "Cajeta" && methodCallName == "arenaInUse" && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_arena_bytes");
+                    resolvedType = CajetaType::of("int64");
+                    return builder->CreateCall(fn, {});
+                }
                 // dropValue(x): drop an owned value of generic type by its STATIC
                 // type — class -> __cajeta_class_virtual_drop, heap array ->
                 // __cajeta_free_array, primitive / @ValueType POD / view -> no-op.

@@ -816,6 +816,106 @@ void __cajeta_free(void* ptr) {
     free(ptr);
 }
 
+// ---- Frame bump arena (docs/specs/frame-arena-spec.md) ---------------------
+// Thread-local bump allocator backing non-escaping owned locals (e.g. transient
+// String concat temporaries). Allocate = bump a pointer; reclaim = O(1) reset to a
+// saved mark. Arena blocks are NOT live-set tracked and never individually freed —
+// a whole scope's worth is reclaimed at scope exit by one reset.
+//
+// One large virtual reservation per thread, committed lazily by the kernel
+// (MAP_NORESERVE: pages fault in zero-filled on first touch, so they never move and
+// existing pointers stay valid as the bump advances). A mark is just the current
+// byte offset, so mark/reset are a load/store and nest LIFO with lexical scopes.
+// Reset optionally madvise(DONTNEED)s pages above the new mark once retained
+// capacity exceeds a threshold — the memory-pressure backstop (spec 6.1.5); pages
+// come back zero-filled on the next touch.
+#include <sys/mman.h>
+
+#define CAJETA_ARENA_RESERVE        ((size_t) 4 << 30)   // 4 GiB virtual / thread
+#define CAJETA_ARENA_TRIM_THRESHOLD ((size_t) 4 << 20)   // trim retained > 4 MiB over mark
+
+typedef struct {
+    unsigned char* base;       // mmap base; NULL until first use
+    size_t bump;               // current offset (bytes in use)
+    size_t retained;           // high-water offset with pages physically committed
+} cajeta_arena;
+
+static __thread cajeta_arena __cajeta_arena = { NULL, 0, 0 };
+
+static void __cajeta_arena_init(void) {
+    void* p = mmap(NULL, CAJETA_ARENA_RESERVE, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (p == MAP_FAILED) {
+        fprintf(stderr, "cajeta: arena mmap failed\n");
+        abort();
+    }
+    __cajeta_arena.base = (unsigned char*) p;
+    __cajeta_arena.bump = 0;
+    __cajeta_arena.retained = 0;
+}
+
+static inline size_t __cajeta_arena_align8(size_t n) {
+    return (n + 7u) & ~(size_t) 7u;
+}
+
+static inline void* __cajeta_arena_bump(uint64_t size) {
+    if (!__cajeta_arena.base) __cajeta_arena_init();
+    size_t n = __cajeta_arena_align8((size_t) size);
+    if (__cajeta_arena.bump + n > CAJETA_ARENA_RESERVE) {
+        fprintf(stderr, "cajeta: arena exhausted (request=%zu, reserve=%zu)\n",
+                (size_t) size, (size_t) CAJETA_ARENA_RESERVE);
+        abort();
+    }
+    unsigned char* p = __cajeta_arena.base + __cajeta_arena.bump;
+    __cajeta_arena.bump += n;
+    if (__cajeta_arena.bump > __cajeta_arena.retained) {
+        __cajeta_arena.retained = __cajeta_arena.bump;
+    }
+    return p;
+}
+
+// Zeroed arena alloc. Reset reuses memory, so unlike a fresh mmap page the bytes
+// may be dirty — zero them for the zero-init contract the heap __cajeta_alloc has.
+void* __cajeta_arena_alloc(uint64_t size) {
+    void* p = __cajeta_arena_bump(size);
+    memset(p, 0, __cajeta_arena_align8((size_t) size));
+    return p;
+}
+
+// Uninitialized arena alloc (caller overwrites every byte). Mirrors
+// __cajeta_alloc_uninit.
+void* __cajeta_arena_alloc_uninit(uint64_t size) {
+    return __cajeta_arena_bump(size);
+}
+
+// Capture the current bump offset. Stash at scope entry; pass to reset on exit.
+uint64_t __cajeta_arena_mark(void) {
+    return (uint64_t) __cajeta_arena.bump;
+}
+
+// O(1) reclaim: restore the bump to `mark`. All objects allocated since the mark
+// are abandoned in place (their bytes reused on the next bump). Trim backstop:
+// when retained pages run well past the new mark, hand them back to the OS.
+void __cajeta_arena_reset(uint64_t mark) {
+    size_t m = (size_t) mark;
+    __cajeta_arena.bump = m;
+    if (__cajeta_arena.base
+            && __cajeta_arena.retained > m + CAJETA_ARENA_TRIM_THRESHOLD) {
+        size_t pg = (size_t) sysconf(_SC_PAGESIZE);
+        if (pg == 0) pg = 4096;
+        size_t from = (m + pg - 1) & ~(pg - 1);                       // round up
+        size_t to   = (__cajeta_arena.retained + pg - 1) & ~(pg - 1);
+        if (to > from) {
+            madvise(__cajeta_arena.base + from, to - from, MADV_DONTNEED);
+        }
+        __cajeta_arena.retained = m;
+    }
+}
+
+// Test/introspection: current bytes in use, and high-water retained bytes.
+int64_t __cajeta_arena_bytes(void)    { return (int64_t) __cajeta_arena.bump; }
+int64_t __cajeta_arena_retained(void) { return (int64_t) __cajeta_arena.retained; }
+
 // cajeta.lang.String wrapper layout (generatePrototype embed order, mirrored by
 // the concat lowering in BinaryOpExpression). mode: 0 = owned (bytes is a heap
 // array header this String owns), 1 = view (bytes borrowed from static/shared
