@@ -13,6 +13,7 @@
 #include "../type/CajetaView.h"
 #include "../type/CajetaFunctionType.h"
 #include "expression/Expression.h"
+#include "expression/LiteralExpression.h"
 #include "expression/DotExpression.h"
 #include "expression/Identifier.h"
 #include "expression/MethodCallExpression.h"
@@ -518,6 +519,17 @@ namespace cajeta {
                 auto& children = varInit->getChildren();
                 if (!children.empty()) {
                     auto rhsExpr = dynamic_pointer_cast<Expression>(children[0]);
+                    // A string-literal initializer (`String s = "x";`) aliases
+                    // static/.rodata storage — a view (mode 1) that owns nothing.
+                    // It must NOT get an owned-String drop entry: the drop would
+                    // fire as a no-op (live-set claim fails) but is wasteful and
+                    // semantically wrong (a literal alias is a borrow). Mark borrow.
+                    if (auto litExpr = dynamic_pointer_cast<TextLiteralExpression>(children[0])) {
+                        LiteralType lt = litExpr->getLiteralType();
+                        if (lt == LITERAL_TYPE_STRING || lt == LITERAL_TYPE_TEXT_BLOCK) {
+                            initIsBorrow = true;
+                        }
+                    }
                     if (auto newExpr = dynamic_pointer_cast<NewExpression>(children[0])) {
                         if (newExpr->getStackAlloc()) {
                             initIsStackAlloc = true;
