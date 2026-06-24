@@ -18,6 +18,9 @@
 #include "../asn/expression/MethodCallExpression.h"
 #include "../asn/expression/NewExpression.h"
 #include "../asn/expression/AggregateInitializerExpression.h"
+#include "../asn/expression/BinaryOpExpression.h"
+#include "../asn/expression/Identifier.h"
+#include "../asn/LocalVariableDeclaration.h"
 #include "../type/FormalParameter.h"
 #include "../field/ParameterField.h"
 #include "../field/BoundClosureField.h"
@@ -1218,6 +1221,173 @@ namespace cajeta {
         module->getLlvmModule()->getOrInsertFunction(canonical, llvmFunctionType);
     }
 
+    // ---- Frame-arena escape analysis (frame-arena-plan U2) ----------------
+    namespace {
+        bool arenaIsStringType(const CajetaTypePtr& t) {
+            if (!t || !t->getQName()) return false;
+            return t->getQName()->getTypeName() == "String"
+                && t->getQName()->getPackageName() == "cajeta.lang";
+        }
+        // Leftmost (receiver-side) identifier of a subtree — the name a `#move`
+        // transfers (mirrors Expression.cpp::firstIdentifierIn; `#c.next()` parses
+        // as `#(c.next())`, so the transferred name is the call's receiver leaf).
+        std::string arenaLeftmostId(const AbstractSyntaxNodePtr& node) {
+            if (!node) return "";
+            if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(node))
+                return id->getTextValue();
+            if (auto mc = std::dynamic_pointer_cast<MethodCallExpression>(node)) {
+                if (!mc->getChildren().empty())
+                    return arenaLeftmostId(mc->getChildren()[0]);
+                return "";
+            }
+            for (auto& c : node->getChildren()) {
+                auto r = arenaLeftmostId(c);
+                if (!r.empty()) return r;
+            }
+            return "";
+        }
+        // The concat BinaryOpExpression directly initializing a declarator, if any.
+        std::shared_ptr<BinaryOpExpression> arenaConcatInit(const VariableDeclaratorPtr& d) {
+            if (!d || !d->getInitializer()) return nullptr;
+            auto& kids = d->getInitializer()->getChildren();
+            if (kids.empty()) return nullptr;
+            auto bo = std::dynamic_pointer_cast<BinaryOpExpression>(kids[0]);
+            if (bo && bo->getBinaryOp() == BINARY_OP_ADD) return bo;
+            return nullptr;
+        }
+        // Direct identifier RHS of an expression (alias source) — `x = name` /
+        // `T x = name`. A name nested inside a call/operator is a borrow, not a
+        // store, so only a bare top-level identifier counts as an escape here.
+        std::string arenaDirectIdentifier(const AbstractSyntaxNodePtr& node) {
+            if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(node))
+                return id->getTextValue();
+            return "";
+        }
+        // Comprehensive escape walk (holder set mirrors Expression.cpp's
+        // collectFreeIdentifiers so `#name` / returns / stores anywhere are seen).
+        // Collects names that ESCAPE the frame and concat-decl candidates.
+        void arenaWalk(const AbstractSyntaxNodePtr& node,
+                       std::set<std::string>& escaping,
+                       std::vector<std::pair<std::string,
+                           std::shared_ptr<BinaryOpExpression>>>& candidates) {
+            if (!node) return;
+            // #name → the transferred name escapes (ownership leaves the frame).
+            if (auto mv = std::dynamic_pointer_cast<MoveExpression>(node)) {
+                if (!mv->getChildren().empty()) {
+                    std::string n = arenaLeftmostId(mv->getChildren()[0]);
+                    if (!n.empty()) escaping.insert(n);
+                    for (auto& c : mv->getChildren()) arenaWalk(c, escaping, candidates);
+                }
+                return;
+            }
+            // return name → escapes to caller (return of a concat expr does not:
+            // that builds a fresh value, the operands are borrowed).
+            if (auto ret = std::dynamic_pointer_cast<ReturnStatement>(node)) {
+                std::string n = arenaDirectIdentifier(ret->getExpression());
+                if (!n.empty()) escaping.insert(n);
+                arenaWalk(ret->getExpression(), escaping, candidates);
+                return;
+            }
+            // x = name / this.f = name / arr[i] = name → name is stored.
+            if (auto bo = std::dynamic_pointer_cast<BinaryOpExpression>(node)) {
+                if (bo->getBinaryOp() == BINARY_OP_ASSIGN
+                        && bo->getChildren().size() >= 2) {
+                    std::string n = arenaDirectIdentifier(bo->getChildren()[1]);
+                    if (!n.empty()) escaping.insert(n);
+                }
+                for (auto& c : bo->getChildren()) arenaWalk(c, escaping, candidates);
+                return;
+            }
+            // Declarations: collect String-concat candidates; alias init escapes.
+            if (auto lvd = std::dynamic_pointer_cast<LocalVariableDeclaration>(node)) {
+                bool isStr = arenaIsStringType(lvd->getType());
+                for (auto& d : lvd->getVariableDeclarators()) {
+                    if (!d) continue;
+                    if (d->getInitializer()) {
+                        auto& kids = d->getInitializer()->getChildren();
+                        if (!kids.empty()) {
+                            std::string alias = arenaDirectIdentifier(kids[0]);
+                            if (!alias.empty()) escaping.insert(alias);  // T x = name
+                        }
+                        arenaWalk(d->getInitializer(), escaping, candidates);
+                    }
+                    if (isStr) {
+                        if (auto cbo = arenaConcatInit(d))
+                            candidates.emplace_back(d->getIdentifier(), cbo);
+                    }
+                }
+                return;
+            }
+            if (auto mc = std::dynamic_pointer_cast<MethodCallExpression>(node)) {
+                for (auto& c : mc->getChildren()) arenaWalk(c, escaping, candidates);
+                for (auto& p : mc->getParameters()) {
+                    // A `#arg` call argument is recorded as callerTransferred on the
+                    // parameter (the callee takes ownership) — the named value
+                    // escapes the frame. This is the bench's `m.put(#k, i)` shape.
+                    if (p.callerTransferred) {
+                        std::string n = arenaLeftmostId(p.expression);
+                        if (!n.empty()) escaping.insert(n);
+                    }
+                    arenaWalk(p.expression, escaping, candidates);
+                }
+                return;
+            }
+            if (auto es = std::dynamic_pointer_cast<ExpressionStatement>(node)) {
+                arenaWalk(es->getExpression(), escaping, candidates);
+                return;
+            }
+            if (auto ifs = std::dynamic_pointer_cast<IfStatement>(node)) {
+                arenaWalk(ifs->getCondition(), escaping, candidates);
+                arenaWalk(ifs->getThenBranch(), escaping, candidates);
+                arenaWalk(ifs->getElseBranch(), escaping, candidates);
+                return;
+            }
+            if (auto ls = std::dynamic_pointer_cast<LabelStatement>(node)) {
+                arenaWalk(ls->getBlock(), escaping, candidates); return;
+            }
+            if (auto ss = std::dynamic_pointer_cast<ScopeStatement>(node)) {
+                arenaWalk(ss->getBlock(), escaping, candidates); return;
+            }
+            if (auto ws = std::dynamic_pointer_cast<WhileStatement>(node)) {
+                arenaWalk(ws->getCondition(), escaping, candidates);
+                arenaWalk(ws->getBody(), escaping, candidates); return;
+            }
+            if (auto dos = std::dynamic_pointer_cast<DoStatement>(node)) {
+                arenaWalk(dos->getBody(), escaping, candidates);
+                arenaWalk(dos->getCondition(), escaping, candidates); return;
+            }
+            if (auto fs = std::dynamic_pointer_cast<ForStatement>(node)) {
+                arenaWalk(fs->getInit(), escaping, candidates);
+                arenaWalk(fs->getCondition(), escaping, candidates);
+                for (auto& u : fs->getUpdate()) arenaWalk(u, escaping, candidates);
+                arenaWalk(fs->getBody(), escaping, candidates); return;
+            }
+            if (auto efs = std::dynamic_pointer_cast<EnhancedForStatement>(node)) {
+                arenaWalk(efs->getIterableExpr(), escaping, candidates);
+                arenaWalk(efs->getBody(), escaping, candidates); return;
+            }
+            for (auto& c : node->getChildren()) arenaWalk(c, escaping, candidates);
+        }
+    }
+
+    void Method::computeArenaEligibility() {
+        arenaEligibleNames.clear();
+        methodUsesArena = false;
+        if (!block) return;
+        std::set<std::string> escaping;
+        std::vector<std::pair<std::string, std::shared_ptr<BinaryOpExpression>>> candidates;
+        arenaWalk(block, escaping, candidates);
+        for (auto& cand : candidates) {
+            // A concat local is arena-eligible iff its name never escapes. A name
+            // declared more than once is eligible only if NO declaration escapes
+            // (conservative on shadowing).
+            if (escaping.find(cand.first) != escaping.end()) continue;
+            cand.second->setArenaEligible(true);
+            arenaEligibleNames.insert(cand.first);
+            methodUsesArena = true;
+        }
+    }
+
     void Method::generateCode() {
         // Emit-target swap (test-reuse): point `module` at the emit module for
         // the whole body. generateCode passes `module` DOWN to every statement/
@@ -1910,6 +2080,7 @@ namespace cajeta {
         // distinguish e.g. fp8 from i8 when they share an LLVM type.
         if (block) {
             block->resolveTypes(module);
+            computeArenaEligibility();   // flag non-escaping concat locals (U2)
             block->generateCode(module);
         }
 

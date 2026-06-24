@@ -487,6 +487,22 @@ namespace cajeta {
         // once per method (statically-deduped) from generateCode.
         void lintHeapOptionalReturn();
 
+        // ---- Frame-arena eligibility (frame-arena-plan U2) ----------------
+        // Names of owned String-concat locals proven non-escaping by the escape
+        // pre-pass (computeArenaEligibility): they bump-allocate from the frame
+        // arena and register no drop entry. usesArena() is true iff the method has
+        // any such local (gates Block's mark/reset so arena-free methods pay zero).
+        std::set<std::string> arenaEligibleNames;
+        bool methodUsesArena = false;
+        bool usesArena() const { return methodUsesArena; }
+        bool isArenaEligibleLocal(const std::string& n) const {
+            return arenaEligibleNames.find(n) != arenaEligibleNames.end();
+        }
+        // Walk the method body: collect names that escape (#-moved, returned,
+        // stored/aliased) and String-concat decls; flag the non-escaping concats'
+        // BinaryOpExpression nodes arena-eligible and record their names here.
+        void computeArenaEligibility();
+
         // Push a fresh (empty) drop frame onto the stack. Block::generateCode
         // calls this at its entry; the frame collects every owned local
         // declared inside the block until the matching pop.

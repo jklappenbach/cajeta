@@ -908,8 +908,18 @@ namespace cajeta {
             // (ReturnStatement), transferring ownership to the caller. This
             // retires the former never-drop policy that leaked every dynamically
             // built String.
+            // Arena-eligible concat locals (frame-arena-plan U2) register NO drop
+            // entry — the scope-exit arena reset reclaims them in bulk. The escape
+            // pre-pass guarantees they don't leave the frame.
+            bool arenaEligible = false;
+            if (isCajetaString) {
+                if (auto cm = module->getCurrentMethod()) {
+                    arenaEligible = cm->isArenaEligibleLocal(declarator->getIdentifier());
+                }
+            }
             if (isCajetaString && !isArray && !isStructType
-                    && !initIsBorrow && !initIsStackAlloc && initializer) {
+                    && !initIsBorrow && !initIsStackAlloc && initializer
+                    && !arenaEligible) {
                 emitDropEntryFor(module, field, "__cajeta_string_drop", getSourceLine());
             }
             // @ValueType locals are Copy PODs living inline in their slot —

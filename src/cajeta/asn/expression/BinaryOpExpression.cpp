@@ -1775,6 +1775,15 @@ namespace cajeta {
                     //   {ssoCount, ssoData} is shaped like a CajetaArray header so
                     //   `bytes` can point at it and every reader works unchanged.
                     const int64_t SSO_CAP = 23;   // sizeof(ssoData) - 1 (NUL room)
+                    // Arena routing (frame-arena-plan U2): when the escape pre-pass
+                    // proved this concat's result is a non-escaping local, allocate
+                    // the wrapper (and any heap byte buffer) from the frame arena —
+                    // no malloc, no live-set; reclaimed by the scope's arena reset.
+                    bool arena = this->isArenaEligible();
+                    const char* wrapAllocName =
+                        arena ? "__cajeta_arena_alloc_uninit" : nullptr;
+                    const char* bufAllocName =
+                        arena ? "__cajeta_arena_alloc_uninit" : "__cajeta_alloc_uninit";
                     llvm::Function* strlenFn = module->getRuntimeFunction("__cajeta_str_len");
                     llvm::Value* lenL = builder->CreateCall(strlenFn, {ls}, "concat.lenL");
                     llvm::Value* lenR = builder->CreateCall(strlenFn, {rs}, "concat.lenR");
@@ -1787,8 +1796,18 @@ namespace cajeta {
                         module->getLlvmModule()->getDataLayout();
                     llvm::Constant* sSize = llvm::ConstantInt::get(
                         i64Ty, dl.getTypeAllocSize(stringStructTy));
-                    llvm::Value* sPtr = MemoryManager::createMallocInstruction(
-                        module, sSize, builder->GetInsertBlock());
+                    llvm::Value* sPtr;
+                    if (wrapAllocName) {
+                        llvm::FunctionType* wTy = llvm::FunctionType::get(
+                            ptrTy, {i64Ty}, false);
+                        llvm::FunctionCallee wFn =
+                            module->getLlvmModule()->getOrInsertFunction(
+                                wrapAllocName, wTy);
+                        sPtr = builder->CreateCall(wFn, {sSize}, "concat.s_arena");
+                    } else {
+                        sPtr = MemoryManager::createMallocInstruction(
+                            module, sSize, builder->GetInsertBlock());
+                    }
 
                     llvm::Constant* vtableRef = llvm::ConstantPointerNull::get(
                         llvm::cast<llvm::PointerType>(ptrTy));
@@ -1830,7 +1849,7 @@ namespace cajeta {
                         ptrTy, {i64Ty}, false);
                     llvm::FunctionCallee allocFn =
                         module->getLlvmModule()->getOrInsertFunction(
-                            "__cajeta_alloc_uninit", allocTy);
+                            bufAllocName, allocTy);
                     llvm::Value* arrPtr = builder->CreateCall(
                         allocFn, {arrSize}, "concat.arr_alloc");
                     builder->CreateStore(total, arrPtr);

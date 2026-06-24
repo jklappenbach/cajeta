@@ -70,6 +70,7 @@ namespace cajeta {
         bool assignment;
         bool requireIntOps;
         MethodPtr overrideMethod;
+        bool arenaEligible = false;
     public:
         BinaryOpExpression(BinaryOp binaryOp, antlr4::Token* token) : Expression(token) {
             overrideMethod = nullptr;
@@ -124,6 +125,13 @@ namespace cajeta {
 
         bool isAssignment() const { return assignment; }
         BinaryOp getBinaryOp() const { return binaryOp; }
+
+        // Frame-arena routing (frame-arena-plan U2): set by Method's escape pre-pass
+        // when this is a String concat whose result binds to a non-escaping local.
+        // When set, concat codegen bump-allocates the result from the frame arena
+        // (no malloc, no live-set) and the local registers no drop entry.
+        void setArenaEligible(bool b) { arenaEligible = b; }
+        bool isArenaEligible() const { return arenaEligible; }
 
         void resolveTypes(CajetaModulePtr module) override {
             // Walk children first, then take lhs's type as our result type. A real type
