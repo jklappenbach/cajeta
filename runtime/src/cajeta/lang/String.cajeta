@@ -278,23 +278,29 @@ public final class String {
     }
 
     /**
-     * Value `==` for Strings. SEMANTICALLY IDENTICAL to the inherited
-     * Object.operator== (null-safe hash() comparison) — this overload exists
-     * purely for speed: because both parameters are statically `String` (a
-     * `final` class), the `a.hash()`/`b.hash()` calls below devirtualize to
-     * direct calls, whereas the inherited form takes `Object` params and pays
-     * a virtual `__cajeta_vtable_lookup` per hash() on every comparison. That
-     * cost showed up as ~7.6% of hashmap-string (two vtable lookups per probe).
-     * resolveMethod prefers this more-specific overload for String operands; a
-     * `String == Object` comparison still falls through to Object.operator==.
-     * Behavior is unchanged (hash-based, not byte-exact — use equals() for the
-     * collision-proof byte walk).
+     * Value `==` for Strings: null-safe, BYTE-EXACT equality. Two non-null
+     * Strings are equal iff they have identical UTF-8 payloads (delegates to
+     * equals()). This is a more-specific overload of the inherited
+     * Object.operator==(Object,Object) (resolveMethod prefers it for two String
+     * operands; `String == Object` still falls through to Object's hash form).
+     *
+     * Byte-exact, not the inherited hash-only compare, for two reasons:
+     *   1. Correctness — hash equality admits collisions, so hash-based `==`
+     *      could report two distinct strings equal. Hash-keyed collections
+     *      confirm a probe with `==`, so a collision there returned the WRONG
+     *      value; the byte walk closes that latent hole.
+     *   2. Speed — both params are statically `String` (a `final` class), so the
+     *      equals() call (and the byteLength/byte loop inside it) devirtualizes
+     *      to a direct, inlinable call. The old hash form recomputed BOTH
+     *      operands' XXH3 every comparison — in a map probe the key was hashed
+     *      for the bucket and then re-hashed twice more inside `==` (~3 XXH3 per
+     *      lookup); a short-key byte compare is far cheaper.
      */
     public static boolean operator== (String a, String b) {
         if (a == null || b == null) {
             return a == null && b == null;
         }
-        return a.hash() == b.hash();
+        return a.equals(b);
     }
 
     /**
