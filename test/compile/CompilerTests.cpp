@@ -97,7 +97,11 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // 2026-06-23: 443 → 445 — cajeta.gpu.Sobol (the §3 3.b-rest-sobol low-discrepancy
 // (0,2)-sequence) + cajeta.gpu.BvhCodec (the §3 3.a-rest reinterpret/quantized-node
 // codec); both eager cajeta.gpu prelude; +2.
-static constexpr size_t STDLIB_STRUCTURE_COUNT = 445;
+// 2026-06-24: 445 → 446 — cajeta.gpu.Bvh (the cajeta-accel contract facade +
+// Reference adapter, plan unit 1) registers a structure; the sibling
+// cajeta.gpu.Strategy ENUM does not add a separate module, so the eager prelude
+// grew net +1.
+static constexpr size_t STDLIB_STRUCTURE_COUNT = 446;
 
 TEST(CompilerTests, canParseOnValidShortPackage) {
     string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");
