@@ -245,7 +245,7 @@ assumptions must not leak into device buffer design (analysis §2.4 device cavea
 - **8.1** As a núcleo author, when I export a host-resident column over the C Data
   Interface, then the host contract (§4) applies unchanged.
 - **8.2** As a núcleo author, when a column is device-resident, then its physical
-  representation is núcleo's own device buffer design (aligned with `cajeta.gpu`), **not**
+  representation is núcleo's own device buffer design (aligned with `cajeta.xpu`), **not**
   dictated by Arrow's host layout; an `ArrowDeviceArray`-style bridge is used only at an
   explicit device-handoff boundary.
 

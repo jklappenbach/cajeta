@@ -69,8 +69,8 @@ invariant (`nucleo-column-spec.md` §1.1, analysis §2.3), a splat scene's colum
 - **The transform intrinsics** (`transform-intrinsics-spec.md`): `@Grad` / `Grad(...)` wraps the
   render-and-loss function; the backward is composed from the VJP registry and fuses with the
   forward like any other differentiated function.
-- **`cajeta.gpu`**: the rasterizer lowers to the device model (the same `@Kernel` / device-IR
-  path `cajeta.gpu` already exposes); the column→GPU-buffer handoff (§7) sits at that boundary.
+- **`cajeta.xpu`**: the rasterizer lowers to the device model (the same `@Kernel` / device-IR
+  path `cajeta.xpu` already exposes); the column→GPU-buffer handoff (§7) sits at that boundary.
 - **`cajeta.math` / fixed-size shapes**: `Vec3`, `Quat`, `Matrix<float32,4,4>` camera matrices,
   and `SH3` are value-typed fixed-shape aggregates (compile-time shape, `target-experience.md`
   §6c).
@@ -141,7 +141,7 @@ float32 photometricLoss(Camera cam, Image<float32> target) {
 **Use cases**
 - **4.1** As a developer, when I call `scene.render(cam)` for a `Table<Splat>` and a `Camera`,
   then I get an `Image<float32>` — the splats projected, sorted, and alpha-composited into a
-  raster, lowered to the GPU via `cajeta.gpu` and fused (one set of kernels over the columns,
+  raster, lowered to the GPU via `cajeta.xpu` and fused (one set of kernels over the columns,
   no per-splat temporaries materialized).
 - **4.2** As a developer, when I wrap a function that calls `render` in `@Grad`
   (`Grad(photometricLoss)`), then the render is **differentiable** — the backward is composed

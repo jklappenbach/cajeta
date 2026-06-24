@@ -62,7 +62,7 @@ shapes, never a second engine.
 
 ### 1.4 Relationship to existing constructs
 - Builds on stdlib **`cajeta.math.Tensor`** (numpy, done) for parameter storage and forward
-  compute, and on **`cajeta.gpu`** for the device model — dtype/device are **type-level**
+  compute, and on **`cajeta.xpu`** for the device model — dtype/device are **type-level**
   (`Tensor<float32>`), not runtime-global state.
 - A **`Module`** is an ordinary Cajeta class with `heap` lifetime; parameters and sub-modules
   are its **fields**. Parameter collection reuses **reflection** (`Class<T>`, field enumeration)

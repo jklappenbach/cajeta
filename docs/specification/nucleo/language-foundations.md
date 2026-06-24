@@ -228,7 +228,8 @@ add-on (the ➕ tier), nice but not required for the capability.
 Grounded in what the code audit confirmed is shipped vs. needed. Each layer is a clean
 dependency cut: nothing in a layer starts before the layer beneath it lands.
 
-**Layer 0 — Substrate (DONE).** `cajeta.math.Tensor` (numpy), `cajeta.gpu`, codec IO — plus the
+**Layer 0 — Substrate (DONE).** `cajeta.math.Tensor` (numpy), `cajeta.xpu` (multi-target
+compute/kernel model — CPU/NVPTX/AMDGPU/SPIR-V), codec IO — plus the
 shipped *language* enablers this whole plan leans on: named args + defaults, operator overloading,
 monomorphization, first-class function types, lambdas/closures, **closure specialization**
 (static function arg inlined — cajeta-ir Unit 4), method-level templates, **intrinsic-function

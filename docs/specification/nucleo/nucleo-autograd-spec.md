@@ -209,7 +209,7 @@ backward — one of the architecture's load-bearing wins over a temporary-materi
 - **7.2** As a developer, when I compose `Jit(Grad(f))` (mechanism §6.4), then `Jit` fuses the
   already-differentiated IR into one kernel over the whole forward+backward — the backward is not
   a separate dispatched pass.
-- **7.3** As a núcleo author, when an expression lowers to GPU (`cajeta.gpu`, `nucleo-expr-spec.md`),
+- **7.3** As a núcleo author, when an expression lowers to GPU (`cajeta.xpu`, `nucleo-expr-spec.md`),
   then its backward lowers to the same device — gradients computed where the forward ran, no
   host round-trip.
 

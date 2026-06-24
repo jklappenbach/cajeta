@@ -27,7 +27,7 @@ because a non-null numeric column and a 1-D tensor buffer are the same bytes (an
   (collapse an elementwise chain into one kernel with no materialized temporaries), and the
   relational rewrites **predicate pushdown** and **projection pushdown**.
 - A **lowering** step — emit the optimized graph as one or more kernels targeting CPU or GPU
-  (via `cajeta.gpu`).
+  (via `cajeta.xpu`).
 - The **eager-vs-lazy boundary** — the rule for when an expression *forces* (materializes).
 - The seam by which a **differentiable** expression hands its graph to autograd
   (`nucleo-autograd-spec.md`).
@@ -46,7 +46,7 @@ because a non-null numeric column and a 1-D tensor buffer are the same bytes (an
 
 ### 1.4 Relationship to existing constructs
 - The engine is built on the shipped substrate: `cajeta.math.Tensor` and `Storage<T>` (a single
-  contiguous, C-order, dense buffer — already the non-null-column case), `cajeta.gpu` (the
+  contiguous, C-order, dense buffer — already the non-null-column case), `cajeta.xpu` (the
   device/lowering target), monomorphized templates (so an expression over `Tensor<float32>` and
   one over `Tensor<float64>` are distinct, fully-typed graphs), and operator overloading (so
   `t - t.mean()` and `col.price > 0.0` *build graph nodes* rather than computing eagerly).
@@ -190,7 +190,7 @@ developer needs to know, looking at code, where computation actually happens.
 ## 6. Lowering to CPU or GPU
 
 The optimized graph is **lowered** — emitted as executable kernels — to either CPU or GPU. GPU
-lowering goes through `cajeta.gpu` (the shipped device model, analysis §3.1/§4.1). The same
+lowering goes through `cajeta.xpu` (the shipped device model, analysis §3.1/§4.1). The same
 optimized graph must be lowerable to either target; device choice does not change which expression
 the developer wrote.
 
@@ -198,7 +198,7 @@ the developer wrote.
 - **6.1** As a developer, when I force an expression whose inputs are host buffers, then it lowers
   to a CPU kernel (the default target).
 - **6.2** As a developer, when I force an expression whose inputs are device buffers (or I request
-  the GPU target), then the **same** optimized graph lowers to a GPU kernel via `cajeta.gpu`, with
+  the GPU target), then the **same** optimized graph lowers to a GPU kernel via `cajeta.xpu`, with
   fusion preserved (one fused device kernel, not one dispatch per operator — the per-op-dispatch
   death the analysis §4.4 warns about).
 - **6.3** As a developer, when an expression mixes host and device inputs, then this is surfaced as
@@ -280,7 +280,7 @@ there; the requirement here is that the expression IR is *legible to* them at th
   forces only at an explicit terminal.
 - **Predicate pushdown** and **projection pushdown** are observable: a more selective filter / a
   narrower projection does measurably less work (rows/columns read).
-- The **same** optimized graph lowers to **both** CPU and GPU (via `cajeta.gpu`), preserving
+- The **same** optimized graph lowers to **both** CPU and GPU (via `cajeta.xpu`), preserving
   fusion.
 - An elementwise expression over a non-null column and over a tensor of the same dtype uses the
   **same** engine (one code path, demonstrable).

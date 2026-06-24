@@ -65,7 +65,7 @@ self-contained win, lower priority than the DL+graphics spine but cheap.
 - **The quantile-sketch** (`nucleo-frame-spec.md` §9 / analysis §4.5): the booster's per-feature
   quantile binning is the **same primitive** as the frame's zone-map / quantile-sketch — built
   once, used as a histogram binner here and as an index/zone-map there (one primitive, two hats).
-- **`cajeta.gpu`**: histogram construction and split-finding are parallelizable over the
+- **`cajeta.xpu`**: histogram construction and split-finding are parallelizable over the
   bin-indexed representation; device lowering aligns with the device model where it pays
   (a plan-time concern, not a v1 commitment).
 

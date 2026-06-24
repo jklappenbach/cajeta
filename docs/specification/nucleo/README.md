@@ -18,8 +18,9 @@ and surfaced in each spec's Open Questions section, to be resolved when each spe
 
 ## The spec set, by layer (build order: top to bottom)
 
-**Layer 0 — Substrate (DONE, not specced here):** `cajeta.math.Tensor` (numpy), `cajeta.gpu`,
-codec IO — plus shipped language enablers (named args, operator overloading, monomorphization,
+**Layer 0 — Substrate (DONE, not specced here):** `cajeta.math.Tensor` (numpy), `cajeta.xpu`
+(the multi-target compute/kernel model — CPU/NVPTX/AMDGPU/SPIR-V; `cajeta.gfx` is the sibling
+graphics layer, unused by núcleo), codec IO — plus shipped language enablers (named args, operator overloading, monomorphization,
 first-class function types, closures, **closure specialization**, method-level templates,
 **intrinsic dispatch**, reflection).
 

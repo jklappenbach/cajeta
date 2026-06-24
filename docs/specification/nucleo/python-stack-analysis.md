@@ -160,7 +160,7 @@ effort & risk · núcleo mapping.*
 ### 3.2 PyTorch — the critical surface
 - **What it is.** numpy-shaped tensor + **autograd** + nn + optim + device + serialization.
   The framework the field defaults to. *The single most important surface to capture.*
-- **Already covered.** Tensor + nearly all ops (`cajeta.math`); device model (`cajeta.gpu`).
+- **Already covered.** Tensor + nearly all ops (`cajeta.math`); device model (`cajeta.xpu`).
 - **Genuinely new.** The autograd engine (VJP/JVP rules + the MIR-pass driver + an eager
   tape — see §4.4); the `nn.Module`/`Parameter` system; `optim` (SGD/Adam/AdamW + schedulers);
   a fiber-backed `DataLoader`; `state_dict`/`.pt` serialization compatibility; `amp`/autocast.
@@ -296,7 +296,7 @@ nucleo.sparse    sparse arrays + sparse linalg (scipy's one new type)
 nucleo.linalg    factorizations extending cajeta.math linalg
 nucleo.trees     gradient-boosting (histogram + tree construction; XGBoost lineage)
 nucleo.geometry  geometry-attribute tables + splat tables (+ BVH over tensor buffers, not rows)
-        builds on → stdlib cajeta.math.Tensor (numpy, done) + cajeta.gpu (device model)
+        builds on → stdlib cajeta.math.Tensor (numpy, done) + cajeta.xpu (device model)
 ```
 
 ### 4.2 The three ML lineages (distinct cores, shared substrate)
@@ -376,7 +376,7 @@ tensor + autodiff + GPU + fusion substrate; differentiable rendering is their li
 intersection and the flagship.
 
 ### 5.2 Build order
-1. **Substrate (done):** `cajeta.math.Tensor`, `cajeta.gpu`, codec IO.
+1. **Substrate (done):** `cajeta.math.Tensor`, `cajeta.xpu`, codec IO.
 2. **núcleo core:** `column` (Arrow layout + C Data Interface) → `expr` (fusion) →
    `autograd` (rules + MIR pass + tape) → `nn`/`optim`. In parallel, the Tensor Arrow
    retrofit (alignment + C-Data-Interface seam).
