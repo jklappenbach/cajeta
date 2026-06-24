@@ -888,6 +888,29 @@ void* __cajeta_arena_alloc_uninit(uint64_t size) {
     return __cajeta_arena_bump(size);
 }
 
+// Arena variant of __cajeta_new_array_header (frame-arena-plan U3): a non-escaping
+// owned heap array of primitive elements bump-allocated from the frame arena. Same
+// byte layout as the malloc version (count word at offset 0, then data) so all
+// array readers work unchanged, but NOT live-set tracked and never individually
+// freed — the scope-exit arena reset reclaims it. Zeroed for the array zero-init
+// contract (the arena reuses memory across resets, so it may be dirty).
+void* __cajeta_new_array_header_arena(uint64_t header_size, uint64_t elem_size, uint64_t count) {
+    if (elem_size != 0 && count > (UINT64_MAX - header_size) / elem_size) {
+        fprintf(stderr, "cajeta: __cajeta_new_array_header_arena overflow (header=%llu elem=%llu count=%llu)\n",
+                (unsigned long long) header_size,
+                (unsigned long long) elem_size,
+                (unsigned long long) count);
+        abort();
+    }
+    uint64_t total = header_size + count * elem_size;
+    if (total == 0) {
+        return NULL;
+    }
+    void* hdr = __cajeta_arena_alloc((uint64_t) total);   // zeroed
+    *((int64_t*) hdr) = (int64_t) count;
+    return hdr;
+}
+
 // Capture the current bump offset. Stash at scope entry; pass to reset on exit.
 uint64_t __cajeta_arena_mark(void) {
     return (uint64_t) __cajeta_arena.bump;
@@ -5887,6 +5910,33 @@ char* __cajeta_i64_to_str(int64_t v) {
     memcpy(out, buf, (size_t) n);
     out[n] = '\0';
     return out;
+}
+
+// Lever #1 (string-concat fast path): decimal length of an int64, no allocation.
+// Lets the concat lowering size its destination buffer for an integer operand
+// without first malloc'ing a stringified copy. Counts the sign for negatives;
+// the unsigned magnitude is computed via a wrap-safe negate (handles INT64_MIN).
+int64_t __cajeta_i64_str_len(int64_t v) {
+    int64_t n = 0;
+    uint64_t u;
+    if (v < 0) { n = 1; u = (uint64_t) (-(v + 1)) + 1u; }
+    else       { u = (uint64_t) v; }
+    if (u == 0) return 1;
+    while (u) { u /= 10u; n++; }
+    return n;
+}
+
+// Lever #1: write the decimal text of an int64 straight into `dst` (no NUL, no
+// allocation) and return the byte count. The concat lowering calls this to format
+// an integer operand directly into the result String's byte storage, eliminating
+// the per-concat __cajeta_i64_to_str malloc/free (60k/iter in the hashmap-string
+// bench). `dst` must hold __cajeta_i64_str_len(v) bytes.
+int64_t __cajeta_i64_to_buf(int64_t v, char* dst) {
+    char buf[32];
+    int n = snprintf(buf, sizeof(buf), "%lld", (long long) v);
+    if (n < 0) n = 0;
+    memcpy(dst, buf, (size_t) n);
+    return (int64_t) n;
 }
 
 char* __cajeta_f64_to_str(double v) {

@@ -43,7 +43,14 @@ namespace cajeta {
         // the CreatorRest at generateCode so the instance is built directly
         // into the caller's return slot. See docs/specification/lang/ValueReturns.md.
         llvm::Value* nrvoTarget = nullptr;
+        // Frame-arena (U3): set by Method::computeArenaEligibility when this
+        // `heap T[N]` initializes a non-escaping single-dimension primitive-element
+        // array local. Propagated to ArrayCreatorRest at generateCode so the header
+        // is bump-allocated from the frame arena (no malloc, no live-set, no drop).
+        bool arenaEligible = false;
     public:
+        void setArenaEligible(bool v) { arenaEligible = v; }
+        bool isArenaEligible() const { return arenaEligible; }
         void setStackAlloc(bool v) { stackAlloc = v; }
         bool getStackAlloc() const { return stackAlloc; }
         void setSharedAlloc(bool v) { sharedAlloc = v; }

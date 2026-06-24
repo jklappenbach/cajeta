@@ -696,12 +696,21 @@ namespace cajeta {
                 }
             }
 
+            // Arena-eligible locals (frame-arena-plan U2/U3) register NO drop entry
+            // — the scope-exit arena reset reclaims them in bulk. The escape pre-pass
+            // guarantees they don't leave the frame. Name-keyed, so it covers both
+            // the owned-String concat case (U2) and the primitive-array case (U3).
+            bool arenaEligible = false;
+            if (auto cm = module->getCurrentMethod()) {
+                arenaEligible = cm->isArenaEligibleLocal(declarator->getIdentifier());
+            }
+
             // Array-typed locals own the heap header; register
             // __cajeta_free_array unless this local is a borrow.
             // The borrow case (e.g. `T[] alias = paramArr` or
             // `T[] xs = obj.field`) already has an owner upstream;
             // duplicating the drop here double-frees at scope exit.
-            if (isArray && !initIsBorrow) {
+            if (isArray && !initIsBorrow && !arenaEligible) {
                 emitDropEntryFor(module, field, "__cajeta_free_array", getSourceLine());
             }
 
@@ -910,13 +919,8 @@ namespace cajeta {
             // built String.
             // Arena-eligible concat locals (frame-arena-plan U2) register NO drop
             // entry — the scope-exit arena reset reclaims them in bulk. The escape
-            // pre-pass guarantees they don't leave the frame.
-            bool arenaEligible = false;
-            if (isCajetaString) {
-                if (auto cm = module->getCurrentMethod()) {
-                    arenaEligible = cm->isArenaEligibleLocal(declarator->getIdentifier());
-                }
-            }
+            // pre-pass guarantees they don't leave the frame. `arenaEligible` was
+            // computed once above (name-keyed; covers String U2 + array U3).
             if (isCajetaString && !isArray && !isStructType
                     && !initIsBorrow && !initIsStackAlloc && initializer
                     && !arenaEligible) {

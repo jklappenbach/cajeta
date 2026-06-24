@@ -8,6 +8,7 @@
 #include "../type/CajetaClass.h"
 #include "../type/CajetaView.h"
 #include "../type/CajetaArray.h"
+#include "../type/CajetaFunctionType.h"
 #include "../compile/CajetaModule.h"
 #include "../compile/Compiler.h"
 #include "../error/VariableAssignmentException.h"
@@ -1255,6 +1256,38 @@ namespace cajeta {
             if (bo && bo->getBinaryOp() == BINARY_OP_ADD) return bo;
             return nullptr;
         }
+        // The `heap T[N]` NewExpression directly initializing a declarator, IF it is
+        // a single-dimension array of primitive elements (frame-arena-plan U3). The
+        // primitive-element gate keeps element drops a no-op, so the arena reset
+        // fully reclaims the array; multi-dim and class/String/array-element arrays
+        // (whose drops free per-element owned storage) are excluded — they keep the
+        // heap path.
+        std::shared_ptr<NewExpression> arenaArrayInit(const CajetaTypePtr& declType,
+                                                      const VariableDeclaratorPtr& d) {
+            // Use the declared local type (always populated post-resolve) rather than
+            // the NewExpression's resolvedType, which isn't reliably set this early.
+            auto arr = std::dynamic_pointer_cast<CajetaArray>(declType);
+            if (!arr) return nullptr;
+            if (!d || !d->getInitializer()) return nullptr;
+            auto& kids = d->getInitializer()->getChildren();
+            if (kids.empty()) return nullptr;
+            auto ne = std::dynamic_pointer_cast<NewExpression>(kids[0]);
+            if (!ne || ne->getStackAlloc() || ne->getSharedAlloc()) return nullptr;
+            // Must be an array creator (`heap T[N]`), single-dimension.
+            auto acr = std::dynamic_pointer_cast<ArrayCreatorRest>(ne->getCreatorRest());
+            if (!acr || acr->getTotalBracketPairs() != 1) return nullptr;
+            auto elem = arr->getElementType();
+            // Element must be a plain primitive: not a class/String, array, view, or
+            // function type (any of which can carry per-element owned storage).
+            if (!elem
+                    || std::dynamic_pointer_cast<CajetaClass>(elem)
+                    || std::dynamic_pointer_cast<CajetaArray>(elem)
+                    || std::dynamic_pointer_cast<CajetaView>(elem)
+                    || std::dynamic_pointer_cast<CajetaFunctionType>(elem)) {
+                return nullptr;
+            }
+            return ne;
+        }
         // Direct identifier RHS of an expression (alias source) — `x = name` /
         // `T x = name`. A name nested inside a call/operator is a borrow, not a
         // store, so only a bare top-level identifier counts as an escape here.
@@ -1269,14 +1302,16 @@ namespace cajeta {
         void arenaWalk(const AbstractSyntaxNodePtr& node,
                        std::set<std::string>& escaping,
                        std::vector<std::pair<std::string,
-                           std::shared_ptr<BinaryOpExpression>>>& candidates) {
+                           std::shared_ptr<BinaryOpExpression>>>& candidates,
+                       std::vector<std::pair<std::string,
+                           std::shared_ptr<NewExpression>>>& arrayCandidates) {
             if (!node) return;
             // #name → the transferred name escapes (ownership leaves the frame).
             if (auto mv = std::dynamic_pointer_cast<MoveExpression>(node)) {
                 if (!mv->getChildren().empty()) {
                     std::string n = arenaLeftmostId(mv->getChildren()[0]);
                     if (!n.empty()) escaping.insert(n);
-                    for (auto& c : mv->getChildren()) arenaWalk(c, escaping, candidates);
+                    for (auto& c : mv->getChildren()) arenaWalk(c, escaping, candidates, arrayCandidates);
                 }
                 return;
             }
@@ -1285,7 +1320,7 @@ namespace cajeta {
             if (auto ret = std::dynamic_pointer_cast<ReturnStatement>(node)) {
                 std::string n = arenaDirectIdentifier(ret->getExpression());
                 if (!n.empty()) escaping.insert(n);
-                arenaWalk(ret->getExpression(), escaping, candidates);
+                arenaWalk(ret->getExpression(), escaping, candidates, arrayCandidates);
                 return;
             }
             // x = name / this.f = name / arr[i] = name → name is stored.
@@ -1295,7 +1330,7 @@ namespace cajeta {
                     std::string n = arenaDirectIdentifier(bo->getChildren()[1]);
                     if (!n.empty()) escaping.insert(n);
                 }
-                for (auto& c : bo->getChildren()) arenaWalk(c, escaping, candidates);
+                for (auto& c : bo->getChildren()) arenaWalk(c, escaping, candidates, arrayCandidates);
                 return;
             }
             // Declarations: collect String-concat candidates; alias init escapes.
@@ -1309,17 +1344,20 @@ namespace cajeta {
                             std::string alias = arenaDirectIdentifier(kids[0]);
                             if (!alias.empty()) escaping.insert(alias);  // T x = name
                         }
-                        arenaWalk(d->getInitializer(), escaping, candidates);
+                        arenaWalk(d->getInitializer(), escaping, candidates, arrayCandidates);
                     }
                     if (isStr) {
                         if (auto cbo = arenaConcatInit(d))
                             candidates.emplace_back(d->getIdentifier(), cbo);
                     }
+                    // U3: non-escaping single-dim primitive-array locals.
+                    if (auto ane = arenaArrayInit(lvd->getType(), d))
+                        arrayCandidates.emplace_back(d->getIdentifier(), ane);
                 }
                 return;
             }
             if (auto mc = std::dynamic_pointer_cast<MethodCallExpression>(node)) {
-                for (auto& c : mc->getChildren()) arenaWalk(c, escaping, candidates);
+                for (auto& c : mc->getChildren()) arenaWalk(c, escaping, candidates, arrayCandidates);
                 for (auto& p : mc->getParameters()) {
                     // A `#arg` call argument is recorded as callerTransferred on the
                     // parameter (the callee takes ownership) — the named value
@@ -1328,45 +1366,45 @@ namespace cajeta {
                         std::string n = arenaLeftmostId(p.expression);
                         if (!n.empty()) escaping.insert(n);
                     }
-                    arenaWalk(p.expression, escaping, candidates);
+                    arenaWalk(p.expression, escaping, candidates, arrayCandidates);
                 }
                 return;
             }
             if (auto es = std::dynamic_pointer_cast<ExpressionStatement>(node)) {
-                arenaWalk(es->getExpression(), escaping, candidates);
+                arenaWalk(es->getExpression(), escaping, candidates, arrayCandidates);
                 return;
             }
             if (auto ifs = std::dynamic_pointer_cast<IfStatement>(node)) {
-                arenaWalk(ifs->getCondition(), escaping, candidates);
-                arenaWalk(ifs->getThenBranch(), escaping, candidates);
-                arenaWalk(ifs->getElseBranch(), escaping, candidates);
+                arenaWalk(ifs->getCondition(), escaping, candidates, arrayCandidates);
+                arenaWalk(ifs->getThenBranch(), escaping, candidates, arrayCandidates);
+                arenaWalk(ifs->getElseBranch(), escaping, candidates, arrayCandidates);
                 return;
             }
             if (auto ls = std::dynamic_pointer_cast<LabelStatement>(node)) {
-                arenaWalk(ls->getBlock(), escaping, candidates); return;
+                arenaWalk(ls->getBlock(), escaping, candidates, arrayCandidates); return;
             }
             if (auto ss = std::dynamic_pointer_cast<ScopeStatement>(node)) {
-                arenaWalk(ss->getBlock(), escaping, candidates); return;
+                arenaWalk(ss->getBlock(), escaping, candidates, arrayCandidates); return;
             }
             if (auto ws = std::dynamic_pointer_cast<WhileStatement>(node)) {
-                arenaWalk(ws->getCondition(), escaping, candidates);
-                arenaWalk(ws->getBody(), escaping, candidates); return;
+                arenaWalk(ws->getCondition(), escaping, candidates, arrayCandidates);
+                arenaWalk(ws->getBody(), escaping, candidates, arrayCandidates); return;
             }
             if (auto dos = std::dynamic_pointer_cast<DoStatement>(node)) {
-                arenaWalk(dos->getBody(), escaping, candidates);
-                arenaWalk(dos->getCondition(), escaping, candidates); return;
+                arenaWalk(dos->getBody(), escaping, candidates, arrayCandidates);
+                arenaWalk(dos->getCondition(), escaping, candidates, arrayCandidates); return;
             }
             if (auto fs = std::dynamic_pointer_cast<ForStatement>(node)) {
-                arenaWalk(fs->getInit(), escaping, candidates);
-                arenaWalk(fs->getCondition(), escaping, candidates);
-                for (auto& u : fs->getUpdate()) arenaWalk(u, escaping, candidates);
-                arenaWalk(fs->getBody(), escaping, candidates); return;
+                arenaWalk(fs->getInit(), escaping, candidates, arrayCandidates);
+                arenaWalk(fs->getCondition(), escaping, candidates, arrayCandidates);
+                for (auto& u : fs->getUpdate()) arenaWalk(u, escaping, candidates, arrayCandidates);
+                arenaWalk(fs->getBody(), escaping, candidates, arrayCandidates); return;
             }
             if (auto efs = std::dynamic_pointer_cast<EnhancedForStatement>(node)) {
-                arenaWalk(efs->getIterableExpr(), escaping, candidates);
-                arenaWalk(efs->getBody(), escaping, candidates); return;
+                arenaWalk(efs->getIterableExpr(), escaping, candidates, arrayCandidates);
+                arenaWalk(efs->getBody(), escaping, candidates, arrayCandidates); return;
             }
-            for (auto& c : node->getChildren()) arenaWalk(c, escaping, candidates);
+            for (auto& c : node->getChildren()) arenaWalk(c, escaping, candidates, arrayCandidates);
         }
     }
 
@@ -1376,11 +1414,19 @@ namespace cajeta {
         if (!block) return;
         std::set<std::string> escaping;
         std::vector<std::pair<std::string, std::shared_ptr<BinaryOpExpression>>> candidates;
-        arenaWalk(block, escaping, candidates);
+        std::vector<std::pair<std::string, std::shared_ptr<NewExpression>>> arrayCandidates;
+        arenaWalk(block, escaping, candidates, arrayCandidates);
         for (auto& cand : candidates) {
             // A concat local is arena-eligible iff its name never escapes. A name
             // declared more than once is eligible only if NO declaration escapes
             // (conservative on shadowing).
+            if (escaping.find(cand.first) != escaping.end()) continue;
+            cand.second->setArenaEligible(true);
+            arenaEligibleNames.insert(cand.first);
+            methodUsesArena = true;
+        }
+        // U3: non-escaping single-dim primitive-array locals take the same gate.
+        for (auto& cand : arrayCandidates) {
             if (escaping.find(cand.first) != escaping.end()) continue;
             cand.second->setArenaEligible(true);
             arenaEligibleNames.insert(cand.first);
