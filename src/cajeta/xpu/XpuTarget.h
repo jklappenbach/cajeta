@@ -64,6 +64,17 @@ namespace xpu {
                                llvm::Module& hostModule,
                                const std::string& arch);
 
+    // Embed each graphics-shader (@Vertex/@Fragment/…) method's SPIR-V + a
+    // registration ctor into `hostModule` — the rasterization parallel of
+    // emitKernelRegistration. Graphics is a SPIR-V/Vulkan-only capability: this
+    // dispatches to the Vulkan backend for Backend::Spirv and is a no-op
+    // (returns 0) for every other device target, which has no raster pipeline.
+    // Returns the number of shaders embedded. Same skip-don't-fail contract.
+    int emitGraphicsRegistration(Backend backend,
+                                 const std::vector<MethodPtr>& shaders,
+                                 llvm::Module& hostModule,
+                                 const std::string& arch);
+
     // Emit one global ctor per bundled backend calling the runtime hook
     // __cajeta_xpu_register_backend((int) backend) — the compile-time manifest
     // the runtime dispatcher (cajeta-cpu.md Increment 4) reads to know which

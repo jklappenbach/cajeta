@@ -52,6 +52,22 @@ namespace cajeta {
         if (m) m->pushDropFrame();
 
         auto* builder = module->getBuilder();
+
+        // Frame-arena (frame-arena-plan U2): bracket this block's body with an
+        // arena mark/reset so non-escaping owned concat locals declared inside are
+        // bump-allocated and reclaimed in O(1) at the closing `}` (per-iteration for
+        // a loop body). Only emitted when the method has arena-eligible locals, so
+        // arena-free code pays nothing. The reset fires on the same normal-exit edge
+        // as the drop chain (early return/throw already unwind via emitOwnerDrops; an
+        // un-reset frame is reclaimed by an enclosing scope's reset — never a UAF
+        // since arena objects don't escape).
+        llvm::Value* arenaMark = nullptr;
+        if (m && m->usesArena() && builder && builder->GetInsertBlock()
+                && !builder->GetInsertBlock()->hasTerminator()) {
+            if (llvm::Function* markFn = module->getRuntimeFunction("__cajeta_arena_mark")) {
+                arenaMark = builder->CreateCall(markFn, {}, "arena.mark");
+            }
+        }
         bool debugInfo = module->getFlags().debugInfo;
         for (auto child: children) {
             // Stop emitting once the current BB has a terminator —
@@ -79,6 +95,13 @@ namespace cajeta {
             llvm::BasicBlock* insertBB = builder ? builder->GetInsertBlock() : nullptr;
             if (insertBB && !insertBB->hasTerminator()) {
                 m->emitTopFrameDrops(module);
+                // Reclaim this block's arena objects (after drops, before frame pop).
+                if (arenaMark) {
+                    if (llvm::Function* resetFn =
+                            module->getRuntimeFunction("__cajeta_arena_reset")) {
+                        builder->CreateCall(resetFn, {arenaMark});
+                    }
+                }
             }
             m->popDropFrame();
         }

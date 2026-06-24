@@ -4,6 +4,7 @@
 
 #include "SpirvKernelLowering.h"
 #include "SpirvBackend.h"
+#include "SpirvInterface.h"
 
 #include "../lowering/KernelLowering.h"
 #include "../lowering/LoweringTarget.h"
@@ -1271,6 +1272,140 @@ public:
     }
 };
 
+// The graphics fork of SpirvTarget (cajeta-gfx §4.b): lowers a @Vertex/@Fragment
+// shader instead of a compute kernel. It reuses the entire SpirvTarget body walk
+// (math, control flow, buffers) and forks only the pipeline interface:
+//   - createKernel → `void main()` with the STAGE's hlsl.shader attr (no
+//     numthreads — graphics has no workgroup).
+//   - materializeParam → each non-resource param is a stage INPUT interface
+//     variable (a Location-N global), loaded by value; resource params
+//     (buffers/textures) still bind as descriptors via SpirvTarget.
+//   - the `return` value is stored into an OUTPUT interface variable
+//     (shaderOutputReturn / storeShaderOutput): BuiltIn Position for a vertex
+//     stage, a Location-0 color for a fragment stage.
+class SpirvGraphicsTarget : public SpirvTarget {
+public:
+    explicit SpirvGraphicsTarget(ShaderStage stage) : stage_(stage) {}
+
+    llvm::Function* createKernel(
+        llvm::Module& m, const std::string& kname,
+        const std::vector<KernelParam>& params) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        auto* fnTy = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
+                                             /*vararg=*/false);
+        auto* fn = llvm::Function::Create(fnTy, llvm::Function::ExternalLinkage,
+                                          kname, &m);
+        fn->addFnAttr("hlsl.shader", hlslShaderAttr(stage_));
+        buildPushConstantBlock(m, params);
+        return fn;
+    }
+
+    llvm::Value* materializeParam(llvm::IRBuilderBase& b, llvm::Module& m,
+                                  llvm::Function* fn, unsigned idx,
+                                  const KernelParam& p) override {
+        // A @PushConstant param: read its member from the stage's single push-
+        // constant block (GEP into the struct global + load). The fork's
+        // SPIRVPushConstantAccess pass rewrites the global access into an
+        // OpAccessChain on the laid-out PushConstant Block. All @PushConstant
+        // params share one block (Vulkan permits exactly one per stage) — see
+        // buildPushConstantBlock.
+        if (p.isPushConstant && pcGlobal_ && idx < pcMemberOf_.size() &&
+            pcMemberOf_[idx] >= 0) {
+            llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+            llvm::Value* member = b.CreateGEP(
+                pcStructTy_, pcGlobal_,
+                {llvm::ConstantInt::get(i32, 0),
+                 llvm::ConstantInt::get(i32, (uint32_t) pcMemberOf_[idx])},
+                p.name + ".pc");
+            return b.CreateLoad(p.type, member, p.name);
+        }
+        // Resource params (buffers/textures/images/samplers/accel structs) still
+        // bind as descriptors — only plain value inputs become interface vars.
+        if (p.isBuffer || p.isTexture || p.isImage || p.isSampler ||
+            p.isAccelStruct) {
+            return SpirvTarget::materializeParam(b, m, fn, idx, p);
+        }
+        // A stage input: a Location-N Input interface variable, loaded by value
+        // (the body lowerer stores it into the param's mutable slot).
+        llvm::GlobalVariable* in = createLocationVar(
+            m, p.type, InterfaceStorage::Input, nextInputLocation_++, p.name);
+        return b.CreateLoad(p.type, in, p.name);
+    }
+
+    bool shaderOutputReturn() const override { return true; }
+
+    void storeShaderOutput(llvm::IRBuilderBase& b, llvm::Module& m,
+                           llvm::Function* /*fn*/, llvm::Value* value) override {
+        // Multi-output (cajeta-gfx §4.b-rest B-2): a @ValueType STRUCT return is
+        // one output per field — the shader's outputs/varyings. Positional mapping:
+        // vertex field 0 → BuiltIn Position, fields 1.. → sequential Location
+        // varyings; fragment (& others) every field → a sequential Location color
+        // target. A single scalar/vector return is the one-field case.
+        if (auto* st = llvm::dyn_cast<llvm::StructType>(value->getType())) {
+            for (unsigned i = 0; i < st->getNumElements(); ++i) {
+                llvm::Value* field = b.CreateExtractValue(value, i, "out.field");
+                b.CreateStore(field, shaderOutputVar(m, i, field->getType()));
+            }
+            return;
+        }
+        b.CreateStore(value, shaderOutputVar(m, 0, value->getType()));
+    }
+
+private:
+    // Collect every @PushConstant param into ONE struct-typed global in the
+    // PushConstant address space (Vulkan allows exactly one push-constant block per
+    // stage). pcMemberOf_[i] is the struct-member index of param i (or -1 if param
+    // i is not a push constant), so materializeParam can GEP the right field. Called
+    // once from createKernel, which receives the full param list before the body
+    // lowerer materializes any param.
+    void buildPushConstantBlock(llvm::Module& m,
+                                const std::vector<KernelParam>& params) {
+        pcMemberOf_.assign(params.size(), -1);
+        std::vector<llvm::Type*> members;
+        for (unsigned i = 0; i < params.size(); ++i) {
+            if (params[i].isPushConstant && params[i].type) {
+                pcMemberOf_[i] = (int) members.size();
+                members.push_back(params[i].type);
+            }
+        }
+        if (members.empty()) return;
+        pcStructTy_ = llvm::StructType::create(m.getContext(), members,
+                                               "cajeta.pushconst");
+        pcGlobal_ = createPushConstantBlock(m, pcStructTy_, "cajeta_pc");
+    }
+
+    // The Output interface variable for output `index` (a struct field, or the
+    // sole output), created+cached on first use. Vertex field 0 is BuiltIn
+    // Position; every other output is a sequential Location (vertex varyings begin
+    // at Location 0 for field 1; fragment color targets begin at Location 0 for
+    // field 0). The vertex varying Location and the matching fragment input
+    // Location line up positionally (fragment inputs count up from 0 too).
+    llvm::GlobalVariable* shaderOutputVar(llvm::Module& m, unsigned index,
+                                          llvm::Type* ty) {
+        if (outputVars_.size() <= index) outputVars_.resize(index + 1, nullptr);
+        if (outputVars_[index]) return outputVars_[index];
+        llvm::GlobalVariable* ov;
+        if (stage_ == ShaderStage::Vertex && index == 0) {
+            ov = createBuiltInVar(m, ty, InterfaceStorage::Output,
+                                  SpirvBuiltIn::Position, "gl_Position");
+        } else {
+            unsigned loc = (stage_ == ShaderStage::Vertex) ? index - 1 : index;
+            ov = createLocationVar(m, ty, InterfaceStorage::Output, loc,
+                                   "out_" + std::to_string(loc));
+        }
+        outputVars_[index] = ov;
+        return ov;
+    }
+
+    ShaderStage stage_;
+    unsigned nextInputLocation_ = 0;
+    std::vector<llvm::GlobalVariable*> outputVars_;
+    // The stage's single push-constant block (null when no @PushConstant params).
+    llvm::StructType* pcStructTy_ = nullptr;
+    llvm::GlobalVariable* pcGlobal_ = nullptr;
+    std::vector<int> pcMemberOf_;
+};
+
 } // namespace
 
 llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
@@ -1280,6 +1415,13 @@ llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
         return cajeta::xpu::lowerKernel(method, deviceModule, target, entryName);
     }
     SpirvTarget target;
+    return cajeta::xpu::lowerKernel(method, deviceModule, target, entryName);
+}
+
+llvm::Function* lowerGraphicsShader(const MethodPtr& method,
+                                    llvm::Module& deviceModule, ShaderStage stage,
+                                    const std::string& entryName) {
+    SpirvGraphicsTarget target(stage);
     return cajeta::xpu::lowerKernel(method, deviceModule, target, entryName);
 }
 

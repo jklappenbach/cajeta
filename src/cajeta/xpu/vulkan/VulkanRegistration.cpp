@@ -29,6 +29,8 @@
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
+#include <optional>
+
 namespace cajeta {
 namespace xpu {
 namespace vulkan {
@@ -180,6 +182,110 @@ namespace vulkan {
             if (usesRayQuery(method))
                 emitVariant(method, entryName + "$sw", /*software=*/true,
                             /*registerKparams=*/false);
+        }
+        return emitted;
+    }
+
+    // --- Graphics shader registration (cajeta-gfx §4) ----------------------
+
+    namespace {
+        // Map a graphics method's stage annotation onto the SPIR-V ShaderStage.
+        // Returns nullopt if the method carries no graphics stage (caller should
+        // have filtered on isGraphicsShader first).
+        std::optional<ShaderStage> stageOf(const Method& m) {
+            if (isVertex(m))      return ShaderStage::Vertex;
+            if (isFragment(m))    return ShaderStage::Fragment;
+            if (isGeometry(m))    return ShaderStage::Geometry;
+            if (isTessControl(m)) return ShaderStage::TessControl;
+            if (isTessEval(m))    return ShaderStage::TessEval;
+            if (isMesh(m))        return ShaderStage::Mesh;
+            if (isTask(m))        return ShaderStage::Task;
+            return std::nullopt;
+        }
+    } // namespace
+
+    // The rasterization twin of emitKernelRegistration: each @Vertex/@Fragment/…
+    // method is lowered on its OWN per-stage SPIR-V TargetMachine (the stage
+    // execution model rides the triple env + the entry's hlsl.shader attr), then
+    // its module is embedded + registered under the entry name exactly as a
+    // kernel is — so a graphics shader rides the normal build like a @Kernel. No
+    // kernel-param metadata is emitted: graphics stages bind inputs as interface
+    // variables, not the uniform kernelParams argv (graphics resource descriptors
+    // are a later slice). Stages whose body uses an unsupported construct
+    // (XPU-N01) are skipped, never fatal.
+    int emitGraphicsRegistration(const std::vector<MethodPtr>& shaders,
+                                 llvm::Module& hostModule,
+                                 const std::string& arch) {
+        if (shaders.empty()) return 0;
+
+        llvm::LLVMContext& ctx = hostModule.getContext();
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+        llvm::Type* voidTy = llvm::Type::getVoidTy(ctx);
+        llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
+        llvm::IRBuilder<> b(ctx);
+
+        // void __cajeta_xpu_register_module(i8* name, i8* image, i64 len) — the
+        // same backend-neutral hook the kernel path registers modules through.
+        llvm::FunctionType* regTy =
+            llvm::FunctionType::get(voidTy, {ptrTy, ptrTy, i64Ty}, false);
+        llvm::FunctionCallee regFn =
+            hostModule.getOrInsertFunction("__cajeta_xpu_register_module", regTy);
+
+        int emitted = 0;
+        for (auto& method : shaders) {
+            if (!method || !isGraphicsShader(*method)) continue;
+            if (hasShaderStageConflict(*method)) continue;  // ill-formed; skip
+            auto stage = stageOf(*method);
+            if (!stage) continue;
+
+            // A FRESH per-stage TargetMachine per shader (as the kernel path
+            // does): the SPIR-V backend accumulates codegen state on the TM, so
+            // it must not be reused across emitSpirv calls.
+            auto tm = createSpirvTargetMachineForStage(*stage, arch);
+            if (!tm) continue;  // this stage's target env isn't in this build
+
+            const std::string regName = method->getName();
+            llvm::LLVMContext devCtx;
+            llvm::Module devMod("xpu.gfx." + regName, devCtx);
+            configureDeviceModuleForStage(devMod, *tm, *stage, arch);
+            llvm::Function* sfn = nullptr;
+            try {
+                sfn = lowerGraphicsShader(method, devMod, *stage, regName);
+            } catch (cajeta::Exception&) {
+                // Unsupported construct (XPU-N01) — leave this stage to nobody;
+                // don't fail the whole compile.
+                continue;
+            }
+            if (!sfn) continue;
+
+            std::vector<uint8_t> spirv = emitSpirv(devMod, *tm);
+            if (spirv.empty()) continue;  // codegen error (logged)
+
+            // Embed the SPIR-V as a private host-module constant.
+            llvm::Constant* dataInit = llvm::ConstantDataArray::get(
+                ctx, llvm::ArrayRef<uint8_t>(spirv.data(), spirv.size()));
+            auto* spvGV = new llvm::GlobalVariable(
+                hostModule, dataInit->getType(), /*isConstant=*/true,
+                llvm::GlobalValue::PrivateLinkage, dataInit,
+                "xpu.spirv." + regName);
+            spvGV->setAlignment(llvm::MaybeAlign(8));
+
+            // ctor: __cajeta_xpu_register_module(regName, spvGV, len)
+            llvm::FunctionType* ctorTy = llvm::FunctionType::get(voidTy, false);
+            llvm::Function* ctor = llvm::Function::Create(
+                ctorTy, llvm::GlobalValue::InternalLinkage,
+                "__cajeta_xpu_reg_ctor." + regName, hostModule);
+            llvm::BasicBlock* bb = llvm::BasicBlock::Create(ctx, "entry", ctor);
+            b.SetInsertPoint(bb);
+            llvm::Value* nameStr =
+                b.CreateGlobalString(regName, "xpu.kname." + regName);
+            b.CreateCall(regFn, {nameStr, spvGV,
+                                 llvm::ConstantInt::get(i64Ty, spirv.size())});
+            b.CreateRetVoid();
+
+            // Run at module-init time (LLJIT: jit->initialize; native: startup).
+            llvm::appendToGlobalCtors(hostModule, ctor, /*priority=*/65535);
+            ++emitted;
         }
         return emitted;
     }

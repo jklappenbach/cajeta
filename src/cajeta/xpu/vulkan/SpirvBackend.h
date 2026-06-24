@@ -45,12 +45,63 @@ namespace vulkan {
     // Create a SPIR-V TargetMachine. `arch` is the SPIR-V target env (e.g.
     // "vulkan1.3"); unused by the in-tree backend today but kept for parity
     // with the nvptx/amdgpu arch knob. Returns nullptr if the spirv target
-    // isn't registered. Self-initializes the LLVM target registry.
+    // isn't registered. Self-initializes the LLVM target registry. Equivalent to
+    // createSpirvTargetMachineForStage(ShaderStage::Compute, arch).
     std::unique_ptr<llvm::TargetMachine>
     createSpirvTargetMachine(const std::string& arch = "vulkan1.3");
 
     // Set the SPIR-V triple + the TargetMachine's DataLayout on `m`.
     void configureDeviceModule(llvm::Module& m, llvm::TargetMachine& tm);
+
+    // --- Per-stage knob (cajeta-gfx §4.a) ----------------------------------
+    //
+    // The SPIR-V backend is no longer compute-only: each shader stage rides its
+    // OWN triple environment (the trailing "-<env>" of the triple), so each is
+    // emitted as its own module / .spv — exactly how Vulkan binds shader stages
+    // (proven feasible in test/gfx/GfxSpirvEmitProbeTests). The execution model
+    // is selected by BOTH the triple env AND the entry function's `hlsl.shader`
+    // attribute, which the in-tree backend turns into the OpEntryPoint model.
+
+    // The shader stages emitted as standalone SPIR-V modules. Compute is the
+    // existing path; Vertex/Fragment are §4.a; the rest generalize the knob and
+    // land their emission goldens under §4.e.
+    enum class ShaderStage {
+        Compute,
+        Vertex,
+        Fragment,
+        Geometry,
+        TessControl,
+        TessEval,
+        Mesh,
+        Task,
+    };
+
+    // The triple ENVIRONMENT token for a stage — the trailing field of
+    // "spirv-unknown-<arch>-<env>": compute / vertex / pixel / geometry / hull /
+    // domain / mesh / amplification (the LLVM/HLSL stage spellings).
+    const char* spirvStageEnv(ShaderStage stage);
+
+    // The full per-stage SPIR-V triple, "spirv-unknown-<arch>-<env>" (arch e.g.
+    // "vulkan1.3"). For (Compute, "vulkan1.3") this equals kSpirvTriple.
+    std::string spirvStageTriple(ShaderStage stage,
+                                 const std::string& arch = "vulkan1.3");
+
+    // The `hlsl.shader` function-attribute value the in-tree SPIR-V backend
+    // turns into the OpEntryPoint execution model. Set this on the entry
+    // function (e.g. fn->addFnAttr("hlsl.shader", hlslShaderAttr(stage))). The
+    // spelling coincides with the triple env token.
+    const char* hlslShaderAttr(ShaderStage stage);
+
+    // Create a SPIR-V TargetMachine for `stage` (its per-stage triple). Returns
+    // nullptr if that stage's target env isn't available in this LLVM build.
+    std::unique_ptr<llvm::TargetMachine>
+    createSpirvTargetMachineForStage(ShaderStage stage,
+                                     const std::string& arch = "vulkan1.3");
+
+    // Set the per-stage SPIR-V triple + the TargetMachine's DataLayout on `m`.
+    void configureDeviceModuleForStage(llvm::Module& m, llvm::TargetMachine& tm,
+                                       ShaderStage stage,
+                                       const std::string& arch = "vulkan1.3");
 
     // Emit SPIR-V assembly (disassembly) text for `deviceModule`. GPU-free;
     // what the emit tests grep for OpEntryPoint / OpExecutionMode. Empty on

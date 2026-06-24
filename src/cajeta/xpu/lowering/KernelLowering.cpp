@@ -238,6 +238,26 @@ DeviceStructInfo deviceStructInfo(const CajetaTypePtr& t, llvm::LLVMContext& ctx
             ++idx;
             continue;
         }
+        // A Vector<T,N> / Matrix<T,R,C> field — a flat <N x T> / <R*C x T> by-value
+        // lane aggregate (cajeta-gfx §4.b-rest: a graphics output/varying struct is
+        // {vec4 position, vec2 uv, ...}; also unblocks cajeta.math @ValueType device
+        // parity — Ray/Aabb hold Vector fields). Like a scalar field it has no named
+        // subfields, so `sub` stays empty: component/`[i]` access on the field goes
+        // through the vector/matrix path, not a struct-field walk. Builtin Vector/
+        // Matrix carry PRIMITIVE_FLAG but not VALUE_TYPE_FLAG, so they do NOT take
+        // the nested-@ValueType branch below — they are handled here.
+        if (llvm::Type* vty = deviceVectorType(pt, ctx)) {
+            info.fields[prop->getName()] = {idx, vty, false, {}};
+            ftys.push_back(vty);
+            ++idx;
+            continue;
+        }
+        if (llvm::Type* mty = deviceMatrixType(pt, ctx)) {
+            info.fields[prop->getName()] = {idx, mty, false, {}};
+            ftys.push_back(mty);
+            ++idx;
+            continue;
+        }
         // S5: a nested @ValueType field is itself a flat by-value POD — recurse
         // into a nested device struct and remember its field map for two-level
         // reads. A value-type-containing struct stays POD all the way down.
@@ -676,8 +696,14 @@ private:
             return;
         }
         if (auto rs = std::dynamic_pointer_cast<ReturnStatement>(node)) {
-            // @Kernel returns void; a @Device helper returns its value.
-            if (fn->getReturnType()->isVoidTy() || !rs->getExpression()) {
+            // @Kernel returns void; a @Device helper returns its value; a
+            // graphics @Vertex/@Fragment shader (void main()) writes its result
+            // into an Output interface variable, then ret void (gfx §4.b).
+            if (rs->getExpression() && target.shaderOutputReturn()) {
+                llvm::Value* v = lowerExpr(rs->getExpression());
+                target.storeShaderOutput(builder, mod, fn, v);
+                builder.CreateRetVoid();
+            } else if (fn->getReturnType()->isVoidTy() || !rs->getExpression()) {
                 builder.CreateRetVoid();
             } else {
                 llvm::Value* v = lowerExpr(rs->getExpression());
@@ -5004,6 +5030,20 @@ static std::vector<LoweringTarget::KernelParam> collectParams(
         } else {
             unsupported("kernel parameter type '" +
                         (t ? t->toCanonical() : std::string("?")) + "'");
+        }
+        // @PushConstant (cajeta-gfx §4.b-rest): mark a by-value param so a graphics
+        // stage routes it through its single PushConstant block instead of a
+        // per-vertex interface variable. Only by-value params qualify — a resource
+        // (Buffer/Texture/Image/Sampler/AccelStruct) has no push-constant meaning,
+        // so the flag is left off there (the annotation is silently inert on them in
+        // v1). Backend-neutral here; only SpirvGraphicsTarget consumes the flag.
+        if (!params.empty() &&
+            p->findAnnotation(XpuAttr::PushConstant) != nullptr) {
+            LoweringTarget::KernelParam& last = params.back();
+            if (!last.isBuffer && !last.isTexture && !last.isImage &&
+                !last.isSampler && !last.isAccelStruct && !last.isBufferArray) {
+                last.isPushConstant = true;
+            }
         }
     }
     return params;

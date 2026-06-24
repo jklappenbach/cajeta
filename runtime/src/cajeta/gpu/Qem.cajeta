@@ -1,0 +1,120 @@
+package cajeta.gpu;
+
+import cajeta.math.Matrix;
+
+/**
+ * Qem — the Garland–Heckbert quadric error metric, the math core of the
+ * appearance-preserving edge-collapse mesh simplifier (cajeta-gfx plan §2.a).
+ * Promoted to `cajeta.gpu` because compute, physics, and graphics all consume it
+ * (spec §8.7).
+ *
+ * A quadric IS a `Matrix<float32,4,4>`: the symmetric fundamental error quadric
+ * `Q = Σ p·pᵀ` over the planes `p = (nx, ny, nz, d)` incident to a vertex (with
+ * a unit normal `n`). The squared distance from a homogeneous point `v = (x,y,z,1)`
+ * to all those planes is `error(Q, v) = vᵀ Q v`. Quadrics ACCUMULATE by matrix
+ * addition (`Q = Qa + Qb`), so an edge-collapse merges its endpoints' quadrics by
+ * `+`, and the collapse COST is the merged quadric's error at the chosen position.
+ *
+ * The optimal collapse position minimizes `vᵀ Q v`; setting the gradient to zero
+ * gives the 3×3 linear system `A x = -b`, where `A` is the top-left 3×3 of `Q`
+ * and `b` is the first three entries of its last column. When `A` is singular
+ * (a flat or under-constrained neighborhood) the system has no unique solution,
+ * so `optimalPosition` falls back to a caller-supplied vertex (usually the edge
+ * midpoint) — the standard Garland–Heckbert degeneracy handling.
+ *
+ * A pure static-utility class (no instance state, like {@link cajeta.math.Camera}).
+ *
+ * ```cajeta
+ * Vector<float32,3> n = stack Vector<float32,3>(0.0f, 1.0f, 0.0f);
+ * Matrix<float32,4,4> q = Qem.planeQuadric(n, 0.0f);   // the y=0 plane
+ * float32 e = Qem.error(q, stack Vector<float32,3>(0.0f, 2.0f, 0.0f));  // 4
+ * ```
+ */
+public class Qem {
+
+    /**
+     * The fundamental error quadric of a single plane `n·x + d = 0` (unit `n`):
+     * `K = p·pᵀ` with `p = (n.x, n.y, n.z, d)`. `error(K, v)` is then the squared
+     * signed distance from `v` to the plane.
+     */
+    public static Matrix<float32,4,4> planeQuadric(Vector<float32,3> normal, float32 d) {
+        float32 a = normal.x;
+        float32 b = normal.y;
+        float32 c = normal.z;
+        return stack Matrix<float32,4,4>(
+            a*a, a*b, a*c, a*d,
+            a*b, b*b, b*c, b*d,
+            a*c, b*c, c*c, c*d,
+            a*d, b*d, c*d, d*d);
+    }
+
+    /**
+     * The fundamental error quadric of a triangle `(a, b, c)`: the quadric of
+     * the triangle's supporting plane, with the outward unit normal
+     * `n = normalize((b-a) × (c-a))` and offset `d = -n·a`. Summing the
+     * `faceQuadric`s of every triangle incident to a vertex gives that vertex's
+     * accumulated quadric (the Garland–Heckbert per-vertex error metric); the
+     * collapse cost of an edge is then `edgeCollapseCost` of its endpoints'
+     * accumulated quadrics. Degenerate (zero-area) triangles yield a NaN normal
+     * and should be filtered by the caller.
+     */
+    public static Matrix<float32,4,4> faceQuadric(Vector<float32,3> a,
+                                                  Vector<float32,3> b,
+                                                  Vector<float32,3> c) {
+        Vector<float32,3> e1 = b - a;
+        Vector<float32,3> e2 = c - a;
+        Vector<float32,3> nRaw = e1.cross(e2);
+        Vector<float32,3> n = nRaw.normalize();
+        float32 d = 0.0f - n.dot(a);
+        return Qem.planeQuadric(n, d);
+    }
+
+    /** The quadric error at a point: `vᵀ Q v` with `v = (p.x, p.y, p.z, 1)`. */
+    public static float32 error(Matrix<float32,4,4> q, Vector<float32,3> p) {
+        Vector<float32,4> vh = stack Vector<float32,4>(p.x, p.y, p.z, 1.0f);
+        Vector<float32,4> qv = q * vh;
+        return vh.dot(qv);
+    }
+
+    /**
+     * The position that minimizes `vᵀ Q v` (the appearance-optimal collapse
+     * vertex), solving the 3×3 system `A x = -b`. Returns `fallback` when `A` is
+     * singular (|det| below a small epsilon).
+     */
+    public static Vector<float32,3> optimalPosition(Matrix<float32,4,4> q,
+                                                    Vector<float32,3> fallback) {
+        float32 a00 = q[0][0];
+        float32 a01 = q[0][1];
+        float32 a02 = q[0][2];
+        float32 a11 = q[1][1];
+        float32 a12 = q[1][2];
+        float32 a22 = q[2][2];
+        Matrix<float32,3,3> a = stack Matrix<float32,3,3>(
+            a00, a01, a02,
+            a01, a11, a12,
+            a02, a12, a22);
+        float32 det = a.determinant();
+        if (det < 0.000001f && det > -0.000001f) {
+            return fallback;
+        }
+        float32 b0 = 0.0f - q[0][3];
+        float32 b1 = 0.0f - q[1][3];
+        float32 b2 = 0.0f - q[2][3];
+        Vector<float32,3> b = stack Vector<float32,3>(b0, b1, b2);
+        Matrix<float32,3,3> inv = a.inverse();
+        return inv * b;
+    }
+
+    /**
+     * The Garland–Heckbert cost of collapsing an edge whose endpoints carry
+     * quadrics `qa` and `qb`: the merged quadric's error at the optimal position
+     * (or at `fallback` when the merged quadric is singular).
+     */
+    public static float32 edgeCollapseCost(Matrix<float32,4,4> qa,
+                                           Matrix<float32,4,4> qb,
+                                           Vector<float32,3> fallback) {
+        Matrix<float32,4,4> sum = qa + qb;
+        Vector<float32,3> pos = Qem.optimalPosition(sum, fallback);
+        return Qem.error(sum, pos);
+    }
+}

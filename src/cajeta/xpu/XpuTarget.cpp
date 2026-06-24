@@ -40,6 +40,17 @@ namespace xpu {
         return 0;
     }
 
+    int emitGraphicsRegistration(Backend backend,
+                                 const std::vector<MethodPtr>& shaders,
+                                 llvm::Module& hostModule,
+                                 const std::string& arch) {
+        // Rasterization is a SPIR-V/Vulkan-only capability; the other device
+        // backends have no graphics pipeline, so they simply embed nothing.
+        if (backend == Backend::Spirv)
+            return vulkan::emitGraphicsRegistration(shaders, hostModule, arch);
+        return 0;
+    }
+
     void emitBackendManifest(const std::vector<Backend>& backends,
                              llvm::Module& hostModule) {
         if (backends.empty()) return;

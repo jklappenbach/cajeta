@@ -83,6 +83,14 @@ namespace cajeta {
             }
         }
 
+        // Frame-arena (U3): when set, the outer array header is bump-allocated
+        // from the frame arena (no malloc, no live-set). NewExpression propagates
+        // this from its own arenaEligible flag, which the escape pre-pass sets only
+        // for a non-escaping single-dimension primitive-element array local.
+        bool arenaEligible = false;
+    public:
+        void setArenaEligible(bool v) { arenaEligible = v; }
+
         int getTotalBracketPairs() const { return totalBracketPairs; }
 
         llvm::Value* generateCode(CajetaModulePtr module) override;

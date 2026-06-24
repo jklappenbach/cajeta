@@ -323,7 +323,15 @@ namespace cajeta {
             typeChain.push_back(wrapped);
         }
 
-        llvm::Function* allocFn = module->getRuntimeFunction("__cajeta_new_array_header");
+        // U3: a non-escaping single-dimension primitive-element array routes its
+        // header through the frame arena (no malloc, no live-set, no drop entry);
+        // the scope-exit reset reclaims it. The escape pre-pass only sets
+        // arenaEligible when totalBracketPairs==1 and the element is primitive, so
+        // there are no inner sub-allocations to worry about. Multi-dim / class-
+        // element creators keep the heap allocator.
+        bool useArena = arenaEligible && totalBracketPairs == 1;
+        llvm::Function* allocFn = module->getRuntimeFunction(
+            useArena ? "__cajeta_new_array_header_arena" : "__cajeta_new_array_header");
         if (!allocFn) {
             return nullptr;
         }

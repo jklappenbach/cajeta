@@ -56,39 +56,33 @@ int64_t observeDropCount(const std::string& body) {
 
 } // namespace
 
-// Post Phase 2b-γ: `+` on class String operands extracts each
-// receiver's `.bytes.data`, calls `__cajeta_str_concat` for the
-// byte work, and re-wraps the malloc'd char* into a fresh class
-// String shell. Both the byte-buffer and the shell are heap-
-// allocated, but `cajeta.lang.String` follows the universal
-// never-drop rule — String drops are skipped entirely in
-// LocalVariableDeclaration. The live-allocation set still owns
-// the buffer + shell at scope exit; revisit only if buffer
-// reclamation becomes a measured hotspot.
+// A non-escaping concat result is bump-allocated from the frame arena
+// (frame-arena-plan U2): the escape pre-pass proves `result` never leaves the
+// scope, so the concat wrapper/bytes come from the arena and are reclaimed by
+// the scope-exit reset — NO individual drop entry is registered, so the count
+// stays 0. (This is the arena path, not the retired never-drop rule; an
+// *escaping* owned concat would instead register a drop, like substring below.)
 TEST(OwnedStringDropTests, concatResultDoesNotDrop_neverDropRule) {
     EXPECT_EQ(observeDropCount(
         "String result = \"hello\" + \" world\";"
     ), 0);
 }
 
-// substring (and toUpperCase / trim / replace below) now route through
-// the class-String stdlib body: an `int8[] out = heap int8[len]` then
-// `return heap String(#out, len)`. The `#out` transfer hands the
-// freshly-allocated buffer to the returned String, which the never-drop
-// rule keeps alive for the rest of the process. The local `out`'s drop
-// entry is marked inactive at the transfer site, so the substring
-// method's scope exit doesn't fire a drop either. Count stays 0 — same
-// reasoning as concatResultDoesNotDrop_neverDropRule above. Reclaiming
-// these buffers is a follow-up tied to the String never-drop revisit
-// (docs/specification/lang/String.md § Memory model).
+// substring / toUpperCase return a freshly-allocated owned (mode 0) class
+// String. Since the mode-aware String drop landed (the never-drop rule was
+// retired — see String.md § Memory model), an owned-String local registers a
+// drop entry that fires at scope exit and frees its bytes, so the count is
+// nonzero. (Contrast concatResultDoesNotDrop_neverDropRule above, which stays 0
+// only because the non-escaping concat result is bump-allocated from the frame
+// arena and reclaimed by the scope reset instead of an individual drop.)
 TEST(OwnedStringDropTests, substringResultDropsAtScopeExit) {
-    EXPECT_EQ(observeDropCount(
+    EXPECT_GT(observeDropCount(
         "String result = \"hello world\".substring(0, 5);"
     ), 0);
 }
 
 TEST(OwnedStringDropTests, toUpperCaseResultDropsAtScopeExit) {
-    EXPECT_EQ(observeDropCount(
+    EXPECT_GT(observeDropCount(
         "String result = \"hello\".toUpperCase();"
     ), 0);
 }

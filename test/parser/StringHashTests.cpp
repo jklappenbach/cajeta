@@ -4,12 +4,11 @@
 // same value, so Object.operator== (which compares hashes) gives value
 // equality for free — String does NOT override operator==, only hash().
 //
-// Empty / null-bytes / distinct-content cases pinned here. Algorithm
-// in v1 is FNV-1a (pure Cajeta); the runtime already has XXH3-64
-// (`__cajeta_hash_bytes`) but exposing it to Cajeta requires
-// int8[]→uint8_t* bridging that hasn't landed yet. FNV-1a is a stable,
-// content-deterministic hash adequate for value equality — the DoS
-// defense layer (seed-mix) is a follow-up.
+// Empty / null-bytes / distinct-content cases pinned here. Algorithm is now
+// XXH3-64 (seeded), via the `Cajeta.hashBytes` intrinsic over the String's
+// bytes — multi-GB/s and DoS-resistant. Tests assert the content-hash
+// SEMANTICS (determinism, same-content-same-hash) rather than any specific
+// constant, so they stay valid across hash-algorithm changes.
 
 #include <gtest/gtest.h>
 #include "../jit/JitTestHelper.h"
@@ -110,15 +109,16 @@ TEST(StringHashTests, emptyStringHashesDeterministic) {
         "package test;\n"
         "import cajeta.lang.String;\n"
         "public final class D {\n"
-        "    public static int64 run() {\n"
+        "    public static int32 run() {\n"
         "        String s1 = heap String();\n"  // default ctor: bytes=null, len=0
         "        String s2 = heap String();\n"
-        "        if (s1.hash() == s2.hash()) return s1.hash();\n"
-        "        return -1;\n"
+        "        if (s1.hash() == s2.hash()) return 1;\n"  // deterministic across instances
+        "        return 0;\n"
         "    }\n"
         "}\n";
-    // FNV-1a offset basis 0xCBF29CE484222325, signed-interpreted.
-    EXPECT_EQ(runI64(src), (int64_t) 0xCBF29CE484222325ULL);
+    // Two independently default-constructed empty Strings hash identically
+    // (algorithm-agnostic — XXH3's len==0 path is a stable seed-derived value).
+    EXPECT_EQ(runI32(src), 1);
 }
 
 // End-to-end: two distinct Strings with identical content compare ==

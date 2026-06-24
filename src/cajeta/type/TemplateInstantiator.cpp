@@ -744,6 +744,16 @@ namespace cajeta {
         // must already be in place.
         auto inst = make_shared<CajetaClass>(module, instQName, instExtended, instImplemented);
         if (emitOwner != module) inst->setEmitModule(emitOwner);
+        // Carry the template's class-level annotations onto the instantiation —
+        // they describe the class shape, which the instantiation shares (e.g.
+        // @ValueType Entry<K,V> -> Entry<int32,int32> must also be a by-value POD,
+        // so generatePrototype below sets VALUE_TYPE_FLAG and the entry stores
+        // inline in arrays instead of boxing). The instantiation body is walked
+        // via visitClassBody, which never re-runs the visitClassDeclaration
+        // annotation handling, so this transfer is the only path.
+        for (auto& ann : this->getAnnotationInstances()) {
+            inst->addAnnotationInstance(ann);
+        }
         inst->setQImplementedTypeArgs(std::move(instImplementedTypeArgs));
         inst->setTypeParameters(typeParameters);   // retained for debugging / introspection
         inst->setTypeArguments(args);

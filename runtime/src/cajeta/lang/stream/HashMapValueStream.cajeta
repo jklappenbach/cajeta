@@ -21,8 +21,8 @@ package cajeta.lang.stream;
  * OCCUPIED).
  */
 public class HashMapValueStream<K, V> extends Stream<V> implements Splittable<V> {
-    V[] vals;
-    int8[] state;
+    MapEntry<K, V>[] slots;
+    int8[] ctrl;
     int64 cap;
     int64 idx;
 
@@ -37,9 +37,9 @@ public class HashMapValueStream<K, V> extends Stream<V> implements Splittable<V>
      * #Stream<V> s = heap HashMapValueStream<K, V>(vals, state, cap);
      * ```
      */
-    public HashMapValueStream(V[] vals, int8[] state, int64 cap) {
-        this.vals = vals;
-        this.state = state;
+    public HashMapValueStream(MapEntry<K, V>[] slots, int8[] ctrl, int64 cap) {
+        this.slots = slots;
+        this.ctrl = ctrl;
         this.cap = cap;
         this.idx = 0;
     }
@@ -51,8 +51,8 @@ public class HashMapValueStream<K, V> extends Stream<V> implements Splittable<V>
      */
     public Optional<V> next() {
         while (this.idx < this.cap) {
-            if (this.state[this.idx] == 1) {
-                V v = this.vals[this.idx];
+            if (this.ctrl[this.idx] >= (int8) 0) {   // FULL: top bit clear
+                V v = this.slots[this.idx].val;
                 this.idx = this.idx + 1;
                 return stack Optional<V>(true, #v);
             }
@@ -71,7 +71,7 @@ public class HashMapValueStream<K, V> extends Stream<V> implements Splittable<V>
             return null;
         }
         int64 mid = this.idx + remaining / 2L;
-        HashMapValueStream<K, V> upper = heap HashMapValueStream<K, V>(this.vals, this.state, this.cap);
+        HashMapValueStream<K, V> upper = heap HashMapValueStream<K, V>(this.slots, this.ctrl, this.cap);
         upper.idx = mid;
         this.cap = mid;
         return upper;

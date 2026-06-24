@@ -37,11 +37,11 @@ public class HashMapStringBench extends Benchmark {
     }
 
     public void run(int32 iterations) {
-        HashMap<String, int32> m = heap HashMap<String, int32>(64);
+        HashMap<String, int32> m = heap HashMap<String, int32>(65536);
         int32 i = 0;
         while (i < this.n) {
             String k = "key" + i;
-            m.put(k, i);
+            m.put(#k, i);
             i = i + 1;
         }
         int64 h = 0;

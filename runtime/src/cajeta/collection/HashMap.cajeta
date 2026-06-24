@@ -1,343 +1,369 @@
 package cajeta.collection;
 
 /**
- * Hash-based map from keys to values.
+ * Hash-based map from keys to values, backed by a SwissTable (SSE2-style open
+ * addressing with SIMD metadata probing) over a DENSE entry array.
  *
  * ## Usage
  *
- * Construct on the heap with a power-of-2 initial capacity, then
- * insert and look up. `K` may be a class type or a primitive; `V`
- * likewise — no boxing either way.
- *
  * ```cajeta
- * // K is a class type (Tag); V is the primitive int32.
  * #HashMap<Tag, int32> counts = heap HashMap<Tag, int32>(16);
- *
- * counts.put(tag, 1);              // insert
- * counts[tag] = counts[tag] + 1;   // subscript sugar over get / put
- *
+ * counts.put(tag, 1);
+ * counts[tag] = counts[tag] + 1;       // subscript sugar over get / put
  * if (counts.containsKey(tag)) {
- *     int32 n = counts.get(tag);   // null/0 on miss — see get()
+ *     int32 n = counts.get(tag);       // null/0 on miss — see get()
  * }
- *
- * counts.remove(tag);              // leaves a reusable tombstone
- *
- * // Stream the live entries (snapshot; slot-walk order):
+ * counts.remove(tag);
  * #Stream<Pair<Tag, int32>> es = counts.entries();
  * ```
  *
- * The stream views (`Stream` of keys, values, or `Pair` entries)
- * are snapshots — see `keys()`, `values()`, `entries()`.
- *
  * ## Hashing and equality
  *
- * `HashMap` uses two contracts on the key type `K`:
+ * - **`key.hash()`** indexes the table. Class K defaults to the identity hash
+ *   from `cajeta.lang.Object`; override `hash()` (or apply `@AutoHash`) for
+ *   value-keyed semantics — and then also override `==`, which decides equality
+ *   within a probe.
+ * - Primitive K lowers `.hash()` to a `__cajeta_hash_X` runtime helper; both
+ *   `HashMap<Tag,int32>` and `HashMap<int32,V>` work without boxing.
  *
- * - **`key.hash()`** for the bucket index. By default this is the
- *   identity hash inherited from `cajeta.lang.Object.hash()` — so
- *   two distinct instances of the same class are different keys
- *   even if their fields match. Override `hash()` on `K` (or apply
- *   the planned `@AutoHash` annotation) for value-keyed semantics.
- * - **`==` on keys** for equality within a bucket. For class types
- *   this is pointer identity; if you override `hash()` for value
- *   semantics you must also override `==` so equal keys compare
- *   equal — the contract HashMap relies on.
+ * **Views are NOT allowed as K or V** — the `MapEntry<K,V>` fields would become
+ * arrays-of-view (`CAJETA_ERROR_VIEW_AS_CLASS_FIELD`).
  *
- * ## K may be class OR primitive
+ * ## Storage: dense SwissTable
  *
- * Class-typed K uses the class's `hash()` method (identity by
- * default; `@AutoHash` synthesizes value-based). Primitive-typed K
- * (int8/16/32/64/uint8/16/32/64/float/double/boolean/char) lowers
- * `.hash()` to one of the `__cajeta_hash_X` runtime helpers via a
- * compiler intrinsic — see `MethodCallExpression`'s primitive-
- * receiver `.hash()` branch. Both `HashMap<Tag, int32>` and
- * `HashMap<int32, V>` (and mixes) work without boxing.
+ * One `MapEntry<K,V>[] slots` array (each element an inline `{key, val}` value
+ * struct) plus a `ctrl` metadata array, one control byte per slot: `EMPTY`
+ * (0x80), `DELETED` (0xFE), or a 7-bit hash fragment `h2` in [0,127] (top bit
+ * clear) for a FULL slot. `ctrl` is `cap + 16` long; the last 16 bytes mirror
+ * the first 16 so a 16-wide group load starting at any slot reads a valid window.
  *
- * **Views are NOT allowed as K or V.** Views are buffer overlays
- * with borrowed lifetime — see `docs/specification/lang/Views.md`. A
- * `HashMap<MyView, X>` or `HashMap<X, MyView>` instantiation
- * triggers `CAJETA_ERROR_VIEW_AS_CLASS_FIELD` at compile time
- * (the `K[] keys` or `V[] vals` field becomes an array-of-view,
- * which can't safely outlive the views' buffers). Workaround:
- * store the underlying `byte[]` and construct the view per access.
+ * A lookup loads 16 control bytes at once (`Cajeta.vload16`) and compares all of
+ * them to `h2` with one SIMD op (`eqMask`); set bits are the slots worth a full
+ * key compare. Because key and value live together in one `slots[i]` element, a
+ * confirmed probe touches just two cache lines (the `ctrl` group + the entry),
+ * the dense abseil/ankerl layout. A group containing an `EMPTY` byte ends the
+ * probe. Probing advances by groups of 16 with a triangular stride, which visits
+ * every slot for a power-of-two capacity.
  *
- * ## Storage, probing, and tombstones
+ * `cap` is a power of two `>= 16` (the constructor rounds up). The table doubles
+ * when non-empty slots (FULL + DELETED) exceed 0.75 of `cap`; a resize rebuilds
+ * into a fresh table and clears tombstones. `remove` leaves a `DELETED` tombstone
+ * that `put` reuses and `get` probes past.
  *
- * Open addressing with linear probing — no entry chain, no
- * indirection through a heap-allocated bucket list. Three parallel
- * heap arrays at the same length: `keys`, `vals`, `state`.
- *
- * The `state` array tracks each slot's lifecycle: `EMPTY` (never
- * written, or freshly allocated), `OCCUPIED` (holds a live entry),
- * `TOMBSTONE` (held an entry that was removed). Tombstones are
- * needed because a deleted entry can't simply revert to `EMPTY`
- * without breaking lookup: a probe walking past a slot needs to
- * know whether to continue (a real key might live further along
- * because of an earlier collision at this slot) or stop. Tombstones
- * say "continue, but this slot is reusable."
- *
- * `put` opportunistically reuses the first tombstone it walks past
- * when inserting a new key, keeping the table compact across remove
- * + insert cycles. `get` / `containsKey` walk past tombstones
- * transparently.
- *
- * Capacity is **power-of-2**; the bucket index is
- * `hash(key) & (capacity - 1)`. Faster than `% capacity`, equivalent
- * distribution given a well-mixed hash. **Caller picks the initial
- * capacity**; the table auto-grows when the load factor (counting
- * tombstones, since they cost probe steps too) exceeds 0.75. Each
- * resize doubles capacity and reinserts every live entry into a
- * fresh table — that pass also clears tombstones, so a workload
- * that thrashes on `remove` + `put` eventually compacts.
- *
- * ## Missing in v1
- *
- * - **Iterator over entries** — needs `cajeta.collection.Iterator<T>`,
- *   not in place yet.
- * - **Primitive K** — see "v1 constraint" above.
- *
+ * @See cajeta.collection.MapEntry
  * @See cajeta.lang.Object
- * @See cajeta.hash.Hash
  */
 public final class HashMap<K, V> {
 
-    // Slot states. Inlined as integer literals at the call sites
-    // because cajeta lacks `const` / `enum` for class-level constants
-    // today — the comments name them.
-    //   0 = EMPTY      (never written, or freshly allocated)
-    //   1 = OCCUPIED   (live entry: keys[i] and vals[i] are valid)
-    //   2 = TOMBSTONE  (deleted entry: probe past, but slot is reusable)
+    // Control-byte sentinels (the rest of [0,127] are FULL h2 fragments):
+    //   EMPTY   = 0x80 (-128)  never written / freshly cleared; ends a probe
+    //   DELETED = 0xFE   (-2)  removed entry; probe past, slot is reusable
+    // FULL slots have the top bit clear (>= 0 as signed int8).
 
-    /** Parallel storage: K bucket, V bucket, slot lifecycle. */
-    private K[] keys;
-    private V[] vals;
-    private int8[] state;
+    // Dense entry storage: one inline {key, val} struct per slot.
+    private MapEntry<K, V>[] slots;
+    // Per-slot ownership bits for entries the map TOOK via `#` transfer and must
+    // drop: bit0 = key owned, bit1 = val owned. Borrowed entries (plain `put`)
+    // leave 0 and are never dropped. Parallel to slots; length cap.
+    private int8[] owned;
+    // Control bytes: length cap + 16. ctrl[cap+i] mirrors ctrl[i] for i in [0,16)
+    // so a group load near the end never overruns.
+    private int8[] ctrl;
     private int64 cap;
     private int64 sizeCount;
-    // Number of slots that aren't EMPTY (OCCUPIED + TOMBSTONE). Both
-    // cost probe steps, so resize decisions count both. sizeCount
-    // alone would let a thrash-on-remove workload accumulate
-    // tombstones until probes are linear; this counter triggers
-    // the rebuild.
+    // Non-empty slots (FULL + DELETED). Both consume probe steps, so the resize
+    // trigger counts both; a remove-heavy workload thus still compacts (on resize).
     private int64 usedSlots;
 
     /**
-     * Construct a new HashMap with the given initial capacity.
-     *
-     * ```cajeta
-     * // initialCapacity must be a power of 2:
-     * #HashMap<int32, Account> byId = heap HashMap<int32, Account>(64);
-     * ```
-     *
-     * @Param initialCapacity number of buckets to allocate; **must
-     *        be a power of 2** (the mask-based index doesn't work
-     *        otherwise). v1 doesn't validate this. The table grows
-     *        from here as entries are added.
+     * Construct a HashMap. `initialCapacity` is rounded up to a power of two
+     * `>= 16`; the table grows from there at 0.75 load.
      */
     public HashMap(int64 initialCapacity) {
-        this.cap = initialCapacity;
-        this.keys = heap K[initialCapacity];
-        this.vals = heap V[initialCapacity];
-        this.state = heap int8[initialCapacity];
+        int64 c = 16;
+        while (c < initialCapacity) {
+            c = c * 2;
+        }
+        this.cap = c;
+        this.slots = heap MapEntry<K, V>[c];
+        this.ctrl = heap int8[c + 16];
+        this.owned = heap int8[c];   // calloc 0 = nothing owned yet
         this.sizeCount = 0;
         this.usedSlots = 0;
+        this.fillCtrlEmpty();
+    }
+
+    // Fill the whole ctrl array (slots + mirror) with EMPTY (0x80). The 8-byte
+    // word store handles the bulk; cap+16 is a multiple of 8 so the tail rarely
+    // runs, but it stays for safety.
+    @Inline
+    private void fillCtrlEmpty() {
+        int64 n = this.cap + 16;
+        int64 word = (int64) 0x8080808080808080;
+        int64 k = 0;
+        while (k + 8 <= n) {
+            Cajeta.storeU64(this.ctrl, k, word);
+            k = k + 8;
+        }
+        while (k < n) {
+            this.ctrl[k] = (int8) 0x80;
+            k = k + 1;
+        }
+    }
+
+    // Write control byte `b` at slot `i`, mirroring into the cloned tail when the
+    // slot is one of the first 16.
+    @Inline
+    private void setCtrl(int64 i, int8 b) {
+        this.ctrl[i] = b;
+        if (i < 16) {
+            this.ctrl[this.cap + i] = b;
+        }
     }
 
     /**
      * Insert or replace the value at `key`.
-     *
-     * @Param key the key. Hashed once via `key.hash()`.
-     * @Param value the value to associate with `key`.
      */
     public void put(K key, V value) {
+        // Ownership taken via `#` (read once at entry, before any other call):
+        // bit0 = key, bit1 = val. Plain (borrow) calls read 0.
+        int64 mvm = Cajeta.moveMask();
+        boolean keyOwned = (mvm & 1) != 0;
+        boolean valOwned = (mvm & 2) != 0;
+        int8 ownBits = (int8) (mvm & 3);
         int64 h = key.hash();
-        int64 idx = h & (this.cap - 1);
-        int64 firstTombstone = -1;
-        // Probe until we hit an EMPTY slot. Along the way:
-        //   - OCCUPIED slot with matching key → replace, done.
-        //   - TOMBSTONE → remember the first one we see; if we
-        //     eventually hit EMPTY without finding the key, we'll
-        //     insert at the tombstone (compacts the table).
-        while (this.state[idx] != 0) {
-            if (this.state[idx] == 1) {
-                if (this.keys[idx] == key) {
-                    this.vals[idx] = value;
+        int64 mask = this.cap - 1;
+        int8 h2 = (int8) ((h >> 57) & 0x7F);
+        int64 pos = h & mask;
+        int64 stride = 0;
+        int64 insertAt = -1;
+        boolean searching = true;
+        while (searching) {
+            Vector<int8,16> g = Cajeta.vload16(this.ctrl, pos);
+            int32 mm = g.eqMask(h2);
+            while (mm != 0) {
+                int64 i = (pos + Cajeta.ctz64((int64) (mm & 65535))) & mask;
+                if (this.slots[i].key == key) {
+                    // Replace: drop the old owned value, keep the existing key.
+                    if ((this.owned[i] & 2) != 0) {
+                        Cajeta.dropValue(this.slots[i].val);
+                    }
+                    this.slots[i].val = value;
+                    // The new key duplicates the stored one; drop it if we took it.
+                    if (keyOwned) {
+                        Cajeta.dropValue(key);
+                    }
+                    if (valOwned) {
+                        this.owned[i] = (int8) (this.owned[i] | 2);
+                    } else {
+                        this.owned[i] = (int8) (this.owned[i] & 1);
+                    }
                     return;
                 }
-            } else {
-                // state == 2 (TOMBSTONE)
-                if (firstTombstone == -1) {
-                    firstTombstone = idx;
+                mm = mm & (mm - 1);
+            }
+            int32 emptyM = g.eqMask((int8) 0x80) & 65535;
+            // First empty-or-deleted slot on the probe is the insert candidate;
+            // reusing a tombstone keeps the table compact across remove + put.
+            if (insertAt == -1) {
+                int32 free = emptyM | (g.eqMask((int8) 0xFE) & 65535);
+                if (free != 0) {
+                    insertAt = (pos + Cajeta.ctz64((int64) free)) & mask;
                 }
             }
-            idx = (idx + 1) & (this.cap - 1);
+            // An EMPTY in the group proves the key is absent (a real key would
+            // have landed before any empty on its probe chain).
+            if (emptyM != 0) {
+                searching = false;
+            } else {
+                stride = stride + 16;
+                pos = (pos + stride) & mask;
+            }
         }
-        // Reached EMPTY. Prefer the first tombstone if any —
-        // compacting the table across remove + put cycles.
-        int64 insertAt = idx;
-        boolean reusingTombstone = false;
-        if (firstTombstone != -1) {
-            insertAt = firstTombstone;
-            reusingTombstone = true;
-        }
-        this.keys[insertAt] = key;
-        this.vals[insertAt] = value;
-        this.state[insertAt] = 1;
+        boolean wasEmpty = (this.ctrl[insertAt] == (int8) 0x80);
+        this.slots[insertAt].key = key;
+        this.slots[insertAt].val = value;
+        this.owned[insertAt] = ownBits;
+        this.setCtrl(insertAt, h2);
         this.sizeCount = this.sizeCount + 1;
-        // usedSlots only grows when we claim a fresh EMPTY slot;
-        // reusing a tombstone repurposes a slot that was already
-        // counted.
-        if (reusingTombstone == false) {
+        // Reusing a DELETED slot doesn't consume a fresh empty, so usedSlots
+        // (the growth driver) only moves when we claim an EMPTY slot.
+        if (wasEmpty) {
             this.usedSlots = this.usedSlots + 1;
-        }
-        // Auto-grow at 0.75 load factor (usedSlots * 4 > cap * 3,
-        // using the multiplied form to avoid integer-division
-        // rounding). Triggers after the insert so the threshold
-        // reflects the table's current state.
-        if (this.usedSlots * 4 > this.cap * 3) {
-            this.resize();
+            if (this.usedSlots * 4 > this.cap * 3) {
+                this.resize();
+            }
         }
     }
 
     /**
-     * Double the capacity and reinsert every live entry. Clears all
-     * tombstones in the process (the new table starts EMPTY). Called
-     * from `put` when the load factor exceeds 0.75. Public surface
-     * doesn't observe it directly — only the side effect (lookups
-     * stay O(1) average even as the map grows).
-     *
-     * Implementation strategy: allocate the new arrays into locals,
-     * walk `this.keys / vals / state` (the OLD arrays, still
-     * reachable through `this`) to rebuild into the locals, then
-     * publish the locals onto `this`. Avoids the local-of-class-
-     * field-pointer pattern, which interacts awkwardly with
-     * cajeta's drop chain (the local's scope-exit drop would race
-     * with the field reassignment).
+     * Double the capacity, reinsert every FULL entry into a fresh EMPTY table,
+     * and drop all tombstones. Published onto `this` via `#` ownership transfer
+     * (without it the locals' scope-exit drop would free the live buffers).
      */
     @NoInline
     private void resize() {
         int64 oldCap = this.cap;
         int64 newCap = oldCap * 2;
-        K[] newKeys = heap K[newCap];
-        V[] newVals = heap V[newCap];
-        int8[] newState = heap int8[newCap];
-        int64 newSize = 0;
-        int64 i = 0;
-        while (i < oldCap) {
-            if (this.state[i] == 1) {
-                // Inline insert into the new table. No tombstones
-                // exist yet; every probe terminates at an EMPTY
-                // slot. No duplicate-key check needed either — old
-                // slots are already unique by construction.
-                K k = this.keys[i];
-                V v = this.vals[i];
-                int64 h = k.hash();
-                int64 idx = h & (newCap - 1);
-                while (newState[idx] != 0) {
-                    idx = (idx + 1) & (newCap - 1);
-                }
-                newKeys[idx] = k;
-                newVals[idx] = v;
-                newState[idx] = 1;
-                newSize = newSize + 1;
-            }
-            i = i + 1;
+        int64 newMask = newCap - 1;
+        MapEntry<K, V>[] newSlots = heap MapEntry<K, V>[newCap];
+        int8[] newCtrl = heap int8[newCap + 16];
+        int8[] newOwned = heap int8[newCap];
+        int64 nlen = newCap + 16;
+        int64 word = (int64) 0x8080808080808080;
+        int64 k = 0;
+        while (k + 8 <= nlen) {
+            Cajeta.storeU64(newCtrl, k, word);
+            k = k + 8;
         }
-        // Publish the rebuilt table onto `this` via `#` (ownership
-        // transfer). Without `#`, the locals' scope-exit drop chain
-        // fires `__cajeta_free_array` on the new buffers right
-        // after we hand them to `this`, leaving the map pointing at
-        // freed memory and turning the next probe into an infinite
-        // loop (garbage `state` bytes are unlikely to be EMPTY=0).
-        this.keys = #newKeys;
-        this.vals = #newVals;
-        this.state = #newState;
+        while (k < nlen) {
+            newCtrl[k] = (int8) 0x80;
+            k = k + 1;
+        }
+        int64 newSize = 0;
+        int64 s = 0;
+        while (s < oldCap) {
+            int8 c = this.ctrl[s];
+            if (c >= (int8) 0) {   // FULL: reinsert (all keys unique, no eq check)
+                K kk = this.slots[s].key;
+                V vv = this.slots[s].val;
+                int64 h = kk.hash();
+                int8 h2 = (int8) ((h >> 57) & 0x7F);
+                int64 pos = h & newMask;
+                int64 stride = 0;
+                boolean placing = true;
+                while (placing) {
+                    Vector<int8,16> g = Cajeta.vload16(newCtrl, pos);
+                    int32 emptyM = g.eqMask((int8) 0x80) & 65535;
+                    if (emptyM != 0) {
+                        int64 i = (pos + Cajeta.ctz64((int64) emptyM)) & newMask;
+                        newSlots[i].key = kk;
+                        newSlots[i].val = vv;
+                        newOwned[i] = this.owned[s];   // carry ownership across resize
+                        newCtrl[i] = h2;
+                        if (i < 16) {
+                            newCtrl[newCap + i] = h2;
+                        }
+                        newSize = newSize + 1;
+                        placing = false;
+                    } else {
+                        stride = stride + 16;
+                        pos = (pos + stride) & newMask;
+                    }
+                }
+            }
+            s = s + 1;
+        }
+        this.slots = #newSlots;
+        this.ctrl = #newCtrl;
+        this.owned = #newOwned;
         this.cap = newCap;
         this.sizeCount = newSize;
         this.usedSlots = newSize;
     }
 
     /**
-     * Retrieve the value at `key`, or null/zero if absent.
-     *
-     * Use `containsKey` to distinguish "absent" from "present but
-     * the stored value is null/0."
-     *
-     * @Param key the key to look up. Hashed once via `key.hash()`.
-     * @returns the value associated with `key`, or null/0 if not present.
+     * Retrieve the value at `key`, or null/zero if absent. Use `containsKey` to
+     * distinguish "absent" from "present but stored null/0".
      */
     public V get(K key) {
         int64 h = key.hash();
-        int64 idx = h & (this.cap - 1);
-        // Walk past TOMBSTONE (state==2) slots; stop only at EMPTY
-        // (state==0). A matching OCCUPIED key (state==1) wins.
-        while (this.state[idx] != 0) {
-            if (this.state[idx] == 1) {
-                if (this.keys[idx] == key) {
-                    return this.vals[idx];
+        int64 mask = this.cap - 1;
+        int8 h2 = (int8) ((h >> 57) & 0x7F);
+        int64 pos = h & mask;
+        int64 stride = 0;
+        boolean searching = true;
+        while (searching) {
+            Vector<int8,16> g = Cajeta.vload16(this.ctrl, pos);
+            int32 mm = g.eqMask(h2);
+            while (mm != 0) {
+                int64 i = (pos + Cajeta.ctz64((int64) (mm & 65535))) & mask;
+                if (this.slots[i].key == key) {
+                    return this.slots[i].val;
                 }
+                mm = mm & (mm - 1);
             }
-            idx = (idx + 1) & (this.cap - 1);
+            if ((g.eqMask((int8) 0x80) & 65535) != 0) {
+                searching = false;
+            } else {
+                stride = stride + 16;
+                pos = (pos + stride) & mask;
+            }
         }
-        // Miss-path default. Cajeta lacks a generic "zero of V"
-        // literal that works for both primitive V (where it should
-        // be 0) and class V (where it should be null) — `return 0;`
-        // breaks class-V (`ret i64 0` vs `ptr`); `return null;` breaks
-        // primitive-V (`ret ptr null` vs `i32`). The V[1] trick gets
-        // both: a fresh single-element V array is zero-initialized
-        // (null for class V, 0 for primitive V) and element 0 has
-        // the right LLVM type already. The array drops at scope exit
-        // via the drop chain — no escape because we only read the
-        // element. Callers that need to disambiguate "absent" from
-        // "present-and-null/zero" should use containsKey() first.
+        // Miss default: a fresh single-element V array is zero-initialized (null
+        // for class V, 0 for primitive V) with the right LLVM element type.
         V[] missDefault = heap V[1];
         return missDefault[0];
     }
 
     /**
-     * Test whether `key` is present in the map.
-     *
-     * @Param key the key to test.
-     * @returns true iff `key` was previously inserted via `put`
-     *          and not subsequently removed.
+     * Test whether `key` is present.
      */
     public boolean containsKey(K key) {
         int64 h = key.hash();
-        int64 idx = h & (this.cap - 1);
-        while (this.state[idx] != 0) {
-            if (this.state[idx] == 1) {
-                if (this.keys[idx] == key) {
+        int64 mask = this.cap - 1;
+        int8 h2 = (int8) ((h >> 57) & 0x7F);
+        int64 pos = h & mask;
+        int64 stride = 0;
+        boolean searching = true;
+        while (searching) {
+            Vector<int8,16> g = Cajeta.vload16(this.ctrl, pos);
+            int32 mm = g.eqMask(h2);
+            while (mm != 0) {
+                int64 i = (pos + Cajeta.ctz64((int64) (mm & 65535))) & mask;
+                if (this.slots[i].key == key) {
                     return true;
                 }
+                mm = mm & (mm - 1);
             }
-            idx = (idx + 1) & (this.cap - 1);
+            if ((g.eqMask((int8) 0x80) & 65535) != 0) {
+                searching = false;
+            } else {
+                stride = stride + 16;
+                pos = (pos + stride) & mask;
+            }
         }
         return false;
     }
 
     /**
-     * Remove the entry at `key`.
+     * Remove the entry at `key`, leaving a `DELETED` tombstone (probed past by
+     * lookups, reused by a later `put`).
      *
-     * Leaves a tombstone in the slot so subsequent probes still
-     * traverse past it correctly. The tombstone is reusable by a
-     * future `put` whose probe reaches it before an `EMPTY` slot.
-     *
-     * @Param key the key to remove. Hashed once via `key.hash()`.
-     * @returns true iff `key` was present and removed; false if
-     *          no such key was in the map.
+     * @returns true iff `key` was present.
      */
     public boolean remove(K key) {
         int64 h = key.hash();
-        int64 idx = h & (this.cap - 1);
-        while (this.state[idx] != 0) {
-            if (this.state[idx] == 1) {
-                if (this.keys[idx] == key) {
-                    this.state[idx] = 2;
+        int64 mask = this.cap - 1;
+        int8 h2 = (int8) ((h >> 57) & 0x7F);
+        int64 pos = h & mask;
+        int64 stride = 0;
+        boolean searching = true;
+        while (searching) {
+            Vector<int8,16> g = Cajeta.vload16(this.ctrl, pos);
+            int32 mm = g.eqMask(h2);
+            while (mm != 0) {
+                int64 i = (pos + Cajeta.ctz64((int64) (mm & 65535))) & mask;
+                if (this.slots[i].key == key) {
+                    if ((this.owned[i] & 1) != 0) {
+                        Cajeta.dropValue(this.slots[i].key);
+                    }
+                    if ((this.owned[i] & 2) != 0) {
+                        Cajeta.dropValue(this.slots[i].val);
+                    }
+                    this.owned[i] = (int8) 0;
+                    this.setCtrl(i, (int8) 0xFE);
                     this.sizeCount = this.sizeCount - 1;
                     return true;
                 }
+                mm = mm & (mm - 1);
             }
-            idx = (idx + 1) & (this.cap - 1);
+            if ((g.eqMask((int8) 0x80) & 65535) != 0) {
+                searching = false;
+            } else {
+                stride = stride + 16;
+                pos = (pos + stride) & mask;
+            }
         }
         return false;
     }
@@ -347,65 +373,53 @@ public final class HashMap<K, V> {
         return this.sizeCount;
     }
 
+    // Drop the keys/values the map OWNS (took via `#`). Runs before the auto
+    // field-drops free the slots/ctrl/owned buffers. Borrowed entries (owned
+    // bit clear) are left alone — their lifetime belongs to the caller.
+    ~HashMap() {
+        int64 k = 0;
+        while (k < this.cap) {
+            if (this.ctrl[k] >= (int8) 0) {   // FULL slot
+                if ((this.owned[k] & 1) != 0) {
+                    Cajeta.dropValue(this.slots[k].key);
+                }
+                if ((this.owned[k] & 2) != 0) {
+                    Cajeta.dropValue(this.slots[k].val);
+                }
+            }
+            k = k + 1;
+        }
+    }
+
     // ----- Subscript-syntax sugar over get/put -------------------------
 
-    /**
-     * Subscript-read syntax: `v = m[key]` dispatches here. Delegates
-     * to `get`. Returns null/0 on miss; use `containsKey` to
-     * disambiguate "absent" from "present-and-null".
-     *
-     * @Param key the key. Hashed once via `key.hash()`.
-     * @returns the value associated with `key`, or null/0.
-     */
+    /** Subscript read: `v = m[key]` → `get(key)`. */
     public V operator[] (K key) {
         return this.get(key);
     }
 
-    /**
-     * Subscript-write syntax: `m[key] = value` dispatches here.
-     * Delegates to `put`. Replaces any existing value bound to a
-     * `==`-equal key.
-     *
-     * @Param key the key. Hashed once via `key.hash()`.
-     * @Param value the value to associate with `key`.
-     */
+    /** Subscript write: `m[key] = value` → `put(key, value)`. */
     public void operator[]= (K key, V value) {
         this.put(key, value);
     }
 
     // ----- Stream views over the map's live entries -------------------
+    // The stream's "occupied" test is ctrl[i] >= 0 (FULL = top bit clear);
+    // EMPTY/DELETED (top bit set) are skipped. Snapshot at call time — a later
+    // resize / put / remove leaves the returned stream's behavior undefined.
 
-    /**
-     * Yields a Stream over this map's keys in slot-walk order (which
-     * is hash-distribution order — semantically unordered as far as
-     * users should rely on). Snapshot at the moment of call: subsequent
-     * resize / put / remove leaves behavior undefined on the returned
-     * stream (same rule as Java's non-snapshot iterators).
-     *
-     * @returns a HashMapKeyStream<K, V> exposed as `Stream`<K>.
-     */
+    /** Stream over the live keys, slot-walk order. */
     public #Stream<K> keys() {
-        return heap HashMapKeyStream<K, V>(this.keys, this.state, this.cap);
+        return heap HashMapKeyStream<K, V>(this.slots, this.ctrl, this.cap);
     }
 
-    /**
-     * Yields a Stream over this map's values, slot-walk order. Same
-     * snapshot caveat as `keys()`.
-     *
-     * @returns a HashMapValueStream<K, V> exposed as `Stream`<V>.
-     */
+    /** Stream over the live values, slot-walk order. */
     public #Stream<V> values() {
-        return heap HashMapValueStream<K, V>(this.vals, this.state, this.cap);
+        return heap HashMapValueStream<K, V>(this.slots, this.ctrl, this.cap);
     }
 
-    /**
-     * Yields a Stream of (key, value) pairs, one fresh Pair per live
-     * slot, slot-walk order. Same snapshot caveat as `keys()`.
-     *
-     * @returns a HashMapEntryStream<K, V> exposed as `Stream`<`Pair`<K, V>>.
-     */
+    /** Stream of (key, value) pairs, one fresh Pair per live slot. */
     public #Stream<Pair<K, V>> entries() {
-        return heap HashMapEntryStream<K, V>(
-            this.keys, this.vals, this.state, this.cap);
+        return heap HashMapEntryStream<K, V>(this.slots, this.ctrl, this.cap);
     }
 }

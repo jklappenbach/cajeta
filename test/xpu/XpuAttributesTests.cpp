@@ -274,6 +274,72 @@ TEST(XpuAttributesTests, noBackendMeansAllBackends) {
     EXPECT_TRUE(attr->emitsFor(XpuBackend::Vulkan));
 }
 
+// gfx §4.a — graphics shader-stage annotations (@Vertex / @Fragment / …) are
+// captured on the same general annotation path as @Kernel; the per-stage and
+// isGraphicsShader predicates report correctly and don't collide with @Kernel.
+TEST(XpuAttributesTests, graphicsStageAnnotationsRecognized) {
+    auto src =
+        "package test;\n"
+        "public class S {\n"
+        "    @Vertex public static void vs() { }\n"
+        "    @Fragment public static void fs() { }\n"
+        "    @Kernel public static void cs() { }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.S");
+    auto klass = module->getStructures()["test.S"];
+    ASSERT_NE(klass, nullptr);
+
+    auto vs = findMethod(klass, "vs");
+    ASSERT_NE(vs, nullptr);
+    EXPECT_TRUE(cajeta::xpu::isVertex(*vs));
+    EXPECT_FALSE(cajeta::xpu::isFragment(*vs));
+    EXPECT_TRUE(cajeta::xpu::isGraphicsShader(*vs));
+    EXPECT_EQ(cajeta::xpu::graphicsStageCount(*vs), 1);
+    EXPECT_FALSE(cajeta::xpu::isKernel(*vs));
+    EXPECT_FALSE(cajeta::xpu::hasShaderStageConflict(*vs));
+
+    auto fs = findMethod(klass, "fs");
+    ASSERT_NE(fs, nullptr);
+    EXPECT_TRUE(cajeta::xpu::isFragment(*fs));
+    EXPECT_TRUE(cajeta::xpu::isGraphicsShader(*fs));
+
+    auto cs = findMethod(klass, "cs");
+    ASSERT_NE(cs, nullptr);
+    EXPECT_TRUE(cajeta::xpu::isKernel(*cs));
+    EXPECT_FALSE(cajeta::xpu::isGraphicsShader(*cs));
+    EXPECT_EQ(cajeta::xpu::graphicsStageCount(*cs), 0);
+}
+
+// gfx §4.a — stage-shape validation: more than one graphics stage, or a graphics
+// stage mixed with @Kernel, is a conflict; a single graphics stage is clean.
+TEST(XpuAttributesTests, shaderStageConflictDetected) {
+    auto src =
+        "package test;\n"
+        "public class S {\n"
+        "    @Vertex @Fragment public static void twoStages() { }\n"
+        "    @Vertex @Kernel public static void mixed() { }\n"
+        "    @Vertex public static void clean() { }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.S");
+    auto klass = module->getStructures()["test.S"];
+    ASSERT_NE(klass, nullptr);
+
+    auto twoStages = findMethod(klass, "twoStages");
+    ASSERT_NE(twoStages, nullptr);
+    EXPECT_EQ(cajeta::xpu::graphicsStageCount(*twoStages), 2);
+    EXPECT_TRUE(cajeta::xpu::hasShaderStageConflict(*twoStages));
+
+    auto mixed = findMethod(klass, "mixed");
+    ASSERT_NE(mixed, nullptr);
+    EXPECT_TRUE(cajeta::xpu::hasShaderStageConflict(*mixed));
+
+    auto clean = findMethod(klass, "clean");
+    ASSERT_NE(clean, nullptr);
+    EXPECT_FALSE(cajeta::xpu::hasShaderStageConflict(*clean));
+}
+
 // parseBackend round-trips backendName.
 TEST(XpuAttributesTests, backendNameRoundTrip) {
     EXPECT_EQ(*cajeta::xpu::parseBackend("nvidia"), XpuBackend::Nvidia);

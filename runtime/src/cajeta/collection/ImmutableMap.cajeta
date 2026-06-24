@@ -3,43 +3,32 @@ package cajeta.collection;
 import cajeta.lang.Pair;
 
 /**
- * Immutable, hash-indexed map. A frozen snapshot of `(key, value)`
- * pairs.
+ * Immutable, hash-indexed map — a frozen snapshot of `(key, value)` pairs,
+ * indexed by a read-only SwissTable.
  *
- * Modeled on Guava's `RegularImmutableMap`: entries are stored once in
- * dense parallel `keyArr` / `valArr` arrays (cheaply indexable in
- * insertion order), and an open-addressing hash table holds
- * `(entryIndex + 1)` for O(1) `get` / `containsKey`. Built once; no
- * put, remove, tombstones, or resize.
+ * Entries are stored once in dense parallel `keyArr` / `valArr` arrays
+ * (insertion order, cheap to index). A SwissTable index (`ctrl` control bytes +
+ * a parallel `slotEntry` slot->entry map) gives O(1) `get` / `containsKey`. Built
+ * once: no put, remove, tombstones, or resize.
  *
  * ## Construction
  *
- * Built from an `ArrayList<Pair<K, V>>` of entries. Duplicate keys
- * resolve **last-wins** (the later pair's value replaces the earlier),
- * matching how a builder fold would behave; this avoids needing the
- * exception machinery to reject duplicates. A `copyOf(HashMap<K, V>)`
- * convenience can layer on once entry iteration into an array is
- * ergonomic.
+ * Built from an `ArrayList<Pair<K, V>>`. Duplicate keys resolve **last-wins**
+ * (a later pair overwrites the earlier value), matching a builder fold.
  *
  * ## Hashing and equality
  *
- * Same contract as `HashMap`: `K.hash()` for the bucket, `==` for
- * key equality. Class K defaults to identity (override `hash()` + `==`
- * for value keys); primitive K lowers `.hash()` to the intrinsic.
- *
- * ## Usage
- *
- * Snapshot an `ArrayList` of `Pair` entries, then query it. Reads
- * go through `get` / `operator[]`, presence through `containsKey`, and
- * `keyAt` / `valAt` walk entries in insertion order.
+ * Same contract as `HashMap`: `K.hash()` indexes, `==` decides key equality.
+ * The index loads 16 control bytes at once (`Cajeta.vload16`) and matches the
+ * 7-bit hash fragment with one SIMD op (`eqMask`); set bits are the candidates
+ * worth a full key compare. Because the map never deletes, slots are only EMPTY
+ * (0x80) or FULL (a 7-bit fragment), and `ctrl` is `cap + 16` long with the
+ * first 16 bytes mirrored into the tail (valid group loads near the end).
  *
  * ```cajeta
- * // entries: ArrayList<Pair<string, int32>>, already populated
  * ImmutableMap<string, int32> m = heap ImmutableMap<string, int32>(entries);
- *
- * int32 one = m["one"];                // subscript -> get("one")
- * boolean has = m.containsKey("two");  // true
- * int64 n = m.count();                 // entry count
+ * int32 one = m["one"];
+ * boolean has = m.containsKey("two");
  * string firstKey = m.keyAt(0);        // dense, insertion order
  * ```
  *
@@ -54,92 +43,128 @@ public final class ImmutableMap<K, V> {
     private int32 entryCount;
 
     /**
-     * Open-addressing index: `table[slot]` holds `entryIndex + 1`, or
-     * 0 for empty. Power-of-2 length; slot is `hash & (tableCap - 1)`
-     * with linear probing.
+     * SwissTable index. `ctrl[slot]` is EMPTY (0x80) or a FULL 7-bit hash
+     * fragment; `slotEntry[slot]` is the dense entry index for a FULL slot.
+     * `ctrl` is `cap + 16` long (first 16 bytes mirrored); `cap` is a power of
+     * two `>= 16` and `>= 2 * entryCount`.
      */
-    private int64[] table;
-    private int64 tableCap;
+    private int8[] ctrl;
+    private int32[] slotEntry;
+    private int64 cap;
 
     /**
-     * Build a frozen map from `src`. Iterates in order; for each pair
-     * a key already present has its value overwritten (last-wins),
-     * otherwise a new entry is appended. The source list is untouched.
-     *
-     * ```cajeta
-     * ArrayList<Pair<string, int32>> entries = ...;
-     * ImmutableMap<string, int32> m = heap ImmutableMap<string, int32>(entries);
-     * ```
-     *
-     * @Param src entries to snapshot, as `Pair``<key, value>`.
+     * Build a frozen map from `src` (last-wins on duplicate keys). The source
+     * list is untouched.
      */
     public ImmutableMap(ArrayList<Pair<K, V>> src) {
         int32 n = src.count();
-        int64 cap = 8;
-        while (cap < (int64) n * 2) {
-            cap = cap * 2;
+        int64 c = 16;
+        while (c < (int64) n * 2) {
+            c = c * 2;
         }
         K[] keys = heap K[n];
         V[] vals = heap V[n];
-        int64[] tab = heap int64[cap];
-        int32 count = 0;
+        int8[] ct = heap int8[c + 16];
+        int32[] se = heap int32[c];
+        int64 mask = c - 1;
 
+        // Fill control bytes EMPTY (0x80) — calloc leaves 0x00, a FULL value.
+        int64 nlen = c + 16;
+        int64 word = (int64) 0x8080808080808080;
+        int64 fk = 0;
+        while (fk + 8 <= nlen) {
+            Cajeta.storeU64(ct, fk, word);
+            fk = fk + 8;
+        }
+        while (fk < nlen) {
+            ct[fk] = (int8) 0x80;
+            fk = fk + 1;
+        }
+
+        int32 count = 0;
         int32 i = 0;
         while (i < n) {
             Pair<K, V> p = src.get(i);
             K k = p.first();
             V v = p.second();
             int64 h = k.hash();
-            int64 idx = h & (cap - 1);
-            boolean replaced = false;
-            boolean scanning = true;
-            while (scanning) {
-                if (tab[idx] == 0) {
-                    scanning = false;
-                } else {
-                    int32 ei = (int32) (tab[idx] - 1);
+            int8 h2 = (int8) ((h >> 57) & 0x7F);
+            int64 pos = h & mask;
+            int64 stride = 0;
+            boolean placing = true;
+            while (placing) {
+                Vector<int8,16> g = Cajeta.vload16(ct, pos);
+                int32 mm = g.eqMask(h2);
+                boolean handled = false;
+                while (mm != 0) {
+                    int64 slot = (pos + Cajeta.ctz64((int64) (mm & 65535))) & mask;
+                    int32 ei = se[slot];
                     if (keys[ei] == k) {
-                        vals[ei] = v;
-                        replaced = true;
-                        scanning = false;
+                        vals[ei] = v;          // last-wins overwrite
+                        handled = true;
+                        placing = false;
+                        mm = 0;
                     } else {
-                        idx = (idx + 1) & (cap - 1);
+                        mm = mm & (mm - 1);
                     }
                 }
-            }
-            if (replaced == false) {
-                keys[count] = k;
-                vals[count] = v;
-                tab[idx] = (int64) (count + 1);
-                count = count + 1;
+                if (handled == false) {
+                    int32 emptyM = g.eqMask((int8) 0x80) & 65535;
+                    if (emptyM != 0) {
+                        int64 slot = (pos + Cajeta.ctz64((int64) emptyM)) & mask;
+                        keys[count] = k;
+                        vals[count] = v;
+                        se[slot] = count;
+                        ct[slot] = h2;
+                        if (slot < 16) {
+                            ct[c + slot] = h2;
+                        }
+                        count = count + 1;
+                        placing = false;
+                    } else {
+                        stride = stride + 16;
+                        pos = (pos + stride) & mask;
+                    }
+                }
             }
             i = i + 1;
         }
         this.keyArr = #keys;
         this.valArr = #vals;
-        this.table = #tab;
+        this.ctrl = #ct;
+        this.slotEntry = #se;
+        this.cap = c;
         this.entryCount = count;
-        this.tableCap = cap;
     }
 
     /**
-     * Value bound to `key`, or the type's zero value (null for class
-     * V, 0 for primitive V) if absent. Use `containsKey` to
-     * distinguish "absent" from "present-and-null/zero".
+     * Value bound to `key`, or the type's zero value (null for class V, 0 for
+     * primitive V) if absent. Use `containsKey` to distinguish absent from
+     * present-and-null/zero.
      */
     public V get(K key) {
         int64 h = key.hash();
-        int64 idx = h & (this.tableCap - 1);
-        boolean scanning = true;
-        while (scanning) {
-            if (this.table[idx] == 0) {
-                scanning = false;
-            } else {
-                int32 ei = (int32) (this.table[idx] - 1);
+        int64 mask = this.cap - 1;
+        int8 h2 = (int8) ((h >> 57) & 0x7F);
+        int64 pos = h & mask;
+        int64 stride = 0;
+        boolean searching = true;
+        while (searching) {
+            Vector<int8,16> g = Cajeta.vload16(this.ctrl, pos);
+            int32 mm = g.eqMask(h2);
+            while (mm != 0) {
+                int64 slot = (pos + Cajeta.ctz64((int64) (mm & 65535))) & mask;
+                int32 ei = this.slotEntry[slot];
                 if (this.keyArr[ei] == key) {
                     return this.valArr[ei];
                 }
-                idx = (idx + 1) & (this.tableCap - 1);
+                mm = mm & (mm - 1);
+            }
+            if ((g.eqMask((int8) 0x80) & 65535) != 0) {
+                searching = false;
+            } else {
+                stride = stride + 16;
+                pos = (pos + stride) & mask;
             }
         }
         V[] missDefault = heap V[1];
@@ -151,17 +176,27 @@ public final class ImmutableMap<K, V> {
      */
     public boolean containsKey(K key) {
         int64 h = key.hash();
-        int64 idx = h & (this.tableCap - 1);
-        boolean scanning = true;
-        while (scanning) {
-            if (this.table[idx] == 0) {
-                scanning = false;
-            } else {
-                int32 ei = (int32) (this.table[idx] - 1);
+        int64 mask = this.cap - 1;
+        int8 h2 = (int8) ((h >> 57) & 0x7F);
+        int64 pos = h & mask;
+        int64 stride = 0;
+        boolean searching = true;
+        while (searching) {
+            Vector<int8,16> g = Cajeta.vload16(this.ctrl, pos);
+            int32 mm = g.eqMask(h2);
+            while (mm != 0) {
+                int64 slot = (pos + Cajeta.ctz64((int64) (mm & 65535))) & mask;
+                int32 ei = this.slotEntry[slot];
                 if (this.keyArr[ei] == key) {
                     return true;
                 }
-                idx = (idx + 1) & (this.tableCap - 1);
+                mm = mm & (mm - 1);
+            }
+            if ((g.eqMask((int8) 0x80) & 65535) != 0) {
+                searching = false;
+            } else {
+                stride = stride + 16;
+                pos = (pos + stride) & mask;
             }
         }
         return false;
