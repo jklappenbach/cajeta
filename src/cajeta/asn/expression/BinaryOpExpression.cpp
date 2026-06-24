@@ -1755,55 +1755,34 @@ namespace cajeta {
                     CajetaTypePtr rhsRT = rhsAst ? rhsAst->getResolvedType() : nullptr;
                     llvm::Value* ls = stringify(l, lhsRT);
                     llvm::Value* rs = stringify(r, rhsRT);
-                    llvm::Function* concat = module->getRuntimeFunction("__cajeta_str_concat");
-                    llvm::Value* concatResult = builder->CreateCall(concat, {ls, rs});
-
                     if (!stringStructTy || !stringKlass) {
-                        // Bootstrap fallback (class String not loaded yet).
-                        result = concatResult;
+                        // Bootstrap fallback (class String not loaded yet): keep
+                        // the legacy char* concat.
+                        llvm::Function* concat = module->getRuntimeFunction(
+                            "__cajeta_str_concat");
+                        result = builder->CreateCall(concat, {ls, rs});
                         break;
                     }
 
-                    // Wrap concatResult (malloc'd char*) into a fresh class
-                    // String. Layout matches generatePrototype's embed order:
-                    //   { ptr vtable, ptr bytes, i32 byteLength, i32 mode, i32 cachedCpLength }
+                    // Direct concat: write both operands straight into the result
+                    // String's byte storage — no intermediate __cajeta_str_concat
+                    // malloc/copy/free. Short results (<= SSO_CAP) live INLINE in
+                    // the wrapper's SSO region with NO separate buffer allocation
+                    // (the small-string fast path that keeps `"key" + i` and other
+                    // short builds off the heap). The String struct embed order is
+                    //   { vtable, bytes, byteLength, mode, cachedCpLength,
+                    //     ssoCount, ssoData }  (indices 0..6); the inline region
+                    //   {ssoCount, ssoData} is shaped like a CajetaArray header so
+                    //   `bytes` can point at it and every reader works unchanged.
+                    const int64_t SSO_CAP = 23;   // sizeof(ssoData) - 1 (NUL room)
                     llvm::Function* strlenFn = module->getRuntimeFunction("__cajeta_str_len");
-                    llvm::Value* lenI64 = builder->CreateCall(
-                        strlenFn, {concatResult}, "concat.len");
-                    llvm::Value* lenI32 = builder->CreateIntCast(
-                        lenI64, i32Ty, /*isSigned=*/true, "concat.len32");
+                    llvm::Value* lenL = builder->CreateCall(strlenFn, {ls}, "concat.lenL");
+                    llvm::Value* lenR = builder->CreateCall(strlenFn, {rs}, "concat.lenR");
+                    llvm::Value* total = builder->CreateAdd(lenL, lenR, "concat.total");
+                    llvm::Value* totalI32 = builder->CreateIntCast(
+                        total, i32Ty, /*isSigned=*/true, "concat.total32");
 
-                    // CajetaArray header sized 8 + len + 1 (count word + bytes
-                    // + null terminator for forward compatibility with any
-                    // strlen-reader that hits the buffer through `.bytes.data`).
-                    // Direct call to __cajeta_alloc (the runtime live-set-aware
-                    // allocator) because MemoryManager::createMallocInstruction
-                    // requires a Constant size; here the size is computed at
-                    // runtime from the concat result's strlen.
-                    llvm::Value* arrSize = builder->CreateAdd(lenI64,
-                        llvm::ConstantInt::get(i64Ty, 9), "concat.arr_size");
-                    // Uninitialized alloc: the count-word store + the data/NUL
-                    // memcpy below cover every byte of the block, so the old
-                    // calloc-then-memset double zero-fill was pure waste.
-                    llvm::FunctionType* allocTy = llvm::FunctionType::get(
-                        ptrTy, {i64Ty}, false);
-                    llvm::FunctionCallee allocFn =
-                        module->getLlvmModule()->getOrInsertFunction(
-                            "__cajeta_alloc_uninit", allocTy);
-                    llvm::Value* arrPtr = builder->CreateCall(
-                        allocFn, {arrSize}, "concat.arr_alloc");
-                    builder->CreateStore(lenI64, arrPtr);
-                    llvm::Value* dataPtr = builder->CreateInBoundsGEP(
-                        i8Ty, arrPtr,
-                        llvm::ConstantInt::get(i64Ty, 8),
-                        "concat.arr_data");
-                    // Copy len+1 bytes — the concat result is NUL-terminated, so
-                    // this also lays down the trailing NUL the buffer needs.
-                    llvm::Value* copyLen = builder->CreateAdd(lenI64,
-                        llvm::ConstantInt::get(i64Ty, 1), "concat.copy_len");
-                    builder->CreateMemCpy(dataPtr, llvm::MaybeAlign(1),
-                        concatResult, llvm::MaybeAlign(1), copyLen);
-
+                    // Allocate the wrapper (size includes the inline SSO region).
                     const llvm::DataLayout& dl =
                         module->getLlvmModule()->getDataLayout();
                     llvm::Constant* sSize = llvm::ConstantInt::get(
@@ -1820,10 +1799,70 @@ namespace cajeta {
                     builder->CreateStore(vtableRef,
                         builder->CreateStructGEP(stringStructTy, sPtr, 0,
                             "concat.s_vtable"));
-                    builder->CreateStore(arrPtr,
+
+                    // SSO vs heap branch.
+                    llvm::Function* curFn = builder->GetInsertBlock()->getParent();
+                    llvm::BasicBlock* ssoBB =
+                        llvm::BasicBlock::Create(llvmCtx, "concat.sso", curFn);
+                    llvm::BasicBlock* heapBB =
+                        llvm::BasicBlock::Create(llvmCtx, "concat.heap", curFn);
+                    llvm::BasicBlock* copyBB =
+                        llvm::BasicBlock::Create(llvmCtx, "concat.copy", curFn);
+                    llvm::Value* isSso = builder->CreateICmpULE(
+                        total, llvm::ConstantInt::get(i64Ty, SSO_CAP), "concat.is_sso");
+                    builder->CreateCondBr(isSso, ssoBB, heapBB);
+
+                    // Inline: bytes -> &ssoCount (struct index 5); count = total;
+                    // data = ssoCount + 8 (= &ssoData). No buffer allocation.
+                    builder->SetInsertPoint(ssoBB);
+                    llvm::Value* ssoHdr = builder->CreateStructGEP(
+                        stringStructTy, sPtr, 5, "concat.sso_hdr");
+                    builder->CreateStore(total, ssoHdr);
+                    llvm::Value* ssoData = builder->CreateInBoundsGEP(
+                        i8Ty, ssoHdr, llvm::ConstantInt::get(i64Ty, 8), "concat.sso_data");
+                    builder->CreateBr(copyBB);
+
+                    // Heap: alloc { i64 count; data; NUL }; count = total; data = +8.
+                    builder->SetInsertPoint(heapBB);
+                    llvm::Value* arrSize = builder->CreateAdd(
+                        total, llvm::ConstantInt::get(i64Ty, 9), "concat.arr_size");
+                    llvm::FunctionType* allocTy = llvm::FunctionType::get(
+                        ptrTy, {i64Ty}, false);
+                    llvm::FunctionCallee allocFn =
+                        module->getLlvmModule()->getOrInsertFunction(
+                            "__cajeta_alloc_uninit", allocTy);
+                    llvm::Value* arrPtr = builder->CreateCall(
+                        allocFn, {arrSize}, "concat.arr_alloc");
+                    builder->CreateStore(total, arrPtr);
+                    llvm::Value* heapData = builder->CreateInBoundsGEP(
+                        i8Ty, arrPtr, llvm::ConstantInt::get(i64Ty, 8), "concat.heap_data");
+                    builder->CreateBr(copyBB);
+
+                    // Merge: pick the bytes-field value + data destination.
+                    builder->SetInsertPoint(copyBB);
+                    llvm::PHINode* bytesVal = builder->CreatePHI(ptrTy, 2, "concat.bytes");
+                    bytesVal->addIncoming(ssoHdr, ssoBB);
+                    bytesVal->addIncoming(arrPtr, heapBB);
+                    llvm::PHINode* dataPtr = builder->CreatePHI(ptrTy, 2, "concat.data");
+                    dataPtr->addIncoming(ssoData, ssoBB);
+                    dataPtr->addIncoming(heapData, heapBB);
+
+                    // Copy both operands + NUL-terminate.
+                    builder->CreateMemCpy(dataPtr, llvm::MaybeAlign(1),
+                        ls, llvm::MaybeAlign(1), lenL);
+                    llvm::Value* dstR = builder->CreateInBoundsGEP(
+                        i8Ty, dataPtr, lenL, "concat.dst_r");
+                    builder->CreateMemCpy(dstR, llvm::MaybeAlign(1),
+                        rs, llvm::MaybeAlign(1), lenR);
+                    llvm::Value* nulSlot = builder->CreateInBoundsGEP(
+                        i8Ty, dataPtr, total, "concat.nul");
+                    builder->CreateStore(llvm::ConstantInt::get(i8Ty, 0), nulSlot);
+
+                    // Remaining String fields.
+                    builder->CreateStore(bytesVal,
                         builder->CreateStructGEP(stringStructTy, sPtr, 1,
                             "concat.s_bytes"));
-                    builder->CreateStore(lenI32,
+                    builder->CreateStore(totalI32,
                         builder->CreateStructGEP(stringStructTy, sPtr, 2,
                             "concat.s_byteLength"));
                     builder->CreateStore(llvm::ConstantInt::get(i32Ty, 0),
@@ -1833,17 +1872,8 @@ namespace cajeta {
                         builder->CreateStructGEP(stringStructTy, sPtr, 4,
                             "concat.s_cachedCpLength"));
 
-                    // Free the malloc'd intermediate char* — we copied its
-                    // bytes into the CajetaArray header above. The class
-                    // String now owns the byte buffer.
-                    if (llvm::Function* freeFn =
-                            module->getRuntimeFunction("__cajeta_free")) {
-                        builder->CreateCall(freeFn, {concatResult});
-                    }
-
-                    // Pin resolvedType so a caller using this concat as a
-                    // ctor / method argument can recover the class type
-                    // instead of the generic `pointer` fallback (mirrors
+                    // Pin resolvedType so a caller using this concat as a ctor /
+                    // method argument recovers the class type (mirrors
                     // NewExpression and MethodCallExpression).
                     resolvedType = stringTy;
                     result = sPtr;

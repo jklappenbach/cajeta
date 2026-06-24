@@ -826,6 +826,8 @@ typedef struct {
     int32_t byteLength;
     int32_t mode;
     int32_t cachedCpLength;
+    int64_t ssoCount;     // inline SSO region: count word (CajetaArray header)
+    int8_t  ssoData[24];  // inline SSO data — bytes points here for short owned strings
 } cajeta_string_layout;
 
 // Mode-aware drop for cajeta.lang.String locals/owned values
@@ -840,8 +842,11 @@ void __cajeta_string_drop(void* s) {
     int32_t mode = str->mode;
     void* bytes = str->bytes;
     if (!__cajeta_live_set_claim(s)) return;   // static literal / already freed
-    if (mode == 0) {
-        __cajeta_free_array(bytes);            // owned buffer
+    // Free the byte buffer only for owned strings whose bytes live in a separate
+    // heap block. SSO strings point bytes at the wrapper's own inline region
+    // (freed with the wrapper); view strings (mode 1) borrow their bytes.
+    if (mode == 0 && bytes != NULL && bytes != (void*) &str->ssoCount) {
+        __cajeta_free_array(bytes);
     }
     __cajeta_poison_buffer(s);
     free(s);

@@ -74,6 +74,16 @@ public final class String {
     public int32  byteLength;
     public int32  mode;
     public int32  cachedCpLength;
+    // Small-string optimization (SSO). For short owned strings the compiler
+    // points `bytes` at this inline region instead of a separate heap buffer,
+    // so a build like `"key" + i` costs no buffer allocation. The two fields
+    // are contiguous and shaped exactly like a CajetaArray header
+    // ({ i64 count; i8 data[] }), so every `bytes` reader works unchanged:
+    // ssoCount is the count word, ssoData is the data. ssoData length is the
+    // SSO capacity (compiler caps inline at length-1 to leave room for a NUL).
+    // Untouched (left zero) for view-mode literals and heap-buffer strings.
+    private int64    ssoCount;
+    private int8[24] ssoData;
 
     /**
      * Constructs the empty String — `bytes` null, `byteLength` 0,

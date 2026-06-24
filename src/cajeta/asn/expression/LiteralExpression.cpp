@@ -256,18 +256,27 @@ namespace cajeta {
                 //    CajetaClass::generatePrototype's embedSubObject walk:
                 //    self vtable, then inherited fields (Object has none),
                 //    then this class's properties (bytes, byteLength,
-                //    mode, cachedCpLength).
+                //    mode, cachedCpLength, ssoCount, ssoData). A literal is
+                //    view-mode (mode 1) pointing at the static byte buffer, so
+                //    the inline SSO region is unused — zero-init the two trailing
+                //    fields via their actual struct element types (i64, [N x i8]).
+                std::vector<llvm::Constant*> fields = {
+                    vtableRef,
+                    bytesGv,
+                    llvm::ConstantInt::get(i32Ty,
+                        llvm::APInt(32, (uint64_t) len, true)),
+                    llvm::ConstantInt::get(i32Ty,
+                        llvm::APInt(32, 1, true)),
+                    llvm::ConstantInt::get(i32Ty,
+                        llvm::APInt(32, (uint64_t) -1, true)),
+                };
+                for (unsigned fi = (unsigned) fields.size();
+                        fi < structTy->getNumElements(); ++fi) {
+                    fields.push_back(
+                        llvm::Constant::getNullValue(structTy->getElementType(fi)));
+                }
                 auto* instInit = llvm::ConstantStruct::get(structTy,
-                    llvm::ArrayRef<llvm::Constant*>{
-                        vtableRef,
-                        bytesGv,
-                        llvm::ConstantInt::get(i32Ty,
-                            llvm::APInt(32, (uint64_t) len, true)),
-                        llvm::ConstantInt::get(i32Ty,
-                            llvm::APInt(32, 1, true)),
-                        llvm::ConstantInt::get(i32Ty,
-                            llvm::APInt(32, (uint64_t) -1, true)),
-                    });
+                    llvm::ArrayRef<llvm::Constant*>(fields));
                 auto* instGv = new llvm::GlobalVariable(
                     *mod, structTy, /*isConst=*/false,
                     llvm::GlobalValue::PrivateLinkage, instInit, ".str.inst");
