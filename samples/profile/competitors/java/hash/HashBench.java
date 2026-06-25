@@ -117,5 +117,8 @@ public class HashBench {
 
         runDigest(runId, ts, "sha256", "SHA-256", SHA256_REF, buf, warmup, trials);
         runDigest(runId, ts, "md5", "MD5", MD5_REF, buf, warmup, trials);
+
+        // blake3 — no JDK stdlib BLAKE3; jar not provisioned.
+        emitSkip(runId, ts, "blake3", "no JDK stdlib BLAKE3; jar not provisioned");
     }
 }

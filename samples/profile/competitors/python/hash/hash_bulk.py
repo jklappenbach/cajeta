@@ -14,6 +14,7 @@ import tracemalloc
 N = 1048576
 SHA256_REF = "fbbab289f7f94b25736c58be46a994c441fd02552cc6022352e3d86d2fab7c83"
 MD5_REF = "c35cc7d8d91728a0cb052831bc4ef372"
+BLAKE3_REF = "64479cf7293960210547db8d982359e0c4ce054525ed7086cf93030828fc0533"
 XXH3_REF = 0xD36C0E13A3DF139E
 
 
@@ -114,6 +115,16 @@ def main():
     ok = hashlib.md5(buf).hexdigest() == MD5_REF
     out.append(row(run_id, ts, "md5", "hashlib", sys.version.split()[0], warmup, trials,
                    stats(s), ok, "ok" if ok else "invalid"))
+
+    # blake3 (optional module; the pip `blake3` binds the Rust reference crate)
+    try:
+        import blake3
+        s = bench(buf, warmup, trials, lambda b: blake3.blake3(b).digest())
+        ok = blake3.blake3(buf).hexdigest() == BLAKE3_REF
+        out.append(row(run_id, ts, "blake3", "blake3", getattr(blake3, "__version__", "?"),
+                       warmup, trials, stats(s), ok, "ok" if ok else "invalid"))
+    except ImportError:
+        out.append(skip_row(run_id, ts, "blake3", "blake3", "blake3 module not importable"))
 
     sys.stdout.write("\n".join(out) + "\n")
 

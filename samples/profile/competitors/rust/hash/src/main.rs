@@ -23,6 +23,7 @@ const N: usize = 1_048_576;
 const SHA256_REF: &str = "fbbab289f7f94b25736c58be46a994c441fd02552cc6022352e3d86d2fab7c83";
 const MD5_REF: &str = "c35cc7d8d91728a0cb052831bc4ef372";
 const XXH3_REF: u64 = 0xd36c0e13a3df139e;
+const BLAKE3_REF: &str = "64479cf7293960210547db8d982359e0c4ce054525ed7086cf93030828fc0533";
 
 fn env(k: &str, d: &str) -> String { std::env::var(k).unwrap_or_else(|_| d.to_string()) }
 
@@ -97,6 +98,14 @@ fn main() {
     });
     let md5_ok = hex(&md5::Md5::digest(&buf)) == MD5_REF;
     emit(&run_id, &ts, "md5", "md-5", "0.10", warmup, trials, s, md5_ok);
+
+    // blake3 (the reference implementation; python's blake3 binds this crate)
+    let (s, _) = bench(&buf, warmup, trials, || {
+        let h = blake3::hash(&buf);
+        u64::from_le_bytes(h.as_bytes()[..8].try_into().unwrap())
+    });
+    let b3_ok = hex(blake3::hash(&buf).as_bytes()) == BLAKE3_REF;
+    emit(&run_id, &ts, "blake3", "blake3", "1", warmup, trials, s, b3_ok);
 }
 
 fn hex(b: &[u8]) -> String {

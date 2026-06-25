@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/zeebo/xxh3"
+	"lukechampine.com/blake3"
 )
 
 const N = 1048576
@@ -23,6 +24,7 @@ const (
 	sha256Ref = "fbbab289f7f94b25736c58be46a994c441fd02552cc6022352e3d86d2fab7c83"
 	md5Ref    = "c35cc7d8d91728a0cb052831bc4ef372"
 	xxh3Ref   = uint64(0xd36c0e13a3df139e)
+	blake3Ref = "64479cf7293960210547db8d982359e0c4ce054525ed7086cf93030828fc0533"
 )
 
 func env(k, d string) string {
@@ -140,4 +142,13 @@ func main() {
 	m := md5.Sum(buf)
 	emit(runID, ts, "md5", "crypto/md5", runtime.Version(), warmup, trials, s,
 		hex.EncodeToString(m[:]) == md5Ref)
+
+	// blake3 (lukechampine.com/blake3 — SIMD-accelerated)
+	s = benchU64(warmup, trials, func() uint64 {
+		h := blake3.Sum256(buf)
+		return uint64(h[0])
+	})
+	b3 := blake3.Sum256(buf)
+	emit(runID, ts, "blake3", "lukechampine/blake3", "v1", warmup, trials, s,
+		hex.EncodeToString(b3[:]) == blake3Ref)
 }

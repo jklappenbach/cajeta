@@ -139,5 +139,11 @@ int main() {
         emit(run_id, ts, "md5", "openssl", OPENSSL_FULL_VERSION_STR, warmup, trials, s,
              tohex(out, MD5_DIGEST_LENGTH) == MD5_REF);
     }
+    // blake3 — the official BLAKE3 C library isn't vendored here (multi-file
+    // SIMD build), so emit a skip rather than a misleading slow reference.
+    std::printf(
+        "1,%s,%s,blake3,hash,,%zu,,%zu,cpp,,,,,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,"
+        "skipped,,BLAKE3 C library not vendored,\n",
+        run_id.c_str(), ts.c_str(), N, N);
     return 0;
 }
