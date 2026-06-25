@@ -78,6 +78,11 @@ fi
 
 echo "[bench] (4/5) capture env -> $OUT/env.csv"
 bash scripts/env-capture.sh > "$OUT/env.csv"
+# Stamp the Cajeta compiler version so the report's Languages legend can show it
+# alongside the competitors' toolchain versions (the Cajeta side emits no
+# language_version column of its own). Best-effort; never fail the run.
+CAJETA_VER="$("$CAJETA" --version 2>/dev/null | head -1)"
+[[ -n "$CAJETA_VER" ]] && echo "cajeta_version,${CAJETA_VER//,/ }" >> "$OUT/env.csv"
 
 echo "[bench] (5/5) report"
 if command -v python3 >/dev/null; then
