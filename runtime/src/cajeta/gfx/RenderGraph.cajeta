@@ -1,5 +1,7 @@
 package cajeta.gfx;
 
+import cajeta.xpu.Barrier;
+
 /**
  * RenderGraph — the minimal, opinion-free render-graph DEPENDENCY + HAZARD policy
  * (cajeta-gfx §5, spec §6/§8.2).

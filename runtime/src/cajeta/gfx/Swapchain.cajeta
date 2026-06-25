@@ -1,5 +1,9 @@
 package cajeta.gfx;
 
+import cajeta.xpu.AccelerationStructure;
+import cajeta.xpu.Device;
+import cajeta.xpu.Image2D;
+
 import cajeta.ifx.Surface;
 
 /**

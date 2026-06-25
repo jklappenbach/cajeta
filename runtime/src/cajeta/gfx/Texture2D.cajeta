@@ -1,5 +1,9 @@
 package cajeta.gfx;
 
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+
 /**
  * Texture2D — a read-only 2-D image of float32 texels, sampled in a kernel
  * through a {@link Sampler} with hardware filtering.

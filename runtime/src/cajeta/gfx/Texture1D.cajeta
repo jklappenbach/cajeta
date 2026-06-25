@@ -1,5 +1,9 @@
 package cajeta.gfx;
 
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+
 /**
  * Texture1D — a read-only 1-D image of texels, sampled in a kernel through a
  * {@link Sampler} with hardware linear filtering. The line sibling of {@link

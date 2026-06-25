@@ -1,5 +1,9 @@
 package cajeta.gfx;
 
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+
 /**
  * TextureCube — a cube map: six square faces (+X, −X, +Y, −Y, +Z, −Z) forming a
  * box around the origin, sampled by a **direction vector** rather than a planar

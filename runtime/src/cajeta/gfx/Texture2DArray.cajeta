@@ -1,5 +1,9 @@
 package cajeta.gfx;
 
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+
 /**
  * Texture2DArray — a stack of N independent 2-D images (layers) sharing one
  * descriptor, sampled in a kernel through a {@link Sampler}. The layered sibling
