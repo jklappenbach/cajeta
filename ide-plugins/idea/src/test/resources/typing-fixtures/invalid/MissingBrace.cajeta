@@ -1,0 +1,4 @@
+package demo;
+
+class Foo {
+    int x;

@@ -1,0 +1,11 @@
+package demo;
+
+import demo.other.Bar;
+
+class Greeter {
+    int count;
+
+    void greet() {
+        count = count + 1;
+    }
+}
