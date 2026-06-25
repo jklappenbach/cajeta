@@ -560,6 +560,15 @@ void __cajeta_dbg_safepoint(int32_t loc_id) {
     if (top) top->current_loc = loc_id;
     cajeta_dbg_handler_fn h = __cajeta_dbg_handler;
     if (h) h(loc_id, __cajeta_dbg_current_fiber_id(), top);
+    // CP6f-2d: cross-carrier convergence (spec §2.2.2). The handler parks the
+    // PRIMARY (the carrier whose loc was armed) inside the DebugController.
+    // Every OTHER carrier, reaching its next safepoint while a stop is in
+    // flight, parks here as a secondary so no fiber advances past a safepoint
+    // while the world is stopped. Off-path this is a single relaxed load
+    // (__cajeta_stop_is_requested, §4.2); only a real stop pays the park cost.
+    // The primary returns here AFTER resume, by which point the flag is cleared
+    // — so it never double-parks.
+    if (__cajeta_stop_is_requested()) __cajeta_stop_park();
 }
 
 // CP6f-3: settable exception handler. When the in-process debugger attaches
@@ -2002,6 +2011,12 @@ static void* __cajeta_carrier_loop(void* arg) {
             continue;
         }
         f->next = NULL;
+
+        // CP6f-2d: scheduler hand-off stop check (spec §2.2.3). If a debugger
+        // stop is in flight, park this carrier BEFORE running the next fiber so
+        // a carrier between fibers can't start new Cajeta work while the world
+        // is stopped. The popped fiber `f` stays in hand and runs after resume.
+        if (__cajeta_stop_is_requested()) __cajeta_stop_park();
 
         __cajeta_current_fiber = f;
         f->state = CAJETA_FIBER_RUNNING;

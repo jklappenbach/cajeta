@@ -1,5 +1,14 @@
 #include "cajeta/dbg/DebugController.h"
 
+// CP6f-2d: the process-global stop coordinator lives in the C runtime
+// (cajeta_runtime.c). The controller drives it: open a stop round before the
+// primary blocks so the other carriers quiesce at their safepoints/hand-off,
+// and clear it on resume to release them all together.
+extern "C" {
+    int  __cajeta_stop_request(void);
+    void __cajeta_stop_clear(void);
+}
+
 namespace cajeta::dbg {
 
     void DebugController::arm(int32_t locId) {
@@ -45,6 +54,12 @@ namespace cajeta::dbg {
                                      void* frameTop) {
         std::unique_lock<std::mutex> lock(mutex);
         if (armed.count(locId) == 0) return;
+
+        // CP6f-2d: open the cross-carrier stop round BEFORE blocking so every
+        // other carrier observes it (__cajeta_stop_is_requested) at its next
+        // safepoint / scheduler hand-off and parks too. This carrier is the
+        // primary; it blocks below via the controller rendezvous as before.
+        __cajeta_stop_request();
 
         // Park: publish the stop, wake the debugger thread, wait for resume.
         stopped = true;
@@ -97,6 +112,10 @@ namespace cajeta::dbg {
         stopped = false;
         resumeRequested = true;
         resumeCv.notify_all();
+        // CP6f-2d: release every secondary/hand-off-parked carrier together
+        // (resume-all, spec §2.5). Clears stop_requested so no carrier re-parks
+        // at its next safepoint, and wakes all parked carriers.
+        __cajeta_stop_clear();
     }
 
     bool DebugController::isStopped() const {
