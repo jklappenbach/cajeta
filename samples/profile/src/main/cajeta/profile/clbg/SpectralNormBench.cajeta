@@ -43,12 +43,32 @@ public class SpectralNormBench extends Benchmark {
         return 1.0 / (float64) d;
     }
 
-    // tmp = A * v ; out = A^T * tmp  (out = AtA * v)
+    // tmp = A * v ; out = A^T * tmp  (out = AtA * v). The inner j-loops are
+    // vectorized in float64: A(i,j) = 1/d with d = (i+j)(i+j+1)/2 + (i+1 or j+1)
+    // recomputed per 8-lane block (no stored matrix — same algorithm the C++/Rust
+    // CLBG entries auto-vectorize at -O3 -march=native). The denominator is an
+    // integer ≤ 39402, exact in float64, so ones/dv is bit-identical to the
+    // scalar reciprocal; only the reduction reassociates (checkResult tolerant).
     public void atAv(float64[] v, float64[] out, float64[] tmp, int32 n) {
+        int32 jlim = n - (n % 8);
+        Vector<float64,8> iota = stack Vector<float64,8>(0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0);
+        Vector<float64,8> ones = stack Vector<float64,8>(1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0);
+
+        // tmp = A * v :  d(i,j) = (i+j)(i+j+1)/2 + i + 1  (additive term constant
+        // across the lane block).
         int32 i = 0;
         while (i < n) {
-            float64 sum = 0.0;
+            Vector<float64,8> acc = stack Vector<float64,8>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
             int32 j = 0;
+            while (j < jlim) {
+                float64 base = (float64) (i + j);
+                Vector<float64,8> ijv = iota + base;
+                Vector<float64,8> dv = ijv * (ijv + ones) * 0.5 + (float64) (i + 1);
+                Vector<float64,8> av = ones / dv;
+                acc = acc + av * Cajeta.vload8f64(v, j);
+                j = j + 8;
+            }
+            float64 sum = Cajeta.vsum8f64(acc);
             while (j < n) {
                 sum = sum + this.evalA(i, j) * v[j];
                 j = j + 1;
@@ -56,10 +76,23 @@ public class SpectralNormBench extends Benchmark {
             tmp[i] = sum;
             i = i + 1;
         }
+
+        // out = A^T * tmp :  d(j,i) = (i+j)(i+j+1)/2 + j + 1  (additive term varies
+        // per lane — j is the summation index, so it's iota + (jbase+1)).
         i = 0;
         while (i < n) {
-            float64 sum = 0.0;
+            Vector<float64,8> acc = stack Vector<float64,8>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
             int32 j = 0;
+            while (j < jlim) {
+                float64 base = (float64) (i + j);
+                Vector<float64,8> ijv = iota + base;
+                Vector<float64,8> addv = iota + (float64) (j + 1);
+                Vector<float64,8> dv = ijv * (ijv + ones) * 0.5 + addv;
+                Vector<float64,8> av = ones / dv;
+                acc = acc + av * Cajeta.vload8f64(tmp, j);
+                j = j + 8;
+            }
+            float64 sum = Cajeta.vsum8f64(acc);
             while (j < n) {
                 sum = sum + this.evalA(j, i) * tmp[j];
                 j = j + 1;
