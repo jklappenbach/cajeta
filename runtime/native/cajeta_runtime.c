@@ -229,6 +229,26 @@ void* __cajeta_dbg_fiber_at(int index) {
     return f;
 }
 
+// CP6f-2d unit 1: atomic registry snapshot. Copies up to `max` live-fiber
+// handles (spawn order) into `out` under a SINGLE lock hold, and returns the
+// total live count at that instant. The single critical section is the whole
+// point: the previous enumeration (count() then a loop of at(i), releasing the
+// lock between calls) is a TOCTOU that races concurrent register/unregister on
+// the still-running carriers (the program is not yet stopped-the-world — see
+// docs/specs/carrier-quiesce-spec.md). Returning the full count (which may
+// exceed `max`) lets the caller grow its buffer and re-snapshot; passing
+// out==NULL or max<=0 just reads the count.
+int __cajeta_dbg_fiber_snapshot(void** out, int max) {
+    pthread_mutex_lock(&__cajeta_dbg_fiber_reg_mutex);
+    int n = __cajeta_dbg_fiber_reg_count;
+    if (out && max > 0) {
+        int copy = n < max ? n : max;
+        for (int i = 0; i < copy; i++) out[i] = __cajeta_dbg_fiber_reg[i];
+    }
+    pthread_mutex_unlock(&__cajeta_dbg_fiber_reg_mutex);
+    return n;
+}
+
 // Test-only: drop all registry entries (does NOT free the fibers themselves).
 void __cajeta_dbg_fiber_reg_reset(void) {
     pthread_mutex_lock(&__cajeta_dbg_fiber_reg_mutex);

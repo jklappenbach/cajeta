@@ -581,16 +581,44 @@ std::vector<JitDebugSession::FiberSnapshot> JitDebugSession::liveFibers() {
             return nullptr;
         }
     };
-    auto countFn = reinterpret_cast<int (*)()>(resolve("__cajeta_dbg_fiber_count"));
-    auto atFn = reinterpret_cast<void* (*)(int)>(resolve("__cajeta_dbg_fiber_at"));
+    // CP6f-2d unit 1: enumerate the registry via the atomic snapshot so the
+    // handle list is one consistent view, not count()+at() with the lock
+    // released between (a TOCTOU under the multi-carrier scheduler). Per-handle
+    // field reads (id/frameTop/state) are still individually locked; the deeper
+    // "handle freed under us" guarantee comes from cross-carrier quiesce (the
+    // rest of carrier-quiesce-spec.md).
+    auto snapFn = reinterpret_cast<int (*)(void**, int)>(resolve("__cajeta_dbg_fiber_snapshot"));
     auto idFn = reinterpret_cast<long (*)(void*)>(resolve("__cajeta_dbg_fiber_id_of"));
     auto ftFn = reinterpret_cast<void* (*)(void*)>(resolve("__cajeta_dbg_fiber_frame_top"));
     auto stFn = reinterpret_cast<int (*)(void*)>(resolve("__cajeta_dbg_fiber_state"));
-    if (!countFn || !atFn || !idFn || !ftFn || !stFn) return out;
+    if (!idFn || !ftFn || !stFn) return out;
 
-    int n = countFn();
-    for (int i = 0; i < n; ++i) {
-        void* handle = atFn(i);
+    std::vector<void*> handles;
+    if (snapFn) {
+        int n = snapFn(nullptr, 0);          // count only
+        if (n > 0) {
+            handles.resize(static_cast<size_t>(n));
+            int got = snapFn(handles.data(), n);
+            if (got > n) {                   // grew between the two calls — retry larger
+                handles.resize(static_cast<size_t>(got));
+                got = snapFn(handles.data(), got);
+            }
+            handles.resize(static_cast<size_t>(got < static_cast<int>(handles.size())
+                                                   ? got : static_cast<int>(handles.size())));
+        }
+    } else {
+        // Fallback for a pre-snapshot runtime: the old (TOCTOU-prone) path.
+        auto countFn = reinterpret_cast<int (*)()>(resolve("__cajeta_dbg_fiber_count"));
+        auto atFn = reinterpret_cast<void* (*)(int)>(resolve("__cajeta_dbg_fiber_at"));
+        if (countFn && atFn) {
+            int n = countFn();
+            for (int i = 0; i < n; ++i) {
+                if (void* h = atFn(i)) handles.push_back(h);
+            }
+        }
+    }
+
+    for (void* handle : handles) {
         if (!handle) continue;
         out.push_back(FiberSnapshot{
             static_cast<int>(idFn(handle)),
