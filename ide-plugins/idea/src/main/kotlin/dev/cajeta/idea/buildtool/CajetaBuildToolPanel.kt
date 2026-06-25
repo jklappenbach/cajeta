@@ -27,6 +27,7 @@ import dev.cajeta.idea.settings.CajetaSettings
 import java.awt.event.KeyEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import java.io.File
 import java.nio.charset.StandardCharsets
 import javax.swing.JComponent
 import javax.swing.JMenuItem
@@ -47,13 +48,19 @@ import javax.swing.tree.DefaultTreeModel
 class CajetaBuildToolPanel(private val project: Project) : SimpleToolWindowPanel(true, true) {
 
     /** Leaf whose toString is the label, so the default tree speed-search and
-     *  renderer both read cleanly. */
-    private class TaskLeaf(val data: TaskTreeNode) : DefaultMutableTreeNode(data) {
+     *  renderer both read cleanly. Carries its owning root manifest so per-root
+     *  run/debug context is unambiguous in a multi-root tree (§10.2). */
+    private class TaskLeaf(val data: TaskTreeNode, val manifestPath: String) : DefaultMutableTreeNode(data) {
         override fun toString(): String = data.label
     }
 
-    /** The last successfully discovered model, kept so the context menu can
-     *  resolve a task's debug-launch coordinates (§5.2.2). */
+    /** A linked-root header node (shown when >1 root); carries the root manifest
+     *  so Unlink and per-root discovery can target it. */
+    private class RootNode(val manifestPath: String, label: String) : DefaultMutableTreeNode(label)
+
+    /** Discovered model per root manifest path (§10.2.1: each root its own tasks).
+     *  `lastModel` mirrors the primary root for the existing single-root paths. */
+    private val rootModels = LinkedHashMap<String, TaskModel>()
     private var lastModel: TaskModel? = null
 
     private val rootNode = DefaultMutableTreeNode("root")
@@ -141,10 +148,12 @@ class CajetaBuildToolPanel(private val project: Project) : SimpleToolWindowPanel
                 override fun isSelected(e: AnActionEvent) = CajetaSettings.instance.buildGroupByProject
                 override fun setSelected(e: AnActionEvent, state: Boolean) {
                     CajetaSettings.instance.buildGroupByProject = state
-                    lastModel?.let { populate(it) }
+                    if (rootModels.isNotEmpty()) rebuildTree()
                 }
             })
             addSeparator()
+            add(action("Link Project…", "Link another cajeta.json root", AllIcons.General.Add,
+                { true }) { linkProject() })
             add(action("Settings", "Open Cajeta settings", AllIcons.General.Settings, { true }) {
                 ShowSettingsUtil.getInstance().showSettingsDialog(project, CajetaConfigurable::class.java)
             })
@@ -179,42 +188,72 @@ class CajetaBuildToolPanel(private val project: Project) : SimpleToolWindowPanel
             .showInFocusCenter()
     }
 
-    /** Re-run discovery and rebuild the tree. */
+    /** All `cajeta.json` roots in play (spec §10): the auto-detected project
+     *  root, the manually linked roots, and any workspace's member manifests. */
+    private fun allRoots(): List<String> {
+        val roots = LinkedHashSet<String>()
+        CajetaManifest.path(project)?.let { roots += it }
+        roots += LinkedRootsService.getInstance(project).linkedPaths()
+        // Expand workspace members (§10.2.4) of every root we know.
+        for (r in roots.toList()) {
+            val text = runCatching { File(r).readText() }.getOrNull() ?: continue
+            roots += CajetaRoots.workspaceMembers(text, File(r).parent ?: ".")
+        }
+        return roots.toList()
+    }
+
+    /** Re-run discovery for every root and rebuild the tree (§10.2.1). */
     fun reload() {
-        val manifest = CajetaManifest.path(project)
-        if (manifest == null) {
+        val roots = allRoots()
+        if (roots.isEmpty()) {
             showMessage("No cajeta.json in this project")
             return
         }
+        rootModels.clear()
         object : Task.Backgroundable(project, "Discovering Cajeta tasks", true) {
             override fun run(indicator: ProgressIndicator) {
-                val result = CajetaBuildRunner.discover(CajetaSettings.instance.buildToolPath, manifest)
-                ApplicationManager.getApplication().invokeLater {
-                    when (result) {
-                        is CajetaBuildRunner.DiscoverResult.Ok -> populate(result.model)
-                        is CajetaBuildRunner.DiscoverResult.Failed -> showMessage(result.reason)
+                val discovered = LinkedHashMap<String, TaskModel>()
+                val failures = mutableListOf<String>()
+                for (root in roots) {
+                    when (val r = CajetaBuildRunner.discover(CajetaSettings.instance.buildToolPath, root)) {
+                        is CajetaBuildRunner.DiscoverResult.Ok -> discovered[root] = r.model
+                        is CajetaBuildRunner.DiscoverResult.Failed -> failures += "${File(root).parent}: ${r.reason}"
                     }
+                }
+                ApplicationManager.getApplication().invokeLater {
+                    rootModels.clear()
+                    rootModels.putAll(discovered)
+                    lastModel = discovered[CajetaManifest.path(project)] ?: discovered.values.firstOrNull()
+                    if (rootModels.isEmpty()) showMessage(failures.joinToString("\n").ifBlank { "Discovery failed" })
+                    else rebuildTree()
                 }
             }
         }.queue()
     }
 
-    private fun populate(model: TaskModel) {
-        lastModel = model
+    private fun rebuildTree() {
         rootNode.removeAllChildren()
+        val multi = rootModels.size > 1
+        for ((manifest, model) in rootModels) {
+            val parent = if (multi) RootNode(manifest, File(manifest).parentFile?.name ?: manifest).also { rootNode.add(it) } else rootNode
+            addGroups(parent, model, manifest)
+        }
+        treeModel.reload()
+        TreeUtil.expandAll(tree)
+    }
+
+    private fun addGroups(parent: DefaultMutableTreeNode, model: TaskModel, manifest: String) {
         val groups = TaskTreeModelBuilder.build(model)
         if (CajetaSettings.instance.buildGroupByProject) {
             for (group in groups) {
                 val groupNode = DefaultMutableTreeNode(group.title)
-                for (node in group.nodes) groupNode.add(TaskLeaf(node))
-                rootNode.add(groupNode)
+                for (node in group.nodes) groupNode.add(TaskLeaf(node, manifest))
+                parent.add(groupNode)
             }
         } else {
-            // Flat presentation (§9.2.4): leaves directly under the root.
-            for (group in groups) for (node in group.nodes) rootNode.add(TaskLeaf(node))
+            // Flat presentation (§9.2.4): leaves directly under the parent.
+            for (group in groups) for (node in group.nodes) parent.add(TaskLeaf(node, manifest))
         }
-        treeModel.reload()
-        TreeUtil.expandAll(tree)
     }
 
     private fun showMessage(text: String) {
@@ -223,63 +262,85 @@ class CajetaBuildToolPanel(private val project: Project) : SimpleToolWindowPanel
         treeModel.reload()
     }
 
-    private fun selectedTask(): TaskTreeNode? =
-        (tree.selectionPath?.lastPathComponent as? TaskLeaf)?.data
+    private fun selectedLeaf(): TaskLeaf? = tree.selectionPath?.lastPathComponent as? TaskLeaf
+    private fun selectedTask(): TaskTreeNode? = selectedLeaf()?.data
+    private fun selectedRoot(): RootNode? = tree.selectionPath?.lastPathComponent as? RootNode
 
     private fun runSelected() {
-        val node = selectedTask() ?: return
-        val manifest = CajetaManifest.path(project) ?: return
-        CajetaTaskLauncher.launch(project, manifest, node)
+        val leaf = selectedLeaf() ?: return
+        CajetaTaskLauncher.launch(project, leaf.manifestPath, leaf.data)
     }
 
-    private fun debugSelected(node: TaskTreeNode) {
-        val manifest = CajetaManifest.path(project) ?: return
-        val model = lastModel ?: return
-        CajetaTaskLauncher.debug(project, manifest, model, node)
+    private fun debugSelected(leaf: TaskLeaf) {
+        val model = rootModels[leaf.manifestPath] ?: return
+        CajetaTaskLauncher.debug(project, leaf.manifestPath, model, leaf.data)
     }
 
     /** Open the Run-with-args dialog for the task and run it with the result
      *  (spec §12.2). */
-    private fun runWithArgs(node: TaskTreeNode) {
-        val model = lastModel ?: return
-        val task = model.tasks.firstOrNull { it.name == node.runName } ?: return
-        val manifest = CajetaManifest.path(project)
+    private fun runWithArgs(leaf: TaskLeaf) {
+        val model = rootModels[leaf.manifestPath] ?: return
+        val task = model.tasks.firstOrNull { it.name == leaf.data.runName } ?: return
         val dialog = RunWithArgsDialog(
-            project, task, manifest,
+            project, task, leaf.manifestPath,
             CajetaSettings.instance.defaultProfile, CajetaSettings.instance.defaultFlavor,
         )
         if (dialog.showAndGet()) CajetaTaskLauncher.launchWithSpec(project, dialog.result())
     }
 
-    /** Whether the selected node maps to a dap-debuggable task (§5.2.2). */
-    private fun isDebuggable(node: TaskTreeNode): Boolean {
-        if (node.kind != TaskTreeNode.Kind.TASK) return false
-        val model = lastModel ?: return false
-        val task = model.tasks.firstOrNull { it.name == node.runName } ?: return false
+    /** Whether the leaf maps to a dap-debuggable task (§5.2.2). */
+    private fun isDebuggable(leaf: TaskLeaf): Boolean {
+        if (leaf.data.kind != TaskTreeNode.Kind.TASK) return false
+        val model = rootModels[leaf.manifestPath] ?: return false
+        val task = model.tasks.firstOrNull { it.name == leaf.data.runName } ?: return false
         return TaskDebugMapping.isDebuggable(task, model)
     }
 
-    private fun openInManifest(node: TaskTreeNode) {
-        val path = CajetaManifest.path(project) ?: return
-        val vf = LocalFileSystem.getInstance().findFileByPath(path) ?: return
+    private fun openInManifest(leaf: TaskLeaf) {
+        val vf = LocalFileSystem.getInstance().findFileByPath(leaf.manifestPath) ?: return
         val text = runCatching {
             String(vf.contentsToByteArray(), StandardCharsets.UTF_8)
         }.getOrDefault("")
-        val offset = ManifestTaskLocator.offsetOf(text, node.runName) ?: 0
+        val offset = ManifestTaskLocator.offsetOf(text, leaf.data.runName) ?: 0
         OpenFileDescriptor(project, vf, offset).navigate(true)
     }
 
+    /** Pick a `cajeta.json` to link as an additional root (§10.2.2). */
+    private fun linkProject() {
+        val descriptor = com.intellij.openapi.fileChooser.FileChooserDescriptor(true, false, false, false, false, false)
+            .withFileFilter { it.name == "cajeta.json" }
+            .withTitle("Link Cajeta Project")
+        com.intellij.openapi.fileChooser.FileChooser.chooseFile(descriptor, project, null)?.let { chosen ->
+            LinkedRootsService.getInstance(project).link(chosen.path)
+            reload()
+        }
+    }
+
+    private fun unlink(root: RootNode) {
+        LinkedRootsService.getInstance(project).unlink(root.manifestPath)
+        reload()
+    }
+
     private fun showContextMenu(e: MouseEvent) {
-        val node = selectedTask() ?: return
+        selectedRoot()?.let { root ->
+            // A linked (non-primary) root can be unlinked (§10.2.3).
+            if (root.manifestPath != CajetaManifest.path(project)) {
+                JPopupMenu().apply {
+                    add(JMenuItem("Unlink Project").apply { addActionListener { unlink(root) } })
+                }.show(e.component, e.x, e.y)
+            }
+            return
+        }
+        val leaf = selectedLeaf() ?: return
         JPopupMenu().apply {
             add(JMenuItem("Run").apply { addActionListener { runSelected() } })
-            if (node.kind == TaskTreeNode.Kind.TASK) {
-                add(JMenuItem("Run with Arguments…").apply { addActionListener { runWithArgs(node) } })
+            if (leaf.data.kind == TaskTreeNode.Kind.TASK) {
+                add(JMenuItem("Run with Arguments…").apply { addActionListener { runWithArgs(leaf) } })
             }
-            if (isDebuggable(node)) {
-                add(JMenuItem("Debug").apply { addActionListener { debugSelected(node) } })
+            if (isDebuggable(leaf)) {
+                add(JMenuItem("Debug").apply { addActionListener { debugSelected(leaf) } })
             }
-            add(JMenuItem("Open in cajeta.json").apply { addActionListener { openInManifest(node) } })
+            add(JMenuItem("Open in cajeta.json").apply { addActionListener { openInManifest(leaf) } })
         }.show(e.component, e.x, e.y)
     }
 
