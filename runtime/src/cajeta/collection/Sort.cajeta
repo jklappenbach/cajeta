@@ -175,16 +175,89 @@ public class Sort {
 
     /**
      * Stable sort of `a[0..n)` by `cmp` (numpy `kind='stable'`/`'mergesort'`).
-     * Bottom-up merge sort: O(n log n), O(n) auxiliary, equal keys keep their
-     * input order (the merge takes the left run on ties).
+     * A driftsort-flavored merge sort: O(n log n), O(n) auxiliary, equal keys
+     * keep their input order (every merge takes the left run on ties).
+     *
+     * Three levers over a textbook width-1 bottom-up mergesort, all stable:
+     *  1. **Run-building base blocks** — each length-`BLK` block is first
+     *     insertion-sorted, and a maximal *strictly*-descending prefix is
+     *     reversed first (strict, so equal keys never cross → stability holds),
+     *     making reverse-ordered input near-linear. Starting the merge at
+     *     width `BLK` instead of 1 removes the first ~log2(BLK) merge passes.
+     *  2. **Ping-pong merging** — passes alternate `a -> buf -> a` instead of
+     *     copying `buf` back into `a` after every pass, halving the memory
+     *     traffic; a single final copy fixes parity when the result lands in
+     *     `buf`.
      */
     public static void sortStable<T>(T[] a, int32 n, (T, T) -> int32 cmp) {
         if (n < 2) {
             return;
         }
+        // Lever 1: build sorted runs of length BLK (insertion sort + descending-
+        // prefix reverse). BLK is the merge's starting width.
+        int32 BLK = 32;
+        int32 start = 0;
+        while (start < n) {
+            int32 end = start + BLK;
+            if (end > n) {
+                end = n;
+            }
+            // Reverse a maximal strictly-descending prefix so reverse-sorted
+            // input costs one reversal, not O(BLK^2) insertion shifts. Strict
+            // `<` keeps equal keys in place — required for stability.
+            int32 runEnd = start + 1;
+            if (runEnd < end && cmp(a[runEnd], a[start]) < 0) {
+                while (runEnd < end && cmp(a[runEnd], a[runEnd - 1]) < 0) {
+                    runEnd = runEnd + 1;
+                }
+                int32 lo2 = start;
+                int32 hi2 = runEnd - 1;
+                while (lo2 < hi2) {
+                    T t = a[lo2];
+                    a[lo2] = a[hi2];
+                    a[hi2] = t;
+                    lo2 = lo2 + 1;
+                    hi2 = hi2 - 1;
+                }
+            }
+            int32 ii = start + 1;
+            while (ii < end) {
+                T key = a[ii];
+                int32 jj = ii;
+                boolean moving = true;
+                while (moving) {
+                    if (jj > start) {
+                        T prev = a[jj - 1];
+                        if (cmp(key, prev) < 0) {
+                            a[jj] = prev;
+                            jj = jj - 1;
+                        } else {
+                            moving = false;
+                        }
+                    } else {
+                        moving = false;
+                    }
+                }
+                a[jj] = key;
+                ii = ii + 1;
+            }
+            start = end;
+        }
+        if (BLK >= n) {
+            return;
+        }
+        // Lever 2: ping-pong bottom-up merge. `src` holds the current sorted
+        // runs, `dst` receives the merged (doubled) runs; swap each pass.
         T[] buf = heap T[n];
-        int32 width = 1;
+        boolean dataInA = true;
+        int32 width = BLK;
         while (width < n) {
+            T[] src = a;
+            T[] dst = buf;
+            if (!dataInA) {
+                src = buf;
+                dst = a;
+            }
             int32 i = 0;
             while (i < n) {
                 int32 left = i;
@@ -200,40 +273,41 @@ public class Sort {
                 int32 ri = mid;
                 int32 k = left;
                 while (li < mid && ri < right) {
-                    T lv = a[li];
-                    T rv = a[ri];
+                    T lv = src[li];
+                    T rv = src[ri];
                     // Stable: take the right run only when it strictly orders
                     // before the left; ties keep the left element first.
                     if (cmp(rv, lv) < 0) {
-                        buf[k] = rv;
+                        dst[k] = rv;
                         ri = ri + 1;
                     } else {
-                        buf[k] = lv;
+                        dst[k] = lv;
                         li = li + 1;
                     }
                     k = k + 1;
                 }
                 while (li < mid) {
-                    T lv = a[li];
-                    buf[k] = lv;
+                    dst[k] = src[li];
                     li = li + 1;
                     k = k + 1;
                 }
                 while (ri < right) {
-                    T rv = a[ri];
-                    buf[k] = rv;
+                    dst[k] = src[ri];
                     ri = ri + 1;
                     k = k + 1;
                 }
                 i = i + width + width;
             }
+            dataInA = !dataInA;
+            width = width + width;
+        }
+        if (!dataInA) {
+            // Result parity landed in `buf`; one copy back to `a`.
             int32 c = 0;
             while (c < n) {
-                T v = buf[c];
-                a[c] = v;
+                a[c] = buf[c];
                 c = c + 1;
             }
-            width = width + width;
         }
     }
 
