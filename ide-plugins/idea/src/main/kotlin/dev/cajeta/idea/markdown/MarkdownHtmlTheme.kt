@@ -25,14 +25,18 @@ object MarkdownHtmlTheme {
         val border: String,
         val fontName: String,
         val fontSizePt: Int,
+        /** Body background. Null = transparent (Swing, painted over the fold tint);
+         *  a color = opaque (JCEF, which has no transparent editor behind it). */
+        val background: String? = null,
     )
 
     fun wrap(bodyHtml: String, p: Palette): String {
         val mono = "${p.fontName.ifBlank { "monospace" }}, monospace"
         val s = p.fontSizePt
+        val bgRule = p.background?.let { " background: $it;" } ?: ""
         val css = """
             body { color: ${p.foreground}; font-family: sans-serif; font-size: ${s}pt;
-                   margin: 0 6px; padding: 4px 0; }
+                   margin: 0 6px; padding: 4px 0;$bgRule }
             h1, h2, h3, h4, h5, h6 { color: ${p.foreground}; margin: 8px 0 4px 0; font-weight: bold; }
             h1 { font-size: ${s + 5}pt; } h2 { font-size: ${s + 3}pt; } h3 { font-size: ${s + 1}pt; }
             h4, h5, h6 { font-size: ${s}pt; }

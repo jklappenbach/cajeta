@@ -20,6 +20,19 @@ class MarkdownFoldRenderer(markdown: String) : CustomFoldRegionRenderer {
 
     private val html: String = MarkdownEngineRegistry.getInstance().active().renderToHtml(markdown)
     private val view: MarkdownBlockView = MarkdownBlockViewFactory.create(html)
+    private var repaintBound = false
+
+    /** Bind the async-render repaint to this region once we have one: re-measure
+     *  + repaint when an async surface (JCEF) finishes. Idempotent. */
+    private fun bindRepaint(region: CustomFoldRegion) {
+        if (repaintBound) return
+        repaintBound = true
+        view.bindRepaint {
+            com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater {
+                if (region.isValid) region.update()
+            }
+        }
+    }
 
     override fun calcWidthInPixels(region: CustomFoldRegion): Int =
         region.editor.contentComponent.width.coerceAtLeast(300)
@@ -33,6 +46,7 @@ class MarkdownFoldRenderer(markdown: String) : CustomFoldRegionRenderer {
         targetRegion: Rectangle2D,
         textAttributes: TextAttributes,
     ) {
+        bindRepaint(region)
         val width = targetRegion.width.toInt().coerceAtLeast(10)
         val height = targetRegion.height.toInt().coerceAtLeast(region.editor.lineHeight)
         val gCopy = g.create() as Graphics2D

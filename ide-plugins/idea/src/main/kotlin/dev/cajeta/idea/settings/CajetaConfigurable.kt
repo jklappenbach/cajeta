@@ -19,6 +19,7 @@ class CajetaConfigurable : Configurable {
 
     private var compilerPathField: JBTextField? = null
     private var renderMarkdownCheck: JBCheckBox? = null
+    private var markdownSurfaceCombo: ComboBox<String>? = null
     private var fixturesPathField: JBTextField? = null
     private var typingDelayField: JBTextField? = null
     // CP7-5: memory-facet visualization toggles (FR-7.3).
@@ -44,6 +45,9 @@ class CajetaConfigurable : Configurable {
             "Render markdown in comments (Obsidian-style)",
             settings.renderMarkdownInComments,
         ).also { renderMarkdownCheck = it }
+        val surfaceCombo = ComboBox(
+            arrayOf(CajetaSettings.MARKDOWN_SURFACE_SWING, CajetaSettings.MARKDOWN_SURFACE_JCEF),
+        ).also { it.selectedItem = settings.markdownRenderSurface; markdownSurfaceCombo = it }
         val fixturesField = JBTextField(settings.testFixturesPath, 40).also { fixturesPathField = it }
         val delayField = JBTextField(settings.testTypingDelayMs.toString(), 6).also { typingDelayField = it }
 
@@ -93,6 +97,7 @@ class CajetaConfigurable : Configurable {
         panel = FormBuilder.createFormBuilder()
             .addLabeledComponent(JBLabel("cajetac binary:"), pathField, 1, false)
             .addComponent(renderCheck, 1)
+            .addLabeledComponent(JBLabel("Markdown render surface (jcef = experimental, full CSS):"), surfaceCombo, 1, false)
             .addSeparator()
             .addComponent(JBLabel("Debugger — memory ownership visualization:"), 1)
             .addComponent(varsCheck, 1)
@@ -121,6 +126,7 @@ class CajetaConfigurable : Configurable {
         val s = CajetaSettings.instance
         return (compilerPathField?.text ?: "") != s.compilerPath ||
             (renderMarkdownCheck?.isSelected ?: true) != s.renderMarkdownInComments ||
+            (markdownSurfaceCombo?.selectedItem as? String ?: s.markdownRenderSurface) != s.markdownRenderSurface ||
             (fixturesPathField?.text ?: "") != s.testFixturesPath ||
             (typingDelayField?.text?.toIntOrNull() ?: s.testTypingDelayMs) != s.testTypingDelayMs ||
             (facetsVariablesCheck?.isSelected ?: true) != s.showFacetsInVariables ||
@@ -138,6 +144,7 @@ class CajetaConfigurable : Configurable {
         val s = CajetaSettings.instance
         s.compilerPath = compilerPathField?.text?.trim().orEmpty()
         s.renderMarkdownInComments = renderMarkdownCheck?.isSelected ?: true
+        s.markdownRenderSurface = markdownSurfaceCombo?.selectedItem as? String ?: CajetaSettings.MARKDOWN_SURFACE_SWING
         s.testFixturesPath = fixturesPathField?.text?.trim().orEmpty()
         typingDelayField?.text?.toIntOrNull()?.let {
             s.testTypingDelayMs = it.coerceIn(1, 5000)
@@ -157,6 +164,7 @@ class CajetaConfigurable : Configurable {
         val s = CajetaSettings.instance
         compilerPathField?.text = s.compilerPath
         renderMarkdownCheck?.isSelected = s.renderMarkdownInComments
+        markdownSurfaceCombo?.selectedItem = s.markdownRenderSurface
         fixturesPathField?.text = s.testFixturesPath
         typingDelayField?.text = s.testTypingDelayMs.toString()
         facetsVariablesCheck?.isSelected = s.showFacetsInVariables
@@ -173,6 +181,7 @@ class CajetaConfigurable : Configurable {
     override fun disposeUIResources() {
         compilerPathField = null
         renderMarkdownCheck = null
+        markdownSurfaceCombo = null
         fixturesPathField = null
         typingDelayField = null
         facetsVariablesCheck = null

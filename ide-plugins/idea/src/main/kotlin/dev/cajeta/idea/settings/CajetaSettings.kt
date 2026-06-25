@@ -15,6 +15,10 @@ class CajetaSettings : PersistentStateComponent<CajetaSettings.State> {
         var compilerPath: String = DEFAULT_COMPILER_PATH,
         var markdownEngineId: String = "jetbrains-markdown",
         var renderMarkdownInComments: Boolean = true,
+        // Rendering surface for in-comment markdown: "swing" (HTMLEditorKit,
+        // default, always available) or "jcef" (Chromium off-screen, full CSS
+        // fidelity, experimental — falls back to swing when JCEF is unsupported).
+        var markdownRenderSurface: String = MARKDOWN_SURFACE_SWING,
         var testFixturesPath: String = DEFAULT_FIXTURES_PATH,
         var testTypingDelayMs: Int = 30,
         // CP7-5 (FR-7.3): independent toggles for the three memory-facet
@@ -56,6 +60,10 @@ class CajetaSettings : PersistentStateComponent<CajetaSettings.State> {
     var renderMarkdownInComments: Boolean
         get() = state.renderMarkdownInComments
         set(value) { state.renderMarkdownInComments = value }
+
+    var markdownRenderSurface: String
+        get() = state.markdownRenderSurface
+        set(value) { state.markdownRenderSurface = value }
 
     var testFixturesPath: String
         get() = state.testFixturesPath
@@ -116,6 +124,10 @@ class CajetaSettings : PersistentStateComponent<CajetaSettings.State> {
         const val AUTO_RELOAD_PROMPT = "prompt"
         const val AUTO_RELOAD_ALWAYS = "always"
         const val AUTO_RELOAD_NEVER = "never"
+
+        // In-comment markdown rendering surfaces (spec: markdown JCEF prototype).
+        const val MARKDOWN_SURFACE_SWING = "swing"
+        const val MARKDOWN_SURFACE_JCEF = "jcef"
 
         val instance: CajetaSettings get() = service()
     }
