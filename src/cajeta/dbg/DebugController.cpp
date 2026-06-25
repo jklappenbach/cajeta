@@ -7,6 +7,7 @@
 extern "C" {
     int  __cajeta_stop_request(void);
     void __cajeta_stop_clear(void);
+    void __cajeta_stop_park(void);
     void __cajeta_stop_set_expected(int n);
     int  __cajeta_stop_wait_converged(long timeout_ns);
     int  __cajeta_carrier_count_get(void);
@@ -86,6 +87,17 @@ namespace cajeta::dbg {
                                       void* frameTop) {
         std::unique_lock<std::mutex> lock(mutex);
         if (!exceptionArmed) return;
+
+        // CP6f-2d §3.6: an armed exception quiesces the whole pool, exactly like
+        // a breakpoint. Open the stop round so other carriers park at their
+        // safepoints/hand-off. If a stop is already in flight this round, park as
+        // a secondary (the throw resumes after continue) — no competing stop.
+        if (__cajeta_stop_request() == 0) {
+            lock.unlock();
+            __cajeta_stop_park();
+            return;
+        }
+        __cajeta_stop_set_expected(__cajeta_carrier_count_get() - 1);
 
         // Park with reason=Exception. locId is -1 (no safepoint loc); the DAP
         // layer reads the throwing line from the innermost frame's current_loc.

@@ -41,9 +41,22 @@ constexpr int kFibers = 4;   // 3 plain + 1 armed; carriers pinned to match
 cajeta::dbg::DebugController* g_ctrl = nullptr;
 std::atomic<long> g_counter{0};
 std::atomic<bool> g_quit{false};
+std::atomic<bool> g_stuckRunning{false};   // stuck fiber is in its native call
+std::atomic<int> g_armedReady{0};          // start-gate for the two-armed race
 
 extern "C" void testTrampoline(int32_t loc, int fid, void* ft) {
     if (g_ctrl) g_ctrl->onSafepoint(loc, static_cast<long>(fid), ft);
+}
+
+// Stands in for the runtime throw chokepoint calling the armed-exception
+// handler (CP6f-3) — drives onException directly so unit 6 tests the quiesce
+// integration, not the unwinder.
+void throwingFiber(void*) {
+    if (g_ctrl) g_ctrl->onException(reinterpret_cast<void*>(0xDEAD), 0, nullptr);
+    while (!g_quit.load(std::memory_order_relaxed)) {
+        __cajeta_dbg_safepoint(kPlainLoc);
+        g_counter.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 void plainFiber(void*) {
@@ -60,16 +73,40 @@ void armedFiber(void*) {
     }
 }
 
-// Simulates a carrier blocked in a long native call: it never reaches a
-// safepoint, so it cannot park — the barrier must time out and flag it (§5.4).
+// Simulates a carrier blocked in a native call for the whole stop window: it
+// never reaches a safepoint NOR returns to the carrier loop (which would let it
+// idle-park and count as quiesced), so it can never park — the barrier must
+// time out and flag it (§5.4). Stays "in native" until teardown sets g_quit.
 void nativeStuckFiber(void*) {
-    usleep(500 * 1000);                             // 500ms "native" work
+    g_stuckRunning.store(true);                     // handshake: now in native
+    while (!g_quit.load(std::memory_order_relaxed)) {
+        usleep(20 * 1000);                          // perpetually mid-native-call
+    }
+}
+
+// Armed fiber that waits until the stuck fiber is provably in its native call
+// before triggering the stop — so the stuck carrier is genuinely running (not
+// idle/un-dispatched, which would idle-park and count as quiesced). Each fiber
+// has its own pinned carrier, so the spin doesn't starve the stuck one.
+void armedAfterStuckFiber(void*) {
+    while (!g_stuckRunning.load(std::memory_order_acquire)) { /* spin */ }
+    __cajeta_dbg_safepoint(kArmedLoc);
+    while (!g_quit.load(std::memory_order_relaxed)) {
+        __cajeta_dbg_safepoint(kPlainLoc);
+        g_counter.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 // Hits a caller-chosen armed loc exactly once, then loops a non-armed loc. Two
 // of these on distinct armed locs exercise the near-simultaneous-stop race.
 void armedOnceFiber(void* arg) {
     int32_t loc = static_cast<int32_t>(reinterpret_cast<intptr_t>(arg));
+    // Start-gate: don't hit the armed loc until BOTH armed fibers are running,
+    // so they engage the same stop round (otherwise an idle carrier can satisfy
+    // the barrier before the second fiber reaches its breakpoint, and it then
+    // fires as a spurious second primary after resume).
+    g_armedReady.fetch_add(1, std::memory_order_acq_rel);
+    while (g_armedReady.load(std::memory_order_acquire) < 2) { /* spin */ }
     __cajeta_dbg_safepoint(loc);
     while (!g_quit.load(std::memory_order_relaxed)) {
         __cajeta_dbg_safepoint(kPlainLoc);
@@ -139,6 +176,7 @@ TEST(DbgCarrierQuiesce, BoundedBarrierFlagsNativeStuckCarrier) {
     __cajeta_stop_reset();
     g_counter.store(0);
     g_quit.store(false);
+    g_stuckRunning.store(false);
     setenv("CAJETA_CARRIERS", "4", 1);
 
     cajeta::dbg::DebugController controller;
@@ -147,13 +185,14 @@ TEST(DbgCarrierQuiesce, BoundedBarrierFlagsNativeStuckCarrier) {
     controller.arm(kArmedLoc);
     __cajeta_dbg_set_safepoint_handler(testTrampoline);
 
-    // 4 carriers: 1 armed (primary), 2 plain (park as secondaries), 1 stuck in
-    // a native call (never parks) → expected=3, only 2 converge.
+    // 4 carriers: 1 armed (primary, fires only once the stuck fiber is provably
+    // mid-native), 2 plain (park as secondaries), 1 stuck in a native call
+    // (never parks) → expected=3, only 2 converge → exactly 1 un-quiesced.
     void* slots[4] = {nullptr};
     __cajeta_task_run(nullptr, plainFiber, &slots[0]);
     __cajeta_task_run(nullptr, plainFiber, &slots[1]);
     __cajeta_task_run(nullptr, nativeStuckFiber, &slots[2]);
-    __cajeta_task_run(nullptr, armedFiber, &slots[3]);
+    __cajeta_task_run(nullptr, armedAfterStuckFiber, &slots[3]);
 
     auto t0 = std::chrono::steady_clock::now();
     cajeta::dbg::StopEvent ev;
@@ -174,6 +213,58 @@ TEST(DbgCarrierQuiesce, BoundedBarrierFlagsNativeStuckCarrier) {
     __cajeta_stop_reset();
 }
 
+// §3.6: an armed exception quiesces the WHOLE pool before inspection — every
+// other fiber AND a non-carrier entry/main thread running safepoints must
+// freeze, not just the throwing carrier.
+TEST(DbgCarrierQuiesce, ExceptionQuiescesPoolAndEntryThread) {
+    __cajeta_stop_reset();
+    g_counter.store(0);
+    g_quit.store(false);
+    setenv("CAJETA_CARRIERS", "3", 1);
+
+    cajeta::dbg::DebugController controller;
+    g_ctrl = &controller;
+    controller.armException();
+    __cajeta_dbg_set_safepoint_handler(testTrampoline);
+
+    // A non-carrier "entry/main" thread running cajeta safepoints, like the
+    // program's main. It must observe the stop and park too.
+    std::atomic<long> entryCounter{0};
+    std::thread entry([&] {
+        while (!g_quit.load(std::memory_order_relaxed)) {
+            __cajeta_dbg_safepoint(kPlainLoc);
+            entryCounter.fetch_add(1, std::memory_order_relaxed);
+        }
+    });
+
+    void* slots[3] = {nullptr};
+    __cajeta_task_run(nullptr, plainFiber, &slots[0]);
+    __cajeta_task_run(nullptr, plainFiber, &slots[1]);
+    __cajeta_task_run(nullptr, throwingFiber, &slots[2]);
+
+    cajeta::dbg::StopEvent ev;
+    ASSERT_TRUE(controller.waitForStop(ev, std::chrono::seconds(5)));
+    EXPECT_EQ(ev.reason, cajeta::dbg::StopEvent::StopReason::Exception);
+
+    // Whole-pool freeze: neither the fibers' counter nor the entry thread moves.
+    long f1 = g_counter.load(), e1 = entryCounter.load();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    EXPECT_EQ(f1, g_counter.load())   << "a fiber advanced during an exception stop";
+    EXPECT_EQ(e1, entryCounter.load()) << "entry thread advanced during an exception stop";
+
+    controller.resume();
+    EXPECT_TRUE(spinUntil([&] {
+        return g_counter.load() > f1 && entryCounter.load() > e1;
+    })) << "pool/entry did not resume after the exception stop";
+
+    g_quit.store(true);
+    entry.join();
+    __cajeta_task_shutdown();
+    __cajeta_dbg_set_safepoint_handler(nullptr);
+    g_ctrl = nullptr;
+    __cajeta_stop_reset();
+}
+
 // §5.3: two carriers hit armed safepoints in the same round → exactly ONE
 // primary stop; the other becomes a secondary (quiesced cleanly, not a second
 // competing primary). Both resume together on continue.
@@ -181,6 +272,7 @@ TEST(DbgCarrierQuiesce, TwoArmedSafepointsOnePrimaryBothResume) {
     __cajeta_stop_reset();
     g_counter.store(0);
     g_quit.store(false);
+    g_armedReady.store(0);
     setenv("CAJETA_CARRIERS", "2", 1);
 
     cajeta::dbg::DebugController controller;
