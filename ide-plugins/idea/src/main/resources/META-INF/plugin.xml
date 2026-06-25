@@ -52,6 +52,15 @@
     </extensions>
 
     <extensions defaultExtensionNs="com.intellij">
+        <!-- W-buildtool: the Gradle-style build-tool tool window, available only
+             when the project has a cajeta.json (spec §2.2). -->
+        <toolWindow
+            id="Cajeta Build"
+            anchor="right"
+            secondary="true"
+            factoryClass="dev.cajeta.idea.buildtool.CajetaBuildToolWindowFactory"/>
+        <notificationGroup id="Cajeta Build Tool" displayType="BALLOON"/>
+
         <fileType
             name="Cajeta"
             implementationClass="dev.cajeta.idea.CajetaFileType"
