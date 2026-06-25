@@ -67,7 +67,10 @@ public class SortInt64Bench extends Benchmark {
             }
         } else if (variant.equals("dups")) {
             while (i < this.n) {
-                this.src[i] = (int64) (i % 100);
+                // i % 16 — 16 unique values, matching every competitor runner's
+                // dups generator (rust/cpp/go/java all use i % 16) so the
+                // high-duplication case is sorted on identical data.
+                this.src[i] = (int64) (i % 16);
                 i = i + 1;
             }
         } else {
