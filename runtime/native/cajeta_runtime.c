@@ -6690,66 +6690,75 @@ struct cajeta_md5_state {
     int32_t  buf_len;
 };
 
-static const uint32_t MD5_K[64] = {
-    0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee,
-    0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
-    0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be,
-    0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
-    0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa,
-    0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
-    0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed,
-    0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
-    0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c,
-    0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
-    0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05,
-    0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
-    0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039,
-    0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
-    0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1,
-    0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391
-};
-
-static const uint32_t MD5_S[64] = {
-    7, 12, 17, 22,  7, 12, 17, 22,  7, 12, 17, 22,  7, 12, 17, 22,
-    5,  9, 14, 20,  5,  9, 14, 20,  5,  9, 14, 20,  5,  9, 14, 20,
-    4, 11, 16, 23,  4, 11, 16, 23,  4, 11, 16, 23,  4, 11, 16, 23,
-    6, 10, 15, 21,  6, 10, 15, 21,  6, 10, 15, 21,  6, 10, 15, 21
-};
+// The per-round constants (K) and rotate amounts (S) are baked directly into
+// the unrolled md5_transform below, so no runtime tables are needed.
 
 static inline uint32_t md5_rotl(uint32_t x, uint32_t n) {
     return (x << n) | (x >> (32u - n));
 }
 
+// Fully-unrolled MD5 transform (OpenSSL/rust-md-5 shape): the per-round message
+// index, rotate amount, and constant are baked in, so there's no data-dependent
+// branch, no `% 16`, and no array-indexed K/S in the inner loop — the original
+// canonical form left ~30% on the table. The round functions use the
+// shorter-critical-path boolean identities F = z^(x&(y^z)) and G = y^(z&(x^y)).
+// M[] is read little-endian via the byte-OR idiom clang folds to a single load
+// on the (LE) targets cajeta builds for.
 static void md5_transform(uint32_t state[4], const uint8_t block[64]) {
+    // The 16 message words are the block read little-endian. memcpy into a
+    // uint32 array is the portable idiom clang lowers to direct (unaligned)
+    // word loads on the LE targets cajeta builds for — no byte-OR reassembly in
+    // the inner path. (On a hypothetical BE target this would need a bswap; all
+    // current cajeta targets — x86-64, aarch64, Apple silicon — are LE.)
     uint32_t M[16];
-    for (int i = 0; i < 16; i++) {
-        M[i] = ((uint32_t) block[i*4 + 0])
-             | ((uint32_t) block[i*4 + 1] << 8)
-             | ((uint32_t) block[i*4 + 2] << 16)
-             | ((uint32_t) block[i*4 + 3] << 24);
-    }
+    memcpy(M, block, 64);
     uint32_t a = state[0], b = state[1], c = state[2], d = state[3];
-    for (int i = 0; i < 64; i++) {
-        uint32_t f, g;
-        if (i < 16) {
-            f = (b & c) | ((~b) & d);
-            g = (uint32_t) i;
-        } else if (i < 32) {
-            f = (d & b) | ((~d) & c);
-            g = (uint32_t)((5 * i + 1) % 16);
-        } else if (i < 48) {
-            f = b ^ c ^ d;
-            g = (uint32_t)((3 * i + 5) % 16);
-        } else {
-            f = c ^ (b | (~d));
-            g = (uint32_t)((7 * i) % 16);
-        }
-        uint32_t temp = d;
-        d = c;
-        c = b;
-        b = b + md5_rotl(a + f + MD5_K[i] + M[g], MD5_S[i]);
-        a = temp;
-    }
+    #define MD5_F(x,y,z) ((z) ^ ((x) & ((y) ^ (z))))
+    #define MD5_G(x,y,z) ((y) ^ ((z) & ((x) ^ (y))))
+    #define MD5_H(x,y,z) ((x) ^ (y) ^ (z))
+    #define MD5_I(x,y,z) ((y) ^ ((x) | ~(z)))
+    #define MD5_STEP(fn,a,b,c,d,m,k,s) (a) = (b) + md5_rotl((a) + fn(b,c,d) + (m) + (k), s)
+    // Round 1
+    MD5_STEP(MD5_F,a,b,c,d,M[0],0xd76aa478,7);  MD5_STEP(MD5_F,d,a,b,c,M[1],0xe8c7b756,12);
+    MD5_STEP(MD5_F,c,d,a,b,M[2],0x242070db,17); MD5_STEP(MD5_F,b,c,d,a,M[3],0xc1bdceee,22);
+    MD5_STEP(MD5_F,a,b,c,d,M[4],0xf57c0faf,7);  MD5_STEP(MD5_F,d,a,b,c,M[5],0x4787c62a,12);
+    MD5_STEP(MD5_F,c,d,a,b,M[6],0xa8304613,17); MD5_STEP(MD5_F,b,c,d,a,M[7],0xfd469501,22);
+    MD5_STEP(MD5_F,a,b,c,d,M[8],0x698098d8,7);  MD5_STEP(MD5_F,d,a,b,c,M[9],0x8b44f7af,12);
+    MD5_STEP(MD5_F,c,d,a,b,M[10],0xffff5bb1,17);MD5_STEP(MD5_F,b,c,d,a,M[11],0x895cd7be,22);
+    MD5_STEP(MD5_F,a,b,c,d,M[12],0x6b901122,7); MD5_STEP(MD5_F,d,a,b,c,M[13],0xfd987193,12);
+    MD5_STEP(MD5_F,c,d,a,b,M[14],0xa679438e,17);MD5_STEP(MD5_F,b,c,d,a,M[15],0x49b40821,22);
+    // Round 2
+    MD5_STEP(MD5_G,a,b,c,d,M[1],0xf61e2562,5);  MD5_STEP(MD5_G,d,a,b,c,M[6],0xc040b340,9);
+    MD5_STEP(MD5_G,c,d,a,b,M[11],0x265e5a51,14);MD5_STEP(MD5_G,b,c,d,a,M[0],0xe9b6c7aa,20);
+    MD5_STEP(MD5_G,a,b,c,d,M[5],0xd62f105d,5);  MD5_STEP(MD5_G,d,a,b,c,M[10],0x02441453,9);
+    MD5_STEP(MD5_G,c,d,a,b,M[15],0xd8a1e681,14);MD5_STEP(MD5_G,b,c,d,a,M[4],0xe7d3fbc8,20);
+    MD5_STEP(MD5_G,a,b,c,d,M[9],0x21e1cde6,5);  MD5_STEP(MD5_G,d,a,b,c,M[14],0xc33707d6,9);
+    MD5_STEP(MD5_G,c,d,a,b,M[3],0xf4d50d87,14); MD5_STEP(MD5_G,b,c,d,a,M[8],0x455a14ed,20);
+    MD5_STEP(MD5_G,a,b,c,d,M[13],0xa9e3e905,5); MD5_STEP(MD5_G,d,a,b,c,M[2],0xfcefa3f8,9);
+    MD5_STEP(MD5_G,c,d,a,b,M[7],0x676f02d9,14); MD5_STEP(MD5_G,b,c,d,a,M[12],0x8d2a4c8a,20);
+    // Round 3
+    MD5_STEP(MD5_H,a,b,c,d,M[5],0xfffa3942,4);  MD5_STEP(MD5_H,d,a,b,c,M[8],0x8771f681,11);
+    MD5_STEP(MD5_H,c,d,a,b,M[11],0x6d9d6122,16);MD5_STEP(MD5_H,b,c,d,a,M[14],0xfde5380c,23);
+    MD5_STEP(MD5_H,a,b,c,d,M[1],0xa4beea44,4);  MD5_STEP(MD5_H,d,a,b,c,M[4],0x4bdecfa9,11);
+    MD5_STEP(MD5_H,c,d,a,b,M[7],0xf6bb4b60,16); MD5_STEP(MD5_H,b,c,d,a,M[10],0xbebfbc70,23);
+    MD5_STEP(MD5_H,a,b,c,d,M[13],0x289b7ec6,4); MD5_STEP(MD5_H,d,a,b,c,M[0],0xeaa127fa,11);
+    MD5_STEP(MD5_H,c,d,a,b,M[3],0xd4ef3085,16); MD5_STEP(MD5_H,b,c,d,a,M[6],0x04881d05,23);
+    MD5_STEP(MD5_H,a,b,c,d,M[9],0xd9d4d039,4);  MD5_STEP(MD5_H,d,a,b,c,M[12],0xe6db99e5,11);
+    MD5_STEP(MD5_H,c,d,a,b,M[15],0x1fa27cf8,16);MD5_STEP(MD5_H,b,c,d,a,M[2],0xc4ac5665,23);
+    // Round 4
+    MD5_STEP(MD5_I,a,b,c,d,M[0],0xf4292244,6);  MD5_STEP(MD5_I,d,a,b,c,M[7],0x432aff97,10);
+    MD5_STEP(MD5_I,c,d,a,b,M[14],0xab9423a7,15);MD5_STEP(MD5_I,b,c,d,a,M[5],0xfc93a039,21);
+    MD5_STEP(MD5_I,a,b,c,d,M[12],0x655b59c3,6); MD5_STEP(MD5_I,d,a,b,c,M[3],0x8f0ccc92,10);
+    MD5_STEP(MD5_I,c,d,a,b,M[10],0xffeff47d,15);MD5_STEP(MD5_I,b,c,d,a,M[1],0x85845dd1,21);
+    MD5_STEP(MD5_I,a,b,c,d,M[8],0x6fa87e4f,6);  MD5_STEP(MD5_I,d,a,b,c,M[15],0xfe2ce6e0,10);
+    MD5_STEP(MD5_I,c,d,a,b,M[6],0xa3014314,15); MD5_STEP(MD5_I,b,c,d,a,M[13],0x4e0811a1,21);
+    MD5_STEP(MD5_I,a,b,c,d,M[4],0xf7537e82,6);  MD5_STEP(MD5_I,d,a,b,c,M[11],0xbd3af235,10);
+    MD5_STEP(MD5_I,c,d,a,b,M[2],0x2ad7d2bb,15); MD5_STEP(MD5_I,b,c,d,a,M[9],0xeb86d391,21);
+    #undef MD5_F
+    #undef MD5_G
+    #undef MD5_H
+    #undef MD5_I
+    #undef MD5_STEP
     state[0] += a;
     state[1] += b;
     state[2] += c;
@@ -6768,17 +6777,25 @@ static void md5_init(struct cajeta_md5_state* s) {
 static void md5_update(struct cajeta_md5_state* s,
                        const uint8_t* data, size_t len) {
     s->bits += (uint64_t) len * 8u;
-    while (len > 0) {
-        size_t to_copy = (size_t) (64 - s->buf_len);
-        if (to_copy > len) to_copy = len;
-        memcpy(s->buf + s->buf_len, data, to_copy);
-        s->buf_len += (int32_t) to_copy;
-        data += to_copy;
-        len  -= to_copy;
-        if (s->buf_len == 64) {
-            md5_transform(s->s, s->buf);
-            s->buf_len = 0;
-        }
+    // 1. Top off any partial buffer to a full block first.
+    if (s->buf_len > 0) {
+        size_t need = (size_t) (64 - s->buf_len);
+        size_t take = need < len ? need : len;
+        memcpy(s->buf + s->buf_len, data, take);
+        s->buf_len += (int32_t) take;
+        data += take; len -= take;
+        if (s->buf_len == 64) { md5_transform(s->s, s->buf); s->buf_len = 0; }
+    }
+    // 2. Hash whole blocks straight from the caller's buffer — no per-block
+    //    64-byte memcpy (the dominant overhead the naive loop paid on bulk input).
+    while (len >= 64) {
+        md5_transform(s->s, data);
+        data += 64; len -= 64;
+    }
+    // 3. Stash the sub-block tail for next time.
+    if (len > 0) {
+        memcpy(s->buf, data, len);
+        s->buf_len = (int32_t) len;
     }
 }
 
