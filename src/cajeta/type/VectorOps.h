@@ -149,6 +149,35 @@ namespace vecops {
         return b.CreateBitCast(cmp, iN, "eqmask.bits");      // packed movemask
     }
 
+    // compressStore(ptr, vec, mask): pack the lanes of `vec` whose `mask` bit is
+    // set into contiguous memory at `ptr`, low lane first — AVX-512 vpcompress*
+    // (the partition primitive behind vqsort / x86-simd-sort). Lowers to
+    // @llvm.masked.compressstore, overloaded ONLY on the vector type (the pointer
+    // is a plain `ptr`, the mask `<N x i1>` is derived). Writes popcount(mask)
+    // elements; the caller advances its write cursor by maskPopcount(mask). On a
+    // target without AVX-512 the backend scalarizes it (correct, just slower).
+    inline void compressStore(llvm::IRBuilderBase& b, llvm::Value* ptr,
+                              llvm::Value* vec, llvm::Value* mask) {
+        llvm::Module* m = b.GetInsertBlock()->getModule();
+        llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
+            m, llvm::Intrinsic::masked_compressstore, {vec->getType()});
+        b.CreateCall(fn, {vec, ptr, mask});
+    }
+
+    // maskPopcount(mask) -> i32: number of set lanes in an `<N x i1>` mask. Bit-
+    // cast to iN then ctpop — the count compressStore just wrote, so a partition
+    // can bump its cursor by it.
+    inline llvm::Value* maskPopcount(llvm::IRBuilderBase& b, llvm::Value* mask) {
+        auto* vecTy = llvm::cast<llvm::FixedVectorType>(mask->getType());
+        unsigned n = vecTy->getNumElements();
+        auto* iN = llvm::IntegerType::get(b.getContext(), n);
+        llvm::Value* bits = b.CreateBitCast(mask, iN, "mask.bits");
+        llvm::Value* pc = b.CreateUnaryIntrinsic(llvm::Intrinsic::ctpop, bits,
+                                                 nullptr, "mask.popcount");
+        return b.CreateZExtOrTrunc(pc, llvm::Type::getInt32Ty(b.getContext()),
+                                   "mask.count");
+    }
+
     // dot(a, b) -> scalar. Element-wise multiply then horizontal add. `isFloat`
     // picks fmul/fadd vs mul/add from the element type.
     inline llvm::Value* dot(llvm::IRBuilderBase& b, llvm::Value* a,
