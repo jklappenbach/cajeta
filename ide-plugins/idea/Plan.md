@@ -12,9 +12,48 @@
 >   toggle shipped; the per-comment **gutter-icon toggle** and a
 >   menu **toggle-action** are deferred (cosmetic).
 >
-> **Current work:** [Phase 2 — Debugging](#phase-2--debugging) (breakpoints,
-> launch-in-debug, stack/variables view+edit, threads/fibers), built on the
-> `cajeta dap` Debug Adapter Protocol server per `docs/Debugging.md`.
+> **Phase 2 — Debugging: landed through CP7-6** (breakpoints incl.
+> conditional/exception, launch-in-debug, stack/variables view+edit,
+> threads/fibers, ownership/allocation/lifetime visualization, drop
+> breakpoints), built on the `cajeta dap` Debug Adapter Protocol server per
+> `docs/Debugging.md`. One open tail: **CP6f-2d** hard carrier-quiesce. See the
+> [Active worklist](#active-worklist-session-2026-06-24) for this session's scope.
+
+## Active worklist (session 2026-06-24)
+
+Phase 2 has, in fact, landed through **CP7-6** on `main` (verified against the
+FR-1 checkpoint table + git log); this status block and the README lag the code.
+This session reconciles that and clears the remaining tail. Tracked on the
+implement skill's focus stack (`agents/idea-focus.md`).
+
+- [x] **W1 — Verify build + tests green.** `./gradlew test` → 87 tests, 86
+  passed, 0 failed, 1 skipped (build compiles clean). Root-caused + fixed one
+  flake: `DapClientIntegrationTest`'s `configurationDone` future capped at 10s,
+  but the server JIT-compiles + runs the program synchronously from that request
+  (first cold JIT of the 277 MB binary > 10s on a loaded box) — raised to 30s
+  with a comment. The production path (`CajetaDebugSession`) already had headroom.
+- [x] **W2 — Reconcile docs to landed reality.** Status header now says "Phase 2
+  landed through CP7-6"; Part C marks CP6a–e, CP6f-1/2a/2b/2c/3 and CP7-1a…CP7-6
+  DONE, with CP6f-2d flagged as the lone OPEN tail; branch note corrected
+  (`idea-ide` → merged to `main`); README layout diagram gains `debugger/`,
+  `harness/`, `wizard/`. (Debugging-tier *acceptance checkboxes* left unticked —
+  ticking them needs a real `runIde` walkthrough, not a doc edit.)
+- [ ] **W3 — Finish loose threads.** Decomposed:
+  - [ ] **W3a — CP6f-2d hard carrier-quiesce.** C++ JIT-debug runtime: guarantee
+    the entry thread and live fibers are fully quiesced for the
+    entry-thread-vs-live-fibers edge before enumeration. TDD against
+    `cajeta_debug_test`. Highest risk (concurrency).
+  - [ ] **W3b — "Toggle Markdown Rendering" menu action.** Plugin Kotlin: an
+    action flipping `CajetaSettings.renderMarkdownInComments` + refreshing folds;
+    register in the plugin.xml `<actions>` block. Behavioral core unit-testable.
+    Tractable.
+  - [ ] **W3c — Per-comment gutter-icon toggle.** Plugin Kotlin: gutter icon per
+    comment fold whose click overrides that comment's render state until the
+    caret moves. More involved; overlaps `FacetGutterManager`. Cosmetic.
+- [ ] **W4 — v0.2 candidates.** `MarkdownEngine` extension point, error-recovery
+  telemetry, typing-simulator test harness. (`TODO(codegen-keywords)` is
+  already implemented via the `generateTokenCategories` Gradle task — confirm
+  + strike from the v0.2 list.)
 
 End-to-end plan to go from an empty directory to a Cajeta language
 plugin installed and running in IntelliJ IDEA. Scope of this document
@@ -1276,14 +1315,21 @@ New package `src/main/kotlin/dev/cajeta/idea/debugger/`. A custom
 
 ### Part C — Checkpoint execution (status)
 
-Parts A and B above are the original outline. The actual build runs
-**checkpoint-by-checkpoint** on branch `idea-ide` (implement + verify one
-checkpoint, report, gate the next; TDD-first; debugger tests live in the
-separate `cajeta_debug_test` target, not the main suite). Status below;
-checkpoint commit hashes are on `idea-ide`. Note the implementation took the
-**JIT-in-process** path (`cajeta dap` LLJIT-runs the target and parks the
-executing fiber in-process) rather than the AOT/DWARF/ptrace path sketched in
-Part A — same DAP wire contract, different backend.
+Parts A and B above are the original outline. The actual build ran
+**checkpoint-by-checkpoint** (implement + verify one checkpoint, report, gate
+the next; TDD-first; debugger tests live in the separate `cajeta_debug_test`
+target, not the main suite) and has since **merged to `main`** — the checkpoint
+commits below are on `main`. Note the implementation took the **JIT-in-process**
+path (`cajeta dap` LLJIT-runs the target and parks the executing fiber
+in-process) rather than the AOT/DWARF/ptrace path sketched in Part A — same DAP
+wire contract, different backend.
+
+**Overall Phase 2 status: landed through CP7-6.** Everything below is **DONE**
+except the single CP6f-2d tail noted inline (hard carrier-quiesce for the
+entry-thread-vs-live-fibers edge); the multi-fiber view works under the
+stop-the-world model without it. The FR-1 checkpoint table in
+[`ide-plugin-debug-fr-1.md`](ide-plugin-debug-fr-1.md) (all CP7 rows ✅) is the
+authoritative per-checkpoint record.
 
 **CP1–CP5 — compiler + DAP foundation (DONE).**
 - CP1 JIT host (`cajeta jit-run`); CP2 statement safepoints + `DebugLocTable`;
@@ -1293,8 +1339,8 @@ Part A — same DAP wire contract, different backend.
   scopes/variables/setVariable + multi-frame stackTrace + the per-fiber
   `dbg_top` frame chain and the host `DebugVars` value layer.
 
-**CP6 — IntelliJ XDebugger integration (DONE through CP6f-1; CP6f-2/3 in
-progress).** Pattern: behavioral core is plain JVM (no `com.intellij.*`) so it
+**CP6 — IntelliJ XDebugger integration (DONE; CP6f-2d the lone open tail).**
+Pattern: behavioral core is plain JVM (no `com.intellij.*`) so it
 unit-tests without a platform fixture and drives the real `cajeta dap` binary;
 platform classes are thin delegates.
 - **CP6a** DAP client core (`Json`/`DapTransport`/`DapClient`). **DONE.**
@@ -1313,14 +1359,20 @@ platform classes are thin delegates.
     plugin wiring of `XLineBreakpoint` conditions. **DONE.**
   - **CP6f-2** fibers view (full multi-stack, stop-the-world). Sub-split:
     **2a** runtime live-fiber registry + `dbg_id` fix **(DONE)**; **2b** DAP
-    `threads`/per-fiber `stackTrace` wiring **(NEXT)**; **2c** plugin
-    multi-stack thread dropdown; **2d** hard carrier-quiesce for the
-    entry-thread-vs-live-fibers edge case.
+    `threads`/per-fiber `stackTrace` wiring **(DONE** — `DapServer.cpp` threads
+    handler + 2b-ii per-thread `stackTrace` slice**)**; **2c** plugin
+    multi-stack thread dropdown (`XExecutionStack` per fiber) **(DONE)**;
+    **2d** hard carrier-quiesce for the entry-thread-vs-live-fibers edge case
+    **(OPEN** — no dedicated commit; the multi-fiber view operates under the
+    stop-the-world "carrier parked while enumerating" model without it. Tracked
+    as W3.**)**.
   - **CP6f-3** exception breakpoints — runtime throw-interception hook into
     `DebugController` + `setExceptionBreakpoints` + `stopped{reason:"exception"}`.
+    **DONE** (CP6f-3b plugin wiring + arm-before-start; CP6f-3c throw-hang fix).
 
 **CP7 — ownership / allocation / lifetime visualization + drop breakpoints
-(PLANNED, after CP6f).** Strong at-a-glance indication of allocation and
+(DONE — CP7-1a…CP7-6 all landed; FR-1 table rows all ✅).** Strong at-a-glance
+indication of allocation and
 lifetime in both the Variables view and inline in the editor. Full requirements
 (FR-1…FR-9) and the CP7-1a…CP7-6 checkpoint mapping live in
 [`ide-plugin-debug-fr-1.md`](ide-plugin-debug-fr-1.md). Summary:

@@ -86,8 +86,14 @@ src/main/
 │   ├── editor/                  Brace matcher, commenter, structure view
 │   ├── lint/                    ExternalAnnotator + cajetac runner
 │   ├── settings/                Application settings + Configurable
-│   └── markdown/                Comment folding + caret-following toggle
-│       └── engines/             Pluggable markdown renderers
+│   ├── markdown/                Comment folding + caret-following toggle
+│   │   └── engines/             Pluggable markdown renderers
+│   ├── debugger/                Phase 2 — DAP client + XDebugger integration:
+│   │                           run config, line/conditional/exception
+│   │                           breakpoints, fibers view, variables + edit,
+│   │                           memory-facet visualization, drop breakpoints
+│   ├── harness/                 Typing-simulator test fixtures
+│   └── wizard/                  New-project wizard + scaffold
 └── resources/
     ├── META-INF/plugin.xml
     └── icons/cajetaFile.svg
