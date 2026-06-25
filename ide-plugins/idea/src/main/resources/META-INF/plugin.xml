@@ -37,6 +37,20 @@
 
     <depends>com.intellij.modules.platform</depends>
 
+    <!-- W4a: pluggable markdown engines. Third-party plugins implement
+         MarkdownEngine and register under this EP from their own plugin.xml. -->
+    <extensionPoints>
+        <extensionPoint
+            name="markdownEngine"
+            interface="dev.cajeta.idea.markdown.MarkdownEngine"
+            dynamic="true"/>
+    </extensionPoints>
+
+    <!-- The built-in engine, registered through our own EP like any other. -->
+    <extensions defaultExtensionNs="dev.cajeta.idea">
+        <markdownEngine implementation="dev.cajeta.idea.markdown.engines.JetBrainsMarkdownEngine"/>
+    </extensions>
+
     <extensions defaultExtensionNs="com.intellij">
         <fileType
             name="Cajeta"
