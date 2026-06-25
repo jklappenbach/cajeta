@@ -1,15 +1,21 @@
 // C++ stream competitors — the same two workloads the Cajeta side runs over
-// xs[i] = i % 1000 (N=1M): stream-filter-map-reduce (filter evens → map +1 → sum,
-// a sequential loop) and stream-parallel-reduce (sum via an OpenMP reduction).
-// One schema-conformant CSV row per benchmark. Cross-check = the exact reference
-// sums (250000000 / 499500000). Libraries: a hand loop and OpenMP.
+// xs[i] = i % 1000 (N=1M): stream-filter-map-reduce and stream-parallel-reduce.
+// To compare like-for-like against Cajeta's Stream abstraction (a lazy pipeline,
+// not a hand-fused loop), these use the EQUIVALENT C++ high-level abstractions:
+// std::views::filter|transform + std::ranges::fold_left for filter-map-reduce,
+// and std::reduce(std::execution::par, …) for parallel-reduce — NOT a hand loop
+// or a raw OpenMP reduction. One schema-conformant CSV row per benchmark.
+// Cross-check = the exact reference sums (250000000 / 499500000).
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <execution>
 #include <fstream>
+#include <functional>
 #include <numeric>
+#include <ranges>
 #include <string>
 #include <vector>
 
@@ -49,7 +55,7 @@ static void emit(const std::string& run_id, const std::string& ts, const char* b
     long long mn = s.front(), med = s[n / 2], mean = sum / (long long)n, p95 = s[std::min(n - 1, n * 95 / 100)];
     double mops = med > 0 ? (double)input / (double)med * 1e9 / 1e6 : 0.0;
     std::printf(
-        "1,%s,%s,%s,stream,,%d,,%d,cpp,%s,%s,std,-O3 -march=native -fopenmp,%d,%d,"
+        "1,%s,%s,%s,stream,,%d,,%d,cpp,%s,%s,std,-O3 -march=native -std=c++23,%d,%d,"
         "%lld,%lld,%lld,%lld,%.2f,Mop/s,%lld,-1,%llu,-1,-1,%s,%s,,\n",
         run_id.c_str(), ts.c_str(), bench, input, input, env("PROFILE_LANG_VERSION", "").c_str(),
         lib, warmup, trials, mn, med, mean, p95, mops, peak_rss_kb(), (unsigned long long)_la(), ok ? "ok" : "invalid", ok ? "true" : "false");
@@ -77,21 +83,23 @@ int main() {
     for (int i = 0; i < N; ++i) xs[i] = i % 1000;
     bool ok;
 
-    // filter-map-reduce (sequential)
+    // filter-map-reduce — a lazy view pipeline (filter evens → map +1) folded to
+    // a sum, the C++ analogue of Cajeta's Stream.filter().map().reduce(). std::
+    // ranges::fold_left sinks the result, so the pipeline can't be DCE'd.
     auto s1 = bench(warmup, trials, [&]{
-        long long sum = 0;
-        for (int i = 0; i < N; ++i) if (xs[i] % 2 == 0) sum += xs[i] + 1;
-        return sum;
+        auto pipe = xs
+            | std::views::filter([](long long x){ return x % 2 == 0; })
+            | std::views::transform([](long long x){ return x + 1; });
+        return std::ranges::fold_left(pipe, 0LL, std::plus<long long>{});
     }, [&](long long r){ return r == FMR_REF; }, ok);
-    emit(run_id, ts, "stream-filter-map-reduce", "hand-loop", N, warmup, trials, s1, ok);
+    emit(run_id, ts, "stream-filter-map-reduce", "views::filter|transform", N, warmup, trials, s1, ok);
 
-    // parallel-reduce (OpenMP)
+    // parallel-reduce — the standard parallel algorithm (libstdc++ → TBB), the
+    // analogue of Cajeta's parallel Stream reduce. The returned sum is checked,
+    // so it can't be DCE'd.
     auto s2 = bench(warmup, trials, [&]{
-        long long sum = 0;
-        #pragma omp parallel for reduction(+:sum)
-        for (int i = 0; i < N; ++i) sum += xs[i];
-        return sum;
+        return std::reduce(std::execution::par, xs.begin(), xs.end(), 0LL);
     }, [&](long long r){ return r == PR_REF; }, ok);
-    emit(run_id, ts, "stream-parallel-reduce", "OpenMP", N, warmup, trials, s2, ok);
+    emit(run_id, ts, "stream-parallel-reduce", "std::reduce(par)", N, warmup, trials, s2, ok);
     return 0;
 }
