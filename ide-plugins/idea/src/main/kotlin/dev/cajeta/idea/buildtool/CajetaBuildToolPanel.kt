@@ -233,6 +233,7 @@ class CajetaBuildToolPanel(private val project: Project) : SimpleToolWindowPanel
 
     private fun rebuildTree() {
         rootNode.removeAllChildren()
+        addFavoritesGroup()
         val multi = rootModels.size > 1
         for ((manifest, model) in rootModels) {
             val parent = if (multi) RootNode(manifest, File(manifest).parentFile?.name ?: manifest).also { rootNode.add(it) } else rootNode
@@ -240,6 +241,21 @@ class CajetaBuildToolPanel(private val project: Project) : SimpleToolWindowPanel
         }
         treeModel.reload()
         TreeUtil.expandAll(tree)
+    }
+
+    /** Favorites pinned at the very top of the tree (spec §11.2.3), resolved
+     *  against the loaded root models. */
+    private fun addFavoritesGroup() {
+        val favs = FavoritesService.getInstance(project).list()
+        if (favs.isEmpty()) return
+        val groupNode = DefaultMutableTreeNode(GROUP_FAVORITES)
+        var any = false
+        for (ref in favs) {
+            val task = rootModels[ref.manifestPath]?.tasks?.firstOrNull { it.name == ref.task } ?: continue
+            groupNode.add(TaskLeaf(TaskTreeNode(task.name, task.description?.takeIf(String::isNotBlank), TaskTreeNode.Kind.TASK), ref.manifestPath))
+            any = true
+        }
+        if (any) rootNode.add(groupNode)
     }
 
     private fun addGroups(parent: DefaultMutableTreeNode, model: TaskModel, manifest: String) {
@@ -296,6 +312,22 @@ class CajetaBuildToolPanel(private val project: Project) : SimpleToolWindowPanel
         return TaskDebugMapping.isDebuggable(task, model)
     }
 
+    /** Persist the task as a saved run configuration bound to its active
+     *  bindings (spec §11.2.1). */
+    private fun saveAsConfig(leaf: TaskLeaf) {
+        val task = rootModels[leaf.manifestPath]?.tasks?.firstOrNull { it.name == leaf.data.runName } ?: return
+        val spec = SavedConfig.specFor(
+            task, leaf.manifestPath,
+            CajetaSettings.instance.defaultProfile, CajetaSettings.instance.defaultFlavor,
+        )
+        CajetaTaskLauncher.saveConfig(project, spec)
+    }
+
+    private fun toggleFavorite(leaf: TaskLeaf) {
+        FavoritesService.getInstance(project).toggle(FavoriteRef(leaf.manifestPath, leaf.data.runName))
+        rebuildTree()
+    }
+
     private fun openInManifest(leaf: TaskLeaf) {
         val vf = LocalFileSystem.getInstance().findFileByPath(leaf.manifestPath) ?: return
         val text = runCatching {
@@ -340,6 +372,13 @@ class CajetaBuildToolPanel(private val project: Project) : SimpleToolWindowPanel
             if (isDebuggable(leaf)) {
                 add(JMenuItem("Debug").apply { addActionListener { debugSelected(leaf) } })
             }
+            if (leaf.data.kind == TaskTreeNode.Kind.TASK) {
+                add(JMenuItem("Save as Run Configuration").apply { addActionListener { saveAsConfig(leaf) } })
+                val fav = FavoritesService.getInstance(project).contains(FavoriteRef(leaf.manifestPath, leaf.data.runName))
+                add(JMenuItem(if (fav) "Remove from Favorites" else "Add to Favorites").apply {
+                    addActionListener { toggleFavorite(leaf) }
+                })
+            }
             add(JMenuItem("Open in cajeta.json").apply { addActionListener { openInManifest(leaf) } })
         }.show(e.component, e.x, e.y)
     }
@@ -361,5 +400,9 @@ class CajetaBuildToolPanel(private val project: Project) : SimpleToolWindowPanel
                 else -> {}
             }
         }
+    }
+
+    companion object {
+        private const val GROUP_FAVORITES = "Favorites"
     }
 }

@@ -59,6 +59,25 @@ object CajetaTaskLauncher {
         ProgramRunnerUtil.executeConfiguration(settings, DefaultDebugExecutor.getDebugExecutorInstance())
     }
 
+    /** Persist a task (with its active bindings) as a saved run configuration
+     *  (spec §11.2.1) — editable in Run/Debug Configurations, not ephemeral. */
+    fun saveConfig(project: Project, spec: TaskRunSpec): RunnerAndConfigurationSettings? {
+        val type = ConfigurationTypeUtil.findConfigurationType(CajetaTaskConfigurationType::class.java)
+            ?: return null
+        val runManager = RunManager.getInstance(project)
+        val settings = runManager.createConfiguration("cajeta ${spec.task}", type.configurationFactories[0])
+        val config = settings.configuration as CajetaTaskRunConfiguration
+        config.task = spec.task
+        config.manifestPath = spec.manifestPath ?: ""
+        config.profile = spec.profile ?: ""
+        config.flavor = spec.flavor ?: ""
+        config.propertiesText = KvText.format(spec.properties)
+        config.paramsText = KvText.format(spec.params)
+        runManager.addConfiguration(settings)
+        runManager.selectedConfiguration = settings
+        return settings
+    }
+
     private fun buildConfig(
         project: Project,
         manifestPath: String,
