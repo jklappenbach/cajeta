@@ -2,9 +2,10 @@ package profile.math;
 
 import profile.Benchmark;
 
-// SAXPY: z = a*x + y over N float64 (scalar). Writes into a persistent result
-// array (allocated once) and accumulates a checksum. Cross-check: the checksum
-// matches a recomputation in the same accumulation order (exact float match).
+// SAXPY: z = a*x + y over N float64. Vectorized with Vector<float64,8> load /
+// broadcast-scalar FMA / store, plus a Vector checksum accumulator horizontal-
+// summed at the end + a scalar tail. Cross-check: the checksum matches a strict
+// scalar recomputation within a small relative tolerance (SIMD reassociation).
 public class SaxpyBench extends Benchmark {
 
     public float64[] x;
@@ -49,10 +50,20 @@ public class SaxpyBench extends Benchmark {
     }
 
     public void run(int32 iterations) {
-        float64 sum = 0.0;
+        int32 nd = this.n;
+        float64 av = this.a;
+        Vector<float64,8> acc = stack Vector<float64,8>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        int32 limit = nd - (nd % 8);
         int32 i = 0;
-        while (i < this.n) {
-            this.z[i] = this.a * this.x[i] + this.y[i];
+        while (i < limit) {
+            Vector<float64,8> zv = Cajeta.vload8f64(this.x, i) * av + Cajeta.vload8f64(this.y, i);
+            Cajeta.vstore8f64(zv, this.z, i);
+            acc = acc + zv;
+            i = i + 8;
+        }
+        float64 sum = Cajeta.vsum8f64(acc);
+        while (i < nd) {
+            this.z[i] = av * this.x[i] + this.y[i];
             sum = sum + this.z[i];
             i = i + 1;
         }
@@ -66,6 +77,15 @@ public class SaxpyBench extends Benchmark {
             expected = expected + (this.a * this.x[i] + this.y[i]);
             i = i + 1;
         }
-        return this.checksum == expected;
+        // SIMD reassociation vs strict scalar order: relative-tolerance compare.
+        float64 diff = this.checksum - expected;
+        if (diff < 0.0) {
+            diff = -diff;
+        }
+        float64 mag = expected;
+        if (mag < 0.0) {
+            mag = -mag;
+        }
+        return diff <= mag * 0.0000000001 + 0.000001;
     }
 }
