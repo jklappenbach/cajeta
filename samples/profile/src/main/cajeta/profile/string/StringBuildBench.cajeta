@@ -31,11 +31,17 @@ public class StringBuildBench extends Benchmark {
     }
 
     public void setup() {
-        this.n = 4000;
+        // 500 appends of the 8-byte piece = 4000 bytes built, matching the
+        // competitors' BUILD_ITERS=500 (cpp/rust/go/java/python). Was 4000
+        // appends (32000 bytes) — an unfair 8x more work than the others.
+        this.n = 500;
     }
 
     public int64 inputSize() {
-        return (int64) this.n;
+        // Bytes built (n * 8), the figure every competitor reports as
+        // input_size (=4000). Reporting `n` would understate the workload and
+        // mismatch the competitors' byte-count column.
+        return (int64) (this.n * 8);
     }
 
     public void run(int32 iterations) {
