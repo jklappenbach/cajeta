@@ -632,27 +632,25 @@ public class Sort {
         pdqSwapIfLess<T>(a, base, 5, 6);
     }
 
-    // ipnsort small_sort_network (no-merge regime, len < 18): sort a prefix with
-    // an optimal branchless network, then shift-left insertion-sort the tail.
-    // The base case of the quicksort — branchless leaves are where ipnsort pulls
-    // ahead of pdqsort's insertion-sort leaves on random input.
-    public static void pdqSmallSortNet<T>(T[] a, int32 begin, int32 end) {
-        int32 len = end - begin;
+    // Optimal branchless network on a sorted-prefix, then shift-left insertion
+    // for the tail — the no-merge leaf, for a[s..e) with (e-s) < 18.
+    public static void pdqNetInsertion<T>(T[] a, int32 s, int32 e) {
+        int32 len = e - s;
         if (len < 2) {
             return;
         }
         int32 presorted;
         if (len >= 13) {
-            pdqSort13<T>(a, begin);
+            pdqSort13<T>(a, s);
             presorted = 13;
         } else if (len >= 9) {
-            pdqSort9<T>(a, begin);
+            pdqSort9<T>(a, s);
             presorted = 9;
         } else {
             presorted = 1;
         }
-        int32 i = begin + presorted;
-        while (i < end) {
+        int32 i = s + presorted;
+        while (i < e) {
             if (a[i] < a[i - 1]) {
                 T tmp = a[i];
                 int32 sift = i;
@@ -660,7 +658,7 @@ public class Sort {
                 while (go) {
                     a[sift] = a[sift - 1];
                     sift = sift - 1;
-                    if (sift == begin) {
+                    if (sift == s) {
                         go = false;
                     } else if (!(tmp < a[sift - 1])) {
                         go = false;
@@ -669,6 +667,63 @@ public class Sort {
                 a[sift] = tmp;
             }
             i = i + 1;
+        }
+    }
+
+    // Branchless bidirectional merge (Igor van den Hoven / quadsort, as in
+    // ipnsort) of the two sorted halves a[begin..begin+h) and a[begin+h..begin+len)
+    // (h = len/2) through `scratch`, copied back to a. merge_up fills the front
+    // smallest-first, merge_down fills the back largest-first; they meet in the
+    // middle — 2 writes per iteration, every comparison branchless.
+    public static void pdqBiMerge<T>(T[] a, int32 begin, int32 len, T[] scratch) {
+        int32 h = len / 2;
+        int32 left = begin;
+        int32 right = begin + h;
+        int32 dst = 0;
+        int32 leftRev = begin + h - 1;
+        int32 rightRev = begin + len - 1;
+        int32 dstRev = len - 1;
+        int32 i = 0;
+        while (i < h) {
+            boolean isU = !(a[right] < a[left]);
+            scratch[dst] = isU ? a[left] : a[right];
+            right = right + (isU ? 0 : 1);
+            left = left + (isU ? 1 : 0);
+            dst = dst + 1;
+            boolean isD = !(a[rightRev] < a[leftRev]);
+            scratch[dstRev] = isD ? a[rightRev] : a[leftRev];
+            rightRev = rightRev - (isD ? 1 : 0);
+            leftRev = leftRev - (isD ? 0 : 1);
+            dstRev = dstRev - 1;
+            i = i + 1;
+        }
+        if ((len % 2) != 0) {
+            boolean leftNonempty = left < (leftRev + 1);
+            scratch[dst] = leftNonempty ? a[left] : a[right];
+        }
+        int32 k = 0;
+        while (k < len) {
+            a[begin + k] = scratch[k];
+            k = k + 1;
+        }
+    }
+
+    // ipnsort small_sort_network: the branchless quicksort leaves. len < 18 →
+    // one network+insertion pass; 18..32 → sort the two halves and
+    // bidirectional-merge. `scratch` is caller-owned, length >= 32. Branchless
+    // leaves are where ipnsort pulls ahead of pdqsort's insertion-sort leaves.
+    public static void pdqSmallSortNet<T>(T[] a, int32 begin, int32 end, T[] scratch) {
+        int32 len = end - begin;
+        if (len < 2) {
+            return;
+        }
+        if (len < 18) {
+            pdqNetInsertion<T>(a, begin, end);
+        } else {
+            int32 h = len / 2;
+            pdqNetInsertion<T>(a, begin, begin + h);
+            pdqNetInsertion<T>(a, begin + h, end);
+            pdqBiMerge<T>(a, begin, len, scratch);
         }
     }
 
@@ -682,7 +737,8 @@ public class Sort {
     // than its ancestor it is the smallest element, so we partition by `<=`
     // (equal keys left) and skip them — the duplicate-key fast path.
     public static void pdqRun<T>(T[] a, int32 begin0, int32 end0, int32 limit0,
-            int32[] stB, int32[] stE, int32[] stLim, int32[] stHasAnc, T[] stAnc) {
+            int32[] stB, int32[] stE, int32[] stLim, int32[] stHasAnc, T[] stAnc,
+            T[] scratch) {
         int32 sp = 0;
         int32 begin = begin0;
         int32 end = end0;
@@ -693,8 +749,8 @@ public class Sort {
         while (run) {
             boolean popNext = false;
             int32 len = end - begin;
-            if (len <= 17) {
-                pdqSmallSortNet<T>(a, begin, end);
+            if (len <= 32) {
+                pdqSmallSortNet<T>(a, begin, end, scratch);
                 popNext = true;
             } else if (limit == 0) {
                 pdqHeapSort<T>(a, begin, end);
@@ -784,7 +840,8 @@ public class Sort {
         int32[] stLim = heap int32[64];
         int32[] stHasAnc = heap int32[64];
         T[] stAnc = heap T[64];
-        pdqRun<T>(a, 0, n, limit, stB, stE, stLim, stHasAnc, stAnc);
+        T[] scratch = heap T[32];
+        pdqRun<T>(a, 0, n, limit, stB, stE, stLim, stHasAnc, stAnc, scratch);
     }
 
     public static void sortStable<T>(T[] a, int32 n) {
