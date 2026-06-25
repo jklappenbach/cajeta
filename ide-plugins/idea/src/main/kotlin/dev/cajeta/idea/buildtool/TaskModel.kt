@@ -29,8 +29,21 @@ data class BuiltinCommand(
     val description: String? = null,
 )
 
+/**
+ * Project-level debug-launch coordinates from the document's `build` object
+ * (spec §5.2.2). `cajeta dap` JIT-runs an [entryMethod] from a [sourceRoot] — it
+ * does not load a prebuilt artifact — so a runnable task's Debug launch is
+ * formed from these, not from [CajetaTask.artifact]. Present only when the
+ * manifest's `settings.build` declares an entry method.
+ */
+data class BuildLaunchCoords(
+    val sourceRoot: String? = null,
+    val entryMethod: String,
+)
+
 data class TaskModel(
     val manifest: String,
     val tasks: List<CajetaTask>,
     val builtins: List<BuiltinCommand>,
+    val buildCoords: BuildLaunchCoords? = null,
 )

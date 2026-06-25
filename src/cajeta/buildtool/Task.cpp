@@ -450,9 +450,21 @@ namespace cajeta::buildtool {
 
     std::string renderTasksJson(const std::string& manifestPath,
                                 const std::map<std::string, Task>& tasks,
-                                const std::vector<BuiltinCommand>& builtins) {
+                                const std::vector<BuiltinCommand>& builtins,
+                                const DebugLaunchCoords& debugCoords) {
         llvm::json::Object root;
         root["manifest"] = manifestPath;
+
+        // Project-level debug-launch coordinates (widget §5.2.2, unit 7): only
+        // when an entry method is known can `cajeta dap` JIT-run the project, so
+        // we gate the whole `build` object on it. The IDE forms a runnable
+        // task's Debug launch from these; without them it disables Debug.
+        if (debugCoords.entryMethod && !debugCoords.entryMethod->empty()) {
+            llvm::json::Object build;
+            build["entryMethod"] = *debugCoords.entryMethod;
+            if (debugCoords.sourceRoot) build["sourceRoot"] = *debugCoords.sourceRoot;
+            root["build"] = std::move(build);
+        }
 
         llvm::json::Array taskArr;
         for (const auto& [name, t] : tasks) {  // std::map -> sorted by name

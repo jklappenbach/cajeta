@@ -13,6 +13,7 @@ import com.intellij.execution.runners.ExecutionEnvironment
 import com.intellij.execution.configurations.CommandLineState
 import com.intellij.openapi.options.SettingsEditor
 import com.intellij.openapi.project.Project
+import dev.cajeta.idea.debugger.CajetaDebugLaunchSpec
 import dev.cajeta.idea.settings.CajetaSettings
 import java.io.File
 
@@ -28,7 +29,7 @@ class CajetaTaskRunConfiguration(
     project: Project,
     factory: ConfigurationFactory,
     name: String,
-) : RunConfigurationBase<CajetaTaskRunConfigurationOptions>(project, factory, name) {
+) : RunConfigurationBase<CajetaTaskRunConfigurationOptions>(project, factory, name), CajetaDebugLaunchSpec {
 
     public override fun getOptions(): CajetaTaskRunConfigurationOptions =
         super.getOptions() as CajetaTaskRunConfigurationOptions
@@ -56,6 +57,19 @@ class CajetaTaskRunConfiguration(
     var paramsText: String
         get() = options.paramsText
         set(value) { options.paramsText = value }
+
+    // CajetaDebugLaunchSpec (§5.2.2): debug-launch coordinates the `cajeta dap`
+    // path consumes. Blank entryMethod => not debuggable (CajetaProgramRunner
+    // keeps Debug disabled). stopOnEntry is always off for a task launch.
+    override var entryMethod: String
+        get() = options.entryMethod
+        set(value) { options.entryMethod = value }
+
+    override var sourceRoot: String
+        get() = options.sourceRoot
+        set(value) { options.sourceRoot = value }
+
+    override val stopOnEntry: Boolean get() = false
 
     /** The shared run spec — the single source of the argv (§4.1.1). */
     fun toRunSpec(): TaskRunSpec = TaskRunSpec(

@@ -116,12 +116,27 @@ namespace cajeta::buildtool {
         std::string description;
     };
 
+    // Project-level debug-launch coordinates, surfaced at the document root as a
+    // `build` object (widget spec §5.2.2, unit 7). These come from the manifest's
+    // `settings.build` and are exactly what `cajeta dap` consumes: it JIT-runs an
+    // `entryMethod` from a `sourceRoot` — it does NOT load a prebuilt artifact.
+    // So a runnable task's Debug launch is formed from these, not from the build
+    // action's output-path. Both must be known to be debuggable.
+    struct DebugLaunchCoords {
+        std::optional<std::string> sourceRoot;
+        std::optional<std::string> entryMethod;
+    };
+
     // Render the `cajeta tasks --json` document (buildtool-widget spec §3):
-    // { manifest, tasks[{name,description?,dependsOn[],params[]}], builtins[] }.
+    // { manifest, build?{sourceRoot,entryMethod}, tasks[{name,description?,
+    //   dependsOn[],params[],runnable,artifact?}], builtins[] }.
     // Tasks emit in `tasks` map order (sorted by name). Pure — no I/O — so the
-    // IDE-contract shape is golden-testable. Pretty-printed (2-space).
+    // IDE-contract shape is golden-testable. Pretty-printed (2-space). The
+    // `build` object is emitted only when both debug-launch coordinates are
+    // known (entryMethod present); omitted otherwise so the IDE disables Debug.
     std::string renderTasksJson(const std::string& manifestPath,
                                 const std::map<std::string, Task>& tasks,
-                                const std::vector<BuiltinCommand>& builtins);
+                                const std::vector<BuiltinCommand>& builtins,
+                                const DebugLaunchCoords& debugCoords = {});
 
 } // namespace cajeta::buildtool

@@ -74,6 +74,29 @@ class TaskDiscoveryParserTest {
         assertNull(lint.artifact)
     }
 
+    // §5.2.2: the document-level `build` object carries debug-launch coords; a
+    // `build` object without an entry method is not debuggable (null coords).
+    @Test
+    fun parsesDebugLaunchCoordsFromBuildObject() {
+        val m = success(
+            """
+            { "manifest": "/m.json",
+              "build": { "sourceRoot": "src/main/cajeta", "entryMethod": "p.P::main" },
+              "tasks": [ { "name": "run", "runnable": true } ] }
+            """.trimIndent(),
+        )
+        assertEquals("p.P::main", m.buildCoords!!.entryMethod)
+        assertEquals("src/main/cajeta", m.buildCoords!!.sourceRoot)
+    }
+
+    @Test
+    fun buildObjectWithoutEntryMethodYieldsNullCoords() {
+        val m = success("""{ "manifest": "/m.json", "build": { "sourceRoot": "s" }, "tasks": [] }""")
+        assertNull(m.buildCoords)
+        // and absent entirely -> null
+        assertNull(success("""{ "manifest": "/m.json", "tasks": [] }""").buildCoords)
+    }
+
     // §3.1.3 / §3.2.3: an older plugin must ignore fields a newer build tool adds.
     @Test
     fun ignoresUnknownFieldsForwardCompat() {

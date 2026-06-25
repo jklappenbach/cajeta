@@ -22,7 +22,7 @@ import java.io.File
  */
 class CajetaDebugProcess(
     xSession: XDebugSession,
-    private val configuration: CajetaRunConfiguration,
+    private val configuration: CajetaDebugLaunchSpec,
 ) : XDebugProcess(xSession) {
 
     private val log = Logger.getInstance(CajetaDebugProcess::class.java)

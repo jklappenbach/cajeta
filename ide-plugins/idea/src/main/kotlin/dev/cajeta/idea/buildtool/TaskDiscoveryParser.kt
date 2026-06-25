@@ -28,7 +28,17 @@ object TaskDiscoveryParser {
         val manifest = root.opt("manifest")?.strOrNull() ?: ""
         val tasks = root.opt("tasks").asArray().mapNotNull { parseTask(it) }
         val builtins = root.opt("builtins").asArray().mapNotNull { parseBuiltin(it) }
-        return Result.Success(TaskModel(manifest, tasks, builtins))
+        val buildCoords = parseBuildCoords(root.opt("build"))
+        return Result.Success(TaskModel(manifest, tasks, builtins, buildCoords))
+    }
+
+    // The document's `build` object (spec §5.2.2): debug-launch coordinates. Only
+    // an entry method makes the project dap-debuggable, so a `build` object
+    // without one yields null (Debug stays disabled).
+    private fun parseBuildCoords(j: Json?): BuildLaunchCoords? {
+        val o = j as? Json.Obj ?: return null
+        val entry = o.opt("entryMethod")?.strOrNull()?.takeIf { it.isNotBlank() } ?: return null
+        return BuildLaunchCoords(sourceRoot = o.opt("sourceRoot")?.strOrNull(), entryMethod = entry)
     }
 
     private fun parseTask(j: Json): CajetaTask? {

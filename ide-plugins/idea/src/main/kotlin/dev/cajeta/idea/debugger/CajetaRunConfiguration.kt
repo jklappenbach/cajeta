@@ -23,20 +23,20 @@ class CajetaRunConfiguration(
     project: Project,
     factory: ConfigurationFactory,
     name: String,
-) : RunConfigurationBase<CajetaRunConfigurationOptions>(project, factory, name) {
+) : RunConfigurationBase<CajetaRunConfigurationOptions>(project, factory, name), CajetaDebugLaunchSpec {
 
     public override fun getOptions(): CajetaRunConfigurationOptions =
         super.getOptions() as CajetaRunConfigurationOptions
 
-    var entryMethod: String
+    override var entryMethod: String
         get() = options.entryMethod
         set(value) { options.entryMethod = value }
 
-    var sourceRoot: String
+    override var sourceRoot: String
         get() = options.sourceRoot
         set(value) { options.sourceRoot = value }
 
-    var stopOnEntry: Boolean
+    override var stopOnEntry: Boolean
         get() = options.stopOnEntry
         set(value) { options.stopOnEntry = value }
 

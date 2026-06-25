@@ -119,6 +119,45 @@ TEST(TasksJson, EmitsRunnableAndArtifactFromBuildAction) {
     EXPECT_EQ(l->get("artifact"), nullptr);   // omitted when no build output-path
 }
 
+// widget §5.2.2 / §7 finish: the document carries the project's debug-launch
+// coordinates (`build.sourceRoot` + `build.entryMethod` from settings.build) so
+// the IDE can launch a runnable task under `cajeta dap` — which JIT-runs an
+// entry method from a source root, NOT a prebuilt artifact. Present only when
+// both coordinates are known.
+TEST(TasksJson, EmitsDebugLaunchCoordsWhenBuildSettingsDeclareThem) {
+    std::map<std::string, Task> tasks;
+    Task t;
+    t.name = "run";
+    tasks["run"] = t;
+
+    DebugLaunchCoords coords;
+    coords.sourceRoot = "src/main/cajeta";
+    coords.entryMethod = "profile.Profile::main";
+
+    auto root = parseOrFail(renderTasksJson("/m/cajeta.json", tasks, {}, coords));
+    auto* obj = root.getAsObject();
+    ASSERT_NE(obj, nullptr);
+    auto* build = obj->getObject("build");
+    ASSERT_NE(build, nullptr) << "debug-launch coords should emit a `build` object";
+    EXPECT_EQ(build->getString("sourceRoot").value_or(""), "src/main/cajeta");
+    EXPECT_EQ(build->getString("entryMethod").value_or(""), "profile.Profile::main");
+}
+
+// When the manifest declares no entry method (e.g. a library), the `build`
+// object is omitted entirely — the IDE then disables Debug rather than forming
+// a launch that cannot attach.
+TEST(TasksJson, OmitsBuildObjectWhenNoEntryMethod) {
+    std::map<std::string, Task> tasks;
+    Task t;
+    t.name = "build";
+    tasks["build"] = t;
+
+    DebugLaunchCoords coords;
+    coords.sourceRoot = "src/main/cajeta";   // sourceRoot but no entryMethod
+    auto root = parseOrFail(renderTasksJson("/m/cajeta.json", tasks, {}, coords));
+    EXPECT_EQ(root.getAsObject()->get("build"), nullptr);
+}
+
 // §3.1.3 robustness: a minimal task (no description/deps/params) still emits
 // valid JSON — optional fields omitted, arrays present but empty — so a sparse
 // or forward-evolved manifest never produces broken output.

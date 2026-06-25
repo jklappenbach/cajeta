@@ -16,6 +16,11 @@ class CajetaTaskRunConfigurationOptions : RunConfigurationOptions() {
     private val flavorOpt = string("").provideDelegate(this, "flavor")
     private val propertiesOpt = string("").provideDelegate(this, "propertiesText")
     private val paramsOpt = string("").provideDelegate(this, "paramsText")
+    // §5.2.2 (unit 7): debug-launch coordinates resolved from the project's
+    // `settings.build` (entry method JIT-run by `cajeta dap`, source root to
+    // compile). Blank entryMethod => not debuggable.
+    private val entryMethodOpt = string("").provideDelegate(this, "entryMethod")
+    private val sourceRootOpt = string("").provideDelegate(this, "sourceRoot")
 
     var task: String
         get() = taskOpt.getValue(this) ?: ""
@@ -40,4 +45,12 @@ class CajetaTaskRunConfigurationOptions : RunConfigurationOptions() {
     var paramsText: String
         get() = paramsOpt.getValue(this) ?: ""
         set(value) = paramsOpt.setValue(this, value)
+
+    var entryMethod: String
+        get() = entryMethodOpt.getValue(this) ?: ""
+        set(value) = entryMethodOpt.setValue(this, value)
+
+    var sourceRoot: String
+        get() = sourceRootOpt.getValue(this) ?: ""
+        set(value) = sourceRootOpt.setValue(this, value)
 }

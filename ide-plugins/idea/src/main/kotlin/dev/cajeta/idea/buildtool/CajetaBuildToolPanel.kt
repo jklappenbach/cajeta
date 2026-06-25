@@ -42,6 +42,10 @@ class CajetaBuildToolPanel(private val project: Project) : SimpleToolWindowPanel
         override fun toString(): String = data.label
     }
 
+    /** The last successfully discovered model, kept so the context menu can
+     *  resolve a task's debug-launch coordinates (§5.2.2). */
+    private var lastModel: TaskModel? = null
+
     private val rootNode = DefaultMutableTreeNode("root")
     private val treeModel = DefaultTreeModel(rootNode)
     private val tree = Tree(treeModel).apply {
@@ -99,6 +103,7 @@ class CajetaBuildToolPanel(private val project: Project) : SimpleToolWindowPanel
     }
 
     private fun populate(model: TaskModel) {
+        lastModel = model
         rootNode.removeAllChildren()
         for (group in TaskTreeModelBuilder.build(model)) {
             val groupNode = DefaultMutableTreeNode(group.title)
@@ -124,6 +129,20 @@ class CajetaBuildToolPanel(private val project: Project) : SimpleToolWindowPanel
         CajetaTaskLauncher.launch(project, manifest, node)
     }
 
+    private fun debugSelected(node: TaskTreeNode) {
+        val manifest = CajetaManifest.path(project) ?: return
+        val model = lastModel ?: return
+        CajetaTaskLauncher.debug(project, manifest, model, node)
+    }
+
+    /** Whether the selected node maps to a dap-debuggable task (§5.2.2). */
+    private fun isDebuggable(node: TaskTreeNode): Boolean {
+        if (node.kind != TaskTreeNode.Kind.TASK) return false
+        val model = lastModel ?: return false
+        val task = model.tasks.firstOrNull { it.name == node.runName } ?: return false
+        return TaskDebugMapping.isDebuggable(task, model)
+    }
+
     private fun openInManifest(node: TaskTreeNode) {
         val path = CajetaManifest.path(project) ?: return
         val vf = LocalFileSystem.getInstance().findFileByPath(path) ?: return
@@ -138,6 +157,9 @@ class CajetaBuildToolPanel(private val project: Project) : SimpleToolWindowPanel
         val node = selectedTask() ?: return
         JPopupMenu().apply {
             add(JMenuItem("Run").apply { addActionListener { runSelected() } })
+            if (isDebuggable(node)) {
+                add(JMenuItem("Debug").apply { addActionListener { debugSelected(node) } })
+            }
             add(JMenuItem("Open in cajeta.json").apply { addActionListener { openInManifest(node) } })
         }.show(e.component, e.x, e.y)
     }

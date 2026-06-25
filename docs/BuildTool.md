@@ -4616,6 +4616,10 @@ build-tool tool window parses to populate its task tree (see
 ```jsonc
 {
   "manifest": "/abs/path/cajeta.json",   // absolute, so the IDE can key linked roots
+  "build": {                              // project debug-launch coords (omitted if no entry method)
+    "sourceRoot": "src/main/cajeta",      //   from settings.build — source root cajeta dap compiles
+    "entryMethod": "demo.Demo::main"      //   the entry method cajeta dap JIT-runs
+  },
   "tasks": [                              // manifest tasks, sorted by name
     { "name": "build",
       "description": "Compile + link the project",   // omitted if the task has none
@@ -4636,8 +4640,14 @@ Contract notes: object key order is not significant (consumers parse, not
 string-match); optional task fields (`description`, `artifact`, param
 `default`/`doc`) are omitted when absent while `dependsOn`/`params`/`runnable`
 are always present (`runnable` is `false` for a task with no build/exec/run
-action). `runnable`/`artifact` let the IDE offer Debug on a task and locate the
-binary to launch under `cajeta dap` (widget §5.2.2). A non-zero exit or load error writes a diagnostic to stderr and emits no
+action). `runnable` lets the IDE offer Debug on a task; the **document-level
+`build` object** carries what `cajeta dap` actually consumes — it JIT-runs an
+`entryMethod` from a `sourceRoot`, it does **not** load the prebuilt `artifact`
+binary — so the IDE forms a runnable task's Debug launch from `build`, not from
+`artifact` (widget §5.2.2). The `build` object is emitted only when
+`settings.build` declares an entry method; without it Debug stays disabled.
+`artifact` remains the build action's `output-path`, surfaced for display/Run.
+A non-zero exit or load error writes a diagnostic to stderr and emits no
 JSON — the plugin treats that as "discovery failed" and degrades gracefully.
 The emission core is `renderTasksJson` (`src/cajeta/buildtool/Task.{h,cpp}`),
 golden-tested in `test/buildtool/TasksJsonTests.cpp`.

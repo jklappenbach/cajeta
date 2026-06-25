@@ -1028,8 +1028,22 @@ namespace cajeta::buildtool {
                 std::filesystem::path abs =
                     std::filesystem::absolute(manifestPath, ec);
                 std::string absStr = ec ? manifestPath : abs.string();
+
+                // Debug-launch coordinates (widget §5.2.2, unit 7): `cajeta dap`
+                // JIT-runs an entry method from a source root, so surface those
+                // from settings.build for the IDE's Debug executor. A parse miss
+                // here just omits the coords (Debug disabled), never fails
+                // discovery.
+                DebugLaunchCoords debugCoords;
+                if (auto sb = parseSettingsBuild(project->manifest)) {
+                    debugCoords.sourceRoot = sb->sourceRoot;
+                    debugCoords.entryMethod = sb->entryMethod;
+                } else {
+                    llvm::consumeError(sb.takeError());
+                }
+
                 std::cout << renderTasksJson(absStr, project->tasks,
-                                             builtinCommands())
+                                             builtinCommands(), debugCoords)
                           << "\n";
                 return 0;
             }
