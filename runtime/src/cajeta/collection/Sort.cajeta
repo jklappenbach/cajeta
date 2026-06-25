@@ -542,6 +542,136 @@ public class Sort {
         return numLt;
     }
 
+    // Branchless compare-exchange: order a[base+i] <= a[base+j] with two selects
+    // (a cmov pair) — the building block of the small-sort networks.
+    public static void pdqSwapIfLess<T>(T[] a, int32 base, int32 i, int32 j) {
+        int32 ai = base + i;
+        int32 aj = base + j;
+        T va = a[ai];
+        T vb = a[aj];
+        boolean lt = vb < va;
+        a[ai] = lt ? vb : va;
+        a[aj] = lt ? va : vb;
+    }
+
+    // Optimal 9-element sorting network (Bert Dobbelaere). Sorts a[base..base+9).
+    public static void pdqSort9<T>(T[] a, int32 base) {
+        pdqSwapIfLess<T>(a, base, 0, 3);
+        pdqSwapIfLess<T>(a, base, 1, 7);
+        pdqSwapIfLess<T>(a, base, 2, 5);
+        pdqSwapIfLess<T>(a, base, 4, 8);
+        pdqSwapIfLess<T>(a, base, 0, 7);
+        pdqSwapIfLess<T>(a, base, 2, 4);
+        pdqSwapIfLess<T>(a, base, 3, 8);
+        pdqSwapIfLess<T>(a, base, 5, 6);
+        pdqSwapIfLess<T>(a, base, 0, 2);
+        pdqSwapIfLess<T>(a, base, 1, 3);
+        pdqSwapIfLess<T>(a, base, 4, 5);
+        pdqSwapIfLess<T>(a, base, 7, 8);
+        pdqSwapIfLess<T>(a, base, 1, 4);
+        pdqSwapIfLess<T>(a, base, 3, 6);
+        pdqSwapIfLess<T>(a, base, 5, 7);
+        pdqSwapIfLess<T>(a, base, 0, 1);
+        pdqSwapIfLess<T>(a, base, 2, 4);
+        pdqSwapIfLess<T>(a, base, 3, 5);
+        pdqSwapIfLess<T>(a, base, 6, 8);
+        pdqSwapIfLess<T>(a, base, 2, 3);
+        pdqSwapIfLess<T>(a, base, 4, 5);
+        pdqSwapIfLess<T>(a, base, 6, 7);
+        pdqSwapIfLess<T>(a, base, 1, 2);
+        pdqSwapIfLess<T>(a, base, 3, 4);
+        pdqSwapIfLess<T>(a, base, 5, 6);
+    }
+
+    // Optimal 13-element sorting network (Bert Dobbelaere). Sorts a[base..base+13).
+    public static void pdqSort13<T>(T[] a, int32 base) {
+        pdqSwapIfLess<T>(a, base, 0, 12);
+        pdqSwapIfLess<T>(a, base, 1, 10);
+        pdqSwapIfLess<T>(a, base, 2, 9);
+        pdqSwapIfLess<T>(a, base, 3, 7);
+        pdqSwapIfLess<T>(a, base, 5, 11);
+        pdqSwapIfLess<T>(a, base, 6, 8);
+        pdqSwapIfLess<T>(a, base, 1, 6);
+        pdqSwapIfLess<T>(a, base, 2, 3);
+        pdqSwapIfLess<T>(a, base, 4, 11);
+        pdqSwapIfLess<T>(a, base, 7, 9);
+        pdqSwapIfLess<T>(a, base, 8, 10);
+        pdqSwapIfLess<T>(a, base, 0, 4);
+        pdqSwapIfLess<T>(a, base, 1, 2);
+        pdqSwapIfLess<T>(a, base, 3, 6);
+        pdqSwapIfLess<T>(a, base, 7, 8);
+        pdqSwapIfLess<T>(a, base, 9, 10);
+        pdqSwapIfLess<T>(a, base, 11, 12);
+        pdqSwapIfLess<T>(a, base, 4, 6);
+        pdqSwapIfLess<T>(a, base, 5, 9);
+        pdqSwapIfLess<T>(a, base, 8, 11);
+        pdqSwapIfLess<T>(a, base, 10, 12);
+        pdqSwapIfLess<T>(a, base, 0, 5);
+        pdqSwapIfLess<T>(a, base, 3, 8);
+        pdqSwapIfLess<T>(a, base, 4, 7);
+        pdqSwapIfLess<T>(a, base, 6, 11);
+        pdqSwapIfLess<T>(a, base, 9, 10);
+        pdqSwapIfLess<T>(a, base, 0, 1);
+        pdqSwapIfLess<T>(a, base, 2, 5);
+        pdqSwapIfLess<T>(a, base, 6, 9);
+        pdqSwapIfLess<T>(a, base, 7, 8);
+        pdqSwapIfLess<T>(a, base, 10, 11);
+        pdqSwapIfLess<T>(a, base, 1, 3);
+        pdqSwapIfLess<T>(a, base, 2, 4);
+        pdqSwapIfLess<T>(a, base, 5, 6);
+        pdqSwapIfLess<T>(a, base, 9, 10);
+        pdqSwapIfLess<T>(a, base, 1, 2);
+        pdqSwapIfLess<T>(a, base, 3, 4);
+        pdqSwapIfLess<T>(a, base, 5, 7);
+        pdqSwapIfLess<T>(a, base, 6, 8);
+        pdqSwapIfLess<T>(a, base, 2, 3);
+        pdqSwapIfLess<T>(a, base, 4, 5);
+        pdqSwapIfLess<T>(a, base, 6, 7);
+        pdqSwapIfLess<T>(a, base, 8, 9);
+        pdqSwapIfLess<T>(a, base, 3, 4);
+        pdqSwapIfLess<T>(a, base, 5, 6);
+    }
+
+    // ipnsort small_sort_network (no-merge regime, len < 18): sort a prefix with
+    // an optimal branchless network, then shift-left insertion-sort the tail.
+    // The base case of the quicksort — branchless leaves are where ipnsort pulls
+    // ahead of pdqsort's insertion-sort leaves on random input.
+    public static void pdqSmallSortNet<T>(T[] a, int32 begin, int32 end) {
+        int32 len = end - begin;
+        if (len < 2) {
+            return;
+        }
+        int32 presorted;
+        if (len >= 13) {
+            pdqSort13<T>(a, begin);
+            presorted = 13;
+        } else if (len >= 9) {
+            pdqSort9<T>(a, begin);
+            presorted = 9;
+        } else {
+            presorted = 1;
+        }
+        int32 i = begin + presorted;
+        while (i < end) {
+            if (a[i] < a[i - 1]) {
+                T tmp = a[i];
+                int32 sift = i;
+                boolean go = true;
+                while (go) {
+                    a[sift] = a[sift - 1];
+                    sift = sift - 1;
+                    if (sift == begin) {
+                        go = false;
+                    } else if (!(tmp < a[sift - 1])) {
+                        go = false;
+                    }
+                }
+                a[sift] = tmp;
+            }
+            i = i + 1;
+        }
+    }
+
     // The ipnsort quicksort driver over a[begin0..end0). Non-recursive: an
     // explicit work stack holds deferred partitions, and at each split we
     // *continue* the larger side and *push* the smaller — bounding the stack to
@@ -563,8 +693,8 @@ public class Sort {
         while (run) {
             boolean popNext = false;
             int32 len = end - begin;
-            if (len <= 24) {
-                pdqInsertion<T>(a, begin, end);
+            if (len <= 17) {
+                pdqSmallSortNet<T>(a, begin, end);
                 popNext = true;
             } else if (limit == 0) {
                 pdqHeapSort<T>(a, begin, end);
