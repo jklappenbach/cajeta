@@ -66,6 +66,17 @@ void nativeStuckFiber(void*) {
     usleep(500 * 1000);                             // 500ms "native" work
 }
 
+// Hits a caller-chosen armed loc exactly once, then loops a non-armed loc. Two
+// of these on distinct armed locs exercise the near-simultaneous-stop race.
+void armedOnceFiber(void* arg) {
+    int32_t loc = static_cast<int32_t>(reinterpret_cast<intptr_t>(arg));
+    __cajeta_dbg_safepoint(loc);
+    while (!g_quit.load(std::memory_order_relaxed)) {
+        __cajeta_dbg_safepoint(kPlainLoc);
+        g_counter.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
 template <typename Pred>
 bool spinUntil(Pred p, int capMs = 4000) {
     auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(capMs);
@@ -156,6 +167,56 @@ TEST(DbgCarrierQuiesce, BoundedBarrierFlagsNativeStuckCarrier) {
         << "barrier hung waiting on the native-stuck carrier";
 
     controller.resume();
+    g_quit.store(true);
+    __cajeta_task_shutdown();
+    __cajeta_dbg_set_safepoint_handler(nullptr);
+    g_ctrl = nullptr;
+    __cajeta_stop_reset();
+}
+
+// §5.3: two carriers hit armed safepoints in the same round → exactly ONE
+// primary stop; the other becomes a secondary (quiesced cleanly, not a second
+// competing primary). Both resume together on continue.
+TEST(DbgCarrierQuiesce, TwoArmedSafepointsOnePrimaryBothResume) {
+    __cajeta_stop_reset();
+    g_counter.store(0);
+    g_quit.store(false);
+    setenv("CAJETA_CARRIERS", "2", 1);
+
+    cajeta::dbg::DebugController controller;
+    g_ctrl = &controller;
+    controller.arm(42);
+    controller.arm(43);
+    __cajeta_dbg_set_safepoint_handler(testTrampoline);
+
+    void* slots[2] = {nullptr};
+    __cajeta_task_run(reinterpret_cast<void*>(42), armedOnceFiber, &slots[0]);
+    __cajeta_task_run(reinterpret_cast<void*>(43), armedOnceFiber, &slots[1]);
+
+    // Exactly one primary; the barrier converges (the OTHER armed carrier is a
+    // clean secondary, not an uncounted second primary → unquiesced must be 0).
+    cajeta::dbg::StopEvent ev;
+    ASSERT_TRUE(controller.waitForStop(ev, std::chrono::seconds(5)));
+    EXPECT_EQ(ev.reason, cajeta::dbg::StopEvent::StopReason::Breakpoint);
+    EXPECT_TRUE(ev.locId == 42 || ev.locId == 43);
+    EXPECT_EQ(ev.unquiescedCarriers, 0)
+        << "second armed carrier did not quiesce as a secondary";
+
+    // Frozen while stopped.
+    long c1 = g_counter.load();
+    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+    EXPECT_EQ(c1, g_counter.load());
+
+    // Resume-all: both carriers continue; no second primary stop appears (the
+    // secondary already passed its armed loc), and the counter advances.
+    controller.resume();
+    cajeta::dbg::StopEvent ev2;
+    EXPECT_FALSE(controller.waitForStop(ev2, std::chrono::milliseconds(300)))
+        << "a spurious second stop appeared — both armed carriers were primary";
+    long c2 = g_counter.load();
+    EXPECT_TRUE(spinUntil([&] { return g_counter.load() > c2; }))
+        << "carriers did not resume together";
+
     g_quit.store(true);
     __cajeta_task_shutdown();
     __cajeta_dbg_set_safepoint_handler(nullptr);

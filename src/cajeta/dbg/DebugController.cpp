@@ -62,7 +62,11 @@ namespace cajeta::dbg {
         // other carrier observes it (__cajeta_stop_is_requested) at its next
         // safepoint / scheduler hand-off and parks too. This carrier is the
         // primary; it blocks below via the controller rendezvous as before.
-        __cajeta_stop_request();
+        // §4.3 determinism: if a stop is already in flight (another carrier hit
+        // an armed safepoint first this round), request() returns 0 — we are NOT
+        // the primary. Don't publish a competing stop; return so the runtime
+        // safepoint parks us as an ordinary secondary (__cajeta_stop_park).
+        if (__cajeta_stop_request() == 0) return;
         // How many carriers must quiesce before inspection: every OTHER carrier
         // in the pool (this primary parks here, in the controller, not the
         // coordinator). <=0 (single carrier / no pool) makes the barrier a
