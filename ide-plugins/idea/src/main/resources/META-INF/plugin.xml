@@ -68,6 +68,17 @@
             language="Cajeta"
             extensions="cajeta"/>
 
+        <!-- W-buildtool unit 10: structured JSONL viewer (spec §8). The file type
+             is text-based so the plain text editor still opens; the provider adds
+             a structured tab alongside it. -->
+        <fileType
+            name="JSONL"
+            implementationClass="dev.cajeta.idea.jsonl.JsonlFileType"
+            fieldName="INSTANCE"
+            extensions="jsonl;ndjson;jsonlines"/>
+        <fileEditorProvider
+            implementation="dev.cajeta.idea.jsonl.JsonlFileEditorProvider"/>
+
         <lang.parserDefinition
             language="Cajeta"
             implementationClass="dev.cajeta.idea.parser.CajetaParserDefinition"/>

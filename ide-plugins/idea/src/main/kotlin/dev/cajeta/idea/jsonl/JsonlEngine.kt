@@ -33,12 +33,27 @@ object JsonlEngine {
         return JsonlModel(rows, deriveColumns(rows))
     }
 
+    /** Parse one physical line into a row (spec §8 windowing reuse): a JSON object
+     *  becomes a [JsonlRow.Record], any other non-blank line a [JsonlRow.Raw]
+     *  passthrough; a blank line carries nothing and returns null. Same rule as
+     *  [parse], exposed so the windowed viewer renders identically to the console. */
+    fun parseLine(lineNumber: Int, line: String): JsonlRow? {
+        if (line.isEmpty() || line.isBlank()) return null
+        val obj = parseObjectOrNull(line)
+        return if (obj != null) JsonlRow.Record(lineNumber, obj, line) else JsonlRow.Raw(lineNumber, line)
+    }
+
     /** Parse a single line as a JSON object; null for non-JSON or non-object. */
     private fun parseObjectOrNull(line: String): Map<String, Json>? = try {
         (Json.parse(line) as? Json.Obj)?.entries
     } catch (_: Exception) {
         null
     }
+
+    /** Deterministic column order for a set of rows (preferred keys first, then
+     *  first-appearance). Public so the windowed viewer derives columns the same
+     *  way as the console (spec §8.2.3, §15.5). */
+    fun columnsOf(rows: List<JsonlRow>): List<String> = deriveColumns(rows)
 
     private fun deriveColumns(rows: List<JsonlRow>): List<String> {
         val seen = LinkedHashSet<String>()
