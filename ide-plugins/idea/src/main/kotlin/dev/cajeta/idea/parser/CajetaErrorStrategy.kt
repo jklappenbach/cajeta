@@ -3,6 +3,7 @@ package dev.cajeta.idea.parser
 import dev.cajeta.idea.parser.antlr.CajetaLexer
 import org.antlr.v4.runtime.DefaultErrorStrategy
 import org.antlr.v4.runtime.Parser
+import org.antlr.v4.runtime.RecognitionException
 import org.antlr.v4.runtime.misc.IntervalSet
 
 /**
@@ -38,4 +39,16 @@ class CajetaErrorStrategy : DefaultErrorStrategy() {
 
     override fun getErrorRecoverySet(recognizer: Parser): IntervalSet =
         super.getErrorRecoverySet(recognizer).or(anchorTokens)
+
+    /**
+     * W4b telemetry: after the default recovery consumes up to a token in the
+     * recovery set, record which token it landed on and whether that token is
+     * one of our curated anchors. Lets us see how often recovery fires and
+     * whether the anchor set covers where errors actually land.
+     */
+    override fun recover(recognizer: Parser, e: RecognitionException) {
+        super.recover(recognizer, e)
+        val landed = recognizer.currentToken?.type ?: return
+        ErrorRecoveryTelemetry.record(landed, anchorTokens.contains(landed))
+    }
 }
