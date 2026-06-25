@@ -57,10 +57,10 @@ implement skill's focus stack (`agents/idea-focus.md`).
     confusing and unwanted. The global Settings checkbox + the W3b menu action +
     existing click-to-expand cover the real needs. Removed from scope (not a
     deferral).
-- [ ] **W4 — v0.2 candidates.** `MarkdownEngine` extension point, error-recovery
-  telemetry, typing-simulator test harness. (`TODO(codegen-keywords)` is
-  already implemented via the `generateTokenCategories` Gradle task — confirm
-  + strike from the v0.2 list.)
+- [ ] **W4 — v0.2 candidates.** `codegen-keywords` **confirmed shipped + struck**
+  from the v0.2 list (the `generateTokenCategories` task emits `CajetaKeywords.kt`,
+  consumed by the highlighter). Remaining, genuinely unbuilt: `MarkdownEngine`
+  extension point, error-recovery telemetry, typing-simulator test harness.
 
 End-to-end plan to go from an empty directory to a Cajeta language
 plugin installed and running in IntelliJ IDEA. Scope of this document
@@ -1511,21 +1511,22 @@ the *what*.
   lint squigglies stacking on the same line creates a poor first
   impression. The thin override (`getErrorRecoverySet` only) keeps
   the maintenance burden low. See Step 4.
-- **Canonical keyword/operator token-name list.** Hand-maintained
-  sets in `CajetaSyntaxHighlighter` for v0.1, with a
-  `TODO(codegen-keywords)` marker. Grammar-driven codegen
-  (option B from the design discussion) is the planned v0.2
-  upgrade once the list of keywords actually stabilizes.
+- **Canonical keyword/operator token-name list.** ~~Hand-maintained
+  sets in `CajetaSyntaxHighlighter` for v0.1~~ — **SHIPPED** the
+  grammar-driven codegen (option B): the `generateTokenCategories`
+  Gradle task parses `CajetaLexer.g4` and emits `CajetaKeywords.kt`,
+  which `CajetaSyntaxHighlighter` consumes (`in CajetaKeywords.ALL`).
+  Adding a keyword in the grammar now needs only a rebuild.
 
 ## Future work — v0.2 candidates
 
 Listed so they're visible without re-running the design
 discussion. None are blockers for v0.1 shipping.
 
-- **`TODO(codegen-keywords)`** — Gradle task that parses
-  `CajetaLexer.g4`, classifies tokens by naming convention, and
-  emits `CajetaKeywords.kt`. Removes the hand-maintained sets in
-  the syntax highlighter.
+- ~~**`TODO(codegen-keywords)`** — Gradle task that parses
+  `CajetaLexer.g4` … emits `CajetaKeywords.kt`.~~ **DONE/SHIPPED** —
+  the `generateTokenCategories` task does exactly this and the
+  highlighter consumes `CajetaKeywords.ALL`. (Verified 2026-06-24.)
 - **`MarkdownEngine` extension point** — promote the hard-coded
   engine map in `MarkdownEngineRegistry` to a JetBrains
   `ExtensionPointName<MarkdownEngine>` so third-party engines can
