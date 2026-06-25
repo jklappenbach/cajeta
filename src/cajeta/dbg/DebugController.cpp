@@ -7,6 +7,9 @@
 extern "C" {
     int  __cajeta_stop_request(void);
     void __cajeta_stop_clear(void);
+    void __cajeta_stop_set_expected(int n);
+    int  __cajeta_stop_wait_converged(long timeout_ns);
+    int  __cajeta_carrier_count_get(void);
 }
 
 namespace cajeta::dbg {
@@ -60,6 +63,11 @@ namespace cajeta::dbg {
         // safepoint / scheduler hand-off and parks too. This carrier is the
         // primary; it blocks below via the controller rendezvous as before.
         __cajeta_stop_request();
+        // How many carriers must quiesce before inspection: every OTHER carrier
+        // in the pool (this primary parks here, in the controller, not the
+        // coordinator). <=0 (single carrier / no pool) makes the barrier a
+        // no-op. The debugger thread reads this in awaitQuiesce().
+        __cajeta_stop_set_expected(__cajeta_carrier_count_get() - 1);
 
         // Park: publish the stop, wake the debugger thread, wait for resume.
         stopped = true;
@@ -86,18 +94,45 @@ namespace cajeta::dbg {
         stopped = false;
     }
 
+    void DebugController::setQuiesceTimeout(std::chrono::milliseconds t) {
+        std::lock_guard<std::mutex> lock(mutex);
+        quiesceTimeout = t;
+    }
+
+    void DebugController::awaitQuiesce() {
+        // CP6f-2d quiesce barrier (spec §2.3). The primary has parked and
+        // published expected_count; block until every other carrier parks or
+        // the bound elapses, then record how many never quiesced so the DAP
+        // layer can flag their fibers. Run WITHOUT the controller mutex (the
+        // coordinator has its own leaf lock; carriers parking must not contend
+        // on ours), then take the mutex briefly to stamp `current`.
+        long timeoutNs =
+            static_cast<long>(quiesceTimeout.count()) * 1000L * 1000L;
+        int unquiesced = __cajeta_stop_wait_converged(timeoutNs);
+        std::lock_guard<std::mutex> lock(mutex);
+        current.unquiescedCarriers = unquiesced;
+    }
+
     StopEvent DebugController::waitForStop() {
-        std::unique_lock<std::mutex> lock(mutex);
-        stoppedCv.wait(lock, [this] { return stopped; });
+        {
+            std::unique_lock<std::mutex> lock(mutex);
+            stoppedCv.wait(lock, [this] { return stopped; });
+        }
+        awaitQuiesce();   // barrier: don't report until the pool has quiesced
+        std::lock_guard<std::mutex> lock(mutex);
         return current;
     }
 
     bool DebugController::waitForStop(StopEvent& out,
                                       std::chrono::milliseconds timeout) {
-        std::unique_lock<std::mutex> lock(mutex);
-        if (!stoppedCv.wait_for(lock, timeout, [this] { return stopped; })) {
-            return false;
+        {
+            std::unique_lock<std::mutex> lock(mutex);
+            if (!stoppedCv.wait_for(lock, timeout, [this] { return stopped; })) {
+                return false;
+            }
         }
+        awaitQuiesce();   // barrier before the DAP `stopped` is emitted
+        std::lock_guard<std::mutex> lock(mutex);
         out = current;
         return true;
     }

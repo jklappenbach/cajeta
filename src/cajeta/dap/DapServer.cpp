@@ -121,7 +121,11 @@ void DapServer::runToStopOrExit(const Emit& emit) {
             // CP6f-2b: the real stopped fiber id (0 = entry/main thread, >=1 a
             // spawned fiber) instead of a hard-coded 1.
             body["threadId"] = static_cast<int>(ev.fiberId);
-            body["allThreadsStopped"] = true;
+            // CP6f-2d: only claim a full stop-the-world when the quiesce barrier
+            // confirmed every carrier parked. If some carrier was stuck (e.g. in
+            // a native call) it stays running, so allThreadsStopped is false and
+            // the client knows not every fiber's state is settled.
+            body["allThreadsStopped"] = (ev.unquiescedCarriers == 0);
             emit(makeEvent(seq_++, "stopped", std::move(body)));
             return;
         }

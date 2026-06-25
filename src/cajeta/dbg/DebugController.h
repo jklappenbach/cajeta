@@ -45,6 +45,11 @@ namespace cajeta::dbg {
         // from the innermost frame's recorded current_loc.
         StopReason reason = StopReason::Breakpoint;
         void* throwable = nullptr;
+        // CP6f-2d: carriers that did NOT quiesce within the bounded barrier
+        // (e.g. blocked in a long native call, unreachable at a safepoint). 0
+        // means the whole pool stopped. The DAP layer marks these carriers'
+        // fibers running/unavailable rather than presenting stale state.
+        int unquiescedCarriers = 0;
     };
 
     class DebugController {
@@ -89,7 +94,18 @@ namespace cajeta::dbg {
         // Non-blocking: is a safepoint currently parked?
         bool isStopped() const;
 
+        // CP6f-2d: bound on the cross-carrier quiesce barrier. After a safepoint
+        // parks the primary, waitForStop blocks until every other carrier parks
+        // OR this timeout elapses — so a carrier stuck in a native call can
+        // never hang the debugger (spec §2.3, §4.1). Default 500ms.
+        void setQuiesceTimeout(std::chrono::milliseconds t);
+
     private:
+        // Run the quiesce barrier (debugger thread): wait until all expected
+        // carriers park or quiesceTimeout elapses; record any un-quiesced count
+        // on `current`. Caller holds nothing.
+        void awaitQuiesce();
+
         mutable std::mutex mutex;
         std::condition_variable stoppedCv;   // signaled when a safepoint parks
         std::condition_variable resumeCv;    // signaled by resume()
@@ -98,6 +114,7 @@ namespace cajeta::dbg {
         bool stopped = false;
         bool resumeRequested = false;
         StopEvent current;
+        std::chrono::milliseconds quiesceTimeout{500};
     };
 
 } // namespace cajeta::dbg

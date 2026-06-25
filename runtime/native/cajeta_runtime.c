@@ -1997,6 +1997,16 @@ static void* __cajeta_carrier_loop(void* arg) {
                 pthread_mutex_unlock(&__cajeta_task_mutex);
                 continue;
             }
+            // CP6f-2d: an idle carrier under a debugger stop is already not
+            // executing Cajeta — count it as quiesced and park until resume
+            // (spec §2.2.4) instead of sleeping on the no-work condvar, so the
+            // barrier converges and the carrier can't grab work mid-stop. Park
+            // OUTSIDE the task mutex (lock order: stop_mu is a leaf).
+            if (__cajeta_stop_is_requested()) {
+                pthread_mutex_unlock(&__cajeta_task_mutex);
+                __cajeta_stop_park();
+                continue;
+            }
             __cajeta_sleeping_count++;
             struct timespec __wait_ts;
             clock_gettime(CLOCK_REALTIME, &__wait_ts);
@@ -2086,6 +2096,13 @@ static void* __cajeta_carrier_loop(void* arg) {
 // remapped condvar address — wakes that orphaned carrier into JIT code
 // that no longer exists). Safe to call when no carrier was started:
 // the flag check makes it a no-op.
+// CP6f-2d: number of carrier threads in the current pool (0 if not started).
+// The debugger's quiesce barrier uses this to compute how many carriers must
+// park before inspection (expected = active carriers minus the primary).
+int __cajeta_carrier_count_get(void) {
+    return __cajeta_carrier_count;
+}
+
 void __cajeta_task_shutdown(void) {
     pthread_mutex_lock(&__cajeta_task_mutex);
     if (!__cajeta_task_workers_started) {

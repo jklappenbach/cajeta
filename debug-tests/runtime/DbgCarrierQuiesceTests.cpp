@@ -18,6 +18,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <thread>
+#include <unistd.h>
 
 #include "cajeta/dbg/DebugController.h"
 
@@ -57,6 +58,12 @@ void armedFiber(void*) {
         __cajeta_dbg_safepoint(kPlainLoc);
         g_counter.fetch_add(1, std::memory_order_relaxed);
     }
+}
+
+// Simulates a carrier blocked in a long native call: it never reaches a
+// safepoint, so it cannot park — the barrier must time out and flag it (§5.4).
+void nativeStuckFiber(void*) {
+    usleep(500 * 1000);                             // 500ms "native" work
 }
 
 template <typename Pred>
@@ -108,6 +115,47 @@ TEST(DbgCarrierQuiesce, BreakpointQuiescesAllCarriers) {
     EXPECT_TRUE(spinUntil([&] { return g_counter.load() > c2; }))
         << "counter did not resume after continue";
 
+    g_quit.store(true);
+    __cajeta_task_shutdown();
+    __cajeta_dbg_set_safepoint_handler(nullptr);
+    g_ctrl = nullptr;
+    __cajeta_stop_reset();
+}
+
+// §5.4: a carrier stuck in a native call can't reach a safepoint. The barrier
+// must return within its bound, flagging the un-quiesced carrier — never hang.
+TEST(DbgCarrierQuiesce, BoundedBarrierFlagsNativeStuckCarrier) {
+    __cajeta_stop_reset();
+    g_counter.store(0);
+    g_quit.store(false);
+    setenv("CAJETA_CARRIERS", "4", 1);
+
+    cajeta::dbg::DebugController controller;
+    controller.setQuiesceTimeout(std::chrono::milliseconds(150));
+    g_ctrl = &controller;
+    controller.arm(kArmedLoc);
+    __cajeta_dbg_set_safepoint_handler(testTrampoline);
+
+    // 4 carriers: 1 armed (primary), 2 plain (park as secondaries), 1 stuck in
+    // a native call (never parks) → expected=3, only 2 converge.
+    void* slots[4] = {nullptr};
+    __cajeta_task_run(nullptr, plainFiber, &slots[0]);
+    __cajeta_task_run(nullptr, plainFiber, &slots[1]);
+    __cajeta_task_run(nullptr, nativeStuckFiber, &slots[2]);
+    __cajeta_task_run(nullptr, armedFiber, &slots[3]);
+
+    auto t0 = std::chrono::steady_clock::now();
+    cajeta::dbg::StopEvent ev;
+    ASSERT_TRUE(controller.waitForStop(ev, std::chrono::seconds(5)));
+    auto elapsed = std::chrono::steady_clock::now() - t0;
+
+    EXPECT_EQ(ev.locId, kArmedLoc);
+    EXPECT_EQ(ev.unquiescedCarriers, 1)            // the native-stuck carrier
+        << "barrier should flag exactly the un-quiesced carrier";
+    EXPECT_LT(elapsed, std::chrono::milliseconds(1500))   // honored the bound
+        << "barrier hung waiting on the native-stuck carrier";
+
+    controller.resume();
     g_quit.store(true);
     __cajeta_task_shutdown();
     __cajeta_dbg_set_safepoint_handler(nullptr);
