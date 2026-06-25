@@ -39,10 +39,13 @@ implement skill's focus stack (`agents/idea-focus.md`).
   `harness/`, `wizard/`. (Debugging-tier *acceptance checkboxes* left unticked —
   ticking them needs a real `runIde` walkthrough, not a doc edit.)
 - [ ] **W3 — Finish loose threads.** Decomposed:
-  - [ ] **W3a — CP6f-2d hard carrier-quiesce.** C++ JIT-debug runtime: guarantee
-    the entry thread and live fibers are fully quiesced for the
-    entry-thread-vs-live-fibers edge before enumeration. TDD against
-    `cajeta_debug_test`. Highest risk (concurrency).
+  - [~] **W3a — CP6f-2d hard carrier-quiesce — SPEC'D, not implemented.**
+    Investigation revealed this is a real multi-carrier stop-the-world bug
+    (only the hitting carrier parks; others keep running fibers; `liveFibers()`
+    TOCTOU), too large/risky to rush here. Per developer decision 2026-06-24:
+    landed the accurate doc correction (this Plan + `DapServer.cpp` FIXME) and
+    moved the implementation to its own checkpoint —
+    `docs/specs/carrier-quiesce-spec.md` + `agents/carrier-quiesce-plan.md`.
   - [x] **W3b — "Toggle Markdown Rendering" menu action.** Added
     `ToggleMarkdownRenderingAction` (a `ToggleAction` whose checked state mirrors
     `renderMarkdownInComments`) under the Cajeta tools group; flipping it applies
@@ -1328,10 +1331,12 @@ path (`cajeta dap` LLJIT-runs the target and parks the executing fiber
 in-process) rather than the AOT/DWARF/ptrace path sketched in Part A — same DAP
 wire contract, different backend.
 
-**Overall Phase 2 status: landed through CP7-6.** Everything below is **DONE**
-except the single CP6f-2d tail noted inline (hard carrier-quiesce for the
-entry-thread-vs-live-fibers edge); the multi-fiber view works under the
-stop-the-world model without it. The FR-1 checkpoint table in
+**Overall Phase 2 status: landed through CP7-6**, with **one known open
+correctness gap: CP6f-2d** (hard cross-carrier quiesce). The runtime is
+multi-carrier, so at a breakpoint only the hitting carrier parks while others
+keep running fibers — the fibers view is therefore not yet safe stop-the-world
+(see the inline CP6f-2d note + `docs/specs/carrier-quiesce-spec.md`). Everything
+else below is **DONE**. The FR-1 checkpoint table in
 [`ide-plugin-debug-fr-1.md`](ide-plugin-debug-fr-1.md) (all CP7 rows ✅) is the
 authoritative per-checkpoint record.
 
@@ -1366,10 +1371,15 @@ platform classes are thin delegates.
     `threads`/per-fiber `stackTrace` wiring **(DONE** — `DapServer.cpp` threads
     handler + 2b-ii per-thread `stackTrace` slice**)**; **2c** plugin
     multi-stack thread dropdown (`XExecutionStack` per fiber) **(DONE)**;
-    **2d** hard carrier-quiesce for the entry-thread-vs-live-fibers edge case
-    **(OPEN** — no dedicated commit; the multi-fiber view operates under the
-    stop-the-world "carrier parked while enumerating" model without it. Tracked
-    as W3.**)**.
+    **2d** hard carrier-quiesce **(OPEN — real multi-carrier bug, not a tail.**
+    Investigation 2026-06-24 found the runtime is multi-carrier
+    (`cajeta_runtime.c` spawns one `__cajeta_carrier_loop` per core); at a
+    breakpoint only the carrier that hit the safepoint parks while the others
+    keep running fibers — so the program is **not** stopped-the-world and
+    `liveFibers()` enumerates a concurrently-mutated registry (TOCTOU). The
+    earlier "carrier parked while enumerating" claim was wrong. Proper fix =
+    cross-carrier stop-the-world quiesce, specified separately in
+    `docs/specs/carrier-quiesce-spec.md` + `agents/carrier-quiesce-plan.md`.**)**
   - **CP6f-3** exception breakpoints — runtime throw-interception hook into
     `DebugController` + `setExceptionBreakpoints` + `stopped{reason:"exception"}`.
     **DONE** (CP6f-3b plugin wiring + arm-before-start; CP6f-3c throw-hang fix).

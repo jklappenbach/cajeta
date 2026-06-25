@@ -292,8 +292,16 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
     if (command == "threads") {
         // CP6f-2b: the program/entry thread is always id 0 ("main"); each live
         // fiber from the JIT registry is an additional thread keyed by its
-        // stable dbg id. The carrier is parked while we enumerate, so the
-        // registry is stable.
+        // stable dbg id.
+        //
+        // FIXME(CP6f-2d, docs/specs/carrier-quiesce-spec.md): this enumeration
+        // is NOT yet safe under the multi-carrier scheduler. Only the carrier
+        // that hit the breakpoint is parked (DebugController::onSafepoint blocks
+        // one thread); the other __cajeta_carriers[] keep running fibers, so the
+        // registry can be mutated (register/unregister) concurrently while we
+        // walk it, and liveFibers() reads count() then at(i) with the registry
+        // lock released between calls (a TOCTOU). Correct behavior needs
+        // cross-carrier stop-the-world quiesce before inspection.
         Json threads = Json::array();
         Json main = Json::object();
         main["id"] = 0;
