@@ -43,10 +43,12 @@ implement skill's focus stack (`agents/idea-focus.md`).
     the entry thread and live fibers are fully quiesced for the
     entry-thread-vs-live-fibers edge before enumeration. TDD against
     `cajeta_debug_test`. Highest risk (concurrency).
-  - [ ] **W3b — "Toggle Markdown Rendering" menu action.** Plugin Kotlin: an
-    action flipping `CajetaSettings.renderMarkdownInComments` + refreshing folds;
-    register in the plugin.xml `<actions>` block. Behavioral core unit-testable.
-    Tractable.
+  - [x] **W3b — "Toggle Markdown Rendering" menu action.** Added
+    `ToggleMarkdownRenderingAction` (a `ToggleAction` whose checked state mirrors
+    `renderMarkdownInComments`) under the Cajeta tools group; flipping it applies
+    to all open editors via new `MarkdownFoldEditorListener.applyRenderingState()`
+    / `uninstall()` (teardown extracted from `refresh()`). Decision core
+    `MarkdownRenderingToggle` (plain JVM) unit-tested (3 tests, green).
   - [ ] **W3c — Per-comment gutter-icon toggle.** Plugin Kotlin: gutter icon per
     comment fold whose click overrides that comment's render state until the
     caret moves. More involved; overlaps `FacetGutterManager`. Cosmetic.

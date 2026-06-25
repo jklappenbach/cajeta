@@ -104,7 +104,6 @@ internal object MarkdownFoldEditorListener : EditorFactoryListener {
      * the source out from under them.
      */
     private fun refresh(editor: Editor) {
-        val foldingModel = editor.foldingModel as? FoldingModelEx ?: return
         val caretOffset = editor.caretModel.offset
 
         val activeBlock = findBlockAt(editor, caretOffset)
@@ -114,6 +113,21 @@ internal object MarkdownFoldEditorListener : EditorFactoryListener {
             log.debug("refresh skipped: caret inside expanded block ${activeBlock.startOffset}-${activeBlock.endOffset}")
             return
         }
+
+        teardownAll(editor)
+        // Rebuild from the current document.
+        installFoldRegions(editor)
+    }
+
+    /**
+     * Removes all installed markdown fold state for this editor — whole-line
+     * CustomFoldRegions and trailing folds + their inlays — without rebuilding.
+     * Shared by refresh() (which rebuilds after) and uninstall() (which does
+     * not). Unconditional: callers that must preserve a caret-in-block edit
+     * (refresh) guard before invoking this.
+     */
+    private fun teardownAll(editor: Editor) {
+        val foldingModel = editor.foldingModel as? FoldingModelEx ?: return
 
         // Tear down whole-line block state + their CustomFoldRegions.
         val blocks = wholeLineBlocksFor(editor)
@@ -136,9 +150,45 @@ internal object MarkdownFoldEditorListener : EditorFactoryListener {
             }
         }
         trailing.clear()
+    }
 
-        // Rebuild from the current document.
-        installFoldRegions(editor)
+    /**
+     * Removes markdown rendering from this editor and stops its refresh
+     * listener — used when the feature is toggled off (W3b). Unlike refresh(),
+     * this tears down unconditionally (even a block the caret sits in), since
+     * the user asked for raw source everywhere.
+     */
+    fun uninstall(editor: Editor) {
+        if (!isCajetaEditor(editor)) return
+        ApplicationManager.getApplication().invokeLater {
+            try {
+                teardownAll(editor)
+                editor.getUserData(REFRESH_LISTENER_KEY)?.let {
+                    editor.document.removeDocumentListener(it)
+                    editor.putUserData(REFRESH_LISTENER_KEY, null)
+                }
+            } catch (e: Throwable) {
+                log.warn("Failed to uninstall markdown fold regions", e)
+            }
+        }
+    }
+
+    /**
+     * Applies the current [CajetaSettings.renderMarkdownInComments] state to
+     * every open editor — installing rendering when on, tearing it down (revert
+     * to raw source) when off. Driven by [ToggleMarkdownRenderingAction]; the
+     * per-editor branch is [MarkdownRenderingToggle.opFor].
+     */
+    fun applyRenderingState() {
+        val enabled = CajetaSettings.instance.renderMarkdownInComments
+        ApplicationManager.getApplication().invokeLater {
+            for (editor in EditorFactory.getInstance().allEditors) {
+                when (MarkdownRenderingToggle.opFor(enabled)) {
+                    MarkdownRenderingToggle.EditorOp.INSTALL -> install(editor)
+                    MarkdownRenderingToggle.EditorOp.UNINSTALL -> uninstall(editor)
+                }
+            }
+        }
     }
 
     private val REFRESH_LISTENER_KEY: Key<DocumentListener> =

@@ -109,6 +109,11 @@
                 class="dev.cajeta.idea.harness.TypeFixtureAction"
                 text="Type Fixture into Editor"
                 description="Run the typing-simulator harness against a fixture file."/>
+            <action
+                id="dev.cajeta.idea.ToggleMarkdownRendering"
+                class="dev.cajeta.idea.markdown.ToggleMarkdownRenderingAction"
+                text="Render Markdown in Comments"
+                description="Toggle Obsidian-style Markdown rendering in Cajeta comments globally."/>
         </group>
     </actions>
 </idea-plugin>
