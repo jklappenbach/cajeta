@@ -457,21 +457,38 @@ public class Sort {
         if (n < 2) {
             return n;
         }
+        // Carry the previous element in a register (`prev`) so the scan does ONE
+        // bounds-checked load per element instead of reloading both a[runLen] and
+        // a[runLen-1] each iteration — the cheap already-/reverse-sorted detection
+        // is otherwise load-bound (benchmark-gap-sweep Unit 4).
         int32 runLen = 2;
-        boolean desc = a[1] < a[0];
+        T prev = a[1];
+        boolean desc = prev < a[0];
         boolean go = true;
         if (desc) {
             while (go) {
-                if (runLen < n && a[runLen] < a[runLen - 1]) {
-                    runLen = runLen + 1;
+                if (runLen < n) {
+                    T cur = a[runLen];
+                    if (cur < prev) {
+                        prev = cur;
+                        runLen = runLen + 1;
+                    } else {
+                        go = false;
+                    }
                 } else {
                     go = false;
                 }
             }
         } else {
             while (go) {
-                if (runLen < n && !(a[runLen] < a[runLen - 1])) {
-                    runLen = runLen + 1;
+                if (runLen < n) {
+                    T cur = a[runLen];
+                    if (!(cur < prev)) {
+                        prev = cur;
+                        runLen = runLen + 1;
+                    } else {
+                        go = false;
+                    }
                 } else {
                     go = false;
                 }
