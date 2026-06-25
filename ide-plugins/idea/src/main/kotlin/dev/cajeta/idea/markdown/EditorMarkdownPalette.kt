@@ -1,19 +1,21 @@
 package dev.cajeta.idea.markdown
 
-import com.intellij.openapi.editor.colors.EditorColorsManager
+import com.intellij.openapi.editor.Editor
 import java.awt.Color
 
 /**
- * Derives a [MarkdownHtmlTheme.Palette] from the active editor color scheme so
- * the rendered block tracks the editor's look (dark/light, font) rather than
- * looking like a foreign web widget. Shared by both rendering surfaces — Swing
+ * Derives a [MarkdownHtmlTheme.Palette] from a specific editor's color scheme so
+ * the rendered block tracks that editor's look — including **per-editor zoom**.
+ * The font size is read from `editor.colorsScheme.editorFontSize`, which
+ * reflects Ctrl+wheel / Ctrl+= zoom, rather than the global scheme's configured
+ * base size (which does not). Shared by both rendering surfaces — Swing
  * (transparent body, painted over the fold tint) and JCEF (opaque body, since
  * Chromium has no editor showing through behind it).
  */
 object EditorMarkdownPalette {
 
-    fun current(withBackground: Boolean): MarkdownHtmlTheme.Palette {
-        val scheme = EditorColorsManager.getInstance().globalScheme
+    fun forEditor(editor: Editor, withBackground: Boolean): MarkdownHtmlTheme.Palette {
+        val scheme = editor.colorsScheme   // editor-local: tracks zoom
         val fg = scheme.defaultForeground
         val bg = scheme.defaultBackground
         val dark = isDark(bg)

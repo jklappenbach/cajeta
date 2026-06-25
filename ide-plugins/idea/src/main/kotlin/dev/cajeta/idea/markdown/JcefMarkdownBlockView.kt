@@ -1,5 +1,6 @@
 package dev.cajeta.idea.markdown
 
+import com.intellij.openapi.editor.Editor
 import java.awt.Graphics2D
 import java.awt.image.BufferedImage
 
@@ -20,22 +21,24 @@ class JcefMarkdownBlockView(private val html: String) : MarkdownBlockView {
     private val fallback = SwingMarkdownBlockView(html)
 
     @Volatile private var image: BufferedImage? = null
-    @Volatile private var started = false
+    /** The (width, fontSize) the current image/in-flight render is for; a change
+     *  (e.g. zoom) invalidates it and triggers a re-render. */
+    private var renderKey: Pair<Int, Int>? = null
     private var repaint: (() -> Unit)? = null
 
     override fun bindRepaint(repaint: () -> Unit) { this.repaint = repaint }
 
-    override fun heightForWidth(width: Int, minHeight: Int): Int {
+    override fun heightForWidth(editor: Editor, width: Int, minHeight: Int): Int {
         val img = image
         return img?.height?.coerceAtLeast(minHeight)
-            ?: fallback.heightForWidth(width, minHeight)
+            ?: fallback.heightForWidth(editor, width, minHeight)
     }
 
-    override fun paint(g: Graphics2D, x: Double, y: Double, width: Int, height: Int) {
-        ensureRenderStarted(width)
+    override fun paint(editor: Editor, g: Graphics2D, x: Double, y: Double, width: Int, height: Int) {
+        ensureRenderStarted(editor, width)
         val img = image
         if (img == null) {
-            fallback.paint(g, x, y, width, height)
+            fallback.paint(editor, g, x, y, width, height)   // until the frame is ready
             return
         }
         val gc = g.create() as Graphics2D
@@ -47,15 +50,20 @@ class JcefMarkdownBlockView(private val html: String) : MarkdownBlockView {
         }
     }
 
-    /** Kick off the one-shot off-screen render the first time we know our width.
+    /** (Re)start the one-shot off-screen render when the width or zoom changes.
      *  JCEF has no editor behind it, so theme with an opaque background. */
-    private fun ensureRenderStarted(width: Int) {
-        if (started || width <= 0) return
-        started = true
-        val doc = MarkdownHtmlTheme.wrap(html, EditorMarkdownPalette.current(withBackground = true))
+    private fun ensureRenderStarted(editor: Editor, width: Int) {
+        if (width <= 0) return
+        val key = width to editor.colorsScheme.editorFontSize
+        if (key == renderKey) return
+        renderKey = key
+        image = null   // fall back to Swing until the new image arrives
+        val doc = MarkdownHtmlTheme.wrap(html, EditorMarkdownPalette.forEditor(editor, withBackground = true))
         JcefHtmlImageRenderer.render(doc, width) { rendered ->
-            image = rendered
-            repaint?.invoke()   // ask the fold region to re-measure + repaint
+            if (renderKey == key) {        // ignore a stale render if zoom moved on
+                image = rendered
+                repaint?.invoke()          // ask the fold region to re-measure + repaint
+            }
         }
     }
 }
