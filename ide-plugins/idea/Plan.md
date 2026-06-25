@@ -49,9 +49,11 @@ implement skill's focus stack (`agents/idea-focus.md`).
     to all open editors via new `MarkdownFoldEditorListener.applyRenderingState()`
     / `uninstall()` (teardown extracted from `refresh()`). Decision core
     `MarkdownRenderingToggle` (plain JVM) unit-tested (3 tests, green).
-  - [ ] **W3c — Per-comment gutter-icon toggle.** Plugin Kotlin: gutter icon per
-    comment fold whose click overrides that comment's render state until the
-    caret moves. More involved; overlaps `FacetGutterManager`. Cosmetic.
+  - [x] **W3c — Per-comment gutter-icon toggle — CUT (not built).** Dropped by
+    developer decision 2026-06-24: per-comment markdown gutter toggles are
+    confusing and unwanted. The global Settings checkbox + the W3b menu action +
+    existing click-to-expand cover the real needs. Removed from scope (not a
+    deferral).
 - [ ] **W4 — v0.2 candidates.** `MarkdownEngine` extension point, error-recovery
   telemetry, typing-simulator test harness. (`TODO(codegen-keywords)` is
   already implemented via the `generateTokenCategories` Gradle task — confirm
