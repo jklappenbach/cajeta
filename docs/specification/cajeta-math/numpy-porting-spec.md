@@ -9,7 +9,7 @@
 
 ## 1. The decision (what this resolves)
 
-cajeta is a numerical/ML-first language: the GPU substrate (`cajeta.gpu` + `cajeta.gpu.xpu`)
+cajeta is a numerical/ML-first language: the GPU substrate (`cajeta.xpu` + `cajeta.xpu.xpu`)
 exists to be the thing numpy/torch/keras-style work runs on. numpy is the **foundational
 n-dimensional array** the whole scientific/ML ecosystem is built on. The question is not
 *whether* to provide it but *how much is stdlib and where the rest lives*. Resolved:
@@ -21,7 +21,7 @@ n-dimensional array** the whole scientific/ML ecosystem is built on. The questio
 - **`cajeta.sci` / `cajeta.learn` (separate official libs) = the scipy / sklearn tier.**
   The huge, churny, opinionated, domain-specific surface — built on the stdlib `Tensor`,
   versioned independently.
-- **`cajeta.gpu.xpu` = the GPU compute-primitive substrate** the math layer *lowers onto*
+- **`cajeta.xpu.xpu` = the GPU compute-primitive substrate** the math layer *lowers onto*
   (`CooperativeMatrix`/`CoopStage`, elementwise/reduction/scan kernels). Not an API home.
 - **torch / keras = separate opinionated frameworks** (autograd, `nn`). Out of scope.
 
@@ -72,7 +72,7 @@ a prerequisite** for landing `cajeta.math` at scale (plan Phase 1).
 - **S — separate official lib.** `cajeta.sci` (scipy-shaped: optimize/integrate/interpolate/
   sparse/special/advanced-signal) and `cajeta.learn` (sklearn-shaped estimators). Churny,
   huge, opinionated; built on the stdlib `Tensor`.
-- **X — `cajeta.gpu.xpu` substrate.** GPU compute primitives the M layer lowers onto. Not
+- **X — `cajeta.xpu.xpu` substrate.** GPU compute primitives the M layer lowers onto. Not
   a numpy-API home.
 - **N — not applicable.** numpy-isms cajeta replaces or omits (`object` dtype, `vectorize`,
   `numpy.testing`, the `np.lib` Python helpers).
@@ -157,7 +157,7 @@ distribution set (uniform/normal/binomial/poisson/exponential/gamma/beta/dirichl
 Inside `cajeta.math`, two regimes (this is *implementation*, both still in the package):
 - **Data-parallel — *is* a kernel.** elementwise, reductions, prefix scans,
   `matmul`/contraction (tensor cores), gather/scatter/mask indexing, sort, fft butterflies,
-  counter-based RNG. The bulk of M — rides the `cajeta.gpu` substrate directly, with a CPU
+  counter-based RNG. The bulk of M — rides the `cajeta.xpu` substrate directly, with a CPU
   floor (cajeta.math is **CPU-first**: every op also has a portable path).
 - **Host-orchestrated algorithm — *not* a kernel.** The LAPACK factorizations: host control
   flow, pivoting, convergence loops, many kernel launches (cuSOLVER/MAGMA shape), possibly
@@ -170,12 +170,12 @@ Because the stdlib `Tensor` is a permanent commitment, settle up front:
 2. **shape / strides / views** — view-vs-copy contract, C/F order, broadcasting rules,
    aliasing/overlap rules.
 3. **indexing** — basic + boolean + fancy, and the view-vs-copy each yields.
-4. **device placement** — **CPU-first**; default host storage; lowers to `cajeta.gpu` for
+4. **device placement** — **CPU-first**; default host storage; lowers to `cajeta.xpu` for
    GPU execution; fully usable with **no GPU** (the reason it's `cajeta.math`, not `gpu.*`).
 5. **interop protocol** — a `Tensor` protocol/trait (array-protocol / DLPack analogue) so
    external libs + the torch port share one array, zero-copy. The anti-fragmentation seam.
-6. **lowering seam** — how a `cajeta.math` op picks CPU vs `cajeta.gpu` and lowers `matmul`
-   onto `cajeta.gpu.xpu.CooperativeMatrix`.
+6. **lowering seam** — how a `cajeta.math` op picks CPU vs `cajeta.xpu` and lowers `matmul`
+   onto `cajeta.xpu.xpu.CooperativeMatrix`.
 
 ## 5. Goals / Non-goals
 **Goals:** the classified surface (§3); the resolved boundary (§1–§2); the `Tensor`
@@ -190,7 +190,7 @@ separate); the torch/keras frameworks.
    `random`/`stats`) is **M**; scipy/sklearn is **S**.
 3. The two arguments for bundling (optimal linkage; frozen API) and the two residual
    concerns (LAPACK backend form; lazy-parse prerequisite) are stated.
-4. `cajeta.gpu.xpu`'s role is the acceleration substrate, not an API home.
+4. `cajeta.xpu.xpu`'s role is the acceleration substrate, not an API home.
 5. The `Tensor` forever-API (§4) is enumerated as the gate for the plan's Phase 2.
 
 ## 7. Recommendation (the answer to "should numpy live in math?")

@@ -1,4 +1,4 @@
-# cajeta.gpu.gfx — Graphics Primitives Spec
+# cajeta.xpu.gfx — Graphics Primitives Spec
 
 **Status:** Draft for review · 2026-06-18 · supersedes the framing in
 `plans/gpu/gfx/cajeta-gfx-plan.md` and `docs/gpu/gfx/CajetaGFX.md` (both drifted).
@@ -10,10 +10,10 @@ implementation tasks — that is the job of the plan derived from it.
 
 ## 0. Why this spec exists (the drift)
 
-The GPU/XPU foundation matured. `cajeta.gpu` now ships value types, the buffer/memory
+The GPU/XPU foundation matured. `cajeta.xpu` now ships value types, the buffer/memory
 model, textures + writable images, acceleration structures, inline ray query (mesh + AABB),
 waves/atomics/barriers, cooperative-matrix tensor-core matmul, and `cajeta.math`
-(`Tensor`/`Matrix`/`DType`). In the process the **definition of `cajeta.gpu.gfx` drifted
+(`Tensor`/`Matrix`/`DType`). In the process the **definition of `cajeta.xpu.gfx` drifted
 between two documents**:
 
 - **`docs/gpu/CajetaGPU.md` (current, authoritative)** frames the graphics facet as:
@@ -26,7 +26,7 @@ between two documents**:
   packaging** (Parts G3–G6).
 
 Those two framings are incompatible. This spec adopts the **foundation doc's framing** and
-makes it precise: **`cajeta.gpu.gfx` is the unopinionated graphics-primitive layer** — the
+makes it precise: **`cajeta.xpu.gfx` is the unopinionated graphics-primitive layer** — the
 framework-neutral building blocks a game engine needs — and *nothing above that line*. The
 opinionated engine (a chosen renderer, a GI system, ECS, physics, audio, an editor) lives in
 **separate libraries built on these primitives**, never in stdlib gfx.
@@ -37,16 +37,16 @@ opinionated engine (a chosen renderer, a GI system, ECS, physics, audio, an edit
 
 ### 1.1 What gfx *is*
 
-> **`cajeta.gpu.gfx` carries primitives that tightly wrap the GPU's *graphics* capabilities,
+> **`cajeta.xpu.gfx` carries primitives that tightly wrap the GPU's *graphics* capabilities,
 > plus the small, framework-neutral algorithms that every engine re-derives.** It is the
-> graphics sibling of `cajeta.gpu.xpu` (compute) over the shared `cajeta.gpu` foundation.
+> graphics sibling of `cajeta.xpu.xpu` (compute) over the shared `cajeta.xpu` foundation.
 
 ```
-cajeta.gpu                       (foundation — value types & math, buffers, textures,
+cajeta.xpu                       (foundation — value types & math, buffers, textures,
    ▲            ▲                 acceleration structures, inline ray query, waves/atomics)
    │            │
-cajeta.gpu.xpu  cajeta.gpu.gfx   ← this spec       (foundation libs on cajeta.gpu:
-(compute prims) (graphics prims)                    cajeta.gpu.splat, cajeta.math)
+cajeta.xpu.xpu  cajeta.xpu.gfx   ← this spec       (foundation libs on cajeta.xpu:
+(compute prims) (graphics prims)                    cajeta.xpu.splat, cajeta.math)
                    ▲
                    │  separate libraries, NOT stdlib:
             Glorias (the PoC engine: scheduler, renderer, scene) · GI system
@@ -57,9 +57,9 @@ cajeta.gpu.xpu  cajeta.gpu.gfx   ← this spec       (foundation libs on cajeta.
 renderer, scene model) lives in its own repo, built on these primitives.
 
 **The governing split — shared ⇒ foundation, graphics-only ⇒ gfx.** A primitive used by *both*
-siblings (compute **and** graphics) belongs in the **foundation** (`cajeta.gpu` / a foundation
-library like `cajeta.gpu.splat`), not in gfx. gfx holds only what is *graphics-only*. This is
-the rule that puts **splats** in `cajeta.gpu.splat` (gfx rasterizes them, xpu scatters them for
+siblings (compute **and** graphics) belongs in the **foundation** (`cajeta.xpu` / a foundation
+library like `cajeta.xpu.splat`), not in gfx. gfx holds only what is *graphics-only*. This is
+the rule that puts **splats** in `cajeta.xpu.splat` (gfx rasterizes them, xpu scatters them for
 SPH/MPM/tomography — `docs/gpu/splats.md`), the same way `AccelerationStructure`+`RayQuery`
 already sit in the foundation. It also pulls the **graphics math** down into `cajeta.math`
 (§4.1) and flags the geometry-processing toolbox (QEM/MC/TSDF) as foundation-leaning (§8.7).
@@ -72,7 +72,7 @@ here:
 
 1. **Write-once-run-everywhere.** Each primitive has a portable default correct on every
    backend, and a native fast path where the silicon has it, **bit-exact cross-checked**
-   against the default. No `cajeta.gpu.gfx.vulkan` / `.nvidia` packages — vendor-exclusive
+   against the default. No `cajeta.gfx.vulkan` / `.nvidia` packages — vendor-exclusive
    silicon lives in external vendor libraries.
 2. **Two seams — verbs and nouns.** A graphics capability is a call *on a datastructure*. The
    verb lowers through `LoweringTarget`; the noun is **built from a description**, not
@@ -83,7 +83,7 @@ here:
 
 ### 1.2 The IN / OUT line (the heart of this spec)
 
-A primitive belongs in `cajeta.gpu.gfx` iff it satisfies **all** of:
+A primitive belongs in `cajeta.xpu.gfx` iff it satisfies **all** of:
 
 - **Capability-wrapping or universally-rederived** — it either wraps a hardware graphics
   capability (a shader stage, a draw, a sampler) or is an algorithm every engine rebuilds
@@ -134,7 +134,7 @@ top. §6 lists the OUT set explicitly.
 
 So the primitive modules below are scoped against *what already exists* vs *what gfx adds*:
 
-| Foundation (`cajeta.gpu`, present today) | Relevance to gfx |
+| Foundation (`cajeta.xpu`, present today) | Relevance to gfx |
 |---|---|
 | `Vector<T,N>` (compiler builtin), `Matrix<T,R,C>` (`cajeta.math`) | transform math — **but no `Quaternion`/`Transform`/bounding volumes/`Frustum`/`Ray` yet** (gap, §4.1) |
 | `KernelBuffer<T>`, `MemoryKind`, `KernelStream`, `Fence`/`Event` | vertex/index/uniform buffers, frame sync |
@@ -142,7 +142,7 @@ So the primitive modules below are scoped against *what already exists* vs *what
 | `Image2D` (writable storage image) | render-target / visibility-buffer write surface |
 | `AccelerationStructure` (AABB + triangle), `RayQuery`, `SoftwareRayQuery`, `AsImpl`, `Capability` | **inline ray query is GPU-owned**; the **RT *pipeline* (raygen/hit/miss/SBT) is gfx-owned** (the GPU↔GFX seam) |
 | `Wave`, `Quad`, `Barrier`, atomics, `Workgroup`, `KernelThread` | software rasterizer, BVH build, sort, reductions |
-| `CooperativeMatrix`, `CoopStage` (`cajeta.gpu.xpu`) | compute-only; gfx does **not** use them |
+| `CooperativeMatrix`, `CoopStage` (`cajeta.xpu.xpu`) | compute-only; gfx does **not** use them |
 | `cajeta.math`: `Tensor<T>`, `Matrix`, `DType`, fp16/bf16/fp8 element types | shared numeric substrate; FFT/Poisson-grade solvers are math-side |
 
 **Confirmed:** there is **no** graphics/rasterization/rendering code yet (no vertex/fragment
@@ -157,7 +157,7 @@ Each module states the **capability**, the **use case (why)**, and its **researc
 
 ### 4.1 Graphics math & spatial primitives  *(value types — these live in `cajeta.math`)*
 - **Decision (resolved):** the small fixed-size math types are **`cajeta.math`**, beside the
-  existing `Matrix<T,R,C>` — *not* `cajeta.gpu` and *not* gfx. `cajeta.math` is the
+  existing `Matrix<T,R,C>` — *not* `cajeta.xpu` and *not* gfx. `cajeta.math` is the
   backend-agnostic, CPU-first math package; these are pure algebra and belong with `Matrix`.
   Confirmed absent today (only `Matrix`/`Tensor`/`DType` exist), so this is all forward work.
 - **`cajeta.math` adds:** `Quaternion`, `Transform` (TRS), affine / projection / view-matrix
@@ -221,7 +221,7 @@ Each module states the **capability**, the **use case (why)**, and its **researc
   the start** — the noun-seam shape `CajetaGPU.md` already uses: *build-from-description +
   query verbs* (bounds, ray-intersect, rasterize/extract, LOD-select), representation hidden.
   But **commit v1 to exactly one conforming backend: the triangle-cluster-DAG** (the proven
-  path canela needs). SVO, displaced-micro-mesh, and the splat cloud (`cajeta.gpu.splat`,
+  path canela needs). SVO, displaced-micro-mesh, and the splat cloud (`cajeta.xpu.splat`,
   already a foundation noun) conform to the *same* trait as each earns its place — no second
   pipeline, just another implementor. Rationale: the trait is nearly free to declare, stops
   consumers (canela, renderer, physics) from hard-coding triangle assumptions, and matches the
@@ -229,7 +229,7 @@ Each module states the **capability**, the **use case (why)**, and its **researc
   implementing all four backends in v1 is not warranted.
 - **Placement note (shared → likely foundation, flag):** QEM / marching-cubes / TSDF-voxel-grid
   are used by **compute** (reconstruction), **physics** (collision), *and* graphics — the
-  canela plan already says "promote to `cajeta.gpu`/stdlib where other consumers can reuse."
+  canela plan already says "promote to `cajeta.xpu`/stdlib where other consumers can reuse."
   By the §1.3 principle below they lean **foundation**, with gfx holding only the
   graphics-semantic composition. Marked in the foundation-vs-gfx pass (§8.7).
 
@@ -279,9 +279,9 @@ Each module states the **capability**, the **use case (why)**, and its **researc
 - **Grounding:** Bitterli 2020 (ReSTIR DI) + Lin 2022 (GRIS) + Wyman 2023 (course) for the
   reservoir/RIS primitives (the *systems* built on them are OUT).
 
-### 4.9 Radiance-field & point primitives  *(FOUNDATION — `cajeta.gpu.splat`, NOT gfx)*
+### 4.9 Radiance-field & point primitives  *(FOUNDATION — `cajeta.xpu.splat`, NOT gfx)*
 - **Decision (resolved):** splats are **foundation**, not gfx. The design already exists:
-  `docs/gpu/splats.md` specifies **`cajeta.gpu.splat`** (a foundation library on `cajeta.gpu`).
+  `docs/gpu/splats.md` specifies **`cajeta.xpu.splat`** (a foundation library on `cajeta.xpu`).
   Rationale: a splat is a **scatter-accumulate of an anisotropic kernel** — there is no
   fixed-function splat silicon, so it decomposes entirely into foundation verbs (atomics,
   sort/scan, `Vector`/`Quaternion` math, `Image2D` RMW, `AccelerationStructure` ray query).
@@ -293,7 +293,7 @@ Each module states the **capability**, the **use case (why)**, and its **researc
   gfx render-graph pass, composited with mesh draws via a shared depth buffer for correct
   occlusion (`docs/gpu/splats.md` §5.5). The `SplatCloud` noun, the rasterizer/scatter verbs,
   the EWA/Mip-Splatting math, the `.cajsplat` codec, and the LOD octree all live in
-  `cajeta.gpu.splat`. gfx imports them; it does not define them.
+  `cajeta.xpu.splat`. gfx imports them; it does not define them.
 - **Grounding:** Kerbl 2023 (3DGS), Zwicker 2001 (EWA), Yu 2023 (Mip-Splatting), Ren 2024
   (Octree-GS LOD), Pfister 2000 / Rusinkiewicz–Levoy 2000 (surfel/QSplat) — full bibliography
   in `docs/gpu/splats.md` over `plans/gpu/gfx/research/gfx/splats/`.
@@ -360,7 +360,7 @@ legitimate libraries, just not stdlib primitives:
 ### 6.1 The PoC engine — `Glorias`
 
 The proof-of-concept graphics **engine** — the opinionated layer that *proves the primitives
-compose* — is **`Glorias`**, in its own repository, built on `cajeta.gpu.gfx` + the foundation.
+compose* — is **`Glorias`**, in its own repository, built on `cajeta.xpu.gfx` + the foundation.
 
 > **Why the name.** Triple fit with the Cajeta dessert/optics theme: (1) a **gloria** is a real
 > atmospheric-optics phenomenon — concentric coloured rings of light around a shadow — i.e. a
@@ -389,9 +389,9 @@ consumer that validates the gfx primitive set (§5's acceptance bar). *Repo not 
 4. **4.9 splats/points** and **4.10 SDF/noise** — composable additions.
 5. **4.3 RT pipeline** — **last & forked-LLVM-gated**, behind inline ray query.
 
-Cross-cutting: **gfx never imports `cajeta.gpu.xpu`** (no cooperative-matrix/compute-execution
-dependency); where gfx wants a compute pass it uses `cajeta.gpu` device/dispatch directly.
-The package rename (`cajeta-gfx` → `cajeta.gpu.gfx` nested stdlib) lands with the first
+Cross-cutting: **gfx never imports `cajeta.xpu.xpu`** (no cooperative-matrix/compute-execution
+dependency); where gfx wants a compute pass it uses `cajeta.xpu` device/dispatch directly.
+The package rename (`cajeta-gfx` → `cajeta.xpu.gfx` nested stdlib) lands with the first
 graphics work, since building the second foundation consumer is what validates the shared seam.
 
 ---
@@ -406,7 +406,7 @@ Resolved in review (2026-06-18):
    **IN gfx**; the opinionated scheduler is **OUT → `Glorias`**.
 3. **Geometry trait (§4.4) — RESOLVED.** Define the `Geometry` trait now; ship **one** backend
    (triangle-cluster-DAG) in v1; SVO / micro-mesh / splat conform later.
-4. **Splats (§4.9) — RESOLVED.** Foundation `cajeta.gpu.splat` (`docs/gpu/splats.md`), not gfx
+4. **Splats (§4.9) — RESOLVED.** Foundation `cajeta.xpu.splat` (`docs/gpu/splats.md`), not gfx
    — including the optional differentiable train/fit path (it stays in the splat foundation lib,
    deferred). gfx only integrates `splatRasterize` as a render-graph pass.
 6. **2-D / UI (§5) — RESOLVED (lean accepted).** 2-D/UI is a **consumer** of the pipeline +
@@ -427,19 +427,19 @@ Resolved on review (cont.):
    | 4.2 graphics pipeline + present | graphics only | **gfx** |
    | 4.3 RT pipeline | graphics only (GPU↔GFX seam) | **gfx** |
    | 4.4 mesh container, meshlet/cluster-DAG, `Geometry` trait | graphics-leaning | **gfx** |
-   | 4.4 QEM / marching-cubes / TSDF-voxel-grid | compute + physics + graphics | **foundation** (`cajeta.gpu`) — *flag* |
+   | 4.4 QEM / marching-cubes / TSDF-voxel-grid | compute + physics + graphics | **foundation** (`cajeta.xpu`) — *flag* |
    | 4.5 software BVH build/traverse | compute + graphics (shared w/ ray query) | **foundation** — *flag* |
    | 4.5 visibility-buffer software rasterizer | graphics only | **gfx** |
    | 4.6 `PageCache<K,V>` generic residency | geometry + texture streaming (shared) | **foundation** — *flag* |
    | 4.6 virtual-texture / mip-gen / anisotropic | graphics only | **gfx** |
    | 4.7 BRDF/BSDF lobes, color, SH, octahedral | graphics only | **gfx** |
    | 4.8 RNG / low-discrepancy / reservoir | compute + graphics (Monte-Carlo) | **foundation** — *flag* |
-   | 4.9 splats | graphics + compute | **`cajeta.gpu.splat`** ✓ resolved |
+   | 4.9 splats | graphics + compute | **`cajeta.xpu.splat`** ✓ resolved |
    | 4.10 SDF grid + sphere-trace, noise | compute + physics + graphics | **foundation** — *flag* |
 
    **RESOLVED — accepted.** The five *flag* rows (4.4 QEM/MC/TSDF, 4.5 software BVH, 4.6
    `PageCache`, 4.8 RNG/low-discrepancy/reservoir, 4.10 SDF+sphere-trace+noise) move **out of gfx
-   into the foundation** (`cajeta.gpu` / foundation libs), per the "shared ⇒ foundation" rule.
+   into the foundation** (`cajeta.xpu` / foundation libs), per the "shared ⇒ foundation" rule.
    gfx's true surface is therefore: **graphics pipeline + present, RT pipeline,
    mesh/`Geometry`/meshlets, visibility-buffer software raster, virtual-texture + mip/anisotropic,
    BRDF/BSDF + color/SH/octahedral, camera/cull, and the minimal render-graph passes** —
@@ -484,11 +484,11 @@ it's FFI + vendor versioning, not an LLVM target.)
 
 One portable contract (`Window`/`Surface`/`Event`, `AudioStream`, `InputDevice`), app code
 write-once. Per-platform **backends** are selected at build/runtime — the same
-write-once-run-everywhere / opaque-noun discipline as `cajeta.gpu`. The **`Surface` is opaque**
+write-once-run-everywhere / opaque-noun discipline as `cajeta.xpu`. The **`Surface` is opaque**
 (`HWND` vs `wl_surface` vs `CAMetalLayer` never inspected); the gfx swapchain backend pairs it
 with the matching Vulkan WSI extension. Genuinely divergent OS behaviour (macOS main-thread event
 loop, Wayland self-positioning ban, DPI/HDR models) is covered by one portable model with rare
-**capability-gated** escape hatches — same rule as "no `cajeta.gpu.nvidia` in stdlib."
+**capability-gated** escape hatches — same rule as "no `cajeta.xpu.nvidia` in stdlib."
 
 ### 9.3 Packaging — `ifx` facade (stdlib) + per-OS backends + the `ifx-backend` melt
 
@@ -533,7 +533,7 @@ server builds pull only what they need. All three are **capability-gated**.
 ifx  (facade, STDLIB)  ◀──implements+registers── ifx.win32 / ifx.wayland / ifx.cocoa
    │ produces                                       (FFI, vendor-versioned, external/optional)
    ▼
- Surface  ──consumed by──▶  cajeta.gpu.gfx swapchain   (pairs w/ the right WSI ext)
+ Surface  ──consumed by──▶  cajeta.xpu.gfx swapchain   (pairs w/ the right WSI ext)
 
  ifx-backend  =  REQUIRED melt; selects { window, input, audio } backends per build target
 ```
@@ -770,11 +770,11 @@ result. *(Shader-I/O spelling is illustrative; the point is where the opinions l
 
 ```cajeta
 // package gloria.ui  — NOT stdlib. Built on gfx + math primitives.
-import cajeta.gpu.gfx.GraphicsPipeline;
-import cajeta.gpu.gfx.RenderPass;
-import cajeta.gpu.KernelBuffer;
-import cajeta.gpu.Texture2D;
-import cajeta.gpu.Sampler;
+import cajeta.gfx.GraphicsPipeline;
+import cajeta.gfx.RenderPass;
+import cajeta.xpu.KernelBuffer;
+import cajeta.gfx.Texture2D;
+import cajeta.gfx.Sampler;
 import cajeta.math.Matrix;            // ortho()/perspective() builders (§4.1)
 import cajeta.math.Vector;
 
@@ -822,8 +822,8 @@ ui.flush(pass);
 ### World B — **2-D/UI is a gfx primitive**: stdlib ships `Canvas`/`Sprite`/`Text`
 
 ```cajeta
-import cajeta.gpu.gfx.Canvas;     // now IN stdlib
-import cajeta.gpu.gfx.Font;
+import cajeta.gfx.Canvas;     // now IN stdlib
+import cajeta.gfx.Font;
 
 Canvas c = heap Canvas(pass, 1920, 1080);        // stdlib fixes the coordinate convention
 c.sprite(fontAtlas, 32.0, 32.0, 256.0, 64.0);    // stdlib fixes vertex layout + batching + blend

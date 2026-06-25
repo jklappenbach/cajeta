@@ -1,24 +1,24 @@
 ---
-id: gpu-overview
-applies-to: [cajeta.gpu]
-title: cajeta.gpu — portable XPU compute (library map & routing)
-description: Routing map for cajeta.gpu — host control plane vs device intrinsics, backend selection, the capability heuristic + override, GpuBuffer ownership, and the task→entry-point table.
+id: xpu-overview
+applies-to: [cajeta.xpu]
+title: cajeta.xpu — portable XPU compute (library map & routing)
+description: Routing map for cajeta.xpu — host control plane vs device intrinsics, backend selection, the capability heuristic + override, KernelBuffer ownership, and the task→entry-point table.
 ---
 
-# cajeta.gpu — portable GPU/XPU compute
+# cajeta.xpu — portable GPU/XPU compute
 
 Write a compute kernel **once** and run it on CUDA, HIP, Vulkan, or a CPU
-emulation backend. `cajeta.gpu` is two cooperating planes:
+emulation backend. `cajeta.xpu` is two cooperating planes:
 
 - **Host control plane** — types you instantiate and call from ordinary host
   code to allocate memory, move data, launch kernels, and synchronize:
-  `GpuBuffer<T>`, `GpuStream`, `Event`, `Fence`, `Device`, `Texture2D`,
+  `KernelBuffer<T>`, `GpuStream`, `Event`, `Fence`, `Device`, `Texture2D`,
   `Image2D`, `AccelerationStructure`.
 - **Device-side intrinsics** — types whose methods are only meaningful inside a
   function marked `@Kernel` / `@Device`; each lowers at its call site to a
   native instruction (no real call is emitted): `GpuThread`, `Workgroup`,
   `Wave`, `Quad`, `Bits`, `Barrier`, `RayQuery`, and
-  `cajeta.gpu.xpu.CooperativeMatrix` / `CoopStage`.
+  `cajeta.xpu.xpu.CooperativeMatrix` / `CoopStage`.
 
 If your task is "manage GPU memory / launch work / pick a path at run time," you
 are in the host plane. If it is "what does each thread compute," you are writing
@@ -28,12 +28,12 @@ a `@Kernel` and using the device plane.
 
 | Want to do | Start with |
 | --- | --- |
-| Allocate device memory | `heap GpuBuffer<T>(n)` (RAII ctor) |
-| Choose memory residency (device/pinned/unified) | `GpuBuffer.allocate(MemoryKind.X)`; see `MemoryKind` |
-| Move data host↔device (explicit) | `GpuBuffer.upload` / `.download` |
+| Allocate device memory | `heap KernelBuffer<T>(n)` (RAII ctor) |
+| Choose memory residency (device/pinned/unified) | `KernelBuffer.allocate(MemoryKind.X)`; see `MemoryKind` |
+| Move data host↔device (explicit) | `KernelBuffer.upload` / `.download` |
 | Move data on a stream, async | `.uploadAsync` / `.downloadAsync` (pair with `MemoryKind.Pinned`) |
 | Zero-copy host access (APU / pinned) | `.hostStore` / `.hostLoad` (no-op on a discrete Device buffer) |
-| A sub-range of a buffer | `GpuBuffer.slice(offset, count)` — non-owning view |
+| A sub-range of a buffer | `KernelBuffer.slice(offset, count)` — non-owning view |
 | Order / wait on work | `GpuStream` (`current()`, `create()`, `sync()`, `waitFor`) |
 | Cross-stream dependency, device-side | `Event` (`record`/`waitFor` via stream) |
 | Host-observable completion signal | `Fence` |
@@ -42,7 +42,7 @@ a `@Kernel` and using the device plane.
 | Warp/subgroup cooperation (reduce, ballot, shuffle, scan) | `Wave` (`Quad` for 2x2) |
 | Per-thread bit ops (popcount, bitreverse, rotate) | `Bits` |
 | Synchronize threads / fence memory in a kernel | `Barrier` |
-| Tensor-core / matrix-core GEMM tile | `cajeta.gpu.xpu.CooperativeMatrix` (+ `CoopStage` for LDS staging) |
+| Tensor-core / matrix-core GEMM tile | `cajeta.xpu.xpu.CooperativeMatrix` (+ `CoopStage` for LDS staging) |
 | Ray / spatial-index query in a kernel | build `AccelerationStructure`, walk with `RayQuery` |
 | Sample a read-only image in a kernel | `Texture2D` + `Sampler` |
 | Write an image from a kernel | `Image2D` (`store`) |
@@ -55,7 +55,7 @@ a `@Kernel` and using the device plane.
   instead just call the kernel in a host loop over the index space.
 - `GpuThread`/`Wave`/`RayQuery`/`CooperativeMatrix` do **nothing on the host** —
   calling them outside a `@Kernel` is unsupported.
-- No `mmap`/pointer arithmetic on a `GpuBuffer`: host code never dereferences it;
+- No `mmap`/pointer arithmetic on a `KernelBuffer`: host code never dereferences it;
   `buf[i]` is legal only inside a kernel.
 - `RayQuery` and `Image2D` are **Vulkan-only**; `Texture2D.sample` is float-only
   (integer textures are `fetch`-only).
@@ -86,23 +86,23 @@ diagnostic, not a warning, tells you which tier you got).
 
 ## Ownership & lifecycle (library-wide invariants)
 
-- **RAII / drop chain.** `GpuBuffer`, `Texture2D`, `Image2D`,
+- **RAII / drop chain.** `KernelBuffer`, `Texture2D`, `Image2D`,
   `AccelerationStructure` are small host handles over an *owned* device
   resource. The constructor acquires it; the destructor (`~Type()`) releases it
   at scope exit — you cannot leak VRAM by forgetting to free. Destructors are
   null-guarded and idempotent; an explicit `free()` is an early-release escape
   hatch (the `FileReader.close()` pattern), rarely needed.
-- **Move-out with `#`.** Factories return `#Type` (`GpuBuffer.alloc`,
+- **Move-out with `#`.** Factories return `#Type` (`KernelBuffer.alloc`,
   `GpuStream.current/create`, `Event.create`, `AccelerationStructure.of`). `#x`
   transfers ownership; the moved-from handle's destructor no-ops.
-- **Launch borrow (XPU-K02).** A kernel launch *borrows* each `GpuBuffer` /
+- **Launch borrow (XPU-K02).** A kernel launch *borrows* each `KernelBuffer` /
   texture / image / AS argument until the next `GpuStream.sync()` ordered after
   the launch. Letting such an argument reach its drop (or an explicit `free()`)
   before that `sync()` is a **compile error**. `GpuStream` is the borrow-scope
   anchor: always `sync()` before the buffer leaves scope and before reading
   results back.
 - **Views borrow their parent.** `slice()` returns a non-owning (`owned=false`)
-  `GpuBuffer` sharing the parent's storage; it allocates and frees nothing. The
+  `KernelBuffer` sharing the parent's storage; it allocates and frees nothing. The
   parent must outlive every view (parent-outlives-view is interim lint, not yet a
   hard error). The drop chain frees the parent's memory exactly once.
 - **Streams / events / fences are explicitly destroyed** (`destroy()`), not
@@ -121,13 +121,13 @@ The spec names collide with cajeta keywords, so the real spellings differ:
 ## Canonical end-to-end example (SAXPY: y = a·x + y)
 
 ```cajeta
-import cajeta.gpu.GpuBuffer;
-import cajeta.gpu.GpuStream;
-import cajeta.gpu.GpuThread;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.GpuStream;
+import cajeta.xpu.GpuThread;
 
 public class Saxpy {
     @Kernel
-    public static void saxpy(GpuBuffer<float32> y, GpuBuffer<float32> x,
+    public static void saxpy(KernelBuffer<float32> y, KernelBuffer<float32> x,
                              float32 a, uint32 n) {
         uint32 i = GpuThread.globalIdX();
         if (i < n) {
@@ -137,8 +137,8 @@ public class Saxpy {
 
     public static void run(float32[] hx, float32[] hy, uint32 n) {
         GpuStream s = GpuStream.current();         // per-thread default stream
-        GpuBuffer<float32> x = heap GpuBuffer<float32>(n);   // RAII: allocates VRAM
-        GpuBuffer<float32> y = heap GpuBuffer<float32>(n);
+        KernelBuffer<float32> x = heap KernelBuffer<float32>(n);   // RAII: allocates VRAM
+        KernelBuffer<float32> y = heap KernelBuffer<float32>(n);
         x.upload(hx);
         y.upload(hy);
         saxpy.launch(s, n)(y, x, 2.0f, n);         // call-site launch sugar
@@ -162,9 +162,9 @@ loop calling `saxpy(...)` once per index (see `test/xpu/XpuLaunchAndSaxpyTests`)
 ## Downward pointers
 
 Per-type detail lives at the class level — read those skills (and the source
-docstrings) for full signatures: `GpuBuffer` (memory + slices), `GpuStream` /
+docstrings) for full signatures: `KernelBuffer` (memory + slices), `GpuStream` /
 `Event` / `Fence` (sync), `Texture2D` / `Image2D` / `Sampler` / `TextureFormat`
 (imaging), `AccelerationStructure` / `RayQuery` / `AsImpl` (ray query),
-`cajeta.gpu.xpu.CooperativeMatrix` / `CoopStage` (matrix cores), `Wave` / `Quad`
+`cajeta.xpu.xpu.CooperativeMatrix` / `CoopStage` (matrix cores), `Wave` / `Quad`
 / `Bits` / `Barrier` / `GpuThread` / `Workgroup` (device intrinsics),
 `MemoryKind` / `MemoryOrder` / `Capability` / `Capabilities` (enums & traits).

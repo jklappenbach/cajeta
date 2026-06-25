@@ -1,5 +1,5 @@
 ---
-id: gpu-rayquery-class
+id: xpu-rayquery-class
 applies-to: [cajeta/gpu/RayQuery]
 title: RayQuery — device-only inline ray-query cursor and its proceed() protocol
 description: How to stack-construct, initialize, and walk a RayQuery's candidate loop inside a kernel, plus its committed accessors and Vulkan-only limits.
@@ -9,7 +9,7 @@ description: How to stack-construct, initialize, and walk a RayQuery's candidate
 
 A `RayQuery` is a **device-only, function-local cursor** that traces ONE ray through an `AccelerationStructure` and walks its intersection candidates, entirely inside a compute kernel (the inline `SPV_KHR_ray_query` model — no ray-tracing pipeline, no hit shaders). It is the *verb* over an `AccelerationStructure` *noun*.
 
-It is NOT a host handle. Unlike `AccelerationStructure`/`GpuBuffer`/`Texture2D`, you never create or touch a `RayQuery` on the host — it lowers to an `OpVariable Function` of `OpTypeRayQueryKHR`. There is no `deviceHandle`, no drop chain, no `close()`/`free()`; it lives and dies with its kernel stack frame.
+It is NOT a host handle. Unlike `AccelerationStructure`/`KernelBuffer`/`Texture2D`, you never create or touch a `RayQuery` on the host — it lowers to an `OpVariable Function` of `OpTypeRayQueryKHR`. There is no `deviceHandle`, no drop chain, no `close()`/`free()`; it lives and dies with its kernel stack frame.
 
 ## Access-point flag
 
@@ -54,16 +54,16 @@ For a pure **spatial-index** query (nearest-neighbour / range / count), you do n
 ```cajeta
 package myapp;
 
-import cajeta.gpu.RayQuery;
-import cajeta.gpu.AccelerationStructure;
-import cajeta.gpu.GpuBuffer;
-import cajeta.gpu.GpuThread;
+import cajeta.xpu.RayQuery;
+import cajeta.xpu.AccelerationStructure;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.GpuThread;
 
 // Count, per query point, how many AABB leaves a zero-length ray overlaps.
 @Kernel
 void countNeighbors(AccelerationStructure scene,
-                    GpuBuffer<float32> queries,   // xyz packed per point
-                    GpuBuffer<uint32>  counts) {
+                    KernelBuffer<float32> queries,   // xyz packed per point
+                    KernelBuffer<uint32>  counts) {
     uint32 i = GpuThread.globalIdX();
     float32 px = queries[i * 3u];
     float32 py = queries[i * 3u + 1u];

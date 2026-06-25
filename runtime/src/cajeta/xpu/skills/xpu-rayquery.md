@@ -1,5 +1,5 @@
 ---
-id: gpu-rayquery
+id: xpu-rayquery
 applies-to: [cajeta/gpu/AccelerationStructure, cajeta/gpu/RayQuery, cajeta/gpu/SoftwareRayQuery, cajeta/gpu/SwRayCursor, cajeta/gpu/AsImpl]
 title: Inline ray query as a spatial index — host-built BVH, native vs software traversal
 description: Build an AccelerationStructure on the host and walk it inside a kernel with RayQuery; choose native vs the portable SoftwareRayQuery/SwRayCursor tier, or just let Auto decide.
@@ -14,7 +14,7 @@ near-zero-length ray (`tMax` ≈ 0.001) centred on the query point and count/ref
 You almost never touch `SoftwareRayQuery`/`SwRayCursor` directly — they are the **portable
 lowering** of `RayQuery` on non-Vulkan backends. You write one `RayQuery` walk; on a
 ray-query-capable Vulkan device it lowers to `SPV_KHR_ray_query` hardware ops, everywhere else
-it lowers to the `SoftwareRayQuery` stackless walk over a `GpuBuffer<float32>` BVH. **Same
+it lowers to the `SoftwareRayQuery` stackless walk over a `KernelBuffer<float32>` BVH. **Same
 source either way** — the tier is a build-time/heuristic choice, not a code fork.
 
 ## Members and roles
@@ -44,7 +44,7 @@ kernel:  RayQuery rq;  rq.initialize(scene, ...)   while (rq.proceed()) { rq.can
                        │ lowers per backend, driven by the AS's recorded impl
         ┌──────────────┴───────────────┐
    native (Vulkan)                 software (everywhere else)
-   OpRayQuery*KHR ops          SwRayCursor ⇄ SoftwareRayQuery.step(cursor, GpuBuffer<float32> bvh)
+   OpRayQuery*KHR ops          SwRayCursor ⇄ SoftwareRayQuery.step(cursor, KernelBuffer<float32> bvh)
 ```
 
 The verb follows the noun: the `impl` chosen at **build time** is recorded on the
@@ -115,17 +115,17 @@ Mirrors `test/xpu/ToffeeSpatialIndexDeviceTests.cpp` (`kRqMinDriver`): build a B
 and, per query point, count the boxes that contain it.
 
 ```cajeta
-import cajeta.gpu.AccelerationStructure;
-import cajeta.gpu.GpuBuffer;
-import cajeta.gpu.RayQuery;
-import cajeta.gpu.GpuStream;
-import cajeta.gpu.GpuThread;
+import cajeta.xpu.AccelerationStructure;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.RayQuery;
+import cajeta.xpu.GpuStream;
+import cajeta.xpu.GpuThread;
 
 public class RqMin {
     @Kernel
     public static void countHits(AccelerationStructure scene,
-                                 GpuBuffer<float32> qx, GpuBuffer<float32> qy,
-                                 GpuBuffer<float32> qz, GpuBuffer<uint32> out,
+                                 KernelBuffer<float32> qx, KernelBuffer<float32> qy,
+                                 KernelBuffer<float32> qz, KernelBuffer<uint32> out,
                                  uint32 n) {
         uint32 i = GpuThread.globalIdX();
         if (i < n) {
@@ -145,7 +145,7 @@ public class RqMin {
         float32[] boxes = heap float32[np * 6];       // 6 floats/box: minX,minY,minZ,maxX,maxY,maxZ
         // ... fill boxes ...
         AccelerationStructure scene = heap AccelerationStructure(boxes, np);  // Auto; RAII
-        GpuBuffer<uint32> out = heap GpuBuffer<uint32>(4);
+        KernelBuffer<uint32> out = heap KernelBuffer<uint32>(4);
         // ... upload query buffers ...
         GpuStream s = GpuStream.current();
         countHits.launch(s, grid: [1], block: [64])(scene, qx, qy, qz, out, 4u);
@@ -158,7 +158,7 @@ public class RqMin {
 
 To force the portable tier regardless of device, swap the build line for
 `AccelerationStructure scene = AccelerationStructure.of(boxes, np, AsImpl.Software);` (add
-`import cajeta.gpu.AsImpl;`).
+`import cajeta.xpu.AsImpl;`).
 
 Exact-distance refinement (RTNN): read `rq.candidatePrimitiveIndex()` inside the loop to recover
 the data point and compute the true L2 distance — the AABB-overlap count is an L-infinity

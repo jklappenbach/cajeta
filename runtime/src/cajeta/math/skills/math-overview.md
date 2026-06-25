@@ -70,7 +70,7 @@ in *first* — the rules below differ between them:
   `RecoverableException` — catch it). `Tensor.fromProtocol` signals "unsupported
   dtype" by returning **`null`**, not throwing.
 - **Builds.** A no-GPU build still works: `Storage`'s device mirror is backed by the
-  `cajeta.gpu` CPU backend; `gpu()`/`cpu()` are eager (explicit), v1 policy.
+  `cajeta.xpu` CPU backend; `gpu()`/`cpu()` are eager (explicit), v1 policy.
 
 ## Canonical end-to-end example
 

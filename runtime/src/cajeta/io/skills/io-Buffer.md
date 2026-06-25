@@ -62,4 +62,4 @@ if (off <= buf.byteCount() - 8) {
 - **Not the networking buffer.** Cursors, pooling, ring/backpressure, and
   `read`/`write` live in `cajeta.io.net` (`ByteBuffer`, `RingBuffer`,
   `BufferPool`) — a separate package. The GPU device buffer is
-  `cajeta.gpu.GpuBuffer<T>`.
+  `cajeta.xpu.KernelBuffer<T>`.

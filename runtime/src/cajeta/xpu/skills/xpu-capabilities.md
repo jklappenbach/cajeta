@@ -1,5 +1,5 @@
 ---
-id: gpu-capabilities
+id: xpu-capabilities
 applies-to: [cajeta/gpu/Device, cajeta/gpu/Capability, cajeta/gpu/Capabilities, cajeta/gpu/KernelArg]
 title: GPU capability model — runtime gating, compile-time traits, KernelArg
 description: How to gate GPU paths — Device.supports(Capability) at run time vs Capabilities traits at codegen vs the KernelArg marker for @Kernel params.
@@ -55,18 +55,18 @@ transfers, no `close()`, no drop concerns in this component.
 ## Worked example — both gates together
 
 ```cajeta
-import cajeta.gpu.Device;
-import cajeta.gpu.Capability;
-import cajeta.gpu.GpuBuffer;
-import cajeta.gpu.GpuThread;
-import cajeta.gpu.TensorCoreF16;   // from Capabilities
+import cajeta.xpu.Device;
+import cajeta.xpu.Capability;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.GpuThread;
+import cajeta.xpu.TensorCoreF16;   // from Capabilities
 
 public class Gemm {
     // Compile-time gate: this kernel only compiles for a Target with tensor cores.
     @Kernel
-    public static void gemmMma<Target: TensorCoreF16>(GpuBuffer<float32> c,
-                                                      GpuBuffer<float32> a,
-                                                      GpuBuffer<float32> b) {
+    public static void gemmMma<Target: TensorCoreF16>(KernelBuffer<float32> c,
+                                                      KernelBuffer<float32> a,
+                                                      KernelBuffer<float32> b) {
         // ... Tensor.mmaF16F32<16,16,16>(...) ...
     }
 
@@ -81,7 +81,7 @@ public class Gemm {
 }
 ```
 
-`GpuBuffer<float32>` satisfies `KernelArg`, which is why it is admissible above; so do
+`KernelBuffer<float32>` satisfies `KernelArg`, which is why it is admissible above; so do
 primitives, POD structs, `Texture<...>`, `Sampler`, and Vulkan `@PushConstant` structs.
 A non-conforming type as a `@Kernel` parameter is a typecheck error. (The structural
 check that admits any POD shape without an explicit annotation is not wired yet — v1 only
@@ -98,5 +98,5 @@ needs the marker to exist.)
 - Adding a capability: append the enum constant **and** the matching probe in
   `runtime/native/cajeta_runtime.c`; never insert in the middle (ordinal is the ABI).
 
-For the buffer types that flow through kernels see `cajeta/gpu/GpuBuffer`; for the
+For the buffer types that flow through kernels see `cajeta/gpu/KernelBuffer`; for the
 device-side thread/coordinate ops inside a kernel see `cajeta/gpu/GpuThread`.

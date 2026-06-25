@@ -1,5 +1,5 @@
 ---
-id: gpu-execution
+id: xpu-execution
 applies-to: [cajeta/gpu/GpuStream, cajeta/gpu/Event, cajeta/gpu/Fence]
 title: GPU host-side execution & synchronization (GpuStream, Event, Fence)
 description: Order GPU work on a GpuStream and synchronize it — device-side cross-stream waits via Event, host-observable signals via Fence, plus the launch-borrow released at sync().
@@ -31,16 +31,16 @@ completion → **Fence**; just "drain this one stream now" → `GpuStream.sync()
 ## How they collaborate
 
 ```
-import cajeta.gpu.GpuStream;
-import cajeta.gpu.GpuBuffer;
-import cajeta.gpu.Event;
+import cajeta.xpu.GpuStream;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.Event;
 
 // Two independent streams; producer must finish before consumer reads.
 GpuStream producer = GpuStream.create();    // owned handle — must destroy()
 GpuStream consumer = GpuStream.create();
 Event ready = Event.create();               // owned handle — must destroy()
 
-GpuBuffer<float32> x = heap GpuBuffer<float32>(n);   // device mem, RAII-freed
+KernelBuffer<float32> x = heap KernelBuffer<float32>(n);   // device mem, RAII-freed
 x.uploadAsync(hx, producer);
 produceKernel.launch(producer, n)(x, ...);   // borrows x until producer.sync()
 
@@ -92,11 +92,11 @@ the new tail — do **not** create a fresh Event per launch.
 ### The launch-borrow released at sync()
 
 A `GpuStream` is the borrow-scope anchor for launched buffers. A kernel launch
-**borrows each `GpuBuffer` argument until the next `sync()` ordered after that launch on
+**borrows each `KernelBuffer` argument until the next `sync()` ordered after that launch on
 that stream** (and async copies likewise). Letting a borrowed buffer reach its drop or an
 explicit `free()` before `sync()` is a **compile error (XPU-K02)** — not a runtime fault.
 So: call `stream.sync()` (which releases the deferred-borrow tokens) before the buffer
-goes out of scope. See `cajeta/gpu/GpuBuffer`.
+goes out of scope. See `cajeta/gpu/KernelBuffer`.
 
 ## What these do NOT do
 
@@ -116,5 +116,5 @@ goes out of scope. See `cajeta/gpu/GpuBuffer`.
   `Fence` lowers onto `GpuStream.sync()`, so `query()` may return true immediately —
   don't rely on observing an un-signaled state.
 
-For device memory and the launch idiom see `cajeta/gpu/GpuBuffer`; for the package map see
-the `cajeta.gpu` library/package skills.
+For device memory and the launch idiom see `cajeta/gpu/KernelBuffer`; for the package map see
+the `cajeta.xpu` library/package skills.

@@ -1,4 +1,4 @@
-package tour.gpu;
+package tour.xpu;
 
 import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
@@ -34,7 +34,7 @@ import cajeta.lang.Math;
 // it *queries* it — so the same source is correct at every width.
 //
 // (Workgroup barriers on the CPU remain a later increment.)
-public final class GpuTour {
+public final class XpuTour {
 
     // y[i] = a*x[i] + y[i] — the canonical accelerator "hello world".
     @Kernel

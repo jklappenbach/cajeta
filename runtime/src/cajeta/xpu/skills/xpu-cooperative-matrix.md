@@ -1,5 +1,5 @@
 ---
-id: gpu-cooperative-matrix
+id: xpu-cooperative-matrix
 applies-to: [cajeta/gpu/xpu/CooperativeMatrix]
 title: CooperativeMatrix — subgroup-cooperative MMA tile
 description: Device-only MMA tile <T,Rows,Cols,Use> — declare, load/splat, mma fused multiply-add, store; one tile of a tiled GEMM.
@@ -9,7 +9,7 @@ description: Device-only MMA tile <T,Rows,Cols,Use> — declare, load/splat, mma
 
 A device-only tile of a matrix multiply held *cooperatively by a subgroup* (wavefront),
 mapping to hardware matrix/tensor cores. One `mma` is a full tile-sized fused
-multiply-add. Lives in package `cajeta.gpu.xpu`. **Not an access point you call from a
+multiply-add. Lives in package `cajeta.xpu.xpu`. **Not an access point you call from a
 factory — it is a value type you declare directly inside an `@Kernel`.**
 
 Use it when you want matrix-core MMA inside a kernel (GEMM, attention, conv-as-matmul).
@@ -28,7 +28,7 @@ memory. Distinct `(T, Rows, Cols, Use)` are distinct device types (like `Vector<
 v1 targets the square `Rows == Cols == K` tile (16x16x16 is the device-verified config).
 
 The `load`/`store` buffer/Shared arguments are **borrowed**, not transferred — no `#`,
-the kernel's caller still owns the `GpuBuffer`/`Shared` backing store. The matrix VALUE
+the kernel's caller still owns the `KernelBuffer`/`Shared` backing store. The matrix VALUE
 never leaves the register file; `load`/`store` only move element data in/out.
 
 ## The methods that matter
@@ -37,7 +37,7 @@ All are device-only intrinsics (the bodies are resolution placeholders, never re
 calls) — each is lowered at the `@Kernel` call site to the chosen tier. All return
 `void` and mutate the receiver tile in place.
 
-- `load(GpuBuffer<T> src, uint32 offset, uint32 layout, uint32 stride)` — fill this tile
+- `load(KernelBuffer<T> src, uint32 offset, uint32 layout, uint32 stride)` — fill this tile
   from global memory. `offset` (in elements) selects a sub-tile of a wider matrix;
   `layout` is **0 = row-major, 1 = column-major**; `stride` is the **source's full row
   width**, not the tile width — that is what gathers a `Rows`x`Cols` window out of a
@@ -51,7 +51,7 @@ calls) — each is lowered at the `@Kernel` call site to the chosen tier. All re
 - `mma(CooperativeMatrix<T,Rows,Cols,0> a, CooperativeMatrix<T,Rows,Cols,1> b)` — fused
   multiply-add **in place**: `this = a*b + this`. `this` must be the accumulator
   (Use 2), `a` MatrixA (Use 0), `b` MatrixB (Use 1) — the types enforce the roles.
-- `store(GpuBuffer<T> dst, ...)` / `store(Shared<T> dst, ...)` — write the tile out with
+- `store(KernelBuffer<T> dst, ...)` / `store(Shared<T> dst, ...)` — write the tile out with
   the same sub-tile addressing as `load`.
 
 ## Lifecycle, state, concurrency
@@ -87,13 +87,13 @@ No runtime exceptions — failures are **compile-time**: mismatched tiers, an in
 ```cajeta
 package test;
 
-import cajeta.gpu.GpuBuffer;
-import cajeta.gpu.xpu.CooperativeMatrix;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.xpu.CooperativeMatrix;
 
 public class M {
     @Kernel
-    public static void wmma(GpuBuffer<float16> a, GpuBuffer<float16> b,
-                            GpuBuffer<float32> c) {
+    public static void wmma(KernelBuffer<float16> a, KernelBuffer<float16> b,
+                            KernelBuffer<float32> c) {
         CooperativeMatrix<float16,16,16,0> ma;
         ma.load(a, 0, 0, 16);          // A tile: offset 0, row-major, stride 16
         CooperativeMatrix<float16,16,16,1> mb;

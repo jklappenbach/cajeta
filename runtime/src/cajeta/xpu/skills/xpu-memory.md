@@ -1,26 +1,26 @@
 ---
-id: gpu-memory
-applies-to: [cajeta/gpu/GpuBuffer, cajeta/gpu/MemoryKind, cajeta/gpu/AddressSpace]
-title: GPU device memory — GpuBuffer storage, MemoryKind residency, address-space refs
-description: How to allocate, transfer, and reference device memory: GpuBuffer handles, MemoryKind residency, and Global/Shared/Constant/Private/Generic kernel refs.
+id: xpu-memory
+applies-to: [cajeta/gpu/KernelBuffer, cajeta/gpu/MemoryKind, cajeta/gpu/AddressSpace]
+title: GPU device memory — KernelBuffer storage, MemoryKind residency, address-space refs
+description: How to allocate, transfer, and reference device memory: KernelBuffer handles, MemoryKind residency, and Global/Shared/Constant/Private/Generic kernel refs.
 ---
 
 # GPU device memory
 
-Three cooperating pieces. **`GpuBuffer<T>`** is the host-side handle you allocate
+Three cooperating pieces. **`KernelBuffer<T>`** is the host-side handle you allocate
 and move data through. **`MemoryKind`** picks where that storage lives (Device /
 Pinned / Unified), chosen at allocation. **`AddressSpace`** (`Global`/`Shared`/
 `Constant`/`Private`/`Generic`) are the qualified-reference markers used *inside*
 kernel code, not on the host.
 
 Decide first:
-- Need device memory the host fills then reads back → make a `GpuBuffer<T>`.
+- Need device memory the host fills then reads back → make a `KernelBuffer<T>`.
 - Choosing between explicit copies vs zero-copy → that is a `MemoryKind` decision (below).
 - Declaring kernel parameters / workgroup tiles → that is `AddressSpace` (below).
 
 ## Members and roles
 
-- **`GpuBuffer<T>`** (entry point you construct). A 16-byte handle —
+- **`KernelBuffer<T>`** (entry point you construct). A 16-byte handle —
   `{deviceHandle, elementCount, owned, kind}` — over device storage that lives in
   VRAM. Owns its device memory by RAII. This is the cross-cutting type every
   higher layer (cajeta.math, Torch, cajeta.render) passes to kernels.
@@ -37,13 +37,13 @@ Decide first:
 
 ## How they collaborate
 
-`GpuBuffer<T>` *is* the host-side façade over a `Global`-address-space allocation:
-a `GpuBuffer<float32>` kernel parameter lowers to a global-memory reference inside
+`KernelBuffer<T>` *is* the host-side façade over a `Global`-address-space allocation:
+a `KernelBuffer<float32>` kernel parameter lowers to a global-memory reference inside
 the kernel, and indexing `buf[i]` there borrows the element. `MemoryKind` is a
 field of the buffer (`kind`) set at allocation and threaded into every native
 alloc/free/host-copy call, so it decides whether the host uses the explicit
 `upload`/`download` path or the zero-copy `hostStore`/`hostLoad` path. The
-address-space markers are otherwise independent of `GpuBuffer` — you reach for
+address-space markers are otherwise independent of `KernelBuffer` — you reach for
 `Shared`/`Constant`/`Private` only when writing kernel bodies.
 
 ## Construction, residency, lifecycle (ownership)
@@ -51,26 +51,26 @@ address-space markers are otherwise independent of `GpuBuffer` — you reach for
 Allocate one of two ways:
 
 ```
-import cajeta.gpu.GpuBuffer;
-import cajeta.gpu.MemoryKind;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.MemoryKind;
 
-GpuBuffer<float32> x = heap GpuBuffer<float32>(n);     // RAII ctor: allocates, kind=Device
+KernelBuffer<float32> x = heap KernelBuffer<float32>(n);     // RAII ctor: allocates, kind=Device
 // or, to choose residency:
-GpuBuffer<float32> u = heap GpuBuffer<float32>(0, n);  // 2-arg ctor: no allocation yet
+KernelBuffer<float32> u = heap KernelBuffer<float32>(0, n);  // 2-arg ctor: no allocation yet
 u.allocate(MemoryKind.Unified);                        // allocate with chosen kind
 ```
 
-There is **no** `GpuBuffer<T>(n, MemoryKind.Unified)` constructor — residency is
+There is **no** `KernelBuffer<T>(n, MemoryKind.Unified)` constructor — residency is
 chosen via `allocate(MemoryKind)`, taken as a separate overload from the 2-arg
 `(int64 deviceHandle, uint64 elementCount)` form. The factory
-`GpuBuffer<T>.alloc(n)` returns a `#`-moved heap handle (Device kind) for
+`KernelBuffer<T>.alloc(n)` returns a `#`-moved heap handle (Device kind) for
 escaping a frame.
 
 **Ownership / lifecycle (the load-bearing part):**
-- The device memory is an *owned resource* released by `~GpuBuffer()` via the
+- The device memory is an *owned resource* released by `~KernelBuffer()` via the
   drop chain at scope exit — forgetting to free no longer leaks VRAM. `free()`
   exists as an idempotent early-release escape hatch; it is rarely needed.
-- A **launch borrows** every `GpuBuffer` argument until the next
+- A **launch borrows** every `KernelBuffer` argument until the next
   `GpuStream.sync()`. Letting a buffer reach its drop (or calling `free()`) while
   a launch still references it is a **compile error, XPU-K02**.
 - Move-out `#buf` transfers ownership; the moved-from handle's destructor no-ops.
@@ -99,15 +99,15 @@ plain device memory — correct, just without zero-copy.
 ## Cross-class call sequence (host → device → host)
 
 ```
-import cajeta.gpu.GpuBuffer;
-import cajeta.gpu.GpuStream;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.GpuStream;
 
 float32[] hx = heap float32[n];
 float32[] hy = heap float32[n];
 // ... fill hx, hy ...
 
-GpuBuffer<float32> x = heap GpuBuffer<float32>(n);   // Device, allocates
-GpuBuffer<float32> y = heap GpuBuffer<float32>(n);
+KernelBuffer<float32> x = heap KernelBuffer<float32>(n);   // Device, allocates
+KernelBuffer<float32> y = heap KernelBuffer<float32>(n);
 x.upload(hx);                                          // host -> device
 y.upload(hy);
 
@@ -118,15 +118,15 @@ y.download(hy);                                        // device -> host
 // x, y device memory freed automatically at scope exit (drop chain)
 ```
 
-The matching kernel — `GpuBuffer<T>` params are global memory, indexing borrows
+The matching kernel — `KernelBuffer<T>` params are global memory, indexing borrows
 the element; a `Shared<T>` tile declares workgroup storage:
 
 ```
-import cajeta.gpu.GpuBuffer;
-import cajeta.gpu.GpuThread;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.GpuThread;
 
 @Kernel
-public static void saxpy(GpuBuffer<float32> y, GpuBuffer<float32> x,
+public static void saxpy(KernelBuffer<float32> y, KernelBuffer<float32> x,
                          float32 a, uint32 n) {
     uint32 i = GpuThread.globalIdX();
     if (i < n) { y[i] = a * x[i] + y[i]; }   // buf[i] legal only in @Kernel/@Device
@@ -140,7 +140,7 @@ the explicit transfer methods.
 ## What this does NOT do
 
 - No host-side `buf[i]` indexing — kernel/device context only.
-- `GpuBuffer` has no global `init`/registry; `GpuStream` and the launch protocol
+- `KernelBuffer` has no global `init`/registry; `GpuStream` and the launch protocol
   live elsewhere (`cajeta/gpu/GpuStream`, the `@Kernel` launch lowering).
 - The address-space classes have **empty v1 bodies** — no methods to call; they
   exist for the compiler to recognize by canonical name and emit `addrspace(N)`.

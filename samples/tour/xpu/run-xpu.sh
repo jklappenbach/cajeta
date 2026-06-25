@@ -4,10 +4,10 @@
 # The same portable @Kernel source is compiled for whichever backend(s) you
 # bundle and run through the runtime dispatcher:
 #
-#     ./run-gpu.sh                 # default: --xpu-backend=cpu (runs anywhere)
-#     ./run-gpu.sh amdgpu,cpu      # use the AMD GPU, fall to CPU if absent
-#     ./run-gpu.sh vulkan,cpu      # use a Vulkan device, fall to CPU if absent
-#     ./run-gpu.sh nvptx,cpu       # use the NVIDIA GPU, fall to CPU if absent
+#     ./run-xpu.sh                 # default: --xpu-backend=cpu (runs anywhere)
+#     ./run-xpu.sh amdgpu,cpu      # use the AMD GPU, fall to CPU if absent
+#     ./run-xpu.sh vulkan,cpu      # use a Vulkan device, fall to CPU if absent
+#     ./run-xpu.sh nvptx,cpu       # use the NVIDIA GPU, fall to CPU if absent
 #
 # Knobs (environment):
 #     XPU_BACKEND=<list>   same as the positional arg (arg wins if both given)
@@ -36,7 +36,7 @@ XPU_BACKEND="${1:-${XPU_BACKEND:-cpu}}"
 SRC_ROOT="${SCRIPT_DIR}/src"
 BUILD_DIR="${SCRIPT_DIR}/build/bin"
 OUT_BINARY="${SCRIPT_DIR}/build/gpu-tour"
-ENTRY_METHOD="tour.gpu.GpuTour.run"
+ENTRY_METHOD="tour.xpu.XpuTour.run"
 
 if [[ ! -x "$CAJETA_BIN" ]]; then
     echo "error: cajeta compiler not found at $CAJETA_BIN" >&2

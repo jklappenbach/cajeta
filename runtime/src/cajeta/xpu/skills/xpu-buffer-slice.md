@@ -1,15 +1,15 @@
 ---
-id: gpu-buffer-slice
-applies-to: [cajeta/gpu/GpuBuffer.slice]
-title: GpuBuffer.slice — non-owning sub-view over a parent's device storage
-description: slice(offset,count) returns a borrowed GpuBuffer<T> sub-view that aliases parent VRAM; it owns nothing and frees nothing.
+id: xpu-buffer-slice
+applies-to: [cajeta/gpu/KernelBuffer.slice]
+title: KernelBuffer.slice — non-owning sub-view over a parent's device storage
+description: slice(offset,count) returns a borrowed KernelBuffer<T> sub-view that aliases parent VRAM; it owns nothing and frees nothing.
 ---
 
-# `GpuBuffer<T>.slice(offset, count)` — borrow a sub-range
+# `KernelBuffer<T>.slice(offset, count)` — borrow a sub-range
 
-`public #GpuBuffer<T> slice(uint64 offset, uint64 count)`
+`public #KernelBuffer<T> slice(uint64 offset, uint64 count)`
 
-Returns a **new heap `GpuBuffer<T>` view** of `count` elements starting at element
+Returns a **new heap `KernelBuffer<T>` view** of `count` elements starting at element
 `offset`, **aliasing the parent's existing device storage**. It allocates nothing
 and frees nothing — use it to upload/download through, or to hand a kernel a
 contiguous sub-range. The result is **moved out** (`#`), so you take ownership of
@@ -18,7 +18,7 @@ points into.
 
 ## Ownership / lifetime — the whole point
 
-- The returned view has `owned = false`. Its `~GpuBuffer()` / `free()` **no-op**:
+- The returned view has `owned = false`. Its `~KernelBuffer()` / `free()` **no-op**:
   the device memory is released **exactly once, by the parent**. Never expect a
   slice to free anything.
 - **The parent must outlive every view of it.** A view dangles if the parent drops
@@ -54,11 +54,11 @@ out-of-range slice silently produces a bad view. Both args are `uint64`.
 ## Example (with imports)
 
 ```cajeta
-import cajeta.gpu.GpuBuffer;
-import cajeta.gpu.GpuStream;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.GpuStream;
 
 // sliceFill writes the local index through whatever sub-view it is given.
-public static void sliceFill(GpuBuffer<int32> b, uint32 n) {
+public static void sliceFill(KernelBuffer<int32> b, uint32 n) {
     uint32 i = GpuThread.globalIdX();
     if (i < n) { b[i] = (int32) i; }
 }
@@ -69,10 +69,10 @@ static void run() {
     int32[] h = heap int32[n];
     for (uint32 i = 0; i < n; i = i + 1) { h[i] = -1; }
 
-    GpuBuffer<int32> all = heap GpuBuffer<int32>(n);   // owns the VRAM
+    KernelBuffer<int32> all = heap KernelBuffer<int32>(n);   // owns the VRAM
     all.upload(h);
 
-    GpuBuffer<int32> tail = all.slice(half, half);     // non-owning second-half view
+    KernelBuffer<int32> tail = all.slice(half, half);     // non-owning second-half view
     GpuStream s = GpuStream.current();
     sliceFill.launch(s, grid: [1], block: [64])(tail, half);
     s.sync();                                          // ends the launch borrow
@@ -84,6 +84,6 @@ static void run() {
 
 ## Related
 
-- Class skill `cajeta/gpu/GpuBuffer` — construction, RAII/drop, upload/download,
+- Class skill `cajeta/gpu/KernelBuffer` — construction, RAII/drop, upload/download,
   `free()`, `MemoryKind` residency. Slice inherits all of that handle behavior;
   only the ownership flip and aliasing are slice-specific.

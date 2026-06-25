@@ -1,5 +1,5 @@
 ---
-id: gpu-texture2d
+id: gfx-texture2d
 applies-to: [cajeta/gpu/Texture2D]
 title: Texture2D — read-only sampled/fetched 2-D device image
 description: Construct/upload a Texture2D (format, mip levels) on the host, then read it device-only via filtered sample/sampleLod (needs a Sampler) or unfiltered fetch/fetchLod by integer texel.
@@ -35,7 +35,7 @@ Two read paths, picked by *what you need*, not by preference:
 ## Construction & ownership (host-side, RAII)
 
 Construct on the heap; the constructor **acquires** the device image and `~Texture2D()`
-**releases** it via the drop chain at scope exit (the `GpuBuffer` RAII convention) —
+**releases** it via the drop chain at scope exit (the `KernelBuffer` RAII convention) —
 null-guarded and idempotent. You do not free it manually.
 
 - `Texture2D(uint32 width, uint32 height)` — `R32F` (1 float channel), 1 mip level.
@@ -81,17 +81,17 @@ Single-channel formats land in `.r`/`.x` (G/B = 0, A = 1); RGBA formats fill all
 ## Worked example (filtered sample, mirrors XpuCudaDispatchDeviceTests)
 
 ```cajeta
-import cajeta.gpu.GpuBuffer;
-import cajeta.gpu.Texture2D;
-import cajeta.gpu.Sampler;
-import cajeta.gpu.GpuStream;
-import cajeta.gpu.GpuThread;
+import cajeta.xpu.KernelBuffer;
+import cajeta.gfx.Texture2D;
+import cajeta.gfx.Sampler;
+import cajeta.xpu.GpuStream;
+import cajeta.xpu.GpuThread;
 
 public class TexSample {
     @Kernel
     public static void sample(Texture2D tex, Sampler s,
-                              GpuBuffer<float32> us, GpuBuffer<float32> vs,
-                              GpuBuffer<float32> out, uint32 n) {
+                              KernelBuffer<float32> us, KernelBuffer<float32> vs,
+                              KernelBuffer<float32> out, uint32 n) {
         uint32 i = GpuThread.globalIdX();
         if (i < n) {
             Vector<float32, 4> c = tex.sample(s, us[i], vs[i]);  // device-only
@@ -106,7 +106,7 @@ public class TexSample {
         Texture2D tex = heap Texture2D(w, h);                // R32F, acquires device image
         tex.upload(pixels);                                  // pixels borrowed during copy
         Sampler samp = heap Sampler(1, 0);                   // linear, clamp-to-edge
-        // ... fill GpuBuffer us/vs/out (see cajeta/gpu/GpuBuffer) ...
+        // ... fill KernelBuffer us/vs/out (see cajeta/gpu/KernelBuffer) ...
         GpuStream s = GpuStream.current();
         sample.launch(s, grid: [1], block: [64])(tex, samp, us, vs, out, n);
         s.sync();                                            // borrow of tex/samp ends here
@@ -121,5 +121,5 @@ For an integer **fetch** texture, parameterize both the field and the `heap`:
 `tex.fetch(x, y).x` in the kernel (no `Sampler`).
 
 For the `#`-move spelling (transferring the handle out of a scope) the moved-from
-destructor is a no-op — see the `GpuBuffer` ownership rules. Buffers/streams:
-`cajeta/gpu/GpuBuffer`, `cajeta/gpu/GpuStream`.
+destructor is a no-op — see the `KernelBuffer` ownership rules. Buffers/streams:
+`cajeta/gpu/KernelBuffer`, `cajeta/gpu/GpuStream`.

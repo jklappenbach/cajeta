@@ -1,5 +1,5 @@
 ---
-id: gpu-acceleration-structure
+id: xpu-acceleration-structure
 applies-to: [cajeta/gpu/AccelerationStructure]
 title: Building a GPU AccelerationStructure (BVH handle)
 description: Construct an AABB or triangle BVH host-side, pick the impl, and pass it into a kernel for RayQuery.
@@ -11,7 +11,7 @@ device bounding-volume hierarchy. You **build it on the host** and pass it as a 
 argument; the actual traversal happens **in-kernel** via `RayQuery` (see
 `cajeta/gpu/RayQuery`) — there is no host-side query method here. Beyond ray tracing it
 doubles as a hardware spatial index: build over AABBs, cast a near-zero-length ray, walk
-candidates for nearest-neighbour / range queries. Member of package `cajeta.gpu`.
+candidates for nearest-neighbour / range queries. Member of package `cajeta.xpu`.
 
 This is an **entry-point type** — you construct it directly.
 
@@ -20,8 +20,8 @@ This is an **entry-point type** — you construct it directly.
 Three host build paths; **arity selects the geometry**:
 
 ```cajeta
-import cajeta.gpu.AccelerationStructure;
-import cajeta.gpu.AsImpl;
+import cajeta.xpu.AccelerationStructure;
+import cajeta.xpu.AsImpl;
 
 // AABBs: 6 float32 per box (minX,minY,minZ, maxX,maxY,maxZ), row-major.
 // impl chosen by the Auto capability heuristic (native if the device supports
@@ -58,7 +58,7 @@ mis-resolve. So the explicit-impl override of the AABB build goes through `of`; 
 ## Lifecycle
 
 Governed by the drop chain — `~AccelerationStructure()` frees the device BVH at scope
-exit (the `GpuBuffer`/`Texture2D` RAII convention). It is **null-guarded and idempotent**:
+exit (the `KernelBuffer`/`Texture2D` RAII convention). It is **null-guarded and idempotent**:
 a prior free, or a moved-from handle (`#scene`), makes the destructor a no-op — so moving
 the handle into a callee does not double-free. A launch **borrows** each
 `AccelerationStructure` argument until the next `GpuStream.sync()`; do not let it drop
@@ -99,17 +99,17 @@ The verb follows the noun: the recorded impl, not the active backend, drives whi
 ## Worked example (mirrors ToffeeSpatialIndexDeviceTests)
 
 ```cajeta
-import cajeta.gpu.AccelerationStructure;
-import cajeta.gpu.GpuBuffer;
-import cajeta.gpu.RayQuery;
-import cajeta.gpu.GpuStream;
-import cajeta.gpu.GpuThread;
+import cajeta.xpu.AccelerationStructure;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.RayQuery;
+import cajeta.xpu.GpuStream;
+import cajeta.xpu.GpuThread;
 
 public class RqMin {
     @Kernel
     public static void countHits(AccelerationStructure scene,
-                                 GpuBuffer<float32> qx, GpuBuffer<float32> qy,
-                                 GpuBuffer<float32> qz, GpuBuffer<uint32> out, uint32 n) {
+                                 KernelBuffer<float32> qx, KernelBuffer<float32> qy,
+                                 KernelBuffer<float32> qz, KernelBuffer<uint32> out, uint32 n) {
         uint32 i = GpuThread.globalIdX();
         if (i < n) {
             RayQuery rq;                                   // see cajeta/gpu/RayQuery
@@ -126,7 +126,7 @@ public class RqMin {
         float32[] boxes = heap float32[np * 6];           // 6 floats per AABB
         // ... fill boxes ...
         AccelerationStructure scene = heap AccelerationStructure(boxes, np);
-        GpuBuffer<uint32> out = heap GpuBuffer<uint32>(4);
+        KernelBuffer<uint32> out = heap KernelBuffer<uint32>(4);
         GpuStream s = GpuStream.current();
         countHits.launch(s, grid: [1], block: [64])(scene, qx, qy, qz, out, 4u);
         s.sync();                                         // scene borrowed until here
@@ -138,5 +138,5 @@ public class RqMin {
 
 To force the software BVH on a ray-query-capable device, swap the build line for
 `AccelerationStructure scene = AccelerationStructure.of(boxes, np, AsImpl.Software);`
-(add `import cajeta.gpu.AsImpl;`) — the recorded impl then drives the kernel onto the
+(add `import cajeta.xpu.AsImpl;`) — the recorded impl then drives the kernel onto the
 SoftwareRayQuery walk, and results match the native path.

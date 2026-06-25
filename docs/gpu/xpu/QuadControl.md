@@ -74,7 +74,7 @@ for free, and the portable result is **bit-identical** to the Vulkan native op
 
 ---
 
-**Rules.** `cajeta.gpu.Quad` ops are device-only (inside an `@Kernel`),
+**Rules.** `cajeta.xpu.Quad` ops are device-only (inside an `@Kernel`),
 quad-cooperative over the four lanes `laneId & ~3 .. +3`. Native
 `OpGroupNonUniformQuad{Broadcast,Swap}` (core) and `…Quad{All,Any}KHR`
 (`SPV_KHR_quad_control`) on Vulkan via `cajeta-spirv` fork intrinsics

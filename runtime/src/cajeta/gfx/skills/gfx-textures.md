@@ -1,8 +1,8 @@
 ---
-id: gpu-textures
+id: gfx-textures
 applies-to: [cajeta/gpu/Texture1D, cajeta/gpu/Texture2D, cajeta/gpu/Texture3D, cajeta/gpu/TextureCube, cajeta/gpu/Texture2DArray, cajeta/gpu/Image2D, cajeta/gpu/Sampler, cajeta/gpu/TextureFormat]
 title: GPU texture & image resources (sampled Texture* vs writable Image2D, Sampler, TextureFormat)
-description: Pick and use cajeta.gpu image resources — read-only sampled Texture{1D,2D,3D,Cube,2DArray} through a Sampler vs writable Image2D, with host create/upload/free and device-only sample/fetch/store.
+description: Pick and use cajeta.xpu image resources — read-only sampled Texture{1D,2D,3D,Cube,2DArray} through a Sampler vs writable Image2D, with host create/upload/free and device-only sample/fetch/store.
 ---
 
 # GPU textures & images
@@ -12,7 +12,7 @@ Device image resources for kernels. Two families:
 - **`Texture{1D,2D,3D,Cube,2DArray}`** — **read-only** sampled images. A kernel reads
   them with `sample` (hardware-filtered, through a `Sampler`) or `fetch` (unfiltered,
   by exact integer texel coord). Use when you want filtering/interpolation or
-  addressing-mode wrap/clamp that a plain `GpuBuffer` read can't give.
+  addressing-mode wrap/clamp that a plain `KernelBuffer` read can't give.
 - **`Image2D`** — a **writable** storage image. A kernel **writes** texels with
   `store(x,y,v)` and reads them back with `load(x,y)`; the host gets the result via
   `download`. No sampler, integer coords only. Use for compute-produced images
@@ -31,7 +31,7 @@ Device image resources for kernels. Two families:
 | Environment map / skybox sampled by a direction vector | `TextureCube` |
 | Kernel that **writes** an image to read back on the host | `Image2D` |
 | Exact stored value, no interpolation, no sampler | `fetch` on any Texture* (not Cube) |
-| Just a flat array on the device (no filtering/addressing) | `GpuBuffer` (different component) |
+| Just a flat array on the device (no filtering/addressing) | `KernelBuffer` (different component) |
 
 Negatives that save a dead end:
 - `TextureCube` has **no `fetch`** — a direction has no single integer texel; reads are
@@ -52,7 +52,7 @@ Negatives that save a dead end:
 ## Lifecycle & ownership (whole family)
 
 Every image is a small **host-side handle** (`deviceHandle` + dims + format ordinal)
-over a device resource, governed by the **drop chain** — the GpuBuffer RAII convention:
+over a device resource, governed by the **drop chain** — the KernelBuffer RAII convention:
 the RAII constructor (`heap Texture2D(w,h)`) **acquires** the device image; the
 destructor **releases** it at scope exit (null-guarded, idempotent — a moved-from `#tex`
 or prior free is a no-op). You do **not** call a free method.
@@ -134,17 +134,17 @@ bilinear sampling at per-lane `(u,v)`.
 
 ```
 package app;
-import cajeta.gpu.GpuBuffer;
-import cajeta.gpu.Texture2D;
-import cajeta.gpu.Sampler;
-import cajeta.gpu.GpuStream;
-import cajeta.gpu.GpuThread;
+import cajeta.xpu.KernelBuffer;
+import cajeta.gfx.Texture2D;
+import cajeta.gfx.Sampler;
+import cajeta.xpu.GpuStream;
+import cajeta.xpu.GpuThread;
 
 public class TexSample {
     @Kernel
     public static void sample(Texture2D tex, Sampler s,
-                              GpuBuffer<float32> us, GpuBuffer<float32> vs,
-                              GpuBuffer<float32> out, uint32 n) {
+                              KernelBuffer<float32> us, KernelBuffer<float32> vs,
+                              KernelBuffer<float32> out, uint32 n) {
         uint32 i = GpuThread.globalIdX();
         if (i < n) {
             Vector<float32,4> c = tex.sample(s, us[i], vs[i]);  // device-only
@@ -161,9 +161,9 @@ public class TexSample {
         Sampler samp = heap Sampler(1, 0);         // linear, clamp-to-edge
 
         uint32 n = 5;
-        GpuBuffer<float32> us = heap GpuBuffer<float32>(n);
-        GpuBuffer<float32> vs = heap GpuBuffer<float32>(n);
-        GpuBuffer<float32> out = heap GpuBuffer<float32>(n);
+        KernelBuffer<float32> us = heap KernelBuffer<float32>(n);
+        KernelBuffer<float32> vs = heap KernelBuffer<float32>(n);
+        KernelBuffer<float32> out = heap KernelBuffer<float32>(n);
         // ... fill + upload us/vs ...
 
         GpuStream s = GpuStream.current();
@@ -182,9 +182,9 @@ public class TexSample {
 Mirrors the Vulkan storage-image test: a kernel writes each texel, host reads back.
 
 ```
-import cajeta.gpu.Image2D;
-import cajeta.gpu.GpuStream;
-import cajeta.gpu.GpuThread;
+import cajeta.xpu.Image2D;
+import cajeta.xpu.GpuStream;
+import cajeta.xpu.GpuThread;
 
 @Kernel
 public static void fill(Image2D img, uint32 w, uint32 h) {
@@ -201,6 +201,6 @@ img.download(out);                                            // host<-device, r
 
 ## See also
 
-`GpuBuffer` (the flat-array sibling and RAII model these follow), `GpuStream`
+`KernelBuffer` (the flat-array sibling and RAII model these follow), `GpuStream`
 (`current()`/`sync()` — the borrow boundary), `GpuThread` (`globalIdX()`), and the
 `@Kernel`/`launch` dispatch path.

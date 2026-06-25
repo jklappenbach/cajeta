@@ -232,7 +232,7 @@ per-point AABBs) and answers fixed-radius neighbour queries by walking it with a
 `RayQuery` inside a `@Kernel` — hardware ray tracing repurposed as a spatial
 accelerator (the RTNN pattern). The "rays" are entirely library-internal; the
 user-facing model is a spatial index. It is built directly on the
-`cajeta.gpu` foundation (`AccelerationStructure`, `Buffer`, `RayQuery`,
+`cajeta.xpu` foundation (`AccelerationStructure`, `Buffer`, `RayQuery`,
 `Stream`, `Thread`).
 
 ```cajeta

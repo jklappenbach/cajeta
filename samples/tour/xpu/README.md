@@ -16,9 +16,9 @@ samples/Tour/
 ├── src/tour/          ← the stdlib / language tour (build-bin.sh, build-uber.sh)
 └── gpu/               ← you are here
     ├── README.md
-    ├── run-gpu.sh     ← compile + (optionally) run the GPU tour
+    ├── run-xpu.sh     ← compile + (optionally) run the GPU tour
     └── src/tour/gpu/
-        └── GpuTour.cajeta   ← @Kernel SAXPY + vecAdd + waveReduce, dispatched at runtime
+        └── XpuTour.cajeta   ← @Kernel SAXPY + vecAdd + waveReduce, dispatched at runtime
 ```
 
 ## Run it
@@ -26,10 +26,10 @@ samples/Tour/
 The compiler must be built first (`cd <repo> && ./build.sh`). Then:
 
 ```sh
-./run-gpu.sh                 # default: --xpu-backend=cpu — runs anywhere, no GPU
-./run-gpu.sh amdgpu,cpu      # use the AMD GPU (HIP), fall to CPU if absent
-./run-gpu.sh vulkan,cpu      # use a Vulkan device (SPIR-V), fall to CPU if absent
-./run-gpu.sh nvptx,cpu       # use the NVIDIA GPU (CUDA), fall to CPU if absent
+./run-xpu.sh                 # default: --xpu-backend=cpu — runs anywhere, no GPU
+./run-xpu.sh amdgpu,cpu      # use the AMD GPU (HIP), fall to CPU if absent
+./run-xpu.sh vulkan,cpu      # use a Vulkan device (SPIR-V), fall to CPU if absent
+./run-xpu.sh nvptx,cpu       # use the NVIDIA GPU (CUDA), fall to CPU if absent
 ```
 
 Expected output — the data-parallel results are identical on every backend; the
@@ -68,14 +68,14 @@ reports 16 on an AVX-512 CPU, 8 on AVX2, and 32/64 on a GPU:
 | Variable | Effect |
 |----------|--------|
 | positional arg / `XPU_BACKEND=<list>` | backends to bundle (comma-separated). Default `cpu`. |
-| `RUN=0` | compile + link only, don't execute (`RUN=0 ./run-gpu.sh amdgpu,cpu`). |
+| `RUN=0` | compile + link only, don't execute (`RUN=0 ./run-xpu.sh amdgpu,cpu`). |
 | `CAJETA_XPU_BACKEND=<one>` | force the runtime's choice at execution time. Bundle `amdgpu,cpu` then force `cpu` to prove the fall-to-CPU path on a box that *has* the GPU. |
 | `DEBUG=1` | keep symbols/debug info in the linked binary. |
 | `CAJETA_BIN`, `CLANG_BIN` | override the compiler / linker paths. |
 
 ## How it works
 
-`run-gpu.sh` mirrors `../build-bin.sh`, plus `--xpu-backend`:
+`run-xpu.sh` mirrors `../build-bin.sh`, plus `--xpu-backend`:
 
 1. `cajeta --emit=obj --xpu-backend=<list>` — compiles each module to a native
    `.o`, and for every selected backend embeds the device kernels, the
@@ -99,7 +99,7 @@ diagnostic instead of crashing (explicit-only bundling is a build-time contract)
 
 ## The kernels
 
-`GpuTour.cajeta` has three data-parallel kernels (identical results everywhere)
+`XpuTour.cajeta` has three data-parallel kernels (identical results everywhere)
 and one wave-cooperative kernel (correct everywhere, at the hardware's wave width):
 
 - `saxpy(y, x, a, n)` — `y[i] = a*x[i] + y[i]`, the canonical accelerator
@@ -146,7 +146,7 @@ and one wave-cooperative kernel (correct everywhere, at the hardware's wave widt
   `note: [mma-tiering]` (a severity below *warning* — it tells you the tier
   without dissuading use, and the path auto-promotes to the cores where the
   hardware exposes the config, e.g. bf16 WMMA on AMD). Walkthrough:
-  `cajeta.gpu.xpu.CooperativeMatrix` + `docs/LintRules.md` § Notes.
+  `cajeta.xpu.xpu.CooperativeMatrix` + `docs/LintRules.md` § Notes.
 - `coopGemmStaged` — **the LDS-staged variant**. The same 16×16 tile matmul, but
   the A and B tiles are first staged into workgroup-shared memory (LDS) by the
   whole workgroup via `CoopStage.panel`, published with a `Barrier.workgroup`, and

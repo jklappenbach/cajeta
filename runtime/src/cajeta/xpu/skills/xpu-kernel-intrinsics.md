@@ -1,5 +1,5 @@
 ---
-id: gpu-kernel-intrinsics
+id: xpu-kernel-intrinsics
 applies-to: [cajeta/gpu/GpuThread, cajeta/gpu/Workgroup, cajeta/gpu/Wave, cajeta/gpu/Quad, cajeta/gpu/Barrier, cajeta/gpu/Bits, cajeta/gpu/MemoryOrder]
 title: GPU kernel intrinsics (thread/workgroup coords, wave & quad cross-lane ops, Barrier, Bits, MemoryOrder)
 description: Device-only kernel primitives — where am I (GpuThread/Workgroup), cooperate across lanes (Wave/Quad), synchronize (Barrier), bit-twiddle (Bits), and order atomics/fences (MemoryOrder).
@@ -21,7 +21,7 @@ function. Pick by what you need:
 | Set the ordering of an atomic or a memory fence | `MemoryOrder` |
 
 Not here: launching kernels, streams, events, atomics on memory, shared memory.
-Atomics (`atomicAdd`/`atomicMax`/…) and the `GpuBuffer<T>` they act on live in the
+Atomics (`atomicAdd`/`atomicMax`/…) and the `KernelBuffer<T>` they act on live in the
 buffer skill; host-side launch/sync lives in `gpu-execution`. `MemoryOrder` is the
 *argument* those atomics (and `Barrier` fences) take.
 
@@ -93,15 +93,15 @@ Choose `Relaxed` for pure counters/histograms where only the final value matters
 
 ```cajeta
 package app;
-import cajeta.gpu.GpuBuffer;
-import cajeta.gpu.GpuThread;
-import cajeta.gpu.Wave;
-import cajeta.gpu.Barrier;
-import cajeta.gpu.MemoryOrder;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.GpuThread;
+import cajeta.xpu.Wave;
+import cajeta.xpu.Barrier;
+import cajeta.xpu.MemoryOrder;
 
 public class Reduce {
     @Kernel
-    public static void sum(GpuBuffer<uint32> out, GpuBuffer<uint32> in, uint32 n) {
+    public static void sum(KernelBuffer<uint32> out, KernelBuffer<uint32> in, uint32 n) {
         uint32 g = GpuThread.globalIdX();
         uint32 v = (g < n) ? in[g] : 0;
 
@@ -109,14 +109,14 @@ public class Reduce {
         uint32 waveTotal = Wave.reduceSum(v); // every lane gets the same total
 
         if (Wave.isFirstLane()) {             // exactly one lane commits
-            out.atomicAdd(0, waveTotal, MemoryOrder.Relaxed);  // atomic on GpuBuffer
+            out.atomicAdd(0, waveTotal, MemoryOrder.Relaxed);  // atomic on KernelBuffer
         }
     }
 }
 ```
 
 Note: `reduceSum` returns the total to *every* lane, so the `isFirstLane()` guard avoids
-adding it `width()` times. `atomicAdd` is a `GpuBuffer` method (see the buffer skill);
+adding it `width()` times. `atomicAdd` is a `KernelBuffer` method (see the buffer skill);
 `MemoryOrder.Relaxed` is the literal trailing arg — correct here because only the final
 sum matters.
 

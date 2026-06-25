@@ -1,32 +1,32 @@
 ---
-id: gpu-buffer
-applies-to: [cajeta/gpu/GpuBuffer]
-title: GpuBuffer<T> — the device-memory access point (alloc, upload/download, slice)
-description: How to allocate, fill, launch against, and free GPU device memory through GpuBuffer<T>, including MemoryKind residency, async-on-stream copies, and RAII/borrow ownership.
+id: xpu-buffer
+applies-to: [cajeta/gpu/KernelBuffer]
+title: KernelBuffer<T> — the device-memory access point (alloc, upload/download, slice)
+description: How to allocate, fill, launch against, and free GPU device memory through KernelBuffer<T>, including MemoryKind residency, async-on-stream copies, and RAII/borrow ownership.
 ---
 
-# GpuBuffer<T>
+# KernelBuffer<T>
 
-The main entry point for device memory in `cajeta.gpu`. A `GpuBuffer<T>` is a small
+The main entry point for device memory in `cajeta.xpu`. A `KernelBuffer<T>` is a small
 (16-byte) **host-side handle** — `deviceHandle` + `elementCount` (+ `owned`, `kind`) —
 over storage that lives in VRAM. **This is the type you instantiate** to hold GPU data;
-kernel parameters are declared as `GpuBuffer<T>` and you pass buffers at launch.
+kernel parameters are declared as `KernelBuffer<T>` and you pass buffers at launch.
 
 Backends tag the underlying handle (CUdeviceptr / hipDeviceptr_t / VkBuffer); from here
 it is one opaque type with a length and the upload/download/free operations.
 
 ## Construct (RAII — the constructor allocates)
 
-Idiomatic form: `heap GpuBuffer<T>(n)` allocates `n` elements of device storage in the
-constructor and `~GpuBuffer()` frees it at scope exit. You do **not** call `free()`.
+Idiomatic form: `heap KernelBuffer<T>(n)` allocates `n` elements of device storage in the
+constructor and `~KernelBuffer()` frees it at scope exit. You do **not** call `free()`.
 
 ```cajeta
-import cajeta.gpu.GpuBuffer;
-import cajeta.gpu.GpuStream;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.GpuStream;
 
 float32[] hx = ...;                                  // host data, length n
-GpuBuffer<float32> x = heap GpuBuffer<float32>(n);   // RAII ctor allocates VRAM
-GpuBuffer<float32> y = heap GpuBuffer<float32>(n);
+KernelBuffer<float32> x = heap KernelBuffer<float32>(n);   // RAII ctor allocates VRAM
+KernelBuffer<float32> y = heap KernelBuffer<float32>(n);
 x.upload(hx);
 y.upload(hy);
 GpuStream s = GpuStream.current();
@@ -36,20 +36,20 @@ y.download(hy);
 // x, y device memory freed automatically when they leave scope
 ```
 
-Use `stack GpuBuffer<T>(0, n)` + `x.allocate()` for a same-scope handle (the 2-arg
+Use `stack KernelBuffer<T>(0, n)` + `x.allocate()` for a same-scope handle (the 2-arg
 ctor takes `(int64 deviceHandle, uint64 elementCount)` — pass `0` for the handle).
 
-`public static #GpuBuffer<T> alloc(uint64 n)` — factory returning an **owned, heap**
+`public static #KernelBuffer<T> alloc(uint64 n)` — factory returning an **owned, heap**
 handle that escapes the frame (it `#`-moves the buffer out). Prefer plain
-`heap GpuBuffer<T>(n)` unless you need factory-style escape.
+`heap KernelBuffer<T>(n)` unless you need factory-style escape.
 
 ## Choose memory residency (MemoryKind)
 
 Kind is selected **after construction via `allocate`**, not by a constructor argument —
-there is no `GpuBuffer<T>(n, kind)` 2-arg ctor (the `(int64, uint64)` form is taken):
+there is no `KernelBuffer<T>(n, kind)` 2-arg ctor (the `(int64, uint64)` form is taken):
 
 ```cajeta
-GpuBuffer<float32> u = heap GpuBuffer<float32>(0, n);
+KernelBuffer<float32> u = heap KernelBuffer<float32>(0, n);
 u.allocate(MemoryKind.Unified);   // managed, host-accessible (i32 ordinal under the hood)
 u.hostStore(hx);                  // zero-copy write — no device transfer
 kernel.launch(s, ...)(u, ...);
@@ -74,7 +74,7 @@ See `cajeta/gpu/MemoryKind` for what `Device`/`Pinned`/`Unified` mean per backen
 - `void hostStore(T[] host)` / `void hostLoad(T[] host)` — zero-copy memcpy in the
   shared address space for a **host-accessible** (`Pinned`/`Unified`) buffer.
   **No-ops for a `Device` buffer on a discrete GPU** — use `upload`/`download` there.
-- `#GpuBuffer<T> slice(uint64 offset, uint64 count)` — returns a **non-owning view**
+- `#KernelBuffer<T> slice(uint64 offset, uint64 count)` — returns a **non-owning view**
   over a contiguous sub-range sharing this buffer's storage (allocates/frees nothing).
 - `void free()` — explicit early release; idempotent and null-guarded so the
   destructor then no-ops. Rarely needed (RAII covers the normal case).
@@ -89,7 +89,7 @@ accessor on the host; it does not exist.
 ## Ownership & lifecycle
 
 - The **handle** is governed by the drop chain; the **device memory** is an owned
-  resource acquired by the constructor and released by `~GpuBuffer()` — forgetting
+  resource acquired by the constructor and released by `~KernelBuffer()` — forgetting
   `free()` does not leak VRAM.
 - `#buf` move-out transfers ownership; the moved-from handle's destructor no-ops
   (both `alloc` and `slice` rely on this).
@@ -99,7 +99,7 @@ accessor on the host; it does not exist.
 
 ## Sharp edges
 
-- **Launch borrow (XPU-K02).** A kernel launch borrows each `GpuBuffer` argument until
+- **Launch borrow (XPU-K02).** A kernel launch borrows each `KernelBuffer` argument until
   the next `GpuStream.sync()` on that stream. Letting a buffer reach its drop — or
   calling `free()` — while a launch still references it is a **compile error**. Always
   `sync()` before the buffer leaves scope or is freed.

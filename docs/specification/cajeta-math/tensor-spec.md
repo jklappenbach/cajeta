@@ -11,7 +11,7 @@
 `cajeta.math.Tensor` is the canonical, framework-neutral n-dimensional array — the lingua
 franca every downstream numerical lib and the torch port shares (spec rationale:
 `numpy-porting-spec.md` §1). It is **CPU-first** (fully usable with no GPU) and
-GPU-accelerable (lowers to `cajeta.gpu`/`cajeta.gpu.xpu`). v1 delivers the *type and its
+GPU-accelerable (lowers to `cajeta.xpu`/`cajeta.xpu.xpu`). v1 delivers the *type and its
 seams*; the op surface is layered on after.
 
 ## 2. The load-bearing design decisions
@@ -23,7 +23,7 @@ expensive to revisit.
 numpy/torch make dtype a **runtime** property (one `ndarray` type; `x.dtype` is a field) —
 largely a side-effect of Python being dynamically typed. cajeta is statically typed and
 already has: element-generic types (`KernelBuffer<T>`, `Vector<T,N>`,
-`cajeta.gpu.xpu.CooperativeMatrix<T,…>`); **reified, monomorphized generics**
+`cajeta.xpu.xpu.CooperativeMatrix<T,…>`); **reified, monomorphized generics**
 (`docs/Embedded.md`; `cajeta.reflect.TemplateArgument`); and **first-class wildcards**
 (`Stream<?>` in the stdlib; bounded `<? extends …>` — `docs/CaptureConversion.md`). So the
 element type is a **compile-time parameter `Tensor<T>`**, and the runtime-dtype cases are
@@ -109,15 +109,15 @@ cast brick.
 ## 6. Storage & device model (CPU-first, GPU-accelerable)
 - **Default = host.** A `Tensor<T>` allocates host `Storage`; every operation has a CPU
   path; a build with no GPU is fully functional.
-- **Device placement.** `Storage<T>` can additionally hold a `cajeta.gpu` device buffer
+- **Device placement.** `Storage<T>` can additionally hold a `cajeta.xpu` device buffer
   (`KernelBuffer<T>`). `tensor.to(Device)`, `.cpu()`, `.gpu()` move/mirror; `.device()` reports
   placement. v1 policy: explicit placement (eager transfer); a lazy/auto-migrate policy is
   a later option, not v1.
 - **The op-dispatch seam (defined here, exercised by the op phases).** A `Tensor` op
   resolves its execution path from operand placement + device availability: device-resident
-  operands → a `cajeta.gpu` kernel lowering (elementwise/reduction/scan/`matmul`-on-
+  operands → a `cajeta.xpu` kernel lowering (elementwise/reduction/scan/`matmul`-on-
   `CooperativeMatrix`); host operands (or no GPU) → the portable CPU path. This is the SAME
-  native-vs-portable, result-cross-checked discipline as `cajeta.gpu` (see numpy-porting-plan
+  native-vs-portable, result-cross-checked discipline as `cajeta.xpu` (see numpy-porting-plan
   cross-cutting rule). The seam is the contract Phase-3+ ops plug into; v1 wires it and
   proves it with one elementwise op end-to-end, not the full op surface.
 
