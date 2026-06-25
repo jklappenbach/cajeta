@@ -6955,6 +6955,7 @@ void __cajeta_md5_oneshot_hex_into(const void* data_hdr, int64_t len, void* out_
 // compiles ONLY cajeta_runtime.c to bitcode; sibling .c files must be textually
 // included to be embedded + linker-merged into user modules).
 #include "cajeta_sha256.c"
+#include "cajeta_blake3.c"
 
 // --- cajeta.hash.SipHash (SipHash-2-4) -------------------------------------
 // SipHash-2-4 over arbitrary bytes with a 128-bit key. Designed for
