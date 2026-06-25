@@ -1,7 +1,7 @@
 //
 // Step 2 — xpu.core Cajeta stdlib declarations.
 //
-// Verifies that the cajeta.gpu stdlib package (KernelStream, Event,
+// Verifies that the cajeta.xpu stdlib package (KernelStream, Event,
 // Fence, KernelBuffer<T>, address-space markers, capability traits, KernelThread/
 // Workgroup/Barrier/Wave builtins, KernelArg, KernelError) is parsed
 // into the compiler's structure table by the embedded-stdlib pass,
@@ -94,14 +94,14 @@ TEST(XpuCoreStdlibTests, nonGenericClassesRegistered) {
     compileForInspection(compiler,
         "package test;\npublic class T { }\n", "test.T");
 
-    EXPECT_NE(findStdlibClass(compiler, "cajeta.gpu.KernelStream"),       nullptr);
-    EXPECT_NE(findStdlibClass(compiler, "cajeta.gpu.Event"),        nullptr);
-    EXPECT_NE(findStdlibClass(compiler, "cajeta.gpu.Fence"),        nullptr);
-    EXPECT_NE(findStdlibClass(compiler, "cajeta.gpu.KernelThread"),       nullptr);
-    EXPECT_NE(findStdlibClass(compiler, "cajeta.gpu.Workgroup"),    nullptr);
-    EXPECT_NE(findStdlibClass(compiler, "cajeta.gpu.Barrier"),      nullptr);
-    EXPECT_NE(findStdlibClass(compiler, "cajeta.gpu.Wave"),         nullptr);
-    EXPECT_NE(findStdlibClass(compiler, "cajeta.gpu.XpuKernelError"), nullptr);
+    EXPECT_NE(findStdlibClass(compiler, "cajeta.xpu.KernelStream"),       nullptr);
+    EXPECT_NE(findStdlibClass(compiler, "cajeta.xpu.Event"),        nullptr);
+    EXPECT_NE(findStdlibClass(compiler, "cajeta.xpu.Fence"),        nullptr);
+    EXPECT_NE(findStdlibClass(compiler, "cajeta.xpu.KernelThread"),       nullptr);
+    EXPECT_NE(findStdlibClass(compiler, "cajeta.xpu.Workgroup"),    nullptr);
+    EXPECT_NE(findStdlibClass(compiler, "cajeta.xpu.Barrier"),      nullptr);
+    EXPECT_NE(findStdlibClass(compiler, "cajeta.xpu.Wave"),         nullptr);
+    EXPECT_NE(findStdlibClass(compiler, "cajeta.xpu.XpuKernelError"), nullptr);
 }
 
 // User code can import + reference KernelStream as a field type. This is
@@ -110,7 +110,7 @@ TEST(XpuCoreStdlibTests, nonGenericClassesRegistered) {
 TEST(XpuCoreStdlibTests, userCodeCanReferenceStream) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelStream;\n"
+        "import cajeta.xpu.KernelStream;\n"
         "public class K {\n"
         "    KernelStream s;\n"
         "    public K(KernelStream s) {\n"
@@ -129,7 +129,7 @@ TEST(XpuCoreStdlibTests, userCodeCanReferenceStream) {
 TEST(XpuCoreStdlibTests, bufferGenericInstantiates) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
         "public class K {\n"
         "    KernelBuffer<float32> buf;\n"
         "    public K(KernelBuffer<float32> buf) {\n"
@@ -157,11 +157,11 @@ TEST(XpuCoreStdlibTests, addressSpaceMarkersRegistered) {
     compileForInspection(compiler,
         "package test;\npublic class T { }\n", "test.T");
 
-    EXPECT_NE(findStdlibClass(compiler, "cajeta.gpu.Global"),   nullptr);
-    EXPECT_NE(findStdlibClass(compiler, "cajeta.gpu.Shared"),   nullptr);
-    EXPECT_NE(findStdlibClass(compiler, "cajeta.gpu.Constant"), nullptr);
-    EXPECT_NE(findStdlibClass(compiler, "cajeta.gpu.Private"),  nullptr);
-    EXPECT_NE(findStdlibClass(compiler, "cajeta.gpu.Generic"),  nullptr);
+    EXPECT_NE(findStdlibClass(compiler, "cajeta.xpu.Global"),   nullptr);
+    EXPECT_NE(findStdlibClass(compiler, "cajeta.xpu.Shared"),   nullptr);
+    EXPECT_NE(findStdlibClass(compiler, "cajeta.xpu.Constant"), nullptr);
+    EXPECT_NE(findStdlibClass(compiler, "cajeta.xpu.Private"),  nullptr);
+    EXPECT_NE(findStdlibClass(compiler, "cajeta.xpu.Generic"),  nullptr);
 }
 
 // Capability traits are interfaces; same registration model as
@@ -173,12 +173,12 @@ TEST(XpuCoreStdlibTests, capabilityTraitsRegistered) {
     compileForInspection(compiler,
         "package test;\npublic class T { }\n", "test.T");
 
-    EXPECT_NE(findStdlibClass(compiler, "cajeta.gpu.TensorCoreF16"),   nullptr);
-    EXPECT_NE(findStdlibClass(compiler, "cajeta.gpu.TensorCoreBF16"),  nullptr);
-    EXPECT_NE(findStdlibClass(compiler, "cajeta.gpu.TensorCoreFP8"),   nullptr);
-    EXPECT_NE(findStdlibClass(compiler, "cajeta.gpu.WaveBallot"),      nullptr);
-    EXPECT_NE(findStdlibClass(compiler, "cajeta.gpu.WaveShuffle"),     nullptr);
-    EXPECT_NE(findStdlibClass(compiler, "cajeta.gpu.AsyncCopy"),       nullptr);
-    EXPECT_NE(findStdlibClass(compiler, "cajeta.gpu.AtomicFloatAdd"),  nullptr);
-    EXPECT_NE(findStdlibClass(compiler, "cajeta.gpu.KernelArg"),       nullptr);
+    EXPECT_NE(findStdlibClass(compiler, "cajeta.xpu.TensorCoreF16"),   nullptr);
+    EXPECT_NE(findStdlibClass(compiler, "cajeta.xpu.TensorCoreBF16"),  nullptr);
+    EXPECT_NE(findStdlibClass(compiler, "cajeta.xpu.TensorCoreFP8"),   nullptr);
+    EXPECT_NE(findStdlibClass(compiler, "cajeta.xpu.WaveBallot"),      nullptr);
+    EXPECT_NE(findStdlibClass(compiler, "cajeta.xpu.WaveShuffle"),     nullptr);
+    EXPECT_NE(findStdlibClass(compiler, "cajeta.xpu.AsyncCopy"),       nullptr);
+    EXPECT_NE(findStdlibClass(compiler, "cajeta.xpu.AtomicFloatAdd"),  nullptr);
+    EXPECT_NE(findStdlibClass(compiler, "cajeta.xpu.KernelArg"),       nullptr);
 }

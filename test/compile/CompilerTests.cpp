@@ -41,16 +41,16 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // drifted ahead of reality during the multi-class push, so re-anchor
 // by running the test and reading the actual size if it diverges.
 // 2026-05-29: bumped 74 → 96 after the cajeta-xpu work merged the
-// cajeta.gpu prelude (Stream, Buffer, Thread, Workgroup, Barrier,
+// cajeta.xpu prelude (Stream, Buffer, Thread, Workgroup, Barrier,
 // Event, Wave, …) into the implicitly-loaded stdlib — +22 structures.
 // --- cajeta-xpu lineage (xpu.core prelude growth) ---
-// 2026-06-01: 96 → 98 — Item 8 added cajeta.gpu.Texture2D + Sampler (+2).
+// 2026-06-01: 96 → 98 — Item 8 added cajeta.gfx.Texture2D + Sampler (+2).
 // 2026-06-03: 98 → 100 — Part C inc 3a added AccelerationStructure + RayQuery (+2).
 // 2026-06-04: 100 → 101 — Part C CM4 added CooperativeMatrix (+1).
 // 2026-06-05: 101 → 102 — B1 added the declared cajeta.math.Matrix value type (+1).
-// 2026-06-06: re-anchored 102 → 104 — Tier-1 sweep added cajeta.gpu.Bits (+ drift fix).
-// 2026-06-06: 104 → 105 — writable images added cajeta.gpu.Image2D (+1).
-// 2026-06-09: +1 — Part C minor added cajeta.gpu.Quad (quad-control); the
+// 2026-06-06: re-anchored 102 → 104 — Tier-1 sweep added cajeta.xpu.Bits (+ drift fix).
+// 2026-06-06: 104 → 105 — writable images added cajeta.xpu.Image2D (+1).
+// 2026-06-09: +1 — Part C minor added cajeta.xpu.Quad (quad-control); the
 //   live base had drifted to 277, so re-anchor to the actual modules.size()-1: 278.
 // --- main lineage (threading / time / json / net preludes) ---
 // 2026-05-31: 96 → 110 — cajeta.concurrent + Atomic + cajeta.time.Duration + #66 stream sweep.
@@ -58,9 +58,9 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // 2026-06-06: 123 → 264 — cajeta-net merge (cajeta.io.net.{tcp,udp,dns,http,tls,ws}, …, +141).
 // --- merge of origin/main into cajeta-xpu ---
 // 2026-06-11: merge of origin/main (Reflection Phases 1–11 prelude) into
-// cajeta-xpu (cajeta.gpu prelude). Both preludes now load together: the
+// cajeta-xpu (cajeta.xpu prelude). Both preludes now load together: the
 // shared base + the reflection structures (cajeta.reflect.Class, Modifiers,
-// annotation/registry classes, reflective adapters) + the cajeta.gpu
+// annotation/registry classes, reflective adapters) + the cajeta.xpu
 // structures HEAD added. This count is self-anchoring — anchored to the live
 // modules.size() after the merge build.
 // 2026-06-15: 320 → 328 — feature/json-schema merge added the SIMD JSON binding
@@ -83,23 +83,23 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // (verified absent from the eager prelude — still lazy); the +9 are non-math
 // stdlib structures. Self-anchored to the live modules.size()-1 on a fresh build.
 // 2026-06-23: re-anchored 383 → 440 on feature/ifx. The 383 anchor was stale on
-// THIS branch: the eager cajeta.gpu §3 foundation classes added here
+// THIS branch: the eager cajeta.xpu §3 foundation classes added here
 // (LowDiscrepancy, Rng, Sdf, Noise, Octahedral) plus the branch's ifx-lineage
-// prelude growth had drifted the live count well past 383 (cajeta.gpu is eager;
+// prelude growth had drifted the live count well past 383 (cajeta.xpu is eager;
 // only cajeta.math is lazy), so this test was already red before §3-a. +1 of the
-// jump is cajeta.gpu.Lbvh (the §3-a software-LBVH builder, Morton-code slice);
+// jump is cajeta.xpu.Lbvh (the §3-a software-LBVH builder, Morton-code slice);
 // the rest absorbs the pre-existing drift. Self-anchored to the live
 // modules.size()-1 on a fresh build.
-// 2026-06-23: 440 → 441 — cajeta.gpu.PageCache (the §3 3.d residency cache, eager
-// cajeta.gpu prelude; +1).
-// 2026-06-23: 441 → 443 — cajeta.gpu.Reservoir + cajeta.gpu.Ris (the §3 3.b-rest
-// RIS reservoir value type + RIS/MIS estimators; eager cajeta.gpu prelude; +2).
-// 2026-06-23: 443 → 445 — cajeta.gpu.Sobol (the §3 3.b-rest-sobol low-discrepancy
-// (0,2)-sequence) + cajeta.gpu.BvhCodec (the §3 3.a-rest reinterpret/quantized-node
-// codec); both eager cajeta.gpu prelude; +2.
-// 2026-06-24: 445 → 446 — cajeta.gpu.Bvh (the cajeta-accel contract facade +
+// 2026-06-23: 440 → 441 — cajeta.xpu.PageCache (the §3 3.d residency cache, eager
+// cajeta.xpu prelude; +1).
+// 2026-06-23: 441 → 443 — cajeta.xpu.Reservoir + cajeta.xpu.Ris (the §3 3.b-rest
+// RIS reservoir value type + RIS/MIS estimators; eager cajeta.xpu prelude; +2).
+// 2026-06-23: 443 → 445 — cajeta.xpu.Sobol (the §3 3.b-rest-sobol low-discrepancy
+// (0,2)-sequence) + cajeta.xpu.BvhCodec (the §3 3.a-rest reinterpret/quantized-node
+// codec); both eager cajeta.xpu prelude; +2.
+// 2026-06-24: 445 → 446 — cajeta.xpu.Bvh (the cajeta-accel contract facade +
 // Reference adapter, plan unit 1) registers a structure; the sibling
-// cajeta.gpu.Strategy ENUM does not add a separate module, so the eager prelude
+// cajeta.xpu.Strategy ENUM does not add a separate module, so the eager prelude
 // grew net +1.
 static constexpr size_t STDLIB_STRUCTURE_COUNT = 446;
 

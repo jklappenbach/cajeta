@@ -1,4 +1,4 @@
-# Cajeta GPU — Gaussian Splats (`cajeta.gpu.splat`)
+# Cajeta GPU — Gaussian Splats (`cajeta.xpu.splat`)
 
 A **splat** is an anisotropic Gaussian kernel with attributes — a continuous,
 differentiable primitive that is *scattered* (accumulated) into a target. 3D Gaussian
@@ -11,7 +11,7 @@ sibling consumers**.
 
 ```
 cajeta-gpu  (foundation: value types, KernelBuffer, Image, AccelerationStructure, atomics,
-   ▲   ▲     sort/scan, ray query)  ──  cajeta.gpu.splat lives here, on core
+   ▲   ▲     sort/scan, ray query)  ──  cajeta.xpu.splat lives here, on core
    │   │
    │   └────────────────────────────┐
 cajeta-xpu  (compute)            cajeta-gfx  (rendering)
@@ -19,7 +19,7 @@ cajeta-xpu  (compute)            cajeta-gfx  (rendering)
   tomography / RBF P2G             relightable material splats
 ```
 
-`cajeta.gpu.splat` is a foundation library layered on **`cajeta.gpu`**. Its device
+`cajeta.xpu.splat` is a foundation library layered on **`cajeta.xpu`**. Its device
 operations register through core's **two seams** (§1.3) and obey core's
 native/portable/degrade discipline — exactly like the `AccelerationStructure` noun +
 `RayQuery` verb. See [`CajetaGPU.md`](CajetaGPU.md) §4 (which already names "3-D-Gaussian
@@ -123,7 +123,7 @@ under dynamic lighting rather than baking the capture's lighting in.
 ### 2.3 The `SplatCloud` noun
 
 ```cajeta
-// cajeta.gpu.splat
+// cajeta.xpu.splat
 class SplatCloud<A extends SplatAppearance> {
     // --- build-description: SoA attribute buffers (heap = ref) ---
     KernelBuffer<Vector<float32,3>>  positions
@@ -176,7 +176,7 @@ SplatView v = cloud.lod().select(camera, screen, budget)   // active splat set f
 > split as any other stdlib codec: the codec knows bytes, the io layer knows files.
 
 ```cajeta
-// cajeta.gpu.splat.codec — pure encode/decode; no files
+// cajeta.xpu.splat.codec — pure encode/decode; no files
 SplatCodec.encode(cloud, stream)                 // SplatCloud -> bytes
 SplatCloud<A> c = SplatCodec.decode<A>(stream)   // bytes -> SplatCloud
 SplatCodec.decodeNode(stream, nodeSpan)          // ranged decode of one octree node (§3.3)

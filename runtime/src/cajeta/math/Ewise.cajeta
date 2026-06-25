@@ -1,18 +1,18 @@
 package cajeta.math;
 
-import cajeta.gpu.KernelBuffer;
-import cajeta.gpu.KernelStream;
-import cajeta.gpu.KernelThread;
-import cajeta.gpu.Workgroup;
-import cajeta.gpu.xpu.CooperativeMatrix;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Workgroup;
+import cajeta.xpu.CooperativeMatrix;
 
 /**
  * Elementwise GPU lowering for the `Tensor` ufunc surface (numpy-porting-plan
- * Phase 3, deliverable 3f) — a `cajeta.gpu` device kernel plus the portable CPU
+ * Phase 3, deliverable 3f) — a `cajeta.xpu` device kernel plus the portable CPU
  * floor, the two cross-checked (3c). It is the reusable op+lowering pattern every
  * later kernel-expressible phase follows: an op routes on **operand placement** —
  * both tensors on-device → the GPU kernel over their device buffers; otherwise the
- * CPU loop — and a `cajeta.gpu` CPU backend backs the buffer when no GPU is present,
+ * CPU loop — and a `cajeta.xpu` CPU backend backs the buffer when no GPU is present,
  * so it runs everywhere.
  *
  * The lowering is **per-concrete-dtype**: a generic `@Kernel` does not monomorphize
@@ -80,7 +80,7 @@ public final class Ewise {
     /**
      * Atomic parallel-sum reduction kernel: every thread adds its element into the
      * single accumulator `out[0]` via `atomicAdd` (numpy-porting Phase 4, 4e — the
-     * GPU reduction primitive; the cajeta.gpu CPU backend lowers it to a native
+     * GPU reduction primitive; the cajeta.xpu CPU backend lowers it to a native
      * atomic RMW). The accumulator must be pre-zeroed.
      */
     @Kernel

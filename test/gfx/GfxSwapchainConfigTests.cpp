@@ -1,6 +1,6 @@
 //
 // GfxSwapchainConfigTests — cajeta-gfx plan §4.c (slice 1): the swapchain WSI
-// SELECTION POLICY (cajeta.gpu.gfx.SwapchainConfig).
+// SELECTION POLICY (cajeta.gfx.SwapchainConfig).
 //
 // A swapchain is built from a description, and the description is derived by
 // choosing — from what the driver reports for a Surface — the surface
@@ -41,7 +41,7 @@ int32_t runI32(const std::string& imports, const std::string& body) {
     return fn();
 }
 
-const char* IMP = "import cajeta.gpu.gfx.SwapchainConfig;\n";
+const char* IMP = "import cajeta.gfx.SwapchainConfig;\n";
 
 } // namespace
 

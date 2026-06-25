@@ -66,8 +66,8 @@ constexpr unsigned TILE = N * N;  // 256 elements
 // subgroup cooperates on one tile (the dispatch's 64 threads = full subgroups).
 const char* kMatmulSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.xpu.CooperativeMatrix;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.CooperativeMatrix;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void matmul(KernelBuffer<float16> a, KernelBuffer<float16> b,\n"
@@ -413,8 +413,8 @@ TEST(XpuCooperativeMatrixDeviceTests, nvptxCoopMatrixLowersToWmma) {
 // workgroup (M/N tiling is GEMM-2). Exact integer check.
 const char* kKAccumSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.xpu.CooperativeMatrix;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.CooperativeMatrix;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void gemm2k(KernelBuffer<float16> a, KernelBuffer<float16> b,\n"
@@ -508,9 +508,9 @@ TEST(XpuCooperativeMatrixDeviceTests, kAccumulationMatmulOnDevice) {
 // matmul SPELA/Toffee can call. Exact integer check over a 64×64×64 problem.
 const char* kGemmSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.xpu.CooperativeMatrix;\n"
-    "import cajeta.gpu.Workgroup;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.CooperativeMatrix;\n"
+    "import cajeta.xpu.Workgroup;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void gemm(KernelBuffer<float16> a, KernelBuffer<float16> b,\n"
@@ -640,8 +640,8 @@ TEST(XpuCooperativeMatrixDeviceTests, tiledGemmOnDevice) {
 // (A in 0..4, B in 0..3: products <= 12, 16-term sum <= 192 < 256 — exact in bf16).
 const char* kBf16SoftwareSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.xpu.CooperativeMatrix;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.CooperativeMatrix;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void bmatmul(KernelBuffer<bfloat16> a, KernelBuffer<bfloat16> b,\n"
@@ -734,10 +734,10 @@ TEST(XpuCooperativeMatrixDeviceTests, bf16SoftwareMatmulOnDevice) {
 // Same exact-integer non-uniform check as the global-source path.
 const char* kStagedSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.xpu.CooperativeMatrix;\n"
-    "import cajeta.gpu.xpu.CoopStage;\n"
-    "import cajeta.gpu.Barrier;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.CooperativeMatrix;\n"
+    "import cajeta.xpu.CoopStage;\n"
+    "import cajeta.xpu.Barrier;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void staged(KernelBuffer<float16> a, KernelBuffer<float16> b,\n"

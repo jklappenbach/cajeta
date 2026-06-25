@@ -1,6 +1,6 @@
 package cajeta.math;
 
-import cajeta.gpu.KernelBuffer;
+import cajeta.xpu.KernelBuffer;
 
 /**
  * `Storage<T>` — the owning host backing of a `Tensor<T>` (tensor-spec.md §4).
@@ -10,13 +10,13 @@ import cajeta.gpu.KernelBuffer;
  * (even when several views share it) — no manual refcount field is needed.
  *
  * ## Device residency (Phase 6)
- * A `Storage` also carries an optional **device mirror** — a `cajeta.gpu`
+ * A `Storage` also carries an optional **device mirror** — a `cajeta.xpu`
  * `KernelBuffer<T>` (null until first placed on a device). {@link #toDevice} mirrors
  * the host buffer onto the device and flips `onDevice`; {@link #toHost} brings it
  * back. This is the host side of the op-dispatch seam: an op reads
  * {@link #isOnDevice}/{@link #deviceBuffer} to pick its CPU vs GPU path. v1 policy
  * is **eager** (explicit `to`/`cpu`/`gpu`); a no-GPU build still works — the
- * `cajeta.gpu` CPU backend backs the buffer.
+ * `cajeta.xpu` CPU backend backs the buffer.
  *
  * Internal — user code constructs tensors through the `Tensor` factories.
  */

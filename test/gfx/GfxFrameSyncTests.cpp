@@ -1,6 +1,6 @@
 //
 // GfxFrameSyncTests — cajeta-gfx plan §4.c (slice 2): the frames-in-flight
-// SYNC POLICY (cajeta.gpu.gfx.FrameSync) and a parse/anchor check on the
+// SYNC POLICY (cajeta.gfx.FrameSync) and a parse/anchor check on the
 // Swapchain noun.
 //
 // A swapchain present loop lets the CPU run a bounded number of frames ahead of
@@ -12,7 +12,7 @@
 // the headless offscreen ring) are device-machine work behind Swapchain's
 // @Native primitives.
 //
-// One test also imports cajeta.gpu.gfx.Swapchain so the noun is parsed +
+// One test also imports cajeta.gfx.Swapchain so the noun is parsed +
 // prototype-generated (it consumes a cajeta.ifx.Surface) without touching its
 // device @Native methods.
 //
@@ -43,7 +43,7 @@ int32_t runI32(const std::string& imports, const std::string& body) {
     return fn();
 }
 
-const char* IMP = "import cajeta.gpu.gfx.FrameSync;\n";
+const char* IMP = "import cajeta.gfx.FrameSync;\n";
 
 } // namespace
 
@@ -93,7 +93,7 @@ TEST(GfxFrameSyncTests, canAcquireBoundsInFlight) {
 TEST(GfxFrameSyncTests, headlessSwapchainConstructsAndReportsDescription) {
     EXPECT_EQ(runI32(
         "import cajeta.ifx.Surface;\n"
-        "import cajeta.gpu.gfx.Swapchain;\n",
+        "import cajeta.gfx.Swapchain;\n",
         "        Surface s = heap Surface(0, 5, 800, 600);\n"          // headless (handle 0)
         "        Swapchain sc = heap Swapchain(s, 50, 0, 2, 3);\n"     // fmt 50, srgb, FIFO, 3 imgs
         "        if (sc.extentWidth() != 800) { return -1; }\n"

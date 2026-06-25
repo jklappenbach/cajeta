@@ -52,8 +52,8 @@ namespace {
 
 const char* kAtomicSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void reduce(KernelBuffer<float32> out, KernelBuffer<float32> in,\n"
@@ -72,8 +72,8 @@ const char* kAtomicSource =
 // must skip (no VK_EXT_shader_atomic_float2). Same parallel-sum reduction.
 const char* kAtomicAddSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void reduceAdd(KernelBuffer<float32> out, KernelBuffer<float32> in,\n"
@@ -320,8 +320,8 @@ TEST(XpuAtomicDeviceTests, floatAtomicsRunOnAmdDevice) {
 namespace {
 const char* kIntAtomicSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void ireduce(KernelBuffer<uint32> out, uint32 n) {\n"

@@ -5,12 +5,12 @@
 //
 // GfxGraphicsLoweringTests proved the bare interface fork (attributes in,
 // gl_Position out). A real shader additionally reads per-draw data from a
-// GpuBuffer<T> (a transform UBO/SSBO). The compute SpirvTarget already binds a
-// GpuBuffer<T> as a (set 0, binding = param-index) storage-buffer descriptor;
+// KernelBuffer<T> (a transform UBO/SSBO). The compute SpirvTarget already binds a
+// KernelBuffer<T> as a (set 0, binding = param-index) storage-buffer descriptor;
 // SpirvGraphicsTarget keeps that path for resource params and routes ONLY plain
 // value params to Location-N interface variables (via a SEPARATE nextInputLocation_
 // counter). These tests pin two properties of that split:
-//   1. a vertex shader reads a GpuBuffer<float32> descriptor AND has a Location-0
+//   1. a vertex shader reads a KernelBuffer<float32> descriptor AND has a Location-0
 //      vertex attribute AND writes BuiltIn Position — all in one valid module;
 //   2. multiple plain attributes get SEQUENTIAL Locations (0,1,2) while a resource
 //      param interleaved among them does NOT consume an interface Location (the
@@ -140,7 +140,7 @@ std::vector<uint8_t> lowerToBinary(const std::string& src, const std::string& fq
 
 } // namespace
 
-// 4b-rest A — a @Vertex shader reads a GpuBuffer<float32> (a per-draw transform
+// 4b-rest A — a @Vertex shader reads a KernelBuffer<float32> (a per-draw transform
 // UBO/SSBO) AND has a Location-0 position attribute AND writes gl_Position. The
 // resource binds as a descriptor (DescriptorSet/Binding) through the inherited
 // compute path; the attribute is a Location-0 Input; the two coexist in one valid
@@ -148,11 +148,11 @@ std::vector<uint8_t> lowerToBinary(const std::string& src, const std::string& fq
 TEST(GfxGraphicsResourceTests, vertexReadsStorageBufferAlongsideAttribute) {
     const std::string src =
         "package test;\n"
-        "import cajeta.gpu.GpuBuffer;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
         "public class S {\n"
         "    @Vertex\n"
         "    public static Vector<float32,4> main(Vector<float32,4> position,\n"
-        "                                         GpuBuffer<float32> xform) {\n"
+        "                                         KernelBuffer<float32> xform) {\n"
         "        float32 s = xform[0];\n"
         "        float32 px = position.x;\n"
         "        Vector<float32,4> out = stack Vector<float32,4>(px, s, s, 1.0f);\n"

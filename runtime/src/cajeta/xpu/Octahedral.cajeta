@@ -1,0 +1,91 @@
+package cajeta.xpu;
+
+import cajeta.lang.Math;
+
+/**
+ * Octahedral — octahedral encoding of unit vectors (cajeta-gfx §3, the
+ * acceleration/sampling/residency foundation; spec §8.7). The compact normal
+ * storage a deferred renderer's G-buffer uses: a unit 3-vector packed into TWO
+ * channels instead of three, with near-uniform angular error and a cheap
+ * encode/decode (Cigolle, Donow, Evangelakos, Mara, McGuire, Meyer 2014).
+ *
+ * The unit sphere is projected onto an octahedron by dividing by the L1 norm
+ * (|x|+|y|+|z|), giving a point on the |u|+|v|+|w|=1 surface; the upper
+ * hemisphere (z >= 0) maps directly to (u, v) in the diamond |u|+|v| <= 1, and
+ * the lower hemisphere folds OUT across that diamond's edges into the rest of
+ * the [-1, 1]^2 square (octWrap). Decoding reverses the fold and renormalizes.
+ * The defining property is the exact ROUND TRIP: decode(encode(n)) == n to
+ * within float precision, for normals in either hemisphere.
+ *
+ * Pure scalar float32 math (every component passed/returned as a scalar; no
+ * vector value types), so it is deterministic, host-testable, and lowers
+ * identically on the GPU. The two encoded coordinates come from {@link #encodeU}
+ * / {@link #encodeV}; the three decoded coordinates from {@link #decodeX} /
+ * {@link #decodeY} / {@link #decodeZ}.
+ */
+public class Octahedral {
+
+    /** Sign with zero treated as positive: +1 for v >= 0, -1 for v < 0. */
+    public static float32 signNz(float32 v) {
+        float32 s = 1.0f;
+        if (v < 0.0f) {
+            s = 0.0f - 1.0f;
+        }
+        return s;
+    }
+
+    /** The U (first) octahedral coordinate of unit vector (nx, ny, nz). */
+    public static float32 encodeU(float32 nx, float32 ny, float32 nz) {
+        float32 l1 = Math.abs(nx) + Math.abs(ny) + Math.abs(nz);
+        float32 pu = nx / l1;
+        float32 pv = ny / l1;
+        if (nz >= 0.0f) {
+            return pu;
+        }
+        // Lower hemisphere: fold out across the diamond edge.
+        float32 s = Octahedral.signNz(pu);
+        return (1.0f - Math.abs(pv)) * s;
+    }
+
+    /** The V (second) octahedral coordinate of unit vector (nx, ny, nz). */
+    public static float32 encodeV(float32 nx, float32 ny, float32 nz) {
+        float32 l1 = Math.abs(nx) + Math.abs(ny) + Math.abs(nz);
+        float32 pu = nx / l1;
+        float32 pv = ny / l1;
+        if (nz >= 0.0f) {
+            return pv;
+        }
+        float32 s = Octahedral.signNz(pv);
+        return (1.0f - Math.abs(pu)) * s;
+    }
+
+    /** The X component of the unit vector decoded from octahedral (u, v). */
+    public static float32 decodeX(float32 u, float32 v) {
+        float32 nz = 1.0f - Math.abs(u) - Math.abs(v);
+        float32 t = Math.max(0.0f - nz, 0.0f);
+        float32 nx = u - t * Octahedral.signNz(u);
+        float32 ny = v - t * Octahedral.signNz(v);
+        float32 len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+        return nx / len;
+    }
+
+    /** The Y component of the unit vector decoded from octahedral (u, v). */
+    public static float32 decodeY(float32 u, float32 v) {
+        float32 nz = 1.0f - Math.abs(u) - Math.abs(v);
+        float32 t = Math.max(0.0f - nz, 0.0f);
+        float32 nx = u - t * Octahedral.signNz(u);
+        float32 ny = v - t * Octahedral.signNz(v);
+        float32 len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+        return ny / len;
+    }
+
+    /** The Z component of the unit vector decoded from octahedral (u, v). */
+    public static float32 decodeZ(float32 u, float32 v) {
+        float32 nz = 1.0f - Math.abs(u) - Math.abs(v);
+        float32 t = Math.max(0.0f - nz, 0.0f);
+        float32 nx = u - t * Octahedral.signNz(u);
+        float32 ny = v - t * Octahedral.signNz(v);
+        float32 len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+        return nz / len;
+    }
+}

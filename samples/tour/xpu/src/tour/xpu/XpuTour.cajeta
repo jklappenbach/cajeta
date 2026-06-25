@@ -1,0 +1,1357 @@
+package tour.xpu;
+
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Wave;
+import cajeta.xpu.Quad;
+import cajeta.xpu.Bits;
+import cajeta.gfx.Texture2D;
+import cajeta.gfx.Texture1D;
+import cajeta.gfx.Texture3D;
+import cajeta.gfx.Texture2DArray;
+import cajeta.gfx.TextureCube;
+import cajeta.gfx.Sampler;
+import cajeta.gfx.TextureFormat;
+import cajeta.lang.Math;
+
+// Cajeta GPU tour — portable @Kernel programs run through the runtime
+// backend dispatcher. The SAME source compiles for NVIDIA (NVPTX), AMD
+// (AMDGPU/HIP), Vulkan (SPIR-V), or the CPU; the backend is a build-time
+// `--xpu-backend=` choice and, when several are bundled, the runtime picks the
+// best available at launch (CUDA -> HIP -> Vulkan -> CPU) and falls to the CPU
+// when no accelerator is present.
+//
+// Build + run with samples/tour/gpu/run-gpu.sh. It defaults to
+// `--xpu-backend=cpu`, so the demos run anywhere with no GPU; pass a backend
+// (e.g. `run-gpu.sh amdgpu,cpu`) to target a device with CPU fallback.
+//
+// The data-parallel kernels (saxpy, vecAdd) are barrier-free and produce
+// identical results on every backend. The wave demo (waveReduce) is
+// wave-cooperative: on a GPU the wave is the hardware warp/wavefront/subgroup
+// (32 or 64); on the CPU it is the host SIMD vector (16 on AVX-512, 8 on AVX2 —
+// Inc 5C). It is written width-agnostically — it never hardcodes the wave size,
+// it *queries* it — so the same source is correct at every width.
+//
+// (Workgroup barriers on the CPU remain a later increment.)
+public final class XpuTour {
+
+    // y[i] = a*x[i] + y[i] — the canonical accelerator "hello world".
+    @Kernel
+    public static void saxpy(KernelBuffer<float32> y, KernelBuffer<float32> x,
+                             float32 a, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            y[i] = a * x[i] + y[i];
+        }
+    }
+
+    // c[i] = a[i] + b[i] — element-wise vector add.
+    @Kernel
+    public static void vecAdd(KernelBuffer<float32> c, KernelBuffer<float32> a,
+                              KernelBuffer<float32> b, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            c[i] = a[i] + b[i];
+        }
+    }
+
+    // transform: out[i] = M * p[i] + t — a per-point 2-D affine transform.
+    // Showcases the intrinsic linear-algebra value types ON the device: a
+    // `Matrix<float32,2,2>` passed BY VALUE as a kernel parameter (marshalled
+    // like a POD — the host packs its 4 floats, the device reads them back),
+    // `Matrix * Vector` (matrix-vector multiply, NOT element-wise), and
+    // `Vector + Vector`. The same source lowers to a `<4 x float>` matrix and a
+    // `<2 x float>` vector on every backend; the matmul/matVec is honest
+    // extract/insert/fma IR, so the result is bit-exact on CPU, Vulkan, and AMD.
+    @Kernel
+    public static void transform(KernelBuffer<float32> outx, KernelBuffer<float32> outy,
+                                 KernelBuffer<float32> px, KernelBuffer<float32> py,
+                                 Matrix<float32,2,2> m,
+                                 float32 tx, float32 ty, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            Vector<float32,2> p = stack Vector<float32,2>(px[i], py[i]);
+            Vector<float32,2> t = stack Vector<float32,2>(tx, ty);
+            Vector<float32,2> r = m * p + t;   // matVec, then element-wise add
+            outx[i] = r[0];
+            outy[i] = r[1];
+        }
+    }
+
+    // ---- Branchless per-lane conditionals: comparison masks + select --------
+    // A `Vector`/`Matrix` holds many values in one register; you cannot `if` a
+    // single lane (and a data-dependent branch diverges the warp on a GPU). The
+    // mask->select pattern expresses a per-element conditional as data:
+    //   mask = a OP b   (a per-lane <N x i1>)   result = mask.select(a, b)
+    // See docs/MaskSelect.md.
+
+    // reluReg: per-thread ReLU on a 4-vector via (v > 0).select(v, zeros).
+    // v = (i-2, -1, 3, -4)  ->  relu = (max(i-2,0), 0, 3, 0).
+    @Kernel
+    public static void reluReg(KernelBuffer<float32> out, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            Vector<float32,4> v = stack Vector<float32,4>(
+                (float32) i - 2.0f, -1.0f, 3.0f, -4.0f);
+            Vector<float32,4> zeros = stack Vector<float32,4>(0.0f, 0.0f, 0.0f, 0.0f);
+            Vector<float32,4> relu = (v > 0.0f).select(v, zeros);   // branchless
+            out[i] = relu.x + relu.y + relu.z + relu.w;
+        }
+    }
+
+    // pruneReg: per-thread weight pruning on a 2x2 matrix via a thresholded mask
+    // (w > 1).select(w, 0) — keep only the large-magnitude weights.
+    // w = [0.1 i; -3 0.05]  ->  pruned keeps i only when i > 1.
+    @Kernel
+    public static void pruneReg(KernelBuffer<float32> out, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            Matrix<float32,2,2> w = stack Matrix<float32,2,2>(
+                0.1f, (float32) i, -3.0f, 0.05f);
+            Matrix<float32,2,2> zeros = stack Matrix<float32,2,2>(
+                0.0f, 0.0f, 0.0f, 0.0f);
+            Matrix<float32,2,2> pruned = (w > 1.0f).select(w, zeros);
+            out[i] = pruned[0][0] + pruned[0][1] + pruned[1][0] + pruned[1][1];
+        }
+    }
+
+    // ---- Quantized: int8 dot product (DP4a) ----------------------------------
+    // dp4aReg: int8/uint8 dot products per thread — the quantized-inference lever.
+    // `Vector<int8,4>.dot(b)` -> int32; the optional 2nd arg is the int32
+    // accumulator (fused dot-add). On Vulkan this lowers to the OpSDot/OpUDot
+    // PackedVectorFormat4x8Bit hardware unit (SPV_KHR_integer_dot_product); on the
+    // other backends to a portable widening reduce — bit-exact either way.
+    //   a=(1,2,3,4) b=(5,6,7,8): a.dot(b) = 70; a.dot(b,100) = 170 (fused)
+    //   u=(200,100,50,25) w=(2,3,4,5): u.dot(w) = 400+300+200+125 = 1025
+    //     (unsigned: the signed reading of 200/100 would be negative)
+    //   out[i] = 70 + 170 + 1025 = 1265
+    @Kernel
+    public static void dp4aReg(KernelBuffer<int32> out, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            Vector<int8,4> a = stack Vector<int8,4>(1, 2, 3, 4);
+            Vector<int8,4> b = stack Vector<int8,4>(5, 6, 7, 8);
+            int32 d = a.dot(b);            // signed dot                = 70
+            int32 e = a.dot(b, 100);       // fused dot-add: 100 + 70   = 170
+            Vector<uint8,4> u = stack Vector<uint8,4>(200, 100, 50, 25);
+            Vector<uint8,4> w = stack Vector<uint8,4>(2, 3, 4, 5);
+            out[i] = d + e + u.dot(w);     // 70 + 170 + 1025           = 1265
+        }
+    }
+
+    // ---- Float atomics: lock-free parallel reduction -------------------------
+    // reduceAtomic: every thread folds its input into a SHARED accumulator with
+    // atomic read-modify-writes — a sum (atomicAdd), a max, and a min, all racing
+    // safely. On Vulkan these are OpAtomicFAddEXT/FMinEXT/FMaxEXT
+    // (SPV_EXT_shader_atomic_float_*); on AMD/NVIDIA/CPU the native atomicrmw.
+    //   in[i] = i, i in [0, n).  out starts {0, 0, BIG}.
+    //   out[0] = sum(0..n-1) = n*(n-1)/2;  out[1] = max = n-1;  out[2] = min = 0
+    @Kernel
+    public static void reduceAtomic(KernelBuffer<float32> out, KernelBuffer<float32> in,
+                                    uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            out.atomicAdd(0, in[i]);     // lock-free sum
+            out.atomicMax(1, in[i]);     // running max
+            out.atomicMin(2, in[i]);     // running min
+        }
+    }
+
+    // histogram: the canonical INTEGER-atomic use — many threads bump shared bins
+    // with atomicAdd, no locks. data[i] = i % NB picks a bin, so each of the NB
+    // bins gets n/NB hits. Core OpAtomicIAdd on Vulkan (no extension, unlike the
+    // float path); the native atomicrmw on AMD/NVIDIA/CPU. See
+    // docs/IntegerAtomics.md.
+    @Kernel
+    public static void histogram(KernelBuffer<uint32> bins, KernelBuffer<uint32> data,
+                                 uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            bins.atomicAdd(data[i], 1);   // ++bins[data[i]] atomically
+        }
+    }
+
+    // ---- Shader clock: in-kernel timing --------------------------------------
+    // clockProbe: each thread brackets a small compute loop with KernelThread.clock()
+    // and stores the elapsed DEVICE cycles. The clock is a free-running hardware
+    // counter — Vulkan OpReadClockKHR (Subgroup scope), s_getreg shader-cycles on
+    // AMD, rdtsc on CPU. Non-deterministic by nature: ticks for *relative*
+    // measurement, not wall-clock seconds.
+    @Kernel
+    public static void clockProbe(KernelBuffer<uint64> out, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            uint64 t0 = KernelThread.clock();
+            uint32 acc = i;
+            for (uint32 k = 0; k < 256; k = k + 1) {
+                acc = acc * 1664525 + 1013904223;   // a little dependent work
+            }
+            uint64 t1 = KernelThread.clock();
+            out[i] = (t1 - t0) + (uint64) (acc & 0); // acc&0=0 keeps the loop live
+        }
+    }
+
+    // bitOps: per-invocation bit manipulation — reverse / popcount / rotate.
+    // Core SPIR-V (OpBitReverse / OpBitCount + inline shift-rotate), no extension
+    // and no fork; native brev/popcnt on AMD/NVIDIA, the same on CPU. The hashing
+    // / bitset / Morton-code building blocks. See docs/BitInstructions.md.
+    //   v = 0x12345678: popcount = 13; rotate and reverse are self-inverse, so
+    //   out[i] = 13*10 + (rotr(rotl)==v) + (reverse(reverse)==v) = 132.
+    @Kernel
+    public static void bitOps(KernelBuffer<uint32> out, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            uint32 v = 305419896;                  // 0x12345678
+            uint32 pc = Bits.count(v);             // 13
+            uint32 rr = Bits.rotateRight(Bits.rotateLeft(v, 7), 7);  // == v
+            uint32 rev = Bits.reverse(Bits.reverse(v));              // == v
+            uint32 ok = 0;
+            if (rr == v) { ok = ok + 1; }
+            if (rev == v) { ok = ok + 1; }
+            out[i] = pc * 10 + ok;
+        }
+    }
+
+    // ---- Multi-channel texture sampling (B3) ---------------------------------
+    // texSample: read all four channels of an RGBA texture through a filtering
+    // Sampler. A 2x2 RGBA8_UNORM image stores per-texel R,G,B,A = .2t, +.05, +.1,
+    // +.15 (t = texel index). Lane i samples texel i's center and writes the
+    // channel sum R+G+B+A = 0.8t + 0.3. The bytes-stored-read-back-normalized path
+    // (UNORM) + the vec4 sample lower on every backend (CPU bilinear too).
+    //   out[i] = c.x + c.y + c.z + c.w  ->  {0.3, 1.1, 1.9, 2.7}, sum 6.0
+    @Kernel
+    public static void texSample(Texture2D tex, Sampler s,
+                                 KernelBuffer<float32> out, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            float32 u = 0.25f + 0.5f * (float32)(i & 1);          // texel-center u
+            float32 v = 0.25f + 0.5f * (float32)((i >> 1) & 1);   // texel-center v
+            Vector<float32, 4> c = tex.sample(s, u, v);
+            out[i] = c.x + c.y + c.z + c.w;
+        }
+    }
+
+    // ---- texelFetch: exact, sampler-free texel reads (B3) ---------------------
+    // texFetch: read the EXACT texel (LOD 0), not a filtered blend — the twin of
+    // sample(), for data textures / LUTs where the wanted value is the one
+    // stored. No Sampler; integer texel coords. Vulkan OpImageFetch / AMD
+    // __ockl_image_load / CPU exact read. See cajeta-docs/gpu (texture fetch).
+    @Kernel
+    public static void texFetch(Texture2D tex, KernelBuffer<float32> out,
+                                uint32 w, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            uint32 y = i / w;
+            uint32 x = i - y * w;
+            Vector<float32,4> c = tex.fetch(x, y);
+            out[i] = c.x;
+        }
+    }
+
+    // texFetchInt: INTEGER textures — `Texture2D<int32>` stores raw integers
+    // (no normalize/convert) and is fetch-ONLY (the hardware sampler can't filter
+    // integer texels). fetch returns the stored integer verbatim as a
+    // Vector<int32,4>. The texel type parameter selects float- vs integer-valued.
+    @Kernel
+    public static void texFetchInt(Texture2D<int32> tex, KernelBuffer<int32> out,
+                                   uint32 w, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            uint32 y = i / w;
+            uint32 x = i - y * w;
+            Vector<int32,4> c = tex.fetch(x, y);
+            out[i] = c.x;
+        }
+    }
+
+    // ---- Texture dimensions: 1-D / 3-D / array / cube (B3) --------------------
+    // The texture-dimension ladder beyond 2-D. Same sample/fetch verbs, the
+    // coordinate arity follows the shape; all float-sampled (-> Vector<T,4>).
+
+    // tex1d: a linear (1-D) texture — gradients / transfer functions / tone
+    // curves / 1-D LUTs. fetch reads the exact texel; sample lerps between
+    // adjacent entries.
+    @Kernel
+    public static void tex1d(Texture1D row, Sampler lin, KernelBuffer<float32> out) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < 1) {
+            Vector<float32,4> a = row.fetch(0);          // first texel (exact)
+            Vector<float32,4> b = row.fetch(3);          // last texel (exact)
+            Vector<float32,4> c = row.sample(lin, 0.5f); // linear blend at midpoint
+            out[0] = a.x;
+            out[1] = b.x;
+            out[2] = c.x;
+        }
+    }
+
+    // tex3d: a volumetric (3-D) texture — fetch reads the exact voxel, sample
+    // trilinearly interpolates across all three axes.
+    @Kernel
+    public static void tex3d(Texture3D vol, Sampler lin, KernelBuffer<float32> out) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < 1) {
+            Vector<float32,4> a = vol.fetch(0, 0, 0);                // first voxel
+            Vector<float32,4> b = vol.fetch(1, 1, 1);                // last voxel
+            Vector<float32,4> c = vol.sample(lin, 0.5f, 0.5f, 0.5f); // trilinear center
+            out[0] = a.x;
+            out[1] = b.x;
+            out[2] = c.x;
+        }
+    }
+
+    // texArray: a layered (2-D array) texture — sprite sheets / atlases-by-index
+    // / map cascades. The layer is an integer INDEX, not a coord: sample filters
+    // WITHIN the selected layer (no cross-layer blend).
+    @Kernel
+    public static void texArray(Texture2DArray arr, Sampler lin,
+                                KernelBuffer<float32> out) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < 1) {
+            Vector<float32,4> a = arr.fetch(0, 0, 0);              // layer 0, first texel
+            Vector<float32,4> b = arr.fetch(1, 1, 2);              // layer 2, last texel
+            Vector<float32,4> c = arr.sample(lin, 0.5f, 0.5f, 1);  // bilinear center, layer 1
+            out[0] = a.x;
+            out[1] = b.x;
+            out[2] = c.x;
+        }
+    }
+
+    // texCube: a cube map sampled by a DIRECTION vector (skyboxes / environment
+    // / reflection probes) — the hardware projects the direction onto one of the
+    // six faces. A cube has no fetch (no single integer texel for a direction).
+    @Kernel
+    public static void texCube(TextureCube cube, Sampler near,
+                               KernelBuffer<float32> out) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < 1) {
+            Vector<float32,4> px = cube.sample(near, 1.0f, 0.0f, 0.0f);    // +X face
+            Vector<float32,4> nx = cube.sample(near, -1.0f, 0.0f, 0.0f);   // -X face
+            Vector<float32,4> py = cube.sample(near, 0.0f, 1.0f, 0.0f);    // +Y face
+            Vector<float32,4> ny = cube.sample(near, 0.0f, -1.0f, 0.0f);   // -Y face
+            Vector<float32,4> pz = cube.sample(near, 0.0f, 0.0f, 1.0f);    // +Z face
+            Vector<float32,4> nz = cube.sample(near, 0.0f, 0.0f, -1.0f);   // -Z face
+            out[0] = px.x;
+            out[1] = nx.x;
+            out[2] = py.x;
+            out[3] = ny.x;
+            out[4] = pz.x;
+            out[5] = nz.x;
+        }
+    }
+
+    // ---- Mipmaps + explicit LOD (B3) -----------------------------------------
+    // texMip: a mip-aware texture with per-level data. fetchLod / sampleLod read
+    // a chosen LOD explicitly (vs implicit derivative LOD, which is fragment-only
+    // and N/A for compute). level L is max(1, w>>L) x max(1, h>>L).
+    @Kernel
+    public static void texMip(Texture2D tex, Sampler lin, KernelBuffer<float32> out) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < 1) {
+            Vector<float32,4> a = tex.fetchLod(1, 1, 0);                 // level 0 texel (1,1)
+            Vector<float32,4> b = tex.fetchLod(0, 0, 1);                 // level 1 texel (0,0)
+            Vector<float32,4> c = tex.sampleLod(lin, 0.5f, 0.5f, 1.0f);  // sample at LOD 1
+            out[0] = a.x;
+            out[1] = b.x;
+            out[2] = c.x;
+        }
+    }
+
+    // ---- Multiple samplers per kernel (B3) -----------------------------------
+    // texTwoSamplers: sample ONE texture through TWO independent Sampler params —
+    // a nearest sampler (picks a single texel) and a linear one (4-texel blend) —
+    // each materializing its own descriptor.
+    @Kernel
+    public static void texTwoSamplers(Texture2D tex, Sampler near, Sampler lin,
+                                      KernelBuffer<float32> out) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < 1) {
+            Vector<float32,4> a = tex.sample(near, 0.5f, 0.5f);   // nearest -> one texel
+            Vector<float32,4> b = tex.sample(lin, 0.5f, 0.5f);    // linear  -> 4-texel avg
+            out[0] = a.x;
+            out[1] = b.x;
+        }
+    }
+
+    // ---- Sub-buffer views (B4): KernelBuffer.slice ---------------------------------
+    // sliceFill: write the global index through a non-owning SLICE of a parent
+    // buffer. The view shares the parent's storage (allocates/frees nothing);
+    // writes land at parent[offset + i]. The offset is folded into the device
+    // address at slice() time, so the kernel sees an ordinary KernelBuffer.
+    @Kernel
+    public static void sliceFill(KernelBuffer<int32> b, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            b[i] = (int32) i;
+        }
+    }
+
+    // ---- Transforms: quaternions, determinant, inverse -----------------------
+    // 3-D rotation algebra and small-matrix solves, the same source on every
+    // backend. See docs/Quaternions.md + MatrixDeterminantInverse.md.
+
+    // quatk: several quaternion ops per thread — rotate, compose, inverse-rotate,
+    // length. qz90 rotates (1,0,0) -> (0,1,0); q45*q45 == qz90; conjugate undoes
+    // a rotation; a unit quaternion has length 1.
+    //   out[i] = rot.y + comp.y + back.x + len = 1 + 1 + 1 + 1 = 4
+    @Kernel
+    public static void quatk(KernelBuffer<float32> out, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            Vector<float32,3> x = stack Vector<float32,3>(1.0f, 0.0f, 0.0f);
+            Quaternion<float32> qz90 = heap Quaternion<float32>(0.70710678f, 0.0f, 0.0f, 0.70710678f);
+            Vector<float32,3> rot = qz90 * x;                 // (0,1,0)
+            Quaternion<float32> q45 = heap Quaternion<float32>(0.92387953f, 0.0f, 0.0f, 0.38268343f);
+            Quaternion<float32> comp = q45 * q45;             // == qz90
+            Vector<float32,3> comprot = comp * x;             // (0,1,0)
+            Quaternion<float32> qinv = qz90.conjugate();      // inverse rotation
+            Vector<float32,3> back = qinv * rot;              // (1,0,0)
+            out[i] = rot.y + comprot.y + back.x + qz90.length();
+        }
+    }
+
+    // linalgk: determinant + inverse + an inverse-based solve per thread.
+    // g = [4 7; 2 6]; det = 10; g*g^-1 = I; solve g*x = (18,14) -> x = (1,2).
+    //   out[i] = det + p[0][0] + p[1][1] + x[0] + x[1] = 10 + 1 + 1 + 1 + 2 = 15
+    @Kernel
+    public static void linalgk(KernelBuffer<float32> out, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            Matrix<float32,2,2> g = stack Matrix<float32,2,2>(4.0f, 7.0f, 2.0f, 6.0f);
+            float32 det = g.determinant();          // 10
+            Matrix<float32,2,2> gi = g.inverse();
+            Matrix<float32,2,2> p = g * gi;          // identity
+            Vector<float32,2> rhs = stack Vector<float32,2>(18.0f, 14.0f);
+            Vector<float32,2> x = gi * rhs;          // (1,2)
+            out[i] = det + p[0][0] + p[1][1] + x[0] + x[1];
+        }
+    }
+
+    // ---- Precision & dtypes: @FastMath, vectorized math, fp16/bf16 -----------
+    // The device-math surface: per-thread transcendentals, elementwise math over
+    // vectors, the 16-bit ML float types, and the @FastMath precision knob. See
+    // cajeta.lang.Math + docs/MaskSelect.md.
+
+    // @FastMath relaxes IEEE FP (FMA fusion, approximate transcendentals) for the
+    // whole body. out[i] = sqrt(i*i)*2 + 1 = 2*i + 1 (i >= 0).
+    @Kernel
+    @FastMath
+    public static void fastMath(KernelBuffer<float32> out, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            float32 x = (float32) i;
+            out[i] = Math.sqrt(x * x) * 2.0f + 1.0f;
+        }
+    }
+
+    // Vectorized math: Math.<fn> applies elementwise to a Vector<T,N>.
+    // sqrt((4,9,16,25)) = (2,3,4,5); sum = 14.  out[i] = 14 + i.
+    @Kernel
+    public static void vecMath(KernelBuffer<float32> out, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            Vector<float32,4> q = stack Vector<float32,4>(4.0f, 9.0f, 16.0f, 25.0f);
+            Vector<float32,4> r = Math.sqrt(q);
+            out[i] = r.x + r.y + r.z + r.w + (float32) i;
+        }
+    }
+
+    // 16-bit ML float types — float16 (binary16) and bfloat16 (brain float).
+    // Both portable: bfloat16 is a storage format computed in f32. h=(1,2,3,4),
+    // h+h=(2,4,6,8) -> h2.w=8; b=(10,20), b+b=(20,40) -> b2.y=40; out = 48 + i.
+    @Kernel
+    public static void floatTypes(KernelBuffer<float32> out, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            Vector<float16,4> h = stack Vector<float16,4>(1.0f, 2.0f, 3.0f, 4.0f);
+            Vector<float16,4> h2 = h + h;
+            Vector<bfloat16,2> b = stack Vector<bfloat16,2>(10.0f, 20.0f);
+            Vector<bfloat16,2> b2 = b + b;
+            out[i] = (float32) h2.w + (float32) b2.y + (float32) i;
+        }
+    }
+
+    // ---- Matrix cores: cooperative-matrix MMA + the tiering fallback ---------
+    // CooperativeMatrix<T,R,C,Use> is a tile of a matrix multiply held across a
+    // subgroup, mapping to the hardware matrix/tensor cores: one `mma` is a
+    // full tile-sized fused multiply-add. See cajeta.xpu.CooperativeMatrix.
+
+    // coopGemm: one 16x16x16 tile matmul C = A*B through the cooperative-matrix
+    // verbs (load A and B tiles, zero the accumulator, one mma, store C). A and B
+    // are float16, the accumulator/result is float32 — the canonical mixed-
+    // precision ML config. With A and B all-ones, every C element is the inner
+    // dimension K = 16.
+    //
+    // TIERING (CM6): the SAME @Kernel takes the fastest path each backend offers.
+    // float16/float32 maps to the NATIVE cooperative-matrix cores on Vulkan; on
+    // the CPU (and any backend that exposes no matrix config for the dtype) it
+    // lowers to the PORTABLE software tile-matmul — a flat tile + a strided
+    // gather + an honest triple loop accumulated in f32 — and the compiler prints
+    // a sticky `note: [mma-tiering]` telling you which path you got (not a
+    // warning; the software path is correct, and it auto-promotes to the cores
+    // where the device exposes the config — e.g. bf16 WMMA on AMD).
+    @Kernel
+    public static void coopGemm(KernelBuffer<float16> a, KernelBuffer<float16> b,
+                                KernelBuffer<float32> c) {
+        CooperativeMatrix<float16,16,16,0> ma;
+        ma.load(a, 0, 0, 16);                  // A tile: row-major, stride 16
+        CooperativeMatrix<float16,16,16,1> mb;
+        mb.load(b, 0, 0, 16);                  // B tile
+        CooperativeMatrix<float32,16,16,2> mc;
+        mc.splat(0.0f);                           // zero accumulator
+        mc.mma(ma, mb);                           // C = A*B + C  (one tile MMA)
+        mc.store(c, 0, 0, 16);                 // store the 16x16 result tile
+    }
+
+    // coopGemmStaged: the SAME tile matmul, but the A and B tiles are first STAGED
+    // into workgroup-shared memory (LDS) and read back through the cooperative-
+    // matrix load(Shared<T>) overload — the LDS-staged GEMM building block.
+    // CoopStage.panel is the cooperative global->LDS copy (the whole workgroup
+    // strides over the tile), a workgroup barrier publishes the writes, and the
+    // matrix cores consume their operands FROM LDS. In a real tiled GEMM the staged
+    // panel is reused across waves and K-steps, turning N redundant global reads
+    // into one global read + N cheap LDS reads. Portable: native LDS + matrix cores
+    // on the GPUs (the Vulkan path took two cajeta-llvm SPIR-V backend fixes), and
+    // on the CPU a per-block stack buffer + the software tile-matmul (the workgroup
+    // barrier lowers via CPU loop fission).
+    @Kernel
+    public static void coopGemmStaged(KernelBuffer<float16> a, KernelBuffer<float16> b,
+                                      KernelBuffer<float32> c) {
+        Shared<float16> sa = shared float16[16 * 16];   // LDS A tile
+        Shared<float16> sb = shared float16[16 * 16];   // LDS B tile
+        CoopStage.panel(sa, a, 0, 0, 16, 16, 16);       // stage A: global -> LDS
+        CoopStage.panel(sb, b, 0, 0, 16, 16, 16);       // stage B: global -> LDS
+        Barrier.workgroup();                             // staged writes visible
+        CooperativeMatrix<float16,16,16,0> ma;
+        ma.load(sa, 0, 0, 16);                           // load A operand FROM LDS
+        CooperativeMatrix<float16,16,16,1> mb;
+        mb.load(sb, 0, 0, 16);                           // load B operand FROM LDS
+        CooperativeMatrix<float32,16,16,2> mc;
+        mc.splat(0.0f);
+        mc.mma(ma, mb);
+        mc.store(c, 0, 0, 16);
+    }
+
+    // waveReduce: out[i] = sum of in over i's wave. A wave-cooperative kernel —
+    // the wave is the warp on a GPU, the SIMD vector on the CPU. Width-agnostic:
+    // it queries the environment (Wave.reduceSum / width() / laneId()) rather
+    // than assuming any particular wave size.
+    @Kernel
+    public static void waveReduce(KernelBuffer<uint32> sums, KernelBuffer<uint32> in,
+                                  uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            // The wave-wide sum of in[]; every lane of the wave receives it.
+            sums[i] = Wave.reduceSum(in[i]);
+        }
+    }
+
+    // waveRotate: a cyclic shift of values across the wave's lanes. Lane L reads
+    // the laneId held `1` position ahead — (L+1) mod width — so the first lanes
+    // read 1,2,3,... Vulkan lowers to the native OpGroupNonUniformRotateKHR
+    // (SPV_KHR_subgroup_rotate); AMD uses ds_bpermute; NVIDIA/CPU a shuffle. See
+    // docs/SubgroupRotate.md.
+    @Kernel
+    public static void waveRotate(KernelBuffer<uint32> out, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            out[i] = Wave.rotate(Wave.laneId(), 1);
+        }
+    }
+
+    // quadOps: the 2x2 (quad) cross-lane group. Each lane reports the id held by
+    // quad lane 0 — its quad's base — so lanes 0-3 read 0, lanes 4-7 read 4, …,
+    // making the four-lane grouping visible. Vulkan lowers to the native
+    // OpGroupNonUniformQuadBroadcast (and QuadAll/AnyKHR for Quad.all/any, the
+    // SPV_KHR_quad_control vote); AMD/NVIDIA/CPU use the portable shuffle/ballot
+    // form over the same lane layout. See cajeta-docs/gpu/xpu/QuadControl.md.
+    @Kernel
+    public static void quadOps(KernelBuffer<uint32> out, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            out[i] = Quad.broadcast(i, 0);
+        }
+    }
+
+    // waveReduceOps: the reduction family beyond sum — max/min/and/or/xor across
+    // the wave. Lane 0 holds a distinguished value so every reduction has a
+    // wave-width-agnostic answer (100/5/3/3/1) on CPU (8/16), AMD/NVIDIA (32/64),
+    // and Vulkan alike. Native on every backend (GroupNonUniform* / wave.reduce.*
+    // / redux.sync.*). See docs/WaveReductions.md.
+    @Kernel
+    public static void waveReduceOps(KernelBuffer<uint32> out, uint32 n) {
+        uint32 t = KernelThread.globalIdX();
+        uint32 vmax = 5;   if (t == 0) { vmax = 100; }
+        uint32 vmin = 100; if (t == 0) { vmin = 5; }
+        uint32 vand = 7;   if (t == 0) { vand = 3; }
+        uint32 vor = 2;    if (t == 0) { vor = 1; }
+        uint32 vxor = 0;   if (t == 0) { vxor = 1; }
+        // EVERY lane stores its wave's reduction (per-lane output regions). The
+        // result must be consumed unconditionally — a wave op whose result is
+        // used only under divergent control flow would be predicated on the CPU
+        // VFABI path. The runner reads lane 0 (wave 0): out[0], out[n], out[2n]...
+        out[t] = Wave.reduceMax(vmax);
+        out[n + t] = Wave.reduceMin(vmin);
+        out[2 * n + t] = Wave.reduceAnd(vand);
+        out[3 * n + t] = Wave.reduceOr(vor);
+        out[4 * n + t] = Wave.reduceXor(vxor);
+    }
+
+    // wavePrefix: exclusive prefix sum across the wave. With every lane
+    // contributing 1, lane i receives the count of lanes before it = i, so the
+    // first lanes read 0,1,2,3,... Native OpGroupNonUniformIAdd ExclusiveScan on
+    // Vulkan; ds_bpermute / shfl Hillis-Steele on AMD/NVIDIA; VFABI scan on CPU.
+    // See docs/WavePrefixScan.md.
+    @Kernel
+    public static void wavePrefix(KernelBuffer<uint32> out, uint32 n) {
+        uint32 t = KernelThread.globalIdX();
+        if (t < n) {
+            out[t] = Wave.prefixSum(1);
+        }
+    }
+
+    // Entry point. The C `main` shim (synthesized by --emit=obj with this
+    // method as the entry) wires this up as the program's main.
+    public static int32 run() {
+        System.stdout.println("=== Cajeta GPU tour ===");
+        System.stdout.println("  one portable @Kernel source, dispatched to the");
+        System.stdout.println("  bundled+available backend (CPU when no GPU).");
+        runSaxpy();
+        runVecAdd();
+        runBufferSlice();
+        runTransform();
+        runMaskSelect();
+        runIntegerDot();
+        runAtomics();
+        runHistogram();
+        runShaderClock();
+        runBitOps();
+        runTexture();
+        runTextureFetch();
+        runTexture1D();
+        runTexture3D();
+        runTextureArray();
+        runTextureCube();
+        runTextureMip();
+        runMultiSampler();
+        runTransforms();
+        runPrecision();
+        runCoopMatrix();
+        runWave();
+        runWaveRotate();
+        runWaveReduceOps();
+        runWavePrefix();
+        runQuad();
+        System.stdout.println("");
+        System.stdout.println("=== gpu tour complete ===");
+        return 0;
+    }
+
+    // block = 64 is portable across every backend (Vulkan bakes its workgroup
+    // size at 64, so the launch block must match it; CUDA/HIP/CPU accept it).
+    static void runSaxpy() {
+        System.stdout.println("");
+        System.stdout.println("-- SAXPY: y = 2*x + y, x[i]=i, y[i]=1 --");
+        uint32 n = 256;
+        float32[] hx = heap float32[n];
+        float32[] hy = heap float32[n];
+        for (uint32 i = 0; i < n; i = i + 1) {
+            hx[i] = (float32) i;
+            hy[i] = 1.0f;
+        }
+        // `heap` KernelBuffer<T> — RAII: the constructor allocates device memory and
+        // the drop chain frees it at scope exit (no allocate()/free() needed).
+        // The handle itself is heap-allocated; use this form when the handle
+        // must outlive the current frame (returned, stored, moved with `#`).
+        // (runVecAdd below shows the `stack` form for the same-scope case.)
+        KernelBuffer<float32> x = heap KernelBuffer<float32>(n);
+        KernelBuffer<float32> y = heap KernelBuffer<float32>(n);
+        x.upload(hx);
+        y.upload(hy);
+        KernelStream s = KernelStream.current();
+        saxpy.launch(s, grid: [(n + 63) / 64], block: [64])(y, x, 2.0f, n);
+        s.sync();
+        y.download(hy);
+        // x, y device memory freed automatically when they leave scope
+        // y[i] = 2*i + 1  ->  y[0]=1, y[1]=3, y[10]=21, y[255]=511
+        System.stdout.println("  y[0]=" + (int32) hy[0]
+                            + " y[1]=" + (int32) hy[1]
+                            + " y[10]=" + (int32) hy[10]
+                            + " y[255]=" + (int32) hy[255]
+                            + "  (expect 1, 3, 21, 511)");
+    }
+
+    static void runVecAdd() {
+        System.stdout.println("");
+        System.stdout.println("-- vecAdd: c = a + b, a[i]=i, b[i]=2*i --");
+        uint32 n = 256;
+        float32[] ha = heap float32[n];
+        float32[] hb = heap float32[n];
+        float32[] hc = heap float32[n];
+        for (uint32 i = 0; i < n; i = i + 1) {
+            ha[i] = (float32) i;
+            hb[i] = (float32) (2 * i);
+            hc[i] = 0.0f;
+        }
+        // `stack` KernelBuffer<T> — same RAII semantics, but the 24-byte handle lives
+        // in this frame (no host-heap allocation for it). The element count only
+        // sizes the *device* allocation, which lives off-stack, so the handle is
+        // fixed-size regardless of `n` — like a std::vector / Rust Vec header on
+        // the stack pointing at off-stack data. Prefer `stack` for the common
+        // same-scope case; the drop chain still frees the device memory at exit.
+        KernelBuffer<float32> a = stack KernelBuffer<float32>(n);
+        KernelBuffer<float32> b = stack KernelBuffer<float32>(n);
+        KernelBuffer<float32> c = stack KernelBuffer<float32>(n);
+        a.upload(ha);
+        b.upload(hb);
+        c.upload(hc);
+        KernelStream s = KernelStream.current();
+        vecAdd.launch(s, grid: [(n + 63) / 64], block: [64])(c, a, b, n);
+        s.sync();
+        c.download(hc);
+        // a, b, c freed automatically at scope exit
+        // c[i] = 3*i  ->  c[1]=3, c[10]=30, c[255]=765
+        System.stdout.println("  c[1]=" + (int32) hc[1]
+                            + " c[10]=" + (int32) hc[10]
+                            + " c[255]=" + (int32) hc[255]
+                            + "  (expect 3, 30, 765)");
+    }
+
+    // M = [[0 -1][1 0]] (a 90 deg rotation); points p[i] = (i, 1); t = (100, 200).
+    // r = M*(i,1) + t = (-1, i) + (100, 200) = (99, i + 200) — the matrix is a
+    // by-value kernel arg, the matVec + add happen on the device.
+    static void runTransform() {
+        System.stdout.println("");
+        System.stdout.println("-- transform: out = M*p + t, M=rot90, p[i]=(i,1), t=(100,200) --");
+        uint32 n = 256;
+        float32[] hpx = heap float32[n];
+        float32[] hpy = heap float32[n];
+        float32[] hox = heap float32[n];
+        float32[] hoy = heap float32[n];
+        for (uint32 i = 0; i < n; i = i + 1) {
+            hpx[i] = (float32) i;
+            hpy[i] = 1.0f;
+            hox[i] = 0.0f;
+            hoy[i] = 0.0f;
+        }
+        KernelBuffer<float32> px = stack KernelBuffer<float32>(n);
+        KernelBuffer<float32> py = stack KernelBuffer<float32>(n);
+        KernelBuffer<float32> outx = stack KernelBuffer<float32>(n);
+        KernelBuffer<float32> outy = stack KernelBuffer<float32>(n);
+        px.upload(hpx);
+        py.upload(hpy);
+        outx.upload(hox);
+        outy.upload(hoy);
+        // The matrix is a value: stack-constructed, then passed BY VALUE to the
+        // kernel launch alongside the buffers and the translation scalars.
+        Matrix<float32,2,2> m = stack Matrix<float32,2,2>(0.0f, -1.0f, 1.0f, 0.0f);
+        KernelStream s = KernelStream.current();
+        transform.launch(s, grid: [(n + 63) / 64], block: [64])(
+            outx, outy, px, py, m, 100.0f, 200.0f, n);
+        s.sync();
+        outx.download(hox);
+        outy.download(hoy);
+        // (i=10) -> (99, 210);  (i=255) -> (99, 455)
+        System.stdout.println("  (i=10) -> (" + (int32) hox[10] + ", " + (int32) hoy[10]
+                            + ")  (i=255) -> (" + (int32) hox[255] + ", " + (int32) hoy[255]
+                            + ")  (expect (99,210) and (99,455))");
+    }
+
+    // Branchless per-lane conditionals on the device: a vector ReLU and a matrix
+    // weight-prune, each via (cond).select(...). The per-element decision runs in
+    // flat <N x T> ops with no branch — see docs/MaskSelect.md.
+    static void runMaskSelect() {
+        System.stdout.println("");
+        System.stdout.println("-- mask/select: branchless per-lane conditionals --");
+        uint32 n = 256;
+        float32[] hrelu = heap float32[n];
+        float32[] hprune = heap float32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hrelu[i] = 0.0f; hprune[i] = 0.0f; }
+        KernelBuffer<float32> relu = stack KernelBuffer<float32>(n);
+        KernelBuffer<float32> prune = stack KernelBuffer<float32>(n);
+        relu.upload(hrelu);
+        prune.upload(hprune);
+        KernelStream s = KernelStream.current();
+        // ReLU: v=(i-2,-1,3,-4) -> (max(i-2,0),0,3,0); sum = max(i-2,0)+3.
+        reluReg.launch(s, grid: [(n + 63) / 64], block: [64])(relu, n);
+        // Prune: keep w>1 -> i kept only when i>1; sum = (i>1 ? i : 0).
+        pruneReg.launch(s, grid: [(n + 63) / 64], block: [64])(prune, n);
+        s.sync();
+        relu.download(hrelu);
+        prune.download(hprune);
+        System.stdout.println("  ReLU  (v>0).select(v,0):  sum[i=0]=" + (int32) hrelu[0]
+                            + " sum[i=10]=" + (int32) hrelu[10] + "  (expect 3, 11)");
+        System.stdout.println("  prune (w>1).select(w,0):  sum[i=0]=" + (int32) hprune[0]
+                            + " sum[i=10]=" + (int32) hprune[10] + "  (expect 0, 10)");
+    }
+
+    // Quantized int8 dot product (DP4a): the same source lowers to the OpSDot/
+    // OpUDot hardware dot-product unit on Vulkan and a portable widening reduce
+    // elsewhere — bit-exact. See docs/IntegerDotProduct.md.
+    static void runIntegerDot() {
+        System.stdout.println("");
+        System.stdout.println("-- DP4a: int8/uint8 dot product (quantized inner product) --");
+        uint32 n = 256;
+        int32[] hout = heap int32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 0; }
+        KernelBuffer<int32> out = stack KernelBuffer<int32>(n);
+        out.upload(hout);
+        KernelStream s = KernelStream.current();
+        dp4aReg.launch(s, grid: [(n + 63) / 64], block: [64])(out, n);
+        s.sync();
+        out.download(hout);
+        System.stdout.println("  int8 a.dot(b) + a.dot(b,100) + uint8 u.dot(w):  out[0]="
+                            + hout[0] + "  (expect 1265)");
+    }
+
+    // Float atomics: a lock-free parallel reduction (sum / max / min) where every
+    // thread races to fold into one shared accumulator. Vulkan emits the
+    // OpAtomicF*EXT hardware atomics; AMD/NVIDIA/CPU the native atomicrmw. See
+    // docs/FloatAtomics.md.
+    static void runAtomics() {
+        System.stdout.println("");
+        System.stdout.println("-- float atomics: lock-free parallel reduction --");
+        uint32 n = 256;
+        float32[] hin = heap float32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hin[i] = (float32) i; }
+        float32[] hout = heap float32[3];
+        hout[0] = 0.0f; hout[1] = 0.0f; hout[2] = 1.0e9f;
+        KernelBuffer<float32> in = stack KernelBuffer<float32>(n);
+        KernelBuffer<float32> out = stack KernelBuffer<float32>(3);
+        in.upload(hin);
+        out.upload(hout);
+        KernelStream s = KernelStream.current();
+        reduceAtomic.launch(s, grid: [(n + 63) / 64], block: [64])(out, in, n);
+        s.sync();
+        out.download(hout);
+        // sum(0..255)=32640, max=255, min=0
+        System.stdout.println("  sum=" + (int32) hout[0] + " max=" + (int32) hout[1]
+                            + " min=" + (int32) hout[2]
+                            + "  (expect 32640, 255, 0)");
+    }
+
+    // Integer atomics: a lock-free histogram. n items, each mapped to one of nb
+    // bins by value; every bin ends with n/nb hits. Core OpAtomicIAdd on Vulkan;
+    // native atomicrmw on AMD/NVIDIA/CPU. See docs/IntegerAtomics.md.
+    static void runHistogram() {
+        System.stdout.println("");
+        System.stdout.println("-- integer atomics: lock-free histogram --");
+        uint32 n = 256;
+        uint32 nb = 8;
+        uint32[] hdata = heap uint32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hdata[i] = i % nb; }
+        uint32[] hbins = heap uint32[nb];
+        for (uint32 i = 0; i < nb; i = i + 1) { hbins[i] = 0; }
+        KernelBuffer<uint32> data = stack KernelBuffer<uint32>(n);
+        KernelBuffer<uint32> bins = stack KernelBuffer<uint32>(nb);
+        data.upload(hdata);
+        bins.upload(hbins);
+        KernelStream s = KernelStream.current();
+        histogram.launch(s, grid: [(n + 63) / 64], block: [64])(bins, data, n);
+        s.sync();
+        bins.download(hbins);
+        // 256 items over 8 bins -> 32 per bin.
+        System.stdout.println("  bins[0..7] = " + (int32) hbins[0] + " "
+                            + (int32) hbins[1] + " " + (int32) hbins[2] + " "
+                            + (int32) hbins[3] + " " + (int32) hbins[4] + " "
+                            + (int32) hbins[5] + " " + (int32) hbins[6] + " "
+                            + (int32) hbins[7] + "  (expect 32 each)");
+    }
+
+    // Shader clock: read a free-running hardware counter inside the kernel for
+    // in-kernel timing. Vulkan -> OpReadClockKHR; AMD/NVIDIA/CPU the native clock.
+    // The elapsed-cycle value is non-deterministic. See docs/ShaderClock.md.
+    static void runShaderClock() {
+        System.stdout.println("");
+        System.stdout.println("-- shader clock: in-kernel timing (device cycles) --");
+        uint32 n = 256;
+        uint64[] hout = heap uint64[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 0; }
+        KernelBuffer<uint64> out = stack KernelBuffer<uint64>(n);
+        out.upload(hout);
+        KernelStream s = KernelStream.current();
+        clockProbe.launch(s, grid: [(n + 63) / 64], block: [64])(out, n);
+        s.sync();
+        out.download(hout);
+        System.stdout.println("  256-iter loop elapsed (thread 0): " + (int64) hout[0]
+                            + " device cycles  (nonzero; varies run-to-run)");
+    }
+
+    // Bit instructions: reverse / popcount / rotate, per invocation. Core SPIR-V,
+    // no extension, no fork; native bit ops on AMD/NVIDIA/CPU. See
+    // docs/BitInstructions.md.
+    static void runBitOps() {
+        System.stdout.println("");
+        System.stdout.println("-- bit ops: reverse / popcount / rotate (per invocation) --");
+        uint32 n = 256;
+        uint32[] hout = heap uint32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 0; }
+        KernelBuffer<uint32> out = stack KernelBuffer<uint32>(n);
+        out.upload(hout);
+        KernelStream s = KernelStream.current();
+        bitOps.launch(s, grid: [(n + 63) / 64], block: [64])(out, n);
+        s.sync();
+        out.download(hout);
+        System.stdout.println("  popcount(0x12345678)*10 + rotate&reverse roundtrips:  out[0]="
+                            + (int32) hout[0] + "  (expect 132)");
+    }
+
+    // RGBA texture sampling: a 2x2 RGBA8_UNORM image sampled through a linear
+    // Sampler; each lane reads all four channels of one texel and sums them.
+    static void runTexture() {
+        System.stdout.println("");
+        System.stdout.println("-- texture: RGBA8_UNORM 2x2, sample 4 channels per texel --");
+        uint32 w = 2;
+        uint32 h = 2;
+        float32[] pixels = heap float32[16];                    // 2*2 RGBA
+        for (uint32 t = 0; t < 4; t = t + 1) {
+            float32 r = (float32) t * 0.2f;                     // all in [0,1]
+            pixels[t * 4 + 0] = r;
+            pixels[t * 4 + 1] = r + 0.05f;
+            pixels[t * 4 + 2] = r + 0.1f;
+            pixels[t * 4 + 3] = r + 0.15f;
+        }
+        Texture2D tex = stack Texture2D(w, h, TextureFormat.RGBA8_UNORM);
+        tex.upload(pixels);
+        Sampler samp = stack Sampler(1, 0);                     // linear, clamp
+        uint32 n = 4;
+        float32[] hout = heap float32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 0.0f; }
+        KernelBuffer<float32> out = stack KernelBuffer<float32>(n);
+        out.upload(hout);
+        KernelStream s = KernelStream.current();
+        texSample.launch(s, grid: [1], block: [64])(tex, samp, out, n);
+        s.sync();
+        out.download(hout);
+        float32 sum = hout[0] + hout[1] + hout[2] + hout[3];
+        System.stdout.println("  per-texel channel sums (0.8t + 0.3), total = "
+                            + (int32)(sum + 0.5f) + "   (expect 6)");
+    }
+
+    // texelFetch: the exact, sampler-free texel read — for a float texture
+    // (R32F) and an INTEGER texture (Texture2D<int32>, fetch-only). Texels
+    // 0,10,20,30 (float) / 10,20,30,40 (int), row-major 2x2.
+    static void runTextureFetch() {
+        System.stdout.println("");
+        System.stdout.println("-- texelFetch: exact texel reads (float R32F + integer R32I) --");
+        uint32 w = 2;
+        uint32 hgt = 2;
+        uint32 n = 4;
+        float32[] fpix = heap float32[n];
+        for (uint32 t = 0; t < n; t = t + 1) { fpix[t] = (float32)(t * 10); }
+        Texture2D ftex = heap Texture2D(w, hgt);   // R32F (default)
+        ftex.upload(fpix);
+        float32[] fout = heap float32[n];
+        KernelBuffer<float32> fb = heap KernelBuffer<float32>(n);
+        fb.upload(fout);
+        int32[] ipix = heap int32[n];
+        for (uint32 t = 0; t < n; t = t + 1) { ipix[t] = (int32)((t + 1) * 10); }
+        Texture2D<int32> itex = heap Texture2D<int32>(w, hgt, TextureFormat.R32I);
+        itex.upload(ipix);
+        int32[] iout = heap int32[n];
+        KernelBuffer<int32> ib = heap KernelBuffer<int32>(n);
+        ib.upload(iout);
+        KernelStream s = KernelStream.current();
+        texFetch.launch(s, grid: [1], block: [64])(ftex, fb, w, n);
+        texFetchInt.launch(s, grid: [1], block: [64])(itex, ib, w, n);
+        s.sync();
+        fb.download(fout);
+        ib.download(iout);
+        System.stdout.println("  float  R32F fetch(0,0)=" + (int32) fout[0]
+                            + " fetch(1,1)=" + (int32) fout[3] + "  (expect 0, 30)");
+        System.stdout.println("  integer R32I   fetch(0,0)=" + iout[0]
+                            + " fetch(1,1)=" + iout[3] + "  (expect 10, 40)");
+    }
+
+    // Texture1D: a width-4 linear texture {0,10,20,30}. fetch reads exact texels;
+    // sample at u=0.5 lerps to the row midpoint.
+    static void runTexture1D() {
+        System.stdout.println("");
+        System.stdout.println("-- Texture1D: linear texture (gradient / 1-D LUT) --");
+        uint32 w = 4;
+        float32[] texels = heap float32[w];
+        for (uint32 t = 0; t < w; t = t + 1) { texels[t] = (float32)(t * 10); }
+        Texture1D row = heap Texture1D(w);
+        row.upload(texels);
+        Sampler lin = heap Sampler(1, 0);   // linear, clamp
+        float32[] hout = heap float32[3];
+        KernelBuffer<float32> out = heap KernelBuffer<float32>(3);
+        out.upload(hout);
+        KernelStream s = KernelStream.current();
+        tex1d.launch(s, grid: [1], block: [64])(row, lin, out);
+        s.sync();
+        out.download(hout);
+        System.stdout.println("  fetch[0]=" + (int32) hout[0] + " fetch[3]=" + (int32) hout[1]
+                            + " sample(0.5,linear)=" + (int32) hout[2] + "  (expect 0, 30, 15)");
+    }
+
+    // Texture3D: a 2x2x2 volume {0,10,...,70}. fetch reads exact voxels; sample
+    // at the center trilinearly averages all 8 -> 35.
+    static void runTexture3D() {
+        System.stdout.println("");
+        System.stdout.println("-- Texture3D: volumetric texture (trilinear) --");
+        uint32 w = 2;
+        uint32 hgt = 2;
+        uint32 d = 2;
+        uint32 n = 8;
+        float32[] voxels = heap float32[n];
+        for (uint32 t = 0; t < n; t = t + 1) { voxels[t] = (float32)(t * 10); }
+        Texture3D vol = heap Texture3D(w, hgt, d);
+        vol.upload(voxels);
+        Sampler lin = heap Sampler(1, 0);
+        float32[] hout = heap float32[3];
+        KernelBuffer<float32> out = heap KernelBuffer<float32>(3);
+        out.upload(hout);
+        KernelStream s = KernelStream.current();
+        tex3d.launch(s, grid: [1], block: [64])(vol, lin, out);
+        s.sync();
+        out.download(hout);
+        System.stdout.println("  fetch(0,0,0)=" + (int32) hout[0] + " fetch(1,1,1)=" + (int32) hout[1]
+                            + " sample(center,trilinear)=" + (int32) hout[2] + "  (expect 0, 70, 35)");
+    }
+
+    // Texture2DArray: 3 layers of a 2x2 texture, texels 0..110. fetch by
+    // (x,y,layer); sample filters WITHIN layer 1 ({40,50,60,70}) -> center 55.
+    static void runTextureArray() {
+        System.stdout.println("");
+        System.stdout.println("-- Texture2DArray: layered texture (sprite sheet / atlas) --");
+        uint32 w = 2;
+        uint32 hgt = 2;
+        uint32 layers = 3;
+        uint32 n = 12;
+        float32[] texels = heap float32[n];
+        for (uint32 t = 0; t < n; t = t + 1) { texels[t] = (float32)(t * 10); }
+        Texture2DArray arr = heap Texture2DArray(w, hgt, layers);
+        arr.upload(texels);
+        Sampler lin = heap Sampler(1, 0);
+        float32[] hout = heap float32[3];
+        KernelBuffer<float32> out = heap KernelBuffer<float32>(3);
+        out.upload(hout);
+        KernelStream s = KernelStream.current();
+        texArray.launch(s, grid: [1], block: [64])(arr, lin, out);
+        s.sync();
+        out.download(hout);
+        System.stdout.println("  fetch(L0)=" + (int32) hout[0] + " fetch(L2 last)=" + (int32) hout[1]
+                            + " sample(center,L1)=" + (int32) hout[2] + "  (expect 0, 110, 55)");
+    }
+
+    // TextureCube: 6 faces filled with face*10 (+X,-X,+Y,-Y,+Z,-Z). Sampling by
+    // each of the 6 axis directions selects the corresponding face.
+    static void runTextureCube() {
+        System.stdout.println("");
+        System.stdout.println("-- TextureCube: cube map sampled by a direction (skybox / env probe) --");
+        uint32 sz = 2;
+        uint32 faceTexels = sz * sz;
+        uint32 total = faceTexels * 6;
+        float32[] faces = heap float32[total];
+        for (uint32 f = 0; f < 6; f = f + 1) {
+            for (uint32 k = 0; k < faceTexels; k = k + 1) {
+                faces[f * faceTexels + k] = (float32)(f * 10);
+            }
+        }
+        TextureCube cube = heap TextureCube(sz);
+        cube.upload(faces);
+        Sampler near = heap Sampler(0, 0);   // nearest, clamp
+        float32[] hout = heap float32[6];
+        KernelBuffer<float32> out = heap KernelBuffer<float32>(6);
+        out.upload(hout);
+        KernelStream s = KernelStream.current();
+        texCube.launch(s, grid: [1], block: [64])(cube, near, out);
+        s.sync();
+        out.download(hout);
+        System.stdout.println("  faces +X -X +Y -Y +Z -Z = "
+                            + (int32) hout[0] + " " + (int32) hout[1] + " " + (int32) hout[2] + " "
+                            + (int32) hout[3] + " " + (int32) hout[4] + " " + (int32) hout[5]
+                            + "  (expect 0 10 20 30 40 50)");
+    }
+
+    // Mipmaps + explicit LOD: a 2-level R32F texture (L0 {0,10,20,30}, L1 {990}).
+    // fetchLod / sampleLod read a chosen level explicitly.
+    static void runTextureMip() {
+        System.stdout.println("");
+        System.stdout.println("-- Mipmaps + explicit LOD: per-level upload, fetchLod / sampleLod --");
+        uint32 w = 2;
+        uint32 hgt = 2;
+        Texture2D tex = heap Texture2D(w, hgt, TextureFormat.R32F, 2);   // 2 mip levels
+        float32[] l0 = heap float32[4];
+        l0[0] = 0.0f; l0[1] = 10.0f; l0[2] = 20.0f; l0[3] = 30.0f;        // level 0: 2x2
+        float32[] l1 = heap float32[1];
+        l1[0] = 990.0f;                                                  // level 1: 1x1
+        tex.uploadLevel(0, l0);
+        tex.uploadLevel(1, l1);
+        Sampler lin = heap Sampler(1, 0);
+        float32[] hout = heap float32[3];
+        KernelBuffer<float32> out = heap KernelBuffer<float32>(3);
+        out.upload(hout);
+        KernelStream s = KernelStream.current();
+        texMip.launch(s, grid: [1], block: [64])(tex, lin, out);
+        s.sync();
+        out.download(hout);
+        System.stdout.println("  fetchLod(1,1,L0)=" + (int32) hout[0]
+                            + " fetchLod(0,0,L1)=" + (int32) hout[1]
+                            + " sampleLod(L1)=" + (int32) hout[2] + "  (expect 30, 990, 990)");
+    }
+
+    // Multiple samplers in one kernel: a nearest and a linear Sampler sampling
+    // one R32F texture {0,10,20,30} at the (0.5,0.5) center — nearest picks one
+    // texel (30), linear averages all four (15).
+    static void runMultiSampler() {
+        System.stdout.println("");
+        System.stdout.println("-- multiple samplers in one kernel: nearest vs linear --");
+        uint32 w = 2;
+        uint32 hgt = 2;
+        float32[] pix = heap float32[4];
+        pix[0] = 0.0f; pix[1] = 10.0f; pix[2] = 20.0f; pix[3] = 30.0f;
+        Texture2D tex = heap Texture2D(w, hgt);   // R32F
+        tex.upload(pix);
+        Sampler near = heap Sampler(0, 0);   // nearest
+        Sampler lin = heap Sampler(1, 0);    // linear
+        float32[] hout = heap float32[2];
+        KernelBuffer<float32> out = heap KernelBuffer<float32>(2);
+        out.upload(hout);
+        KernelStream s = KernelStream.current();
+        texTwoSamplers.launch(s, grid: [1], block: [64])(tex, near, lin, out);
+        s.sync();
+        out.download(hout);
+        System.stdout.println("  center (0.5,0.5): nearest=" + (int32) hout[0]
+                            + " linear=" + (int32) hout[1] + "  (expect 30, 15)");
+    }
+
+    // KernelBuffer.slice: a non-owning sub-view over a parent buffer. A view of the
+    // second half is filled by a kernel (b[i]=i over the view), landing at
+    // parent[64+i]; the head stays untouched. Shares storage, frees nothing.
+    static void runBufferSlice() {
+        System.stdout.println("");
+        System.stdout.println("-- KernelBuffer.slice: a non-owning sub-view of a parent buffer --");
+        uint32 n = 128;
+        uint32 half = 64;
+        int32[] h = heap int32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { h[i] = -1; }
+        KernelBuffer<int32> all = heap KernelBuffer<int32>(n);
+        all.upload(h);
+        KernelBuffer<int32> tail = all.slice(half, half);   // second-half view
+        KernelStream s = KernelStream.current();
+        sliceFill.launch(s, grid: [1], block: [64])(tail, half);
+        s.sync();
+        all.download(h);
+        System.stdout.println("  head[10]=" + h[10] + " (untouched)  tail->parent[64]="
+                            + h[64] + " parent[127]=" + h[127]
+                            + "  (expect -1, 0, 63)");
+    }
+
+    // Quaternion rotation algebra + small-matrix determinant/inverse/solve, run
+    // per thread. Each output is a fixed checkable constant (the math is the same
+    // on every lane); see the kernels for the breakdown.
+    static void runTransforms() {
+        System.stdout.println("");
+        System.stdout.println("-- transforms: quaternions + determinant/inverse --");
+        uint32 n = 256;
+        float32[] hq = heap float32[n];
+        float32[] hl = heap float32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hq[i] = 0.0f; hl[i] = 0.0f; }
+        KernelBuffer<float32> q = stack KernelBuffer<float32>(n);
+        KernelBuffer<float32> l = stack KernelBuffer<float32>(n);
+        q.upload(hq);
+        l.upload(hl);
+        KernelStream s = KernelStream.current();
+        quatk.launch(s, grid: [(n + 63) / 64], block: [64])(q, n);
+        linalgk.launch(s, grid: [(n + 63) / 64], block: [64])(l, n);
+        s.sync();
+        q.download(hq);
+        l.download(hl);
+        System.stdout.println("  quaternion (rotate+compose+conjugate+length) sum = "
+                            + (int32)(hq[0] + 0.5f) + "   (expect 4)");
+        System.stdout.println("  matrix (det + g*g^-1 diag + solve x) sum = "
+                            + (int32)(hl[0] + 0.5f) + "   (expect 15)");
+    }
+
+    // @FastMath, vectorized math (Math.sqrt over a vector), and the fp16/bf16
+    // dtypes — each a fixed checkable constant per thread.
+    static void runPrecision() {
+        System.stdout.println("");
+        System.stdout.println("-- precision & dtypes: @FastMath / vectorized math / fp16+bf16 --");
+        uint32 n = 256;
+        float32[] hf = heap float32[n];
+        float32[] hv = heap float32[n];
+        float32[] hd = heap float32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hf[i] = 0.0f; hv[i] = 0.0f; hd[i] = 0.0f; }
+        KernelBuffer<float32> f = stack KernelBuffer<float32>(n);
+        KernelBuffer<float32> v = stack KernelBuffer<float32>(n);
+        KernelBuffer<float32> d = stack KernelBuffer<float32>(n);
+        f.upload(hf);
+        v.upload(hv);
+        d.upload(hd);
+        KernelStream s = KernelStream.current();
+        fastMath.launch(s, grid: [(n + 63) / 64], block: [64])(f, n);
+        vecMath.launch(s, grid: [(n + 63) / 64], block: [64])(v, n);
+        floatTypes.launch(s, grid: [(n + 63) / 64], block: [64])(d, n);
+        s.sync();
+        f.download(hf);
+        v.download(hv);
+        d.download(hd);
+        System.stdout.println("  @FastMath  2*i+1:   [10]=" + (int32) hf[10]
+                            + " [100]=" + (int32) hf[100] + "  (expect 21, 201)");
+        System.stdout.println("  vectorized sqrt sum: [0]=" + (int32) hv[0]
+                            + " [10]=" + (int32) hv[10] + "  (expect 14, 24)");
+        System.stdout.println("  fp16+bf16 (h2.w+b2.y): [0]=" + (int32) hd[0]
+                            + " [10]=" + (int32) hd[10] + "  (expect 48, 58)");
+    }
+
+    // One 16x16x16 cooperative-matrix tile matmul. A and B are all-ones float16,
+    // so the result tile is all K = 16. Runs on every backend — native matrix
+    // cores where the dtype config exists, the software tile-matmul otherwise
+    // (watch the compile step for the `note: [mma-tiering]` on the CPU build).
+    static void runCoopMatrix() {
+        System.stdout.println("");
+        System.stdout.println("-- coopGemm: 16x16x16 tile matmul on the matrix cores --");
+        uint32 tile = 256;                         // 16 x 16
+        float16[] ha = heap float16[tile];
+        float16[] hb = heap float16[tile];
+        float32[] hc = heap float32[tile];
+        for (uint32 i = 0; i < tile; i = i + 1) {
+            ha[i] = 1.0f;
+            hb[i] = 1.0f;
+            hc[i] = 0.0f;
+        }
+        KernelBuffer<float16> a = stack KernelBuffer<float16>(tile);
+        KernelBuffer<float16> b = stack KernelBuffer<float16>(tile);
+        KernelBuffer<float32> c = stack KernelBuffer<float32>(tile);
+        a.upload(ha);
+        b.upload(hb);
+        c.upload(hc);
+        KernelStream s = KernelStream.current();
+        // One workgroup owns the single output tile (block 64 = the subgroup that
+        // cooperates on it natively; the software path computes it per-invocation).
+        coopGemm.launch(s, grid: [1], block: [64])(a, b, c);
+        s.sync();
+        c.download(hc);
+        // C = A*B with A,B all-ones -> every element is the inner dim K = 16.
+        System.stdout.println("  C[0][0]=" + (int32) hc[0]
+                            + " C[5][5]=" + (int32) hc[5 * 16 + 5]
+                            + "  (expect 16, 16)");
+
+        // Same matmul, but staged through LDS (CoopStage.panel + load(Shared)).
+        // Identical result — it exercises the workgroup-shared staging path.
+        float32[] hcs = heap float32[tile];
+        for (uint32 i = 0; i < tile; i = i + 1) { hcs[i] = 0.0f; }
+        KernelBuffer<float32> cs = stack KernelBuffer<float32>(tile);
+        cs.upload(hcs);
+        coopGemmStaged.launch(s, grid: [1], block: [64])(a, b, cs);
+        s.sync();
+        cs.download(hcs);
+        System.stdout.println("  staged (via LDS): C[0][0]=" + (int32) hcs[0]
+                            + " C[5][5]=" + (int32) hcs[5 * 16 + 5]
+                            + "  (expect 16, 16)");
+    }
+
+    static void runWave() {
+        System.stdout.println("");
+        System.stdout.println("-- waveReduce: sum across each wave, in[i]=1 --");
+        uint32 n = 256;
+        uint32[] hin = heap uint32[n];
+        uint32[] hsums = heap uint32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hin[i] = 1; hsums[i] = 0; }
+        KernelBuffer<uint32> in = stack KernelBuffer<uint32>(n);
+        KernelBuffer<uint32> sums = stack KernelBuffer<uint32>(n);
+        in.upload(hin);
+        sums.upload(hsums);
+        KernelStream s = KernelStream.current();
+        waveReduce.launch(s, grid: [(n + 63) / 64], block: [64])(sums, in, n);
+        s.sync();
+        sums.download(hsums);
+        // With all-ones input, each lane's wave-sum == the number of lanes in
+        // the wave = the wave width. So sums[0] REPORTS the width — discovered
+        // at runtime, never hardcoded (16/8 on a CPU, 32/64 on a GPU).
+        System.stdout.println("  wave width (queried, not hardcoded) = "
+                            + (int32) hsums[0]);
+        System.stdout.println("  every lane of a wave agrees: sums[0]="
+                            + (int32) hsums[0] + " sums[1]=" + (int32) hsums[1]);
+    }
+
+    // Subgroup rotate: cyclic neighbour-exchange across the wave. out[i] reads
+    // laneId from (laneId+1) mod width, so the first lanes read 1,2,3,...
+    static void runWaveRotate() {
+        System.stdout.println("");
+        System.stdout.println("-- waveRotate: rotate laneId by 1 across the wave --");
+        uint32 n = 256;
+        uint32[] hout = heap uint32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 0; }
+        KernelBuffer<uint32> out = stack KernelBuffer<uint32>(n);
+        out.upload(hout);
+        KernelStream s = KernelStream.current();
+        waveRotate.launch(s, grid: [(n + 63) / 64], block: [64])(out, n);
+        s.sync();
+        out.download(hout);
+        System.stdout.println("  out[0..3] = " + (int32) hout[0] + " "
+                            + (int32) hout[1] + " " + (int32) hout[2] + " "
+                            + (int32) hout[3] + "  (expect 1 2 3 4)");
+    }
+
+    // The wave-reduction family beyond sum: max/min/and/or/xor. Native on every
+    // backend; the answer is the same at any wave width. See
+    // docs/WaveReductions.md.
+    static void runWaveReduceOps() {
+        System.stdout.println("");
+        System.stdout.println("-- waveReduceOps: max/min/and/or/xor across the wave --");
+        uint32 n = 256;
+        uint32[] hout = heap uint32[5 * n];
+        for (uint32 i = 0; i < 5 * n; i = i + 1) { hout[i] = 0; }
+        KernelBuffer<uint32> out = stack KernelBuffer<uint32>(5 * n);
+        out.upload(hout);
+        KernelStream s = KernelStream.current();
+        waveReduceOps.launch(s, grid: [(n + 63) / 64], block: [64])(out, n);
+        s.sync();
+        out.download(hout);
+        // Lane 0 (wave 0): the distinguished lane makes each reduction the same
+        // at any wave width (CPU 8/16, GPU 32/64).
+        System.stdout.println("  max min and or xor = " + (int32) hout[0] + " "
+                            + (int32) hout[n] + " " + (int32) hout[2 * n] + " "
+                            + (int32) hout[3 * n] + " " + (int32) hout[4 * n]
+                            + "  (expect 100 5 3 3 1)");
+    }
+
+    // Exclusive prefix sum across the wave: lane i gets the count of lanes
+    // before it. Native on every backend; the answer is the same at any wave
+    // width (>= 8). See docs/WavePrefixScan.md.
+    static void runWavePrefix() {
+        System.stdout.println("");
+        System.stdout.println("-- wavePrefix: exclusive prefix sum of 1 across the wave --");
+        uint32 n = 256;
+        uint32[] hout = heap uint32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 0; }
+        KernelBuffer<uint32> out = stack KernelBuffer<uint32>(n);
+        out.upload(hout);
+        KernelStream s = KernelStream.current();
+        wavePrefix.launch(s, grid: [(n + 63) / 64], block: [64])(out, n);
+        s.sync();
+        out.download(hout);
+        System.stdout.println("  out[0..7] = " + (int32) hout[0] + " "
+                            + (int32) hout[1] + " " + (int32) hout[2] + " "
+                            + (int32) hout[3] + " " + (int32) hout[4] + " "
+                            + (int32) hout[5] + " " + (int32) hout[6] + " "
+                            + (int32) hout[7] + "  (expect 0 1 2 3 4 5 6 7)");
+    }
+
+    // Quad (2x2) ops: each lane reads the id held by quad lane 0 — its quad's
+    // base. The four-lane grouping shows as 0 0 0 0 4 4 4 4 … on every backend
+    // (Vulkan native OpGroupNonUniformQuadBroadcast; AMD/NVIDIA/CPU portable).
+    // See cajeta-docs/gpu/xpu/QuadControl.md.
+    static void runQuad() {
+        System.stdout.println("");
+        System.stdout.println("-- quad: broadcast each lane's quad base (2x2 group) --");
+        uint32 n = 256;
+        uint32[] hout = heap uint32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 0; }
+        KernelBuffer<uint32> out = stack KernelBuffer<uint32>(n);
+        out.upload(hout);
+        KernelStream s = KernelStream.current();
+        quadOps.launch(s, grid: [(n + 63) / 64], block: [64])(out, n);
+        s.sync();
+        out.download(hout);
+        System.stdout.println("  out[0..7] = " + (int32) hout[0] + " "
+                            + (int32) hout[1] + " " + (int32) hout[2] + " "
+                            + (int32) hout[3] + " " + (int32) hout[4] + " "
+                            + (int32) hout[5] + " " + (int32) hout[6] + " "
+                            + (int32) hout[7] + "  (expect 0 0 0 0 4 4 4 4)");
+    }
+}

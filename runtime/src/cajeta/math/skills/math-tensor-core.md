@@ -131,7 +131,7 @@ KernelBuffer<float32> buf = a.deviceBuffer();   // null until gpu(); bind into a
 a.cpu();                  // bring back to host
 ```
 An op picks its path by reading `isOnGpu()`/`deviceBuffer()` (GPU) vs `flatGet`/`flatSet`
-(contiguous CPU loop). A no-GPU build still works — `cajeta.gpu`'s CPU backend backs the
+(contiguous CPU loop). A no-GPU build still works — `cajeta.xpu`'s CPU backend backs the
 buffer.
 
 ## Errors

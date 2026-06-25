@@ -81,7 +81,7 @@ cajeta::MethodPtr findMethod(const cajeta::CajetaClassPtr& klass,
 TEST(XpuAddressSpaceTests, saxpyKernelParametersFlowThrough) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
         "public class K {\n"
         "    @Kernel\n"
         "    public static void saxpy(KernelBuffer<float32> y, KernelBuffer<float32> x,\n"
@@ -128,7 +128,7 @@ TEST(XpuAddressSpaceTests, saxpyKernelParametersFlowThrough) {
 TEST(XpuAddressSpaceTests, globalMarkerTypeReachable) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.Global;\n"
+        "import cajeta.xpu.Global;\n"
         "public class K {\n"
         "    Global<float32> g;\n"
         "    public K(Global<float32> g) { this.g = g; }\n"

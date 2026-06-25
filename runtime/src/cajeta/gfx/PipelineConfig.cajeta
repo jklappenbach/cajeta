@@ -1,0 +1,223 @@
+package cajeta.gfx;
+
+/**
+ * PipelineConfig — the pure graphics-pipeline SELECTION POLICY a graphics
+ * pipeline is built from (cajeta-gfx §4.2 / GP-1, §4.d).
+ *
+ * A graphics pipeline (like a {@link Swapchain}) is an opaque, build-from-
+ * description driver object; its description is derived by CHOOSING — from a
+ * renderer's intent (attribute sizes, a blend preset, reverse-Z, double-sided) —
+ * the vertex-input layout, the blend factors, the depth compare/write, and the
+ * raster/input-assembly state. That choosing is backend-independent arithmetic,
+ * separated here so it is testable on the host with no device, while the live
+ * {@code VkPipeline} / render-pass / framebuffer creation and the draw commands
+ * live behind the device noun (§4.d-rest, validated on the device machine).
+ *
+ * ORDINALS ARE THE STABLE NATIVE CONTRACT (as for {@link SwapchainConfig} and
+ * {@link cajeta.gfx.TextureFormat}): every value is the {@code VK_*} enum ordinal
+ * the runtime consumes — blend factors are {@code VkBlendFactor}
+ * (0 ZERO, 1 ONE, 6 SRC_ALPHA, 7 ONE_MINUS_SRC_ALPHA), compare ops are
+ * {@code VkCompareOp} (3 LESS_OR_EQUAL, 6 GREATER_OR_EQUAL), cull modes are
+ * {@code VkCullModeFlagBits} (0 NONE, 2 BACK), the front face is
+ * {@code VkFrontFace} (0 COUNTER_CLOCKWISE), and the topology is
+ * {@code VkPrimitiveTopology} (3 TRIANGLE_LIST). Blend PRESETS are cajeta's own
+ * small enum: 0 OPAQUE, 1 ALPHA, 2 PREMULTIPLIED, 3 ADDITIVE.
+ */
+public class PipelineConfig {
+
+    // --- vertex input (packed / interleaved layout) ------------------------
+
+    /**
+     * The byte offset of vertex attribute `index` in a PACKED interleaved
+     * binding: the prefix sum of the earlier attributes' byte sizes
+     * (`attrBytes`, the first `count` entries). Returns -1 when `index` is out
+     * of range. (A vec3 position + vec3 normal + vec2 uv = sizes 12/12/8 gives
+     * offsets 0/12/24.)
+     */
+    public static int32 vertexAttributeOffset(int32[] attrBytes, int32 count, int32 index) {
+        if (index < 0) { return -1; }
+        if (index >= count) { return -1; }
+        int32 offset = 0;
+        int32 i = 0;
+        while (i < index) {
+            offset = offset + attrBytes[i];
+            i = i + 1;
+        }
+        return offset;
+    }
+
+    /**
+     * The vertex binding STRIDE for a packed interleaved layout: the total of
+     * the first `count` attribute byte sizes (so the next vertex begins exactly
+     * after this one).
+     */
+    public static int32 vertexStride(int32[] attrBytes, int32 count) {
+        int32 stride = 0;
+        int32 i = 0;
+        while (i < count) {
+            stride = stride + attrBytes[i];
+            i = i + 1;
+        }
+        return stride;
+    }
+
+    // --- blend (VkBlendFactor) ---------------------------------------------
+
+    /**
+     * The source {@code VkBlendFactor} for a blend `preset` (0 OPAQUE,
+     * 1 ALPHA, 2 PREMULTIPLIED, 3 ADDITIVE): ALPHA uses SRC_ALPHA (6); every
+     * other preset uses ONE (1).
+     */
+    public static int32 blendSrcFactor(int32 preset) {
+        if (preset == 1) { return 6; }   // ALPHA: VK_BLEND_FACTOR_SRC_ALPHA
+        return 1;                         // OPAQUE/PREMULTIPLIED/ADDITIVE: ONE
+    }
+
+    /**
+     * The destination {@code VkBlendFactor} for a blend `preset`: OPAQUE uses
+     * ZERO (0), ADDITIVE uses ONE (1), and ALPHA / PREMULTIPLIED use
+     * ONE_MINUS_SRC_ALPHA (7).
+     */
+    public static int32 blendDstFactor(int32 preset) {
+        if (preset == 0) { return 0; }   // OPAQUE: VK_BLEND_FACTOR_ZERO
+        if (preset == 3) { return 1; }   // ADDITIVE: VK_BLEND_FACTOR_ONE
+        return 7;                         // ALPHA/PREMULTIPLIED: ONE_MINUS_SRC_ALPHA
+    }
+
+    // --- depth (VkCompareOp + write enable) --------------------------------
+
+    /**
+     * The depth {@code VkCompareOp}: GREATER_OR_EQUAL (6) for a reverse-Z depth
+     * buffer (the better-precision convention), LESS_OR_EQUAL (3) for a standard
+     * [0,1] depth buffer.
+     */
+    public static int32 depthCompareOp(boolean reverseZ) {
+        if (reverseZ) { return 6; }   // VK_COMPARE_OP_GREATER_OR_EQUAL
+        return 3;                      // VK_COMPARE_OP_LESS_OR_EQUAL
+    }
+
+    /**
+     * Whether depth WRITE is enabled for a blend `preset`: only the OPAQUE pass
+     * (preset 0) writes depth; transparent passes (ALPHA / PREMULTIPLIED /
+     * ADDITIVE) test against the depth buffer but must not overwrite it (so
+     * geometry behind already-drawn opaque surfaces is still occluded, and the
+     * transparent draws don't occlude each other by depth).
+     */
+    public static boolean depthWriteEnabled(int32 blendPreset) {
+        if (blendPreset == 0) { return true; }
+        return false;
+    }
+
+    // --- raster / input assembly -------------------------------------------
+
+    /**
+     * The {@code VkCullModeFlagBits} for a mesh: NONE (0) when double-sided,
+     * BACK (2) otherwise (the standard one-sided cull).
+     */
+    public static int32 cullModeFor(boolean doubleSided) {
+        if (doubleSided) { return 0; }   // VK_CULL_MODE_NONE
+        return 2;                         // VK_CULL_MODE_BACK_BIT
+    }
+
+    /**
+     * The front-face winding: COUNTER_CLOCKWISE (0), matching cajeta.math
+     * {@link cajeta.math.Camera}'s right-handed / [0,1]-clip convention.
+     */
+    public static int32 frontFaceCounterClockwise() { return 0; }
+
+    /**
+     * The default input-assembly topology: TRIANGLE_LIST (3).
+     */
+    public static int32 topologyTriangleList() { return 3; }
+
+    // --- vertex attribute format sizing (VkFormat) -------------------------
+
+    /**
+     * The byte size of a vertex-attribute {@code VkFormat} — so a caller can feed
+     * formats (not raw byte sizes) and derive the layout via
+     * {@link #vertexAttributeOffset} / {@link #vertexStride}. Covers the formats a
+     * vertex buffer actually uses: the 32-bit-per-channel R32 families
+     * ({@code R32*} ordinals 98..109 → 4/8/12/16 for 1/2/3/4 channels), the packed
+     * 8-bit RGBA8_UNORM (37 → 4), and the 16-bit-float families (R16_SFLOAT 76 → 2,
+     * R16G16_SFLOAT 83 → 4, R16G16B16A16_SFLOAT 97 → 8). Returns -1 for a format
+     * not supported as a vertex attribute here.
+     */
+    public static int32 vertexFormatBytes(int32 vkFormat) {
+        if (vkFormat >= 98) {
+            if (vkFormat <= 100) { return 4; }    // R32 {UINT,SINT,SFLOAT}
+            if (vkFormat <= 103) { return 8; }    // R32G32 {UINT,SINT,SFLOAT}
+            if (vkFormat <= 106) { return 12; }   // R32G32B32 {UINT,SINT,SFLOAT}
+            if (vkFormat <= 109) { return 16; }   // R32G32B32A32 {UINT,SINT,SFLOAT}
+        }
+        if (vkFormat == 37) { return 4; }   // R8G8B8A8_UNORM
+        if (vkFormat == 76) { return 2; }   // R16_SFLOAT
+        if (vkFormat == 83) { return 4; }   // R16G16_SFLOAT
+        if (vkFormat == 97) { return 8; }   // R16G16B16A16_SFLOAT
+        return -1;
+    }
+
+    // --- viewport (the Vulkan Y-flip) --------------------------------------
+
+    /**
+     * The {@code VkViewport.y} for a framebuffer of height `extentHeight`: when
+     * `flipY` is set the viewport origin moves to the bottom edge (`extentHeight`)
+     * and {@link #viewportHeight} returns a NEGATIVE height — the
+     * VK_KHR_maintenance1 negative-viewport trick that flips clip-space Y so a
+     * right-handed / Y-up renderer (cajeta.math {@link cajeta.math.Camera}'s
+     * convention) draws upright without a projection hack. Without `flipY` the
+     * viewport is the plain top-left origin.
+     */
+    public static int32 viewportY(int32 extentHeight, boolean flipY) {
+        if (flipY) { return extentHeight; }
+        return 0;
+    }
+
+    /**
+     * The {@code VkViewport.height}: NEGATIVE `extentHeight` when `flipY` (paired
+     * with {@link #viewportY}), else the plain positive height.
+     */
+    public static int32 viewportHeight(int32 extentHeight, boolean flipY) {
+        if (flipY) { return 0 - extentHeight; }
+        return extentHeight;
+    }
+
+    // --- render-pass attachment ops (VkAttachmentLoadOp / StoreOp) ----------
+
+    /**
+     * The color attachment {@code VkAttachmentLoadOp}: CLEAR (1) when the target
+     * is cleared at the start of the pass, else DONT_CARE (2) — a color target is
+     * fully overwritten by the draws, so its prior contents are never LOADed (0).
+     */
+    public static int32 colorLoadOp(boolean clear) {
+        if (clear) { return 1; }   // VK_ATTACHMENT_LOAD_OP_CLEAR
+        return 2;                   // VK_ATTACHMENT_LOAD_OP_DONT_CARE
+    }
+
+    /**
+     * The color attachment {@code VkAttachmentStoreOp}: STORE (0) when the result
+     * is kept (presented or sampled by a later pass), else DONT_CARE (1).
+     */
+    public static int32 colorStoreOp(boolean keep) {
+        if (keep) { return 0; }    // VK_ATTACHMENT_STORE_OP_STORE
+        return 1;                   // VK_ATTACHMENT_STORE_OP_DONT_CARE
+    }
+
+    /**
+     * The depth attachment {@code VkAttachmentLoadOp}: CLEAR (1) when cleared at
+     * frame start (the usual case), else DONT_CARE (2).
+     */
+    public static int32 depthLoadOp(boolean clear) {
+        if (clear) { return 1; }   // VK_ATTACHMENT_LOAD_OP_CLEAR
+        return 2;                   // VK_ATTACHMENT_LOAD_OP_DONT_CARE
+    }
+
+    /**
+     * The depth attachment {@code VkAttachmentStoreOp}: STORE (0) when depth is
+     * reused by a later pass, else DONT_CARE (1) — depth is usually discarded once
+     * the pass that wrote it finishes.
+     */
+    public static int32 depthStoreOp(boolean keep) {
+        if (keep) { return 0; }    // VK_ATTACHMENT_STORE_OP_STORE
+        return 1;                   // VK_ATTACHMENT_STORE_OP_DONT_CARE
+    }
+}

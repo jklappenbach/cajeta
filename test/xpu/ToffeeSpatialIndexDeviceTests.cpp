@@ -54,8 +54,8 @@ std::string readSpatialIndexSource() {
 // hidden inside it.
 const char* kDriver =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelStream;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelStream;\n"
     "import toffee.spatial.SpatialIndex;\n"
     "public class ToffeeRQ {\n"
     "    public static int32 run() {\n"
@@ -97,8 +97,8 @@ const char* kDriver =
 // radiusExact uses the candidate primitive index to refine to the true distance.
 const char* kExactDriver =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelStream;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelStream;\n"
     "import toffee.spatial.SpatialIndex;\n"
     "public class ToffeeExact {\n"
     "    public static int32 run() {\n"
@@ -204,11 +204,11 @@ TEST(ToffeeSpatialIndexDeviceTests, exactL2RefinementOnDevice) {
 // stdlib closure. Same 1/0/1/1 expectation as the Toffee fixed-radius scene.
 const char* kRqMinDriver =
     "package test;\n"
-    "import cajeta.gpu.AccelerationStructure;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.RayQuery;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.AccelerationStructure;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.RayQuery;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class RqMin {\n"
     "    @Kernel\n"
     "    public static void countHits(AccelerationStructure scene,\n"
@@ -267,11 +267,11 @@ const char* kRqMinDriver =
 // triangle candidates is non-deterministic on RADV — see candidateFrontFace.)
 const char* kTriDriver =
     "package test;\n"
-    "import cajeta.gpu.AccelerationStructure;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.RayQuery;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.AccelerationStructure;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.RayQuery;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class TriRq {\n"
     "    @Kernel\n"
     "    public static void countTri(AccelerationStructure scene,\n"
@@ -334,11 +334,11 @@ const char* kTriDriver =
 // (the hit point is v0 + u*(v1-v0) + v*(v2-v0) = (u, v, 0)).
 const char* kBaryDriver =
     "package test;\n"
-    "import cajeta.gpu.AccelerationStructure;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.RayQuery;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.AccelerationStructure;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.RayQuery;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class BaryRq {\n"
     "    @Kernel\n"
     "    public static void getBary(AccelerationStructure scene, KernelBuffer<float32> out) {\n"
@@ -388,11 +388,11 @@ const char* kBaryDriver =
 // shrink on confirm guarantees the closest wins regardless of traversal order.
 const char* kNearestDriver =
     "package test;\n"
-    "import cajeta.gpu.AccelerationStructure;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.RayQuery;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.AccelerationStructure;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.RayQuery;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class NearRq {\n"
     "    @Kernel\n"
     "    public static void nearest(AccelerationStructure scene,\n"
@@ -469,11 +469,11 @@ TEST(ToffeeSpatialIndexDeviceTests, candidateGettersOnCpuSoftwareBvh) {
 // default CCW front-face, so CPU and native agree.
 const char* kFrontDriver =
     "package test;\n"
-    "import cajeta.gpu.AccelerationStructure;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.RayQuery;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.AccelerationStructure;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.RayQuery;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class FrontRq {\n"
     "    @Kernel\n"
     "    public static void getFront(AccelerationStructure scene,\n"
@@ -687,12 +687,12 @@ TEST(ToffeeSpatialIndexDeviceTests, exactL2RefinementOnCpuSoftwareBvh) {
 // three-way equality that proves the noun's recorded impl drives the verb.
 const char* kRqMinSoftwareDriver =
     "package test;\n"
-    "import cajeta.gpu.AccelerationStructure;\n"
-    "import cajeta.gpu.AsImpl;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.RayQuery;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.AccelerationStructure;\n"
+    "import cajeta.xpu.AsImpl;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.RayQuery;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class RqMinSw {\n"
     "    @Kernel\n"
     "    public static void countHits(AccelerationStructure scene,\n"
@@ -753,12 +753,12 @@ const char* kRqMinSoftwareDriver =
 // future AUTO/gate regression can't silently downgrade this leg to software).
 const char* kRqMinNativeDriver =
     "package test;\n"
-    "import cajeta.gpu.AccelerationStructure;\n"
-    "import cajeta.gpu.AsImpl;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.RayQuery;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.AccelerationStructure;\n"
+    "import cajeta.xpu.AsImpl;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.RayQuery;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class RqMinNat {\n"
     "    @Kernel\n"
     "    public static void countHits(AccelerationStructure scene,\n"
@@ -818,11 +818,11 @@ const char* kRqMinNativeDriver =
 // software BVH (which would also produce the correct 1/0/1/1 counts).
 const char* kImplProbeDriver =
     "package test;\n"
-    "import cajeta.gpu.AccelerationStructure;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.RayQuery;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.AccelerationStructure;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.RayQuery;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class RqImpl {\n"
     "    @Kernel\n"
     "    public static void countHits(AccelerationStructure scene,\n"
@@ -962,7 +962,7 @@ TEST(ToffeeSpatialIndexDeviceTests, forcedNativeOfApiOnDevice) {
 // native inline ray-query seam, so NvptxTarget.accelImpl() == SoftwareBvh: the
 // AccelerationStructure noun builds the portable software BVH (the shared CPU
 // builder), the CUDA noun provider uploads it into a device buffer, and the kernel
-// runs the cajeta.gpu.SoftwareRayQuery walk under its base name (no $sw twin
+// runs the cajeta.xpu.SoftwareRayQuery walk under its base name (no $sw twin
 // — the whole NVPTX kernel is the software walk). The SAME driver sources as the
 // CPU software-BVH legs above, so each NVPTX 777 must equal the CPU 777 — the verb
 // following the noun across a third backend. Skips cleanly without a CUDA device.
@@ -1076,9 +1076,9 @@ TEST(ToffeeSpatialIndexDeviceTests, frontFaceOnNvptxSoftwareBvh) {
 // 700 would mean it fell back to the software floor (OptiX unavailable at runtime).
 const char* kOptixImplDriver =
     "package test;\n"
-    "import cajeta.gpu.AccelerationStructure;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.AccelerationStructure;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class RqOptix {\n"
     // A @Kernel (even unlaunched) makes the bundle register the CUDA backend at
     // module init, so it is the active backend when the AS builds below — without
@@ -1123,9 +1123,9 @@ TEST(ToffeeSpatialIndexDeviceTests, optixRecordsImplOnNvptxDevice) {
 // Unsupported-shape kernel. Build-only driver (no kernel launch needed).
 const char* kImplSetDriver =
     "package test;\n"
-    "import cajeta.gpu.AccelerationStructure;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.AccelerationStructure;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class RqSet {\n"
     "    @Kernel\n"
     "    public static void noop(KernelBuffer<uint32> b) {\n"
@@ -1197,11 +1197,11 @@ TEST(ToffeeSpatialIndexDeviceTests, multiImplAsSoftwareOnlyUnderAuto) {
 // so its single qx buffer reproduces the supported kernel's degenerate-ray RTNN query.
 const char* kSelectDriver =
     "package test;\n"
-    "import cajeta.gpu.AccelerationStructure;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.RayQuery;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.AccelerationStructure;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.RayQuery;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class RqSelect {\n"
     "    @Kernel\n"   // SUPPORTED: canonical AABB candidate-count -> OptiX RT cores
     "    public static void countHits(AccelerationStructure scene,\n"
@@ -1306,11 +1306,11 @@ TEST(ToffeeSpatialIndexDeviceTests, sameAsTwoKernelsSelectsPerLaunch) {
 // runs ONLY the unsupported kernel, in isolation, against an OptiX-forced AS.
 const char* kUnsupOptixDriver =
     "package test;\n"
-    "import cajeta.gpu.AccelerationStructure;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.RayQuery;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.AccelerationStructure;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.RayQuery;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class RqUnsup {\n"
     "    @Kernel\n"   // (AS, 2 KernelBuffer, 1 scalar) -> Unsupported -> software floor
     "    public static void countOne(AccelerationStructure scene,\n"
@@ -1416,11 +1416,11 @@ TEST(ToffeeSpatialIndexDeviceTests, autoRecordsSoftwareImplOnNvptxDevice) {
 // 700 + implSet() → expect 701.
 const char* kLazySoftOnlyDriver =
     "package test;\n"
-    "import cajeta.gpu.AccelerationStructure;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.RayQuery;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.AccelerationStructure;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.RayQuery;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class RqLazySoft {\n"
     "    @Kernel\n"   // Unsupported shape -> software cubin, no OptiX program
     "    public static void countOne(AccelerationStructure scene,\n"
@@ -1490,11 +1490,11 @@ TEST(ToffeeSpatialIndexDeviceTests, softwareOnlyConsumerSkipsOptixBuild) {
 // on this box → skip).
 const char* kLazyBuildDriver =
     "package test;\n"
-    "import cajeta.gpu.AccelerationStructure;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.RayQuery;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.AccelerationStructure;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.RayQuery;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class RqLazyBuild {\n"
     "    @Kernel\n"   // SUPPORTED canonical AABB candidate-count -> lazy OptiX at launch
     "    public static void countHits(AccelerationStructure scene,\n"
@@ -1578,12 +1578,12 @@ TEST(ToffeeSpatialIndexDeviceTests, lazyOptixBuiltOnFirstNativeLaunch) {
 // engine is absent (NativeNoFloor then degenerates to the software BVH as the only rep).
 const char* kNoFloorDriver =
     "package test;\n"
-    "import cajeta.gpu.AccelerationStructure;\n"
-    "import cajeta.gpu.AsImpl;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.RayQuery;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.AccelerationStructure;\n"
+    "import cajeta.xpu.AsImpl;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.RayQuery;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class RqNoFloor {\n"
     "    @Kernel\n"   // SUPPORTED canonical AABB candidate-count -> RT cores, no floor needed
     "    public static void countHits(AccelerationStructure scene,\n"
@@ -1667,11 +1667,11 @@ TEST(ToffeeSpatialIndexDeviceTests, dropSoftwareFloorHintHonored) {
 // AUTO Unsupported-shape software fallback is covered by softwareOnlyConsumerSkipsOptixBuild.
 const char* kAutoTriDriver =
     "package test;\n"
-    "import cajeta.gpu.AccelerationStructure;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.RayQuery;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.AccelerationStructure;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.RayQuery;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class NearRqAuto {\n"
     "    @Kernel\n"   // SUPPORTED triangle nearest-hit (NearestTri) -> lazy OptiX at launch
     "    public static void nearest(AccelerationStructure scene,\n"

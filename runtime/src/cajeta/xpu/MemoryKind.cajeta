@@ -1,0 +1,41 @@
+package cajeta.xpu;
+
+/**
+ * Memory residency of a {@link KernelBuffer} — where the device storage physically
+ * lives and how the host and device share it. Selected once at construction
+ * (`heap KernelBuffer<float32>(n, MemoryKind.Unified)`); the default constructor uses
+ * {@link #Device}, preserving the original explicit-transfer model.
+ *
+ * This mirrors {@link TextureFormat}: a single clean axis whose **ordinal is the
+ * stable native contract** — the `__cajeta_xpu_buffer_*` intrinsics (see
+ * [`runtime/native/cajeta_runtime.c`](../../../native/cajeta_runtime.c)) switch
+ * on it to pick the per-backend allocator (`hipMalloc` vs `hipMallocManaged` vs
+ * `hipHostMalloc`; the CUDA analogues) and the matching deallocator. Do **not**
+ * reorder without updating that C side.
+ *
+ * The three kinds:
+ *   - {@link #Device} — device-local memory; the host moves data in/out with the
+ *     explicit `upload`/`download` transfers. The default and, on a discrete
+ *     GPU, the fastest for device-resident compute.
+ *   - {@link #Pinned} — page-locked, device-accessible host memory (CUDA/HIP
+ *     "host alloc"). Faster, asynchronous DMA than pageable host memory, and the
+ *     kernel can read it directly via the unified address space. Use {@link
+ *     KernelBuffer#hostStore}/{@link KernelBuffer#hostLoad} for zero-copy host access.
+ *   - {@link #Unified} — managed memory backed by one pointer the host AND device
+ *     both address (CUDA/HIP "managed alloc"). On an integrated GPU/APU (e.g.
+ *     Strix Halo, where CPU and GPU share physical RAM) this is genuine
+ *     zero-copy: no transfer, no migration. `hostStore`/`hostLoad` are plain
+ *     memcpys in the shared address space.
+ *
+ * BACKENDS. CUDA and HIP honour all three kinds. On Vulkan every buffer is
+ * already host-visible + coherent (effectively unified on this integrated
+ * device), so the kind collapses to that one path. On the CPU "device" memory IS
+ * host memory, so every kind is host-accessible. Where a backend or driver lacks
+ * the managed/pinned entry point, the allocation falls back to plain device
+ * memory — correct, just without the zero-copy property.
+ */
+public enum MemoryKind {
+    Device,    // 0 — device-local; explicit upload/download (default)
+    Pinned,    // 1 — page-locked, device-accessible host memory (fast DMA)
+    Unified    // 2 — managed memory shared by host + device (zero-copy on an APU)
+}

@@ -1,0 +1,213 @@
+package cajeta.gfx;
+
+import cajeta.xpu.Barrier;
+
+/**
+ * RenderGraph — the minimal, opinion-free render-graph DEPENDENCY + HAZARD policy
+ * (cajeta-gfx §5, spec §6/§8.2).
+ *
+ * A render graph lets passes declare the resources they READ and WRITE, then
+ * derives a correct execution order and the barriers between passes — WITHOUT any
+ * scheduling opinion (transient aliasing / memory budget / reordering heuristics
+ * live in the consumer, e.g. Glorias). The atomic decision underneath all of it is
+ * pure set logic over each pass's read/write sets: does a later pass conflict with
+ * an earlier one, what KIND of hazard it is, and therefore what barrier is needed.
+ * That logic is backend-independent and lives here, host-testable; the live
+ * {@code vkCmdPipelineBarrier} recording is the device noun (§5-rest).
+ *
+ * Resource sets are int32 BITMASKS — resource {@code r} is bit {@code r}, so a
+ * graph addresses up to 32 resources in v1 (use {@link #resourceBit}). Hazard
+ * kinds are a small bit enum: RAW=1 (read-after-write), WAR=2 (write-after-read),
+ * WAW=4 (write-after-write). Barrier ENCODING (Vk pipeline-stage / access masks)
+ * and the topological ORDER are follow-on slices; this is the dependency core.
+ */
+public class RenderGraph {
+
+    // The single-resource bitmask for resource `index` (0..31): bit `index` set.
+    // A pass's read/write set is the OR of the resourceBits it touches.
+    public static int32 resourceBit(int32 index) {
+        return 1 << index;
+    }
+
+    // Hazard-kind bits (a pass-pair may carry several at once).
+    public static int32 hazardRaw() { return 1; }   // read-after-write
+    public static int32 hazardWar() { return 2; }   // write-after-read
+    public static int32 hazardWaw() { return 4; }   // write-after-write
+
+    /**
+     * The hazards between an EARLIER pass (`priorReads`/`priorWrites`) and a LATER
+     * pass (`nextReads`/`nextWrites`), as the OR of the kind bits:
+     *   RAW (1) — `next` reads a resource `prior` wrote (must see the producer's data);
+     *   WAR (2) — `next` writes a resource `prior` read (must not clobber it early);
+     *   WAW (4) — both write the same resource (the writes must be ordered).
+     * Returns 0 when the passes are independent (disjoint, or both read-only on the
+     * shared resources).
+     */
+    public static int32 hazardMask(int32 priorReads, int32 priorWrites,
+                                   int32 nextReads, int32 nextWrites) {
+        int32 h = 0;
+        if ((nextReads & priorWrites) != 0)  { h = h | 1; }   // RAW
+        if ((nextWrites & priorReads) != 0)  { h = h | 2; }   // WAR
+        if ((nextWrites & priorWrites) != 0) { h = h | 4; }   // WAW
+        return h;
+    }
+
+    /**
+     * Whether the later pass DEPENDS on the earlier one — i.e. any hazard exists,
+     * so the graph must order `next` after `prior` (and emit a barrier). Disjoint
+     * or both-read-only pass pairs are independent (reorderable / concurrent).
+     */
+    public static boolean dependsOn(int32 priorReads, int32 priorWrites,
+                                    int32 nextReads, int32 nextWrites) {
+        return hazardMask(priorReads, priorWrites, nextReads, nextWrites) != 0;
+    }
+
+    /**
+     * Whether the dependency needs a MEMORY barrier (make the producer's writes
+     * available + visible — a cache flush/invalidate) rather than only an
+     * EXECUTION barrier (ordering, no cache op). RAW and WAW need a memory barrier
+     * (the consumer/overwriter must see / order the prior writes); a WAR hazard
+     * ALONE needs only execution ordering (the prior pass merely read, so there is
+     * nothing to flush). `hazards` is a {@link #hazardMask} result.
+     */
+    public static boolean needsMemoryBarrier(int32 hazards) {
+        // RAW (1) or WAW (4) -> memory barrier; mask = 5.
+        return (hazards & 5) != 0;
+    }
+
+    /**
+     * The NEAREST earlier pass that wrote `resourceBit`, scanning passes
+     * [0, beforePass) of `passWrites` (each entry a pass's write bitmask), or -1
+     * when none produced it (an external / first-use resource). A consumer
+     * synchronizes against only this last writer, not every prior producer — the
+     * minimal-barrier rule. `count` guards the array length.
+     */
+    public static int32 lastWriterBefore(int32[] passWrites, int32 count,
+                                         int32 resourceBit, int32 beforePass) {
+        int32 last = -1;
+        int32 i = 0;
+        while (i < beforePass) {
+            if (i < count) {
+                if ((passWrites[i] & resourceBit) != 0) { last = i; }
+            }
+            i = i + 1;
+        }
+        return last;
+    }
+
+    /**
+     * The prerequisite bitmask for pass `j` in DECLARATION-order semantics: the set
+     * of EARLIER passes (index < j) that `j` conflicts with (any RAW/WAR/WAW
+     * hazard), as a bitmask of pass indices. Bridges {@link #dependsOn} to
+     * {@link #topologicalOrder} — the caller builds a deps[] array by calling this
+     * for each pass, then sorts. (A read sees the most recent earlier write, so
+     * dependencies only point backward; the resulting graph is acyclic by
+     * construction.)
+     */
+    public static int32 dependenciesOf(int32[] passReads, int32[] passWrites,
+                                       int32 passCount, int32 j) {
+        int32 deps = 0;
+        // Load the indexed elements into locals before the call: passing an array
+        // subscript directly as a call argument emits the element POINTER, not the
+        // loaded value (a cajeta codegen trap) — see [[cajeta-interface-codegen-gotchas]].
+        int32 jReads = passReads[j];
+        int32 jWrites = passWrites[j];
+        int32 i = 0;
+        while (i < j) {
+            if (i < passCount) {
+                int32 iReads = passReads[i];
+                int32 iWrites = passWrites[i];
+                if (dependsOn(iReads, iWrites, jReads, jWrites)) {
+                    deps = deps | (1 << i);
+                }
+            }
+            i = i + 1;
+        }
+        return deps;
+    }
+
+    /**
+     * A topological EXECUTION ORDER of the passes by Kahn's algorithm:
+     * `deps[j]` is a bitmask of the pass indices that must run BEFORE pass `j`
+     * (its prerequisites — build it with {@link #dependenciesOf}, or from explicit
+     * producer/consumer edges). The order is written into the caller-provided
+     * `outOrder` (so no fresh-array return); each round emits the LOWEST-index pass
+     * whose prerequisites are all already emitted (a stable, deterministic order).
+     * Returns the number of passes ordered (== `passCount` on success), or -1 if
+     * the graph has a CYCLE (some pass's prerequisites can never all be met).
+     * v1 addresses up to 31 passes (the bitmask width).
+     */
+    public static int32 topologicalOrder(int32[] deps, int32 passCount,
+                                         int32[] outOrder) {
+        int32 emitted = 0;        // bitmask of already-emitted pass indices
+        int32 emittedCount = 0;
+        while (emittedCount < passCount) {
+            int32 picked = -1;
+            int32 j = 0;
+            while (j < passCount) {
+                int32 bit = 1 << j;
+                if ((emitted & bit) == 0) {                  // j not yet emitted
+                    // ready iff every prerequisite is already emitted
+                    // (deps[j] is a subset of emitted).
+                    if ((deps[j] & emitted) == deps[j]) {
+                        if (picked < 0) { picked = j; }
+                    }
+                }
+                j = j + 1;
+            }
+            if (picked < 0) { return -1; }   // no ready pass -> a cycle
+            outOrder[emittedCount] = picked;
+            emitted = emitted | (1 << picked);
+            emittedCount = emittedCount + 1;
+        }
+        return emittedCount;
+    }
+
+    // --- barrier stage/access masks (VkPipelineStageFlags / VkAccessFlags) ---
+    //
+    // A barrier between a PRODUCER (writes a resource) and a CONSUMER (reads it)
+    // carries src/dst pipeline-stage masks + src/dst access masks, derived from
+    // each pass's KIND: srcStage = pipelineStageForKind(producer),
+    // dstStage = pipelineStageForKind(consumer), srcAccess = writeAccessForKind
+    // (producer), dstAccess = readAccessForKind(consumer). This is the §5.b
+    // "compute pass gets correct sync vs the draw passes" derivation. v1 uses the
+    // COMMON-case access per kind (graphics write = color-attachment write,
+    // shader read for sampling); a per-resource-usage refinement is a follow-on.
+
+    // Pass kinds (cajeta's own small enum).
+    public static int32 kindCompute()  { return 0; }
+    public static int32 kindGraphics() { return 1; }
+    public static int32 kindTransfer() { return 2; }
+
+    /**
+     * The {@code VkPipelineStageFlagBits} a pass of `passKind` executes in:
+     * Compute → COMPUTE_SHADER_BIT (2048), Graphics → ALL_GRAPHICS_BIT (32768, the
+     * conservative whole-graphics scope), Transfer → TRANSFER_BIT (4096).
+     */
+    public static int32 pipelineStageForKind(int32 passKind) {
+        if (passKind == 0) { return 2048; }    // VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+        if (passKind == 1) { return 32768; }   // VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT
+        return 4096;                            // VK_PIPELINE_STAGE_TRANSFER_BIT
+    }
+
+    /**
+     * The {@code VkAccessFlagBits} for a pass of `passKind` WRITING its output:
+     * Compute → SHADER_WRITE_BIT (64), Graphics → COLOR_ATTACHMENT_WRITE_BIT (256),
+     * Transfer → TRANSFER_WRITE_BIT (4096). The producer-side access of a barrier.
+     */
+    public static int32 writeAccessForKind(int32 passKind) {
+        if (passKind == 0) { return 64; }     // VK_ACCESS_SHADER_WRITE_BIT
+        if (passKind == 1) { return 256; }    // VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+        return 4096;                           // VK_ACCESS_TRANSFER_WRITE_BIT
+    }
+
+    /**
+     * The {@code VkAccessFlagBits} for a pass of `passKind` READING an input:
+     * Transfer → TRANSFER_READ_BIT (2048); Compute and Graphics both sample via
+     * SHADER_READ_BIT (32). The consumer-side access of a barrier.
+     */
+    public static int32 readAccessForKind(int32 passKind) {
+        if (passKind == 2) { return 2048; }   // VK_ACCESS_TRANSFER_READ_BIT
+        return 32;                             // VK_ACCESS_SHADER_READ_BIT
+    }
+}

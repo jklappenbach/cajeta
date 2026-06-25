@@ -89,8 +89,8 @@ void lowerOnVulkan(const cajeta::MethodPtr& kernel) {
 TEST(XpuLoweringRejectionTests, recursiveDeviceCallRejected) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class M {\n"
         "    @Device\n"
         "    public static int32 fib(int32 n) {\n"
@@ -122,9 +122,9 @@ TEST(XpuLoweringRejectionTests, recursiveDeviceCallRejected) {
 TEST(XpuLoweringRejectionTests, secondDynamicSharedArrayRejected) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
-        "import cajeta.gpu.Shared;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "import cajeta.xpu.Shared;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void k(KernelBuffer<int32> out, uint32 lenA, uint32 lenB) {\n"
@@ -156,9 +156,9 @@ TEST(XpuLoweringRejectionTests, secondDynamicSharedArrayRejected) {
 TEST(XpuLoweringRejectionTests, nonFourByteDynamicSharedRejectedOnVulkan) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
-        "import cajeta.gpu.Shared;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "import cajeta.xpu.Shared;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void k(KernelBuffer<int32> out, uint32 len) {\n"

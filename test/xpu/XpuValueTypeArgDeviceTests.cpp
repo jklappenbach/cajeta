@@ -80,8 +80,8 @@ const char* kVec2 =
 TEST(XpuValueTypeArgDeviceTests, flatValueTypeArgFieldReadLowers) {
     std::string src =
         std::string("package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n")
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n")
         + kVec2 +
         "public class M {\n"
         "    @Kernel\n"
@@ -114,8 +114,8 @@ TEST(XpuValueTypeArgDeviceTests, flatValueTypeArgFieldReadLowers) {
 TEST(XpuValueTypeArgDeviceTests, nestedValueTypeFieldReadLowers) {
     std::string src =
         std::string("package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n")
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n")
         + kVec2 +
         "@ValueType public final class Box {\n"
         "    public Vec2 lo;\n"

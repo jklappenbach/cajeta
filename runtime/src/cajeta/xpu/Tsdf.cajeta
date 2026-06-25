@@ -1,0 +1,109 @@
+package cajeta.xpu;
+
+/**
+ * Tsdf — a truncated signed-distance-function voxel grid (cajeta-gfx plan §2.c),
+ * the volumetric fusion primitive of the shared geometry toolbox (spec §8.7).
+ *
+ * Each voxel stores a running signed distance `D` to the observed surface and an
+ * accumulated confidence weight `W`. A new range measurement contributes a
+ * truncated signed distance `d` and a weight `w`, fused by the Curless–Levoy
+ * running weighted average:
+ *
+ * ```
+ * D' = (W·D + w·d) / (W + w)
+ * W' = W + w
+ * ```
+ *
+ * so the fused zero-crossing (the reconstructed surface) is the weight-weighted
+ * average of the individual measurements: two equal-weight scans of a surface at
+ * slightly different positions fuse to their midpoint. A measurement's weight is
+ * scaled by the cosine of incidence — `w = baseWeight·|normalZ|` for an
+ * axis-aligned +z scan — so **grazing hits are down-weighted** and pull the
+ * estimate less than head-on hits (Curless–Levoy §4).
+ *
+ * Grid storage is flat `float32[]` (`(k·ny + j)·nx + i`), distance and weight in
+ * parallel; both start at zero, so the first fuse into a voxel writes the
+ * measurement exactly (`D = d`, `W = w`). World z of voxel layer `k` is
+ * `k·cellSize`. Distances are truncated to `±trunc`.
+ */
+public class Tsdf {
+
+    private float32[] dist;
+    private float32[] weight;
+    private int32 nx;
+    private int32 ny;
+    private int32 nz;
+    private float32 cellSize;
+    private float32 trunc;
+
+    /** Allocate a zeroed `nx`×`ny`×`nz` TSDF grid with spacing `cellSize` and
+     *  truncation distance `trunc`. */
+    public Tsdf(int32 nx, int32 ny, int32 nz, float32 cellSize, float32 trunc) {
+        this.nx = nx;
+        this.ny = ny;
+        this.nz = nz;
+        this.cellSize = cellSize;
+        this.trunc = trunc;
+        int32 n = nx * ny * nz;
+        this.dist = heap float32[n];
+        this.weight = heap float32[n];
+    }
+
+    /**
+     * Fuse a planar depth scan observing the surface `z = planeZ` (plane normal
+     * z-component `normalZ`, scan along +z) with base confidence `baseWeight`.
+     * The effective per-voxel weight is `baseWeight·|normalZ|` (grazing →
+     * down-weighted); each voxel's truncated signed distance is `z − planeZ`
+     * clamped to `±trunc`, fused by the Curless–Levoy running average. A
+     * non-positive effective weight is a no-op.
+     */
+    public void fusePlaneZ(float32 planeZ, float32 normalZ, float32 baseWeight) {
+        float32 grazing = normalZ;
+        if (grazing < 0.0f) {
+            grazing = 0.0f - grazing;
+        }
+        float32 w = baseWeight * grazing;
+        if (w <= 0.0f) {
+            return;
+        }
+        float32 negTrunc = 0.0f - this.trunc;
+        int32 k = 0;
+        while (k < this.nz) {
+            float32 z = ((float32) k) * this.cellSize;
+            float32 d = z - planeZ;
+            if (d > this.trunc) {
+                d = this.trunc;
+            }
+            if (d < negTrunc) {
+                d = negTrunc;
+            }
+            int32 j = 0;
+            while (j < this.ny) {
+                int32 i = 0;
+                while (i < this.nx) {
+                    int32 vi = (k * this.ny + j) * this.nx + i;
+                    float32 oldD = this.dist[vi];
+                    float32 oldW = this.weight[vi];
+                    float32 newW = oldW + w;
+                    this.dist[vi] = (oldW * oldD + w * d) / newW;
+                    this.weight[vi] = newW;
+                    i = i + 1;
+                }
+                j = j + 1;
+            }
+            k = k + 1;
+        }
+    }
+
+    /** The fused signed distance at voxel `(i, j, k)`. */
+    public float32 distanceAt(int32 i, int32 j, int32 k) {
+        int32 vi = (k * this.ny + j) * this.nx + i;
+        return this.dist[vi];
+    }
+
+    /** The accumulated confidence weight at voxel `(i, j, k)`. */
+    public float32 weightAt(int32 i, int32 j, int32 k) {
+        int32 vi = (k * this.ny + j) * this.nx + i;
+        return this.weight[vi];
+    }
+}

@@ -47,8 +47,8 @@ namespace {
 // float32 x 4 — load an 4-block, double it, store it. One thread per 4-block.
 const char* kVaddSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void vadd(KernelBuffer<float32> c) {\n"

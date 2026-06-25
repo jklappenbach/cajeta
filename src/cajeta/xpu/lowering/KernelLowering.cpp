@@ -188,7 +188,7 @@ llvm::Type* deviceQuaternionType(const CajetaTypePtr& t, llvm::LLVMContext& ctx)
 bool isBufferType(const CajetaTypePtr& t) {
     if (!t) return false;
     const std::string& c = t->toCanonical();
-    static const std::string kPrefix = "cajeta.gpu.KernelBuffer";
+    static const std::string kPrefix = "cajeta.xpu.KernelBuffer";
     return c.compare(0, kPrefix.size(), kPrefix) == 0;
 }
 
@@ -732,7 +732,7 @@ private:
                     ? (llvm::Type*) swCursorInfo().type
                     : target.rayQueryType(mod);
                 if (!rqTy)
-                    unsupported("software RayQuery needs cajeta.gpu.SwRayCursor");
+                    unsupported("software RayQuery needs cajeta.xpu.SwRayCursor");
                 rayQuerySlots[nm] = entryAlloca(rqTy, nm);
                 continue;
             }
@@ -2774,7 +2774,7 @@ private:
 
     // Resolve a core stdlib class by canonical name (parsed eagerly into the
     // process-global canonicalMap at compiler init), for the software ray-query
-    // dispatch into cajeta.gpu.SoftwareRayQuery / SwRayCursor.
+    // dispatch into cajeta.xpu.SoftwareRayQuery / SwRayCursor.
     std::shared_ptr<CajetaClass> coreClass(const std::string& canonical) {
         auto& cm = CajetaType::getCanonicalMap();
         auto it = cm.find(canonical);
@@ -2796,7 +2796,7 @@ private:
     // The SwRayCursor device struct + field map (cached). Empty if unavailable.
     const DeviceStructInfo& swCursorInfo() {
         if (!swCursorCached) {
-            auto c = coreClass("cajeta.gpu.SwRayCursor");
+            auto c = coreClass("cajeta.xpu.SwRayCursor");
             swCursorInfoCache = c ? deviceStructInfo(c, ctx) : DeviceStructInfo{};
             swCursorCached = true;
         }
@@ -2870,8 +2870,8 @@ private:
         if (name == "proceed") {
             if (!args.empty()) unsupported("RayQuery.proceed takes no arguments");
             MethodPtr m =
-                coreDeviceMethod("cajeta.gpu.SoftwareRayQuery", "step");
-            if (!m) unsupported("cajeta.gpu.SoftwareRayQuery.step unavailable");
+                coreDeviceMethod("cajeta.xpu.SoftwareRayQuery", "step");
+            if (!m) unsupported("cajeta.xpu.SoftwareRayQuery.step unavailable");
             llvm::Function* hfn = lowerDeviceFn(m);
             auto bit = rayQueryBvh.find(rqPtr);
             if (bit == rayQueryBvh.end())

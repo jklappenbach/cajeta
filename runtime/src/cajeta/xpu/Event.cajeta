@@ -1,0 +1,85 @@
+package cajeta.xpu;
+
+/**
+ * Event — device-side fence handle.
+ *
+ * Records a point in a KernelStream's submission order. A second KernelStream
+ * can `waitFor(event)` to introduce a cross-stream dependency,
+ * which the runtime resolves device-side (no host roundtrip).
+ *
+ * Events are reusable: `record(stream)` overwrites the recording
+ * point with the new stream's current tail.
+ *
+ * Per CajetaXPU.md §3.5, Events map to `cuEvent` / `hipEvent` /
+ * `VkEvent`-or-timeline-semaphore-value on the three backends.
+ */
+public final class Event {
+    int64 handle;
+
+    Event(int64 handle) {
+        this.handle = handle;
+    }
+
+    /**
+     * Create a fresh event — a real backend event object (cuEvent /
+     * hipEvent) on CUDA/HIP, an always-signaled sentinel on the
+     * synchronous CPU/Vulkan paths. The caller owns it and must
+     * `destroy()` it when done.
+     */
+    public static #Event create() {
+        Event e = heap Event(nativeCreate());
+        return #e;                                 // move out; source dtor no-ops
+    }
+
+    /**
+     * Record this event at `stream`'s current tail. After this
+     * call, anything that `waitFor`s this event will block until
+     * everything submitted to `stream` before this point completes.
+     *
+     * Named `recordOn` rather than the spec's `record` because
+     * `record` is a Cajeta keyword (record-type declarations).
+     */
+    public void recordOn(KernelStream stream) {
+        int64 sh = stream.handle;
+        this.nativeRecord(this.handle, sh);
+    }
+
+    /**
+     * Block the host until this event has been signaled on the
+     * device. Use sparingly — prefer cross-stream waits via
+     * `KernelStream.waitFor(event)`.
+     */
+    public void waitHost() {
+        this.nativeWait(this.handle);
+    }
+
+    /**
+     * Non-blocking poll. True iff the event has been signaled.
+     */
+    public boolean query() {
+        return this.nativeQuery(this.handle);
+    }
+
+    public void destroy() {
+        this.nativeDestroy(this.handle);
+    }
+
+    // Native event primitives. The handle (int64) IS the backend event object;
+    // create() returns it wrapped in an Event and the instance ops pass both
+    // `this.handle` and (for record) the stream handle so the C side speaks only
+    // handles.
+    @Native("__cajeta_xpu_event_create")
+    private static int64 nativeCreate();
+
+    @Native("__cajeta_xpu_event_record")
+    private void nativeRecord(int64 handle, int64 streamHandle);
+
+    @Native("__cajeta_xpu_event_wait")
+    private void nativeWait(int64 handle);
+
+    @Native("__cajeta_xpu_event_query")
+    private boolean nativeQuery(int64 handle);
+
+    @Native("__cajeta_xpu_event_destroy")
+    private void nativeDestroy(int64 handle);
+}

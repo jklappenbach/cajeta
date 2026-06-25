@@ -1516,7 +1516,7 @@ namespace cajeta {
             for (auto& p : parameterList) {
                 if (p && p->getType()
                         && p->getType()->toCanonical().rfind(
-                               "cajeta.gpu.KernelBuffer", 0) == 0) {
+                               "cajeta.xpu.KernelBuffer", 0) == 0) {
                     hasDeviceBuffer = true;
                     break;
                 }
@@ -2469,6 +2469,23 @@ namespace cajeta {
 
     void Method::createScope() {
         module->getScopeStack().add(make_shared<Scope>(toCanonical(), module));
+        // A method body is a fresh lexical root. ScopeStack::add() wires the new
+        // scope's parent to whatever frame happened to be on the stack — the
+        // enclosing class scope, or (during nested/mid-codegen compilation) a
+        // sibling or caller method's scope. Letting getField() fall through that
+        // parent chain lets the resolveTypes PRE-PASS (Method::generateCode runs
+        // block->resolveTypes before block->generateCode) bind an identifier to a
+        // same-named local of a DIFFERENT type from an unrelated method — before
+        // this method's own LocalVariableDeclaration registers it — and pin a
+        // wrong resolvedType on the AST node that codegen then trusts (e.g. a
+        // Matrix<3,3> * Vector<3> mis-lowered to a scalar `mat.scale` because the
+        // RHS `b` resolved to a sibling's `int32 b`). A method's own locals/params
+        // live in THIS scope (nested block scopes chain beneath it); static-field
+        // access goes through the structure stack and closure captures through the
+        // capture env — neither needs this parent. Clear it: pure isolation, and a
+        // generalization of the save()/restore() barrier CajetaClass already
+        // applies on its template-instantiation path.
+        module->getScopeStack().peek()->setParent(nullptr);
     }
 
     void Method::destroyScope() {
@@ -2494,13 +2511,13 @@ namespace cajeta {
                 // enforced; AS in particular could free its device BVH mid-kernel.)
                 const string c = t->toCanonical();
                 bool isDeviceResource =
-                    c.rfind("cajeta.gpu.KernelBuffer", 0) == 0 ||
-                    c.rfind("cajeta.gpu.Texture2D", 0) == 0 ||
-                    c.rfind("cajeta.gpu.Texture3D", 0) == 0 ||
-                    c.rfind("cajeta.gpu.Texture1D", 0) == 0 ||
-                    c.rfind("cajeta.gpu.Texture2DArray", 0) == 0 ||
-                    c.rfind("cajeta.gpu.TextureCube", 0) == 0 ||
-                    c == "cajeta.gpu.AccelerationStructure";
+                    c.rfind("cajeta.xpu.KernelBuffer", 0) == 0 ||
+                    c.rfind("cajeta.gfx.Texture2D", 0) == 0 ||
+                    c.rfind("cajeta.gfx.Texture3D", 0) == 0 ||
+                    c.rfind("cajeta.gfx.Texture1D", 0) == 0 ||
+                    c.rfind("cajeta.gfx.Texture2DArray", 0) == 0 ||
+                    c.rfind("cajeta.gfx.TextureCube", 0) == 0 ||
+                    c == "cajeta.xpu.AccelerationStructure";
                 if (!isDeviceResource) continue;
                 throw Exception(
                     "device resource '" + name + "' leaves scope while a launch "

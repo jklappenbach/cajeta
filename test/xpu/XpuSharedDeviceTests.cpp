@@ -81,11 +81,11 @@ TEST(XpuSharedDeviceTests, sharedTreeReductionRunsOnDevice) {
     // tree-reduce, thread 0 writes tile[0] to out[blockIdx].
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
-        "import cajeta.gpu.Workgroup;\n"
-        "import cajeta.gpu.Barrier;\n"
-        "import cajeta.gpu.Shared;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "import cajeta.xpu.Workgroup;\n"
+        "import cajeta.xpu.Barrier;\n"
+        "import cajeta.xpu.Shared;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void reduce(KernelBuffer<int32> out, KernelBuffer<int32> in, uint32 n) {\n"
@@ -167,11 +167,11 @@ TEST(XpuSharedDeviceTests, dynamicSharedReductionRunsOnDevice) {
 
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
-        "import cajeta.gpu.Workgroup;\n"
-        "import cajeta.gpu.Barrier;\n"
-        "import cajeta.gpu.Shared;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "import cajeta.xpu.Workgroup;\n"
+        "import cajeta.xpu.Barrier;\n"
+        "import cajeta.xpu.Shared;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void dynreduce(KernelBuffer<int32> out, KernelBuffer<int32> in,\n"

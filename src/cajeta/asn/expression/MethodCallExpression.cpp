@@ -695,7 +695,7 @@ namespace cajeta {
                 auto parent = cm->getParent();
                 if (parent && parent->isInstantiation()
                         && parent->toCanonical().rfind(
-                               "cajeta.gpu.KernelBuffer", 0) == 0
+                               "cajeta.xpu.KernelBuffer", 0) == 0
                         && !parent->getTypeArguments().empty()) {
                     auto elemT = parent->getTypeArguments()[0];
                     llvm::Type* lt = elemT ? elemT->getLlvmType() : nullptr;
@@ -918,10 +918,10 @@ namespace cajeta {
                             if (f->getType()) canonical = f->getType()->toCanonical();
                         }
                     }
-                    bool isStream = canonical == "cajeta.gpu.KernelStream";
-                    bool isEvent  = canonical == "cajeta.gpu.Event";
+                    bool isStream = canonical == "cajeta.xpu.KernelStream";
+                    bool isEvent  = canonical == "cajeta.xpu.Event";
                     bool isBuffer =
-                        canonical.rfind("cajeta.gpu.KernelBuffer", 0) == 0;
+                        canonical.rfind("cajeta.xpu.KernelBuffer", 0) == 0;
                     if ((isStream && methodCallName == "sync") ||
                         (isEvent && methodCallName == "waitHost")) {
                         sc->releaseLaunchBorrows();
@@ -4646,7 +4646,7 @@ namespace cajeta {
         if ((methodCallName == "vload" || methodCallName == "vstore")
                 && targetClass->getQName()
                 && targetClass->getQName()->toCanonical().rfind(
-                       "cajeta.gpu.KernelBuffer", 0) == 0) {
+                       "cajeta.xpu.KernelBuffer", 0) == 0) {
             throw Exception(
                 "'" + methodCallName + "' is a kernel-only operation on a "
                 "KernelBuffer and can only be called inside an @Kernel body",

@@ -91,8 +91,8 @@ std::string lowerToPtx(const std::string& src, const std::string& fqClass,
 TEST(XpuNvptxLoopEmitTests, lowersStridedSumLoop) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void strideSum(KernelBuffer<int32> out, KernelBuffer<int32> in,\n"
@@ -124,8 +124,8 @@ TEST(XpuNvptxLoopEmitTests, lowersStridedSumLoop) {
 TEST(XpuNvptxLoopEmitTests, lowersIntegerOpsMix) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void opsmix(KernelBuffer<uint32> out, uint32 n, uint32 d) {\n"
@@ -152,8 +152,8 @@ TEST(XpuNvptxLoopEmitTests, lowersIntegerOpsMix) {
 TEST(XpuNvptxLoopEmitTests, lowersPodStructArg) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class Params {\n"
         "    int32 mul;\n"
         "    int32 add;\n"

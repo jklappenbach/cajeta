@@ -53,8 +53,8 @@ namespace {
 
 const char* kMathSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void mathk(KernelBuffer<float32> out, uint32 n) {\n"
@@ -80,8 +80,8 @@ const char* kMathSource =
 //   rsqrt(0.25)=2 acos1=0  -> sum 16 ;  out[i] = 16 + i
 const char* kTranscendentalSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class T {\n"
     "    @Kernel\n"
     "    public static void trans(KernelBuffer<float32> out, uint32 n) {\n"
@@ -103,8 +103,8 @@ float transExpectedAt(uint32_t i) { return 16.0f + (float) i; }
 //          = 0 + 1 + 1 + 1 + 2+3+4+5 = 17 ;  out[i] = 17 + i
 const char* kVectorMathSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "import cajeta.lang.Math;\n"
     "public class V {\n"
     "    @Kernel\n"
@@ -129,8 +129,8 @@ float vectorMathExpectedAt(uint32_t i) { return 17.0f + (float) i; }
 // reciprocals, and approximate transcendentals. out[i] = 2*i + 1 (exact).
 const char* kFastMathSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class F {\n"
     "    @Kernel\n"
     "    @FastMath\n"
@@ -142,8 +142,8 @@ const char* kFastMathSource =
 // Same kernel without @FastMath — the FP ops are emitted IEEE-strict (no flags).
 const char* kPreciseSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class P {\n"
     "    @Kernel\n"
     "    public static void precisek(KernelBuffer<float32> out, uint32 n) {\n"
@@ -227,8 +227,8 @@ TEST(XpuMathDeviceTests, lowersToMathIntrinsics) {
 TEST(XpuMathDeviceTests, lowersNumericLiteralsCorrectly) {
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class L {\n"
         "    @Kernel\n"
         "    public static void litk(KernelBuffer<int32> out, KernelBuffer<int64> out64,\n"

@@ -1,6 +1,6 @@
 //
 // GfxPipelineConfigTests — cajeta-gfx plan §4.d (slice 1): the graphics
-// PIPELINE-STATE SELECTION POLICY (cajeta.gpu.gfx.PipelineConfig).
+// PIPELINE-STATE SELECTION POLICY (cajeta.gfx.PipelineConfig).
 //
 // A graphics pipeline is built from a description — vertex input layout, input
 // assembly, raster, blend, depth/stencil. Deriving that description from a
@@ -43,7 +43,7 @@ int32_t runI32(const std::string& imports, const std::string& body) {
     return fn();
 }
 
-const char* IMP = "import cajeta.gpu.gfx.PipelineConfig;\n";
+const char* IMP = "import cajeta.gfx.PipelineConfig;\n";
 
 } // namespace
 

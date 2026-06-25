@@ -16,7 +16,7 @@
 A framework-neutral, **CPU-first**, GPU-accelerable sorting capability. The host facility
 (§4a) is ordinary eager stdlib (`cajeta.collection`) — it does not depend on `cajeta.math`
 or any GPU. The Tensor sort (§4b) is data-parallel over dense typed `Storage`/`KernelBuffer`
-and lowers to `cajeta.gpu` with the host facility as its CPU floor. The two meet at one
+and lowers to `cajeta.xpu` with the host facility as its CPU floor. The two meet at one
 comparison/search seam (§4c). v1 covers the **kernel-expressible** sort/search surface of
 numpy §3.7 plus the general host sort the language is missing; it is *not* a full
 order-statistics library (median/quantile interpolation stays in `cajeta.math.stats`).

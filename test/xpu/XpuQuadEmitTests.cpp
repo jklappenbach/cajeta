@@ -45,9 +45,9 @@ namespace {
 // swap, all, any) appear in one spirv-val-clean module.
 const char* kQuadSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelThread;\n"
-    "import cajeta.gpu.Quad;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelThread;\n"
+    "import cajeta.xpu.Quad;\n"
     "public class Q {\n"
     "    @Kernel\n"
     "    public static void quadops(KernelBuffer<uint32> out) {\n"

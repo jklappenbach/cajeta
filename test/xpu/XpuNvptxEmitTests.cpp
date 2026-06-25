@@ -153,8 +153,8 @@ TEST(XpuNvptxEmitTests, emitsPtxForHandBuiltKernel) {
 TEST(XpuNvptxEmitTests, lowersSaxpyKernelToPtx) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void saxpy(KernelBuffer<float32> y, KernelBuffer<float32> x,\n"
@@ -215,10 +215,10 @@ TEST(XpuNvptxEmitTests, lowersSaxpyKernelToPtx) {
 TEST(XpuNvptxEmitTests, lowersTextureSampleToPtxTex) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.Texture2D;\n"
-        "import cajeta.gpu.Sampler;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.gfx.Texture2D;\n"
+        "import cajeta.gfx.Sampler;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void sampleTex(Texture2D tex, Sampler s,\n"
@@ -264,8 +264,8 @@ TEST(XpuNvptxEmitTests, lowersTextureSampleToPtxTex) {
 TEST(XpuNvptxEmitTests, lowersImageStoreLoadToPtxSurf) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.Image2D;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.Image2D;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void rmw(Image2D img, uint32 n) {\n"
@@ -314,9 +314,9 @@ TEST(XpuNvptxEmitTests, imageLoadStoreRmwOnNvptx) {
     CAJETA_SKIP_IF_NO_CUDA();
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.Image2D;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.Image2D;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class ImgRmwNv {\n"
         "    @Kernel\n"
         "    public static void fill(Image2D img, uint32 w, uint32 h) {\n"
@@ -380,8 +380,8 @@ TEST(XpuNvptxEmitTests, assemblesSaxpyPtxToCubin) {
 
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void saxpy(KernelBuffer<float32> y, KernelBuffer<float32> x,\n"
@@ -421,9 +421,9 @@ TEST(XpuNvptxEmitTests, assemblesSaxpyPtxToCubin) {
 TEST(XpuNvptxEmitTests, lowersMemoryFenceToPtxMembar) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
-        "import cajeta.gpu.Barrier;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "import cajeta.xpu.Barrier;\n"
         "public class MF {\n"
         "    @Kernel\n"
         "    public static void fence(KernelBuffer<int32> data, KernelBuffer<int32> out,\n"
@@ -470,9 +470,9 @@ TEST(XpuNvptxEmitTests, lowersMemoryFenceToPtxMembar) {
 TEST(XpuNvptxEmitTests, lowersRelaxedAtomicToMonotonicPtx) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
-        "import cajeta.gpu.MemoryOrder;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "import cajeta.xpu.MemoryOrder;\n"
         "public class MO {\n"
         "    @Kernel\n"
         "    public static void bump(KernelBuffer<int32> a, KernelBuffer<int32> b,\n"
@@ -510,8 +510,8 @@ TEST(XpuNvptxEmitTests, lowersRelaxedAtomicToMonotonicPtx) {
 TEST(XpuNvptxEmitTests, lowersDebugPrintfToVprintf) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class Prnt {\n"
         "    @Kernel\n"
         "    public static void k(KernelBuffer<int32> out, uint32 n) {\n"
@@ -558,8 +558,8 @@ TEST(XpuNvptxEmitTests, lowersDebugPrintfToVprintf) {
 TEST(XpuNvptxEmitTests, lowersDeviceDispatchToBranchChain) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class Ops {\n"
         "    @Device public static int32 sq(int32 x)   { return x * x; }\n"
         "    @Device public static int32 cube(int32 x) { return x * x * x; }\n"

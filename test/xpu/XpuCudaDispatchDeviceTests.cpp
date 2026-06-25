@@ -45,9 +45,9 @@ CajetaJit::Options cudaOptions() {
 
 const char* kSaxpyHostSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class Saxpy {\n"
     "    @Kernel\n"
     "    public static void saxpy(KernelBuffer<float32> y, KernelBuffer<float32> x,\n"
@@ -104,9 +104,9 @@ TEST(XpuCudaDispatchDeviceTests, gridStrideForEachRoutesToCudaOnDevice) {
     CAJETA_SKIP_IF_NO_CUDA();
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class Grid {\n"
         "    @Kernel\n"
         "    public static void scale(KernelBuffer<float32> out, KernelBuffer<float32> in,\n"
@@ -151,9 +151,9 @@ TEST(XpuCudaDispatchDeviceTests, deviceBufferParamHelperRoutesToCudaOnDevice) {
     CAJETA_SKIP_IF_NO_CUDA();
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class DevBuf {\n"
         "    @Device\n"
         "    public static void scale(KernelBuffer<float32> out, KernelBuffer<float32> in,\n"
@@ -202,9 +202,9 @@ TEST(XpuCudaDispatchDeviceTests, podStructArgRoutesToCudaOnDevice) {
     CAJETA_SKIP_IF_NO_CUDA();
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class Params {\n"
         "    float32 scale;\n"
         "    float32 bias;\n"
@@ -251,9 +251,9 @@ TEST(XpuCudaDispatchDeviceTests, bufferSliceKernelRoutesToCudaOnDevice) {
     CAJETA_SKIP_IF_NO_CUDA();
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class Slice {\n"
         "    @Kernel\n"
         "    public static void fill(KernelBuffer<int32> b, uint32 n) {\n"
@@ -298,10 +298,10 @@ TEST(XpuCudaDispatchDeviceTests, relaxedAtomicCounterRoutesToCudaOnDevice) {
     CAJETA_SKIP_IF_NO_CUDA();
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
-        "import cajeta.gpu.MemoryOrder;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "import cajeta.xpu.MemoryOrder;\n"
         "public class RAC {\n"
         "    @Kernel\n"
         "    public static void count(KernelBuffer<int32> out, uint32 n) {\n"
@@ -340,10 +340,10 @@ TEST(XpuCudaDispatchDeviceTests, memoryFenceRoutesToCudaOnDevice) {
     CAJETA_SKIP_IF_NO_CUDA();
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
-        "import cajeta.gpu.Barrier;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "import cajeta.xpu.Barrier;\n"
         "public class MF {\n"
         "    @Kernel\n"
         "    public static void fence(KernelBuffer<int32> data, KernelBuffer<int32> out,\n"
@@ -388,11 +388,11 @@ TEST(XpuCudaDispatchDeviceTests, sharedReductionRoutesToCudaOnDevice) {
     CAJETA_SKIP_IF_NO_CUDA();
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
-        "import cajeta.gpu.Workgroup;\n"
-        "import cajeta.gpu.Barrier;\n"
-        "import cajeta.gpu.Shared;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "import cajeta.xpu.Workgroup;\n"
+        "import cajeta.xpu.Barrier;\n"
+        "import cajeta.xpu.Shared;\n"
         "public class Red {\n"
         "    @Kernel\n"
         "    public static void reduce(KernelBuffer<int32> out, KernelBuffer<int32> in, uint32 n) {\n"
@@ -439,9 +439,9 @@ TEST(XpuCudaDispatchDeviceTests, bindlessBufferArrayRoutesToCudaOnDevice) {
     CAJETA_SKIP_IF_NO_CUDA();
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class Bindless {\n"
         "    @Kernel\n"
         "    public static void gather(KernelBuffer<int32>[] bufs, uint32 count,\n"
@@ -497,9 +497,9 @@ TEST(XpuCudaDispatchDeviceTests, asyncCopyPipelineRoutesToCudaOnDevice) {
     CAJETA_SKIP_IF_NO_CUDA();
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class Pipe {\n"
         "    @Kernel\n"
         "    public static void inc(KernelBuffer<int32> b, uint32 n) {\n"
@@ -543,11 +543,11 @@ TEST(XpuCudaDispatchDeviceTests, eventFenceSyncRoutesToCudaOnDevice) {
     CAJETA_SKIP_IF_NO_CUDA();
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.Event;\n"
-        "import cajeta.gpu.Fence;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.Event;\n"
+        "import cajeta.xpu.Fence;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class Sync {\n"
         "    @Kernel\n"
         "    public static void inc(KernelBuffer<int32> b, uint32 n) {\n"
@@ -605,10 +605,10 @@ static const char* cudaMemKindSource(const char* kindExpr) {
     static std::string s;
     s = std::string(
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.MemoryKind;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.MemoryKind;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class MemKind {\n"
         "    @Kernel\n"
         "    public static void inc(KernelBuffer<int32> b, uint32 n) {\n"
@@ -674,9 +674,9 @@ TEST(XpuCudaDispatchDeviceTests, specOverrideRoutesToCudaOnDevice) {
     CAJETA_SKIP_IF_NO_CUDA();
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class SO {\n"
         "    @Kernel\n"
         "    public static void fill(KernelBuffer<int32> out, uint32 n) {\n"
@@ -715,9 +715,9 @@ TEST(XpuCudaDispatchDeviceTests, specOverridePartialReadsDefaultForUnsetSlotsOnC
     CAJETA_SKIP_IF_NO_CUDA();
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class SOP {\n"
         "    @Kernel\n"
         "    public static void fill(KernelBuffer<int32> out, uint32 n) {\n"
@@ -762,9 +762,9 @@ TEST(XpuCudaDispatchDeviceTests, noOverrideReadsDefaultOnCuda) {
     CAJETA_SKIP_IF_NO_CUDA();
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class SD {\n"
         "    @Kernel\n"
         "    public static void fill(KernelBuffer<int32> out, uint32 n) {\n"
@@ -807,11 +807,11 @@ TEST(XpuCudaDispatchDeviceTests, textureSampleRoutesToCudaOnDevice) {
     CAJETA_SKIP_IF_NO_CUDA();
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.Texture2D;\n"
-        "import cajeta.gpu.Sampler;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.gfx.Texture2D;\n"
+        "import cajeta.gfx.Sampler;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class TexSample {\n"
         "    @Kernel\n"
         "    public static void sample(Texture2D tex, Sampler s,\n"
@@ -880,9 +880,9 @@ TEST(XpuCudaDispatchDeviceTests, imageLoadStoreRmwRoutesToCudaOnDevice) {
     CAJETA_SKIP_IF_NO_CUDA();
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.Image2D;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.Image2D;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class ImgRmwCuda {\n"
         "    @Kernel\n"
         "    public static void fill(Image2D img, uint32 w, uint32 h) {\n"

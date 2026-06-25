@@ -185,10 +185,10 @@ cajeta::MethodPtr findMethod(const cajeta::CajetaClassPtr& klass, const std::str
 // The canonical AABB candidate-count kernel (the kRqMinDriver shape).
 const char* kCountKernelSrc =
     "package test;\n"
-    "import cajeta.gpu.AccelerationStructure;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.RayQuery;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.AccelerationStructure;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.RayQuery;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class RqCount {\n"
     "    @Kernel\n"
     "    public static void countHits(AccelerationStructure scene,\n"

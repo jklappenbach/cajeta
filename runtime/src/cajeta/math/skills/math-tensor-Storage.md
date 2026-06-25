@@ -57,8 +57,8 @@ An op chooses its path by reading the seam (via the owning `Tensor`, which deleg
 `Tensor.gpu()→toDevice`, `cpu()→toHost`, `isOnGpu()→isOnDevice`, `deviceBuffer()`):
 ```
 import cajeta.math.Tensor;
-import cajeta.gpu.KernelBuffer;
-import cajeta.gpu.KernelStream;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
 
 public static Tensor<float32> add(Tensor<float32> a, Tensor<float32> b) {
     if (a.isOnGpu() && b.isOnGpu()) {        // both device-resident → GPU kernel
@@ -71,7 +71,7 @@ public static Tensor<float32> add(Tensor<float32> a, Tensor<float32> b) {
     // ... CPU path over host get/set ...
 }
 ```
-A no-GPU build still works: the `cajeta.gpu` CPU backend backs the buffer, so
+A no-GPU build still works: the `cajeta.xpu` CPU backend backs the buffer, so
 `toDevice`/`deviceBuffer` remain valid.
 
 ## Lifecycle — freed exactly once, no manual refcount
@@ -95,7 +95,7 @@ job. `toDevice`/`toHost` are idempotent but mutate residency state.
 ## Errors
 The methods raise no `cajeta.math` exceptions themselves. Out-of-range `get`/`set`
 indices are undefined (no bounds check). Device transfer surfaces failures from
-`cajeta.gpu.KernelBuffer` (`upload`/`download`).
+`cajeta.xpu.KernelBuffer` (`upload`/`download`).
 
 ## See also
 - `cajeta/math/Tensor` — the view that owns and exposes this `Storage`.

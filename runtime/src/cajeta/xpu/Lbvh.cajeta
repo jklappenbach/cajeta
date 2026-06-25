@@ -1,0 +1,558 @@
+package cajeta.xpu;
+
+/**
+ * Lbvh — a pure-cajeta software LBVH builder (cajeta-gfx §3, the acceleration/
+ * sampling/residency foundation; spec §8.7). The build-from-description half of
+ * the portable software acceleration structure whose traversal already lives in
+ * {@link SoftwareRayQuery}: where the existing C builder (runtime/native/
+ * cajeta_bvh.c) does a median split, this builds the SAME frozen threaded-DFS
+ * flat float32 layout by the linear-BVH method (Lauterbach et al. 2009) —
+ * primitives ordered along a Morton (Z-order) space-filling curve, then a
+ * binary radix tree (Karras 2012) over the sorted codes. Because it emits the
+ * identical layout, traversal reuses {@link SoftwareRayQuery#step} unchanged and
+ * a built tree cross-checks nearest hits against the C builder.
+ *
+ * This file is grown in slices; this slice is the MORTON CODE primitive:
+ * {@link #quantize} (coordinate -> 10-bit lattice cell), {@link #expandBits}
+ * (spread 10 bits across every 3rd bit), and {@link #morton3D} (interleave three
+ * cells into one 30-bit Z-order code that fits a positive int32). Radix sort and
+ * the Karras hierarchy + DFS flatten are the sibling slices.
+ *
+ * CODEGEN DISCIPLINE (see the value-type-codegen-gotchas memory). The bit spread
+ * uses LEFT shifts + or + and only: an int32 `>>>` mis-lowers to an ARITHMETIC
+ * shift in the current codegen, so no logical right shift on int32 appears here.
+ * Float -> int goes through the float64 -> int64 -> int32 cast chain
+ * ({@link #floorToInt}); a direct float32 -> int32 cast mis-lowers to an illegal
+ * instruction.
+ */
+public class Lbvh {
+
+    /**
+     * Spread the 10 low bits of `v` so that input bit i lands at output bit 3i
+     * (the interleave half of a 3-D Morton code). Pure left-shift / or / and:
+     * after masking to 10 bits the value never sets bit 28+, so no shift
+     * overflows int32's sign bit, and no int32 logical right shift is needed
+     * (which would mis-lower). The four magic masks are the standard 10-bit
+     * bit-spreading constants (0x030000FF, 0x0300F00F, 0x030C30C3, 0x09249249).
+     */
+    public static int32 expandBits(int32 v) {
+        int32 x = v & 1023;                       // 0x3FF — keep 10 bits
+        x = (x | (x << 16)) & 50331903;           // 0x030000FF
+        x = (x | (x << 8))  & 50393103;           // 0x0300F00F
+        x = (x | (x << 4))  & 51130563;           // 0x030C30C3
+        x = (x | (x << 2))  & 153391689;          // 0x09249249
+        return x;
+    }
+
+    /**
+     * Interleave three 10-bit lattice cells into one 30-bit Morton (Z-order)
+     * code: x bits land at 2,5,..,29; y at 1,4,..,28; z at 0,3,..,27. The result
+     * is < 2^30, a positive int32. Z-order preserves per-axis ordering when the
+     * other two axes are held fixed, which is what makes the sorted order a
+     * spatially-coherent leaf layout.
+     */
+    public static int32 morton3D(int32 qx, int32 qy, int32 qz) {
+        int32 xx = Lbvh.expandBits(qx);
+        int32 yy = Lbvh.expandBits(qy);
+        int32 zz = Lbvh.expandBits(qz);
+        return (xx << 2) | (yy << 1) | zz;
+    }
+
+    /**
+     * Floor `x` to an int32 via the float64 -> int64 -> int32 cast chain (the
+     * route {@link Noise#floorToInt} uses); a direct float32 -> int32 cast
+     * mis-lowers to an illegal instruction in the current codegen.
+     */
+    public static int32 floorToInt(float32 x) {
+        float64 xd = x;          // float32 -> float64 (widen)
+        int64 t = (int64) xd;    // float64 -> int64 (truncates toward zero; x >= 0 here)
+        return (int32) t;        // int64 -> int32
+    }
+
+    /**
+     * Map a coordinate `v` in the span [lo, hi] onto a 10-bit lattice cell in
+     * [0, 1023], clamped at both ends (so an out-of-bounds primitive never
+     * indexes past the lattice). A degenerate span (hi <= lo) collapses to cell
+     * 0. This is the per-axis quantization that precedes {@link #morton3D}.
+     */
+    public static int32 quantize(float32 v, float32 lo, float32 hi) {
+        float32 span = hi - lo;
+        float32 t = 0.0f;
+        if (span > 0.0000001f) {
+            t = (v - lo) / span;
+        }
+        if (t < 0.0f) { t = 0.0f; }
+        if (t > 1.0f) { t = 1.0f; }
+        float32 scaled = t * 1023.0f;
+        int32 q = Lbvh.floorToInt(scaled);
+        if (q < 0) { q = 0; }
+        if (q > 1023) { q = 1023; }
+        return q;
+    }
+
+    /**
+     * Sort the first `n` entries of `keys` ascending, carrying `payload` along
+     * (so payload ends as the argsort — the primitive permutation that orders
+     * leaves by Morton code). In place, STABLE, O(n) via LSD radix: four
+     * counting-sort passes of 8 bits each, which covers the full 30-bit positive
+     * Morton range. Both arrays are mutated; scratch is heap-allocated.
+     *
+     * The digit extraction uses ARITHMETIC `>>`, not `>>>`: Morton codes are
+     * always non-negative (< 2^30), so the sign bit is never set and arithmetic
+     * and logical right shift coincide — which sidesteps the int32 `>>>` ->
+     * arithmetic-shift mis-lowering (value-type-codegen-gotchas memory).
+     */
+    public static void radixSort(int32[] keys, int32[] payload, int32 n) {
+        int32[] tmpKey = heap int32[n];
+        int32[] tmpVal = heap int32[n];
+        int32[] count  = heap int32[256];   // histogram / running offsets
+
+        int32 shift = 0;
+        int32 pass = 0;
+        while (pass < 4) {
+            // Zero the histogram for this pass.
+            int32 b = 0;
+            while (b < 256) {
+                count[b] = 0;
+                b = b + 1;
+            }
+            // Count occurrences of each 8-bit digit.
+            int32 i = 0;
+            while (i < n) {
+                int32 d = (keys[i] >> shift) & 255;
+                count[d] = count[d] + 1;
+                i = i + 1;
+            }
+            // Exclusive prefix sum -> the start offset of each digit bucket.
+            int32 sum = 0;
+            b = 0;
+            while (b < 256) {
+                int32 c = count[b];
+                count[b] = sum;
+                sum = sum + c;
+                b = b + 1;
+            }
+            // Stable scatter into scratch at the bucket cursors.
+            i = 0;
+            while (i < n) {
+                int32 k = keys[i];
+                int32 d = (k >> shift) & 255;
+                int32 pos = count[d];
+                count[d] = pos + 1;
+                tmpKey[pos] = k;
+                tmpVal[pos] = payload[i];
+                i = i + 1;
+            }
+            // Copy the pass result back into the caller's arrays.
+            i = 0;
+            while (i < n) {
+                keys[i] = tmpKey[i];
+                payload[i] = tmpVal[i];
+                i = i + 1;
+            }
+            shift = shift + 8;
+            pass = pass + 1;
+        }
+    }
+
+    /**
+     * Find the split index for the sorted Morton range [first, last] (both
+     * inclusive): the largest index in [first, last-1] whose code still shares
+     * the longest common prefix with codes[first] — i.e. the highest bit at
+     * which the range's codes diverge (Karras 2012 / the NVIDIA `findSplit`).
+     * Left child = [first, split], right child = [split+1, last].
+     *
+     * clz-FREE: longer common prefix == smaller XOR with codes[first], so the
+     * relation clz(firstCode ^ splitCode) > clz(firstCode ^ lastCode) is just
+     * (firstCode ^ splitCode) < (firstCode ^ lastCode). Morton codes are
+     * non-negative (< 2^30) so the XORs are non-negative and signed `<` is the
+     * unsigned compare — no count-leading-zeros intrinsic needed. Equal first/
+     * last codes (duplicate-code run) split at the midpoint.
+     */
+    public static int32 findSplit(int32[] codes, int32 first, int32 last) {
+        int32 firstCode = codes[first];
+        int32 lastCode = codes[last];
+        if (firstCode == lastCode) {
+            return (first + last) / 2;
+        }
+        int32 commonXor = firstCode ^ lastCode;   // smaller XOR ⇒ longer shared prefix
+        int32 split = first;
+        int32 step = last - first;
+        boolean more = true;
+        while (more) {
+            step = (step + 1) / 2;                 // halve the search stride
+            int32 newSplit = split + step;
+            if (newSplit < last) {
+                int32 splitCode = codes[newSplit];
+                int32 splitXor = firstCode ^ splitCode;
+                if (splitXor < commonXor) {
+                    split = newSplit;              // still shares the prefix; advance
+                }
+            }
+            if (step <= 1) { more = false; }
+        }
+        return split;
+    }
+
+    /**
+     * Build the software BVH over `count` AABBs (6 floats each: min.xyz, max.xyz)
+     * and return the complete frozen float32 block — the SAME threaded-DFS layout
+     * the C median-split builder emits (runtime/native/cajeta_bvh.c) and that
+     * {@link SoftwareRayQuery#step} traverses on device: an 8-word header, then
+     * (2*count - 1) nine-word depth-first nodes (left child at index+1, escape =
+     * past-subtree), then a `count`-word primRef table of original indices. Only
+     * the SPLIT criterion differs from the C builder — highest-differing Morton
+     * bit ({@link #findSplit}) instead of a median split, the linear-BVH method.
+     *
+     * Pipeline: centroid bounds -> per-prim Morton code ({@link #quantize} +
+     * {@link #morton3D}) -> {@link #radixSort} (codes carry the prim index) ->
+     * recursive top-down emit ({@link #buildNode}). Recursion threads the node
+     * and primRef write cursors through one-element int32 arrays (cajeta has no
+     * pointers); arrays mutate by reference so the cursors persist across calls.
+     */
+    public static #float32[] build(float32[] boxes, int32 count) {
+        // Centroid bounds for the Morton quantization grid (init from prim 0, no
+        // ±inf sentinel — correct at any coordinate magnitude).
+        float32 cminx = (boxes[0] + boxes[3]) * 0.5f;
+        float32 cminy = (boxes[1] + boxes[4]) * 0.5f;
+        float32 cminz = (boxes[2] + boxes[5]) * 0.5f;
+        float32 cmaxx = cminx;
+        float32 cmaxy = cminy;
+        float32 cmaxz = cminz;
+        int32 i = 1;
+        while (i < count) {
+            int32 b6 = i * 6;
+            float32 cx = (boxes[b6 + 0] + boxes[b6 + 3]) * 0.5f;
+            float32 cy = (boxes[b6 + 1] + boxes[b6 + 4]) * 0.5f;
+            float32 cz = (boxes[b6 + 2] + boxes[b6 + 5]) * 0.5f;
+            if (cx < cminx) { cminx = cx; }
+            if (cx > cmaxx) { cmaxx = cx; }
+            if (cy < cminy) { cminy = cy; }
+            if (cy > cmaxy) { cmaxy = cy; }
+            if (cz < cminz) { cminz = cz; }
+            if (cz > cmaxz) { cmaxz = cz; }
+            i = i + 1;
+        }
+
+        // Morton code per prim; payload = original index.
+        int32[] codes = heap int32[count];
+        int32[] prims = heap int32[count];
+        i = 0;
+        while (i < count) {
+            int32 b6 = i * 6;
+            float32 cx = (boxes[b6 + 0] + boxes[b6 + 3]) * 0.5f;
+            float32 cy = (boxes[b6 + 1] + boxes[b6 + 4]) * 0.5f;
+            float32 cz = (boxes[b6 + 2] + boxes[b6 + 5]) * 0.5f;
+            int32 qx = Lbvh.quantize(cx, cminx, cmaxx);
+            int32 qy = Lbvh.quantize(cy, cminy, cmaxy);
+            int32 qz = Lbvh.quantize(cz, cminz, cmaxz);
+            codes[i] = Lbvh.morton3D(qx, qy, qz);
+            prims[i] = i;
+            i = i + 1;
+        }
+        Lbvh.radixSort(codes, prims, count);
+
+        int32 nodeCount = 2 * count - 1;     // full binary tree, 1 prim / leaf
+        int32 nodesOff = 8;
+        int32 primRefOff = nodesOff + nodeCount * 9;
+        int32 total = primRefOff + count;
+        float32[] blk = heap float32[total];
+
+        int32[] nextCell = heap int32[1];    // running node write index (DFS cursor)
+        int32[] prCell = heap int32[1];      // running primRef write cursor
+        nextCell[0] = 0;
+        prCell[0] = 0;
+        Lbvh.buildNode(boxes, codes, prims, 0, count, blk, nodesOff, nextCell,
+                       primRefOff, prCell);
+
+        // Header (mirrors cajeta_bvh.c: version, counts, offsets, AABB flag, stride).
+        float32 vnodes = nextCell[0];
+        float32 vcount = count;
+        float32 voff = primRefOff;
+        blk[0] = 1.0f;       // version
+        blk[1] = vnodes;     // nodeCount
+        blk[2] = vcount;     // primCount
+        blk[3] = 0.0f;       // rootIndex
+        blk[4] = 8.0f;       // nodesOffset
+        blk[5] = voff;       // primRefOffset
+        blk[6] = 1.0f;       // flags: bit0 = AABB geometry
+        blk[7] = 9.0f;       // nodeStride
+        return #blk;
+    }
+
+    /**
+     * Recursive depth-first emit of the subtree over the sorted prims[lo..hi)
+     * into `blk` at node index `nextCell[0]++`, returning nothing — the threaded
+     * layout makes the linkage implicit (left child is the immediately-following
+     * node; escape is the node index past this whole subtree). Mirrors
+     * cajeta_bvh.c `caj_bvh_build`, but splits on the Morton bit ({@link
+     * #findSplit}) rather than the median. AABB accumulators init from prims[lo]
+     * (no ±inf sentinel). int -> float stores go through a local (the array
+     * element is float32).
+     */
+    private static void buildNode(float32[] boxes, int32[] codes, int32[] prims,
+                                  int32 lo, int32 hi, float32[] blk, int32 nodesOff,
+                                  int32[] nextCell, int32 primRefOff, int32[] prCell) {
+        int32 idx = nextCell[0];
+        nextCell[0] = idx + 1;
+        int32 base = nodesOff + idx * 9;
+
+        // Box over prims[lo..hi), seeded from the first prim.
+        int32 p0 = prims[lo];
+        int32 pb0 = p0 * 6;
+        float32 minx = boxes[pb0 + 0];
+        float32 miny = boxes[pb0 + 1];
+        float32 minz = boxes[pb0 + 2];
+        float32 maxx = boxes[pb0 + 3];
+        float32 maxy = boxes[pb0 + 4];
+        float32 maxz = boxes[pb0 + 5];
+        int32 k = lo + 1;
+        while (k < hi) {
+            int32 p = prims[k];
+            int32 pb = p * 6;
+            float32 lox = boxes[pb + 0];
+            float32 loy = boxes[pb + 1];
+            float32 loz = boxes[pb + 2];
+            float32 hix = boxes[pb + 3];
+            float32 hiy = boxes[pb + 4];
+            float32 hiz = boxes[pb + 5];
+            if (lox < minx) { minx = lox; }
+            if (loy < miny) { miny = loy; }
+            if (loz < minz) { minz = loz; }
+            if (hix > maxx) { maxx = hix; }
+            if (hiy > maxy) { maxy = hiy; }
+            if (hiz > maxz) { maxz = hiz; }
+            k = k + 1;
+        }
+        blk[base + 0] = minx;
+        blk[base + 1] = miny;
+        blk[base + 2] = minz;
+        blk[base + 3] = maxx;
+        blk[base + 4] = maxy;
+        blk[base + 5] = maxz;
+
+        if (hi - lo <= 1) {
+            // Leaf: one primitive. Record its original index in the primRef table.
+            int32 first = prCell[0];
+            float32 fp = prims[lo];
+            blk[primRefOff + first] = fp;
+            prCell[0] = first + 1;
+            float32 ffirst = first;
+            blk[base + 7] = ffirst;   // firstPrim
+            blk[base + 8] = 1.0f;     // primCount
+        } else {
+            int32 split = Lbvh.findSplit(codes, lo, hi - 1);
+            int32 mid = split + 1;
+            Lbvh.buildNode(boxes, codes, prims, lo, mid, blk, nodesOff, nextCell,
+                           primRefOff, prCell);    // left = idx+1
+            Lbvh.buildNode(boxes, codes, prims, mid, hi, blk, nodesOff, nextCell,
+                           primRefOff, prCell);
+            blk[base + 7] = 0.0f;     // interior
+            blk[base + 8] = 0.0f;
+        }
+        float32 esc = nextCell[0];
+        blk[base + 6] = esc;          // escape = node index past this subtree
+    }
+
+    /**
+     * Surface area of the AABB enclosing prims[a..b) (their boxes in `boxes`):
+     * 2*(dx*dy + dy*dz + dz*dx). The cost metric the SAH minimizes — a node's
+     * expected traversal cost is proportional to its surface area times the
+     * primitives under it.
+     */
+    public static float32 rangeSurfaceArea(float32[] boxes, int32[] prims, int32 a, int32 b) {
+        int32 p0 = prims[a];
+        int32 pb0 = p0 * 6;
+        float32 minx = boxes[pb0 + 0];
+        float32 miny = boxes[pb0 + 1];
+        float32 minz = boxes[pb0 + 2];
+        float32 maxx = boxes[pb0 + 3];
+        float32 maxy = boxes[pb0 + 4];
+        float32 maxz = boxes[pb0 + 5];
+        int32 k = a + 1;
+        while (k < b) {
+            int32 p = prims[k];
+            int32 pb = p * 6;
+            float32 lox = boxes[pb + 0];
+            float32 loy = boxes[pb + 1];
+            float32 loz = boxes[pb + 2];
+            float32 hix = boxes[pb + 3];
+            float32 hiy = boxes[pb + 4];
+            float32 hiz = boxes[pb + 5];
+            if (lox < minx) { minx = lox; }
+            if (loy < miny) { miny = loy; }
+            if (loz < minz) { minz = loz; }
+            if (hix > maxx) { maxx = hix; }
+            if (hiy > maxy) { maxy = hiy; }
+            if (hiz > maxz) { maxz = hiz; }
+            k = k + 1;
+        }
+        float32 dx = maxx - minx;
+        float32 dy = maxy - miny;
+        float32 dz = maxz - minz;
+        return 2.0f * (dx * dy + dy * dz + dz * dx);
+    }
+
+    /**
+     * Build the software BVH with a SURFACE-AREA-HEURISTIC split instead of the
+     * Morton-bit split ({@link #build}) — a higher-quality tree (less node
+     * overlap ⇒ fewer slab tests per ray) for the same frozen threaded-DFS layout,
+     * so {@link SoftwareRayQuery#step} traverses it unchanged. The primitives are
+     * still Morton-ordered first (spatial coherence), then each node's split is
+     * the position along that order minimizing the SAH cost SA(left)*Nleft +
+     * SA(right)*Nright (a full sweep — exact, O(n^2) per node; binned SAH is the
+     * scaling follow-up). LBVH optimizes BUILD speed; this trades build cost for
+     * QUERY speed.
+     */
+    public static #float32[] buildSah(float32[] boxes, int32 count) {
+        // Centroid bounds (init from prim 0).
+        float32 cminx = (boxes[0] + boxes[3]) * 0.5f;
+        float32 cminy = (boxes[1] + boxes[4]) * 0.5f;
+        float32 cminz = (boxes[2] + boxes[5]) * 0.5f;
+        float32 cmaxx = cminx;
+        float32 cmaxy = cminy;
+        float32 cmaxz = cminz;
+        int32 i = 1;
+        while (i < count) {
+            int32 b6 = i * 6;
+            float32 cx = (boxes[b6 + 0] + boxes[b6 + 3]) * 0.5f;
+            float32 cy = (boxes[b6 + 1] + boxes[b6 + 4]) * 0.5f;
+            float32 cz = (boxes[b6 + 2] + boxes[b6 + 5]) * 0.5f;
+            if (cx < cminx) { cminx = cx; }
+            if (cx > cmaxx) { cmaxx = cx; }
+            if (cy < cminy) { cminy = cy; }
+            if (cy > cmaxy) { cmaxy = cy; }
+            if (cz < cminz) { cminz = cz; }
+            if (cz > cmaxz) { cmaxz = cz; }
+            i = i + 1;
+        }
+
+        int32[] codes = heap int32[count];
+        int32[] prims = heap int32[count];
+        i = 0;
+        while (i < count) {
+            int32 b6 = i * 6;
+            float32 cx = (boxes[b6 + 0] + boxes[b6 + 3]) * 0.5f;
+            float32 cy = (boxes[b6 + 1] + boxes[b6 + 4]) * 0.5f;
+            float32 cz = (boxes[b6 + 2] + boxes[b6 + 5]) * 0.5f;
+            int32 qx = Lbvh.quantize(cx, cminx, cmaxx);
+            int32 qy = Lbvh.quantize(cy, cminy, cmaxy);
+            int32 qz = Lbvh.quantize(cz, cminz, cmaxz);
+            codes[i] = Lbvh.morton3D(qx, qy, qz);
+            prims[i] = i;
+            i = i + 1;
+        }
+        Lbvh.radixSort(codes, prims, count);
+
+        int32 nodeCount = 2 * count - 1;
+        int32 nodesOff = 8;
+        int32 primRefOff = nodesOff + nodeCount * 9;
+        int32 total = primRefOff + count;
+        float32[] blk = heap float32[total];
+
+        int32[] nextCell = heap int32[1];
+        int32[] prCell = heap int32[1];
+        nextCell[0] = 0;
+        prCell[0] = 0;
+        Lbvh.buildSahNode(boxes, prims, 0, count, blk, nodesOff, nextCell,
+                          primRefOff, prCell);
+
+        float32 vnodes = nextCell[0];
+        float32 vcount = count;
+        float32 voff = primRefOff;
+        blk[0] = 1.0f;
+        blk[1] = vnodes;
+        blk[2] = vcount;
+        blk[3] = 0.0f;
+        blk[4] = 8.0f;
+        blk[5] = voff;
+        blk[6] = 1.0f;
+        blk[7] = 9.0f;
+        return #blk;
+    }
+
+    /**
+     * Recursive SAH-split emit (the {@link #buildNode} twin): the node's AABB and
+     * threaded linkage are identical; only the split position changes — a full
+     * SAH sweep over the Morton-sorted prims[lo..hi) picks the min-cost boundary.
+     */
+    private static void buildSahNode(float32[] boxes, int32[] prims,
+                                     int32 lo, int32 hi, float32[] blk, int32 nodesOff,
+                                     int32[] nextCell, int32 primRefOff, int32[] prCell) {
+        int32 idx = nextCell[0];
+        nextCell[0] = idx + 1;
+        int32 base = nodesOff + idx * 9;
+
+        int32 p0 = prims[lo];
+        int32 pb0 = p0 * 6;
+        float32 minx = boxes[pb0 + 0];
+        float32 miny = boxes[pb0 + 1];
+        float32 minz = boxes[pb0 + 2];
+        float32 maxx = boxes[pb0 + 3];
+        float32 maxy = boxes[pb0 + 4];
+        float32 maxz = boxes[pb0 + 5];
+        int32 k = lo + 1;
+        while (k < hi) {
+            int32 p = prims[k];
+            int32 pb = p * 6;
+            float32 lox = boxes[pb + 0];
+            float32 loy = boxes[pb + 1];
+            float32 loz = boxes[pb + 2];
+            float32 hix = boxes[pb + 3];
+            float32 hiy = boxes[pb + 4];
+            float32 hiz = boxes[pb + 5];
+            if (lox < minx) { minx = lox; }
+            if (loy < miny) { miny = loy; }
+            if (loz < minz) { minz = loz; }
+            if (hix > maxx) { maxx = hix; }
+            if (hiy > maxy) { maxy = hiy; }
+            if (hiz > maxz) { maxz = hiz; }
+            k = k + 1;
+        }
+        blk[base + 0] = minx;
+        blk[base + 1] = miny;
+        blk[base + 2] = minz;
+        blk[base + 3] = maxx;
+        blk[base + 4] = maxy;
+        blk[base + 5] = maxz;
+
+        if (hi - lo <= 1) {
+            int32 first = prCell[0];
+            float32 fp = prims[lo];
+            blk[primRefOff + first] = fp;
+            prCell[0] = first + 1;
+            float32 ffirst = first;
+            blk[base + 7] = ffirst;
+            blk[base + 8] = 1.0f;
+        } else {
+            // Full SAH sweep: pick the split minimizing SA(L)*Nl + SA(R)*Nr.
+            int32 bestS = lo + 1;
+            float32 lsa0 = Lbvh.rangeSurfaceArea(boxes, prims, lo, bestS);
+            float32 rsa0 = Lbvh.rangeSurfaceArea(boxes, prims, bestS, hi);
+            float32 nl0 = bestS - lo;
+            float32 nr0 = hi - bestS;
+            float32 bestCost = lsa0 * nl0 + rsa0 * nr0;
+            int32 s = lo + 2;
+            while (s < hi) {
+                float32 lsa = Lbvh.rangeSurfaceArea(boxes, prims, lo, s);
+                float32 rsa = Lbvh.rangeSurfaceArea(boxes, prims, s, hi);
+                float32 fnl = s - lo;
+                float32 fnr = hi - s;
+                float32 cost = lsa * fnl + rsa * fnr;
+                if (cost < bestCost) {
+                    bestCost = cost;
+                    bestS = s;
+                }
+                s = s + 1;
+            }
+            Lbvh.buildSahNode(boxes, prims, lo, bestS, blk, nodesOff, nextCell,
+                              primRefOff, prCell);
+            Lbvh.buildSahNode(boxes, prims, bestS, hi, blk, nodesOff, nextCell,
+                              primRefOff, prCell);
+            blk[base + 7] = 0.0f;
+            blk[base + 8] = 0.0f;
+        }
+        float32 esc = nextCell[0];
+        blk[base + 6] = esc;
+    }
+}

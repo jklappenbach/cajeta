@@ -22,7 +22,7 @@ concrete backend at launch and the **null/headless floor** that lets any program
   backend FFI-binds its OS, implements an `ifx` SPI interface, and **registers itself**
   at load. `ifx` selects among the registered backends by `probe()` + `priority()`.
 - **`Surface` is opaque.** `HWND` / `wl_surface` / `CAMetalLayer` are never inspected by
-  `ifx`; the `cajeta.gpu.gfx` swapchain pairs the `Surface` with the matching Vulkan WSI
+  `ifx`; the `cajeta.xpu.gfx` swapchain pairs the `Surface` with the matching Vulkan WSI
   extension. The Surface→present path is owned by gfx, not `ifx`.
 
 ### Scope
@@ -32,7 +32,7 @@ dispatch, the null floor, the capability/permission/lifecycle model, and the rec
 
 ### Non-goals
 - **No OS code / FFI in `ifx`** — that lives in the per-OS backend repos.
-- **No GPU / WSI** — the swapchain and WSI-extension pairing belong to `cajeta.gpu.gfx`.
+- **No GPU / WSI** — the swapchain and WSI-extension pairing belong to `cajeta.xpu.gfx`.
 - **No backend selection at build time** — that is the `cajeta-ifx-backend` melt (BOM).
 - **No codec implementations** — only the SPI seam + the royalty-free PNG/WAV fallback
   contract; real codecs are optional external providers (§9.6).

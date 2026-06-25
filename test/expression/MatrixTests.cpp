@@ -37,7 +37,7 @@ float runF32(const std::string& src) {
 }
 
 const char* IMPORTS =
-    "import cajeta.gpu.KernelBuffer;\n";
+    "import cajeta.xpu.KernelBuffer;\n";
 
 } // namespace
 
@@ -371,6 +371,36 @@ TEST(MatrixTests, matrixVectorMultiply) {
         "    }\n"
         "}\n";
     EXPECT_FLOAT_EQ(runF32(src), 32014.0f);
+}
+
+// Regression: a Matrix*Vector whose RHS local shares its name with a
+// DIFFERENTLY-TYPED local in a SIBLING method declared earlier in the class.
+// Method::generateCode runs a resolveTypes pre-pass before the body's locals
+// are registered; ScopeStack::add had wired each method scope's parent to the
+// frame left on the stack, so `b` here fell through to the sibling's `int32 b`
+// and pinned int32 on the AST node — codegen then mis-lowered `m * b` to a
+// scalar `mat.scale` (`<9 x float>` returned from a `<3 x float>` function),
+// tripping the verifier. The fix clears the method-root scope's parent. Both
+// methods MUST be in one class, sibling-first, sharing the local name.
+TEST(MatrixTests, matVecRhsNameCollidesWithSiblingScalarLocal) {
+    std::string src = std::string("package test;\n") +
+        "public final class D {\n"
+        "    public static int32 sibling() {\n"
+        "        int32 b = 7;\n"            // sibling's `b` is a scalar
+        "        return b;\n"
+        "    }\n"
+        "    public static float32 mv() {\n"
+        "        Matrix<float32,3,3> m = stack Matrix<float32,3,3>(\n"
+        "            2.0f,0.0f,0.0f, 0.0f,2.0f,0.0f, 0.0f,0.0f,2.0f);\n"
+        "        Vector<float32,3> b = stack Vector<float32,3>(1.0f,2.0f,3.0f);\n"
+        "        Vector<float32,3> r = m * b;\n"   // 2*I * (1,2,3) = (2,4,6)
+        "        return r[0] + r[1] + r[2];\n"     // 12
+        "    }\n"
+        "    public static float32 run() {\n"
+        "        return D.mv() + (float32) D.sibling();\n"   // 12 + 7 = 19
+        "    }\n"
+        "}\n";
+    EXPECT_FLOAT_EQ(runF32(src), 19.0f);
 }
 
 // Matmul shape mismatch (inner dims differ) is a clean diagnostic.

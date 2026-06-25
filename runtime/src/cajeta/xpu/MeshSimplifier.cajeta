@@ -1,0 +1,258 @@
+package cajeta.xpu;
+
+import cajeta.math.Matrix;
+import cajeta.xpu.Qem;
+
+/**
+ * MeshSimplifier — the appearance-preserving Garland–Heckbert edge-collapse
+ * mesh simplifier (cajeta-gfx plan §2.a), built on {@link cajeta.xpu.Qem}.
+ * Promoted to `cajeta.xpu` because physics, canela, and gfx all consume one
+ * remeshing toolbox (spec §8.7).
+ *
+ * A mesh is an indexed triangle soup in the canonical vertex-buffer layout: a
+ * flat `float32[]` of vertex positions (x, y, z interleaved, three entries per
+ * vertex) and an `int32[]` of triangle corner indices (three per triangle).
+ * Flat primitive arrays are used because a `Vector[]` / `Matrix[]` cannot be
+ * allocated — `heap Vector[n]` default-constructs its elements and neither type
+ * has a nullary constructor (CAJETA_ERROR_VECTOR_CONSTRUCT / _MATRIX_CONSTRUCT).
+ * The simplifier proceeds in the classic two phases:
+ *
+ *  1. **Accumulate** a per-vertex error quadric — `accumulateQuadrics` sums the
+ *     {@link cajeta.xpu.Qem#faceQuadric} of every triangle incident to a vertex.
+ *     `Q[v]` measures the summed squared distance from a candidate position to
+ *     all planes meeting at `v`.
+ *  2. **Collapse** the cheapest edge repeatedly — the cost of collapsing edge
+ *     `(u, v)` is {@link cajeta.xpu.Qem#edgeCollapseCost} of `Q[u]` and `Q[v]`,
+ *     placing the new vertex at the error-minimizing position. (The iterative
+ *     collapse driver lands in the next §2.a slice; this slice is the
+ *     accumulation phase the cube/fan golden tests pin down.)
+ *
+ * **Quadric storage.** A quadric IS a `Matrix<float32,4,4>`, but a `Matrix[]`
+ * cannot be allocated — `heap Matrix[n]` default-constructs its elements and
+ * `Matrix` has no nullary constructor (CAJETA_ERROR_MATRIX_CONSTRUCT). So the
+ * per-vertex quadrics live in a flat, zero-initialized `float32[]` (16 entries
+ * per vertex, row-major); `vertexQuadric` reconstructs a `Matrix` on demand
+ * through the runtime-argument constructor (which, unlike a literal-only one,
+ * compiles fine). A pure static-utility class, like {@link cajeta.xpu.Qem}.
+ */
+public class MeshSimplifier {
+
+    /**
+     * Accumulate a Garland–Heckbert error quadric per vertex into a flat
+     * `float32[]` (16 row-major entries per vertex; entry `v*16 + r*4 + c` is
+     * row `r`, column `c` of vertex `v`'s quadric). For each triangle
+     * `(i0, i1, i2)` the triangle's `faceQuadric` is added to each corner's
+     * quadric. `positions` holds the vertex positions flat (x, y, z per vertex),
+     * `vertexCount` their number, and `indices` is a flat triangle list (length
+     * a multiple of 3). Read a vertex's quadric back with {@link #vertexQuadric}.
+     */
+    public static #float32[] accumulateQuadrics(float32[] positions,
+                                                int32[] indices,
+                                                int32 vertexCount) {
+        float32[] quadrics = heap float32[vertexCount * 16];
+        int32 triCount = (int32) (indices.count() / 3);
+        int32 t = 0;
+        while (t < triCount) {
+            int32 base = t * 3;
+            int32 i0 = indices[base];
+            int32 i1 = indices[base + 1];
+            int32 i2 = indices[base + 2];
+            int32 p0 = i0 * 3;
+            int32 p1 = i1 * 3;
+            int32 p2 = i2 * 3;
+            Vector<float32,3> a = stack Vector<float32,3>(positions[p0], positions[p0 + 1], positions[p0 + 2]);
+            Vector<float32,3> b = stack Vector<float32,3>(positions[p1], positions[p1 + 1], positions[p1 + 2]);
+            Vector<float32,3> c = stack Vector<float32,3>(positions[p2], positions[p2 + 1], positions[p2 + 2]);
+            Matrix<float32,4,4> fq = Qem.faceQuadric(a, b, c);
+            MeshSimplifier.addInto(quadrics, i0, fq);
+            MeshSimplifier.addInto(quadrics, i1, fq);
+            MeshSimplifier.addInto(quadrics, i2, fq);
+            t = t + 1;
+        }
+        return #quadrics;
+    }
+
+    /**
+     * Reconstruct vertex `v`'s accumulated quadric as a `Matrix<float32,4,4>`
+     * from the flat store produced by {@link #accumulateQuadrics}. Feed the
+     * result to {@link cajeta.xpu.Qem#error} / {@link cajeta.xpu.Qem#edgeCollapseCost}.
+     */
+    public static Matrix<float32,4,4> vertexQuadric(float32[] quadrics, int32 v) {
+        int32 b = v * 16;
+        return stack Matrix<float32,4,4>(
+            quadrics[b + 0],  quadrics[b + 1],  quadrics[b + 2],  quadrics[b + 3],
+            quadrics[b + 4],  quadrics[b + 5],  quadrics[b + 6],  quadrics[b + 7],
+            quadrics[b + 8],  quadrics[b + 9],  quadrics[b + 10], quadrics[b + 11],
+            quadrics[b + 12], quadrics[b + 13], quadrics[b + 14], quadrics[b + 15]);
+    }
+
+    /**
+     * Add the 16 components of face quadric `f` into vertex `v`'s slot of the
+     * flat store. Unrolled with constant matrix indices (`f[r][c]`), the form
+     * proven by `Qem.optimalPosition`; variable matrix indices are avoided.
+     */
+    private static void addInto(float32[] q, int32 v, Matrix<float32,4,4> f) {
+        int32 b = v * 16;
+        q[b + 0]  = q[b + 0]  + f[0][0];
+        q[b + 1]  = q[b + 1]  + f[0][1];
+        q[b + 2]  = q[b + 2]  + f[0][2];
+        q[b + 3]  = q[b + 3]  + f[0][3];
+        q[b + 4]  = q[b + 4]  + f[1][0];
+        q[b + 5]  = q[b + 5]  + f[1][1];
+        q[b + 6]  = q[b + 6]  + f[1][2];
+        q[b + 7]  = q[b + 7]  + f[1][3];
+        q[b + 8]  = q[b + 8]  + f[2][0];
+        q[b + 9]  = q[b + 9]  + f[2][1];
+        q[b + 10] = q[b + 10] + f[2][2];
+        q[b + 11] = q[b + 11] + f[2][3];
+        q[b + 12] = q[b + 12] + f[3][0];
+        q[b + 13] = q[b + 13] + f[3][1];
+        q[b + 14] = q[b + 14] + f[3][2];
+        q[b + 15] = q[b + 15] + f[3][3];
+    }
+
+    /** Merge vertex `src`'s quadric into vertex `dst`'s (the Garland–Heckbert
+     *  collapse merge: quadrics accumulate by addition) in the flat store. */
+    private static void mergeQuadric(float32[] q, int32 dst, int32 src) {
+        int32 d = dst * 16;
+        int32 s = src * 16;
+        int32 j = 0;
+        while (j < 16) {
+            q[d + j] = q[d + j] + q[s + j];
+            j = j + 1;
+        }
+    }
+
+    /** The Garland–Heckbert cost of collapsing edge `(a, b)` given the flat
+     *  quadric store and positions: error of the merged quadric at its optimal
+     *  position, with the edge midpoint as the degenerate fallback. */
+    private static float32 pairCost(float32[] quadrics, float32[] positions, int32 a, int32 b) {
+        Matrix<float32,4,4> qa = MeshSimplifier.vertexQuadric(quadrics, a);
+        Matrix<float32,4,4> qb = MeshSimplifier.vertexQuadric(quadrics, b);
+        int32 pa = a * 3;
+        int32 pb = b * 3;
+        float32 mx = (positions[pa] + positions[pb]) * 0.5f;
+        float32 my = (positions[pa + 1] + positions[pb + 1]) * 0.5f;
+        float32 mz = (positions[pa + 2] + positions[pb + 2]) * 0.5f;
+        Vector<float32,3> mid = stack Vector<float32,3>(mx, my, mz);
+        return Qem.edgeCollapseCost(qa, qb, mid);
+    }
+
+    /**
+     * Simplify an indexed triangle mesh by iterative Garland–Heckbert edge
+     * collapse down to (at most) `targetTriangleCount` triangles, returning the
+     * surviving triangle index list (length a multiple of 3); `positions` is
+     * mutated in place as collapsed vertices move to their error-minimizing
+     * positions.
+     *
+     * Each iteration scans the live triangles for the cheapest collapsible edge
+     * (`pairCost`), collapses its higher-index endpoint `b` into `a` — moving
+     * `a` to the merged quadric's optimal position ({@link cajeta.xpu.Qem#optimalPosition},
+     * falling back to the edge midpoint), merging `b`'s quadric into `a`,
+     * remapping every `b` reference to `a`, and dropping the triangles that
+     * thereby become degenerate (two equal corners). Quadrics merge by addition
+     * and are never re-planed, the standard QEM formulation, so flat regions
+     * collapse at zero cost while curved/creased regions resist. The survivors
+     * are compacted into a fresh index array.
+     *
+     * `positions` is the flat xyz vertex buffer, `indices` the flat triangle
+     * list, `vertexCount` the vertex count. O(triangles²) for the linear
+     * cheapest-edge scan — adequate for the v1 toolbox; a heap-ordered driver
+     * is a later optimization.
+     */
+    public static #int32[] simplify(float32[] positions,
+                                    int32[] indices,
+                                    int32 vertexCount,
+                                    int32 targetTriangleCount) {
+        float32[] quadrics = MeshSimplifier.accumulateQuadrics(positions, indices, vertexCount);
+        int32 triCount = (int32) (indices.count() / 3);
+        int32[] idx = heap int32[triCount * 3];
+        int32 i = 0;
+        while (i < triCount * 3) {
+            idx[i] = indices[i];
+            i = i + 1;
+        }
+        int32 live = triCount;
+        boolean go = true;
+        while (live > targetTriangleCount && go) {
+            boolean found = false;
+            float32 bestCost = 0.0f;
+            int32 bestA = -1;
+            int32 bestB = -1;
+            int32 t = 0;
+            while (t < triCount) {
+                int32 tb = t * 3;
+                int32 c0 = idx[tb];
+                if (c0 >= 0) {
+                    int32 c1 = idx[tb + 1];
+                    int32 c2 = idx[tb + 2];
+                    float32 e01 = MeshSimplifier.pairCost(quadrics, positions, c0, c1);
+                    if (!found || e01 < bestCost) {
+                        found = true; bestCost = e01; bestA = c0; bestB = c1;
+                    }
+                    float32 e12 = MeshSimplifier.pairCost(quadrics, positions, c1, c2);
+                    if (e12 < bestCost) {
+                        bestCost = e12; bestA = c1; bestB = c2;
+                    }
+                    float32 e20 = MeshSimplifier.pairCost(quadrics, positions, c2, c0);
+                    if (e20 < bestCost) {
+                        bestCost = e20; bestA = c2; bestB = c0;
+                    }
+                }
+                t = t + 1;
+            }
+            if (!found) {
+                go = false;
+            } else {
+                Matrix<float32,4,4> qa = MeshSimplifier.vertexQuadric(quadrics, bestA);
+                Matrix<float32,4,4> qb = MeshSimplifier.vertexQuadric(quadrics, bestB);
+                Matrix<float32,4,4> sum = qa + qb;
+                int32 pa = bestA * 3;
+                int32 pb = bestB * 3;
+                float32 mx = (positions[pa] + positions[pb]) * 0.5f;
+                float32 my = (positions[pa + 1] + positions[pb + 1]) * 0.5f;
+                float32 mz = (positions[pa + 2] + positions[pb + 2]) * 0.5f;
+                Vector<float32,3> mid = stack Vector<float32,3>(mx, my, mz);
+                Vector<float32,3> opt = Qem.optimalPosition(sum, mid);
+                positions[pa] = opt.x;
+                positions[pa + 1] = opt.y;
+                positions[pa + 2] = opt.z;
+                MeshSimplifier.mergeQuadric(quadrics, bestA, bestB);
+                int32 k = 0;
+                while (k < triCount) {
+                    int32 kb = k * 3;
+                    int32 k0 = idx[kb];
+                    if (k0 >= 0) {
+                        int32 k1 = idx[kb + 1];
+                        int32 k2 = idx[kb + 2];
+                        if (k0 == bestB) { k0 = bestA; idx[kb] = bestA; }
+                        if (k1 == bestB) { k1 = bestA; idx[kb + 1] = bestA; }
+                        if (k2 == bestB) { k2 = bestA; idx[kb + 2] = bestA; }
+                        if (k0 == k1 || k1 == k2 || k0 == k2) {
+                            idx[kb] = -1;
+                            idx[kb + 1] = -1;
+                            idx[kb + 2] = -1;
+                            live = live - 1;
+                        }
+                    }
+                    k = k + 1;
+                }
+            }
+        }
+        int32[] out = heap int32[live * 3];
+        int32 w = 0;
+        int32 r = 0;
+        while (r < triCount) {
+            int32 rb = r * 3;
+            int32 r0 = idx[rb];
+            if (r0 >= 0) {
+                out[w] = r0;
+                out[w + 1] = idx[rb + 1];
+                out[w + 2] = idx[rb + 2];
+                w = w + 3;
+            }
+            r = r + 1;
+        }
+        return #out;
+    }
+}

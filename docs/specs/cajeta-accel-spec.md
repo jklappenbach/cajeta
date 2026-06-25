@@ -1,7 +1,7 @@
 # Cajeta Acceleration Structures — strategy-based BVH for GPU/CPU ray + collision queries
 
 > Status: DRAFT (authored with the design skill). Goal: turn the single binary
-> software BVH (`cajeta.gpu.Lbvh` + `SoftwareRayQuery`) into a **strategy-based**
+> software BVH (`cajeta.xpu.Lbvh` + `SoftwareRayQuery`) into a **strategy-based**
 > acceleration-structure facility — one logical contract, two encoding strategies
 > (`Exact` / `Quantized`), with **width lowered from capability** and **backend
 > orthogonal** — that builds **and** queries on the GPU, serves ray *and* broad-phase
@@ -12,9 +12,9 @@
 
 ### 1.1 Purpose
 Cajeta today has one acceleration structure: a binary, full-float32, threaded-DFS BVH
-built on the host (`cajeta.gpu.Lbvh.build`/`buildSah`, native
+built on the host (`cajeta.xpu.Lbvh.build`/`buildSah`, native
 `runtime/native/cajeta_bvh.c`) and traversed on-device by the single `@Device`
-`cajeta.gpu.SoftwareRayQuery.step`. It is correct and portable but tuned for nothing in
+`cajeta.xpu.SoftwareRayQuery.step`. It is correct and portable but tuned for nothing in
 particular. This feature reorganizes acceleration structures around **three orthogonal
 axes** so the same source runs at the maximum capacity of each chip:
 
@@ -33,11 +33,11 @@ GPU does both build and query.
 - **Exists.** The frozen threaded-DFS float32 block (8-word header / 9-word binary nodes
   / primRef table); host builders (`Lbvh`, `cajeta_bvh.c`); the single device traversal
   `SoftwareRayQuery.step` (+ `slabHit`, value-type `SwRayCursor`); the
-  reinterpret/quantization codec `cajeta.gpu.BvhCodec`; direction encoding
-  `cajeta.gpu.Octahedral`; the algebra `cajeta.math` (`Aabb`, `Ray`, `Sphere`,
+  reinterpret/quantization codec `cajeta.xpu.BvhCodec`; direction encoding
+  `cajeta.xpu.Octahedral`; the algebra `cajeta.math` (`Aabb`, `Ray`, `Sphere`,
   `Rotation`, `Transform`, `Vector<float32,N>`). The capability machinery:
-  compile-time traits (`cajeta.gpu.Capabilities`, resolved at codegen per `--xpu-arch`)
-  + runtime `cajeta.gpu.Capability` / `Device.supports` (today's `RayQueryNative`
+  compile-time traits (`cajeta.xpu.Capabilities`, resolved at codegen per `--xpu-arch`)
+  + runtime `cajeta.xpu.Capability` / `Device.supports` (today's `RayQueryNative`
   dispatch), with the tiering precedent that `RayQuery` and `CooperativeMatrix` already
   auto-select a native vs software tier.
 - **Missing.** (a) Any **wide** node format/traversal. (b) Any **GPU-side** build —

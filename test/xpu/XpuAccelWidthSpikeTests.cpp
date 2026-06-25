@@ -94,8 +94,8 @@ std::string lowerToIr(Compiler& compiler, const char* src, const char* entry) {
 // Per thread: a 96-float block — mn[16] mx[16] o[16] inv[16] t0[16] t1[16].
 const char* kSlab16 =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void slab16(KernelBuffer<float32> c) {\n"
@@ -115,8 +115,8 @@ const char* kSlab16 =
 // Width-8 twin: a 48-float block — mn[8] mx[8] o[8] inv[8] t0[8] t1[8].
 const char* kSlab8 =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void slab8(KernelBuffer<float32> c) {\n"

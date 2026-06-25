@@ -1,0 +1,40 @@
+package cajeta.xpu;
+
+/**
+ * KernelThread — per-thread coordinate builtins. Only meaningful inside
+ * @Kernel / @Device functions. See CajetaXPU.md §3.2.
+ *
+ * Each backend's lowering substitutes these calls with the native
+ * intrinsic at codegen time:
+ *
+ *   NVPTX:  llvm.nvvm.read.ptx.sreg.tid.{x,y,z}
+ *           llvm.nvvm.read.ptx.sreg.ntid.{x,y,z} for the block dim
+ *   AMDGPU: llvm.amdgcn.workitem.id.{x,y,z}
+ *   SPIR-V: OpLoad LocalInvocationId
+ *
+ * The @Native bodies declared here forward to runtime symbols that
+ * exist only in the CPU-emulation backend (step 7). Native and
+ * Vulkan backends replace the call sites entirely before the
+ * forwarder ever fires.
+ */
+public final class KernelThread {
+
+    @Native("__cajeta_xpu_thread_x")
+    public static uint32 x();
+
+    @Native("__cajeta_xpu_thread_y")
+    public static uint32 y();
+
+    @Native("__cajeta_xpu_thread_z")
+    public static uint32 z();
+
+    /** workgroup.x() * workgroup.dimX() + thread.x() */
+    @Native("__cajeta_xpu_thread_global_id_x")
+    public static uint32 globalIdX();
+
+    @Native("__cajeta_xpu_thread_global_id_y")
+    public static uint32 globalIdY();
+
+    @Native("__cajeta_xpu_thread_global_id_z")
+    public static uint32 globalIdZ();
+}

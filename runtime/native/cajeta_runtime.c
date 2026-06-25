@@ -8953,9 +8953,9 @@ void __cajeta_run_atexit_handlers(void) {
 }
 
 // ============================================================================
-// cajeta.gpu runtime stubs (CajetaXPU phases 1-2, step 2).
+// cajeta.xpu runtime stubs (CajetaXPU phases 1-2, step 2).
 //
-// The cajeta.gpu stdlib classes (Stream / Event / Fence / Thread /
+// The cajeta.xpu stdlib classes (Stream / Event / Fence / Thread /
 // Workgroup / Barrier / Wave) declare their methods @Native and forward to
 // the symbols below. LLJIT eagerly materializes all externs at module load
 // time, so these have to exist before any XPU implementation does.
@@ -12270,7 +12270,7 @@ static int cajeta_xpu_active_backend(void) {
 extern int cajeta_xpu_optix_available(void);
 
 // Device.supports(Capability) — does the active device advertise the capability
-// natively? The capability heuristic's runtime input (cajeta.gpu.Device).
+// natively? The capability heuristic's runtime input (cajeta.xpu.Device).
 // `cap` is the Capability ordinal (the stable contract in Capability.cajeta).
 // Returns 0/1. Append new capabilities as new cases; never renumber.
 int32_t __cajeta_xpu_device_supports(int32_t cap) {
@@ -15302,7 +15302,7 @@ int32_t __cajeta_xpu_accel_impl_set(void* self, int64_t handle, int32_t primaryI
     return set;
 }
 
-// --- gfx swapchain (cajeta.gpu.gfx.Swapchain, cajeta-gfx §4.c) --------------
+// --- gfx swapchain (cajeta.gfx.Swapchain, cajeta-gfx §4.c) --------------
 //
 // The presentable-image-chain noun. The instance @Native convention (leading
 // `self`, ignored): create is handed the opaque cajeta.ifx.Surface object (as a
@@ -15314,7 +15314,7 @@ int32_t __cajeta_xpu_accel_impl_set(void* self, int64_t handle, int32_t primaryI
 // over a real Vulkan WSI surface + a window backend (the separate cajeta-ifx-*
 // repos) — none of that exists here. These stubs let the noun construct and its
 // acquire/present plumb on the host so the API + frames-in-flight pacing
-// (cajeta.gpu.gfx.FrameSync) are exercisable; they hold no pixels and present
+// (cajeta.gfx.FrameSync) are exercisable; they hold no pixels and present
 // nothing. The real WSI backend replaces them on the device machine.
 int64_t __cajeta_gfx_swapchain_create(void* self, void* surface, int32_t format,
                                       int32_t colorSpace, int32_t presentMode,

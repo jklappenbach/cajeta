@@ -71,7 +71,7 @@ stdlib-adjacent tree.
 
 The sub-packages (tensor / linalg / stats / signal / nn) live as
 separate libraries with independent versioning, optional dependencies
-on the accelerator foundation ([`cajeta.gpu`](gpu/CajetaGPU.md) —
+on the accelerator foundation ([`cajeta.xpu`](gpu/CajetaGPU.md) —
 see §"Backend strategy"), and room for the APIs to evolve.
 
 ## Goals
@@ -99,7 +99,7 @@ see §"Backend strategy"), and room for the APIs to evolve.
   Casting between them is explicit and uses the boxed-primitive
   casting API.
 - **GPU acceleration on day one — optional.** Kernels dispatch
-  through [`cajeta.gpu`](gpu/CajetaGPU.md) when a device is
+  through [`cajeta.xpu`](gpu/CajetaGPU.md) when a device is
   present, fall back to CPU + LLVM SIMD intrinsics otherwise. Same
   `Tensor` API; the active backend resolves at runtime.
 
@@ -680,7 +680,7 @@ by construction.
 ```cajeta
 // Matrix multiplication. Broadcasts over batch dimensions; final two
 // dims are (M, K) x (K, N) -> (M, N). Dispatches to vendor BLAS via
-// cajeta.gpu.blas when an XPU device is present.
+// cajeta.xpu.blas when an XPU device is present.
 public Tensor<T> matmul<T>(Tensor<T> a, Tensor<T> b);
 
 // Decompositions — all return Tensor tuples / structured types.
@@ -764,8 +764,8 @@ and SLAM workloads use the same types.
 
 ### Backend dispatch
 
-Linalg kernels dispatch through `cajeta.gpu.blas` /
-`cajeta.gpu.dnn` when an accelerator is present and the operation
+Linalg kernels dispatch through `cajeta.xpu.blas` /
+`cajeta.xpu.dnn` when an accelerator is present and the operation
 is large enough to amortize the launch overhead. Below that threshold,
 or when no XPU device is configured, the CPU fallback uses LLVM SIMD
 intrinsics — see §"Backend strategy" for the full story.
@@ -910,7 +910,7 @@ public Tensor<T>          dct<T>(Tensor<T> x, DCTType type = DCTType.II);
 public Tensor<T>          idct<T>(Tensor<T> X, DCTType type = DCTType.II);
 ```
 
-Dispatches to `cajeta.gpu.fft` (cuFFT / rocFFT) when an XPU
+Dispatches to `cajeta.xpu.fft` (cuFFT / rocFFT) when an XPU
 device is present and the transform is large enough; FFTW-shaped CPU
 plans below that threshold.
 
@@ -991,7 +991,7 @@ Op authors register a `Function<Inputs, Output, GradInputs>` that
 provides forward + backward. Standard ops (matmul, add, mul, relu,
 softmax, log, sum, mean, ...) ship as built-ins; each delegates its
 forward pass to `cajeta.math.tensor` (and through it to
-`cajeta.gpu` when an accelerator is present).
+`cajeta.xpu` when an accelerator is present).
 
 ### `Module` base + parameter discovery
 
@@ -1090,11 +1090,11 @@ import / export operates on `Module` graphs, not raw tensors.
 ## Backend strategy
 
 The same `Tensor` / `Module` API targets one portable accelerator
-surface — `cajeta.gpu` — which the compiler lowers to four
+surface — `cajeta.xpu` — which the compiler lowers to four
 backends from one source:
 
 - **CPU + LLVM SIMD intrinsics** — the default and the only one with
-  no external dependencies, and the floor `cajeta.gpu` always
+  no external dependencies, and the floor `cajeta.xpu` always
   lowers to when no GPU is present. Loop kernels are aggressively
   autovectorized; AVX-512, NEON, SVE are all in scope.
 - **Vulkan (SPIR-V)** — portable cross-vendor compute (Intel Arc,
@@ -1103,11 +1103,11 @@ backends from one source:
 - **AMD (ROCm / AMDGPU)** — when a HIP device is present.
 - **NVIDIA (NVPTX)** — when a CUDA device is present.
 
-`cajeta.gpu` is the *only* GPU package in the stdlib: there are no
-per-vendor `cajeta.gpu.nvidia` / `.amd` / `.vulkan` stdlib packages.
+`cajeta.xpu` is the *only* GPU package in the stdlib: there are no
+per-vendor `cajeta.xpu.nvidia` / `.amd` / `.vulkan` stdlib packages.
 Vendor-peak library bindings (cuBLAS / cuDNN / cuFFT, rocBLAS / MIOpen /
 rocFFT) and vendor-exclusive silicon paths live in **external vendor
-libraries** layered under the same `cajeta.gpu.{blas,dnn,fft}`
+libraries** layered under the same `cajeta.xpu.{blas,dnn,fft}`
 seams — added to a project explicitly, never bundled in stdlib. See
 [`CajetaGPU.md`](gpu/CajetaGPU.md) for the foundation model.
 
@@ -1118,7 +1118,7 @@ present, with no source-level branching.
 
 When no GPU is present the math sub-packages still build and run — they
 just stay on CPU. The GPU dependency is genuinely optional; dropping
-`cajeta.gpu` from `Cajeta.toml` strips the device-dispatch path out
+`cajeta.xpu` from `Cajeta.toml` strips the device-dispatch path out
 of the compiled library entirely.
 
 For the substrate that makes accelerator dispatch possible — the device
@@ -1147,7 +1147,7 @@ A reasonable order, given dependencies:
    as a baseline (no autograd yet, no linalg yet). Plus npy / npz IO.
 5. **`cajeta.math.linalg`.** matmul + basic decompositions + the
    geometry types. Wraps reference-implementation kernels initially;
-   LAPACK / OpenBLAS / `cajeta.gpu.blas` plug in later behind
+   LAPACK / OpenBLAS / `cajeta.xpu.blas` plug in later behind
    the same surface.
 6. **`cajeta.math.stats` — descriptive + distributions.** Self-
    contained block atop `tensor` + `linalg`. Hypothesis tests next.
@@ -1162,7 +1162,7 @@ A reasonable order, given dependencies:
     Transformer block early so language-model workloads are reachable.
 12. **`cajeta.math.nn` — gradient-free optimizers.** BFGS / L-BFGS,
     Nelder-Mead, SA, DE. Independent of the autograd path.
-13. **Accelerator wiring through `cajeta.gpu.{blas,dnn,fft}`.**
+13. **Accelerator wiring through `cajeta.xpu.{blas,dnn,fft}`.**
     Backends light up under the same API. The CPU path keeps working.
 
 The gating step is (1) — every other layer touches boxed numerics,

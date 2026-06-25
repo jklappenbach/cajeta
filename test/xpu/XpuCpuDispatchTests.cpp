@@ -41,9 +41,9 @@ namespace {
 // backend is available (nothing launched).
 const char* kSaxpyHostSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class Saxpy {\n"
     "    @Kernel\n"
     "    public static void saxpy(KernelBuffer<float32> y, KernelBuffer<float32> x,\n"
@@ -84,9 +84,9 @@ const char* kSaxpyHostSource =
 // -> sum = 4 * 65536 = 262144.
 const char* kSaxpyLargeSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class Saxpy {\n"
     "    @Kernel\n"
     "    public static void saxpy(KernelBuffer<float32> y, KernelBuffer<float32> x,\n"
@@ -129,9 +129,9 @@ CajetaJit::Options cpuOptions() {
 // the kernel through the runtime's 3-D grid decode. out[by*4+bx] = by*10+bx.
 const char* kGrid2dSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.Workgroup;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.Workgroup;\n"
     "public class Grid2d {\n"
     "    @Kernel\n"
     "    public static void grid2d(KernelBuffer<int32> out) {\n"
@@ -166,9 +166,9 @@ const char* kGrid2dSource =
 // just tid.x. out[ty*4+tx] = ty*100+tx.
 const char* kBlock2dSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class Block2d {\n"
     "    @Kernel\n"
     "    public static void block2d(KernelBuffer<int32> out, uint32 w) {\n"
@@ -208,8 +208,8 @@ const char* kBlock2dSource =
 // ALL i proves full coverage with the right per-element index.
 const char* kGridStrideForEachSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelStream;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelStream;\n"
     "public class GridStride {\n"
     "    @Kernel\n"
     "    public static void copy(KernelBuffer<float32> out, KernelBuffer<float32> in,\n"
@@ -245,9 +245,9 @@ const char* kGridStrideForEachSource =
 // return). The helper is lowered to a device function and inlined; out[i] = i*i.
 const char* kDeviceHelperSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class DevH {\n"
     "    @Device\n"
     "    public static int32 square(int32 x) { return x * x; }\n"
@@ -277,9 +277,9 @@ const char* kDeviceHelperSource =
 // shared function cache + nested lowering). twice(x) = inc(inc(x)) = x+2.
 const char* kDeviceChainSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class DevChain {\n"
     "    @Device\n"
     "    public static int32 inc(int32 x) { return x + 1; }\n"
@@ -313,9 +313,9 @@ const char* kDeviceChainSource =
 // out[i] = in[i]*3 = i*3.
 const char* kDeviceBufferParamSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class DevBuf {\n"
     "    @Device\n"
     "    public static void scale(KernelBuffer<int32> out, KernelBuffer<int32> in,\n"
@@ -360,9 +360,9 @@ const char* kDeviceBufferParamSource =
 // path (identical code for HIP/CUDA).
 const char* kBufferSliceSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class Slice {\n"
     "    @Kernel\n"
     "    public static void fill(KernelBuffer<int32> b, uint32 n) {\n"
@@ -401,9 +401,9 @@ const char* kBufferSliceSource =
 // host buffer ops no-op — a pre-existing runtime fact, orthogonal to slice).
 const char* kBufferSliceUploadSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class SliceIO {\n"
     "    @Kernel\n"
     "    public static void dbl(KernelBuffer<int32> b, uint32 n) {\n"
@@ -445,9 +445,9 @@ const char* kBufferSliceUploadSource =
 // kernelParams ABI; the CPU thunk loads the struct aggregate from argv[i].
 const char* kPodStructArgSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class Params {\n"
     "    int32 mul;\n"
     "    int32 add;\n"
@@ -486,11 +486,11 @@ const char* kPodStructArgSource =
 // lowering reaches __cajeta_xpu_cpu_tex_sample, and the C bilinear math is right.
 const char* kTextureSampleSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.Texture2D;\n"
-    "import cajeta.gpu.Sampler;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.gfx.Texture2D;\n"
+    "import cajeta.gfx.Sampler;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class TexSample {\n"
     "    @Kernel\n"
     "    public static void sample(Texture2D tex, Sampler s,\n"
@@ -547,12 +547,12 @@ static const char* kRgbaSampleSrcCpu(const char* fmt) {
     static std::string s;
     s = std::string(
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.Texture2D;\n"
-        "import cajeta.gpu.TextureFormat;\n"
-        "import cajeta.gpu.Sampler;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.gfx.Texture2D;\n"
+        "import cajeta.gfx.TextureFormat;\n"
+        "import cajeta.gfx.Sampler;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class TexRgbaCpu {\n"
         "    @Kernel\n"
         "    public static void sample(Texture2D tex, Sampler s,\n"
@@ -624,12 +624,12 @@ static const char* kR1SampleSrcCpu(const char* fmt) {
     static std::string s;
     s = std::string(
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.Texture2D;\n"
-        "import cajeta.gpu.TextureFormat;\n"
-        "import cajeta.gpu.Sampler;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.gfx.Texture2D;\n"
+        "import cajeta.gfx.TextureFormat;\n"
+        "import cajeta.gfx.Sampler;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class TexR1Cpu {\n"
         "    @Kernel\n"
         "    public static void sample(Texture2D tex, Sampler s,\n"
@@ -685,11 +685,11 @@ static const char* kRgbaFetchSrcCpu(const char* fmt) {
     static std::string s;
     s = std::string(
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.Texture2D;\n"
-        "import cajeta.gpu.TextureFormat;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.gfx.Texture2D;\n"
+        "import cajeta.gfx.TextureFormat;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class TexFetchCpu {\n"
         "    @Kernel\n"
         "    public static void fetch(Texture2D tex, KernelBuffer<float32> out,\n"
@@ -752,10 +752,10 @@ static const char* kR1FetchSrcCpu() {
     static std::string s;
     s =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.Texture2D;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.gfx.Texture2D;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class TexFetchR1Cpu {\n"
         "    @Kernel\n"
         "    public static void fetch(Texture2D tex, KernelBuffer<float32> out,\n"
@@ -803,11 +803,11 @@ static const char* kRgbaIntFetchSrcCpu(const char* elem, const char* fmt) {
     std::string e(elem);
     s = std::string(
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.Texture2D;\n"
-        "import cajeta.gpu.TextureFormat;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.gfx.Texture2D;\n"
+        "import cajeta.gfx.TextureFormat;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class TexFetchIntCpu {\n"
         "    @Kernel\n"
         "    public static void fetch(Texture2D<") + e + "> tex, KernelBuffer<" + e + "> out,\n"
@@ -866,11 +866,11 @@ static const char* kR32iFetchSrcCpu() {
     static std::string s;
     s =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.Texture2D;\n"
-        "import cajeta.gpu.TextureFormat;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.gfx.Texture2D;\n"
+        "import cajeta.gfx.TextureFormat;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class TexFetchR32iCpu {\n"
         "    @Kernel\n"
         "    public static void fetch(Texture2D<int32> tex, KernelBuffer<int32> out,\n"
@@ -918,10 +918,10 @@ static const char* kTex3dFetchSrcCpu() {
     static std::string s;
     s =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.Texture3D;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.gfx.Texture3D;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class Tex3dFetchCpu {\n"
         "    @Kernel\n"
         "    public static void fetch(Texture3D vol, KernelBuffer<float32> out,\n"
@@ -967,11 +967,11 @@ static const char* kTex3dSampleSrcCpu() {
     static std::string s;
     s =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.Texture3D;\n"
-        "import cajeta.gpu.Sampler;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.gfx.Texture3D;\n"
+        "import cajeta.gfx.Sampler;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class Tex3dSampleCpu {\n"
         "    @Kernel\n"
         "    public static void samp(Texture3D vol, Sampler sn,\n"
@@ -1040,11 +1040,11 @@ static const char* kTex3dIntFetchSrcCpu(const char* elem, const char* fmt) {
     std::string e(elem);
     s = std::string(
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.Texture3D;\n"
-        "import cajeta.gpu.TextureFormat;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.gfx.Texture3D;\n"
+        "import cajeta.gfx.TextureFormat;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class Tex3dIntFetchCpu {\n"
         "    @Kernel\n"
         "    public static void fetch(Texture3D<") + e + "> vol, KernelBuffer<" + e + "> out,\n"
@@ -1099,10 +1099,10 @@ static const char* kTex1dFetchSrcCpu() {
     static std::string s;
     s =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.Texture1D;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.gfx.Texture1D;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class Tex1dFetchCpu {\n"
         "    @Kernel\n"
         "    public static void fetch(Texture1D row, KernelBuffer<float32> out, uint32 n) {\n"
@@ -1143,11 +1143,11 @@ static const char* kTex1dSampleSrcCpu() {
     static std::string s;
     s =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.Texture1D;\n"
-        "import cajeta.gpu.Sampler;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.gfx.Texture1D;\n"
+        "import cajeta.gfx.Sampler;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class Tex1dSampleCpu {\n"
         "    @Kernel\n"
         "    public static void samp(Texture1D row, Sampler sn, KernelBuffer<float32> out,\n"
@@ -1208,10 +1208,10 @@ static const char* kTex2daFetchSrcCpu() {
     static std::string s;
     s =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.Texture2DArray;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.gfx.Texture2DArray;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class Tex2daFetchCpu {\n"
         "    @Kernel\n"
         "    public static void fetch(Texture2DArray arr, KernelBuffer<float32> out,\n"
@@ -1258,11 +1258,11 @@ static const char* kTex2daSampleSrcCpu() {
     static std::string s;
     s =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.Texture2DArray;\n"
-        "import cajeta.gpu.Sampler;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.gfx.Texture2DArray;\n"
+        "import cajeta.gfx.Sampler;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class Tex2daSampleCpu {\n"
         "    @Kernel\n"
         "    public static void samp(Texture2DArray arr, Sampler sn,\n"
@@ -1334,11 +1334,11 @@ static const char* kTexCubeSampleSrcCpu() {
     static std::string s;
     s =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.TextureCube;\n"
-        "import cajeta.gpu.Sampler;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.gfx.TextureCube;\n"
+        "import cajeta.gfx.Sampler;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class TexCubeSampleCpu {\n"
         "    @Kernel\n"
         "    public static void samp(TextureCube cube, Sampler sn,\n"
@@ -1394,11 +1394,11 @@ static const char* kTwoSamplersSrcCpu() {
     static std::string s;
     s =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.Texture2D;\n"
-        "import cajeta.gpu.Sampler;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.gfx.Texture2D;\n"
+        "import cajeta.gfx.Sampler;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class TwoSamp {\n"
         "    @Kernel\n"
         "    public static void both(Texture2D tex, Sampler sn, Sampler sl,\n"
@@ -1442,12 +1442,12 @@ static const char* kMipSrcCpu() {
     static std::string s;
     s =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.Texture2D;\n"
-        "import cajeta.gpu.TextureFormat;\n"
-        "import cajeta.gpu.Sampler;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.gfx.Texture2D;\n"
+        "import cajeta.gfx.TextureFormat;\n"
+        "import cajeta.gfx.Sampler;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class MipCpu {\n"
         "    @Kernel\n"
         "    public static void mip(Texture2D tex, Sampler sl, KernelBuffer<float32> out) {\n"
@@ -1578,9 +1578,9 @@ TEST(XpuCpuDispatchTests, deviceHelperBufferParamOnCpu) {
 // it cross-class (lowerDeviceFn inlines the foreign owner's body). out[i] = i*i.
 const char* kCrossClassDeviceSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class MathLib {\n"
     "    @Device\n"
     "    public static int32 square(int32 x) { return x * x; }\n"
@@ -1628,9 +1628,9 @@ TEST(XpuCpuDispatchTests, crossClassDeviceHelperOnCpu) {
 //     (innermost continue would run j==3 and the +100 → 412).
 const char* kLabeledLoopSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class LabLoop {\n"
     "    @Kernel\n"
     "    public static void brk(KernelBuffer<int32> out, uint32 n) {\n"
@@ -1698,9 +1698,9 @@ TEST(XpuCpuDispatchTests, labeledBreakContinueOnCpu) {
 TEST(XpuCpuDispatchTests, devicePrintfOnCpu) {
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class Prnt {\n"
         "    @Kernel\n"
         "    public static void k(KernelBuffer<int32> out, uint32 n) {\n"
@@ -1773,10 +1773,10 @@ TEST(XpuCpuDispatchTests, bufferSliceUploadDownloadOnCpu) {
 // end. (The HIP twin proves genuine zero-copy managed memory on gfx1151.)
 const char* kMemKindUnifiedSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.MemoryKind;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.MemoryKind;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class MemKind {\n"
     "    @Kernel\n"
     "    public static void inc(KernelBuffer<int32> b, uint32 n) {\n"
@@ -1820,9 +1820,9 @@ TEST(XpuCpuDispatchTests, memoryKindUnifiedHostCopyOnCpu) {
 // everywhere. The HIP twin proves a real per-stream async queue on gfx1151.
 const char* kAsyncPipelineSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class Pipe {\n"
     "    @Kernel\n"
     "    public static void inc(KernelBuffer<int32> b, uint32 n) {\n"
@@ -1867,11 +1867,11 @@ TEST(XpuCpuDispatchTests, asyncCopyPipelineOnCpu) {
 // portability/compile proof; HIP exercises the real hipEvent ordering.
 const char* kEventFenceSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.Event;\n"
-    "import cajeta.gpu.Fence;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.Event;\n"
+    "import cajeta.xpu.Fence;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class Sync {\n"
     "    @Kernel\n"
     "    public static void inc(KernelBuffer<int32> b, uint32 n) {\n"
@@ -1931,9 +1931,9 @@ TEST(XpuCpuDispatchTests, eventFenceSyncOnCpu) {
 // descriptor array is the Vulkan path; the CPU shares the same source.)
 const char* kBindlessSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class Bindless {\n"
     "    @Kernel\n"
     "    public static void gather(KernelBuffer<int32>[] bufs, uint32 count,\n"
@@ -2281,9 +2281,9 @@ TEST(XpuCpuDispatchTests, envForcesCpuAndRuns) {
 TEST(XpuCpuDispatchTests, imageLoadStoreRmwOnCpu) {
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.Image2D;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.Image2D;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class ImgRmwCpu {\n"
         "    @Kernel\n"
         "    public static void fill(Image2D img, uint32 w, uint32 h) {\n"
@@ -2337,10 +2337,10 @@ TEST(XpuCpuDispatchTests, imageLoadStoreRmwOnCpu) {
 TEST(XpuCpuDispatchTests, memoryFenceOnCpu) {
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
-        "import cajeta.gpu.Barrier;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "import cajeta.xpu.Barrier;\n"
         "public class MFCpu {\n"
         "    @Kernel\n"
         "    public static void fence(KernelBuffer<int32> data, KernelBuffer<int32> out,\n"
@@ -2385,10 +2385,10 @@ TEST(XpuCpuDispatchTests, memoryFenceOnCpu) {
 TEST(XpuCpuDispatchTests, relaxedAtomicCounterOnCpu) {
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
-        "import cajeta.gpu.MemoryOrder;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "import cajeta.xpu.MemoryOrder;\n"
         "public class RAC {\n"
         "    @Kernel\n"
         "    public static void count(KernelBuffer<int32> out, uint32 n) {\n"
@@ -2428,9 +2428,9 @@ TEST(XpuCpuDispatchTests, relaxedAtomicCounterOnCpu) {
 TEST(XpuCpuDispatchTests, specConstantBakesDefaultOnCpu) {
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class SC {\n"
         "    @Kernel\n"
         "    public static void fill(KernelBuffer<int32> out, uint32 n) {\n"
@@ -2467,9 +2467,9 @@ TEST(XpuCpuDispatchTests, specConstantBakesDefaultOnCpu) {
 TEST(XpuCpuDispatchTests, specConstantFloatBakesDefaultOnCpu) {
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class SCF {\n"
         "    @Kernel\n"
         "    public static void fill(KernelBuffer<float32> out, uint32 n) {\n"
@@ -2519,9 +2519,9 @@ TEST(XpuCpuDispatchTests, specConstantFloatBakesDefaultOnCpu) {
 // function-typed device local lowers to a (tag-0) direct call.
 const char* kDeviceFnPtrVariableSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class Ops {\n"
     "    @Device public static int32 sq(int32 x)   { return x * x; }\n"
     "    @Device public static int32 cube(int32 x) { return x * x * x; }\n"
@@ -2569,9 +2569,9 @@ TEST(XpuCpuDispatchTests, deviceFnPtrVariableOnCpu) {
 // i%3==0 -> i*i, ==1 -> i*i*i, ==2 -> -i. The index IS the dispatch tag.
 const char* kDeviceDispatchTableSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class Ops {\n"
     "    @Device public static int32 sq(int32 x)   { return x * x; }\n"
     "    @Device public static int32 cube(int32 x) { return x * x * x; }\n"
@@ -2625,9 +2625,9 @@ TEST(XpuCpuDispatchTests, deviceDispatchTableOnCpu) {
 // is always out of range for a 2-entry table, so every lane must read 0.
 const char* kDeviceDispatchOobSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class Ops {\n"
     "    @Device public static int32 sq(int32 x)   { return x * x; }\n"
     "    @Device public static int32 cube(int32 x) { return x * x * x; }\n"

@@ -32,7 +32,7 @@ namespace mir {
 namespace {
 
 // Address-space qualifier for a parameter type. Recognized when the
-// type's canonical name maps to one of cajeta.gpu.{Global,
+// type's canonical name maps to one of cajeta.xpu.{Global,
 // Shared, Constant, Private, Generic}. Anything else defaults to
 // Generic — including primitives and Buffer<T>, which carry their
 // own backend lowering at codegen time.
