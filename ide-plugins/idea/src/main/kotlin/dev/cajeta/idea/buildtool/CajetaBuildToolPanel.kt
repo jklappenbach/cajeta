@@ -16,7 +16,12 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.SimpleToolWindowPanel
 import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.openapi.vfs.VirtualFileManager
+import com.intellij.openapi.vfs.newvfs.BulkFileListener
+import com.intellij.openapi.vfs.newvfs.events.VFileEvent
 import com.intellij.ui.ColoredTreeCellRenderer
+import com.intellij.ui.EditorNotificationPanel
+import com.intellij.util.Alarm
 import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.TreeSpeedSearch
 import com.intellij.ui.components.JBScrollPane
@@ -63,6 +68,18 @@ class CajetaBuildToolPanel(private val project: Project) : SimpleToolWindowPanel
     private val rootModels = LinkedHashMap<String, TaskModel>()
     private var lastModel: TaskModel? = null
 
+    /** A reload banner (spec §13.2.1): shown when a watched manifest changes and
+     *  auto-reload is "prompt"; its Reload action re-runs discovery. */
+    private val reloadBanner = EditorNotificationPanel().apply {
+        text("Cajeta projects need to be reloaded")
+        createActionLabel("Reload") { hideBanner(); reload() }
+        isVisible = false
+    }
+    private val contentPanel = javax.swing.JPanel(java.awt.BorderLayout()).apply {
+        add(reloadBanner, java.awt.BorderLayout.NORTH)
+    }
+    private val reloadAlarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, project)
+
     private val rootNode = DefaultMutableTreeNode("root")
     private val treeModel = DefaultTreeModel(rootNode)
     private val tree = Tree(treeModel).apply {
@@ -95,9 +112,36 @@ class CajetaBuildToolPanel(private val project: Project) : SimpleToolWindowPanel
             KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0),
             JComponent.WHEN_FOCUSED,
         )
-        setContent(JBScrollPane(tree))
+        contentPanel.add(JBScrollPane(tree), java.awt.BorderLayout.CENTER)
+        setContent(contentPanel)
         setToolbar(buildToolbarComponent())
+        installManifestWatcher()
         reload()
+    }
+
+    private fun showBanner() { reloadBanner.isVisible = true; contentPanel.revalidate() }
+    private fun hideBanner() { reloadBanner.isVisible = false; contentPanel.revalidate() }
+
+    /** Watch the linked `cajeta.json` files; on change, decide per the auto-reload
+     *  setting (spec §13): reload (debounced), prompt via banner, or ignore. */
+    private fun installManifestWatcher() {
+        val roots = allRoots().toSet()
+        project.messageBus.connect(project).subscribe(
+            VirtualFileManager.VFS_CHANGES,
+            object : BulkFileListener {
+                override fun after(events: List<VFileEvent>) {
+                    if (events.none { it.path in roots }) return
+                    when (AutoSync.decide(CajetaSettings.instance.buildAutoReload)) {
+                        AutoSync.Action.IGNORE -> {}
+                        AutoSync.Action.PROMPT -> showBanner()
+                        AutoSync.Action.RELOAD -> {
+                            reloadAlarm.cancelAllRequests()
+                            reloadAlarm.addRequest({ reload() }, DEBOUNCE_MS)
+                        }
+                    }
+                }
+            },
+        )
     }
 
     /** Toolbar (actions) + an active profile/flavor selector (spec §12.1) that
@@ -209,7 +253,6 @@ class CajetaBuildToolPanel(private val project: Project) : SimpleToolWindowPanel
             showMessage("No cajeta.json in this project")
             return
         }
-        rootModels.clear()
         object : Task.Backgroundable(project, "Discovering Cajeta tasks", true) {
             override fun run(indicator: ProgressIndicator) {
                 val discovered = LinkedHashMap<String, TaskModel>()
@@ -221,11 +264,17 @@ class CajetaBuildToolPanel(private val project: Project) : SimpleToolWindowPanel
                     }
                 }
                 ApplicationManager.getApplication().invokeLater {
+                    hideBanner()
+                    // §13.2.3: a failed re-discovery keeps the prior tree usable.
+                    val next = AutoSync.reconcile(LinkedHashMap(rootModels), discovered)
+                    if (next.isEmpty()) {
+                        showMessage(failures.joinToString("\n").ifBlank { "Discovery failed" })
+                        return@invokeLater
+                    }
                     rootModels.clear()
-                    rootModels.putAll(discovered)
-                    lastModel = discovered[CajetaManifest.path(project)] ?: discovered.values.firstOrNull()
-                    if (rootModels.isEmpty()) showMessage(failures.joinToString("\n").ifBlank { "Discovery failed" })
-                    else rebuildTree()
+                    rootModels.putAll(next)
+                    lastModel = rootModels[CajetaManifest.path(project)] ?: rootModels.values.firstOrNull()
+                    rebuildTree()
                 }
             }
         }.queue()
@@ -404,5 +453,7 @@ class CajetaBuildToolPanel(private val project: Project) : SimpleToolWindowPanel
 
     companion object {
         private const val GROUP_FAVORITES = "Favorites"
+        /** Coalesce a burst of manifest edits into one reload (spec §13.1). */
+        private const val DEBOUNCE_MS = 400
     }
 }
