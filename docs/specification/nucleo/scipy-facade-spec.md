@@ -153,10 +153,12 @@ record**, not `OptimizeResult`.
 
 ## 5. spatial — KDTree, distance, ConvexHull/Delaunay (priority)
 
-Graphics needs spatial structures now (analysis §3.4 priority note); the toffee subsystem
-already has an **RT-as-compute spatial index** that may be a **shared substrate** for some
-queries (analysis §3.4) — the façade names the SciPy surface; *which* engine backs each
-query is a núcleo decision, not specified here.
+`cajeta.xpu` provides an **RT-as-compute spatial index** (RTNN: hardware ray-query repurposed as
+a kNN / radius / range accelerator — a compute primitive, graduated from the prism/caramelo
+project into the xpu foundation, device-verified). It is the **GPU backend** for these queries,
+**shared with robotica** (ICP / point-cloud nearest-neighbour). The façade names the SciPy
+surface; the xpu spatial index backs the nearest-neighbour/radius queries (a CPU KD-tree remains
+the fallback), invisibly to the user.
 
 **Use cases**
 - **5.1** As a graphics/ML developer, when I build a KD-tree over a point cloud
@@ -172,9 +174,10 @@ query is a núcleo decision, not specified here.
   (`spatial.convexHull(points)` / `spatial.delaunay(points)`), then I get a typed record of
   the hull/triangulation topology (vertices, simplices) with named fields.
 
-> **TBD (plan-time):** [S6] Whether `spatial.KdTree` is a thin façade over the toffee
-> RT-as-compute spatial index (shared substrate) or a standalone KD-tree, and whether that
-> choice is visible to the user (it should not be — same recognizable surface either way).
+> **Resolved [S6] (2026-06-24):** `spatial.KdTree`'s nearest-neighbour/radius queries ride the
+> **`cajeta.xpu` RT-as-compute spatial index** as the GPU backend (a CPU KD-tree is the
+> fallback); the choice is **invisible** to the user (same recognizable surface either way). The
+> index is an xpu compute primitive shared with robotica — not a scipy-private structure.
 
 ## 6. interpolate — splines, interp1d, griddata
 
@@ -280,8 +283,8 @@ not a plan — the actual schedule is plan-time.
 - **[S4]** Objective-callable gradient — `@Grad`-derived vs. finite-difference vs. both
   (§3).
 - **[S5]** Filter representation — `sos`-first vs. `(b, a)` transfer function (§4).
-- **[S6]** Whether `spatial` queries ride the toffee RT-as-compute spatial index as a shared
-  substrate, invisibly (§5).
+- **[S6] — RESOLVED:** `spatial` nearest-neighbour/radius queries ride the **`cajeta.xpu`**
+  RT-as-compute spatial index (GPU backend; CPU KD-tree fallback), invisibly (§5).
 - The exact field set of each result record (`MinimizeResult`, `IvpResult`, etc.) —
   recognizable-subset vs. full-SciPy-parity — resolved per submodule at plan time.
 - Whether `special`/`stats` distribution objects are value records or stateful objects.
