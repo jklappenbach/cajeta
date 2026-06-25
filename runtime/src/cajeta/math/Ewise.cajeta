@@ -1,10 +1,10 @@
 package cajeta.math;
 
-import cajeta.gpu.KernelBuffer;
-import cajeta.gpu.KernelStream;
-import cajeta.gpu.KernelThread;
-import cajeta.gpu.Workgroup;
-import cajeta.gpu.xpu.CooperativeMatrix;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Workgroup;
+import cajeta.xpu.CooperativeMatrix;
 
 /**
  * Elementwise GPU lowering for the `Tensor` ufunc surface (numpy-porting-plan

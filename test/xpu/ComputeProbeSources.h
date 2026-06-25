@@ -19,9 +19,9 @@ namespace cajeta_test_probes {
 inline const char* kNumericsBroadcastReduce() {
     return
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class NumProbe {\n"
     "    @Kernel\n"
     "    public static void broadcastReduce(KernelBuffer<float32> acc,\n"
@@ -94,9 +94,9 @@ inline const char* kNumericsBroadcastReduce() {
 inline const char* kTorchMatmulScatter() {
     return
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class TorchProbe {\n"
     "    @Kernel\n"
     "    public static void matmul(KernelBuffer<float32> C, KernelBuffer<float32> A,\n"
@@ -199,9 +199,9 @@ inline const char* kTorchMatmulScatter() {
 inline const char* kSpelaFusedLayer() {
     return
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelStream;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class SpelaProbe {\n"
     "    @Kernel\n"
     "    public static void fusedLayer(KernelBuffer<float32> W, KernelBuffer<float32> x,\n"

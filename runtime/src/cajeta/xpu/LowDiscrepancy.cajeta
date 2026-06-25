@@ -1,0 +1,73 @@
+package cajeta.xpu;
+
+/**
+ * LowDiscrepancy — quasi-random low-discrepancy sampling sequences (cajeta-gfx §3,
+ * the acceleration/sampling/residency foundation; spec §8.7).
+ *
+ * Monte-Carlo integration (path tracing, AO, area-light sampling, BRDF importance
+ * sampling) converges far faster on a LOW-DISCREPANCY point set — points that fill
+ * the domain more evenly than independent random samples — than on pseudo-random
+ * ones. The building block is the Van der Corput RADICAL INVERSE: write `index` in
+ * base `base`, then reflect its digits about the radix point, giving a point in
+ * [0, 1). The Halton sequence is the radical inverse in a different (coprime) base
+ * per dimension; the Hammersley point set fixes the first axis to a uniform
+ * `index/count` stratification.
+ *
+ * Pure, deterministic per index — CPU == GPU, no state — so it is host-testable
+ * against exact known values (Van der Corput base 2 of 1/2/3/4 = 0.5/0.25/0.75/
+ * 0.125). The stateful PCG/xoshiro stream RNG and the reservoir/RIS-MIS estimators
+ * are the sampling foundation's other half (follow-on slices).
+ */
+public class LowDiscrepancy {
+
+    /**
+     * The radical inverse of `index` in base `base` (`base` >= 2): the digits of
+     * `index` written in base `base`, reflected about the radix point — a point in
+     * [0, 1). radicalInverse(0, b) = 0 for every base.
+     */
+    public static float32 radicalInverse(int32 index, int32 base) {
+        float32 b = base;                // int32 -> float32
+        float32 invBase = 1.0f / b;
+        float32 result = 0.0f;
+        float32 f = invBase;
+        int32 i = index;
+        while (i > 0) {
+            int32 digit = i % base;
+            float32 d = digit;           // int32 -> float32
+            result = result + d * f;
+            i = i / base;
+            f = f * invBase;
+        }
+        return result;
+    }
+
+    /**
+     * The Van der Corput sequence — the radical inverse in base 2 (the canonical
+     * 1-D low-discrepancy sequence): 1 -> 0.5, 2 -> 0.25, 3 -> 0.75, 4 -> 0.125.
+     */
+    public static float32 vanDerCorput(int32 index) {
+        return radicalInverse(index, 2);
+    }
+
+    /**
+     * The Halton sequence coordinate for `index` in dimension-base `base` — just
+     * the radical inverse, named for its role: a d-dimensional Halton point is
+     * (radicalInverse(i, p0), radicalInverse(i, p1), ...) over coprime bases
+     * p0, p1, ... (typically the first primes 2, 3, 5, 7, ...).
+     */
+    public static float32 halton(int32 index, int32 base) {
+        return radicalInverse(index, base);
+    }
+
+    /**
+     * The first coordinate of the Hammersley point set: the uniform stratified
+     * axis `index / count` (for sample `index` of a fixed `count`). Pair it with
+     * {@link #vanDerCorput}(index) for the 2-D Hammersley point — an even better
+     * fill than 2-D Halton when the total sample count is known up front.
+     */
+    public static float32 hammersleyX(int32 index, int32 count) {
+        float32 x = index;               // int32 -> float32
+        float32 n = count;
+        return x / n;
+    }
+}

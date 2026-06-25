@@ -91,8 +91,8 @@ std::string printModule(llvm::Module& m) {
 TEST(XpuAmdgpuLoopEmitTests, lowersSaxpyToIsaAndIr) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void saxpy(KernelBuffer<float32> y, KernelBuffer<float32> x,\n"
@@ -148,8 +148,8 @@ TEST(XpuAmdgpuLoopEmitTests, lowersSaxpyToIsaAndIr) {
 TEST(XpuAmdgpuLoopEmitTests, lowersStridedSumLoop) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void strideSum(KernelBuffer<int32> out, KernelBuffer<int32> in,\n"
@@ -191,10 +191,10 @@ namespace {
 // A 2-D texture sampled through a Sampler — the Item 8 Stage C kernel.
 const char* kTextureSampleSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
     "import cajeta.gpu.Texture2D;\n"
     "import cajeta.gpu.Sampler;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void sampleTex(Texture2D tex, Sampler s,\n"
@@ -206,9 +206,9 @@ const char* kTextureSampleSource =
 
 const char* kTextureFetchSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
     "import cajeta.gpu.Texture2D;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void fetchTex(Texture2D tex,\n"
@@ -222,9 +222,9 @@ const char* kTextureFetchSource =
 // __ockl_image_load_2D (v4f32) then bitcasts the raw result to <4 x i32>.
 const char* kIntTextureFetchSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
     "import cajeta.gpu.Texture2D;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void fetchTex(Texture2D<int32> tex,\n"
@@ -342,10 +342,10 @@ TEST(XpuAmdgpuLoopEmitTests, intTextureFetchBitcastsToI32) {
 TEST(XpuAmdgpuLoopEmitTests, lowers3dTextureToOckl3D) {
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
         "import cajeta.gpu.Texture3D;\n"
         "import cajeta.gpu.Sampler;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void fetchVol(Texture3D vol, KernelBuffer<float32> out, uint32 n) {\n"
@@ -415,8 +415,8 @@ TEST(XpuAmdgpuLoopEmitTests, textureFetchEmitsImageLoadIsa) {
 TEST(XpuAmdgpuLoopEmitTests, lowersPodStructArg) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class Params {\n"
         "    int32 mul;\n"
         "    int32 add;\n"

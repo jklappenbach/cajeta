@@ -1,0 +1,224 @@
+package cajeta.xpu;
+
+import cajeta.xpu.KernelBuffer;
+
+/**
+ * SoftwareRayQuery — the portable, backend-agnostic ray-query traversal
+ * (cajeta-gpu ray-query-to-core, inc 1). It is the **Software tier** of inline
+ * ray query, mirroring how {@link CooperativeMatrix} has a native tier and a
+ * portable software tier: where the device advertises native inline ray query
+ * (Vulkan `SPV_KHR_ray_query`) a {@link RayQuery} lowers to the hardware op; on
+ * every other backend it lowers to *this* — a stackless walk, written once in
+ * cajeta, of the software BVH the {@link AccelerationStructure} software builder
+ * produced (runtime/native/cajeta_bvh.c).
+ *
+ * THE BVH IS A `KernelBuffer<float32>`. The acceleration structure on a software
+ * backend is a flat float32 block (see cajeta-docs/gpu/RayQuery.md §3 for the
+ * frozen layout): an 8-word header, then 9-word threaded depth-first nodes, then
+ * a primRef table. Structural integers (counts, indices, escape links) are stored
+ * as exact floats and read back with the ordinary `(uint32)` cast — so the whole
+ * walk needs no uint↔float bit-reinterpret (cajeta core has none yet). Exact for
+ * indices < 2^24, the v1 limit.
+ *
+ * THE CURSOR ({@link SwRayCursor}) carries the ray and the resumable traversal
+ * state by value. Value types are immutable in a kernel, so `step` CONSTRUCTS a
+ * new cursor each call: it resumes at `cursor.nextNode`, descends/skips via the
+ * threaded escape links, and stops at the next leaf whose AABB the ray hits —
+ * setting `hasCandidate` and the candidate's caller primitive index, exactly the
+ * `OpRayQueryProceedKHR` + `GetIntersectionType`/`PrimitiveIndex` semantics the
+ * native path exposes. These static `@Device` helpers are how a `RayQuery`
+ * op lowers on a software backend: the kernel call site emits
+ * `cursor = SoftwareRayQuery.<op>(cursor, ...)` and reads the result fields
+ * back off the cursor (the value-type-cursor + writeback realization).
+ *
+ * v1: AABB geometry, one primitive per leaf (each leaf's AABB is the prim's box,
+ * so the slab test on the node IS the primitive test); candidates are always AABB
+ * (`candKind == 1`), and there is no committed hit yet (`committed == 0`) — count
+ * / candidate-refine queries (Toffee `countWithin` / `radiusExact`). Triangle
+ * leaves (Möller-Trumbore) and confirm/generate are inc 2 / inc 3.
+ */
+public final class SoftwareRayQuery {
+
+    // Header / node word offsets (must match cajeta_bvh.c):
+    //   header: [1]=nodeCount [4]=nodesOffset [5]=primRefOffset
+    //   node (stride 9): [0..5]=aabb [6]=escape [7]=firstPrim [8]=primCount
+    //
+    // `initialize` (seeding the cursor from the ray) is built directly at the
+    // kernel call site (an insertvalue chain) — it has no KernelBuffer parameter, so a
+    // cajeta body here would be host-compiled (Method::generateCode only stubs
+    // device-only methods that take a KernelBuffer<T>) and choke on value-type
+    // construction; the trivial seed is cheaper inline anyway. The traversal — the
+    // actual work — stays here in `step`.
+
+    /**
+     * Advance to the next candidate leaf, returning a new cursor with
+     * `hasCandidate` = 1 and the candidate fields set while a candidate remains,
+     * else `hasCandidate` = 0 once the walk is exhausted. The threaded layout
+     * makes this stackless: a hit interior node descends to `i+1`; a miss (or a
+     * processed leaf) jumps to the node's escape index. Mirrors
+     * `OpRayQueryProceedKHR`.
+     */
+    @Device public static SwRayCursor step(SwRayCursor cursor, KernelBuffer<float32> bvh) {
+        uint32 nodeCount   = (uint32) bvh[1];
+        uint32 primCountTot = (uint32) bvh[2];
+        uint32 nodesOff    = (uint32) bvh[4];
+        uint32 primRefOff  = (uint32) bvh[5];
+        uint32 geomFlags   = (uint32) bvh[6];
+        // primData (9 floats / triangle) is appended after primRef; offset is
+        // implicit. Only read for triangle geometry (the Möller-Trumbore leaf).
+        uint32 primDataOff = primRefOff + primCountTot;
+
+        float32 ox = cursor.ox;
+        float32 oy = cursor.oy;
+        float32 oz = cursor.oz;
+        float32 dx = cursor.dx;
+        float32 dy = cursor.dy;
+        float32 dz = cursor.dz;
+        float32 tMin = cursor.tMin;
+        float32 tMax = cursor.tMax;
+        uint32 committed = cursor.committed;
+        // Committed (nearest) hit carried through untouched — confirm/generate at
+        // the call site set it; tMax above already reflects any commit's shrink.
+        float32 committedT = cursor.committedT;
+        uint32 committedPrim = cursor.committedPrim;
+        float32 committedU = cursor.committedU;
+        float32 committedV = cursor.committedV;
+        uint32 committedFront = cursor.committedFront;
+
+        uint32 i = cursor.nextNode;
+        while (i < nodeCount) {
+            uint32 base = nodesOff + i * 9;
+            uint32 escape    = (uint32) bvh[base + 6];
+            uint32 firstPrim = (uint32) bvh[base + 7];
+            uint32 primCount = (uint32) bvh[base + 8];
+
+            // Node-AABB slab: descent for interior nodes; for a leaf it bounds the
+            // primitive (the box around an AABB prim, or a triangle's bbox).
+            boolean hit = SoftwareRayQuery.slabHit(
+                ox, oy, oz, dx, dy, dz, tMin, tMax,
+                bvh[base + 0], bvh[base + 1], bvh[base + 2],
+                bvh[base + 3], bvh[base + 4], bvh[base + 5]);
+
+            if (hit && primCount > 0) {
+                // Leaf: the actual primitive test. AABB geometry's candidate IS
+                // the box overlap (kind 1); a triangle additionally needs a
+                // Möller-Trumbore hit (kind 0), inlined here so we capture the hit
+                // distance + barycentrics (the inc-3 candidate getters).
+                uint32 prim = (uint32) bvh[primRefOff + firstPrim];
+                boolean isCandidate = true;
+                uint32 kind = 1;
+                float32 cT = 0.0f;
+                float32 cU = 0.0f;
+                float32 cV = 0.0f;
+                uint32 cFront = 0;
+                if (geomFlags == 2) {
+                    kind = 0;
+                    isCandidate = false;
+                    uint32 tb = primDataOff + prim * 9;
+                    float32 v0x = bvh[tb + 0]; float32 v0y = bvh[tb + 1]; float32 v0z = bvh[tb + 2];
+                    float32 v1x = bvh[tb + 3]; float32 v1y = bvh[tb + 4]; float32 v1z = bvh[tb + 5];
+                    float32 v2x = bvh[tb + 6]; float32 v2y = bvh[tb + 7]; float32 v2z = bvh[tb + 8];
+                    float32 e1x = v1x - v0x; float32 e1y = v1y - v0y; float32 e1z = v1z - v0z;
+                    float32 e2x = v2x - v0x; float32 e2y = v2y - v0y; float32 e2z = v2z - v0z;
+                    float32 px = dy * e2z - dz * e2y;   // p = dir × e2
+                    float32 py = dz * e2x - dx * e2z;
+                    float32 pz = dx * e2y - dy * e2x;
+                    float32 det = e1x * px + e1y * py + e1z * pz;
+                    if (det > 0.00000001f || det < -0.00000001f) {
+                        float32 inv = 1.0f / det;
+                        float32 tvx = ox - v0x; float32 tvy = oy - v0y; float32 tvz = oz - v0z;
+                        float32 uu = (tvx * px + tvy * py + tvz * pz) * inv;
+                        if (uu >= 0.0f && uu <= 1.0f) {
+                            float32 qx = tvy * e1z - tvz * e1y;   // q = tv × e1
+                            float32 qy = tvz * e1x - tvx * e1z;
+                            float32 qz = tvx * e1y - tvy * e1x;
+                            float32 vv = (dx * qx + dy * qy + dz * qz) * inv;
+                            if (vv >= 0.0f && uu + vv <= 1.0f) {
+                                float32 tt = (e2x * qx + e2y * qy + e2z * qz) * inv;
+                                if (tt >= tMin && tt <= tMax) {
+                                    isCandidate = true;
+                                    cT = tt; cU = uu; cV = vv;
+                                    // det = -dot(dir, geometric normal): det > 0
+                                    // ⇔ the normal faces the ray ⇒ front-facing
+                                    // (the CCW-winding convention, matching Vulkan
+                                    // OpRayQueryGetIntersectionFrontFaceKHR).
+                                    if (det > 0.0f) { cFront = 1; }
+                                }
+                            }
+                        }
+                    }
+                }
+                if (isCandidate) {
+                    return stack SwRayCursor(ox, oy, oz, dx, dy, dz, tMin, tMax,
+                                           escape, 1, prim, kind, committed,
+                                           cT, cU, cV, cFront,
+                                           committedT, committedPrim,
+                                           committedU, committedV, committedFront);
+                }
+                i = escape;       // leaf's box hit but primitive missed: skip it
+            } else {
+                if (hit) {
+                    i = i + 1;    // interior hit: descend to the left child
+                } else {
+                    i = escape;   // miss: skip the subtree
+                }
+            }
+        }
+        // Exhausted: no candidate (committed hit, if any, carried through).
+        return stack SwRayCursor(ox, oy, oz, dx, dy, dz, tMin, tMax,
+                               nodeCount, 0, 0, 0, committed, 0.0f, 0.0f, 0.0f, 0,
+                               committedT, committedPrim, committedU, committedV,
+                               committedFront);
+    }
+
+    /**
+     * Ray vs axis-aligned box over [tMin, tMax] — the slab test. An axis whose
+     * direction component is ~0 degenerates to a containment test on that axis
+     * (avoids 0·∞ → NaN), so a near-zero-length spatial-index ray reduces cleanly
+     * to point-in-box.
+     */
+    @Device public static boolean slabHit(
+            float32 ox, float32 oy, float32 oz,
+            float32 dx, float32 dy, float32 dz,
+            float32 tMin, float32 tMax,
+            float32 minx, float32 miny, float32 minz,
+            float32 maxx, float32 maxy, float32 maxz) {
+        float32 tNear = tMin;
+        float32 tFar = tMax;
+
+        // X axis.
+        if (dx < 0.00000001f && dx > -0.00000001f) {
+            if (ox < minx || ox > maxx) { return false; }
+        } else {
+            float32 inv = 1.0f / dx;
+            float32 t0 = (minx - ox) * inv;
+            float32 t1 = (maxx - ox) * inv;
+            if (t0 > t1) { float32 tmp = t0; t0 = t1; t1 = tmp; }
+            if (t0 > tNear) { tNear = t0; }
+            if (t1 < tFar) { tFar = t1; }
+        }
+        // Y axis.
+        if (dy < 0.00000001f && dy > -0.00000001f) {
+            if (oy < miny || oy > maxy) { return false; }
+        } else {
+            float32 inv = 1.0f / dy;
+            float32 t0 = (miny - oy) * inv;
+            float32 t1 = (maxy - oy) * inv;
+            if (t0 > t1) { float32 tmp = t0; t0 = t1; t1 = tmp; }
+            if (t0 > tNear) { tNear = t0; }
+            if (t1 < tFar) { tFar = t1; }
+        }
+        // Z axis.
+        if (dz < 0.00000001f && dz > -0.00000001f) {
+            if (oz < minz || oz > maxz) { return false; }
+        } else {
+            float32 inv = 1.0f / dz;
+            float32 t0 = (minz - oz) * inv;
+            float32 t1 = (maxz - oz) * inv;
+            if (t0 > t1) { float32 tmp = t0; t0 = t1; t1 = tmp; }
+            if (t0 > tNear) { tNear = t0; }
+            if (t1 < tFar) { tFar = t1; }
+        }
+        return tNear <= tFar;
+    }
+}

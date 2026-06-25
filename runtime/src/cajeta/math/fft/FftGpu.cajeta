@@ -1,9 +1,9 @@
 package cajeta.math.fft;
 
 import cajeta.math.Tensor;
-import cajeta.gpu.KernelBuffer;
-import cajeta.gpu.KernelStream;
-import cajeta.gpu.KernelThread;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
 
 /**
  * GPU lowering of the radix-2 FFT (numpy-porting-plan Phase 8, 8b — the FFT butterfly

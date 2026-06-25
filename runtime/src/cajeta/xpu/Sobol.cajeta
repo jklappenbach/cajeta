@@ -1,0 +1,152 @@
+package cajeta.xpu;
+
+/**
+ * Sobol — the Sobol' (0,2)-sequence quasi-random low-discrepancy generator
+ * (cajeta-gfx §3, the sampling foundation; spec §8.7). The optional quality
+ * upgrade parked off {@link LowDiscrepancy}: where the Halton/Van der Corput
+ * radical inverse fills each axis well but its higher dimensions correlate, a
+ * Sobol' sequence is a digital (0,2)-net — its 2-D points are STRATIFIED across
+ * every dyadic elementary interval (one point per cell of every 2^a x 2^b grid
+ * with a+b = log2 N), which is why Sobol' is the default sampler in production
+ * path tracers.
+ *
+ * The construction is the standard direction-number method (Bratley & Fox 1988 /
+ * Joe & Kuo): per dimension a set of 32 "direction numbers" v[i], and the sample
+ * integer for `index` is the XOR of the v[i] whose bit i is set in `index`,
+ * read as a fraction of 2^32. Dimension 0 uses the identity directions
+ * v[i] = 2^(31-i) — which reproduces the Van der Corput base-2 radical inverse
+ * exactly (a cross-check against {@link LowDiscrepancy#vanDerCorput}). Dimension
+ * 1 uses the primitive polynomial x+1 with initial direction integer 1, whose
+ * recurrence m_i = 2*m_{i-1} XOR m_{i-1} generates the classic second Sobol'
+ * dimension; together the two axes are the (0,2)-sequence.
+ *
+ * CODEGEN DISCIPLINE (see the value-type-codegen-gotchas memory). Direction
+ * numbers are carried as int64 so the 2^31 / 2^32-range values never set an
+ * int32 sign bit, and every power-of-two scale is built by DOUBLING (int64
+ * add only) — no int32 `>>>` (mis-lowers to arithmetic), no variable-amount
+ * shift, no int64 multiply by a sign-bit constant. The final fraction uses an
+ * int64 `>>>` (the proven-safe logical shift on int64, as in {@link Rng}). Bit
+ * extraction of `index` uses arithmetic `>>` on a non-negative sample number,
+ * where arithmetic and logical shift coincide. Pure and deterministic per index
+ * (CPU == GPU), so it is host-testable against exact known values.
+ */
+public class Sobol {
+
+    /**
+     * Map a 32-bit Sobol' integer (held in the low 32 bits of `bits32`, value in
+     * [0, 2^32)) to a uniform float in [0, 1): take the top 24 bits (the float32
+     * mantissa width, so each representable value is hit exactly) and divide by
+     * 2^24. The `>>> 8` is an int64 logical shift — the proven-safe one (only the
+     * int32 `>>>` mis-lowers); the operand is non-negative so it is unambiguous.
+     */
+    public static float32 toUnitFloat32(int64 bits32) {
+        int64 hi = (bits32 >>> 8) & 0xFFFFFFL;   // top 24 of the low 32 bits
+        int32 hiI = (int32) hi;
+        float32 f = hiI;                          // int32 -> float32 (exact, < 2^24)
+        return f / 16777216.0f;                   // / 2^24
+    }
+
+    /**
+     * Left-shift `val` by `e` bits (0 <= e <= 31) using repeated DOUBLING — int64
+     * add only, so no variable-amount hardware shift and no multiply is emitted
+     * (both routes the current codegen mis-lowers). With val and e bounded so the
+     * result stays < 2^32, the value remains a positive int64.
+     */
+    public static int64 shiftLeft(int64 val, int32 e) {
+        int64 r = val;
+        int32 k = 0;
+        while (k < e) {
+            r = r + r;
+            k = k + 1;
+        }
+        return r;
+    }
+
+    /**
+     * The 32 direction numbers for Sobol' dimension 0 (the identity directions):
+     * v[i] = 2^(31-i). Built top-down by doubling — v[31] = 1, v[i] = 2*v[i+1] —
+     * so no shift instruction is needed. This dimension is the Van der Corput
+     * base-2 radical inverse.
+     */
+    // Fills the caller-provided 32-entry array (was a `#int64[]` move-return,
+    // which trips a codegen NULL_OPERAND on the int64[] move when the class
+    // lives in the prelude-rooted cajeta.xpu package — see migration plan 1.3.2).
+    public static void directionsDim0(int64[] v) {
+        v[31] = 1;
+        int32 i = 30;
+        while (i >= 0) {
+            int64 nxt = v[i + 1];
+            v[i] = nxt + nxt;       // 2 * v[i+1] = 2^(31-i)
+            i = i - 1;
+        }
+    }
+
+    /**
+     * The 32 direction numbers for Sobol' dimension 1, from the primitive
+     * polynomial x+1 (degree 1) with initial direction integer m_1 = 1. The
+     * degree-1 recurrence is m_i = 2*m_{i-1} XOR m_{i-1}; the direction number is
+     * v[i] = m_{i+1} << (31 - i) (0-based bit i). m_{i+1} < 2^(i+1) so the shift
+     * keeps every v[i] < 2^32 (a positive int64).
+     */
+    // Fills the caller-provided 32-entry array (see directionsDim0 note).
+    public static void directionsDim1(int64[] v) {
+        int64[] m = heap int64[33];     // m[1..32], 1-based
+        m[1] = 1;
+        int32 i = 2;
+        while (i <= 32) {
+            int64 prev = m[i - 1];
+            int64 dbl = prev + prev;    // 2 * m_{i-1}
+            m[i] = dbl ^ prev;          // 2*m_{i-1} XOR m_{i-1}
+            i = i + 1;
+        }
+        int32 b = 0;
+        while (b < 32) {
+            int64 mm = m[b + 1];
+            v[b] = Sobol.shiftLeft(mm, 31 - b);
+            b = b + 1;
+        }
+    }
+
+    /**
+     * The Sobol' sample for `index` given a dimension's 32 direction numbers `v`:
+     * the XOR of v[i] over the set bits i of `index`, mapped to [0, 1) by
+     * {@link #toUnitFloat32}. `index` is scanned LSB-first; `index >> 1` is an
+     * arithmetic shift on a non-negative sample number (so it agrees with the
+     * logical shift). index 0 maps to 0 in every dimension.
+     */
+    public static float32 sample(int32 index, int64[] v) {
+        int64 x = 0;
+        int32 i = 0;
+        int32 idx = index;
+        while (idx > 0) {
+            int32 bit = idx & 1;
+            if (bit == 1) {
+                x = x ^ v[i];
+            }
+            idx = idx >> 1;     // non-negative -> arithmetic == logical
+            i = i + 1;
+        }
+        return Sobol.toUnitFloat32(x);
+    }
+
+    /**
+     * Sobol' dimension 0 coordinate for `index` — equals the Van der Corput
+     * base-2 radical inverse (1 -> 0.5, 2 -> 0.25, 3 -> 0.75, 4 -> 0.125).
+     */
+    public static float32 dim0(int32 index) {
+        int64[] v = heap int64[32];
+        Sobol.directionsDim0(v);
+        return Sobol.sample(index, v);
+    }
+
+    /**
+     * Sobol' dimension 1 coordinate for `index` (the classic second dimension):
+     * 1 -> 0.5, 2 -> 0.75, 3 -> 0.25, 4 -> 0.625. Paired with {@link #dim0} it
+     * forms the 2-D (0,2)-sequence whose first 4 points hit all four quadrants.
+     */
+    public static float32 dim1(int32 index) {
+        int64[] v = heap int64[32];
+        Sobol.directionsDim1(v);
+        return Sobol.sample(index, v);
+    }
+}

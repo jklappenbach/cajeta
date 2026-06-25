@@ -69,7 +69,7 @@ TEST(ConstGenericVectorTests, vectorLocalWithConstParamWidthRuns) {
 TEST(ConstGenericVectorTests, vectorAsBufferElementWithConstParam) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
         "public class W {\n"
         "    public static int32 lenN<uint32 N>() {\n"
         "        KernelBuffer<Vector<float32,N>> b = heap KernelBuffer<Vector<float32,N>>(0, 5);\n"
@@ -89,7 +89,7 @@ TEST(ConstGenericVectorTests, vectorAsBufferElementWithConstParam) {
 TEST(ConstGenericVectorTests, matrixWithConstParamDims) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
         "public class W {\n"
         "    public static int32 lenN<uint32 N>() {\n"
         "        KernelBuffer<Matrix<float32,N,N>> b = heap KernelBuffer<Matrix<float32,N,N>>(0, 7);\n"

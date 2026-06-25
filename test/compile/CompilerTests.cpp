@@ -48,9 +48,9 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // 2026-06-03: 98 → 100 — Part C inc 3a added AccelerationStructure + RayQuery (+2).
 // 2026-06-04: 100 → 101 — Part C CM4 added CooperativeMatrix (+1).
 // 2026-06-05: 101 → 102 — B1 added the declared cajeta.math.Matrix value type (+1).
-// 2026-06-06: re-anchored 102 → 104 — Tier-1 sweep added cajeta.gpu.Bits (+ drift fix).
-// 2026-06-06: 104 → 105 — writable images added cajeta.gpu.Image2D (+1).
-// 2026-06-09: +1 — Part C minor added cajeta.gpu.Quad (quad-control); the
+// 2026-06-06: re-anchored 102 → 104 — Tier-1 sweep added cajeta.xpu.Bits (+ drift fix).
+// 2026-06-06: 104 → 105 — writable images added cajeta.xpu.Image2D (+1).
+// 2026-06-09: +1 — Part C minor added cajeta.xpu.Quad (quad-control); the
 //   live base had drifted to 277, so re-anchor to the actual modules.size()-1: 278.
 // --- main lineage (threading / time / json / net preludes) ---
 // 2026-05-31: 96 → 110 — cajeta.concurrent + Atomic + cajeta.time.Duration + #66 stream sweep.
@@ -87,19 +87,19 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // (LowDiscrepancy, Rng, Sdf, Noise, Octahedral) plus the branch's ifx-lineage
 // prelude growth had drifted the live count well past 383 (cajeta.gpu is eager;
 // only cajeta.math is lazy), so this test was already red before §3-a. +1 of the
-// jump is cajeta.gpu.Lbvh (the §3-a software-LBVH builder, Morton-code slice);
+// jump is cajeta.xpu.Lbvh (the §3-a software-LBVH builder, Morton-code slice);
 // the rest absorbs the pre-existing drift. Self-anchored to the live
 // modules.size()-1 on a fresh build.
-// 2026-06-23: 440 → 441 — cajeta.gpu.PageCache (the §3 3.d residency cache, eager
+// 2026-06-23: 440 → 441 — cajeta.xpu.PageCache (the §3 3.d residency cache, eager
 // cajeta.gpu prelude; +1).
-// 2026-06-23: 441 → 443 — cajeta.gpu.Reservoir + cajeta.gpu.Ris (the §3 3.b-rest
+// 2026-06-23: 441 → 443 — cajeta.xpu.Reservoir + cajeta.xpu.Ris (the §3 3.b-rest
 // RIS reservoir value type + RIS/MIS estimators; eager cajeta.gpu prelude; +2).
-// 2026-06-23: 443 → 445 — cajeta.gpu.Sobol (the §3 3.b-rest-sobol low-discrepancy
-// (0,2)-sequence) + cajeta.gpu.BvhCodec (the §3 3.a-rest reinterpret/quantized-node
+// 2026-06-23: 443 → 445 — cajeta.xpu.Sobol (the §3 3.b-rest-sobol low-discrepancy
+// (0,2)-sequence) + cajeta.xpu.BvhCodec (the §3 3.a-rest reinterpret/quantized-node
 // codec); both eager cajeta.gpu prelude; +2.
-// 2026-06-24: 445 → 446 — cajeta.gpu.Bvh (the cajeta-accel contract facade +
+// 2026-06-24: 445 → 446 — cajeta.xpu.Bvh (the cajeta-accel contract facade +
 // Reference adapter, plan unit 1) registers a structure; the sibling
-// cajeta.gpu.Strategy ENUM does not add a separate module, so the eager prelude
+// cajeta.xpu.Strategy ENUM does not add a separate module, so the eager prelude
 // grew net +1.
 static constexpr size_t STDLIB_STRUCTURE_COUNT = 446;
 

@@ -1075,7 +1075,7 @@ namespace cajeta {
                     // you cannot parameterize a non-generic one. If the bare
                     // short-name fallback above landed a NON-template (e.g.
                     // unqualified `Stream<T>` resolved to the final,
-                    // non-generic `cajeta.gpu.KernelStream` instead of the
+                    // non-generic `cajeta.xpu.KernelStream` instead of the
                     // generic `cajeta.lang.stream.Stream`, because both
                     // register the bare key "Stream" in the process-global
                     // canonicalMap and the last writer wins), re-resolve to a
@@ -1083,7 +1083,7 @@ namespace cajeta {
                     // arguments are silently dropped and the intended generic
                     // type/parent is lost — which broke every
                     // `ArrayStream<T>`-derived stream (fold/map/reduce/…) once
-                    // `cajeta.gpu.KernelStream` was added to the build.
+                    // `cajeta.xpu.KernelStream` was added to the build.
                     if (!templateClass || !templateClass->isTemplate()) {
                         if (auto t = findTemplateByShortName(qName->getTypeName())) {
                             templateClass = dynamic_pointer_cast<CajetaClass>(t);

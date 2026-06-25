@@ -85,8 +85,8 @@ TEST(XpuCudaSpecProbeTests, noOverrideReadsBakedDefaultOnDevice) {
 
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class SC {\n"
         "    @Kernel\n"
         "    public static void fill(KernelBuffer<int32> out, uint32 n) {\n"

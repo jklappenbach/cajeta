@@ -5,7 +5,7 @@
 // KernelArg trait (CajetaXPU.md §3.1.1). v1's admissible set:
 //
 //   - primitives (anything with PRIMITIVE_FLAG)
-//   - cajeta.gpu.KernelBuffer<T> (any T)
+//   - cajeta.xpu.KernelBuffer<T> (any T)
 //   - POD structs by value (a class with only primitive fields and no
 //     inheritance) — admitted without a marker interface (Item 7)
 //   - user types declared `implements KernelArg`
@@ -109,7 +109,7 @@ TEST(XpuKernelArgTests, primitivesAdmissible) {
 TEST(XpuKernelArgTests, bufferTypeAdmissible) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
         "public class K {\n"
         "    @Kernel\n"
         "    public static void run(KernelBuffer<float32> y, KernelBuffer<float32> x,\n"
@@ -125,7 +125,7 @@ TEST(XpuKernelArgTests, bufferTypeAdmissible) {
 TEST(XpuKernelArgTests, textureAndSamplerAdmissible) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
         "import cajeta.gpu.Texture2D;\n"
         "import cajeta.gpu.Sampler;\n"
         "public class K {\n"
@@ -141,7 +141,7 @@ TEST(XpuKernelArgTests, textureAndSamplerAdmissible) {
 TEST(XpuKernelArgTests, userTypeImplementingKernelArgAdmissible) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelArg;\n"
+        "import cajeta.xpu.KernelArg;\n"
         "public class MyPod implements KernelArg {\n"
         "    int32 a;\n"
         "    int32 b;\n"

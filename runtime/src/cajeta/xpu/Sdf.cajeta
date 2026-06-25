@@ -1,0 +1,206 @@
+package cajeta.xpu;
+
+import cajeta.lang.Math;
+
+/**
+ * Sdf — signed-distance-field primitives, CSG combinators, and a sphere tracer
+ * (cajeta-gfx §3, the acceleration/sampling/residency foundation; spec §8.7).
+ *
+ * A signed distance field maps a point to the distance to the nearest surface,
+ * NEGATIVE inside the solid and zero exactly on it. SDFs compose analytically —
+ * union is the min of two fields, intersection the max, subtraction max(a, -b)
+ * — which makes them the natural representation for procedural geometry,
+ * soft shadows, ambient occlusion, and collision margins.
+ *
+ * SPHERE TRACING renders an SDF without triangles: from a ray's current point,
+ * the field value is the radius of the largest empty sphere, so a step of
+ * exactly that distance provably never crosses a surface; iterating marches
+ * right up to the boundary and stops when the field falls below epsilon. It
+ * converges onto the analytic surface (a ray toward a sphere hits at the same
+ * t the closed-form intersection gives).
+ *
+ * Pure scalar float32 math (no vector value types — every coordinate is passed
+ * and returned as a scalar, sidestepping the value-type codegen traps), so it
+ * is deterministic and host-testable, and lowers identically on the GPU. The
+ * grid-sampled SDF (a `float32[]` volume + trilinear fetch) and the noise /
+ * octahedral-encode primitives are the sibling slices of §3.c.
+ */
+public class Sdf {
+
+    /** Signed distance to a sphere of radius `r` centred at the origin. */
+    public static float32 sphere(float32 px, float32 py, float32 pz, float32 r) {
+        float32 len = Math.sqrt(px * px + py * py + pz * pz);
+        return len - r;
+    }
+
+    /**
+     * Signed distance to an axis-aligned box with half-extents (bx, by, bz)
+     * centred at the origin: the exterior distance (length of the positive part
+     * of |p|-b) plus the interior term (max component of |p|-b, clamped to <= 0).
+     */
+    public static float32 box(float32 px, float32 py, float32 pz,
+                              float32 bx, float32 by, float32 bz) {
+        float32 qx = Math.abs(px) - bx;
+        float32 qy = Math.abs(py) - by;
+        float32 qz = Math.abs(pz) - bz;
+        float32 mx = Math.max(qx, 0.0f);
+        float32 my = Math.max(qy, 0.0f);
+        float32 mz = Math.max(qz, 0.0f);
+        float32 outside = Math.sqrt(mx * mx + my * my + mz * mz);
+        float32 qyz = Math.max(qy, qz);
+        float32 inner = Math.max(qx, qyz);
+        float32 inside = Math.min(inner, 0.0f);
+        return outside + inside;
+    }
+
+    /**
+     * Signed distance to a plane through the origin with unit normal
+     * (nx, ny, nz): the signed projection of `p` onto the normal (positive on
+     * the normal's side). `n` is assumed already normalized.
+     */
+    public static float32 plane(float32 px, float32 py, float32 pz,
+                                float32 nx, float32 ny, float32 nz) {
+        return px * nx + py * ny + pz * nz;
+    }
+
+    /** CSG union: the field of A ∪ B is the nearer surface. */
+    public static float32 opUnion(float32 a, float32 b) {
+        return Math.min(a, b);
+    }
+
+    /** CSG intersection: the field of A ∩ B is the farther surface. */
+    public static float32 opIntersect(float32 a, float32 b) {
+        return Math.max(a, b);
+    }
+
+    /** CSG subtraction A \ B: intersect A with the complement of B. */
+    public static float32 opSubtract(float32 a, float32 b) {
+        return Math.max(a, 0.0f - b);
+    }
+
+    /**
+     * Sphere-trace a ray against a single sphere (centre c, radius r). Marches
+     * from t = 0 by the SDF value each step — the guaranteed-empty radius — and
+     * returns the hit `t` once the field drops below `eps`, or -1 if it exits
+     * past `tMax` or exhausts `maxSteps`. The ray direction (dx, dy, dz) should
+     * be unit length so `t` is a true distance. This is the canonical sphere-
+     * trace loop specialized to one primitive (cajeta has no SDF closures to
+     * pass a general scene); CSG scenes inline opUnion/opIntersect in the loop.
+     */
+    public static float32 sphereTraceSphere(
+            float32 ox, float32 oy, float32 oz,
+            float32 dx, float32 dy, float32 dz,
+            float32 cx, float32 cy, float32 cz, float32 r,
+            float32 tMax, int32 maxSteps, float32 eps) {
+        float32 t = 0.0f;
+        int32 i = 0;
+        while (i < maxSteps) {
+            float32 px = ox + dx * t;
+            float32 py = oy + dy * t;
+            float32 pz = oz + dz * t;
+            float32 rx = px - cx;
+            float32 ry = py - cy;
+            float32 rz = pz - cz;
+            float32 d = Sdf.sphere(rx, ry, rz, r);
+            if (d < eps) {
+                return t;
+            }
+            t = t + d;
+            if (t > tMax) {
+                return 0.0f - 1.0f;
+            }
+            i = i + 1;
+        }
+        return 0.0f - 1.0f;
+    }
+
+    /**
+     * Floor `x` to an int32 via the float64 -> int64 -> int32 chain (a direct
+     * float32 -> int32 cast mis-lowers in the current codegen). `Math.floor`
+     * keeps it correct for negative coordinates.
+     */
+    public static int32 floorToInt(float32 x) {
+        float64 xd = x;
+        float64 fd = Math.floor(xd);
+        int64 t = (int64) fd;
+        return (int32) t;
+    }
+
+    /**
+     * Trilinearly sample a grid-sampled SDF (or any scalar volume) stored as a
+     * flat `float32[]` of `nx*ny*nz` voxels in x-fastest order
+     * (`vol[x + y*nx + z*nx*ny]`). The sample coordinate (x, y, z) is in lattice
+     * units (voxel index space) and is clamped into `[0, n-1]` per axis, so a
+     * sample outside the volume reads the nearest face (the standard clamp-to-edge
+     * addressing). This is the grid companion to the analytic primitives: a
+     * baked/fused SDF volume (e.g. from `Tsdf`) sampled continuously for sphere
+     * tracing or collision queries.
+     */
+    public static float32 sampleGrid(float32[] vol, int32 nx, int32 ny, int32 nz,
+                                     float32 x, float32 y, float32 z) {
+        int32 xm = nx - 1;
+        int32 ym = ny - 1;
+        int32 zm = nz - 1;
+        float32 fxm = xm;
+        float32 fym = ym;
+        float32 fzm = zm;
+        float32 cx = x;
+        float32 cy = y;
+        float32 cz = z;
+        if (cx < 0.0f) { cx = 0.0f; }
+        if (cx > fxm) { cx = fxm; }
+        if (cy < 0.0f) { cy = 0.0f; }
+        if (cy > fym) { cy = fym; }
+        if (cz < 0.0f) { cz = 0.0f; }
+        if (cz > fzm) { cz = fzm; }
+
+        int32 x0 = Sdf.floorToInt(cx);
+        int32 y0 = Sdf.floorToInt(cy);
+        int32 z0 = Sdf.floorToInt(cz);
+        if (x0 > xm) { x0 = xm; }
+        if (y0 > ym) { y0 = ym; }
+        if (z0 > zm) { z0 = zm; }
+        int32 x1 = x0 + 1;
+        int32 y1 = y0 + 1;
+        int32 z1 = z0 + 1;
+        if (x1 > xm) { x1 = xm; }
+        if (y1 > ym) { y1 = ym; }
+        if (z1 > zm) { z1 = zm; }
+
+        float32 gx0 = x0;
+        float32 gy0 = y0;
+        float32 gz0 = z0;
+        float32 fx = cx - gx0;
+        float32 fy = cy - gy0;
+        float32 fz = cz - gz0;
+
+        int32 sy = nx;
+        int32 sz = nx * ny;
+        // Eight corner fetches (each subscript loaded into a local).
+        int32 i000 = x0 + y0 * sy + z0 * sz;
+        int32 i100 = x1 + y0 * sy + z0 * sz;
+        int32 i010 = x0 + y1 * sy + z0 * sz;
+        int32 i110 = x1 + y1 * sy + z0 * sz;
+        int32 i001 = x0 + y0 * sy + z1 * sz;
+        int32 i101 = x1 + y0 * sy + z1 * sz;
+        int32 i011 = x0 + y1 * sy + z1 * sz;
+        int32 i111 = x1 + y1 * sy + z1 * sz;
+        float32 c000 = vol[i000];
+        float32 c100 = vol[i100];
+        float32 c010 = vol[i010];
+        float32 c110 = vol[i110];
+        float32 c001 = vol[i001];
+        float32 c101 = vol[i101];
+        float32 c011 = vol[i011];
+        float32 c111 = vol[i111];
+
+        // Trilinear blend: lerp along x, then y, then z.
+        float32 c00 = c000 + (c100 - c000) * fx;
+        float32 c10 = c010 + (c110 - c010) * fx;
+        float32 c01 = c001 + (c101 - c001) * fx;
+        float32 c11 = c011 + (c111 - c011) * fx;
+        float32 c0 = c00 + (c10 - c00) * fy;
+        float32 c1 = c01 + (c11 - c01) * fy;
+        return c0 + (c1 - c0) * fz;
+    }
+}

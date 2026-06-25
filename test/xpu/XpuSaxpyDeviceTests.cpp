@@ -88,8 +88,8 @@ TEST(XpuSaxpyDeviceTests, runsOnDevice) {
     // 1. Compile the kernel source to a cubin.
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void saxpy(KernelBuffer<float32> y, KernelBuffer<float32> x,\n"

@@ -9,7 +9,7 @@ import cajeta.ifx.Surface;
  * the matching Vulkan WSI extension to build a {@code VkSwapchainKHR}.
  *
  * BUILD-FROM-DESCRIPTION, OPAQUE, RAII — the same noun discipline as
- * {@link cajeta.gpu.AccelerationStructure} / {@link cajeta.gpu.Image2D}: a small
+ * {@link cajeta.xpu.AccelerationStructure} / {@link cajeta.xpu.Image2D}: a small
  * host-side handle ({@code deviceHandle}) over a driver object the constructor
  * acquires and the destructor releases at scope exit. The resolved description
  * (format / colorSpace / present mode / image count) is chosen by

@@ -83,14 +83,14 @@ namespace xpu {
     bool isTextureCubeType(const CajetaTypePtr& type);
     bool isSamplerType(const CajetaTypePtr& type);
 
-    // Is `type` the cajeta.gpu.Image2D type (writable images)? Matched by
+    // Is `type` the cajeta.xpu.Image2D type (writable images)? Matched by
     // canonical name — the writable twin of Texture2D, bound as a STORAGE_IMAGE
     // descriptor and written in a kernel via `img.store(x, y, value)`. Shared by
     // the admissibility check, the launch-site marshaller, and the kernel-param
     // classifier so all agree it takes the storage-image path.
     bool isImageType(const CajetaTypePtr& type);
 
-    // Is `type` the cajeta.gpu.AccelerationStructure resp. RayQuery type
+    // Is `type` the cajeta.xpu.AccelerationStructure resp. RayQuery type
     // (cajeta-gpu Part C ray query)? Matched by canonical name.
     // AccelerationStructure is an admissible kernel arg (a descriptor-bound BVH);
     // RayQuery is a device-only kernel-body local (never a kernel arg), recognized

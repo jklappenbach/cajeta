@@ -37,7 +37,7 @@ float runF32(const std::string& src) {
 }
 
 const char* IMPORTS =
-    "import cajeta.gpu.KernelBuffer;\n";
+    "import cajeta.xpu.KernelBuffer;\n";
 
 } // namespace
 

@@ -1516,7 +1516,7 @@ namespace cajeta {
             for (auto& p : parameterList) {
                 if (p && p->getType()
                         && p->getType()->toCanonical().rfind(
-                               "cajeta.gpu.KernelBuffer", 0) == 0) {
+                               "cajeta.xpu.KernelBuffer", 0) == 0) {
                     hasDeviceBuffer = true;
                     break;
                 }
@@ -2494,13 +2494,13 @@ namespace cajeta {
                 // enforced; AS in particular could free its device BVH mid-kernel.)
                 const string c = t->toCanonical();
                 bool isDeviceResource =
-                    c.rfind("cajeta.gpu.KernelBuffer", 0) == 0 ||
+                    c.rfind("cajeta.xpu.KernelBuffer", 0) == 0 ||
                     c.rfind("cajeta.gpu.Texture2D", 0) == 0 ||
                     c.rfind("cajeta.gpu.Texture3D", 0) == 0 ||
                     c.rfind("cajeta.gpu.Texture1D", 0) == 0 ||
                     c.rfind("cajeta.gpu.Texture2DArray", 0) == 0 ||
                     c.rfind("cajeta.gpu.TextureCube", 0) == 0 ||
-                    c == "cajeta.gpu.AccelerationStructure";
+                    c == "cajeta.xpu.AccelerationStructure";
                 if (!isDeviceResource) continue;
                 throw Exception(
                     "device resource '" + name + "' leaves scope while a launch "

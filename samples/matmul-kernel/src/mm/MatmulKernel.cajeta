@@ -1,8 +1,8 @@
 package mm;
 
-import cajeta.gpu.KernelBuffer;
-import cajeta.gpu.KernelStream;
-import cajeta.gpu.KernelThread;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
 import cajeta.time.Clock;
 
 // Standalone measurement: dense n x n float64 matmul as a CPU @Kernel, fanned

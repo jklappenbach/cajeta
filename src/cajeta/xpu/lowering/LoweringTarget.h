@@ -77,7 +77,7 @@ namespace xpu {
         enum class FenceScope { Workgroup, Device };
 
         // User-selectable memory ordering for a kernel atomic / fence (mirrors
-        // the cajeta cajeta.gpu.MemoryOrder enum — ordinals MUST match).
+        // the cajeta cajeta.xpu.MemoryOrder enum — ordinals MUST match).
         // `Default` = no explicit order given: each backend keeps its
         // established default (Monotonic on the portable seam, AcquireRelease on
         // Vulkan). LLVM bakes ordering at IR-build time, so the value is always
@@ -598,7 +598,7 @@ namespace xpu {
 
         // True when this backend has no native inline ray query and uses the
         // portable Software tier instead (cajeta-gpu ray-query-to-core): a
-        // RayQuery lowers to the cajeta.gpu.SoftwareRayQuery @Device walk over
+        // RayQuery lowers to the cajeta.xpu.SoftwareRayQuery @Device walk over
         // a software BVH `Buffer<float32>`, not to the native rayQuery* seams. Thin
         // alias over rayQueryTier() — the call site (KernelLowering) reads this to
         // pick the verb lowering, and the noun (AccelerationStructure) is

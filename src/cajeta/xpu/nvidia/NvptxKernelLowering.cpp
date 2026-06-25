@@ -36,7 +36,7 @@ public:
 
     // No native inline ray query (cajeta has no NVPTX RT-core / OptiX seam), so
     // the AccelerationStructure noun is built as the portable software BVH and
-    // the RayQuery verb follows to the cajeta.gpu.SoftwareRayQuery walk over
+    // the RayQuery verb follows to the cajeta.xpu.SoftwareRayQuery walk over
     // a software BVH buffer — the same Portable tier the CPU backend uses
     // (ray-query-to-core inc 1). Without this the base default (VulkanNative)
     // routes RayQuery to rayQueryType(), which throws on NVPTX. softwareRayQuery()

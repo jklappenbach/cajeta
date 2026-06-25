@@ -75,10 +75,10 @@ cajeta::MethodPtr findMethod(const cajeta::CajetaClassPtr& klass,
 // KernelBuffer origins, a KernelBuffer<uint32> output, a count scalar.
 const char* kCountKernel =
     "package test;\n"
-    "import cajeta.gpu.AccelerationStructure;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.RayQuery;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.AccelerationStructure;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.RayQuery;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class RqCount {\n"
     "    @Kernel\n"
     "    public static void countHits(AccelerationStructure scene,\n"
@@ -104,10 +104,10 @@ const char* kCountKernel =
 // reads committed getters; a compile-time-constant ray (one with a unary-minus dz).
 const char* kNearestKernel =
     "package test;\n"
-    "import cajeta.gpu.AccelerationStructure;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.RayQuery;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.AccelerationStructure;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.RayQuery;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class RqNear {\n"
     "    @Kernel\n"
     "    public static void nearest(AccelerationStructure scene,\n"
@@ -133,10 +133,10 @@ const char* kNearestKernel =
 // proceed loop (no confirm); a compile-time-constant ray.
 const char* kBaryKernel =
     "package test;\n"
-    "import cajeta.gpu.AccelerationStructure;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.RayQuery;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.AccelerationStructure;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.RayQuery;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class RqBary {\n"
     "    @Kernel\n"
     "    public static void getBary(AccelerationStructure scene, KernelBuffer<float32> out) {\n"
@@ -164,10 +164,10 @@ const char* kBaryKernel =
 // constant) — exercises the const-or-buffer[i] ray resolver.
 const char* kCommittedTriKernel =
     "package test;\n"
-    "import cajeta.gpu.AccelerationStructure;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.RayQuery;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.AccelerationStructure;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.RayQuery;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class RqFront {\n"
     "    @Kernel\n"
     "    public static void getFront(AccelerationStructure scene,\n"
@@ -195,9 +195,9 @@ const char* kCommittedTriKernel =
 // buffer, not three) — must be rejected with XPU-N04.
 const char* kNonCanonicalKernel =
     "package test;\n"
-    "import cajeta.gpu.AccelerationStructure;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.AccelerationStructure;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class RqOther {\n"
     "    @Kernel\n"
     "    public static void odd(AccelerationStructure scene,\n"
@@ -216,10 +216,10 @@ const char* kNonCanonicalKernel =
 // kNonCanonicalKernel, which is not a ray query at all and drives the emit-level guard.
 const char* kUnsupportedRqKernel =
     "package test;\n"
-    "import cajeta.gpu.AccelerationStructure;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.RayQuery;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.AccelerationStructure;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.RayQuery;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class RqUnsupShape {\n"
     "    @Kernel\n"
     "    public static void odd(AccelerationStructure scene,\n"

@@ -524,9 +524,9 @@ TEST(TensorTests, seamElementwiseCpuGpuAgree) {
     std::string src =
         "package test;\n"
         "import cajeta.math.Tensor;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelStream;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public final class D {\n"
         "    @Kernel\n"
         "    public static void addF32(KernelBuffer<float32> out, KernelBuffer<float32> a,\n"

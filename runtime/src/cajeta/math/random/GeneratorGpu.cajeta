@@ -1,9 +1,9 @@
 package cajeta.math.random;
 
 import cajeta.math.Tensor;
-import cajeta.gpu.KernelBuffer;
-import cajeta.gpu.KernelStream;
-import cajeta.gpu.KernelThread;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
 
 /**
  * GPU lowering of the Philox uniform generator (numpy-porting-plan Phase 9, 9c — the

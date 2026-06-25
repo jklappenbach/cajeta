@@ -44,8 +44,8 @@ namespace {
 // One thread per contiguous 8-element block: load it, double it, store it.
 const char* kDblSource =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void dbl(KernelBuffer<float64> c) {\n"
@@ -162,8 +162,8 @@ namespace {
 // A different element type AND a different (non-8) width — float32 x 4.
 const char* kDbl4Source =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void dbl4(KernelBuffer<float32> c) {\n"
@@ -223,8 +223,8 @@ TEST(XpuVectorLoadStoreTests, vloadVstoreFloat32Width4) {
 namespace {
 const char* kI32Source =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void dbli32(KernelBuffer<int32> c) {\n"
@@ -236,8 +236,8 @@ const char* kI32Source =
     "}\n";
 const char* kI64Source =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelThread;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelThread;\n"
     "public class M {\n"
     "    @Kernel\n"
     "    public static void dbli64(KernelBuffer<int64> c) {\n"
@@ -319,7 +319,7 @@ TEST(XpuVectorLoadStoreTests, vloadVstoreInt64) {
 TEST(XpuVectorLoadStoreTests, vloadOutsideKernelIsCompileError) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        KernelBuffer<float64> b = stack KernelBuffer<float64>(8);\n"

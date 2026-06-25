@@ -78,8 +78,8 @@ std::string codegenErrorId(Compiler& compiler) {
 
 const char* kHeader =
     "package test;\n"
-    "import cajeta.gpu.KernelBuffer;\n"
-    "import cajeta.gpu.KernelStream;\n";
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelStream;\n";
 
 } // namespace
 

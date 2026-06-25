@@ -12081,7 +12081,7 @@ static int cajeta_xpu_active_backend(void) {
 extern int cajeta_xpu_optix_available(void);
 
 // Device.supports(Capability) — does the active device advertise the capability
-// natively? The capability heuristic's runtime input (cajeta.gpu.Device).
+// natively? The capability heuristic's runtime input (cajeta.xpu.Device).
 // `cap` is the Capability ordinal (the stable contract in Capability.cajeta).
 // Returns 0/1. Append new capabilities as new cases; never renumber.
 int32_t __cajeta_xpu_device_supports(int32_t cap) {

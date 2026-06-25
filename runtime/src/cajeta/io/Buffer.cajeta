@@ -9,7 +9,7 @@ package cajeta.io;
  * v1 ships the byte/word **read** core (`byteAt`, `loadU64`). Strided element
  * access (`at`/`set`), `reinterpret<U>`, the `store*` family, and explicit
  * little-/big-endian variants land as scenarios demand them (the GPU-side
- * device buffer is the separate `cajeta.gpu.KernelBuffer<T>`).
+ * device buffer is the separate `cajeta.xpu.KernelBuffer<T>`).
  *
  * ```cajeta
  * Buffer<int8> buf = heap Buffer<int8>(#bytes, n);

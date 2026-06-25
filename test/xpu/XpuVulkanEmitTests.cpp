@@ -155,8 +155,8 @@ TEST(XpuVulkanEmitTests, spirvTargetMachineAvailable) {
 TEST(XpuVulkanEmitTests, lowersSaxpyToSpirv) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void saxpy(KernelBuffer<float32> y, KernelBuffer<float32> x,\n"
@@ -245,8 +245,8 @@ TEST(XpuVulkanEmitTests, lowersSaxpyToSpirv) {
 TEST(XpuVulkanEmitTests, lowersPodStructArgToSpirv) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class Params {\n"
         "    int32 mul;\n"
         "    int32 add;\n"
@@ -297,8 +297,8 @@ TEST(XpuVulkanEmitTests, lowersPodStructArgToSpirv) {
 TEST(XpuVulkanEmitTests, lowersStridedSumLoop) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void strideSum(KernelBuffer<int32> out, KernelBuffer<int32> in,\n"
@@ -352,8 +352,8 @@ TEST(XpuVulkanEmitTests, lowersStridedSumLoop) {
 TEST(XpuVulkanEmitTests, lowersTextureSampleToSpirv) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "import cajeta.gpu.Texture2D;\n"
         "import cajeta.gpu.Sampler;\n"
         "public class M {\n"
@@ -423,8 +423,8 @@ TEST(XpuVulkanEmitTests, lowersTextureSampleToSpirv) {
 TEST(XpuVulkanEmitTests, lowersTextureFetchToSpirv) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "import cajeta.gpu.Texture2D;\n"
         "public class M {\n"
         "    @Kernel\n"
@@ -492,8 +492,8 @@ TEST(XpuVulkanEmitTests, lowersTextureFetchToSpirv) {
 TEST(XpuVulkanEmitTests, lowersIntTextureFetchToSpirv) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "import cajeta.gpu.Texture2D;\n"
         "public class M {\n"
         "    @Kernel\n"
@@ -556,8 +556,8 @@ TEST(XpuVulkanEmitTests, lowersIntTextureFetchToSpirv) {
 TEST(XpuVulkanEmitTests, lowers3dTextureFetchToSpirv) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "import cajeta.gpu.Texture3D;\n"
         "public class M {\n"
         "    @Kernel\n"
@@ -608,8 +608,8 @@ TEST(XpuVulkanEmitTests, lowers3dTextureFetchToSpirv) {
 TEST(XpuVulkanEmitTests, integerTextureSampleRejected) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "import cajeta.gpu.Texture2D;\n"
         "import cajeta.gpu.Sampler;\n"
         "public class M {\n"
@@ -646,8 +646,8 @@ TEST(XpuVulkanEmitTests, integerTextureSampleRejected) {
 TEST(XpuVulkanEmitTests, lowersImageStoreToSpirv) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelThread;\n"
-        "import cajeta.gpu.Image2D;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "import cajeta.xpu.Image2D;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void writeImg(Image2D img, uint32 w, uint32 h) {\n"
@@ -716,8 +716,8 @@ TEST(XpuVulkanEmitTests, lowersImageStoreToSpirv) {
 TEST(XpuVulkanEmitTests, lowersImageLoadToSpirv) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelThread;\n"
-        "import cajeta.gpu.Image2D;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "import cajeta.xpu.Image2D;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void rmwImg(Image2D img, uint32 w, uint32 h) {\n"
@@ -782,10 +782,10 @@ TEST(XpuVulkanEmitTests, lowersImageLoadToSpirv) {
 TEST(XpuVulkanEmitTests, lowersRayQueryToSpirv) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
-        "import cajeta.gpu.AccelerationStructure;\n"
-        "import cajeta.gpu.RayQuery;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "import cajeta.xpu.AccelerationStructure;\n"
+        "import cajeta.xpu.RayQuery;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void trace(AccelerationStructure scene,\n"
@@ -870,10 +870,10 @@ TEST(XpuVulkanEmitTests, lowersRayQueryToSpirv) {
 TEST(XpuVulkanEmitTests, lowersRayQueryPrimitiveIndexToSpirv) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
-        "import cajeta.gpu.AccelerationStructure;\n"
-        "import cajeta.gpu.RayQuery;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "import cajeta.xpu.AccelerationStructure;\n"
+        "import cajeta.xpu.RayQuery;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void trace(AccelerationStructure scene,\n"
@@ -947,8 +947,8 @@ TEST(XpuVulkanEmitTests, lowersRayQueryPrimitiveIndexToSpirv) {
 TEST(XpuVulkanEmitTests, lowersCooperativeMatrixToSpirv) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.xpu.CooperativeMatrix;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.CooperativeMatrix;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void matmul(KernelBuffer<float32> a, KernelBuffer<float32> b,\n"
@@ -1019,7 +1019,7 @@ TEST(XpuVulkanEmitTests, lowersCooperativeMatrixToSpirv) {
 TEST(XpuVulkanEmitTests, lowersIntegerDotToSpirv) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
         "public class D {\n"
         "    @Kernel\n"
         "    public static void dp4a(KernelBuffer<int32> out, uint32 n) {\n"
@@ -1088,8 +1088,8 @@ TEST(XpuVulkanEmitTests, lowersIntegerDotToSpirv) {
 TEST(XpuVulkanEmitTests, lowersFloatAtomicsToSpirv) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class A {\n"
         "    @Kernel\n"
         "    public static void reduce(KernelBuffer<float32> acc, uint32 n) {\n"
@@ -1159,8 +1159,8 @@ TEST(XpuVulkanEmitTests, lowersFloatAtomicsToSpirv) {
 TEST(XpuVulkanEmitTests, lowersIntAtomicsToSpirv) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class A {\n"
         "    @Kernel\n"
         "    public static void atomics(KernelBuffer<int32> a, uint32 n) {\n"
@@ -1237,10 +1237,10 @@ TEST(XpuVulkanEmitTests, lowersIntAtomicsToSpirv) {
 TEST(XpuVulkanEmitTests, lowersSharedAtomicsToSpirv) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
-        "import cajeta.gpu.Barrier;\n"
-        "import cajeta.gpu.Shared;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "import cajeta.xpu.Barrier;\n"
+        "import cajeta.xpu.Shared;\n"
         "public class A {\n"
         "    @Kernel\n"
         "    public static void mixed(KernelBuffer<uint32> out, uint32 n) {\n"
@@ -1290,8 +1290,8 @@ TEST(XpuVulkanEmitTests, lowersSharedAtomicsToSpirv) {
 TEST(XpuVulkanEmitTests, lowersShaderClockToSpirv) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class C {\n"
         "    @Kernel\n"
         "    public static void stamp(KernelBuffer<uint64> out, uint32 n) {\n"
@@ -1352,9 +1352,9 @@ TEST(XpuVulkanEmitTests, lowersShaderClockToSpirv) {
 TEST(XpuVulkanEmitTests, lowersBitInstructionsToSpirv) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
-        "import cajeta.gpu.Bits;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "import cajeta.xpu.Bits;\n"
         "public class B {\n"
         "    @Kernel\n"
         "    public static void bitops(KernelBuffer<uint32> out, uint32 n) {\n"
@@ -1428,8 +1428,8 @@ TEST(XpuVulkanEmitTests, lowersBitInstructionsToSpirv) {
 TEST(XpuVulkanEmitTests, lowersMixedPrecisionCooperativeMatrixToSpirv) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.xpu.CooperativeMatrix;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.CooperativeMatrix;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void matmul(KernelBuffer<float16> a, KernelBuffer<float16> b,\n"
@@ -1499,10 +1499,10 @@ TEST(XpuVulkanEmitTests, lowersMixedPrecisionCooperativeMatrixToSpirv) {
 TEST(XpuVulkanEmitTests, workgroupBarrierIsSpecValid) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
-        "import cajeta.gpu.Barrier;\n"
-        "import cajeta.gpu.Shared;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "import cajeta.xpu.Barrier;\n"
+        "import cajeta.xpu.Shared;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void reduce(KernelBuffer<int32> out, KernelBuffer<int32> in) {\n"
@@ -1548,10 +1548,10 @@ TEST(XpuVulkanEmitTests, workgroupBarrierIsSpecValid) {
 TEST(XpuVulkanEmitTests, ldsStagedCoopLoadEmitsValidSpirv) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.xpu.CooperativeMatrix;\n"
-        "import cajeta.gpu.xpu.CoopStage;\n"
-        "import cajeta.gpu.Barrier;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.CooperativeMatrix;\n"
+        "import cajeta.xpu.CoopStage;\n"
+        "import cajeta.xpu.Barrier;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void staged(KernelBuffer<float16> a, KernelBuffer<float16> b,\n"
@@ -1599,9 +1599,9 @@ TEST(XpuVulkanEmitTests, ldsStagedCoopLoadEmitsValidSpirv) {
 TEST(XpuVulkanEmitTests, workgroupDimEmitsValidSpirv) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
-        "import cajeta.gpu.Workgroup;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "import cajeta.xpu.Workgroup;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void k(KernelBuffer<float32> c) {\n"
@@ -1638,8 +1638,8 @@ TEST(XpuVulkanEmitTests, workgroupDimEmitsValidSpirv) {
 TEST(XpuVulkanEmitTests, lowersBindlessBufferArrayToSpirv) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void gather(KernelBuffer<int32>[] bufs, uint32 count,\n"
@@ -1707,9 +1707,9 @@ TEST(XpuVulkanEmitTests, lowersBindlessBufferArrayToSpirv) {
 TEST(XpuVulkanEmitTests, lowersMemoryFenceToSpirv) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
-        "import cajeta.gpu.Barrier;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "import cajeta.xpu.Barrier;\n"
         "public class MF {\n"
         "    @Kernel\n"
         "    public static void fence(KernelBuffer<int32> data, KernelBuffer<int32> out,\n"
@@ -1777,9 +1777,9 @@ TEST(XpuVulkanEmitTests, lowersMemoryFenceToSpirv) {
 TEST(XpuVulkanEmitTests, lowersAtomicMemoryOrderToSpirv) {
     auto src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
-        "import cajeta.gpu.MemoryOrder;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "import cajeta.xpu.MemoryOrder;\n"
         "public class MO {\n"
         "    @Kernel\n"
         "    public static void bump(KernelBuffer<int32> a, KernelBuffer<int32> b,\n"
@@ -1837,8 +1837,8 @@ TEST(XpuVulkanEmitTests, lowersAtomicMemoryOrderToSpirv) {
 TEST(XpuVulkanEmitTests, lowersSpecConstantToOpSpecConstant) {
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void k(KernelBuffer<int32> out) {\n"
@@ -1881,8 +1881,8 @@ TEST(XpuVulkanEmitTests, lowersSpecConstantToOpSpecConstant) {
 TEST(XpuVulkanEmitTests, lowersFloatSpecConstantToOpSpecConstant) {
     const char* src =
         "package test;\n"
-        "import cajeta.gpu.KernelBuffer;\n"
-        "import cajeta.gpu.KernelThread;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void k(KernelBuffer<float32> out) {\n"

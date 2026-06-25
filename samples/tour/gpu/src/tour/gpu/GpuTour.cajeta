@@ -1,11 +1,11 @@
 package tour.gpu;
 
-import cajeta.gpu.KernelBuffer;
-import cajeta.gpu.KernelStream;
-import cajeta.gpu.KernelThread;
-import cajeta.gpu.Wave;
-import cajeta.gpu.Quad;
-import cajeta.gpu.Bits;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Wave;
+import cajeta.xpu.Quad;
+import cajeta.xpu.Bits;
 import cajeta.gpu.Texture2D;
 import cajeta.gpu.Texture1D;
 import cajeta.gpu.Texture3D;
@@ -474,7 +474,7 @@ public final class GpuTour {
     // ---- Matrix cores: cooperative-matrix MMA + the tiering fallback ---------
     // CooperativeMatrix<T,R,C,Use> is a tile of a matrix multiply held across a
     // subgroup, mapping to the hardware matrix/tensor cores: one `mma` is a
-    // full tile-sized fused multiply-add. See cajeta.gpu.xpu.CooperativeMatrix.
+    // full tile-sized fused multiply-add. See cajeta.xpu.CooperativeMatrix.
 
     // coopGemm: one 16x16x16 tile matmul C = A*B through the cooperative-matrix
     // verbs (load A and B tiles, zero the accumulator, one mma, store C). A and B
