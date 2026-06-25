@@ -635,6 +635,23 @@ int64_t __cajeta_live_set_population(void) {
     return (int64_t) __cajeta_live_set_count;
 }
 
+// Cumulative bytes ever requested from the heap allocator across all of cajeta's
+// allocation entry points — the runtime-neutral "allocation intensity" metric the
+// profile harness reads via Cajeta.allocatedBytes() (mirrors the competitors'
+// counting allocator / Go MemStats / tracemalloc). Monotonic, never reset; the
+// harness samples a before/after delta around a benchmark. A single relaxed
+// atomic add is always correct (incl. once worker threads exist) and far cheaper
+// than the live-set's hash-table mutex, so it needs no mt fast-path.
+static int64_t __cajeta_total_allocated = 0;
+
+static inline void __cajeta_note_alloc(uint64_t bytes) {
+    __atomic_fetch_add(&__cajeta_total_allocated, (int64_t) bytes, __ATOMIC_RELAXED);
+}
+
+int64_t __cajeta_total_allocated_bytes(void) {
+    return __atomic_load_n(&__cajeta_total_allocated, __ATOMIC_RELAXED);
+}
+
 static void __cajeta_live_set_add_locked(void* p) {
     if (!p || p == CAJETA_LIVE_SET_TOMBSTONE) return;
     if (__cajeta_live_set_count >= CAJETA_LIVE_SET_LOAD_CAP) {
@@ -744,6 +761,7 @@ void* __cajeta_new_array(uint64_t elem_size, uint64_t total_count) {
                 (unsigned long long) total_count, (unsigned long long) elem_size);
         abort();
     }
+    __cajeta_note_alloc(total_count * elem_size);
     __cajeta_live_set_add(buf);
     return buf;
 }
@@ -796,6 +814,7 @@ void* __cajeta_new_array_header(uint64_t header_size, uint64_t elem_size, uint64
     }
     // Store count at the size field (first 8 bytes of the header).
     *((int64_t*) hdr) = (int64_t) count;
+    __cajeta_note_alloc(total);
     __cajeta_live_set_add(hdr);
     return hdr;
 }
@@ -827,6 +846,7 @@ void* __cajeta_new_array_header_uninit(uint64_t header_size, uint64_t elem_size,
         abort();
     }
     *((int64_t*) hdr) = (int64_t) count;
+    __cajeta_note_alloc(total);
     __cajeta_live_set_add(hdr);
     return hdr;
 }
@@ -947,6 +967,7 @@ void* __cajeta_alloc(uint64_t size) {
                 (unsigned long long) size);
         abort();
     }
+    __cajeta_note_alloc(size);
     __cajeta_live_set_add(p);
     return p;
 }
@@ -963,6 +984,7 @@ void* __cajeta_alloc_uninit(uint64_t size) {
                 (unsigned long long) size);
         abort();
     }
+    __cajeta_note_alloc(size);
     __cajeta_live_set_add(p);
     return p;
 }

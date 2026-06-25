@@ -78,6 +78,19 @@ public class Harness {
         int64 peak = Memory.peakRssKb();
         boolean ok = b.checkResult();
 
+        // Allocation intensity: bytes one representative execution requests from
+        // the heap allocator (Cajeta.allocatedBytes() is a cumulative runtime
+        // counter; the delta around a single run is the per-execution figure that
+        // matches the competitors' counting-allocator / tracemalloc numbers).
+        // Measured OUTSIDE the timed region so it cannot perturb min_ns, and it
+        // populates the report's Memory tab (was -1 → cajeta filtered out).
+        int64 allocBase = Cajeta.allocatedBytes();
+        b.runVariant(variant, 1);
+        int64 allocBytes = Cajeta.allocatedBytes() - allocBase;
+        if (allocBytes < 0) {
+            allocBytes = 0;
+        }
+
         // Distribution (sort then index). n ~ a few hundred.
         Harness.sortInPlace(samples, trials);
         int64 sum = 0;
@@ -117,6 +130,7 @@ public class Harness {
             ws = 0;
         }
         r.workingSetKb = ws;
+        r.allocBytes = allocBytes;
         r.checkOk = ok;
         if (ok) {
             r.status = "ok";
