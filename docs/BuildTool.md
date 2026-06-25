@@ -2085,6 +2085,7 @@ at manifest-load (catches typos).
 | Property | Values |
 |---|---|
 | `opt`               | `"O0"` / `"O1"` / `"O2"` / `"O3"` / `"Oz"` |
+| `xpu-backend`       | `"none"` / `"cpu"` / `"vulkan"` / `"nvptx"` / `"amdgpu"` (device backend for `@Kernel` methods) |
 | `lto`               | `"off"` / `"thin"` / `"full"` |
 | `debug-info`        | `"off"` / `"line"` / `"full"` |
 | `strip-symbols`     | `true` / `false` |

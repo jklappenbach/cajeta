@@ -258,6 +258,32 @@ TEST(FlavorTests, toCompilerFlagsRendersDeterministically) {
     EXPECT_EQ(flags[2], "--source-tags=on");
 }
 
+// benchmark-fidelity Unit 3 (3.b.3): xpu-backend lowers to --xpu-backend=<v> so
+// a manifest flavor can build @Kernel methods for the CPU backend (profile suite
+// matmul). EnumString, vocabulary-ordered after cpu / before lto.
+TEST(FlavorTests, xpuBackendLowersToCompilerFlag) {
+    using cajeta::buildtool::toCompilerFlags;
+    llvm::json::Object props{
+        {"opt",         "O3"},
+        {"cpu",         "native"},
+        {"xpu-backend", "cpu"},
+    };
+    auto flags = toCompilerFlags(props);
+    ASSERT_EQ(flags.size(), 3u);
+    EXPECT_EQ(flags[0], "--opt=O3");
+    EXPECT_EQ(flags[1], "--cpu=native");
+    EXPECT_EQ(flags[2], "--xpu-backend=cpu");
+}
+
+TEST(FlavorTests, xpuBackendSpecIsKnownEnum) {
+    using cajeta::buildtool::findFlavorPropertySpec;
+    const auto* spec = findFlavorPropertySpec("xpu-backend");
+    ASSERT_TRUE(spec);
+    EXPECT_EQ(spec->kind,
+              cajeta::buildtool::FlavorPropertySpec::Kind::EnumString);
+    EXPECT_EQ(spec->allowed.size(), 5u);  // none/cpu/vulkan/nvptx/amdgpu
+}
+
 TEST(FlavorTests, validateCustomFlavorsAcceptsValidChain) {
     using cajeta::buildtool::validateCustomFlavors;
     llvm::json::Object cf;

@@ -45,7 +45,11 @@
         "build": {
             "description": "Build the profile harness to a native binary (build/profile)",
             "actions": [
-                { "action": "build", "flavor": "debug",
+                // xpu-backend=cpu so the MatMulBench @Kernel matmul compiles +
+                // registers for the CPU kernel-pool dispatcher (else .launch
+                // finds no registered kernel and silently skips).
+                { "action": "build",
+                  "flavor": { "base": "debug", "xpu-backend": "cpu" },
                   "output-path": "build/profile", "id": "art" }
             ],
             "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
@@ -54,7 +58,8 @@
         "run": {
             "description": "Build the profile harness and run it",
             "actions": [
-                { "action": "build", "flavor": "debug",
+                { "action": "build",
+                  "flavor": { "base": "debug", "xpu-backend": "cpu" },
                   "output-path": "build/profile", "id": "art" },
                 { "action": "exec", "command": "${art.path}" }
             ]
@@ -68,7 +73,8 @@
                 // `-O3 -march=native` / `target-cpu=native` builds, instead of
                 // the default release flavor's O2 + generic-baseline x86-64.
                 { "action": "build",
-                  "flavor": { "base": "release", "opt": "O3", "cpu": "native" },
+                  "flavor": { "base": "release", "opt": "O3", "cpu": "native",
+                              "xpu-backend": "cpu" },
                   "output-path": "build/profile", "id": "art" }
             ],
             "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }

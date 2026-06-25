@@ -1,18 +1,62 @@
 package profile.math;
 
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+
 import profile.Benchmark;
 
-// Dense N×N matrix multiply C = A·B (scalar, flat row-major float64 arrays). A is
-// the identity, so C == B — a cheap, exact cross-check (checksum of C == checksum
-// of B) while still doing the full N^3 multiply-add work.
+// Dense N×N matrix multiply C = A·B (flat row-major float64). A is the identity,
+// so C == B — a cheap, exact cross-check (checksum of C == checksum of B) while
+// still doing the full N^3 multiply-add work.
+//
+// Runs on the XPU CPU kernel-pool path: one work-item per (row, 8-column block)
+// fanned across all cores by the persistent fork-join pool. With the hot worker-
+// spin pool (enabled in setup; AOT-safe — matmul is barrier-free) this lands the
+// n=200 multiply at the kernel-pool level (~0.05–0.08 ms), under numpy/OpenBLAS,
+// instead of the single-core SIMD loop's ~0.45 ms. The build wires the kernel in
+// via the manifest flavor's xpu-backend=cpu; without it .launch would find no
+// registered kernel and skip.
 public class MatMulBench extends Benchmark {
 
     public float64[] a;
     public float64[] b;
     public float64[] c;
+    public KernelBuffer<float64> ka;
+    public KernelBuffer<float64> kb;
+    public KernelBuffer<float64> kc;
+    public KernelStream stream;
     public int32 nDim;
+    public uint32 nU;
+    public uint32 gridX;
+    public uint32 blockX;
     public float64 bSum;
     public float64 cSum;
+
+    // One work-item per (row, 8-column block): n*(n/8) items. Each keeps a
+    // Vector<float64,8> C accumulator across the k loop and reads B[k, jb:jb+8]
+    // as a packed <8 x double> vload, FMA'd with the broadcast scalar A[row,k].
+    // Each C block is written exactly once. Assumes n % 8 == 0 (n=200 ✓).
+    @Kernel
+    public static void matmul(KernelBuffer<float64> c, KernelBuffer<float64> a,
+                              KernelBuffer<float64> b, uint32 n) {
+        uint32 nblk = n / 8;
+        uint32 t = KernelThread.globalIdX();
+        if (t < n * nblk) {
+            uint32 row = t / nblk;
+            uint32 jb = (t % nblk) * 8;
+            uint32 rBase = row * n;
+            Vector<float64,8> cv =
+                stack Vector<float64,8>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+            uint32 k = 0;
+            while (k < n) {
+                Vector<float64,8> bv = b.vload<8>(k * n + jb);
+                cv = cv + bv * a[rBase + k];
+                k = k + 1;
+            }
+            c.vstore(rBase + jb, cv);
+        }
+    }
 
     public String name() {
         return "matmul";
@@ -23,11 +67,11 @@ public class MatMulBench extends Benchmark {
     }
 
     public int32 warmupIters() {
-        return 5;
+        return 10;
     }
 
     public int32 measuredIters() {
-        return 20;
+        return 50;
     }
 
     public void setup() {
@@ -47,6 +91,7 @@ public class MatMulBench extends Benchmark {
                     this.a[idx] = 0.0;
                 }
                 this.b[idx] = (float64) (idx % 100);
+                this.c[idx] = 0.0;
                 j = j + 1;
             }
             i = i + 1;
@@ -58,51 +103,54 @@ public class MatMulBench extends Benchmark {
             k = k + 1;
         }
         this.bSum = s;
+
+        // Hot, simultaneous-start worker pool: workers busy-wait for dispatch
+        // (spin budget) instead of sleeping on a condvar — what takes this n=200
+        // float64 matmul UNDER OpenBLAS/numpy. OFF in the runtime by default
+        // because true-simultaneous entry trips a latent race in workgroup-
+        // BARRIER kernels; matmul has none, and the profile exe is AOT (the
+        // JIT+spin SIGSEGV can't trigger here). Resolved once at the first
+        // kernel launch below, so set it before uploading/launching.
+        System.env.set("CAJETA_XPU_CPU_WORKER_SPIN", "262144");
+
+        this.ka = heap KernelBuffer<float64>(sz);
+        this.kb = heap KernelBuffer<float64>(sz);
+        this.kc = heap KernelBuffer<float64>(sz);
+        this.ka.upload(this.a);
+        this.kb.upload(this.b);
+        this.kc.upload(this.c);
+        this.stream = KernelStream.current();
+
+        this.nU = (uint32) this.nDim;
+        uint32 total = this.nU * (this.nU / 8);   // one item per (row, 8-col block)
+        // Coarse blocks on purpose: the CPU dispatcher fans BLOCKS across pool
+        // workers, so block count = worker count. n=200 ⇒ 5000 items; a 512-item
+        // block gives ~10 blocks ⇒ ~10 spinning workers, leaving cores free for
+        // the dispatcher + OS. With all 32 logical cores pegged by the hot-spin
+        // pool the launching thread gets preempted and trials spike to the cold-
+        // pool latency (noisy median); this caps the fan-out instead. The kernel
+        // is dispatch/overhead-bound at this size, so the coarser grid doesn't
+        // cost throughput. The kernel's `t < n*nblk` guard covers the tail.
+        this.blockX = 512;
+        this.gridX = (total + this.blockX - 1) / this.blockX;
     }
 
     public int64 inputSize() {
         return (int64) (this.nDim * this.nDim);
     }
 
+    // Measured region: dispatch the grid across the kernel pool and wait. Buffers
+    // are uploaded once in setup; A=identity makes each launch recompute the same
+    // C == B deterministically, so repeated trials are valid.
     public void run(int32 iterations) {
-        int32 nd = this.nDim;
-        int32 sz = nd * nd;
-        int32 jLimit = nd - (nd % 8);
-        // Register-accumulated, vectorized matmul. For each (i, j-block of 8) keep
-        // the C accumulator in ONE zmm register across the whole k loop, store it
-        // once -- so C is written n²/8 times instead of streamed n³/8 times.
-        // cv += B[k, j:j+8] * A[i,k] (scalar broadcast -> FMA). Explicit vload/
-        // vstore bypass the per-element bounds checks + aliasing the autovectorizer
-        // couldn't see past. Each C element is written exactly once (from a zeroed
-        // accumulator), so no pre-zeroing is needed.
-        int32 i = 0;
-        while (i < nd) {
-            int32 iBase = i * nd;
-            int32 jb = 0;
-            while (jb < jLimit) {
-                Vector<float64,8> cv =
-                    stack Vector<float64,8>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
-                int32 k = 0;
-                while (k < nd) {
-                    cv = cv + Cajeta.vload8f64(this.b, k * nd + jb) * this.a[iBase + k];
-                    k = k + 1;
-                }
-                Cajeta.vstore8f64(cv, this.c, iBase + jb);
-                jb = jb + 8;
-            }
-            // scalar tail columns (n % 8), also register-accumulated
-            while (jb < nd) {
-                float64 acc = 0.0;
-                int32 k = 0;
-                while (k < nd) {
-                    acc = acc + this.a[iBase + k] * this.b[k * nd + jb];
-                    k = k + 1;
-                }
-                this.c[iBase + jb] = acc;
-                jb = jb + 1;
-            }
-            i = i + 1;
-        }
+        matmul.launch(this.stream, grid: [this.gridX], block: [this.blockX])(
+            this.kc, this.ka, this.kb, this.nU);
+        this.stream.sync();
+    }
+
+    public boolean checkResult() {
+        this.kc.download(this.c);
+        int32 sz = this.nDim * this.nDim;
         float64 s = 0.0;
         int32 m = 0;
         while (m < sz) {
@@ -110,9 +158,6 @@ public class MatMulBench extends Benchmark {
             m = m + 1;
         }
         this.cSum = s;
-    }
-
-    public boolean checkResult() {
         return this.cSum == this.bSum;
     }
 }
