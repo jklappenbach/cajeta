@@ -37,6 +37,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <unistd.h>   // write(2) for abort-survivable diagnostics (see below)
+#include <errno.h>    // ETIMEDOUT — bounded stop-coordinator convergence wait
 
 #include "cajeta_xpu_abi.h"   // single source of truth for the XPU FFI contract
 
@@ -254,6 +255,142 @@ void __cajeta_dbg_fiber_reg_reset(void) {
     pthread_mutex_lock(&__cajeta_dbg_fiber_reg_mutex);
     __cajeta_dbg_fiber_reg_count = 0;
     pthread_mutex_unlock(&__cajeta_dbg_fiber_reg_mutex);
+}
+
+// === CP6f-2d unit 2: debug-only stop coordinator ==========================
+// Process-global rendezvous for cross-carrier stop-the-world (spec §2.1). A
+// breakpoint/exception sets `__cajeta_stop_requested`; every carrier observes
+// it at its next safepoint / scheduler hand-off (wired in units 3-6) and parks
+// via __cajeta_stop_park; the debugger waits on the convergence barrier
+// (__cajeta_stop_wait_converged) until parked==expected or a bounded timeout,
+// then resumes all with __cajeta_stop_clear. Zero cost off-path: the hot-path
+// check is __cajeta_stop_is_requested(), a single relaxed-atomic load (§4.2) —
+// the slow path (mutex/condvar) is touched only once a stop is in flight.
+//
+// Lock order (§4.1, acyclic): __cajeta_stop_mu is a LEAF — code holding it
+// never takes the registry or carrier/deque mutexes. The flag is read/written
+// with relaxed atomics so the safepoint fast path needs no lock; the
+// mutex+condvars serialize the count transitions and the park/resume waits.
+static pthread_mutex_t __cajeta_stop_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  __cajeta_stop_resume_cv    = PTHREAD_COND_INITIALIZER; // carriers wait here
+static pthread_cond_t  __cajeta_stop_converged_cv = PTHREAD_COND_INITIALIZER; // debugger waits here
+static int      __cajeta_stop_requested = 0;   // 0/1 flag — hot-path relaxed read
+static unsigned __cajeta_stop_generation = 0;  // bumped on every request and clear
+static int      __cajeta_stop_parked = 0;      // carriers currently parked
+static int      __cajeta_stop_expected = 0;    // carriers that must park before inspect
+
+// Hot path. A single relaxed load — gated upstream by the safepoint/session
+// guard, so when nothing is armed this is the only added instruction (§4.2).
+int __cajeta_stop_is_requested(void) {
+    return __atomic_load_n(&__cajeta_stop_requested, __ATOMIC_RELAXED);
+}
+
+// Open a stop round. Returns 1 iff this caller flipped 0->1 (the *primary*,
+// §4.3); 0 if a stop was already in progress (this caller is a secondary).
+int __cajeta_stop_request(void) {
+    int primary = 0;
+    pthread_mutex_lock(&__cajeta_stop_mu);
+    if (!__atomic_load_n(&__cajeta_stop_requested, __ATOMIC_RELAXED)) {
+        __atomic_store_n(&__cajeta_stop_requested, 1, __ATOMIC_RELAXED);
+        __cajeta_stop_generation++;
+        primary = 1;
+    }
+    pthread_mutex_unlock(&__cajeta_stop_mu);
+    return primary;
+}
+
+// Resume-all: clear the flag, bump the generation, wake every parked carrier.
+void __cajeta_stop_clear(void) {
+    pthread_mutex_lock(&__cajeta_stop_mu);
+    __atomic_store_n(&__cajeta_stop_requested, 0, __ATOMIC_RELAXED);
+    __cajeta_stop_generation++;
+    pthread_cond_broadcast(&__cajeta_stop_resume_cv);
+    pthread_mutex_unlock(&__cajeta_stop_mu);
+}
+
+void __cajeta_stop_set_expected(int n) {
+    pthread_mutex_lock(&__cajeta_stop_mu);
+    __cajeta_stop_expected = n;
+    pthread_cond_broadcast(&__cajeta_stop_converged_cv);  // a lowered bar may already be met
+    pthread_mutex_unlock(&__cajeta_stop_mu);
+}
+
+// A carrier observed the stop and parks here: count itself, wake the debugger's
+// convergence wait, then block until THIS round is cleared. If the round was
+// already cleared between the carrier's flag read and acquiring the lock, this
+// returns immediately (never parks into a resumed world) — the generation guard
+// also releases it promptly if a *new* round opens.
+void __cajeta_stop_park(void) {
+    pthread_mutex_lock(&__cajeta_stop_mu);
+    unsigned gen = __cajeta_stop_generation;
+    __cajeta_stop_parked++;
+    pthread_cond_broadcast(&__cajeta_stop_converged_cv);
+    while (__atomic_load_n(&__cajeta_stop_requested, __ATOMIC_RELAXED)
+           && __cajeta_stop_generation == gen) {
+        pthread_cond_wait(&__cajeta_stop_resume_cv, &__cajeta_stop_mu);
+    }
+    __cajeta_stop_parked--;
+    pthread_mutex_unlock(&__cajeta_stop_mu);
+}
+
+// Debugger-side barrier. Block until parked>=expected, or until timeout_ns
+// elapses (<=0 waits indefinitely). Returns the count still NOT parked (0 ==
+// fully quiesced) so the caller can flag un-quiesced carriers (spec §2.3, §5.4)
+// rather than hang on a carrier stuck in a native call.
+int __cajeta_stop_wait_converged(long timeout_ns) {
+    struct timespec deadline;
+    if (timeout_ns > 0) {
+        clock_gettime(CLOCK_REALTIME, &deadline);
+        long sec = timeout_ns / 1000000000L;
+        long nsec = timeout_ns % 1000000000L;
+        deadline.tv_sec += sec;
+        deadline.tv_nsec += nsec;
+        if (deadline.tv_nsec >= 1000000000L) { deadline.tv_nsec -= 1000000000L; deadline.tv_sec++; }
+    }
+    pthread_mutex_lock(&__cajeta_stop_mu);
+    while (__cajeta_stop_parked < __cajeta_stop_expected) {
+        if (timeout_ns <= 0) {
+            pthread_cond_wait(&__cajeta_stop_converged_cv, &__cajeta_stop_mu);
+        } else if (pthread_cond_timedwait(&__cajeta_stop_converged_cv,
+                                          &__cajeta_stop_mu, &deadline) == ETIMEDOUT) {
+            break;
+        }
+    }
+    int missing = __cajeta_stop_expected - __cajeta_stop_parked;
+    if (missing < 0) missing = 0;
+    pthread_mutex_unlock(&__cajeta_stop_mu);
+    return missing;
+}
+
+int __cajeta_stop_parked_count(void) {
+    pthread_mutex_lock(&__cajeta_stop_mu);
+    int n = __cajeta_stop_parked;
+    pthread_mutex_unlock(&__cajeta_stop_mu);
+    return n;
+}
+
+int __cajeta_stop_expected_count(void) {
+    pthread_mutex_lock(&__cajeta_stop_mu);
+    int n = __cajeta_stop_expected;
+    pthread_mutex_unlock(&__cajeta_stop_mu);
+    return n;
+}
+
+unsigned __cajeta_stop_generation_get(void) {
+    pthread_mutex_lock(&__cajeta_stop_mu);
+    unsigned g = __cajeta_stop_generation;
+    pthread_mutex_unlock(&__cajeta_stop_mu);
+    return g;
+}
+
+// Test-only: drop the coordinator back to its idle state.
+void __cajeta_stop_reset(void) {
+    pthread_mutex_lock(&__cajeta_stop_mu);
+    __atomic_store_n(&__cajeta_stop_requested, 0, __ATOMIC_RELAXED);
+    __cajeta_stop_generation = 0;
+    __cajeta_stop_parked = 0;
+    __cajeta_stop_expected = 0;
+    pthread_mutex_unlock(&__cajeta_stop_mu);
 }
 
 // CP3: a settable safepoint handler. When the in-process debugger is attached
