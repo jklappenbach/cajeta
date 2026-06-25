@@ -2,9 +2,9 @@
 
 `dev.cajeta.nucleo` is the **consolidated core** for porting the Python scientific/ML stack
 to Cajeta — one substrate (tensor + columnar + GPU) with familiar **façades** (torch, keras,
-scipy, pandas) and the greenfield **toffee** framework on top. The thesis: *port the
-contracts, not the implementations; correct the upstream mistakes; make the result feel
-familiar but be categorically better.*
+scipy, pandas) over it. (A greenfield native framework, **caramelo**, is deferred — everyone
+targets the núcleo core directly.) The thesis: *port the contracts, not the implementations;
+correct the upstream mistakes; make the result feel familiar but be categorically better.*
 
 This directory holds the design docs and the spec set. Specs are **requirements + use cases**
 (the *why/what*); build decisions (the *how*) are deferred as `> **TBD (plan-time):**` markers
@@ -38,7 +38,7 @@ first-class function types, closures, **closure specialization**, method-level t
 | `nucleo-column-spec.md` | Arrow-laid-out columnar buffer + C Data Interface (no libarrow); the column == tensor-buffer invariant; Tensor Arrow retrofit. |
 | `nucleo-expr-spec.md` | Lazy expression graph + fusion engine — shared by tensor ops AND dataframe ops. |
 | `nucleo-autograd-spec.md` | The autograd engine — tensor-op VJP rules, forward/backward contract, eager tape, `Diff<T>`, `@NoGrad`/`@Checkpoint`. Consumes transform-intrinsics. |
-| `nucleo-nn-optim-spec.md` | Module/Parameter system + optimizers (explicit grads, no global state) — shared by torch/keras/toffee. |
+| `nucleo-nn-optim-spec.md` | Module/Parameter system + optimizers (explicit grads, no global state) — skinned by the torch/keras façades. |
 | `nucleo-frame-spec.md` | Polars-shaped lazy typed dataframe (`Table<T>`) + the pluggable index interface (zone-maps/B+/Z-order; R-tree/BVH/HNSW deferred). |
 | `nucleo-sparse-linalg-spec.md` | Sparse *arrays* (CSR/CSC/COO) + sparse linalg; extended factorizations (qr/cholesky/lu/svd/eig) returning typed records. |
 
@@ -46,7 +46,7 @@ first-class function types, closures, **closure specialization**, method-level t
 | Spec | Covers |
 |---|---|
 | `torch-facade-spec.md` | The critical surface — recognizable PyTorch over núcleo; footguns corrected; `.pt` state-dict compat. |
-| `keras-facade-spec.md` | High-level Model/`fit`/`compile` contract over a backend (torch-skin **and** toffee). |
+| `keras-facade-spec.md` | High-level Model/`fit`/`compile` contract over the one núcleo core. |
 | `scipy-facade-spec.md` | scipy by submodule (optimize/signal/spatial pulled forward); typed result records; sparse-arrays-only. |
 | `pandas-facade-spec.md` | Optional, demoted recognizability skin over `nucleo.frame` (the primary API). |
 | `flagship-splat-spec.md` | Differentiable Gaussian-splat rendering — the integration proof (df + tensor + autograd + render on one set of bytes). |

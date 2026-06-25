@@ -1,8 +1,8 @@
 # Núcleo NN & Optim — Specification
 
 > Status: draft for review (2026-06-23). The **module/parameter system + optimizers** — the
-> neural-net core (`dev.cajeta.nucleo.nn`, `dev.cajeta.nucleo.optim`) shared by the torch and
-> keras façades and by toffee. Layer-1b núcleo core. Companion design:
+> neural-net core (`dev.cajeta.nucleo.nn`, `dev.cajeta.nucleo.optim`) that the torch and keras
+> façades skin. Layer-1b núcleo core. Companion design:
 > `python-stack-analysis.md` §3.2/§3.3, `target-experience.md` §2,
 > `language-foundations.md` §3.
 >
@@ -16,9 +16,9 @@
 > autograd engine (`nucleo-autograd-spec.md`) and the transform combinators
 > (`transform-intrinsics-spec.md`); it does **not** define differentiation rules. Module state
 > serialization (`state_dict`/`.pt`) is deferred to `torch-facade-spec.md`. The façades
-> (`torch-facade-spec.md`, `keras-facade-spec.md`) are thin skins over this; toffee
-> (SPELA-based) sits directly on it. Tensors come from stdlib `cajeta.math.Tensor`; records
-> (typed return bags) from `records-spec.md`.
+> (`torch-facade-spec.md`, `keras-facade-spec.md`) are thin skins over this; a future native
+> framework (**caramelo**, deferred) would likewise build directly on it. Tensors come from
+> stdlib `cajeta.math.Tensor`; records (typed return bags) from `records-spec.md`.
 
 ## 1. Definition
 
@@ -28,8 +28,8 @@ owns parameters and sub-modules and defines a forward pass; **parameter collecti
 enumerates a module's owned tensors so an optimizer can update them; and the **optimizer
 protocol** (SGD/Adam/AdamW + LR schedulers) that consumes the **explicit gradients returned by
 the autograd engine** and writes updated parameter values back. It is the one nn layer the
-torch façade, keras, and toffee all stand on — the façades add recognizable names and call
-shapes, never a second engine.
+torch and keras façades stand on (and that a future native framework, **caramelo**, would build
+on) — the façades add recognizable names and call shapes, never a second engine.
 
 ### 1.2 Scope
 - A composable **`Module`/`Layer`** abstraction: a module holds **parameters** and
@@ -223,7 +223,8 @@ opt.step(result.grads);                           // explicit grads in; params u
   grads in," indifferent to which driver produced them.
 - **5.6** As a developer, when I implement a custom optimizer, then I implement the **optimizer
   protocol** (a `step(grads)` + state-init contract) — the protocol is an interface other
-  optimizers (and toffee's SPELA-style updates) implement, not a fixed closed set.
+  optimizers (including non-standard updates such as a future SPELA-style local-loss rule)
+  implement, not a fixed closed set.
 
 > **TBD (plan-time):** [N6] The optimizer protocol's exact shape — a single `step(grads)`, or a
 > split `step()` + a separately supplied grad source; how per-parameter optimizer state is keyed
@@ -322,11 +323,12 @@ This core is the **shared substrate**; the façades add only recognizable names 
 - **9.2** As a façade author, when I build `dev.cajeta.keras`, then `Model`/`Layer`/`compile`/
   `fit`/callbacks sit over the **same** `nucleo.nn`/`nucleo.optim` core
   (`python-stack-analysis.md` §3.3) — keras owns no nn/optim engine of its own.
-- **9.3** As a toffee author, when I write a SPELA-based (forward-only, per-layer local-loss)
-  trainer, then I use the **same `Module`/`Parameter`/optimizer-protocol** core directly — no
-  façade — and my non-backprop update rule implements the **optimizer protocol** (§5.6),
-  consuming the per-layer local grads SPELA computes rather than autograd's reverse-mode grads.
-- **9.4** As a developer, when I move a model between the torch skin, keras, and toffee, then the
+- **9.3** As a native-framework author (e.g. a future **caramelo**), when I write a non-backprop
+  trainer such as a SPELA-based (forward-only, per-layer local-loss) rule, then I use the **same
+  `Module`/`Parameter`/optimizer-protocol** core directly — no façade — and my update rule
+  implements the **optimizer protocol** (§5.6), consuming per-layer local grads rather than
+  autograd's reverse-mode grads. (This is a generality requirement on the core, not v1 scope.)
+- **9.4** As a developer, when I move a model between the torch skin and keras, then the
   `Module` and parameters are **the same objects** — the façade is a presentation layer, not a
   conversion boundary.
 
@@ -348,8 +350,9 @@ This core is the **shared substrate**; the façades add only recognizable names 
   with explicit reduction.
 - Train/eval mode is selectable **without a global mutable flag** and is reentrant across
   concurrent forwards.
-- The core is backend-neutral: the torch and keras façades and toffee are thin skins over the
-  same `Module`/optimizer/loss objects.
+- The core is backend-neutral: the torch and keras façades are thin skins over the
+  same `Module`/optimizer/loss objects, and the optimizer protocol is general enough for a future
+  native framework's non-standard update rules.
 
 ## 11. Open questions (resolve at plan time)
 - **[N1]** `Module` as interface/base class vs. `@Module`-synthesized plumbing (§1.4).

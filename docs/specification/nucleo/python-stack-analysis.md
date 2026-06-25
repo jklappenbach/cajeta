@@ -54,9 +54,10 @@ encodes a genuine mistake, the core does not inherit it (see §2.5).
 ### 1.4 Two audiences
 - **Familiarity-seekers** — Python developers who want a known surface. Served by the
   **façades** (`dev.cajeta.torch / .keras / .scipy / .pandas`).
-- **Greenfield** — served by **toffee**, the first-principles SPELA-based framework, which
-  carries no familiarity obligation and sits directly on the consolidated core for the
-  best footing.
+- **Greenfield** — served by the **consolidated core directly** (`dev.cajeta.nucleo`), which
+  carries no familiarity obligation and is the best footing for new code. *(A first-principles
+  native framework, **caramelo** — SPELA-based — is **deferred**; if built it would sit directly
+  on the same core, not as a façade. For now greenfield = núcleo core directly.)*
 
 Both draw from the same core. That is the whole architecture.
 
@@ -194,12 +195,12 @@ effort & risk · núcleo mapping.*
   Sequential/Functional/subclassing split (collapse to **one** coherent model API); lazy
   `build()`/late shape inference (make shapes explicit/early via the type system); global
   backend state.
-- **Strategic value.** Built as a **contract over a cajeta backend**, keras becomes the
-  *single high-level front door* for both the torch-shaped world **and** toffee — the
-  cheapest high-value win once the core exists.
+- **Strategic value.** Built as a **high-level contract over the one núcleo core**, keras becomes
+  the *high-level front door* for the torch-shaped world — the cheapest high-value win once the
+  core exists.
 - **Effort / risk:** low-med (gated on core+nn) / low.
-- **núcleo mapping:** façade `dev.cajeta.keras` over `nucleo.nn`/`nucleo.optim`,
-  backend-agnostic across the torch skin and toffee.
+- **núcleo mapping:** façade `dev.cajeta.keras` over `nucleo.nn`/`nucleo.optim` — straight onto
+  the one core (the same core the torch façade skins), no backend choice.
 
 ### 3.4 SciPy — algorithms over the array
 - **What it is.** numpy + scientific algorithm modules + **one new core type (sparse)**.
@@ -211,9 +212,9 @@ effort & risk · núcleo mapping.*
 - **Genuinely new.** `optimize` (minimize, root, least_squares, curve_fit, linprog);
   `signal` (filters, convolution, spectral, resampling); `interpolate` (splines, interp1d,
   griddata); `integrate` (quad, `solve_ivp` ODE solvers); `special` (gamma/beta/bessel/erf…);
-  `spatial` (KDTree, distance, ConvexHull/Delaunay — note **toffee already has an
-  RT-as-compute spatial index**, a potential shared substrate); **`sparse` (CSR/CSC/COO +
-  sparse linalg) — the one new core type**; `ndimage`; `cluster`.
+  `spatial` (KDTree, distance, ConvexHull/Delaunay — KDTree's kNN/radius queries ride the
+  **`cajeta.xpu` RT-as-compute spatial index**, a compute primitive shared with robotica);
+  **`sparse` (CSR/CSC/COO + sparse linalg) — the one new core type**; `ndimage`; `cluster`.
 - **Drop (mistakes not to inherit).** Ship **sparse *arrays* only** (scipy is itself
   deprecating the `np.matrix`-based sparse *matrix*); normalize inconsistent return
   conventions (ad-hoc tuples / `OptimizeResult` bags); keep Fortran-order/LAPACK out of the
@@ -295,7 +296,7 @@ nucleo.column    Arrow-laid-out columnar buffer (validity bitmap · offsets+data
                  64-byte align · C-Data-Interface export/import · MX extension types)
 nucleo.expr      lazy expression graph + fusion engine (shared by tensor AND dataframe ops)
 nucleo.autograd  one VJP/JVP rule-set + two drivers (MIR-pass engine · eager-tape skin)
-nucleo.nn        module / parameter core      (shared by torch.nn, keras, toffee)
+nucleo.nn        module / parameter core      (skinned by torch.nn + keras)
 nucleo.optim     optimizers + schedulers      (shared)
 nucleo.frame     Polars-shaped lazy typed dataframe over column + expr
 nucleo.index     pluggable index interface (+ zone-maps · in-memory B+ · Z-order)
@@ -307,7 +308,8 @@ nucleo.geometry  geometry-attribute tables + splat tables (+ BVH over tensor buf
 ```
 
 ### 4.2 The three ML lineages (distinct cores, shared substrate)
-1. **Deep learning** — `Tensor` + `nucleo.autograd` → façades `torch`, `keras`; native `toffee`.
+1. **Deep learning** — `Tensor` + `nucleo.autograd`, used directly or via façades `torch`/`keras`
+   (a native `caramelo` framework is deferred).
 2. **Gradient-boosting** — columnar ingest + histogram + trees (`nucleo.trees`); no autodiff.
 3. **Graphics** — BVH + differentiable rendering (`nucleo.geometry` + autograd + GPU).
 
@@ -317,7 +319,8 @@ autodiff spine.
 ### 4.3 The façades (`dev.cajeta.*`)
 `dev.cajeta.torch` (+ `.nn`, `.optim`, `.utils.data`, `.amp`, `.io`) · `dev.cajeta.keras` ·
 `dev.cajeta.scipy` (split by submodule) · optional `dev.cajeta.pandas` skin over the
-Polars-shaped `nucleo.frame`. **toffee** is not a façade — it sits directly on núcleo.
+Polars-shaped `nucleo.frame`. A native **caramelo** framework (deferred) would not be a façade —
+it would sit directly on núcleo; for now greenfield code targets the núcleo core directly.
 
 ### 4.4 Autodiff placement — the keystone (decided: MIR-pass primary, tape skin)
 Three placements, sharply different:
@@ -410,7 +413,9 @@ intersection and the flagship.
 ## 6. Decision log
 
 **Settled**
-- Consolidated core **`dev.cajeta.nucleo`** ("núcleo") + recognizable façades + toffee on top.
+- Consolidated core **`dev.cajeta.nucleo`** ("núcleo") + recognizable façades over it; everyone
+  (familiarity-seekers *and* greenfield) targets the one core. A native **caramelo** framework is
+  **deferred** (not v1; would sit directly on núcleo if built).
 - Port the contracts, not the implementations; façades recognizable, not faithful.
 - One columnar-expression engine; **non-null-column == tensor-buffer == same bytes** invariant.
 - Arrow **layout + C Data Interface** (no `libarrow`); MX as extension types; own engine/types.
@@ -429,8 +434,9 @@ intersection and the flagship.
 - Exact scipy submodule cut for v1 (which of optimize/signal/interpolate/integrate/special/
   spatial/ndimage/cluster ship first vs. defer).
 - Whether `nucleo.trees`/scikit get a unified estimator façade or separate skins.
-- Toffee's exact relationship to `nucleo.autograd` (consume the MIR pass, or bypass autodiff
-  for SPELA's forward-only training — likely both paths).
+- *(Deferred, not v1)* A native **caramelo** framework's relationship to `nucleo.autograd` — if
+  built, whether its SPELA-style forward-only training consumes the MIR pass or bypasses autodiff
+  (likely both paths). The nn/optim optimizer protocol is already general enough to host it.
 
 ---
 
