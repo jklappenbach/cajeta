@@ -93,8 +93,15 @@ def main():
         ok = xxhash.xxh3_64_intdigest(buf, seed=0) == XXH3_REF
         out.append(row(run_id, ts, "xxhash3", "xxhash", xxhash.VERSION, warmup, trials,
                        stats(s), ok, "ok" if ok else "invalid"))
+        # xxhash3_128 (XXH3-128; time + cross-check the low64)
+        mask = (1 << 64) - 1
+        s = bench(buf, warmup, trials, lambda b: xxhash.xxh3_128_intdigest(b, seed=0) & mask)
+        ok = (xxhash.xxh3_128_intdigest(buf, seed=0) & mask) == XXH3_REF
+        out.append(row(run_id, ts, "xxhash3_128", "xxhash", xxhash.VERSION, warmup, trials,
+                       stats(s), ok, "ok" if ok else "invalid"))
     except ImportError:
         out.append(skip_row(run_id, ts, "xxhash3", "xxhash", "xxhash module not importable"))
+        out.append(skip_row(run_id, ts, "xxhash3_128", "xxhash", "xxhash module not importable"))
 
     # sha256 (hashlib)
     s = bench(buf, warmup, trials, lambda b: hashlib.sha256(b).digest())

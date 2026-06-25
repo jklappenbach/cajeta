@@ -125,6 +125,10 @@ func main() {
 	s := benchU64(warmup, trials, func() uint64 { return xxh3.Hash(buf) })
 	emit(runID, ts, "xxhash3", "zeebo/xxh3", "v1.0.2", warmup, trials, s, xxh3.Hash(buf) == xxh3Ref)
 
+	// xxhash3_128 (XXH3-128; time + cross-check the low64)
+	s = benchU64(warmup, trials, func() uint64 { return xxh3.Hash128(buf).Lo })
+	emit(runID, ts, "xxhash3_128", "zeebo/xxh3", "v1.0.2", warmup, trials, s, xxh3.Hash128(buf).Lo == xxh3Ref)
+
 	// sha256
 	s = benchU64(warmup, trials, func() uint64 { h := sha256.Sum256(buf); return uint64(h[0]) })
 	d := sha256.Sum256(buf)

@@ -77,6 +77,11 @@ fn main() {
     let (s, h) = bench(&buf, warmup, trials, || xxhash_rust::xxh3::xxh3_64(&buf));
     emit(&run_id, &ts, "xxhash3", "xxhash-rust", "0.8", warmup, trials, s, h == XXH3_REF);
 
+    // xxhash3_128 (XXH3-128; time + cross-check the low64)
+    let (s, h) = bench(&buf, warmup, trials, || xxhash_rust::xxh3::xxh3_128(&buf) as u64);
+    emit(&run_id, &ts, "xxhash3_128", "xxhash-rust", "0.8", warmup, trials, s,
+         h == 0xd36c0e13a3df139e);
+
     // sha256
     let (s, _) = bench(&buf, warmup, trials, || {
         let d = sha2::Sha256::digest(&buf);

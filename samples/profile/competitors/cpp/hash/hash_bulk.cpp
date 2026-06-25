@@ -100,6 +100,19 @@ int main() {
         bool ok = (uint64_t)XXH3_64bits(buf.data(), N) == XXH3_REF; (void)sink;
         emit(run_id, ts, "xxhash3", "xxHash", XXH_VER_STRING, warmup, trials, s, ok);
     }
+    // xxhash3_128 (XXH3-128; time the low64 for the sink, cross-check low64)
+    {
+        volatile uint64_t sink = 0;
+        for (int i = 0; i < warmup; ++i) sink = XXH3_128bits(buf.data(), N).low64;
+        std::vector<long long> s;
+        for (int i = 0; i < trials; ++i) {
+            auto t0 = clk::now(); XXH128_hash_t h = XXH3_128bits(buf.data(), N); auto t1 = clk::now();
+            sink = h.low64;
+            s.push_back(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+        }
+        bool ok = XXH3_128bits(buf.data(), N).low64 == 0xd36c0e13a3df139eULL; (void)sink;
+        emit(run_id, ts, "xxhash3_128", "xxHash", XXH_VER_STRING, warmup, trials, s, ok);
+    }
     // sha256 (OpenSSL)
     {
         unsigned char out[SHA256_DIGEST_LENGTH];

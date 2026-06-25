@@ -7175,6 +7175,42 @@ int64_t __cajeta_xxh3_oneshot(const void* data_hdr, int64_t len, int64_t seed) {
         ((const uint8_t*) data_hdr) + 8, (size_t) len, (uint64_t) seed);
 }
 
+// One-shot XXH3-128, reference path. Writes low64 then high64 (native LE) into
+// the 16-byte payload of out_hdr (a Cajeta int8[16]; data starts at +8). Used as
+// the correctness oracle for the pure-Cajeta SIMD long path and as the
+// small-input (<= 240 B) path that the Cajeta side doesn't vectorize.
+void __cajeta_xxh3_128_oneshot(const void* data_hdr, int64_t len, int64_t seed,
+                               void* out_hdr) {
+    if (!out_hdr) return;
+    const uint8_t* in = (len > 0 && data_hdr) ? ((const uint8_t*) data_hdr) + 8
+                                              : (const uint8_t*) "";
+    XXH128_hash_t h = XXH3_128bits_withSeed(in, (size_t)(len > 0 ? len : 0),
+                                            (uint64_t) seed);
+    uint8_t* out = ((uint8_t*) out_hdr) + 8;
+    memcpy(out, &h.low64, 8);
+    memcpy(out + 8, &h.high64, 8);
+}
+
+// Format an XXH3-128 (low64,high64) pair as the 32-char canonical hex digest —
+// big-endian high64 then big-endian low64 (matches XXH128_canonicalFromHash) —
+// into the 32-byte payload of out_hdr. Lets hash128Hex keep the SIMD crown path
+// for the hash itself and only format the two halves here.
+void __cajeta_xxh3_128_hex(int64_t low, int64_t high, void* out_hdr) {
+    if (!out_hdr) return;
+    static const char H[16] = {'0','1','2','3','4','5','6','7',
+                               '8','9','a','b','c','d','e','f'};
+    uint8_t* o = ((uint8_t*) out_hdr) + 8;
+    uint64_t hi = (uint64_t) high, lo = (uint64_t) low;
+    for (int i = 0; i < 8; i++) {
+        uint8_t b = (uint8_t)(hi >> ((7 - i) * 8));
+        o[i * 2] = H[b >> 4]; o[i * 2 + 1] = H[b & 0xF];
+    }
+    for (int i = 0; i < 8; i++) {
+        uint8_t b = (uint8_t)(lo >> ((7 - i) * 8));
+        o[16 + i * 2] = H[b >> 4]; o[16 + i * 2 + 1] = H[b & 0xF];
+    }
+}
+
 // Width-named folders. Same approach as MD5 / SipHash.
 void __cajeta_xxh3_write_i8(void* state, int8_t v) {
     if (state) XXH3_64bits_update((XXH3_state_t*) state, &v, 1);

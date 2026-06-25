@@ -111,8 +111,9 @@ public class HashBench {
         byte[] buf = new byte[N];
         for (int i = 0; i < N; i++) buf[i] = (byte) (i & 0xFF);
 
-        // xxhash3 — no JDK stdlib xxHash; jar not provisioned.
+        // xxhash3 / xxhash3_128 — no JDK stdlib xxHash; jar not provisioned.
         emitSkip(runId, ts, "xxhash3", "no JDK stdlib xxHash; jar not provisioned");
+        emitSkip(runId, ts, "xxhash3_128", "no JDK stdlib xxHash; jar not provisioned");
 
         runDigest(runId, ts, "sha256", "SHA-256", SHA256_REF, buf, warmup, trials);
         runDigest(runId, ts, "md5", "MD5", MD5_REF, buf, warmup, trials);
