@@ -68,10 +68,8 @@ public class Sobol {
      * so no shift instruction is needed. This dimension is the Van der Corput
      * base-2 radical inverse.
      */
-    // Fills the caller-provided 32-entry array (was a `#int64[]` move-return,
-    // which trips a codegen NULL_OPERAND on the int64[] move when the class
-    // lives in the prelude-rooted cajeta.xpu package — see migration plan 1.3.2).
-    public static void directionsDim0(int64[] v) {
+    public static #int64[] directionsDim0() {
+        int64[] v = heap int64[32];
         v[31] = 1;
         int32 i = 30;
         while (i >= 0) {
@@ -79,6 +77,7 @@ public class Sobol {
             v[i] = nxt + nxt;       // 2 * v[i+1] = 2^(31-i)
             i = i - 1;
         }
+        return #v;
     }
 
     /**
@@ -88,8 +87,7 @@ public class Sobol {
      * v[i] = m_{i+1} << (31 - i) (0-based bit i). m_{i+1} < 2^(i+1) so the shift
      * keeps every v[i] < 2^32 (a positive int64).
      */
-    // Fills the caller-provided 32-entry array (see directionsDim0 note).
-    public static void directionsDim1(int64[] v) {
+    public static #int64[] directionsDim1() {
         int64[] m = heap int64[33];     // m[1..32], 1-based
         m[1] = 1;
         int32 i = 2;
@@ -99,12 +97,14 @@ public class Sobol {
             m[i] = dbl ^ prev;          // 2*m_{i-1} XOR m_{i-1}
             i = i + 1;
         }
+        int64[] v = heap int64[32];
         int32 b = 0;
         while (b < 32) {
             int64 mm = m[b + 1];
             v[b] = Sobol.shiftLeft(mm, 31 - b);
             b = b + 1;
         }
+        return #v;
     }
 
     /**
@@ -134,8 +134,7 @@ public class Sobol {
      * base-2 radical inverse (1 -> 0.5, 2 -> 0.25, 3 -> 0.75, 4 -> 0.125).
      */
     public static float32 dim0(int32 index) {
-        int64[] v = heap int64[32];
-        Sobol.directionsDim0(v);
+        int64[] v = Sobol.directionsDim0();
         return Sobol.sample(index, v);
     }
 
@@ -145,8 +144,7 @@ public class Sobol {
      * forms the 2-D (0,2)-sequence whose first 4 points hit all four quadrants.
      */
     public static float32 dim1(int32 index) {
-        int64[] v = heap int64[32];
-        Sobol.directionsDim1(v);
+        int64[] v = Sobol.directionsDim1();
         return Sobol.sample(index, v);
     }
 }

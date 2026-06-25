@@ -2469,6 +2469,23 @@ namespace cajeta {
 
     void Method::createScope() {
         module->getScopeStack().add(make_shared<Scope>(toCanonical(), module));
+        // A method body is a fresh lexical root. ScopeStack::add() wires the new
+        // scope's parent to whatever frame happened to be on the stack — the
+        // enclosing class scope, or (during nested/mid-codegen compilation) a
+        // sibling or caller method's scope. Letting getField() fall through that
+        // parent chain lets the resolveTypes PRE-PASS (Method::generateCode runs
+        // block->resolveTypes before block->generateCode) bind an identifier to a
+        // same-named local of a DIFFERENT type from an unrelated method — before
+        // this method's own LocalVariableDeclaration registers it — and pin a
+        // wrong resolvedType on the AST node that codegen then trusts (e.g. a
+        // Matrix<3,3> * Vector<3> mis-lowered to a scalar `mat.scale` because the
+        // RHS `b` resolved to a sibling's `int32 b`). A method's own locals/params
+        // live in THIS scope (nested block scopes chain beneath it); static-field
+        // access goes through the structure stack and closure captures through the
+        // capture env — neither needs this parent. Clear it: pure isolation, and a
+        // generalization of the save()/restore() barrier CajetaClass already
+        // applies on its template-instantiation path.
+        module->getScopeStack().peek()->setParent(nullptr);
     }
 
     void Method::destroyScope() {
