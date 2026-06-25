@@ -36,6 +36,11 @@ namespace cajeta {
     class CajetaClass;
 
     class CajetaModule : public enable_shared_from_this<CajetaModule> {
+    public:
+        // TBAA access kind (see the TBAA section further down for rationale).
+        // Declared at the top so the private provenance map can name it.
+        enum class TbaaKind { None, Char, Field, ArrayElem };
+
     private:
         static map<string, MethodPtr> methods;
         static map<string, CajetaModulePtr> strutureToModule;
@@ -284,6 +289,17 @@ namespace cajeta {
         CajetaTypePtr initializerType;
         string targetTriple;
 
+        // TBAA: provenance of array-element / field GEPs, plus the lazily-built
+        // metadata nodes (see the TBAA section in the public API below).
+        std::unordered_map<const llvm::Value*, TbaaKind> tbaaProvenance;
+        llvm::MDNode* tbaaCharType = nullptr;
+        llvm::MDNode* tbaaFieldType = nullptr;
+        llvm::MDNode* tbaaArrayElemType = nullptr;
+        llvm::MDNode* tbaaFieldTag = nullptr;
+        llvm::MDNode* tbaaArrayElemTag = nullptr;
+        llvm::MDNode* tbaaCharTag = nullptr;
+        void ensureTbaaNodes();
+
 
     public:
         CajetaModule(llvm::LLVMContext* llvmContext,
@@ -333,6 +349,29 @@ namespace cajeta {
         llvm::IRBuilder<>* getBuilder() {
             return this->builder;
         }
+
+        // ── TBAA (type-based alias analysis) metadata ──────────────────────
+        // Cajeta emits coarse TBAA so the optimizer knows an array-element store
+        // can't alias the enclosing object's fields (array buffers and object
+        // storage are always disjoint allocations). Two disjoint scalar nodes —
+        // "cajeta field" and "cajeta array element" — both descend from an
+        // omnipotent-char node (which aliases everything), so a raw/byte access
+        // tagged Char still conservatively aliases all. An UNtagged access is
+        // conservative too. Accesses get tagged via a provenance map populated
+        // at the array- and field-GEP emit sites, then applied to the consuming
+        // loads/stores by applyTbaaTags(). Sound because differently-tagged
+        // (field vs array-elem) memory genuinely never overlaps. (The TbaaKind
+        // enum is declared at the top of the class.)
+
+        // Record that `ptr` (an array-element or field GEP) has the given access
+        // kind so applyTbaaTags() can later tag the loads/stores that use it.
+        void recordTbaaProvenance(llvm::Value* ptr, TbaaKind kind);
+
+        // Walk every defined function in this module's llvm::Module; for each
+        // load/store whose pointer operand (modulo pointer casts) has recorded
+        // provenance, attach the matching !tbaa access tag. Idempotent; run once
+        // per module after codegen, before optimization.
+        void applyTbaaTags();
 
         // Allocate a stack slot in the CURRENT function's ENTRY block, not at
         // the builder's current insertion point. Local-variable slots must use

@@ -718,8 +718,13 @@ namespace cajeta {
             }
         }
 
-        return module->getBuilder()->CreateStructGEP(klass->getLlvmType(), base,
-            fieldIdx, identifier);
+        llvm::Value* fieldGep = module->getBuilder()->CreateStructGEP(
+            klass->getLlvmType(), base, fieldIdx, identifier);
+        // TBAA: object-field access. The disjoint "field" tag lets the optimizer
+        // hoist field loads across array-element stores (which carry the
+        // array-element tag) — array buffers and object storage never overlap.
+        module->recordTbaaProvenance(fieldGep, CajetaModule::TbaaKind::Field);
+        return fieldGep;
     }
 
 } // code

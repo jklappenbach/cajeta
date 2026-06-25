@@ -1327,6 +1327,11 @@ namespace cajeta {
     // native ELF/Mach-O/etc. object. Exe defers linking until after every module's
     // object has been written; see linkExecutable.
     void Compiler::emitForModule(CajetaModulePtr module) {
+        // Attach TBAA !tbaa tags to array-element / object-field loads & stores
+        // (recorded during codegen) before any optimization runs — so LICM/GVN
+        // can hoist field loads across array-element stores. Runs for every emit
+        // mode (IR mode writes the .ll so the tags are inspectable).
+        module->applyTbaaTags();
         switch (emitMode) {
             case EmitMode::IR:
                 module->writeIRFileTarget();

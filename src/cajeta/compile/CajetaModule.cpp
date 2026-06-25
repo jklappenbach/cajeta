@@ -20,6 +20,9 @@
 
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/MDBuilder.h"
+#include "llvm/IR/Metadata.h"
 #include "llvm/Linker/Linker.h"
 #include "llvm/Support/MemoryBuffer.h"
 
@@ -1135,5 +1138,74 @@ namespace cajeta {
             gv, llvm::PointerType::get(ctx, 0));
         sourceFileConstants[path] = ptr;
         return ptr;
+    }
+
+    // ── TBAA ───────────────────────────────────────────────────────────────
+    void CajetaModule::ensureTbaaNodes() {
+        if (tbaaCharType) {
+            return;
+        }
+        llvm::MDBuilder mdb(*llvmContext);
+        llvm::MDNode* root = mdb.createTBAARoot("Cajeta TBAA");
+        // omnipotent char aliases everything; field + array-element descend from
+        // it and are SIBLINGS, so they do not alias each other.
+        tbaaCharType = mdb.createTBAAScalarTypeNode("omnipotent char", root);
+        tbaaFieldType = mdb.createTBAAScalarTypeNode("cajeta field", tbaaCharType);
+        tbaaArrayElemType =
+            mdb.createTBAAScalarTypeNode("cajeta array element", tbaaCharType);
+        tbaaFieldTag = mdb.createTBAAStructTagNode(tbaaFieldType, tbaaFieldType, 0);
+        tbaaArrayElemTag =
+            mdb.createTBAAStructTagNode(tbaaArrayElemType, tbaaArrayElemType, 0);
+        tbaaCharTag = mdb.createTBAAStructTagNode(tbaaCharType, tbaaCharType, 0);
+    }
+
+    void CajetaModule::recordTbaaProvenance(llvm::Value* ptr, TbaaKind kind) {
+        if (ptr && kind != TbaaKind::None) {
+            tbaaProvenance[ptr] = kind;
+        }
+    }
+
+    void CajetaModule::applyTbaaTags() {
+        // Kill switch (debug / A-B attribution): CAJETA_TBAA_DISABLE=1 emits no
+        // TBAA so the optimizer falls back to fully-conservative aliasing.
+        if (tbaaProvenance.empty() || std::getenv("CAJETA_TBAA_DISABLE")) {
+            return;
+        }
+        ensureTbaaNodes();
+        for (llvm::Function& f : *llvmModule) {
+            if (f.isDeclaration()) {
+                continue;
+            }
+            for (llvm::BasicBlock& bb : f) {
+                for (llvm::Instruction& inst : bb) {
+                    llvm::Value* ptr = nullptr;
+                    if (auto* ld = llvm::dyn_cast<llvm::LoadInst>(&inst)) {
+                        ptr = ld->getPointerOperand();
+                    } else if (auto* st = llvm::dyn_cast<llvm::StoreInst>(&inst)) {
+                        ptr = st->getPointerOperand();
+                    } else {
+                        continue;
+                    }
+                    // Don't clobber metadata another path already set.
+                    if (inst.getMetadata(llvm::LLVMContext::MD_tbaa)) {
+                        continue;
+                    }
+                    auto it = tbaaProvenance.find(ptr->stripPointerCasts());
+                    if (it == tbaaProvenance.end()) {
+                        continue;
+                    }
+                    llvm::MDNode* tag = nullptr;
+                    switch (it->second) {
+                        case TbaaKind::Field:     tag = tbaaFieldTag; break;
+                        case TbaaKind::ArrayElem: tag = tbaaArrayElemTag; break;
+                        case TbaaKind::Char:      tag = tbaaCharTag; break;
+                        default: break;
+                    }
+                    if (tag) {
+                        inst.setMetadata(llvm::LLVMContext::MD_tbaa, tag);
+                    }
+                }
+            }
+        }
     }
 }
