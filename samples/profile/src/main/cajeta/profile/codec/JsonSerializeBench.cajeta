@@ -39,15 +39,7 @@ public class JsonSerializeBench extends Benchmark {
         return System.env.get("PROFILE_DATA_DIR") != null;
     }
 
-    // Only the integer-only file is DOM-parseable in v1 (floats throw); the
-    // others skip with the reason.
-    public boolean supportsVariant(String variant) {
-        return variant.equals("citm_catalog");
-    }
-
-    public String skipReason() {
-        return "v1 JSON DOM doesn't parse floats (integer-only inputs only)";
-    }
+    // Floats now DOM-parse (Unit 2): all three corpus files serialize.
 
     public #ArrayList<String> variants() {
         ArrayList<String> v = heap ArrayList<String>();

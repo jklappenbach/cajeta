@@ -43,16 +43,9 @@ public class JsonDomBench extends Benchmark {
         return System.env.get("PROFILE_DATA_DIR") != null;
     }
 
-    // v1 DOM throws "non-integer number" on float-bearing inputs; only the
-    // integer-only file (citm_catalog) is DOM-parseable today. twitter/canada
-    // are recorded as skips with the reason — surfacing the gap in the data.
-    public boolean supportsVariant(String variant) {
-        return variant.equals("citm_catalog");
-    }
-
-    public String skipReason() {
-        return "v1 JSON DOM doesn't parse floats (integer-only inputs only)";
-    }
+    // The DOM now parses floats (Unit 2): fractional/exponent numbers land in
+    // JsonValue.floatVal. All three corpus files (twitter/citm_catalog/canada)
+    // DOM-parse — no per-variant skip.
 
     public #ArrayList<String> variants() {
         ArrayList<String> v = heap ArrayList<String>();

@@ -661,6 +661,24 @@ public final class JsonReader {
      * }
      * ```
      */
+    /**
+     * True iff the current `NUMBER` token's span carries a fraction (`.`)
+     * or exponent (`e`/`E`) — i.e. it must be parsed as `float64` rather
+     * than `int64`. Scans the recorded span; no allocation.
+     */
+    public boolean currentNumberIsFloat() {
+        int64 i = this.tokenStart;
+        int64 end = this.tokenEnd;
+        while (i < end) {
+            int8 c = this.input[i];
+            if (c == (int8) 46 || c == (int8) 101 || c == (int8) 69) {  // '.' 'e' 'E'
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+
     public int64 currentNumberAsInt64() {
         int64 i = this.tokenStart;
         int64 end = this.tokenEnd;
@@ -855,7 +873,13 @@ public final class JsonReader {
             int32 len = (int32) (this.tokenEnd - this.tokenStart);
             v.setStringOwned(#bytes, len);
         } else if (t == JsonToken.NUMBER) {
-            v.setNumber(this.currentNumberAsInt64());
+            // Integer literals keep the exact int64 path; a fraction or
+            // exponent in the span widens to float64 (twitter/canada).
+            if (this.currentNumberIsFloat()) {
+                v.setFloat(this.currentNumberAsFloat64());
+            } else {
+                v.setNumber(this.currentNumberAsInt64());
+            }
         } else if (t == JsonToken.BOOLEAN) {
             v.setBoolean(this.currentBool);
         } else if (t == JsonToken.NULL) {
