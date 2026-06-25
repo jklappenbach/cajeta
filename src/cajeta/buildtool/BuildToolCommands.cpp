@@ -967,9 +967,29 @@ namespace cajeta::buildtool {
             return 0;
         }
 
+        // The tool's built-in subcommands, surfaced in `tasks --json` so the IDE
+        // can present them as runnable separately from manifest tasks (spec
+        // §3.1.2). Curated runnable set; not every internal subcommand.
+        std::vector<BuiltinCommand> builtinCommands() {
+            return {
+                {"init", "Scaffold a new project from an archetype"},
+                {"add", "Add a dependency to the manifest"},
+                {"remove", "Remove a dependency from the manifest"},
+                {"info", "Print dependency tree / capabilities"},
+                {"tasks", "List tasks defined in the manifest"},
+                {"upgrade", "Upgrade dependencies to newer versions"},
+                {"install", "Resolve and install dependencies"},
+                {"publish", "Publish the project to a repository"},
+                {"workspace", "Workspace (multi-member) operations"},
+                {"toolchain", "Manage the active toolchain"},
+                {"coverage", "Generate a coverage report"},
+            };
+        }
+
         // `cajeta tasks` — list task names + descriptions.
         int tasksCommand(int argc, const char* argv[]) {
             std::string manifestPath = "./cajeta.json";
+            bool jsonOut = false;
             PropertyOverrides overrides;
             loadEnvOverrides(overrides);
 
@@ -978,9 +998,13 @@ namespace cajeta::buildtool {
                 std::string value;
                 if (match(arg, "manifest", value)) {
                     manifestPath = std::move(value);
+                } else if (arg == "--json") {
+                    jsonOut = true;
                 } else if (arg == "--help" || arg == "-h") {
-                    std::cout << "Usage: cajeta tasks [--manifest=<path>]\n"
-                              << "List tasks defined in the manifest.\n";
+                    std::cout << "Usage: cajeta tasks [--manifest=<path>] [--json]\n"
+                              << "List tasks defined in the manifest.\n"
+                              << "  --json  Emit the machine-readable task/builtins "
+                                 "document (IDE contract, spec §3).\n";
                     return 0;
                 } else {
                     std::cerr << "cajeta tasks: unknown argument '"
@@ -997,6 +1021,19 @@ namespace cajeta::buildtool {
                 std::cerr << "cajeta tasks: " << msg << "\n";
                 return 1;
             }
+
+            if (jsonOut) {
+                // Absolute manifest path so the IDE can key linked roots on it.
+                std::error_code ec;
+                std::filesystem::path abs =
+                    std::filesystem::absolute(manifestPath, ec);
+                std::string absStr = ec ? manifestPath : abs.string();
+                std::cout << renderTasksJson(absStr, project->tasks,
+                                             builtinCommands())
+                          << "\n";
+                return 0;
+            }
+
             if (project->tasks.empty()) {
                 std::cout << "(no tasks defined in " << manifestPath << ")\n";
                 return 0;

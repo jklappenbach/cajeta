@@ -1,6 +1,8 @@
 #include "cajeta/buildtool/Task.h"
 
 #include <llvm/Support/Error.h>
+#include <llvm/Support/FormatVariadic.h>
+#include <llvm/Support/raw_ostream.h>
 
 #include <algorithm>
 #include <set>
@@ -404,6 +406,53 @@ namespace cajeta::buildtool {
             }
         }
         return llvm::Error::success();
+    }
+
+    std::string renderTasksJson(const std::string& manifestPath,
+                                const std::map<std::string, Task>& tasks,
+                                const std::vector<BuiltinCommand>& builtins) {
+        llvm::json::Object root;
+        root["manifest"] = manifestPath;
+
+        llvm::json::Array taskArr;
+        for (const auto& [name, t] : tasks) {  // std::map -> sorted by name
+            (void) name;
+            llvm::json::Object to;
+            to["name"] = t.name;
+            if (t.description) to["description"] = *t.description;
+
+            llvm::json::Array deps;
+            for (const auto& d : t.dependsOn) deps.push_back(d);
+            to["dependsOn"] = std::move(deps);
+
+            llvm::json::Array params;
+            for (const auto& p : t.params) {
+                llvm::json::Object po;
+                po["name"] = p.name;
+                po["type"] = p.type;
+                if (p.defaultValue) po["default"] = *p.defaultValue;
+                po["required"] = p.required;
+                if (p.doc) po["doc"] = *p.doc;
+                params.push_back(std::move(po));
+            }
+            to["params"] = std::move(params);
+            taskArr.push_back(std::move(to));
+        }
+        root["tasks"] = std::move(taskArr);
+
+        llvm::json::Array builtinArr;
+        for (const auto& b : builtins) {
+            builtinArr.push_back(llvm::json::Object{
+                {"name", b.name},
+                {"description", b.description},
+            });
+        }
+        root["builtins"] = std::move(builtinArr);
+
+        std::string out;
+        llvm::raw_string_ostream os(out);
+        os << llvm::formatv("{0:2}", llvm::json::Value(std::move(root)));
+        return os.str();
     }
 
 } // namespace cajeta::buildtool

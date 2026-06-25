@@ -4606,6 +4606,40 @@ Deferred (separate efforts, post-v1):
 
 ---
 
+## `cajeta tasks --json` — the IDE discovery contract
+
+`cajeta tasks` lists manifest tasks for humans; `cajeta tasks --json
+[--manifest=<path>]` emits a stable machine-readable document the IDE plugin's
+build-tool tool window parses to populate its task tree (see
+`docs/specs/buildtool-widget-spec.md` §3). Shape:
+
+```jsonc
+{
+  "manifest": "/abs/path/cajeta.json",   // absolute, so the IDE can key linked roots
+  "tasks": [                              // manifest tasks, sorted by name
+    { "name": "build",
+      "description": "Compile + link the project",   // omitted if the task has none
+      "dependsOn": ["check"],                        // from the manifest DAG
+      "params": [                                    // typed CLI params
+        { "name": "flavor", "type": "string", "default": "debug",
+          "required": false, "doc": "Build flavor" } ] }
+  ],
+  "builtins": [                           // curated runnable subcommands (init, add, …)
+    { "name": "tasks", "description": "List tasks defined in the manifest" }
+  ]
+}
+```
+
+Contract notes: object key order is not significant (consumers parse, not
+string-match); optional task fields (`description`, param `default`/`doc`) are
+omitted when absent while `dependsOn`/`params` are always present (possibly
+empty). A non-zero exit or load error writes a diagnostic to stderr and emits no
+JSON — the plugin treats that as "discovery failed" and degrades gracefully.
+The emission core is `renderTasksJson` (`src/cajeta/buildtool/Task.{h,cpp}`),
+golden-tested in `test/buildtool/TasksJsonTests.cpp`.
+
+---
+
 ## Open questions
 
 - **Public registry governance.** Who owns it, how do

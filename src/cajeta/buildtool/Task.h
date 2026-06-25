@@ -109,4 +109,19 @@ namespace cajeta::buildtool {
     // when the graph is acyclic.
     llvm::Error validateTaskGraph(const std::map<std::string, Task>& tasks);
 
+    // A built-in subcommand the tool exposes (init, add, info, …), surfaced in
+    // the `cajeta tasks --json` document alongside manifest tasks (spec §3.1.2).
+    struct BuiltinCommand {
+        std::string name;
+        std::string description;
+    };
+
+    // Render the `cajeta tasks --json` document (buildtool-widget spec §3):
+    // { manifest, tasks[{name,description?,dependsOn[],params[]}], builtins[] }.
+    // Tasks emit in `tasks` map order (sorted by name). Pure — no I/O — so the
+    // IDE-contract shape is golden-testable. Pretty-printed (2-space).
+    std::string renderTasksJson(const std::string& manifestPath,
+                                const std::map<std::string, Task>& tasks,
+                                const std::vector<BuiltinCommand>& builtins);
+
 } // namespace cajeta::buildtool
