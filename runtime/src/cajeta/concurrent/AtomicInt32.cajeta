@@ -38,7 +38,7 @@ package cajeta.concurrent;
  * boolean won = counter.compareAndSet(1, 2);   // true; cell now holds 2
  * ```
  */
-public class AtomicInt32 {
+public final class AtomicInt32 {
     pointer cell;
 
     /**
