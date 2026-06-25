@@ -5,6 +5,15 @@ import profile.Benchmark;
 // Computer Language Benchmarks Game: mandelbrot. Escape-time membership over a
 // W×W grid (50 iterations, escape radius 2). Cross-check: the in-set pixel count
 // is deterministic and within (0, W*W) — the set covers a stable fraction.
+//
+// Vectorized (benchmark-gap-sweep Unit 1): 8 pixels of a row at a time in
+// Vector<float64,8> — cr = (iota + px)*(2/n) - 1.5, scalar ci, 50 iterations with a
+// MONOTONIC membership mask (once |z|^2 > 4 a lane escapes and stays escaped, so
+// member = (mag<=4).select(member, zeros) is exact), an all-escaped early-out, and
+// count += vsum8f64(member). Same float64 arithmetic per lane as the scalar loop the
+// C++/Rust CLBG entries auto-vectorize at -O3 -march=native; the vectorized count is
+// bit-identical to the scalar reference (guarded by MandelbrotKernelTests). A scalar
+// tail handles n % 8.
 public class MandelbrotBench extends Benchmark {
 
     public int32 w;
@@ -37,29 +46,56 @@ public class MandelbrotBench extends Benchmark {
     public void run(int32 iterations) {
         int32 n = this.w;
         int64 count = 0;
+        int32 lim = n - (n % 8);
+        Vector<float64,8> iota = stack Vector<float64,8>(0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0);
+        Vector<float64,8> ones = stack Vector<float64,8>(1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0);
+        Vector<float64,8> zeros = stack Vector<float64,8>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        float64 inv = 2.0 / (float64) n;
         int32 py = 0;
         while (py < n) {
+            float64 ci = (2.0 * (float64) py / (float64) n) - 1.0;
             int32 px = 0;
-            while (px < n) {
-                float64 cr = (2.0 * (float64) px / (float64) n) - 1.5;
-                float64 ci = (2.0 * (float64) py / (float64) n) - 1.0;
-                float64 zr = 0.0;
-                float64 zi = 0.0;
+            while (px < lim) {
+                Vector<float64,8> cr = (iota + (float64) px) * inv + (-1.5);
+                Vector<float64,8> zr = zeros;
+                Vector<float64,8> zi = zeros;
+                Vector<float64,8> member = ones;
                 int32 iter = 0;
-                boolean member = true;
                 while (iter < 50) {
-                    float64 nzr = zr * zr - zi * zi + cr;
-                    float64 nzi = 2.0 * zr * zi + ci;
+                    Vector<float64,8> nzr = zr * zr - zi * zi + cr;
+                    Vector<float64,8> nzi = (zr * zi) * 2.0 + ci;
                     zr = nzr;
                     zi = nzi;
-                    if (zr * zr + zi * zi > 4.0) {
-                        member = false;
+                    Vector<float64,8> mag = zr * zr + zi * zi;
+                    member = (mag <= 4.0).select(member, zeros);
+                    iter = iter + 1;
+                    if ((member == 0.0).all()) {
                         iter = 50;
-                    } else {
-                        iter = iter + 1;
                     }
                 }
-                if (member) {
+                count = count + (int64) Cajeta.vsum8f64(member);
+                px = px + 8;
+            }
+            // Scalar tail for the n % 8 remainder.
+            while (px < n) {
+                float64 cr2 = (2.0 * (float64) px / (float64) n) - 1.5;
+                float64 zr2 = 0.0;
+                float64 zi2 = 0.0;
+                int32 it2 = 0;
+                boolean mem = true;
+                while (it2 < 50) {
+                    float64 nzr2 = zr2 * zr2 - zi2 * zi2 + cr2;
+                    float64 nzi2 = 2.0 * zr2 * zi2 + ci;
+                    zr2 = nzr2;
+                    zi2 = nzi2;
+                    if (zr2 * zr2 + zi2 * zi2 > 4.0) {
+                        mem = false;
+                        it2 = 50;
+                    } else {
+                        it2 = it2 + 1;
+                    }
+                }
+                if (mem) {
                     count = count + 1;
                 }
                 px = px + 1;
