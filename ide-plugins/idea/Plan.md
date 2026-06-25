@@ -38,14 +38,17 @@ implement skill's focus stack (`agents/idea-focus.md`).
   (`idea-ide` → merged to `main`); README layout diagram gains `debugger/`,
   `harness/`, `wizard/`. (Debugging-tier *acceptance checkboxes* left unticked —
   ticking them needs a real `runIde` walkthrough, not a doc edit.)
-- [ ] **W3 — Finish loose threads.** Decomposed:
-  - [~] **W3a — CP6f-2d hard carrier-quiesce — SPEC'D, not implemented.**
-    Investigation revealed this is a real multi-carrier stop-the-world bug
-    (only the hitting carrier parks; others keep running fibers; `liveFibers()`
-    TOCTOU), too large/risky to rush here. Per developer decision 2026-06-24:
-    landed the accurate doc correction (this Plan + `DapServer.cpp` FIXME) and
-    moved the implementation to its own checkpoint —
-    `docs/specs/carrier-quiesce-spec.md` + `agents/carrier-quiesce-plan.md`.
+- [x] **W3 — Finish loose threads.** Decomposed:
+  - [x] **W3a — CP6f-2d hard carrier-quiesce — IMPLEMENTED (2026-06-25).**
+    Investigation revealed a real multi-carrier stop-the-world bug (only the
+    hitting carrier parks; others keep running fibers; `liveFibers()` TOCTOU), so
+    it was specced as its own checkpoint (`docs/specs/carrier-quiesce-spec.md` +
+    `agents/carrier-quiesce-plan.md`). **All 7 units now landed** — atomic fiber
+    snapshot, the debug stop coordinator, cross-carrier convergence at
+    safepoints/hand-off, bounded quiesce barrier + un-quiesced reporting,
+    one-primary determinism + resume-all, exception/entry-thread integration, and
+    a regression + ThreadSanitizer pass. Verified at the container level by
+    driving the real carrier pool from C (no JIT); committed on the compiler side.
   - [x] **W3b — "Toggle Markdown Rendering" menu action.** Added
     `ToggleMarkdownRenderingAction` (a `ToggleAction` whose checked state mirrors
     `renderMarkdownInComments`) under the Cajeta tools group; flipping it applies
@@ -57,10 +60,30 @@ implement skill's focus stack (`agents/idea-focus.md`).
     confusing and unwanted. The global Settings checkbox + the W3b menu action +
     existing click-to-expand cover the real needs. Removed from scope (not a
     deferral).
-- [ ] **W4 — v0.2 candidates.** `codegen-keywords` **confirmed shipped + struck**
+- [x] **W4 — v0.2 candidates.** `codegen-keywords` **confirmed shipped + struck**
   from the v0.2 list (the `generateTokenCategories` task emits `CajetaKeywords.kt`,
-  consumed by the highlighter). Remaining, genuinely unbuilt: `MarkdownEngine`
-  extension point, error-recovery telemetry, typing-simulator test harness.
+  consumed by the highlighter). The three genuinely-unbuilt items all landed
+  (W4a/W4b/W4c below):
+  - [x] **W4a — `MarkdownEngine` extension point.** `MarkdownEngineRegistry` now
+    pulls engines from `ExtensionPointName("dev.cajeta.idea.markdownEngine")`
+    (`dynamic="true"`), declared in `plugin.xml` with the built-in
+    `JetBrainsMarkdownEngine` registered through it; pure `resolve(engines,
+    settingsId)` (4 tests green) + built-in fallback when the EP is empty.
+    `verifyPluginProjectConfiguration` green.
+  - [x] **W4b — Error-recovery telemetry.** `ErrorRecoveryTelemetry` (process-
+    global, thread-safe) tallies each `CajetaErrorStrategy.recover()` by the token
+    it lands on and whether that token is a curated anchor vs a default-set token
+    (the tuning signal); `snapshot(vocab)` gives busiest-first symbolic names. 3
+    tests green incl. a real-parser integration check that malformed input drives
+    `recover()` into the telemetry.
+  - [x] **W4c — Typing-simulator test harness.** The interactive half
+    (`TypeFixtureAction`/`FixtureTyper`) already existed but had no fixtures and no
+    automated test; added the **headless** half: `TypingSimulator` replays a source
+    char-by-char through the bare lexer/parser + `CajetaErrorStrategy`, asserting no
+    prefix ever throws, valid fixtures parse clean when complete, invalid ones
+    report errors. Reuses the existing `FixtureLoader`/`Fixture` model; fixtures in
+    `src/test/resources/typing-fixtures/{valid,invalid}/`. 3 tests; full plugin
+    suite green (100 tests / 17 suites).
 
 End-to-end plan to go from an empty directory to a Cajeta language
 plugin installed and running in IntelliJ IDEA. Scope of this document
