@@ -67,6 +67,17 @@ intellijPlatform {
             .map { listOf(it) }
             .orElse(listOf("default"))
     }
+
+    // Plugin Verifier targets. A locally installed IDE (e.g. CLion 261, the real
+    // install target here) is used when CAJETA_VERIFY_IDE points at it, so the
+    // verifier runs against the exact IDE with no multi-GB download; otherwise
+    // it falls back to JetBrains' recommended IDE set.
+    pluginVerification {
+        ides {
+            val localIde = providers.environmentVariable("CAJETA_VERIFY_IDE").orNull
+            if (localIde != null) local(file(localIde)) else recommended()
+        }
+    }
 }
 
 // The org.gradle.antlr plugin resolves source paths relative to the
