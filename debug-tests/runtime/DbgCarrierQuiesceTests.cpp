@@ -213,6 +213,39 @@ TEST(DbgCarrierQuiesce, BoundedBarrierFlagsNativeStuckCarrier) {
     __cajeta_stop_reset();
 }
 
+// §5.5 regression: a single-carrier program stops and resumes exactly as
+// before — the quiesce barrier is a no-op (expected = carriers − primary = 0),
+// no deadlock, nothing flagged.
+TEST(DbgCarrierQuiesce, SingleCarrierStopsAndResumesAsBefore) {
+    __cajeta_stop_reset();
+    g_counter.store(0);
+    g_quit.store(false);
+    setenv("CAJETA_CARRIERS", "1", 1);
+
+    cajeta::dbg::DebugController controller;
+    g_ctrl = &controller;
+    controller.arm(kArmedLoc);
+    __cajeta_dbg_set_safepoint_handler(testTrampoline);
+
+    void* slot = nullptr;
+    __cajeta_task_run(nullptr, armedFiber, &slot);
+
+    cajeta::dbg::StopEvent ev;
+    ASSERT_TRUE(controller.waitForStop(ev, std::chrono::seconds(5)));
+    EXPECT_EQ(ev.locId, kArmedLoc);
+    EXPECT_EQ(ev.unquiescedCarriers, 0);   // nothing else to quiesce
+
+    controller.resume();
+    EXPECT_TRUE(spinUntil([&] { return g_counter.load() > 0; }))
+        << "single carrier did not resume";
+
+    g_quit.store(true);
+    __cajeta_task_shutdown();
+    __cajeta_dbg_set_safepoint_handler(nullptr);
+    g_ctrl = nullptr;
+    __cajeta_stop_reset();
+}
+
 // §3.6: an armed exception quiesces the WHOLE pool before inspection — every
 // other fiber AND a non-carrier entry/main thread running safepoints must
 // freeze, not just the throwing carrier.
