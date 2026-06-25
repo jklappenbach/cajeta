@@ -116,6 +116,8 @@
         <!-- Debugging (Phase 2): run config + program runner driving cajeta dap. -->
         <configurationType
             implementation="dev.cajeta.idea.debugger.CajetaConfigurationType"/>
+        <configurationType
+            implementation="dev.cajeta.idea.buildtool.CajetaTaskConfigurationType"/>
         <programRunner
             implementation="dev.cajeta.idea.debugger.CajetaProgramRunner"/>
         <xdebugger.breakpointType
