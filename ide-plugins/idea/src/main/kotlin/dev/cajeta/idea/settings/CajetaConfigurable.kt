@@ -1,14 +1,19 @@
 package dev.cajeta.idea.settings
 
 import com.intellij.openapi.options.Configurable
+import com.intellij.openapi.ui.ComboBox
+import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.FormBuilder
+import dev.cajeta.idea.buildtool.BuildToolPathValidator
 import dev.cajeta.idea.debugger.MemoryFacetLegend
 import javax.swing.JComponent
 import javax.swing.JPanel
+import javax.swing.event.DocumentEvent
+import javax.swing.event.DocumentListener
 
 class CajetaConfigurable : Configurable {
 
@@ -20,6 +25,14 @@ class CajetaConfigurable : Configurable {
     private var facetsVariablesCheck: JBCheckBox? = null
     private var facetsGutterCheck: JBCheckBox? = null
     private var facetsInlineCheck: JBCheckBox? = null
+    // Build-tool tool window settings (spec §14).
+    private var buildToolPathField: JBTextField? = null
+    private var buildToolPathProblem: JBLabel? = null
+    private var autoReloadCombo: ComboBox<String>? = null
+    private var defaultProfileField: JBTextField? = null
+    private var defaultFlavorField: JBTextField? = null
+    private var jsonlStructuredCheck: JBCheckBox? = null
+    private var jsonlLevelField: JBTextField? = null
     private var panel: JPanel? = null
 
     override fun getDisplayName(): String = "Cajeta"
@@ -52,6 +65,31 @@ class CajetaConfigurable : Configurable {
             lineWrap = false
         }
 
+        // Build-tool tool window controls (spec §14).
+        val btPath = JBTextField(settings.buildToolPath, 40).also { buildToolPathField = it }
+        val btProblem = JBLabel().apply { foreground = JBColor.RED }.also { buildToolPathProblem = it }
+        fun refreshBtProblem() { btProblem.text = BuildToolPathValidator.problem(btPath.text) ?: "" }
+        refreshBtProblem()
+        btPath.document.addDocumentListener(object : DocumentListener {
+            override fun insertUpdate(e: DocumentEvent) = refreshBtProblem()
+            override fun removeUpdate(e: DocumentEvent) = refreshBtProblem()
+            override fun changedUpdate(e: DocumentEvent) = refreshBtProblem()
+        })
+        val reloadCombo = ComboBox(
+            arrayOf(
+                CajetaSettings.AUTO_RELOAD_PROMPT,
+                CajetaSettings.AUTO_RELOAD_ALWAYS,
+                CajetaSettings.AUTO_RELOAD_NEVER,
+            ),
+        ).also { it.selectedItem = settings.buildAutoReload; autoReloadCombo = it }
+        val profileField = JBTextField(settings.defaultProfile, 20).also { defaultProfileField = it }
+        val flavorField = JBTextField(settings.defaultFlavor, 20).also { defaultFlavorField = it }
+        val jsonlStructured = JBCheckBox(
+            "Open JSONL views in structured mode by default",
+            settings.jsonlDefaultStructured,
+        ).also { jsonlStructuredCheck = it }
+        val jsonlLevel = JBTextField(settings.jsonlDefaultLevel, 12).also { jsonlLevelField = it }
+
         panel = FormBuilder.createFormBuilder()
             .addLabeledComponent(JBLabel("cajetac binary:"), pathField, 1, false)
             .addComponent(renderCheck, 1)
@@ -65,6 +103,15 @@ class CajetaConfigurable : Configurable {
             .addSeparator()
             .addLabeledComponent(JBLabel("Test fixtures path:"), fixturesField, 1, false)
             .addLabeledComponent(JBLabel("Typing-harness delay (ms):"), delayField, 1, false)
+            .addSeparator()
+            .addComponent(JBLabel("Build tool:"), 1)
+            .addLabeledComponent(JBLabel("Build-tool path:"), btPath, 1, false)
+            .addComponent(btProblem, 1)
+            .addLabeledComponent(JBLabel("Auto-reload on manifest change:"), reloadCombo, 1, false)
+            .addLabeledComponent(JBLabel("Default profile:"), profileField, 1, false)
+            .addLabeledComponent(JBLabel("Default flavor:"), flavorField, 1, false)
+            .addComponent(jsonlStructured, 1)
+            .addLabeledComponent(JBLabel("JSONL default level filter:"), jsonlLevel, 1, false)
             .addComponentFillVertically(JPanel(), 0)
             .panel
         return panel!!
@@ -78,7 +125,13 @@ class CajetaConfigurable : Configurable {
             (typingDelayField?.text?.toIntOrNull() ?: s.testTypingDelayMs) != s.testTypingDelayMs ||
             (facetsVariablesCheck?.isSelected ?: true) != s.showFacetsInVariables ||
             (facetsGutterCheck?.isSelected ?: true) != s.showFacetsInGutter ||
-            (facetsInlineCheck?.isSelected ?: true) != s.showFacetsInline
+            (facetsInlineCheck?.isSelected ?: true) != s.showFacetsInline ||
+            (buildToolPathField?.text ?: "") != s.buildToolPath ||
+            (autoReloadCombo?.selectedItem as? String ?: s.buildAutoReload) != s.buildAutoReload ||
+            (defaultProfileField?.text ?: "") != s.defaultProfile ||
+            (defaultFlavorField?.text ?: "") != s.defaultFlavor ||
+            (jsonlStructuredCheck?.isSelected ?: true) != s.jsonlDefaultStructured ||
+            (jsonlLevelField?.text ?: "") != s.jsonlDefaultLevel
     }
 
     override fun apply() {
@@ -92,6 +145,12 @@ class CajetaConfigurable : Configurable {
         s.showFacetsInVariables = facetsVariablesCheck?.isSelected ?: true
         s.showFacetsInGutter = facetsGutterCheck?.isSelected ?: true
         s.showFacetsInline = facetsInlineCheck?.isSelected ?: true
+        s.buildToolPath = buildToolPathField?.text?.trim().orEmpty()
+        s.buildAutoReload = autoReloadCombo?.selectedItem as? String ?: CajetaSettings.AUTO_RELOAD_PROMPT
+        s.defaultProfile = defaultProfileField?.text?.trim().orEmpty()
+        s.defaultFlavor = defaultFlavorField?.text?.trim().orEmpty()
+        s.jsonlDefaultStructured = jsonlStructuredCheck?.isSelected ?: true
+        s.jsonlDefaultLevel = jsonlLevelField?.text?.trim().orEmpty()
     }
 
     override fun reset() {
@@ -103,6 +162,12 @@ class CajetaConfigurable : Configurable {
         facetsVariablesCheck?.isSelected = s.showFacetsInVariables
         facetsGutterCheck?.isSelected = s.showFacetsInGutter
         facetsInlineCheck?.isSelected = s.showFacetsInline
+        buildToolPathField?.text = s.buildToolPath
+        autoReloadCombo?.selectedItem = s.buildAutoReload
+        defaultProfileField?.text = s.defaultProfile
+        defaultFlavorField?.text = s.defaultFlavor
+        jsonlStructuredCheck?.isSelected = s.jsonlDefaultStructured
+        jsonlLevelField?.text = s.jsonlDefaultLevel
     }
 
     override fun disposeUIResources() {
@@ -113,6 +178,13 @@ class CajetaConfigurable : Configurable {
         facetsVariablesCheck = null
         facetsGutterCheck = null
         facetsInlineCheck = null
+        buildToolPathField = null
+        buildToolPathProblem = null
+        autoReloadCombo = null
+        defaultProfileField = null
+        defaultFlavorField = null
+        jsonlStructuredCheck = null
+        jsonlLevelField = null
         panel = null
     }
 }

@@ -23,6 +23,15 @@ class CajetaSettings : PersistentStateComponent<CajetaSettings.State> {
         var showFacetsInVariables: Boolean = true,
         var showFacetsInGutter: Boolean = true,
         var showFacetsInline: Boolean = true,
+        // Build-tool tool window (spec §14). buildToolPath defaults to `cajeta`
+        // on PATH; buildAutoReload is prompt|always|never; the JSONL-view and
+        // profile/flavor defaults seed new runs and newly opened views.
+        var buildToolPath: String = DEFAULT_BUILD_TOOL_PATH,
+        var buildAutoReload: String = AUTO_RELOAD_PROMPT,
+        var defaultProfile: String = "",
+        var defaultFlavor: String = "",
+        var jsonlDefaultStructured: Boolean = true,
+        var jsonlDefaultLevel: String = "",
     )
 
     private var state = State()
@@ -65,11 +74,41 @@ class CajetaSettings : PersistentStateComponent<CajetaSettings.State> {
         get() = state.showFacetsInline
         set(value) { state.showFacetsInline = value }
 
+    var buildToolPath: String
+        get() = state.buildToolPath
+        set(value) { state.buildToolPath = value }
+
+    var buildAutoReload: String
+        get() = state.buildAutoReload
+        set(value) { state.buildAutoReload = value }
+
+    var defaultProfile: String
+        get() = state.defaultProfile
+        set(value) { state.defaultProfile = value }
+
+    var defaultFlavor: String
+        get() = state.defaultFlavor
+        set(value) { state.defaultFlavor = value }
+
+    var jsonlDefaultStructured: Boolean
+        get() = state.jsonlDefaultStructured
+        set(value) { state.jsonlDefaultStructured = value }
+
+    var jsonlDefaultLevel: String
+        get() = state.jsonlDefaultLevel
+        set(value) { state.jsonlDefaultLevel = value }
+
     companion object {
         // Default points at the in-tree cajeta build. Users override
         // in Settings | Languages & Frameworks | Cajeta.
         const val DEFAULT_COMPILER_PATH = "/home/julian/code/cpp/cajeta/build/src/cajeta"
         const val DEFAULT_FIXTURES_PATH = "/home/julian/code/cpp/cajeta/ide-plugins/idea/test-code"
+
+        // Build tool resolved on PATH by default (spec §14.1).
+        const val DEFAULT_BUILD_TOOL_PATH = "cajeta"
+        const val AUTO_RELOAD_PROMPT = "prompt"
+        const val AUTO_RELOAD_ALWAYS = "always"
+        const val AUTO_RELOAD_NEVER = "never"
 
         val instance: CajetaSettings get() = service()
     }
