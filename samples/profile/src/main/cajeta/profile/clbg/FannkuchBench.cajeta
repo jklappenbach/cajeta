@@ -7,17 +7,14 @@ import profile.Benchmark;
 // head is 0, counts flips, and reports the max-flips + the even/odd-indexed
 // checksum. Cross-check: the canonical N=10 results — maxFlips=38, checksum=73196.
 //
-// KNOWN REGRESSION (benchmark-fidelity Unit 10): this number is a steady ~335ms
-// (verified across ~15 release runs at full 5.15GHz boost — NOT a measurement
-// spike or CPU throttle), a ~2.3x regression from the ~145ms measured 2026-06-21/22
-// at the SAME build flags (--release -O3 -march=native). Ruled out: bounds-check
-// and overflow-check codegen (both =off measured identical), CPU frequency. The
-// regression entered in the 2026-06-22→06-24 compiler window (merges 23603046
-// "uninit alloc/AVX2 search" + 04ee88f2 "frame arena/ownership transfer"); the
-// frame-arena change to non-escaping owned-local arrays (this bench's heap int32[])
-// is the prime suspect for the array-heavy hot loop. Root-cause bisect + fix is a
-// tracked compiler follow-up (does NOT understate the language's true ceiling —
-// it's a fixable codegen regression, not an algorithmic limit).
+// FIXED REGRESSION (benchmark-fidelity Unit 10/10.d): this had regressed to ~335ms
+// (~2.3x) when frame-arena U3 (commit 37248bbf) began bump-allocating non-escaping
+// primitive heap arrays (this bench's perm/perm1/count). The cause was NOT the
+// arena allocation itself but Block codegen bracketing EVERY block with a
+// __cajeta_arena_mark/__cajeta_arena_reset CALL pair whenever the method had any
+// arena local — so the hot swap/advance inner loops paid two runtime calls per
+// iteration. Fixed (Block.cpp) by emitting mark/reset only for blocks that
+// actually declare an arena-eligible local; back to ~143ms.
 public class FannkuchBench extends Benchmark {
 
     public int32 nDim;

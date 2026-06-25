@@ -3,6 +3,7 @@
 //
 
 #include "Block.h"
+#include "LocalVariableDeclaration.h"
 #include "../method/Method.h"
 #include "../compile/CajetaModule.h"
 #include "cajeta/dbg/DebugLocTable.h"
@@ -54,15 +55,39 @@ namespace cajeta {
         auto* builder = module->getBuilder();
 
         // Frame-arena (frame-arena-plan U2): bracket this block's body with an
-        // arena mark/reset so non-escaping owned concat locals declared inside are
-        // bump-allocated and reclaimed in O(1) at the closing `}` (per-iteration for
-        // a loop body). Only emitted when the method has arena-eligible locals, so
-        // arena-free code pays nothing. The reset fires on the same normal-exit edge
-        // as the drop chain (early return/throw already unwind via emitOwnerDrops; an
-        // un-reset frame is reclaimed by an enclosing scope's reset — never a UAF
-        // since arena objects don't escape).
+        // arena mark/reset so non-escaping owned concat / primitive-array locals
+        // declared inside are bump-allocated and reclaimed in O(1) at the closing
+        // `}` (per-iteration for a loop body). The reset fires on the same
+        // normal-exit edge as the drop chain (early return/throw already unwind via
+        // emitOwnerDrops; an un-reset frame is reclaimed by an enclosing scope's
+        // reset — never a UAF since arena objects don't escape).
+        //
+        // Gate on whether THIS block directly declares an arena-eligible local, not
+        // merely on m->usesArena() (any arena local anywhere in the method). Arena
+        // allocations only ever happen at a declaration's initializer (see
+        // Method::arenaWalk), and a declaration is always a direct child of its
+        // enclosing block — so this scan is exact: a per-iteration arena local lives
+        // in the loop-body block and still gets its per-iteration reset, while a hot
+        // inner loop that allocates nothing pays zero. The old usesArena() gate
+        // wrapped EVERY block (incl. allocation-free inner loops) in a mark/reset
+        // CALL pair, a ~2.3x regression on integer-array code (e.g. fannkuch's
+        // perm/perm1/count swap loops).
+        bool blockHasArenaAlloc = false;
+        if (m && m->usesArena()) {
+            for (auto& child : children) {
+                auto lvd = std::dynamic_pointer_cast<LocalVariableDeclaration>(child);
+                if (!lvd) continue;
+                for (auto& d : lvd->getVariableDeclarators()) {
+                    if (d && m->isArenaEligibleLocal(d->getIdentifier())) {
+                        blockHasArenaAlloc = true;
+                        break;
+                    }
+                }
+                if (blockHasArenaAlloc) break;
+            }
+        }
         llvm::Value* arenaMark = nullptr;
-        if (m && m->usesArena() && builder && builder->GetInsertBlock()
+        if (blockHasArenaAlloc && builder && builder->GetInsertBlock()
                 && !builder->GetInsertBlock()->hasTerminator()) {
             if (llvm::Function* markFn = module->getRuntimeFunction("__cajeta_arena_mark")) {
                 arenaMark = builder->CreateCall(markFn, {}, "arena.mark");

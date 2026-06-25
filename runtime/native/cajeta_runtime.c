@@ -1046,7 +1046,15 @@ static inline size_t __cajeta_arena_align8(size_t n) {
     return (n + 7u) & ~(size_t) 7u;
 }
 
-static inline void* __cajeta_arena_bump(uint64_t size) {
+// __attribute__((malloc)): each bump returns a fresh, disjoint region, so the
+// result aliases no other live pointer — exactly malloc's contract (the regions
+// are reused only AFTER a scope-exit reset, past every use of the old pointer).
+// WITHOUT this, LLVM cannot prove two arena arrays (e.g. fannkuch's perm/perm1/
+// count, all offsets off the same arena base) don't alias, so it reloads array
+// bases across every store in hot loops — a ~2.3x regression on integer-array
+// code when frame-arena U3 began routing primitive arrays here. malloc restores
+// the noalias the malloc path gets for free, and propagates through inlining.
+__attribute__((malloc)) static inline void* __cajeta_arena_bump(uint64_t size) {
     if (!__cajeta_arena.base) __cajeta_arena_init();
     size_t n = __cajeta_arena_align8((size_t) size);
     if (__cajeta_arena.bump + n > CAJETA_ARENA_RESERVE) {
@@ -1064,7 +1072,7 @@ static inline void* __cajeta_arena_bump(uint64_t size) {
 
 // Zeroed arena alloc. Reset reuses memory, so unlike a fresh mmap page the bytes
 // may be dirty — zero them for the zero-init contract the heap __cajeta_alloc has.
-void* __cajeta_arena_alloc(uint64_t size) {
+__attribute__((malloc)) void* __cajeta_arena_alloc(uint64_t size) {
     void* p = __cajeta_arena_bump(size);
     memset(p, 0, __cajeta_arena_align8((size_t) size));
     return p;
@@ -1072,7 +1080,7 @@ void* __cajeta_arena_alloc(uint64_t size) {
 
 // Uninitialized arena alloc (caller overwrites every byte). Mirrors
 // __cajeta_alloc_uninit.
-void* __cajeta_arena_alloc_uninit(uint64_t size) {
+__attribute__((malloc)) void* __cajeta_arena_alloc_uninit(uint64_t size) {
     return __cajeta_arena_bump(size);
 }
 
@@ -1082,7 +1090,7 @@ void* __cajeta_arena_alloc_uninit(uint64_t size) {
 // array readers work unchanged, but NOT live-set tracked and never individually
 // freed — the scope-exit arena reset reclaims it. Zeroed for the array zero-init
 // contract (the arena reuses memory across resets, so it may be dirty).
-void* __cajeta_new_array_header_arena(uint64_t header_size, uint64_t elem_size, uint64_t count) {
+__attribute__((malloc)) void* __cajeta_new_array_header_arena(uint64_t header_size, uint64_t elem_size, uint64_t count) {
     if (elem_size != 0 && count > (UINT64_MAX - header_size) / elem_size) {
         fprintf(stderr, "cajeta: __cajeta_new_array_header_arena overflow (header=%llu elem=%llu count=%llu)\n",
                 (unsigned long long) header_size,
