@@ -112,7 +112,12 @@ class DapClientIntegrationTest {
                 ),
             ).get(10, TimeUnit.SECONDS)
 
-            client.sendRequest("configurationDone").get(10, TimeUnit.SECONDS)
+            // The server runs the program *synchronously* from configurationDone
+            // (JIT-compiles + executes until the first stop), so its response is
+            // only acked once the breakpoint is hit. A cold first-JIT of the full
+            // compiler binary can take well over 10s on a loaded machine — give it
+            // ample headroom rather than flaking. See CajetaDebugSession.launch().
+            client.sendRequest("configurationDone").get(30, TimeUnit.SECONDS)
 
             assertTrue("breakpoint never hit", stopped.await(30, TimeUnit.SECONDS))
             assertEquals("breakpoint", stoppedEvent.get().at("body").at("reason").asString())
