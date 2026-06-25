@@ -117,7 +117,9 @@ public class SortInt64Bench extends Benchmark {
             w[i] = this.src[i];
             i = i + 1;
         }
-        Sort.sort<int64>(w, this.n);
+        // No explicit type arg: resolves to the concrete Sort.sort(int64[],
+        // int32) overload — the AVX-512 vqsort (vpcompressq) fast path.
+        Sort.sort(w, this.n);
         // Retain for verification outside the timed region (see `out`).
         this.out = w;
     }

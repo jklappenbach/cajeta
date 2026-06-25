@@ -616,6 +616,108 @@ public class Sort {
         return numLt;
     }
 
+    // ─────────────────────────────────────────────────────────────────────
+    // Vectorized (AVX-512) partition — the vqsort / x86-simd-sort core. These
+    // are CONCRETE int64 (not generic): cajeta type-checks a generic body with
+    // `T` abstract, and `Vector<T,8>` demands a concrete numeric primitive at
+    // that point — so the SIMD path can't be templated. int64 is the type whose
+    // random-input sort still trailed Rust; float64 already wins on the scalar
+    // path, so it stays there. The lane count is 8 (a 512-bit zmm).
+    // ─────────────────────────────────────────────────────────────────────
+
+    // Partition one 8-lane register `cur` into the hole [l, r): the `< pivot`
+    // lanes compress-store at a[l..], the `>= pivot` lanes compress-store ending
+    // at a[r). The two stores fill exactly 8 disjoint slots (Blacher's in-place
+    // scheme). Returns the count that went right (>= pivot). One `vpcompressq`
+    // per side replaces 8 scalar compare-and-place steps.
+    public static int32 vqPartitionVecI64(int64[] a, int32 l, int32 r,
+            Vector<int64,8> cur, int64 pivot) {
+        int32 countLt = cur.compressStore(a[l], (cur < pivot));
+        int32 countGe = 8 - countLt;
+        // Skip the right store when no lane goes right: its base a[r-countGe]
+        // would be a[r], which at the top level is a[n] — a valid one-past-end
+        // cursor for the (empty) masked store, but cajeta bounds-checks the
+        // lvalue. The guard is one predictable branch per 8 elements.
+        if (countGe > 0) {
+            cur.compressStore(a[r - countGe], (cur >= pivot));
+        }
+        return countGe;
+    }
+
+    // Vectorized in-place partition of a[s..e) by `< pivot` (Blacher et al.,
+    // "Fast and Robust Vectorized In-Place Sorting", as in x86-simd-sort). Drop-
+    // in for pdqLomCycLt: returns numLt with a[s..s+numLt) < pivot and
+    // a[s+numLt..e) >= pivot. Both end-blocks are read into registers up front;
+    // each step reads from whichever side has more consumed headroom, so the two
+    // compress-stores never clobber unread input. Falls back to the scalar
+    // lomcyc partition below the vector break-even length.
+    public static int32 vqLomCycLtI64(int64[] a, int32 s, int32 e, int64 pivot) {
+        int32 len = e - s;
+        if (len < 128) {
+            return pdqLomCycLt<int64>(a, s, e, pivot);
+        }
+        int32 left = s;
+        int32 right = e;
+        // Peel the front remainder so (right - left) is a multiple of 8,
+        // partitioning each peeled element into the < / >= regions in place.
+        int32 rem = (right - left) % 8;
+        while (rem > 0) {
+            if (!(a[left] < pivot)) {
+                right = right - 1;
+                int64 t = a[left];
+                a[left] = a[right];
+                a[right] = t;
+            } else {
+                left = left + 1;
+            }
+            rem = rem - 1;
+        }
+        if (left == right) {
+            return left - s;
+        }
+        // Hold both ends in registers; the loop reuses their memory as the hole.
+        Vector<int64,8> vecL = a.vload<8>(left);
+        Vector<int64,8> vecR = a.vload<8>(right - 8);
+        int32 lStore = left;
+        int32 rStore = right - 8;
+        int32 readL = left + 8;
+        int32 readR = right - 8;
+        while (readL != readR) {
+            int32 src;
+            // Read from the side with less remaining hole, so the store cursor
+            // never overtakes the read cursor.
+            if (((rStore + 8) - readR) < (readL - lStore)) {
+                readR = readR - 8;
+                src = readR;
+            } else {
+                src = readL;
+                readL = readL + 8;
+            }
+            Vector<int64,8> cur = a.vload<8>(src);
+            int32 countGe = vqPartitionVecI64(a, lStore, rStore + 8, cur, pivot);
+            rStore = rStore - countGe;
+            lStore = lStore + (8 - countGe);
+        }
+        // Drain the two held end-blocks into the final hole.
+        int32 cGeL = vqPartitionVecI64(a, lStore, rStore + 8, vecL, pivot);
+        lStore = lStore + (8 - cGeL);
+        rStore = rStore - cGeL;
+        int32 cGeR = vqPartitionVecI64(a, lStore, rStore + 8, vecR, pivot);
+        lStore = lStore + (8 - cGeR);
+        return lStore - s;
+    }
+
+    // Vectorized analogue of pdqPartitionLt: move the pivot to a[begin],
+    // vector-partition a[begin+1..end), restore the pivot at a[begin+numLt].
+    public static int32 vqPartitionLtI64(int64[] a, int32 begin, int32 end,
+            int32 pivotIdx) {
+        pdqSwap<int64>(a, begin, pivotIdx);
+        int64 pivot = a[begin];
+        int32 numLt = vqLomCycLtI64(a, begin + 1, end, pivot);
+        pdqSwap<int64>(a, begin, begin + numLt);
+        return numLt;
+    }
+
     // Branchless compare-exchange: order a[base+i] <= a[base+j] with two selects
     // (a cmov pair) — the building block of the small-sort networks.
     public static void pdqSwapIfLess<T>(T[] a, int32 base, int32 i, int32 j) {
@@ -916,6 +1018,119 @@ public class Sort {
         T[] stAnc = heap T[64];
         T[] scratch = heap T[32];
         pdqRun<T>(a, 0, n, limit, stB, stE, stLim, stHasAnc, stAnc, scratch);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Vectorized int64 unstable sort driver. Identical to the scalar pdqRun but
+    // the large-block `< pivot` partition uses the AVX-512 vqPartitionLtI64
+    // (vpcompressq). Concrete int64 (the SIMD partition can't be templated); the
+    // generic scalar `sort<T>` and class-typed sorts are untouched. The dup-key
+    // path keeps the scalar `<=` partition (already best-in-class on dups).
+    // ─────────────────────────────────────────────────────────────────────
+    public static void vqRunI64(int64[] a, int32 begin0, int32 end0, int32 limit0,
+            int32[] stB, int32[] stE, int32[] stLim, int32[] stHasAnc,
+            int64[] stAnc, int64[] scratch) {
+        int32 sp = 0;
+        int32 begin = begin0;
+        int32 end = end0;
+        int32 limit = limit0;
+        boolean hasAnc = false;
+        int64 anc = a[begin0];
+        boolean run = true;
+        while (run) {
+            boolean popNext = false;
+            int32 len = end - begin;
+            if (len <= 32) {
+                pdqSmallSortNet<int64>(a, begin, end, scratch);
+                popNext = true;
+            } else if (limit == 0) {
+                pdqHeapSort<int64>(a, begin, end);
+                popNext = true;
+            } else {
+                limit = limit - 1;
+                int32 pivotRel = pdqChoosePivot<int64>(a, begin, end);
+                int32 pivotIdx = begin + pivotRel;
+                boolean didLe = false;
+                if (hasAnc) {
+                    if (!(anc < a[pivotIdx])) {
+                        int32 numLe = pdqPartitionLe<int64>(a, begin, end, pivotIdx);
+                        begin = begin + numLe + 1;
+                        hasAnc = false;
+                        didLe = true;
+                    }
+                }
+                if (!didLe) {
+                    int32 numLt = vqPartitionLtI64(a, begin, end, pivotIdx);
+                    int32 pIdx = begin + numLt;
+                    int64 pivotVal = a[pIdx];
+                    int32 lb = begin;
+                    int32 le = pIdx;
+                    int32 rb = pIdx + 1;
+                    int32 re = end;
+                    if ((le - lb) > (re - rb)) {
+                        stB[sp] = rb;
+                        stE[sp] = re;
+                        stLim[sp] = limit;
+                        stHasAnc[sp] = 1;
+                        stAnc[sp] = pivotVal;
+                        sp = sp + 1;
+                        end = le;
+                    } else {
+                        stB[sp] = lb;
+                        stE[sp] = le;
+                        stLim[sp] = limit;
+                        stHasAnc[sp] = hasAnc ? 1 : 0;
+                        stAnc[sp] = anc;
+                        sp = sp + 1;
+                        begin = rb;
+                        anc = pivotVal;
+                        hasAnc = true;
+                    }
+                }
+            }
+            if (popNext) {
+                if (sp == 0) {
+                    run = false;
+                } else {
+                    sp = sp - 1;
+                    begin = stB[sp];
+                    end = stE[sp];
+                    limit = stLim[sp];
+                    hasAnc = stHasAnc[sp] == 1;
+                    anc = stAnc[sp];
+                }
+            }
+        }
+    }
+
+    // Concrete int64 unstable sort — the AVX-512 vqsort fast path. Wins overload
+    // resolution over the generic `sort<T>` for a bare `Sort.sort(arr, n)` call
+    // (concrete beats template), so int64 callers get the vectorized partition
+    // automatically; every other element type falls through to the scalar
+    // generic. (An explicit `Sort.sort<int64>(...)` still selects the template —
+    // call without type args to opt into the vector path.)
+    public static void sort(int64[] a, int32 n) {
+        if (n < 2) {
+            return;
+        }
+        int32 runLen = pdqFindRun<int64>(a, n);
+        if (runLen == n) {
+            return;
+        }
+        int32 limit = 0;
+        int32 m = n | 1;
+        while (m > 1) {
+            m = m >> 1;
+            limit = limit + 1;
+        }
+        limit = limit * 2;
+        int32[] stB = heap int32[64];
+        int32[] stE = heap int32[64];
+        int32[] stLim = heap int32[64];
+        int32[] stHasAnc = heap int32[64];
+        int64[] stAnc = heap int64[64];
+        int64[] scratch = heap int64[32];
+        vqRunI64(a, 0, n, limit, stB, stE, stLim, stHasAnc, stAnc, scratch);
     }
 
     public static void sortStable<T>(T[] a, int32 n) {
