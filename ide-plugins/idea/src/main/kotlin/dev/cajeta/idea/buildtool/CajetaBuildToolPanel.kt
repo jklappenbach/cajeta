@@ -1,11 +1,20 @@
 package dev.cajeta.idea.buildtool
 
+import com.intellij.icons.AllIcons
+import com.intellij.openapi.actionSystem.ActionManager
+import com.intellij.openapi.actionSystem.ActionToolbar
+import com.intellij.openapi.actionSystem.AnAction
+import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.DefaultActionGroup
+import com.intellij.openapi.actionSystem.ToggleAction
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
+import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.SimpleToolWindowPanel
+import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.ui.ColoredTreeCellRenderer
 import com.intellij.ui.SimpleTextAttributes
@@ -13,6 +22,7 @@ import com.intellij.ui.TreeSpeedSearch
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.treeStructure.Tree
 import com.intellij.util.ui.tree.TreeUtil
+import dev.cajeta.idea.settings.CajetaConfigurable
 import dev.cajeta.idea.settings.CajetaSettings
 import java.awt.event.KeyEvent
 import java.awt.event.MouseAdapter
@@ -79,7 +89,72 @@ class CajetaBuildToolPanel(private val project: Project) : SimpleToolWindowPanel
             JComponent.WHEN_FOCUSED,
         )
         setContent(JBScrollPane(tree))
+        toolbar = buildToolbar().component
         reload()
+    }
+
+    /** Current toolbar enable/disable + grouping state (spec §9), computed from
+     *  the discovered model, selection, and active runs. */
+    private fun toolbarState(): BuildToolbarState = BuildToolbarState(
+        hasTasks = (lastModel?.tasks?.isNotEmpty() == true) || (lastModel?.builtins?.isNotEmpty() == true),
+        activeRuns = BuildRunTracker.getInstance(project).activeCount(),
+        selectionRunnable = selectedTask()?.kind == TaskTreeNode.Kind.TASK,
+        groupByProject = CajetaSettings.instance.buildGroupByProject,
+    )
+
+    private fun buildToolbar(): ActionToolbar {
+        val group = DefaultActionGroup().apply {
+            add(action("Refresh", "Re-run task discovery", AllIcons.Actions.Refresh,
+                { true }) { reload() })
+            add(action("Run Task…", "Pick a task to run", AllIcons.Actions.Execute,
+                { toolbarState().runTaskPickerEnabled }) { showRunTaskPicker() })
+            add(action("Stop", "Stop active runs", AllIcons.Actions.Suspend,
+                { toolbarState().stopEnabled }) { BuildRunTracker.getInstance(project).stopAll() })
+            addSeparator()
+            add(action("Expand All", "Expand all nodes", AllIcons.Actions.Expandall,
+                { toolbarState().expandCollapseEnabled }) { TreeUtil.expandAll(tree) })
+            add(action("Collapse All", "Collapse all nodes", AllIcons.Actions.Collapseall,
+                { toolbarState().expandCollapseEnabled }) { TreeUtil.collapseAll(tree, 1) })
+            add(object : ToggleAction("Group by Project", "Group the tree by project root", AllIcons.Actions.GroupByModule) {
+                override fun isSelected(e: AnActionEvent) = CajetaSettings.instance.buildGroupByProject
+                override fun setSelected(e: AnActionEvent, state: Boolean) {
+                    CajetaSettings.instance.buildGroupByProject = state
+                    lastModel?.let { populate(it) }
+                }
+            })
+            addSeparator()
+            add(action("Settings", "Open Cajeta settings", AllIcons.General.Settings, { true }) {
+                ShowSettingsUtil.getInstance().showSettingsDialog(project, CajetaConfigurable::class.java)
+            })
+        }
+        return ActionManager.getInstance().createActionToolbar("CajetaBuildToolbar", group, true).apply {
+            targetComponent = this@CajetaBuildToolPanel
+        }
+    }
+
+    private fun action(
+        text: String,
+        description: String,
+        icon: javax.swing.Icon,
+        enabled: () -> Boolean,
+        run: () -> Unit,
+    ): AnAction = object : AnAction(text, description, icon) {
+        override fun update(e: AnActionEvent) { e.presentation.isEnabled = enabled() }
+        override fun actionPerformed(e: AnActionEvent) = run()
+    }
+
+    private fun showRunTaskPicker() {
+        val tasks = lastModel?.tasks?.map { it.name }?.sorted().orEmpty()
+        if (tasks.isEmpty()) return
+        JBPopupFactory.getInstance()
+            .createPopupChooserBuilder(tasks)
+            .setTitle("Run Cajeta Task")
+            .setItemChosenCallback { name ->
+                val manifest = CajetaManifest.path(project) ?: return@setItemChosenCallback
+                CajetaTaskLauncher.launch(project, manifest, TaskTreeNode(name, null, TaskTreeNode.Kind.TASK))
+            }
+            .createPopup()
+            .showInFocusCenter()
     }
 
     /** Re-run discovery and rebuild the tree. */
@@ -105,10 +180,16 @@ class CajetaBuildToolPanel(private val project: Project) : SimpleToolWindowPanel
     private fun populate(model: TaskModel) {
         lastModel = model
         rootNode.removeAllChildren()
-        for (group in TaskTreeModelBuilder.build(model)) {
-            val groupNode = DefaultMutableTreeNode(group.title)
-            for (node in group.nodes) groupNode.add(TaskLeaf(node))
-            rootNode.add(groupNode)
+        val groups = TaskTreeModelBuilder.build(model)
+        if (CajetaSettings.instance.buildGroupByProject) {
+            for (group in groups) {
+                val groupNode = DefaultMutableTreeNode(group.title)
+                for (node in group.nodes) groupNode.add(TaskLeaf(node))
+                rootNode.add(groupNode)
+            }
+        } else {
+            // Flat presentation (§9.2.4): leaves directly under the root.
+            for (group in groups) for (node in group.nodes) rootNode.add(TaskLeaf(node))
         }
         treeModel.reload()
         TreeUtil.expandAll(tree)

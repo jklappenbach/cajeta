@@ -32,6 +32,9 @@ class CajetaSettings : PersistentStateComponent<CajetaSettings.State> {
         var defaultFlavor: String = "",
         var jsonlDefaultStructured: Boolean = true,
         var jsonlDefaultLevel: String = "",
+        // Tool-window toolbar: group the tree by project root vs. flat. Persisted
+        // so the grouping toggle survives restarts (spec §9.2.4).
+        var buildGroupByProject: Boolean = true,
     )
 
     private var state = State()
@@ -97,6 +100,10 @@ class CajetaSettings : PersistentStateComponent<CajetaSettings.State> {
     var jsonlDefaultLevel: String
         get() = state.jsonlDefaultLevel
         set(value) { state.jsonlDefaultLevel = value }
+
+    var buildGroupByProject: Boolean
+        get() = state.buildGroupByProject
+        set(value) { state.buildGroupByProject = value }
 
     companion object {
         // Default points at the in-tree cajeta build. Users override

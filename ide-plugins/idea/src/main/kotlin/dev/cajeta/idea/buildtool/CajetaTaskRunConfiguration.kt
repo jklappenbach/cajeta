@@ -93,6 +93,8 @@ class CajetaTaskRunConfiguration(
                 manifestPath.ifBlank { null }?.let { File(it).parent }?.let { cmd.withWorkDirectory(it) }
                 val handler = KillableColoredProcessHandler(cmd)
                 ProcessTerminatedListener.attach(handler)
+                // Track for the tool-window Stop action (§9.2.3).
+                BuildRunTracker.getInstance(project).register(handler)
                 return handler
             }
         }
