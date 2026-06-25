@@ -14,6 +14,9 @@ public class SortStableBench extends Benchmark {
     public int64[] src;
     public int64 baseNs;
     public int32 sortedOk;
+    // Verified outside the timed region (see SortInt64Bench.out) so the reported
+    // number is sort-only, matching the Rust runner.
+    public int64[] out;
 
     public String name() {
         return "sort-stable-int64";
@@ -71,22 +74,21 @@ public class SortStableBench extends Benchmark {
             i = i + 1;
         }
         Sort.sortStable<int64>(w, this.n);
+        this.out = w;
+    }
+
+    public boolean checkResult() {
+        if (this.out == null) {
+            return false;
+        }
         boolean ok = true;
         int32 j = 1;
         while (j < this.n) {
-            if (w[j] < w[j - 1]) {
+            if (this.out[j] < this.out[j - 1]) {
                 ok = false;
             }
             j = j + 1;
         }
-        if (ok) {
-            this.sortedOk = 1;
-        } else {
-            this.sortedOk = 0;
-        }
-    }
-
-    public boolean checkResult() {
-        return this.sortedOk == 1;
+        return ok;
     }
 }

@@ -53,7 +53,82 @@ static inline uint32_t sha256_rotr(uint32_t x, uint32_t n) {
     return (x >> n) | (x << (32u - n));
 }
 
-static void sha256_transform(uint32_t state[8], const uint8_t block[64]) {
+// ── Hardware SHA path (x86 SHA-NI: sha256rnds2/msg1/msg2) ───────────────────
+// The crown-holders (rust sha2, OpenSSL, Go crypto/sha256) all dispatch to the
+// CPU SHA extensions, hitting ~2.0-2.4 GB/s; a scalar transform tops out near
+// ~0.5 GB/s. We do the same: a SHA-NI multi-block transform gated by a one-shot
+// CPUID probe, with the scalar transform as the fallback (non-x86, or x86
+// without SHA). The probe uses inline `cpuid` (<cpuid.h>) — no external
+// __cpu_model/__cpu_indicator_init symbols, which the LLJIT can't materialize.
+#if defined(__x86_64__) || defined(__i386__)
+#define CAJETA_SHA256_X86 1
+#include <immintrin.h>
+#include <cpuid.h>
+
+static int cajeta_cpu_has_sha(void) {
+    static int v = -1;
+    if (v >= 0) return v;
+    unsigned a, b, c, d;
+    int has = 0;
+    if (__get_cpuid_count(7, 0, &a, &b, &c, &d)) has = (b & (1u << 29)) != 0;
+    v = has;
+    return v;
+}
+
+// SHA-NI multi-block transform. Message schedule kept in four rotating 128-bit
+// windows (verified against the scalar schedule); two sha256rnds2 per 4-round
+// group. Big-endian message load via the byte-shuffle MASK. The full unroll
+// keeps the windows in registers (array indices are compile-time constants).
+__attribute__((target("sha,sse4.1,ssse3")))
+static void sha256_shani(uint32_t state[8], const uint8_t* data, size_t blocks) {
+    const __m128i MASK = _mm_set_epi64x(0x0c0d0e0f08090a0bULL, 0x0405060700010203ULL);
+    __m128i STATE0, STATE1, MSG, ABEF_SAVE, CDGH_SAVE;
+    __m128i TMP = _mm_loadu_si128((const __m128i*)&state[0]);
+    STATE1      = _mm_loadu_si128((const __m128i*)&state[4]);
+    TMP    = _mm_shuffle_epi32(TMP, 0xB1);
+    STATE1 = _mm_shuffle_epi32(STATE1, 0x1B);
+    STATE0 = _mm_alignr_epi8(TMP, STATE1, 8);
+    STATE1 = _mm_blend_epi16(STATE1, TMP, 0xF0);
+
+    while (blocks) {
+        ABEF_SAVE = STATE0; CDGH_SAVE = STATE1;
+        __m128i M[4];
+        M[0] = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i*)(data+0)),  MASK);
+        M[1] = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i*)(data+16)), MASK);
+        M[2] = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i*)(data+32)), MASK);
+        M[3] = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i*)(data+48)), MASK);
+        #pragma clang loop unroll(full)
+        for (int g = 0; g < 16; g++) {
+            __m128i cur = M[g & 3];
+            MSG = _mm_add_epi32(cur, _mm_loadu_si128((const __m128i*)&SHA256_K[g*4]));
+            STATE1 = _mm_sha256rnds2_epu32(STATE1, STATE0, MSG);
+            // Produce the window for group g+4 while the first rnds2 retires.
+            if (g < 12) {
+                __m128i o = M[g & 3], a = M[(g+1) & 3], b = M[(g+2) & 3], c = M[(g+3) & 3];
+                o = _mm_sha256msg1_epu32(o, a);
+                o = _mm_add_epi32(o, _mm_alignr_epi8(c, b, 4));
+                M[g & 3] = _mm_sha256msg2_epu32(o, c);
+            }
+            MSG = _mm_shuffle_epi32(MSG, 0x0E);
+            STATE0 = _mm_sha256rnds2_epu32(STATE0, STATE1, MSG);
+        }
+        STATE0 = _mm_add_epi32(STATE0, ABEF_SAVE);
+        STATE1 = _mm_add_epi32(STATE1, CDGH_SAVE);
+        data += 64; blocks--;
+    }
+
+    TMP    = _mm_shuffle_epi32(STATE0, 0x1B);
+    STATE1 = _mm_shuffle_epi32(STATE1, 0xB1);
+    STATE0 = _mm_blend_epi16(TMP, STATE1, 0xF0);
+    STATE1 = _mm_alignr_epi8(STATE1, TMP, 8);
+    _mm_storeu_si128((__m128i*)&state[0], STATE0);
+    _mm_storeu_si128((__m128i*)&state[4], STATE1);
+}
+#else
+static int cajeta_cpu_has_sha(void) { return 0; }
+#endif
+
+static void sha256_transform_scalar(uint32_t state[8], const uint8_t block[64]) {
     uint32_t W[64];
     // Message schedule: first 16 words are the block read big-endian.
     for (int i = 0; i < 16; i++) {
@@ -97,6 +172,15 @@ static void sha256_transform(uint32_t state[8], const uint8_t block[64]) {
     state[7] += h;
 }
 
+// Process `blocks` complete 64-byte blocks, dispatching to SHA-NI when the CPU
+// advertises the SHA extensions, else the scalar transform.
+static void sha256_blocks(uint32_t state[8], const uint8_t* data, size_t blocks) {
+#ifdef CAJETA_SHA256_X86
+    if (cajeta_cpu_has_sha()) { sha256_shani(state, data, blocks); return; }
+#endif
+    for (; blocks; blocks--, data += 64) sha256_transform_scalar(state, data);
+}
+
 static void sha256_init(struct cajeta_sha256_state* s) {
     // First 32 bits of the fractional parts of the square roots of the
     // first 8 primes (FIPS 180-4 §5.3.3).
@@ -115,17 +199,26 @@ static void sha256_init(struct cajeta_sha256_state* s) {
 static void sha256_update(struct cajeta_sha256_state* s,
                           const uint8_t* data, size_t len) {
     s->bits += (uint64_t) len * 8u;
-    while (len > 0) {
-        size_t to_copy = (size_t) (64 - s->buf_len);
-        if (to_copy > len) to_copy = len;
-        memcpy(s->buf + s->buf_len, data, to_copy);
-        s->buf_len += (int32_t) to_copy;
-        data += to_copy;
-        len  -= to_copy;
-        if (s->buf_len == 64) {
-            sha256_transform(s->s, s->buf);
-            s->buf_len = 0;
-        }
+    // 1. Top off any partial buffer to a full block first.
+    if (s->buf_len > 0) {
+        size_t need = (size_t) (64 - s->buf_len);
+        size_t take = need < len ? need : len;
+        memcpy(s->buf + s->buf_len, data, take);
+        s->buf_len += (int32_t) take;
+        data += take; len -= take;
+        if (s->buf_len == 64) { sha256_blocks(s->s, s->buf, 1); s->buf_len = 0; }
+    }
+    // 2. Hash whole blocks straight from the caller's buffer — no per-block
+    //    memcpy, and SHA-NI keeps the digest state in registers across them.
+    if (len >= 64) {
+        size_t nb = len >> 6;
+        sha256_blocks(s->s, data, nb);
+        data += nb << 6; len -= nb << 6;
+    }
+    // 3. Stash the sub-block tail for next time.
+    if (len > 0) {
+        memcpy(s->buf, data, len);
+        s->buf_len = (int32_t) len;
     }
 }
 
@@ -135,14 +228,14 @@ static void sha256_finalize(struct cajeta_sha256_state* s, uint8_t out[32]) {
     s->buf[s->buf_len++] = 0x80;
     if (s->buf_len > 56) {
         memset(s->buf + s->buf_len, 0, (size_t)(64 - s->buf_len));
-        sha256_transform(s->s, s->buf);
+        sha256_blocks(s->s, s->buf, 1);
         s->buf_len = 0;
     }
     memset(s->buf + s->buf_len, 0, (size_t)(56 - s->buf_len));
     for (int i = 0; i < 8; i++) {
         s->buf[56 + i] = (uint8_t)(s->bits >> ((7 - i) * 8));
     }
-    sha256_transform(s->s, s->buf);
+    sha256_blocks(s->s, s->buf, 1);
     for (int i = 0; i < 8; i++) {
         out[i*4 + 0] = (uint8_t)(s->s[i] >> 24);
         out[i*4 + 1] = (uint8_t)(s->s[i] >> 16);

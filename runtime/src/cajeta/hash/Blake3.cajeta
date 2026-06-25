@@ -1,0 +1,218 @@
+package cajeta.hash;
+
+import cajeta.lang.String;
+
+/**
+ * BLAKE3 — fast modern cryptographic hash (and XOF).
+ *
+ * The recommended hash for new **cryptographic** fingerprinting and
+ * content-addressing: collision-resistant like SHA-256 but much faster, with a
+ * built-in extendable output (XOF). For non-cryptographic fingerprints (cache
+ * keys, ETags where attacker control is impossible) prefer `XXHash3` /
+ * `XXHash3.hash128` — they're faster still. `MD5` remains only for legacy
+ * interop (S3 `Content-MD5`, existing ETags); do not use it for new work.
+ *
+ * The 256-bit (32-byte) digest is the default; `hashXof` streams any number of
+ * output bytes.
+ *
+ * ## Surface
+ *
+ * One-shot:
+ * ```cajeta
+ * #int8[] digest = Blake3.hash(bytes, bytes.count());
+ * String hex = Blake3.hashHex(bytes, bytes.count());
+ * int8[] wide = heap int8[64];
+ * Blake3.hashXof(bytes, bytes.count(), wide);   // 64 bytes of XOF output
+ * ```
+ *
+ * Streaming `Hasher`:
+ * ```cajeta
+ * Blake3 h = heap Blake3();
+ * h.writeString(record.title);
+ * h.writeInt64(record.id);
+ * #int8[] digest = h.digest();
+ * ```
+ *
+ * @See cajeta.hash.Hasher
+ * @See cajeta.hash.Sha256
+ * @See cajeta.hash.XXHash3
+ */
+public final class Blake3 implements Hasher {
+
+    /** Opaque pointer to the native streaming hasher state. */
+    public pointer state;
+
+    /** Construct a fresh streaming BLAKE3 hasher. */
+    public Blake3() {
+        this.state = Blake3.allocState();
+    }
+
+    ~Blake3() {
+        Blake3.freeState(this.state);
+    }
+
+    // --- @Native bridges --------------------------------------------
+
+    @Native("__cajeta_blake3_alloc")
+    private static pointer allocState();
+
+    @Native("__cajeta_blake3_free")
+    private static void freeState(pointer s);
+
+    @Native("__cajeta_blake3_reset")
+    private static void resetNative(pointer s);
+
+    @Native("__cajeta_blake3_update")
+    private static void updateNative(pointer s, int8[] data, int64 len);
+
+    @Native("__cajeta_blake3_digest")
+    private static void digestInto(pointer s, int8[] out32);
+
+    @Native("__cajeta_blake3_finish_int64")
+    private static int64 finishNative(pointer s);
+
+    @Native("__cajeta_blake3_oneshot")
+    private static void oneshotInto(int8[] data, int64 len, int8[] out32);
+
+    @Native("__cajeta_blake3_oneshot_xof")
+    private static void oneshotXofInto(int8[] data, int64 len, int8[] out, int64 outLen);
+
+    @Native("__cajeta_blake3_oneshot_hex")
+    private static void oneshotHexInto(int8[] data, int64 len, int8[] out64);
+
+    @Native("__cajeta_blake3_write_i8")
+    private static void writeI8Native(pointer s, int8 v);
+    @Native("__cajeta_blake3_write_i16")
+    private static void writeI16Native(pointer s, int16 v);
+    @Native("__cajeta_blake3_write_i32")
+    private static void writeI32Native(pointer s, int32 v);
+    @Native("__cajeta_blake3_write_i64")
+    private static void writeI64Native(pointer s, int64 v);
+    @Native("__cajeta_blake3_write_f32")
+    private static void writeF32Native(pointer s, float32 v);
+    @Native("__cajeta_blake3_write_f64")
+    private static void writeF64Native(pointer s, float64 v);
+
+    // --- One-shot statics -------------------------------------------
+
+    /**
+     * One-shot 32-byte BLAKE3 digest of `data[0..len)`.
+     *
+     * ```cajeta
+     * #int8[] digest = Blake3.hash(bytes, bytes.count());
+     * ```
+     */
+    public static #int8[] hash(int8[] data, int64 len) {
+        int8[] out = heap int8[32];
+        Blake3.oneshotInto(data, len, out);
+        return #out;
+    }
+
+    /**
+     * One-shot 32-byte digest written into a caller-provided `out32` — zero
+     * allocation when the buffer is reused.
+     *
+     * ```cajeta
+     * int8[] digest = heap int8[32];
+     * Blake3.hashInto(bytes, bytes.count(), digest);
+     * ```
+     */
+    public static void hashInto(int8[] data, int64 len, int8[] out32) {
+        Blake3.oneshotInto(data, len, out32);
+    }
+
+    /**
+     * One-shot lowercase 64-char hex digest of `data[0..len)`.
+     *
+     * ```cajeta
+     * String h = Blake3.hashHex(bytes, bytes.count());
+     * ```
+     */
+    public static #String hashHex(int8[] data, int64 len) {
+        int8[] hex = heap int8[64];
+        Blake3.oneshotHexInto(data, len, hex);
+        return heap String(#hex, 64);
+    }
+
+    /** One-shot 32-byte digest of a `String`'s UTF-8 bytes. */
+    public static #int8[] hashString(String s) {
+        return Blake3.hash(s.bytes, (int64) s.byteLength);
+    }
+
+    /** One-shot lowercase hex digest of a `String`'s UTF-8 bytes. */
+    public static #String hashStringHex(String s) {
+        return Blake3.hashHex(s.bytes, (int64) s.byteLength);
+    }
+
+    /**
+     * One-shot extendable output: fill all `out.count()` bytes with BLAKE3 XOF
+     * output of `data[0..len)`. The first 32 bytes equal `hash(...)`.
+     *
+     * ```cajeta
+     * int8[] wide = heap int8[64];
+     * Blake3.hashXof(bytes, bytes.count(), wide);
+     * ```
+     */
+    public static void hashXof(int8[] data, int64 len, int8[] out) {
+        Blake3.oneshotXofInto(data, len, out, out.count());
+    }
+
+    // --- Streaming surface ------------------------------------------
+
+    /** Feed `data[0..len)` into the running hash state. */
+    public void update(int8[] data, int64 len) {
+        Blake3.updateNative(this.state, data, len);
+    }
+
+    /** Finalize and return the 32-byte digest of everything written so far. */
+    public #int8[] digest() {
+        int8[] out = heap int8[32];
+        Blake3.digestInto(this.state, out);
+        return #out;
+    }
+
+    /** Discard accumulated input so the instance can be reused for a fresh digest. */
+    public void reset() {
+        Blake3.resetNative(this.state);
+    }
+
+    // --- Hasher streaming primitives --------------------------------
+
+    public void writeBoolean(boolean v) {
+        Blake3.writeI8Native(this.state, (int8)(v ? 1 : 0));
+    }
+    public void writeInt8(int8 v)       { Blake3.writeI8Native(this.state, v); }
+    public void writeInt16(int16 v)     { Blake3.writeI16Native(this.state, v); }
+    public void writeInt32(int32 v)     { Blake3.writeI32Native(this.state, v); }
+    public void writeInt64(int64 v)     { Blake3.writeI64Native(this.state, v); }
+    public void writeUInt8(uint8 v)     { Blake3.writeI8Native(this.state, (int8) v); }
+    public void writeUInt16(uint16 v)   { Blake3.writeI16Native(this.state, (int16) v); }
+    public void writeUInt32(uint32 v)   { Blake3.writeI32Native(this.state, (int32) v); }
+    public void writeUInt64(uint64 v)   { Blake3.writeI64Native(this.state, (int64) v); }
+    public void writeFloat32(float32 v) { Blake3.writeF32Native(this.state, v); }
+    public void writeFloat64(float64 v) { Blake3.writeF64Native(this.state, v); }
+
+    public void writeBytes(int8[] data) {
+        Blake3.updateNative(this.state, data, data.count());
+    }
+
+    public void writeBytesRange(int8[] data, int64 offset, int64 length) {
+        Blake3.updateNative(this.state, data, length);
+    }
+
+    public void writeString(String s) {
+        Blake3.updateNative(this.state, s.bytes, (int64) s.byteLength);
+    }
+
+    public void writeObject(Object obj) {
+        Blake3.writeI64Native(this.state, obj.hash());
+    }
+
+    /**
+     * Project the first 8 digest bytes as a little-endian `int64` (the `Hasher`
+     * contract). For the full cryptographic digest use `digest()` / `hashHex`.
+     */
+    public int64 finish() {
+        return Blake3.finishNative(this.state);
+    }
+}

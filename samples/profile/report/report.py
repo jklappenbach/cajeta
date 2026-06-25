@@ -105,6 +105,39 @@ def lang_color(lang):
     return LANG_COLORS.get(lang, DEFAULT_COLOR)
 
 
+def clean_version(lang, ver):
+    """Trim a verbose `--version` string down to the meaningful version for the
+    legend table (the Language column already names the language). Keeps cajeta's
+    commit hash and the C++ compiler name; everything else collapses to N.N.N."""
+    ver = ver.strip()
+    if lang == "cajeta":
+        return ver[len("cajeta "):] if ver.startswith("cajeta ") else ver
+    m = re.search(r"\d+\.\d+(?:\.\d+)?", ver)
+    num = m.group(0) if m else ver
+    if lang == "cpp":
+        low = ver.lower()
+        comp = "clang" if "clang" in low else ("g++" if "g++" in low or "gcc" in low else "")
+        return (comp + " " + num).strip()
+    return num
+
+
+def lang_versions(rows, env):
+    """Map each language -> its (cleaned) toolchain version. Competitor versions
+    are carried per-row in `language_version` (each runner records its own
+    rustc/go/javac/python/g++ --version); cajeta's is stamped into env.csv as
+    `cajeta_version` (the Cajeta side emits no version column of its own)."""
+    out = {}
+    for r in rows:
+        la = r.get("language", "")
+        ver = (r.get("language_version") or "").strip()
+        if la and ver and la not in out:
+            out[la] = clean_version(la, ver)
+    cv = (env.get("cajeta_version") or "").strip()
+    if cv:
+        out["cajeta"] = clean_version("cajeta", cv)
+    return out
+
+
 def row_label(r):
     lang = r.get("language", "")
     lib = r.get("library", "")
@@ -294,7 +327,23 @@ def gen_markdown(rows, env):
     out = ["# Cajeta profile — benchmark report", ""]
     if env:
         out.append("Reference machine: " + " · ".join(
-            f"**{k}** {v}" for k, v in env.items() if k != "run_id") + "\n")
+            f"**{k}** {v}" for k, v in env.items()
+            if k not in ("run_id", "cajeta_version")) + "\n")
+    # Languages legend — toolchain versions behind each competitor.
+    lv = lang_versions(rows, env)
+    langs_present = []
+    for r in rows:
+        la = r.get("language", "")
+        if la and la not in langs_present:
+            langs_present.append(la)
+    if langs_present:
+        out.append("## Languages\n")
+        out.append("| Language | Version |")
+        out.append("|---|---|")
+        for la in langs_present:
+            tag = " ★" if la == "cajeta" else ""
+            out.append(f"| {la}{tag} | {lv.get(la) or '—'} |")
+        out.append("")
     for area, rs in group_by_area(rows):
         out.append(f"## {area}")
         out.append("")
@@ -370,9 +419,19 @@ header .sub{opacity:.94;margin-top:3px;font-size:14px}
 .env b{color:var(--caramel);font-weight:700}
 
 /* ---- legend ---- */
-.legend{display:flex;flex-wrap:wrap;gap:10px 16px;margin:0 0 20px;font-size:12.5px}
+.legend{display:flex;flex-wrap:wrap;gap:10px 16px;margin:0 0 14px;font-size:12.5px}
 .legend .sw{display:inline-flex;align-items:center;gap:6px}
 .legend .chip{width:14px;height:14px;border:1px solid var(--hair);border-radius:3px;display:inline-block}
+
+/* ---- language + version legend table ---- */
+.langtable{border-collapse:collapse;margin:0 0 22px;font-size:12.5px;
+  border:1px solid var(--hair);border-radius:10px;overflow:hidden}
+.langtable th,.langtable td{text-align:left;padding:5px 14px;border-bottom:1px solid var(--hair)}
+.langtable thead th{background:var(--panel);color:var(--caramel);font-weight:700}
+.langtable tbody tr:last-child td{border-bottom:none}
+.langtable .chip{width:12px;height:12px;border:1px solid var(--hair);border-radius:3px;
+  display:inline-block;vertical-align:middle;margin-right:7px}
+.langtable td.ver{color:var(--ink-soft, #6b5a48);font-variant-numeric:tabular-nums}
 
 /* ---- panels (the one place that keeps a true black pinline) ---- */
 .panel{display:none;background:var(--panel);border:2px solid var(--line);border-radius:14px;
@@ -533,7 +592,7 @@ def gen_html(rows, env):
     if env:
         main.append("<div class='env'>" + "".join(
             f"<span><b>{html.escape(k)}</b> {html.escape(v)}</span>"
-            for k, v in env.items() if k != "run_id") + "</div>")
+            for k, v in env.items() if k not in ("run_id", "cajeta_version")) + "</div>")
     # language legend
     langs_present = []
     for *_x, rs in benches:
@@ -544,6 +603,18 @@ def gen_html(rows, env):
     main.append("<div class='legend'>" + "".join(
         f"<span class='sw'><span class='chip' style='background:{lang_color(la)}'></span>"
         f"{html.escape(la)}{' ★' if la == 'cajeta' else ''}</span>" for la in langs_present) + "</div>")
+    # language + version legend table. Versions come from each competitor
+    # runner's `language_version` (rustc/go/javac/python/g++ --version); cajeta's
+    # is stamped into env.csv as `cajeta_version` by bench.sh.
+    lang_ver = lang_versions(rows, env)
+    if langs_present:
+        main.append(
+            "<table class='langtable'><thead><tr><th>Language</th><th>Version</th>"
+            "</tr></thead><tbody>" + "".join(
+                f"<tr><td><span class='chip' style='background:{lang_color(la)}'>"
+                f"</span>{html.escape(la)}{' ★' if la == 'cajeta' else ''}</td>"
+                f"<td class='ver'>{html.escape(lang_ver.get(la) or '—')}</td></tr>"
+                for la in langs_present) + "</tbody></table>")
 
     area_ds = area_dataset_names(rows)
     area_s2d = area_size_to_ds(rows)

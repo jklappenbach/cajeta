@@ -101,6 +101,12 @@ public final class XXHash3 implements Hasher {
     @Native("__cajeta_xxh3_oneshot")
     private static int64 oneshot(int8[] data, int64 len, int64 seedArg);
 
+    @Native("__cajeta_xxh3_128_oneshot")
+    private static void oneshot128(int8[] data, int64 len, int64 seedArg, int8[] out16);
+
+    @Native("__cajeta_xxh3_128_hex")
+    private static void hex128Into(int64 low, int64 high, int8[] out32);
+
     @Native("__cajeta_xxh3_write_i8")
     private static void writeI8Native(pointer s, int8 v);
 
@@ -170,6 +176,93 @@ public final class XXHash3 implements Hasher {
     @Inline
     public static int64 hashStringSeeded(String s, int64 seedArg) {
         return XXHash3.oneshot(s.bytes, (int64) s.byteLength, seedArg);
+    }
+
+    // --- 128-bit one-shot surface -----------------------------------
+    //
+    // XXH3-128: the 128-bit non-cryptographic fingerprint — the direct,
+    // higher-collision-margin replacement for MD5 in new code (cache keys,
+    // ETags, content fingerprints). The digest is delivered as 16 bytes
+    // (low64 little-endian, then high64 little-endian) into a caller-provided
+    // `int8[16]`, mirroring the native reference and `MD5.hash` — so the hot
+    // path is heap-free when the buffer is reused. Inputs > 240 B take the
+    // pure-Cajeta AVX-512 SIMD long path (hashLong128Into); shorter inputs use
+    // the native reference. NOTE: low64 is bit-identical to the 64-bit XXH3
+    // digest on the long path (XXH3 computes both from the same accumulators).
+    //
+    // (The digest is NOT returned as a `Vector<int64,2>` value: returning a
+    // small SIMD vector by value across a non-inlined call currently mis-codegens
+    // to zero under AOT -O3 — a separate compiler bug. The int8[16] out-param is
+    // both the correct workaround and the more idiomatic digest-buffer shape.)
+
+    /**
+     * One-shot 128-bit hash of `data[0..len)` under `seedArg`, written as 16
+     * bytes (low64 LE, then high64 LE) into `out16` — zero-allocation when the
+     * buffer is reused. Routes >240 B to the SIMD long path, else native.
+     *
+     * ```cajeta
+     * int8[] digest = heap int8[16];
+     * XXHash3.hash128Into(bytes, bytes.count(), 0xC0FFEEL, digest);
+     * ```
+     */
+    public static void hash128Into(int8[] data, int64 len, int64 seedArg, int8[] out16) {
+        if (len > 240) {
+            XXHash3.hashLong128Into(data, len, seedArg, out16);
+        } else {
+            XXHash3.oneshot128(data, len, seedArg, out16);
+        }
+    }
+
+    /**
+     * One-shot 128-bit digest of `data[0..len)` (per-process seed) as a fresh
+     * owned 16-byte array (low64 LE, then high64 LE).
+     *
+     * ```cajeta
+     * #int8[] digest = XXHash3.hash128(bytes, bytes.count());
+     * ```
+     */
+    public static #int8[] hash128(int8[] data, int64 len) {
+        int8[] out = heap int8[16];
+        XXHash3.hash128Into(data, len, Hash.processSeed(), out);
+        return #out;
+    }
+
+    /** Low 64 bits of the 128-bit digest (== the 64-bit XXH3 hash for inputs > 240 B). */
+    public static int64 hash128Low(int8[] data, int64 len) {
+        int8[] out = heap int8[16];
+        XXHash3.hash128Into(data, len, Hash.processSeed(), out);
+        return Cajeta.loadU64(out, 0);
+    }
+
+    /** High 64 bits of the 128-bit digest. */
+    public static int64 hash128High(int8[] data, int64 len) {
+        int8[] out = heap int8[16];
+        XXHash3.hash128Into(data, len, Hash.processSeed(), out);
+        return Cajeta.loadU64(out, 8);
+    }
+
+    /**
+     * One-shot 128-bit digest as the 32-char canonical lowercase hex string
+     * (big-endian high64 then low64 — matches `XXH128_canonicalFromHash`).
+     *
+     * ```cajeta
+     * String etag = XXHash3.hash128Hex(bytes, bytes.count());
+     * ```
+     */
+    public static #String hash128Hex(int8[] data, int64 len) {
+        return XXHash3.hash128HexSeeded(data, len, Hash.processSeed());
+    }
+
+    /**
+     * One-shot 128-bit canonical hex digest under an explicit `seedArg`, for
+     * reproducible digests (e.g. cross-process ETags).
+     */
+    public static #String hash128HexSeeded(int8[] data, int64 len, int64 seedArg) {
+        int8[] out = heap int8[16];
+        XXHash3.hash128Into(data, len, seedArg, out);
+        int8[] hex = heap int8[32];
+        XXHash3.hex128Into(Cajeta.loadU64(out, 0), Cajeta.loadU64(out, 8), hex);
+        return heap String(#hex, 32);
     }
 
     // --- Streaming surface ------------------------------------------
@@ -379,5 +472,78 @@ public final class XXHash3 implements Hasher {
         result = result + XXHash3.mix2(Cajeta.vlane(acc, 4), Cajeta.vlane(acc, 5), secret, 43);
         result = result + XXHash3.mix2(Cajeta.vlane(acc, 6), Cajeta.vlane(acc, 7), secret, 59);
         return XXHash3.avalanche(result);
+    }
+
+    // The 128-bit long-input driver. The accumulator loop is IDENTICAL to
+    // hashLong (XXH3 shares XXH3_hashLong_internal_loop between the 64- and
+    // 128-bit paths); only the finalization differs — two mergeAccs instead of
+    // one. low64 reuses the 64-bit merge (start = len*PRIME64_1, secret 11/27/
+    // 43/59) so it equals hashLong bit-for-bit; high64 uses start = ~(len*
+    // PRIME64_2) over secret 117/133/149/165 (= secretSize-64-11 + 16*i). The
+    // 8-lane acc stays in a zmm register under --cpu=native exactly as hashLong.
+    // Writes 16 bytes (low64 LE, then high64 LE) into out16 (no Vector-value
+    // return — that mis-codegens to zero across a non-inlined call under -O3).
+    public static void hashLong128Into(int8[] data, int64 len, int64 seed, int8[] out16) {
+        int8[] secret = XXHash3.buildSecret(seed);
+        Vector<int64,8> acc = stack Vector<int64,8>(
+            0x00000000C2B2AE3DL, 0x9E3779B185EBCA87L, 0xC2B2AE3D27D4EB4FL,
+            0x165667B19E3779F9L, 0x85EBCA77C2B2AE63L, 0x0000000085EBCA77L,
+            0x27D4EB2F165667C5L, 0x000000009E3779B1L);
+
+        int64 nbBlocks = (len - 1) / 1024;
+        int64 bIdx = 0;
+        while (bIdx < nbBlocks) {
+            int64 base = bIdx * 1024;
+            int64 s = 0;
+            while (s < 16) {
+                Vector<int64,8> d = Cajeta.vload8i64(data, base + s * 64);
+                Vector<int64,8> key = d ^ Cajeta.vload8i64(secret, s * 8);
+                Vector<int64,8> hi = key >>> 32;
+                acc = acc + (Cajeta.vswapPairs(d) + (key & 0xFFFFFFFFL) * hi);
+                s = s + 1;
+            }
+            Vector<int64,8> shifted = acc >>> 47;
+            acc = ((acc ^ shifted) ^ Cajeta.vload8i64(secret, 128)) * 0x000000009E3779B1L;
+            bIdx = bIdx + 1;
+        }
+        int64 nbStripes = ((len - 1) - 1024 * nbBlocks) / 64;
+        int64 s2 = 0;
+        while (s2 < nbStripes) {
+            Vector<int64,8> d = Cajeta.vload8i64(data, nbBlocks * 1024 + s2 * 64);
+            Vector<int64,8> key = d ^ Cajeta.vload8i64(secret, s2 * 8);
+            Vector<int64,8> hi = key >>> 32;
+            acc = acc + (Cajeta.vswapPairs(d) + (key & 0xFFFFFFFFL) * hi);
+            s2 = s2 + 1;
+        }
+        Vector<int64,8> dl = Cajeta.vload8i64(data, len - 64);
+        Vector<int64,8> keyl = dl ^ Cajeta.vload8i64(secret, 121);
+        Vector<int64,8> hil = keyl >>> 32;
+        acc = acc + (Cajeta.vswapPairs(dl) + (keyl & 0xFFFFFFFFL) * hil);
+
+        int64 a0 = Cajeta.vlane(acc, 0);
+        int64 a1 = Cajeta.vlane(acc, 1);
+        int64 a2 = Cajeta.vlane(acc, 2);
+        int64 a3 = Cajeta.vlane(acc, 3);
+        int64 a4 = Cajeta.vlane(acc, 4);
+        int64 a5 = Cajeta.vlane(acc, 5);
+        int64 a6 = Cajeta.vlane(acc, 6);
+        int64 a7 = Cajeta.vlane(acc, 7);
+
+        int64 low = len * 0x9E3779B185EBCA87L;            // len * PRIME64_1
+        low = low + XXHash3.mix2(a0, a1, secret, 11);
+        low = low + XXHash3.mix2(a2, a3, secret, 27);
+        low = low + XXHash3.mix2(a4, a5, secret, 43);
+        low = low + XXHash3.mix2(a6, a7, secret, 59);
+        low = XXHash3.avalanche(low);
+
+        int64 high = ~(len * 0xC2B2AE3D27D4EB4FL);         // ~(len * PRIME64_2)
+        high = high + XXHash3.mix2(a0, a1, secret, 117);
+        high = high + XXHash3.mix2(a2, a3, secret, 133);
+        high = high + XXHash3.mix2(a4, a5, secret, 149);
+        high = high + XXHash3.mix2(a6, a7, secret, 165);
+        high = XXHash3.avalanche(high);
+
+        Cajeta.storeU64(out16, 0, low);
+        Cajeta.storeU64(out16, 8, high);
     }
 }

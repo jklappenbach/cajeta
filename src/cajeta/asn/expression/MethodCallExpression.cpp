@@ -3602,6 +3602,51 @@ namespace cajeta {
                         llvm::Type::getInt32Ty(builder->getContext()),
                         "eqmask.i32");
                 }
+                // SIMD: compressStore(dst, mask) -> int32. Pack the lanes of this
+                // vector whose `mask` bit is set into contiguous memory starting
+                // at `dst` (an array-element l-value, e.g. `out[w]`), low lane
+                // first — AVX-512 vpcompress* (vpcompressq for 64-bit lanes). The
+                // partition primitive behind vqsort / x86-simd-sort. Returns
+                // popcount(mask): how many elements were written, so a vectorized
+                // partition advances its write cursor by it. `mask` is an N-lane
+                // comparison vector, e.g. `(v < pivotVec)`.
+                if (methodCallName == "compressStore") {
+                    if (parameters.size() != 2) {
+                        throw Exception(
+                            "Vector.compressStore expects (dst, mask): dst an "
+                            "array element l-value (e.g. out[w]), mask an N-lane "
+                            "comparison mask", "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    // The destination is an l-value array element: its
+                    // generateCode yields the element GEP — exactly &out[w] — the
+                    // contiguous store base. Do NOT loadIfLValue: we want the
+                    // address, not the loaded element.
+                    llvm::Value* ptr =
+                        parameters[0].expression->generateCode(module);
+                    if (!ptr || !ptr->getType()->isPointerTy()) {
+                        throw Exception(
+                            "Vector.compressStore destination must be an array "
+                            "element l-value (e.g. out[w])",
+                            "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    llvm::Value* mask = loadIfLValue(module,
+                        parameters[1].expression->generateCode(module),
+                        parameters[1].expression);
+                    auto* mvt = llvm::dyn_cast<llvm::FixedVectorType>(
+                        mask->getType());
+                    auto* dvt =
+                        llvm::cast<llvm::FixedVectorType>(self->getType());
+                    if (!mvt || !mvt->getElementType()->isIntegerTy(1) ||
+                            mvt->getNumElements() != dvt->getNumElements()) {
+                        throw Exception(
+                            "Vector.compressStore mask must be an N-lane "
+                            "comparison mask matching this vector's lane count",
+                            "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    vecops::compressStore(*builder, ptr, self, mask);
+                    resolvedType = CajetaType::of("int32");
+                    return vecops::maskPopcount(*builder, mask);
+                }
                 if (methodCallName == "length") {
                     if (!isFloat) {
                         throw Exception(

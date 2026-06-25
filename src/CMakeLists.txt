@@ -492,10 +492,22 @@ endif()
 # otherwise edits to an included runtime source silently ship a stale bitcode
 # (a real bug: a new intrinsic added to e.g. cajeta_net_socket.c would be
 # missing from the embedded runtime, so getRuntimeFunction can't find it).
+# -O3 (not -O2): the embedded bitcode is OPTIMIZED here, once, and that opt
+# level is baked in — the AOT pipeline re-codegens it for the native target but
+# does NOT redo target-aware loop transforms (unroll factor, vectorization width)
+# on already-optimized IR, so -O2's weaker transforms persist into every @Native
+# bulk path. Bumping to -O3 measured: blake3 1.43x, md5 1.21x, sha256 1.12x over
+# a 1 MiB buffer (and lands blake3 at the standalone -O3 ceiling). Stays GENERIC
+# on purpose — do NOT add -march=native: this bitcode ships in the DISTRIBUTED
+# compiler and is JIT-loaded on arbitrary hosts, and the AVX-512 hot paths
+# (blake3/sha256/xxh3) already gate their own intrinsics behind
+# __attribute__((target("avx512f"))) + a cpuid probe, so baking a fixed CPU in
+# only degrades the AOT re-codegen (measured: -march=native made blake3 SLOWER,
+# 224us vs 189us generic).
 add_custom_command(
         OUTPUT ${CAJETA_RT_BC}
         # 1) Core runtime C -> bitcode (was the whole step; now an intermediate).
-        COMMAND ${CAJETA_CLANG} -c -emit-llvm -O2 -fno-builtin
+        COMMAND ${CAJETA_CLANG} -c -emit-llvm -O3 -fno-builtin
                 -ffunction-sections -fdata-sections
                 -MD -MF ${CAJETA_RT_CORE_BC}.d
                 -I${CAJETA_XXHASH_INCLUDE_DIR}

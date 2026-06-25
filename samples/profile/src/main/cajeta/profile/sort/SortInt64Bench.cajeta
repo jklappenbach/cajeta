@@ -17,6 +17,11 @@ public class SortInt64Bench extends Benchmark {
     public int64[] src;
     public int64 baseNs;
     public int32 sortedOk;
+    // Last sorted output, retained so the non-decreasing cross-check runs in
+    // checkResult() — OUTSIDE the timed region — matching the Rust runner, which
+    // verifies after `Instant::elapsed()`. Keeping the verify inside runVariant
+    // would charge cajeta a 50K-element scan that Rust's number never pays.
+    public int64[] out;
 
     public String name() {
         return "sort-int64";
@@ -67,7 +72,10 @@ public class SortInt64Bench extends Benchmark {
             }
         } else if (variant.equals("dups")) {
             while (i < this.n) {
-                this.src[i] = (int64) (i % 100);
+                // i % 16 — 16 unique values, matching every competitor runner's
+                // dups generator (rust/cpp/go/java all use i % 16) so the
+                // high-duplication case is sorted on identical data.
+                this.src[i] = (int64) (i % 16);
                 i = i + 1;
             }
         } else {
@@ -109,23 +117,25 @@ public class SortInt64Bench extends Benchmark {
             w[i] = this.src[i];
             i = i + 1;
         }
-        Sort.sort<int64>(w, this.n);
+        // No explicit type arg: resolves to the concrete Sort.sort(int64[],
+        // int32) overload — the AVX-512 vqsort (vpcompressq) fast path.
+        Sort.sort(w, this.n);
+        // Retain for verification outside the timed region (see `out`).
+        this.out = w;
+    }
+
+    public boolean checkResult() {
+        if (this.out == null) {
+            return false;
+        }
         boolean ok = true;
         int32 j = 1;
         while (j < this.n) {
-            if (w[j] < w[j - 1]) {
+            if (this.out[j] < this.out[j - 1]) {
                 ok = false;
             }
             j = j + 1;
         }
-        if (ok) {
-            this.sortedOk = 1;
-        } else {
-            this.sortedOk = 0;
-        }
-    }
-
-    public boolean checkResult() {
-        return this.sortedOk == 1;
+        return ok;
     }
 }

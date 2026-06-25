@@ -9,6 +9,7 @@ edition = "2021"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 sha2 = "0.10"
 md-5 = "0.10"
+blake3 = "1"
 
 [[bin]]
 name = "profile-hash"

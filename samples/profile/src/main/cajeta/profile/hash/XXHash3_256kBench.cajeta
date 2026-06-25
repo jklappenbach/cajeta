@@ -1,0 +1,67 @@
+package profile.hash;
+
+import cajeta.hash.XXHash3;
+
+import profile.Benchmark;
+
+// XXHash3 (64-bit) COMPUTE-BOUND throughput over a 256 KiB buffer. The bulk
+// `xxhash3` bench hashes 1 MiB, which sits at the L2 boundary and bleeds into
+// L3/DRAM (~145 GB/s here), so it partly measures the memory subsystem. A
+// 256 KiB buffer is L2-resident and runs at the pure compute ceiling (~174 GB/s
+// here), where the AVX-512 accumulator-loop width separates from the AVX2
+// library ports (rust xxhash-rust, go zeebo) instead of everyone saturating the
+// bus. seed 0 => XXH3's default secret => the loop is the only work.
+//
+// One hash per timed trial (256 KiB / ~1.5 us is comfortably above the timer
+// floor), mirroring the bulk bench — no rep loop, no anti-CSE machinery.
+public class XXHash3_256kBench extends Benchmark {
+
+    public int8[] data;
+    public int64 len;
+    public int64 lastHash;
+
+    public String name() {
+        return "xxhash3-256k";
+    }
+
+    public String area() {
+        return "hash";
+    }
+
+    public int32 warmupIters() {
+        return 30;
+    }
+
+    public int32 measuredIters() {
+        return 200;
+    }
+
+    public void setup() {
+        this.len = 262144;
+        this.data = heap int8[(int32) this.len];
+        int32 i = 0;
+        int32 n = (int32) this.len;
+        while (i < n) {
+            this.data[i] = (int8) ((i * 31 + 7) & 0xFF);
+            i = i + 1;
+        }
+    }
+
+    public int64 inputSize() {
+        return this.len;
+    }
+
+    public void run(int32 iterations) {
+        // Pure-Cajeta SIMD long path, seed 0 (default secret).
+        this.lastHash = XXHash3.hashLong(this.data, this.len, 0L);
+    }
+
+    public boolean checkResult() {
+        // Self-verifying: the timed SIMD long path must equal the @Native C
+        // xxHash reference for the exact 256 KiB input + seed 0. Outside the
+        // timed loop; also keeps hashLong reachable for the tree-shaker.
+        int64 simd = XXHash3.hashLong(this.data, this.len, 0L);
+        int64 ref = XXHash3.hashSeeded(this.data, this.len, 0L);
+        return this.lastHash != 0 && simd == ref && this.lastHash == ref;
+    }
+}

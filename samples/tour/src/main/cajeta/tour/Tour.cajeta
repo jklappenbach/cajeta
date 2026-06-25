@@ -16,6 +16,7 @@ import tour.time.*;
 import tour.net.*;
 import tour.io.*;
 import tour.codec.*;
+import tour.hash.*;
 
 // Cajeta language tour. Every load-bearing feature of the language
 // has a demo class extending DemoClass; this entry point puts one
@@ -91,6 +92,7 @@ public final class Tour {
         demos.add(heap RedBlackTreeDemo());
         demos.add(heap BPlusTreeDemo());
         demos.add(heap LtmBPlusTreeDemo());
+        demos.add(heap HashDemo());
 
         // Stream over the list — virtual dispatch lands each
         // subclass's execute() override.

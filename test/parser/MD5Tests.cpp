@@ -36,6 +36,34 @@ std::string runHashHex(const std::string& input) {
     return std::string(data, (size_t) count);
 }
 
+// Hex digest of `count` copies of byte `val`, filled with a loop (not per-byte
+// unrolling) so large inputs stay cheap to JIT. Exercises the bulk-update fast
+// path (len >> 64), where whole blocks are hashed straight from the caller
+// buffer with no per-block memcpy.
+std::string runHashHexRepeated(int val, size_t count) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.hash.MD5;\n"
+        "import cajeta.lang.String;\n"
+        "public final class D {\n"
+        "    public static pointer run() {\n"
+        "        int64 n = " + std::to_string(count) + "L;\n"
+        "        int8[] data = heap int8[n];\n"
+        "        int64 i = 0L;\n"
+        "        while (i < n) { data[i] = (int8) " + std::to_string(val) + "; i = i + 1L; }\n"
+        "        String s = MD5.hashHex(data, n);\n"
+        "        return s.bytes;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<void* (*)()>("run");
+    void* hdr = fn();
+    if (!hdr) return "<null>";
+    int64_t count2 = *(int64_t*) hdr;
+    const char* data = (const char*) hdr + 8;
+    return std::string(data, (size_t) count2);
+}
+
 } // namespace
 
 TEST(MD5Tests, emptyString) {
@@ -52,6 +80,14 @@ TEST(MD5Tests, abc) {
 
 TEST(MD5Tests, messageDigest) {
     EXPECT_EQ(runHashHex("message digest"), "f96b697d7cb7938d525a2f31aaf161d0");
+}
+
+// The classic 1,000,000 x 'a' RFC 1321 vector. ~15625 blocks, so it drives the
+// bulk-update fast path (and its sub-block remainder handling) far past the
+// single-/two-block cases.
+TEST(MD5Tests, millionA) {
+    EXPECT_EQ(runHashHexRepeated('a', 1000000),
+              "7707d6ae4e027c70eea2a935c2296f21");
 }
 
 TEST(MD5Tests, alphabet) {

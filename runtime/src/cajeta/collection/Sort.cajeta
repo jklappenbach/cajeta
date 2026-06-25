@@ -175,16 +175,89 @@ public class Sort {
 
     /**
      * Stable sort of `a[0..n)` by `cmp` (numpy `kind='stable'`/`'mergesort'`).
-     * Bottom-up merge sort: O(n log n), O(n) auxiliary, equal keys keep their
-     * input order (the merge takes the left run on ties).
+     * A driftsort-flavored merge sort: O(n log n), O(n) auxiliary, equal keys
+     * keep their input order (every merge takes the left run on ties).
+     *
+     * Three levers over a textbook width-1 bottom-up mergesort, all stable:
+     *  1. **Run-building base blocks** — each length-`BLK` block is first
+     *     insertion-sorted, and a maximal *strictly*-descending prefix is
+     *     reversed first (strict, so equal keys never cross → stability holds),
+     *     making reverse-ordered input near-linear. Starting the merge at
+     *     width `BLK` instead of 1 removes the first ~log2(BLK) merge passes.
+     *  2. **Ping-pong merging** — passes alternate `a -> buf -> a` instead of
+     *     copying `buf` back into `a` after every pass, halving the memory
+     *     traffic; a single final copy fixes parity when the result lands in
+     *     `buf`.
      */
     public static void sortStable<T>(T[] a, int32 n, (T, T) -> int32 cmp) {
         if (n < 2) {
             return;
         }
+        // Lever 1: build sorted runs of length BLK (insertion sort + descending-
+        // prefix reverse). BLK is the merge's starting width.
+        int32 BLK = 32;
+        int32 start = 0;
+        while (start < n) {
+            int32 end = start + BLK;
+            if (end > n) {
+                end = n;
+            }
+            // Reverse a maximal strictly-descending prefix so reverse-sorted
+            // input costs one reversal, not O(BLK^2) insertion shifts. Strict
+            // `<` keeps equal keys in place — required for stability.
+            int32 runEnd = start + 1;
+            if (runEnd < end && cmp(a[runEnd], a[start]) < 0) {
+                while (runEnd < end && cmp(a[runEnd], a[runEnd - 1]) < 0) {
+                    runEnd = runEnd + 1;
+                }
+                int32 lo2 = start;
+                int32 hi2 = runEnd - 1;
+                while (lo2 < hi2) {
+                    T t = a[lo2];
+                    a[lo2] = a[hi2];
+                    a[hi2] = t;
+                    lo2 = lo2 + 1;
+                    hi2 = hi2 - 1;
+                }
+            }
+            int32 ii = start + 1;
+            while (ii < end) {
+                T key = a[ii];
+                int32 jj = ii;
+                boolean moving = true;
+                while (moving) {
+                    if (jj > start) {
+                        T prev = a[jj - 1];
+                        if (cmp(key, prev) < 0) {
+                            a[jj] = prev;
+                            jj = jj - 1;
+                        } else {
+                            moving = false;
+                        }
+                    } else {
+                        moving = false;
+                    }
+                }
+                a[jj] = key;
+                ii = ii + 1;
+            }
+            start = end;
+        }
+        if (BLK >= n) {
+            return;
+        }
+        // Lever 2: ping-pong bottom-up merge. `src` holds the current sorted
+        // runs, `dst` receives the merged (doubled) runs; swap each pass.
         T[] buf = heap T[n];
-        int32 width = 1;
+        boolean dataInA = true;
+        int32 width = BLK;
         while (width < n) {
+            T[] src = a;
+            T[] dst = buf;
+            if (!dataInA) {
+                src = buf;
+                dst = a;
+            }
             int32 i = 0;
             while (i < n) {
                 int32 left = i;
@@ -200,40 +273,41 @@ public class Sort {
                 int32 ri = mid;
                 int32 k = left;
                 while (li < mid && ri < right) {
-                    T lv = a[li];
-                    T rv = a[ri];
+                    T lv = src[li];
+                    T rv = src[ri];
                     // Stable: take the right run only when it strictly orders
                     // before the left; ties keep the left element first.
                     if (cmp(rv, lv) < 0) {
-                        buf[k] = rv;
+                        dst[k] = rv;
                         ri = ri + 1;
                     } else {
-                        buf[k] = lv;
+                        dst[k] = lv;
                         li = li + 1;
                     }
                     k = k + 1;
                 }
                 while (li < mid) {
-                    T lv = a[li];
-                    buf[k] = lv;
+                    dst[k] = src[li];
                     li = li + 1;
                     k = k + 1;
                 }
                 while (ri < right) {
-                    T rv = a[ri];
-                    buf[k] = rv;
+                    dst[k] = src[ri];
                     ri = ri + 1;
                     k = k + 1;
                 }
                 i = i + width + width;
             }
+            dataInA = !dataInA;
+            width = width + width;
+        }
+        if (!dataInA) {
+            // Result parity landed in `buf`; one copy back to `a`.
             int32 c = 0;
             while (c < n) {
-                T v = buf[c];
-                a[c] = v;
+                a[c] = buf[c];
                 c = c + 1;
             }
-            width = width + width;
         }
     }
 
@@ -288,16 +362,775 @@ public class Sort {
     // Natural-order entry points (by `<` / `>` on T) — thin seam wrappers
     // ─────────────────────────────────────────────────────────────────────
 
-    public static void sort<T>(T[] a, int32 n) {
-        sort<T>(a, n, (x, y) -> {
-            if (x < y) {
-                return -1;
+    // ─────────────────────────────────────────────────────────────────────
+    // Natural-order pattern-defeating quicksort (pdqsort) — the hot path the
+    // benchmarks and the numeric Tensor sort hit. This is a port of Orson
+    // Peters' pdqsort: median-of-3 / pseudomedian-of-9 (ninther) pivots, a
+    // BlockQuicksort-style *branchless* partition (no data-dependent branch in
+    // the partition inner loop — the dominant win on random input), a
+    // pattern-breaking shuffle on unbalanced splits, an introsort heapsort
+    // fallback for O(n log n) worst case, and partial-insertion-sort on
+    // already-partitioned runs (O(n) on sorted/structured input). Comparisons
+    // are inlined `<` so a monomorphized `sort<int64>` lowers each to a native
+    // `icmp`/`fcmp` (no comparator closure on this path).
+    //
+    // The helpers below are `public static` only because the toolchain has no
+    // proven internal-visibility for templated statics yet; they are not part
+    // of the intended Sort API. TODO: tighten to internal once available.
+    // ─────────────────────────────────────────────────────────────────────
+
+    public static void pdqSwap<T>(T[] a, int32 i, int32 j) {
+        T t = a[i];
+        a[i] = a[j];
+        a[j] = t;
+    }
+
+    // Index (relative to begin) of the median of a[begin+i], a[begin+j],
+    // a[begin+k]. Branchless-friendly (ipnsort/glidesort median3).
+    public static int32 pdqMedian3<T>(T[] a, int32 begin, int32 i, int32 j, int32 k) {
+        boolean x = a[begin + i] < a[begin + j];
+        boolean y = a[begin + i] < a[begin + k];
+        if (x == y) {
+            // b, c both <= a (x=y=0) -> want max(b,c); a < b, c (x=y=1) -> want
+            // min(b,c). XOR with x flips the b<c outcome to pick the right one.
+            boolean z = a[begin + j] < a[begin + k];
+            if (z != x) {
+                return k;
             }
-            if (x > y) {
-                return 1;
+            return j;
+        }
+        return i;
+    }
+
+    // ipnsort/glidesort pivot: median of 3 well-spread samples (0, 4n/8, 7n/8),
+    // upgraded to a median-of-9 pseudomedian for len >= 64 (one unrolled level;
+    // the reference recurses deeper for ~median-of-sqrt(n), but self-recursion
+    // can't be instantiated by the JIT and median-of-9 is an ample pivot for the
+    // benchmarked range). Returns the pivot index relative to begin. len >= 8.
+    public static int32 pdqChoosePivot<T>(T[] a, int32 begin, int32 end) {
+        int32 len = end - begin;
+        int32 d8 = len / 8;
+        int32 ia = 0;
+        int32 ib = 4 * d8;
+        int32 ic = 7 * d8;
+        if (len < 64) {
+            return pdqMedian3<T>(a, begin, ia, ib, ic);
+        }
+        int32 d64 = d8 / 8;
+        ia = pdqMedian3<T>(a, begin, ia, ia + 4 * d64, ia + 7 * d64);
+        ib = pdqMedian3<T>(a, begin, ib, ib + 4 * d64, ib + 7 * d64);
+        ic = pdqMedian3<T>(a, begin, ic, ic + 4 * d64, ic + 7 * d64);
+        return pdqMedian3<T>(a, begin, ia, ib, ic);
+    }
+
+    // Guarded insertion sort of a[begin..end) (end exclusive).
+    public static void pdqInsertion<T>(T[] a, int32 begin, int32 end) {
+        if (begin >= end) {
+            return;
+        }
+        int32 cur = begin + 1;
+        while (cur < end) {
+            int32 sift = cur;
+            if (a[sift] < a[sift - 1]) {
+                T tmp = a[sift];
+                boolean go = true;
+                while (go) {
+                    a[sift] = a[sift - 1];
+                    sift = sift - 1;
+                    if (sift == begin) {
+                        go = false;
+                    } else if (!(tmp < a[sift - 1])) {
+                        go = false;
+                    }
+                }
+                a[sift] = tmp;
             }
+            cur = cur + 1;
+        }
+    }
+
+    // ipnsort find_existing_run: length of the already-sorted run at a[0..). If
+    // the WHOLE array is one monotone run, leaves it ascending (reversing in
+    // place if it was strictly descending) so the caller can early-out — the
+    // cheap already-sorted / reverse-sorted fast path.
+    public static int32 pdqFindRun<T>(T[] a, int32 n) {
+        if (n < 2) {
+            return n;
+        }
+        int32 runLen = 2;
+        boolean desc = a[1] < a[0];
+        boolean go = true;
+        if (desc) {
+            while (go) {
+                if (runLen < n && a[runLen] < a[runLen - 1]) {
+                    runLen = runLen + 1;
+                } else {
+                    go = false;
+                }
+            }
+        } else {
+            while (go) {
+                if (runLen < n && !(a[runLen] < a[runLen - 1])) {
+                    runLen = runLen + 1;
+                } else {
+                    go = false;
+                }
+            }
+        }
+        if (runLen == n && desc) {
+            int32 i = 0;
+            int32 j = n - 1;
+            while (i < j) {
+                pdqSwap<T>(a, i, j);
+                i = i + 1;
+                j = j - 1;
+            }
+        }
+        return runLen;
+    }
+
+    // Sift a[begin+root] down a binary max-heap of `count` elements rooted at
+    // a[begin].
+    public static void pdqSiftDown<T>(T[] a, int32 begin, int32 root, int32 count) {
+        boolean go = true;
+        while (go) {
+            int32 child = 2 * root + 1;
+            if (child >= count) {
+                go = false;
+            } else {
+                if (child + 1 < count) {
+                    if (a[begin + child] < a[begin + child + 1]) {
+                        child = child + 1;
+                    }
+                }
+                if (a[begin + root] < a[begin + child]) {
+                    pdqSwap<T>(a, begin + root, begin + child);
+                    root = child;
+                } else {
+                    go = false;
+                }
+            }
+        }
+    }
+
+    // In-place heapsort of a[begin..end) — the introsort fallback that caps the
+    // worst case at O(n log n).
+    public static void pdqHeapSort<T>(T[] a, int32 begin, int32 end) {
+        int32 count = end - begin;
+        if (count < 2) {
+            return;
+        }
+        int32 start = count / 2;
+        while (start > 0) {
+            start = start - 1;
+            pdqSiftDown<T>(a, begin, start, count);
+        }
+        int32 e = count;
+        while (e > 1) {
+            e = e - 1;
+            pdqSwap<T>(a, begin, begin + e);
+            pdqSiftDown<T>(a, begin, 0, e);
+        }
+    }
+
+    // ipnsort's branchless Lomuto partition with a cyclic permutation
+    // (Bergdoll & Peters' "lomcyc"). Partitions a[s..e) by `a[x] < pivot`,
+    // returning the count of elements < pivot. A single forward scan: each step
+    // is ~1 move (the gap chases the writes) and the only data-dependent op is
+    // the branchless `numLt += (a[right] < pivot)` — no block buffers, no swaps.
+    // This is ipnsort's edge over pdqsort's BlockQuicksort on cheap-to-copy T.
+    public static int32 pdqLomCycLt<T>(T[] a, int32 s, int32 e, T pivot) {
+        int32 len = e - s;
+        if (len == 0) {
             return 0;
-        });
+        }
+        T gapValue = a[s];
+        int32 gapPos = s;
+        int32 numLt = 0;
+        int32 right = s + 1;
+        while (right < e) {
+            boolean lt = a[right] < pivot;
+            int32 left = s + numLt;
+            a[gapPos] = a[left];
+            a[left] = a[right];
+            gapPos = right;
+            numLt = numLt + (lt ? 1 : 0);
+            right = right + 1;
+        }
+        // Close the cycle: the held-out first element re-enters at the gap.
+        boolean lt2 = gapValue < pivot;
+        int32 left2 = s + numLt;
+        a[gapPos] = a[left2];
+        a[left2] = gapValue;
+        numLt = numLt + (lt2 ? 1 : 0);
+        return numLt;
+    }
+
+    // As pdqLomCycLt but partitions by `a[x] <= pivot` (elements equal to the
+    // pivot go LEFT) — ipnsort's duplicate-key path when the pivot is the
+    // smallest element (equals the ancestor pivot).
+    public static int32 pdqLomCycLe<T>(T[] a, int32 s, int32 e, T pivot) {
+        int32 len = e - s;
+        if (len == 0) {
+            return 0;
+        }
+        T gapValue = a[s];
+        int32 gapPos = s;
+        int32 numLt = 0;
+        int32 right = s + 1;
+        while (right < e) {
+            boolean le = !(pivot < a[right]);
+            int32 left = s + numLt;
+            a[gapPos] = a[left];
+            a[left] = a[right];
+            gapPos = right;
+            numLt = numLt + (le ? 1 : 0);
+            right = right + 1;
+        }
+        boolean le2 = !(pivot < gapValue);
+        int32 left2 = s + numLt;
+        a[gapPos] = a[left2];
+        a[left2] = gapValue;
+        numLt = numLt + (le2 ? 1 : 0);
+        return numLt;
+    }
+
+    // Partition a[begin..end) around the pivot at index `pivotIdx` by `<`.
+    // Moves the pivot to begin, lomcyc-partitions a[begin+1..end), then places
+    // the pivot at begin+numLt. Returns numLt: afterwards a[begin..begin+numLt)
+    // < pivot, a[begin+numLt] == pivot, a[begin+numLt+1..end) >= pivot.
+    public static int32 pdqPartitionLt<T>(T[] a, int32 begin, int32 end, int32 pivotIdx) {
+        pdqSwap<T>(a, begin, pivotIdx);
+        T pivot = a[begin];
+        int32 numLt = pdqLomCycLt<T>(a, begin + 1, end, pivot);
+        pdqSwap<T>(a, begin, begin + numLt);
+        return numLt;
+    }
+
+    // As pdqPartitionLt but by `<=` (equal keys go left of the pivot).
+    public static int32 pdqPartitionLe<T>(T[] a, int32 begin, int32 end, int32 pivotIdx) {
+        pdqSwap<T>(a, begin, pivotIdx);
+        T pivot = a[begin];
+        int32 numLt = pdqLomCycLe<T>(a, begin + 1, end, pivot);
+        pdqSwap<T>(a, begin, begin + numLt);
+        return numLt;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Vectorized (AVX-512) partition — the vqsort / x86-simd-sort core. These
+    // are CONCRETE int64 (not generic): cajeta type-checks a generic body with
+    // `T` abstract, and `Vector<T,8>` demands a concrete numeric primitive at
+    // that point — so the SIMD path can't be templated. int64 is the type whose
+    // random-input sort still trailed Rust; float64 already wins on the scalar
+    // path, so it stays there. The lane count is 8 (a 512-bit zmm).
+    // ─────────────────────────────────────────────────────────────────────
+
+    // Partition one 8-lane register `cur` into the hole [l, r): the `< pivot`
+    // lanes compress-store at a[l..], the `>= pivot` lanes compress-store ending
+    // at a[r). The two stores fill exactly 8 disjoint slots (Blacher's in-place
+    // scheme). Returns the count that went right (>= pivot). One `vpcompressq`
+    // per side replaces 8 scalar compare-and-place steps.
+    public static int32 vqPartitionVecI64(int64[] a, int32 l, int32 r,
+            Vector<int64,8> cur, int64 pivot) {
+        int32 countLt = cur.compressStore(a[l], (cur < pivot));
+        int32 countGe = 8 - countLt;
+        // Skip the right store when no lane goes right: its base a[r-countGe]
+        // would be a[r], which at the top level is a[n] — a valid one-past-end
+        // cursor for the (empty) masked store, but cajeta bounds-checks the
+        // lvalue. The guard is one predictable branch per 8 elements.
+        if (countGe > 0) {
+            cur.compressStore(a[r - countGe], (cur >= pivot));
+        }
+        return countGe;
+    }
+
+    // Vectorized in-place partition of a[s..e) by `< pivot` (Blacher et al.,
+    // "Fast and Robust Vectorized In-Place Sorting", as in x86-simd-sort). Drop-
+    // in for pdqLomCycLt: returns numLt with a[s..s+numLt) < pivot and
+    // a[s+numLt..e) >= pivot. Both end-blocks are read into registers up front;
+    // each step reads from whichever side has more consumed headroom, so the two
+    // compress-stores never clobber unread input. Falls back to the scalar
+    // lomcyc partition below the vector break-even length.
+    public static int32 vqLomCycLtI64(int64[] a, int32 s, int32 e, int64 pivot) {
+        int32 len = e - s;
+        if (len < 128) {
+            return pdqLomCycLt<int64>(a, s, e, pivot);
+        }
+        int32 left = s;
+        int32 right = e;
+        // Peel the front remainder so (right - left) is a multiple of 8,
+        // partitioning each peeled element into the < / >= regions in place.
+        int32 rem = (right - left) % 8;
+        while (rem > 0) {
+            if (!(a[left] < pivot)) {
+                right = right - 1;
+                int64 t = a[left];
+                a[left] = a[right];
+                a[right] = t;
+            } else {
+                left = left + 1;
+            }
+            rem = rem - 1;
+        }
+        if (left == right) {
+            return left - s;
+        }
+        // Hold both ends in registers; the loop reuses their memory as the hole.
+        Vector<int64,8> vecL = a.vload<8>(left);
+        Vector<int64,8> vecR = a.vload<8>(right - 8);
+        int32 lStore = left;
+        int32 rStore = right - 8;
+        int32 readL = left + 8;
+        int32 readR = right - 8;
+        while (readL != readR) {
+            int32 src;
+            // Read from the side with less remaining hole, so the store cursor
+            // never overtakes the read cursor.
+            if (((rStore + 8) - readR) < (readL - lStore)) {
+                readR = readR - 8;
+                src = readR;
+            } else {
+                src = readL;
+                readL = readL + 8;
+            }
+            Vector<int64,8> cur = a.vload<8>(src);
+            int32 countGe = vqPartitionVecI64(a, lStore, rStore + 8, cur, pivot);
+            rStore = rStore - countGe;
+            lStore = lStore + (8 - countGe);
+        }
+        // Drain the two held end-blocks into the final hole.
+        int32 cGeL = vqPartitionVecI64(a, lStore, rStore + 8, vecL, pivot);
+        lStore = lStore + (8 - cGeL);
+        rStore = rStore - cGeL;
+        int32 cGeR = vqPartitionVecI64(a, lStore, rStore + 8, vecR, pivot);
+        lStore = lStore + (8 - cGeR);
+        return lStore - s;
+    }
+
+    // Vectorized analogue of pdqPartitionLt: move the pivot to a[begin],
+    // vector-partition a[begin+1..end), restore the pivot at a[begin+numLt].
+    public static int32 vqPartitionLtI64(int64[] a, int32 begin, int32 end,
+            int32 pivotIdx) {
+        pdqSwap<int64>(a, begin, pivotIdx);
+        int64 pivot = a[begin];
+        int32 numLt = vqLomCycLtI64(a, begin + 1, end, pivot);
+        pdqSwap<int64>(a, begin, begin + numLt);
+        return numLt;
+    }
+
+    // Branchless compare-exchange: order a[base+i] <= a[base+j] with two selects
+    // (a cmov pair) — the building block of the small-sort networks.
+    public static void pdqSwapIfLess<T>(T[] a, int32 base, int32 i, int32 j) {
+        int32 ai = base + i;
+        int32 aj = base + j;
+        T va = a[ai];
+        T vb = a[aj];
+        boolean lt = vb < va;
+        a[ai] = lt ? vb : va;
+        a[aj] = lt ? va : vb;
+    }
+
+    // Optimal 9-element sorting network (Bert Dobbelaere). Sorts a[base..base+9).
+    public static void pdqSort9<T>(T[] a, int32 base) {
+        pdqSwapIfLess<T>(a, base, 0, 3);
+        pdqSwapIfLess<T>(a, base, 1, 7);
+        pdqSwapIfLess<T>(a, base, 2, 5);
+        pdqSwapIfLess<T>(a, base, 4, 8);
+        pdqSwapIfLess<T>(a, base, 0, 7);
+        pdqSwapIfLess<T>(a, base, 2, 4);
+        pdqSwapIfLess<T>(a, base, 3, 8);
+        pdqSwapIfLess<T>(a, base, 5, 6);
+        pdqSwapIfLess<T>(a, base, 0, 2);
+        pdqSwapIfLess<T>(a, base, 1, 3);
+        pdqSwapIfLess<T>(a, base, 4, 5);
+        pdqSwapIfLess<T>(a, base, 7, 8);
+        pdqSwapIfLess<T>(a, base, 1, 4);
+        pdqSwapIfLess<T>(a, base, 3, 6);
+        pdqSwapIfLess<T>(a, base, 5, 7);
+        pdqSwapIfLess<T>(a, base, 0, 1);
+        pdqSwapIfLess<T>(a, base, 2, 4);
+        pdqSwapIfLess<T>(a, base, 3, 5);
+        pdqSwapIfLess<T>(a, base, 6, 8);
+        pdqSwapIfLess<T>(a, base, 2, 3);
+        pdqSwapIfLess<T>(a, base, 4, 5);
+        pdqSwapIfLess<T>(a, base, 6, 7);
+        pdqSwapIfLess<T>(a, base, 1, 2);
+        pdqSwapIfLess<T>(a, base, 3, 4);
+        pdqSwapIfLess<T>(a, base, 5, 6);
+    }
+
+    // Optimal 13-element sorting network (Bert Dobbelaere). Sorts a[base..base+13).
+    public static void pdqSort13<T>(T[] a, int32 base) {
+        pdqSwapIfLess<T>(a, base, 0, 12);
+        pdqSwapIfLess<T>(a, base, 1, 10);
+        pdqSwapIfLess<T>(a, base, 2, 9);
+        pdqSwapIfLess<T>(a, base, 3, 7);
+        pdqSwapIfLess<T>(a, base, 5, 11);
+        pdqSwapIfLess<T>(a, base, 6, 8);
+        pdqSwapIfLess<T>(a, base, 1, 6);
+        pdqSwapIfLess<T>(a, base, 2, 3);
+        pdqSwapIfLess<T>(a, base, 4, 11);
+        pdqSwapIfLess<T>(a, base, 7, 9);
+        pdqSwapIfLess<T>(a, base, 8, 10);
+        pdqSwapIfLess<T>(a, base, 0, 4);
+        pdqSwapIfLess<T>(a, base, 1, 2);
+        pdqSwapIfLess<T>(a, base, 3, 6);
+        pdqSwapIfLess<T>(a, base, 7, 8);
+        pdqSwapIfLess<T>(a, base, 9, 10);
+        pdqSwapIfLess<T>(a, base, 11, 12);
+        pdqSwapIfLess<T>(a, base, 4, 6);
+        pdqSwapIfLess<T>(a, base, 5, 9);
+        pdqSwapIfLess<T>(a, base, 8, 11);
+        pdqSwapIfLess<T>(a, base, 10, 12);
+        pdqSwapIfLess<T>(a, base, 0, 5);
+        pdqSwapIfLess<T>(a, base, 3, 8);
+        pdqSwapIfLess<T>(a, base, 4, 7);
+        pdqSwapIfLess<T>(a, base, 6, 11);
+        pdqSwapIfLess<T>(a, base, 9, 10);
+        pdqSwapIfLess<T>(a, base, 0, 1);
+        pdqSwapIfLess<T>(a, base, 2, 5);
+        pdqSwapIfLess<T>(a, base, 6, 9);
+        pdqSwapIfLess<T>(a, base, 7, 8);
+        pdqSwapIfLess<T>(a, base, 10, 11);
+        pdqSwapIfLess<T>(a, base, 1, 3);
+        pdqSwapIfLess<T>(a, base, 2, 4);
+        pdqSwapIfLess<T>(a, base, 5, 6);
+        pdqSwapIfLess<T>(a, base, 9, 10);
+        pdqSwapIfLess<T>(a, base, 1, 2);
+        pdqSwapIfLess<T>(a, base, 3, 4);
+        pdqSwapIfLess<T>(a, base, 5, 7);
+        pdqSwapIfLess<T>(a, base, 6, 8);
+        pdqSwapIfLess<T>(a, base, 2, 3);
+        pdqSwapIfLess<T>(a, base, 4, 5);
+        pdqSwapIfLess<T>(a, base, 6, 7);
+        pdqSwapIfLess<T>(a, base, 8, 9);
+        pdqSwapIfLess<T>(a, base, 3, 4);
+        pdqSwapIfLess<T>(a, base, 5, 6);
+    }
+
+    // Optimal branchless network on a sorted-prefix, then shift-left insertion
+    // for the tail — the no-merge leaf, for a[s..e) with (e-s) < 18.
+    public static void pdqNetInsertion<T>(T[] a, int32 s, int32 e) {
+        int32 len = e - s;
+        if (len < 2) {
+            return;
+        }
+        int32 presorted;
+        if (len >= 13) {
+            pdqSort13<T>(a, s);
+            presorted = 13;
+        } else if (len >= 9) {
+            pdqSort9<T>(a, s);
+            presorted = 9;
+        } else {
+            presorted = 1;
+        }
+        int32 i = s + presorted;
+        while (i < e) {
+            if (a[i] < a[i - 1]) {
+                T tmp = a[i];
+                int32 sift = i;
+                boolean go = true;
+                while (go) {
+                    a[sift] = a[sift - 1];
+                    sift = sift - 1;
+                    if (sift == s) {
+                        go = false;
+                    } else if (!(tmp < a[sift - 1])) {
+                        go = false;
+                    }
+                }
+                a[sift] = tmp;
+            }
+            i = i + 1;
+        }
+    }
+
+    // Branchless bidirectional merge (Igor van den Hoven / quadsort, as in
+    // ipnsort) of the two sorted halves a[begin..begin+h) and a[begin+h..begin+len)
+    // (h = len/2) through `scratch`, copied back to a. merge_up fills the front
+    // smallest-first, merge_down fills the back largest-first; they meet in the
+    // middle — 2 writes per iteration, every comparison branchless.
+    public static void pdqBiMerge<T>(T[] a, int32 begin, int32 len, T[] scratch) {
+        int32 h = len / 2;
+        int32 left = begin;
+        int32 right = begin + h;
+        int32 dst = 0;
+        int32 leftRev = begin + h - 1;
+        int32 rightRev = begin + len - 1;
+        int32 dstRev = len - 1;
+        int32 i = 0;
+        while (i < h) {
+            boolean isU = !(a[right] < a[left]);
+            scratch[dst] = isU ? a[left] : a[right];
+            right = right + (isU ? 0 : 1);
+            left = left + (isU ? 1 : 0);
+            dst = dst + 1;
+            boolean isD = !(a[rightRev] < a[leftRev]);
+            scratch[dstRev] = isD ? a[rightRev] : a[leftRev];
+            rightRev = rightRev - (isD ? 1 : 0);
+            leftRev = leftRev - (isD ? 0 : 1);
+            dstRev = dstRev - 1;
+            i = i + 1;
+        }
+        if ((len % 2) != 0) {
+            boolean leftNonempty = left < (leftRev + 1);
+            scratch[dst] = leftNonempty ? a[left] : a[right];
+        }
+        int32 k = 0;
+        while (k < len) {
+            a[begin + k] = scratch[k];
+            k = k + 1;
+        }
+    }
+
+    // ipnsort small_sort_network: the branchless quicksort leaves. len < 18 →
+    // one network+insertion pass; 18..32 → sort the two halves and
+    // bidirectional-merge. `scratch` is caller-owned, length >= 32. Branchless
+    // leaves are where ipnsort pulls ahead of pdqsort's insertion-sort leaves.
+    public static void pdqSmallSortNet<T>(T[] a, int32 begin, int32 end, T[] scratch) {
+        int32 len = end - begin;
+        if (len < 2) {
+            return;
+        }
+        if (len < 18) {
+            pdqNetInsertion<T>(a, begin, end);
+        } else {
+            int32 h = len / 2;
+            pdqNetInsertion<T>(a, begin, begin + h);
+            pdqNetInsertion<T>(a, begin + h, end);
+            pdqBiMerge<T>(a, begin, len, scratch);
+        }
+    }
+
+    // The ipnsort quicksort driver over a[begin0..end0). Non-recursive: an
+    // explicit work stack holds deferred partitions, and at each split we
+    // *continue* the larger side and *push* the smaller — bounding the stack to
+    // O(log n) frames (and dodging the JIT's self-recursive-generic instantiation
+    // hang). `limit` counts partitions down to the heapsort fallback (O(n log n)
+    // worst case). Instead of pdqsort's `leftmost`, ipnsort threads an
+    // `ancestor` (the predecessor pivot): when the chosen pivot is not greater
+    // than its ancestor it is the smallest element, so we partition by `<=`
+    // (equal keys left) and skip them — the duplicate-key fast path.
+    public static void pdqRun<T>(T[] a, int32 begin0, int32 end0, int32 limit0,
+            int32[] stB, int32[] stE, int32[] stLim, int32[] stHasAnc, T[] stAnc,
+            T[] scratch) {
+        int32 sp = 0;
+        int32 begin = begin0;
+        int32 end = end0;
+        int32 limit = limit0;
+        boolean hasAnc = false;
+        T anc = a[begin0];
+        boolean run = true;
+        while (run) {
+            boolean popNext = false;
+            int32 len = end - begin;
+            if (len <= 32) {
+                pdqSmallSortNet<T>(a, begin, end, scratch);
+                popNext = true;
+            } else if (limit == 0) {
+                pdqHeapSort<T>(a, begin, end);
+                popNext = true;
+            } else {
+                limit = limit - 1;
+                int32 pivotRel = pdqChoosePivot<T>(a, begin, end);
+                int32 pivotIdx = begin + pivotRel;
+                boolean didLe = false;
+                if (hasAnc) {
+                    // Pivot not greater than ancestor => smallest element here.
+                    if (!(anc < a[pivotIdx])) {
+                        int32 numLe = pdqPartitionLe<T>(a, begin, end, pivotIdx);
+                        begin = begin + numLe + 1;
+                        hasAnc = false;
+                        didLe = true;
+                    }
+                }
+                if (!didLe) {
+                    int32 numLt = pdqPartitionLt<T>(a, begin, end, pivotIdx);
+                    int32 pIdx = begin + numLt;
+                    T pivotVal = a[pIdx];
+                    int32 lb = begin;
+                    int32 le = pIdx;
+                    int32 rb = pIdx + 1;
+                    int32 re = end;
+                    // Continue the larger side, push the smaller. Left keeps the
+                    // current ancestor; right's ancestor is the pivot just placed.
+                    if ((le - lb) > (re - rb)) {
+                        stB[sp] = rb;
+                        stE[sp] = re;
+                        stLim[sp] = limit;
+                        stHasAnc[sp] = 1;
+                        stAnc[sp] = pivotVal;
+                        sp = sp + 1;
+                        end = le;
+                    } else {
+                        stB[sp] = lb;
+                        stE[sp] = le;
+                        stLim[sp] = limit;
+                        stHasAnc[sp] = hasAnc ? 1 : 0;
+                        stAnc[sp] = anc;
+                        sp = sp + 1;
+                        begin = rb;
+                        anc = pivotVal;
+                        hasAnc = true;
+                    }
+                }
+            }
+            if (popNext) {
+                if (sp == 0) {
+                    run = false;
+                } else {
+                    sp = sp - 1;
+                    begin = stB[sp];
+                    end = stE[sp];
+                    limit = stLim[sp];
+                    hasAnc = stHasAnc[sp] == 1;
+                    anc = stAnc[sp];
+                }
+            }
+        }
+    }
+
+    // Natural-order unstable sort (numpy `kind='quicksort'`): ipnsort — a
+    // pattern-defeating quicksort with a branchless lomcyc partition. See the
+    // helper block above.
+    public static void sort<T>(T[] a, int32 n) {
+        if (n < 2) {
+            return;
+        }
+        // Already-sorted (or reverse-sorted) fast path.
+        int32 runLen = pdqFindRun<T>(a, n);
+        if (runLen == n) {
+            return;
+        }
+        // limit = 2 * floor(log2(n | 1)) imbalanced partitions before heapsort.
+        int32 limit = 0;
+        int32 m = n | 1;
+        while (m > 1) {
+            m = m >> 1;
+            limit = limit + 1;
+        }
+        limit = limit * 2;
+        int32[] stB = heap int32[64];
+        int32[] stE = heap int32[64];
+        int32[] stLim = heap int32[64];
+        int32[] stHasAnc = heap int32[64];
+        T[] stAnc = heap T[64];
+        T[] scratch = heap T[32];
+        pdqRun<T>(a, 0, n, limit, stB, stE, stLim, stHasAnc, stAnc, scratch);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Vectorized int64 unstable sort driver. Identical to the scalar pdqRun but
+    // the large-block `< pivot` partition uses the AVX-512 vqPartitionLtI64
+    // (vpcompressq). Concrete int64 (the SIMD partition can't be templated); the
+    // generic scalar `sort<T>` and class-typed sorts are untouched. The dup-key
+    // path keeps the scalar `<=` partition (already best-in-class on dups).
+    // ─────────────────────────────────────────────────────────────────────
+    public static void vqRunI64(int64[] a, int32 begin0, int32 end0, int32 limit0,
+            int32[] stB, int32[] stE, int32[] stLim, int32[] stHasAnc,
+            int64[] stAnc, int64[] scratch) {
+        int32 sp = 0;
+        int32 begin = begin0;
+        int32 end = end0;
+        int32 limit = limit0;
+        boolean hasAnc = false;
+        int64 anc = a[begin0];
+        boolean run = true;
+        while (run) {
+            boolean popNext = false;
+            int32 len = end - begin;
+            if (len <= 32) {
+                pdqSmallSortNet<int64>(a, begin, end, scratch);
+                popNext = true;
+            } else if (limit == 0) {
+                pdqHeapSort<int64>(a, begin, end);
+                popNext = true;
+            } else {
+                limit = limit - 1;
+                int32 pivotRel = pdqChoosePivot<int64>(a, begin, end);
+                int32 pivotIdx = begin + pivotRel;
+                boolean didLe = false;
+                if (hasAnc) {
+                    if (!(anc < a[pivotIdx])) {
+                        int32 numLe = pdqPartitionLe<int64>(a, begin, end, pivotIdx);
+                        begin = begin + numLe + 1;
+                        hasAnc = false;
+                        didLe = true;
+                    }
+                }
+                if (!didLe) {
+                    int32 numLt = vqPartitionLtI64(a, begin, end, pivotIdx);
+                    int32 pIdx = begin + numLt;
+                    int64 pivotVal = a[pIdx];
+                    int32 lb = begin;
+                    int32 le = pIdx;
+                    int32 rb = pIdx + 1;
+                    int32 re = end;
+                    if ((le - lb) > (re - rb)) {
+                        stB[sp] = rb;
+                        stE[sp] = re;
+                        stLim[sp] = limit;
+                        stHasAnc[sp] = 1;
+                        stAnc[sp] = pivotVal;
+                        sp = sp + 1;
+                        end = le;
+                    } else {
+                        stB[sp] = lb;
+                        stE[sp] = le;
+                        stLim[sp] = limit;
+                        stHasAnc[sp] = hasAnc ? 1 : 0;
+                        stAnc[sp] = anc;
+                        sp = sp + 1;
+                        begin = rb;
+                        anc = pivotVal;
+                        hasAnc = true;
+                    }
+                }
+            }
+            if (popNext) {
+                if (sp == 0) {
+                    run = false;
+                } else {
+                    sp = sp - 1;
+                    begin = stB[sp];
+                    end = stE[sp];
+                    limit = stLim[sp];
+                    hasAnc = stHasAnc[sp] == 1;
+                    anc = stAnc[sp];
+                }
+            }
+        }
+    }
+
+    // Concrete int64 unstable sort — the AVX-512 vqsort fast path. Wins overload
+    // resolution over the generic `sort<T>` for a bare `Sort.sort(arr, n)` call
+    // (concrete beats template), so int64 callers get the vectorized partition
+    // automatically; every other element type falls through to the scalar
+    // generic. (An explicit `Sort.sort<int64>(...)` still selects the template —
+    // call without type args to opt into the vector path.)
+    public static void sort(int64[] a, int32 n) {
+        if (n < 2) {
+            return;
+        }
+        int32 runLen = pdqFindRun<int64>(a, n);
+        if (runLen == n) {
+            return;
+        }
+        int32 limit = 0;
+        int32 m = n | 1;
+        while (m > 1) {
+            m = m >> 1;
+            limit = limit + 1;
+        }
+        limit = limit * 2;
+        int32[] stB = heap int32[64];
+        int32[] stE = heap int32[64];
+        int32[] stLim = heap int32[64];
+        int32[] stHasAnc = heap int32[64];
+        int64[] stAnc = heap int64[64];
+        int64[] scratch = heap int64[32];
+        vqRunI64(a, 0, n, limit, stB, stE, stLim, stHasAnc, stAnc, scratch);
     }
 
     public static void sortStable<T>(T[] a, int32 n) {
