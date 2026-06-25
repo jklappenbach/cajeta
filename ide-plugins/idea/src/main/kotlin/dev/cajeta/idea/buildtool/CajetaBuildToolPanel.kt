@@ -89,8 +89,30 @@ class CajetaBuildToolPanel(private val project: Project) : SimpleToolWindowPanel
             JComponent.WHEN_FOCUSED,
         )
         setContent(JBScrollPane(tree))
-        toolbar = buildToolbar().component
+        setToolbar(buildToolbarComponent())
         reload()
+    }
+
+    /** Toolbar (actions) + an active profile/flavor selector (spec §12.1) that
+     *  edits the defaults double-click runs use, so changing them retargets
+     *  subsequent runs. */
+    private fun buildToolbarComponent(): JComponent {
+        val profileSelector = javax.swing.JTextField(CajetaSettings.instance.defaultProfile, 8).apply {
+            toolTipText = "Active --profile for runs"
+            addActionListener { CajetaSettings.instance.defaultProfile = text.trim() }
+        }
+        val flavorSelector = javax.swing.JTextField(CajetaSettings.instance.defaultFlavor, 8).apply {
+            toolTipText = "Active flavor (--release/--debug/--fast or a name)"
+            addActionListener { CajetaSettings.instance.defaultFlavor = text.trim() }
+        }
+        val selectors = javax.swing.JPanel().apply {
+            add(javax.swing.JLabel("Profile:")); add(profileSelector)
+            add(javax.swing.JLabel("Flavor:")); add(flavorSelector)
+        }
+        return javax.swing.JPanel(java.awt.BorderLayout()).apply {
+            add(buildToolbar().component, java.awt.BorderLayout.WEST)
+            add(selectors, java.awt.BorderLayout.EAST)
+        }
     }
 
     /** Current toolbar enable/disable + grouping state (spec §9), computed from
@@ -216,6 +238,19 @@ class CajetaBuildToolPanel(private val project: Project) : SimpleToolWindowPanel
         CajetaTaskLauncher.debug(project, manifest, model, node)
     }
 
+    /** Open the Run-with-args dialog for the task and run it with the result
+     *  (spec §12.2). */
+    private fun runWithArgs(node: TaskTreeNode) {
+        val model = lastModel ?: return
+        val task = model.tasks.firstOrNull { it.name == node.runName } ?: return
+        val manifest = CajetaManifest.path(project)
+        val dialog = RunWithArgsDialog(
+            project, task, manifest,
+            CajetaSettings.instance.defaultProfile, CajetaSettings.instance.defaultFlavor,
+        )
+        if (dialog.showAndGet()) CajetaTaskLauncher.launchWithSpec(project, dialog.result())
+    }
+
     /** Whether the selected node maps to a dap-debuggable task (§5.2.2). */
     private fun isDebuggable(node: TaskTreeNode): Boolean {
         if (node.kind != TaskTreeNode.Kind.TASK) return false
@@ -238,6 +273,9 @@ class CajetaBuildToolPanel(private val project: Project) : SimpleToolWindowPanel
         val node = selectedTask() ?: return
         JPopupMenu().apply {
             add(JMenuItem("Run").apply { addActionListener { runSelected() } })
+            if (node.kind == TaskTreeNode.Kind.TASK) {
+                add(JMenuItem("Run with Arguments…").apply { addActionListener { runWithArgs(node) } })
+            }
             if (isDebuggable(node)) {
                 add(JMenuItem("Debug").apply { addActionListener { debugSelected(node) } })
             }

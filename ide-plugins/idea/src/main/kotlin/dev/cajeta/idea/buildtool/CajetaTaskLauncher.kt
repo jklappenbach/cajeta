@@ -25,6 +25,23 @@ object CajetaTaskLauncher {
         ProgramRunnerUtil.executeConfiguration(settings, DefaultRunExecutor.getRunExecutorInstance())
     }
 
+    /** Run a task with an explicit [TaskRunSpec] from the Run-with-args dialog
+     *  (spec §12): the profile/flavor/properties/params override the defaults. */
+    fun launchWithSpec(project: Project, spec: TaskRunSpec) {
+        val type = ConfigurationTypeUtil.findConfigurationType(CajetaTaskConfigurationType::class.java)
+            ?: return
+        val runManager = RunManager.getInstance(project)
+        val settings = runManager.createConfiguration("cajeta ${spec.task}", type.configurationFactories[0])
+        val config = settings.configuration as CajetaTaskRunConfiguration
+        config.task = spec.task
+        config.manifestPath = spec.manifestPath ?: ""
+        config.profile = spec.profile ?: ""
+        config.flavor = spec.flavor ?: ""
+        config.propertiesText = KvText.format(spec.properties)
+        config.paramsText = KvText.format(spec.params)
+        ProgramRunnerUtil.executeConfiguration(settings, DefaultRunExecutor.getRunExecutorInstance())
+    }
+
     /**
      * Debug the task under the existing `cajeta dap` path (spec §5.2.2). The
      * [model] supplies the project's debug-launch coordinates; a task that
