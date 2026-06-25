@@ -683,7 +683,7 @@ TEST(NumpyOpsTests, scalarCategoryBump) {
 // routes on placement — both operands on-device → the float32 GPU @Kernel; host
 // operands → the CPU loop — and the two paths agree (the cross-check). Proven over
 // the full arithmetic family (add/sub/mul/div) against a host oracle. Values chosen
-// so every op is exact in float32, so agreement is bit-exact. Runs on the cajeta.gpu
+// so every op is exact in float32, so agreement is bit-exact. Runs on the cajeta.xpu
 // CPU backend in-process (no GPU required); on-device validation rides device gates.
 TEST(NumpyOpsTests, elementwiseCpuGpuAgree) {
     std::string src =
@@ -956,7 +956,7 @@ TEST(NumpyOpsTests, scansMatchNumpy) {
 // 4c — reductionsCpuGpuAgree: the stdlib GPU reduction (Ewise.sumF32, atomic
 // parallel sum) routes on placement — on-device → atomicAdd reduction; host → CPU
 // loop — and the two agree, and agree with the generic CPU Tensor.sum. Integer-
-// valued floats (sum 36 < 2^24) → exact regardless of atomic order. cajeta.gpu CPU
+// valued floats (sum 36 < 2^24) → exact regardless of atomic order. cajeta.xpu CPU
 // backend in-process (no GPU required).
 TEST(NumpyOpsTests, reductionsCpuGpuAgree) {
     std::string src =
@@ -1188,7 +1188,7 @@ TEST(NumpyOpsTests, compressChooseMaskMatchNumpy) {
 
 // 5b/5c — gatherCpuGpuAgree: the stdlib GPU gather (Ewise.takeF32) routes on
 // placement — on-device → the gatherF32 kernel (out[i]=in[idx[i]]); host → CPU
-// loop — and the two agree. cajeta.gpu CPU backend in-process (no GPU required).
+// loop — and the two agree. cajeta.xpu CPU backend in-process (no GPU required).
 TEST(NumpyOpsTests, gatherCpuGpuAgree) {
     std::string src =
         "package test;\n"

@@ -1,6 +1,6 @@
 //
 // GfxRenderGraphTests — cajeta-gfx plan §5 (slice 1): the minimal render-graph's
-// DEPENDENCY + HAZARD policy (cajeta.gpu.gfx.RenderGraph).
+// DEPENDENCY + HAZARD policy (cajeta.gfx.RenderGraph).
 //
 // A render graph is opinion-free: passes declare the resources they read and
 // write, and the graph derives (a) the dependencies / a correct execution order
@@ -44,7 +44,7 @@ int32_t runI32(const std::string& imports, const std::string& body) {
     return fn();
 }
 
-const char* IMP = "import cajeta.gpu.gfx.RenderGraph;\n";
+const char* IMP = "import cajeta.gfx.RenderGraph;\n";
 
 } // namespace
 

@@ -5,7 +5,7 @@ import cajeta.math.Matrix;
 /**
  * Qem — the Garland–Heckbert quadric error metric, the math core of the
  * appearance-preserving edge-collapse mesh simplifier (cajeta-gfx plan §2.a).
- * Promoted to `cajeta.gpu` because compute, physics, and graphics all consume it
+ * Promoted to `cajeta.xpu` because compute, physics, and graphics all consume it
  * (spec §8.7).
  *
  * A quadric IS a `Matrix<float32,4,4>`: the symmetric fundamental error quadric

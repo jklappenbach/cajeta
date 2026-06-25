@@ -1,4 +1,4 @@
-package cajeta.gpu;
+package cajeta.gfx;
 
 /**
  * Texture2D — a read-only 2-D image of float32 texels, sampled in a kernel

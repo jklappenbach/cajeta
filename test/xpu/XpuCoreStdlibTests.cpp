@@ -1,7 +1,7 @@
 //
 // Step 2 — xpu.core Cajeta stdlib declarations.
 //
-// Verifies that the cajeta.gpu stdlib package (KernelStream, Event,
+// Verifies that the cajeta.xpu stdlib package (KernelStream, Event,
 // Fence, KernelBuffer<T>, address-space markers, capability traits, KernelThread/
 // Workgroup/Barrier/Wave builtins, KernelArg, KernelError) is parsed
 // into the compiler's structure table by the embedded-stdlib pass,

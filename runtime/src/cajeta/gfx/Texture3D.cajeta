@@ -1,4 +1,4 @@
-package cajeta.gpu;
+package cajeta.gfx;
 
 /**
  * Texture3D — a read-only 3-D (volumetric) image of texels, sampled in a kernel

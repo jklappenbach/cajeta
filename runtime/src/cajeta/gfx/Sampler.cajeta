@@ -1,4 +1,4 @@
-package cajeta.gpu;
+package cajeta.gfx;
 
 /**
  * Sampler — filtering + addressing configuration for {@link Texture2D.sample}.

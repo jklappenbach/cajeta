@@ -222,10 +222,10 @@ namespace cajeta {
             // deviceHandle (the runtime texture-object pointer / image handle)
             // flows through the kernelParams slot, and the launch borrows it.
             bool isTexture = klass &&
-                (klass->toCanonical().rfind("cajeta.gpu.Texture2D", 0) == 0 ||
-                 klass->toCanonical().rfind("cajeta.gpu.Texture3D", 0) == 0 ||
-                 klass->toCanonical().rfind("cajeta.gpu.Texture1D", 0) == 0 ||
-                 klass->toCanonical().rfind("cajeta.gpu.TextureCube", 0) == 0);
+                (klass->toCanonical().rfind("cajeta.gfx.Texture2D", 0) == 0 ||
+                 klass->toCanonical().rfind("cajeta.gfx.Texture3D", 0) == 0 ||
+                 klass->toCanonical().rfind("cajeta.gfx.Texture1D", 0) == 0 ||
+                 klass->toCanonical().rfind("cajeta.gfx.TextureCube", 0) == 0);
             // NB: the Texture2D prefix above already matches Texture2DArray.
             // AccelerationStructure (Part C): a descriptor-bound device BVH. It
             // marshals via the POD-by-value path below (its deviceHandle is the

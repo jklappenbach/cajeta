@@ -1,4 +1,4 @@
-package cajeta.gpu.gfx;
+package cajeta.gfx;
 
 /**
  * RenderGraph — the minimal, opinion-free render-graph DEPENDENCY + HAZARD policy

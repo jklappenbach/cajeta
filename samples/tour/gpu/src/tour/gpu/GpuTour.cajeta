@@ -6,13 +6,13 @@ import cajeta.xpu.KernelThread;
 import cajeta.xpu.Wave;
 import cajeta.xpu.Quad;
 import cajeta.xpu.Bits;
-import cajeta.gpu.Texture2D;
-import cajeta.gpu.Texture1D;
-import cajeta.gpu.Texture3D;
-import cajeta.gpu.Texture2DArray;
-import cajeta.gpu.TextureCube;
-import cajeta.gpu.Sampler;
-import cajeta.gpu.TextureFormat;
+import cajeta.gfx.Texture2D;
+import cajeta.gfx.Texture1D;
+import cajeta.gfx.Texture3D;
+import cajeta.gfx.Texture2DArray;
+import cajeta.gfx.TextureCube;
+import cajeta.gfx.Sampler;
+import cajeta.gfx.TextureFormat;
 import cajeta.lang.Math;
 
 // Cajeta GPU tour — portable @Kernel programs run through the runtime

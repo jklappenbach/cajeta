@@ -1,4 +1,4 @@
-package cajeta.gpu;
+package cajeta.gfx;
 
 /**
  * TextureCube — a cube map: six square faces (+X, −X, +Y, −Y, +Z, −Z) forming a

@@ -1,4 +1,4 @@
-package cajeta.gpu.gfx;
+package cajeta.gfx;
 
 /**
  * PipelineConfig — the pure graphics-pipeline SELECTION POLICY a graphics
@@ -14,7 +14,7 @@ package cajeta.gpu.gfx;
  * live behind the device noun (§4.d-rest, validated on the device machine).
  *
  * ORDINALS ARE THE STABLE NATIVE CONTRACT (as for {@link SwapchainConfig} and
- * {@link cajeta.gpu.TextureFormat}): every value is the {@code VK_*} enum ordinal
+ * {@link cajeta.gfx.TextureFormat}): every value is the {@code VK_*} enum ordinal
  * the runtime consumes — blend factors are {@code VkBlendFactor}
  * (0 ZERO, 1 ONE, 6 SRC_ALPHA, 7 ONE_MINUS_SRC_ALPHA), compare ops are
  * {@code VkCompareOp} (3 LESS_OR_EQUAL, 6 GREATER_OR_EQUAL), cull modes are

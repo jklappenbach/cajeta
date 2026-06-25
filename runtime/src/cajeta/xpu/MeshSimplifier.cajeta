@@ -6,7 +6,7 @@ import cajeta.xpu.Qem;
 /**
  * MeshSimplifier — the appearance-preserving Garland–Heckbert edge-collapse
  * mesh simplifier (cajeta-gfx plan §2.a), built on {@link cajeta.xpu.Qem}.
- * Promoted to `cajeta.gpu` because physics, canela, and gfx all consume one
+ * Promoted to `cajeta.xpu` because physics, canela, and gfx all consume one
  * remeshing toolbox (spec §8.7).
  *
  * A mesh is an indexed triangle soup in the canonical vertex-buffer layout: a

@@ -7,7 +7,7 @@
 // static-utility class (like cajeta.math.Camera). Each test JITs a small program
 // returning 0 on success or a negative failure code, checked on ANALYTIC cases.
 //
-// cajeta.gpu is lazily parsed; importing cajeta.xpu.Qem triggers it.
+// cajeta.xpu is lazily parsed; importing cajeta.xpu.Qem triggers it.
 //
 
 #include <gtest/gtest.h>

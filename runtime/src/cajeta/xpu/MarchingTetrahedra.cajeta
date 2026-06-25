@@ -2,7 +2,7 @@ package cajeta.xpu;
 
 /**
  * MarchingTetrahedra — the isosurface extractor of the cajeta-gfx geometry
- * toolbox (plan §2.b), promoted to `cajeta.gpu` for shared use by physics /
+ * toolbox (plan §2.b), promoted to `cajeta.xpu` for shared use by physics /
  * canela / gfx (spec §8.7).
  *
  * Extracts a triangle mesh of the `iso` level set of a scalar field sampled on a

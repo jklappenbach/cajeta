@@ -1,4 +1,4 @@
-package cajeta.gpu;
+package cajeta.gfx;
 
 /**
  * Storage format of a {@link Texture2D}. Selects how texels are stored on the

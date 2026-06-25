@@ -1,4 +1,4 @@
-package cajeta.gpu;
+package cajeta.gfx;
 
 /**
  * Texture1D — a read-only 1-D image of texels, sampled in a kernel through a

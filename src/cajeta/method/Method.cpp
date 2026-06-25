@@ -2512,11 +2512,11 @@ namespace cajeta {
                 const string c = t->toCanonical();
                 bool isDeviceResource =
                     c.rfind("cajeta.xpu.KernelBuffer", 0) == 0 ||
-                    c.rfind("cajeta.gpu.Texture2D", 0) == 0 ||
-                    c.rfind("cajeta.gpu.Texture3D", 0) == 0 ||
-                    c.rfind("cajeta.gpu.Texture1D", 0) == 0 ||
-                    c.rfind("cajeta.gpu.Texture2DArray", 0) == 0 ||
-                    c.rfind("cajeta.gpu.TextureCube", 0) == 0 ||
+                    c.rfind("cajeta.gfx.Texture2D", 0) == 0 ||
+                    c.rfind("cajeta.gfx.Texture3D", 0) == 0 ||
+                    c.rfind("cajeta.gfx.Texture1D", 0) == 0 ||
+                    c.rfind("cajeta.gfx.Texture2DArray", 0) == 0 ||
+                    c.rfind("cajeta.gfx.TextureCube", 0) == 0 ||
                     c == "cajeta.xpu.AccelerationStructure";
                 if (!isDeviceResource) continue;
                 throw Exception(

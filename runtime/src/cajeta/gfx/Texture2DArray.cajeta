@@ -1,4 +1,4 @@
-package cajeta.gpu;
+package cajeta.gfx;
 
 /**
  * Texture2DArray — a stack of N independent 2-D images (layers) sharing one

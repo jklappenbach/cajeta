@@ -1,4 +1,4 @@
-package cajeta.gpu.gfx;
+package cajeta.gfx;
 
 /**
  * FrameSync — the pure FRAMES-IN-FLIGHT bookkeeping a {@link Swapchain} present

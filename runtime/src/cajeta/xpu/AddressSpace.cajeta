@@ -22,7 +22,7 @@ package cajeta.xpu;
  * v1 type bodies are empty markers; instantiation goes through
  * the launch-site lowering, never user code directly. Step 5
  * wires the compiler-side recognition; this file just reserves
- * the type names in the cajeta.gpu namespace.
+ * the type names in the cajeta.xpu namespace.
  */
 
 public final class Global<T> { }

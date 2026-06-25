@@ -8,7 +8,7 @@
 // returning 0 on success or a negative failure code, checked on ANALYTIC plane
 // scans.
 //
-// cajeta.gpu is lazily parsed; importing it triggers the parse.
+// cajeta.xpu is lazily parsed; importing it triggers the parse.
 //
 
 #include <gtest/gtest.h>

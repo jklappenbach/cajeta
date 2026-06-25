@@ -31,11 +31,11 @@ bool isBufferInstantiation(const std::string& canonical) {
 }
 
 // Texture2D is now templated on its texel scalar — `Texture2D<T = float32>` —
-// so an instance's canonical is either the bare `cajeta.gpu.Texture2D`
-// (default-filled to `<float32>`) or `cajeta.gpu.Texture2D<...>`. Match the
+// so an instance's canonical is either the bare `cajeta.gfx.Texture2D`
+// (default-filled to `<float32>`) or `cajeta.gfx.Texture2D<...>`. Match the
 // prefix like Buffer. Sampler is NOT a template (exact match).
 bool isTextureCanonical(const std::string& canonical) {
-    static const std::string kPrefix = "cajeta.gpu.Texture2D";
+    static const std::string kPrefix = "cajeta.gfx.Texture2D";
     if (canonical.size() < kPrefix.size()) return false;
     if (canonical.compare(0, kPrefix.size(), kPrefix) != 0) return false;
     if (canonical.size() == kPrefix.size()) return true;
@@ -43,7 +43,7 @@ bool isTextureCanonical(const std::string& canonical) {
 }
 // Texture3D<T = float32> — the volumetric sibling; same prefix-match shape.
 bool isTexture3DCanonical(const std::string& canonical) {
-    static const std::string kPrefix = "cajeta.gpu.Texture3D";
+    static const std::string kPrefix = "cajeta.gfx.Texture3D";
     if (canonical.size() < kPrefix.size()) return false;
     if (canonical.compare(0, kPrefix.size(), kPrefix) != 0) return false;
     if (canonical.size() == kPrefix.size()) return true;
@@ -51,7 +51,7 @@ bool isTexture3DCanonical(const std::string& canonical) {
 }
 // Texture1D<T = float32> — the linear sibling; same prefix-match shape.
 bool isTexture1DCanonical(const std::string& canonical) {
-    static const std::string kPrefix = "cajeta.gpu.Texture1D";
+    static const std::string kPrefix = "cajeta.gfx.Texture1D";
     if (canonical.size() < kPrefix.size()) return false;
     if (canonical.compare(0, kPrefix.size(), kPrefix) != 0) return false;
     if (canonical.size() == kPrefix.size()) return true;
@@ -59,7 +59,7 @@ bool isTexture1DCanonical(const std::string& canonical) {
 }
 // Texture2DArray<T = float32> — the layered sibling (N 2-D planes); same shape.
 bool isTexture2DArrayCanonical(const std::string& canonical) {
-    static const std::string kPrefix = "cajeta.gpu.Texture2DArray";
+    static const std::string kPrefix = "cajeta.gfx.Texture2DArray";
     if (canonical.size() < kPrefix.size()) return false;
     if (canonical.compare(0, kPrefix.size(), kPrefix) != 0) return false;
     if (canonical.size() == kPrefix.size()) return true;
@@ -67,14 +67,14 @@ bool isTexture2DArrayCanonical(const std::string& canonical) {
 }
 // TextureCube<T = float32> — the cube-map sibling (6 faces, direction-sampled).
 bool isTextureCubeCanonical(const std::string& canonical) {
-    static const std::string kPrefix = "cajeta.gpu.TextureCube";
+    static const std::string kPrefix = "cajeta.gfx.TextureCube";
     if (canonical.size() < kPrefix.size()) return false;
     if (canonical.compare(0, kPrefix.size(), kPrefix) != 0) return false;
     if (canonical.size() == kPrefix.size()) return true;
     return canonical[kPrefix.size()] == '<';
 }
 bool isSamplerCanonical(const std::string& canonical) {
-    return canonical == "cajeta.gpu.Sampler";
+    return canonical == "cajeta.gfx.Sampler";
 }
 // Image2D (writable images) — the writable twin of Texture2D, matched by exact
 // canonical name (not a template). A 2-D float storage image, bound as a
@@ -273,8 +273,8 @@ void validateKernelParams(const MethodPtr& method) {
                 << (t ? t->toCanonical() : std::string("<unknown>"))
                 << "' which is not admissible as a kernel argument. "
                 << "Admissible types: primitives, "
-                << "cajeta.xpu.KernelBuffer<T>, cajeta.gpu.Texture2D, "
-                << "cajeta.xpu.Image2D, cajeta.gpu.Sampler, "
+                << "cajeta.xpu.KernelBuffer<T>, cajeta.gfx.Texture2D, "
+                << "cajeta.xpu.Image2D, cajeta.gfx.Sampler, "
                 << "cajeta.xpu.AccelerationStructure, POD structs (a class with "
                 << "only primitive fields and no inheritance), or any type "
                 << "that implements cajeta.xpu.KernelArg.";

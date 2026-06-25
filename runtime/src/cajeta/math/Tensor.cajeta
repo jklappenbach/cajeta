@@ -499,7 +499,7 @@ public class Tensor<T> {
 
     /**
      * The device buffer backing this tensor's storage (null until {@link #gpu}) —
-     * the handle an op's GPU path binds into a `cajeta.gpu` kernel launch. The
+     * the handle an op's GPU path binds into a `cajeta.xpu` kernel launch. The
      * host side of the op-dispatch seam.
      */
     public KernelBuffer<T> deviceBuffer() {

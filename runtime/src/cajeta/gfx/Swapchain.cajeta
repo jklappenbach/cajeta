@@ -1,4 +1,4 @@
-package cajeta.gpu.gfx;
+package cajeta.gfx;
 
 import cajeta.ifx.Surface;
 

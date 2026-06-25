@@ -8,7 +8,7 @@
 // or a negative failure code, checked on ANALYTIC fields (empties, a single
 // inside corner, and an SDF sphere whose vertices must lie on the surface).
 //
-// cajeta.gpu is lazily parsed; importing it triggers the parse.
+// cajeta.xpu is lazily parsed; importing it triggers the parse.
 //
 
 #include <gtest/gtest.h>

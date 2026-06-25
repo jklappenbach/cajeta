@@ -2,7 +2,7 @@
 // XpuLowDiscrepancyTests — cajeta-gfx plan §3 (slice 1): the low-discrepancy
 // sampling sequences (cajeta.xpu.LowDiscrepancy).
 //
-// §3 is the acceleration/sampling/residency FOUNDATION (cajeta.gpu, spec §8.7).
+// §3 is the acceleration/sampling/residency FOUNDATION (cajeta.xpu, spec §8.7).
 // Its sampling half rests on quasi-random low-discrepancy sequences: the Van der
 // Corput radical inverse (reflect an index's base-b digits about the radix point)
 // and the Halton / Hammersley points built from it. These are pure, deterministic-

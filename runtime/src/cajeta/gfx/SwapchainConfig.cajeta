@@ -1,11 +1,11 @@
-package cajeta.gpu.gfx;
+package cajeta.gfx;
 
 /**
  * SwapchainConfig — the pure WSI SELECTION POLICY a {@link Swapchain} is built
  * from (cajeta-gfx §4.2 / GP-1).
  *
  * A swapchain is an opaque, build-from-description driver object (the noun-seam
- * discipline of {@code cajeta.gpu}); its description is derived by CHOOSING,
+ * discipline of {@code cajeta.xpu}); its description is derived by CHOOSING,
  * from what the driver reports for a {@code cajeta.ifx.Surface}, the surface
  * (format, colorSpace) pair, the present mode, the image count, and the extent.
  * That choosing is backend-independent arithmetic over the reported capability
@@ -13,7 +13,7 @@ package cajeta.gpu.gfx;
  * live {@code VK_KHR_swapchain} acquire/present loop lives behind {@code Swapchain}'s
  * native primitives.
  *
- * ORDINALS ARE THE STABLE NATIVE CONTRACT (as for {@link cajeta.gpu.TextureFormat}):
+ * ORDINALS ARE THE STABLE NATIVE CONTRACT (as for {@link cajeta.gfx.TextureFormat}):
  * every value here is the {@code VK_*} enum ordinal the runtime reports and
  * consumes — present modes are {@code VK_PRESENT_MODE_*_KHR}
  * (0 Immediate, 1 Mailbox, 2 Fifo, 3 FifoRelaxed), formats are {@code VK_FORMAT_*},

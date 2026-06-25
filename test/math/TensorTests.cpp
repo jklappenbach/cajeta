@@ -489,7 +489,7 @@ TEST(TensorTests, wildcardAirlock) {
 
 // 6a — device placement: to-gpu / to-cpu move storage; device()/isOnGpu() report
 // it; data survives a host→device→host round-trip; a no-GPU build still works
-// (the cajeta.gpu CPU backend backs the buffer).
+// (the cajeta.xpu CPU backend backs the buffer).
 TEST(TensorTests, devicePlacement) {
     std::string src =
         "package test;\n"
@@ -515,7 +515,7 @@ TEST(TensorTests, devicePlacement) {
 }
 
 // 6b — the op-dispatch seam, proven with one elementwise op (add). The op routes
-// on operand placement: both-on-device → a cajeta.gpu @Kernel over the device
+// on operand placement: both-on-device → a cajeta.xpu @Kernel over the device
 // buffers; host operands → the CPU loop. The two paths agree (cross-check). The
 // op + kernel live in the test program (the op library is numpy-porting-plan
 // Phase 3); the Tensor type supplies the seam: placement + deviceBuffer + flat

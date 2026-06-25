@@ -192,8 +192,8 @@ namespace {
 const char* kTextureSampleSource =
     "package test;\n"
     "import cajeta.xpu.KernelBuffer;\n"
-    "import cajeta.gpu.Texture2D;\n"
-    "import cajeta.gpu.Sampler;\n"
+    "import cajeta.gfx.Texture2D;\n"
+    "import cajeta.gfx.Sampler;\n"
     "import cajeta.xpu.KernelThread;\n"
     "public class M {\n"
     "    @Kernel\n"
@@ -207,7 +207,7 @@ const char* kTextureSampleSource =
 const char* kTextureFetchSource =
     "package test;\n"
     "import cajeta.xpu.KernelBuffer;\n"
-    "import cajeta.gpu.Texture2D;\n"
+    "import cajeta.gfx.Texture2D;\n"
     "import cajeta.xpu.KernelThread;\n"
     "public class M {\n"
     "    @Kernel\n"
@@ -223,7 +223,7 @@ const char* kTextureFetchSource =
 const char* kIntTextureFetchSource =
     "package test;\n"
     "import cajeta.xpu.KernelBuffer;\n"
-    "import cajeta.gpu.Texture2D;\n"
+    "import cajeta.gfx.Texture2D;\n"
     "import cajeta.xpu.KernelThread;\n"
     "public class M {\n"
     "    @Kernel\n"
@@ -343,8 +343,8 @@ TEST(XpuAmdgpuLoopEmitTests, lowers3dTextureToOckl3D) {
     const char* src =
         "package test;\n"
         "import cajeta.xpu.KernelBuffer;\n"
-        "import cajeta.gpu.Texture3D;\n"
-        "import cajeta.gpu.Sampler;\n"
+        "import cajeta.gfx.Texture3D;\n"
+        "import cajeta.gfx.Sampler;\n"
         "import cajeta.xpu.KernelThread;\n"
         "public class M {\n"
         "    @Kernel\n"

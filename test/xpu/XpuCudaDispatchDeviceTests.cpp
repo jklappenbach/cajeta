@@ -808,8 +808,8 @@ TEST(XpuCudaDispatchDeviceTests, textureSampleRoutesToCudaOnDevice) {
     const char* src =
         "package test;\n"
         "import cajeta.xpu.KernelBuffer;\n"
-        "import cajeta.gpu.Texture2D;\n"
-        "import cajeta.gpu.Sampler;\n"
+        "import cajeta.gfx.Texture2D;\n"
+        "import cajeta.gfx.Sampler;\n"
         "import cajeta.xpu.KernelStream;\n"
         "import cajeta.xpu.KernelThread;\n"
         "public class TexSample {\n"
