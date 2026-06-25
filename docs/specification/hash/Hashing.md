@@ -1,8 +1,9 @@
 # Hashing — `cajeta.hash`
 
-Non-cryptographic and crypto-broken-but-still-useful (MD5) hashing.
-Cryptographic primitives live in the (future) `cajeta.crypto` peer
-library.
+Non-cryptographic *and* cryptographic digesting. Collision-resistant
+fingerprints (`Sha256`, `Blake3`) now ship in this package; only
+authenticated/keyed primitives (HMAC, AEAD, signatures) are deferred to
+the future `cajeta.crypto` peer library.
 
 This is the cajeta surface for the runtime `__cajeta_hash_*` symbols
 plus the algorithm classes that wrap them. Every cajeta value has a
@@ -10,12 +11,28 @@ plus the algorithm classes that wrap them. Every cajeta value has a
 or hand-overridden; this doc covers the algorithms those hashes
 ultimately route through.
 
+**Decision guide — pick the right hash:**
+
+| Need | Use |
+|------|-----|
+| `Object.hash()` / hash-map key (compiler does this) | `DefaultHasher` (XXH3-64) |
+| fast 64-bit fingerprint / cache key (non-crypto) | `XXHash3.hash` |
+| **128-bit fingerprint — the MD5 replacement** | **`XXHash3.hash128`** |
+| untrusted input (HTTP body, user strings) | `SipHash` |
+| cryptographic digest / content-addressing | `Sha256` or `Blake3` |
+| fast crypto + extendable output (XOF) | `Blake3` |
+| WebSocket handshake (protocol-fixed) | `Sha1` |
+| **legacy interop only** (S3 Content-MD5, old ETags) | `MD5` |
+
+> Do **not** pick `MD5` for new code — it's broken *and* the slowest hash
+> here. Its 128-bit-fingerprint job is now `XXHash3.hash128` (faster, lower
+> collision odds); its crypto job is `Sha256` / `Blake3`.
+
 Status: `Hash` utility namespace + per-primitive intrinsics complete;
-`Hasher` interface + `MD5` + `SipHash` + `XXHash3` + `DefaultHasher`
-shipped (2026-05-20). `SHA-1` and `SHA-256` also ship in this package
-(`Sha1.cajeta`, `Sha256.cajeta`) — SHA-1 is the WebSocket-handshake digest,
-SHA-256 a general checksum; neither is a substitute for `cajeta.crypto`'s
-(future) authenticated primitives. `RapidHash` still designed-only.
+`Hasher` interface + `MD5` + `SipHash` + `XXHash3` (incl. **`hash128`**,
+XXH3-128) + `DefaultHasher` shipped. Cryptographic digests shipped:
+`Sha1` (WebSocket handshake), `Sha256` (SHA-NI accelerated), and `Blake3`
+(AVX-512 hash-16, with XOF). `RapidHash` still designed-only.
 
 ## `Hash` utility namespace — shipped
 
@@ -160,10 +177,66 @@ public final class XXHash3 implements Hasher {
     public static int64 hashSeeded(int8[] data, int64 len, int64 seedArg);
     public static int64 hashString(String s);
     public static int64 hashStringSeeded(String s, int64 seedArg);
+    // --- 128-bit (XXH3-128): the MD5 replacement for fingerprints ---
+    public static #int8[] hash128(int8[] data, int64 len);                 // 16-byte digest (low64 LE, high64 LE)
+    public static void hash128Into(int8[] data, int64 len, int64 seed, int8[] out16); // zero-alloc
+    public static int64 hash128Low(int8[] data, int64 len);
+    public static int64 hash128High(int8[] data, int64 len);
+    public static #String hash128Hex(int8[] data, int64 len);              // 32-char canonical hex
+    public static #String hash128HexSeeded(int8[] data, int64 len, int64 seedArg);
     public void update(int8[] data, int64 len);
     public void reset();
     // ... full Hasher surface
     public int64 finish();
+}
+```
+
+The bulk path (inputs > 240 B) is a pure-Cajeta AVX-512 `Vector<int64,8>`
+long path that's bit-identical to the native XXH3 reference and beats every
+competitor's library on this metric (the crown). `hash128`'s low64 equals the
+64-bit digest on that path (XXH3 derives both from the same accumulators).
+
+### `Sha256` (cryptographic checksum / content-addressing) — shipped
+
+SHA-256 (FIPS 180-4). The native bridge uses x86 **SHA-NI** behind a CPUID
+probe (scalar fallback), making it the fastest SHA-256 in the comparison suite.
+Use for content-addressing and interop; not a keyed/authenticated primitive.
+
+```cajeta
+public final class Sha256 implements Hasher {
+    public static #int8[] hash(int8[] data, int64 len);          // 32-byte digest
+    public static #int8[] hashString(String s);
+    public static #String hashHex(int8[] data, int64 len);       // lowercase 64-char hex
+    public static #String hashStringHex(String s);
+    public void update(int8[] data, int64 len);
+    public #int8[] digest();
+    public void reset();
+    // ... full Hasher surface
+    public int64 finish();    // first 8 bytes of digest, little-endian
+}
+```
+
+### `Blake3` (fast cryptographic hash + XOF) — shipped
+
+BLAKE3 — the modern fast cryptographic fingerprint and the recommended
+content-addressing hash for new code. 256-bit default digest plus an
+**extendable output (XOF)** of any length (the first 32 bytes equal the
+standard digest). The bulk path is an AVX-512 `hash16` (16 chunks in
+parallel, CPUID-gated, scalar fallback).
+
+```cajeta
+public final class Blake3 implements Hasher {
+    public static #int8[] hash(int8[] data, int64 len);          // 32-byte digest
+    public static void hashInto(int8[] data, int64 len, int8[] out32); // zero-alloc
+    public static #String hashHex(int8[] data, int64 len);       // lowercase 64-char hex
+    public static #int8[] hashString(String s);
+    public static #String hashStringHex(String s);
+    public static void hashXof(int8[] data, int64 len, int8[] out); // fill out.count() bytes (XOF)
+    public void update(int8[] data, int64 len);
+    public #int8[] digest();
+    public void reset();
+    // ... full Hasher surface
+    public int64 finish();    // first 8 bytes of digest, little-endian
 }
 ```
 
@@ -190,7 +263,11 @@ public final class SipHash implements Hasher {
 }
 ```
 
-### `MD5` (checksum / identifier, **not security**) — shipped
+### `MD5` (legacy interop only — **do not use for new code**) — shipped
+
+Kept only for protocols that fix MD5 (S3 `Content-MD5`, existing ETags). It's
+broken *and* the slowest hash here. New code: `XXHash3.hash128` (non-crypto
+128-bit) or `Sha256` / `Blake3` (crypto).
 
 ```cajeta
 public final class MD5 implements Hasher {
@@ -226,11 +303,16 @@ public final class DefaultHasher implements Hasher {
 | Default Object.hash() (compiler does this) | `DefaultHasher` (synthesized) |
 | Hash a buffer / file / blob for fingerprinting | `XXHash3.hash` |
 | Cache key derivation, internal table keys | `XXHash3.hash` |
-| High-volume hashing, no external interop | `RapidHash.hash` |
-| Untrusted input (HTTP body, user strings) | `SipHash.hash` |
-| HTTP ETag / S3 Content-MD5 / asset fingerprinting | `MD5.hashHex` |
+| 128-bit fingerprint (cache keys, ETags, content) | `XXHash3.hash128` |
+| Untrusted input (HTTP body, user strings) | `SipHash.hashKeyed` |
+| Cryptographic digest / content-addressing | `Sha256.hashHex` / `Blake3.hashHex` |
+| Fast crypto hash + extendable output (XOF) | `Blake3.hashXof` |
+| WebSocket handshake digest (protocol-fixed) | `Sha1` |
+| **Legacy interop only** (S3 Content-MD5, old ETags) | `MD5.hashHex` |
 | Identity-based (graph nodes, weak refs) | `Hash.identity` |
-| Real cryptographic security | **`cajeta.crypto`** (separate library) |
+| Authenticated/keyed crypto (HMAC, AEAD, signatures) | **`cajeta.crypto`** (future library) |
+
+Worked end-to-end in the tour: `samples/tour/.../tour/hash/HashDemo.cajeta`.
 
 ## Tests
 
@@ -243,9 +325,11 @@ public final class DefaultHasher implements Hasher {
 | `MD5` (RFC 1321) | `test/parser/MD5Tests.cpp` | shipped |
 | `SipHash` (SipHash-2-4) | `test/parser/SipHashTests.cpp` | shipped |
 | `XXHash3` + `DefaultHasher` | `test/parser/XXHash3Tests.cpp` | shipped |
+| `XXHash3.hash128` (XXH3-128) | `test/parser/XXHash3_128Tests.cpp` | shipped |
 | `String.hash()` (FNV-1a) | `test/parser/StringHashTests.cpp` | shipped |
 | `SHA-1` | `test/parser/Sha1Tests.cpp` | shipped |
 | `SHA-256` | `test/parser/Sha256Tests.cpp` | shipped |
+| `BLAKE3` (+ XOF) | `test/parser/Blake3Tests.cpp` | shipped |
 | `RapidHash` | — | designed |
 
 ## v1 implementation notes

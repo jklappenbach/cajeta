@@ -1,0 +1,73 @@
+package tour.hash;
+
+import tour.DemoClass;
+import cajeta.hash.XXHash3;
+import cajeta.hash.Sha256;
+import cajeta.hash.Blake3;
+import cajeta.hash.MD5;
+import cajeta.lang.String;
+
+// cajeta.hash — picking the right hash for the job. This demo walks the
+// decision guide top to bottom:
+//
+//   * non-crypto fingerprint / cache key / hash-map key   -> XXHash3   (fastest)
+//   * 128-bit fingerprint, the MD5 drop-in replacement    -> XXHash3.hash128
+//   * cryptographic fingerprint / content-addressing      -> SHA-256 or BLAKE3
+//   * BLAKE3 also yields an extendable output (XOF) of any length
+//   * MD5 is kept ONLY for legacy interop (S3 Content-MD5, existing ETags) —
+//     never reach for it in new code.
+//
+// All of these are @Native bridges to vetted C (fair: every language's hashes
+// are native/asm). XXHash3's bulk path and BLAKE3's hash-16 path are AVX-512.
+public class HashDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- cajeta.hash: choosing the right hash --");
+
+        String msg = "the quick brown fox";
+        int8[] bytes = msg.bytes;
+        int64 len = (int64) msg.byteLength;
+
+        // 1) Non-crypto fingerprint: XXHash3 — multi-GB/s, the algorithm behind
+        //    the compiler-synthesized Object.hash()/String.hash(). hashSeeded()
+        //    with a fixed seed is reproducible across processes; the bare
+        //    hash()/hashString() are PER-PROCESS-seeded (ideal for in-memory
+        //    maps + DoS resistance, NOT for persisted fingerprints).
+        int64 xx = XXHash3.hashSeeded(bytes, len, 0L);
+        System.stdout.println("  XXHash3  (64-bit, non-crypto)   = " + xx);
+
+        // 2) 128-bit fingerprint — the direct replacement for MD5 in new code
+        //    (cache keys, ETags, content fingerprints): far lower collision odds
+        //    and ~170x faster. Canonical lowercase hex, here under a fixed seed.
+        String xx128 = XXHash3.hash128HexSeeded(bytes, len, 0L);
+        System.stdout.println("  XXHash3.hash128 (MD5 replacement)= " + xx128);
+
+        // 3) Cryptographic fingerprint / content-addressing. SHA-256 is the
+        //    ubiquitous interop choice; BLAKE3 is the modern, much faster one.
+        String sha = Sha256.hashStringHex(msg);
+        System.stdout.println("  SHA-256  (crypto, interop)      = " + sha);
+
+        String b3 = Blake3.hashStringHex(msg);
+        System.stdout.println("  BLAKE3   (fast crypto)          = " + b3);
+
+        // 4) BLAKE3 extendable output (XOF): ask for ANY number of bytes — the
+        //    first 32 always equal the standard digest. Handy for deriving
+        //    multiple keys / a wide stream from one hash.
+        int8[] wide = heap int8[64];
+        Blake3.hashXof(bytes, len, wide);
+        #int8[] digest = Blake3.hash(bytes, len);
+        boolean prefixMatches = true;
+        int32 i = 0;
+        while (i < 32) {
+            if (wide[(int64) i] != digest[(int64) i]) { prefixMatches = false; }
+            i = i + 1;
+        }
+        System.stdout.println("  BLAKE3 XOF(64) first 32 == digest = " + prefixMatches);
+
+        // 5) MD5 — LEGACY INTEROP ONLY. Computed here for an existing protocol
+        //    that fixes MD5 (e.g. an S3 Content-MD5 header); do not pick it for
+        //    new work — use XXHash3.hash128 (non-crypto) or SHA-256/BLAKE3.
+        String md5 = MD5.hashHex(bytes, len);
+        System.stdout.println("  MD5      (legacy interop only)  = " + md5);
+    }
+}

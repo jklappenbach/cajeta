@@ -5,21 +5,28 @@ import cajeta.lang.String;
 /**
  * MD5 (RFC 1321) — 128-bit non-cryptographic checksum / identifier.
  *
- * **Not security.** MD5 is cryptographically broken — collision
- * attacks have been practical for ~15 years. Do **not** use for
- * signatures, MACs, password hashing, or anything where an attacker
- * benefits from forging a match. The cases MD5 still fits:
+ * **Legacy interop only — do not reach for MD5 in new code.** MD5 is
+ * cryptographically broken (practical collisions for ~15 years) *and*
+ * the slowest hash in the library. Keep it ONLY where an external
+ * protocol fixes the algorithm and you cannot choose:
  *
- * - HTTP `ETag` (cache invalidation; an attacker forging matches
- *   only fools their own cache)
- * - S3 `Content-MD5` (the protocol fixes the algorithm)
- * - Asset fingerprinting (bundler hashes; attacker with write
- *   access doesn't need to forge anything)
- * - Cache-key derivation from internal inputs
- * - Database row fingerprinting (delta detection between snapshots)
+ * - S3 `Content-MD5` / multipart ETags (the protocol fixes MD5)
+ * - existing `ETag`s / checksums you must reproduce for compatibility
  *
- * For real cryptography use `cajeta.crypto.SHA256` /
- * `cajeta.crypto.BLAKE3` (peer library, not in v1).
+ * ## Pick the right hash instead (decision guide)
+ *
+ * | Need                                   | Use                         |
+ * |----------------------------------------|-----------------------------|
+ * | hash-map key / fast fingerprint        | `XXHash3` (process-seeded)  |
+ * | 128-bit fingerprint (MD5's job, safer) | `XXHash3.hash128`           |
+ * | cryptographic digest / content-address | `Sha256` or `Blake3`        |
+ * | fast crypto + extendable output (XOF)  | `Blake3`                    |
+ *
+ * `XXHash3.hash128` is the direct MD5 replacement for cache keys, ETags
+ * and content fingerprints: a 128-bit digest, far lower collision odds,
+ * and dramatically faster. For collision-resistance against untrusted
+ * input use `cajeta.hash.Sha256` / `cajeta.hash.Blake3` (both shipped).
+ * MD5 stays portable-C interop-only — never use it for new work.
  *
  * ## Surface
  *
