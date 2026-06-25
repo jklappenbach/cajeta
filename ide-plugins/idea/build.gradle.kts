@@ -24,8 +24,14 @@ dependencies {
     // Bridge ANTLR4 ParseTree to IntelliJ PSI.
     implementation("org.antlr:antlr4-intellij-adaptor:0.1")
 
-    // Markdown engine for Obsidian-style comment rendering (M5).
-    implementation("org.jetbrains:markdown:0.7.3")
+    // Markdown engine for Obsidian-style comment rendering (M5). The IntelliJ
+    // platform already ships `org.intellij.markdown` (lib/intellij.libraries.
+    // markdown.jar), so compile against it but do NOT bundle our own copy —
+    // bundling an IDE package is flagged by the plugin verifier and risks
+    // classloader conflicts. compileOnly => present at compile, provided by the
+    // platform at runtime.
+    compileOnly("org.jetbrains:markdown:0.7.3")
+    testImplementation("org.jetbrains:markdown:0.7.3")
 
     testImplementation("junit:junit:4.13.2")
 
