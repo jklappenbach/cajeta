@@ -408,6 +408,46 @@ namespace cajeta::buildtool {
         return llvm::Error::success();
     }
 
+    namespace {
+        // Whether a task produces a runnable native artifact, and (if the build
+        // action declares one) its output-path. Lets `tasks --json` tell the IDE
+        // which tasks can be Run-as-Debug and what binary to launch under
+        // `cajeta dap` (widget spec §3, §5.2.2). Scans nested parallel groups.
+        struct TaskRunInfo {
+            bool runnable = false;
+            std::optional<std::string> artifact;
+        };
+
+        void scanActionsForRun(const std::vector<ActionEntry>& actions, TaskRunInfo& info) {
+            for (const auto& e : actions) {
+                switch (e.kind) {
+                    case ActionEntry::Kind::Invocation:
+                        if (e.invocation.action == "build" ||
+                            e.invocation.action == "exec" ||
+                            e.invocation.action == "run") {
+                            info.runnable = true;
+                            if (e.invocation.action == "build") {
+                                if (auto op = e.invocation.params.getString("output-path"))
+                                    info.artifact = op->str();
+                            }
+                        }
+                        break;
+                    case ActionEntry::Kind::Parallel:
+                        if (e.parallel) scanActionsForRun(e.parallel->children, info);
+                        break;
+                    case ActionEntry::Kind::RunTask:
+                        break;  // delegates to another task; its own entry reports runnability
+                }
+            }
+        }
+
+        TaskRunInfo computeTaskRunInfo(const Task& t) {
+            TaskRunInfo info;
+            scanActionsForRun(t.actions, info);
+            return info;
+        }
+    }  // namespace
+
     std::string renderTasksJson(const std::string& manifestPath,
                                 const std::map<std::string, Task>& tasks,
                                 const std::vector<BuiltinCommand>& builtins) {
@@ -420,6 +460,12 @@ namespace cajeta::buildtool {
             llvm::json::Object to;
             to["name"] = t.name;
             if (t.description) to["description"] = *t.description;
+
+            // §3 (widget §5.2.2): expose whether the task yields a runnable
+            // artifact (so the IDE can offer Debug) and, when declared, where.
+            TaskRunInfo ri = computeTaskRunInfo(t);
+            to["runnable"] = ri.runnable;
+            if (ri.artifact) to["artifact"] = *ri.artifact;
 
             llvm::json::Array deps;
             for (const auto& d : t.dependsOn) deps.push_back(d);

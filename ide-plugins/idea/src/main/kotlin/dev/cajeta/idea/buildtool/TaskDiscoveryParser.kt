@@ -39,6 +39,8 @@ object TaskDiscoveryParser {
             description = o.opt("description")?.strOrNull(),
             dependsOn = o.opt("dependsOn").asArray().mapNotNull { it.strOrNull() },
             params = o.opt("params").asArray().mapNotNull { parseParam(it) },
+            runnable = (o.opt("runnable") as? Json.Bool)?.value ?: false,
+            artifact = o.opt("artifact")?.strOrNull(),
         )
     }
 

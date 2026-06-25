@@ -55,6 +55,25 @@ class TaskDiscoveryParserTest {
         assertEquals(listOf("tasks", "info"), m.builtins.map { it.name })
     }
 
+    // §5.2.2: runnable + artifact carry through; default false/null when absent.
+    @Test
+    fun parsesRunnableAndArtifact() {
+        val m = success(
+            """
+            { "manifest": "/m.json", "tasks": [
+              { "name": "build", "runnable": true, "artifact": "build/exe/demo" },
+              { "name": "lint" }
+            ] }
+            """.trimIndent(),
+        )
+        val build = m.tasks.first { it.name == "build" }
+        assertTrue(build.runnable)
+        assertEquals("build/exe/demo", build.artifact)
+        val lint = m.tasks.first { it.name == "lint" }
+        assertTrue(!lint.runnable)
+        assertNull(lint.artifact)
+    }
+
     // §3.1.3 / §3.2.3: an older plugin must ignore fields a newer build tool adds.
     @Test
     fun ignoresUnknownFieldsForwardCompat() {

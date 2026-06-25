@@ -82,6 +82,43 @@ TEST(TasksJson, GoldenShapeMatchesSpecSection3) {
     EXPECT_EQ((*barr)[1].getAsObject()->getString("name").value_or(""), "info");
 }
 
+// §3 (widget §5.2.2): a task with a build action is `runnable` and carries the
+// build's output-path as `artifact`; a task without one is not runnable.
+TEST(TasksJson, EmitsRunnableAndArtifactFromBuildAction) {
+    std::map<std::string, Task> tasks;
+
+    Task build;
+    build.name = "build";
+    ActionInvocation inv;
+    inv.action = "build";
+    inv.params["output-path"] = "build/exe/demo";
+    ActionEntry entry;
+    entry.kind = ActionEntry::Kind::Invocation;
+    entry.invocation = inv;
+    build.actions.push_back(entry);
+    tasks["build"] = build;
+
+    Task lint;            // no build action -> not runnable
+    lint.name = "lint";
+    tasks["lint"] = lint;
+
+    auto root = parseOrFail(renderTasksJson("/m/cajeta.json", tasks, {}));
+    auto* tarr = root.getAsObject()->getArray("tasks");
+    ASSERT_EQ(tarr->size(), 2u);
+    // sorted by name: build, lint
+    auto* b = (*tarr)[0].getAsObject();
+    EXPECT_EQ(b->getString("name").value_or(""), "build");
+    ASSERT_TRUE(b->getBoolean("runnable").has_value());
+    EXPECT_TRUE(*b->getBoolean("runnable"));
+    EXPECT_EQ(b->getString("artifact").value_or(""), "build/exe/demo");
+
+    auto* l = (*tarr)[1].getAsObject();
+    EXPECT_EQ(l->getString("name").value_or(""), "lint");
+    ASSERT_TRUE(l->getBoolean("runnable").has_value());
+    EXPECT_FALSE(*l->getBoolean("runnable"));
+    EXPECT_EQ(l->get("artifact"), nullptr);   // omitted when no build output-path
+}
+
 // §3.1.3 robustness: a minimal task (no description/deps/params) still emits
 // valid JSON — optional fields omitted, arrays present but empty — so a sparse
 // or forward-evolved manifest never produces broken output.

@@ -4620,6 +4620,8 @@ build-tool tool window parses to populate its task tree (see
     { "name": "build",
       "description": "Compile + link the project",   // omitted if the task has none
       "dependsOn": ["check"],                        // from the manifest DAG
+      "runnable": true,                              // has a build/exec/run action
+      "artifact": "build/exe/demo",                  // build action's output-path (if declared)
       "params": [                                    // typed CLI params
         { "name": "flavor", "type": "string", "default": "debug",
           "required": false, "doc": "Build flavor" } ] }
@@ -4631,9 +4633,11 @@ build-tool tool window parses to populate its task tree (see
 ```
 
 Contract notes: object key order is not significant (consumers parse, not
-string-match); optional task fields (`description`, param `default`/`doc`) are
-omitted when absent while `dependsOn`/`params` are always present (possibly
-empty). A non-zero exit or load error writes a diagnostic to stderr and emits no
+string-match); optional task fields (`description`, `artifact`, param
+`default`/`doc`) are omitted when absent while `dependsOn`/`params`/`runnable`
+are always present (`runnable` is `false` for a task with no build/exec/run
+action). `runnable`/`artifact` let the IDE offer Debug on a task and locate the
+binary to launch under `cajeta dap` (widget §5.2.2). A non-zero exit or load error writes a diagnostic to stderr and emits no
 JSON — the plugin treats that as "discovery failed" and degrades gracefully.
 The emission core is `renderTasksJson` (`src/cajeta/buildtool/Task.{h,cpp}`),
 golden-tested in `test/buildtool/TasksJsonTests.cpp`.
