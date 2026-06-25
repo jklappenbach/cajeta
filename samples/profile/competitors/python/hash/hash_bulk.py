@@ -47,21 +47,21 @@ def stats(samples):
     return s[0], s[n // 2], sum(s) // n, s[min(n - 1, n * 95 // 100)]
 
 
-def row(run_id, ts, bench, lib, ver, warmup, trials, st, check_ok, status):
+def row(run_id, ts, bench, lib, ver, warmup, trials, st, check_ok, status, sz=N):
     mn, med, mean, p95 = st
-    mbps = (N / med * 1e9 / 1048576.0) if med > 0 else 0.0
+    mbps = (sz / med * 1e9 / 1048576.0) if med > 0 else 0.0
     pyver = env("PROFILE_LANG_VERSION", "")
     return (
-        f"1,{run_id},{ts},{bench},hash,,{N},,{N},python,{pyver},{lib},{ver},-OO,"
+        f"1,{run_id},{ts},{bench},hash,,{sz},,{sz},python,{pyver},{lib},{ver},-OO,"
         f"{warmup},{trials},{mn},{med},{mean},{p95},{mbps:.1f},MB/s,{peak_rss_kb()},"
         f"-1,{_ALLOC},-1,-1,{status},{str(check_ok).lower()},,"
     )
 
 
-def skip_row(run_id, ts, bench, lib, reason):
+def skip_row(run_id, ts, bench, lib, reason, sz=N):
     pyver = env("PROFILE_LANG_VERSION", "")
     return (
-        f"1,{run_id},{ts},{bench},hash,,{N},,{N},python,{pyver},{lib},,,0,0,"
+        f"1,{run_id},{ts},{bench},hash,,{sz},,{sz},python,{pyver},{lib},,,0,0,"
         f"-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,,{reason},"
     )
 
@@ -100,9 +100,22 @@ def main():
         ok = (xxhash.xxh3_128_intdigest(buf, seed=0) & mask) == XXH3_REF
         out.append(row(run_id, ts, "xxhash3_128", "xxhash", xxhash.VERSION, warmup, trials,
                        stats(s), ok, "ok" if ok else "invalid"))
+        # xxhash3-256k / xxhash3_128-256k — compute-bound (L2-resident) throughput.
+        n256 = 262144
+        b256 = buf[:n256]
+        s = bench(b256, warmup, trials, lambda b: xxhash.xxh3_64_intdigest(b, seed=0))
+        ok = xxhash.xxh3_64_intdigest(b256, seed=0) != 0
+        out.append(row(run_id, ts, "xxhash3-256k", "xxhash", xxhash.VERSION, warmup, trials,
+                       stats(s), ok, "ok" if ok else "invalid", n256))
+        s = bench(b256, warmup, trials, lambda b: xxhash.xxh3_128_intdigest(b, seed=0) & mask)
+        ok = (xxhash.xxh3_128_intdigest(b256, seed=0) & mask) != 0
+        out.append(row(run_id, ts, "xxhash3_128-256k", "xxhash", xxhash.VERSION, warmup, trials,
+                       stats(s), ok, "ok" if ok else "invalid", n256))
     except ImportError:
         out.append(skip_row(run_id, ts, "xxhash3", "xxhash", "xxhash module not importable"))
         out.append(skip_row(run_id, ts, "xxhash3_128", "xxhash", "xxhash module not importable"))
+        out.append(skip_row(run_id, ts, "xxhash3-256k", "xxhash", "xxhash module not importable", 262144))
+        out.append(skip_row(run_id, ts, "xxhash3_128-256k", "xxhash", "xxhash module not importable", 262144))
 
     # sha256 (hashlib)
     s = bench(buf, warmup, trials, lambda b: hashlib.sha256(b).digest())

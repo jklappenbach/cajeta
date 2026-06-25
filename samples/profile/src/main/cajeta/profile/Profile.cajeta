@@ -31,7 +31,9 @@ import profile.string.StringSearchBench;
 import profile.string.StringReplaceBench;
 import profile.string.StringUpperBench;
 import profile.hash.XXHash3Bench;
+import profile.hash.XXHash3_256kBench;
 import profile.hash.XXHash3_128Bench;
+import profile.hash.XXHash3_128_256kBench;
 import profile.hash.SipHashBench;
 import profile.hash.Sha256Bench;
 import profile.hash.Md5Bench;
@@ -103,7 +105,9 @@ public final class Profile {
         benchmarks.add(heap StringUpperBench());
         // -- hash area (Unit 9) --
         benchmarks.add(heap XXHash3Bench());
+        benchmarks.add(heap XXHash3_256kBench());
         benchmarks.add(heap XXHash3_128Bench());
+        benchmarks.add(heap XXHash3_128_256kBench());
         benchmarks.add(heap SipHashBench());
         benchmarks.add(heap Sha256Bench());
         benchmarks.add(heap Md5Bench());

@@ -64,17 +64,17 @@ static std::string tohex(const unsigned char* b, int n) {
 
 static void emit(const std::string& run_id, const std::string& ts, const char* bench,
                  const char* lib, const char* ver, int warmup, int trials,
-                 std::vector<long long> s, bool check_ok) {
+                 std::vector<long long> s, bool check_ok, size_t sz = N) {
     std::sort(s.begin(), s.end());
     size_t n = s.size();
     long long sum = std::accumulate(s.begin(), s.end(), 0LL);
     long long mn = s.front(), med = s[n / 2], mean = sum / (long long)n,
               p95 = s[std::min(n - 1, n * 95 / 100)];
-    double mbps = med > 0 ? (double)N / (double)med * 1e9 / 1048576.0 : 0.0;
+    double mbps = med > 0 ? (double)sz / (double)med * 1e9 / 1048576.0 : 0.0;
     std::printf(
         "1,%s,%s,%s,hash,,%zu,,%zu,cpp,%s,%s,%s,-O3 -march=native,%d,%d,"
         "%lld,%lld,%lld,%lld,%.1f,MB/s,%lld,-1,%llu,-1,-1,%s,%s,,\n",
-        run_id.c_str(), ts.c_str(), bench, N, N, env("PROFILE_LANG_VERSION", "").c_str(),
+        run_id.c_str(), ts.c_str(), bench, sz, sz, env("PROFILE_LANG_VERSION", "").c_str(),
         lib, ver, warmup, trials, mn, med, mean, p95, mbps, peak_rss_kb(), (unsigned long long)_la(),
         check_ok ? "ok" : "invalid", check_ok ? "true" : "false");
 }
@@ -112,6 +112,34 @@ int main() {
         }
         bool ok = XXH3_128bits(buf.data(), N).low64 == 0xd36c0e13a3df139eULL; (void)sink;
         emit(run_id, ts, "xxhash3_128", "xxHash", XXH_VER_STRING, warmup, trials, s, ok);
+    }
+    // xxhash3-256k / xxhash3_128-256k — compute-bound (L2-resident) throughput.
+    // Hash the first 256 KiB of the same buffer; value-correctness is already
+    // proven by the 1 MiB benches above, so a non-zero digest is the gate here.
+    static const size_t N256 = 262144;
+    {
+        volatile uint64_t sink = 0;
+        for (int i = 0; i < warmup; ++i) sink = XXH3_64bits(buf.data(), N256);
+        std::vector<long long> s;
+        for (int i = 0; i < trials; ++i) {
+            auto t0 = clk::now(); uint64_t h = XXH3_64bits(buf.data(), N256); auto t1 = clk::now();
+            sink = h;
+            s.push_back(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+        }
+        bool ok = (uint64_t)XXH3_64bits(buf.data(), N256) != 0; (void)sink;
+        emit(run_id, ts, "xxhash3-256k", "xxHash", XXH_VER_STRING, warmup, trials, s, ok, N256);
+    }
+    {
+        volatile uint64_t sink = 0;
+        for (int i = 0; i < warmup; ++i) sink = XXH3_128bits(buf.data(), N256).low64;
+        std::vector<long long> s;
+        for (int i = 0; i < trials; ++i) {
+            auto t0 = clk::now(); XXH128_hash_t h = XXH3_128bits(buf.data(), N256); auto t1 = clk::now();
+            sink = h.low64;
+            s.push_back(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+        }
+        bool ok = XXH3_128bits(buf.data(), N256).low64 != 0; (void)sink;
+        emit(run_id, ts, "xxhash3_128-256k", "xxHash", XXH_VER_STRING, warmup, trials, s, ok, N256);
     }
     // sha256 (OpenSSL)
     {

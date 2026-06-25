@@ -50,18 +50,18 @@ fn bench<F: FnMut() -> u64>(buf: &[u8], warmup: usize, trials: usize, mut f: F) 
 }
 
 fn emit(run_id: &str, ts: &str, bench: &str, lib: &str, ver: &str, warmup: usize,
-        trials: usize, mut samples: Vec<u128>, check_ok: bool) {
+        trials: usize, mut samples: Vec<u128>, check_ok: bool, sz: usize) {
     samples.sort_unstable();
     let n = samples.len();
     let sum: u128 = samples.iter().sum();
     let (mn, med, mean, p95) = (samples[0], samples[n / 2], sum / n as u128,
                                 samples[(n * 95 / 100).min(n - 1)]);
-    let mbps = if med > 0 { N as f64 / med as f64 * 1e9 / 1_048_576.0 } else { 0.0 };
+    let mbps = if med > 0 { sz as f64 / med as f64 * 1e9 / 1_048_576.0 } else { 0.0 };
     let status = if check_ok { "ok" } else { "invalid" };
     println!(
-        "1,{run_id},{ts},{bench},hash,,{N},,{N},rust,{ver_lang},{lib},{ver},-O3 lto target-cpu=native,{warmup},{trials},\
+        "1,{run_id},{ts},{bench},hash,,{sz},,{sz},rust,{ver_lang},{lib},{ver},-O3 lto target-cpu=native,{warmup},{trials},\
 {mn},{med},{mean},{p95},{mbps:.1},MB/s,{rss},-1,{alloc},-1,-1,{status},{check},,",
-        run_id = run_id, ts = ts, bench = bench, N = N,
+        run_id = run_id, ts = ts, bench = bench, sz = sz,
         ver_lang = env("PROFILE_LANG_VERSION", ""), lib = lib, ver = ver,
         warmup = warmup, trials = trials, mn = mn, med = med, mean = mean, p95 = p95,
         mbps = mbps, rss = peak_rss_kb(), alloc = _la(), status = status, check = check_ok);
@@ -76,12 +76,19 @@ fn main() {
 
     // xxhash3
     let (s, h) = bench(&buf, warmup, trials, || xxhash_rust::xxh3::xxh3_64(&buf));
-    emit(&run_id, &ts, "xxhash3", "xxhash-rust", "0.8", warmup, trials, s, h == XXH3_REF);
+    emit(&run_id, &ts, "xxhash3", "xxhash-rust", "0.8", warmup, trials, s, h == XXH3_REF, N);
 
     // xxhash3_128 (XXH3-128; time + cross-check the low64)
     let (s, h) = bench(&buf, warmup, trials, || xxhash_rust::xxh3::xxh3_128(&buf) as u64);
     emit(&run_id, &ts, "xxhash3_128", "xxhash-rust", "0.8", warmup, trials, s,
-         h == 0xd36c0e13a3df139e);
+         h == 0xd36c0e13a3df139e, N);
+
+    // xxhash3-256k / xxhash3_128-256k — compute-bound (L2-resident) throughput.
+    const N256: usize = 262_144;
+    let (s, h) = bench(&buf, warmup, trials, || xxhash_rust::xxh3::xxh3_64(&buf[..N256]));
+    emit(&run_id, &ts, "xxhash3-256k", "xxhash-rust", "0.8", warmup, trials, s, h != 0, N256);
+    let (s, h) = bench(&buf, warmup, trials, || xxhash_rust::xxh3::xxh3_128(&buf[..N256]) as u64);
+    emit(&run_id, &ts, "xxhash3_128-256k", "xxhash-rust", "0.8", warmup, trials, s, h != 0, N256);
 
     // sha256
     let (s, _) = bench(&buf, warmup, trials, || {
@@ -89,7 +96,7 @@ fn main() {
         u64::from_le_bytes(d[..8].try_into().unwrap())
     });
     let sha_ok = hex(&sha2::Sha256::digest(&buf)) == SHA256_REF;
-    emit(&run_id, &ts, "sha256", "sha2", "0.10", warmup, trials, s, sha_ok);
+    emit(&run_id, &ts, "sha256", "sha2", "0.10", warmup, trials, s, sha_ok, N);
 
     // md5
     let (s, _) = bench(&buf, warmup, trials, || {
@@ -97,7 +104,7 @@ fn main() {
         u64::from_le_bytes(d[..8].try_into().unwrap())
     });
     let md5_ok = hex(&md5::Md5::digest(&buf)) == MD5_REF;
-    emit(&run_id, &ts, "md5", "md-5", "0.10", warmup, trials, s, md5_ok);
+    emit(&run_id, &ts, "md5", "md-5", "0.10", warmup, trials, s, md5_ok, N);
 
     // blake3 (the reference implementation; python's blake3 binds this crate)
     let (s, _) = bench(&buf, warmup, trials, || {
@@ -105,7 +112,7 @@ fn main() {
         u64::from_le_bytes(h.as_bytes()[..8].try_into().unwrap())
     });
     let b3_ok = hex(blake3::hash(&buf).as_bytes()) == BLAKE3_REF;
-    emit(&run_id, &ts, "blake3", "blake3", "1", warmup, trials, s, b3_ok);
+    emit(&run_id, &ts, "blake3", "blake3", "1", warmup, trials, s, b3_ok, N);
 }
 
 fn hex(b: &[u8]) -> String {

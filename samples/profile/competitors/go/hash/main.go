@@ -62,7 +62,7 @@ func atoiDefault(s string, d int) int {
 	return v
 }
 
-func emit(runID, ts, bench, lib, ver string, warmup, trials int, samples []int64, checkOK bool) {
+func emit(runID, ts, bench, lib, ver string, warmup, trials int, samples []int64, checkOK bool, sz int) {
 	sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
 	n := len(samples)
 	var sum int64
@@ -76,7 +76,7 @@ func emit(runID, ts, bench, lib, ver string, warmup, trials int, samples []int64
 	mn, med, mean, p95 := samples[0], samples[n/2], sum/int64(n), samples[idx]
 	mbps := 0.0
 	if med > 0 {
-		mbps = float64(N) / float64(med) * 1e9 / 1048576.0
+		mbps = float64(sz) / float64(med) * 1e9 / 1048576.0
 	}
 	status := "ok"
 	if !checkOK {
@@ -84,7 +84,7 @@ func emit(runID, ts, bench, lib, ver string, warmup, trials int, samples []int64
 	}
 	fmt.Printf(
 		"1,%s,%s,%s,hash,,%d,,%d,go,%s,%s,%s,GOAMD64=v4,%d,%d,%d,%d,%d,%d,%.1f,MB/s,%d,-1,%d,-1,-1,%s,%t,,\n",
-		runID, ts, bench, N, N, env("PROFILE_LANG_VERSION", ""), lib, ver,
+		runID, ts, bench, sz, sz, env("PROFILE_LANG_VERSION", ""), lib, ver,
 		warmup, trials, mn, med, mean, p95, mbps, peakRSSKb(), gAlloc, status, checkOK)
 }
 
@@ -125,23 +125,30 @@ func main() {
 
 	// xxhash3
 	s := benchU64(warmup, trials, func() uint64 { return xxh3.Hash(buf) })
-	emit(runID, ts, "xxhash3", "zeebo/xxh3", "v1.0.2", warmup, trials, s, xxh3.Hash(buf) == xxh3Ref)
+	emit(runID, ts, "xxhash3", "zeebo/xxh3", "v1.0.2", warmup, trials, s, xxh3.Hash(buf) == xxh3Ref, N)
 
 	// xxhash3_128 (XXH3-128; time + cross-check the low64)
 	s = benchU64(warmup, trials, func() uint64 { return xxh3.Hash128(buf).Lo })
-	emit(runID, ts, "xxhash3_128", "zeebo/xxh3", "v1.0.2", warmup, trials, s, xxh3.Hash128(buf).Lo == xxh3Ref)
+	emit(runID, ts, "xxhash3_128", "zeebo/xxh3", "v1.0.2", warmup, trials, s, xxh3.Hash128(buf).Lo == xxh3Ref, N)
+
+	// xxhash3-256k / xxhash3_128-256k — compute-bound (L2-resident) throughput.
+	const N256 = 262144
+	s = benchU64(warmup, trials, func() uint64 { return xxh3.Hash(buf[:N256]) })
+	emit(runID, ts, "xxhash3-256k", "zeebo/xxh3", "v1.0.2", warmup, trials, s, xxh3.Hash(buf[:N256]) != 0, N256)
+	s = benchU64(warmup, trials, func() uint64 { return xxh3.Hash128(buf[:N256]).Lo })
+	emit(runID, ts, "xxhash3_128-256k", "zeebo/xxh3", "v1.0.2", warmup, trials, s, xxh3.Hash128(buf[:N256]).Lo != 0, N256)
 
 	// sha256
 	s = benchU64(warmup, trials, func() uint64 { h := sha256.Sum256(buf); return uint64(h[0]) })
 	d := sha256.Sum256(buf)
 	emit(runID, ts, "sha256", "crypto/sha256", runtime.Version(), warmup, trials, s,
-		hex.EncodeToString(d[:]) == sha256Ref)
+		hex.EncodeToString(d[:]) == sha256Ref, N)
 
 	// md5
 	s = benchU64(warmup, trials, func() uint64 { h := md5.Sum(buf); return uint64(h[0]) })
 	m := md5.Sum(buf)
 	emit(runID, ts, "md5", "crypto/md5", runtime.Version(), warmup, trials, s,
-		hex.EncodeToString(m[:]) == md5Ref)
+		hex.EncodeToString(m[:]) == md5Ref, N)
 
 	// blake3 (lukechampine.com/blake3 — SIMD-accelerated)
 	s = benchU64(warmup, trials, func() uint64 {
@@ -150,5 +157,5 @@ func main() {
 	})
 	b3 := blake3.Sum256(buf)
 	emit(runID, ts, "blake3", "lukechampine/blake3", "v1", warmup, trials, s,
-		hex.EncodeToString(b3[:]) == blake3Ref)
+		hex.EncodeToString(b3[:]) == blake3Ref, N)
 }

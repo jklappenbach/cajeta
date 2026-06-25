@@ -22,7 +22,7 @@ VENDOR="${DIR}/vendor"
 LANGS="${PROFILE_LANGS:-rust cpp go python java}"
 strip() { tr -d ',"'; }
 N=1048576
-BENCHES="xxhash3 xxhash3_128 sha256 md5 blake3"
+BENCHES="xxhash3 xxhash3-256k xxhash3_128 xxhash3_128-256k sha256 md5 blake3"
 
 skip_lang() {
     local lang="$1" lib="$2" reason="$3"

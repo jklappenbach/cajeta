@@ -185,36 +185,48 @@ Reference machine: **cpu_model** AMD RYZEN AI MAX+ 395 w/ Radeon 8060S · **cpu_
 
 | benchmark | variant | lang | library | input | min (ms) | median (ms) | rate | ws (KB) | status |
 |---|---|---|---|---|---|---|---|---|---|
-| xxhash3 |  | cajeta | stdlib | 1048576 | 0.007 | 0.007 | 152.34G/s | 36 | ok |
-| xxhash3_128 |  | cajeta | stdlib | 1048576 | 0.007 | 0.007 | 150.59G/s | 36 | ok |
-| siphash |  | cajeta | stdlib | 1048576 | 0.246 | 0.246 | 4.26G/s | 16 | ok |
-| sha256 |  | cajeta | stdlib | 1048576 | 0.416 | 0.417 | 2.52G/s | 16 | ok |
-| md5 |  | cajeta | stdlib | 1048576 | 1.257 | 1.259 | 833.89M/s | 16 | ok |
-| blake3 |  | cajeta | stdlib | 1048576 | 0.188 | 0.188 | 5.59G/s | 16 | ok |
-| xxhash3 |  | rust | xxhash-rust | 1048576 | 0.013 | 0.013 | 80.32G/s | -1 | ok |
-| xxhash3_128 |  | rust | xxhash-rust | 1048576 | 0.013 | 0.013 | 79.11G/s | -1 | ok |
-| sha256 |  | rust | sha2 | 1048576 | 0.461 | 0.461 | 2.28G/s | -1 | ok |
-| md5 |  | rust | md-5 | 1048576 | 1.202 | 1.204 | 872.62M/s | -1 | ok |
-| blake3 |  | rust | blake3 | 1048576 | 0.093 | 0.094 | 11.23G/s | -1 | ok |
-| xxhash3 |  | cpp | xxHash | 1048576 | 0.007 | 0.008 | 141.24G/s | -1 | ok |
-| xxhash3_128 |  | cpp | xxHash | 1048576 | 0.007 | 0.007 | 146.16G/s | -1 | ok |
-| sha256 |  | cpp | openssl | 1048576 | 0.416 | 0.418 | 2.52G/s | -1 | ok |
-| md5 |  | cpp | openssl | 1048576 | 0.924 | 0.926 | 1.14G/s | -1 | ok |
+| xxhash3 |  | cajeta | stdlib | 1048576 | 0.008 | 0.008 | 134.54G/s | 120 | ok |
+| xxhash3-256k |  | cajeta | stdlib | 262144 | 0.002 | 0.002 | 143.80G/s | 0 | ok |
+| xxhash3_128 |  | cajeta | stdlib | 1048576 | 0.008 | 0.008 | 133.83G/s | 0 | ok |
+| xxhash3_128-256k |  | cajeta | stdlib | 262144 | 0.002 | 0.002 | 144.59G/s | 4 | ok |
+| siphash |  | cajeta | stdlib | 1048576 | 0.252 | 0.255 | 4.16G/s | 4 | ok |
+| sha256 |  | cajeta | stdlib | 1048576 | 0.426 | 0.427 | 2.46G/s | 0 | ok |
+| md5 |  | cajeta | stdlib | 1048576 | 1.279 | 1.297 | 820.01M/s | 0 | ok |
+| blake3 |  | cajeta | stdlib | 1048576 | 0.189 | 0.190 | 5.54G/s | 0 | ok |
+| xxhash3 |  | rust | xxhash-rust | 1048576 | 0.013 | 0.013 | 79.17G/s | -1 | ok |
+| xxhash3_128 |  | rust | xxhash-rust | 1048576 | 0.013 | 0.013 | 78.81G/s | -1 | ok |
+| xxhash3-256k |  | rust | xxhash-rust | 262144 | 0.003 | 0.003 | 80.51G/s | -1 | ok |
+| xxhash3_128-256k |  | rust | xxhash-rust | 262144 | 0.003 | 0.003 | 80.51G/s | -1 | ok |
+| sha256 |  | rust | sha2 | 1048576 | 0.415 | 0.417 | 2.53G/s | -1 | ok |
+| md5 |  | rust | md-5 | 1048576 | 1.086 | 1.094 | 965.68M/s | -1 | ok |
+| blake3 |  | rust | blake3 | 1048576 | 0.084 | 0.084 | 12.52G/s | -1 | ok |
+| xxhash3 |  | cpp | xxHash | 1048576 | 0.008 | 0.008 | 136.62G/s | -1 | ok |
+| xxhash3_128 |  | cpp | xxHash | 1048576 | 0.008 | 0.012 | 136.28G/s | -1 | ok |
+| xxhash3-256k |  | cpp | xxHash | 262144 | 0.002 | 0.002 | 143.01G/s | -1 | ok |
+| xxhash3_128-256k |  | cpp | xxHash | 262144 | 0.002 | 0.002 | 142.24G/s | -1 | ok |
+| sha256 |  | cpp | openssl | 1048576 | 0.416 | 0.419 | 2.52G/s | -1 | ok |
+| md5 |  | cpp | openssl | 1048576 | 0.923 | 0.928 | 1.14G/s | -1 | ok |
 | blake3 |  | cpp | stdlib | 1048576 |  |  |  | -1 | skipped |
-| xxhash3 |  | go | zeebo/xxh3 | 1048576 | 0.017 | 0.017 | 60.36G/s | -1 | ok |
-| xxhash3_128 |  | go | zeebo/xxh3 | 1048576 | 0.017 | 0.017 | 60.32G/s | -1 | ok |
-| sha256 |  | go | crypto/sha256 | 1048576 | 0.458 | 0.460 | 2.29G/s | -1 | ok |
-| md5 |  | go | crypto/md5 | 1048576 | 1.018 | 1.019 | 1.03G/s | -1 | ok |
-| blake3 |  | go | lukechampine/blake3 | 1048576 | 0.055 | 0.094 | 19.12G/s | -1 | ok |
-| xxhash3 |  | python | xxhash | 1048576 | 0.026 | 0.026 | 40.36G/s | -1 | ok |
-| xxhash3_128 |  | python | xxhash | 1048576 | 0.026 | 0.026 | 39.90G/s | -1 | ok |
-| sha256 |  | python | hashlib | 1048576 | 0.460 | 0.466 | 2.28G/s | -1 | ok |
-| md5 |  | python | hashlib | 1048576 | 0.925 | 0.928 | 1.13G/s | -1 | ok |
+| xxhash3 |  | go | zeebo/xxh3 | 1048576 | 0.016 | 0.016 | 66.79G/s | -1 | ok |
+| xxhash3_128 |  | go | zeebo/xxh3 | 1048576 | 0.016 | 0.016 | 66.79G/s | -1 | ok |
+| xxhash3-256k |  | go | zeebo/xxh3 | 262144 | 0.004 | 0.004 | 67.10G/s | -1 | ok |
+| xxhash3_128-256k |  | go | zeebo/xxh3 | 262144 | 0.004 | 0.004 | 67.10G/s | -1 | ok |
+| sha256 |  | go | crypto/sha256 | 1048576 | 0.416 | 0.421 | 2.52G/s | -1 | ok |
+| md5 |  | go | crypto/md5 | 1048576 | 0.925 | 0.931 | 1.13G/s | -1 | ok |
+| blake3 |  | go | lukechampine/blake3 | 1048576 | 0.053 | 0.092 | 19.78G/s | -1 | ok |
+| xxhash3 |  | python | xxhash | 1048576 | 0.023 | 0.023 | 46.02G/s | -1 | ok |
+| xxhash3_128 |  | python | xxhash | 1048576 | 0.023 | 0.023 | 45.66G/s | -1 | ok |
+| xxhash3-256k |  | python | xxhash | 262144 | 0.006 | 0.006 | 44.73G/s | -1 | ok |
+| xxhash3_128-256k |  | python | xxhash | 262144 | 0.006 | 0.006 | 44.05G/s | -1 | ok |
+| sha256 |  | python | hashlib | 1048576 | 0.415 | 0.417 | 2.53G/s | -1 | ok |
+| md5 |  | python | hashlib | 1048576 | 0.923 | 0.929 | 1.14G/s | -1 | ok |
 | blake3 |  | python | blake3 | 1048576 |  |  |  | -1 | skipped |
 | xxhash3 |  | java | stdlib | 1048576 |  |  |  | -1 | skipped |
 | xxhash3_128 |  | java | stdlib | 1048576 |  |  |  | -1 | skipped |
-| sha256 |  | java | java.security.MessageDigest | 1048576 | 0.475 | 0.482 | 2.21G/s | -1 | ok |
-| md5 |  | java | java.security.MessageDigest | 1048576 | 0.938 | 0.940 | 1.12G/s | -1 | ok |
+| xxhash3-256k |  | java | stdlib | 1048576 |  |  |  | -1 | skipped |
+| xxhash3_128-256k |  | java | stdlib | 1048576 |  |  |  | -1 | skipped |
+| sha256 |  | java | java.security.MessageDigest | 1048576 | 0.473 | 0.476 | 2.22G/s | -1 | ok |
+| md5 |  | java | java.security.MessageDigest | 1048576 | 0.934 | 0.942 | 1.12G/s | -1 | ok |
 | blake3 |  | java | stdlib | 1048576 |  |  |  | -1 | skipped |
 | siphash |  | rust | siphash | 1048576 |  |  |  | -1 | skipped |
 | siphash |  | cpp | siphash | 1048576 |  |  |  | -1 | skipped |
