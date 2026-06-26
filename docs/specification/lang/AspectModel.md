@@ -239,10 +239,19 @@ with no framework dependency, instead of fragmenting like Java's
 
 ## Interim status
 
-The compiler **recognizes all of the above today** (`CajetaModule.cpp`,
-`CajetaLlvmVisitor.h`, `ComponentInjectMethod.cpp`): graph build, the implemented
-allocation modes, lifecycle hooks, and aspect weaving all work. `@Factory` is the
-one *new* substrate surface (specced here; implementation pending). The long-term
-annotation-processing / codegen **extension point** goal applies to the **policy**
-layer (so primavera or any framework plugs its stereotypes, scopes, and web model
-in without core changes) — **not** to the DI substrate, which stays core.
+The compiler **implements all of the above today** (`CajetaModule.cpp`,
+`CajetaLlvmVisitor.h`, `ComponentInjectMethod.cpp`, `FactoryProviderMethod.cpp`):
+graph build, the implemented allocation modes, lifecycle hooks, aspect weaving, and
+the full **`@Factory`** substrate — discovery (R1/R3/R4), graph resolution
+(provider vs factory-injection, the `@Component`/`@Factory` ambiguity, factory-param
+cycles), provider-accessor codegen (`@Singleton` memo / `@Transient` fresh, R2 `#T`
+fresh-owned), and assisted-injection call-site threading (the consumer passes only
+the assisted args). The long-term annotation-processing / codegen **extension point**
+goal applies to the **policy** layer (so primavera or any framework plugs its
+stereotypes, scopes, and web model in without core changes) — **not** to the DI
+substrate, which stays core.
+
+> Known v1 gap: a `@Transient` factory product stored in a singleton owner's field
+> is not yet drop-tracked per holder (leaks at owner destruction) — consistent with
+> the existing transient/owner-scope handling; revisit with owning-collections /
+> lean-linker drop synthesis.

@@ -1,0 +1,92 @@
+package tour.lang;
+
+import tour.DemoClass;
+
+// @Factory — the third DI pillar (alongside @Component and @Inject),
+// for the cases plain constructor injection cannot cover: third-party /
+// unowned product types, assisted (caller-supplied) arguments, and
+// initialization beyond the constructor. All resolved at compile time —
+// no runtime container. See docs/specification/lang/AspectModel.md.
+//
+//   - all-injected provider  → the PRODUCT type becomes injectable;
+//                              `@Inject Product` calls the provider.
+//   - assisted provider      → the consumer injects the @Factory and
+//                              calls it, passing ONLY the assisted args;
+//                              the compiler threads the @Inject args.
+//   - the provider returns a fresh-owned `#T` (R2); the framework owns
+//                              the @Singleton drop, the caller a @Transient.
+
+// A collaborator the factory depends on — an ordinary @Component.
+@Component public class DbPool {
+    public int32 size;
+    public DbPool() {
+        this.size = 10;
+        return;
+    }
+}
+
+// The product. Not a @Component — it is built by the factory.
+public class DbConn {
+    public int32 id;
+    public int32 poolSize;
+    public DbConn() {
+        this.id = 0;
+        this.poolSize = 0;
+        return;
+    }
+}
+
+@Factory public class ConnFactory {
+    // All-injected provider: every param is @Inject, so DbConn is
+    // injectable as a product. @Singleton (default) — built once.
+    #DbConn shared(@Inject DbPool pool) {
+        DbConn c = heap DbConn();
+        c.id = 1;
+        c.poolSize = pool.size;          // injected collaborator, init beyond ctor
+        return c;
+    }
+
+    // Assisted provider: `id` is caller-supplied; @Inject DbPool is
+    // threaded automatically. @Transient — a fresh product per call.
+    @Transient #DbConn make(@Inject DbPool pool, int32 id) {
+        DbConn c = heap DbConn();
+        c.id = id;
+        c.poolSize = pool.size;
+        return c;
+    }
+}
+
+// Consumer: injects the product (provider) and the factory (assisted).
+@Component public class ConnService {
+    @Inject DbConn shared;               // routes to ConnFactory.shared()
+    @Inject ConnFactory factory;         // for assisted make() calls
+    public ConnService() { return; }
+
+    public int32 sharedPoolSize() {
+        return this.shared.poolSize;
+    }
+
+    public int32 makeWithId(int32 id) {
+        DbConn c = this.factory.make(id); // assisted: pool threaded, id supplied
+        return c.id * 100 + c.poolSize;
+    }
+}
+
+public class FactoryDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- @Factory (DI providers + assisted injection) --");
+
+        ConnService s = ConnService.__cajeta_inject();
+
+        // Provider path: @Inject DbConn was built once by shared(), with
+        // the @Inject DbPool collaborator visible inside the provider.
+        System.stdout.println("  provider (singleton) pool size = "
+            + s.sharedPoolSize());
+
+        // Assisted path: make(7) passes only the assisted id; the
+        // compiler splices the @Inject DbPool. id*100 + poolSize.
+        int32 r = s.makeWithId(7);
+        System.stdout.println("  assisted make(7) -> id*100+poolSize = " + r);
+    }
+}

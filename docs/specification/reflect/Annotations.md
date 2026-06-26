@@ -75,14 +75,15 @@ framework policy, and lives in **primavera**.
 | `@Component`      | class                | Declares an injectable node in the compile-time DI graph. Optional `name=` qualifier. | `CajetaLlvmVisitor.h:352`, `CajetaModule.cpp`      | [`AspectModel.md`](../lang/AspectModel.md) § DI substrate |
 | `@Inject`         | field, parameter     | Marks an injection site. The compiler resolves it to a provider at construction (field) or invocation (parameter); `allocate=` picks the identity scope. | `CajetaModule.cpp:718`                             | [`AspectModel.md`](../lang/AspectModel.md) § `@Inject` |
 | `@Inject(name="primary")` | same        | Disambiguates when multiple named providers of the same type exist (the unqualified provider is the implicit default). | same                                               | same                                |
-| `@Factory`        | class (+ methods)    | One method per produced type — third-party/unowned types, assisted (non-`@Inject`) args, init beyond the ctor. Resolves on method signature; returns a fresh owned value. | (spec; impl pending)                               | [`AspectModel.md`](../lang/AspectModel.md) § `@Factory` |
+| `@Factory`        | class (+ methods)    | One method per produced type — third-party/unowned types, assisted (non-`@Inject`) args, init beyond the ctor. Resolves on method signature; returns a fresh owned `#T`. | `CajetaModule.cpp`, `FactoryProviderMethod.cpp`    | [`AspectModel.md`](../lang/AspectModel.md) § `@Factory` |
 | `@PostConstruct` / `@PreDestroy` | method | Lifecycle hooks — run after injection / on drop. | `ComponentInjectMethod.cpp:294`/`:320`             | [`AspectModel.md`](../lang/AspectModel.md) § Lifecycle |
 
 > **Substrate is core; only policy is primavera.** `@Component` / `@Inject` /
 > `@Factory`, lifecycle hooks, and the `@Aspect` / `@Before` / `@After` /
 > `@AfterReturning` / `@AfterThrowing` / `@Around` / `@Original` / `@Order` family
 > are **core language**, recognized and lowered by the compiler
-> (`CajetaLlvmVisitor.h`, `CajetaModule.cpp`, `ComponentInjectMethod.cpp`). The
+> (`CajetaLlvmVisitor.h`, `CajetaModule.cpp`, `ComponentInjectMethod.cpp`,
+> `FactoryProviderMethod.cpp`). The
 > opinion layer — stereotypes (`@Repository`, `@Service`), deployment `@Profile`,
 > `@TestComponent`, request/session scope, and the web model (`@RestServer`) —
 > is **primavera** policy (`org.cajeta.primavera`). See
