@@ -573,6 +573,21 @@ namespace cajeta {
                                     targetCls = dynamic_pointer_cast<CajetaClass>(
                                         recvExpr->getResolvedType());
                                 }
+                                // Static call `ClassName.factory(...)`: the
+                                // receiver is a TYPE NAME, not a value, so it has
+                                // no resolved value-type above. Resolve the class
+                                // from the identifier (same pattern as
+                                // MethodCallExpression's static-call handling) so a
+                                // static value-return (e.g. Instant.ofEpochSecond)
+                                // is stack-classified rather than falling to the
+                                // virtual-drop branch. (codegen-perf-levers 1.2.c)
+                                if (!targetCls) {
+                                    if (auto recvId = dynamic_pointer_cast<
+                                            IdentifierExpression>(mcKids[0])) {
+                                        targetCls = dynamic_pointer_cast<CajetaClass>(
+                                            CajetaType::of(recvId->getTextValue()));
+                                    }
+                                }
                             } else if (!module->getStructureStack().empty()) {
                                 targetCls = dynamic_pointer_cast<CajetaClass>(
                                     module->getStructureStack().back());

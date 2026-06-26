@@ -105,13 +105,15 @@ TEST(NoopDropElision, trivialValueTypeNoDrops) {
     EXPECT_EQ(d, 0) << "trivial-drop stack Instant locals still register/run drop entries";
 }
 
-// 1.1.a (bench shape) — guards the delivered 2x on time-instant-arith: the
-// instance value-return is elided; the static factory still drops (follow-up).
-TEST(NoopDropElision, benchShapeAtLeastHalfElided) {
+// 1.2.c — the exact time-instant-arith bench shape (static factory + instance
+// method) fully elides: BOTH the static `Instant.ofEpochSecond(...)` and the
+// instance `t.plusSeconds(...)` value-returns route to the stack branch, so a
+// trivial-drop Instant loop incurs ZERO drops.
+TEST(NoopDropElision, benchShapeFullyElided) {
     int64_t d = runDrops(kBench, "test.B", 1000);
     std::printf("[noop-drop] bench-shape Instant x1000 loop: dropCount=%lld\n", (long long) d);
     ASSERT_GE(d, 0) << "result-check sentinel tripped";
-    EXPECT_LE(d, 1000) << "stack-classified Instant local not elided (regressed)";
+    EXPECT_EQ(d, 0) << "static-factory value-return not stack-classified (still drops)";
 }
 
 // 1.1.b — an owning (String-field) stack type still drops.
