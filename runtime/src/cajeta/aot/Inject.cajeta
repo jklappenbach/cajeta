@@ -1,0 +1,19 @@
+package cajeta.aot;
+
+/**
+ * Marks an injection site — a field or a constructor/method parameter the
+ * compiler resolves to a provider (AspectModel.md § @Inject). `allocate`
+ * picks the identity scope AT THE SITE; `name` qualifies; `optional` permits
+ * a null when no provider exists.
+ *
+ * allocate values (the four identity scopes):
+ *   "ALLOCATE_SINGLETON"   — one instance per process (default)
+ *   "ALLOCATE_OWNER_SCOPE" — one per injecting object
+ *   "ALLOCATE_CALL_SCOPE"  — one per method activation (stubbed)
+ *   "ALLOCATE_TRANSIENT"   — a fresh instance per read
+ */
+annotation Inject {
+    String name() default "";
+    String allocate() default "ALLOCATE_SINGLETON";
+    boolean optional() default false;
+}

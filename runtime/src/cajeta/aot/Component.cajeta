@@ -1,0 +1,15 @@
+package cajeta.aot;
+
+/**
+ * Declares an injectable node in the compile-time DI graph (AspectModel.md §
+ * DI substrate). Optional `name` qualifier disambiguates multiple
+ * implementations of one type; the unqualified provider is the implicit
+ * default (@Primary-equivalent). The component declares no lifetime of its
+ * own — that is a per-@Inject-site decision (see {@link Inject}).
+ *
+ * Core: recognized and lowered by the compiler (no runtime container) — a
+ * @Component class gets a synthesized `__cajeta_inject()` lazy accessor.
+ */
+annotation Component {
+    String name() default "";
+}
