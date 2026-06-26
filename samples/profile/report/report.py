@@ -26,7 +26,7 @@ import re
 import sys
 
 AREAS_ORDER = ["codec", "collection", "sort", "string", "hash", "stream",
-               "math", "clbg", "time", "concurrent", "xpu"]
+               "math", "gpu", "clbg", "time", "concurrent", "xpu"]
 
 # Per-language bar colours — all in the cajeta caramel family, distinguishable.
 LANG_COLORS = {
@@ -141,7 +141,13 @@ def lang_versions(rows, env):
 def row_label(r):
     lang = r.get("language", "")
     lib = r.get("library", "")
-    return lang if (not lib or lib == lang) else f"{lang}/{lib}"
+    base = lang if (not lib or lib == lang) else f"{lang}/{lib}"
+    # Distinguish GPU backends (hip/vulkan/cuda) so device rows are comparable;
+    # cpu/host rows (the default) keep their plain label.
+    be = (r.get("backend") or "").strip()
+    if be and be != "cpu":
+        base = f"{base} ({be})"
+    return base
 
 
 def group_by_area(rows):
@@ -265,7 +271,7 @@ AREA_THR_UNIT = {
     "codec": "MB/s", "hash": "MB/s", "string": "MB/s",
     "sort": "Melem/s",
     "collection": "Mop/s", "stream": "Mop/s", "time": "Mop/s", "concurrent": "Mop/s",
-    "math": "GFLOP/s",
+    "math": "GFLOP/s", "gpu": "GFLOP/s",
 }
 
 

@@ -16,10 +16,11 @@ rm -rf "$D"; mkdir -p "$D"
 
 # Minimal fixture CSV (two areas, an ok + a skipped row).
 cat > "$D/results.csv" <<'CSV'
-schema_version,run_id,timestamp_unix,benchmark,area,dataset_name,dataset_bytes,dataset_sha256,input_size,language,language_version,library,library_version,flags,warmup,trials,min_ns,median_ns,mean_ns,p95_ns,throughput,throughput_unit,peak_rss_kb,cgroup_peak_kb,alloc_bytes,alloc_count,working_set_kb,status,check_ok,notes,variant
-1,t,1750444800,json-tokenize,codec,,-1,,631514,cajeta,0.7,stdlib,,--release,10,50,1429708,1466247,1450000,1500000,,,5000,-1,-1,-1,620,ok,true,,twitter
-1,t,1750444800,json-dom,codec,,-1,,2251051,cajeta,0.7,stdlib,,--release,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,floats,canada
-1,t,1750444800,hashmap-int,collection,,-1,,50000,cajeta,0.7,stdlib,,--release,5,30,2419869,2497504,2450000,2600000,,,34592,-1,-1,-1,34592,ok,true,,
+schema_version,run_id,timestamp_unix,benchmark,area,dataset_name,dataset_bytes,dataset_sha256,input_size,language,language_version,library,library_version,flags,warmup,trials,min_ns,median_ns,mean_ns,p95_ns,throughput,throughput_unit,peak_rss_kb,cgroup_peak_kb,alloc_bytes,alloc_count,working_set_kb,status,check_ok,notes,variant,backend
+1,t,1750444800,json-tokenize,codec,,-1,,631514,cajeta,0.7,stdlib,,--release,10,50,1429708,1466247,1450000,1500000,,,5000,-1,-1,-1,620,ok,true,,twitter,cpu
+1,t,1750444800,json-dom,codec,,-1,,2251051,cajeta,0.7,stdlib,,--release,0,0,-1,-1,-1,-1,,,-1,-1,-1,-1,-1,skipped,false,floats,canada,cpu
+1,t,1750444800,hashmap-int,collection,,-1,,50000,cajeta,0.7,stdlib,,--release,5,30,2419869,2497504,2450000,2600000,,,34592,-1,-1,-1,34592,ok,true,,,cpu
+1,t,1750444800,matmul,gpu,,-1,,1048576,cajeta,0.7,,,--release,5,30,9900000,9940000,9950000,9990000,,,5000,-1,-1,-1,620,ok,true,,n1024,hip
 CSV
 printf 'key,value\ncpu_model,Test CPU\ncpu_cores,32\nkernel,Linux test\n' > "$D/env.csv"
 
@@ -37,5 +38,9 @@ grep -q "showTab"         "$D/site/index.html" || fail "site missing the Time/Th
 # self-contained: no external http(s) resource references
 if grep -qE "https?://[^ '\"]+\.(css|js)" "$D/site/index.html"; then fail "site references external CDN"; fi
 grep -q "## codec" "$D/report.md" || fail "report.md missing codec area"
+# gpu area: GFLOP/s derived for the Cajeta GPU matmul row, backend-labelled.
+grep -q "## gpu" "$D/report.md"        || fail "report.md missing gpu area"
+grep -q "GFLOP/s" "$D/site/index.html" || fail "gpu row missing GFLOP/s (AREA_THR_UNIT[gpu]?)"
+grep -q "cajeta (hip)" "$D/site/index.html" || fail "gpu row not backend-labelled (cajeta (hip))"
 
 echo "REPORT OK"
