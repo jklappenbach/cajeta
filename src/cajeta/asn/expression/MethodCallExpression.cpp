@@ -17,6 +17,7 @@
 #include "cajeta/type/CajetaView.h"
 #include "cajeta/type/CajetaFunctionType.h"
 #include "cajeta/method/Method.h"
+#include "cajeta/method/FactoryProviderMethod.h"
 #include "cajeta/error/Diagnostics.h"
 #include "cajeta/error/Exception.h"
 #include "cajeta/util/MemoryManager.h"
@@ -4999,6 +5000,48 @@ namespace cajeta {
                 }
             }
             entries.push_back(ParameterEntry(et, param.label, value));
+        }
+
+        // Assisted-injection (AspectModel.md § @Factory R3 / aot-di Unit 4b).
+        // A call to a @Factory provider method that has assisted params
+        // supplies ONLY the assisted args; the compiler splices the
+        // graph-resolved @Inject args into their declared positions. The
+        // splice fires only when the supplied arg count matches the
+        // assisted count exactly — a caller that passes every param
+        // explicitly (count == total) keeps the unchanged path.
+        if (targetClass && targetClass->getQName()) {
+            CajetaModule::FactoryDescriptorPtr fdesc;
+            for (auto& f : CajetaModule::getFactoryClasses()) {
+                if (f && f->klass && f->klass->getQName()
+                        && f->klass->getQName()->toCanonical()
+                            == targetClass->getQName()->toCanonical()) {
+                    fdesc = f;
+                    break;
+                }
+            }
+            if (fdesc) {
+                for (auto& prov : fdesc->providers) {
+                    if (!prov.hasAssisted || !prov.method) continue;
+                    if (prov.method->getName() != methodCallName) continue;
+                    int assistedCount = 0;
+                    for (auto& fp : prov.params) if (!fp.injected) assistedCount++;
+                    if ((int) entries.size() != assistedCount) continue;
+                    std::vector<ParameterEntry> spliced;
+                    size_t userIdx = 0;
+                    for (auto& fp : prov.params) {
+                        if (fp.injected) {
+                            llvm::Value* dep = FactoryProviderMethod::emitInjectArg(
+                                builder, module, fp);
+                            spliced.push_back(ParameterEntry(
+                                fp.param->getType(), "", dep));
+                        } else if (userIdx < entries.size()) {
+                            spliced.push_back(entries[userIdx++]);
+                        }
+                    }
+                    entries = std::move(spliced);
+                    break;
+                }
+            }
         }
 
         // Varargs (`T... args`): if a same-named method on the target class is

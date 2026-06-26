@@ -922,17 +922,18 @@ namespace cajeta {
             }
         }
 
-        // Resolve all-injected providers' @Inject params (R1 edges) and
+        // Resolve every provider's @Inject params (R1 edges) and
         // attribute their dependencies to the factory's node, so cycles
-        // through factory params are caught by the DFS below. Assisted
-        // params are skipped (caller-supplied, not graph edges); an
-        // assisted provider is not a graph product at all. A missing
+        // through factory params are caught by the DFS below. This runs
+        // for assisted providers too: their product isn't a graph node,
+        // but the @Inject params still need resolution for the
+        // assisted-injection call-site splice (Unit 4b). Assisted (un-
+        // marked) params are caller-supplied and skipped. A missing
         // @Inject-param target is a hard error.
         for (auto& f : factoryClasses) {
             if (!f || !f->klass || !f->selfComponent) continue;
             if (!activeSet.count(f->selfComponent)) continue;
             for (auto& p : f->providers) {
-                if (p.hasAssisted) continue;
                 for (auto& fp : p.params) {
                     if (!fp.injected) continue;
                     auto pType = fp.param ? fp.param->getType() : nullptr;

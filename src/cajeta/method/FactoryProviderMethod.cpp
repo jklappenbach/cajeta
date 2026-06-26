@@ -23,6 +23,42 @@ namespace cajeta {
         return "__cajeta_provide_" + fc + "_" + pt;
     }
 
+    llvm::Value* FactoryProviderMethod::emitInjectArg(
+            llvm::IRBuilder<>* builder, CajetaModulePtr module,
+            CajetaModule::FactoryProvider::Param& fp) {
+        auto& ctx = *module->getLlvmContext();
+        llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
+        auto* nullPtr = llvm::ConstantPointerNull::get(
+            llvm::cast<llvm::PointerType>(ptrTy));
+        if (fp.resolvedFactory && fp.resolvedProviderIdx >= 0) {
+            auto& nested =
+                fp.resolvedFactory->providers[fp.resolvedProviderIdx];
+            if (nested.accessor) {
+                nested.accessor->getLlvmFunctionType();
+                llvm::Function* fn = CajetaModule::ensureFunctionVisible(
+                    builder, nested.accessor->getLlvmFunction(),
+                    nested.accessor->getLlvmFunctionType());
+                return builder->CreateCall(
+                    nested.accessor->getLlvmFunctionType(), fn, {}, "idep");
+            }
+            return nullPtr;
+        }
+        if (fp.resolvedTarget && fp.resolvedTarget->klass) {
+            MethodPtr inj;
+            for (auto& [mk, m] : fp.resolvedTarget->klass->getMethods()) {
+                if (m && m->getName() == "__cajeta_inject") { inj = m; break; }
+            }
+            if (inj) {
+                inj->getLlvmFunctionType();
+                llvm::Function* fn = CajetaModule::ensureFunctionVisible(
+                    builder, inj->getLlvmFunction(), inj->getLlvmFunctionType());
+                return builder->CreateCall(
+                    inj->getLlvmFunctionType(), fn, {}, "idep");
+            }
+        }
+        return nullPtr;
+    }
+
     FactoryProviderMethod::FactoryProviderMethod(
             CajetaModulePtr module,
             CajetaClassPtr factoryClass,
@@ -108,21 +144,7 @@ namespace cajeta {
         std::vector<ParameterEntry> args;
         for (auto& fp : provider.params) {
             if (!fp.injected) continue;
-            llvm::Value* dep = nullPtr;
-            if (fp.resolvedFactory && fp.resolvedProviderIdx >= 0) {
-                auto& nested =
-                    fp.resolvedFactory->providers[fp.resolvedProviderIdx];
-                if (nested.accessor) {
-                    nested.accessor->getLlvmFunctionType();
-                    llvm::Function* fn = CajetaModule::ensureFunctionVisible(
-                        builder, nested.accessor->getLlvmFunction(),
-                        nested.accessor->getLlvmFunctionType());
-                    dep = builder->CreateCall(
-                        nested.accessor->getLlvmFunctionType(), fn, {}, "pdep");
-                }
-            } else if (fp.resolvedTarget) {
-                dep = callInject(fp.resolvedTarget->klass, "pdep");
-            }
+            llvm::Value* dep = emitInjectArg(builder, module, fp);
             args.emplace_back(fp.param->getType(), std::string(), dep);
         }
 

@@ -24,6 +24,7 @@
 
 #include "Method.h"
 #include "../compile/CajetaModule.h"
+#include "llvm/IR/IRBuilder.h"
 
 namespace cajeta {
     class FactoryProviderMethod : public Method {
@@ -37,6 +38,16 @@ namespace cajeta {
 
         static std::string accessorName(CajetaClassPtr factoryClass,
                                         CajetaTypePtr providedType);
+
+        // Emit the value for a resolved @Inject param: the target
+        // component's __cajeta_inject, or a nested provider accessor.
+        // Shared by the accessor body (Unit 4a) and the assisted-
+        // injection call-site splice (Unit 4b). Returns a null pointer
+        // constant if unresolved (defensive — the graph already errored).
+        static llvm::Value* emitInjectArg(
+            llvm::IRBuilder<>* builder,
+            CajetaModulePtr module,
+            CajetaModule::FactoryProvider::Param& fp);
 
     private:
         CajetaModule::FactoryDescriptorPtr descriptor;
