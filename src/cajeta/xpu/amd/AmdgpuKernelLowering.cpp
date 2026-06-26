@@ -123,6 +123,93 @@ public:
         b.CreateFence(ord, sc);
     }
 
+    // Async global->LDS copy (xpu-pipelined-gemm-primitives U2). gfx1151 (RDNA3.5)
+    // has the LDS-direct vmem load `global_load_lds_{ubyte,ushort,dword}` but NOT
+    // the gfx1250+ async-mark hardware. So `copy` issues `global_load_lds` per
+    // element — the data goes global->LDS with NO VGPR staging buffer (frees the
+    // registers the WMMA accumulator path is starved for), the key ISA win over the
+    // staged global->reg->LDS path. The workgroup stripes it (e = tid, tid+nthr, ...),
+    // so each wave's lanes coalesce. Element size must be 1/2/4 bytes; wider (e.g.
+    // fp64) falls back to the synchronous strided seam (the fp64 path uses CoopStage,
+    // not AsyncCopy). `commit` is a no-op (no async-mark); `wait` drains outstanding
+    // vmem so the landed LDS is safe to publish through the caller's Barrier — a full
+    // drain, since deep N-stage overlap needs the gfx1250 async-mark path.
+    // True iff `arch` (gfxNNN) has the direct global->LDS load (VMemToLDSLoad in
+    // LLVM): the GFX9/CDNA family and gfx1250+. RDNA1-3.5 (gfx10xx/gfx11xx) and
+    // gfx1200/1201 lack it — emitting global_load_lds there Cannot-selects, so we
+    // fall back to the synchronous staged copy.
+    static bool archHasVmemToLds(llvm::StringRef arch) {
+        if (arch.starts_with("gfx9")) return true;
+        unsigned num = 0;
+        if (arch.starts_with("gfx") && !arch.drop_front(3).getAsInteger(10, num))
+            return num >= 1250;
+        return false;
+    }
+
+    void asyncCopy(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* dstBase,
+                   llvm::Type* dstElem, llvm::Value* dstOffset, llvm::Value* srcBase,
+                   llvm::Type* srcElem, llvm::Value* srcOffset,
+                   llvm::Value* count) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        uint64_t elemBytes = m.getDataLayout().getTypeStoreSize(srcElem);
+        llvm::StringRef arch;
+        if (auto* f = m.getModuleFlag("cajeta.amdgpu.arch"))
+            if (auto* s = llvm::dyn_cast<llvm::MDString>(f)) arch = s->getString();
+        // No native direct global->LDS on this subtarget, or a width the LDS-direct
+        // load can't carry (1/2/4 bytes only) — use the synchronous staged copy.
+        if (!archHasVmemToLds(arch)
+                || (elemBytes != 1 && elemBytes != 2 && elemBytes != 4)) {
+            LoweringTarget::asyncCopy(b, m, dstBase, dstElem, dstOffset, srcBase,
+                                      srcElem, srcOffset, count);
+            return;
+        }
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+        llvm::Function* fn = b.GetInsertBlock()->getParent();
+        auto i32of = [&](llvm::Value* v) { return b.CreateZExtOrTrunc(v, i32); };
+        llvm::Value* tid  = i32of(threadId(b, m, 0));
+        llvm::Value* nthr = i32of(workgroupDim(b, m, 0));
+        llvm::Value* cnt  = i32of(count);
+        llvm::Value* dOff = i32of(dstOffset);
+        llvm::Value* sOff = i32of(srcOffset);
+        llvm::Function* loadLds = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::amdgcn_global_load_lds);
+        llvm::BasicBlock* pred = b.GetInsertBlock();
+        auto* head = llvm::BasicBlock::Create(ctx, "asynccopy.head", fn);
+        auto* body = llvm::BasicBlock::Create(ctx, "asynccopy.body", fn);
+        auto* exit = llvm::BasicBlock::Create(ctx, "asynccopy.exit", fn);
+        b.CreateBr(head);
+        b.SetInsertPoint(head);
+        llvm::PHINode* e = b.CreatePHI(i32, 2, "asynccopy.e");
+        e->addIncoming(tid, pred);
+        b.CreateCondBr(b.CreateICmpULT(e, cnt), body, exit);
+        b.SetInsertPoint(body);
+        llvm::Value* sPtr = bufferElementPtr(   // addrspace(1) global source
+            b, m, srcBase, srcElem, b.CreateZExt(b.CreateAdd(sOff, e), i64));
+        llvm::Value* dPtr = bufferElementPtr(   // addrspace(3) LDS destination
+            b, m, dstBase, dstElem, b.CreateZExt(b.CreateAdd(dOff, e), i64));
+        b.CreateCall(loadLds, {sPtr, dPtr,
+                               llvm::ConstantInt::get(i32, elemBytes),
+                               llvm::ConstantInt::get(i32, 0),
+                               llvm::ConstantInt::get(i32, 0)});
+        e->addIncoming(b.CreateAdd(e, nthr), body);
+        b.CreateBr(head);
+        b.SetInsertPoint(exit);
+    }
+
+    // No async-mark on gfx1151 — there is no group counter to close.
+    void asyncCommit(llvm::IRBuilderBase&, llvm::Module&) override {}
+
+    // Drain the outstanding global_load_lds writes (a workgroup AcqRel fence the
+    // backend lowers to the right s_waitcnt) so the caller's Barrier publishes
+    // landed data. Full drain — gfx1151 has no async-mark partial wait.
+    void asyncWait(llvm::IRBuilderBase& b, llvm::Module& m,
+                   llvm::Value* /*groupsInFlight*/) override {
+        llvm::SyncScope::ID wg =
+            m.getContext().getOrInsertSyncScopeID("workgroup");
+        b.CreateFence(llvm::AtomicOrdering::AcquireRelease, wg);
+    }
+
     // AMDGPU marks kernels purely by calling convention — no metadata
     // analogue to nvvm.annotations.
     void decorateKernel(llvm::Function* fn, llvm::Module& /*m*/) override {
