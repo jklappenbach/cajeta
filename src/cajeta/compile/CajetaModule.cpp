@@ -14,6 +14,7 @@
 #include "Compiler.h"
 #include "../method/Method.h"
 #include "../method/ComponentInjectMethod.h"
+#include "../method/FactoryProviderMethod.h"
 #include "../type/StructureMetadata.h"
 #include "../type/CajetaClass.h"
 #include "../runtime/EmbeddedRuntime.h"
@@ -1043,6 +1044,27 @@ namespace cajeta {
             auto inject = std::make_shared<ComponentInjectMethod>(
                 c->klass->getModule(), c->klass, c);
             c->klass->addMethod(inject);
+        }
+
+        // @Factory provider accessors (Unit 4a). One per all-injected
+        // provider whose factory survived filtering. Synthesized AFTER
+        // every component's __cajeta_inject exists (the accessor calls
+        // them for the factory singleton + the providers' @Inject params)
+        // and added to the factory class so the codegen worklist walks
+        // it. Idempotent: skip if the accessor is already set.
+        for (auto& f : factoryClasses) {
+            if (!f || !f->klass || !f->selfComponent) continue;
+            if (!activeSet.count(f->selfComponent)) continue;
+            for (size_t i = 0; i < f->providers.size(); ++i) {
+                auto& p = f->providers[i];
+                if (p.hasAssisted) continue;            // assisted ⇒ no accessor (Unit 4b)
+                if (p.accessor) continue;
+                if (!p.providedType) continue;
+                auto acc = std::make_shared<FactoryProviderMethod>(
+                    f->klass->getModule(), f->klass, f, (int) i);
+                f->klass->addMethod(acc);
+                p.accessor = acc;
+            }
         }
     }
 

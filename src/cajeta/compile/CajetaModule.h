@@ -151,6 +151,12 @@ namespace cajeta {
             vector<Param> params;
             bool hasAssisted = false;           // any assisted param => factory-injection
             AllocateMode scope = AllocateMode::Singleton;   // R4
+            // The synthesized provider accessor (all-injected providers
+            // only) — a static method on the factory class that builds
+            // the product via the factory method. Consumers' @Inject of
+            // the product route to it. Null until synthesized (Unit 4a);
+            // the singleton memo storage lives on the method itself.
+            MethodPtr accessor;
         };
 
         struct FactoryDescriptor {
