@@ -81,11 +81,11 @@
         },
 
         "gpu": {
-            "description": "Release build with GPU backend (amdgpu+cpu, gfx1151) for the gpu-area @Kernel benchmarks; the active backend is chosen at runtime via CAJETA_XPU_BACKEND. Output build/profile-gpu so it does not collide with the cpu-only build/profile. Vulkan is deferred (see agents/gpu-vulkan-f64-plan.md: 8-wide SPIR-V limit + 4-wide check=false).",
+            "description": "Release build with GPU backend (amdgpu, gfx1151) for the gpu-area @Kernel benchmarks; the active backend is chosen at runtime via CAJETA_XPU_BACKEND=hip. Output build/profile-gpu so it does not collide with the cpu-only build/profile. cpu is NOT in this flavor: the LDS-tiled matmul kernel has a barrier in its K-loop, which OOMs the CPU barrier-fission pass (see reference_cpu_barrier_fission_loop_oom); HIP compiles it natively. Vulkan is deferred (agents/gpu-vulkan-f64-plan.md).",
             "actions": [
                 { "action": "build",
                   "flavor": { "base": "release", "opt": "O3", "cpu": "native",
-                              "xpu-backend": "amdgpu,cpu", "xpu-arch": "gfx1151" },
+                              "xpu-backend": "amdgpu", "xpu-arch": "gfx1151" },
                   "output-path": "build/profile-gpu", "id": "art" }
             ],
             "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }

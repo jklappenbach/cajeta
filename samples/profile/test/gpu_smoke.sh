@@ -20,7 +20,7 @@ fail() { echo "GPU FAIL: $1" >&2; exit 1; }
 [[ -x "$CAJETA" ]] || fail "cajeta not found at $CAJETA"
 
 cd "$PROJ"
-echo "[gpu] building gpu flavor (amdgpu,cpu / gfx1151)..."
+echo "[gpu] building gpu flavor (amdgpu / gfx1151)..."
 "$CAJETA" gpu >/tmp/gpu-build.log 2>&1 || { tail -25 /tmp/gpu-build.log; fail "gpu build failed"; }
 EXE="$PROJ/build/profile-gpu"
 [[ -x "$EXE" ]] || EXE="$PROJ/build/profile"

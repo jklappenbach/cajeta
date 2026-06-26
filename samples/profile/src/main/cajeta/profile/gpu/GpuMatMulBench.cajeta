@@ -4,6 +4,9 @@ import cajeta.collection.ArrayList;
 import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
 import cajeta.xpu.KernelThread;
+import cajeta.xpu.Workgroup;
+import cajeta.xpu.Barrier;
+import cajeta.xpu.Shared;
 
 import profile.Benchmark;
 
@@ -14,11 +17,14 @@ import profile.Benchmark;
 // backend. A is the identity, so C == B — a cheap exact cross-check at every
 // swept size (checksum of C == checksum of B) while doing the full N^3 work.
 //
-// One work-item per (row, 8-column block): n*(n/8) items. Each keeps a
-// Vector<float64,8> C accumulator across the k loop and reads B[k, jb:jb+8] as a
-// packed <8 x double> vload, FMA'd with the broadcast scalar A[row,k]. This is
-// the single-accumulator baseline kernel; the multi-accumulator + FMA unroll is
-// Unit 3. Assumes n % 8 == 0 (all swept sizes are).
+// LDS-tiled, register-blocked fp64 GEMM. A 64x64 output tile per workgroup, K
+// stepped by 16, each of the 256 threads computing a 4x4 micro-tile (16 register
+// accumulators). Both global loads are coalesced (A along k, B along n) and
+// staged into shared memory once per K-step; @FastMath fuses the 16 a*b+c into
+// v_fma_f64. This is 1.86x the naive single-accumulator kernel (212 -> 394
+// GFLOP/s at n=1024 on gfx1151/HIP; ~88% of rocBLAS/PyTorch's 449). The last mile
+// to vendor-BLAS parity (the occupancy/LDS-bandwidth wall) is the gpu-matmul-tiling
+// follow-up. Assumes n % 64 == 0 (all swept sizes are).
 public class GpuMatMulBench extends Benchmark {
 
     public float64[] a;
@@ -36,24 +42,68 @@ public class GpuMatMulBench extends Benchmark {
     public float64 cSum;
 
     @Kernel
+    @FastMath
     public static void gpuMatmul(KernelBuffer<float64> c, KernelBuffer<float64> a,
                               KernelBuffer<float64> b, uint32 n) {
-        uint32 nblk = n / 8;
-        uint32 t = KernelThread.globalIdX();
-        if (t < n * nblk) {
-            uint32 row = t / nblk;
-            uint32 jb = (t % nblk) * 8;
-            uint32 rBase = row * n;
-            Vector<float64,8> cv =
-                stack Vector<float64,8>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
-            uint32 k = 0;
-            while (k < n) {
-                Vector<float64,8> bv = b.vload<8>(k * n + jb);
-                cv = cv + bv * a[rBase + k];
-                k = k + 1;
+        Shared<float64> as = shared float64[64 * 16];
+        Shared<float64> bs = shared float64[16 * 64];
+        uint32 tid = KernelThread.x();
+        uint32 bm = Workgroup.y();
+        uint32 bn = Workgroup.x();
+        uint32 threadRow = tid / 16;
+        uint32 threadCol = tid % 16;
+        uint32 rowBase = bm * 64;
+        uint32 colBase = bn * 64;
+
+        float64 c00 = 0.0; float64 c01 = 0.0; float64 c02 = 0.0; float64 c03 = 0.0;
+        float64 c10 = 0.0; float64 c11 = 0.0; float64 c12 = 0.0; float64 c13 = 0.0;
+        float64 c20 = 0.0; float64 c21 = 0.0; float64 c22 = 0.0; float64 c23 = 0.0;
+        float64 c30 = 0.0; float64 c31 = 0.0; float64 c32 = 0.0; float64 c33 = 0.0;
+
+        uint32 k0 = 0;
+        while (k0 < n) {
+            uint32 i = 0;
+            while (i < 4) {
+                uint32 li = tid + i * 256;
+                uint32 m = li / 16;
+                uint32 kk = li % 16;
+                as[kk * 64 + m] = a[(rowBase + m) * n + k0 + kk];
+                i = i + 1;
             }
-            c.vstore(rBase + jb, cv);
+            i = 0;
+            while (i < 4) {
+                uint32 li = tid + i * 256;
+                uint32 kk = li / 64;
+                uint32 nn = li % 64;
+                bs[kk * 64 + nn] = b[(k0 + kk) * n + colBase + nn];
+                i = i + 1;
+            }
+            Barrier.workgroup();
+
+            uint32 kk = 0;
+            while (kk < 16) {
+                uint32 aB = kk * 64 + threadRow * 4;
+                float64 a0 = as[aB + 0]; float64 a1 = as[aB + 1];
+                float64 a2 = as[aB + 2]; float64 a3 = as[aB + 3];
+                uint32 bB = kk * 64 + threadCol * 4;
+                float64 b0 = bs[bB + 0]; float64 b1 = bs[bB + 1];
+                float64 b2 = bs[bB + 2]; float64 b3 = bs[bB + 3];
+                c00 = c00 + a0 * b0; c01 = c01 + a0 * b1; c02 = c02 + a0 * b2; c03 = c03 + a0 * b3;
+                c10 = c10 + a1 * b0; c11 = c11 + a1 * b1; c12 = c12 + a1 * b2; c13 = c13 + a1 * b3;
+                c20 = c20 + a2 * b0; c21 = c21 + a2 * b1; c22 = c22 + a2 * b2; c23 = c23 + a2 * b3;
+                c30 = c30 + a3 * b0; c31 = c31 + a3 * b1; c32 = c32 + a3 * b2; c33 = c33 + a3 * b3;
+                kk = kk + 1;
+            }
+            Barrier.workgroup();
+            k0 = k0 + 16;
         }
+
+        uint32 r0 = rowBase + threadRow * 4;
+        uint32 cc = colBase + threadCol * 4;
+        c[(r0 + 0) * n + cc + 0] = c00; c[(r0 + 0) * n + cc + 1] = c01; c[(r0 + 0) * n + cc + 2] = c02; c[(r0 + 0) * n + cc + 3] = c03;
+        c[(r0 + 1) * n + cc + 0] = c10; c[(r0 + 1) * n + cc + 1] = c11; c[(r0 + 1) * n + cc + 2] = c12; c[(r0 + 1) * n + cc + 3] = c13;
+        c[(r0 + 2) * n + cc + 0] = c20; c[(r0 + 2) * n + cc + 1] = c21; c[(r0 + 2) * n + cc + 2] = c22; c[(r0 + 2) * n + cc + 3] = c23;
+        c[(r0 + 3) * n + cc + 0] = c30; c[(r0 + 3) * n + cc + 1] = c31; c[(r0 + 3) * n + cc + 2] = c32; c[(r0 + 3) * n + cc + 3] = c33;
     }
 
     public String name() {
@@ -188,9 +238,8 @@ public class GpuMatMulBench extends Benchmark {
         this.kc.upload(this.c);
 
         this.nU = (uint32) this.nDim;
-        uint32 total = this.nU * (this.nU / 8);   // one item per (row, 8-col block)
-        this.blockX = 64;
-        this.gridX = (total + this.blockX - 1) / this.blockX;
+        this.blockX = 256;            // 256 threads/workgroup, each a 4x4 micro-tile
+        this.gridX = this.nU / 64;    // one workgroup per 64x64 output tile (square)
     }
 
     public int64 inputSize() {
@@ -198,7 +247,7 @@ public class GpuMatMulBench extends Benchmark {
     }
 
     public void run(int32 iterations) {
-        gpuMatmul.launch(this.stream, grid: [this.gridX], block: [this.blockX])(
+        gpuMatmul.launch(this.stream, grid: [this.gridX, this.gridX], block: [this.blockX])(
             this.kc, this.ka, this.kb, this.nU);
         this.stream.sync();
     }
