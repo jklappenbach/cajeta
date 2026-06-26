@@ -502,6 +502,58 @@ namespace cajeta {
                                  "OperatorOverloading.md §7. "
                                  "[CAJETA_WARN_HASH_EQUALS_MISMATCH]\n";
                 }
+                // @Factory discovery (AspectModel.md § @Factory, R1–R4).
+                // Runs here (after the body walk, inside the non-template
+                // guard) because it needs the provider methods populated;
+                // templates re-run visitClassDeclaration per instantiation
+                // (same reasoning as @Aspect). A @Factory class is ALSO
+                // registered as a plain @Component so its @Inject
+                // collaborators resolve and it is itself an injectable
+                // singleton (R3's assisted case injects the factory).
+                if (structure->findAnnotation("Factory")) {
+                    CajetaModule::ComponentDescriptorPtr self;
+                    for (auto& d : CajetaModule::getComponentClasses()) {
+                        if (d && d->klass == structure) { self = d; break; }
+                    }
+                    if (!self) {
+                        self = make_shared<CajetaModule::ComponentDescriptor>();
+                        self->klass = structure;
+                        CajetaModule::registerComponent(self);
+                    }
+                    auto fdesc = make_shared<CajetaModule::FactoryDescriptor>();
+                    fdesc->klass = structure;
+                    fdesc->selfComponent = self;
+                    for (auto& kv : structure->getMethods()) {
+                        auto& method = kv.second;
+                        if (!method || method->isConstructor()) continue;
+                        auto retType = method->getReturnType();
+                        // A provider returns the product; void / null-return
+                        // methods are helpers, not providers (R1).
+                        if (!retType || retType->toCanonical() == "void") continue;
+                        CajetaModule::FactoryProvider prov;
+                        prov.method = method;
+                        prov.providedType = retType;
+                        // R4: method scope @Singleton / @Transient (Singleton default).
+                        prov.scope = method->findAnnotation("Transient")
+                            ? CajetaModule::AllocateMode::Transient
+                            : CajetaModule::AllocateMode::Singleton;
+                        // R1/R3: classify each param — @Inject = edge,
+                        // unmarked = assisted (any assisted ⇒ factory-injection).
+                        for (auto& p : method->getParameterList()) {
+                            CajetaModule::FactoryProvider::Param fp;
+                            fp.param = p;
+                            if (auto inj = p->findAnnotation("Inject")) {
+                                fp.injected = true;
+                                fp.nameQualifier = inj->getString("name");
+                            } else {
+                                prov.hasAssisted = true;
+                            }
+                            prov.params.push_back(fp);
+                        }
+                        fdesc->providers.push_back(std::move(prov));
+                    }
+                    CajetaModule::registerFactory(fdesc);
+                }
             }
             // @Logged: synthesize the auto-logger static field BEFORE the
             // prototype is built, so the new `log` is laid out and resolves as a

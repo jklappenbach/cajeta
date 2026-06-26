@@ -36,6 +36,7 @@ namespace cajeta {
     map<string, CajetaModulePtr> CajetaModule::moduleVariables;
     vector<CajetaClassPtr> CajetaModule::aspectClasses;
     vector<CajetaModule::ComponentDescriptorPtr> CajetaModule::componentClasses;
+    vector<CajetaModule::FactoryDescriptorPtr> CajetaModule::factoryClasses;
     string CajetaModule::activeProfile = "prod";
 
     CajetaModule::CajetaModule(llvm::LLVMContext* llvmContext,
@@ -322,6 +323,7 @@ namespace cajeta {
         methods.clear();
         aspectClasses.clear();
         componentClasses.clear();
+        factoryClasses.clear();
         activeProfile = "prod";
         Method::getArchive().clear();
         stdlibModule.reset();
@@ -341,6 +343,7 @@ namespace cajeta {
             map<string, CajetaModulePtr> moduleVariables;
             vector<CajetaClassPtr> aspectClasses;
             vector<CajetaModule::ComponentDescriptorPtr> componentClasses;
+            vector<CajetaModule::FactoryDescriptorPtr> factoryClasses;
             string activeProfile;
             map<string, MethodPtr> methodArchive;
             CajetaModulePtr stdlibModule;
@@ -354,6 +357,7 @@ namespace cajeta {
         g_moduleBaseline.moduleVariables = moduleVariables;
         g_moduleBaseline.aspectClasses = aspectClasses;
         g_moduleBaseline.componentClasses = componentClasses;
+        g_moduleBaseline.factoryClasses = factoryClasses;
         g_moduleBaseline.activeProfile = activeProfile;
         g_moduleBaseline.methodArchive = Method::getArchive();
         g_moduleBaseline.stdlibModule = stdlibModule;
@@ -367,6 +371,7 @@ namespace cajeta {
         moduleVariables = g_moduleBaseline.moduleVariables;
         aspectClasses = g_moduleBaseline.aspectClasses;
         componentClasses = g_moduleBaseline.componentClasses;
+        factoryClasses = g_moduleBaseline.factoryClasses;
         activeProfile = g_moduleBaseline.activeProfile;
         Method::getArchive() = g_moduleBaseline.methodArchive;
         stdlibModule = g_moduleBaseline.stdlibModule;
