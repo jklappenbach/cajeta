@@ -185,6 +185,74 @@ public class M {
 }
 )CJ";
 
+// U3b: a tiled 16x16 GEMM where A and B are staged into Swizzled<float16,16> LDS
+// tiles (CoopStage.panel), then WMMA-loaded from those swizzled tiles. The
+// CooperativeMatrix fragment loads must apply the SAME swizzle the staging did, or
+// the matmul is wrong. A[i][k]=(i+2k)%5, B[k][j]=(3k+j)%4 (i,k,j-distinct, small
+// enough to be exact in half); run() compares the kernel's C against an in-kernel
+// reference and returns 999 on full match.
+const char* kSwizzledWmma = R"CJ(
+package test;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.Barrier;
+import cajeta.xpu.Swizzled;
+import cajeta.xpu.CoopStage;
+import cajeta.xpu.CooperativeMatrix;
+public class M {
+    @Kernel
+    public static void wmma(KernelBuffer<float16> a, KernelBuffer<float16> b,
+                            KernelBuffer<float32> c) {
+        Swizzled<float16, 16> sa = shared float16[256];
+        Swizzled<float16, 16> sb = shared float16[256];
+        CoopStage.panel(sa, a, 0, 0, 16, 16, 16);
+        CoopStage.panel(sb, b, 0, 0, 16, 16, 16);
+        Barrier.workgroup();
+        CooperativeMatrix<float16, 16, 16, 0> ma;
+        ma.load(sa, 0, 0, 16);
+        CooperativeMatrix<float16, 16, 16, 1> mb;
+        mb.load(sb, 0, 0, 16);
+        CooperativeMatrix<float32, 16, 16, 2> mc;
+        mc.splat(0.0f);
+        mc.mma(ma, mb);
+        mc.store(c, 0, 0, 16);
+    }
+    public static int32 run() {
+        uint32 n = 256;
+        float16[] ha = heap float16[n];
+        float16[] hb = heap float16[n];
+        float32[] hc = heap float32[n];
+        for (uint32 i = 0; i < 16; i = i + 1) {
+            for (uint32 k = 0; k < 16; k = k + 1) {
+                ha[i * 16 + k] = (float16) ((float32) ((i + 2 * k) % 5));
+                hb[i * 16 + k] = (float16) ((float32) ((3 * i + k) % 4));
+                hc[i * 16 + k] = 0.0f;
+            }
+        }
+        KernelBuffer<float16> a = heap KernelBuffer<float16>(n);
+        KernelBuffer<float16> b = heap KernelBuffer<float16>(n);
+        KernelBuffer<float32> c = heap KernelBuffer<float32>(n);
+        a.upload(ha);
+        b.upload(hb);
+        c.upload(hc);
+        KernelStream s = KernelStream.current();
+        wmma.launch(s, grid: [1], block: [32])(a, b, c);
+        s.sync();
+        c.download(hc);
+        for (uint32 i = 0; i < 16; i = i + 1) {
+            for (uint32 j = 0; j < 16; j = j + 1) {
+                float32 acc = 0.0f;
+                for (uint32 k = 0; k < 16; k = k + 1) {
+                    acc = acc + (float32) ((i + 2 * k) % 5) * (float32) ((3 * k + j) % 4);
+                }
+                if (hc[i * 16 + j] != acc) { return (int32) (100 + i * 16 + j); }
+            }
+        }
+        return 999;
+    }
+}
+)CJ";
+
 } // namespace
 
 // U3.1.a (CPU half): a Swizzled tile write-then-cross-lane-read round-trips every
@@ -219,4 +287,17 @@ TEST(XpuSwizzledTests, swizzledStagedRoundTrips) {
     ASSERT_NE(fn, nullptr);
     int r = fn();
     EXPECT_EQ(r, 555) << "fail code " << r << " (100+i CoopStage, 1000+i AsyncCopy)";
+}
+
+// U3b (CPU software-tier oracle): a 16x16 GEMM whose A/B tiles are staged into
+// Swizzled LDS and WMMA-loaded from there computes correctly — the fragment loads
+// apply the same swizzle as the staging. (Software cooperative-matrix tile on CPU;
+// the AMD on-device test exercises the real WMMA path.)
+TEST(XpuSwizzledTests, swizzledStagedWmmaMatmul) {
+    auto jit = CajetaJit::compile(kSwizzledWmma, "test.M", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 999) << "fail code " << r << " (100+i*16+j: C[i][j] mismatch)";
 }

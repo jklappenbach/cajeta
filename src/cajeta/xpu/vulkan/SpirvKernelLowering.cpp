@@ -962,7 +962,11 @@ public:
                                 llvm::Value* ptr, llvm::Value* layout,
                                 llvm::Value* stride, llvm::Type* matrixType,
                                 uint32_t /*rows*/, uint32_t /*cols*/,
-                                uint32_t /*use*/) override {
+                                uint32_t /*use*/, uint32_t swz = 0) override {
+        if (swz) throw cajeta::Exception(
+            "XPU SPIR-V: CooperativeMatrix.load from a Swizzled<T,S> tile is "
+            "unsupported (OpCooperativeMatrixLoadKHR can't permute per element); "
+            "use a plain Shared<T> tile", "XPU-CM-SWZ");
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::spv_cooperative_matrix_load,
             {matrixType, ptr->getType()});
@@ -973,7 +977,11 @@ public:
     void coopMatrixStore(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
                          llvm::Value* matrixVal, llvm::Value* layout,
                          llvm::Value* stride, uint32_t /*rows*/, uint32_t /*cols*/,
-                         uint32_t /*use*/) override {
+                         uint32_t /*use*/, uint32_t swz = 0) override {
+        if (swz) throw cajeta::Exception(
+            "XPU SPIR-V: CooperativeMatrix.store to a Swizzled<T,S> tile is "
+            "unsupported (OpCooperativeMatrixStoreKHR can't permute per element); "
+            "use a plain Shared<T> tile", "XPU-CM-SWZ");
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::spv_cooperative_matrix_store,
             {ptr->getType(), matrixVal->getType()});

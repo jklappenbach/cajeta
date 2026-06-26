@@ -1001,14 +1001,17 @@ private:
         return target.swizzleAddr(builder, idx, it->second);
     }
 
-    // True if `e` is a bare identifier naming a Swizzled<T,S> tile local.
-    bool namesSwizzledTile(const ExpressionPtr& e) {
+    // The swizzle row stride S if `e` is a bare identifier naming a Swizzled<T,S>
+    // tile local, else 0 (not swizzled).
+    uint32_t swizzleStrideOfArg(const ExpressionPtr& e) {
         if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(e)) {
             auto bb = bufferBases.find(id->getTextValue());
-            if (bb != bufferBases.end())
-                return swizzledBaseStride.count(bb->second) != 0;
+            if (bb != bufferBases.end()) {
+                auto it = swizzledBaseStride.find(bb->second);
+                if (it != swizzledBaseStride.end()) return it->second;
+            }
         }
-        return false;
+        return 0;
     }
 
     // Coerce any scalar to an i1 truth value (for conditions).
@@ -3489,12 +3492,10 @@ private:
             if (args.size() != 4)
                 unsupported("CooperativeMatrix." + name +
                             " expects (Buffer, offset, layout, stride)");
-            if (namesSwizzledTile(args[0].expression))
-                unsupported("CooperativeMatrix." + name + " from a Swizzled<T,S> "
-                            "tile is not yet swizzle-aware (the fragment coords "
-                            "are still linear, so it would mis-address a swizzled "
-                            "tile); use a plain Shared<T> tile for the WMMA "
-                            "load/store for now");
+            // A Swizzled<T,S> tile carries its stride S into the fragment-coord
+            // swizzle (WMMA sub-tile offsets are S²-aligned, so the pre-offset ptr
+            // is fine). 0 = a plain Shared tile (no swizzle).
+            uint32_t swz = swizzleStrideOfArg(args[0].expression);
             llvm::Value* offset = lowerExpr(args[1].expression);
             llvm::Value* ptr = resolveBufferTileArg(args[0].expression, offset);
             llvm::Value* layout = coerceTo(lowerExpr(args[2].expression), i32);
@@ -3502,13 +3503,13 @@ private:
             if (name == "load") {
                 llvm::Value* v = target.coopMatrixLoad(
                     builder, mod, ptr, layout, stride, slot.matrixType,
-                    slot.rows, slot.cols, slot.use);
+                    slot.rows, slot.cols, slot.use, swz);
                 builder.CreateStore(v, slot.alloca);
             } else {
                 llvm::Value* v = builder.CreateLoad(slot.matrixType, slot.alloca,
                                                     recv + ".val");
                 target.coopMatrixStore(builder, mod, ptr, v, layout, stride,
-                                       slot.rows, slot.cols, slot.use);
+                                       slot.rows, slot.cols, slot.use, swz);
             }
             return llvm::ConstantInt::get(i32, 0);
         }
@@ -3574,12 +3575,6 @@ private:
             if (args.size() != 4)
                 unsupported("CooperativeMatrix." + name +
                             " expects (Buffer, offset, layout, stride)");
-            if (namesSwizzledTile(args[0].expression))
-                unsupported("CooperativeMatrix." + name + " from a Swizzled<T,S> "
-                            "tile is not yet swizzle-aware (the load/store coords "
-                            "are still linear, so it would mis-address a swizzled "
-                            "tile); use a plain Shared<T> tile for the WMMA "
-                            "load/store for now");
             llvm::Value* base = nullptr; llvm::Type* bElem = nullptr;
             if (!resolveBufferBase(args[0].expression, base, bElem))
                 unsupported("CooperativeMatrix." + name +
@@ -3599,8 +3594,11 @@ private:
                         builder.CreateICmpEQ(layout,
                                              llvm::ConstantInt::get(i32, 0)),
                         rm, cm);
-                    llvm::Value* bidx =
-                        builder.CreateZExt(builder.CreateAdd(offset, sel), i64);
+                    // Swizzled<T,S> tile: permute the absolute element index (the
+                    // identity on CPU, where this software tier runs — so it stays
+                    // consistent with the identity-swizzled staging).
+                    llvm::Value* bidx = maybeSwizzle(
+                        base, builder.CreateZExt(builder.CreateAdd(offset, sel), i64));
                     llvm::Value* bptr =
                         target.bufferElementPtr(builder, mod, base, bElem, bidx);
                     // tile linear index r*C + c.
@@ -5073,14 +5071,16 @@ llvm::Type* LoweringTarget::coopMatrixType(llvm::Module& /*m*/, llvm::Type* /*el
 llvm::Value* LoweringTarget::coopMatrixLoad(
     llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/, llvm::Value* /*ptr*/,
     llvm::Value* /*layout*/, llvm::Value* /*stride*/, llvm::Type* /*matrixType*/,
-    uint32_t /*rows*/, uint32_t /*cols*/, uint32_t /*use*/) {
+    uint32_t /*rows*/, uint32_t /*cols*/, uint32_t /*use*/,
+    uint32_t /*swizzleStride*/) {
     throw coopMatrixUnsupported(name());
 }
 
 void LoweringTarget::coopMatrixStore(
     llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/, llvm::Value* /*ptr*/,
     llvm::Value* /*matrixVal*/, llvm::Value* /*layout*/, llvm::Value* /*stride*/,
-    uint32_t /*rows*/, uint32_t /*cols*/, uint32_t /*use*/) {
+    uint32_t /*rows*/, uint32_t /*cols*/, uint32_t /*use*/,
+    uint32_t /*swizzleStride*/) {
     throw coopMatrixUnsupported(name());
 }
 

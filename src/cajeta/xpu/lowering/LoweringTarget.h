@@ -741,17 +741,27 @@ namespace xpu {
         // Vulkan seam ignores them (the opaque matrixType already carries them);
         // a per-lane backend (AMD WMMA) needs them to gather the right fragment
         // (→ OpCooperativeMatrixLoadKHR).
+        // `swizzleStride` (0 = none) addresses a Swizzled<T,S> LDS tile: each
+        // per-element fragment coord is permuted by the conflict-free XOR with
+        // stride S (xpu-pipelined-gemm-primitives §3). WMMA sub-tile offsets are
+        // multiples of S², so the absolute swizzle reduces to the fragment-local
+        // one — `ptr` stays the pre-offset pointer. Only a per-element backend
+        // (AMD WMMA) / the software tile can honor it; a hardware whole-tile load
+        // (SPIR-V/NVPTX native) rejects a non-zero stride (can't per-element swizzle).
         virtual llvm::Value* coopMatrixLoad(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
             llvm::Value* layout, llvm::Value* stride, llvm::Type* matrixType,
-            uint32_t rows, uint32_t cols, uint32_t use);
+            uint32_t rows, uint32_t cols, uint32_t use,
+            uint32_t swizzleStride = 0);
 
         // m.store(dst, layout, stride): store `matrixVal` to `ptr`. Void op.
-        // `rows`/`cols`/`use` as in coopMatrixLoad (→ OpCooperativeMatrixStoreKHR).
+        // `rows`/`cols`/`use`/`swizzleStride` as in coopMatrixLoad
+        // (→ OpCooperativeMatrixStoreKHR).
         virtual void coopMatrixStore(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
             llvm::Value* matrixVal, llvm::Value* layout, llvm::Value* stride,
-            uint32_t rows, uint32_t cols, uint32_t use);
+            uint32_t rows, uint32_t cols, uint32_t use,
+            uint32_t swizzleStride = 0);
 
         // c.mma(a, b) → a*b+c (result type `matrixType`, the accumulator type)
         // (→ OpCooperativeMatrixMulAddKHR).

@@ -81,6 +81,37 @@ const char* kSwzSrc =
     "    }\n"
     "}\n";
 
+// A 16x16 f16 GEMM whose A and B tiles are staged into Swizzled<float16,16> LDS
+// tiles (CoopStage.panel), then loaded into WMMA fragments from those swizzled
+// tiles. The native AMD coopMatrixLoad must apply the same fragment-coord swizzle
+// the staging used, or the matmul is wrong. One wave (32 lanes) on the single tile.
+const char* kSwzWmmaSrc =
+    "package test;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.Barrier;\n"
+    "import cajeta.xpu.Swizzled;\n"
+    "import cajeta.xpu.CoopStage;\n"
+    "import cajeta.xpu.CooperativeMatrix;\n"
+    "public class M {\n"
+    "    @Kernel\n"
+    "    public static void wmma(KernelBuffer<float16> a, KernelBuffer<float16> b,\n"
+    "                            KernelBuffer<float32> c) {\n"
+    "        Swizzled<float16, 16> sa = shared float16[256];\n"
+    "        Swizzled<float16, 16> sb = shared float16[256];\n"
+    "        CoopStage.panel(sa, a, 0, 0, 16, 16, 16);\n"
+    "        CoopStage.panel(sb, b, 0, 0, 16, 16, 16);\n"
+    "        Barrier.workgroup();\n"
+    "        CooperativeMatrix<float16,16,16,0> ma;\n"
+    "        ma.load(sa, 0, 0, 16);\n"
+    "        CooperativeMatrix<float16,16,16,1> mb;\n"
+    "        mb.load(sb, 0, 0, 16);\n"
+    "        CooperativeMatrix<float32,16,16,2> mc;\n"
+    "        mc.splat(0.0f);\n"
+    "        mc.mma(ma, mb);\n"
+    "        mc.store(c, 0, 0, 16);\n"
+    "    }\n"
+    "}\n";
+
 CajetaModulePtr compileForInspection(Compiler& compiler, const char* source) {
     static std::mt19937_64 rng(std::random_device{}());
     auto base = std::filesystem::temp_directory_path()
@@ -184,4 +215,90 @@ TEST(XpuSwizzledAmdDeviceTests, swizzledRoundTripsOnDevice) {
         uint32_t j = (i * 13 + 5) & 255;
         EXPECT_EQ(out[i], j * 7 + 1) << "lane " << i << " swizzle round-trip wrong";
     }
+}
+
+// U3b (ISA, GPU-free): the swizzled-staged WMMA kernel emits both the WMMA
+// intrinsic and a `v_xor` (the fragment-coord swizzle) and compiles cleanly on
+// gfx1151 — no Cannot-select.
+TEST(XpuSwizzledAmdDeviceTests, swizzledWmmaEmitsXorAndWmma) {
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kSwzWmmaSrc);
+    auto method = findMethod(module->getStructures()["test.M"], "wmma");
+    ASSERT_NE(method, nullptr);
+    auto tm = createAmdgpuTargetMachine("gfx1151");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module dev("xpu_swz_wmma_isa", ctx);
+    configureDeviceModule(dev, *tm);
+    ASSERT_NE(lowerKernel(method, dev), nullptr);
+    std::string isa = cajeta::xpu::amd::emitIsa(dev, *tm);
+    ASSERT_FALSE(isa.empty()) << "ISA emit failed";
+    EXPECT_NE(isa.find("v_wmma"), std::string::npos) << "expected a WMMA op\n" << isa;
+    EXPECT_NE(isa.find("v_xor"), std::string::npos)
+        << "expected the fragment-coord swizzle XOR\n" << isa;
+}
+
+// U3b (on-device): a 16x16 f16 GEMM staged through Swizzled LDS tiles and read
+// into WMMA fragments computes correctly on gfx1151 — the native WMMA fragment
+// loads apply the same swizzle as the staging, so the result matches the reference.
+TEST(XpuSwizzledAmdDeviceTests, swizzledStagedWmmaOnDevice) {
+    if (!HipDriver::available()) GTEST_SKIP() << "no ROCm/HIP device available";
+
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kSwzWmmaSrc);
+    auto method = findMethod(module->getStructures()["test.M"], "wmma");
+    ASSERT_NE(method, nullptr);
+
+    auto tm = createAmdgpuTargetMachine("gfx1151");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module dev("xpu_swz_wmma_device", ctx);
+    configureDeviceModule(dev, *tm);
+    ASSERT_NE(lowerKernel(method, dev), nullptr);
+    std::vector<uint8_t> hsaco = assembleHsaco(dev, *tm, "gfx1151");
+    ASSERT_FALSE(hsaco.empty()) << "hsaco assembly failed";
+
+    constexpr unsigned NN = 16, TILE = NN * NN;
+    std::vector<_Float16> hostA(TILE), hostB(TILE);
+    std::vector<float> ref(TILE, 0.0f);
+    for (unsigned i = 0; i < NN; ++i)
+        for (unsigned k = 0; k < NN; ++k)
+            hostA[i * NN + k] = (_Float16) ((i + 2 * k) % 5);
+    for (unsigned k = 0; k < NN; ++k)
+        for (unsigned j = 0; j < NN; ++j)
+            hostB[k * NN + j] = (_Float16) ((3 * k + j) % 4);
+    for (unsigned i = 0; i < NN; ++i)
+        for (unsigned j = 0; j < NN; ++j) {
+            float acc = 0.0f;
+            for (unsigned k = 0; k < NN; ++k)
+                acc += (float) hostA[i * NN + k] * (float) hostB[k * NN + j];
+            ref[i * NN + j] = acc;
+        }
+
+    HipDriver hip;
+    ASSERT_TRUE(hip.init());
+    HipModule mod = hip.loadModule(hsaco.data(), hsaco.size());
+    ASSERT_NE(mod, nullptr);
+    HipFunction fn = hip.getFunction(mod, "wmma");
+    ASSERT_NE(fn, nullptr);
+
+    HipDevicePtr dA = hip.alloc(TILE * sizeof(_Float16));
+    HipDevicePtr dB = hip.alloc(TILE * sizeof(_Float16));
+    HipDevicePtr dC = hip.alloc(TILE * sizeof(float));
+    ASSERT_NE(dA, nullptr); ASSERT_NE(dB, nullptr); ASSERT_NE(dC, nullptr);
+    ASSERT_TRUE(hip.memcpyHtoD(dA, hostA.data(), TILE * sizeof(_Float16)));
+    ASSERT_TRUE(hip.memcpyHtoD(dB, hostB.data(), TILE * sizeof(_Float16)));
+    std::vector<float> seed(TILE, -1.0f);
+    ASSERT_TRUE(hip.memcpyHtoD(dC, seed.data(), TILE * sizeof(float)));
+
+    void* params[] = { &dA, &dB, &dC };
+    ASSERT_TRUE(hip.launch(fn, /*grid=*/1, /*block=*/32, params));
+    ASSERT_TRUE(hip.synchronize());
+
+    std::vector<float> out(TILE, 0.0f);
+    ASSERT_TRUE(hip.memcpyDtoH(out.data(), dC, TILE * sizeof(float)));
+    hip.free(dA); hip.free(dB); hip.free(dC);
+
+    for (unsigned i = 0; i < TILE; ++i)
+        EXPECT_EQ(out[i], ref[i]) << "C[" << (i / NN) << "][" << (i % NN) << "] wrong";
 }

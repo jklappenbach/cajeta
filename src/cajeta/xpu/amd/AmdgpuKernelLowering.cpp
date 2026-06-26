@@ -803,7 +803,7 @@ public:
                                 llvm::Value* ptr, llvm::Value* layout,
                                 llvm::Value* stride, llvm::Type* matrixType,
                                 uint32_t /*rows*/, uint32_t /*cols*/,
-                                uint32_t use) override {
+                                uint32_t use, uint32_t swz = 0) override {
         auto* vecTy = llvm::cast<llvm::FixedVectorType>(matrixType);
         llvm::Type* fe = vecTy->getElementType();
         unsigned n = vecTy->getNumElements();
@@ -818,7 +818,7 @@ public:
             for (unsigned w = 0; w < n; ++w) {
                 llvm::Value* word = llvm::ConstantInt::get(fe, 0);
                 for (unsigned s = 0; s < 4; ++s) {
-                    auto rc = fragCoord(b, m, use, 4 * w + s, layout, stride);
+                    auto rc = fragCoord(b, m, use, 4 * w + s, layout, stride, swz);
                     llvm::Value* p = b.CreateGEP(i8, ptr, rc, "cm.ld.ptr");
                     llvm::Value* byte = b.CreateLoad(i8, p, "cm.ld");
                     // zext keeps the raw 8 bits; shift into byte slot s and OR.
@@ -832,7 +832,7 @@ public:
             return frag;
         }
         for (unsigned e = 0; e < n; ++e) {
-            auto rc = fragCoord(b, m, use, e, layout, stride);
+            auto rc = fragCoord(b, m, use, e, layout, stride, swz);
             llvm::Value* p = b.CreateGEP(fe, ptr, rc, "cm.ld.ptr");
             frag = b.CreateInsertElement(frag, b.CreateLoad(fe, p, "cm.ld"), e);
         }
@@ -842,12 +842,12 @@ public:
     void coopMatrixStore(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
                          llvm::Value* matrixVal, llvm::Value* layout,
                          llvm::Value* stride, uint32_t /*rows*/, uint32_t /*cols*/,
-                         uint32_t use) override {
+                         uint32_t use, uint32_t swz = 0) override {
         auto* vecTy = llvm::cast<llvm::FixedVectorType>(matrixVal->getType());
         llvm::Type* fe = vecTy->getElementType();
         unsigned n = vecTy->getNumElements();
         for (unsigned e = 0; e < n; ++e) {
-            auto rc = fragCoord(b, m, use, e, layout, stride);
+            auto rc = fragCoord(b, m, use, e, layout, stride, swz);
             llvm::Value* p = b.CreateGEP(fe, ptr, rc, "cm.st.ptr");
             b.CreateStore(b.CreateExtractElement(matrixVal, e), p);
         }
@@ -903,7 +903,8 @@ private:
     // element offset into the tile base (row-major `row*stride+col`, column-major
     // `col*stride+row`).
     llvm::Value* fragCoord(llvm::IRBuilderBase& b, llvm::Module& m, uint32_t use,
-                           unsigned e, llvm::Value* layout, llvm::Value* stride) {
+                           unsigned e, llvm::Value* layout, llvm::Value* stride,
+                           uint32_t swz = 0) {
         llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
         llvm::Value* lane = waveLaneId(b, m);
         llvm::Value* lane16 = b.CreateAnd(lane, llvm::ConstantInt::get(i32, 15));
@@ -922,9 +923,14 @@ private:
         }
         llvm::Value* rowMajor = b.CreateAdd(b.CreateMul(row, stride), col);
         llvm::Value* colMajor = b.CreateAdd(b.CreateMul(col, stride), row);
-        return b.CreateSelect(
+        llvm::Value* idx = b.CreateSelect(
             b.CreateICmpEQ(layout, llvm::ConstantInt::get(i32, 0)),
             rowMajor, colMajor, "cm.idx");
+        // Swizzled<T,S> tile: permute the fragment coord by the same conflict-free
+        // XOR the staging used (WMMA sub-tile offsets are S²-aligned, so this
+        // fragment-local swizzle equals the absolute one).
+        if (swz) idx = swizzleAddr(b, idx, swz);
+        return idx;
     }
 
     static llvm::Value* readId(llvm::IRBuilderBase& b, llvm::Module& m,
