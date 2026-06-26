@@ -178,6 +178,18 @@ namespace xpu {
         virtual void asyncWait(llvm::IRBuilderBase& b, llvm::Module& m,
                                llvm::Value* groupsInFlight);
 
+        // Conflict-free LDS swizzle (xpu-pipelined-gemm-primitives §3): permute a
+        // flat element index `idx` (i64) into a `Swizzled<T,S>` tile so that
+        // consecutive rows land in different banks. `stride` is the tile's row
+        // width S (a power of two). The permutation is an involution
+        // (`row*S + (col ^ (row & (S-1)))`), applied identically at every access
+        // of the tile, so it is transparent at the logical-index level. The
+        // DEFAULT is the IDENTITY (no swizzle — correct, just unaccelerated); a
+        // non-power-of-two `stride` also falls back to identity. AMDGPU emits the
+        // XOR. Returns the physical index (i64).
+        virtual llvm::Value* swizzleAddr(llvm::IRBuilderBase& b, llvm::Value* idx,
+                                         uint32_t stride);
+
         // Device printf (Stage 11): `fmt` is an i8* constant format string;
         // `args` are the already-lowered scalar arguments (Path A — explicit
         // args, no C varargs in the language). CPU calls host printf (the kernel

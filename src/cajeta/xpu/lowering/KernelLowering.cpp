@@ -544,6 +544,12 @@ private:
     // type}. Indexed as gep(arrTy, gv, {0, i}) so the SPIR-V OpTypeArray survives
     // (a spec-constant length needs it), vs the decayed-to-T* base for others.
     std::map<std::string, std::pair<llvm::Value*, llvm::Type*>> arrayShared;
+    // Swizzled<T,S> tiles: the LDS base pointer -> its row stride S. Every access
+    // of such a tile runs its element index through target.swizzleAddr(idx, S)
+    // (the conflict-free XOR), applied identically on read and write so it stays
+    // transparent. Keyed by base Value* so all addressing sites (direct index,
+    // CoopStage/AsyncCopy dst) share one lookup. See xpu-pipelined-gemm §3.
+    std::map<llvm::Value*, uint32_t> swizzledBaseStride;
     // At most one dynamic (runtime-sized) shared array per kernel — the
     // extern unsized addrspace(3) region is a single base; multiple would
     // alias (CUDA extern __shared__ / HIP HIP_DYNAMIC_SHARED both single).
@@ -873,6 +879,27 @@ private:
         if (!elemTy) unsupported("shared local '" + nm +
                                  "' needs a scalar element type (Shared<T>)");
 
+        // `Swizzled<T, S>` — a conflict-free LDS tile. The second type argument S
+        // is its row stride (a power of two): every access of this tile runs its
+        // index through target.swizzleAddr(idx, S). Stride is captured here and
+        // recorded against the base pointer below so all addressing sites agree.
+        uint32_t swizStride = 0;
+        if (declType && declType->toCanonical().compare(
+                            0, std::string("cajeta.xpu.Swizzled").size(),
+                            "cajeta.xpu.Swizzled") == 0) {
+            auto cls = std::dynamic_pointer_cast<CajetaClass>(declType);
+            if (!cls || cls->getTypeArguments().size() != 2)
+                unsupported("Swizzled requires <T, S> (element type, row stride)");
+            auto s = std::dynamic_pointer_cast<CajetaConstantType>(
+                cls->getTypeArguments()[1]);
+            if (!s) unsupported("Swizzled<T, S>: the row stride S must be an "
+                                "integer constant");
+            swizStride = (uint32_t) s->getValue();
+            if (swizStride == 0 || (swizStride & (swizStride - 1)) != 0)
+                unsupported("Swizzled<T, S>: the row stride S must be a power of "
+                            "two (got " + std::to_string(swizStride) + ")");
+        }
+
         // Size from the array creator's single size operand.
         auto acr = std::dynamic_pointer_cast<ArrayCreatorRest>(ne->getCreatorRest());
         if (!acr) unsupported("shared local '" + nm +
@@ -949,6 +976,7 @@ private:
             arrayShared[nm] = {gv, arrTy};
             bufferElems[nm] = elemTy;
             bufferElemSigned[nm] = elemSigned;
+            if (swizStride) swizzledBaseStride[gv] = swizStride;
             return;
         }
         // Decay [n x T]* -> T* (addrspace 3) and register like a buffer base so
@@ -960,6 +988,27 @@ private:
         bufferBases[nm] = base;
         bufferElems[nm] = elemTy;
         bufferElemSigned[nm] = elemSigned;
+        if (swizStride) swizzledBaseStride[base] = swizStride;
+    }
+
+    // If `base` is a Swizzled<T,S> tile, permute the element index `idx` (i64)
+    // through the backend's conflict-free swizzle (involution); otherwise return
+    // `idx` unchanged. Every tile-addressing site routes through here so reads and
+    // writes of a swizzled tile agree on the physical slot.
+    llvm::Value* maybeSwizzle(llvm::Value* base, llvm::Value* idx) {
+        auto it = swizzledBaseStride.find(base);
+        if (it == swizzledBaseStride.end()) return idx;
+        return target.swizzleAddr(builder, idx, it->second);
+    }
+
+    // True if `e` is a bare identifier naming a Swizzled<T,S> tile local.
+    bool namesSwizzledTile(const ExpressionPtr& e) {
+        if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(e)) {
+            auto bb = bufferBases.find(id->getTextValue());
+            if (bb != bufferBases.end())
+                return swizzledBaseStride.count(bb->second) != 0;
+        }
+        return false;
     }
 
     // Coerce any scalar to an i1 truth value (for conditions).
@@ -2068,6 +2117,7 @@ private:
             if (idx->getType() != i64)
                 idx = builder.CreateIntCast(idx, i64,
                                             exprSigned(exprChild(ai, 1)));
+            idx = maybeSwizzle(as->second.first, idx);
             llvm::Value* zero = llvm::ConstantInt::get(i64, 0);
             llvm::Value* addr = builder.CreateGEP(
                 as->second.second, as->second.first, {zero, idx}, "dynsh.idx");
@@ -2085,6 +2135,7 @@ private:
             idx = builder.CreateIntCast(idx, llvm::Type::getInt64Ty(ctx),
                                         exprSigned(idxExpr));
         }
+        idx = maybeSwizzle(bv->second, idx);
         // Element pointer is a backend decision: NVPTX/AMDGPU GEP the base
         // pointer; Vulkan routes descriptor-buffer handles through getpointer
         // (shared-mem globals still GEP). See LoweringTarget::bufferElementPtr.
@@ -3291,8 +3342,11 @@ private:
         llvm::Value* sPtr = target.bufferElementPtr(
             builder, mod, srcBase, srcElem, builder.CreateZExt(gIdx, i64));
         llvm::Value* val = builder.CreateLoad(srcElem, sPtr, "stage.ld");
+        // Swizzle the dst index when staging into a Swizzled<T,S> tile, so a later
+        // direct-index / WMMA read of the same logical slot agrees.
+        llvm::Value* dIdx = maybeSwizzle(dstBase, builder.CreateZExt(e, i64));
         llvm::Value* dPtr = target.bufferElementPtr(
-            builder, mod, dstBase, dstElem, builder.CreateZExt(e, i64));
+            builder, mod, dstBase, dstElem, dIdx);
         builder.CreateStore(coerceTo(val, dstElem), dPtr);
         builder.CreateStore(builder.CreateAdd(e, nthr), iv);
         builder.CreateBr(head);
@@ -3307,6 +3361,42 @@ private:
     // local) and src (a Buffer<T> param) through the same buffer maps as
     // CoopStage; the offsets/count are uint32 expressions. All three lower to the
     // LoweringTarget async seams (default = synchronous strided copy + no-ops).
+    // A synchronous workgroup-strided global→LDS copy whose dst index is run
+    // through the tile's swizzle: for (e=tid; e<count; e+=nthr)
+    // dst[swizzle(dstOffset+e)] = src[srcOffset+e]. Used for AsyncCopy.copy into a
+    // Swizzled<T,S> tile (the native async path can't permute the address).
+    void emitSwizzledSyncCopy(llvm::Value* dstBase, llvm::Type* dstElem,
+                              llvm::Value* dstOffset, llvm::Value* srcBase,
+                              llvm::Type* srcElem, llvm::Value* srcOffset,
+                              llvm::Value* count) {
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+        llvm::Value* tid  = coerceTo(target.threadId(builder, mod, 0), i32);
+        llvm::Value* nthr = coerceTo(target.workgroupDim(builder, mod, 0), i32);
+        llvm::Value* iv = entryAlloca(i32, "swzcopy.e");
+        builder.CreateStore(tid, iv);
+        auto* head = llvm::BasicBlock::Create(ctx, "swzcopy.head", fn);
+        auto* body = llvm::BasicBlock::Create(ctx, "swzcopy.body", fn);
+        auto* exit = llvm::BasicBlock::Create(ctx, "swzcopy.exit", fn);
+        builder.CreateBr(head);
+        builder.SetInsertPoint(head);
+        llvm::Value* e = builder.CreateLoad(i32, iv, "swzcopy.e.cur");
+        builder.CreateCondBr(builder.CreateICmpULT(e, count), body, exit);
+        builder.SetInsertPoint(body);
+        llvm::Value* sPtr = target.bufferElementPtr(
+            builder, mod, srcBase, srcElem,
+            builder.CreateZExt(builder.CreateAdd(srcOffset, e), i64));
+        llvm::Value* val = builder.CreateLoad(srcElem, sPtr, "swzcopy.ld");
+        llvm::Value* dIdx = maybeSwizzle(
+            dstBase, builder.CreateZExt(builder.CreateAdd(dstOffset, e), i64));
+        llvm::Value* dPtr =
+            target.bufferElementPtr(builder, mod, dstBase, dstElem, dIdx);
+        builder.CreateStore(coerceTo(val, dstElem), dPtr);
+        builder.CreateStore(builder.CreateAdd(e, nthr), iv);
+        builder.CreateBr(head);
+        builder.SetInsertPoint(exit);
+    }
+
     llvm::Value* lowerAsyncCopy(const std::string& name,
                                 const std::shared_ptr<MethodCallExpression>& mc) {
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
@@ -3338,6 +3428,15 @@ private:
         llvm::Value* dstOffset = coerceTo(lowerExpr(args[1].expression), i32);
         llvm::Value* srcOffset = coerceTo(lowerExpr(args[3].expression), i32);
         llvm::Value* count     = coerceTo(lowerExpr(args[4].expression), i32);
+        // A Swizzled<T,S> dst can't ride the native LDS-direct async path (it
+        // can't apply the XOR; on gfx1151 there's no native path regardless), so
+        // stage it with a synchronous strided copy whose dst index is swizzled —
+        // consistent with every other access of the tile.
+        if (swizzledBaseStride.count(dstBase)) {
+            emitSwizzledSyncCopy(dstBase, dstElem, dstOffset,
+                                 srcBase, srcElem, srcOffset, count);
+            return llvm::ConstantInt::get(i32, 0);
+        }
         target.asyncCopy(builder, mod, dstBase, dstElem, dstOffset,
                          srcBase, srcElem, srcOffset, count);
         return llvm::ConstantInt::get(i32, 0);
@@ -3390,6 +3489,12 @@ private:
             if (args.size() != 4)
                 unsupported("CooperativeMatrix." + name +
                             " expects (Buffer, offset, layout, stride)");
+            if (namesSwizzledTile(args[0].expression))
+                unsupported("CooperativeMatrix." + name + " from a Swizzled<T,S> "
+                            "tile is not yet swizzle-aware (the fragment coords "
+                            "are still linear, so it would mis-address a swizzled "
+                            "tile); use a plain Shared<T> tile for the WMMA "
+                            "load/store for now");
             llvm::Value* offset = lowerExpr(args[1].expression);
             llvm::Value* ptr = resolveBufferTileArg(args[0].expression, offset);
             llvm::Value* layout = coerceTo(lowerExpr(args[2].expression), i32);
@@ -3469,6 +3574,12 @@ private:
             if (args.size() != 4)
                 unsupported("CooperativeMatrix." + name +
                             " expects (Buffer, offset, layout, stride)");
+            if (namesSwizzledTile(args[0].expression))
+                unsupported("CooperativeMatrix." + name + " from a Swizzled<T,S> "
+                            "tile is not yet swizzle-aware (the load/store coords "
+                            "are still linear, so it would mis-address a swizzled "
+                            "tile); use a plain Shared<T> tile for the WMMA "
+                            "load/store for now");
             llvm::Value* base = nullptr; llvm::Type* bElem = nullptr;
             if (!resolveBufferBase(args[0].expression, base, bElem))
                 unsupported("CooperativeMatrix." + name +
@@ -4704,6 +4815,13 @@ void LoweringTarget::asyncCommit(llvm::IRBuilderBase&, llvm::Module&) {}
 
 void LoweringTarget::asyncWait(llvm::IRBuilderBase&, llvm::Module&,
                                llvm::Value*) {}
+
+// Default LDS swizzle: the identity (no permutation). Swizzling is a perf-only
+// transform; a backend without it stays correct by addressing the tile linearly.
+llvm::Value* LoweringTarget::swizzleAddr(llvm::IRBuilderBase&, llvm::Value* idx,
+                                         uint32_t /*stride*/) {
+    return idx;
+}
 
 // Default device printf: rejected. CPU + NVPTX override; AMD/Vulkan need
 // hostcall / DebugPrintf runtime integration (deferred).

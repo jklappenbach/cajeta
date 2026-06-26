@@ -210,6 +210,28 @@ public:
         b.CreateFence(llvm::AtomicOrdering::AcquireRelease, wg);
     }
 
+    // Conflict-free LDS swizzle for a Swizzled<T,S> tile: permute the flat element
+    // index so consecutive rows of the tile land in different LDS banks. With
+    // row = idx >> log2S and col = idx & (S-1), the physical slot is
+    // row*S + (col ^ (row & (S-1))). The XOR touches only col's bits [0,log2S),
+    // disjoint from the row bits it reads, so it is an involution — applied
+    // identically on every access, the staged data reads back unchanged while the
+    // WMMA fragment loads stop colliding on banks. (S is a power of two; the
+    // frontend rejects anything else.)
+    llvm::Value* swizzleAddr(llvm::IRBuilderBase& b, llvm::Value* idx,
+                             uint32_t stride) override {
+        if (stride <= 1) return idx;
+        llvm::Type* ty = idx->getType();
+        unsigned log2S = llvm::Log2_32(stride);
+        llvm::Value* mask = llvm::ConstantInt::get(ty, stride - 1);
+        llvm::Value* shift = llvm::ConstantInt::get(ty, log2S);
+        llvm::Value* row = b.CreateLShr(idx, shift, "swz.row");
+        llvm::Value* col = b.CreateAnd(idx, mask, "swz.col");
+        llvm::Value* perm = b.CreateXor(
+            col, b.CreateAnd(row, mask), "swz.col2");
+        return b.CreateOr(b.CreateShl(row, shift), perm, "swz.idx");
+    }
+
     // AMDGPU marks kernels purely by calling convention — no metadata
     // analogue to nvvm.annotations.
     void decorateKernel(llvm::Function* fn, llvm::Module& /*m*/) override {
