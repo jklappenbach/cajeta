@@ -121,7 +121,7 @@ the split is about what every program needs versus what is specialized:
 | **cajeta-two core stdlib** | `view` (language) · `cajeta.codec.json` · `cajeta.codec.csv` · the `Encoder`/`SchemaEncoder`/`StreamingEncoder` interfaces (`cajeta.wire`) · the staged-access convention | Everyone uses JSON and CSV; both are pure-Cajeta SIMD. The interfaces are the contracts `@Encoding` resolves against, so they are core. |
 | **`cajeta-codec` (standalone, importable)** | `cajeta.codec.{protobuf, ion, avro, parquet, orc}` · the columnar tier (`XFile`/`ColumnVector`) · the compression codecs (`Decompressor`/`Compressor`) | Specialized formats most programs never touch. Opt-in: code that never reads Parquet never pulls in the columnar/compression machinery. All our own code — no third-party libraries. |
 
-`cajeta-codec` is a standalone repo on the cajeta-unit / cajeta-logging / cazo
+`cajeta-codec` is a standalone repo on the cajeta-unit / cajeta-logging / primavera
 model (own `cajeta.json`, `src/`, `docs/`, `plan/`), imported via classpath
 bitcode linking. It depends on the core interfaces and implements them for the
 specialized formats. The framework convention (this spec) is language-wide and

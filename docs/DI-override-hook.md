@@ -71,7 +71,7 @@ cajeta-unit's `org.cajeta.unit.TestContext` is the cajeta-level front door:
 
 `@Inject` is the language's neutral DI *point*; making its resolution
 runtime-overridable is what lets *any* framework or test harness intercept it
-(cazo's container can use the same hook). The alternative — a parallel
+(primavera's container can use the same hook). The alternative — a parallel
 library-level service locator — wouldn't override `@Inject`-annotated code at
-all. See `docs/specification/lang/AspectModel.md` (the framework moved to cazo) and the cazo
-roadmap.
+all. See `docs/specification/lang/AspectModel.md` (the DI substrate is core;
+primavera owns the policy layer).
