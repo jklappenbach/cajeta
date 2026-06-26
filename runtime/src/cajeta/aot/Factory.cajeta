@@ -1,0 +1,19 @@
+package cajeta.aot;
+
+/**
+ * Declares a factory class — one method per provided type, for the cases
+ * @Component construction cannot cover: third-party/unowned types, assisted
+ * (caller-supplied, non-@Inject) arguments, and initialization beyond the
+ * constructor (AspectModel.md § @Factory, rules R1–R4).
+ *
+ * R1: resolution keys on the method SIGNATURE (return type = provided type;
+ *     @Inject params = dependency edges) — the body is arbitrary.
+ * R2: the method returns a freshly heap-allocated owned `#T`; the framework
+ *     owns caching/drop per the declared scope (the body must not self-cache).
+ * R3: @Inject params are graph-resolved; unmarked params are assisted. Any
+ *     assisted param ⇒ consumers inject the FACTORY and call it; all-injected
+ *     ⇒ it is a provider and consumers inject the PRODUCT.
+ * R4: scope is declared on the method ({@link Singleton} / {@link Transient}).
+ */
+annotation Factory {
+}

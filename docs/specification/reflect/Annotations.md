@@ -62,27 +62,32 @@ These are wired into the compiler and consumed at codegen.
 Symbol where each is handled is the authoritative pointer; the
 design doc is the prose spec.
 
-### Dependency injection — the `@Inject` *point* (`cajeta.aot`)
+### Dependency injection — the DI substrate (`cajeta.aot`)
 
-`@Inject` is the one dependency-injection primitive that stays in the language —
-it marks *where* an instance is needed. *Which* framework resolves it is policy:
-cazo's container does, but so could any other.
+`@Component`, `@Inject`, and `@Factory` are the **core** DI substrate — one
+indivisible mechanism the compiler owns (a core `@Inject` is incoherent without
+core producers to resolve against). Only the opinion layer on top —
+request/session scope, the web model, stereotypes, and deployment profiles — is
+framework policy, and lives in **primavera**.
 
 | Annotation        | Target               | Effect                                          | Handler                                            | Spec                                 |
 |-------------------|----------------------|-------------------------------------------------|----------------------------------------------------|--------------------------------------|
-| `@Inject`         | field, parameter     | Marks an injection site. A DI container resolves it to an instance at the point of construction (field) or invocation (parameter). | `CajetaModule.cpp:718`                             | cazo `docs/AspectModel.md` § Injection |
-| `@Inject(name="primary")` | same        | Disambiguates when multiple named provider variants of the same type exist. | same                                               | same                                |
+| `@Component`      | class                | Declares an injectable node in the compile-time DI graph. Optional `name=` qualifier. | `CajetaLlvmVisitor.h:352`, `CajetaModule.cpp`      | [`AspectModel.md`](../lang/AspectModel.md) § DI substrate |
+| `@Inject`         | field, parameter     | Marks an injection site. The compiler resolves it to a provider at construction (field) or invocation (parameter); `allocate=` picks the identity scope. | `CajetaModule.cpp:718`                             | [`AspectModel.md`](../lang/AspectModel.md) § `@Inject` |
+| `@Inject(name="primary")` | same        | Disambiguates when multiple named providers of the same type exist (the unqualified provider is the implicit default). | same                                               | same                                |
+| `@Factory`        | class (+ methods)    | One method per produced type — third-party/unowned types, assisted (non-`@Inject`) args, init beyond the ctor. Resolves on method signature; returns a fresh owned `#T`. | `CajetaModule.cpp`, `FactoryProviderMethod.cpp`    | [`AspectModel.md`](../lang/AspectModel.md) § `@Factory` |
+| `@PostConstruct` / `@PreDestroy` | method | Lifecycle hooks — run after injection / on drop. | `ComponentInjectMethod.cpp:294`/`:320`             | [`AspectModel.md`](../lang/AspectModel.md) § Lifecycle |
 
-> **The component model, stereotypes, lifecycle, profiles, and aspect weaving
-> moved to cazo.** `@Component` / `@Repository` / `@TestComponent`,
-> `@Profile`, `@PostConstruct` / `@PreDestroy`, and the `@Aspect` /
-> `@Before` / `@After` / `@AfterReturning` / `@AfterThrowing` / `@Around` /
-> `@Original` / `@Order` family are **framework policy**, not core language —
-> see **https://github.com/jklappenbach/cajeta-cazo** (`docs/AspectModel.md`)
-> and [`AspectModel.md`](AspectModel.md) here for why and the interim status.
-> The compiler still *recognizes* these annotations during the transition
-> (`CajetaLlvmVisitor.h`, `CajetaModule.cpp`, `ComponentInjectMethod.cpp`), but
-> their authoritative spec now lives in cazo.
+> **Substrate is core; only policy is primavera.** `@Component` / `@Inject` /
+> `@Factory`, lifecycle hooks, and the `@Aspect` / `@Before` / `@After` /
+> `@AfterReturning` / `@AfterThrowing` / `@Around` / `@Original` / `@Order` family
+> are **core language**, recognized and lowered by the compiler
+> (`CajetaLlvmVisitor.h`, `CajetaModule.cpp`, `ComponentInjectMethod.cpp`,
+> `FactoryProviderMethod.cpp`). The
+> opinion layer — stereotypes (`@Repository`, `@Service`), deployment `@Profile`,
+> `@TestComponent`, request/session scope, and the web model (`@RestServer`) —
+> is **primavera** policy (`org.cajeta.primavera`). See
+> [`AspectModel.md`](../lang/AspectModel.md) for the core/policy split.
 
 ### Wire formats / views (`cajeta.wire`)
 
@@ -525,16 +530,15 @@ contributors don't reach for them expecting them to work.
 |-------------------------|-----------------|--------------------------------------------------------------------------------------------------|---------------------|
 | `@Throws(IOException.class, ...)` | method | Advisory declaration of exceptions a method may throw. Used by lint to surface uncaught throws at call sites. | `ErrorModel.md`     |
 
-### Aspects (advanced) — moved to cazo
+### Aspects (advanced) — core language
 
-These advanced aspect extensions are part of the AOP framework, which now lives
-in **cazo** (https://github.com/jklappenbach/cajeta-cazo). Listed here only as a
-pointer; their spec is cazo's `docs/AspectModel.md`.
+Aspect weaving is **core** (see [`AspectModel.md`](../lang/AspectModel.md) §
+Aspect weaving). These advanced extensions:
 
 | Annotation              | Intended target | Intended effect                                                                                  | Spec                       |
 |-------------------------|-----------------|--------------------------------------------------------------------------------------------------|----------------------------|
-| `@NoAdvice`             | method          | Opts the method out of aspect matching. Hot-path escape hatch.                                   | cazo `docs/AspectModel.md` |
-| `@DeclareParents`       | aspect method   | AspectJ-style introduction of a new interface implementation onto a target class.                | cazo `docs/AspectModel.md` |
+| `@NoAdvice`             | method          | Opts the method out of aspect matching. Hot-path escape hatch.                                   | [`AspectModel.md`](../lang/AspectModel.md) |
+| `@DeclareParents`       | aspect method   | AspectJ-style introduction of a new interface implementation onto a target class. (Rejected in v1 — use inheritance.) | [`AspectModel.md`](../lang/AspectModel.md) |
 
 ### Lint variants
 
@@ -556,7 +560,7 @@ pointer; their spec is cazo's `docs/AspectModel.md`.
 | `@Transactional`        | method          | Aspect marker for transactional methods (user-defined, but reserved name).                       | `AspectModel.md`    |
 | `@DisplayAs("name")`    | method, field   | Override the display name in IDE / debugger views.                                               | `Debugging.md`      |
 | `@Parameter`            | parameter       | Reflection hint — retains the parameter name in the symbol table for introspection.              | `Reflection.md`  |
-| `@Scope("singleton"|"prototype"|"request")` | component class | DI scope (cazo framework). Controllable per **injection site** via `@Inject(allocate=ALLOCATE_SINGLETON\|OWNER_SCOPE\|TRANSIENT)` (three modes shipped; `CALL_SCOPE` stubbed). Request scope ships in cazo over `FiberLocal` (`org.cajeta.cazo.context.RequestScope`). A class-level `@Scope` default is on the cazo roadmap. See cazo `docs/AspectModel.md`, `docs/RequestScope.md`, and `plan/cazo-plan.md`. | cazo `docs/AspectModel.md` |
+| `@Scope("singleton"|"prototype"|"request")` | component class | DI scope. Identity scopes are controllable per **injection site** via `@Inject(allocate=ALLOCATE_SINGLETON\|OWNER_SCOPE\|TRANSIENT)` (three modes shipped; `CALL_SCOPE` stubbed) — core. Request scope ships in **primavera** over `FiberLocal` (`org.cajeta.primavera.context.RequestScope`). A class-level `@Scope` default is on the primavera roadmap. See [`AspectModel.md`](../lang/AspectModel.md) (core substrate) and primavera `docs/RequestScope.md`. | [`AspectModel.md`](../lang/AspectModel.md) |
 
 ### Rejected
 

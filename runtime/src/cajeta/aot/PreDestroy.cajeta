@@ -1,0 +1,5 @@
+package cajeta.aot;
+
+/** Runs on drop (at process exit for singletons; on the owner's drop chain otherwise). */
+annotation PreDestroy {
+}

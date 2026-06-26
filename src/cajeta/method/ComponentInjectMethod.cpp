@@ -172,7 +172,25 @@ namespace cajeta {
             }
 
             llvm::Value* depPtr = nullptr;
-            if (!rd.target || !rd.target->klass) {
+            if (rd.factory) {
+                // Factory-provided product (Unit 4a): call the
+                // synthesized provider accessor. The accessor owns the
+                // scope (singleton memo / transient fresh); here it just
+                // yields the product pointer to store in the field.
+                auto& prov = rd.factory->providers[rd.providerIdx];
+                if (prov.accessor) {
+                    prov.accessor->getLlvmFunctionType();   // force prototype
+                    llvm::Function* accFn = CajetaModule::ensureFunctionVisible(
+                        builder, prov.accessor->getLlvmFunction(),
+                        prov.accessor->getLlvmFunctionType());
+                    depPtr = builder->CreateCall(
+                        prov.accessor->getLlvmFunctionType(), accFn, {},
+                        rd.field->getName() + "_dep");
+                } else {
+                    depPtr = llvm::ConstantPointerNull::get(
+                        llvm::cast<llvm::PointerType>(ptrTy));
+                }
+            } else if (!rd.target || !rd.target->klass) {
                 // Optional injection with no candidate → store null.
                 depPtr = llvm::ConstantPointerNull::get(
                     llvm::cast<llvm::PointerType>(ptrTy));
@@ -294,9 +312,19 @@ namespace cajeta {
 
                 std::string ifaceCanonical =
                     fieldIface->getQName()->toCanonical();
+                // The underlying implementing class: the resolved
+                // @Component, or — for a factory-provided field — the
+                // provider's product type.
+                CajetaClassPtr underlying;
+                if (rd.target) {
+                    underlying = rd.target->klass;
+                } else if (rd.factory) {
+                    underlying = std::dynamic_pointer_cast<CajetaClass>(
+                        rd.factory->providers[rd.providerIdx].providedType);
+                }
                 llvm::Constant* vtableRef = nullptr;
-                if (rd.target && rd.target->klass) {
-                    if (auto gv = rd.target->klass->getInterfaceVTable(ifaceCanonical)) {
+                if (underlying) {
+                    if (auto gv = underlying->getInterfaceVTable(ifaceCanonical)) {
                         vtableRef = CajetaModule::ensureGlobalInModule(lmod, gv);
                     }
                 }

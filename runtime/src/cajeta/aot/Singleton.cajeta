@@ -1,0 +1,5 @@
+package cajeta.aot;
+
+/** Factory-method scope (R4): one cached instance per process. */
+annotation Singleton {
+}

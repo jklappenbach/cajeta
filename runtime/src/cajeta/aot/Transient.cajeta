@@ -1,0 +1,5 @@
+package cajeta.aot;
+
+/** Factory-method scope (R4): a fresh instance per read (no caching). */
+annotation Transient {
+}

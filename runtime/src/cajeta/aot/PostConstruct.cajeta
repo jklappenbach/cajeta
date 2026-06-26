@@ -1,0 +1,5 @@
+package cajeta.aot;
+
+/** Runs after all @Inject fields are populated, before the instance is exposed. */
+annotation PostConstruct {
+}

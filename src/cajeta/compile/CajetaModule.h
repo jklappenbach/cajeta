@@ -69,6 +69,16 @@ namespace cajeta {
         struct ComponentDescriptor;
         typedef shared_ptr<ComponentDescriptor> ComponentDescriptorPtr;
 
+        // @Factory descriptor (AspectModel.md § @Factory, R1–R4). A
+        // @Factory class holds one provider method per provided type.
+        // The descriptor is the parse-time model the DI graph consumes:
+        // resolution keys on the method *signature* (R1), so discovery
+        // captures the return type (= provided type), the @Inject params
+        // (dependency edges), the assisted (unmarked) params, and the
+        // method scope (@Singleton / @Transient, R4) — never the body.
+        struct FactoryDescriptor;
+        typedef shared_ptr<FactoryDescriptor> FactoryDescriptorPtr;
+
         // One resolved @Inject site on the owning component: the
         // StructureProperty being assigned and the component whose
         // singleton fills it. resolveDependencyGraph populates this
@@ -90,7 +100,13 @@ namespace cajeta {
         };
         struct ResolvedDependency {
             StructurePropertyPtr field;
-            ComponentDescriptorPtr target;     // null iff `optional` and no candidate
+            ComponentDescriptorPtr target;     // component-ctor target; null if factory-provided or (optional && no candidate)
+            // When the @Inject is satisfied by an all-injected @Factory
+            // provider (rather than a @Component ctor), `factory` is set
+            // and `providerIdx` indexes factory->providers. `target` is
+            // then null. Codegen routes to the factory accessor.
+            FactoryDescriptorPtr factory;
+            int providerIdx = -1;
             AllocateMode allocate = AllocateMode::Singleton;
             bool optional = false;
         };
@@ -110,6 +126,51 @@ namespace cajeta {
             llvm::GlobalVariable* singletonGlobal = nullptr;
         };
 
+        // One provider method on a @Factory class. Each `param` is
+        // either an @Inject edge (graph-resolved) or assisted
+        // (caller-supplied) per R3; `hasAssisted` flips the consumer's
+        // resolution from "inject the product" (provider) to "inject
+        // the factory and call it" (factory-injection). `scope` is the
+        // method-level @Singleton / @Transient (R4); Singleton default.
+        struct FactoryProvider {
+            MethodPtr method;
+            CajetaTypePtr providedType;        // = the method's return type
+            string name;                        // optional @Factory name qualifier ("" v1)
+            struct Param {
+                FormalParameterPtr param;
+                bool injected = false;          // @Inject => edge; else assisted
+                string nameQualifier;           // @Inject(name = "...")
+                // Filled by resolveDependencyGraph (Unit 3) for @Inject
+                // params: the resolved provider — a @Component ctor
+                // (resolvedTarget) or another all-injected @Factory
+                // provider (resolvedFactory + resolvedProviderIdx).
+                ComponentDescriptorPtr resolvedTarget;
+                FactoryDescriptorPtr resolvedFactory;
+                int resolvedProviderIdx = -1;
+            };
+            vector<Param> params;
+            bool hasAssisted = false;           // any assisted param => factory-injection
+            AllocateMode scope = AllocateMode::Singleton;   // R4
+            // The synthesized provider accessor (all-injected providers
+            // only) — a static method on the factory class that builds
+            // the product via the factory method. Consumers' @Inject of
+            // the product route to it. Null until synthesized (Unit 4a);
+            // the singleton memo storage lives on the method itself.
+            MethodPtr accessor;
+        };
+
+        struct FactoryDescriptor {
+            CajetaClassPtr klass;
+            vector<FactoryProvider> providers;
+            // The @Factory class is also registered as a plain
+            // @Component so its @Inject collaborator fields resolve and
+            // it is itself an injectable process singleton (R3's
+            // assisted case injects the factory). This back-points to
+            // that descriptor; the factory singleton storage lives on
+            // selfComponent->singletonGlobal.
+            ComponentDescriptorPtr selfComponent;
+        };
+
         // Lazy-stdlib import hook. Installed by the Compiler so that an
         // `import cajeta.math.X` (or a bare reference to a hardcoded
         // cajeta.math type such as Matrix) seen during a parse triggers
@@ -120,6 +181,7 @@ namespace cajeta {
         static std::function<void(const std::string&)> stdlibImportHook;
     private:
         static vector<ComponentDescriptorPtr> componentClasses;
+        static vector<FactoryDescriptorPtr> factoryClasses;
 
         // The profile name passed to the compiler (`--profile=<name>`)
         // or set by the test driver. Default `"prod"`; JIT test helper
@@ -472,6 +534,18 @@ namespace cajeta {
         }
         static const vector<ComponentDescriptorPtr>& getComponentClasses() {
             return componentClasses;
+        }
+
+        // @Factory registry. registerFactory is called from
+        // visitClassDeclaration once per @Factory class (after the
+        // provider methods are described); resolveDependencyGraph walks
+        // both registries so @Inject resolves to either a @Component
+        // ctor or a @Factory provider, with a both-provide ambiguity.
+        static void registerFactory(FactoryDescriptorPtr f) {
+            factoryClasses.push_back(std::move(f));
+        }
+        static const vector<FactoryDescriptorPtr>& getFactoryClasses() {
+            return factoryClasses;
         }
 
         // Active profile selector for component filtering. Default
