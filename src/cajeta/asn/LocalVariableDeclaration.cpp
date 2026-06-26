@@ -964,9 +964,18 @@ namespace cajeta {
                 // and reachable: they live in vtable.drop_fn and the
                 // dispatcher routes through them.
                 if (initIsStackAlloc) {
-                    if (llvm::Function* stackDropFn =
-                            klass->getOrCreateStackDropFunction()) {
-                        emitDropEntryForFn(module, field, stackDropFn, getSourceLine());
+                    // Skip the drop entry entirely when the stack drop is a
+                    // no-op (primitive-only value types like Instant/LocalDate):
+                    // registering + running an empty drop per scope is the whole
+                    // cost in tight loops (time-* ~230x — see codegen-perf-levers
+                    // plan / reference_noop_drop_stack_value_type_tax). Stack
+                    // allocation fixes the dynamic type, so static triviality is
+                    // sound here.
+                    if (!klass->hasTrivialStackDrop()) {
+                        if (llvm::Function* stackDropFn =
+                                klass->getOrCreateStackDropFunction()) {
+                            emitDropEntryForFn(module, field, stackDropFn, getSourceLine());
+                        }
                     }
                 } else if (klass->hasVtablePointerAtSlotZero()) {
                     // Patch this class's vtable drop_fn slot with the
