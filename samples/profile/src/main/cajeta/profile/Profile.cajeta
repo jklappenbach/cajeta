@@ -44,6 +44,7 @@ import profile.math.SaxpyBench;
 import profile.math.DotProductBench;
 import profile.math.MatMulBench;
 import profile.gpu.GpuMatMulBench;
+import profile.gpu.GpuMatMulF16Bench;
 import profile.clbg.MandelbrotBench;
 import profile.clbg.FannkuchBench;
 import profile.clbg.SpectralNormBench;
@@ -122,6 +123,7 @@ public final class Profile {
         benchmarks.add(heap MatMulBench());
         // -- gpu area (gpu-matmul-profiling) — real device @Kernel matmul --
         benchmarks.add(heap GpuMatMulBench());
+        benchmarks.add(heap GpuMatMulF16Bench());
         // -- CLBG classics (Unit 12) --
         benchmarks.add(heap MandelbrotBench());
         benchmarks.add(heap FannkuchBench());

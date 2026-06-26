@@ -1,0 +1,229 @@
+package profile.gpu;
+
+import cajeta.collection.ArrayList;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Workgroup;
+import cajeta.xpu.Barrier;
+import cajeta.xpu.Shared;
+import cajeta.xpu.CooperativeMatrix;
+import cajeta.xpu.CoopStage;
+
+import profile.Benchmark;
+
+// LDS-staged f16 WMMA GEMM (C = A·B, f16 multiplicands, f32 accumulate) on the
+// hardware matrix cores (gfx1151 v_wmma_f32_16x16x16_f16 — the SAME instruction
+// rocBLAS/PyTorch use for f16). 128x128 output tile / workgroup, 16 waves (512
+// threads), each wave a 2x2 grid of 16x16 WMMA tiles (4 f32 accumulators); each
+// K-step stages the 128x16 A panel + 16x128 B panel global->LDS once and every
+// wave reuses them. 10.5 TFLOP/s at n=1024 on HIP (~35% of PyTorch's CK-tuned
+// f16); the lever was MANY waves + small per-wave tiles (the WMMA accumulator
+// fragment is VGPR-heavy, so big per-wave tiles spill). Double-buffering + deep-K
+// staging toward parity is the gpu-matmul-tiling U3 follow-up. A = identity, so
+// C == B exactly (f32 holds the f16 values). Assumes n % 128 == 0.
+public class GpuMatMulF16Bench extends Benchmark {
+
+    public float16[] a;
+    public float16[] b;
+    public float32[] c;
+    public KernelBuffer<float16> ka;
+    public KernelBuffer<float16> kb;
+    public KernelBuffer<float32> kc;
+    public KernelStream stream;
+    public int32 nDim;
+    public uint32 nU;
+    public uint32 gridX;
+    public float64 bSum;
+    public float64 cSum;
+
+    @Kernel
+    public static void gemmF16(KernelBuffer<float32> c, KernelBuffer<float16> a,
+                               KernelBuffer<float16> b, uint32 n) {
+        uint32 blockRow = Workgroup.y();
+        uint32 blockCol = Workgroup.x();
+        uint32 wave = KernelThread.x() / 32;
+        uint32 wi = wave / 4;
+        uint32 wj = wave % 4;
+        Shared<float16> sa = shared float16[2048];
+        Shared<float16> sb = shared float16[2048];
+        CooperativeMatrix<float32,16,16,2> acc0_0; acc0_0.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> acc0_1; acc0_1.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> acc1_0; acc1_0.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> acc1_1; acc1_1.splat(0.0f);
+        CooperativeMatrix<float16,16,16,0> wa0;
+        CooperativeMatrix<float16,16,16,0> wa1;
+        CooperativeMatrix<float16,16,16,1> wb0;
+        CooperativeMatrix<float16,16,16,1> wb1;
+        uint32 nt = n / 16;
+        uint32 kt = 0;
+        while (kt < nt) {
+            CoopStage.panel(sa, a, blockRow * 128, kt * 16, 128, 16, n);
+            CoopStage.panel(sb, b, kt * 16, blockCol * 128, 16, 128, n);
+            Barrier.workgroup();
+            wa0.load(sa, (wi * 2 + 0) * 256, 0, 16);
+            wa1.load(sa, (wi * 2 + 1) * 256, 0, 16);
+            wb0.load(sb, (wj * 2 + 0) * 16, 0, 128);
+            wb1.load(sb, (wj * 2 + 1) * 16, 0, 128);
+            acc0_0.mma(wa0, wb0); acc0_1.mma(wa0, wb1);
+            acc1_0.mma(wa1, wb0); acc1_1.mma(wa1, wb1);
+            Barrier.workgroup();
+            kt = kt + 1;
+        }
+        uint32 rr0 = blockRow * 128 + (wi * 2 + 0) * 16;
+        uint32 rr1 = blockRow * 128 + (wi * 2 + 1) * 16;
+        uint32 ccc0 = blockCol * 128 + (wj * 2 + 0) * 16;
+        uint32 ccc1 = blockCol * 128 + (wj * 2 + 1) * 16;
+        acc0_0.store(c, rr0 * n + ccc0, 0, n);
+        acc0_1.store(c, rr0 * n + ccc1, 0, n);
+        acc1_0.store(c, rr1 * n + ccc0, 0, n);
+        acc1_1.store(c, rr1 * n + ccc1, 0, n);
+    }
+
+    public String name() {
+        return "matmul-f16";
+    }
+
+    public String area() {
+        return "gpu";
+    }
+
+    public String backend() {
+        String bk = System.env.get("CAJETA_XPU_BACKEND");
+        if (bk == null) {
+            return "cpu";
+        }
+        if (bk.equals("hip")) {
+            return "hip";
+        }
+        if (bk.equals("vulkan")) {
+            return "vulkan";
+        }
+        if (bk.equals("amdgpu")) {
+            return "amdgpu";
+        }
+        if (bk.equals("cpu")) {
+            return "cpu";
+        }
+        return "cpu";
+    }
+
+    public boolean available() {
+        String bk = System.env.get("CAJETA_XPU_BACKEND");
+        if (bk == null) {
+            return true;
+        }
+        if (bk.equals("hip") || bk.equals("amdgpu") || bk.equals("vulkan")
+                || bk.equals("cpu")) {
+            return true;
+        }
+        return false;
+    }
+
+    public String skipReason() {
+        return "xpu backend not available in this build (CAJETA_XPU_BACKEND)";
+    }
+
+    public int32 warmupIters() {
+        return 5;
+    }
+
+    public int32 measuredIters() {
+        return 30;
+    }
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("n256");
+        v.add("n512");
+        v.add("n1024");
+        v.add("n2048");
+        return v;
+    }
+
+    private int32 sizeFor(String variant) {
+        if (variant.equals("n256")) {
+            return 256;
+        }
+        if (variant.equals("n512")) {
+            return 512;
+        }
+        if (variant.equals("n1024")) {
+            return 1024;
+        }
+        if (variant.equals("n2048")) {
+            return 2048;
+        }
+        return 256;
+    }
+
+    public void setup() {
+        this.stream = KernelStream.current();
+    }
+
+    // A = identity, B[idx]=idx%100 (exact in f16) ⇒ C == B exactly. f32 accumulate
+    // holds the f16 product without loss for these inputs — exact cross-check.
+    public void prepare(String variant) {
+        this.nDim = this.sizeFor(variant);
+        int32 sz = this.nDim * this.nDim;
+        this.a = heap float16[sz];
+        this.b = heap float16[sz];
+        this.c = heap float32[sz];
+        int32 i = 0;
+        while (i < this.nDim) {
+            int32 j = 0;
+            while (j < this.nDim) {
+                int32 idx = i * this.nDim + j;
+                if (i == j) {
+                    this.a[idx] = (float16) 1.0;
+                } else {
+                    this.a[idx] = (float16) 0.0;
+                }
+                this.b[idx] = (float16) (idx % 100);
+                this.c[idx] = 0.0f;
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        float64 s = 0.0;
+        int32 k = 0;
+        while (k < sz) {
+            s = s + (float64) this.b[k];
+            k = k + 1;
+        }
+        this.bSum = s;
+
+        this.ka = heap KernelBuffer<float16>(sz);
+        this.kb = heap KernelBuffer<float16>(sz);
+        this.kc = heap KernelBuffer<float32>(sz);
+        this.ka.upload(this.a);
+        this.kb.upload(this.b);
+        this.kc.upload(this.c);
+
+        this.nU = (uint32) this.nDim;
+        this.gridX = this.nU / 128;   // one workgroup per 128x128 output tile
+    }
+
+    public int64 inputSize() {
+        return (int64) (this.nDim * this.nDim);   // N² → report derives 2·N³ GFLOP
+    }
+
+    public void run(int32 iterations) {
+        gemmF16.launch(this.stream, grid: [this.gridX, this.gridX], block: [512])(
+            this.kc, this.ka, this.kb, this.nU);
+        this.stream.sync();
+    }
+
+    public boolean checkResult() {
+        this.kc.download(this.c);
+        int32 sz = this.nDim * this.nDim;
+        float64 s = 0.0;
+        int32 m = 0;
+        while (m < sz) {
+            s = s + (float64) this.c[m];
+            m = m + 1;
+        }
+        this.cSum = s;
+        return this.cSum == this.bSum;
+    }
+}

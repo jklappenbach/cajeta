@@ -285,8 +285,8 @@ AREA_THR_UNIT = {
 def math_flops(bench, size):
     if not size or size <= 0:
         return None
-    if bench == "matmul":
-        return 2.0 * size ** 1.5
+    if bench == "matmul" or (bench and bench.startswith("matmul-")):
+        return 2.0 * size ** 1.5   # matmul + dtype variants (matmul-f16, …)
     if bench in ("dot-product", "saxpy"):
         return 2.0 * size
     return None
