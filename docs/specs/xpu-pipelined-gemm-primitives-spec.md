@@ -126,9 +126,16 @@ same XOR-permutation in both `sa[i] = …` stores and `CooperativeMatrix.load(sa
   still runs (un-accelerated) on backends without the native path, with a `note:` tier
   disclosure.
 
-## 5. Open design items (resolve in the plan, with the developer)
-- 5.1 Swizzle surface: `shared swizzled T[]` keyword vs. a `Swizzled<T>` typed tile.
-- 5.2 `AsyncCopy` granularity: per-element `count` vs. a tile/panel helper (a
-  `CoopStage.panelAsync` analog) layered on top.
-- 5.3 Whether N-stage buffering is hand-rolled by the author or a managed `Shared`
-  ring-buffer convenience is provided.
+## 5. Design decisions (resolved 2026-06-26, approved)
+- 5.1 **Swizzle surface = a `Swizzled<T>` typed tile** (not a bare keyword): the
+  permutation is a property of the tile's TYPE, so producer (store) and consumer
+  (`CooperativeMatrix.load`) provably agree — a mismatch is a compile error, consistent
+  with the type-carried tier rules on `CooperativeMatrix`. Declared
+  `Swizzled<float16> sa = shared swizzled float16[N];` (the tile type is `Swizzled<T>`).
+- 5.2 **`AsyncCopy` exposes both**: the low-level `copy/commit/wait` verbs (§2) AND a
+  `CoopStage.panelAsync(dst, src, …)` panel helper layered on top (the async analog of
+  `CoopStage.panel`) — authors reach for the helper; the verbs stay for custom patterns.
+- 5.3 **N-stage buffering is author-managed** (no managed ring-buffer in v1): the author
+  declares an N-deep `Shared`/`Swizzled` tile and indexes the stage, exactly as the
+  shipped double-buffer hand-rolls 2 stages. A managed ring-buffer is a later convenience
+  (non-goal, §1.5).
