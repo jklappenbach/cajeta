@@ -100,7 +100,13 @@ namespace cajeta {
         };
         struct ResolvedDependency {
             StructurePropertyPtr field;
-            ComponentDescriptorPtr target;     // null iff `optional` and no candidate
+            ComponentDescriptorPtr target;     // component-ctor target; null if factory-provided or (optional && no candidate)
+            // When the @Inject is satisfied by an all-injected @Factory
+            // provider (rather than a @Component ctor), `factory` is set
+            // and `providerIdx` indexes factory->providers. `target` is
+            // then null. Codegen routes to the factory accessor.
+            FactoryDescriptorPtr factory;
+            int providerIdx = -1;
             AllocateMode allocate = AllocateMode::Singleton;
             bool optional = false;
         };
@@ -134,13 +140,17 @@ namespace cajeta {
                 FormalParameterPtr param;
                 bool injected = false;          // @Inject => edge; else assisted
                 string nameQualifier;           // @Inject(name = "...")
+                // Filled by resolveDependencyGraph (Unit 3) for @Inject
+                // params: the resolved provider — a @Component ctor
+                // (resolvedTarget) or another all-injected @Factory
+                // provider (resolvedFactory + resolvedProviderIdx).
+                ComponentDescriptorPtr resolvedTarget;
+                FactoryDescriptorPtr resolvedFactory;
+                int resolvedProviderIdx = -1;
             };
             vector<Param> params;
             bool hasAssisted = false;           // any assisted param => factory-injection
             AllocateMode scope = AllocateMode::Singleton;   // R4
-            // Populated by resolveDependencyGraph (Unit 3): the resolved
-            // target component for each @Inject param, in param order.
-            vector<ComponentDescriptorPtr> resolvedParamTargets;
         };
 
         struct FactoryDescriptor {

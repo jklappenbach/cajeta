@@ -732,6 +732,75 @@ namespace cajeta {
                 return unqualified;
             };
 
+        // ---- @Factory provider lookup (Unit 3) ----
+        // An all-injected provider makes its product type injectable —
+        // consumers @Inject the *product* and codegen calls the provider
+        // (R3). An assisted provider does NOT: its product needs caller
+        // args, so consumers inject the *factory* type itself (an
+        // ordinary @Component, registered at discovery) and call it. A
+        // provider participates only if its factory's selfComponent
+        // survived profile / @TestComponent filtering.
+        set<ComponentDescriptorPtr> activeSet(active.begin(), active.end());
+        struct ProviderRef { FactoryDescriptorPtr f; int idx; };
+        map<string, vector<ProviderRef>> provByCanonical, provByShort;
+        for (auto& f : factoryClasses) {
+            if (!f || !f->klass) continue;
+            if (f->selfComponent && !activeSet.count(f->selfComponent)) continue;
+            for (size_t i = 0; i < f->providers.size(); ++i) {
+                auto& p = f->providers[i];
+                if (p.hasAssisted) continue;
+                if (!p.providedType || !p.providedType->getQName()) continue;
+                provByCanonical[p.providedType->getQName()->toCanonical()]
+                    .push_back({f, (int)i});
+                provByShort[p.providedType->getQName()->getTypeName()]
+                    .push_back({f, (int)i});
+            }
+        }
+
+        // Unified resolution: a type may be provided by a @Component
+        // ctor OR by an all-injected @Factory provider — never both
+        // (that overlap is the @Factory/@Component ambiguity). Returns
+        // exactly one of {component, factory-provider}, flags ambiguous,
+        // or leaves both null for missing. Used for both @Inject fields
+        // and all-injected providers' @Inject params.
+        struct Resolution {
+            ComponentDescriptorPtr component;
+            FactoryDescriptorPtr factory;
+            int providerIdx = -1;
+            bool ambiguous = false;
+        };
+        auto resolveCombined =
+            [&](const string& canonical, const string& shortName,
+                const string& nameQualifier) -> Resolution {
+                Resolution r;
+                vector<ComponentDescriptorPtr> compCands;
+                ComponentDescriptorPtr comp =
+                    resolveDependency(canonical, nameQualifier, compCands);
+                if (compCands.empty()) {
+                    comp = resolveDependency(shortName, nameQualifier, compCands);
+                }
+                vector<ProviderRef> provCands;
+                auto pit = provByCanonical.find(canonical);
+                if (pit != provByCanonical.end()) provCands = pit->second;
+                if (provCands.empty()) {
+                    auto ps = provByShort.find(shortName);
+                    if (ps != provByShort.end()) provCands = ps->second;
+                }
+                if (!compCands.empty() && !provCands.empty()) {
+                    r.ambiguous = true;   // a @Component ctor AND a @Factory provide it
+                    return r;
+                }
+                if (!provCands.empty()) {
+                    if (provCands.size() > 1) { r.ambiguous = true; return r; }
+                    r.factory = provCands[0].f;
+                    r.providerIdx = provCands[0].idx;
+                    return r;
+                }
+                r.component = comp;          // component-only (or nothing)
+                if (!comp && !compCands.empty()) r.ambiguous = true;  // name-mismatch / multi-unnamed
+                return r;
+            };
+
         // Build per-component dependency edges and detect missing /
         // ambiguous resolution in one pass. The resolved (field →
         // target) pairs are written back to the descriptor's
@@ -804,16 +873,21 @@ namespace cajeta {
                         "CAJETA_ERROR_NOT_IMPLEMENTED");
                 }
 
-                vector<ComponentDescriptorPtr> candidates;
-                auto resolved = resolveDependency(targetCanonical, nameQualifier, candidates);
-                if (!resolved && candidates.empty()) {
-                    resolved = resolveDependency(targetShort, nameQualifier, candidates);
-                }
-                if (candidates.empty()) {
+                Resolution res =
+                    resolveCombined(targetCanonical, targetShort, nameQualifier);
+                if (!res.component && !res.factory) {
+                    if (res.ambiguous) {
+                        throw Exception(
+                            "Ambiguous @Inject of " + targetCanonical
+                                + " in " + c->klass->getQName()->toCanonical()
+                                + " — multiple @Component/@Factory providers (or a "
+                                  "name qualifier matching none). Qualify the site.",
+                            "CAJETA_ERROR_DI_AMBIGUOUS");
+                    }
                     if (isOptional) {
-                        // No candidate; field stays null. The
-                        // codegen branch reads target==null and
-                        // stores ConstantPointerNull.
+                        // No candidate; field stays null. The codegen
+                        // branch reads target==null and stores
+                        // ConstantPointerNull.
                         ResolvedDependency rd;
                         rd.field = prop;
                         rd.target = nullptr;
@@ -825,35 +899,78 @@ namespace cajeta {
                     throw Exception(
                         c->klass->getQName()->toCanonical()
                             + " needs " + targetCanonical
-                            + ", but no @Component class implements " + targetCanonical
+                            + ", but no @Component/@Factory provides " + targetCanonical
                             + " (active profile: " + activeProfile + ")",
                         "CAJETA_ERROR_MISSING_COMPONENT");
                 }
-                if (!resolved) {
-                    string detail;
-                    for (auto& cand : candidates) {
-                        if (!detail.empty()) detail += ", ";
-                        detail += cand->klass->getQName()->toCanonical();
-                        if (!cand->name.empty()) {
-                            detail += "(name=\"" + cand->name + "\")";
-                        }
-                    }
-                    throw Exception(
-                        "Ambiguous @Inject of " + targetCanonical
-                            + " in " + c->klass->getQName()->toCanonical()
-                            + ". Candidates: " + detail
-                            + (nameQualifier.empty()
-                                ? ". Add @Inject(name = \"...\") at the consumer."
-                                : (". No candidate has name=\"" + nameQualifier + "\".")),
-                        "CAJETA_ERROR_DI_AMBIGUOUS");
-                }
-                edges[c].push_back(resolved);
                 ResolvedDependency rd;
                 rd.field = prop;
-                rd.target = resolved;
                 rd.allocate = allocate;
                 rd.optional = isOptional;
+                if (res.factory) {
+                    // Satisfied by an all-injected factory provider:
+                    // the consumer depends on the factory's node.
+                    rd.factory = res.factory;
+                    rd.providerIdx = res.providerIdx;
+                    edges[c].push_back(res.factory->selfComponent);
+                } else {
+                    rd.target = res.component;
+                    edges[c].push_back(res.component);
+                }
                 c->resolvedFields.push_back(rd);
+            }
+        }
+
+        // Resolve all-injected providers' @Inject params (R1 edges) and
+        // attribute their dependencies to the factory's node, so cycles
+        // through factory params are caught by the DFS below. Assisted
+        // params are skipped (caller-supplied, not graph edges); an
+        // assisted provider is not a graph product at all. A missing
+        // @Inject-param target is a hard error.
+        for (auto& f : factoryClasses) {
+            if (!f || !f->klass || !f->selfComponent) continue;
+            if (!activeSet.count(f->selfComponent)) continue;
+            for (auto& p : f->providers) {
+                if (p.hasAssisted) continue;
+                for (auto& fp : p.params) {
+                    if (!fp.injected) continue;
+                    auto pType = fp.param ? fp.param->getType() : nullptr;
+                    if (!pType || !pType->getQName()) {
+                        throw Exception(
+                            "@Inject factory param '"
+                                + (fp.param ? fp.param->getName() : string("?"))
+                                + "' of " + f->klass->getQName()->toCanonical()
+                                + " has no resolvable type",
+                            "CAJETA_ERROR_MISSING_COMPONENT");
+                    }
+                    Resolution pr = resolveCombined(
+                        pType->getQName()->toCanonical(),
+                        pType->getQName()->getTypeName(),
+                        fp.nameQualifier);
+                    if (!pr.component && !pr.factory) {
+                        if (pr.ambiguous) {
+                            throw Exception(
+                                "Ambiguous @Inject param '" + fp.param->getName()
+                                    + "' of " + f->klass->getQName()->toCanonical()
+                                    + " — multiple @Component/@Factory providers.",
+                                "CAJETA_ERROR_DI_AMBIGUOUS");
+                        }
+                        throw Exception(
+                            f->klass->getQName()->toCanonical()
+                                + " factory needs "
+                                + pType->getQName()->toCanonical()
+                                + ", but no @Component/@Factory provides it",
+                            "CAJETA_ERROR_MISSING_COMPONENT");
+                    }
+                    if (pr.factory) {
+                        fp.resolvedFactory = pr.factory;
+                        fp.resolvedProviderIdx = pr.providerIdx;
+                        edges[f->selfComponent].push_back(pr.factory->selfComponent);
+                    } else {
+                        fp.resolvedTarget = pr.component;
+                        edges[f->selfComponent].push_back(pr.component);
+                    }
+                }
             }
         }
 
