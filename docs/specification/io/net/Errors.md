@@ -6,7 +6,7 @@ This is the networking peer of
 [`cajeta.io.file`'s `Errors.md`](../io/file/Errors.md) — same shape,
 same throws-clause discipline, a parallel-but-separate tree (file I/O
 and network I/O share the fiber model but nothing else; see
-[`docs/Net.md`](../../Net.md) §Design principles).
+[`Networking.md`](Networking.md) §Design principles).
 
 > **Status — this is the NET-11.6 consolidation.** The whole
 > networking taxonomy is gathered here: **every** phase's exceptions
