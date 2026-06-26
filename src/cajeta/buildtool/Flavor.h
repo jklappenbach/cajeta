@@ -46,10 +46,17 @@ namespace cajeta::buildtool {
     // vocabulary" for the source-of-truth table.
     struct FlavorPropertySpec {
         std::string key;
-        enum class Kind { Boolean, EnumString };
+        // EnumStringCsv: a comma-separated list whose every token must be in
+        // `allowed` (e.g. xpu-backend="amdgpu,vulkan,cpu" bundles several device
+        // targets in one build); lowers to the raw string, which the frontend
+        // CLI splits on commas.
+        // FreeString: any non-empty string, lowered verbatim (e.g. xpu-arch=
+        // gfx1151 / sm_89 / vulkan1.3 — an open device-arch set the build tool
+        // does not enumerate).
+        enum class Kind { Boolean, EnumString, EnumStringCsv, FreeString };
         Kind kind;
-        // Populated when kind == EnumString; the closed set of
-        // accepted strings.
+        // Populated when kind == EnumString / EnumStringCsv; the closed set of
+        // accepted strings (per token for EnumStringCsv).
         std::vector<std::string> allowed;
         // The compiler CLI flag this property lowers to (without the
         // leading `--`), e.g. "bounds" for the "bounds-check" property.

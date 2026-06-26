@@ -100,7 +100,8 @@ namespace cajeta::buildtool {
         static const std::vector<FlavorPropertySpec> v = {
             {"opt",             K::EnumString, {"O0", "O1", "O2", "O3", "Oz"}, "opt"},
             {"cpu",             K::EnumString, {"native", "generic"},          "cpu"},
-            {"xpu-backend",     K::EnumString, {"none", "cpu", "vulkan", "nvptx", "amdgpu"}, "xpu-backend"},
+            {"xpu-backend",     K::EnumStringCsv, {"none", "cpu", "vulkan", "nvptx", "amdgpu"}, "xpu-backend"},
+            {"xpu-arch",        K::FreeString, {},                            "xpu-arch"},
             {"lto",             K::EnumString, {"off", "thin", "full"},        "lto"},
             {"debug-info",      K::EnumString, {"off", "line", "full"},        ""},
             {"strip-symbols",   K::Boolean,    {},                            ""},
@@ -182,6 +183,49 @@ namespace cajeta::buildtool {
             return err(where.str() + ": property '" + key.str() +
                        "' value '" + sv + "' not allowed (one of " +
                        joinAllowed(spec->allowed) + ")");
+        }
+        case FlavorPropertySpec::Kind::EnumStringCsv: {
+            auto s = value.getAsString();
+            if (!s) {
+                return err(where.str() + ": property '" + key.str() +
+                           "' must be a string (comma-separated, each one of " +
+                           joinAllowed(spec->allowed) + ")");
+            }
+            // Each comma token must be a known enum value; empty tokens (a
+            // stray/leading/trailing comma) are rejected so the lowered flag
+            // can't carry a blank backend.
+            llvm::SmallVector<llvm::StringRef, 4> toks;
+            s->split(toks, ',');
+            if (toks.empty()) {
+                return err(where.str() + ": property '" + key.str() +
+                           "' must list at least one of " +
+                           joinAllowed(spec->allowed));
+            }
+            for (llvm::StringRef tok : toks) {
+                std::string t = tok.str();
+                bool found = false;
+                for (const auto& a : spec->allowed) {
+                    if (a == t) { found = true; break; }
+                }
+                if (!found) {
+                    return err(where.str() + ": property '" + key.str() +
+                               "' token '" + t + "' not allowed (each of " +
+                               joinAllowed(spec->allowed) + ")");
+                }
+            }
+            return llvm::Error::success();
+        }
+        case FlavorPropertySpec::Kind::FreeString: {
+            auto s = value.getAsString();
+            if (!s) {
+                return err(where.str() + ": property '" + key.str() +
+                           "' must be a string");
+            }
+            if (s->empty()) {
+                return err(where.str() + ": property '" + key.str() +
+                           "' must be a non-empty string");
+            }
+            return llvm::Error::success();
         }
         }
         return llvm::Error::success();
@@ -320,7 +364,12 @@ namespace cajeta::buildtool {
                 rendered = *b ? "on" : "off";  // frontend bools accept on/off
                 break;
             }
-            case FlavorPropertySpec::Kind::EnumString: {
+            case FlavorPropertySpec::Kind::EnumString:
+            case FlavorPropertySpec::Kind::EnumStringCsv:
+            case FlavorPropertySpec::Kind::FreeString: {
+                // EnumStringCsv lowers to the raw comma list; the frontend CLI
+                // (--xpu-backend=a,b,c) splits it into individual targets.
+                // FreeString (xpu-arch) lowers verbatim.
                 auto s = v->getAsString();
                 if (!s) continue;
                 rendered = s->str();

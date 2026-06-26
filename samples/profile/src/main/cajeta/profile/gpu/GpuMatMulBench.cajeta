@@ -1,0 +1,218 @@
+package profile.gpu;
+
+import cajeta.collection.ArrayList;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+
+import profile.Benchmark;
+
+// GPU dense N×N matrix multiply C = A·B (flat row-major float64), run as a real
+// device @Kernel — the first of the suite's GPU compute benchmarks. Built once
+// for amdgpu+vulkan+cpu (the `gpu` flavor); the active backend is chosen at run
+// time via CAJETA_XPU_BACKEND, so the SAME binary produces one labeled row per
+// backend. A is the identity, so C == B — a cheap exact cross-check at every
+// swept size (checksum of C == checksum of B) while doing the full N^3 work.
+//
+// One work-item per (row, 8-column block): n*(n/8) items. Each keeps a
+// Vector<float64,8> C accumulator across the k loop and reads B[k, jb:jb+8] as a
+// packed <8 x double> vload, FMA'd with the broadcast scalar A[row,k]. This is
+// the single-accumulator baseline kernel; the multi-accumulator + FMA unroll is
+// Unit 3. Assumes n % 8 == 0 (all swept sizes are).
+public class GpuMatMulBench extends Benchmark {
+
+    public float64[] a;
+    public float64[] b;
+    public float64[] c;
+    public KernelBuffer<float64> ka;
+    public KernelBuffer<float64> kb;
+    public KernelBuffer<float64> kc;
+    public KernelStream stream;
+    public int32 nDim;
+    public uint32 nU;
+    public uint32 gridX;
+    public uint32 blockX;
+    public float64 bSum;
+    public float64 cSum;
+
+    @Kernel
+    public static void gpuMatmul(KernelBuffer<float64> c, KernelBuffer<float64> a,
+                              KernelBuffer<float64> b, uint32 n) {
+        uint32 nblk = n / 8;
+        uint32 t = KernelThread.globalIdX();
+        if (t < n * nblk) {
+            uint32 row = t / nblk;
+            uint32 jb = (t % nblk) * 8;
+            uint32 rBase = row * n;
+            Vector<float64,8> cv =
+                stack Vector<float64,8>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+            uint32 k = 0;
+            while (k < n) {
+                Vector<float64,8> bv = b.vload<8>(k * n + jb);
+                cv = cv + bv * a[rBase + k];
+                k = k + 1;
+            }
+            c.vstore(rBase + jb, cv);
+        }
+    }
+
+    public String name() {
+        return "matmul";
+    }
+
+    public String area() {
+        return "gpu";
+    }
+
+    // The runtime-selected device backend, reported on the result row. The gpu
+    // build bundles amdgpu+vulkan+cpu; the driver forces one per run via
+    // CAJETA_XPU_BACKEND, so echoing it labels the row accurately. Unset → cpu.
+    public String backend() {
+        String bk = System.env.get("CAJETA_XPU_BACKEND");
+        if (bk == null) {
+            return "cpu";
+        }
+        // Return a literal (borrow) — matches the base non-`#` signature and
+        // avoids transferring the owned env string out of scope.
+        if (bk.equals("hip")) {
+            return "hip";
+        }
+        if (bk.equals("vulkan")) {
+            return "vulkan";
+        }
+        if (bk.equals("amdgpu")) {
+            return "amdgpu";
+        }
+        if (bk.equals("cpu")) {
+            return "cpu";
+        }
+        return "cpu";
+    }
+
+    // Device-availability gate: skip cleanly (recorded, never a crash) when the
+    // selected backend is not one this build can target. A CPU-only host that
+    // forces an absent GPU backend gets a skip row instead of a failed suite.
+    public boolean available() {
+        String bk = System.env.get("CAJETA_XPU_BACKEND");
+        if (bk == null) {
+            return true;
+        }
+        if (bk.equals("hip") || bk.equals("amdgpu") || bk.equals("vulkan")
+                || bk.equals("cpu")) {
+            return true;
+        }
+        return false;
+    }
+
+    public String skipReason() {
+        return "xpu backend not available in this build (CAJETA_XPU_BACKEND)";
+    }
+
+    public int32 warmupIters() {
+        return 5;
+    }
+
+    public int32 measuredIters() {
+        return 30;
+    }
+
+    // Problem-size sweep: one labeled row per size. All are % 8 == 0. The sweep
+    // exposes the overhead→compute crossover (small N: GPU launch-bound; large N:
+    // compute-bound, GPU wins).
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("n256");
+        v.add("n512");
+        v.add("n1024");
+        v.add("n2048");
+        return v;
+    }
+
+    private int32 sizeFor(String variant) {
+        if (variant.equals("n256")) {
+            return 256;
+        }
+        if (variant.equals("n512")) {
+            return 512;
+        }
+        if (variant.equals("n1024")) {
+            return 1024;
+        }
+        if (variant.equals("n2048")) {
+            return 2048;
+        }
+        return 256;
+    }
+
+    public void setup() {
+        this.stream = KernelStream.current();
+    }
+
+    // Build the per-variant inputs and upload them: A = identity, B[idx]=idx%100
+    // ⇒ C == B. Reallocating the fields drops the prior variant's buffers.
+    public void prepare(String variant) {
+        this.nDim = this.sizeFor(variant);
+        int32 sz = this.nDim * this.nDim;
+        this.a = heap float64[sz];
+        this.b = heap float64[sz];
+        this.c = heap float64[sz];
+        int32 i = 0;
+        while (i < this.nDim) {
+            int32 j = 0;
+            while (j < this.nDim) {
+                int32 idx = i * this.nDim + j;
+                if (i == j) {
+                    this.a[idx] = 1.0;
+                } else {
+                    this.a[idx] = 0.0;
+                }
+                this.b[idx] = (float64) (idx % 100);
+                this.c[idx] = 0.0;
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        float64 s = 0.0;
+        int32 k = 0;
+        while (k < sz) {
+            s = s + this.b[k];
+            k = k + 1;
+        }
+        this.bSum = s;
+
+        this.ka = heap KernelBuffer<float64>(sz);
+        this.kb = heap KernelBuffer<float64>(sz);
+        this.kc = heap KernelBuffer<float64>(sz);
+        this.ka.upload(this.a);
+        this.kb.upload(this.b);
+        this.kc.upload(this.c);
+
+        this.nU = (uint32) this.nDim;
+        uint32 total = this.nU * (this.nU / 8);   // one item per (row, 8-col block)
+        this.blockX = 64;
+        this.gridX = (total + this.blockX - 1) / this.blockX;
+    }
+
+    public int64 inputSize() {
+        return (int64) (this.nDim * this.nDim);   // N² → report derives 2·N³ GFLOP
+    }
+
+    public void run(int32 iterations) {
+        gpuMatmul.launch(this.stream, grid: [this.gridX], block: [this.blockX])(
+            this.kc, this.ka, this.kb, this.nU);
+        this.stream.sync();
+    }
+
+    public boolean checkResult() {
+        this.kc.download(this.c);
+        int32 sz = this.nDim * this.nDim;
+        float64 s = 0.0;
+        int32 m = 0;
+        while (m < sz) {
+            s = s + this.c[m];
+            m = m + 1;
+        }
+        this.cSum = s;
+        return this.cSum == this.bSum;
+    }
+}

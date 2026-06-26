@@ -80,6 +80,17 @@
             "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
         },
 
+        "gpu": {
+            "description": "Release build with GPU backend (amdgpu+cpu, gfx1151) for the gpu-area @Kernel benchmarks; the active backend is chosen at runtime via CAJETA_XPU_BACKEND. Output build/profile-gpu so it does not collide with the cpu-only build/profile. Vulkan is deferred (see agents/gpu-vulkan-f64-plan.md: 8-wide SPIR-V limit + 4-wide check=false).",
+            "actions": [
+                { "action": "build",
+                  "flavor": { "base": "release", "opt": "O3", "cpu": "native",
+                              "xpu-backend": "amdgpu,cpu", "xpu-arch": "gfx1151" },
+                  "output-path": "build/profile-gpu", "id": "art" }
+            ],
+            "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
+        },
+
         "clean": {
             "description": "Wipe build outputs",
             "actions": [ { "action": "clean" } ]

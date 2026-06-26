@@ -33,6 +33,14 @@ public class Benchmark {
         return "none";
     }
 
+    // The XPU backend that executed this benchmark's measured run (cpu|hip|
+    // vulkan|...). Recorded on the result row so GPU benches can be grouped by
+    // backend in the report. CPU/host benchmarks keep the "cpu" default; a GPU
+    // @Kernel benchmark overrides this to report the runtime-selected device.
+    public String backend() {
+        return "cpu";
+    }
+
     // Describes the input dataset (name / size / checksum) for the report.
     // Empty when the benchmark is self-generating.
     public String datasetInfo() {
