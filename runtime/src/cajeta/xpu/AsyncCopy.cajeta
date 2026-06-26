@@ -1,0 +1,72 @@
+package cajeta.xpu;
+
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.Shared;
+
+/**
+ * AsyncCopy — direct global→workgroup-shared (LDS) transfers that do NOT pass
+ * through registers and retire asynchronously, plus group commit/wait so a kernel
+ * can run an N-stage software prefetch pipeline. Only meaningful inside @Kernel /
+ * @Device functions. See docs/specs/xpu-pipelined-gemm-primitives-spec.md §2.
+ *
+ * The shipped double-buffered GEMM stages global→registers→LDS (two hops, register
+ * pressure, a barrier on the critical path). `AsyncCopy.copy` issues the transfer
+ * straight into `Shared<T>` and retires it off the compute path, so the author can
+ * prefetch K-panels k+1..k+N while the matrix cores consume panel k:
+ *
+ *     // prologue: kick off the first N panels
+ *     for (uint32 s = 0; s < N; s = s + 1) {
+ *         AsyncCopy.copy(sa, s * panelA, a, srcA(s), panelA);
+ *         AsyncCopy.copy(sb, s * panelB, b, srcB(s), panelB);
+ *         AsyncCopy.commit();                 // one group per stage
+ *     }
+ *     for (uint32 kt = 0; kt < nsteps; kt = kt + 1) {
+ *         AsyncCopy.wait(N - 1);              // <= N-1 groups still outstanding
+ *         Barrier.workgroup();               // publish the oldest stage to all waves
+ *         // ... CooperativeMatrix loads + mma out of stage (kt % N) ...
+ *         if (kt + N < nsteps) {             // refill the stage we just drained
+ *             AsyncCopy.copy(sa, (kt % N) * panelA, a, srcA(kt + N), panelA);
+ *             AsyncCopy.copy(sb, (kt % N) * panelB, b, srcB(kt + N), panelB);
+ *             AsyncCopy.commit();
+ *         }
+ *     }
+ *
+ * Lowering (per backend, chosen statically):
+ *   AMDGPU:  the LDS-direct global load (`global_load_lds` / `buffer_load … lds`),
+ *            `wait(n)` → `s_waitcnt vmcnt(n)`, `commit` tracks the group counter.
+ *   NVPTX:   `cp.async.ca.shared.global`, `cp.async.commit_group`,
+ *            `cp.async.wait_group n`.
+ *   SPIR-V:  the async cooperative-load / MemoryAccess where the env exposes it.
+ *   CPU / any backend without an async path: a SYNCHRONOUS strided global→LDS copy
+ *            with `commit`/`wait` as no-ops — bit-identical result, just no overlap
+ *            (a `note: [async-tiering]` discloses the synchronous fallback).
+ *
+ * The @Native bodies forward to CPU-emulation runtime symbols; the GPU backends
+ * replace the call sites before the forwarder fires. Using AsyncCopy on the host is
+ * unsupported. Pairs with `Swizzled<T>` (conflict-free LDS) and `Barrier` for the
+ * cross-wave publish; `CoopStage.panelAsync` is the ergonomic panel-staging layer.
+ */
+public final class AsyncCopy {
+
+    /**
+     * Device-only intrinsic: issue a transfer of `count` elements of `src` starting
+     * at `srcOffset` into the workgroup-shared tile `dst` at `dstOffset`, directly
+     * (no register round-trip), retiring asynchronously. The calling work-item owns
+     * its slice; the whole workgroup cooperates to stage a panel. Not visible to
+     * other waves until a `wait` + `Barrier.workgroup()`.
+     */
+    @Native("__cajeta_xpu_async_copy")
+    public static void copy<T>(Shared<T> dst, uint32 dstOffset,
+                               KernelBuffer<T> src, uint32 srcOffset, uint32 count);
+
+    /** Device-only intrinsic: close the current async-copy group (the unit `wait`
+     *  counts). One `commit` per prefetch stage. */
+    @Native("__cajeta_xpu_async_commit")
+    public static void commit();
+
+    /** Device-only intrinsic: block until at most `groupsInFlight` committed groups
+     *  remain outstanding (the oldest groups have landed in LDS). `wait(0)` drains
+     *  all. Pair with `Barrier.workgroup()` to publish the landed data to all waves. */
+    @Native("__cajeta_xpu_async_wait")
+    public static void wait(uint32 groupsInFlight);
+}
