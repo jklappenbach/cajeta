@@ -42,10 +42,22 @@ Two device-only primitives usable inside `@Kernel`/`@Device`, lowered per backen
   fragment load agree on the permuted address (consistency is a type/whole-tile property,
   not a per-access flag the user can mismatch).
 
-### 1.5 Non-goals
+### 1.5 General applicability (beyond GEMM)
+GEMM parity is the *forcing function*, but `AsyncCopy` is a general device-side primitive
+for any `@Kernel` that stages **global → LDS** before compute — image convolution/filters,
+tile-based lighting, stencils, scan/histogram, mesh-shader per-tile geometry. It belongs
+in the stdlib as a first-class verb, not a GEMM helper
+([[feedback_promote_to_general_purpose]]). On a **unified-memory** target (the gfx1151 APU
+here), `global_load_lds` can read a **host-coherent** `KernelBuffer` directly into LDS, so
+`AsyncCopy` composes with host-coherent buffers to consume host-resident data on demand —
+a property of the buffer's allocation, which `AsyncCopy` rides, not one it provides.
+
+### 1.6 Non-goals
 - Not a managed/auto-tuned GEMM op (the `@Kernel` author still writes the loop). A fully-
   managed tiled-GEMM block is a possible later convenience, out of scope here.
 - Not split-K / stream-K reduction schemes (a separate follow-up if parity needs them).
+- Not host→device transfer/streaming (a host-side `KernelStream`/DMA concern) nor graphics
+  resource residency (textures, sparse/tiled resources, mip streaming) — different layers.
 - Not the Vulkan f64 correctness work ([[reference_spirv_8wide_f64_legalize_fail]]).
 
 ---
@@ -138,4 +150,4 @@ same XOR-permutation in both `sa[i] = …` stores and `CooperativeMatrix.load(sa
 - 5.3 **N-stage buffering is author-managed** (no managed ring-buffer in v1): the author
   declares an N-deep `Shared`/`Swizzled` tile and indexes the stage, exactly as the
   shipped double-buffer hand-rolls 2 stages. A managed ring-buffer is a later convenience
-  (non-goal, §1.5).
+  (non-goal, §1.6).

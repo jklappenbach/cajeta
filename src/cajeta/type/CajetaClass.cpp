@@ -3023,7 +3023,12 @@ namespace cajeta {
     // decl already referenced by this class's #Rtti.
     void CajetaClass::emitReflectInvokeBody() {
         if (llvmReflectInvokeBodyEmitted) return;
-        llvm::Function* fn = llvmReflectInvokeFunction;   // created in createRttiConstant
+        // Adopt the decl if a sibling CajetaClass instance built the RTTI (so
+        // llvmReflectInvokeFunction is null on THIS instance but the #Rtti already
+        // references the external decl) — otherwise the body never fills and the
+        // symbol is left undefined, breaking the whole JIT/AOT link.
+        llvm::Function* fn = llvmReflectInvokeFunction
+            ? llvmReflectInvokeFunction : getOrCreateReflectInvokeDecl();
         if (!fn) return;
         llvmReflectInvokeBodyEmitted = true;
         if (!fn->empty()) return;                         // already has a body
@@ -3160,7 +3165,10 @@ namespace cajeta {
     // new instance. Unknown/unmarshallable constructors fall to a null return.
     void CajetaClass::emitReflectNewBody() {
         if (llvmReflectNewBodyEmitted) return;
-        llvm::Function* fn = llvmReflectNewFunction;   // created in createRttiConstant
+        // Adopt the decl if a sibling instance built the RTTI (see
+        // emitReflectInvokeBody) so the body always fills and the symbol resolves.
+        llvm::Function* fn = llvmReflectNewFunction
+            ? llvmReflectNewFunction : getOrCreateReflectNewDecl();
         if (!fn) return;
         llvmReflectNewBodyEmitted = true;
         if (!fn->empty()) return;

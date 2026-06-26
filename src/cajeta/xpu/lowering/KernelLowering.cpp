@@ -2457,6 +2457,11 @@ private:
             // CoopStage.panel(...) — the cooperative global→LDS staging copy for
             // tiled GEMM (the consume side is CooperativeMatrix.load(Shared<T>)).
             return lowerCoopStage(name, mc);
+        } else if (recv == "AsyncCopy") {
+            // AsyncCopy.copy/commit/wait — async global→LDS transfers + group
+            // commit/wait for N-stage software prefetch (§2). Default lowering is
+            // a synchronous strided copy + no-op commit/wait; AMDGPU overrides.
+            return lowerAsyncCopy(name, mc);
         }
         // Buffer atomics on the element pointer (the same bufferElementPtr seam as
         // buf[i]); every form returns the OLD value.
@@ -3292,6 +3297,49 @@ private:
         builder.CreateStore(builder.CreateAdd(e, nthr), iv);
         builder.CreateBr(head);
         builder.SetInsertPoint(exit);
+        return llvm::ConstantInt::get(i32, 0);
+    }
+
+    // AsyncCopy.copy(dst, dstOffset, src, srcOffset, count) / commit() / wait(n).
+    // The async analog of CoopStage.panel for software-pipelined staging: `copy`
+    // issues a direct global→LDS transfer (workgroup-strided), `commit` closes a
+    // group, `wait(n)` blocks until <= n groups remain. Resolves dst (a Shared<T>
+    // local) and src (a Buffer<T> param) through the same buffer maps as
+    // CoopStage; the offsets/count are uint32 expressions. All three lower to the
+    // LoweringTarget async seams (default = synchronous strided copy + no-ops).
+    llvm::Value* lowerAsyncCopy(const std::string& name,
+                                const std::shared_ptr<MethodCallExpression>& mc) {
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        const auto& args = mc->getParameters();
+        if (name == "commit") {
+            if (!args.empty())
+                unsupported("AsyncCopy.commit expects no arguments");
+            target.asyncCommit(builder, mod);
+            return llvm::ConstantInt::get(i32, 0);
+        }
+        if (name == "wait") {
+            if (args.size() != 1)
+                unsupported("AsyncCopy.wait expects (groupsInFlight)");
+            target.asyncWait(builder, mod,
+                             coerceTo(lowerExpr(args[0].expression), i32));
+            return llvm::ConstantInt::get(i32, 0);
+        }
+        if (name != "copy")
+            unsupported("AsyncCopy." + name + "()");
+        if (args.size() != 5)
+            unsupported("AsyncCopy.copy expects (Shared dst, dstOffset, "
+                        "Buffer src, srcOffset, count)");
+        llvm::Value* dstBase = nullptr; llvm::Type* dstElem = nullptr;
+        llvm::Value* srcBase = nullptr; llvm::Type* srcElem = nullptr;
+        if (!resolveBufferBase(args[0].expression, dstBase, dstElem))
+            unsupported("AsyncCopy.copy: dst must be a Shared<T> kernel local");
+        if (!resolveBufferBase(args[2].expression, srcBase, srcElem))
+            unsupported("AsyncCopy.copy: src must be a Buffer<T> kernel parameter");
+        llvm::Value* dstOffset = coerceTo(lowerExpr(args[1].expression), i32);
+        llvm::Value* srcOffset = coerceTo(lowerExpr(args[3].expression), i32);
+        llvm::Value* count     = coerceTo(lowerExpr(args[4].expression), i32);
+        target.asyncCopy(builder, mod, dstBase, dstElem, dstOffset,
+                         srcBase, srcElem, srcOffset, count);
         return llvm::ConstantInt::get(i32, 0);
     }
 
@@ -4607,6 +4655,55 @@ void LoweringTarget::memoryFence(llvm::IRBuilderBase& b, llvm::Module& /*m*/,
         ord = llvm::AtomicOrdering::AcquireRelease;
     b.CreateFence(ord);
 }
+
+// Default async global->shared copy: a SYNCHRONOUS thread-strided copy (the same
+// structure as CoopStage.panel's contiguous case) — for (e = tid; e < count;
+// e += nthreads) dst[dstOffset+e] = src[srcOffset+e]. Bit-identical to the native
+// path, just no compute/transfer overlap; CPU runs it under loop fission, so each
+// work-item copies its own stripe. AMDGPU overrides with global_load_lds.
+void LoweringTarget::asyncCopy(llvm::IRBuilderBase& b, llvm::Module& m,
+                               llvm::Value* dstBase, llvm::Type* dstElem,
+                               llvm::Value* dstOffset, llvm::Value* srcBase,
+                               llvm::Type* srcElem, llvm::Value* srcOffset,
+                               llvm::Value* count) {
+    llvm::LLVMContext& ctx = m.getContext();
+    llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+    llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    auto i32of = [&](llvm::Value* v) { return b.CreateZExtOrTrunc(v, i32); };
+    llvm::Value* tid  = i32of(threadId(b, m, 0));
+    llvm::Value* nthr = i32of(workgroupDim(b, m, 0));
+    llvm::Value* cnt  = i32of(count);
+    llvm::Value* dOff = i32of(dstOffset);
+    llvm::Value* sOff = i32of(srcOffset);
+    llvm::BasicBlock* pred = b.GetInsertBlock();
+    auto* head = llvm::BasicBlock::Create(ctx, "asynccopy.head", fn);
+    auto* body = llvm::BasicBlock::Create(ctx, "asynccopy.body", fn);
+    auto* exit = llvm::BasicBlock::Create(ctx, "asynccopy.exit", fn);
+    b.CreateBr(head);
+    b.SetInsertPoint(head);
+    llvm::PHINode* e = b.CreatePHI(i32, 2, "asynccopy.e");
+    e->addIncoming(tid, pred);
+    b.CreateCondBr(b.CreateICmpULT(e, cnt), body, exit);
+    b.SetInsertPoint(body);
+    llvm::Value* sPtr = bufferElementPtr(
+        b, m, srcBase, srcElem, b.CreateZExt(b.CreateAdd(sOff, e), i64));
+    llvm::Value* v = b.CreateLoad(srcElem, sPtr, "asynccopy.v");
+    llvm::Value* dPtr = bufferElementPtr(
+        b, m, dstBase, dstElem, b.CreateZExt(b.CreateAdd(dOff, e), i64));
+    b.CreateStore(v, dPtr);
+    llvm::Value* eNext = b.CreateAdd(e, nthr);
+    e->addIncoming(eNext, body);
+    b.CreateBr(head);
+    b.SetInsertPoint(exit);
+}
+
+// Default async-copy group commit/wait: no-ops. The synchronous fallback above
+// already landed the data, so there is nothing in flight to track or wait on.
+void LoweringTarget::asyncCommit(llvm::IRBuilderBase&, llvm::Module&) {}
+
+void LoweringTarget::asyncWait(llvm::IRBuilderBase&, llvm::Module&,
+                               llvm::Value*) {}
 
 // Default device printf: rejected. CPU + NVPTX override; AMD/Vulkan need
 // hostcall / DebugPrintf runtime integration (deferred).

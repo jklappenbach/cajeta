@@ -154,6 +154,30 @@ namespace xpu {
                                  FenceScope scope,
                                  MemoryOrder order = MemoryOrder::Default);
 
+        // Async global->shared copy (xpu-pipelined-gemm-primitives §2): issue a
+        // direct global->LDS transfer of `count` elements, the workgroup striping
+        // it across its threads (dst[dstOffset+e] = src[srcOffset+e] for
+        // e = tid, tid+nthreads, ...). `dst`/`src` are resolved buffer bases (a
+        // Shared<T> local + a Buffer<T> param); elem types match (same T). The
+        // DEFAULT is a SYNCHRONOUS strided copy — bit-identical, no overlap — so
+        // every backend is correct before its native async path lands; AMDGPU
+        // overrides with `global_load_lds` tracked under vmcnt (NVPTX cp.async).
+        virtual void asyncCopy(llvm::IRBuilderBase& b, llvm::Module& m,
+                               llvm::Value* dstBase, llvm::Type* dstElem,
+                               llvm::Value* dstOffset, llvm::Value* srcBase,
+                               llvm::Type* srcElem, llvm::Value* srcOffset,
+                               llvm::Value* count);
+
+        // Close the current async-copy group (the unit `asyncWait` counts).
+        // Default no-op (the synchronous fallback already landed the data).
+        virtual void asyncCommit(llvm::IRBuilderBase& b, llvm::Module& m);
+
+        // Block until at most `groupsInFlight` committed async-copy groups remain
+        // outstanding. Default no-op (synchronous fallback). AMDGPU lowers to
+        // `s_waitcnt vmcnt(groupsInFlight)`; NVPTX to `cp.async.wait_group`.
+        virtual void asyncWait(llvm::IRBuilderBase& b, llvm::Module& m,
+                               llvm::Value* groupsInFlight);
+
         // Device printf (Stage 11): `fmt` is an i8* constant format string;
         // `args` are the already-lowered scalar arguments (Path A — explicit
         // args, no C varargs in the language). CPU calls host printf (the kernel
