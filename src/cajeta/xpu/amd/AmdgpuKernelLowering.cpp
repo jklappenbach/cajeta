@@ -210,6 +210,38 @@ public:
         b.CreateFence(llvm::AtomicOrdering::AcquireRelease, wg);
     }
 
+    // Instruction-scheduling hints (xpu-kernel-scheduling-hints §3) → the native
+    // amdgcn intrinsics. sched_barrier / sched_group_barrier / iglp_opt are
+    // SCHEDULER directives consumed by the MachineScheduler (no ISA instruction
+    // survives to the output); s_setprio is a real SOPP instruction. All operands
+    // are ImmArg — passed as ConstantInt, already validated/range-checked by the
+    // call-site dispatch.
+    void schedBarrier(llvm::IRBuilderBase& b, llvm::Module& m,
+                      uint32_t mask) override {
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::amdgcn_sched_barrier);
+        b.CreateCall(f, {b.getInt32(mask)});
+    }
+    void schedGroupBarrier(llvm::IRBuilderBase& b, llvm::Module& m,
+                           uint32_t mask, uint32_t size,
+                           uint32_t syncId) override {
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::amdgcn_sched_group_barrier);
+        b.CreateCall(f, {b.getInt32(mask), b.getInt32(size), b.getInt32(syncId)});
+    }
+    void schedPriority(llvm::IRBuilderBase& b, llvm::Module& m,
+                       uint32_t level) override {
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::amdgcn_s_setprio);
+        b.CreateCall(f, {b.getInt16((uint16_t) level)});
+    }
+    void schedPipelineOpt(llvm::IRBuilderBase& b, llvm::Module& m,
+                          uint32_t strategy) override {
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::amdgcn_iglp_opt);
+        b.CreateCall(f, {b.getInt32(strategy)});
+    }
+
     // Conflict-free LDS swizzle for a Swizzled<T,S> tile: permute the flat element
     // index so consecutive rows of the tile land in different LDS banks. With
     // row = idx >> log2S and col = idx & (S-1), the physical slot is
