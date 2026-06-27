@@ -1,0 +1,43 @@
+name: 'Publish to Olla'
+description: 'Signed publish of a built .cja to the Olla registry (olla.cajeta.dev)'
+inputs:
+  cja-path:
+    description: 'Path to the built .cja artifact'
+    required: true
+  manifest-path:
+    description: 'cajeta.json used as the publish manifest (JSONC ok)'
+    required: false
+    default: 'cajeta.json'
+  version:
+    description: 'Version to publish (e.g. 0.5.0)'
+    required: true
+  readme-path:
+    description: 'Optional README attached to the listing'
+    required: false
+    default: 'README.md'
+  olla-url:
+    description: 'Registry base URL'
+    required: false
+    default: 'https://olla.cajeta.dev'
+  token:
+    description: 'Olla publish bearer token'
+    required: true
+  signing-key-pem:
+    description: 'Ed25519 private key (PKCS#8 PEM) — the CI publisher key'
+    required: true
+  signing-key-id:
+    description: 'key-id registered in Olla''s trust store (POST /v2/keys)'
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        OLLA_URL: ${{ inputs.olla-url }}
+        OLLA_TOKEN: ${{ inputs.token }}
+        OLLA_SIGNING_KEY_PEM: ${{ inputs.signing-key-pem }}
+        OLLA_SIGNING_KEY_ID: ${{ inputs.signing-key-id }}
+      run: >
+        node "$GITHUB_ACTION_PATH/olla-publish.mjs"
+        "${{ inputs.cja-path }}" "${{ inputs.manifest-path }}"
+        "${{ inputs.version }}" "${{ inputs.readme-path }}"

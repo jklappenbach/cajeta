@@ -1,0 +1,86 @@
+# Reusable release workflow for a Cajeta library (.cja).
+#
+# A library repo calls this from its own .github/workflows/release.yml:
+#
+#   jobs:
+#     release:
+#       uses: jklappenbach/cajeta/.github/workflows/lib-release.yml@main
+#       secrets: inherit
+#
+# On a v* tag it: installs the cajeta toolchain (from the cajeta .deb release),
+# runs `cajeta build` (emits build/archive/<name>-<version>.cja), publishes a
+# GitHub Release with the .cja, and does a signed publish to Olla. On PRs /
+# branch pushes it builds only (no release, no publish).
+name: lib-release
+
+on:
+  workflow_call:
+    inputs:
+      cajeta-version:
+        description: 'cajeta toolchain release tag to build against'
+        type: string
+        required: false
+        default: 'v0.7.1'
+    secrets:
+      OLLA_TOKEN:
+        required: true
+      OLLA_SIGNING_KEY_PEM:
+        required: true
+      OLLA_SIGNING_KEY_ID:
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cajeta toolchain (${{ inputs.cajeta-version }})
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release download "${{ inputs.cajeta-version }}" \
+            --repo jklappenbach/cajeta --pattern 'cajeta_*_amd64.deb' --dir /tmp
+          sudo apt-get update
+          sudo apt-get install -y /tmp/cajeta_*_amd64.deb
+          cajeta --version || cajeta version || true
+
+      - name: Build library .cja
+        run: cajeta build
+
+      - name: Locate artifact
+        id: art
+        run: |
+          set -euo pipefail
+          cja="$(ls build/archive/*.cja 2>/dev/null | head -1 || true)"
+          if [ -z "$cja" ]; then echo "no .cja under build/archive"; ls -R build || true; exit 1; fi
+          echo "cja=$cja" >> "$GITHUB_OUTPUT"
+          # Version from the tag (refs/tags/vX.Y.Z); only used on tag runs.
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cja-${{ github.run_id }}
+          path: ${{ steps.art.outputs.cja }}
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: ${{ steps.art.outputs.cja }}
+
+      - name: Publish to Olla
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: jklappenbach/cajeta/.github/actions/olla-publish@main
+        with:
+          cja-path: ${{ steps.art.outputs.cja }}
+          version: ${{ steps.art.outputs.version }}
+          token: ${{ secrets.OLLA_TOKEN }}
+          signing-key-pem: ${{ secrets.OLLA_SIGNING_KEY_PEM }}
+          signing-key-id: ${{ secrets.OLLA_SIGNING_KEY_ID }}
