@@ -277,7 +277,15 @@ TEST(XpuOccupancyTests, gemmF16IsaInstructionMix) {
               << "  ds_write=" << countOccurrences(isa, "ds_store")
                                + countOccurrences(isa, "ds_write")
               << "  global_load=" << countOccurrences(isa, "global_load")
-              << "  v_wmma_present=" << (countOccurrences(isa, "v_wmma") > 0)
+              << "\n[isa]   ds_read widths:"
+              << "  b128=" << countOccurrences(isa, "ds_read_b128")
+              << "  b64=" << countOccurrences(isa, "ds_read_b64")
+              << "  b32=" << countOccurrences(isa, "ds_read_b32")
+              << "  u16=" << countOccurrences(isa, "ds_read_u16")
+              << "  (ds_load_* :"
+              << " b128=" << countOccurrences(isa, "ds_load_b128")
+              << " b64=" << countOccurrences(isa, "ds_load_b64")
+              << " u16=" << countOccurrences(isa, "ds_load_u16") << ")"
               << "\n";
     EXPECT_GT(countOccurrences(isa, "v_wmma"), 0) << "expected WMMA in the GEMM";
 }
