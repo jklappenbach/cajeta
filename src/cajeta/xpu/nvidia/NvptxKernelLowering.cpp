@@ -21,6 +21,7 @@
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
 
+#include <iostream>
 #include <string>
 #include <vector>
 
@@ -325,10 +326,15 @@ public:
                                 llvm::Value* stride, llvm::Type* matrixType,
                                 uint32_t /*rows*/, uint32_t /*cols*/,
                                 uint32_t use, uint32_t swz = 0) override {
-        if (swz) throw cajeta::Exception(
-            "XPU NVPTX: CooperativeMatrix.load from a Swizzled<T,S> tile is "
-            "unsupported (the WMMA whole-tile load can't permute per element); "
-            "use a plain Shared<T> tile", "XPU-CM-SWZ");
+        if (swz) {
+            // U5.3: degrade to identity, don't reject. The WMMA whole-tile load
+            // can't permute per element, but swizzleAddr is already identity on
+            // NVPTX, so the Swizzled<T,S> tile was STAGED unpermuted too — an
+            // identity load stays consistent (correct, just no bank-conflict win).
+            std::cerr << "note: [swizzle-tier] CooperativeMatrix.load from a "
+                         "Swizzled<T,S> tile uses the IDENTITY layout on NVPTX "
+                         "(no per-element WMMA swizzle); correct, unaccelerated.\n";
+        }
         requireRowMajor(layout, "load");
         llvm::Function* f =
             nvWmmaLoadDecl(m, use, nvFragScalar(matrixType), ptr->getType());
@@ -339,10 +345,12 @@ public:
                          llvm::Value* matrixVal, llvm::Value* layout,
                          llvm::Value* stride, uint32_t /*rows*/, uint32_t /*cols*/,
                          uint32_t /*use*/, uint32_t swz = 0) override {
-        if (swz) throw cajeta::Exception(
-            "XPU NVPTX: CooperativeMatrix.store to a Swizzled<T,S> tile is "
-            "unsupported (the WMMA whole-tile store can't permute per element); "
-            "use a plain Shared<T> tile", "XPU-CM-SWZ");
+        if (swz) {
+            // U5.3: degrade to identity, don't reject (see coopMatrixLoad).
+            std::cerr << "note: [swizzle-tier] CooperativeMatrix.store to a "
+                         "Swizzled<T,S> tile uses the IDENTITY layout on NVPTX "
+                         "(no per-element WMMA swizzle); correct, unaccelerated.\n";
+        }
         requireRowMajor(layout, "store");
         // store.d.f32.row.stride(ptr, d0..d7, stride).
         llvm::Function* f = nvDecl(

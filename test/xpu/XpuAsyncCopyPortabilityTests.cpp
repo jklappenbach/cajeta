@@ -23,6 +23,9 @@
 #include "cajeta/xpu/nvidia/NvptxKernelLowering.h"
 #include "cajeta/xpu/vulkan/SpirvBackend.h"
 #include "cajeta/xpu/vulkan/SpirvKernelLowering.h"
+#include "cajeta/xpu/amd/AmdgpuBackend.h"
+#include "cajeta/xpu/amd/AmdgpuKernelLowering.h"
+#include "cajeta/xpu/cpu/CpuKernelLowering.h"
 
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CajetaModule.h"
@@ -62,6 +65,41 @@ const char* kAsyncStageSrc =
     "        AsyncCopy.wait(0);\n"
     "        Barrier.workgroup();\n"
     "        out[t] = tile[255 - t];\n"
+    "    }\n"
+    "}\n";
+
+// U5.3 acceptance: a 16x16 f16 WMMA GEMM that stages A/B into Swizzled<float16,16>
+// LDS tiles via AsyncCopy, then WMMA-loads the fragments from those swizzled tiles.
+// Exercises all three primitives at once (async + swizzle + coop-matrix). It must
+// COMPILE on every backend: AMD applies the native XOR swizzle + sync-fallback async;
+// NVPTX gets native cp.async with the swizzle degraded to identity on the WMMA load
+// (note: tier); SPIR-V/CPU use the sync/identity fallbacks.
+const char* kSwizzledAsyncWmmaSrc =
+    "package test;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.Barrier;\n"
+    "import cajeta.xpu.Swizzled;\n"
+    "import cajeta.xpu.AsyncCopy;\n"
+    "import cajeta.xpu.CooperativeMatrix;\n"
+    "public class M {\n"
+    "    @Kernel\n"
+    "    public static void wmma(KernelBuffer<float16> a, KernelBuffer<float16> b,\n"
+    "                            KernelBuffer<float32> c) {\n"
+    "        Swizzled<float16, 16> sa = shared float16[256];\n"
+    "        Swizzled<float16, 16> sb = shared float16[256];\n"
+    "        AsyncCopy.copy(sa, 0, a, 0, 256);\n"
+    "        AsyncCopy.copy(sb, 0, b, 0, 256);\n"
+    "        AsyncCopy.commit();\n"
+    "        AsyncCopy.wait(0);\n"
+    "        Barrier.workgroup();\n"
+    "        CooperativeMatrix<float16, 16, 16, 0> ma;\n"
+    "        ma.load(sa, 0, 0, 16);\n"
+    "        CooperativeMatrix<float16, 16, 16, 1> mb;\n"
+    "        mb.load(sb, 0, 0, 16);\n"
+    "        CooperativeMatrix<float32, 16, 16, 2> mc;\n"
+    "        mc.splat(0.0f);\n"
+    "        mc.mma(ma, mb);\n"
+    "        mc.store(c, 0, 0, 16);\n"
     "    }\n"
     "}\n";
 
@@ -136,4 +174,59 @@ TEST(XpuAsyncCopyPortabilityTests, spirvCompilesAsyncCopyViaSyncFallback) {
     std::string spv = cajeta::xpu::vulkan::emitSpirvText(deviceModule, *tm);
     EXPECT_FALSE(spv.empty())
         << "AsyncCopy must compile to valid SPIR-V via the sync fallback";
+}
+
+// U5.3 (acceptance, GPU-free): the swizzled + async f16 WMMA kernel COMPILES on
+// every backend. AMD applies the native XOR swizzle + WMMA; NVPTX emits cp.async
+// and degrades the WMMA-load swizzle to identity (note: tier — staging is also
+// identity there, so it stays consistent); SPIR-V + CPU use the sync/identity
+// fallbacks. Before U5.3 the NVPTX/SPIR-V coop-matrix load THREW on a swizzled
+// tile; this pins that they now lower instead of rejecting.
+TEST(XpuAsyncCopyPortabilityTests, swizzledAsyncWmmaCompilesOnAllBackends) {
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kSwizzledAsyncWmmaSrc);
+    auto method = findMethod(module->getStructures()["test.M"], "wmma");
+    ASSERT_NE(method, nullptr);
+
+    // CPU (software tier): identity swizzle + synchronous async + software tile.
+    {
+        llvm::LLVMContext ctx;
+        llvm::Module host("xpu_swzasync_cpu", ctx);
+        EXPECT_NE(cajeta::xpu::cpu::lowerKernel(method, host), nullptr)
+            << "swizzled+async WMMA must lower on CPU";
+    }
+    // AMDGPU (native XOR swizzle + WMMA; gfx1151 async = sync fallback).
+    {
+        auto tm = cajeta::xpu::amd::createAmdgpuTargetMachine("gfx1151");
+        ASSERT_NE(tm, nullptr);
+        llvm::LLVMContext ctx;
+        llvm::Module dev("xpu_swzasync_amd", ctx);
+        cajeta::xpu::amd::configureDeviceModule(dev, *tm);
+        ASSERT_NE(cajeta::xpu::amd::lowerKernel(method, dev), nullptr);
+        EXPECT_FALSE(cajeta::xpu::amd::emitIsa(dev, *tm).empty())
+            << "swizzled+async WMMA must emit AMD ISA";
+    }
+    // NVPTX (cp.async + swizzle degraded to identity on the WMMA load).
+    {
+        auto tm = cajeta::xpu::nvidia::createNvptxTargetMachine("sm_89");
+        ASSERT_NE(tm, nullptr);
+        llvm::LLVMContext ctx;
+        llvm::Module dev("xpu_swzasync_nvptx", ctx);
+        cajeta::xpu::nvidia::configureDeviceModule(dev, *tm);
+        ASSERT_NE(cajeta::xpu::nvidia::lowerKernel(method, dev), nullptr);
+        std::string ptx = cajeta::xpu::nvidia::emitPtx(dev, *tm);
+        EXPECT_FALSE(ptx.empty()) << "swizzled+async WMMA must emit PTX";
+        EXPECT_NE(ptx.find("cp.async"), std::string::npos) << ptx;
+    }
+    // SPIR-V (sync async fallback + identity swizzle on the coop-matrix load).
+    {
+        auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine("vulkan1.3");
+        ASSERT_NE(tm, nullptr);
+        llvm::LLVMContext ctx;
+        llvm::Module dev("xpu_swzasync_spirv", ctx);
+        cajeta::xpu::vulkan::configureDeviceModule(dev, *tm);
+        ASSERT_NE(cajeta::xpu::vulkan::lowerKernel(method, dev), nullptr);
+        EXPECT_FALSE(cajeta::xpu::vulkan::emitSpirvText(dev, *tm).empty())
+            << "swizzled+async WMMA must emit SPIR-V";
+    }
 }

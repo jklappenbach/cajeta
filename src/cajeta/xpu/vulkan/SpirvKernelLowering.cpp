@@ -18,6 +18,7 @@
 #include "llvm/IR/IntrinsicsSPIRV.h"
 #include "llvm/IR/Module.h"
 
+#include <iostream>
 #include <string>
 
 namespace cajeta {
@@ -963,10 +964,15 @@ public:
                                 llvm::Value* stride, llvm::Type* matrixType,
                                 uint32_t /*rows*/, uint32_t /*cols*/,
                                 uint32_t /*use*/, uint32_t swz = 0) override {
-        if (swz) throw cajeta::Exception(
-            "XPU SPIR-V: CooperativeMatrix.load from a Swizzled<T,S> tile is "
-            "unsupported (OpCooperativeMatrixLoadKHR can't permute per element); "
-            "use a plain Shared<T> tile", "XPU-CM-SWZ");
+        if (swz) {
+            // U5.3: degrade to identity, don't reject. OpCooperativeMatrixLoadKHR
+            // can't permute per element, but swizzleAddr is already identity on
+            // SPIR-V, so the tile was staged unpermuted — an identity load stays
+            // consistent (correct, just no bank-conflict win).
+            std::cerr << "note: [swizzle-tier] CooperativeMatrix.load from a "
+                         "Swizzled<T,S> tile uses the IDENTITY layout on SPIR-V "
+                         "(no per-element coop-matrix swizzle); correct, unaccelerated.\n";
+        }
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::spv_cooperative_matrix_load,
             {matrixType, ptr->getType()});
@@ -978,10 +984,12 @@ public:
                          llvm::Value* matrixVal, llvm::Value* layout,
                          llvm::Value* stride, uint32_t /*rows*/, uint32_t /*cols*/,
                          uint32_t /*use*/, uint32_t swz = 0) override {
-        if (swz) throw cajeta::Exception(
-            "XPU SPIR-V: CooperativeMatrix.store to a Swizzled<T,S> tile is "
-            "unsupported (OpCooperativeMatrixStoreKHR can't permute per element); "
-            "use a plain Shared<T> tile", "XPU-CM-SWZ");
+        if (swz) {
+            // U5.3: degrade to identity, don't reject (see coopMatrixLoad).
+            std::cerr << "note: [swizzle-tier] CooperativeMatrix.store to a "
+                         "Swizzled<T,S> tile uses the IDENTITY layout on SPIR-V "
+                         "(no per-element coop-matrix swizzle); correct, unaccelerated.\n";
+        }
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::spv_cooperative_matrix_store,
             {ptr->getType(), matrixVal->getType()});
