@@ -2629,6 +2629,16 @@ namespace cajeta {
                     resolvedType = CajetaType::of("int64");
                     return builder->CreateCall(fn, {});
                 }
+                // allocatedBytes() -> int64: cumulative bytes ever requested from
+                // the heap allocator (runtime-neutral allocation-intensity metric).
+                // The profile harness samples a before/after delta around a benchmark
+                // to fill the report's Memory column (mirrors the competitors' alloc
+                // counters). Monotonic, never reset.
+                if (ns == "Cajeta" && methodCallName == "allocatedBytes" && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_total_allocated_bytes");
+                    resolvedType = CajetaType::of("int64");
+                    return builder->CreateCall(fn, {});
+                }
                 // arenaInUse() -> int64: current frame-arena bytes in use (test-only
                 // introspection). Lets a test assert non-escaping owned locals were
                 // bump-allocated and reclaimed by the scope-exit reset.

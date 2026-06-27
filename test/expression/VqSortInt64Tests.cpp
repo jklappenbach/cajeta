@@ -55,8 +55,25 @@ const char* RANDOM = "            x = (x * 1103515245 + 12345) & 0x7FFFFFFF; v =
 const char* DUPS   = "            v = (int64)(i % 16);\n";
 const char* REVERSE= "            v = (int64)(n - 1 - i);\n";
 const char* EQUAL  = "            v = 7;\n";
+const char* ASCEND = "            v = (int64) i;\n";
+// Ascending for the first half, then random — exercises the partial-run case of
+// pdqFindRun (run shorter than n, must fall through to the real sort).
+const char* PARTIAL= "            if (i < n/2) { v = (int64) i; } else { x = (x * 1103515245 + 12345) & 0x7FFFFFFF; v = x; }\n";
 
 } // namespace
+
+// benchmark-gap-sweep Unit 4 — already-ascending input: pdqFindRun's single-scan
+// fast path returns runLen==n and the sort early-outs, leaving order intact. This
+// guards the register-carried-prev rewrite of pdqFindRun.
+TEST(VqSortInt64Tests, ascendingFastPath) {
+    EXPECT_EQ(runI64(prog(4096, ASCEND)), 0);
+}
+
+// Partial ascending run then random tail — pdqFindRun returns runLen < n and the
+// full sort must still produce a fully ordered, multiset-preserving result.
+TEST(VqSortInt64Tests, partialRun) {
+    EXPECT_EQ(runI64(prog(4096, PARTIAL)), 0);
+}
 
 // Large random input — the main vectorized-partition path (n >> 128).
 TEST(VqSortInt64Tests, randomLarge) {

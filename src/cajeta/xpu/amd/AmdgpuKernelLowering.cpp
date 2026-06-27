@@ -123,6 +123,147 @@ public:
         b.CreateFence(ord, sc);
     }
 
+    // Async global->LDS copy (xpu-pipelined-gemm-primitives U2). gfx1151 (RDNA3.5)
+    // has the LDS-direct vmem load `global_load_lds_{ubyte,ushort,dword}` but NOT
+    // the gfx1250+ async-mark hardware. So `copy` issues `global_load_lds` per
+    // element — the data goes global->LDS with NO VGPR staging buffer (frees the
+    // registers the WMMA accumulator path is starved for), the key ISA win over the
+    // staged global->reg->LDS path. The workgroup stripes it (e = tid, tid+nthr, ...),
+    // so each wave's lanes coalesce. Element size must be 1/2/4 bytes; wider (e.g.
+    // fp64) falls back to the synchronous strided seam (the fp64 path uses CoopStage,
+    // not AsyncCopy). `commit` is a no-op (no async-mark); `wait` drains outstanding
+    // vmem so the landed LDS is safe to publish through the caller's Barrier — a full
+    // drain, since deep N-stage overlap needs the gfx1250 async-mark path.
+    // True iff `arch` (gfxNNN) has the direct global->LDS load (VMemToLDSLoad in
+    // LLVM): the GFX9/CDNA family and gfx1250+. RDNA1-3.5 (gfx10xx/gfx11xx) and
+    // gfx1200/1201 lack it — emitting global_load_lds there Cannot-selects, so we
+    // fall back to the synchronous staged copy.
+    static bool archHasVmemToLds(llvm::StringRef arch) {
+        if (arch.starts_with("gfx9")) return true;
+        unsigned num = 0;
+        if (arch.starts_with("gfx") && !arch.drop_front(3).getAsInteger(10, num))
+            return num >= 1250;
+        return false;
+    }
+
+    void asyncCopy(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* dstBase,
+                   llvm::Type* dstElem, llvm::Value* dstOffset, llvm::Value* srcBase,
+                   llvm::Type* srcElem, llvm::Value* srcOffset,
+                   llvm::Value* count) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        uint64_t elemBytes = m.getDataLayout().getTypeStoreSize(srcElem);
+        llvm::StringRef arch;
+        if (auto* f = m.getModuleFlag("cajeta.amdgpu.arch"))
+            if (auto* s = llvm::dyn_cast<llvm::MDString>(f)) arch = s->getString();
+        // No native direct global->LDS on this subtarget, or a width the LDS-direct
+        // load can't carry (1/2/4 bytes only) — use the synchronous staged copy.
+        if (!archHasVmemToLds(arch)
+                || (elemBytes != 1 && elemBytes != 2 && elemBytes != 4)) {
+            LoweringTarget::asyncCopy(b, m, dstBase, dstElem, dstOffset, srcBase,
+                                      srcElem, srcOffset, count);
+            return;
+        }
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+        llvm::Function* fn = b.GetInsertBlock()->getParent();
+        auto i32of = [&](llvm::Value* v) { return b.CreateZExtOrTrunc(v, i32); };
+        llvm::Value* tid  = i32of(threadId(b, m, 0));
+        llvm::Value* nthr = i32of(workgroupDim(b, m, 0));
+        llvm::Value* cnt  = i32of(count);
+        llvm::Value* dOff = i32of(dstOffset);
+        llvm::Value* sOff = i32of(srcOffset);
+        llvm::Function* loadLds = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::amdgcn_global_load_lds);
+        llvm::BasicBlock* pred = b.GetInsertBlock();
+        auto* head = llvm::BasicBlock::Create(ctx, "asynccopy.head", fn);
+        auto* body = llvm::BasicBlock::Create(ctx, "asynccopy.body", fn);
+        auto* exit = llvm::BasicBlock::Create(ctx, "asynccopy.exit", fn);
+        b.CreateBr(head);
+        b.SetInsertPoint(head);
+        llvm::PHINode* e = b.CreatePHI(i32, 2, "asynccopy.e");
+        e->addIncoming(tid, pred);
+        b.CreateCondBr(b.CreateICmpULT(e, cnt), body, exit);
+        b.SetInsertPoint(body);
+        llvm::Value* sPtr = bufferElementPtr(   // addrspace(1) global source
+            b, m, srcBase, srcElem, b.CreateZExt(b.CreateAdd(sOff, e), i64));
+        llvm::Value* dPtr = bufferElementPtr(   // addrspace(3) LDS destination
+            b, m, dstBase, dstElem, b.CreateZExt(b.CreateAdd(dOff, e), i64));
+        b.CreateCall(loadLds, {sPtr, dPtr,
+                               llvm::ConstantInt::get(i32, elemBytes),
+                               llvm::ConstantInt::get(i32, 0),
+                               llvm::ConstantInt::get(i32, 0)});
+        e->addIncoming(b.CreateAdd(e, nthr), body);
+        b.CreateBr(head);
+        b.SetInsertPoint(exit);
+    }
+
+    // No async-mark on gfx1151 — there is no group counter to close.
+    void asyncCommit(llvm::IRBuilderBase&, llvm::Module&) override {}
+
+    // Drain the outstanding global_load_lds writes (a workgroup AcqRel fence the
+    // backend lowers to the right s_waitcnt) so the caller's Barrier publishes
+    // landed data. Full drain — gfx1151 has no async-mark partial wait.
+    void asyncWait(llvm::IRBuilderBase& b, llvm::Module& m,
+                   llvm::Value* /*groupsInFlight*/) override {
+        llvm::SyncScope::ID wg =
+            m.getContext().getOrInsertSyncScopeID("workgroup");
+        b.CreateFence(llvm::AtomicOrdering::AcquireRelease, wg);
+    }
+
+    // Instruction-scheduling hints (xpu-kernel-scheduling-hints §3) → the native
+    // amdgcn intrinsics. sched_barrier / sched_group_barrier / iglp_opt are
+    // SCHEDULER directives consumed by the MachineScheduler (no ISA instruction
+    // survives to the output); s_setprio is a real SOPP instruction. All operands
+    // are ImmArg — passed as ConstantInt, already validated/range-checked by the
+    // call-site dispatch.
+    void schedBarrier(llvm::IRBuilderBase& b, llvm::Module& m,
+                      uint32_t mask) override {
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::amdgcn_sched_barrier);
+        b.CreateCall(f, {b.getInt32(mask)});
+    }
+    void schedGroupBarrier(llvm::IRBuilderBase& b, llvm::Module& m,
+                           uint32_t mask, uint32_t size,
+                           uint32_t syncId) override {
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::amdgcn_sched_group_barrier);
+        b.CreateCall(f, {b.getInt32(mask), b.getInt32(size), b.getInt32(syncId)});
+    }
+    void schedPriority(llvm::IRBuilderBase& b, llvm::Module& m,
+                       uint32_t level) override {
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::amdgcn_s_setprio);
+        b.CreateCall(f, {b.getInt16((uint16_t) level)});
+    }
+    void schedPipelineOpt(llvm::IRBuilderBase& b, llvm::Module& m,
+                          uint32_t strategy) override {
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::amdgcn_iglp_opt);
+        b.CreateCall(f, {b.getInt32(strategy)});
+    }
+
+    // Conflict-free LDS swizzle for a Swizzled<T,S> tile: permute the flat element
+    // index so consecutive rows of the tile land in different LDS banks. With
+    // row = idx >> log2S and col = idx & (S-1), the physical slot is
+    // row*S + (col ^ (row & (S-1))). The XOR touches only col's bits [0,log2S),
+    // disjoint from the row bits it reads, so it is an involution — applied
+    // identically on every access, the staged data reads back unchanged while the
+    // WMMA fragment loads stop colliding on banks. (S is a power of two; the
+    // frontend rejects anything else.)
+    llvm::Value* swizzleAddr(llvm::IRBuilderBase& b, llvm::Value* idx,
+                             uint32_t stride) override {
+        if (stride <= 1) return idx;
+        llvm::Type* ty = idx->getType();
+        unsigned log2S = llvm::Log2_32(stride);
+        llvm::Value* mask = llvm::ConstantInt::get(ty, stride - 1);
+        llvm::Value* shift = llvm::ConstantInt::get(ty, log2S);
+        llvm::Value* row = b.CreateLShr(idx, shift, "swz.row");
+        llvm::Value* col = b.CreateAnd(idx, mask, "swz.col");
+        llvm::Value* perm = b.CreateXor(
+            col, b.CreateAnd(row, mask), "swz.col2");
+        return b.CreateOr(b.CreateShl(row, shift), perm, "swz.idx");
+    }
+
     // AMDGPU marks kernels purely by calling convention — no metadata
     // analogue to nvvm.annotations.
     void decorateKernel(llvm::Function* fn, llvm::Module& /*m*/) override {
@@ -694,7 +835,7 @@ public:
                                 llvm::Value* ptr, llvm::Value* layout,
                                 llvm::Value* stride, llvm::Type* matrixType,
                                 uint32_t /*rows*/, uint32_t /*cols*/,
-                                uint32_t use) override {
+                                uint32_t use, uint32_t swz = 0) override {
         auto* vecTy = llvm::cast<llvm::FixedVectorType>(matrixType);
         llvm::Type* fe = vecTy->getElementType();
         unsigned n = vecTy->getNumElements();
@@ -709,7 +850,7 @@ public:
             for (unsigned w = 0; w < n; ++w) {
                 llvm::Value* word = llvm::ConstantInt::get(fe, 0);
                 for (unsigned s = 0; s < 4; ++s) {
-                    auto rc = fragCoord(b, m, use, 4 * w + s, layout, stride);
+                    auto rc = fragCoord(b, m, use, 4 * w + s, layout, stride, swz);
                     llvm::Value* p = b.CreateGEP(i8, ptr, rc, "cm.ld.ptr");
                     llvm::Value* byte = b.CreateLoad(i8, p, "cm.ld");
                     // zext keeps the raw 8 bits; shift into byte slot s and OR.
@@ -723,7 +864,7 @@ public:
             return frag;
         }
         for (unsigned e = 0; e < n; ++e) {
-            auto rc = fragCoord(b, m, use, e, layout, stride);
+            auto rc = fragCoord(b, m, use, e, layout, stride, swz);
             llvm::Value* p = b.CreateGEP(fe, ptr, rc, "cm.ld.ptr");
             frag = b.CreateInsertElement(frag, b.CreateLoad(fe, p, "cm.ld"), e);
         }
@@ -733,12 +874,12 @@ public:
     void coopMatrixStore(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
                          llvm::Value* matrixVal, llvm::Value* layout,
                          llvm::Value* stride, uint32_t /*rows*/, uint32_t /*cols*/,
-                         uint32_t use) override {
+                         uint32_t use, uint32_t swz = 0) override {
         auto* vecTy = llvm::cast<llvm::FixedVectorType>(matrixVal->getType());
         llvm::Type* fe = vecTy->getElementType();
         unsigned n = vecTy->getNumElements();
         for (unsigned e = 0; e < n; ++e) {
-            auto rc = fragCoord(b, m, use, e, layout, stride);
+            auto rc = fragCoord(b, m, use, e, layout, stride, swz);
             llvm::Value* p = b.CreateGEP(fe, ptr, rc, "cm.st.ptr");
             b.CreateStore(b.CreateExtractElement(matrixVal, e), p);
         }
@@ -794,7 +935,8 @@ private:
     // element offset into the tile base (row-major `row*stride+col`, column-major
     // `col*stride+row`).
     llvm::Value* fragCoord(llvm::IRBuilderBase& b, llvm::Module& m, uint32_t use,
-                           unsigned e, llvm::Value* layout, llvm::Value* stride) {
+                           unsigned e, llvm::Value* layout, llvm::Value* stride,
+                           uint32_t swz = 0) {
         llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
         llvm::Value* lane = waveLaneId(b, m);
         llvm::Value* lane16 = b.CreateAnd(lane, llvm::ConstantInt::get(i32, 15));
@@ -813,9 +955,14 @@ private:
         }
         llvm::Value* rowMajor = b.CreateAdd(b.CreateMul(row, stride), col);
         llvm::Value* colMajor = b.CreateAdd(b.CreateMul(col, stride), row);
-        return b.CreateSelect(
+        llvm::Value* idx = b.CreateSelect(
             b.CreateICmpEQ(layout, llvm::ConstantInt::get(i32, 0)),
             rowMajor, colMajor, "cm.idx");
+        // Swizzled<T,S> tile: permute the fragment coord by the same conflict-free
+        // XOR the staging used (WMMA sub-tile offsets are S²-aligned, so this
+        // fragment-local swizzle equals the absolute one).
+        if (swz) idx = swizzleAddr(b, idx, swz);
+        return idx;
     }
 
     static llvm::Value* readId(llvm::IRBuilderBase& b, llvm::Module& m,

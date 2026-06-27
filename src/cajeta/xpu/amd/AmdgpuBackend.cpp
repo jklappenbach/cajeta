@@ -209,6 +209,11 @@ createAmdgpuTargetMachine(const std::string& arch) {
 void configureDeviceModule(llvm::Module& m, llvm::TargetMachine& tm) {
     m.setTargetTriple(llvm::Triple(kAmdgpuTriple));
     m.setDataLayout(tm.createDataLayout());
+    // Record the gfx arch so the kernel lowerer can gate per-subtarget features
+    // it must decide BEFORE codegen (e.g. the direct global->LDS load, a CDNA/
+    // GFX9 + gfx1250 feature absent on RDNA1-3.5 where emitting it Cannot-selects).
+    m.addModuleFlag(llvm::Module::Warning, "cajeta.amdgpu.arch",
+                    llvm::MDString::get(m.getContext(), tm.getTargetCPU()));
 }
 
 std::string emitIsa(llvm::Module& deviceModule, llvm::TargetMachine& tm) {

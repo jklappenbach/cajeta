@@ -573,6 +573,21 @@ namespace cajeta {
                                     targetCls = dynamic_pointer_cast<CajetaClass>(
                                         recvExpr->getResolvedType());
                                 }
+                                // Static call `ClassName.factory(...)`: the
+                                // receiver is a TYPE NAME, not a value, so it has
+                                // no resolved value-type above. Resolve the class
+                                // from the identifier (same pattern as
+                                // MethodCallExpression's static-call handling) so a
+                                // static value-return (e.g. Instant.ofEpochSecond)
+                                // is stack-classified rather than falling to the
+                                // virtual-drop branch. (codegen-perf-levers 1.2.c)
+                                if (!targetCls) {
+                                    if (auto recvId = dynamic_pointer_cast<
+                                            IdentifierExpression>(mcKids[0])) {
+                                        targetCls = dynamic_pointer_cast<CajetaClass>(
+                                            CajetaType::of(recvId->getTextValue()));
+                                    }
+                                }
                             } else if (!module->getStructureStack().empty()) {
                                 targetCls = dynamic_pointer_cast<CajetaClass>(
                                     module->getStructureStack().back());
@@ -964,9 +979,18 @@ namespace cajeta {
                 // and reachable: they live in vtable.drop_fn and the
                 // dispatcher routes through them.
                 if (initIsStackAlloc) {
-                    if (llvm::Function* stackDropFn =
-                            klass->getOrCreateStackDropFunction()) {
-                        emitDropEntryForFn(module, field, stackDropFn, getSourceLine());
+                    // Skip the drop entry entirely when the stack drop is a
+                    // no-op (primitive-only value types like Instant/LocalDate):
+                    // registering + running an empty drop per scope is the whole
+                    // cost in tight loops (time-* ~230x — see codegen-perf-levers
+                    // plan / reference_noop_drop_stack_value_type_tax). Stack
+                    // allocation fixes the dynamic type, so static triviality is
+                    // sound here.
+                    if (!klass->hasTrivialStackDrop()) {
+                        if (llvm::Function* stackDropFn =
+                                klass->getOrCreateStackDropFunction()) {
+                            emitDropEntryForFn(module, field, stackDropFn, getSourceLine());
+                        }
                     }
                 } else if (klass->hasVtablePointerAtSlotZero()) {
                     // Patch this class's vtable drop_fn slot with the

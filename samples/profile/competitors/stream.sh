@@ -41,19 +41,26 @@ if want rust; then
     fi
 fi
 
-# ---- cpp (hand loop + OpenMP) ----
+# ---- cpp (std::views::filter|transform + std::reduce(par) over TBB) ----
 if want cpp; then
     if command -v g++ >/dev/null 2>&1; then
         BIN="$BUILD/cpp-stream"
         if [[ ! -x "$BIN" || "$DIR/cpp/stream/stream_bench.cpp" -nt "$BIN" ]]; then
-            g++ -O3 -march=native -fopenmp -DNDEBUG "$DIR/cpp/stream/stream_bench.cpp" \
-                -o "$BIN" >/tmp/profile-stream-cpp.log 2>&1 || true
+            # std::reduce(execution::par) needs the TBB backend. Prefer the dev
+            # symlink (-ltbb); fall back to the versioned soname when the -dev
+            # package isn't installed (only libtbb.so.12 present).
+            TBB="-ltbb"
+            if ! echo 'int main(){}' | g++ -x c++ - -ltbb -o /dev/null 2>/dev/null; then
+                TBB="-l:libtbb.so.12"
+            fi
+            g++ -O3 -march=native -std=c++23 -DNDEBUG "$DIR/cpp/stream/stream_bench.cpp" \
+                $TBB -o "$BIN" >/tmp/profile-stream-cpp.log 2>&1 || true
         fi
         if [[ -x "$BIN" ]]; then
             PROFILE_LANG_VERSION="$(g++ --version | head -1 | strip)" "$BIN" \
                 || skip_lang cpp cpp "cpp stream runner crashed"
         else
-            skip_lang cpp cpp "g++ build failed — needs OpenMP (see /tmp/profile-stream-cpp.log)"
+            skip_lang cpp cpp "g++ build failed — needs C++23 + TBB (see /tmp/profile-stream-cpp.log)"
         fi
     else
         skip_lang cpp cpp "g++ not installed"

@@ -2663,6 +2663,44 @@ namespace cajeta {
         return llvmStackDropFunction;
     }
 
+    // A drop function does nothing observable iff every call it (transitively)
+    // makes is to another do-nothing function. The empty base `Object::drop` is
+    // the common leaf — every class's stack drop calls it, so a naive "any call"
+    // test would never see a trivial drop. Real reclamation bottoms out in a
+    // runtime free (`__cajeta_free*`) or a referent's drop, which is a
+    // declaration / has its own freeing calls. Indirect calls and invokes are
+    // conservatively treated as non-trivial.
+    static bool isNoOpDropFn(llvm::Function* f,
+                             std::unordered_set<llvm::Function*>& seen) {
+        if (!f || f->isDeclaration()) return false;
+        if (!seen.insert(f).second) return true;   // cycle: bottoms out elsewhere
+        for (auto& bb : *f) {
+            for (auto& inst : bb) {
+                if (auto* ci = llvm::dyn_cast<llvm::CallInst>(&inst)) {
+                    if (!isNoOpDropFn(ci->getCalledFunction(), seen)) return false;
+                } else if (llvm::isa<llvm::InvokeInst>(&inst)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    bool CajetaClass::hasTrivialStackDrop() {
+        if (interfaceFlag) return false;
+        // Kill-switch (mirrors CAJETA_TBAA_DISABLE) — forces drop entries to be
+        // registered as before, for same-session A/B measurement and as an
+        // escape hatch if a mis-classification is ever suspected.
+        if (std::getenv("CAJETA_DROP_ELISION_DISABLE")) return false;
+        // The stack drop fn is emitted regardless (vtable.drop_fn slot), so
+        // forcing it here is free. If it does nothing observable, registering a
+        // drop entry for a stack local of this type is pure overhead — the
+        // time-* ~230x tax. See codegen-perf-levers plan /
+        // reference_noop_drop_stack_value_type_tax.
+        std::unordered_set<llvm::Function*> seen;
+        return isNoOpDropFn(getOrCreateStackDropFunction(), seen);
+    }
+
     std::vector<CajetaClassPtr> CajetaClass::collectDestructorChain() {
         // Reverse DFS over direct parents in reverse declaration order,
         // skipping interfaces and ancestors already visited. Implements
@@ -2985,7 +3023,12 @@ namespace cajeta {
     // decl already referenced by this class's #Rtti.
     void CajetaClass::emitReflectInvokeBody() {
         if (llvmReflectInvokeBodyEmitted) return;
-        llvm::Function* fn = llvmReflectInvokeFunction;   // created in createRttiConstant
+        // Adopt the decl if a sibling CajetaClass instance built the RTTI (so
+        // llvmReflectInvokeFunction is null on THIS instance but the #Rtti already
+        // references the external decl) — otherwise the body never fills and the
+        // symbol is left undefined, breaking the whole JIT/AOT link.
+        llvm::Function* fn = llvmReflectInvokeFunction
+            ? llvmReflectInvokeFunction : getOrCreateReflectInvokeDecl();
         if (!fn) return;
         llvmReflectInvokeBodyEmitted = true;
         if (!fn->empty()) return;                         // already has a body
@@ -3122,7 +3165,10 @@ namespace cajeta {
     // new instance. Unknown/unmarshallable constructors fall to a null return.
     void CajetaClass::emitReflectNewBody() {
         if (llvmReflectNewBodyEmitted) return;
-        llvm::Function* fn = llvmReflectNewFunction;   // created in createRttiConstant
+        // Adopt the decl if a sibling instance built the RTTI (see
+        // emitReflectInvokeBody) so the body always fills and the symbol resolves.
+        llvm::Function* fn = llvmReflectNewFunction
+            ? llvmReflectNewFunction : getOrCreateReflectNewDecl();
         if (!fn) return;
         llvmReflectNewBodyEmitted = true;
         if (!fn->empty()) return;

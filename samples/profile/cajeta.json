@@ -45,7 +45,11 @@
         "build": {
             "description": "Build the profile harness to a native binary (build/profile)",
             "actions": [
-                { "action": "build", "flavor": "debug",
+                // xpu-backend=cpu so the MatMulBench @Kernel matmul compiles +
+                // registers for the CPU kernel-pool dispatcher (else .launch
+                // finds no registered kernel and silently skips).
+                { "action": "build",
+                  "flavor": { "base": "debug", "xpu-backend": "cpu" },
                   "output-path": "build/profile", "id": "art" }
             ],
             "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
@@ -54,7 +58,8 @@
         "run": {
             "description": "Build the profile harness and run it",
             "actions": [
-                { "action": "build", "flavor": "debug",
+                { "action": "build",
+                  "flavor": { "base": "debug", "xpu-backend": "cpu" },
                   "output-path": "build/profile", "id": "art" },
                 { "action": "exec", "command": "${art.path}" }
             ]
@@ -68,8 +73,20 @@
                 // `-O3 -march=native` / `target-cpu=native` builds, instead of
                 // the default release flavor's O2 + generic-baseline x86-64.
                 { "action": "build",
-                  "flavor": { "base": "release", "opt": "O3", "cpu": "native" },
+                  "flavor": { "base": "release", "opt": "O3", "cpu": "native",
+                              "xpu-backend": "cpu" },
                   "output-path": "build/profile", "id": "art" }
+            ],
+            "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
+        },
+
+        "gpu": {
+            "description": "Release build with GPU backend (amdgpu, gfx1151) for the gpu-area @Kernel benchmarks; the active backend is chosen at runtime via CAJETA_XPU_BACKEND=hip. Output build/profile-gpu so it does not collide with the cpu-only build/profile. cpu is NOT in this flavor: the LDS-tiled matmul kernel has a barrier in its K-loop, which OOMs the CPU barrier-fission pass (see reference_cpu_barrier_fission_loop_oom); HIP compiles it natively. Vulkan is deferred (agents/gpu-vulkan-f64-plan.md).",
+            "actions": [
+                { "action": "build",
+                  "flavor": { "base": "release", "opt": "O3", "cpu": "native",
+                              "xpu-backend": "amdgpu", "xpu-arch": "gfx1151" },
+                  "output-path": "build/profile-gpu", "id": "art" }
             ],
             "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
         },

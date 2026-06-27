@@ -7,6 +7,15 @@ import profile.Benchmark;
 // Instant arithmetic throughput: N iterations of plusSeconds + getEpochSecond
 // (value-type time math). Cross-check: the accumulated epoch sum is the closed
 // form 7*(1+2+...+N) == 7*N*(N+1)/2.
+//
+// FAIRNESS / DEFERRED (benchmark-fidelity Unit 9, spec §1.3): the large gap to
+// the C++ std::chrono competitor is a VERIFIED-FAIR comparison — the competitor
+// does the full per-iteration work (runtime epoch base from the environment so
+// the loop can't be constant-folded, do_not_optimize() each iteration to defeat
+// the Gauss closed-form elision, result sunk + checked). Confirmed empirically:
+// its time scales ~linearly with N. The gap is Cajeta's own scalar time-arith
+// codegen (no vectorization), an explicitly DEFERRED optimization — not a
+// measurement artifact and not competitor cheating.
 public class InstantArithmeticBench extends Benchmark {
 
     public int32 n;

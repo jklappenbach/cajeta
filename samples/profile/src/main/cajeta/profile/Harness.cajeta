@@ -78,6 +78,19 @@ public class Harness {
         int64 peak = Memory.peakRssKb();
         boolean ok = b.checkResult();
 
+        // Allocation intensity: bytes one representative execution requests from
+        // the heap allocator (Cajeta.allocatedBytes() is a cumulative runtime
+        // counter; the delta around a single run is the per-execution figure that
+        // matches the competitors' counting-allocator / tracemalloc numbers).
+        // Measured OUTSIDE the timed region so it cannot perturb min_ns, and it
+        // populates the report's Memory tab (was -1 → cajeta filtered out).
+        int64 allocBase = Cajeta.allocatedBytes();
+        b.runVariant(variant, 1);
+        int64 allocBytes = Cajeta.allocatedBytes() - allocBase;
+        if (allocBytes < 0) {
+            allocBytes = 0;
+        }
+
         // Distribution (sort then index). n ~ a few hundred.
         Harness.sortInPlace(samples, trials);
         int64 sum = 0;
@@ -91,6 +104,7 @@ public class Harness {
         // result inline into a field has bitten us before — bind, then store).
         String benchName = b.name();
         String benchArea = b.area();
+        String benchBackend = b.backend();
 
         Result r = heap Result();
         // Owned copies of the borrowed params — storing a borrow into a field
@@ -100,6 +114,7 @@ public class Harness {
         r.area = "" + benchArea;
         r.variant = "" + variant;
         r.language = "cajeta";
+        r.backend = "" + benchBackend;
         // Built by `cajeta release` with the profile manifest's native flavor
         // (base release → O3 + --cpu=native); record it so the report shows the
         // same -march=native footing as the C++/Rust/Go competitors.
@@ -117,6 +132,7 @@ public class Harness {
             ws = 0;
         }
         r.workingSetKb = ws;
+        r.allocBytes = allocBytes;
         r.checkOk = ok;
         if (ok) {
             r.status = "ok";
@@ -131,12 +147,14 @@ public class Harness {
     public static #Result skippedRow(Benchmark b, String runId, String variant, String reason) {
         String nm = b.name();
         String ar = b.area();
+        String be = b.backend();
         Result r = heap Result();
         r.runId = "" + runId;
         r.benchmark = "" + nm;
         r.area = "" + ar;
         r.variant = "" + variant;
         r.language = "cajeta";
+        r.backend = "" + be;
         r.status = "skipped";
         r.checkOk = false;
         r.notes = "" + reason;

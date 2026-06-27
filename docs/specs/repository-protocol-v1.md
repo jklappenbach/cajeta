@@ -54,7 +54,7 @@ A v2-capable registry serves `/.well-known/cajeta-capabilities.json`:
     "lockfile-diff": true,
     "supercompress": false,
     "transparency-log": true,
-    "well-known-bundles": ["stdlib@1.0.0"]
+    "well-known-bundles": []
   },
   "mirrors": [
     {"url": "https://mirror-eu.example.org", "region": "eu"},
@@ -67,6 +67,13 @@ A v2-capable registry serves `/.well-known/cajeta-capabilities.json`:
 The client (`HttpRepository::capabilities()`) caches the response for the
 advertised TTL. v1-only servers either omit the file (404) or respond with
 `v2: false`; the client falls back to v1 paths.
+
+`well-known-bundles` advertises curated multi-package bundles a registry
+pre-builds; it is normally empty. The **standard library is not a bundle or a
+package** — it ships embedded in executable `.cja`s / binaries and is never
+resolved from the registry. **Namespaces:** external (published) libraries use
+the `dev.cajeta.*` namespace; the reserved `cajeta.*` namespace denotes embedded
+stdlib modules, which the resolver skips as toolchain-provided.
 
 ## v2 endpoints
 

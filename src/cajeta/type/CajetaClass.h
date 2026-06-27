@@ -621,6 +621,14 @@ namespace cajeta {
         // owned by the stack frame, not the heap allocator.
         llvm::Function* getOrCreateStackDropFunction();
 
+        // True iff this class's stack drop does nothing observable — it would
+        // emit NO calls (no user `drop()`, no owning ancestor user `drop()`, no
+        // owned class-ref fields). Such a type's scope-exit drop is a no-op, so
+        // registering a drop entry for a stack local of it is pure overhead
+        // (the time-* 230x tax). Mirrors exactly the call-emitting branches of
+        // getOrCreateStackDropFunction.
+        bool hasTrivialStackDrop();
+
         // REFL-2: return (creating on first call) the DECLARATION of this
         // class's reflective invoke adapter — `void(ptr obj, i32 methodIndex,
         // ptr args, ptr ret)`. No body is emitted here; the #Rtti constant

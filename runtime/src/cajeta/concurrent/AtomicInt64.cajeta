@@ -20,7 +20,7 @@ package cajeta.concurrent;
  * int64 seq = counter.load();    // 1
  * ```
  */
-public class AtomicInt64 {
+public final class AtomicInt64 {
     pointer cell;
 
     /**

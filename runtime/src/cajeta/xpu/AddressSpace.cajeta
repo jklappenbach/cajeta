@@ -29,6 +29,22 @@ public final class Global<T> { }
 
 public final class Shared<T> { }
 
+/**
+ * Swizzled<T, S> — a workgroup-shared (LDS) tile whose element addressing is
+ * permuted by a conflict-free XOR swizzle with row stride `S` (a power of two):
+ * for a flat index `a`, `row = a / S`, `col = a % S`, the physical slot is
+ * `row*S + (col ^ (row & (S-1)))`. The permutation is an *involution* (applying
+ * it twice is the identity), so it is transparent at the logical-index level —
+ * staging writes and matrix-core reads that use the SAME stride `S` see the same
+ * physical slot for a given logical index, while consecutive rows land in
+ * different LDS banks (killing the bank-conflict replays a linear tile suffers on
+ * WMMA fragment loads). Declared and used exactly like `Shared<T>`
+ * (`Swizzled<T,S> t = shared T[N];`); the compiler applies the swizzle at every
+ * access. On a backend with no native swizzle the permutation is the identity
+ * (correct, just unaccelerated). See docs/specs/xpu-pipelined-gemm-primitives-spec.md §3.
+ */
+public final class Swizzled<T, uint32 S> { }
+
 public final class Constant<T> { }
 
 public final class Private<T> { }

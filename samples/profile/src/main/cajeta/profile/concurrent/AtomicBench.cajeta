@@ -37,8 +37,9 @@ public class AtomicBench extends Benchmark {
 
     public void run(int32 iterations) {
         AtomicInt64 a = heap AtomicInt64(0);
+        int32 n = this.n;
         int32 i = 0;
-        while (i < this.n) {
+        while (i < n) {
             a.fetchAdd(1);
             i = i + 1;
         }

@@ -738,6 +738,18 @@ namespace cajeta {
         }
         llvm::Type* headerTy = arrayType->getLlvmType();
 
+        // TBAA access kind for this array's elements: i8 (byte buffer) is
+        // reinterpretation-prone -> alias-all Char; any other element type gets
+        // the disjoint array-element tag so the optimizer can hoist enclosing
+        // object-field loads across element stores.
+        auto tbaaElemKind = [&]() -> CajetaModule::TbaaKind {
+            llvm::Type* et = resolvedType ? resolvedType->getLlvmType() : nullptr;
+            if (et && et->isIntegerTy(8)) {
+                return CajetaModule::TbaaKind::Char;
+            }
+            return CajetaModule::TbaaKind::ArrayElem;
+        };
+
         // Resolve the index expression. Same l-value-to-r-value coercion
         // needed for class-field indices (`this.data[this.idx]`) — the
         // DotExpression for `this.idx` returns a GEP, not an AllocaInst,
@@ -811,7 +823,13 @@ namespace cajeta {
                 llvm::ConstantInt::get(i64Ty, 0),
                 idx,
             };
-            return builder->CreateGEP(inlineTy, arrayVal, inlineGep);
+            llvm::Value* inlineElemPtr = builder->CreateGEP(inlineTy, arrayVal, inlineGep);
+            // TBAA: this address feeds an array-element load/store. Byte (i8)
+            // buffers are reinterpretation-prone (String/SWAR/memcpy) so they get
+            // the alias-all Char tag; other element types get the disjoint
+            // array-element tag. See CajetaModule TBAA section.
+            module->recordTbaaProvenance(inlineElemPtr, tbaaElemKind());
+            return inlineElemPtr;
         }
 
         // Bounds check (when enabled by the compiler flag and the runtime helper is
@@ -852,7 +870,11 @@ namespace cajeta {
             llvm::ConstantInt::get(i32Ty, CajetaArray::DATA_FIELD_INDEX),
             idx,
         };
-        return builder->CreateGEP(headerTy, arrayVal, gepIndices);
+        llvm::Value* elemPtr = builder->CreateGEP(headerTy, arrayVal, gepIndices);
+        // TBAA: array-element access (i8 buffers -> alias-all Char; else the
+        // disjoint array-element tag). See CajetaModule TBAA section.
+        module->recordTbaaProvenance(elemPtr, tbaaElemKind());
+        return elemPtr;
     }
 
     // Helper for prefix/postfix: child is the operand. Returns (addr, value) where addr is

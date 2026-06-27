@@ -7,6 +7,14 @@ import profile.Benchmark;
 // LocalDate arithmetic throughput: N iterations of plusDays + toEpochDay
 // (calendar math). Cross-check: the accumulated epoch-day sum is the closed form
 // 1+2+...+N == N*(N+1)/2 (starting from epoch day 0, each step lands on day i).
+//
+// FAIRNESS / DEFERRED (benchmark-fidelity Unit 9, spec §1.3): the gap to the C++
+// std::chrono competitor is a VERIFIED-FAIR comparison — the competitor does the
+// full per-iteration work (runtime epoch base from the environment to block
+// constant-folding, do_not_optimize() each iteration to defeat the closed-form
+// elision, result sunk + checked), and its time scales ~linearly with N. The
+// gap is Cajeta's own scalar calendar-arith codegen, an explicitly DEFERRED
+// optimization — not a measurement artifact and not competitor cheating.
 public class LocalDateArithmeticBench extends Benchmark {
 
     public int32 n;

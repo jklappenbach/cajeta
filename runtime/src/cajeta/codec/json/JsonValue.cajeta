@@ -38,6 +38,12 @@ public final class JsonValue {
     int32 kind;
     boolean boolVal;
     int64 numVal;
+    // NUMBER payload is a tagged scalar: integer literals keep the exact
+    // int64 in `numVal` (numIsFloat=false); fractional/exponent literals
+    // store the parsed double in `floatVal` (numIsFloat=true). asInt64 /
+    // asFloat64 convert across the two so callers needn't branch.
+    boolean numIsFloat;
+    float64 floatVal;
     int8[] strBytes;
     int32 strLen;
     JsonArray arrVal;
@@ -59,6 +65,8 @@ public final class JsonValue {
         this.kind = 0;
         this.boolVal = false;
         this.numVal = 0;
+        this.numIsFloat = false;
+        this.floatVal = 0.0;
         this.strBytes = null;
         this.strLen = 0;
         this.arrVal = null;
@@ -83,13 +91,34 @@ public final class JsonValue {
 
     @Inline
     public int64 asInt64() {
+        if (this.numIsFloat) {
+            return (int64) this.floatVal;
+        }
         return this.numVal;
     }
 
     /** Narrowing view of the NUMBER payload — truncates the int64 to int32. */
     @Inline
     public int32 asInt32() {
-        return (int32) this.numVal;
+        return (int32) this.asInt64();
+    }
+
+    /** True iff this NUMBER carried a fraction/exponent (parsed as float64). */
+    @Inline
+    public boolean isFloat() {
+        return this.numIsFloat;
+    }
+
+    /**
+     * The NUMBER payload as `float64`. An integer literal widens exactly;
+     * a fractional/exponent literal returns the parsed double.
+     */
+    @Inline
+    public float64 asFloat64() {
+        if (this.numIsFloat) {
+            return this.floatVal;
+        }
+        return (float64) this.numVal;
     }
 
     // String bytes — borrowed view, caller must not free. v1 keeps
@@ -154,6 +183,14 @@ public final class JsonValue {
     public JsonValue setNumber(int64 v) {
         this.kind = 2;
         this.numVal = v;
+        this.numIsFloat = false;
+        return this;
+    }
+
+    public JsonValue setFloat(float64 v) {
+        this.kind = 2;
+        this.floatVal = v;
+        this.numIsFloat = true;
         return this;
     }
 

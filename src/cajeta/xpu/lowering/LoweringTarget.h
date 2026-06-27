@@ -154,6 +154,60 @@ namespace xpu {
                                  FenceScope scope,
                                  MemoryOrder order = MemoryOrder::Default);
 
+        // Async global->shared copy (xpu-pipelined-gemm-primitives §2): issue a
+        // direct global->LDS transfer of `count` elements, the workgroup striping
+        // it across its threads (dst[dstOffset+e] = src[srcOffset+e] for
+        // e = tid, tid+nthreads, ...). `dst`/`src` are resolved buffer bases (a
+        // Shared<T> local + a Buffer<T> param); elem types match (same T). The
+        // DEFAULT is a SYNCHRONOUS strided copy — bit-identical, no overlap — so
+        // every backend is correct before its native async path lands; AMDGPU
+        // overrides with `global_load_lds` tracked under vmcnt (NVPTX cp.async).
+        virtual void asyncCopy(llvm::IRBuilderBase& b, llvm::Module& m,
+                               llvm::Value* dstBase, llvm::Type* dstElem,
+                               llvm::Value* dstOffset, llvm::Value* srcBase,
+                               llvm::Type* srcElem, llvm::Value* srcOffset,
+                               llvm::Value* count);
+
+        // Close the current async-copy group (the unit `asyncWait` counts).
+        // Default no-op (the synchronous fallback already landed the data).
+        virtual void asyncCommit(llvm::IRBuilderBase& b, llvm::Module& m);
+
+        // Block until at most `groupsInFlight` committed async-copy groups remain
+        // outstanding. Default no-op (synchronous fallback). AMDGPU lowers to
+        // `s_waitcnt vmcnt(groupsInFlight)`; NVPTX to `cp.async.wait_group`.
+        virtual void asyncWait(llvm::IRBuilderBase& b, llvm::Module& m,
+                               llvm::Value* groupsInFlight);
+
+        // Instruction-scheduling hints (xpu-kernel-scheduling-hints §2): steer how
+        // the backend interleaves matrix-core / LDS / global-memory instructions.
+        // Operands are compile-time constants (ImmArg), validated + range-checked
+        // at the call site, so the seams take plain integers. The DEFAULT is a
+        // NO-OP on every seam — a scheduling hint is an optimization directive, so
+        // omitting it is always correct (spec §1.3.2). AMDGPU overrides each with
+        // the native intrinsic (sched_barrier / sched_group_barrier / s_setprio /
+        // iglp_opt); NVPTX / SPIR-V / CPU keep the no-op (spec §4).
+        virtual void schedBarrier(llvm::IRBuilderBase& b, llvm::Module& m,
+                                  uint32_t mask);
+        virtual void schedGroupBarrier(llvm::IRBuilderBase& b, llvm::Module& m,
+                                       uint32_t mask, uint32_t size,
+                                       uint32_t syncId);
+        virtual void schedPriority(llvm::IRBuilderBase& b, llvm::Module& m,
+                                   uint32_t level);
+        virtual void schedPipelineOpt(llvm::IRBuilderBase& b, llvm::Module& m,
+                                      uint32_t strategy);
+
+        // Conflict-free LDS swizzle (xpu-pipelined-gemm-primitives §3): permute a
+        // flat element index `idx` (i64) into a `Swizzled<T,S>` tile so that
+        // consecutive rows land in different banks. `stride` is the tile's row
+        // width S (a power of two). The permutation is an involution
+        // (`row*S + (col ^ (row & (S-1)))`), applied identically at every access
+        // of the tile, so it is transparent at the logical-index level. The
+        // DEFAULT is the IDENTITY (no swizzle — correct, just unaccelerated); a
+        // non-power-of-two `stride` also falls back to identity. AMDGPU emits the
+        // XOR. Returns the physical index (i64).
+        virtual llvm::Value* swizzleAddr(llvm::IRBuilderBase& b, llvm::Value* idx,
+                                         uint32_t stride);
+
         // Device printf (Stage 11): `fmt` is an i8* constant format string;
         // `args` are the already-lowered scalar arguments (Path A — explicit
         // args, no C varargs in the language). CPU calls host printf (the kernel
@@ -705,17 +759,27 @@ namespace xpu {
         // Vulkan seam ignores them (the opaque matrixType already carries them);
         // a per-lane backend (AMD WMMA) needs them to gather the right fragment
         // (→ OpCooperativeMatrixLoadKHR).
+        // `swizzleStride` (0 = none) addresses a Swizzled<T,S> LDS tile: each
+        // per-element fragment coord is permuted by the conflict-free XOR with
+        // stride S (xpu-pipelined-gemm-primitives §3). WMMA sub-tile offsets are
+        // multiples of S², so the absolute swizzle reduces to the fragment-local
+        // one — `ptr` stays the pre-offset pointer. Only a per-element backend
+        // (AMD WMMA) / the software tile can honor it; a hardware whole-tile load
+        // (SPIR-V/NVPTX native) rejects a non-zero stride (can't per-element swizzle).
         virtual llvm::Value* coopMatrixLoad(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
             llvm::Value* layout, llvm::Value* stride, llvm::Type* matrixType,
-            uint32_t rows, uint32_t cols, uint32_t use);
+            uint32_t rows, uint32_t cols, uint32_t use,
+            uint32_t swizzleStride = 0);
 
         // m.store(dst, layout, stride): store `matrixVal` to `ptr`. Void op.
-        // `rows`/`cols`/`use` as in coopMatrixLoad (→ OpCooperativeMatrixStoreKHR).
+        // `rows`/`cols`/`use`/`swizzleStride` as in coopMatrixLoad
+        // (→ OpCooperativeMatrixStoreKHR).
         virtual void coopMatrixStore(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
             llvm::Value* matrixVal, llvm::Value* layout, llvm::Value* stride,
-            uint32_t rows, uint32_t cols, uint32_t use);
+            uint32_t rows, uint32_t cols, uint32_t use,
+            uint32_t swizzleStride = 0);
 
         // c.mma(a, b) → a*b+c (result type `matrixType`, the accumulator type)
         // (→ OpCooperativeMatrixMulAddKHR).

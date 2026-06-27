@@ -26,7 +26,7 @@ import re
 import sys
 
 AREAS_ORDER = ["codec", "collection", "sort", "string", "hash", "stream",
-               "math", "clbg", "time", "concurrent", "xpu"]
+               "math", "gpu", "clbg", "time", "concurrent", "xpu"]
 
 # Per-language bar colours — all in the cajeta caramel family, distinguishable.
 LANG_COLORS = {
@@ -141,7 +141,13 @@ def lang_versions(rows, env):
 def row_label(r):
     lang = r.get("language", "")
     lib = r.get("library", "")
-    return lang if (not lib or lib == lang) else f"{lang}/{lib}"
+    base = lang if (not lib or lib == lang) else f"{lang}/{lib}"
+    # Distinguish GPU backends (hip/vulkan/cuda) so device rows are comparable;
+    # cpu/host rows (the default) keep their plain label.
+    be = (r.get("backend") or "").strip()
+    if be and be != "cpu":
+        base = f"{base} ({be})"
+    return base
 
 
 def group_by_area(rows):
@@ -265,12 +271,35 @@ AREA_THR_UNIT = {
     "codec": "MB/s", "hash": "MB/s", "string": "MB/s",
     "sort": "Melem/s",
     "collection": "Mop/s", "stream": "Mop/s", "time": "Mop/s", "concurrent": "Mop/s",
+    "math": "GFLOP/s", "gpu": "GFLOP/s",
 }
 
 
-def derive_thr(unit, size, ns):
+# GFLOP/s can't come from a size/time divisor — it needs the benchmark's FLOP
+# count. These mirror the competitor runners' exact conventions (math_bench.py /
+# main.go / main.rs / math_bench.cpp): input_size is the element count, and
+#   saxpy / dot-product : 2·N      (N = input_size)
+#   matmul              : 2·N³     (input_size = N², so N³ = input_size ** 1.5)
+# so Cajeta — which emits only median_ns + input_size — stays first-class on the
+# math Throughput tab instead of silently dropping out of the default view.
+def math_flops(bench, size):
+    if not size or size <= 0:
+        return None
+    if bench == "matmul" or (bench and bench.startswith("matmul-")):
+        return 2.0 * size ** 1.5   # matmul + dtype variants (matmul-f16, …)
+    if bench in ("dot-product", "saxpy"):
+        return 2.0 * size
+    return None
+
+
+def derive_thr(unit, size, ns, bench=None):
+    if not ns or ns <= 0:
+        return None
+    if unit == "GFLOP/s":
+        f = math_flops(bench, size)
+        return f / ns if f else None      # FLOP per ns == GFLOP/s
     d = THR_DIV.get(unit)
-    if d is None or not size or not ns or size <= 0 or ns <= 0:
+    if d is None or not size or size <= 0:
         return None
     return size / ns * 1e9 / d
 
@@ -285,7 +314,8 @@ def thr_series(rows, area):
     for r in measured(rows):
         t = fnum(r.get("throughput"))
         if not (t and t > 0):
-            t = derive_thr(unit, fnum(r.get("input_size")), fnum(r.get("median_ns")))
+            t = derive_thr(unit, fnum(r.get("input_size")), fnum(r.get("median_ns")),
+                           r.get("benchmark"))
         if t and t > 0:
             vals.append((r, t))
     if not vals:

@@ -6,6 +6,15 @@ import profile.Benchmark;
 // permutations, repeatedly reverses the first k elements (k = perm[0]) until the
 // head is 0, counts flips, and reports the max-flips + the even/odd-indexed
 // checksum. Cross-check: the canonical N=10 results — maxFlips=38, checksum=73196.
+//
+// FIXED REGRESSION (benchmark-fidelity Unit 10/10.d): this had regressed to ~335ms
+// (~2.3x) when frame-arena U3 (commit 37248bbf) began bump-allocating non-escaping
+// primitive heap arrays (this bench's perm/perm1/count). The cause was NOT the
+// arena allocation itself but Block codegen bracketing EVERY block with a
+// __cajeta_arena_mark/__cajeta_arena_reset CALL pair whenever the method had any
+// arena local — so the hot swap/advance inner loops paid two runtime calls per
+// iteration. Fixed (Block.cpp) by emitting mark/reset only for blocks that
+// actually declare an arena-eligible local; back to ~143ms.
 public class FannkuchBench extends Benchmark {
 
     public int32 nDim;

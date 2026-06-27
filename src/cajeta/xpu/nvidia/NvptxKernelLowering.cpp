@@ -21,6 +21,7 @@
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
 
+#include <iostream>
 #include <string>
 #include <vector>
 
@@ -102,6 +103,81 @@ public:
                     ? llvm::Intrinsic::nvvm_membar_cta
                     : llvm::Intrinsic::nvvm_membar_gl);
         b.CreateCall(f, {});
+    }
+
+    // Async global->shared copy via the cp.async family (sm_80+): each thread
+    // strides the panel, issuing one cp.async.ca.shared.global per element — a
+    // direct global->shared transfer that bypasses the register file, the CUDA
+    // analog of CDNA's global_load_lds. commit/wait close + drain the group.
+    // cp.async carries 4/8/16-byte elements only; other widths use the sync
+    // staged copy (the base seam) so the kernel stays correct.
+    void asyncCopy(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* dstBase,
+                   llvm::Type* dstElem, llvm::Value* dstOffset, llvm::Value* srcBase,
+                   llvm::Type* srcElem, llvm::Value* srcOffset,
+                   llvm::Value* count) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        uint64_t elemBytes = m.getDataLayout().getTypeStoreSize(srcElem);
+        llvm::Intrinsic::ID cp;
+        switch (elemBytes) {
+            case 4:  cp = llvm::Intrinsic::nvvm_cp_async_ca_shared_global_4; break;
+            case 8:  cp = llvm::Intrinsic::nvvm_cp_async_ca_shared_global_8; break;
+            case 16: cp = llvm::Intrinsic::nvvm_cp_async_ca_shared_global_16; break;
+            default:
+                LoweringTarget::asyncCopy(b, m, dstBase, dstElem, dstOffset, srcBase,
+                                          srcElem, srcOffset, count);
+                return;
+        }
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+        llvm::Function* fn = b.GetInsertBlock()->getParent();
+        auto i32of = [&](llvm::Value* v) { return b.CreateZExtOrTrunc(v, i32); };
+        llvm::Value* tid  = i32of(threadId(b, m, 0));
+        llvm::Value* nthr = i32of(workgroupDim(b, m, 0));
+        llvm::Value* cnt  = i32of(count);
+        llvm::Value* dOff = i32of(dstOffset);
+        llvm::Value* sOff = i32of(srcOffset);
+        llvm::Function* cpAsync = llvm::Intrinsic::getOrInsertDeclaration(&m, cp);
+        llvm::BasicBlock* pred = b.GetInsertBlock();
+        auto* head = llvm::BasicBlock::Create(ctx, "asynccopy.head", fn);
+        auto* body = llvm::BasicBlock::Create(ctx, "asynccopy.body", fn);
+        auto* exit = llvm::BasicBlock::Create(ctx, "asynccopy.exit", fn);
+        b.CreateBr(head);
+        b.SetInsertPoint(head);
+        llvm::PHINode* e = b.CreatePHI(i32, 2, "asynccopy.e");
+        e->addIncoming(tid, pred);
+        b.CreateCondBr(b.CreateICmpULT(e, cnt), body, exit);
+        b.SetInsertPoint(body);
+        llvm::Value* sPtr = bufferElementPtr(   // addrspace(1) global source
+            b, m, srcBase, srcElem, b.CreateZExt(b.CreateAdd(sOff, e), i64));
+        llvm::Value* dPtr = bufferElementPtr(   // addrspace(3) shared destination
+            b, m, dstBase, dstElem, b.CreateZExt(b.CreateAdd(dOff, e), i64));
+        b.CreateCall(cpAsync, {dPtr, sPtr});    // cp.async is (shared dst, global src)
+        e->addIncoming(b.CreateAdd(e, nthr), body);
+        b.CreateBr(head);
+        b.SetInsertPoint(exit);
+    }
+
+    // Close the current cp.async group (the unit asyncWait counts).
+    void asyncCommit(llvm::IRBuilderBase& b, llvm::Module& m) override {
+        b.CreateCall(llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::nvvm_cp_async_commit_group), {});
+    }
+
+    // Block until at most `groupsInFlight` committed cp.async groups remain. PTX
+    // cp.async.wait_group takes an IMMEDIATE, so a constant count (the usual
+    // wait(0) = drain all) lowers directly; a dynamic count drains everything
+    // with cp.async.wait_all (conservative but correct).
+    void asyncWait(llvm::IRBuilderBase& b, llvm::Module& m,
+                   llvm::Value* groupsInFlight) override {
+        if (auto* c = llvm::dyn_cast<llvm::ConstantInt>(groupsInFlight)) {
+            b.CreateCall(llvm::Intrinsic::getOrInsertDeclaration(
+                             &m, llvm::Intrinsic::nvvm_cp_async_wait_group),
+                         {llvm::ConstantInt::get(llvm::Type::getInt32Ty(m.getContext()),
+                                                 c->getZExtValue())});
+        } else {
+            b.CreateCall(llvm::Intrinsic::getOrInsertDeclaration(
+                &m, llvm::Intrinsic::nvvm_cp_async_wait_all), {});
+        }
     }
 
     void devicePrintf(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* fmt,
@@ -249,7 +325,16 @@ public:
                                 llvm::Value* ptr, llvm::Value* layout,
                                 llvm::Value* stride, llvm::Type* matrixType,
                                 uint32_t /*rows*/, uint32_t /*cols*/,
-                                uint32_t use) override {
+                                uint32_t use, uint32_t swz = 0) override {
+        if (swz) {
+            // U5.3: degrade to identity, don't reject. The WMMA whole-tile load
+            // can't permute per element, but swizzleAddr is already identity on
+            // NVPTX, so the Swizzled<T,S> tile was STAGED unpermuted too — an
+            // identity load stays consistent (correct, just no bank-conflict win).
+            std::cerr << "note: [swizzle-tier] CooperativeMatrix.load from a "
+                         "Swizzled<T,S> tile uses the IDENTITY layout on NVPTX "
+                         "(no per-element WMMA swizzle); correct, unaccelerated.\n";
+        }
         requireRowMajor(layout, "load");
         llvm::Function* f =
             nvWmmaLoadDecl(m, use, nvFragScalar(matrixType), ptr->getType());
@@ -259,7 +344,13 @@ public:
     void coopMatrixStore(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
                          llvm::Value* matrixVal, llvm::Value* layout,
                          llvm::Value* stride, uint32_t /*rows*/, uint32_t /*cols*/,
-                         uint32_t /*use*/) override {
+                         uint32_t /*use*/, uint32_t swz = 0) override {
+        if (swz) {
+            // U5.3: degrade to identity, don't reject (see coopMatrixLoad).
+            std::cerr << "note: [swizzle-tier] CooperativeMatrix.store to a "
+                         "Swizzled<T,S> tile uses the IDENTITY layout on NVPTX "
+                         "(no per-element WMMA swizzle); correct, unaccelerated.\n";
+        }
         requireRowMajor(layout, "store");
         // store.d.f32.row.stride(ptr, d0..d7, stride).
         llvm::Function* f = nvDecl(

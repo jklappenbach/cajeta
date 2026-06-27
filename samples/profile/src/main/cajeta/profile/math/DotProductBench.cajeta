@@ -2,8 +2,11 @@ package profile.math;
 
 import profile.Benchmark;
 
-// Dot product: sum(x[i]*y[i]) over N float64 (scalar reduction). Cross-check:
-// matches a recomputation in the same accumulation order.
+// Dot product: sum(x[i]*y[i]) over N float64. Vectorized with 4 independent
+// Vector<float64,8> accumulators (32-wide unroll) to hide FMA latency on this
+// memory-bound reduction, horizontal-summed at the end + a scalar tail. The
+// cross-check recomputes the strict left-to-right scalar sum and compares within
+// a small relative tolerance, since SIMD reassociation rounds differently.
 public class DotProductBench extends Benchmark {
 
     public float64[] x;
@@ -44,9 +47,22 @@ public class DotProductBench extends Benchmark {
     }
 
     public void run(int32 iterations) {
-        float64 sum = 0.0;
+        int32 nd = this.n;
+        Vector<float64,8> a0 = stack Vector<float64,8>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        Vector<float64,8> a1 = stack Vector<float64,8>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        Vector<float64,8> a2 = stack Vector<float64,8>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        Vector<float64,8> a3 = stack Vector<float64,8>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        int32 limit = nd - (nd % 32);
         int32 i = 0;
-        while (i < this.n) {
+        while (i < limit) {
+            a0 = a0 + Cajeta.vload8f64(this.x, i)      * Cajeta.vload8f64(this.y, i);
+            a1 = a1 + Cajeta.vload8f64(this.x, i + 8)  * Cajeta.vload8f64(this.y, i + 8);
+            a2 = a2 + Cajeta.vload8f64(this.x, i + 16) * Cajeta.vload8f64(this.y, i + 16);
+            a3 = a3 + Cajeta.vload8f64(this.x, i + 24) * Cajeta.vload8f64(this.y, i + 24);
+            i = i + 32;
+        }
+        float64 sum = Cajeta.vsum8f64(a0 + a1 + a2 + a3);
+        while (i < nd) {
             sum = sum + this.x[i] * this.y[i];
             i = i + 1;
         }
@@ -60,6 +76,16 @@ public class DotProductBench extends Benchmark {
             expected = expected + this.x[i] * this.y[i];
             i = i + 1;
         }
-        return this.result == expected;
+        // SIMD reassociation (32 partial lanes) vs strict scalar order: compare
+        // within a small relative tolerance instead of exact equality.
+        float64 diff = this.result - expected;
+        if (diff < 0.0) {
+            diff = -diff;
+        }
+        float64 mag = expected;
+        if (mag < 0.0) {
+            mag = -mag;
+        }
+        return diff <= mag * 0.0000000001 + 0.000001;
     }
 }

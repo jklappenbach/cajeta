@@ -369,6 +369,9 @@ public final class JsonWriter {
             return this.writeBoolean(v.asBoolean());
         }
         if (k == 2) {                                  // NUMBER
+            if (v.isFloat()) {
+                return this.writeNumber(v.asFloat64());
+            }
             return this.writeNumber(v.asInt64());
         }
         if (k == 3) {                                  // STRING
