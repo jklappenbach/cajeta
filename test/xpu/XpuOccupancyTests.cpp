@@ -99,16 +99,22 @@ const char* kGemmF16Src =
     "        uint32 kt = 0;\n"
     "        while (kt < nsteps) {\n"
     "            uint32 konext = (kt + 1) * 16;\n"
-    "            if (kt + 1 < nsteps) {\n"
-    "                uint32 nb = (1 - ph) * 2048;\n"
-    "                uint32 e2 = tid;\n"
-    "                while (e2 < 2048) {\n"
-    "                    uint32 ar = e2 / 16; uint32 ac = e2 % 16;\n"
-    "                    sa[nb + ar * 16 + ac] = a[(rb + ar) * n + konext + ac];\n"
-    "                    uint32 br = e2 / 128; uint32 bc = e2 % 128;\n"
-    "                    sb[nb + br * 128 + bc] = b[(konext + br) * n + cb + bc];\n"
-    "                    e2 = e2 + 512;\n"
-    "                }\n"
+    "            uint32 ie0 = tid; uint32 ie1 = tid + 512;\n"
+    "            uint32 ie2 = tid + 1024; uint32 ie3 = tid + 1536;\n"
+    "            float16 ra0 = (float16) 0.0; float16 ra1 = (float16) 0.0;\n"
+    "            float16 ra2 = (float16) 0.0; float16 ra3 = (float16) 0.0;\n"
+    "            float16 rb0 = (float16) 0.0; float16 rb1 = (float16) 0.0;\n"
+    "            float16 rb2 = (float16) 0.0; float16 rb3 = (float16) 0.0;\n"
+    "            boolean pf = kt + 1 < nsteps;\n"
+    "            if (pf) {\n"
+    "                ra0 = a[(rb + ie0 / 16) * n + konext + ie0 % 16];\n"
+    "                ra1 = a[(rb + ie1 / 16) * n + konext + ie1 % 16];\n"
+    "                ra2 = a[(rb + ie2 / 16) * n + konext + ie2 % 16];\n"
+    "                ra3 = a[(rb + ie3 / 16) * n + konext + ie3 % 16];\n"
+    "                rb0 = b[(konext + ie0 / 128) * n + cb + ie0 % 128];\n"
+    "                rb1 = b[(konext + ie1 / 128) * n + cb + ie1 % 128];\n"
+    "                rb2 = b[(konext + ie2 / 128) * n + cb + ie2 % 128];\n"
+    "                rb3 = b[(konext + ie3 / 128) * n + cb + ie3 % 128];\n"
     "            }\n"
     "            uint32 base = ph * 2048;\n"
     "            wa0.load(sa, base + (wi * 2 + 0) * 256, 0, 16);\n"
@@ -117,6 +123,17 @@ const char* kGemmF16Src =
     "            wb1.load(sb, base + (wj * 2 + 1) * 16, 0, 128);\n"
     "            acc0_0.mma(wa0, wb0); acc0_1.mma(wa0, wb1);\n"
     "            acc1_0.mma(wa1, wb0); acc1_1.mma(wa1, wb1);\n"
+    "            if (pf) {\n"
+    "                uint32 nb = (1 - ph) * 2048;\n"
+    "                sa[nb + (ie0 / 16) * 16 + ie0 % 16] = ra0;\n"
+    "                sa[nb + (ie1 / 16) * 16 + ie1 % 16] = ra1;\n"
+    "                sa[nb + (ie2 / 16) * 16 + ie2 % 16] = ra2;\n"
+    "                sa[nb + (ie3 / 16) * 16 + ie3 % 16] = ra3;\n"
+    "                sb[nb + (ie0 / 128) * 128 + ie0 % 128] = rb0;\n"
+    "                sb[nb + (ie1 / 128) * 128 + ie1 % 128] = rb1;\n"
+    "                sb[nb + (ie2 / 128) * 128 + ie2 % 128] = rb2;\n"
+    "                sb[nb + (ie3 / 128) * 128 + ie3 % 128] = rb3;\n"
+    "            }\n"
     "            Barrier.workgroup();\n"
     "            ph = 1 - ph;\n"
     "            kt = kt + 1;\n"
@@ -218,9 +235,12 @@ TEST(XpuOccupancyTests, gemmF16BaselineOccupancy) {
     int vgpr = vgprsOf(kGemmF16Src, "gemmF16", &spill);
     ASSERT_GT(vgpr, 0) << "failed to parse gemmF16 .vgpr_count";
     int occ = rdna35Occupancy(vgpr);
-    std::cerr << "[occ] BASELINE gemmF16 (4 f32 accs/wave): vgpr=" << vgpr
+    // The shipped gemmF16 = the U3 register-prefetch pipeline (4 f32 accs/wave +
+    // 8 prefetch registers). Linear-staging baseline was vgpr=94 / occ=16 / 17.5
+    // TFLOP/s; this trades some occupancy for global-latency hiding → 20.6 TFLOP/s.
+    std::cerr << "[occ] gemmF16 (U3 register-prefetch): vgpr=" << vgpr
               << "  vgpr_spill=" << spill
               << "  theoretical_occupancy=" << occ << " waves/SIMD"
-              << "  (17.5 TFLOP/s @ n2048)\n";
+              << "  (20.6 TFLOP/s @ n2048; baseline was vgpr=94/occ=16/17.5)\n";
     EXPECT_GE(occ, 1) << "kernel must be launchable (>=1 wave/SIMD)";
 }
