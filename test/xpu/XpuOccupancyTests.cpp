@@ -188,22 +188,36 @@ int parseAmdMeta(const std::string& isa, const std::string& key) {
     return -1;
 }
 
-// VGPRs/wave of `kernelName` in `source`, compiled for gfx1151 (GPU-free). The
-// reusable extractor (U1.1.b). spill: out-param VGPR spill count (-1 if absent).
-int vgprsOf(const char* source, const char* kernelName, int* spill = nullptr) {
+// Emit the gfx1151 ISA for `kernelName` in `source` (GPU-free).
+std::string isaOf(const char* source, const char* kernelName) {
     Compiler compiler;
     auto module = compileForInspection(compiler, source);
     auto method = findMethod(module->getStructures()["test.M"], kernelName);
-    if (!method) return -1;
+    if (!method) return {};
     auto tm = createAmdgpuTargetMachine("gfx1151");
-    if (!tm) return -1;
+    if (!tm) return {};
     llvm::LLVMContext ctx;
     llvm::Module dev("xpu_occ_isa", ctx);
     configureDeviceModule(dev, *tm);
-    if (!lowerKernel(method, dev)) return -1;
-    std::string isa = cajeta::xpu::amd::emitIsa(dev, *tm);
+    if (!lowerKernel(method, dev)) return {};
+    return cajeta::xpu::amd::emitIsa(dev, *tm);
+}
+
+// VGPRs/wave of `kernelName` in `source`, compiled for gfx1151 (GPU-free). The
+// reusable extractor (U1.1.b). spill: out-param VGPR spill count (-1 if absent).
+int vgprsOf(const char* source, const char* kernelName, int* spill = nullptr) {
+    std::string isa = isaOf(source, kernelName);
+    if (isa.empty()) return -1;
     if (spill) *spill = parseAmdMeta(isa, "vgpr_spill_count");
     return parseAmdMeta(isa, "vgpr_count");
+}
+
+int countOccurrences(const std::string& hay, const std::string& needle) {
+    int n = 0;
+    for (size_t p = hay.find(needle); p != std::string::npos;
+         p = hay.find(needle, p + needle.size()))
+        ++n;
+    return n;
 }
 
 // Theoretical wave32 occupancy (waves/SIMD) for a VGPR count on RDNA3.5 (gfx1151):
@@ -243,4 +257,27 @@ TEST(XpuOccupancyTests, gemmF16BaselineOccupancy) {
               << "  theoretical_occupancy=" << occ << " waves/SIMD"
               << "  (20.6 TFLOP/s @ n2048; baseline was vgpr=94/occ=16/17.5)\n";
     EXPECT_GE(occ, 1) << "kernel must be launchable (>=1 wave/SIMD)";
+}
+
+// GPU-free ISA diagnosis substitute for rocprof (PMC profiling segfaults on this
+// gfx1151 APU — see reference_rocprof_broken_gfx1151). Static instruction mix of
+// the shipped gemmF16: how much of the body is memory-wait (s_waitcnt) + barrier
+// vs the WMMA compute + LDS/global traffic. Logs the counts (informational).
+TEST(XpuOccupancyTests, gemmF16IsaInstructionMix) {
+    std::string isa = isaOf(kGemmF16Src, "gemmF16");
+    ASSERT_FALSE(isa.empty());
+    std::cerr << "[isa] gemmF16 instruction mix (gfx1151):"
+              << "  s_waitcnt=" << countOccurrences(isa, "s_waitcnt")
+              << "  s_barrier=" << (countOccurrences(isa, "s_barrier")
+                                    + countOccurrences(isa, "s_wait_barrier")
+                                    + countOccurrences(isa, "barrier"))
+              << "  v_wmma=" << countOccurrences(isa, "v_wmma")
+              << "  ds_read=" << countOccurrences(isa, "ds_load")
+                              + countOccurrences(isa, "ds_read")
+              << "  ds_write=" << countOccurrences(isa, "ds_store")
+                               + countOccurrences(isa, "ds_write")
+              << "  global_load=" << countOccurrences(isa, "global_load")
+              << "  v_wmma_present=" << (countOccurrences(isa, "v_wmma") > 0)
+              << "\n";
+    EXPECT_GT(countOccurrences(isa, "v_wmma"), 0) << "expected WMMA in the GEMM";
 }
