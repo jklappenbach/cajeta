@@ -178,6 +178,24 @@ namespace xpu {
         virtual void asyncWait(llvm::IRBuilderBase& b, llvm::Module& m,
                                llvm::Value* groupsInFlight);
 
+        // Instruction-scheduling hints (xpu-kernel-scheduling-hints §2): steer how
+        // the backend interleaves matrix-core / LDS / global-memory instructions.
+        // Operands are compile-time constants (ImmArg), validated + range-checked
+        // at the call site, so the seams take plain integers. The DEFAULT is a
+        // NO-OP on every seam — a scheduling hint is an optimization directive, so
+        // omitting it is always correct (spec §1.3.2). AMDGPU overrides each with
+        // the native intrinsic (sched_barrier / sched_group_barrier / s_setprio /
+        // iglp_opt); NVPTX / SPIR-V / CPU keep the no-op (spec §4).
+        virtual void schedBarrier(llvm::IRBuilderBase& b, llvm::Module& m,
+                                  uint32_t mask);
+        virtual void schedGroupBarrier(llvm::IRBuilderBase& b, llvm::Module& m,
+                                       uint32_t mask, uint32_t size,
+                                       uint32_t syncId);
+        virtual void schedPriority(llvm::IRBuilderBase& b, llvm::Module& m,
+                                   uint32_t level);
+        virtual void schedPipelineOpt(llvm::IRBuilderBase& b, llvm::Module& m,
+                                      uint32_t strategy);
+
         // Conflict-free LDS swizzle (xpu-pipelined-gemm-primitives §3): permute a
         // flat element index `idx` (i64) into a `Swizzled<T,S>` tile so that
         // consecutive rows land in different banks. `stride` is the tile's row

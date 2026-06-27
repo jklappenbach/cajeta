@@ -1,0 +1,61 @@
+package cajeta.xpu;
+
+/**
+ * Schedule — portable instruction-scheduling HINTS for a @Kernel: the controls
+ * that steer how the backend interleaves matrix-core, LDS, and global-memory
+ * instructions (the WMMA/memory schedule rocBLAS / Composable Kernel hand-tune).
+ * Only meaningful inside @Kernel / @Device functions. See
+ * docs/specs/xpu-kernel-scheduling-hints-spec.md.
+ *
+ * These are OPTIMIZATION DIRECTIVES: a hint never changes a kernel's result — it
+ * only changes the instruction schedule, so output is identical with or without
+ * it. Like AsyncCopy/CoopStage they are device-only intrinsics — the body is
+ * empty and the lowering replaces each call at the @Kernel site (KernelLowering's
+ * `recv == "Schedule"` dispatch → the LoweringTarget sched seams). There is no
+ * real call. All operands are compile-time constants (ImmArg). Lowering per
+ * backend (chosen statically):
+ *   AMDGPU:  barrier → llvm.amdgcn.sched.barrier(mask); groupBarrier →
+ *            llvm.amdgcn.sched.group.barrier(mask,size,syncId); priority →
+ *            llvm.amdgcn.s.setprio(level); pipelineOpt → llvm.amdgcn.iglp.opt.
+ *   NVPTX / SPIR-V / CPU: documented NO-OPs (the default LoweringTarget seam) —
+ *            the kernel compiles and runs correctly, just without the hint.
+ */
+public final class Schedule {
+
+    /**
+     * Device-only intrinsic: a one-sided scheduling fence — the backend must not
+     * move instructions of the classes named by `mask` across this point. `mask`
+     * is a compile-time bitmask (0 = all classes; AMD sched_barrier bits, e.g.
+     * 0x0020 VALU, 0x0100 DS). AMD → llvm.amdgcn.sched.barrier; no-op elsewhere.
+     */
+    public static void barrier(uint32 mask) {
+    }
+
+    /**
+     * Device-only intrinsic: assemble an explicit instruction group of `size`
+     * instructions matching `mask`, synchronized with other group-barriers
+     * sharing `syncId` — lets the author hand-build a WMMA/DS/VMEM interleave.
+     * All three operands are compile-time constants. AMD →
+     * llvm.amdgcn.sched.group.barrier; no-op elsewhere.
+     */
+    public static void groupBarrier(uint32 mask, uint32 size, uint32 syncId) {
+    }
+
+    /**
+     * Device-only intrinsic: set the issuing wave's scheduling priority to
+     * `level` (0..3) so latency-critical waves win issue slots. `level` is a
+     * compile-time constant. AMD → llvm.amdgcn.s.setprio; no-op elsewhere.
+     */
+    public static void priority(uint32 level) {
+    }
+
+    /**
+     * Device-only intrinsic: apply the backend's canned pipeline schedule
+     * `strategy` (0 = GEMM-style matrix/LDS interleave). `strategy` is a
+     * compile-time constant. AMD → llvm.amdgcn.iglp.opt; no-op elsewhere.
+     * Caveat: the canned strategies are MFMA/CDNA-tuned, so on RDNA WMMA this
+     * may select nothing (an effective no-op) — a recorded outcome, not an error.
+     */
+    public static void pipelineOpt(uint32 strategy) {
+    }
+}

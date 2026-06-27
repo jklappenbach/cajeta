@@ -2516,6 +2516,12 @@ private:
             // commit/wait for N-stage software prefetch (§2). Default lowering is
             // a synchronous strided copy + no-op commit/wait; AMDGPU overrides.
             return lowerAsyncCopy(name, mc);
+        } else if (recv == "Schedule") {
+            // Schedule.barrier/groupBarrier/priority/pipelineOpt — portable
+            // instruction-scheduling hints (§2). Default lowering is a no-op;
+            // AMDGPU overrides with sched_barrier/sched_group_barrier/s_setprio/
+            // iglp_opt. Operands are validated as ImmArg constants here.
+            return lowerSchedule(name, mc);
         }
         // Buffer atomics on the element pointer (the same bufferElementPtr seam as
         // buf[i]); every form returns the OLD value.
@@ -3442,6 +3448,54 @@ private:
         }
         target.asyncCopy(builder, mod, dstBase, dstElem, dstOffset,
                          srcBase, srcElem, srcOffset, count);
+        return llvm::ConstantInt::get(i32, 0);
+    }
+
+    // Schedule.barrier/groupBarrier/priority/pipelineOpt — instruction-scheduling
+    // hints (§2). Every operand is an ImmArg, so it must lower to a ConstantInt;
+    // a non-constant or out-of-range value is a clean call-site diagnostic (§2.2),
+    // not an LLVM verifier crash. The validated constants are passed to the target
+    // sched seams (default no-op; AMDGPU emits the native intrinsic).
+    llvm::Value* lowerSchedule(const std::string& name,
+                               const std::shared_ptr<MethodCallExpression>& mc) {
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        const auto& args = mc->getParameters();
+        auto constArg = [&](size_t i, const char* what) -> uint64_t {
+            auto* ci = llvm::dyn_cast<llvm::ConstantInt>(
+                lowerExpr(args[i].expression));
+            if (!ci)
+                unsupported("Schedule." + name + ": " + what +
+                            " must be a compile-time constant");
+            return ci->getZExtValue();
+        };
+        if (name == "barrier") {
+            if (args.size() != 1)
+                unsupported("Schedule.barrier expects (mask)");
+            target.schedBarrier(builder, mod, (uint32_t) constArg(0, "mask"));
+        } else if (name == "groupBarrier") {
+            if (args.size() != 3)
+                unsupported("Schedule.groupBarrier expects (mask, size, syncId)");
+            target.schedGroupBarrier(builder, mod, (uint32_t) constArg(0, "mask"),
+                                     (uint32_t) constArg(1, "size"),
+                                     (uint32_t) constArg(2, "syncId"));
+        } else if (name == "priority") {
+            if (args.size() != 1)
+                unsupported("Schedule.priority expects (level)");
+            uint64_t level = constArg(0, "level");
+            if (level > 3)
+                unsupported("Schedule.priority: level must be 0..3");
+            target.schedPriority(builder, mod, (uint32_t) level);
+        } else if (name == "pipelineOpt") {
+            if (args.size() != 1)
+                unsupported("Schedule.pipelineOpt expects (strategy)");
+            uint64_t strategy = constArg(0, "strategy");
+            if (strategy > 1)
+                unsupported("Schedule.pipelineOpt: unknown strategy (0=GEMM, "
+                            "1=MFMA-exp)");
+            target.schedPipelineOpt(builder, mod, (uint32_t) strategy);
+        } else {
+            unsupported("Schedule." + name + "()");
+        }
         return llvm::ConstantInt::get(i32, 0);
     }
 
@@ -4813,6 +4867,19 @@ void LoweringTarget::asyncCommit(llvm::IRBuilderBase&, llvm::Module&) {}
 
 void LoweringTarget::asyncWait(llvm::IRBuilderBase&, llvm::Module&,
                                llvm::Value*) {}
+
+// Default scheduling hints: no-ops. A scheduling hint is an optimization
+// directive — omitting it never changes the kernel's result — so every backend
+// without a native scheduling intrinsic (NVPTX/SPIR-V/CPU) simply drops it.
+// AMDGPU overrides each with the matching amdgcn intrinsic.
+void LoweringTarget::schedBarrier(llvm::IRBuilderBase&, llvm::Module&,
+                                  uint32_t) {}
+void LoweringTarget::schedGroupBarrier(llvm::IRBuilderBase&, llvm::Module&,
+                                       uint32_t, uint32_t, uint32_t) {}
+void LoweringTarget::schedPriority(llvm::IRBuilderBase&, llvm::Module&,
+                                   uint32_t) {}
+void LoweringTarget::schedPipelineOpt(llvm::IRBuilderBase&, llvm::Module&,
+                                      uint32_t) {}
 
 // Default LDS swizzle: the identity (no permutation). Swizzling is a perf-only
 // transform; a backend without it stays correct by addressing the tile linearly.
