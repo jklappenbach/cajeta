@@ -110,19 +110,41 @@ Lowering map (illustrative):
 - 3.3.3 As an author, when I pin a value, then the automatic backoff (§2) respects it
   and does not override it.
 
-## 4. Runtime autotuning (follow-on tier)
+## 4. Runtime autotuning: shipped guidance + fallback analysis (follow-on tier)
 
 ### 4.1 Requirement
-For kernels whose best logistics depend on problem shape, the runtime shall sweep a
-small set of occupancy/launch configurations on first launch per (device, kernel,
-problem-shape), measure wall-clock, and cache the winner so subsequent launches use it.
-This mirrors the autotuning database that gives vendor BLAS (Tensile/hipBLASLt) much of
-its edge.
+For kernels whose best logistics depend on problem shape, config selection shall follow a
+**three-tier lookup** so the common path costs nothing and only genuinely-new shapes pay
+to learn:
+1. **Runtime cache** — a config already chosen this run (or persisted from a prior run)
+   for this (device, kernel, problem-shape) is used immediately.
+2. **Shipped guidance** — a static tuning database compiled into the toolchain maps known
+   (architecture, kernel, problem-shape) keys to their best config (authored offline from
+   measurements — the same thing that gives Tensile/hipBLASLt their edge). A hit is used
+   directly with **no on-device measurement** and seeds the runtime cache.
+3. **Analysis phase** — on a miss, sweep a small list of default candidate configs, time
+   each, pick the fastest, and write it to the runtime cache (so it is a hit thereafter).
 
-### 4.2 Use cases
-- 4.2.1 As a user running a GEMM across sizes, when I launch a shape the first time,
-  then the runtime picks the best config for that shape and reuses it thereafter.
-- 4.2.2 As a user, when a cached config exists for my (device, kernel, shape), then no
-  sweep occurs and the launch uses the cached winner immediately.
-- 4.2.3 As a user, when I pin an override (§3), then the runtime treats it as a clamp on
-  the sweep space rather than ignoring it.
+This is "one better" than a pure first-launch sweep: most launches resolve against shipped
+guidance and never measure; the sweep is the fallback for unknown shapes, and its results
+accrete into the cache.
+
+### 4.2 Architecture
+- **TuningKey** = (arch, kernel name, problem-shape signature). The shape signature buckets
+  the significant launch dimensions so near-identical shapes share a key.
+- **TuningConfig** = the tunable launch logistics (v1: workgroup/block size; extensible to
+  grid strategy and shared-memory split).
+- The **selection** is pure decision logic (cache → guidance → sweep) with the timer
+  **injected**, so it is validated GPU-free; the real launcher supplies an on-device timer.
+- An `@Occupancy` override (§3) **clamps** the candidate set (e.g. swept block ≤ maxThreads)
+  and the §2 compile-time pin bounds what the runtime may legally launch.
+
+### 4.3 Use cases
+- 4.3.1 As a user launching a shape covered by shipped guidance, when I run, then the best
+  config is used with no measurement overhead.
+- 4.3.2 As a user launching an unknown shape, when I run, then a short one-time analysis
+  picks the best candidate and caches it; subsequent launches of that shape are hits.
+- 4.3.3 As a user, when a config is already cached (this run or persisted), then neither
+  guidance nor sweep runs — the cached winner is used.
+- 4.3.4 As a user who pinned `@Occupancy` (§3), when autotuning runs, then the candidate
+  set is clamped to my bound rather than ignoring it.
