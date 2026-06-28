@@ -19,6 +19,7 @@
 #include "CajetaLexer.h"
 #include "CajetaParser.h"
 #include "CompilerMode.h"
+#include "CompilationContext.h"
 #include <string>
 #include <set>
 #include <vector>
@@ -107,6 +108,14 @@ namespace cajeta {
         // survive across Compiler instances. Production leaves it at the owned
         // context — behavior is identical.
         llvm::LLVMContext* activeContext = &llvmContext;
+        // This compile's per-thread mutable state (thread-safe-compiler Unit 1).
+        // The scope guard makes it the calling thread's current context for this
+        // Compiler's lifetime, restoring the previous current on destruction so a
+        // persistent prime context stays current beneath per-test Compilers.
+        // Declared before the ctor body so currentCompilationContext() is set
+        // before later units' reset/init run. Unit 1: marker only, no reads yet.
+        CompilationContext compilationContext;
+        ScopedCompilationContext compilationContextScope{&compilationContext};
         // Process-global shared context for the test stdlib-reuse path. When
         // non-null, newly constructed Compilers bind to it and SKIP the
         // global-state reset/init (the StdlibCache owns that lifecycle).

@@ -101,7 +101,10 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // Reference adapter, plan unit 1) registers a structure; the sibling
 // cajeta.xpu.Strategy ENUM does not add a separate module, so the eager prelude
 // grew net +1.
-static constexpr size_t STDLIB_STRUCTURE_COUNT = 446;
+// 2026-06-28: 446 → 451 — re-anchor to the actual eager prelude on main
+// (anchor had drifted stale; main-lineage prelude growth). Independent of the
+// thread-safe-compiler work (which adds no structures).
+static constexpr size_t STDLIB_STRUCTURE_COUNT = 451;
 
 TEST(CompilerTests, canParseOnValidShortPackage) {
     string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");
