@@ -182,14 +182,16 @@ void dumpDs(const std::string& tag, const std::string& isa) {
 TEST(XpuWideBReadProbeTests, benchFaithfulBReadIsWide) {
     std::string isa66 = isaOf(srcBenchB(66), "breadbench");
     std::string isa72 = isaOf(srcBenchB(72), "breadbench");
-    ASSERT_FALSE(isa66.empty()); ASSERT_FALSE(isa72.empty());
-    EXPECT_EQ(isa72.find("Cannot select"), std::string::npos) << isa72;
+    std::string isa80 = isaOf(srcBenchB(80), "breadbench");   // torch's pad 16 -> stride 80
+    ASSERT_FALSE(isa66.empty()); ASSERT_FALSE(isa72.empty()); ASSERT_FALSE(isa80.empty());
+    EXPECT_EQ(isa80.find("Cannot select"), std::string::npos) << isa80;
     dumpDs("stride 66 (pad 2, current)", isa66);
-    dumpDs("stride 72 (pad 8, 8-aligned)", isa72);
-    int b128_72 = countOccurrences(isa72, "ds_read_b128") + countOccurrences(isa72, "ds_load_b128");
+    dumpDs("stride 72 (pad 8)", isa72);
+    dumpDs("stride 80 (pad 16, TORCH LdsPad=16)", isa80);
+    int b128_80 = countOccurrences(isa80, "ds_read_b128") + countOccurrences(isa80, "ds_load_b128");
     int b128_66 = countOccurrences(isa66, "ds_read_b128") + countOccurrences(isa66, "ds_load_b128");
-    EXPECT_GT(b128_72, b128_66)
-        << "an 8-element-aligned LDS stride (72) should widen the col-major B read to ds_read_b128";
+    EXPECT_GT(b128_80, b128_66)
+        << "torch's 8-aligned LDS stride (80, pad 16) should widen the col-major B read to ds_read_b128";
 }
 
 // U1.1.a/b/c: col-major B load vs the row-major control — record the routing verdict.
