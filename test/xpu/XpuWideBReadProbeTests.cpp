@@ -31,6 +31,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <random>
 #include <string>
 
@@ -125,6 +126,71 @@ Widths readWidths(const std::string& isa) {
 }
 
 } // namespace
+
+// Faithful to the SHIPPED bench gemmF16 B path: B stored transposed-padded (N-major, K contiguous,
+// stride 66 = 64+2) and read col-major (layout=1, stride 66). Settles whether the real kernel's B
+// fragment read is already wide (b128) — i.e. whether the "B u16" occupancy finding is just the
+// stale row-major test mirror, not the shipped kernel.
+namespace {
+// Faithful B path parameterized by LDS row stride (= depthU 64 + pad). depthU 64 contiguous K per
+// N-row; col-major (layout=1) fragment read. b128 needs an 8-ELEMENT-aligned per-lane stride
+// (stride % 8 == 0); de-conflict needs stride NOT a multiple of 64 (else consecutive lanes share
+// banks). 66 (pad 2) de-conflicts but breaks b128 alignment -> ds_load_2addr_b32; 72 (pad 8 =
+// torch LdsPadB=8) is 8-aligned AND de-conflicts -> should give b128.
+std::string srcBenchB(int stride) {
+    std::string s = std::to_string(stride);
+    return std::string(
+        "package test;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "import cajeta.xpu.Barrier;\n"
+        "import cajeta.xpu.Shared;\n"
+        "import cajeta.xpu.CooperativeMatrix;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void breadbench(KernelBuffer<float32> c, KernelBuffer<float16> g) {\n"
+        "        Shared<float16> sa = shared float16[16 * ") + s + "];\n"
+        "        Shared<float16> sb = shared float16[128 * " + s + "];\n"
+        "        uint32 t = KernelThread.x();\n"
+        "        while (t < 1024) {\n"
+        "            uint32 nn = t / 64; uint32 kk = t % 64;\n"
+        "            sb[nn * " + s + " + kk] = g[t];\n"
+        "            if (t < 256) { uint32 mr = t / 16; uint32 mk = t % 16; sa[mr * " + s + " + mk] = g[t]; }\n"
+        "            t = t + 128;\n"
+        "        }\n"
+        "        Barrier.workgroup();\n"
+        "        CooperativeMatrix<float16,16,16,0> wa; wa.load(sa, 0, 0, " + s + ");\n"
+        "        CooperativeMatrix<float16,16,16,1> wb; wb.load(sb, 0, 1, " + s + ");\n"
+        "        CooperativeMatrix<float32,16,16,2> acc; acc.splat(0.0f);\n"
+        "        acc.mma(wa, wb);\n"
+        "        acc.store(c, 0, 0, 16);\n"
+        "    }\n"
+        "}\n";
+}
+void dumpDs(const std::string& tag, const std::string& isa) {
+    std::cerr << "[widebr] " << tag
+              << ": b128=" << (countOccurrences(isa, "ds_read_b128") + countOccurrences(isa, "ds_load_b128"))
+              << " 2addr_b32=" << countOccurrences(isa, "ds_load_2addr_b32")
+              << " b32=" << (countOccurrences(isa, "ds_read_b32") + countOccurrences(isa, "ds_load_b32"))
+              << " u16=" << (countOccurrences(isa, "ds_read_u16") + countOccurrences(isa, "ds_load_u16"))
+              << " v_wmma=" << countOccurrences(isa, "v_wmma") << "\n";
+}
+} // namespace
+
+// The bench's stride-66 B read is b32-paired, NOT b128 (alignment), but an 8-aligned stride (72,
+// torch's LdsPadB=8) should widen it to b128 while still de-conflicting. Records the lever.
+TEST(XpuWideBReadProbeTests, benchFaithfulBReadIsWide) {
+    std::string isa66 = isaOf(srcBenchB(66), "breadbench");
+    std::string isa72 = isaOf(srcBenchB(72), "breadbench");
+    ASSERT_FALSE(isa66.empty()); ASSERT_FALSE(isa72.empty());
+    EXPECT_EQ(isa72.find("Cannot select"), std::string::npos) << isa72;
+    dumpDs("stride 66 (pad 2, current)", isa66);
+    dumpDs("stride 72 (pad 8, 8-aligned)", isa72);
+    int b128_72 = countOccurrences(isa72, "ds_read_b128") + countOccurrences(isa72, "ds_load_b128");
+    int b128_66 = countOccurrences(isa66, "ds_read_b128") + countOccurrences(isa66, "ds_load_b128");
+    EXPECT_GT(b128_72, b128_66)
+        << "an 8-element-aligned LDS stride (72) should widen the col-major B read to ds_read_b128";
+}
 
 // U1.1.a/b/c: col-major B load vs the row-major control — record the routing verdict.
 TEST(XpuWideBReadProbeTests, bColMajorBReadWidensVsRowMajor) {
