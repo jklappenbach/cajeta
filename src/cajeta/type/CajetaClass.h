@@ -11,10 +11,38 @@
 #include "Templates.h"
 
 #include <vector>
+#include <map>
+#include <unordered_map>
 
 namespace cajeta {
     class CajetaInterface;
     typedef shared_ptr<CajetaInterface> CajetaInterfacePtr;
+
+    // U6.3 — the per-class codegen bindings that are LLVMContext-bound (struct
+    // types, globals, functions) plus the per-context emission flags. In the
+    // frozen-shared stdlib model each thread compiles into its OWN LLVMContext,
+    // so a shared (frozen) CajetaClass cannot hold these inline; when frozen,
+    // access routes to a per-thread side-table keyed by the class pointer
+    // (frozenClassBindings()). Behaviour is unchanged while frozen=false — the
+    // inline members are still used. See compiler-threadsafe-plan U6.
+    struct ClassLlvmBindings {
+        llvm::StructType* llvmVirtualTableType = nullptr;
+        llvm::StructType* llvmRttiType = nullptr;
+        llvm::StructType* llvmReferenceType = nullptr;
+        llvm::GlobalVariable* llvmVirtualTableGlobal = nullptr;
+        llvm::GlobalVariable* llvmRttiGlobal = nullptr;
+        llvm::GlobalVariable* llvmClassObjectGlobal = nullptr;
+        llvm::Function* llvmDropFunction = nullptr;
+        llvm::Function* llvmStackDropFunction = nullptr;
+        bool llvmDropFunctionPatched = false;
+        llvm::Function* llvmReflectInvokeFunction = nullptr;
+        bool llvmReflectInvokeBodyEmitted = false;
+        llvm::Function* llvmReflectNewFunction = nullptr;
+        bool llvmReflectNewBodyEmitted = false;
+        std::map<std::string, llvm::GlobalVariable*> interfaceVTables;
+        std::map<std::string, llvm::GlobalVariable*> staticFieldGlobals;
+        std::map<std::string, llvm::GlobalVariable*> secondaryVTables;
+    };
 
     class ClassBodyDeclaration;
     typedef shared_ptr<ClassBodyDeclaration> ClassBodyDeclarationPtr;
@@ -586,20 +614,91 @@ namespace cajeta {
             MethodPtr impl,
             uint64_t parentOffsetInThis);
 
+        // U6.3 — per-thread side-table of codegen bindings, used only when this
+        // class is frozen (shared, immutable semantic model). Keyed by class
+        // identity; thread_local so each compile thread keeps its own
+        // LLVMContext-bound globals/functions. Defined in CajetaClass.cpp.
+        static std::unordered_map<const CajetaClass*, ClassLlvmBindings>& frozenClassBindings();
+
+        // Frozen-aware accessors. While frozen=false they alias the inline
+        // members (behaviour-identical to pre-U6.3); while frozen they redirect
+        // to this thread's side-table entry. Reference-returning so call sites
+        // both read and write through them. unordered_map guarantees reference
+        // stability across inserts, so an `auto& b = xRef();` stays valid even
+        // as other classes seed their entries.
+        llvm::StructType*& vtableTypeRef() {
+            return frozen ? frozenClassBindings()[this].llvmVirtualTableType : llvmVirtualTableType;
+        }
+        llvm::StructType*& rttiTypeRef() {
+            return frozen ? frozenClassBindings()[this].llvmRttiType : llvmRttiType;
+        }
+        llvm::StructType*& referenceTypeRef() {
+            return frozen ? frozenClassBindings()[this].llvmReferenceType : llvmReferenceType;
+        }
+        llvm::GlobalVariable*& vtableGlobalRef() {
+            return frozen ? frozenClassBindings()[this].llvmVirtualTableGlobal : llvmVirtualTableGlobal;
+        }
+        llvm::GlobalVariable*& rttiGlobalRef() {
+            return frozen ? frozenClassBindings()[this].llvmRttiGlobal : llvmRttiGlobal;
+        }
+        llvm::GlobalVariable*& classObjectGlobalRef() {
+            return frozen ? frozenClassBindings()[this].llvmClassObjectGlobal : llvmClassObjectGlobal;
+        }
+        llvm::Function*& dropFnRef() {
+            return frozen ? frozenClassBindings()[this].llvmDropFunction : llvmDropFunction;
+        }
+        llvm::Function*& stackDropFnRef() {
+            return frozen ? frozenClassBindings()[this].llvmStackDropFunction : llvmStackDropFunction;
+        }
+        bool& dropFnPatchedRef() {
+            return frozen ? frozenClassBindings()[this].llvmDropFunctionPatched : llvmDropFunctionPatched;
+        }
+        llvm::Function*& reflectInvokeFnRef() {
+            return frozen ? frozenClassBindings()[this].llvmReflectInvokeFunction : llvmReflectInvokeFunction;
+        }
+        bool& reflectInvokeBodyEmittedRef() {
+            return frozen ? frozenClassBindings()[this].llvmReflectInvokeBodyEmitted : llvmReflectInvokeBodyEmitted;
+        }
+        llvm::Function*& reflectNewFnRef() {
+            return frozen ? frozenClassBindings()[this].llvmReflectNewFunction : llvmReflectNewFunction;
+        }
+        bool& reflectNewBodyEmittedRef() {
+            return frozen ? frozenClassBindings()[this].llvmReflectNewBodyEmitted : llvmReflectNewBodyEmitted;
+        }
+        std::map<std::string, llvm::GlobalVariable*>& interfaceVTablesRef() {
+            return frozen ? frozenClassBindings()[this].interfaceVTables : interfaceVTables;
+        }
+        const std::map<std::string, llvm::GlobalVariable*>& interfaceVTablesRef() const {
+            if (frozen) {
+                auto& t = frozenClassBindings();
+                auto it = t.find(this);
+                if (it != t.end()) return it->second.interfaceVTables;
+                static const std::map<std::string, llvm::GlobalVariable*> empty;
+                return empty;
+            }
+            return interfaceVTables;
+        }
+        std::map<std::string, llvm::GlobalVariable*>& staticFieldGlobalsRef() {
+            return frozen ? frozenClassBindings()[this].staticFieldGlobals : staticFieldGlobals;
+        }
+        std::map<std::string, llvm::GlobalVariable*>& secondaryVTablesRef() {
+            return frozen ? frozenClassBindings()[this].secondaryVTables : secondaryVTables;
+        }
+
         void setVirtualTableType(llvm::StructType* llvmVirtualTableType) {
-            this->llvmVirtualTableType = llvmVirtualTableType;
+            this->vtableTypeRef() = llvmVirtualTableType;
         }
 
         llvm::StructType* getVirtualTableType() {
-            return llvmVirtualTableType;
+            return vtableTypeRef();
         }
 
         void setVirtualTableGlobal(llvm::GlobalVariable* llvmVirtualTableGlobal) {
-            this->llvmVirtualTableGlobal = llvmVirtualTableGlobal;
+            this->vtableGlobalRef() = llvmVirtualTableGlobal;
         }
 
         llvm::GlobalVariable* getVirtualTableGlobal() {
-            return llvmVirtualTableGlobal;
+            return vtableGlobalRef();
         }
 
         // Synthesize (or return the cached) per-class drop wrapper. The
@@ -752,27 +851,28 @@ namespace cajeta {
         // Lookup for the synthesized global by interface canonical name.
         // Returns nullptr if this class doesn't implement that interface.
         llvm::GlobalVariable* getInterfaceVTable(const std::string& interfaceCanonical) const {
-            auto it = interfaceVTables.find(interfaceCanonical);
-            return it != interfaceVTables.end() ? it->second : nullptr;
+            const auto& m = interfaceVTablesRef();
+            auto it = m.find(interfaceCanonical);
+            return it != m.end() ? it->second : nullptr;
         }
 
         const std::map<std::string, llvm::GlobalVariable*>&
-        getInterfaceVTables() const { return interfaceVTables; }
+        getInterfaceVTables() const { return interfaceVTablesRef(); }
 
         void setRttiGlobal(llvm::GlobalVariable* llvmRttiGlobal) {
-            this->llvmRttiGlobal = llvmRttiGlobal;
+            this->rttiGlobalRef() = llvmRttiGlobal;
         }
 
         llvm::GlobalVariable* getRttiGlobal() {
-            return llvmRttiGlobal;
+            return rttiGlobalRef();
         }
 
         void setClassObjectGlobal(llvm::GlobalVariable* g) {
-            this->llvmClassObjectGlobal = g;
+            this->classObjectGlobalRef() = g;
         }
 
         llvm::GlobalVariable* getClassObjectGlobal() {
-            return llvmClassObjectGlobal;
+            return classObjectGlobalRef();
         }
 
         void setClassBody(ClassBodyDeclarationPtr classBody);
@@ -1054,11 +1154,11 @@ namespace cajeta {
 
 
         void setRttiType(llvm::StructType* llvmRttiType) {
-            this->llvmRttiType = llvmRttiType;
+            this->rttiTypeRef() = llvmRttiType;
         }
 
         llvm::StructType* getRttiType() {
-            return llvmRttiType;
+            return rttiTypeRef();
         }
     };
 } // code

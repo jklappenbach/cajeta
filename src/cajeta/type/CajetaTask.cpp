@@ -75,6 +75,7 @@ namespace cajeta {
     }
 
     llvm::Function* CajetaTask::getOrCreateDropFunction() {
+        auto& llvmDropFunction = dropFnRef();  // U6.3: frozen-aware
         if (llvmDropFunction) return llvmDropFunction;
         auto& ctx = *module->getLlvmContext();
         auto* lmod = module->getLlvmModule();

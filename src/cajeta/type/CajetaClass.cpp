@@ -51,6 +51,13 @@ namespace {
 using namespace std;
 
 namespace cajeta {
+    // U6.3 — per-thread side-table for a frozen (shared) class's LLVMContext-bound
+    // codegen bindings. See ClassLlvmBindings / the *Ref() accessors in the header.
+    std::unordered_map<const CajetaClass*, ClassLlvmBindings>& CajetaClass::frozenClassBindings() {
+        static thread_local std::unordered_map<const CajetaClass*, ClassLlvmBindings> tbl;
+        return tbl;
+    }
+
     // Forward declaration — defined further down. Needed by
     // generateStaticInitializers, which lives above the definition.
     static llvm::Constant* foldStaticInitializer(
@@ -99,13 +106,14 @@ namespace cajeta {
     }
 
     llvm::Type* CajetaClass::getLlvmReferenceType() {
-        if (llvmReferenceType == nullptr) {
+        auto& refType = referenceTypeRef();
+        if (refType == nullptr) {
             vector<llvm::Type*> types;
             types.push_back(llvm::Type::getInt1Ty(*module->getLlvmContext()));
             types.push_back(llvm::PointerType::get(*module->getLlvmContext(), 0));
-            llvmReferenceType = llvm::StructType::create(*module->getLlvmContext(), llvm::ArrayRef<llvm::Type*>(types));
+            refType = llvm::StructType::create(*module->getLlvmContext(), llvm::ArrayRef<llvm::Type*>(types));
         }
-        return llvmReferenceType;
+        return refType;
     }
 
     bool CajetaClass::isParentOrKind(CajetaClassPtr source) {
@@ -636,6 +644,7 @@ namespace cajeta {
             CajetaClassPtr parent) {
         if (!parent) return nullptr;
         std::string parentCanon = parent->getQName()->toCanonical();
+        auto& secondaryVTables = secondaryVTablesRef();
         auto cached = secondaryVTables.find(parentCanon);
         if (cached != secondaryVTables.end()) return cached->second;
 
@@ -1256,6 +1265,7 @@ namespace cajeta {
     void CajetaClass::synthesizeInterfaceVTables() {
         if (implementedInterfaces.empty()) return;
 
+        auto& interfaceVTables = interfaceVTablesRef();
         auto& ctx = *module->getLlvmContext();
         auto* lmod = getEmitModule()->getLlvmModule();
         llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
@@ -2452,6 +2462,7 @@ namespace cajeta {
         const std::string globalName =
             qName->toCanonical() + "." + prop->getName();
 
+        auto& staticFieldGlobals = staticFieldGlobalsRef();
         auto it = staticFieldGlobals.find(prop->getName());
         llvm::GlobalVariable* g;
         if (it != staticFieldGlobals.end()) {
@@ -2506,11 +2517,14 @@ namespace cajeta {
     // module by construction, so the patch is module-local. Idempotent
     // via llvmDropFunctionPatched.
     void CajetaClass::patchVirtualTableDropFn() {
-        if (llvmDropFunctionPatched) return;
+        bool& dropFnPatched = dropFnPatchedRef();
+        if (dropFnPatched) return;
         llvm::Function* dropFn = getOrCreateDropFunction();
         if (!dropFn) return;
-        if (!llvmVirtualTableGlobal || !llvmVirtualTableType) return;
-        llvm::Constant* init = llvmVirtualTableGlobal->getInitializer();
+        llvm::GlobalVariable* vtGlobal = vtableGlobalRef();
+        llvm::StructType* vtType = vtableTypeRef();
+        if (!vtGlobal || !vtType) return;
+        llvm::Constant* init = vtGlobal->getInitializer();
         if (!init) return;
         auto* structInit = llvm::dyn_cast<llvm::ConstantStruct>(init);
         if (!structInit) return;
@@ -2522,13 +2536,14 @@ namespace cajeta {
         }
         if (elems.size() < 4) return;
         elems[3] = dropFn;
-        llvmVirtualTableGlobal->setInitializer(
-            llvm::ConstantStruct::get(llvmVirtualTableType,
+        vtGlobal->setInitializer(
+            llvm::ConstantStruct::get(vtType,
                 llvm::ArrayRef<llvm::Constant*>(elems)));
-        llvmDropFunctionPatched = true;
+        dropFnPatched = true;
     }
 
     llvm::Function* CajetaClass::getOrCreateStackDropFunction() {
+        auto& llvmStackDropFunction = stackDropFnRef();  // U6.3: frozen-aware
         if (llvmStackDropFunction) return llvmStackDropFunction;
         if (interfaceFlag) return nullptr;
         auto& ctx = *module->getLlvmContext();
@@ -2875,6 +2890,7 @@ namespace cajeta {
         if (isWildcardInstantiation()) {
             return module->getRuntimeFunction("__cajeta_class_virtual_drop");
         }
+        auto& llvmDropFunction = dropFnRef();  // U6.3: frozen-aware
         if (llvmDropFunction) return llvmDropFunction;
         auto& ctx = *module->getLlvmContext();
         auto* lmod = getEmitModule()->getLlvmModule();
@@ -2994,6 +3010,7 @@ namespace cajeta {
     // emitReflectInvokeBody (post-quiescence). Shape:
     //   void __cajeta_<canonical>_reflect_invoke(ptr obj, i32 idx, ptr args, ptr ret)
     llvm::Function* CajetaClass::getOrCreateReflectInvokeDecl() {
+        auto& llvmReflectInvokeFunction = reflectInvokeFnRef();  // U6.3: frozen-aware
         if (llvmReflectInvokeFunction) return llvmReflectInvokeFunction;
         auto& ctx = *module->getLlvmContext();
         auto* lmod = module->getLlvmModule();
@@ -3025,6 +3042,8 @@ namespace cajeta {
     // default (no-op) arm. NOTE: does NOT create the declaration; only fills a
     // decl already referenced by this class's #Rtti.
     void CajetaClass::emitReflectInvokeBody() {
+        auto& llvmReflectInvokeBodyEmitted = reflectInvokeBodyEmittedRef();  // U6.3
+        auto& llvmReflectInvokeFunction = reflectInvokeFnRef();              // U6.3
         if (llvmReflectInvokeBodyEmitted) return;
         // Adopt the decl if a sibling CajetaClass instance built the RTTI (so
         // llvmReflectInvokeFunction is null on THIS instance but the #Rtti already
@@ -3141,6 +3160,7 @@ namespace cajeta {
     // by emitReflectNewBody (post-quiescence). Shape:
     //   ptr __cajeta_<canon>_reflect_new(i32 ctorIndex, ptr args)
     llvm::Function* CajetaClass::getOrCreateReflectNewDecl() {
+        auto& llvmReflectNewFunction = reflectNewFnRef();  // U6.3: frozen-aware
         if (llvmReflectNewFunction) return llvmReflectNewFunction;
         auto& ctx = *module->getLlvmContext();
         auto* lmod = module->getLlvmModule();
@@ -3167,6 +3187,8 @@ namespace cajeta {
     // + patch the virtual drop slot + run the chosen constructor, returning the
     // new instance. Unknown/unmarshallable constructors fall to a null return.
     void CajetaClass::emitReflectNewBody() {
+        auto& llvmReflectNewBodyEmitted = reflectNewBodyEmittedRef();  // U6.3
+        auto& llvmReflectNewFunction = reflectNewFnRef();              // U6.3
         if (llvmReflectNewBodyEmitted) return;
         // Adopt the decl if a sibling instance built the RTTI (see
         // emitReflectInvokeBody) so the body always fills and the symbol resolves.
@@ -4120,7 +4142,7 @@ namespace cajeta {
         // Idempotent: bail if we've already produced a vtable global. Callers
         // can invoke this at any point in prototype generation without
         // worrying about duplicate work.
-        if (llvmVirtualTableGlobal != nullptr) return;
+        if (vtableGlobalRef() != nullptr) return;
         buildVirtualTable();
         StructureMetadata(module).populate(
             static_pointer_cast<CajetaClass>(shared_from_this()));
