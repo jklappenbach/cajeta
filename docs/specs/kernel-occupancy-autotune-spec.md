@@ -40,33 +40,44 @@ portable override for experts.
 - **Honest measurement.** Eliminating spill is guaranteed; a *throughput* win is not —
   every claim is measured on-device and recorded, never assumed.
 
-## 2. Automatic compile-time spill backoff
+## 2. Automatic workgroup-size-aware register budgeting
 
 ### 2.1 Requirement
-When the device backend compiles a `@Kernel` and its register allocator **spills**,
-the compiler shall automatically relax that kernel's occupancy target (raising the
-per-thread register budget) and recompile, keeping the spill-free result — unless the
-author pinned an explicit override (§3), which is respected verbatim.
+The compiler shall tell the device backend each `@Kernel`'s **actual launch workgroup
+size**, so the backend budgets per-thread registers for the true (usually small)
+occupancy instead of its pessimistic hardware-maximum default — eliminating spills that
+exist only because the backend assumed the worst-case workgroup. The author's explicit
+override (§3), if present, is respected verbatim.
 
-### 2.2 Mechanism (AMDGPU first)
-1. After the device IR pipeline, perform a **trial codegen** to assembly and parse the
-   per-kernel resource metadata (`.vgpr_spill_count`, `.vgpr_count`, `.name`) — the
-   same metadata Cajeta already parses in its GPU-free probes.
-2. For each kernel with `vgpr_spill_count > 0` and **no** explicit occupancy override,
-   set `"amdgpu-waves-per-eu"="1"` (minimum occupancy → maximum VGPR budget) on that
-   function.
-3. The final codegen (object/hsaco) then uses the relaxed budget. Spill is eliminated
-   when the kernel fits in the max budget; if it still spills at minimum occupancy the
-   compiler has done its best and leaves it (logged).
+### 2.2 Mechanism (AMDGPU first) — measured, corrected from the trial-codegen design
+Empirical finding on gfx1151 (recorded in the plan): a register-heavy kernel left at the
+default capped at **192 VGPR and spilled**; `"amdgpu-waves-per-eu"` had **no effect**;
+setting **`"amdgpu-flat-work-group-size"`** to the real workgroup size raised the budget
+to **256 VGPR and drove spill to 0**. Without the attribute the backend assumes the
+1024-thread maximum (→ up to 32 waves/workgroup → low VGPR cap). So the mechanism is
+*proactive*, not a spill-triggered retry:
+1. Scan every module's `@Kernel` **launch sites** for the constant block dimensions and
+   compute, per kernel, the **largest** workgroup size across its sites (product of the
+   block dims).
+2. At AMDGPU registration, set `"amdgpu-flat-work-group-size"="1,<maxThreads>"` on the
+   kernel function (no explicit override present). NVPTX → `maxntid` (later); Vulkan →
+   no-op.
+3. **Soundness:** if *any* launch site of a kernel uses a non-constant block, the kernel
+   is left at the backend default (we cannot bound its launch size) — never set a max a
+   runtime launch could exceed.
+
+This is superior to the trial-codegen spill-backoff: no extra codegen pass, it benefits
+every kernel (not only spillers), and the value is the *correct* occupancy, not a guess.
 
 ### 2.3 Use cases
-- 2.3.1 As a kernel author, when my register-heavy `@Kernel` spills under the
-  allocator's default occupancy, then the compiler eliminates the spill with no source
-  change and no vendor knowledge on my part.
-- 2.3.2 As a kernel author whose kernel does **not** spill, when I build, then the auto
-  path makes no change (identical output) and adds no measurable build cost.
-- 2.3.3 As a compiler maintainer, when a kernel still spills at minimum occupancy, then
-  I see a diagnostic recording the residual spill rather than a silent acceptance.
+- 2.3.1 As a kernel author, when my register-heavy `@Kernel` is dispatched with a small
+  block but spills under the backend's 1024-thread default budget, then the compiler
+  removes the spill with no source change and no vendor knowledge on my part.
+- 2.3.2 As a kernel author whose kernel does **not** spill, when I build, then the
+  attribute is harmless (the budget simply matches the real workgroup) and correctness
+  is unchanged.
+- 2.3.3 As a maintainer, when a kernel is launched with a non-constant block, then the
+  compiler conservatively leaves it at the default (sound) rather than pinning a bound.
 - 2.3.4 As a kernel author who pinned an override (§3), when I build, then the auto path
   does not touch my kernel — my choice wins.
 

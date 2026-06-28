@@ -22,6 +22,7 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace llvm { class Module; }
@@ -62,7 +63,9 @@ namespace xpu {
     int emitKernelRegistration(Backend backend,
                                const std::vector<MethodPtr>& kernels,
                                llvm::Module& hostModule,
-                               const std::string& arch);
+                               const std::string& arch,
+                               const std::unordered_map<std::string, unsigned>&
+                                   kernelMaxThreads = {});
 
     // Embed each graphics-shader (@Vertex/@Fragment/…) method's SPIR-V + a
     // registration ctor into `hostModule` — the rasterization parallel of

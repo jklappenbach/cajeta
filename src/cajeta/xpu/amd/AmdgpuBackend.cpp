@@ -25,6 +25,8 @@
 #include "llvm/Target/TargetOptions.h"
 
 #include <cstdlib>
+#include <cstring>
+#include <sstream>
 #include "llvm/TargetParser/Triple.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 
@@ -237,6 +239,52 @@ std::string emitIsa(llvm::Module& deviceModule, llvm::TargetMachine& tm) {
         return {};
     }
     return std::string(buf.begin(), buf.end());
+}
+
+// Parse per-kernel resource usage from the .amdgpu_metadata YAML in emitted
+// AMDGCN asm. Within a kernel record the (kernel) `.name:` is the nearest
+// `.name:` before its `.vgpr_count:` — arg names sit earlier under `.args:` —
+// and `.vgpr_spill_count:` immediately follows `.vgpr_count:`. Records keyed in
+// emission order; a missing spill line means none (0).
+std::vector<KernelResourceInfo> parseKernelResourceUsage(
+        const std::string& isa) {
+    auto valAfter = [](const std::string& line, const char* key) -> std::string {
+        auto p = line.find(key);
+        if (p == std::string::npos) return {};
+        p += std::strlen(key);
+        while (p < line.size() && (line[p] == ' ' || line[p] == '\t')) ++p;
+        size_t e = p;
+        while (e < line.size() && line[e] != ' ' && line[e] != '\t' &&
+               line[e] != '\n' && line[e] != '\r') ++e;
+        return line.substr(p, e - p);
+    };
+    std::vector<KernelResourceInfo> out;
+    std::istringstream ss(isa);
+    std::string line, curName;
+    for (std::string l; std::getline(ss, l);) {
+        if (l.find(".name:") != std::string::npos) {
+            curName = valAfter(l, ".name:");
+        } else if (l.find(".vgpr_count:") != std::string::npos) {
+            KernelResourceInfo k;
+            k.name = curName;
+            k.vgpr = std::atoi(valAfter(l, ".vgpr_count:").c_str());
+            k.spill = 0;   // emitted as 0 when none; absent -> treat as none
+            out.push_back(k);
+        } else if (l.find(".vgpr_spill_count:") != std::string::npos &&
+                   !out.empty()) {
+            out.back().spill = std::atoi(valAfter(l, ".vgpr_spill_count:").c_str());
+        }
+    }
+    return out;
+}
+
+void setKernelWorkgroupSize(llvm::Function* fn, unsigned maxThreads) {
+    if (!fn || maxThreads == 0) return;
+    if (fn->hasFnAttribute("amdgpu-flat-work-group-size")) return;  // override wins
+    // "min,max" flat work-group size. Pinning max to the real launch size lets
+    // the backend raise the per-thread VGPR budget (fewer co-resident waves).
+    std::string range = "1," + std::to_string(maxThreads);
+    fn->addFnAttr("amdgpu-flat-work-group-size", range);
 }
 
 std::string findLld() {
