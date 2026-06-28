@@ -183,11 +183,19 @@ class CajetaType : public Modifiable, public Annotatable,
         static thread_local map<string, map<string, int32_t>> enumConstants;
         QualifiedNamePtr qName;
         llvm::Type* llvmType;
+        // threadsafe U6: when frozen (a shared stdlib instance), the LLVM binding
+        // is NOT the inline `llvmType` (one context) but a per-thread side-table
+        // entry keyed by `this`, so threads with different LLVMContexts each get
+        // their own binding for the one shared object. Default false → inline
+        // (unchanged behavior) until the stdlib is frozen in 6.4.
+        bool frozen = false;
         string canonical;
         string generic;
         CajetaTypeFlags typeFlags;
         int rank;
     public:
+        void markFrozen() { frozen = true; }
+        bool isFrozen() const { return frozen; }
         CajetaType() {
             this->typeFlags = STRUCT_FLAG;
             llvmType = nullptr;
@@ -268,9 +276,10 @@ class CajetaType : public Modifiable, public Annotatable,
             return qName;
         }
 
-        virtual llvm::Type* getLlvmType() {
-            return llvmType;
-        }
+        // Frozen-aware: returns the per-thread binding for a frozen (shared
+        // stdlib) object, else the inline `llvmType`. Out-of-line so it can reach
+        // the thread_local binding table (CajetaType.cpp). (threadsafe U6.1)
+        virtual llvm::Type* getLlvmType();
 
         // Used by the placeholder-synthesis path so a forward-
         // referenced class has a named (body-less) struct type
@@ -278,7 +287,7 @@ class CajetaType : public Modifiable, public Annotatable,
         // calls setBody on the same struct (getOrCreateLlvmType
         // is canonical-keyed) so existing references compose
         // correctly.
-        void setLlvmType(llvm::Type* t) { llvmType = t; }
+        void setLlvmType(llvm::Type* t);
 
         CajetaTypePtr toPointerType();
 

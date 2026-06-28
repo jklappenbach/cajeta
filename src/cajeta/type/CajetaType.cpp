@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <optional>
 #include <set>
+#include <unordered_map>
 #include "../compile/CajetaModule.h"
 #include "CajetaArray.h"
 #include "CajetaCapture.h"
@@ -55,6 +56,30 @@ namespace cajeta {
     thread_local map<string, map<string, int32_t>> CajetaType::enumConstants;
     thread_local map<TypeKey, CajetaTypePtr> CajetaType::typeMap;
     thread_local map<llvm::Type::TypeID, CajetaTypePtr> CajetaType::llvmTypeIdMap;
+
+    // threadsafe U6.1: per-thread LLVM-type binding for FROZEN (shared stdlib)
+    // CajetaType objects, keyed by the shared object. A frozen object has no valid
+    // inline `llvmType` (it would be one context's); each thread resolves/creates
+    // its own binding here in its own LLVMContext. Non-frozen objects keep using
+    // the inline member, so behavior is unchanged until the stdlib is frozen (6.4).
+    static std::unordered_map<const CajetaType*, llvm::Type*>& frozenTypeBindings() {
+        static thread_local std::unordered_map<const CajetaType*, llvm::Type*> tbl;
+        return tbl;
+    }
+
+    llvm::Type* CajetaType::getLlvmType() {
+        if (frozen) {
+            auto& tbl = frozenTypeBindings();
+            auto it = tbl.find(this);
+            return it != tbl.end() ? it->second : nullptr;
+        }
+        return llvmType;
+    }
+
+    void CajetaType::setLlvmType(llvm::Type* t) {
+        if (frozen) { frozenTypeBindings()[this] = t; return; }
+        llvmType = t;
+    }
     // Archive — see CajetaType.h. Cleared by resetGlobals so each
     // fresh Compiler starts with an empty set.
     static thread_local map<string, string> g_archive;
