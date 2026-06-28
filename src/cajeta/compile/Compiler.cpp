@@ -508,7 +508,11 @@ namespace cajeta {
     static bool isLazyStdlibPackage(const std::string& pkg) {
         // cajeta.math — the numpy-equivalent, including its nested submodules
         // (cajeta.math.linalg / fft / random / stats) — is parsed on demand.
-        return pkg == "cajeta.math" || pkg.rfind("cajeta.math.", 0) == 0;
+        if (pkg == "cajeta.math" || pkg.rfind("cajeta.math.", 0) == 0) return true;
+        // cajeta.xpu.mesh (Qem / MeshSimplifier) is the ONLY eager-prelude
+        // consumer of cajeta.math; making it lazy keeps cajeta.math out of the
+        // eager prelude (MathLazyParse — guarded by CompilerTests).
+        return pkg == "cajeta.xpu.mesh" || pkg.rfind("cajeta.xpu.mesh.", 0) == 0;
     }
 
     // Instrumentation + lazy bookkeeping (process-global).
