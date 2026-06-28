@@ -36,6 +36,18 @@ namespace llvm {
 namespace cajeta {
 namespace xpu {
 
+    // Block-padded LDS tile (BlockPadded<T,Block,Pad> / Tensile LdsBlockSizePerPad):
+    // the physical element slot is `logical + (logical/period)*pad`. Unlike the XOR
+    // swizzle, additive padding does NOT distribute over base+offset, so for a block-
+    // padded tile the coop-load `ptr` is the BARE tile base (offset 0) and `baseOffset`
+    // carries the logical sub-tile offset — the fragment coord pads `baseOffset +
+    // fragLocal` and GEPs from the base. `period`==0 means not block-padded (default).
+    struct LdsBlockPad {
+        uint32_t period = 0;                // block size in elements (0 = none)
+        uint32_t pad = 0;                   // padding elements per block
+        llvm::Value* baseOffset = nullptr;  // logical offset (ptr is the bare base)
+    };
+
     class LoweringTarget {
     public:
         virtual ~LoweringTarget() = default;
@@ -207,6 +219,16 @@ namespace xpu {
         // XOR. Returns the physical index (i64).
         virtual llvm::Value* swizzleAddr(llvm::IRBuilderBase& b, llvm::Value* idx,
                                          uint32_t stride);
+
+        // Block padding: map a flat element index `idx` into a
+        // `BlockPadded<T,Block,Pad>` tile to its physical slot
+        // `idx + (idx/period)*pad` (Tensile LdsBlockSizePerPad). `period`/`pad` are
+        // in elements; `period`==0 is the identity. Applied identically at every
+        // direct/staging access so it is transparent at the logical-index level.
+        // The DEFAULT is the IDENTITY (correct, unaccelerated); AMDGPU emits the
+        // additive pad. Returns the physical index.
+        virtual llvm::Value* blockPadAddr(llvm::IRBuilderBase& b, llvm::Value* idx,
+                                          uint32_t period, uint32_t pad);
 
         // Device printf (Stage 11): `fmt` is an i8* constant format string;
         // `args` are the already-lowered scalar arguments (Path A — explicit
@@ -770,7 +792,7 @@ namespace xpu {
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
             llvm::Value* layout, llvm::Value* stride, llvm::Type* matrixType,
             uint32_t rows, uint32_t cols, uint32_t use,
-            uint32_t swizzleStride = 0);
+            uint32_t swizzleStride = 0, LdsBlockPad blockPad = {});
 
         // m.store(dst, layout, stride): store `matrixVal` to `ptr`. Void op.
         // `rows`/`cols`/`use`/`swizzleStride` as in coopMatrixLoad
@@ -779,7 +801,7 @@ namespace xpu {
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
             llvm::Value* matrixVal, llvm::Value* layout, llvm::Value* stride,
             uint32_t rows, uint32_t cols, uint32_t use,
-            uint32_t swizzleStride = 0);
+            uint32_t swizzleStride = 0, LdsBlockPad blockPad = {});
 
         // c.mma(a, b) → a*b+c (result type `matrixType`, the accumulator type)
         // (→ OpCooperativeMatrixMulAddKHR).

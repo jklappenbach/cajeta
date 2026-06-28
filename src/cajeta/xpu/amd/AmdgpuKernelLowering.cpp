@@ -264,6 +264,22 @@ public:
         return b.CreateOr(b.CreateShl(row, shift), perm, "swz.idx");
     }
 
+    // Block-padded LDS tile (BlockPadded<T,Block,Pad> / Tensile LdsBlockSizePerPad):
+    // physical = idx + (idx / period) * pad. The byte-period boundary is independent
+    // of the row/col stride, so the one layout de-conflicts both the wide staging
+    // store and the transposed WMMA read; applied identically on every access, the
+    // staged data reads back unchanged.
+    llvm::Value* blockPadAddr(llvm::IRBuilderBase& b, llvm::Value* idx,
+                              uint32_t period, uint32_t pad) override {
+        if (period == 0 || pad == 0) return idx;
+        llvm::Type* ty = idx->getType();
+        llvm::Value* blk = b.CreateUDiv(idx, llvm::ConstantInt::get(ty, period),
+                                        "bp.blk");
+        llvm::Value* off = b.CreateMul(blk, llvm::ConstantInt::get(ty, pad),
+                                       "bp.off");
+        return b.CreateAdd(idx, off, "bp.idx");
+    }
+
     // AMDGPU marks kernels purely by calling convention — no metadata
     // analogue to nvvm.annotations.
     void decorateKernel(llvm::Function* fn, llvm::Module& /*m*/) override {
@@ -835,7 +851,8 @@ public:
                                 llvm::Value* ptr, llvm::Value* layout,
                                 llvm::Value* stride, llvm::Type* matrixType,
                                 uint32_t /*rows*/, uint32_t /*cols*/,
-                                uint32_t use, uint32_t swz = 0) override {
+                                uint32_t use, uint32_t swz = 0,
+                                LdsBlockPad blk = {}) override {
         auto* vecTy = llvm::cast<llvm::FixedVectorType>(matrixType);
         llvm::Type* fe = vecTy->getElementType();
         unsigned n = vecTy->getNumElements();
@@ -850,7 +867,7 @@ public:
             for (unsigned w = 0; w < n; ++w) {
                 llvm::Value* word = llvm::ConstantInt::get(fe, 0);
                 for (unsigned s = 0; s < 4; ++s) {
-                    auto rc = fragCoord(b, m, use, 4 * w + s, layout, stride, swz);
+                    auto rc = fragCoord(b, m, use, 4 * w + s, layout, stride, swz, blk);
                     llvm::Value* p = b.CreateGEP(i8, ptr, rc, "cm.ld.ptr");
                     llvm::Value* byte = b.CreateLoad(i8, p, "cm.ld");
                     // zext keeps the raw 8 bits; shift into byte slot s and OR.
@@ -864,7 +881,7 @@ public:
             return frag;
         }
         for (unsigned e = 0; e < n; ++e) {
-            auto rc = fragCoord(b, m, use, e, layout, stride, swz);
+            auto rc = fragCoord(b, m, use, e, layout, stride, swz, blk);
             llvm::Value* p = b.CreateGEP(fe, ptr, rc, "cm.ld.ptr");
             frag = b.CreateInsertElement(frag, b.CreateLoad(fe, p, "cm.ld"), e);
         }
@@ -874,12 +891,13 @@ public:
     void coopMatrixStore(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
                          llvm::Value* matrixVal, llvm::Value* layout,
                          llvm::Value* stride, uint32_t /*rows*/, uint32_t /*cols*/,
-                         uint32_t use, uint32_t swz = 0) override {
+                         uint32_t use, uint32_t swz = 0,
+                         LdsBlockPad blk = {}) override {
         auto* vecTy = llvm::cast<llvm::FixedVectorType>(matrixVal->getType());
         llvm::Type* fe = vecTy->getElementType();
         unsigned n = vecTy->getNumElements();
         for (unsigned e = 0; e < n; ++e) {
-            auto rc = fragCoord(b, m, use, e, layout, stride, swz);
+            auto rc = fragCoord(b, m, use, e, layout, stride, swz, blk);
             llvm::Value* p = b.CreateGEP(fe, ptr, rc, "cm.st.ptr");
             b.CreateStore(b.CreateExtractElement(matrixVal, e), p);
         }
@@ -936,7 +954,7 @@ private:
     // `col*stride+row`).
     llvm::Value* fragCoord(llvm::IRBuilderBase& b, llvm::Module& m, uint32_t use,
                            unsigned e, llvm::Value* layout, llvm::Value* stride,
-                           uint32_t swz = 0) {
+                           uint32_t swz = 0, LdsBlockPad blk = {}) {
         llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
         llvm::Value* lane = waveLaneId(b, m);
         llvm::Value* lane16 = b.CreateAnd(lane, llvm::ConstantInt::get(i32, 15));
@@ -961,7 +979,14 @@ private:
         // Swizzled<T,S> tile: permute the fragment coord by the same conflict-free
         // XOR the staging used (WMMA sub-tile offsets are S²-aligned, so this
         // fragment-local swizzle equals the absolute one).
-        if (swz) idx = swizzleAddr(b, idx, swz);
+        if (swz) { idx = swizzleAddr(b, idx, swz); return idx; }
+        // BlockPadded<T,Block,Pad>: additive pad needs the ABSOLUTE index, so add the
+        // logical sub-tile offset (ptr is the bare base) then pad — matching the
+        // direct/staging path which pads the absolute index too.
+        if (blk.period) {
+            if (blk.baseOffset) idx = b.CreateAdd(idx, blk.baseOffset, "cm.abs");
+            idx = blockPadAddr(b, idx, blk.period, blk.pad);
+        }
         return idx;
     }
 
