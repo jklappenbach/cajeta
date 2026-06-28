@@ -52,8 +52,10 @@ public class GpuMatMulF16Bench extends Benchmark {
         // torch-faithful: A and B both WIDE b128 LDS write + read, de-conflicted by the block
         // pad (BlockPadded<64,8> = torch's LBSPPB128/LPB8). B is fed TRANSPOSED from global so its
         // LDS write is wide (no scatter); A is [M][K] (already K-contiguous). Logical stride 64.
-        BlockPadded<float16,64,8> sa = shared float16[13824];   // 2x A[96(M)][64(K)] logical
-        BlockPadded<float16,64,8> sb = shared float16[18432];   // 2x B[128(N)][64(K)] logical
+        // U4: SINGLE LDS buffer (6912+9216=16128 elem=32256 B) -> 2 workgroups/WGP occupancy on the
+        // 64KB gfx1151 LDS (the 26->38 lever; double-buffer's 64512 B capped us at 1 WG/WGP).
+        BlockPadded<float16,64,8> sa = shared float16[6912];   // A[96(M)][64(K)] logical, single buf
+        BlockPadded<float16,64,8> sb = shared float16[9216];   // B[128(N)][64(K)] logical, single buf
         CooperativeMatrix<float32,16,16,2> a00; a00.splat(0.0f);
         CooperativeMatrix<float32,16,16,2> a01; a01.splat(0.0f);
         CooperativeMatrix<float32,16,16,2> a02; a02.splat(0.0f);
@@ -91,59 +93,50 @@ public class GpuMatMulF16Bench extends Benchmark {
         }
         Barrier.workgroup();
         uint32 npanels = n / 64;
-        uint32 ph = 0;
+        uint32 ao0 = (wm * 48 + 0) * 64;
+        uint32 ao1 = (wm * 48 + 16) * 64;
+        uint32 ao2 = (wm * 48 + 32) * 64;
+        uint32 cn0 = (wn * 64 + 0) * 64; uint32 cn1 = (wn * 64 + 16) * 64;
+        uint32 cn2 = (wn * 64 + 32) * 64; uint32 cn3 = (wn * 64 + 48) * 64;
         uint32 p = 0;
         while (p < npanels) {
-            // PGR2-style interleave: stage one slice of the NEXT panel per K-substep (wide
-            // load at top -> WMMA -> commit at bottom), so the wide global loads overlap the
-            // matrix-core compute with only ~4 vectors live (no spill). 6 A + 8 B chunks/thread
-            // spread over 4 substeps: A vec at ks (+ks+4 for ks<2); B vecs at ks and ks+4.
-            boolean pf = p + 1 < npanels;
-            uint32 ko = (p + 1) * 64;
-            uint32 sbA = (1 - ph) * 6144;
-            uint32 sbB = (1 - ph) * 8192;
-            uint32 dbA = ph * 6144;
-            uint32 dbB = ph * 8192;
-            uint32 ao0 = dbA + (wm * 48 + 0) * 64;
-            uint32 ao1 = dbA + (wm * 48 + 16) * 64;
-            uint32 ao2 = dbA + (wm * 48 + 32) * 64;
-            uint32 cn0 = (wn * 64 + 0) * 64; uint32 cn1 = (wn * 64 + 16) * 64;
-            uint32 cn2 = (wn * 64 + 32) * 64; uint32 cn3 = (wn * 64 + 48) * 64;
+            // Single LDS buffer: compute the current panel, barrier, then stage the next panel
+            // straight to the SAME buffer (no register hold -> no spill). 2 WG/WGP hides the load
+            // latency across workgroups; PGR2 register-overlap is the follow-up if needed.
             uint32 ks = 0;
             while (ks < 4) {
                 uint32 ka = ks * 16;
-                uint32 ea0 = tid + ks * 128; uint32 ma0 = ea0 / 8; uint32 ak0 = (ea0 % 8) * 8;
-                uint32 ea1 = tid + (ks + 4) * 128; uint32 ma1 = ea1 / 8; uint32 ak1 = (ea1 % 8) * 8;
-                uint32 fb0 = tid + ks * 128; uint32 bn0 = fb0 / 8; uint32 bk0 = (fb0 % 8) * 8;
-                uint32 fb1 = tid + (ks + 4) * 128; uint32 bn1 = fb1 / 8; uint32 bk1 = (fb1 % 8) * 8;
-                Vector<float16,8> pa0; Vector<float16,8> pa1;
-                Vector<float16,8> pb0; Vector<float16,8> pb1;
-                if (pf) {
-                    if (rb + ma0 < n) { pa0 = a.vload<8>((rb + ma0) * n + ko + ak0); }
-                    if (ks < 2) { if (rb + ma1 < n) { pa1 = a.vload<8>((rb + ma1) * n + ko + ak1); } }
-                    pb0 = b.vload<8>((cb + bn0) * n + ko + bk0);
-                    pb1 = b.vload<8>((cb + bn1) * n + ko + bk1);
-                }
                 wa0.load(sa, ao0 + ka, 0, 64);
                 wa1.load(sa, ao1 + ka, 0, 64);
                 wa2.load(sa, ao2 + ka, 0, 64);
-                wb0.load(sb, dbB + cn0 + ka, 1, 64);
-                wb1.load(sb, dbB + cn1 + ka, 1, 64);
-                wb2.load(sb, dbB + cn2 + ka, 1, 64);
-                wb3.load(sb, dbB + cn3 + ka, 1, 64);
+                wb0.load(sb, cn0 + ka, 1, 64);
+                wb1.load(sb, cn1 + ka, 1, 64);
+                wb2.load(sb, cn2 + ka, 1, 64);
+                wb3.load(sb, cn3 + ka, 1, 64);
                 a00.mma(wa0, wb0); a01.mma(wa0, wb1); a02.mma(wa0, wb2); a03.mma(wa0, wb3);
                 a10.mma(wa1, wb0); a11.mma(wa1, wb1); a12.mma(wa1, wb2); a13.mma(wa1, wb3);
                 a20.mma(wa2, wb0); a21.mma(wa2, wb1); a22.mma(wa2, wb2); a23.mma(wa2, wb3);
-                if (pf) {
-                    if (rb + ma0 < n) { sa.vstore(sbA + ma0 * 64 + ak0, pa0); }
-                    if (ks < 2) { if (rb + ma1 < n) { sa.vstore(sbA + ma1 * 64 + ak1, pa1); } }
-                    sb.vstore(sbB + bn0 * 64 + bk0, pb0);   // wide b128 LDS write [N][K]
-                    sb.vstore(sbB + bn1 * 64 + bk1, pb1);
-                }
                 ks = ks + 1;
             }
             Barrier.workgroup();
-            ph = 1 - ph;
+            if (p + 1 < npanels) {
+                uint32 ko = (p + 1) * 64;
+                uint32 ca2 = tid;
+                while (ca2 < 768) {
+                    uint32 m = ca2 / 8; uint32 kk = (ca2 % 8) * 8;
+                    if (rb + m < n) { Vector<float16,8> va = a.vload<8>((rb + m) * n + ko + kk);
+                        sa.vstore(m * 64 + kk, va); }
+                    ca2 = ca2 + 128;
+                }
+                uint32 cbk2 = tid;
+                while (cbk2 < 1024) {
+                    uint32 bn = cbk2 / 8; uint32 bk = (cbk2 % 8) * 8;
+                    Vector<float16,8> vb = b.vload<8>((cb + bn) * n + ko + bk);
+                    sb.vstore(bn * 64 + bk, vb);
+                    cbk2 = cbk2 + 128;
+                }
+                Barrier.workgroup();
+            }
             p = p + 1;
         }
         uint32 r0 = rb + wm * 48;
