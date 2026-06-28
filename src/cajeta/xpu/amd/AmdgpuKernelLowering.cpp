@@ -6,6 +6,7 @@
 
 #include "../lowering/KernelLowering.h"
 #include "../lowering/LoweringTarget.h"
+#include "../core/XpuKernelAttr.h"
 
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
@@ -284,6 +285,22 @@ public:
     // analogue to nvvm.annotations.
     void decorateKernel(llvm::Function* fn, llvm::Module& /*m*/) override {
         fn->setCallingConv(llvm::CallingConv::AMDGPU_KERNEL);
+    }
+
+    // @Occupancy override (kernel-occupancy-autotune §3). maxThreads pins the
+    // launch bound (flat-work-group-size — the lever that controls the VGPR
+    // budget on RDNA); minResident pins the occupancy floor (waves-per-eu). On
+    // gfx1151 waves-per-eu is inert, but it is the honest AMD mapping and matters
+    // on other gfx. maxRegisters has no stable per-function AMDGPU attribute, so
+    // it is folded into the occupancy intent rather than set directly.
+    void applyOccupancy(llvm::Function* fn, const XpuKernelAttr& attr) override {
+        if (auto mt = attr.maxThreads()) {
+            std::string range = "1," + std::to_string(*mt);
+            fn->addFnAttr("amdgpu-flat-work-group-size", range);
+        }
+        if (auto mr = attr.minResident()) {
+            fn->addFnAttr("amdgpu-waves-per-eu", std::to_string(*mr));
+        }
     }
 
     // A Texture2D kernel param is a pointer to the HIP texture object, in the

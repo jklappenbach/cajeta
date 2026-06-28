@@ -62,9 +62,24 @@ namespace xpu {
         // empty restriction set returns true (no restriction).
         bool emitsFor(XpuBackend b) const;
 
+        // @Occupancy override (kernel-occupancy-autotune §3) — portable,
+        // vendor-neutral resource logistics. Each is nullopt when absent.
+        //   maxThreads   — max threads per workgroup (launch bound)
+        //   minResident  — min workgroups co-resident per compute unit
+        //   maxRegisters — max registers per thread
+        std::optional<unsigned> maxThreads() const { return maxThreads_; }
+        std::optional<unsigned> minResident() const { return minResident_; }
+        std::optional<unsigned> maxRegisters() const { return maxRegisters_; }
+        bool hasOccupancy() const {
+            return maxThreads_ || minResident_ || maxRegisters_;
+        }
+
     private:
         std::optional<int> waveWidth_;
         std::vector<XpuBackend> backends_;
+        std::optional<unsigned> maxThreads_;
+        std::optional<unsigned> minResident_;
+        std::optional<unsigned> maxRegisters_;
     };
 
 } // namespace xpu

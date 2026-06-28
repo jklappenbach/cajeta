@@ -11,6 +11,7 @@
 
 #include "../lowering/KernelLowering.h"
 #include "../lowering/LoweringTarget.h"
+#include "../core/XpuKernelAttr.h"
 #include "cajeta/error/Exception.h"
 
 #include "llvm/IR/DerivedTypes.h"
@@ -225,6 +226,27 @@ public:
         };
         m.getOrInsertNamedMetadata("nvvm.annotations")
             ->addOperand(llvm::MDNode::get(ctx, ops));
+    }
+
+    // @Occupancy override (kernel-occupancy-autotune §3) → nvvm.annotations:
+    // maxThreads→maxntidx (launch bound), minResident→minctasm (min CTAs/SM),
+    // maxRegisters→maxnreg. The portable analogue of the AMDGPU mapping.
+    void applyOccupancy(llvm::Function* fn, const XpuKernelAttr& attr) override {
+        llvm::Module& m = *fn->getParent();
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        auto annotate = [&](const char* key, unsigned val) {
+            llvm::Metadata* ops[] = {
+                llvm::ValueAsMetadata::get(fn),
+                llvm::MDString::get(ctx, key),
+                llvm::ValueAsMetadata::get(llvm::ConstantInt::get(i32, val)),
+            };
+            m.getOrInsertNamedMetadata("nvvm.annotations")
+                ->addOperand(llvm::MDNode::get(ctx, ops));
+        };
+        if (auto mt = attr.maxThreads())   annotate("maxntidx", *mt);
+        if (auto mr = attr.minResident())  annotate("minctasm", *mr);
+        if (auto rr = attr.maxRegisters()) annotate("maxnreg", *rr);
     }
 
     // Wave ops: NVIDIA warps are 32 wide; shuffle + ballot are hardware.

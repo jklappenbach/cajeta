@@ -19,6 +19,7 @@
 #include "../../type/MatrixOps.h"
 #include "../../type/QuaternionOps.h"
 #include "../core/XpuAttributes.h"
+#include "../core/XpuKernelAttr.h"
 #include "../core/KernelArgTrait.h"
 #include "../../error/Exception.h"
 
@@ -5647,6 +5648,11 @@ llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
 
     std::string kname = entryName.empty() ? method->getName() : entryName;
     llvm::Function* fn = target.createKernel(deviceModule, kname, params);
+
+    // @Occupancy override (kernel-occupancy-autotune §3): apply portable resource
+    // logistics before the §2 auto budgeting, so an explicit override wins.
+    if (auto attr = XpuKernelAttr::from(*method); attr && attr->hasOccupancy())
+        target.applyOccupancy(fn, *attr);
 
     DeviceLowerer lowerer(deviceModule, fn, target);
     lowerer.setParams(std::move(params));

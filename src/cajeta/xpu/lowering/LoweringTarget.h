@@ -36,6 +36,8 @@ namespace llvm {
 namespace cajeta {
 namespace xpu {
 
+    class XpuKernelAttr;   // @Occupancy override view (applyOccupancy hook)
+
     // Block-padded LDS tile (BlockPadded<T,Block,Pad> / Tensile LdsBlockSizePerPad):
     // the physical element slot is `logical + (logical/period)*pad`. Unlike the XOR
     // swizzle, additive padding does NOT distribute over base+offset, so for a block-
@@ -275,6 +277,15 @@ namespace xpu {
         // no equivalent module-level mode to set.
         virtual void onSubgroupOpsUsed(llvm::Function* /*fn*/,
                                        llvm::Module& /*m*/) {}
+
+        // Apply an @Occupancy override (kernel-occupancy-autotune §3) to a
+        // freshly-lowered kernel. Portable, vendor-neutral logistics: AMDGPU maps
+        // maxThreads→flat-work-group-size + minResident→waves-per-eu; NVPTX maps
+        // them to maxntid/minctasm/maxnreg. Default no-op (Vulkan/CPU: no
+        // equivalent). Runs before the §2 auto budgeting, so an explicit override
+        // wins (the auto path skips a function that already carries the attr).
+        virtual void applyOccupancy(llvm::Function* /*fn*/,
+                                    const XpuKernelAttr& /*attr*/) {}
 
         // --- kernel signature / parameter model (the Vulkan fork) -----------
         //

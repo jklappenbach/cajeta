@@ -38,6 +38,11 @@ namespace xpu {
         // may fuse (FMA), reassociate, use reciprocals, and pick approximate
         // transcendentals (the LLVM fast-math flags). Opt-in (precision-trading).
         static constexpr const char* FastMath     = "FastMath";
+        // @Occupancy(maxThreads=, minResident=, maxRegisters=) — the portable
+        // override for resource logistics (kernel-occupancy-autotune §3). All
+        // params optional + vendor-neutral; lowered per-backend, no-op where
+        // unsupported. Overrides the automatic workgroup-size budgeting (§2).
+        static constexpr const char* Occupancy    = "Occupancy";
 
         // KernelArg trait marker (v1 simulates the trait via this
         // annotation; full structural-trait check lands later).
