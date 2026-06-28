@@ -7,6 +7,7 @@ import cajeta.xpu.KernelThread;
 import cajeta.xpu.Workgroup;
 import cajeta.xpu.Barrier;
 import cajeta.xpu.Shared;
+import cajeta.xpu.BlockPadded;
 import cajeta.xpu.CooperativeMatrix;
 
 import profile.Benchmark;
@@ -14,13 +15,13 @@ import profile.Benchmark;
 // Torch-recipe f16 WMMA GEMM (gpu-f16-torch-recipe) — implements torch's VERIFIED gfx1151
 // kernel shape: MT 96x128, depthU 64, MIWT 3x4 = 12 accumulators/wave, 4 waves (128 threads).
 // Wide 128-bit global loads on BOTH operands (GRVWA8/GRVWB8, vload<8>); B stored TRANSPOSED in
-// LDS so its WMMA fragment reads wide (ds_read_b128). BOTH A and B LDS tiles are PADDED to an
-// ODD half-stride (stride 66 = 64+2; 66/2=33 coprime with the 32 LDS banks) — THE lever:
-// rocprof showed unpadded/even-pad gives 84% LDS bank conflicts (every lane same bank), padding
-// both odd drops it to ~38% and lifts 11.9 -> 26.2 TFLOP/s @ n2048 (beats variant B's ~20). The
-// next-panel staging is interleaved one slice per K-substep (load->WMMA->commit, ~4 vectors
-// live). torch hits 38.2 with this shape + PGR2 + LRVW16; this build = wide-loads + transposed
-// + bank-conflict-free reads. A = identity ⇒ C == B. n % 128 == 0 (N); M (96-tile) bounds-checked.
+// LDS so its WMMA fragment reads wide (ds_read_b128). U3: A/B staged through BlockPadded<f16,128,16>
+// at LOGICAL stride 64 — the compiler emits Tensile's block-additive de-conflict pad
+// (pad(idx)=idx+(idx/128)*16) on the per-lane fragment base, the torch mechanism (LdsBlockSizePerPad,
+// NOT perpPerm, which is DirectToLds-gated and OFF in torch's HHS). Replaces the prior literal
+// stride-66 layout (which the wide-B probe showed read as paired b32, not b128, and was linear /
+// no de-conflict). (Block,Pad) is the on-device rocprof sweep knob. torch hits 38.2 with this shape
+// + PGR2 + LRVW16. A = identity ⇒ C == B. n % 128 == 0 (N); M (96-tile) bounds-checked.
 public class GpuMatMulF16Bench extends Benchmark {
 
     public float16[] a;
@@ -48,8 +49,12 @@ public class GpuMatMulF16Bench extends Benchmark {
         uint32 wn = wave % 2;
         uint32 rb = blockRow * 96;
         uint32 cb = blockCol * 128;
-        Shared<float16> sa = shared float16[2 * 6336];   // A [96(M)][64(K)] x2
-        Shared<float16> sb = shared float16[2 * 8448];   // B [128(N)][66(Kpad)] x2 transposed
+        // U3: A/B staged through BlockPadded<f16,128,16> at LOGICAL stride 64 — the compiler
+        // emits the block-additive de-conflict pad on the per-lane fragment base (non-fold path,
+        // runtime baseOffset). Buffers are logical halves (A 6144, B 8192); physical sizes hold
+        // the pad. Sweep (Block,Pad) here for the on-device rocprof conflict pass.
+        BlockPadded<float16,128,16> sa = shared float16[13824];   // 2x A[96(M)][64(K)] logical
+        BlockPadded<float16,128,16> sb = shared float16[18432];   // 2x B[128(N)][64(K)] transposed
         CooperativeMatrix<float32,16,16,2> a00; a00.splat(0.0f);
         CooperativeMatrix<float32,16,16,2> a01; a01.splat(0.0f);
         CooperativeMatrix<float32,16,16,2> a02; a02.splat(0.0f);
@@ -74,7 +79,7 @@ public class GpuMatMulF16Bench extends Benchmark {
             uint32 m = ca / 8; uint32 kk = (ca % 8) * 8;
             if (rb + m < n) {
                 Vector<float16,8> va = a.vload<8>((rb + m) * n + kk);
-                sa.vstore(m * 66 + kk, va);
+                sa.vstore(m * 64 + kk, va);
             }
             ca = ca + 128;
         }
@@ -82,10 +87,10 @@ public class GpuMatMulF16Bench extends Benchmark {
         while (cbk < 1024) {
             uint32 k2 = cbk / 16; uint32 nb = (cbk % 16) * 8;
             Vector<float16,8> vb = b.vload<8>(k2 * n + cb + nb);
-            sb[(nb + 0) * 66 + k2] = vb[0]; sb[(nb + 1) * 66 + k2] = vb[1];
-            sb[(nb + 2) * 66 + k2] = vb[2]; sb[(nb + 3) * 66 + k2] = vb[3];
-            sb[(nb + 4) * 66 + k2] = vb[4]; sb[(nb + 5) * 66 + k2] = vb[5];
-            sb[(nb + 6) * 66 + k2] = vb[6]; sb[(nb + 7) * 66 + k2] = vb[7];
+            sb[(nb + 0) * 64 + k2] = vb[0]; sb[(nb + 1) * 64 + k2] = vb[1];
+            sb[(nb + 2) * 64 + k2] = vb[2]; sb[(nb + 3) * 64 + k2] = vb[3];
+            sb[(nb + 4) * 64 + k2] = vb[4]; sb[(nb + 5) * 64 + k2] = vb[5];
+            sb[(nb + 6) * 64 + k2] = vb[6]; sb[(nb + 7) * 64 + k2] = vb[7];
             cbk = cbk + 128;
         }
         Barrier.workgroup();
@@ -99,15 +104,15 @@ public class GpuMatMulF16Bench extends Benchmark {
             // spread over 4 substeps: A vec at ks (+ks+4 for ks<2); B vecs at ks and ks+4.
             boolean pf = p + 1 < npanels;
             uint32 ko = (p + 1) * 64;
-            uint32 sbA = (1 - ph) * 6336;
-            uint32 sbB = (1 - ph) * 8448;
-            uint32 dbA = ph * 6336;
-            uint32 dbB = ph * 8448;
-            uint32 ao0 = dbA + (wm * 48 + 0) * 66;
-            uint32 ao1 = dbA + (wm * 48 + 16) * 66;
-            uint32 ao2 = dbA + (wm * 48 + 32) * 66;
-            uint32 cn0 = (wn * 64 + 0) * 66; uint32 cn1 = (wn * 64 + 16) * 66;
-            uint32 cn2 = (wn * 64 + 32) * 66; uint32 cn3 = (wn * 64 + 48) * 66;
+            uint32 sbA = (1 - ph) * 6144;
+            uint32 sbB = (1 - ph) * 8192;
+            uint32 dbA = ph * 6144;
+            uint32 dbB = ph * 8192;
+            uint32 ao0 = dbA + (wm * 48 + 0) * 64;
+            uint32 ao1 = dbA + (wm * 48 + 16) * 64;
+            uint32 ao2 = dbA + (wm * 48 + 32) * 64;
+            uint32 cn0 = (wn * 64 + 0) * 64; uint32 cn1 = (wn * 64 + 16) * 64;
+            uint32 cn2 = (wn * 64 + 32) * 64; uint32 cn3 = (wn * 64 + 48) * 64;
             uint32 ks = 0;
             while (ks < 4) {
                 uint32 ka = ks * 16;
@@ -123,27 +128,27 @@ public class GpuMatMulF16Bench extends Benchmark {
                     pb0 = b.vload<8>((ko + bk0) * n + cb + bn0);
                     pb1 = b.vload<8>((ko + bk1) * n + cb + bn1);
                 }
-                wa0.load(sa, ao0 + ka, 0, 66);
-                wa1.load(sa, ao1 + ka, 0, 66);
-                wa2.load(sa, ao2 + ka, 0, 66);
-                wb0.load(sb, dbB + cn0 + ka, 1, 66);
-                wb1.load(sb, dbB + cn1 + ka, 1, 66);
-                wb2.load(sb, dbB + cn2 + ka, 1, 66);
-                wb3.load(sb, dbB + cn3 + ka, 1, 66);
+                wa0.load(sa, ao0 + ka, 0, 64);
+                wa1.load(sa, ao1 + ka, 0, 64);
+                wa2.load(sa, ao2 + ka, 0, 64);
+                wb0.load(sb, dbB + cn0 + ka, 1, 64);
+                wb1.load(sb, dbB + cn1 + ka, 1, 64);
+                wb2.load(sb, dbB + cn2 + ka, 1, 64);
+                wb3.load(sb, dbB + cn3 + ka, 1, 64);
                 a00.mma(wa0, wb0); a01.mma(wa0, wb1); a02.mma(wa0, wb2); a03.mma(wa0, wb3);
                 a10.mma(wa1, wb0); a11.mma(wa1, wb1); a12.mma(wa1, wb2); a13.mma(wa1, wb3);
                 a20.mma(wa2, wb0); a21.mma(wa2, wb1); a22.mma(wa2, wb2); a23.mma(wa2, wb3);
                 if (pf) {
-                    if (rb + ma0 < n) { sa.vstore(sbA + ma0 * 66 + ak0, pa0); }
-                    if (ks < 2) { if (rb + ma1 < n) { sa.vstore(sbA + ma1 * 66 + ak1, pa1); } }
-                    sb[sbB + (bn0 + 0) * 66 + bk0] = pb0[0]; sb[sbB + (bn0 + 1) * 66 + bk0] = pb0[1];
-                    sb[sbB + (bn0 + 2) * 66 + bk0] = pb0[2]; sb[sbB + (bn0 + 3) * 66 + bk0] = pb0[3];
-                    sb[sbB + (bn0 + 4) * 66 + bk0] = pb0[4]; sb[sbB + (bn0 + 5) * 66 + bk0] = pb0[5];
-                    sb[sbB + (bn0 + 6) * 66 + bk0] = pb0[6]; sb[sbB + (bn0 + 7) * 66 + bk0] = pb0[7];
-                    sb[sbB + (bn1 + 0) * 66 + bk1] = pb1[0]; sb[sbB + (bn1 + 1) * 66 + bk1] = pb1[1];
-                    sb[sbB + (bn1 + 2) * 66 + bk1] = pb1[2]; sb[sbB + (bn1 + 3) * 66 + bk1] = pb1[3];
-                    sb[sbB + (bn1 + 4) * 66 + bk1] = pb1[4]; sb[sbB + (bn1 + 5) * 66 + bk1] = pb1[5];
-                    sb[sbB + (bn1 + 6) * 66 + bk1] = pb1[6]; sb[sbB + (bn1 + 7) * 66 + bk1] = pb1[7];
+                    if (rb + ma0 < n) { sa.vstore(sbA + ma0 * 64 + ak0, pa0); }
+                    if (ks < 2) { if (rb + ma1 < n) { sa.vstore(sbA + ma1 * 64 + ak1, pa1); } }
+                    sb[sbB + (bn0 + 0) * 64 + bk0] = pb0[0]; sb[sbB + (bn0 + 1) * 64 + bk0] = pb0[1];
+                    sb[sbB + (bn0 + 2) * 64 + bk0] = pb0[2]; sb[sbB + (bn0 + 3) * 64 + bk0] = pb0[3];
+                    sb[sbB + (bn0 + 4) * 64 + bk0] = pb0[4]; sb[sbB + (bn0 + 5) * 64 + bk0] = pb0[5];
+                    sb[sbB + (bn0 + 6) * 64 + bk0] = pb0[6]; sb[sbB + (bn0 + 7) * 64 + bk0] = pb0[7];
+                    sb[sbB + (bn1 + 0) * 64 + bk1] = pb1[0]; sb[sbB + (bn1 + 1) * 64 + bk1] = pb1[1];
+                    sb[sbB + (bn1 + 2) * 64 + bk1] = pb1[2]; sb[sbB + (bn1 + 3) * 64 + bk1] = pb1[3];
+                    sb[sbB + (bn1 + 4) * 64 + bk1] = pb1[4]; sb[sbB + (bn1 + 5) * 64 + bk1] = pb1[5];
+                    sb[sbB + (bn1 + 6) * 64 + bk1] = pb1[6]; sb[sbB + (bn1 + 7) * 64 + bk1] = pb1[7];
                 }
                 ks = ks + 1;
             }
