@@ -3311,6 +3311,67 @@ private:
                                 const std::shared_ptr<MethodCallExpression>& mc) {
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
         llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+        // panelTransposed(dst, src, rowBase, colBase, rows, cols, ld, pad): wide
+        // 128-bit global load of `cols`-contiguous chunks, written TRANSPOSED into the
+        // padded LDS tile dst[c*(rows+pad)+r] (torch TransposeLDS=1 + LdsPad). The
+        // transpose makes the local write strided (expected; the prefetch hides it).
+        if (name == "panelTransposed") {
+            const auto& ta = mc->getParameters();
+            if (ta.size() != 8)
+                unsupported("CoopStage.panelTransposed expects (Shared dst, Buffer src, "
+                            "rowBase, colBase, rows, cols, ld, pad)");
+            llvm::Value* dB = nullptr; llvm::Type* dE = nullptr;
+            llvm::Value* sB = nullptr; llvm::Type* sE = nullptr;
+            if (!resolveBufferBase(ta[0].expression, dB, dE))
+                unsupported("CoopStage.panelTransposed: dst must be a Shared<T> local");
+            if (!resolveBufferBase(ta[1].expression, sB, sE))
+                unsupported("CoopStage.panelTransposed: src must be a Buffer<T> param");
+            llvm::Value* rB = coerceTo(lowerExpr(ta[2].expression), i32);
+            llvm::Value* cB = coerceTo(lowerExpr(ta[3].expression), i32);
+            llvm::Value* rws = coerceTo(lowerExpr(ta[4].expression), i32);
+            llvm::Value* cls = coerceTo(lowerExpr(ta[5].expression), i32);
+            llvm::Value* ldv = coerceTo(lowerExpr(ta[6].expression), i32);
+            llvm::Value* pdv = coerceTo(lowerExpr(ta[7].expression), i32);
+            unsigned eb = sE->getPrimitiveSizeInBits();
+            unsigned lanes = eb ? (128u / eb) : 1u;
+            if (lanes < 1) lanes = 1;
+            llvm::Value* lanesV = llvm::ConstantInt::get(i32, lanes);
+            llvm::Value* kpad = builder.CreateAdd(rws, pdv, "bt.kpad");
+            llvm::Value* cpr = builder.CreateUDiv(cls, lanesV, "bt.cpr");
+            llvm::Value* tot = builder.CreateMul(rws, cpr, "bt.total");
+            llvm::Value* tid = coerceTo(target.threadId(builder, mod, 0), i32);
+            llvm::Value* nth = coerceTo(target.workgroupDim(builder, mod, 0), i32);
+            llvm::Value* iv = entryAlloca(i32, "bt.e");
+            builder.CreateStore(tid, iv);
+            auto* h = llvm::BasicBlock::Create(ctx, "bt.head", fn);
+            auto* bd = llvm::BasicBlock::Create(ctx, "bt.body", fn);
+            auto* ex = llvm::BasicBlock::Create(ctx, "bt.exit", fn);
+            builder.CreateBr(h);
+            builder.SetInsertPoint(h);
+            llvm::Value* e = builder.CreateLoad(i32, iv, "bt.e.cur");
+            builder.CreateCondBr(builder.CreateICmpULT(e, tot), bd, ex);
+            builder.SetInsertPoint(bd);
+            llvm::Value* r = builder.CreateUDiv(e, cpr);
+            llvm::Value* cc = builder.CreateMul(builder.CreateURem(e, cpr), lanesV);
+            llvm::Value* gIdx = builder.CreateAdd(
+                builder.CreateMul(builder.CreateAdd(rB, r), ldv),
+                builder.CreateAdd(cB, cc), "bt.gidx");
+            llvm::Value* vec = target.vectorLoad(
+                builder, mod, sB, sE, lanes, builder.CreateZExt(gIdx, i64));
+            for (unsigned i = 0; i < lanes; ++i) {
+                llvm::Value* ci = builder.CreateAdd(cc, llvm::ConstantInt::get(i32, i));
+                llvm::Value* dIdx = builder.CreateAdd(
+                    builder.CreateMul(ci, kpad), r, "bt.didx");
+                llvm::Value* dPtr = target.bufferElementPtr(
+                    builder, mod, dB, dE, builder.CreateZExt(dIdx, i64));
+                llvm::Value* elt = builder.CreateExtractElement(vec, i);
+                builder.CreateStore(coerceTo(elt, dE), dPtr);
+            }
+            builder.CreateStore(builder.CreateAdd(e, nth), iv);
+            builder.CreateBr(h);
+            builder.SetInsertPoint(ex);
+            return llvm::ConstantInt::get(i32, 0);
+        }
         if (name != "panel")
             unsupported("CoopStage." + name + "()");
         const auto& args = mc->getParameters();

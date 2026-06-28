@@ -49,4 +49,21 @@ public final class CoopStage {
                                 uint32 rowBase, uint32 colBase,
                                 uint32 rows, uint32 cols, uint32 ld) {
     }
+
+    /**
+     * Transposed + padded staging of a `rows`x`cols` panel (the torch
+     * `TransposeLDS=1` + `LdsPadB` layout, gpu-f16-torch-recipe U1). The panel is
+     * read wide (128-bit `cols`-contiguous global loads) and written TRANSPOSED into
+     * the LDS tile `dst` laid out `[cols][rows + pad]` — so element (r,c) lands at
+     * `dst[c*(rows+pad) + r]`, making the summation dim contiguous in LDS. A later
+     * `CooperativeMatrix.load(dst, c*(rows+pad), 1, rows+pad)` (column-major) then
+     * reads each fragment WIDE (`ds_read_b128`), bank-conflict-free via `pad`. The
+     * transpose makes the local write strided (expected; the prefetch pipeline hides
+     * it). `cols` must be a multiple of the 128-bit lane count. Device-only.
+     */
+    public static void panelTransposed<T>(Shared<T> dst, KernelBuffer<T> src,
+                                          uint32 rowBase, uint32 colBase,
+                                          uint32 rows, uint32 cols, uint32 ld,
+                                          uint32 pad) {
+    }
 }
