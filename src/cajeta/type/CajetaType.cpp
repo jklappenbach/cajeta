@@ -67,13 +67,17 @@ namespace cajeta {
         return tbl;
     }
 
-    llvm::Type* CajetaType::getLlvmType() {
+    llvm::Type* CajetaType::rawLlvmType() const {
         if (frozen) {
             auto& tbl = frozenTypeBindings();
             auto it = tbl.find(this);
             return it != tbl.end() ? it->second : nullptr;
         }
         return llvmType;
+    }
+
+    llvm::Type* CajetaType::getLlvmType() {
+        return rawLlvmType();
     }
 
     void CajetaType::setLlvmType(llvm::Type* t) {
@@ -525,7 +529,7 @@ namespace cajeta {
     llvm::ConstantInt* CajetaType::getTypeAllocSize(CajetaModulePtr module) {
         const llvm::DataLayout& dataLayout = module->getLlvmModule()->getDataLayout();
         return llvm::ConstantInt::get(llvm::Type::getInt64Ty(*module->getLlvmContext()),
-            dataLayout.getTypeAllocSize(llvmType));
+            dataLayout.getTypeAllocSize(rawLlvmType()));
     }
 
     string CajetaType::toGeneric() {
@@ -1239,7 +1243,7 @@ namespace cajeta {
         CajetaTypePtr pointerType = CajetaType::of(pointerName);
         if (!pointerType) {
             pointerType = CajetaType::create(pointerName,
-                llvm::PointerType::get(llvmType->getContext(), 0), POINTER_FLAG);
+                llvm::PointerType::get(rawLlvmType()->getContext(), 0), POINTER_FLAG);
         }
         return pointerType;
     }
@@ -1336,14 +1340,14 @@ namespace cajeta {
                 case UINT32_TYPE_ID:
                 case UINT64_TYPE_ID:
                 case UINT128_TYPE_ID:
-                    result = module->getBuilder()->CreateIntCast(op, llvmType, false);
+                    result = module->getBuilder()->CreateIntCast(op, rawLlvmType(), false);
                     break;
                 case INT8_TYPE_ID:
                 case INT16_TYPE_ID:
                 case INT32_TYPE_ID:
                 case INT64_TYPE_ID:
                 case INT128_TYPE_ID:
-                    result = module->getBuilder()->CreateIntCast(op, llvmType, true);
+                    result = module->getBuilder()->CreateIntCast(op, rawLlvmType(), true);
                     break;
                 case FLOAT4E2M1_TYPE_ID:
                 case FLOAT6E2M3_TYPE_ID:
@@ -1360,7 +1364,7 @@ namespace cajeta {
                 case FLOAT32_TYPE_ID:
                 case FLOAT64_TYPE_ID:
                 case FLOAT128_TYPE_ID:
-                    result = module->getBuilder()->CreateFPCast(op, llvmType);
+                    result = module->getBuilder()->CreateFPCast(op, rawLlvmType());
                     break;
                 default:
                     throw Exception(string("Illegal execution error, attempting to normalize non-numeric type."), string("100"));

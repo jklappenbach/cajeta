@@ -59,11 +59,11 @@ namespace cajeta {
     }
 
     llvm::Type* CajetaMatrix::getLlvmType() {
-        if (!llvmType) {
-            llvmType = llvm::FixedVectorType::get(elementType->getLlvmType(),
-                                                  rows * cols);
-        }
-        return llvmType;
+        // frozen-aware lazy-create (threadsafe U6.2).
+        if (llvm::Type* cur = CajetaType::getLlvmType()) return cur;
+        llvm::Type* t = llvm::FixedVectorType::get(elementType->getLlvmType(), rows * cols);
+        setLlvmType(t);
+        return t;
     }
 
     shared_ptr<CajetaMatrix> CajetaMatrix::getOrCreate(CajetaModulePtr /*module*/,

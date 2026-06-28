@@ -40,8 +40,8 @@ namespace cajeta {
         // Create the LLVM struct type. `getOrCreateLlvmType` also stuffs a
         // plain CajetaType into the canonical map; we'll overwrite that
         // immediately below so name lookups return this CajetaView instance.
-        llvmType = CajetaType::getOrCreateLlvmType(module->getLlvmContext(), canonical);
-        typeMap[TypeKey(llvmType)] = shared_from_this();
+        setLlvmType(CajetaType::getOrCreateLlvmType(module->getLlvmContext(), canonical));  // U6.2
+        typeMap[TypeKey(rawLlvmType())] = shared_from_this();
         canonicalMap[canonical] = static_pointer_cast<CajetaType>(shared_from_this());
         // Also register by short name so the view constructor's name lookup
         // (`MyView(byte[])` in MethodCallExpression) finds the view via its
@@ -117,7 +117,7 @@ namespace cajeta {
         }
         variableSizeFieldCount = variableSizeCount;
         const bool packed = (alignment != ViewAlignment::Natural);
-        ((llvm::StructType*) llvmType)->setBody(
+        ((llvm::StructType*) rawLlvmType())->setBody(
             llvm::ArrayRef<llvm::Type*>(llvmMembers), packed);
 
         // Views are not `new`-able: no default constructor, no vtable. The
@@ -134,11 +134,12 @@ namespace cajeta {
     }
 
     uint64_t CajetaView::getFixedSize() const {
-        if (!llvmType || !llvm::isa<llvm::StructType>(llvmType)) {
+        llvm::Type* lt = rawLlvmType();
+        if (!lt || !llvm::isa<llvm::StructType>(lt)) {
             return 0;
         }
         const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
-        return dl.getTypeAllocSize(llvmType);
+        return dl.getTypeAllocSize(lt);
     }
 
     uint64_t CajetaView::getMinimumSize() const {

@@ -62,7 +62,7 @@ namespace cajeta {
         // pointed-to layout grew. Call sites load the record and indirect-
         // dispatch through fn_ptr, passing captures_ptr as the first arg.
         llvm::Type* ptrTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
-        this->llvmType = ptrTy;
+        setLlvmType(ptrTy);  // U6.2
 
         // L2 calling convention: every lambda function takes `ptr captures`
         // as its first arg. Non-capturing lambdas pass null; capturing

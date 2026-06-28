@@ -67,7 +67,7 @@ namespace cajeta {
     }
 
     llvm::Type* CajetaClass::getLlvmType() {
-        if (llvmType) return llvmType;
+        if (llvm::Type* cur = rawLlvmType()) return cur;  // frozen-aware cache read (U6.2)
         if (placeholderFlag && module) {
             return llvm::PointerType::get(*module->getLlvmContext(), 0);
         }
@@ -95,7 +95,7 @@ namespace cajeta {
         if (isTemplate() && module) {
             return llvm::PointerType::get(*module->getLlvmContext(), 0);
         }
-        return llvmType;
+        return rawLlvmType();
     }
 
     llvm::Type* CajetaClass::getLlvmReferenceType() {
@@ -485,8 +485,9 @@ namespace cajeta {
         if (!ancestor || ancestor == this) return 0;
         auto it = subObjectSlotMap.find(ancestor);
         if (it == subObjectSlotMap.end() || it->second == 0) return 0;
-        if (!llvmType || !llvm::isa<llvm::StructType>(llvmType)) return 0;
-        auto* st = llvm::cast<llvm::StructType>(llvmType);
+        llvm::Type* lt = rawLlvmType();
+        if (!lt || !llvm::isa<llvm::StructType>(lt)) return 0;
+        auto* st = llvm::cast<llvm::StructType>(lt);
         if (!st->isSized()) return 0;
         const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
         return dl.getStructLayout(st)->getElementOffset((unsigned) it->second);
@@ -495,8 +496,9 @@ namespace cajeta {
     std::vector<CajetaClass::NonFirstSubObject>
     CajetaClass::getNonFirstSubObjects() {
         std::vector<NonFirstSubObject> result;
-        if (!llvmType || !llvm::isa<llvm::StructType>(llvmType)) return result;
-        auto* st = llvm::cast<llvm::StructType>(llvmType);
+        llvm::Type* lt = rawLlvmType();
+        if (!lt || !llvm::isa<llvm::StructType>(lt)) return result;
+        auto* st = llvm::cast<llvm::StructType>(lt);
         if (!st->isSized()) return result;
         const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
         const auto* layout = dl.getStructLayout(st);
@@ -807,17 +809,18 @@ namespace cajeta {
             // by synthesizeInterfaceVTables; kind is one of
             // IFACE_KIND_BORROWED_CLASS / OWNED_CLASS and drives
             // drop-chain dispatch at scope exit.
-            llvmType = CajetaType::getOrCreateLlvmType(module->getLlvmContext(), canonical);
-            typeMap[TypeKey(llvmType)] = shared_from_this();
+            llvm::Type* lt = CajetaType::getOrCreateLlvmType(module->getLlvmContext(), canonical);
+            setLlvmType(lt);
+            typeMap[TypeKey(lt)] = shared_from_this();
             // The body may already be set if a forward reference synthesized
             // this interface's fat placeholder (CajetaType::fromContext's
             // born-fat interface branch) — setBody on a non-opaque struct
             // asserts, so only populate it the first time.
-            if (((llvm::StructType*) llvmType)->isOpaque()) {
+            if (((llvm::StructType*) lt)->isOpaque()) {
                 llvm::Type* ptrTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
                 llvm::Type* i64Ty = llvm::Type::getInt64Ty(*module->getLlvmContext());
                 vector<llvm::Type*> members{ ptrTy, ptrTy, i64Ty };
-                ((llvm::StructType*) llvmType)->setBody(llvm::ArrayRef<llvm::Type*>(members), false);
+                ((llvm::StructType*) lt)->setBody(llvm::ArrayRef<llvm::Type*>(members), false);
             }
 
             canonicalMap[canonical] = static_pointer_cast<CajetaType>(shared_from_this());
@@ -837,8 +840,8 @@ namespace cajeta {
             return;
         }
 
-        llvmType = CajetaType::getOrCreateLlvmType(module->getLlvmContext(), canonical);
-        typeMap[TypeKey(llvmType)] = shared_from_this();
+        setLlvmType(CajetaType::getOrCreateLlvmType(module->getLlvmContext(), canonical));
+        typeMap[TypeKey(rawLlvmType())] = shared_from_this();
         // Overwrite the plain-CajetaType placeholder `getOrCreateLlvmType` put
         // in the canonical map so name lookups (e.g. `dynamic_pointer_cast<
         // CajetaClass>(receiverType)` in MethodCallExpression) actually see
@@ -1112,7 +1115,7 @@ namespace cajeta {
         embedSubObject(static_pointer_cast<CajetaClass>(shared_from_this()),
             /*ownVtable=*/hasVtablePointerAtSlotZero(), /*enclosingStart=*/0);
 
-        ((llvm::StructType*) llvmType)->setBody(llvm::ArrayRef<llvm::Type*>(llvmMembers), false);
+        ((llvm::StructType*) rawLlvmType())->setBody(llvm::ArrayRef<llvm::Type*>(llvmMembers), false);
 
         // Lombok ctor annotations run BEFORE ensureDefaultConstructor —
         // if @NoArgsConstructor (etc.) adds a ctor, the populated map
@@ -2643,7 +2646,7 @@ namespace cajeta {
 
             unsigned fieldIdx = (unsigned) getFieldLlvmIndex(property);
             llvm::Value* slotPtr = b.CreateStructGEP(
-                llvmType, instance, fieldIdx,
+                rawLlvmType(), instance, fieldIdx,
                 std::string("stack_drop_field_") + property->getName());
             llvm::Value* refPtr = b.CreateLoad(ptrTy, slotPtr);
 
@@ -2808,7 +2811,7 @@ namespace cajeta {
                 }
                 if (!freeArrayFn) continue;
                 llvm::Value* slot = b.CreateStructGEP(
-                    llvmType, instance, fieldIdx,
+                    rawLlvmType(), instance, fieldIdx,
                     std::string("drop_arr_slot_") + property->getName());
                 llvm::Value* arrPtr = b.CreateLoad(ptrTy, slot,
                     std::string("drop_arr_ptr_") + property->getName());
@@ -2824,7 +2827,7 @@ namespace cajeta {
                     }
                     if (!ifaceDropFn) continue;
                     llvm::Value* bodyPtr = b.CreateStructGEP(
-                        llvmType, instance, fieldIdx,
+                        rawLlvmType(), instance, fieldIdx,
                         std::string("drop_iface_body_") + property->getName());
                     b.CreateCall(ifaceDropFn, {bodyPtr});
                     continue;
@@ -2837,7 +2840,7 @@ namespace cajeta {
                 if (!virtualDropFn) continue;
                 fieldClass->patchVirtualTableDropFn();
                 llvm::Value* slot = b.CreateStructGEP(
-                    llvmType, instance, fieldIdx,
+                    rawLlvmType(), instance, fieldIdx,
                     std::string("drop_ref_slot_") + property->getName());
                 llvm::Value* refPtr = b.CreateLoad(ptrTy, slot,
                     std::string("drop_ref_ptr_") + property->getName());

@@ -78,6 +78,6 @@ namespace cajeta {
             i64Ty,
             llvm::ArrayType::get(elemLlvm, 0),
         };
-        llvmType = CajetaType::getOrCreateLlvmType(ctx, string("#array.") + canonical, fields);
+        setLlvmType(CajetaType::getOrCreateLlvmType(ctx, string("#array.") + canonical, fields));  // U6.2
     }
 }

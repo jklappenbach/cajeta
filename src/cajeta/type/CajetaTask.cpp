@@ -69,8 +69,8 @@ namespace cajeta {
             llvm::PointerType::get(*ctx, 0),
             llvm::PointerType::get(*ctx, 0),
         };
-        llvmType = CajetaType::getOrCreateLlvmType(ctx,
-            string("#task.") + canonical, fields);
+        setLlvmType(CajetaType::getOrCreateLlvmType(ctx,
+            string("#task.") + canonical, fields));  // U6.2
         typeFlags = STRUCT_FLAG | USER_DEFINED_FLAG;
     }
 
@@ -148,7 +148,7 @@ namespace cajeta {
         llvm::Function* waitFn = module->getRuntimeFunction("__cajeta_task_wait");
         if (waitFn) {
             llvm::Value* doneAddr = b.CreateStructGEP(
-                llvmType, task, DONE_FIELD_INDEX, "task_done");
+                rawLlvmType(), task, DONE_FIELD_INDEX, "task_done");
             b.CreateCall(waitFn, {doneAddr});
         }
         // Throw path: scope_exit_to runs AFTER drop chain unwind, so any
@@ -158,7 +158,7 @@ namespace cajeta {
             "__cajeta_scope_deregister_task");
         if (deregFn) {
             const llvm::DataLayout& dl = lmod->getDataLayout();
-            uint64_t taskSize = dl.getTypeAllocSize(llvmType);
+            uint64_t taskSize = dl.getTypeAllocSize(rawLlvmType());
             llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
             b.CreateCall(deregFn, {task,
                 llvm::ConstantInt::get(i64Ty, taskSize)});

@@ -280,6 +280,10 @@ class CajetaType : public Modifiable, public Annotatable,
         // stdlib) object, else the inline `llvmType`. Out-of-line so it can reach
         // the thread_local binding table (CajetaType.cpp). (threadsafe U6.1)
         virtual llvm::Type* getLlvmType();
+        // Raw frozen-aware read of the cached binding: const, NO virtual dispatch
+        // and NO lazy-create. Subclasses + const methods use this for cache reads
+        // (the virtual getLlvmType has placeholder/wildcard branches). (U6.2)
+        llvm::Type* rawLlvmType() const;
 
         // Used by the placeholder-synthesis path so a forward-
         // referenced class has a named (body-less) struct type

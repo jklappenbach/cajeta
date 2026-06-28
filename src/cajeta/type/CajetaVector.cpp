@@ -56,11 +56,13 @@ namespace cajeta {
     }
 
     llvm::Type* CajetaVector::getLlvmType() {
-        if (!llvmType) {
-            llvmType = llvm::FixedVectorType::get(elementType->getLlvmType(),
-                                                  lanes);
-        }
-        return llvmType;
+        // frozen-aware lazy-create (threadsafe U6.2): read/write via the base
+        // accessor so a frozen shared instance binds per-thread, a normal one
+        // inline (identical behavior pre-freeze).
+        if (llvm::Type* cur = CajetaType::getLlvmType()) return cur;
+        llvm::Type* t = llvm::FixedVectorType::get(elementType->getLlvmType(), lanes);
+        setLlvmType(t);
+        return t;
     }
 
     shared_ptr<CajetaVector> CajetaVector::getOrCreate(CajetaModulePtr /*module*/,
