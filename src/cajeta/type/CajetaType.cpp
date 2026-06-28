@@ -50,13 +50,14 @@ namespace cajeta {
             errId);
     }
 
-    map<string, CajetaTypePtr> CajetaType::canonicalMap;
-    map<string, map<string, int32_t>> CajetaType::enumConstants;
-    map<TypeKey, CajetaTypePtr> CajetaType::typeMap;
-    map<llvm::Type::TypeID, CajetaTypePtr> CajetaType::llvmTypeIdMap;
+    // thread-safe-compiler Unit 2: per-thread so concurrent compiles don't share.
+    thread_local map<string, CajetaTypePtr> CajetaType::canonicalMap;
+    thread_local map<string, map<string, int32_t>> CajetaType::enumConstants;
+    thread_local map<TypeKey, CajetaTypePtr> CajetaType::typeMap;
+    thread_local map<llvm::Type::TypeID, CajetaTypePtr> CajetaType::llvmTypeIdMap;
     // Archive — see CajetaType.h. Cleared by resetGlobals so each
     // fresh Compiler starts with an empty set.
-    static map<string, string> g_archive;
+    static thread_local map<string, string> g_archive;
     // Side set marking which archived canonical names are enum
     // declarations (rather than classes / interfaces / structs /
     // views). Read by fromContext's placeholder-synthesis path so
@@ -64,20 +65,20 @@ namespace cajeta {
     // to the proper i32-backed enum CajetaType instead of a
     // class-shaped placeholder. Populated by the prescan visitor's
     // visitEnumDeclaration override.
-    static set<string> g_enumArchive;
+    static thread_local set<string> g_enumArchive;
     // Archive entries known to be @ValueType classes. Read by
     // fromContext's placeholder-synthesis path so a cross-file
     // value-type-typed declaration gets a placeholder born with
     // VALUE_TYPE_FLAG | BY_VALUE_FLAG. Populated by the prescan
     // visitor's visitClassDeclaration when it sees the annotation.
-    static set<string> g_valueTypeArchive;
+    static thread_local set<string> g_valueTypeArchive;
     // Side set marking which archived canonical names are INTERFACE
     // declarations. Read by fromContext's placeholder-synthesis path so
     // a forward-referenced interface type (referenced by a field/param/
     // local before its own declaration is visited) is born as a fat
     // 24-byte interface pointer instead of a thin class pointer.
     // Populated by the prescan visitor's visitInterfaceDeclaration.
-    static set<string> g_interfaceArchive;
+    static thread_local set<string> g_interfaceArchive;
     // Per-class template metadata captured by the prescan when the
     // class declaration carries `typeParameters`. Lets the placeholder-
     // synthesis path in fromContext below pre-populate enough state on
@@ -95,7 +96,7 @@ namespace cajeta {
         vector<TypeParameter> typeParameters;
         string templateSource;
     };
-    static map<string, ArchiveTemplateMeta> g_archiveTemplateMeta;
+    static thread_local map<string, ArchiveTemplateMeta> g_archiveTemplateMeta;
     // Wildcard feature-flag override (Step 1). Set by tests via
     // CajetaType::setWildcardsEnabledForTest. Null means "fall back
     // to the CAJETA_WILDCARDS env var" (the production path).
@@ -108,7 +109,7 @@ namespace cajeta {
         CajetaType::WildcardKind kind;
         CajetaTypePtr bound;
     };
-    static map<string, WildcardInfoEntry> g_wildcardInfo;
+    static thread_local map<string, WildcardInfoEntry> g_wildcardInfo;
 
 
     TypeKey::TypeKey(llvm::Type* type) {

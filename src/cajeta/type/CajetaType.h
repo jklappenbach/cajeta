@@ -167,15 +167,20 @@ namespace cajeta {
 class CajetaType : public Modifiable, public Annotatable,
         public std::enable_shared_from_this<CajetaType> {
     protected:
-        static map<string, CajetaTypePtr> canonicalMap;
-        static map<TypeKey, CajetaTypePtr> typeMap;
-        static map<llvm::Type::TypeID, CajetaTypePtr> llvmTypeIdMap;
+        // thread-safe-compiler Unit 2: the per-compile type registries are
+        // thread_local so concurrent compiles on different threads never share
+        // them. Single-threaded behavior is unchanged (resetGlobals clears the
+        // calling thread's copy each compile). Units 5-6 split these into a
+        // shared frozen-stdlib tier + a per-thread user tier.
+        static thread_local map<string, CajetaTypePtr> canonicalMap;
+        static thread_local map<TypeKey, CajetaTypePtr> typeMap;
+        static thread_local map<llvm::Type::TypeID, CajetaTypePtr> llvmTypeIdMap;
         // Enum constant registry. Keyed by the enum's short typeName
         // ("Direction") and then by constant name ("NORTH" / "SOUTH" / ...).
         // The value is the constant's int32 ordinal. DotExpression consults
         // this for `MyEnum.CONST` references; the enum CajetaType itself
         // is registered in canonicalMap as an i32-backed type.
-        static map<string, map<string, int32_t>> enumConstants;
+        static thread_local map<string, map<string, int32_t>> enumConstants;
         QualifiedNamePtr qName;
         llvm::Type* llvmType;
         string canonical;
