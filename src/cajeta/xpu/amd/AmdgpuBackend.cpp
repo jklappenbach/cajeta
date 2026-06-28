@@ -23,6 +23,8 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
+
+#include <cstdlib>
 #include "llvm/TargetParser/Triple.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 
@@ -156,10 +158,22 @@ void optimizeDeviceModule(llvm::Module& m, llvm::TargetMachine& tm) {
     pb.registerLoopAnalyses(lam);
     pb.crossRegisterProxies(lam, fam, cgam, mam);
 
-    llvm::FunctionPassManager fpm;
-    fpm.addPass(llvm::PromotePass());  // mem2reg
+    // Full IR pipeline before codegen (addPassesToEmitFile runs none, so without this every
+    // @Kernel ships unoptimized -> redundant address math spills regalloc); default O3,
+    // CAJETA_XPU_DEVICE_OPT=0|1|2|3 overrides (0 = mem2reg-only fallback).
     llvm::ModulePassManager mpm;
-    mpm.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(fpm)));
+    int lvl = 3;
+    if (const char* e = std::getenv("CAJETA_XPU_DEVICE_OPT")) lvl = std::atoi(e);
+    if (lvl <= 0) {
+        llvm::FunctionPassManager fpm;
+        fpm.addPass(llvm::PromotePass());
+        mpm.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(fpm)));
+    } else {
+        llvm::OptimizationLevel ol = lvl == 1 ? llvm::OptimizationLevel::O1
+                                   : lvl == 2 ? llvm::OptimizationLevel::O2
+                                              : llvm::OptimizationLevel::O3;
+        mpm = pb.buildPerModuleDefaultPipeline(ol);
+    }
     mpm.run(m, mam);
 }
 
