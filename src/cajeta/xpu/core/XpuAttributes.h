@@ -43,6 +43,12 @@ namespace xpu {
         // params optional + vendor-neutral; lowered per-backend, no-op where
         // unsupported. Overrides the automatic workgroup-size budgeting (§2).
         static constexpr const char* Occupancy    = "Occupancy";
+        // @Autotune (optionally @Autotune(blocks = {64, 128, 256})) — opt-in marker
+        // that a kernel is block-flexible (grid-stride) and may be runtime-tuned
+        // over a candidate set (kernel-occupancy-autotune §4). The kernel is then
+        // compiled with flat-work-group-size pinned to the LARGEST candidate so
+        // every swept block size is a legal launch.
+        static constexpr const char* Autotune     = "Autotune";
 
         // KernelArg trait marker (v1 simulates the trait via this
         // annotation; full structural-trait check lands later).
@@ -73,6 +79,10 @@ namespace xpu {
     // @FastMath kernel: relax FP (fast-math flags) for the whole body.
     inline bool isFastMath(const Annotatable& a) {
         return a.findAnnotation(XpuAttr::FastMath) != nullptr;
+    }
+    // @Autotune kernel: block-flexible, eligible for runtime config tuning.
+    inline bool isAutotune(const Annotatable& a) {
+        return a.findAnnotation(XpuAttr::Autotune) != nullptr;
     }
     inline bool isHost(const Annotatable& a) {
         // @Host is the default — present-or-absent is the same to the

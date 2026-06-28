@@ -10,6 +10,7 @@
 #include "cajeta/xpu/amd/AmdgpuBackend.h"
 #include "cajeta/xpu/amd/AmdgpuKernelLowering.h"
 #include "cajeta/xpu/core/XpuKernelAttr.h"
+#include "cajeta/xpu/core/KernelTuner.h"
 
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CajetaModule.h"
@@ -46,6 +47,30 @@ const char* kOccSrc =
     "    public static void plain(KernelBuffer<float32> c, KernelBuffer<float32> a, uint32 n) {\n"
     "        uint32 tid = KernelThread.x();\n"
     "        if (tid < n) { c[tid] = a[tid] + 1.0f; }\n"
+    "    }\n"
+    "}\n";
+
+const char* kAutotuneSrc =
+    "package test;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelThread;\n"
+    "public class M {\n"
+    "    @Kernel\n"
+    "    @Autotune(blocks = {64, 128, 256})\n"
+    "    public static void tuned(KernelBuffer<float32> c, KernelBuffer<float32> a, uint32 n) {\n"
+    "        uint32 i = KernelThread.x();\n"
+    "        while (i < n) { c[i] = a[i] + 1.0f; i = i + 256; }\n"
+    "    }\n"
+    "    @Kernel\n"
+    "    @Autotune\n"
+    "    public static void tunedDefault(KernelBuffer<float32> c, KernelBuffer<float32> a, uint32 n) {\n"
+    "        uint32 i = KernelThread.x();\n"
+    "        while (i < n) { c[i] = a[i] + 1.0f; i = i + 256; }\n"
+    "    }\n"
+    "    @Kernel\n"
+    "    public static void notTuned(KernelBuffer<float32> c, KernelBuffer<float32> a, uint32 n) {\n"
+    "        uint32 i = KernelThread.x();\n"
+    "        if (i < n) { c[i] = a[i] + 1.0f; }\n"
     "    }\n"
     "}\n";
 
@@ -149,4 +174,33 @@ TEST(XpuOccupancyAttrProbeTests, overrideWinsOverAuto) {
     setKernelWorkgroupSize(fn, 999);   // the §2 auto path with a different size
     EXPECT_EQ(attrOf(fn, "amdgpu-flat-work-group-size"), "1,256")
         << "the explicit @Occupancy override must win over auto budgeting";
+}
+
+// 3b — @Autotune parses (explicit + default candidate sets) and the compile-time
+// bound is the LARGEST candidate (so every swept block is a legal launch).
+TEST(XpuOccupancyAttrProbeTests, autotuneParsesAndBoundsToMaxCandidate) {
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kAutotuneSrc);
+    auto& cls = module->getStructures()["test.M"];
+
+    auto tuned = XpuKernelAttr::from(*findMethod(cls, "tuned"));
+    ASSERT_TRUE(tuned.has_value());
+    EXPECT_TRUE(tuned->autotune());
+    ASSERT_EQ(tuned->autotuneBlocks().size(), 3u);
+    EXPECT_EQ(tuned->autotuneBlocks()[0], 64u);
+    EXPECT_EQ(tuned->autotuneBlocks()[2], 256u);
+    EXPECT_EQ(tuned->autotuneMaxThreads(), 256u) << "bound = largest candidate";
+
+    // Bare @Autotune -> the tuner's default candidates; bound = their max.
+    auto def = XpuKernelAttr::from(*findMethod(cls, "tunedDefault"));
+    ASSERT_TRUE(def.has_value());
+    EXPECT_TRUE(def->autotune());
+    EXPECT_TRUE(def->autotuneBlocks().empty());
+    EXPECT_EQ(def->autotuneMaxThreads(),
+              cajeta::xpu::KernelTuner::defaultCandidateBlocks().back());
+
+    auto plain = XpuKernelAttr::from(*findMethod(cls, "notTuned"));
+    ASSERT_TRUE(plain.has_value());
+    EXPECT_FALSE(plain->autotune());
+    EXPECT_EQ(plain->autotuneMaxThreads(), 0u);
 }

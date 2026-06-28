@@ -69,6 +69,11 @@ namespace xpu {
         // Shipped guidance DB lookup (static, authored offline). nullopt on miss.
         static std::optional<TuningConfig> guidance(const TuningKey& key);
 
+        // Default candidate block sizes for a kernel that opts into autotuning
+        // (@Autotune) without naming its own set. The sweep clamps these to the
+        // kernel's compile-time bound.
+        static const std::vector<unsigned>& defaultCandidateBlocks();
+
     private:
         std::unordered_map<TuningKey, TuningConfig, TuningKeyHash> cache_;
     };

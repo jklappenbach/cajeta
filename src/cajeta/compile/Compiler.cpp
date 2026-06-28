@@ -31,6 +31,7 @@
 #include "cajeta/error/CajetaExceptions.h"
 #include "CajetaParserBaseVisitor.h"
 #include "../xpu/core/XpuAttributes.h"
+#include "../xpu/core/XpuKernelAttr.h"
 #include "../xpu/XpuTarget.h"
 #include "../xpu/mir/XpuMirBuilder.h"
 #include "../asn/expression/LiteralExpression.h"
@@ -1494,6 +1495,21 @@ namespace cajeta {
             }
         }
         for (const auto& k : kernelUnboundedBlock) kernelMaxThreads.erase(k);
+
+        // §4 interaction: an @Autotune kernel is swept over candidate block sizes
+        // at runtime, so it must be compiled with flat-work-group-size pinned to
+        // the LARGEST candidate (not its single launch block) — else a swept block
+        // would exceed the compiled bound and be rejected. This overrides the
+        // launch-derived size above and clears any unbounded-block poison.
+        for (auto& module : modules) {
+            for (auto& method : module->getAllMethods()) {
+                if (!method || !cajeta::xpu::isKernel(*method)) continue;
+                auto attr = cajeta::xpu::XpuKernelAttr::from(*method);
+                if (!attr || !attr->autotune()) continue;
+                if (unsigned mx = attr->autotuneMaxThreads(); mx > 0)
+                    kernelMaxThreads[method->getName()] = mx;
+            }
+        }
 
         for (auto& module : modules) {
             std::vector<MethodPtr> kernels;

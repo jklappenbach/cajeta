@@ -3,6 +3,7 @@
 //
 
 #include "XpuKernelAttr.h"
+#include "KernelTuner.h"
 
 #include <algorithm>
 #include <cctype>
@@ -98,7 +99,29 @@ std::optional<XpuKernelAttr> XpuKernelAttr::from(const Annotatable& a) {
         out.maxRegisters_ = readU("maxRegisters");
     }
 
+    // @Autotune — bare marker, or @Autotune(blocks = {64, 128, 256}) candidate set.
+    if (auto autotune = a.findAnnotation(XpuAttr::Autotune)) {
+        out.autotune_ = true;
+        if (auto* arg = autotune->findArg("blocks")) {
+            if (arg->kind == AnnotationArgKind::Int64List) {
+                for (int64_t v : arg->i64List)
+                    if (v > 0) out.autotuneBlocks_.push_back(
+                        static_cast<unsigned>(v));
+            }
+        }
+    }
+
     return out;
+}
+
+unsigned XpuKernelAttr::autotuneMaxThreads() const {
+    if (!autotune_) return 0;
+    const std::vector<unsigned>& blocks =
+        autotuneBlocks_.empty() ? KernelTuner::defaultCandidateBlocks()
+                                : autotuneBlocks_;
+    unsigned max = 0;
+    for (unsigned b : blocks) max = std::max(max, b);
+    return max;
 }
 
 bool XpuKernelAttr::emitsFor(XpuBackend b) const {

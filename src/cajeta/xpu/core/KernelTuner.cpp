@@ -45,6 +45,11 @@ std::optional<TuningConfig> KernelTuner::guidance(const TuningKey& key) {
     return std::nullopt;
 }
 
+const std::vector<unsigned>& KernelTuner::defaultCandidateBlocks() {
+    static const std::vector<unsigned> blocks = {64, 128, 256, 512};
+    return blocks;
+}
+
 std::optional<TuningConfig> KernelTuner::cached(const TuningKey& key) const {
     auto it = cache_.find(key);
     if (it == cache_.end()) return std::nullopt;
