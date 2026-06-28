@@ -2241,14 +2241,16 @@ private:
                 auto cN = std::dynamic_pointer_cast<CajetaConstantType>(targs[0]);
                 if (!cN) unsupported("vload<N>: N must be an integer constant");
                 if (params.size() != 1) unsupported("vload<N> expects (index)");
-                llvm::Value* idx = toI64(params[0].expression);
+                // Block-padded/swizzled tile: relayout the base index (the wide run
+                // stays within one block, so the pad is constant across the vector).
+                llvm::Value* idx = maybeSwizzle(base, toI64(params[0].expression));
                 return target.vectorLoad(builder, mod, base, elemTy,
                                          (unsigned) cN->getValue(), idx);
             }
             // vstore(index, value) — N is implicit in the value's <N x T> type.
             if (params.size() != 2)
                 unsupported("vstore expects (index, value)");
-            llvm::Value* idx = toI64(params[0].expression);
+            llvm::Value* idx = maybeSwizzle(base, toI64(params[0].expression));
             llvm::Value* val = lowerExpr(params[1].expression);
             if (!val->getType()->isVectorTy())
                 unsupported("vstore value must be a Vector<T,N>");

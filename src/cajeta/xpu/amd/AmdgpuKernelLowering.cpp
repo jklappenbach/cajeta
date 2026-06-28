@@ -980,12 +980,18 @@ private:
         // XOR the staging used (WMMA sub-tile offsets are S²-aligned, so this
         // fragment-local swizzle equals the absolute one).
         if (swz) { idx = swizzleAddr(b, idx, swz); return idx; }
-        // BlockPadded<T,Block,Pad>: additive pad needs the ABSOLUTE index, so add the
-        // logical sub-tile offset (ptr is the bare base) then pad — matching the
-        // direct/staging path which pads the absolute index too.
+        // BlockPadded<T,Block,Pad>: pad the fragment's e=0 base ONCE then add the unit-
+        // stride element index e back — so the per-element address stays affine in e and
+        // the 16 contiguous loads coalesce to ds_read_b128 (padding the full base+e index
+        // is non-affine and scalarizes the read). Correct because a natural-layout WMMA
+        // fragment (e unit-stride: use0/row-major, use1/col-major) fits within one block,
+        // where pad(base+e) == pad(base)+e. ptr is the bare base; baseOffset is logical.
         if (blk.period) {
-            if (blk.baseOffset) idx = b.CreateAdd(idx, blk.baseOffset, "cm.abs");
-            idx = blockPadAddr(b, idx, blk.period, blk.pad);
+            llvm::Value* eC = llvm::ConstantInt::get(i32, e);
+            llvm::Value* base = b.CreateSub(idx, eC, "cm.frag0");
+            if (blk.baseOffset) base = b.CreateAdd(base, blk.baseOffset, "cm.abs");
+            base = blockPadAddr(b, base, blk.period, blk.pad);
+            idx = b.CreateAdd(base, eC, "cm.padidx");
         }
         return idx;
     }
