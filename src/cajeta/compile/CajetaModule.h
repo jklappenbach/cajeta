@@ -42,9 +42,12 @@ namespace cajeta {
         enum class TbaaKind { None, Char, Field, ArrayElem };
 
     private:
-        static map<string, MethodPtr> methods;
-        static map<string, CajetaModulePtr> strutureToModule;
-        static map<string, CajetaModulePtr> moduleVariables;
+        // thread-safe-compiler Unit 3: per-compile registries are thread_local
+        // (concurrent compiles never share them). stdlibModule/reuseEmitModule/
+        // reuseEpoch stay shared — the frozen-stdlib tier handled in Units 5-6.
+        static thread_local map<string, MethodPtr> methods;
+        static thread_local map<string, CajetaModulePtr> strutureToModule;
+        static thread_local map<string, CajetaModulePtr> moduleVariables;
         // Classes annotated `@Aspect`, in declaration order across all
         // modules in the compile. AspectModel.md § Implementation
         // roadmap A2: pointcut matching (A3) walks this list to find
@@ -53,7 +56,7 @@ namespace cajeta {
         // another — matches the "compiler scans all source" model the
         // doc's DI graph already uses. Cleared on each fresh Compiler
         // by resetGlobals.
-        static vector<CajetaClassPtr> aspectClasses;
+        static thread_local vector<CajetaClassPtr> aspectClasses;
 
     public:
         // Component registry (AspectModel.md § A8). Holds every class
@@ -185,15 +188,15 @@ namespace cajeta {
         // without a Compiler dependency. See Compiler's lazy stdlib loader.
         static std::function<void(const std::string&)> stdlibImportHook;
     private:
-        static vector<ComponentDescriptorPtr> componentClasses;
-        static vector<FactoryDescriptorPtr> factoryClasses;
+        static thread_local vector<ComponentDescriptorPtr> componentClasses;
+        static thread_local vector<FactoryDescriptorPtr> factoryClasses;
 
         // The profile name passed to the compiler (`--profile=<name>`)
         // or set by the test driver. Default `"prod"`; JIT test helper
         // sets `"test"`. Resolved at graph-build time — a component's
         // @Profile annotations must include this value, or carry no
         // @Profile at all, to participate.
-        static string activeProfile;
+        static thread_local string activeProfile;
 
         // The module currently being walked (parse pass or template-
         // instantiation walk). Used as a fallback by call sites that don't
@@ -203,7 +206,7 @@ namespace cajeta {
         // `CajetaClass::instantiate` around their respective walks.
         // Single-threaded compilation, so a plain pointer is enough; if we
         // ever parallelize parsing this becomes thread_local.
-        static CajetaModulePtr activeModule;
+        static thread_local CajetaModulePtr activeModule;
 
         // Incremental compilation (Phase 2/3): the module whose method body
         // is currently being lowered by Method::generateCode (innermost frame
@@ -212,7 +215,7 @@ namespace cajeta {
         // choke point reads this to attribute a cross-module instantiation to
         // the module that triggered it. Single-threaded codegen, like
         // activeModule.
-        static CajetaModulePtr currentCodegenModule;
+        static thread_local CajetaModulePtr currentCodegenModule;
 
         // Test-reuse fallback emit target. The harness sets this to the per-test
         // primary USER module before compiling, so a stdlib-template
@@ -224,7 +227,7 @@ namespace cajeta {
         // by Method::generateCode / clinit body lowering; read by
         // emitTargetLlvmModule() so IR-creation helpers land new IR in the emit
         // module without swapping `module` (which would split per-module state).
-        static llvm::Module* currentEmitLlvmModule;
+        static thread_local llvm::Module* currentEmitLlvmModule;
         static uint64_t reuseEpoch;
 
         // The compiler-owned module that holds the parsed stdlib
@@ -531,7 +534,7 @@ namespace cajeta {
             std::vector<std::string> forceAllReasons;
         };
         static ReflectionKeep& reflectionKeep() {
-            static ReflectionKeep instance;
+            static thread_local ReflectionKeep instance;  // per-compile (U3)
             return instance;
         }
         static void resetReflectionKeep() { reflectionKeep() = ReflectionKeep(); }

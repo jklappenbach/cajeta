@@ -40,7 +40,7 @@ using namespace std;
 #define ERROR_ID_VARIABLE_DUPLICATE         "CAJETA_ERROR_VARIABLE_DUPLICATE"
 
 namespace cajeta {
-    map<string, MethodPtr> Method::archive;
+    thread_local map<string, MethodPtr> Method::archive;  // per-compile (U3)
 
     // SIMD plan Phase 0.6: a method needs the implicit structured-concurrency
     // scope frame (save_top + scope_enter[HEAP-ALLOC] + exit_to) only when its

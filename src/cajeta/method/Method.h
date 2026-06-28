@@ -80,7 +80,7 @@ namespace cajeta {
 
     class Method : public Modifiable, public Annotatable, public std::enable_shared_from_this<Method> {
     protected:
-        static map<string, MethodPtr> archive;
+        static thread_local map<string, MethodPtr> archive;  // per-compile (U3)
         string name;
         CajetaClassPtr parent;
         CajetaTypePtr returnType;
