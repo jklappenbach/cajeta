@@ -88,3 +88,6 @@ agents/
 # Machine-specific LLVM toolchain pin (sourced by setup.sh) — local only.
 scripts/llvm-env.local.sh
 build-three/
+
+# rocprof output artifacts (samples/profile)
+samples/profile/.rocprofv3/

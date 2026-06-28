@@ -980,18 +980,36 @@ private:
         // XOR the staging used (WMMA sub-tile offsets are S²-aligned, so this
         // fragment-local swizzle equals the absolute one).
         if (swz) { idx = swizzleAddr(b, idx, swz); return idx; }
-        // BlockPadded<T,Block,Pad>: pad the fragment's e=0 base ONCE then add the unit-
-        // stride element index e back — so the per-element address stays affine in e and
-        // the 16 contiguous loads coalesce to ds_read_b128 (padding the full base+e index
-        // is non-affine and scalarizes the read). Correct because a natural-layout WMMA
-        // fragment (e unit-stride: use0/row-major, use1/col-major) fits within one block,
-        // where pad(base+e) == pad(base)+e. ptr is the bare base; baseOffset is logical.
+        // BlockPadded<T,Block,Pad>: when an operand fragment provably fits one pad block
+        // (constant stride, 15*stride+15 < Block) and the panel base is block-aligned, pad
+        // the panel base ALONE and add the per-lane + e term unpadded — pad(panelBase +
+        // lane*stride + e) == pad(panelBase) + lane*stride + e with no block boundary inside
+        // the fragment. The base pad folds to a compile-time constant for a constant panel
+        // offset (the unrolled-K case), so the K-loop carries zero pad VALU and e rides into
+        // the ds_read offset: immediate. Otherwise fall back to padding the e=0 base once and
+        // re-adding e (affine in e, reads stay ds_read_b128). ptr is the bare base; baseOffset
+        // is logical. See docs/specs/amdgpu-constant-folded-lds-spec.md §1.4.
         if (blk.period) {
             llvm::Value* eC = llvm::ConstantInt::get(i32, e);
-            llvm::Value* base = b.CreateSub(idx, eC, "cm.frag0");
-            if (blk.baseOffset) base = b.CreateAdd(base, blk.baseOffset, "cm.abs");
-            base = blockPadAddr(b, base, blk.period, blk.pad);
-            idx = b.CreateAdd(base, eC, "cm.padidx");
+            bool canFold = false;
+            if ((use == 0 || use == 1) && llvm::isa<llvm::ConstantInt>(stride)) {
+                uint64_t S = llvm::cast<llvm::ConstantInt>(stride)->getZExtValue();
+                bool baseAligned = !blk.baseOffset;
+                if (auto* bo = llvm::dyn_cast_or_null<llvm::ConstantInt>(blk.baseOffset))
+                    baseAligned = (bo->getZExtValue() % blk.period) == 0;
+                canFold = baseAligned && (15 * S + 15 < blk.period);
+            }
+            if (canFold) {
+                llvm::Value* padBase = blk.baseOffset
+                    ? blockPadAddr(b, blk.baseOffset, blk.period, blk.pad)
+                    : llvm::ConstantInt::get(i32, 0);
+                idx = b.CreateAdd(padBase, idx, "cm.foldidx");
+            } else {
+                llvm::Value* base = b.CreateSub(idx, eC, "cm.frag0");
+                if (blk.baseOffset) base = b.CreateAdd(base, blk.baseOffset, "cm.abs");
+                base = blockPadAddr(b, base, blk.period, blk.pad);
+                idx = b.CreateAdd(base, eC, "cm.padidx");
+            }
         }
         return idx;
     }
