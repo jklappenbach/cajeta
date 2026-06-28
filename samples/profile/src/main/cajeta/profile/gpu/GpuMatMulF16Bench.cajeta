@@ -98,11 +98,28 @@ public class GpuMatMulF16Bench extends Benchmark {
         uint32 ao2 = (wm * 48 + 32) * 64;
         uint32 cn0 = (wn * 64 + 0) * 64; uint32 cn1 = (wn * 64 + 16) * 64;
         uint32 cn2 = (wn * 64 + 32) * 64; uint32 cn3 = (wn * 64 + 48) * 64;
+        uint32 bk = (tid % 8) * 8;        // B-staging: const K-offset; N-row = tid/8 + 16*slot
+        uint32 bnb = tid / 8;
         uint32 p = 0;
         while (p < npanels) {
-            // Single LDS buffer: compute the current panel, barrier, then stage the next panel
-            // straight to the SAME buffer (no register hold -> no spill). 2 WG/WGP hides the load
-            // latency across workgroups; PGR2 register-overlap is the follow-up if needed.
+            // PGR2 single-buffer: prefetch the NEXT panel's B into registers (global loads issued
+            // before the compute -> in flight during the WMMA), then after the compute barrier write
+            // regs->LDS + stage A. Overlap restored AT 2 WG/WGP (the combined lever). B-only prefetch
+            // keeps VGPR < 256 (no spill).
+            boolean pf = p + 1 < npanels;
+            uint32 ko = (p + 1) * 64;
+            Vector<float16,8> pb0; Vector<float16,8> pb1; Vector<float16,8> pb2; Vector<float16,8> pb3;
+            Vector<float16,8> pb4; Vector<float16,8> pb5; Vector<float16,8> pb6; Vector<float16,8> pb7;
+            if (pf) {
+                pb0 = b.vload<8>((cb + bnb +  0) * n + ko + bk);
+                pb1 = b.vload<8>((cb + bnb + 16) * n + ko + bk);
+                pb2 = b.vload<8>((cb + bnb + 32) * n + ko + bk);
+                pb3 = b.vload<8>((cb + bnb + 48) * n + ko + bk);
+                pb4 = b.vload<8>((cb + bnb + 64) * n + ko + bk);
+                pb5 = b.vload<8>((cb + bnb + 80) * n + ko + bk);
+                pb6 = b.vload<8>((cb + bnb + 96) * n + ko + bk);
+                pb7 = b.vload<8>((cb + bnb + 112) * n + ko + bk);
+            }
             uint32 ks = 0;
             while (ks < 4) {
                 uint32 ka = ks * 16;
@@ -119,21 +136,17 @@ public class GpuMatMulF16Bench extends Benchmark {
                 ks = ks + 1;
             }
             Barrier.workgroup();
-            if (p + 1 < npanels) {
-                uint32 ko = (p + 1) * 64;
+            if (pf) {
+                sb.vstore((bnb +  0) * 64 + bk, pb0); sb.vstore((bnb + 16) * 64 + bk, pb1);
+                sb.vstore((bnb + 32) * 64 + bk, pb2); sb.vstore((bnb + 48) * 64 + bk, pb3);
+                sb.vstore((bnb + 64) * 64 + bk, pb4); sb.vstore((bnb + 80) * 64 + bk, pb5);
+                sb.vstore((bnb + 96) * 64 + bk, pb6); sb.vstore((bnb + 112) * 64 + bk, pb7);
                 uint32 ca2 = tid;
                 while (ca2 < 768) {
                     uint32 m = ca2 / 8; uint32 kk = (ca2 % 8) * 8;
                     if (rb + m < n) { Vector<float16,8> va = a.vload<8>((rb + m) * n + ko + kk);
                         sa.vstore(m * 64 + kk, va); }
                     ca2 = ca2 + 128;
-                }
-                uint32 cbk2 = tid;
-                while (cbk2 < 1024) {
-                    uint32 bn = cbk2 / 8; uint32 bk = (cbk2 % 8) * 8;
-                    Vector<float16,8> vb = b.vload<8>((cb + bn) * n + ko + bk);
-                    sb.vstore(bn * 64 + bk, vb);
-                    cbk2 = cbk2 + 128;
                 }
                 Barrier.workgroup();
             }
