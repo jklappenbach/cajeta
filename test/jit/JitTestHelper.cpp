@@ -92,13 +92,15 @@ namespace {
 // from the Compiler ctor only set up codegen targets; the JIT also wants the
 // native asm parser.
 void ensureJitInitialized() {
-    static bool initialized = false;
-    if (!initialized) {
+    // Magic-static: C++ guarantees thread-safe once-init, so concurrent compiles
+    // don't race on the JIT one-time init (threadsafe U5 concurrency-first).
+    static const bool initialized = [] {
         llvm::InitializeNativeTarget();
         llvm::InitializeNativeTargetAsmPrinter();
         llvm::InitializeNativeTargetAsmParser();
-        initialized = true;
-    }
+        return true;
+    }();
+    (void) initialized;
 }
 
 // Convert a fully-qualified class name like "test.foo.Bar" into a relative file
@@ -120,7 +122,7 @@ std::filesystem::path classNameToRelativePath(const std::string& fqClassName) {
 // Returns {sourceRoot, sourcePath}.
 std::pair<std::filesystem::path, std::filesystem::path>
 writeSourceToTemp(const std::string& source, const std::string& fqClassName) {
-    static std::mt19937_64 rng(std::random_device{}());
+    static thread_local std::mt19937_64 rng(std::random_device{}());  // per-thread (U5)
     auto base = std::filesystem::temp_directory_path()
               / ("cajeta_test_" + std::to_string(rng()));
     std::filesystem::create_directories(base);
@@ -499,7 +501,7 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         }
     } sharedContextGuard;
 
-    static std::mt19937_64 rng(std::random_device{}());
+    static thread_local std::mt19937_64 rng(std::random_device{}());  // per-thread (U5)
     auto sourceRoot = std::filesystem::temp_directory_path()
                     / ("cajeta_multi_" + std::to_string(rng()));
     std::filesystem::create_directories(sourceRoot);

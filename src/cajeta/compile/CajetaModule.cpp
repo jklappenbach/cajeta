@@ -33,10 +33,12 @@ namespace cajeta {
     thread_local map<string, CajetaModulePtr> CajetaModule::strutureToModule;
     thread_local CajetaModulePtr CajetaModule::activeModule;
     thread_local CajetaModulePtr CajetaModule::currentCodegenModule;
-    CajetaModulePtr CajetaModule::reuseEmitModule;              // shared (Units 5-6)
+    // U5 concurrency-first: each thread primes its OWN stdlib (memory-heavy,
+    // temporary — the frozen-shared optimization replaces this).
+    thread_local CajetaModulePtr CajetaModule::reuseEmitModule;
     thread_local llvm::Module* CajetaModule::currentEmitLlvmModule = nullptr;
-    uint64_t CajetaModule::reuseEpoch = 0;                      // shared (Units 5-6)
-    CajetaModulePtr CajetaModule::stdlibModule;                 // shared (Units 5-6)
+    thread_local uint64_t CajetaModule::reuseEpoch = 0;
+    thread_local CajetaModulePtr CajetaModule::stdlibModule;
     std::function<void(const std::string&)> CajetaModule::stdlibImportHook;
     thread_local map<string, CajetaModulePtr> CajetaModule::moduleVariables;
     thread_local vector<CajetaClassPtr> CajetaModule::aspectClasses;

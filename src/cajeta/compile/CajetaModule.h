@@ -222,13 +222,13 @@ namespace cajeta {
         // instantiation triggered with no user-type arg and no active codegen
         // frame (e.g. during type resolution) still emits into a disposable user
         // module rather than the cached stdlib. Null outside the reuse path.
-        static CajetaModulePtr reuseEmitModule;
+        static thread_local CajetaModulePtr reuseEmitModule;
         // The llvm::Module of the function currently being emitted. Set (RAII)
         // by Method::generateCode / clinit body lowering; read by
         // emitTargetLlvmModule() so IR-creation helpers land new IR in the emit
         // module without swapping `module` (which would split per-module state).
         static thread_local llvm::Module* currentEmitLlvmModule;
-        static uint64_t reuseEpoch;
+        static thread_local uint64_t reuseEpoch;
 
         // The compiler-owned module that holds the parsed stdlib
         // (cajeta.error.* today) and the linked runtime bitcode.
@@ -237,7 +237,7 @@ namespace cajeta {
         // to stdlib classes and runtime functions resolve through
         // module-local extern declarations whose definitions live
         // here, and the JIT/AOT merge unifies them.
-        static CajetaModulePtr stdlibModule;
+        static thread_local CajetaModulePtr stdlibModule;
 
 
         map<string, map<string, QualifiedNamePtr>> imports;
