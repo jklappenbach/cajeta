@@ -17,7 +17,7 @@ namespace cajeta {
 
     class QualifiedName {
     private:
-        static map <string, map<string, QualifiedNamePtr>> cache;
+        static thread_local map <string, map<string, QualifiedNamePtr>> cache;  // per-thread (threadsafe U4)
         string packageName;
         string typeName;
         string canonical;

@@ -489,19 +489,22 @@ namespace cajeta {
     // dotted package -> indices into cajeta::stdlib::g_files. Built once;
     // g_files is constant for the process, so this survives resetGlobals.
     static const std::map<std::string, std::vector<size_t>>& stdlibPackageIndex() {
-        static std::map<std::string, std::vector<size_t>> index;
-        static bool built = false;
-        if (!built) {
+        // Built once from the embedded file table, then read-only — shared across
+        // threads (C++ guarantees thread-safe init of the function-local static;
+        // no mutation after, so concurrent reads are safe). (threadsafe U4 — the
+        // one Unit-4 datum kept shared rather than thread_local, per spec §8.3.)
+        static const std::map<std::string, std::vector<size_t>> index = [] {
+            std::map<std::string, std::vector<size_t>> m;
             for (size_t i = 0; i < cajeta::stdlib::g_fileCount; ++i) {
                 std::string rel = cajeta::stdlib::g_files[i].relativePath;
                 auto slash = rel.find_last_of('/');
                 std::string pkg = (slash == std::string::npos)
                     ? std::string() : rel.substr(0, slash);
                 std::replace(pkg.begin(), pkg.end(), '/', '.');
-                index[pkg].push_back(i);
+                m[pkg].push_back(i);
             }
-            built = true;
-        }
+            return m;
+        }();
         return index;
     }
 
@@ -515,11 +518,13 @@ namespace cajeta {
         return pkg == "cajeta.xpu.mesh" || pkg.rfind("cajeta.xpu.mesh.", 0) == 0;
     }
 
-    // Instrumentation + lazy bookkeeping (process-global).
-    static std::set<std::string> g_stdlibParsedPackages;  // every pkg parsed (eager + lazy)
-    static std::set<std::string> g_lazyPrescanned;        // lazy pkgs prescanned into the archive
-    static std::set<std::string> g_lazyParsed;            // lazy pkgs fully parsed
-    static std::vector<std::string> g_lazyQueue;          // lazy pkgs awaiting full parse
+    // Instrumentation + lazy bookkeeping. thread_local (threadsafe U4): each
+    // thread tracks the lazy packages IT has parsed into its own (thread_local)
+    // registries. Units 5-6 share frozen lazy packages under a one-time lock.
+    static thread_local std::set<std::string> g_stdlibParsedPackages;  // every pkg parsed (eager + lazy)
+    static thread_local std::set<std::string> g_lazyPrescanned;        // lazy pkgs prescanned into the archive
+    static thread_local std::set<std::string> g_lazyParsed;            // lazy pkgs fully parsed
+    static thread_local std::vector<std::string> g_lazyQueue;          // lazy pkgs awaiting full parse
 
     static void resetLazyStdlibStateImpl() {
         g_stdlibParsedPackages.clear();

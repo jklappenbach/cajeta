@@ -5,7 +5,7 @@
 #include "QualifiedName.h"
 
 namespace cajeta {
-    map<string, map<string, QualifiedNamePtr>> QualifiedName::cache;
+    thread_local map<string, map<string, QualifiedNamePtr>> QualifiedName::cache;
 
     map<string, map<string, QualifiedNamePtr>>& QualifiedName::getCache() { return cache; }
 
