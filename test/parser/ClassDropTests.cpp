@@ -70,19 +70,26 @@ TEST(ClassDropTests, twoInstancesFireBothDrops) {
 }
 
 // User-defined destructor is invoked before the heap free. The
-// observable: have ~Tracer() allocate a small array — when the
-// destructor returns the array's own drop fires, adding 1 to the
-// drop count. So a class with a destructor that allocates an array
+// observable: have ~Tracer() heap-allocate a Probe instance — when the
+// destructor returns, the Probe's own drop fires, adding 1 to the
+// drop count. So a class with a destructor that allocates a Probe
 // contributes:
 //   1 for the class instance's drop entry (pop_run's pre-increment)
-//   1 for the array's drop fired at the destructor's scope-exit
+//   1 for the Probe's drop fired at the destructor's scope-exit
 // Total = 2. A class without a destructor contributes only 1.
+//
+// NOTE (task #15): the probe is a heap CLASS instance, not a primitive
+// heap array. frame-arena U3 (37248bbf) arena-routes non-escaping
+// single-dim primitive heap arrays (bump-alloc + scope reset, no
+// free_array drop), so a `heap int32[]` here no longer ticks dropCount.
+// Class instances stay on the drop path (arena opt defers them).
 TEST(ClassDropTests, userDropMethodIsInvoked) {
     auto src =
         "package test;\n"
+        "public class Probe {}\n"
         "public class Tracer {\n"
         "    public ~Tracer() {\n"
-        "        int32[] junk = heap int32[1];\n"
+        "        Probe junk = heap Probe();\n"
         "    }\n"
         "}\n"
         "public final class D {\n"
