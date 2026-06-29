@@ -17,6 +17,8 @@
 #include "../lowering/KernelLowering.h"
 #include "cajeta/method/Method.h"
 #include "cajeta/xpu/core/XpuAttributes.h"
+#include "cajeta/xpu/core/XpuKernelAttr.h"
+#include "cajeta/xpu/core/DeviceModel.h"
 #include "cajeta/error/Exception.h"
 
 #include "llvm/IR/Constants.h"
@@ -27,6 +29,7 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Target/TargetMachine.h"
+#include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
 namespace cajeta {
@@ -70,6 +73,13 @@ namespace amd {
         llvm::FunctionCallee kpFn = hostModule.getOrInsertFunction(
             "__cajeta_xpu_register_kernel_params", kpTy);
 
+        // void __cajeta_xpu_register_autotune(i8* name, i32* blocks, i32 count)
+        // §4: the DeviceModel-pruned candidate block sizes for an @Autotune kernel.
+        llvm::FunctionType* atTy = llvm::FunctionType::get(
+            voidTy, {ptrTy, ptrTy, i32Ty}, false);
+        llvm::FunctionCallee atFn = hostModule.getOrInsertFunction(
+            "__cajeta_xpu_register_autotune", atTy);
+
         int emitted = 0;
         for (auto& method : kernels) {
             if (!method || !isKernel(*method)) continue;
@@ -96,6 +106,32 @@ namespace amd {
             // Keyed by simple kernel name (= entryName, the launch receiver).
             if (auto it = maxThreads.find(entryName); it != maxThreads.end()) {
                 setKernelWorkgroupSize(kfn, it->second);
+            }
+
+            // §4: for an @Autotune kernel, compute the DeviceModel-pruned,
+            // occupancy-ordered candidate block list from its read VGPR (parsed
+            // from a clone — codegen consumes the module). Empty for every other
+            // kernel. Registered below so the runtime tuner sweeps these.
+            std::vector<uint32_t> autoBlocks;
+            if (auto ka = XpuKernelAttr::from(*method); ka && ka->autotune()) {
+                unsigned vgpr = 0;
+                auto clone = llvm::CloneModule(devMod);
+                for (auto& k : parseKernelResourceUsage(emitIsa(*clone, *tm)))
+                    if (k.name == entryName) {
+                        vgpr = k.vgpr > 0 ? (unsigned) k.vgpr : 0; break;
+                    }
+                unsigned clamp = ka->autotuneMaxThreads();
+                DeviceModel dm;   // gfx1151 defaults (single-arch baseline)
+                if (!ka->autotuneBlocks().empty()) {
+                    for (unsigned blk : ka->autotuneBlocks())
+                        if ((clamp == 0 || blk <= clamp) &&
+                            (vgpr == 0 || dm.occupancy(blk, vgpr, 0) > 0))
+                            autoBlocks.push_back(blk);
+                } else {
+                    for (unsigned blk : dm.candidateBlocks(vgpr, 0, clamp))
+                        autoBlocks.push_back(blk);
+                }
+                if (autoBlocks.empty() && clamp > 0) autoBlocks.push_back(clamp);
             }
 
             std::vector<uint8_t> hsaco = assembleHsacoBundle(devMod, archList);
@@ -151,6 +187,20 @@ namespace amd {
                                     llvm::ConstantInt::get(i32Ty,
                                                            (uint32_t) info.size()),
                                     kindGV, szGV});
+            }
+
+            // §4: register the autotune candidate blocks (if any).
+            if (!autoBlocks.empty()) {
+                llvm::Constant* blkInit = llvm::ConstantDataArray::get(
+                    ctx, llvm::ArrayRef<uint32_t>(autoBlocks.data(),
+                                                  autoBlocks.size()));
+                auto* blkGV = new llvm::GlobalVariable(
+                    hostModule, blkInit->getType(), /*isConstant=*/true,
+                    llvm::GlobalValue::PrivateLinkage, blkInit,
+                    "xpu.atblk." + entryName);
+                b.CreateCall(atFn, {nameStr, blkGV,
+                                    llvm::ConstantInt::get(
+                                        i32Ty, (uint32_t) autoBlocks.size())});
             }
             b.CreateRetVoid();
 
