@@ -12,10 +12,13 @@
 #include "cajeta_xpu_abi.h"
 #include "XpuDeviceTestUtil.h"
 
+#include <iostream>
 #include <string>
 
 using cajeta::xpu::DeviceModel;
+using cajeta::xpu::DeviceProfile;
 using cajeta::xpu::queryLiveDeviceModel;
+using cajeta::xpu::queryLiveDeviceProfile;
 
 // 1.10 — a reachable device yields a measured model with sane fields.
 TEST(XpuDeviceProfileAmdDeviceTests, liveQueryPopulatesModel) {
@@ -43,4 +46,22 @@ TEST(XpuDeviceProfileAmdDeviceTests, gfx1151KnownConstants) {
     EXPECT_EQ(m.ldsBytesPerCU, 65536u);
     EXPECT_EQ(m.ldsBankCount, 32u);
     EXPECT_EQ(m.cuCount, 40u);   // Strix Halo: 20 WGPs reported * 2 = 40 CUs
+}
+
+// 2.7 — the bandwidth probe returns a plausible device-memory ceiling.
+TEST(XpuDeviceProfileAmdDeviceTests, bandwidthProbeMeasures) {
+    CAJETA_SKIP_IF_NO_HIP();
+    double gbps = cajeta_xpu_measure_bandwidth_gbps(64ull << 20, 3);
+    std::cout << "[ device   ] measured device bandwidth: " << gbps << " GB/s\n";
+    EXPECT_GT(gbps, 10.0) << "measured " << gbps << " GB/s";
+    EXPECT_LT(gbps, 5000.0) << "implausibly high: " << gbps << " GB/s";
+}
+
+// 2.7 — the full profile carries a measured roofline on a real device.
+TEST(XpuDeviceProfileAmdDeviceTests, profileCarriesRoofline) {
+    CAJETA_SKIP_IF_NO_HIP();
+    DeviceProfile p = queryLiveDeviceProfile();
+    EXPECT_FALSE(p.model.estimated);
+    EXPECT_TRUE(p.rooflineMeasured);
+    EXPECT_GT(p.bandwidthGBps, 10.0) << "measured " << p.bandwidthGBps << " GB/s";
 }

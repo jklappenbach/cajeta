@@ -9437,6 +9437,8 @@ struct cajeta_hip_api {
     int (*hipGetDevicePropertiesR0600)(void*, int);
     // Per-attribute scalar query (ABI-stable enum) for the device profile.
     int (*hipDeviceGetAttribute)(int*, int, int);
+    // Device-to-device copy for the bandwidth probe (optional).
+    int (*hipMemcpyDtoD)(void*, void*, size_t);
 };
 static struct cajeta_hip_api g_xpu_hip;
 
@@ -9694,6 +9696,7 @@ static int cajeta_xpu_hip_init_locked(void) {
     CAJ_HBIND_OPT(hipEventDestroy, "hipEventDestroy");
     CAJ_HBIND_OPT(hipGetDevicePropertiesR0600, "hipGetDevicePropertiesR0600");
     CAJ_HBIND_OPT(hipDeviceGetAttribute, "hipDeviceGetAttribute");
+    CAJ_HBIND_OPT(hipMemcpyDtoD, "hipMemcpyDtoD");
     #undef CAJ_HBIND_OPT
     if (g_xpu_hip.hipInit(0) != 0) return 0;
     int count = 0;
@@ -9811,6 +9814,44 @@ int32_t cajeta_xpu_query_raw_device(CajetaXpuRawDevice* out) {
     }
     out->valid = 1;
     return 1;
+}
+
+// Measure device memory bandwidth (GB/s) from a device-to-device copy of `bytes`
+// (2*bytes traffic: read + write), best of `passes`, host-timed around
+// hipDeviceSynchronize. Returns 0.0 on failure / no GPU / profiling disabled.
+double cajeta_xpu_measure_bandwidth_gbps(uint64_t bytes, int32_t passes) {
+    const char* dis = getenv("CAJETA_XPU_DEVICE_PROFILE_DISABLE");
+    if (dis && dis[0] && dis[0] != '0') return 0.0;
+    if (bytes == 0 || passes < 1) return 0.0;
+
+    pthread_mutex_lock(&g_xpu_cuda_lock);
+    int up = cajeta_xpu_hip_init_locked();
+    pthread_mutex_unlock(&g_xpu_cuda_lock);
+    if (!up || !g_xpu_hip.hipMalloc || !g_xpu_hip.hipFree ||
+        !g_xpu_hip.hipMemcpyDtoD || !g_xpu_hip.hipDeviceSynchronize) return 0.0;
+
+    void* src = NULL; void* dst = NULL;
+    if (g_xpu_hip.hipMalloc(&src, bytes) != 0) return 0.0;
+    if (g_xpu_hip.hipMalloc(&dst, bytes) != 0) { g_xpu_hip.hipFree(src); return 0.0; }
+
+    g_xpu_hip.hipMemcpyDtoD(dst, src, bytes);   // warmup
+    g_xpu_hip.hipDeviceSynchronize();
+
+    double best = 1e30;
+    for (int32_t i = 0; i < passes; ++i) {
+        struct timespec t0, t1;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        if (g_xpu_hip.hipMemcpyDtoD(dst, src, bytes) != 0) { best = 1e30; break; }
+        g_xpu_hip.hipDeviceSynchronize();
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        double sec = (double)(t1.tv_sec - t0.tv_sec) +
+                     (double)(t1.tv_nsec - t0.tv_nsec) * 1e-9;
+        if (sec > 0.0 && sec < best) best = sec;
+    }
+    g_xpu_hip.hipFree(src);
+    g_xpu_hip.hipFree(dst);
+    if (best >= 1e30) return 0.0;
+    return (2.0 * (double) bytes) / best / 1e9;
 }
 
 // --- per-kernel parameter metadata (the Vulkan launch translation) ----------

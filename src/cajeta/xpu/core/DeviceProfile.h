@@ -70,5 +70,35 @@ namespace xpu {
     // GPU is reachable or profiling is disabled.
     DeviceModel queryLiveDeviceModel();
 
+    // The full profile: the machine model plus the measured roofline. A peak
+    // FLOP ceiling is left 0 (unknown) until the optional FLOP probe ships;
+    // `bandwidthGBps` is the measured device-memory ceiling, the honest
+    // denominator for memory-bound throughput.
+    struct DeviceProfile {
+        DeviceModel model;
+        double bandwidthGBps    = 0.0;    // measured; 0 = unmeasured
+        double peakGFLOPs       = 0.0;    // 0 = unknown (FLOP probe deferred)
+        bool   rooflineMeasured = false;
+    };
+
+    // Bandwidth-probe sizing, from the environment, clamped to sane bounds.
+    struct BandwidthProbeParams { uint64_t bytes; unsigned passes; };
+    BandwidthProbeParams bandwidthProbeParams();
+
+    // True when profiling is disabled (CAJETA_XPU_DEVICE_PROFILE_DISABLE) or the
+    // model is not a measured device — i.e. the roofline probe should be skipped.
+    bool shouldProbeRoofline(const DeviceModel& model);
+
+    // Roofline math (GPU-free). `bytesMoved`/`nanos` -> GB/s (bytes per ns ==
+    // GB/s). classifyBound compares the kernel's arithmetic intensity to the
+    // ridge point (peakGFLOPs / bwGBps); Unknown when a ceiling is missing.
+    double achievedGBps(uint64_t bytesMoved, double nanos);
+    enum class Bound { Memory, Compute, Unknown };
+    Bound classifyBound(double flops, double bytes, double bwGBps, double peakGFLOPs);
+
+    // Build the full profile: the live model + (when warranted) the measured
+    // bandwidth roofline. Cached once per process; nothing persisted.
+    DeviceProfile queryLiveDeviceProfile();
+
 } // namespace xpu
 } // namespace cajeta

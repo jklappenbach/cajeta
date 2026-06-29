@@ -9,6 +9,7 @@
 
 #include "cajeta/xpu/core/DeviceProfile.h"
 
+#include <cstdlib>
 #include <cstring>
 
 using cajeta::xpu::RawDeviceProps;
@@ -16,6 +17,11 @@ using cajeta::xpu::DeviceModel;
 using cajeta::xpu::lookupArch;
 using cajeta::xpu::defaultDeviceModel;
 using cajeta::xpu::buildDeviceModel;
+using cajeta::xpu::bandwidthProbeParams;
+using cajeta::xpu::shouldProbeRoofline;
+using cajeta::xpu::achievedGBps;
+using cajeta::xpu::classifyBound;
+using cajeta::xpu::Bound;
 
 namespace {
 
@@ -110,4 +116,50 @@ TEST(XpuDeviceProfileTests, validQueryUnknownArchIsEstimated) {
     EXPECT_TRUE(m.estimated);
     EXPECT_EQ(m.cuCount, 99u);   // unknown arch -> factor 1, raw count kept
     EXPECT_EQ(m.archName, "gfx9999");
+}
+
+// 2.1 — roofline math: GB/s derivation and bound classification.
+TEST(XpuDeviceProfileTests, rooflineMath) {
+    EXPECT_DOUBLE_EQ(achievedGBps(2000, 1000.0), 2.0);   // bytes/ns == GB/s
+    EXPECT_DOUBLE_EQ(achievedGBps(1000, 0.0), 0.0);      // guard
+
+    // ridge = peakGFLOPs/bw = 40000/200 = 200 FLOP/byte.
+    EXPECT_EQ(classifyBound(2e9, 1e9, 200.0, 40000.0), Bound::Memory);   // AI 2
+    EXPECT_EQ(classifyBound(1e9, 1.0, 200.0, 40000.0), Bound::Compute);  // AI 1e9
+    EXPECT_EQ(classifyBound(1e9, 1e9, 200.0, 0.0), Bound::Unknown);      // no peak
+}
+
+// 2.2 — bandwidth probe sizing parses + clamps the environment.
+TEST(XpuDeviceProfileTests, bandwidthProbeParamsClamp) {
+    ::unsetenv("CAJETA_XPU_PROFILE_BW_BYTES");
+    ::unsetenv("CAJETA_XPU_PROFILE_BW_PASSES");
+    auto def = bandwidthProbeParams();
+    EXPECT_EQ(def.bytes, 256ull << 20);
+    EXPECT_EQ(def.passes, 5u);
+
+    ::setenv("CAJETA_XPU_PROFILE_BW_BYTES", "1000", 1);     // below 1 MB floor
+    ::setenv("CAJETA_XPU_PROFILE_BW_PASSES", "999", 1);     // above 50 ceiling
+    auto clamped = bandwidthProbeParams();
+    EXPECT_EQ(clamped.bytes, 1ull << 20);
+    EXPECT_EQ(clamped.passes, 50u);
+    ::unsetenv("CAJETA_XPU_PROFILE_BW_BYTES");
+    ::unsetenv("CAJETA_XPU_PROFILE_BW_PASSES");
+}
+
+// 2.3 — the roofline probe is skipped when disabled or for an estimated model.
+TEST(XpuDeviceProfileTests, shouldProbeRooflineGate) {
+    DeviceModel measured = buildDeviceModel([] {
+        RawDeviceProps p; std::strncpy(p.archName, "gfx1151", 8);
+        p.waveSize = 32; p.maxThreadsPerBlock = 1024; p.multiprocessorCount = 20;
+        p.valid = true; return p;
+    }());
+    ASSERT_FALSE(measured.estimated);
+
+    ::unsetenv("CAJETA_XPU_DEVICE_PROFILE_DISABLE");
+    EXPECT_TRUE(shouldProbeRoofline(measured));
+    EXPECT_FALSE(shouldProbeRoofline(defaultDeviceModel()));   // estimated
+
+    ::setenv("CAJETA_XPU_DEVICE_PROFILE_DISABLE", "1", 1);
+    EXPECT_FALSE(shouldProbeRoofline(measured));
+    ::unsetenv("CAJETA_XPU_DEVICE_PROFILE_DISABLE");
 }

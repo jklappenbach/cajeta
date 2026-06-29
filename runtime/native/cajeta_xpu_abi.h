@@ -108,6 +108,11 @@ typedef struct CajetaXpuRawDevice {
  * out->valid == 0 and the consumer falls back to estimated defaults. */
 int32_t cajeta_xpu_query_raw_device(CajetaXpuRawDevice* out);
 
+/* Measure device memory bandwidth (GB/s) via a device-to-device copy of `bytes`
+ * (read + write = 2*bytes of traffic), best of `passes`. Returns 0.0 on failure,
+ * no GPU, or profiling disabled. Nothing is persisted. */
+double cajeta_xpu_measure_bandwidth_gbps(uint64_t bytes, int32_t passes);
+
 #ifdef __cplusplus
 }
 #endif

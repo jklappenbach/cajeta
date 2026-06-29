@@ -8,6 +8,7 @@
 #include "cajeta_xpu_abi.h"   // CajetaXpuRawDevice — the live runtime query
 
 #include <array>
+#include <cstdlib>
 #include <cstring>
 
 namespace cajeta {
@@ -108,6 +109,60 @@ DeviceModel queryLiveDeviceModel() {
             props.valid               = true;
         }
         return buildDeviceModel(props);
+    }();
+    return cached;
+}
+
+namespace {
+    // Parse a non-negative integer env var; 0 / unset / malformed -> fallback.
+    uint64_t envU64(const char* name, uint64_t fallback) {
+        const char* v = std::getenv(name);
+        if (!v || !*v) return fallback;
+        char* end = nullptr;
+        unsigned long long parsed = std::strtoull(v, &end, 10);
+        if (end == v || parsed == 0) return fallback;
+        return (uint64_t) parsed;
+    }
+} // namespace
+
+BandwidthProbeParams bandwidthProbeParams() {
+    uint64_t bytes  = envU64("CAJETA_XPU_PROFILE_BW_BYTES", 256ull << 20);
+    uint64_t passes = envU64("CAJETA_XPU_PROFILE_BW_PASSES", 5);
+    if (bytes  < (1ull << 20)) bytes  = 1ull << 20;     // >= 1 MB
+    if (bytes  > (2ull << 30)) bytes  = 2ull << 30;     // <= 2 GB
+    if (passes < 1)  passes = 1;
+    if (passes > 50) passes = 50;
+    return { bytes, (unsigned) passes };
+}
+
+bool shouldProbeRoofline(const DeviceModel& model) {
+    const char* dis = std::getenv("CAJETA_XPU_DEVICE_PROFILE_DISABLE");
+    if (dis && dis[0] && dis[0] != '0') return false;
+    return !model.estimated;   // only measure a real, identified device
+}
+
+double achievedGBps(uint64_t bytesMoved, double nanos) {
+    if (nanos <= 0.0) return 0.0;
+    return (double) bytesMoved / nanos;   // bytes/ns == GB/s
+}
+
+Bound classifyBound(double flops, double bytes, double bwGBps, double peakGFLOPs) {
+    if (bwGBps <= 0.0 || peakGFLOPs <= 0.0 || bytes <= 0.0) return Bound::Unknown;
+    double ridge = peakGFLOPs / bwGBps;    // FLOP per byte at the knee
+    double intensity = flops / bytes;
+    return intensity < ridge ? Bound::Memory : Bound::Compute;
+}
+
+DeviceProfile queryLiveDeviceProfile() {
+    static const DeviceProfile cached = [] {
+        DeviceProfile p;
+        p.model = queryLiveDeviceModel();
+        if (shouldProbeRoofline(p.model)) {
+            BandwidthProbeParams bp = bandwidthProbeParams();
+            double gbps = cajeta_xpu_measure_bandwidth_gbps(bp.bytes, (int) bp.passes);
+            if (gbps > 0.0) { p.bandwidthGBps = gbps; p.rooflineMeasured = true; }
+        }
+        return p;
     }();
     return cached;
 }
