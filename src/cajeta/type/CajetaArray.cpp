@@ -54,7 +54,10 @@ namespace cajeta {
         qName = QualifiedName::getOrCreate(typeName);
         canonical = qName->toCanonical();
 
-        llvm::LLVMContext* ctx = module->getLlvmContext();
+        setLlvmType(buildLlvmType(module->getLlvmContext()));  // U6.4.1
+    }
+
+    llvm::Type* CajetaArray::buildLlvmType(llvm::LLVMContext* ctx) const {
         llvm::Type* i64Ty = llvm::Type::getInt64Ty(*ctx);
         llvm::Type* elemLlvm = getElementLlvmType(ctx);
 
@@ -78,6 +81,6 @@ namespace cajeta {
             i64Ty,
             llvm::ArrayType::get(elemLlvm, 0),
         };
-        setLlvmType(CajetaType::getOrCreateLlvmType(ctx, string("#array.") + canonical, fields));  // U6.2
+        return CajetaType::getOrCreateLlvmType(ctx, string("#array.") + canonical, fields);
     }
 }

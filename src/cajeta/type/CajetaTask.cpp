@@ -30,8 +30,15 @@ namespace cajeta {
         // (task #47).
         setTypeArguments({elementType});
 
-        llvm::LLVMContext* ctx = module->getLlvmContext();
+        setLlvmType(buildLlvmType(module->getLlvmContext()));  // U6.4.1
+        typeFlags = STRUCT_FLAG | USER_DEFINED_FLAG;
+    }
 
+    // U6.4.1 — build (intern) the task's `{ T value, i32 done, ptr exception,
+    // ptr fiber }` struct in `ctx` from the (immutable) element type. Context-
+    // parameterized so the frozen-stdlib path can rebuild it in a thread's own
+    // context (U6.4.2); the ctor calls it with the home module's context.
+    llvm::Type* CajetaTask::buildLlvmType(llvm::LLVMContext* ctx) const {
         // Element-storage type: classes/arrays travel as `ptr` (heap-allocated,
         // pass-by-reference at the LLVM level). Primitives store their LLVM
         // type directly.
@@ -69,9 +76,8 @@ namespace cajeta {
             llvm::PointerType::get(*ctx, 0),
             llvm::PointerType::get(*ctx, 0),
         };
-        setLlvmType(CajetaType::getOrCreateLlvmType(ctx,
-            string("#task.") + canonical, fields));  // U6.2
-        typeFlags = STRUCT_FLAG | USER_DEFINED_FLAG;
+        return CajetaType::getOrCreateLlvmType(ctx,
+            string("#task.") + canonical, fields);
     }
 
     llvm::Function* CajetaTask::getOrCreateDropFunction() {

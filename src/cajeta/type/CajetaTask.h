@@ -42,6 +42,11 @@ namespace cajeta {
 
         CajetaTypePtr getElementType() const { return elementType; }
 
+        // U6.4.1 — build (intern) the Task<T> struct in `ctx` from the element
+        // type. Context-parameterized for frozen-stdlib per-thread rebuild
+        // (U6.4.2); the ctor calls it with the home module's context.
+        llvm::Type* buildLlvmType(llvm::LLVMContext* ctx) const;
+
         // Get or create the Task<T> wrapper for the given element type,
         // caching the instance on the module so every Task<T> reference for
         // the same T resolves to the same CajetaClass.

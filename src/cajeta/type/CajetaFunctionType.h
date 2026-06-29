@@ -50,6 +50,9 @@ namespace cajeta {
         // side-table. Behaviour-identical while not frozen. Defined in the .cpp.
         llvm::FunctionType* getLlvmFunctionType() const;
         void setLlvmFunctionType(llvm::FunctionType* t);
+        // U6.4.1 — build the signature FunctionType in `ctx` from the param/return
+        // types. Context-parameterized for frozen-stdlib per-thread rebuild (U6.4.2).
+        llvm::FunctionType* buildLlvmFunctionType(llvm::LLVMContext* ctx) const;
 
         // True iff the LLVM signature uses the sret ABI: `void (ptr sret(R),
         // ptr captures, params...)`. Call sites consult this to allocate the
