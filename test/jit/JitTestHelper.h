@@ -133,6 +133,12 @@ private:
     void* lookupAddress(const std::string& shortName);
 
     std::unique_ptr<llvm::orc::LLJIT> jit;
+    // Shared-dylib mode (U7b/c, CAJETA_JIT_SHARED_DYLIB): `jit` is null and the
+    // LLJIT is BORROWED from the process-wide StdlibReuseCache. This test's code
+    // lives in `userDylib` (links the shared CajetaStdlib JITDylib); it's removed
+    // on destruction so dylibs don't accumulate. Lookups target `userDylib`.
+    llvm::orc::LLJIT* sharedJit = nullptr;
+    llvm::orc::JITDylib* userDylib = nullptr;
     std::string moduleIr;
     // Mapping short method name -> full mangled name in the JIT'd module. Built
     // once at compile time so per-test lookups don't have to rescan.
