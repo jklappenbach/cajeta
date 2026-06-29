@@ -1098,7 +1098,120 @@ Graphics phases (raster, ray tracing, mesh shaders) are tracked in
 
 ---
 
-## 14. Summary
+## 14. Device detection & kernel configuration
+
+GPU performance logistics — occupancy, register budget, launch geometry — affect
+**performance only, never correctness**. Cajeta treats them as logistics it
+configures *for* you, interrogating the actual device rather than baking in
+constants, and lets an expert override the lot with one portable annotation.
+
+### 14.1 Detection — which device runs a kernel
+
+`--xpu-backend=<list>` selects the device backend(s) a `@Kernel` is compiled for
+(`nvptx`, `amdgpu`, `vulkan`, `cpu`, comma-separated). Each bundles its kernel +
+a registration ctor, so a `kernel.launch(...)` resolves at runtime: the runtime
+enumerates the bundled backends and **picks the best available** (e.g.
+`amdgpu,cpu` runs on the GPU when present, else the CPU fallback). The active
+device is then queried into a **DeviceProfile** (§14.3).
+
+### 14.2 Configuration — analytic first, measure only when you can't model
+
+Config follows a tiered flow. The guiding rule is **analytic over search**: a
+device we can model is *computed*, never blindly swept (the old `@Autotune`
+runtime sweep was removed for running everywhere it wasn't needed).
+
+```
+  compile time:  pin each kernel's real launch workgroup size so the backend
+                 budgets registers for the TRUE occupancy (automatic, every
+                 kernel) — no spilling from a worst-case 1024-thread assumption.
+
+  runtime, per (device, kernel):
+    +----------------------------------------------------------------------+
+    | known arch (in the table)  -> table constants + ANALYTIC picker       |
+    | queryable, known arch      -> live query + measured roofline +        |
+    |                               ANALYTIC picker (occupancy + roofline)  |
+    | queryable, UNKNOWN arch     -> BOUNDED SWEEP (can't model -> measure   |
+    |   (no occupancy constants)     the feasible blocks, pick fastest)     |
+    | not queryable / no GPU      -> conservative estimated defaults         |
+    +----------------------------------------------------------------------+
+            an explicit @Occupancy (§14.4) overrides ALL of the above
+```
+
+- **Known arch** — a per-arch table supplies the constants the driver can't
+  expose (VGPR file per SIMD, LDS bank geometry, waves/SIMD); adding a GPU is one
+  table row.
+- **Interrogation** — a live `hipDeviceGetAttribute` query fills wave size, max
+  threads, and the physical CU count (on RDNA the driver reports WGPs = CUs/2,
+  scaled back up), plus a one-time **measured** memory-bandwidth roofline.
+- **Analytic picker** — computes the occupancy-optimal launch geometry from the
+  profile + the kernel's compiled VGPR/LDS demand, and classifies the kernel
+  memory- vs compute-bound (reporting honestly when a geometry change *cannot*
+  help, e.g. the memory-bound GEMM).
+- **Bounded sweep** — the fallback **only** when the device is queryable but its
+  arch is unknown, so the occupancy constants are missing and the analytic
+  ranking is unreliable. It times the *feasible* candidate blocks and picks the
+  fastest — bounded, never an open search, and never run on a device we can model.
+
+### 14.3 Inspecting the profile — `cajeta gpu-profile`
+
+`cajeta gpu-profile` interrogates the active GPU and prints its DeviceProfile as
+JSON (nothing is persisted; the profile is per-process, in memory):
+
+```
+$ cajeta gpu-profile
+{"arch":"gfx1151","cu":40,"wave_size":32,"lds_bytes_per_cu":65536,
+ "vgpr_per_simd":1536,"estimated":false,"roofline_measured":true,
+ "bandwidth_gbps":212.6}
+```
+
+The profile suite's `env-capture.sh` consumes this so the benchmark report can
+show throughput against the device's *measured* ceiling rather than a data-sheet
+peak.
+
+### 14.4 Two ways to configure a kernel
+
+**(a) Let Cajeta configure it — no annotation.** The compiler pins the real
+launch workgroup size for register budgeting; at runtime the analytic picker (or,
+on an unknown GPU, the bounded sweep) settles occupancy/geometry from the
+interrogated profile. Most kernels want this.
+
+```cajeta
+@Kernel public static void saxpy(KernelBuffer<float32> y, KernelBuffer<float32> x,
+                                 float32 a, uint32 n) {
+    uint32 i = KernelThread.x();
+    if (i < n) { y[i] = a * x[i] + y[i]; }   // logistics handled for you
+}
+```
+
+**(b) Configure it yourself — explicit `@Occupancy`.** A portable, vendor-neutral
+annotation pins the logistics when you know better. It **always wins** over the
+automatic path (and suppresses the sweep for that kernel). All three parameters
+are optional and lower per-backend (AMD -> `flat-work-group-size` / `waves-per-eu`;
+NVIDIA -> `maxntid` / `minctasm` / `maxnreg`), a no-op where a backend has no
+equivalent.
+
+```cajeta
+@Kernel
+@Occupancy(maxThreads = 256, minResident = 2, maxRegisters = 128)
+public static void gemm(KernelBuffer<float32> c, KernelBuffer<float32> a,
+                        KernelBuffer<float32> b, uint32 n) {
+    // hand-tuned tile geometry: pin the logistics, don't let the auto path move them
+}
+```
+
+The choice is just *who owns the logistics*: omit `@Occupancy` and Cajeta
+configures the kernel from the live device; add it and you do, portably.
+
+> **Status.** The compile-time workgroup-size budgeting and `@Occupancy` override
+> are active today; the DeviceProfile, analytic picker, and bounded sweep are the
+> config-decision layer (`cajeta gpu-profile` is live). Applying a *runtime-chosen*
+> geometry to a tunable kernel is the remaining wiring — it needs a
+> tunable-geometry consumer, since hand-tuned kernels (the GEMM) own their tile
+> shape and the picker is advisory for them.
+
+---
+
+## 15. Summary
 
 `cajeta.xpu` is one library with three peer backends — NVIDIA via
 NVPTX, AMD via AMDGPU, Vulkan via SPIR-V — under a single namespace
