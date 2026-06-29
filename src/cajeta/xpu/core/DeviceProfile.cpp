@@ -93,6 +93,7 @@ DeviceModel buildDeviceModel(const RawDeviceProps& props) {
                         (archKnown ? m.cuPerMultiprocessor : 1u);
     }
 
+    m.queried = props.valid;
     m.estimated = !(props.valid && archKnown);
     return m;
 }
@@ -222,7 +223,24 @@ LaunchPick pickLaunch(const DeviceProfile& profile, unsigned kernelVgpr,
     double peak = profile.peakGFLOPs;   // 0 (unknown) -> Bound::Unknown
     p.bound = classifyBound(flops, bytes, profile.bandwidthGBps, peak);
     p.geometryWontHelp = (p.bound == Bound::Memory);
+    p.needsSweep = shouldSweep(profile.model);
     return p;
+}
+
+bool shouldSweep(const DeviceModel& m) {
+    return m.queried && m.estimated;   // queryable but unknown arch -> measure
+}
+
+unsigned sweepBlocks(const std::vector<unsigned>& candidates,
+                     const std::function<double(unsigned)>& timeBlock) {
+    unsigned best = 0;
+    double bestTime = 0.0;
+    for (unsigned block : candidates) {
+        double t = timeBlock(block);
+        if (t <= 0.0) continue;
+        if (best == 0 || t < bestTime) { best = block; bestTime = t; }
+    }
+    return best;
 }
 
 std::string formatDeviceProfileJson(const DeviceProfile& p) {

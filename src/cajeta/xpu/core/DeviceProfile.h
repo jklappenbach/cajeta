@@ -15,6 +15,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -51,6 +52,7 @@ namespace xpu {
         unsigned ldsBankWidth       = 4;
         unsigned cuPerMultiprocessor = 2;    // RDNA WGP = 2 CUs; CDNA/NV = 1
         unsigned cuCount            = 0;     // PHYSICAL CUs = mpCount * cuPerMp
+        bool     queried            = false; // a real device responded to the query
         bool     estimated          = true;  // true until a known arch + valid query
     };
 
@@ -131,7 +133,21 @@ namespace xpu {
         Bound    bound = Bound::Unknown;
         bool     geometryWontHelp = false;
         bool     advisoryOnly = false;
+        bool     needsSweep = false;   // unmodelable device: verify `block` empirically
     };
+
+    // True when the device was queried but its arch is unknown — so the occupancy
+    // constants are guessed and the analytic ranking is unreliable. This is the
+    // ONLY case that warrants the bounded sweep (a known/modelable device stays
+    // analytic; a device that did not respond uses safe defaults, no sweep).
+    bool shouldSweep(const DeviceModel& m);
+
+    // Bounded empirical fallback: time each candidate block via the injected
+    // timer (lower is faster) and return the fastest (0 if none). The timer is
+    // injected so the decision is GPU-free testable; the real launcher supplies
+    // an on-device launch-and-time. Used only when shouldSweep is true.
+    unsigned sweepBlocks(const std::vector<unsigned>& candidates,
+                         const std::function<double(unsigned)>& timeBlock);
 
     // Compute the launch pick from the profile + the kernel's resource demand +
     // the launch's FLOP/byte work. Pure decision logic — no GPU calls. `clamp`

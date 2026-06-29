@@ -28,6 +28,8 @@ using cajeta::xpu::occupancy;
 using cajeta::xpu::candidateBlocks;
 using cajeta::xpu::pickLaunch;
 using cajeta::xpu::LaunchPick;
+using cajeta::xpu::shouldSweep;
+using cajeta::xpu::sweepBlocks;
 
 namespace {
 
@@ -242,4 +244,37 @@ TEST(XpuDeviceProfileTests, pickerClampAndAdvisory) {
 
     LaunchPick fixed = pickLaunch(p, 64, 0, 0.0, 0.0, 0, /*fixedGeometry*/true);
     EXPECT_TRUE(fixed.advisoryOnly);
+}
+
+// U6 — the bounded sweep fires ONLY for a queried-but-unknown-arch device; a
+// known device and a non-queried (no-GPU) device never sweep.
+TEST(XpuDeviceProfileTests, shouldSweepOnlyWhenUnmodelable) {
+    DeviceModel known = buildDeviceModel(gfx1151Props());     // queried + known
+    EXPECT_FALSE(shouldSweep(known));
+
+    RawDeviceProps up = gfx1151Props();
+    std::strncpy(up.archName, "gfx9999", sizeof(up.archName) - 1);
+    DeviceModel unknown = buildDeviceModel(up);               // queried + unknown
+    EXPECT_TRUE(shouldSweep(unknown));
+
+    DeviceModel none = buildDeviceModel(RawDeviceProps{});    // not queried
+    EXPECT_FALSE(shouldSweep(none));
+}
+
+// U6 — the picker flags needsSweep for an unmodelable device, and the empirical
+// sweep returns the fastest-timed candidate from an injected timer.
+TEST(XpuDeviceProfileTests, sweepPicksFastestCandidate) {
+    RawDeviceProps up = gfx1151Props();
+    std::strncpy(up.archName, "gfx9999", sizeof(up.archName) - 1);
+    DeviceProfile p;
+    p.model = buildDeviceModel(up);
+    LaunchPick pick = pickLaunch(p, 64, 0, 0.0, 0.0);
+    EXPECT_TRUE(pick.needsSweep);
+
+    // injected timer: a V whose minimum (fastest) is at block 256.
+    auto timer = [](unsigned block) {
+        return 1.0 + (block > 256 ? block - 256 : 256 - block);
+    };
+    EXPECT_EQ(sweepBlocks({64, 128, 256, 512}, timer), 256u);
+    EXPECT_EQ(sweepBlocks({}, timer), 0u);                    // nothing to sweep
 }

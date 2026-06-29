@@ -37,8 +37,9 @@ calibrates the picker and powers ground-truth diagnostics.
     real hardware counters to calibrate the picker and emit ground-truth
     diagnostics.
 - **Out:**
-  - Resurrecting the removed runtime block-size **sweep** (`@Autotune`,
-    `KernelTuner`'s timed candidate search). The picker is analytic.
+  - Resurrecting the **blind/redundant** runtime sweep (`@Autotune`,
+    `KernelTuner`'s timed search that ran even on devices we can model). A
+    **bounded** sweep gated to *unmodelable* devices is in scope — see §4.5.
   - Changing kernel **semantics** or a kernel author's hand-chosen algorithmic
     tiling.
   - Changing **compile-time** register budgeting at runtime (VGPR allocation is
@@ -57,9 +58,13 @@ calibrates the picker and powers ground-truth diagnostics.
 ### 1.4 Principles
 - **Interrogate, don't assume.** Every machine constant comes from a live device
   query or an on-device measurement — no architecture literals.
-- **Analytic over search.** Config is *computed* from a model + roofline, not
-  discovered by timing many candidates. The optional counter tier *validates* the
-  computation; it does not replace it with a sweep.
+- **Analytic over search, search only when you can't model.** For a device we
+  can model (known arch, or queryable with the occupancy constants), config is
+  *computed* from the model + roofline — never a blind timed search. A bounded
+  empirical sweep is the fallback **only** when the device is queryable but its
+  arch is unknown, so the occupancy constants are missing and the analytic
+  ranking is unreliable (§4.5). The optional counter tier *validates* the
+  computation; it does not replace it.
 - **Cheap by default, heavy only on opt-in.** The lightweight probe (§2) rides on
   the HIP init the process already pays (~15–50 ms, once per process). The counter
   tier (§5) — which needs kernel replay — is `dlopen`'d and never on the default
@@ -191,6 +196,37 @@ emitted ISA, plus static LDS use), and the launch's problem shape. The picker is
 - 4.3.4 As a maintainer, when I unit-test the picker, then I inject fixture
   `DeviceProfile`s and resource usages and assert the computed geometry — no GPU
   required.
+
+## 4.5 Bounded sweep — the unmodelable-device fallback
+
+### 4.5.1 Requirement
+When a device is **queryable but its arch is unknown** (the live query succeeded,
+so wave size / max threads / CU count are real, but the arch-derived occupancy
+constants — VGPR file per SIMD, LDS bank geometry — are absent, so the model is
+`estimated`), the analytic occupancy *ranking* is unreliable. In that and only
+that case, the runtime shall fall back to a **bounded empirical sweep**: time a
+small feasible candidate set and pick the fastest. This is the tier the removed
+`@Autotune` got wrong by running it *everywhere*; here it fires **only** where
+analysis genuinely cannot decide.
+
+### 4.5.2 Mechanism
+- `shouldSweep(model)` is true iff `model.queried && model.estimated` — queryable
+  but unknown arch. A known/modelable device (`!estimated`) stays fully analytic;
+  a device that did not respond (`!queried`) uses safe defaults — neither sweeps.
+- `pickLaunch` sets `needsSweep` from `shouldSweep`; the caller then runs
+  `sweepBlocks(candidates, timeBlock)` over the feasible candidate set, with the
+  timer **injected** (GPU-free testable; the real launcher supplies launch-and-time).
+- The sweep is **bounded** to the feasible candidate set (wave-multiple blocks
+  that fit the budgets), never an open search.
+
+### 4.5.3 Use cases
+- 4.5.1 As the runtime on a brand-new GPU not in the arch table, when I launch a
+  tunable-geometry kernel, then I sweep the feasible blocks once and pick the
+  fastest — better than trusting an occupancy ranking built on guessed constants.
+- 4.5.2 As the runtime on a known device (gfx1151), when I launch, then I never
+  sweep — the analytic pick stands (no redundant cost; the lesson of the removal).
+- 4.5.3 As the runtime with no reachable GPU, when config is requested, then I use
+  conservative estimated defaults and never sweep.
 
 ## 5. Opt-in hardware counter tier (calibration + ground truth)
 
