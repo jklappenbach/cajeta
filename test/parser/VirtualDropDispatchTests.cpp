@@ -15,10 +15,18 @@
 // type's destructor fires regardless of the declared type.
 //
 // Observability follows the existing pattern in ClassDropTests: a
-// destructor that allocates a heap array contributes +1 to the drop
-// count (the array's own drop entry firing at the destructor's scope
-// exit). So a virtually-dispatched ~Dog() that allocates an array
-// contributes 2 total (drop entry's pre-increment + the array drop).
+// destructor that heap-allocates a Probe instance contributes +1 to
+// the drop count (the Probe's own drop entry firing at the
+// destructor's scope exit). So a virtually-dispatched ~Dog() that
+// allocates a Probe contributes 2 total (drop entry's pre-increment
+// + the Probe drop).
+//
+// NOTE (task #15): the probe is a heap CLASS instance, not a primitive
+// heap array. Since frame-arena U3 (37248bbf) arena-routes non-escaping
+// single-dim primitive heap arrays — bump-allocated + reclaimed by scope
+// reset, no free_array drop — a `heap int32[]` inside a destructor no
+// longer ticks dropCount. Class instances are still drop-tracked (the
+// arena opt explicitly defers them), so they remain a stable probe.
 //
 
 #include "gtest/gtest.h"
@@ -29,19 +37,21 @@
 
 using cajeta_test::CajetaJit;
 
-// The crown jewel: declared type Animal, dynamic type Dog. Today this
-// returns 1 (Animal has no user drop, so just the entry's pre-increment).
-// After the fix this returns 2 (Dog's destructor fires via the vtable
-// and its array allocation contributes the second drop).
+// The crown jewel: declared type Animal, dynamic type Dog. Without
+// virtual drop dispatch this returns 1 (Animal has no user drop, so just
+// the entry's pre-increment). With it, this returns 2 (Dog's destructor
+// fires via the vtable and its Probe allocation contributes the second
+// drop).
 TEST(VirtualDropDispatchTests, basetypedLocalCallsDerivedDestructor) {
     auto src =
         "package test;\n"
+        "public class Probe {}\n"
         "public class Animal {\n"
         "    public int32 sound() { return 1; }\n"
         "}\n"
         "public class Dog extends Animal {\n"
         "    public ~Dog() {\n"
-        "        int32[] junk = heap int32[1];\n"
+        "        Probe junk = heap Probe();\n"
         "    }\n"
         "}\n"
         "public final class D {\n"
@@ -65,9 +75,10 @@ TEST(VirtualDropDispatchTests, basetypedLocalCallsDerivedDestructor) {
 TEST(VirtualDropDispatchTests, concreteTypedLocalStillCallsDestructor) {
     auto src =
         "package test;\n"
+        "public class Probe {}\n"
         "public class Tagged {\n"
         "    public ~Tagged() {\n"
-        "        int32[] junk = heap int32[1];\n"
+        "        Probe junk = heap Probe();\n"
         "    }\n"
         "}\n"
         "public final class D {\n"
@@ -89,21 +100,22 @@ TEST(VirtualDropDispatchTests, concreteTypedLocalStillCallsDestructor) {
 // base-typed local, virtual dispatch enters ~Derived first
 // (proving the static base type doesn't shadow the dynamic type's
 // drop_fn), and from task #151 the chain then implicitly runs
-// ~Base afterward. So the count picks up arrays from both
+// ~Base afterward. So the count picks up Probe drops from both
 // destructors. Pinning two properties at once: virtual dispatch
 // AND the chain.
 TEST(VirtualDropDispatchTests, derivedDestructorWinsOverBase) {
     auto src =
         "package test;\n"
+        "public class Probe {}\n"
         "public class Base {\n"
         "    public ~Base() {\n"
-        "        int32[] one = heap int32[1];\n"
+        "        Probe one = heap Probe();\n"
         "    }\n"
         "}\n"
         "public class Derived extends Base {\n"
         "    public ~Derived() {\n"
-        "        int32[] a = heap int32[1];\n"
-        "        int32[] b = heap int32[1];\n"
+        "        Probe a = heap Probe();\n"
+        "        Probe b = heap Probe();\n"
         "    }\n"
         "}\n"
         "public final class D {\n"
@@ -118,8 +130,8 @@ TEST(VirtualDropDispatchTests, derivedDestructorWinsOverBase) {
         "}\n";
     auto jit = CajetaJit::compile(src, "test.D");
     jit->lookup<int32_t (*)()>("run")();
-    // 1 (entry) + 2 (two array drops in ~Derived)
-    //         + 1 (one array drop in ~Base via the chain)
+    // 1 (entry) + 2 (two Probe drops in ~Derived)
+    //         + 1 (one Probe drop in ~Base via the chain)
     //         = 4. Pre-chain (task #151) this was 3 — only ~Derived
     // ran. The +1 is the chain firing ~Base after ~Derived returns.
     EXPECT_EQ(jit->lookup<int64_t (*)()>("read")(), 4);
