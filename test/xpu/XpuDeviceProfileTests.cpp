@@ -24,6 +24,10 @@ using cajeta::xpu::classifyBound;
 using cajeta::xpu::Bound;
 using cajeta::xpu::DeviceProfile;
 using cajeta::xpu::formatDeviceProfileJson;
+using cajeta::xpu::occupancy;
+using cajeta::xpu::candidateBlocks;
+using cajeta::xpu::pickLaunch;
+using cajeta::xpu::LaunchPick;
 
 namespace {
 
@@ -183,4 +187,59 @@ TEST(XpuDeviceProfileTests, deviceProfileJson) {
     EXPECT_NE(je.find("\"estimated\":true"), std::string::npos);
     EXPECT_NE(je.find("\"roofline_measured\":false"), std::string::npos);
     EXPECT_EQ(je.find("bandwidth_gbps"), std::string::npos);   // omitted
+}
+
+// 4.1 — closed-form occupancy matches a hand computation; a config that cannot
+// fit the register budget reports 0.
+TEST(XpuDeviceProfileTests, occupancyClosedForm) {
+    DeviceModel m = buildDeviceModel(gfx1151Props());
+    // block 256 (8 waves/WG), 128 VGPR/thread: wavesPerSIMD=min(16,1536/128=12)=12,
+    // per-CU 24, wg=24/8=3, occ=min(32, 3*8)=24.
+    EXPECT_EQ(occupancy(m, 256, 128, 0), 24u);
+    // block 1024 (32 waves), 256 VGPR: per-CU 12 waves -> 12/32 = 0 -> does not fit.
+    EXPECT_EQ(occupancy(m, 1024, 256, 0), 0u);
+}
+
+// 4.2 — candidateBlocks is feasible, best-first, and honors the clamp.
+TEST(XpuDeviceProfileTests, candidateBlocksOrderedAndClamped) {
+    DeviceModel m = buildDeviceModel(gfx1151Props());
+    auto all = candidateBlocks(m, 128, 0, 0);
+    ASSERT_FALSE(all.empty());
+    for (size_t i = 1; i < all.size(); ++i)        // non-increasing occupancy
+        EXPECT_GE(occupancy(m, all[i - 1], 128, 0), occupancy(m, all[i], 128, 0));
+    auto clamped = candidateBlocks(m, 128, 0, 128);
+    for (unsigned b : clamped) EXPECT_LE(b, 128u);
+}
+
+// 4.3 — a low-arithmetic-intensity launch is memory-bound -> geometry won't help;
+// without a peak-FLOP ceiling (the deferred probe) the bound is Unknown.
+TEST(XpuDeviceProfileTests, pickerMemoryBound) {
+    DeviceProfile p;
+    p.model = buildDeviceModel(gfx1151Props());
+    p.bandwidthGBps = 200.0;
+    p.peakGFLOPs = 40000.0;          // ridge = 200 FLOP/byte
+    p.rooflineMeasured = true;
+
+    LaunchPick mem = pickLaunch(p, 128, 0, /*flops*/2e9, /*bytes*/1e9);   // AI 2
+    EXPECT_GT(mem.block, 0u);
+    EXPECT_EQ(mem.bound, cajeta::xpu::Bound::Memory);
+    EXPECT_TRUE(mem.geometryWontHelp);
+
+    p.peakGFLOPs = 0.0;              // peak unknown (deferred probe)
+    LaunchPick unk = pickLaunch(p, 128, 0, 2e9, 1e9);
+    EXPECT_EQ(unk.bound, cajeta::xpu::Bound::Unknown);
+    EXPECT_FALSE(unk.geometryWontHelp);
+}
+
+// 4.4 — an @Occupancy/§2 clamp caps the picked block; a fixed-geometry kernel is
+// flagged advisory (the pick is informational, not to be applied).
+TEST(XpuDeviceProfileTests, pickerClampAndAdvisory) {
+    DeviceProfile p;
+    p.model = buildDeviceModel(gfx1151Props());
+    LaunchPick clamped = pickLaunch(p, 64, 0, 0.0, 0.0, /*clamp*/128);
+    EXPECT_LE(clamped.block, 128u);
+    EXPECT_GT(clamped.block, 0u);
+
+    LaunchPick fixed = pickLaunch(p, 64, 0, 0.0, 0.0, 0, /*fixedGeometry*/true);
+    EXPECT_TRUE(fixed.advisoryOnly);
 }

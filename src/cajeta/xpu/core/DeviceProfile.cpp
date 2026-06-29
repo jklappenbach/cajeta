@@ -7,6 +7,7 @@
 
 #include "cajeta_xpu_abi.h"   // CajetaXpuRawDevice — the live runtime query
 
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <cstring>
@@ -166,6 +167,62 @@ DeviceProfile queryLiveDeviceProfile() {
         return p;
     }();
     return cached;
+}
+
+unsigned occupancy(const DeviceModel& m, unsigned block,
+                   unsigned kernelVgpr, unsigned ldsBytes) {
+    if (block == 0 || block > m.maxThreadsPerBlock || m.waveSize == 0) return 0;
+    unsigned wavesPerWG = (block + m.waveSize - 1) / m.waveSize;
+    if (wavesPerWG == 0) return 0;
+
+    // Register limiter: waves a SIMD holds for the per-thread VGPR demand, capped
+    // by the hardware wave limit, scaled to the CU.
+    unsigned vg = kernelVgpr == 0 ? 1 : kernelVgpr;
+    unsigned wavesPerSIMD = std::min(m.maxWavesPerSIMD, m.vgprFilePerSIMD / vg);
+    unsigned wavesPerCUByVgpr = wavesPerSIMD * m.simdsPerCU;
+
+    unsigned wgByVgpr = wavesPerCUByVgpr / wavesPerWG;
+    unsigned wgByLds = ldsBytes == 0 ? wgByVgpr
+                                     : m.ldsBytesPerCU / std::max(ldsBytes, 1u);
+    unsigned wg = std::min(wgByVgpr, wgByLds);
+    if (wg == 0) return 0;
+    return std::min(m.maxWavesPerCU, wg * wavesPerWG);
+}
+
+std::vector<unsigned> candidateBlocks(const DeviceModel& m, unsigned kernelVgpr,
+                                      unsigned ldsBytes, unsigned clamp) {
+    std::vector<std::pair<unsigned, unsigned>> scored;   // (block, occupancy)
+    for (unsigned block = m.waveSize; block <= m.maxThreadsPerBlock;
+         block += m.waveSize) {
+        if (clamp != 0 && block > clamp) break;
+        unsigned occ = occupancy(m, block, kernelVgpr, ldsBytes);
+        if (occ == 0) continue;
+        scored.push_back({block, occ});
+    }
+    std::sort(scored.begin(), scored.end(), [](const auto& a, const auto& b) {
+        if (a.second != b.second) return a.second > b.second;
+        return a.first > b.first;
+    });
+    std::vector<unsigned> out;
+    out.reserve(scored.size());
+    for (auto& [block, occ] : scored) out.push_back(block);
+    return out;
+}
+
+LaunchPick pickLaunch(const DeviceProfile& profile, unsigned kernelVgpr,
+                      unsigned ldsBytes, double flops, double bytes,
+                      unsigned clamp, bool fixedGeometry) {
+    LaunchPick p;
+    p.advisoryOnly = fixedGeometry;
+    auto blocks = candidateBlocks(profile.model, kernelVgpr, ldsBytes, clamp);
+    if (!blocks.empty()) {
+        p.block = blocks.front();
+        p.occupancyWaves = occupancy(profile.model, p.block, kernelVgpr, ldsBytes);
+    }
+    double peak = profile.peakGFLOPs;   // 0 (unknown) -> Bound::Unknown
+    p.bound = classifyBound(flops, bytes, profile.bandwidthGBps, peak);
+    p.geometryWontHelp = (p.bound == Bound::Memory);
+    return p;
 }
 
 std::string formatDeviceProfileJson(const DeviceProfile& p) {

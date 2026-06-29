@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace cajeta {
 namespace xpu {
@@ -104,6 +105,40 @@ namespace xpu {
     // Render the profile as a compact one-line JSON object (GPU-free) — the
     // payload of `cajeta gpu-profile`, consumed by env-capture.sh.
     std::string formatDeviceProfileJson(const DeviceProfile& profile);
+
+    // ---- Analytic launch-config picker (spec §4) -------------------------- //
+    // Resident waves/CU for `block` threads given the kernel's compiled per-thread
+    // VGPR demand and per-workgroup LDS bytes — the closed form (min over the
+    // register, LDS, and hardware-wave limiters). 0 means the config does not fit.
+    unsigned occupancy(const DeviceModel& m, unsigned block,
+                       unsigned kernelVgpr, unsigned ldsBytes);
+
+    // Feasible block sizes (wave multiples that fit the budgets), best-first by
+    // predicted occupancy (larger block breaks ties). `clamp` (0 = none) caps the
+    // block (an @Occupancy / §2 bound). Empty if nothing fits.
+    std::vector<unsigned> candidateBlocks(const DeviceModel& m, unsigned kernelVgpr,
+                                          unsigned ldsBytes, unsigned clamp = 0);
+
+    // The picker's verdict for a launch. `block` is the computed occupancy-optimal
+    // launch size (0 if nothing fits); `occupancyWaves` its resident waves/CU;
+    // `bound` the roofline classification; `geometryWontHelp` is true when the
+    // kernel is memory-bound (a geometry change cannot raise throughput — the
+    // honest negative). `advisoryOnly` flags that the caller's kernel has fixed,
+    // hand-tuned geometry so the pick is informational, not to be applied.
+    struct LaunchPick {
+        unsigned block = 0;
+        unsigned occupancyWaves = 0;
+        Bound    bound = Bound::Unknown;
+        bool     geometryWontHelp = false;
+        bool     advisoryOnly = false;
+    };
+
+    // Compute the launch pick from the profile + the kernel's resource demand +
+    // the launch's FLOP/byte work. Pure decision logic — no GPU calls. `clamp`
+    // caps the block; `fixedGeometry` marks a hand-tuned kernel (pick is advisory).
+    LaunchPick pickLaunch(const DeviceProfile& profile, unsigned kernelVgpr,
+                          unsigned ldsBytes, double flops, double bytes,
+                          unsigned clamp = 0, bool fixedGeometry = false);
 
 } // namespace xpu
 } // namespace cajeta
