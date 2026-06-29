@@ -9806,11 +9806,17 @@ int32_t cajeta_xpu_query_raw_device(CajetaXpuRawDevice* out) {
         if (g_xpu_hip.hipDeviceGetAttribute(&v, 56, dev) == 0 && v >= 1 && v <= 4096)
             out->maxThreadsPerBlock = (uint32_t) v;
         v = 0;
-        if (g_xpu_hip.hipDeviceGetAttribute(&v, 74, dev) == 0 && v > 0 && v <= (1 << 20))
-            out->ldsBytesPerBlock = (uint32_t) v;
-        v = 0;
         if (g_xpu_hip.hipDeviceGetAttribute(&v, 63, dev) == 0 && v >= 1 && v <= 4096)
             out->multiprocessorCount = (uint32_t) v;
+        v = 0;   // MaxRegistersPerMultiprocessor — the live VGPR file
+        if (g_xpu_hip.hipDeviceGetAttribute(&v, 72, dev) == 0 && v >= 1024 && v <= (1 << 22))
+            out->regsPerMP = (uint32_t) v;
+        v = 0;   // MaxThreadsPerMultiProcessor — the live wave cap
+        if (g_xpu_hip.hipDeviceGetAttribute(&v, 57, dev) == 0 && v >= 64 && v <= 8192)
+            out->threadsPerMP = (uint32_t) v;
+        v = 0;   // MaxSharedMemoryPerMultiprocessor (AMD-specific ordinal)
+        if (g_xpu_hip.hipDeviceGetAttribute(&v, 10002, dev) == 0 && v >= 1024 && v <= (1 << 20))
+            out->ldsBytesPerMP = (uint32_t) v;
     }
     out->valid = 1;
     return 1;

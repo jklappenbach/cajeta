@@ -200,19 +200,23 @@ emitted ISA, plus static LDS use), and the launch's problem shape. The picker is
 ## 4.5 Bounded sweep — the unmodelable-device fallback
 
 ### 4.5.1 Requirement
-When a device is **queryable but its arch is unknown** (the live query succeeded,
-so wave size / max threads / CU count are real, but the arch-derived occupancy
-constants — VGPR file per SIMD, LDS bank geometry — are absent, so the model is
-`estimated`), the analytic occupancy *ranking* is unreliable. In that and only
-that case, the runtime shall fall back to a **bounded empirical sweep**: time a
-small feasible candidate set and pick the fastest. This is the tier the removed
-`@Autotune` got wrong by running it *everywhere*; here it fires **only** where
-analysis genuinely cannot decide.
+The occupancy constants are read **live** (§5): `hipDeviceGetAttribute` reports
+the register file, wave cap, and LDS budget per multiprocessor on any queryable
+device, so even an **unknown-arch** device is normally *modelable* and stays
+analytic. The bounded sweep is the fallback **only** in the residual case where a
+device responded but the driver supplied **neither** an arch-table row **nor** the
+live occupancy attributes (`model.queried && model.estimated`) — so the model is
+genuinely undetermined. It times a small feasible candidate set and picks the
+fastest. This is the tier the removed `@Autotune` got wrong by running it
+*everywhere*; here it fires **only** where analysis genuinely cannot decide —
+which, given live attributes, is near-never.
 
 ### 4.5.2 Mechanism
-- `shouldSweep(model)` is true iff `model.queried && model.estimated` — queryable
-  but unknown arch. A known/modelable device (`!estimated`) stays fully analytic;
-  a device that did not respond (`!queried`) uses safe defaults — neither sweeps.
+- `shouldSweep(model)` is true iff `model.queried && model.estimated` — i.e. a
+  real device responded but we got no occupancy constants (no arch row AND no live
+  attributes). A modelable device (`!estimated`, including unknown-arch-with-live-
+  attrs) stays fully analytic; a device that did not respond (`!queried`) uses safe
+  defaults — neither sweeps.
 - `pickLaunch` sets `needsSweep` from `shouldSweep`; the caller then runs
   `sweepBlocks(candidates, timeBlock)` over the feasible candidate set, with the
   timer **injected** (GPU-free testable; the real launcher supplies launch-and-time).
@@ -228,36 +232,47 @@ analysis genuinely cannot decide.
 - 4.5.3 As the runtime with no reachable GPU, when config is requested, then I use
   conservative estimated defaults and never sweep.
 
-## 5. Opt-in hardware counter tier (calibration + ground truth)
+## 5. Live occupancy-constant interrogation (chosen over the counter tier)
+
+**Pivot (2026-06-29).** The original plan here was an opt-in, `dlopen`'d
+rocprofiler-sdk (AMD) / CUPTI (NVIDIA) **counter tier** to read achieved occupancy
+/ MemUnitBusy / bank conflicts and calibrate the picker. Two findings overturned it:
+1. **rocprofiler-sdk can't profile live, mid-run.** Its PMC collection requires the
+   tool to register via `rocprofiler_configure` / `force_configure` **before HIP
+   initializes**; you cannot `dlopen` it after the runtime is up and count
+   already-running kernels. So §5.2's "dlopen-and-profile-a-launch" model is
+   unworkable in-process.
+2. **The config decision needs no counters.** The quantities the counter tier was
+   for — occupancy — are *derivable*, and the inputs are reported **live** by
+   `hipDeviceGetAttribute`: `MaxRegistersPerMultiprocessor` (the VGPR file),
+   `MaxThreadsPerMultiProcessor` (the wave cap), `MaxSharedMemoryPerMultiprocessor`
+   (the LDS budget). Combined with the kernel's *actual compiled* VGPR/LDS (already
+   extracted from the ISA), occupancy is computed exactly — no PMC.
 
 ### 5.1 Requirement
-Behind an **opt-in** flag, the runtime shall read **real hardware performance
-counters** for a kernel launch — achieved occupancy, memory-unit busy, LDS bank
-conflicts, VALU busy, wave counts (AMD); the analogous CUPTI metrics (NVIDIA) —
-to (a) **calibrate/validate** the analytic picker's predictions against ground
-truth and (b) emit ground-truth diagnostics. It is never on the default launch
-path.
+The interrogation (§2) shall read the occupancy constants **live** at init, in
+per-multiprocessor terms (topology-free), so the analytic model (§4) works on
+**any queryable device** — known arch or not — and the bounded sweep (§4.5)
+becomes a near-never residual. This is cheap (a few attribute reads), live, and
+portable; it replaces the gfx1151-hardcoded constants with driver-reported ones.
 
 ### 5.2 Mechanism
-- AMD: `dlopen` **rocprofiler-sdk** (the in-process API that `rocprofv3` wraps),
-  following the established optional-lib pattern used for `libcajeta_amdtex`
-  (tri-state load, `CAJETA_AMD_ROCPROFILER_LIB` env override, path search, graceful
-  degrade). NVIDIA: the same shape over **CUPTI**.
-- Counter collection uses **kernel replay** (the kernel runs multiple passes, one
-  per counter set), costing hundreds of ms to seconds per profiled kernel — hence
-  opt-in and dev/tuning-time only.
-- Results are returned/printed in-process; **never persisted** (§7).
-- When the lib is absent or the flag is off, the tier is a no-op and the picker
-  runs model-only (§4) with no degradation in correctness.
+- Read `MaxRegistersPerMultiprocessor`, `MaxThreadsPerMultiProcessor`,
+  `MaxSharedMemoryPerMultiprocessor` via `hipDeviceGetAttribute` (sanity-clamped;
+  the ordinals are version-sensitive, so a wrong one fails safe to the arch table).
+- `occupancy` is per-multiprocessor: register-, wave-, and LDS-limited blocks from
+  those live quantities + the kernel's compiled VGPR/LDS.
+- The arch table collapses to a **fallback** (when the driver omits an attribute)
+  plus the two genuinely arch-only values: LDS bank geometry and the CU-per-WGP
+  factor.
 
-### 5.3 Use cases
-- 5.3.1 As a developer validating the picker, when I opt into the counter tier,
-  then the runtime reports the picker's *predicted* vs the *measured* occupancy /
-  bank-conflict / mem-busy, so I can trust or correct the model.
-- 5.3.2 As a developer diagnosing a kernel, when I opt in, then I get real counter
-  values in-process without manually wiring `rocprofv3` from the CLI.
-- 5.3.3 As any user not opting in (or on a box without the profiler lib), when I
-  run, then nothing loads, nothing is profiled, and the default path is unchanged.
+### 5.3 Dynamic counters — deferred, optional dev-diagnostic
+The *dynamic* counters (MemUnitBusy, LDS bank-conflict replays, VALUBusy) are **not
+derivable** and **not needed to configure** a kernel — only to *diagnose* runtime
+behavior after the fact. They are deferred as an **optional dev-diagnostic** via a
+**subprocess `rocprofv3`** invocation (which handles the before-init registration
+correctly), never the fragile in-process SDK path, and never on the default launch
+path. `rocprofv3` already covers this manually today.
 
 ## 6. Portability & backends
 

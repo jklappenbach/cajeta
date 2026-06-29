@@ -98,8 +98,10 @@ typedef struct CajetaXpuRawDevice {
     char     archName[64];          /* gfx token / cuda name; "" if unknown     */
     uint32_t waveSize;              /* warpSize        (0 = unavailable)        */
     uint32_t maxThreadsPerBlock;    /*                 (0 = unavailable)        */
-    uint32_t ldsBytesPerBlock;      /* sharedMemPerBlock (0 = unavailable)      */
     uint32_t multiprocessorCount;   /* RDNA: WGPs = physical CUs/2 (0 = n/a)    */
+    uint32_t regsPerMP;             /* MaxRegistersPerMultiprocessor (occupancy)*/
+    uint32_t threadsPerMP;          /* MaxThreadsPerMultiProcessor   (occupancy)*/
+    uint32_t ldsBytesPerMP;         /* MaxSharedMemoryPerMultiprocessor         */
     int32_t  valid;                 /* 1 iff a real device arch was read        */
 } CajetaXpuRawDevice;
 

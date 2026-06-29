@@ -18,18 +18,18 @@ namespace xpu {
 
 namespace {
 
-    // Arch-derived constants the driver does not expose. One row per GPU family;
-    // adding a part is a row, not a code change. gfx11xx are RDNA3/3.5 wave32:
-    // 1536 VGPR/SIMD, 2 SIMD/CU, 16 waves/SIMD, 64 KB LDS/CU, 32 banks x 4 B.
+    // Fallback occupancy constants per GPU family, used ONLY when the live query
+    // can't supply them (the driver reports regsPerMP / threadsPerMP / ldsPerMP
+    // directly on any queryable device — see buildDeviceModel). The bank geometry
+    // and the CU-per-WGP factor are the only genuinely arch-only values.
+    // gfx11xx (RDNA3/3.5) per WGP: 196608 VGPRs, 64 waves, 64 KB LDS, 32 banks x 4 B.
     struct ArchRow {
         const char* name;
         unsigned    waveSize;
         unsigned    maxThreadsPerBlock;
-        unsigned    maxWavesPerCU;
-        unsigned    simdsPerCU;
-        unsigned    vgprFilePerSIMD;
-        unsigned    maxWavesPerSIMD;
-        unsigned    ldsBytesPerCU;
+        unsigned    regsPerMP;
+        unsigned    maxWavesPerMP;
+        unsigned    ldsBytesPerMP;
         unsigned    ldsBankCount;
         unsigned    ldsBankWidth;
         unsigned    cuPerMultiprocessor;   // physical CUs per driver multiprocessor
@@ -37,9 +37,9 @@ namespace {
 
     constexpr std::array<ArchRow, 2> kArchTable = {{
         // gfx1151 (RDNA3.5, Strix Halo) — verified on-device (40 CU = 20 WGP).
-        {"gfx1151", 32, 1024, 32, 2, 1536, 16, 65536, 32, 4, 2},
+        {"gfx1151", 32, 1024, 196608, 64, 65536, 32, 4, 2},
         // gfx1100 (RDNA3 discrete) — same wave32 geometry; CU count is per-SKU.
-        {"gfx1100", 32, 1024, 32, 2, 1536, 16, 65536, 32, 4, 2},
+        {"gfx1100", 32, 1024, 196608, 64, 65536, 32, 4, 2},
     }};
 
     // The leading arch token, dropping any ":feature" suffix the driver appends.
@@ -54,16 +54,14 @@ bool lookupArch(const std::string& archName, DeviceModel& out) {
     const std::string token = archToken(archName);
     for (const auto& row : kArchTable) {
         if (token == row.name) {
-            out.archName           = token;
-            out.waveSize           = row.waveSize;
-            out.maxThreadsPerBlock = row.maxThreadsPerBlock;
-            out.maxWavesPerCU      = row.maxWavesPerCU;
-            out.simdsPerCU         = row.simdsPerCU;
-            out.vgprFilePerSIMD    = row.vgprFilePerSIMD;
-            out.maxWavesPerSIMD    = row.maxWavesPerSIMD;
-            out.ldsBytesPerCU      = row.ldsBytesPerCU;
-            out.ldsBankCount       = row.ldsBankCount;
-            out.ldsBankWidth       = row.ldsBankWidth;
+            out.archName            = token;
+            out.waveSize            = row.waveSize;
+            out.maxThreadsPerBlock  = row.maxThreadsPerBlock;
+            out.regsPerMP           = row.regsPerMP;
+            out.maxWavesPerMP       = row.maxWavesPerMP;
+            out.ldsBytesPerMP       = row.ldsBytesPerMP;
+            out.ldsBankCount        = row.ldsBankCount;
+            out.ldsBankWidth        = row.ldsBankWidth;
             out.cuPerMultiprocessor = row.cuPerMultiprocessor;
             return true;
         }
@@ -81,20 +79,29 @@ DeviceModel buildDeviceModel(const RawDeviceProps& props) {
 
     const bool archKnown = lookupArch(m.archName, m);
 
-    // Overlay the fields the driver actually reports (trusted over the table).
-    // The physical CU count is the driver multiprocessor count scaled by the
-    // arch's CUs-per-multiprocessor (RDNA reports WGPs = CUs/2); for an unknown
-    // arch the factor is 1, so cuCount degrades to the raw multiprocessor count.
+    // Overlay what the driver reports live (trusted over the table). The occupancy
+    // inputs (register file, wave cap, LDS) come straight from hipDeviceGetAttribute
+    // when present — that is what lets an UNKNOWN-arch device be modeled without a
+    // table row. CU count is the multiprocessor count scaled by the arch's CUs/WGP
+    // (RDNA reports WGPs = CUs/2); unknown arch -> factor 1 (raw multiprocessors).
+    bool liveOccupancy = false;
     if (props.valid) {
         if (props.waveSize)           m.waveSize = props.waveSize;
         if (props.maxThreadsPerBlock) m.maxThreadsPerBlock = props.maxThreadsPerBlock;
+        if (props.regsPerMP)          m.regsPerMP = props.regsPerMP;
+        if (props.threadsPerMP && m.waveSize)
+            m.maxWavesPerMP = props.threadsPerMP / m.waveSize;
+        if (props.ldsBytesPerMP)      m.ldsBytesPerMP = props.ldsBytesPerMP;
+        liveOccupancy = props.regsPerMP && props.threadsPerMP;
         if (props.multiprocessorCount)
             m.cuCount = props.multiprocessorCount *
                         (archKnown ? m.cuPerMultiprocessor : 1u);
     }
 
     m.queried = props.valid;
-    m.estimated = !(props.valid && archKnown);
+    // Modelable (not estimated) when a real device gave us the occupancy inputs,
+    // either from a known arch row OR live attributes (the portable path).
+    m.estimated = !(props.valid && (archKnown || liveOccupancy));
     return m;
 }
 
@@ -107,8 +114,10 @@ DeviceModel queryLiveDeviceModel() {
             std::strncpy(props.archName, raw.archName, sizeof(props.archName) - 1);
             props.waveSize            = raw.waveSize;
             props.maxThreadsPerBlock  = raw.maxThreadsPerBlock;
-            props.ldsBytesPerBlock    = raw.ldsBytesPerBlock;
             props.multiprocessorCount = raw.multiprocessorCount;
+            props.regsPerMP           = raw.regsPerMP;
+            props.threadsPerMP        = raw.threadsPerMP;
+            props.ldsBytesPerMP       = raw.ldsBytesPerMP;
             props.valid               = true;
         }
         return buildDeviceModel(props);
@@ -173,21 +182,22 @@ DeviceProfile queryLiveDeviceProfile() {
 unsigned occupancy(const DeviceModel& m, unsigned block,
                    unsigned kernelVgpr, unsigned ldsBytes) {
     if (block == 0 || block > m.maxThreadsPerBlock || m.waveSize == 0) return 0;
-    unsigned wavesPerWG = (block + m.waveSize - 1) / m.waveSize;
-    if (wavesPerWG == 0) return 0;
+    unsigned wavesPerBlock = (block + m.waveSize - 1) / m.waveSize;
+    if (wavesPerBlock == 0) return 0;
 
-    // Register limiter: waves a SIMD holds for the per-thread VGPR demand, capped
-    // by the hardware wave limit, scaled to the CU.
-    unsigned vg = kernelVgpr == 0 ? 1 : kernelVgpr;
-    unsigned wavesPerSIMD = std::min(m.maxWavesPerSIMD, m.vgprFilePerSIMD / vg);
-    unsigned wavesPerCUByVgpr = wavesPerSIMD * m.simdsPerCU;
-
-    unsigned wgByVgpr = wavesPerCUByVgpr / wavesPerWG;
-    unsigned wgByLds = ldsBytes == 0 ? wgByVgpr
-                                     : m.ldsBytesPerCU / std::max(ldsBytes, 1u);
-    unsigned wg = std::min(wgByVgpr, wgByLds);
-    if (wg == 0) return 0;
-    return std::min(m.maxWavesPerCU, wg * wavesPerWG);
+    // Per-multiprocessor limits, all topology-free. A wave consumes
+    // kernelVgpr * waveSize 32-bit registers; the MP holds regsPerMP of them.
+    unsigned wavesByReg = kernelVgpr == 0
+        ? m.maxWavesPerMP
+        : m.regsPerMP / (kernelVgpr * m.waveSize);
+    unsigned blocksByReg = wavesByReg / wavesPerBlock;
+    unsigned blocksByWave = m.maxWavesPerMP / wavesPerBlock;
+    unsigned blocksByLds = ldsBytes == 0
+        ? blocksByWave
+        : m.ldsBytesPerMP / std::max(ldsBytes, 1u);
+    unsigned blocks = std::min({blocksByReg, blocksByWave, blocksByLds});
+    if (blocks == 0) return 0;   // does not fit -> pruned
+    return std::min(m.maxWavesPerMP, blocks * wavesPerBlock);
 }
 
 std::vector<unsigned> candidateBlocks(const DeviceModel& m, unsigned kernelVgpr,
@@ -248,8 +258,9 @@ std::string formatDeviceProfileJson(const DeviceProfile& p) {
     o << "{\"arch\":\"" << p.model.archName << "\""
       << ",\"cu\":" << p.model.cuCount
       << ",\"wave_size\":" << p.model.waveSize
-      << ",\"lds_bytes_per_cu\":" << p.model.ldsBytesPerCU
-      << ",\"vgpr_per_simd\":" << p.model.vgprFilePerSIMD
+      << ",\"regs_per_mp\":" << p.model.regsPerMP
+      << ",\"max_waves_per_mp\":" << p.model.maxWavesPerMP
+      << ",\"lds_bytes_per_mp\":" << p.model.ldsBytesPerMP
       << ",\"estimated\":" << (p.model.estimated ? "true" : "false")
       << ",\"roofline_measured\":" << (p.rooflineMeasured ? "true" : "false");
     if (p.rooflineMeasured) o << ",\"bandwidth_gbps\":" << p.bandwidthGBps;

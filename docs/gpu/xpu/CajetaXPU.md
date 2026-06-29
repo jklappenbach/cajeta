@@ -1127,30 +1127,36 @@ runtime sweep was removed for running everywhere it wasn't needed).
 
   runtime, per (device, kernel):
     +----------------------------------------------------------------------+
-    | known arch (in the table)  -> table constants + ANALYTIC picker       |
-    | queryable, known arch      -> live query + measured roofline +        |
-    |                               ANALYTIC picker (occupancy + roofline)  |
-    | queryable, UNKNOWN arch     -> BOUNDED SWEEP (can't model -> measure   |
-    |   (no occupancy constants)     the feasible blocks, pick fastest)     |
+    | queryable (known OR unknown arch) -> live occupancy constants from    |
+    |   hipDeviceGetAttribute + measured roofline -> ANALYTIC picker        |
+    | queryable but driver gave NO occupancy attrs AND unknown arch         |
+    |   -> BOUNDED SWEEP (genuinely can't model -> measure; near-never)     |
     | not queryable / no GPU      -> conservative estimated defaults         |
     +----------------------------------------------------------------------+
             an explicit @Occupancy (§14.4) overrides ALL of the above
 ```
 
-- **Known arch** — a per-arch table supplies the constants the driver can't
-  expose (VGPR file per SIMD, LDS bank geometry, waves/SIMD); adding a GPU is one
-  table row.
-- **Interrogation** — a live `hipDeviceGetAttribute` query fills wave size, max
-  threads, and the physical CU count (on RDNA the driver reports WGPs = CUs/2,
-  scaled back up), plus a one-time **measured** memory-bandwidth roofline.
-- **Analytic picker** — computes the occupancy-optimal launch geometry from the
-  profile + the kernel's compiled VGPR/LDS demand, and classifies the kernel
-  memory- vs compute-bound (reporting honestly when a geometry change *cannot*
-  help, e.g. the memory-bound GEMM).
-- **Bounded sweep** — the fallback **only** when the device is queryable but its
-  arch is unknown, so the occupancy constants are missing and the analytic
-  ranking is unreliable. It times the *feasible* candidate blocks and picks the
-  fastest — bounded, never an open search, and never run on a device we can model.
+- **Interrogation (live occupancy constants).** `hipDeviceGetAttribute` reports,
+  per multiprocessor, the **register file** (`MaxRegistersPerMultiprocessor`), the
+  **wave cap** (`MaxThreadsPerMultiProcessor`), and the **LDS budget**
+  (`MaxSharedMemoryPerMultiprocessor`) — plus wave size and the physical CU count
+  (RDNA reports WGPs = CUs/2, scaled back up). These are the occupancy-determining
+  quantities, so **any queryable device is modelable**, not just ones in a table.
+  A one-time **measured** memory-bandwidth roofline rounds it out.
+- **Arch table → fallback only.** It now supplies just the two values the driver
+  *can't* give (LDS bank geometry, the CU-per-WGP factor) plus a fallback if a
+  driver omits an attribute. Adding a GPU is rarely needed.
+- **Analytic picker.** Computes the occupancy-optimal launch geometry
+  (topology-free, per-multiprocessor) from the live constants + the kernel's
+  *compiled* VGPR/LDS demand, and classifies memory- vs compute-bound (reporting
+  honestly when a geometry change *cannot* help — the memory-bound GEMM).
+- **Bounded sweep.** The fallback **only** in the residual case where a device
+  responded but supplied *neither* an arch row *nor* the live occupancy attributes
+  — genuinely undetermined. It times the feasible blocks and picks the fastest;
+  bounded, never an open search, and (given live attributes) near-never reached.
+- **Dynamic counters** (MemUnitBusy, bank conflicts) are *not* needed to configure
+  a kernel — only to diagnose runtime behavior. They're a deferred, optional
+  `rocprofv3`-subprocess dev-diagnostic, not part of this flow.
 
 ### 14.3 Inspecting the profile — `cajeta gpu-profile`
 
@@ -1159,10 +1165,12 @@ JSON (nothing is persisted; the profile is per-process, in memory):
 
 ```
 $ cajeta gpu-profile
-{"arch":"gfx1151","cu":40,"wave_size":32,"lds_bytes_per_cu":65536,
- "vgpr_per_simd":1536,"estimated":false,"roofline_measured":true,
- "bandwidth_gbps":212.6}
+{"arch":"gfx1151","cu":40,"wave_size":32,"regs_per_mp":196608,
+ "max_waves_per_mp":64,"lds_bytes_per_mp":65536,"estimated":false,
+ "roofline_measured":true,"bandwidth_gbps":212.6}
 ```
+(`regs_per_mp` / `max_waves_per_mp` / `lds_bytes_per_mp` are read **live** — they
+are what let the analytic model run on any queryable device.)
 
 The profile suite's `env-capture.sh` consumes this so the benchmark report can
 show throughput against the device's *measured* ceiling rather than a data-sheet

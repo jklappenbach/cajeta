@@ -38,31 +38,47 @@ RawDeviceProps gfx1151Props() {
     std::strncpy(p.archName, "gfx1151", sizeof(p.archName) - 1);
     p.waveSize = 32;
     p.maxThreadsPerBlock = 1024;
-    p.ldsBytesPerBlock = 65536;
     p.multiprocessorCount = 20;   // gfx1151 driver reports 20 WGPs (= 40 CUs)
+    p.regsPerMP = 196608;         // live occupancy attrs (MaxRegistersPerMP)
+    p.threadsPerMP = 2048;        // MaxThreadsPerMultiProcessor (64 waves/MP)
+    p.ldsBytesPerMP = 65536;
     p.valid = true;
+    return p;
+}
+
+// Queryable but UNMODELABLE: a real device responded, but the driver gave no
+// occupancy attributes (regs/threads/lds per MP) AND the arch is unknown — the
+// only case that warrants the bounded sweep.
+RawDeviceProps unmodelableProps() {
+    RawDeviceProps p;
+    std::strncpy(p.archName, "gfx9999", sizeof(p.archName) - 1);
+    p.waveSize = 32;
+    p.maxThreadsPerBlock = 1024;
+    p.multiprocessorCount = 20;
+    p.valid = true;   // regsPerMP / threadsPerMP / ldsBytesPerMP stay 0
     return p;
 }
 
 } // namespace
 
-// 1.1 — the arch table returns the known gfx1151 constants.
+// 1.1 — the arch table returns the known gfx1151 fallback constants.
 TEST(XpuDeviceProfileTests, archTableKnownGfx1151) {
     DeviceModel m;
     ASSERT_TRUE(lookupArch("gfx1151", m));
     EXPECT_EQ(m.waveSize, 32u);
-    EXPECT_EQ(m.ldsBytesPerCU, 65536u);
-    EXPECT_EQ(m.vgprFilePerSIMD, 1536u);
+    EXPECT_EQ(m.regsPerMP, 196608u);
+    EXPECT_EQ(m.maxWavesPerMP, 64u);
+    EXPECT_EQ(m.ldsBytesPerMP, 65536u);
     EXPECT_EQ(m.ldsBankCount, 32u);
     EXPECT_EQ(m.ldsBankWidth, 4u);
-    EXPECT_EQ(m.simdsPerCU, 2u);
+    EXPECT_EQ(m.cuPerMultiprocessor, 2u);
 }
 
 // 1.1b — a trailing feature suffix on the arch token still resolves.
 TEST(XpuDeviceProfileTests, archTableToleratesSuffix) {
     DeviceModel m;
     EXPECT_TRUE(lookupArch("gfx1151:sramecc-:xnack-", m));
-    EXPECT_EQ(m.vgprFilePerSIMD, 1536u);
+    EXPECT_EQ(m.regsPerMP, 196608u);
 }
 
 // 1.2 — an unknown arch is a miss: the model is left at conservative defaults.
@@ -71,7 +87,7 @@ TEST(XpuDeviceProfileTests, archTableUnknownIsMiss) {
     EXPECT_FALSE(lookupArch("gfx9999", m));
     // unchanged defaults
     EXPECT_EQ(m.waveSize, 32u);
-    EXPECT_EQ(m.ldsBytesPerCU, 65536u);
+    EXPECT_EQ(m.ldsBytesPerMP, 65536u);
 }
 
 // 1.3 — buildDeviceModel overlays a valid live query onto a known arch and
@@ -83,7 +99,8 @@ TEST(XpuDeviceProfileTests, buildFromLivePropsKnownArch) {
     EXPECT_EQ(m.waveSize, 32u);          // from the query
     EXPECT_EQ(m.maxThreadsPerBlock, 1024u);
     EXPECT_EQ(m.cuCount, 40u);           // 20 WGPs * 2 = 40 physical CUs
-    EXPECT_EQ(m.vgprFilePerSIMD, 1536u); // arch table (driver does not expose)
+    EXPECT_EQ(m.regsPerMP, 196608u);     // live occupancy attr
+    EXPECT_EQ(m.maxWavesPerMP, 64u);     // 2048 threads / 32 wave
     EXPECT_EQ(m.ldsBankCount, 32u);
 }
 
@@ -109,16 +126,27 @@ TEST(XpuDeviceProfileTests, invalidQueryYieldsEstimatedDefault) {
     EXPECT_TRUE(m.estimated);
     DeviceModel def = defaultDeviceModel();
     EXPECT_EQ(m.waveSize, def.waveSize);
-    EXPECT_EQ(m.ldsBytesPerCU, def.ldsBytesPerCU);
-    EXPECT_EQ(m.vgprFilePerSIMD, def.vgprFilePerSIMD);
+    EXPECT_EQ(m.ldsBytesPerMP, def.ldsBytesPerMP);
+    EXPECT_EQ(m.regsPerMP, def.regsPerMP);
     EXPECT_TRUE(def.estimated);
 }
 
-// 1.4b — a valid query for an UNKNOWN arch is still estimated (we lack the
-// arch-derived constants) but keeps the driver-reported fields.
-TEST(XpuDeviceProfileTests, validQueryUnknownArchIsEstimated) {
-    RawDeviceProps p = gfx1151Props();
+// 1.4b (PIVOT) — a valid query for an UNKNOWN arch is MODELABLE when the driver
+// reports the occupancy attributes live: estimated=false, constants from live.
+TEST(XpuDeviceProfileTests, validQueryUnknownArchModelableViaLive) {
+    RawDeviceProps p = gfx1151Props();   // carries live regs/threads/lds per MP
     std::strncpy(p.archName, "gfx9999", sizeof(p.archName) - 1);
+    DeviceModel m = buildDeviceModel(p);
+    EXPECT_FALSE(m.estimated) << "live occupancy attrs make an unknown arch modelable";
+    EXPECT_EQ(m.regsPerMP, 196608u);     // from the live query, no table row
+    EXPECT_EQ(m.maxWavesPerMP, 64u);
+    EXPECT_EQ(m.archName, "gfx9999");
+}
+
+// 1.4c — a valid query for an unknown arch WITHOUT occupancy attrs stays
+// estimated (truly unmodelable) but keeps the driver-reported fields.
+TEST(XpuDeviceProfileTests, validQueryUnknownArchNoAttrsEstimated) {
+    RawDeviceProps p = unmodelableProps();
     p.multiprocessorCount = 99;
     DeviceModel m = buildDeviceModel(p);
     EXPECT_TRUE(m.estimated);
@@ -181,6 +209,7 @@ TEST(XpuDeviceProfileTests, deviceProfileJson) {
     std::string j = formatDeviceProfileJson(p);
     EXPECT_NE(j.find("\"arch\":\"gfx1151\""), std::string::npos);
     EXPECT_NE(j.find("\"cu\":40"), std::string::npos);
+    EXPECT_NE(j.find("\"regs_per_mp\":196608"), std::string::npos);
     EXPECT_NE(j.find("\"roofline_measured\":true"), std::string::npos);
     EXPECT_NE(j.find("\"bandwidth_gbps\":207.9"), std::string::npos);
 
@@ -195,10 +224,11 @@ TEST(XpuDeviceProfileTests, deviceProfileJson) {
 // fit the register budget reports 0.
 TEST(XpuDeviceProfileTests, occupancyClosedForm) {
     DeviceModel m = buildDeviceModel(gfx1151Props());
-    // block 256 (8 waves/WG), 128 VGPR/thread: wavesPerSIMD=min(16,1536/128=12)=12,
-    // per-CU 24, wg=24/8=3, occ=min(32, 3*8)=24.
-    EXPECT_EQ(occupancy(m, 256, 128, 0), 24u);
-    // block 1024 (32 waves), 256 VGPR: per-CU 12 waves -> 12/32 = 0 -> does not fit.
+    // block 256 (8 waves), 128 VGPR/thread: wavesByReg=196608/(128*32)=48,
+    // blocksByReg=48/8=6, blocksByWave=64/8=8, blocks=6, occ=min(64,6*8)=48.
+    EXPECT_EQ(occupancy(m, 256, 128, 0), 48u);
+    // block 1024 (32 waves), 256 VGPR: wavesByReg=196608/(256*32)=24 -> 24/32=0
+    // blocks -> does not fit.
     EXPECT_EQ(occupancy(m, 1024, 256, 0), 0u);
 }
 
@@ -246,16 +276,20 @@ TEST(XpuDeviceProfileTests, pickerClampAndAdvisory) {
     EXPECT_TRUE(fixed.advisoryOnly);
 }
 
-// U6 — the bounded sweep fires ONLY for a queried-but-unknown-arch device; a
-// known device and a non-queried (no-GPU) device never sweep.
+// U6 (post-pivot) — the bounded sweep fires ONLY when a queried device is truly
+// unmodelable (no live occupancy attrs AND unknown arch). A known device, an
+// unknown arch WITH live attrs, and a non-queried device all skip the sweep.
 TEST(XpuDeviceProfileTests, shouldSweepOnlyWhenUnmodelable) {
     DeviceModel known = buildDeviceModel(gfx1151Props());     // queried + known
     EXPECT_FALSE(shouldSweep(known));
 
-    RawDeviceProps up = gfx1151Props();
-    std::strncpy(up.archName, "gfx9999", sizeof(up.archName) - 1);
-    DeviceModel unknown = buildDeviceModel(up);               // queried + unknown
-    EXPECT_TRUE(shouldSweep(unknown));
+    RawDeviceProps liveUnknown = gfx1151Props();              // live attrs present
+    std::strncpy(liveUnknown.archName, "gfx9999", sizeof(liveUnknown.archName) - 1);
+    EXPECT_FALSE(shouldSweep(buildDeviceModel(liveUnknown)))
+        << "live occupancy attrs make an unknown arch modelable -> no sweep";
+
+    DeviceModel unmodelable = buildDeviceModel(unmodelableProps());  // no attrs
+    EXPECT_TRUE(shouldSweep(unmodelable));
 
     DeviceModel none = buildDeviceModel(RawDeviceProps{});    // not queried
     EXPECT_FALSE(shouldSweep(none));
@@ -264,10 +298,8 @@ TEST(XpuDeviceProfileTests, shouldSweepOnlyWhenUnmodelable) {
 // U6 — the picker flags needsSweep for an unmodelable device, and the empirical
 // sweep returns the fastest-timed candidate from an injected timer.
 TEST(XpuDeviceProfileTests, sweepPicksFastestCandidate) {
-    RawDeviceProps up = gfx1151Props();
-    std::strncpy(up.archName, "gfx9999", sizeof(up.archName) - 1);
     DeviceProfile p;
-    p.model = buildDeviceModel(up);
+    p.model = buildDeviceModel(unmodelableProps());
     LaunchPick pick = pickLaunch(p, 64, 0, 0.0, 0.0);
     EXPECT_TRUE(pick.needsSweep);
 

@@ -31,29 +31,33 @@ namespace xpu {
         char     archName[64]        = {0}; // gcnArchName / cuda name (e.g. "gfx1151")
         unsigned waveSize            = 0;   // warpSize
         unsigned maxThreadsPerBlock  = 0;   // maxThreadsPerBlock
-        unsigned ldsBytesPerBlock    = 0;   // sharedMemPerBlock
         unsigned multiprocessorCount = 0;   // RDNA: WGPs (= physical CUs / 2)
+        // Occupancy inputs read LIVE (hipDeviceGetAttribute). These make an
+        // unknown-arch device modelable without an arch-table row — the driver
+        // reports the register file, wave cap, and LDS budget directly.
+        unsigned regsPerMP           = 0;   // MaxRegistersPerMultiprocessor
+        unsigned threadsPerMP        = 0;   // MaxThreadsPerMultiProcessor
+        unsigned ldsBytesPerMP       = 0;   // MaxSharedMemoryPerMultiprocessor
         bool     valid               = false; // false -> query failed / disabled
     };
 
-    // The occupancy-relevant machine model. Defaults are a conservative,
-    // single-wave-friendly baseline; a known arch + a valid query overwrite them
-    // and clear `estimated`.
+    // The occupancy-relevant machine model, in per-multiprocessor (per-WGP on
+    // RDNA) terms — topology-free, so it is filled either from live device
+    // attributes (any queryable GPU) or from the arch table (fallback). Defaults
+    // are a conservative gfx1151-shaped baseline.
     struct DeviceModel {
         std::string archName = "unknown";
         unsigned waveSize           = 32;
         unsigned maxThreadsPerBlock = 1024;
-        unsigned maxWavesPerCU      = 32;
-        unsigned simdsPerCU         = 2;
-        unsigned vgprFilePerSIMD    = 1536;
-        unsigned maxWavesPerSIMD    = 16;
-        unsigned ldsBytesPerCU      = 65536;
-        unsigned ldsBankCount       = 32;
-        unsigned ldsBankWidth       = 4;
-        unsigned cuPerMultiprocessor = 2;    // RDNA WGP = 2 CUs; CDNA/NV = 1
-        unsigned cuCount            = 0;     // PHYSICAL CUs = mpCount * cuPerMp
-        bool     queried            = false; // a real device responded to the query
-        bool     estimated          = true;  // true until a known arch + valid query
+        unsigned regsPerMP          = 196608; // 32-bit VGPRs per multiprocessor
+        unsigned maxWavesPerMP      = 64;     // wave residency cap per MP
+        unsigned ldsBytesPerMP      = 65536;  // LDS per MP
+        unsigned ldsBankCount       = 32;     // arch-only (swizzle/diagnostics)
+        unsigned ldsBankWidth       = 4;      // arch-only
+        unsigned cuPerMultiprocessor = 2;     // RDNA WGP = 2 CUs; for CU reporting
+        unsigned cuCount            = 0;      // PHYSICAL CUs = mpCount * cuPerMp
+        bool     queried            = false;  // a real device responded to the query
+        bool     estimated          = true;   // true until modelable (live or known arch)
     };
 
     // Fill `out`'s arch-derived constants for a known arch string; return true on
@@ -109,9 +113,11 @@ namespace xpu {
     std::string formatDeviceProfileJson(const DeviceProfile& profile);
 
     // ---- Analytic launch-config picker (spec §4) -------------------------- //
-    // Resident waves/CU for `block` threads given the kernel's compiled per-thread
-    // VGPR demand and per-workgroup LDS bytes — the closed form (min over the
-    // register, LDS, and hardware-wave limiters). 0 means the config does not fit.
+    // Resident waves per multiprocessor for `block` threads given the kernel's
+    // compiled per-thread VGPR demand and per-block LDS bytes — the closed form
+    // (min over the register, LDS, and wave-residency limiters, rounded to whole
+    // blocks). 0 means the config does not fit. Topology-free: uses only per-MP
+    // quantities the driver reports live (regsPerMP, maxWavesPerMP, ldsBytesPerMP).
     unsigned occupancy(const DeviceModel& m, unsigned block,
                        unsigned kernelVgpr, unsigned ldsBytes);
 
@@ -122,7 +128,7 @@ namespace xpu {
                                           unsigned ldsBytes, unsigned clamp = 0);
 
     // The picker's verdict for a launch. `block` is the computed occupancy-optimal
-    // launch size (0 if nothing fits); `occupancyWaves` its resident waves/CU;
+    // launch size (0 if nothing fits); `occupancyWaves` its resident waves/MP;
     // `bound` the roofline classification; `geometryWontHelp` is true when the
     // kernel is memory-bound (a geometry change cannot raise throughput — the
     // honest negative). `advisoryOnly` flags that the caller's kernel has fixed,

@@ -29,8 +29,9 @@ TEST(XpuDeviceProfileAmdDeviceTests, liveQueryPopulatesModel) {
     EXPECT_TRUE(m.waveSize == 32 || m.waveSize == 64);
     EXPECT_GT(m.maxThreadsPerBlock, 0u);
     EXPECT_GT(m.cuCount, 0u) << "multiprocessorCount should be reported";
-    EXPECT_GT(m.vgprFilePerSIMD, 0u);   // arch-table derived
-    EXPECT_GT(m.ldsBytesPerCU, 0u);
+    EXPECT_GT(m.regsPerMP, 0u);    // live occupancy attr
+    EXPECT_GT(m.maxWavesPerMP, 0u);
+    EXPECT_GT(m.ldsBytesPerMP, 0u);
 }
 
 // 1.10 — on gfx1151 (this box) the specific RDNA3.5 constants match.
@@ -42,8 +43,9 @@ TEST(XpuDeviceProfileAmdDeviceTests, gfx1151KnownConstants) {
         GTEST_SKIP() << "not gfx1151: " << raw.archName;
     DeviceModel m = queryLiveDeviceModel();
     EXPECT_EQ(m.waveSize, 32u);
-    EXPECT_EQ(m.vgprFilePerSIMD, 1536u);
-    EXPECT_EQ(m.ldsBytesPerCU, 65536u);
+    EXPECT_EQ(m.regsPerMP, 196608u);     // live MaxRegistersPerMultiprocessor
+    EXPECT_EQ(m.maxWavesPerMP, 64u);     // 2048 threads / 32 wave
+    EXPECT_EQ(m.ldsBytesPerMP, 65536u);
     EXPECT_EQ(m.ldsBankCount, 32u);
     EXPECT_EQ(m.cuCount, 40u);   // Strix Halo: 20 WGPs reported * 2 = 40 CUs
 }
