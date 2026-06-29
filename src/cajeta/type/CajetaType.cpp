@@ -18,10 +18,30 @@
 #include "CajetaMatrix.h"
 #include "CajetaQuaternion.h"
 #include "CajetaFunctionType.h"
+#include "../compile/CompilationContext.h"
 #include "../error/InvalidOperandException.h"
 #include "../error/Exception.h"
 
 namespace cajeta {
+
+    // U6.4.2 — rebuild a scalar (primitive) LLVM type in `ctx` from a prototype
+    // built in another context. TypeID + integer bit-width are context-independent
+    // metadata, so a frozen primitive (whose inline llvmType belongs to the prime
+    // context) can clone its shape into a compile thread's own context.
+    static llvm::Type* cloneScalarLlvmType(llvm::Type* proto, llvm::LLVMContext& ctx) {
+        if (!proto) return nullptr;
+        switch (proto->getTypeID()) {
+            case llvm::Type::HalfTyID:    return llvm::Type::getHalfTy(ctx);
+            case llvm::Type::BFloatTyID:  return llvm::Type::getBFloatTy(ctx);
+            case llvm::Type::FloatTyID:   return llvm::Type::getFloatTy(ctx);
+            case llvm::Type::DoubleTyID:  return llvm::Type::getDoubleTy(ctx);
+            case llvm::Type::FP128TyID:   return llvm::Type::getFP128Ty(ctx);
+            case llvm::Type::VoidTyID:    return llvm::Type::getVoidTy(ctx);
+            case llvm::Type::IntegerTyID: return llvm::Type::getIntNTy(ctx, proto->getIntegerBitWidth());
+            case llvm::Type::PointerTyID: return llvm::PointerType::get(ctx, 0);
+            default:                      return nullptr;
+        }
+    }
 
     #define CAJETA_NATIVE_PACKAGE ""
     #define NATIVE_TYPE_ENTRY(typeName, llvmType, typeFlags) CajetaType::create(QualifiedName::getOrInsert(typeName, CAJETA_NATIVE_PACKAGE), llvmType, typeFlags);
@@ -77,6 +97,14 @@ namespace cajeta {
     }
 
     llvm::Type* CajetaType::getLlvmType() {
+        // U6.4.2 — frozen primitive with an empty per-thread binding: clone its
+        // scalar shape (from the prime-context inline prototype) into this thread's
+        // context. Inert while not frozen. Composite/class types override this.
+        if (frozen && (typeFlags & PRIMITIVE_FLAG) && rawLlvmType() == nullptr && llvmType) {
+            if (llvm::LLVMContext* ctx = currentLlvmContext()) {
+                if (llvm::Type* t = cloneScalarLlvmType(llvmType, *ctx)) setLlvmType(t);
+            }
+        }
         return rawLlvmType();
     }
 
