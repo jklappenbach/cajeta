@@ -10,6 +10,7 @@
 #include <array>
 #include <cstdlib>
 #include <cstring>
+#include <sstream>
 
 namespace cajeta {
 namespace xpu {
@@ -165,6 +166,20 @@ DeviceProfile queryLiveDeviceProfile() {
         return p;
     }();
     return cached;
+}
+
+std::string formatDeviceProfileJson(const DeviceProfile& p) {
+    std::ostringstream o;
+    o << "{\"arch\":\"" << p.model.archName << "\""
+      << ",\"cu\":" << p.model.cuCount
+      << ",\"wave_size\":" << p.model.waveSize
+      << ",\"lds_bytes_per_cu\":" << p.model.ldsBytesPerCU
+      << ",\"vgpr_per_simd\":" << p.model.vgprFilePerSIMD
+      << ",\"estimated\":" << (p.model.estimated ? "true" : "false")
+      << ",\"roofline_measured\":" << (p.rooflineMeasured ? "true" : "false");
+    if (p.rooflineMeasured) o << ",\"bandwidth_gbps\":" << p.bandwidthGBps;
+    o << "}";
+    return o.str();
 }
 
 } // namespace xpu

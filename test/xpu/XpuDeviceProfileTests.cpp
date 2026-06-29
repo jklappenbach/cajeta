@@ -22,6 +22,8 @@ using cajeta::xpu::shouldProbeRoofline;
 using cajeta::xpu::achievedGBps;
 using cajeta::xpu::classifyBound;
 using cajeta::xpu::Bound;
+using cajeta::xpu::DeviceProfile;
+using cajeta::xpu::formatDeviceProfileJson;
 
 namespace {
 
@@ -162,4 +164,23 @@ TEST(XpuDeviceProfileTests, shouldProbeRooflineGate) {
     ::setenv("CAJETA_XPU_DEVICE_PROFILE_DISABLE", "1", 1);
     EXPECT_FALSE(shouldProbeRoofline(measured));
     ::unsetenv("CAJETA_XPU_DEVICE_PROFILE_DISABLE");
+}
+
+// 3.3 — the gpu-profile JSON carries the measured ceiling; absent when unmeasured.
+TEST(XpuDeviceProfileTests, deviceProfileJson) {
+    DeviceProfile p;
+    p.model = buildDeviceModel(gfx1151Props());
+    p.bandwidthGBps = 207.9;
+    p.rooflineMeasured = true;
+    std::string j = formatDeviceProfileJson(p);
+    EXPECT_NE(j.find("\"arch\":\"gfx1151\""), std::string::npos);
+    EXPECT_NE(j.find("\"cu\":40"), std::string::npos);
+    EXPECT_NE(j.find("\"roofline_measured\":true"), std::string::npos);
+    EXPECT_NE(j.find("\"bandwidth_gbps\":207.9"), std::string::npos);
+
+    DeviceProfile est;   // estimated default, no roofline
+    std::string je = formatDeviceProfileJson(est);
+    EXPECT_NE(je.find("\"estimated\":true"), std::string::npos);
+    EXPECT_NE(je.find("\"roofline_measured\":false"), std::string::npos);
+    EXPECT_EQ(je.find("bandwidth_gbps"), std::string::npos);   // omitted
 }

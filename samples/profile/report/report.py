@@ -304,6 +304,42 @@ def derive_thr(unit, size, ns, bench=None):
     return size / ns * 1e9 / d
 
 
+# Element byte width per matmul dtype variant (input_size = N²).
+MATMUL_DTYPE_BYTES = {"matmul": 8, "matmul-f16": 2, "matmul-f32": 4, "matmul-bf16": 2}
+
+
+def ideal_roofline_gflops(bench, size, bw_gbps):
+    # An OPTIMISTIC memory roofline from IDEAL traffic (3·N²·dtype, assuming
+    # perfect LDS/cache reuse): arithmetic intensity AI = 2N/(3·dtype), so the
+    # roofline = AI · bandwidth. Labeled optimistic because actual LDS+global
+    # traffic is higher — the true memory-bound fraction needs hardware counters
+    # (xpu-device-profile §5), not this formula.
+    dt = MATMUL_DTYPE_BYTES.get(bench)
+    if not dt or not size or size <= 0 or not bw_gbps or bw_gbps <= 0:
+        return None
+    n = size ** 0.5
+    ai = (2.0 * n) / (3.0 * dt)           # FLOP per byte
+    return ai * bw_gbps                    # FLOP/byte · GB/s == GFLOP/s
+
+
+def gpu_roofline_rows(rows, env):
+    # (bench, variant, achieved GFLOP/s, ideal-roofline GFLOP/s|None) per ok gpu
+    # row. The ideal roofline is None when no measured ceiling is in env.
+    bw = fnum(env.get("gpu_bandwidth_gbps")) if env else None
+    out = []
+    for r in rows:
+        if r.get("area") != "gpu" or r.get("status") != "ok":
+            continue
+        bench = r.get("benchmark")
+        ach = derive_thr("GFLOP/s", fnum(r.get("input_size")),
+                         fnum(r.get("median_ns")), bench)
+        if not ach:
+            continue
+        ideal = ideal_roofline_gflops(bench, fnum(r.get("input_size")), bw)
+        out.append((bench, r.get("variant", ""), ach, ideal))
+    return out
+
+
 def thr_series(rows, area):
     unit = next((r.get("throughput_unit", "") for r in measured(rows)
                  if fnum(r.get("throughput")) and r.get("throughput_unit")), None)
@@ -373,6 +409,24 @@ def gen_markdown(rows, env):
         for la in langs_present:
             tag = " ★" if la == "cajeta" else ""
             out.append(f"| {la}{tag} | {lv.get(la) or '—'} |")
+        out.append("")
+    # Only when a measured ceiling is present (graceful absence: no section, so
+    # a profiling-disabled report is unchanged from before — U3 acceptance 3.6).
+    bw = env.get("gpu_bandwidth_gbps") if env else None
+    gr = gpu_roofline_rows(rows, env) if bw else []
+    if gr:
+        out.append("## GPU roofline\n")
+        out.append(
+            f"Measured device-memory ceiling: **{bw} GB/s** "
+            f"({env.get('gpu_arch', '?')}, {env.get('gpu_cu', '?')} CU). "
+            "The ideal-traffic roofline assumes perfect LDS/cache reuse — an "
+            "OPTIMISTIC upper bound, not the true memory-bound fraction (that "
+            "needs hardware counters).\n")
+        out.append("| benchmark | variant | achieved (GFLOP/s) | ideal-traffic roofline |")
+        out.append("|---|---|---|---|")
+        for bench, variant, ach, ideal in gr:
+            roof = f"{ideal:.0f} GFLOP/s (optimistic)" if ideal else "n/a"
+            out.append(f"| {bench} | {variant} | {ach:.1f} | {roof} |")
         out.append("")
     for area, rs in group_by_area(rows):
         out.append(f"## {area}")

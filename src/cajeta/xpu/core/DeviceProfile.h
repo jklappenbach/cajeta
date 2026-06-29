@@ -16,6 +16,7 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 
 namespace cajeta {
 namespace xpu {
@@ -99,6 +100,10 @@ namespace xpu {
     // Build the full profile: the live model + (when warranted) the measured
     // bandwidth roofline. Cached once per process; nothing persisted.
     DeviceProfile queryLiveDeviceProfile();
+
+    // Render the profile as a compact one-line JSON object (GPU-free) — the
+    // payload of `cajeta gpu-profile`, consumed by env-capture.sh.
+    std::string formatDeviceProfileJson(const DeviceProfile& profile);
 
 } // namespace xpu
 } // namespace cajeta

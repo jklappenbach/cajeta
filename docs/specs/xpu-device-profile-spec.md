@@ -123,10 +123,21 @@ The buffer size and pass count are overridable (env); a sane default is shipped.
 ## 3. Honest roofline diagnostics
 
 ### 3.1 Requirement
-The profile suite's throughput reporting shall express a kernel's achieved
-throughput as a fraction of the device's **measured** ceiling (memory bandwidth
-for memory-bound kernels, peak FLOP for compute-bound), not of a theoretical
-peak. The measured ceiling is sourced from the `DeviceProfile` (§2.2).
+The profile suite's throughput reporting shall surface the device's **measured**
+ceiling (bandwidth + arch/CU) as device context, and express a kernel's achieved
+throughput as a fraction of that measured ceiling **only where the ratio is
+exact** — i.e. for genuinely DRAM-bound rows whose bytes-moved is unambiguous
+(saxpy / dot / stream / copy: bytes ÷ time → % of the measured ceiling). The
+measured ceiling is sourced from the `DeviceProfile` (§2.2).
+
+**Honesty caveat (measured, not assumed).** A roofline % from an *ideal*
+byte-traffic formula would mislead for cache/LDS-reusing kernels: for matmul the
+ideal traffic (3N²·dtype) gives an optimistic ~70 TFLOP/s memory roofline that
+would label the GEMM compute-bound, flatly contradicting rocprof's measured 86%
+MemUnitBusy (memory-bound, counting *actual* LDS+global traffic). So matmul shows
+achieved GFLOP/s + the ideal-traffic roofline **explicitly labeled an optimistic
+upper bound**, never a headline %; its true % awaits the §5 counter tier
+(actual traffic).
 
 ### 3.2 Mechanism
 - The GPU benchmarks emit (or the runtime exposes) the measured ceiling alongside

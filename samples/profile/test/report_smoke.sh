@@ -22,7 +22,7 @@ schema_version,run_id,timestamp_unix,benchmark,area,dataset_name,dataset_bytes,d
 1,t,1750444800,hashmap-int,collection,,-1,,50000,cajeta,0.7,stdlib,,--release,5,30,2419869,2497504,2450000,2600000,,,34592,-1,-1,-1,34592,ok,true,,,cpu
 1,t,1750444800,matmul,gpu,,-1,,1048576,cajeta,0.7,,,--release,5,30,9900000,9940000,9950000,9990000,,,5000,-1,-1,-1,620,ok,true,,n1024,hip
 CSV
-printf 'key,value\ncpu_model,Test CPU\ncpu_cores,32\nkernel,Linux test\n' > "$D/env.csv"
+printf 'key,value\ncpu_model,Test CPU\ncpu_cores,32\nkernel,Linux test\ngpu_arch,gfx1151\ngpu_cu,40\ngpu_bandwidth_gbps,212.7\n' > "$D/env.csv"
 
 python3 "$PROJ/report/report.py" "$D" || fail "report.py exited non-zero"
 
@@ -42,5 +42,9 @@ grep -q "## codec" "$D/report.md" || fail "report.md missing codec area"
 grep -q "## gpu" "$D/report.md"        || fail "report.md missing gpu area"
 grep -q "GFLOP/s" "$D/site/index.html" || fail "gpu row missing GFLOP/s (AREA_THR_UNIT[gpu]?)"
 grep -q "cajeta (hip)" "$D/site/index.html" || fail "gpu row not backend-labelled (cajeta (hip))"
+# xpu-device-profile U3: measured device ceiling + labeled ideal-traffic roofline.
+grep -q "212.7 GB/s" "$D/report.md"            || fail "report.md missing measured device ceiling"
+grep -q "GPU roofline" "$D/report.md"          || fail "report.md missing GPU roofline section"
+grep -q "optimistic" "$D/report.md"            || fail "ideal-traffic roofline not labeled optimistic"
 
 echo "REPORT OK"
