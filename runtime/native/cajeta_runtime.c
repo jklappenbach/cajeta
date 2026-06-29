@@ -9435,6 +9435,8 @@ struct cajeta_hip_api {
     // Device properties (R0600 ABI). Used only to read gcnArchName for the
     // addrlib-based mip/cube emulation config lookup; optional.
     int (*hipGetDevicePropertiesR0600)(void*, int);
+    // Per-attribute scalar query (ABI-stable enum) for the device profile.
+    int (*hipDeviceGetAttribute)(int*, int, int);
 };
 static struct cajeta_hip_api g_xpu_hip;
 
@@ -9691,6 +9693,7 @@ static int cajeta_xpu_hip_init_locked(void) {
     CAJ_HBIND_OPT(hipStreamWaitEvent, "hipStreamWaitEvent");
     CAJ_HBIND_OPT(hipEventDestroy, "hipEventDestroy");
     CAJ_HBIND_OPT(hipGetDevicePropertiesR0600, "hipGetDevicePropertiesR0600");
+    CAJ_HBIND_OPT(hipDeviceGetAttribute, "hipDeviceGetAttribute");
     #undef CAJ_HBIND_OPT
     if (g_xpu_hip.hipInit(0) != 0) return 0;
     int count = 0;
@@ -9772,6 +9775,42 @@ static int cajeta_xpu_hip_gfx_arch(char* out, size_t outLen) {
         }
     }
     return 0;
+}
+
+// Query the active device into *out for the host-side DeviceModel builder. The
+// arch token is the robust signal; the numeric attributes use ABI-stable
+// hipDeviceGetAttribute ordinals (ROCm 6/7) and are clamped to plausible ranges
+// so a wrong ordinal on another runtime leaves the field 0 rather than poisoning
+// the model. See cajeta_xpu_abi.h.
+int32_t cajeta_xpu_query_raw_device(CajetaXpuRawDevice* out) {
+    if (!out) return 0;
+    memset(out, 0, sizeof(*out));
+    const char* dis = getenv("CAJETA_XPU_DEVICE_PROFILE_DISABLE");
+    if (dis && dis[0] && dis[0] != '0') return 0;
+
+    pthread_mutex_lock(&g_xpu_cuda_lock);
+    int up = cajeta_xpu_hip_init_locked();
+    pthread_mutex_unlock(&g_xpu_cuda_lock);
+    if (!up) return 0;
+
+    if (!cajeta_xpu_hip_gfx_arch(out->archName, sizeof(out->archName))) return 0;
+
+    if (g_xpu_hip.hipDeviceGetAttribute) {
+        int v = 0, dev = g_xpu_hip.device;
+        if (g_xpu_hip.hipDeviceGetAttribute(&v, 87, dev) == 0 && (v == 32 || v == 64))
+            out->waveSize = (uint32_t) v;
+        v = 0;
+        if (g_xpu_hip.hipDeviceGetAttribute(&v, 56, dev) == 0 && v >= 1 && v <= 4096)
+            out->maxThreadsPerBlock = (uint32_t) v;
+        v = 0;
+        if (g_xpu_hip.hipDeviceGetAttribute(&v, 74, dev) == 0 && v > 0 && v <= (1 << 20))
+            out->ldsBytesPerBlock = (uint32_t) v;
+        v = 0;
+        if (g_xpu_hip.hipDeviceGetAttribute(&v, 63, dev) == 0 && v >= 1 && v <= 4096)
+            out->multiprocessorCount = (uint32_t) v;
+    }
+    out->valid = 1;
+    return 1;
 }
 
 // --- per-kernel parameter metadata (the Vulkan launch translation) ----------

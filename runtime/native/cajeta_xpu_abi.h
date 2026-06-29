@@ -88,6 +88,26 @@ void __cajeta_xpu_launch(const char* kernelName,
                          int32_t blockX, int32_t blockY, int32_t blockZ,
                          uint32_t sharedBytes, void* argv, int64_t streamHandle);
 
+/* --- device profile (xpu-device-profile) --------------------------------- *
+ * Raw device facts a host consumer turns into a DeviceModel. `archName` is the
+ * robust gfx-token scan; numeric fields come from ABI-stable
+ * hipDeviceGetAttribute and are sanity-clamped, so a wrong attribute ordinal on
+ * a different runtime fails safe (the field stays 0, `valid` still set off the
+ * arch token). Nothing is persisted; the profile is per-process, in memory. */
+typedef struct CajetaXpuRawDevice {
+    char     archName[64];          /* gfx token / cuda name; "" if unknown     */
+    uint32_t waveSize;              /* warpSize        (0 = unavailable)        */
+    uint32_t maxThreadsPerBlock;    /*                 (0 = unavailable)        */
+    uint32_t ldsBytesPerBlock;      /* sharedMemPerBlock (0 = unavailable)      */
+    uint32_t multiprocessorCount;   /* RDNA: WGPs = physical CUs/2 (0 = n/a)    */
+    int32_t  valid;                 /* 1 iff a real device arch was read        */
+} CajetaXpuRawDevice;
+
+/* Query the active device into *out (zeroed first). Returns 1 on success; 0 if
+ * no GPU or profiling is disabled (CAJETA_XPU_DEVICE_PROFILE_DISABLE) — then
+ * out->valid == 0 and the consumer falls back to estimated defaults. */
+int32_t cajeta_xpu_query_raw_device(CajetaXpuRawDevice* out);
+
 #ifdef __cplusplus
 }
 #endif
