@@ -1309,6 +1309,14 @@ namespace cajeta {
 
     }
 
+    llvm::StructType* CajetaType::getOrCreateLlvmStructNoRegister(llvm::LLVMContext* ctx, const string& name) {
+        llvm::StructType* result = llvm::StructType::getTypeByName(*ctx, name);
+        if (result == nullptr) {
+            result = llvm::StructType::create(*ctx, name);  // opaque; caller sets body
+        }
+        return result;
+    }
+
     llvm::StructType* CajetaType::getOrCreateLlvmType(llvm::LLVMContext* ctx, string name, vector<llvm::Type*> properties) {
         llvm::StructType* result = llvm::StructType::getTypeByName(*ctx, name);
         if (result == nullptr) {

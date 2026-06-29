@@ -7,6 +7,7 @@
 #include "CajetaView.h"
 #include "CajetaArray.h"
 #include "../compile/CajetaModule.h"
+#include "../compile/CompilationContext.h"
 #include "../method/Method.h"
 #include "../error/Exception.h"
 
@@ -25,6 +26,34 @@ namespace cajeta {
         // length-prefix walk for them.
         if (dynamic_pointer_cast<CajetaArray>(type)) return true;
         return false;
+    }
+
+    llvm::Type* CajetaView::getLlvmType() {
+        if (isFrozen() && CajetaType::rawLlvmType() == nullptr) {
+            llvm::LLVMContext* ctx = currentLlvmContext();
+            if (!ctx && module) ctx = module->getLlvmContext();
+            if (ctx) {
+                // Re-create the fixed-prefix struct in this thread's context
+                // (no registry side-effect) and refill its body. Mirrors the
+                // member-selection in generatePrototype: fixed fields before the
+                // first variable-size field; var-size + post-var fields live
+                // past the struct footprint and are not members.
+                std::string canonical = qName->toCanonical();
+                llvm::StructType* st = CajetaType::getOrCreateLlvmStructNoRegister(ctx, canonical);
+                setLlvmType(st);  // U6.4.2: bind before setBody so refs resolve
+                std::vector<llvm::Type*> members;
+                members.reserve(propertyList.size());
+                bool sawVariableSize = false;
+                for (auto& property : propertyList) {
+                    if (CajetaView::isVariableSize(property)) { sawVariableSize = true; continue; }
+                    if (sawVariableSize) continue;
+                    members.push_back(property->getType()->getLlvmType());
+                }
+                const bool packed = (alignment != ViewAlignment::Natural);
+                st->setBody(llvm::ArrayRef<llvm::Type*>(members), packed);
+            }
+        }
+        return CajetaClass::getLlvmType();
     }
 
     void CajetaView::generatePrototype() {

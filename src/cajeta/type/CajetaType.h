@@ -441,6 +441,14 @@ class CajetaType : public Modifiable, public Annotatable,
         static llvm::StructType* getOrCreateLlvmType(llvm::LLVMContext* ctx, string name, vector<llvm::Type*> properties);
         static llvm::StructType* getOrCreateLlvmType(llvm::LLVMContext* ctx, string name);
 
+        // U6.4.2 — like getOrCreateLlvmType(ctx, name) but WITHOUT the
+        // canonicalMap registration side-effect. The frozen-stdlib per-thread
+        // struct rebuild needs only the (opaque) named StructType in the thread's
+        // context; it must NOT re-register a plain CajetaType over the shared
+        // class/view entry in the thread's registry. Returns the existing struct
+        // by name in `ctx` if present, else creates a fresh opaque one.
+        static llvm::StructType* getOrCreateLlvmStructNoRegister(llvm::LLVMContext* ctx, const string& name);
+
         static CajetaTypePtr create() {
             return CajetaType::create();
         }
