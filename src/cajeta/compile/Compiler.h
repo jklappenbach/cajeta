@@ -325,6 +325,10 @@ namespace cajeta {
                     CajetaType::init(*activeContext);
                 }
             }
+            // U6.4.2 — publish this compile's context so the frozen-stdlib rebuild
+            // path (currentLlvmContext()) materializes shared types in THIS thread's
+            // context. compilationContextScope (above) already made it current.
+            compilationContext.llvmContext = activeContext;
         }
 
         ~Compiler() { }

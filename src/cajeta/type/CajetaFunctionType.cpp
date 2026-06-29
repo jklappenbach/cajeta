@@ -9,6 +9,7 @@
 #include "CajetaArray.h"
 #include "CajetaClass.h"
 #include "CajetaView.h"
+#include "../compile/CompilationContext.h"
 #include <unordered_map>
 
 namespace cajeta {
@@ -24,7 +25,13 @@ namespace cajeta {
         if (isFrozen()) {
             auto& tbl = frozenFnTypeBindings();
             auto it = tbl.find(this);
-            return it != tbl.end() ? it->second : nullptr;
+            if (it != tbl.end()) return it->second;
+            // U6.4.2 — rebuild the signature in this thread's context on empty.
+            llvm::LLVMContext* ctx = currentLlvmContext();
+            if (!ctx) return nullptr;
+            llvm::FunctionType* t = buildLlvmFunctionType(ctx);
+            tbl[this] = t;
+            return t;
         }
         return llvmFunctionType;
     }

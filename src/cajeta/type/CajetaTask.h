@@ -47,6 +47,9 @@ namespace cajeta {
         // (U6.4.2); the ctor calls it with the home module's context.
         llvm::Type* buildLlvmType(llvm::LLVMContext* ctx) const;
 
+        // U6.4.2 — frozen per-thread rebuild on empty table; inert while not frozen.
+        llvm::Type* getLlvmType() override;
+
         // Get or create the Task<T> wrapper for the given element type,
         // caching the instance on the module so every Task<T> reference for
         // the same T resolves to the same CajetaClass.

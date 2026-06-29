@@ -5,8 +5,18 @@
 #include "CajetaArray.h"
 #include "CajetaView.h"
 #include "../compile/CajetaModule.h"
+#include "../compile/CompilationContext.h"
 
 namespace cajeta {
+
+    llvm::Type* CajetaArray::getLlvmType() {
+        if (isFrozen() && CajetaType::rawLlvmType() == nullptr) {
+            llvm::LLVMContext* ctx = currentLlvmContext();
+            if (!ctx && module) ctx = module->getLlvmContext();
+            if (ctx) setLlvmType(buildLlvmType(ctx));  // U6.4.2: per-thread rebuild
+        }
+        return CajetaClass::getLlvmType();
+    }
 
     llvm::Type* CajetaArray::getElementLlvmType(llvm::LLVMContext* ctx) const {
         // Reference types are stored as opaque pointers in the array's

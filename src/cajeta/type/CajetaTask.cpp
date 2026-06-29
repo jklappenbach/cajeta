@@ -6,9 +6,19 @@
 #include "CajetaArray.h"
 #include "CajetaView.h"
 #include "../compile/CajetaModule.h"
+#include "../compile/CompilationContext.h"
 #include "llvm/TargetParser/Triple.h"
 
 namespace cajeta {
+
+    llvm::Type* CajetaTask::getLlvmType() {
+        if (isFrozen() && CajetaType::rawLlvmType() == nullptr) {
+            llvm::LLVMContext* ctx = currentLlvmContext();
+            if (!ctx && module) ctx = module->getLlvmContext();
+            if (ctx) setLlvmType(buildLlvmType(ctx));  // U6.4.2: per-thread rebuild
+        }
+        return CajetaClass::getLlvmType();
+    }
 
     CajetaTask::CajetaTask(CajetaModulePtr module, CajetaTypePtr elementType)
         : CajetaClass(module) {
