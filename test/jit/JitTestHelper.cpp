@@ -1002,9 +1002,20 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
                 + cajeta::jittest::toString(jdOrErr.takeError()));
         }
         jitState->userDylib = &*jdOrErr;
-        jitState->userDylib->addToLinkOrder(*stdlibCache.sharedStdlibJD);
-        jitState->userDylib->addToLinkOrder(
-            jitState->sharedJit->getMainJITDylib());
+        // U7c cross-dylib EH fix: force the SHARED STDLIB ahead of the main
+        // dylib in the link order. createJITDylib seeds the link order with the
+        // process-symbol main dylib first, so a user `try`'s __cajeta_exc_push
+        // resolved to the NATIVE runtime while the stdlib `throw` (intra-StdlibJD)
+        // used the JIT runtime — two different __cajeta_main_exc_top TLS slots →
+        // uncaught. setLinkOrder (self, StdlibJD, main) makes ALL runtime symbols
+        // in user code resolve to the SAME JIT copy the stdlib uses. Native libc
+        // still resolves via main (StdlibJD/user don't define it).
+        jitState->userDylib->setLinkOrder(
+            { { stdlibCache.sharedStdlibJD,
+                llvm::orc::JITDylibLookupFlags::MatchExportedSymbolsOnly },
+              { &jitState->sharedJit->getMainJITDylib(),
+                llvm::orc::JITDylibLookupFlags::MatchExportedSymbolsOnly } },
+            /*LinkAgainstThisJITDylibFirst=*/true);
         if (auto err = jitState->sharedJit->addIRModule(*jitState->userDylib,
                                                         std::move(tsModule))) {
             throw std::runtime_error("user addIRModule failed: "
