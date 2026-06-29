@@ -91,3 +91,4 @@ build-three/
 
 # rocprof output artifacts (samples/profile)
 samples/profile/.rocprofv3/
+.rocprofv3/
