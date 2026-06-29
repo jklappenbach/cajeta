@@ -1041,6 +1041,13 @@ namespace cajeta {
 
         virtual void generatePrototype();
 
+        // U6.4.2 — pure instance-struct layout, factored out of
+        // generatePrototype so a frozen class can rebuild its body in a
+        // thread's own LLVMContext (the frozen getLlvmType() path). Computes
+        // members + setBody and the sub-object / vbase slot maps; does NO
+        // registration or method prototyping. Re-runnable byte-identically.
+        void buildInstanceStructBody(llvm::LLVMContext* lctx);
+
         virtual void generateCode();
 
         // P6.2 — emit a per-class clinit-style function that evaluates
