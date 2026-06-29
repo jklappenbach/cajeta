@@ -26,6 +26,7 @@ namespace cajeta {
     }
 
     void DefaultConstructorMethod::generateCode() {
+        auto& llvmFunction = llvmFunctionRef();  // U6.3b: frozen-aware
         llvmBasicBlock = llvm::BasicBlock::Create(*module->getLlvmContext(), name, llvmFunction);
         builder = new llvm::IRBuilder<>(llvmBasicBlock, llvmBasicBlock->begin());
         builder->SetInsertPoint(llvmBasicBlock);

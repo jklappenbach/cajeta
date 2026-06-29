@@ -9,8 +9,30 @@
 #include "CajetaArray.h"
 #include "CajetaClass.h"
 #include "CajetaView.h"
+#include <unordered_map>
 
 namespace cajeta {
+
+    // U6.3b — per-thread side-table for a frozen function type's cached LLVM
+    // FunctionType (LLVMContext-bound). See getLlvmFunctionType / the header.
+    static std::unordered_map<const CajetaFunctionType*, llvm::FunctionType*>& frozenFnTypeBindings() {
+        static thread_local std::unordered_map<const CajetaFunctionType*, llvm::FunctionType*> tbl;
+        return tbl;
+    }
+
+    llvm::FunctionType* CajetaFunctionType::getLlvmFunctionType() const {
+        if (isFrozen()) {
+            auto& tbl = frozenFnTypeBindings();
+            auto it = tbl.find(this);
+            return it != tbl.end() ? it->second : nullptr;
+        }
+        return llvmFunctionType;
+    }
+
+    void CajetaFunctionType::setLlvmFunctionType(llvm::FunctionType* t) {
+        if (isFrozen()) { frozenFnTypeBindings()[this] = t; return; }
+        llvmFunctionType = t;
+    }
 
     // Non-sret-eligible returns (primitive, void, interface fat-ptr, array,
     // view) have no semantic distinction between ownership and sret form —
@@ -109,7 +131,7 @@ namespace cajeta {
                 llvmRet = llvm::Type::getVoidTy(*module->getLlvmContext());
             }
         }
-        this->llvmFunctionType = llvm::FunctionType::get(llvmRet, llvmParams, /*isVarArg=*/false);
+        setLlvmFunctionType(llvm::FunctionType::get(llvmRet, llvmParams, /*isVarArg=*/false));  // U6.3b
     }
 
     bool CajetaFunctionType::usesSret() const {

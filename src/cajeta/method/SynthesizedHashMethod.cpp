@@ -167,6 +167,7 @@ namespace cajeta {
     }
 
     void SynthesizedHashMethod::generateCode() {
+        auto& llvmFunction = llvmFunctionRef();  // U6.3b: frozen-aware
         // Method::generatePrototype already injected `this` as the
         // first parameter and built llvmFunction with type
         // (ptr) -> i64. Emit a single entry block, walk fields, ret.

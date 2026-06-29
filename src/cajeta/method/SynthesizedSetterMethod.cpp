@@ -33,6 +33,7 @@ namespace cajeta {
     }
 
     void SynthesizedSetterMethod::generateCode() {
+        auto& llvmFunction = llvmFunctionRef();  // U6.3b: frozen-aware
         // Method::generatePrototype built llvmFunction with signature
         // (this, value) -> void. arg(0) is this, arg(1) is the value.
         llvm::LLVMContext& ctx = *module->getLlvmContext();

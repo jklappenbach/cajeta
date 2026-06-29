@@ -34,6 +34,7 @@ namespace cajeta {
     }
 
     void SynthesizedConstructorMethod::generateCode() {
+        auto& llvmFunction = llvmFunctionRef();  // U6.3b: frozen-aware
         // Signature post-prototype: (this, field1, field2, ...) -> void.
         // arg(0) is this; arg(i+1) is fields[i]'s value.
         llvm::LLVMContext& ctx = *module->getLlvmContext();

@@ -42,6 +42,27 @@ using namespace std;
 namespace cajeta {
     thread_local map<string, MethodPtr> Method::archive;  // per-compile (U3)
 
+    // U6.3b — a method is frozen iff its parent class is frozen (shared stdlib).
+    bool Method::isFrozen() const {
+        return parent && parent->isFrozen();
+    }
+
+    // U6.3b — per-thread side-table for a frozen method's LLVMContext-bound bindings.
+    std::unordered_map<const Method*, MethodLlvmBindings>& Method::frozenMethodBindings() {
+        static thread_local std::unordered_map<const Method*, MethodLlvmBindings> tbl;
+        return tbl;
+    }
+
+    llvm::Function*& Method::llvmFunctionRef() {
+        return isFrozen() ? frozenMethodBindings()[this].llvmFunction : llvmFunction;
+    }
+    llvm::FunctionType*& Method::llvmFunctionTypeRef() {
+        return isFrozen() ? frozenMethodBindings()[this].llvmFunctionType : llvmFunctionType;
+    }
+    llvm::Function*& Method::llvmOriginalFunctionRef() {
+        return isFrozen() ? frozenMethodBindings()[this].llvmOriginalFunction : llvmOriginalFunction;
+    }
+
     // SIMD plan Phase 0.6: a method needs the implicit structured-concurrency
     // scope frame (save_top + scope_enter[HEAP-ALLOC] + exit_to) only when its
     // body creates/joins a child task — i.e. lexically contains a `spawn`,
@@ -477,6 +498,8 @@ namespace cajeta {
     }
 
     void Method::emitNativeForwardingBody(const std::string& symbol) {
+        auto& llvmFunction = llvmFunctionRef();          // U6.3b: frozen-aware
+        auto& llvmFunctionType = llvmFunctionTypeRef();  // U6.3b
         // The forwarding wrapper IS this method's llvmFunction (in the emit
         // module); its runtime-symbol extern must be co-resident there.
         llvm::Module* lmod = getEmitModule()->getLlvmModule();
@@ -629,6 +652,7 @@ namespace cajeta {
     //     bug, not an arg-passing bug)
     void Method::emitNonNullParamChecks(CajetaModulePtr module) {
         if (parameterList.empty()) return;
+        auto& llvmFunction = llvmFunctionRef();  // U6.3b: frozen-aware
 
         llvm::IRBuilder<>* b = module->getBuilder();
         llvm::Function* throwFn = module->getRuntimeFunction("__cajeta_throw");
@@ -768,6 +792,7 @@ namespace cajeta {
 
     void Method::emitAfterThrowingTryPop(CajetaModulePtr module) {
         if (!hasAfterThrowingAdvice()) return;
+        auto& llvmOriginalFunction = llvmOriginalFunctionRef();  // U6.3b: frozen-aware
         // Only valid when we're inside the BODY-level try frame.
         // @Around-wrapped methods emit the body into
         // llvmOriginalFunction without a frame at that level — the
@@ -845,6 +870,8 @@ namespace cajeta {
         // instantiation pins each T to a real type. See
         // docs/specification/lang/MethodLevelTemplate.md.
         if (isMethodTemplate()) return;
+        auto& llvmFunction = llvmFunctionRef();          // U6.3b: frozen-aware
+        auto& llvmFunctionType = llvmFunctionTypeRef();  // U6.3b
         // Emit-target swap (test-reuse): for a stdlib-template instantiation
         // owned (emit-wise) by a user module, point `module` at the emit module
         // for the duration of prototype emission so the Function — and every
@@ -1435,6 +1462,9 @@ namespace cajeta {
     }
 
     void Method::generateCode() {
+        auto& llvmFunction = llvmFunctionRef();                  // U6.3b: frozen-aware
+        auto& llvmFunctionType = llvmFunctionTypeRef();          // U6.3b
+        auto& llvmOriginalFunction = llvmOriginalFunctionRef();  // U6.3b
         // Emit-target swap (test-reuse): point `module` at the emit module for
         // the whole body. generateCode passes `module` DOWN to every statement/
         // expression (generateCode(CajetaModulePtr)), so this single swap
@@ -2266,6 +2296,9 @@ namespace cajeta {
     }
 
     void Method::emitAroundWrapper() {
+        auto& llvmFunction = llvmFunctionRef();                  // U6.3b: frozen-aware
+        auto& llvmFunctionType = llvmFunctionTypeRef();          // U6.3b
+        auto& llvmOriginalFunction = llvmOriginalFunctionRef();  // U6.3b
         // A7: collect every @Around match in matchingAdvice order
         // (already sorted by @Order during A3's resolveAdviceMatches
         // pass). aroundChain[0] is the outermost; aroundChain[N-1]

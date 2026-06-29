@@ -22,6 +22,7 @@ namespace cajeta {
     }
 
     void SynthesizedGetterMethod::generateCode() {
+        auto& llvmFunction = llvmFunctionRef();  // U6.3b: frozen-aware
         // Method::generatePrototype has already built llvmFunction with
         // signature (this) -> fieldType. Emit a single entry block that
         // GEPs the field, loads it, and returns.

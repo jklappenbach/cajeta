@@ -39,6 +39,7 @@ namespace cajeta {
     }
 
     void SynthesizedBuilderSetterMethod::generateCode() {
+        auto& llvmFunction = llvmFunctionRef();  // U6.3b: frozen-aware
         // (this, value) -> ptr (Builder). Store value into the named
         // field, return this.
         llvm::LLVMContext& ctx = *module->getLlvmContext();
@@ -77,6 +78,7 @@ namespace cajeta {
     }
 
     void SynthesizedBuildMethod::generateCode() {
+        auto& llvmFunction = llvmFunctionRef();  // U6.3b: frozen-aware
         // Body:
         //   Outer* o = __cajeta_alloc(sizeof(Outer));
         //   o->vtable = &Outer#VTable;     // slot 0
@@ -233,6 +235,7 @@ namespace cajeta {
     }
 
     void SynthesizedBuilderFactoryMethod::generateCode() {
+        auto& llvmFunction = llvmFunctionRef();  // U6.3b: frozen-aware
         // Static: () -> ptr (Builder). Alloc Builder, init vtable, apply
         // @Builder.Default initializers (if any), return.
         // Builder's no-arg ctor zero-inits fields; the alloc itself
