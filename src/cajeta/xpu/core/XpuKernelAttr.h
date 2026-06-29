@@ -74,24 +74,12 @@ namespace xpu {
             return maxThreads_ || minResident_ || maxRegisters_;
         }
 
-        // @Autotune (kernel-occupancy-autotune §4): block-flexible, runtime-tunable.
-        bool autotune() const { return autotune_; }
-        // Candidate block sizes from @Autotune(blocks = {...}); empty when @Autotune
-        // is absent or carries no explicit list (the tuner's defaults then apply).
-        const std::vector<unsigned>& autotuneBlocks() const { return autotuneBlocks_; }
-        // The compile-time workgroup bound for an autotuned kernel = the largest
-        // candidate (explicit list, else the tuner defaults), so every swept block
-        // is a legal launch. 0 when not autotuned.
-        unsigned autotuneMaxThreads() const;
-
     private:
         std::optional<int> waveWidth_;
         std::vector<XpuBackend> backends_;
         std::optional<unsigned> maxThreads_;
         std::optional<unsigned> minResident_;
         std::optional<unsigned> maxRegisters_;
-        bool autotune_ = false;
-        std::vector<unsigned> autotuneBlocks_;
     };
 
 } // namespace xpu

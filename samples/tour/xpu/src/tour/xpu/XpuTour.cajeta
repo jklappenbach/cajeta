@@ -37,7 +37,17 @@ import cajeta.lang.Math;
 public final class XpuTour {
 
     // y[i] = a*x[i] + y[i] — the canonical accelerator "hello world".
+    //
+    // Resource logistics (occupancy, register budget, launch bounds) are handled
+    // AUTOMATICALLY: the compiler pins each kernel's real launch workgroup size so
+    // the backend budgets registers for the true occupancy — no per-vendor knobs,
+    // no spilling because the backend assumed a worst-case 1024-thread group. To
+    // override (hard-code a config), annotate with the portable, vendor-neutral
+    // `@Occupancy(maxThreads=, minResident=, maxRegisters=)` — all optional; it
+    // lowers per-backend (AMD flat-work-group-size/waves-per-eu, NVIDIA maxntid/
+    // minctasm/maxnreg, Vulkan no-op) and always wins over the automatic default.
     @Kernel
+    @Occupancy(maxThreads = 256)
     public static void saxpy(KernelBuffer<float32> y, KernelBuffer<float32> x,
                              float32 a, uint32 n) {
         uint32 i = KernelThread.globalIdX();

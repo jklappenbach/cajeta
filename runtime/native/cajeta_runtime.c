@@ -9432,7 +9432,6 @@ struct cajeta_hip_api {
     int (*hipEventQuery)(void*);
     int (*hipStreamWaitEvent)(void*, void*, unsigned);
     int (*hipEventDestroy)(void*);
-    int (*hipEventElapsedTime)(float*, void*, void*);   // ms between two events
     // Device properties (R0600 ABI). Used only to read gcnArchName for the
     // addrlib-based mip/cube emulation config lookup; optional.
     int (*hipGetDevicePropertiesR0600)(void*, int);
@@ -9689,7 +9688,6 @@ static int cajeta_xpu_hip_init_locked(void) {
     CAJ_HBIND_OPT(hipEventRecord, "hipEventRecord");
     CAJ_HBIND_OPT(hipEventSynchronize, "hipEventSynchronize");
     CAJ_HBIND_OPT(hipEventQuery, "hipEventQuery");
-    CAJ_HBIND_OPT(hipEventElapsedTime, "hipEventElapsedTime");
     CAJ_HBIND_OPT(hipStreamWaitEvent, "hipStreamWaitEvent");
     CAJ_HBIND_OPT(hipEventDestroy, "hipEventDestroy");
     CAJ_HBIND_OPT(hipGetDevicePropertiesR0600, "hipGetDevicePropertiesR0600");
@@ -9850,59 +9848,6 @@ static struct cajeta_kparams* cajeta_xpu_find_kparams(const char* name) {
     return NULL;
 }
 
-// kernel-occupancy-autotune §4: per-@Autotune-kernel candidate block sizes
-// (DeviceModel-pruned + occupancy-ordered at compile time) and a runtime cache
-// of the best block per (kernel, problem-shape). The launch path sweeps the
-// candidates once per shape (HIP-event timed), then reuses the cached winner.
-#define CAJETA_XPU_MAX_AUTOTUNE 64
-#define CAJETA_XPU_MAX_AUTOTUNE_BLOCKS 16
-struct cajeta_autotune {
-    char name[96];
-    uint32_t blocks[CAJETA_XPU_MAX_AUTOTUNE_BLOCKS];
-    int nblocks;
-};
-static struct cajeta_autotune g_xpu_autotune[CAJETA_XPU_MAX_AUTOTUNE];
-static int g_xpu_autotune_count;
-
-#define CAJETA_XPU_MAX_AUTOTUNE_CACHE 256
-struct cajeta_autotune_cache { char name[96]; uint64_t shape; uint32_t block; };
-static struct cajeta_autotune_cache
-    g_xpu_autotune_cache[CAJETA_XPU_MAX_AUTOTUNE_CACHE];
-static int g_xpu_autotune_cache_count;
-
-void __cajeta_xpu_register_autotune(const char* name, const uint32_t* blocks,
-                                    int32_t count) {
-    if (!name || !blocks || count <= 0) return;
-    pthread_mutex_lock(&g_xpu_cuda_lock);
-    int idx = -1;
-    for (int i = 0; i < g_xpu_autotune_count; ++i)
-        if (strncmp(g_xpu_autotune[i].name, name,
-                    sizeof(g_xpu_autotune[i].name)) == 0) { idx = i; break; }
-    int isNew = 0;
-    if (idx < 0) {
-        if (g_xpu_autotune_count >= CAJETA_XPU_MAX_AUTOTUNE) {
-            pthread_mutex_unlock(&g_xpu_cuda_lock); return;
-        }
-        idx = g_xpu_autotune_count; isNew = 1;
-    }
-    struct cajeta_autotune* e = &g_xpu_autotune[idx];
-    strncpy(e->name, name, sizeof(e->name) - 1);
-    e->name[sizeof(e->name) - 1] = '\0';
-    int n = count > CAJETA_XPU_MAX_AUTOTUNE_BLOCKS
-                ? CAJETA_XPU_MAX_AUTOTUNE_BLOCKS : count;
-    for (int i = 0; i < n; ++i) e->blocks[i] = blocks[i];
-    e->nblocks = n;
-    if (isNew) g_xpu_autotune_count++;
-    pthread_mutex_unlock(&g_xpu_cuda_lock);
-}
-
-static struct cajeta_autotune* cajeta_xpu_find_autotune(const char* name) {
-    for (int i = 0; i < g_xpu_autotune_count; ++i)
-        if (strncmp(g_xpu_autotune[i].name, name,
-                    sizeof(g_xpu_autotune[i].name)) == 0)
-            return &g_xpu_autotune[i];
-    return NULL;
-}
 
 // ============================================================================
 // Vulkan compute binding (dlopen'd) — backs the real SPIR-V device path.
@@ -16173,89 +16118,6 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
 // handle, so a hipTextureObject is built from its hipArray + the paired Sampler's
 // modes and substituted into the kernelParams (the kernel reads the image+sampler
 // SRDs from that object via __ockl_image_sample_2D); destroyed after the launch.
-// kernel-occupancy-autotune §4: pick the (grid, block) for an @Autotune kernel.
-// Cache hit -> reuse; else sweep the DeviceModel-pruned candidates (HIP-event
-// timed) and cache the winner. With no timing available, fall back to the
-// model's top candidate (blocks[0], occupancy-ordered) — still better than blind,
-// zero measurement. Total threads are held constant (grid rescaled per block), so
-// a grid-stride kernel keeps full coverage. 1-D launches only.
-static void cajeta_xpu_autotune_pick(struct cajeta_autotune* at, void* fn,
-        int32_t origGrid, int32_t origBlock, uint32_t sharedBytes,
-        void** useArgv, int64_t streamHandle,
-        int32_t* outGrid, int32_t* outBlock) {
-    *outGrid = origGrid; *outBlock = origBlock;
-    if (!at || at->nblocks <= 0) return;
-    if (origBlock < 1) origBlock = 1;
-    int64_t total = (int64_t) origGrid * (int64_t) origBlock;
-    if (total < 1) total = 1;
-    uint64_t shape = (uint64_t) total;
-
-    static int disabled = -1;
-    if (disabled < 0) {
-        const char* s = getenv("CAJETA_XPU_AUTOTUNE");
-        disabled = (s && s[0] == '0') ? 1 : 0;
-    }
-
-    pthread_mutex_lock(&g_xpu_cuda_lock);
-    for (int i = 0; i < g_xpu_autotune_cache_count; ++i)
-        if (g_xpu_autotune_cache[i].shape == shape &&
-            strncmp(g_xpu_autotune_cache[i].name, at->name,
-                    sizeof(at->name)) == 0) {
-            uint32_t b = g_xpu_autotune_cache[i].block;
-            pthread_mutex_unlock(&g_xpu_cuda_lock);
-            *outBlock = (int32_t) b;
-            *outGrid = (int32_t) ((total + b - 1) / b);
-            return;
-        }
-    pthread_mutex_unlock(&g_xpu_cuda_lock);
-
-    uint32_t best = at->blocks[0];   // model's top pick (no-measure fallback)
-    int haveTiming = !disabled && g_xpu_hip.hipEventCreate &&
-        g_xpu_hip.hipEventRecord && g_xpu_hip.hipEventSynchronize &&
-        g_xpu_hip.hipEventElapsedTime && g_xpu_hip.hipModuleLaunchKernel;
-    if (haveTiming) {
-        void* stream = (void*) (intptr_t) streamHandle;
-        void *evA = NULL, *evB = NULL;
-        if (g_xpu_hip.hipEventCreate(&evA) != 0) evA = NULL;
-        if (g_xpu_hip.hipEventCreate(&evB) != 0) evB = NULL;
-        if (evA && evB) {
-            float bestMs = 0.0f; int haveBest = 0;
-            for (int i = 0; i < at->nblocks; ++i) {
-                uint32_t b = at->blocks[i];
-                if (b < 1) continue;
-                unsigned g = (unsigned) ((total + b - 1) / b);
-                g_xpu_hip.hipModuleLaunchKernel(fn, g, 1, 1, b, 1, 1,
-                    sharedBytes, stream, useArgv, NULL);   // warm
-                g_xpu_hip.hipEventRecord(evA, stream);
-                for (int it = 0; it < 3; ++it)
-                    g_xpu_hip.hipModuleLaunchKernel(fn, g, 1, 1, b, 1, 1,
-                        sharedBytes, stream, useArgv, NULL);
-                g_xpu_hip.hipEventRecord(evB, stream);
-                g_xpu_hip.hipEventSynchronize(evB);
-                float ms = 0.0f;
-                if (g_xpu_hip.hipEventElapsedTime(&ms, evA, evB) == 0 &&
-                    (!haveBest || ms < bestMs)) {
-                    bestMs = ms; best = b; haveBest = 1;
-                }
-            }
-        }
-        if (evA) g_xpu_hip.hipEventDestroy(evA);
-        if (evB) g_xpu_hip.hipEventDestroy(evB);
-    }
-
-    pthread_mutex_lock(&g_xpu_cuda_lock);
-    if (g_xpu_autotune_cache_count < CAJETA_XPU_MAX_AUTOTUNE_CACHE) {
-        struct cajeta_autotune_cache* c =
-            &g_xpu_autotune_cache[g_xpu_autotune_cache_count++];
-        strncpy(c->name, at->name, sizeof(c->name) - 1);
-        c->name[sizeof(c->name) - 1] = '\0';
-        c->shape = shape; c->block = best;
-    }
-    pthread_mutex_unlock(&g_xpu_cuda_lock);
-    *outBlock = (int32_t) best;
-    *outGrid = (int32_t) ((total + best - 1) / best);
-}
-
 static void cajeta_xpu_launch_hip(const char* kernelName,
                                   int32_t gridX, int32_t gridY, int32_t gridZ,
                                   int32_t blockX, int32_t blockY, int32_t blockZ,
@@ -16419,19 +16281,6 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
                 }
             }
             useArgv = subArgv;
-        }
-    }
-
-    // §4: for an @Autotune kernel on a 1-D launch, pick the (grid, block) via the
-    // tuner (cache -> DeviceModel-pruned, HIP-timed sweep). No-op for every other
-    // kernel (find_autotune returns NULL), so existing launches are untouched.
-    if (launchOk && gridY <= 1 && gridZ <= 1 && blockY <= 1 && blockZ <= 1) {
-        struct cajeta_autotune* at = cajeta_xpu_find_autotune(kernelName);
-        if (at) {
-            int32_t tg = gridX, tb = blockX;
-            cajeta_xpu_autotune_pick(at, fn, gridX, blockX, sharedBytes,
-                                     useArgv, streamHandle, &tg, &tb);
-            gridX = tg; blockX = tb;
         }
     }
 

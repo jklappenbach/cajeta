@@ -110,7 +110,18 @@ Lowering map (illustrative):
 - 3.3.3 As an author, when I pin a value, then the automatic backoff (§2) respects it
   and does not override it.
 
-## 4. Runtime autotuning: shipped guidance + fallback analysis (follow-on tier)
+## 4. Runtime autotuning — DROPPED (2026-06-28)
+
+Removed by design. Runtime config search (the `@Autotune` marker, `KernelTuner`
+three-tier lookup, `DeviceModel` candidate generator, and the C-runtime HIP-timed
+sweep) earned its complexity for no real workload: profiling showed the f16 GEMM is
+**memory-bandwidth-bound** (rocprof MemUnitBusy ~86%), so block-size search cannot beat
+the bus; and §2 already budgets the occupancy config correctly by default while §3
+(`@Occupancy`) gives experts an explicit override. The two surviving tiers — **automatic
+compile-time budgeting (§2)** and the **explicit `@Occupancy` override (§3)** — are the
+whole feature. The original spec below is kept for the record.
+
+### 4.0 (historical) Runtime autotuning: shipped guidance + fallback analysis
 
 ### 4.1 Requirement
 For kernels whose best logistics depend on problem shape, config selection shall follow a
