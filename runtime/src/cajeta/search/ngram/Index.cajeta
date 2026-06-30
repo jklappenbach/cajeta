@@ -68,13 +68,13 @@ public class Index<T> {
         }
         if (len < this.n) {
             String whole = lower.substring(0, len);
-            out.add(whole);
+            out.add(#whole);
             return out;
         }
         int32 i = 0;
         while (i + this.n <= len) {
             String g = lower.substring(i, i + this.n);
-            out.add(g);
+            out.add(#g);
             i = i + 1;
         }
         return out;
