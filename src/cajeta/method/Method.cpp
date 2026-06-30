@@ -601,6 +601,17 @@ namespace cajeta {
                 b->CreateCall(popRun, {*eit});
             }
         }
+        // Frame-arena: reclaim this method's arena locals on the way out (after the
+        // drop chain, mirroring Block::generateCode's drops-then-reset order). A
+        // block ending in a terminator skips its own reset, so this is the only
+        // reclaim point for method-body-direct / early-returned arena arrays —
+        // and it ticks dropCount for them via __cajeta_arena_reset. Reset to the
+        // method-entry mark, which dominates every return.
+        if (methodArenaMark) {
+            if (llvm::Function* resetFn = module->getRuntimeFunction("__cajeta_arena_reset")) {
+                b->CreateCall(resetFn, {methodArenaMark});
+            }
+        }
     }
 
     // Emit one advice call. Validates v1 constraints (static, no
@@ -1342,6 +1353,25 @@ namespace cajeta {
                 }
                 return;
             }
+            // Lambda body: a closure captures outer-scope names, and its body is
+            // held in a separate `body` member (not getChildren()), so the default
+            // walk never sees it. Scan it for escapes — chiefly `#name` transfers
+            // INTO the closure: the closure takes ownership and may outlive the
+            // enclosing frame, so such a name must NOT be arena-routed (the arena
+            // reset would reclaim memory the closure still owns → UAF; and it would
+            // double-count against the closure's own drop). Borrow captures stay
+            // arena-eligible — an escaping borrow-capture closure is already a
+            // compile error (hasBorrowCaptures gate), so the array can't outlive its
+            // arena scope. Collect escapes only; the lambda's own locals live in a
+            // separate frame, so discard candidates gathered from its body.
+            if (auto lambda = std::dynamic_pointer_cast<LambdaExpression>(node)) {
+                std::vector<std::pair<std::string,
+                    std::shared_ptr<BinaryOpExpression>>> innerCands;
+                std::vector<std::pair<std::string,
+                    std::shared_ptr<NewExpression>>> innerArrays;
+                arenaWalk(lambda->getBody(), escaping, innerCands, innerArrays);
+                return;
+            }
             // return name → escapes to caller (return of a concat expr does not:
             // that builds a fresh value, the operands are borrowed).
             if (auto ret = std::dynamic_pointer_cast<ReturnStatement>(node)) {
@@ -1745,6 +1775,8 @@ namespace cajeta {
                 }
             }
         }
+
+        methodArenaMark = nullptr;
 
         // Debugger CP5: push a debug frame for this method (no-op unless
         // --debug-info). Paired with __cajeta_dbg_frame_leave on every return
@@ -2157,6 +2189,21 @@ namespace cajeta {
         if (block) {
             block->resolveTypes(module);
             computeArenaEligibility();   // flag non-escaping concat locals (U2)
+            // Frame-arena: now that eligibility is known, capture the arena mark at
+            // method entry (still the straight-line entry region, so it dominates
+            // every return) so emitOwnerDrops can reclaim this method's arena locals
+            // on the way out — see Method.h methodArenaMark. The per-block reset is
+            // skipped when a block ends in a terminator (a return), so a
+            // method-body-direct or early-returned arena local would otherwise defer
+            // its reclaim (and dropCount tick) to an enclosing scope (the C++ caller
+            // for a top-level call, where it never fires).
+            if (usesArena()) {
+                if (llvm::Function* markFn =
+                        module->getRuntimeFunction("__cajeta_arena_mark")) {
+                    methodArenaMark = module->getBuilder()->CreateCall(
+                        markFn, {}, "method.arena.mark");
+                }
+            }
             block->generateCode(module);
         }
 

@@ -209,6 +209,14 @@ namespace cajeta {
         // explicit `scope { }` the return is inside of — gets waited
         // and popped before the ret instruction.
         llvm::AllocaInst* scopeWatermark = nullptr;
+        // Frame-arena: the arena bump position captured at method entry. On every
+        // method-exit edge (emitOwnerDrops — explicit + fall-through return) the
+        // arena is reset to this mark, reclaiming any arena-routed locals whose own
+        // block reset was skipped because the block ended in a terminator (a
+        // return). Without it those reclaims (and their dropCount ticks) deferred
+        // to an enclosing scope — which for a top-level call is the C++ caller, so
+        // they never fired. Null when the method has no arena locals.
+        llvm::Value* methodArenaMark = nullptr;
         // Advice matches: each entry says "this aspect's advice
         // method applies to me." Populated by the pointcut-matching
         // pass (AspectModel.md § A3) that runs once per Compiler
