@@ -45,6 +45,24 @@ public final class Shared<T> { }
  */
 public final class Swizzled<T, uint32 S> { }
 
+/**
+ * BlockPadded<T, Block, Pad> — a workgroup-shared (LDS) tile whose element
+ * addressing inserts `Pad` padding elements after every `Block` logical elements:
+ * for a logical flat index `a`, the physical slot is `a + (a / Block) * Pad`. This
+ * is AMD Tensile's `LdsBlockSizePerPad`/`LdsPad` layout (`Block`/`Pad` in elements;
+ * torch's gfx1151 f16 GEMM uses 256-byte blocks + 16-element pad = `Block`=128,
+ * `Pad`=16 for f16). Unlike `Swizzled<T,S>`'s XOR (per-row, leaves the transposed
+ * staging write conflicting), the byte-period block boundary is independent of the
+ * row/col structure, so the SAME single layout de-conflicts both the wide staging
+ * write and the transposed WMMA fragment read, with no separate strides — and it
+ * shifts whole 128-bit chunks, so wide `ds_store_b128`/`ds_read_b128` accesses
+ * survive (an element XOR would scalarize them). The map is applied at every access
+ * (direct index, CoopStage staging, and the WMMA fragment coord); a backend with no
+ * block-pad support treats it as the identity. See
+ * docs/specs/gpu-f16-torch-parity-spec.md §2.
+ */
+public final class BlockPadded<T, uint32 Block, uint32 Pad> { }
+
 public final class Constant<T> { }
 
 public final class Private<T> { }

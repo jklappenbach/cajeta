@@ -6,6 +6,7 @@
 
 #include "../lowering/KernelLowering.h"
 #include "../lowering/LoweringTarget.h"
+#include "../core/XpuKernelAttr.h"
 
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
@@ -264,10 +265,42 @@ public:
         return b.CreateOr(b.CreateShl(row, shift), perm, "swz.idx");
     }
 
+    // Block-padded LDS tile (BlockPadded<T,Block,Pad> / Tensile LdsBlockSizePerPad):
+    // physical = idx + (idx / period) * pad. The byte-period boundary is independent
+    // of the row/col stride, so the one layout de-conflicts both the wide staging
+    // store and the transposed WMMA read; applied identically on every access, the
+    // staged data reads back unchanged.
+    llvm::Value* blockPadAddr(llvm::IRBuilderBase& b, llvm::Value* idx,
+                              uint32_t period, uint32_t pad) override {
+        if (period == 0 || pad == 0) return idx;
+        llvm::Type* ty = idx->getType();
+        llvm::Value* blk = b.CreateUDiv(idx, llvm::ConstantInt::get(ty, period),
+                                        "bp.blk");
+        llvm::Value* off = b.CreateMul(blk, llvm::ConstantInt::get(ty, pad),
+                                       "bp.off");
+        return b.CreateAdd(idx, off, "bp.idx");
+    }
+
     // AMDGPU marks kernels purely by calling convention — no metadata
     // analogue to nvvm.annotations.
     void decorateKernel(llvm::Function* fn, llvm::Module& /*m*/) override {
         fn->setCallingConv(llvm::CallingConv::AMDGPU_KERNEL);
+    }
+
+    // @Occupancy override (kernel-occupancy-autotune §3). maxThreads pins the
+    // launch bound (flat-work-group-size — the lever that controls the VGPR
+    // budget on RDNA); minResident pins the occupancy floor (waves-per-eu). On
+    // gfx1151 waves-per-eu is inert, but it is the honest AMD mapping and matters
+    // on other gfx. maxRegisters has no stable per-function AMDGPU attribute, so
+    // it is folded into the occupancy intent rather than set directly.
+    void applyOccupancy(llvm::Function* fn, const XpuKernelAttr& attr) override {
+        if (auto mt = attr.maxThreads()) {
+            std::string range = "1," + std::to_string(*mt);
+            fn->addFnAttr("amdgpu-flat-work-group-size", range);
+        }
+        if (auto mr = attr.minResident()) {
+            fn->addFnAttr("amdgpu-waves-per-eu", std::to_string(*mr));
+        }
     }
 
     // A Texture2D kernel param is a pointer to the HIP texture object, in the
@@ -835,7 +868,8 @@ public:
                                 llvm::Value* ptr, llvm::Value* layout,
                                 llvm::Value* stride, llvm::Type* matrixType,
                                 uint32_t /*rows*/, uint32_t /*cols*/,
-                                uint32_t use, uint32_t swz = 0) override {
+                                uint32_t use, uint32_t swz = 0,
+                                LdsBlockPad blk = {}) override {
         auto* vecTy = llvm::cast<llvm::FixedVectorType>(matrixType);
         llvm::Type* fe = vecTy->getElementType();
         unsigned n = vecTy->getNumElements();
@@ -850,7 +884,7 @@ public:
             for (unsigned w = 0; w < n; ++w) {
                 llvm::Value* word = llvm::ConstantInt::get(fe, 0);
                 for (unsigned s = 0; s < 4; ++s) {
-                    auto rc = fragCoord(b, m, use, 4 * w + s, layout, stride, swz);
+                    auto rc = fragCoord(b, m, use, 4 * w + s, layout, stride, swz, blk);
                     llvm::Value* p = b.CreateGEP(i8, ptr, rc, "cm.ld.ptr");
                     llvm::Value* byte = b.CreateLoad(i8, p, "cm.ld");
                     // zext keeps the raw 8 bits; shift into byte slot s and OR.
@@ -864,7 +898,7 @@ public:
             return frag;
         }
         for (unsigned e = 0; e < n; ++e) {
-            auto rc = fragCoord(b, m, use, e, layout, stride, swz);
+            auto rc = fragCoord(b, m, use, e, layout, stride, swz, blk);
             llvm::Value* p = b.CreateGEP(fe, ptr, rc, "cm.ld.ptr");
             frag = b.CreateInsertElement(frag, b.CreateLoad(fe, p, "cm.ld"), e);
         }
@@ -874,12 +908,13 @@ public:
     void coopMatrixStore(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
                          llvm::Value* matrixVal, llvm::Value* layout,
                          llvm::Value* stride, uint32_t /*rows*/, uint32_t /*cols*/,
-                         uint32_t use, uint32_t swz = 0) override {
+                         uint32_t use, uint32_t swz = 0,
+                         LdsBlockPad blk = {}) override {
         auto* vecTy = llvm::cast<llvm::FixedVectorType>(matrixVal->getType());
         llvm::Type* fe = vecTy->getElementType();
         unsigned n = vecTy->getNumElements();
         for (unsigned e = 0; e < n; ++e) {
-            auto rc = fragCoord(b, m, use, e, layout, stride, swz);
+            auto rc = fragCoord(b, m, use, e, layout, stride, swz, blk);
             llvm::Value* p = b.CreateGEP(fe, ptr, rc, "cm.st.ptr");
             b.CreateStore(b.CreateExtractElement(matrixVal, e), p);
         }
@@ -936,7 +971,7 @@ private:
     // `col*stride+row`).
     llvm::Value* fragCoord(llvm::IRBuilderBase& b, llvm::Module& m, uint32_t use,
                            unsigned e, llvm::Value* layout, llvm::Value* stride,
-                           uint32_t swz = 0) {
+                           uint32_t swz = 0, LdsBlockPad blk = {}) {
         llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
         llvm::Value* lane = waveLaneId(b, m);
         llvm::Value* lane16 = b.CreateAnd(lane, llvm::ConstantInt::get(i32, 15));
@@ -961,7 +996,38 @@ private:
         // Swizzled<T,S> tile: permute the fragment coord by the same conflict-free
         // XOR the staging used (WMMA sub-tile offsets are S²-aligned, so this
         // fragment-local swizzle equals the absolute one).
-        if (swz) idx = swizzleAddr(b, idx, swz);
+        if (swz) { idx = swizzleAddr(b, idx, swz); return idx; }
+        // BlockPadded<T,Block,Pad>: when an operand fragment provably fits one pad block
+        // (constant stride, 15*stride+15 < Block) and the panel base is block-aligned, pad
+        // the panel base ALONE and add the per-lane + e term unpadded — pad(panelBase +
+        // lane*stride + e) == pad(panelBase) + lane*stride + e with no block boundary inside
+        // the fragment. The base pad folds to a compile-time constant for a constant panel
+        // offset (the unrolled-K case), so the K-loop carries zero pad VALU and e rides into
+        // the ds_read offset: immediate. Otherwise fall back to padding the e=0 base once and
+        // re-adding e (affine in e, reads stay ds_read_b128). ptr is the bare base; baseOffset
+        // is logical. See docs/specs/amdgpu-constant-folded-lds-spec.md §1.4.
+        if (blk.period) {
+            llvm::Value* eC = llvm::ConstantInt::get(i32, e);
+            bool canFold = false;
+            if ((use == 0 || use == 1) && llvm::isa<llvm::ConstantInt>(stride)) {
+                uint64_t S = llvm::cast<llvm::ConstantInt>(stride)->getZExtValue();
+                bool baseAligned = !blk.baseOffset;
+                if (auto* bo = llvm::dyn_cast_or_null<llvm::ConstantInt>(blk.baseOffset))
+                    baseAligned = (bo->getZExtValue() % blk.period) == 0;
+                canFold = baseAligned && (15 * S + 15 < blk.period);
+            }
+            if (canFold) {
+                llvm::Value* padBase = blk.baseOffset
+                    ? blockPadAddr(b, blk.baseOffset, blk.period, blk.pad)
+                    : llvm::ConstantInt::get(i32, 0);
+                idx = b.CreateAdd(padBase, idx, "cm.foldidx");
+            } else {
+                llvm::Value* base = b.CreateSub(idx, eC, "cm.frag0");
+                if (blk.baseOffset) base = b.CreateAdd(base, blk.baseOffset, "cm.abs");
+                base = blockPadAddr(b, base, blk.period, blk.pad);
+                idx = b.CreateAdd(base, eC, "cm.padidx");
+            }
+        }
         return idx;
     }
 

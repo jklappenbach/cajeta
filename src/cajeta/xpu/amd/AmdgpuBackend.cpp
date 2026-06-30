@@ -23,6 +23,10 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
+
+#include <cstdlib>
+#include <cstring>
+#include <sstream>
 #include "llvm/TargetParser/Triple.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 
@@ -156,10 +160,22 @@ void optimizeDeviceModule(llvm::Module& m, llvm::TargetMachine& tm) {
     pb.registerLoopAnalyses(lam);
     pb.crossRegisterProxies(lam, fam, cgam, mam);
 
-    llvm::FunctionPassManager fpm;
-    fpm.addPass(llvm::PromotePass());  // mem2reg
+    // Full IR pipeline before codegen (addPassesToEmitFile runs none, so without this every
+    // @Kernel ships unoptimized -> redundant address math spills regalloc); default O3,
+    // CAJETA_XPU_DEVICE_OPT=0|1|2|3 overrides (0 = mem2reg-only fallback).
     llvm::ModulePassManager mpm;
-    mpm.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(fpm)));
+    int lvl = 3;
+    if (const char* e = std::getenv("CAJETA_XPU_DEVICE_OPT")) lvl = std::atoi(e);
+    if (lvl <= 0) {
+        llvm::FunctionPassManager fpm;
+        fpm.addPass(llvm::PromotePass());
+        mpm.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(fpm)));
+    } else {
+        llvm::OptimizationLevel ol = lvl == 1 ? llvm::OptimizationLevel::O1
+                                   : lvl == 2 ? llvm::OptimizationLevel::O2
+                                              : llvm::OptimizationLevel::O3;
+        mpm = pb.buildPerModuleDefaultPipeline(ol);
+    }
     mpm.run(m, mam);
 }
 
@@ -223,6 +239,52 @@ std::string emitIsa(llvm::Module& deviceModule, llvm::TargetMachine& tm) {
         return {};
     }
     return std::string(buf.begin(), buf.end());
+}
+
+// Parse per-kernel resource usage from the .amdgpu_metadata YAML in emitted
+// AMDGCN asm. Within a kernel record the (kernel) `.name:` is the nearest
+// `.name:` before its `.vgpr_count:` — arg names sit earlier under `.args:` —
+// and `.vgpr_spill_count:` immediately follows `.vgpr_count:`. Records keyed in
+// emission order; a missing spill line means none (0).
+std::vector<KernelResourceInfo> parseKernelResourceUsage(
+        const std::string& isa) {
+    auto valAfter = [](const std::string& line, const char* key) -> std::string {
+        auto p = line.find(key);
+        if (p == std::string::npos) return {};
+        p += std::strlen(key);
+        while (p < line.size() && (line[p] == ' ' || line[p] == '\t')) ++p;
+        size_t e = p;
+        while (e < line.size() && line[e] != ' ' && line[e] != '\t' &&
+               line[e] != '\n' && line[e] != '\r') ++e;
+        return line.substr(p, e - p);
+    };
+    std::vector<KernelResourceInfo> out;
+    std::istringstream ss(isa);
+    std::string line, curName;
+    for (std::string l; std::getline(ss, l);) {
+        if (l.find(".name:") != std::string::npos) {
+            curName = valAfter(l, ".name:");
+        } else if (l.find(".vgpr_count:") != std::string::npos) {
+            KernelResourceInfo k;
+            k.name = curName;
+            k.vgpr = std::atoi(valAfter(l, ".vgpr_count:").c_str());
+            k.spill = 0;   // emitted as 0 when none; absent -> treat as none
+            out.push_back(k);
+        } else if (l.find(".vgpr_spill_count:") != std::string::npos &&
+                   !out.empty()) {
+            out.back().spill = std::atoi(valAfter(l, ".vgpr_spill_count:").c_str());
+        }
+    }
+    return out;
+}
+
+void setKernelWorkgroupSize(llvm::Function* fn, unsigned maxThreads) {
+    if (!fn || maxThreads == 0) return;
+    if (fn->hasFnAttribute("amdgpu-flat-work-group-size")) return;  // override wins
+    // "min,max" flat work-group size. Pinning max to the real launch size lets
+    // the backend raise the per-thread VGPR budget (fewer co-resident waves).
+    std::string range = "1," + std::to_string(maxThreads);
+    fn->addFnAttr("amdgpu-flat-work-group-size", range);
 }
 
 std::string findLld() {

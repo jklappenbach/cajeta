@@ -22,6 +22,7 @@
 namespace llvm {
     class Module;
     class TargetMachine;
+    class Function;
 }
 
 namespace cajeta {
@@ -75,6 +76,27 @@ namespace amd {
     // Split a comma-separated arch string ("gfx1100,gfx1151") into a list,
     // trimming spaces and dropping empties. A single arch yields one element.
     std::vector<std::string> splitArchList(const std::string& arch);
+
+    // Per-kernel resource usage parsed from emitted AMDGCN assembly metadata
+    // (.amdhsa_kernel / .amdgpu_metadata). The single parser shared by the
+    // GPU-free probes and the occupancy backoff (kernel-occupancy-autotune §2).
+    struct KernelResourceInfo {
+        std::string name;   // .name (kernel symbol)
+        int vgpr = -1;      // .vgpr_count       (-1 if absent)
+        int spill = -1;     // .vgpr_spill_count (-1 if absent)
+    };
+    std::vector<KernelResourceInfo> parseKernelResourceUsage(
+        const std::string& isa);
+
+    // kernel-occupancy-autotune §2 — set the kernel's actual launch workgroup
+    // size as "amdgpu-flat-work-group-size" so the backend budgets registers for
+    // the real (small) occupancy instead of its pessimistic 1024-thread default.
+    // Measured on gfx1151: a kernel left at the default capped at 192 VGPR and
+    // spilled; with the real size it uses up to 256 and spills 0 — logistics
+    // only, never changes semantics. `maxThreads` = product of the launch block
+    // dims (the largest across launch sites). No-op if maxThreads==0 (unknown) or
+    // the function already carries an explicit flat-work-group-size override.
+    void setKernelWorkgroupSize(llvm::Function* fn, unsigned maxThreads);
 
 } // namespace amd
 } // namespace xpu

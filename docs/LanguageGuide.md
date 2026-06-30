@@ -496,6 +496,23 @@ declares workgroup memory.
 }
 ```
 
+Resource logistics — occupancy, register budget, launch bounds — are tuned
+**automatically**: the compiler pins each kernel's real launch workgroup size so
+the backend budgets registers for the true occupancy (no spilling because the
+backend assumed a worst-case 1024-thread workgroup). To override, annotate the
+kernel with the portable, vendor-neutral `@Occupancy`:
+
+```cajeta
+@Kernel
+@Occupancy(maxThreads = 256, minResident = 2, maxRegisters = 128)
+public static void gemm(...) { ... }
+```
+
+All three parameters are optional. They lower per-backend (AMD →
+`flat-work-group-size` / `waves-per-eu`; NVIDIA → `maxntid` / `minctasm` /
+`maxnreg`) and are a no-op where a backend has no equivalent. An explicit
+`@Occupancy` always wins over the automatic budgeting.
+
 See [`gpu/xpu/CajetaXPU.md`](gpu/xpu/CajetaXPU.md),
 [`gpu/CajetaGPU.md`](gpu/CajetaGPU.md), and the capability matrix
 [`gpu/xpu/CajetaXPU-Matrix.md`](gpu/xpu/CajetaXPU-Matrix.md).

@@ -17,6 +17,7 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace llvm { class Module; }
@@ -30,12 +31,19 @@ namespace cajeta {
 namespace xpu {
 namespace amd {
 
+    // kernel-occupancy-autotune §2: kernel canonical name -> the largest launch
+    // workgroup size (product of block dims) seen at any launch site, used to set
+    // amdgpu-flat-work-group-size so the backend budgets registers correctly.
+    using KernelMaxThreads = std::unordered_map<std::string, unsigned>;
+
     // Emit hsaco constants + registration ctors into `hostModule` for each
     // @Kernel in `kernels`. Returns the number embedded (0 if none / the
     // amdgcn target is unavailable). `arch` is a GFX target (e.g. "gfx1151").
+    // `maxThreads` carries each kernel's launch workgroup size (empty = unknown).
     int emitKernelRegistration(const std::vector<MethodPtr>& kernels,
                                llvm::Module& hostModule,
-                               const std::string& arch = "gfx1151");
+                               const std::string& arch = "gfx1151",
+                               const KernelMaxThreads& maxThreads = {});
 
 } // namespace amd
 } // namespace xpu

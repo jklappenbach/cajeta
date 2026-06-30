@@ -32,6 +32,8 @@
 #include "CajetaParserBaseVisitor.h"
 #include "../xpu/core/XpuAttributes.h"
 #include "../xpu/XpuTarget.h"
+#include "../xpu/mir/XpuMirBuilder.h"
+#include "../asn/expression/LiteralExpression.h"
 #include "../xpu/nvidia/NvptxBackend.h"
 #include "../xpu/nvidia/NvptxKernelLowering.h"
 #include "../xpu/amd/AmdgpuBackend.h"
@@ -1462,6 +1464,46 @@ namespace cajeta {
                 default:                 return "sm_89";
             }
         };
+
+        // kernel-occupancy-autotune §2: scan every module's launch sites for the
+        // constant block size each @Kernel is dispatched with, keyed by simple
+        // kernel name (the largest across sites). The AMDGPU registration sets
+        // this as amdgpu-flat-work-group-size so the backend budgets registers
+        // for the true occupancy instead of its pessimistic 1024-thread default.
+        std::unordered_map<std::string, unsigned> kernelMaxThreads;
+        std::unordered_set<std::string> kernelUnboundedBlock;
+        auto constBlockThreads =
+            [](const std::vector<ExpressionPtr>& dims) -> unsigned {
+            if (dims.empty()) return 0;
+            unsigned prod = 1;
+            for (auto& d : dims) {
+                auto lit = std::dynamic_pointer_cast<IntegerLiteralExpression>(d);
+                if (!lit) return 0;   // non-constant block dim -> unknown
+                unsigned long v = 0;
+                try { v = std::stoul(lit->getRawValue()); } catch (...) { return 0; }
+                if (v == 0) return 0;
+                prod *= static_cast<unsigned>(v);
+            }
+            return prod;
+        };
+        for (auto& module : modules) {
+            auto mir = cajeta::xpu::mir::XpuMirBuilder::buildForModule(module);
+            if (!mir) continue;
+            for (auto& site : mir->launchSites) {
+                if (!site) continue;
+                std::string simple = site->kernelCanonicalName;
+                if (auto dot = simple.rfind('.'); dot != std::string::npos)
+                    simple = simple.substr(dot + 1);
+                unsigned threads = constBlockThreads(site->block);
+                // A non-constant block at ANY site means we cannot bound this
+                // kernel's launch size — leave it at the backend default (sound).
+                if (threads == 0) { kernelUnboundedBlock.insert(simple); continue; }
+                unsigned& cur = kernelMaxThreads[simple];
+                cur = std::max(cur, threads);
+            }
+        }
+        for (const auto& k : kernelUnboundedBlock) kernelMaxThreads.erase(k);
+
         for (auto& module : modules) {
             std::vector<MethodPtr> kernels;
             std::vector<MethodPtr> shaders;
@@ -1499,7 +1541,8 @@ namespace cajeta {
                 cajeta::xpu::Backend backend = toLayer(cb);
                 std::string arch = singleBackend ? xpuArch : defaultArch(cb);
                 cajeta::xpu::emitKernelRegistration(
-                    backend, kernels, *module->getLlvmModule(), arch);
+                    backend, kernels, *module->getLlvmModule(), arch,
+                    kernelMaxThreads);
                 // Graphics shaders register alongside kernels — a no-op for the
                 // non-Vulkan backends (no raster pipeline). Rides the same build.
                 cajeta::xpu::emitGraphicsRegistration(

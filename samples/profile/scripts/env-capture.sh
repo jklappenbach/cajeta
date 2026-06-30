@@ -22,3 +22,21 @@ emit kernel    "${kernel:-unknown}"
 emit os        "${os:-unknown}"
 emit governor  "${gov:-unknown}"
 emit mem_total_kb "${memkb:-unknown}"
+
+# GPU device profile (xpu-device-profile): arch, CU count, and the MEASURED
+# device-memory bandwidth ceiling — the honest denominator for GPU roofline
+# reporting. Best-effort: silent when no GPU / no cajeta binary.
+here="$(cd "$(dirname "$0")" && pwd)"
+cajeta_bin="${CAJETA:-${here}/../../../build-cajeta/src/cajeta}"
+gpu_json=""
+if [ -x "$cajeta_bin" ]; then
+    gpu_json="$("$cajeta_bin" gpu-profile 2>/dev/null || true)"
+fi
+if [ -n "$gpu_json" ]; then
+    gpu_arch="$(printf '%s' "$gpu_json" | sed -n 's/.*"arch":"\([^"]*\)".*/\1/p')"
+    gpu_cu="$(printf '%s'   "$gpu_json" | sed -n 's/.*"cu":\([0-9]*\).*/\1/p')"
+    gpu_bw="$(printf '%s'   "$gpu_json" | sed -n 's/.*"bandwidth_gbps":\([0-9.]*\).*/\1/p')"
+    [ -n "$gpu_arch" ] && emit gpu_arch "$gpu_arch"
+    [ -n "$gpu_cu" ]   && emit gpu_cu "$gpu_cu"
+    [ -n "$gpu_bw" ]   && emit gpu_bandwidth_gbps "$gpu_bw"
+fi

@@ -35,7 +35,8 @@ namespace amd {
 
     int emitKernelRegistration(const std::vector<MethodPtr>& kernels,
                                llvm::Module& hostModule,
-                               const std::string& arch) {
+                               const std::string& arch,
+                               const KernelMaxThreads& maxThreads) {
         if (kernels.empty()) return 0;
 
         // `arch` may be a comma-separated list ("gfx1100,gfx1151") → a multi-arch
@@ -69,6 +70,7 @@ namespace amd {
         llvm::FunctionCallee kpFn = hostModule.getOrInsertFunction(
             "__cajeta_xpu_register_kernel_params", kpTy);
 
+
         int emitted = 0;
         for (auto& method : kernels) {
             if (!method || !isKernel(*method)) continue;
@@ -89,6 +91,13 @@ namespace amd {
                 continue;
             }
             if (!kfn) continue;
+
+            // kernel-occupancy-autotune §2: pin the real launch workgroup size so
+            // the backend budgets registers for the true (small) occupancy.
+            // Keyed by simple kernel name (= entryName, the launch receiver).
+            if (auto it = maxThreads.find(entryName); it != maxThreads.end()) {
+                setKernelWorkgroupSize(kfn, it->second);
+            }
 
             std::vector<uint8_t> hsaco = assembleHsacoBundle(devMod, archList);
             if (hsaco.empty()) continue;  // lld/bundler missing or errored
@@ -144,6 +153,7 @@ namespace amd {
                                                            (uint32_t) info.size()),
                                     kindGV, szGV});
             }
+
             b.CreateRetVoid();
 
             // Run at module-init time (LLJIT: jit->initialize; native: startup).

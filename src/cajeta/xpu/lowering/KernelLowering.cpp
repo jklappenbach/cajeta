@@ -19,6 +19,7 @@
 #include "../../type/MatrixOps.h"
 #include "../../type/QuaternionOps.h"
 #include "../core/XpuAttributes.h"
+#include "../core/XpuKernelAttr.h"
 #include "../core/KernelArgTrait.h"
 #include "../../error/Exception.h"
 
@@ -550,6 +551,11 @@ private:
     // transparent. Keyed by base Value* so all addressing sites (direct index,
     // CoopStage/AsyncCopy dst) share one lookup. See xpu-pipelined-gemm §3.
     std::map<llvm::Value*, uint32_t> swizzledBaseStride;
+    // BlockPadded<T,Block,Pad> tiles: base Value* -> {block period, pad} (elements).
+    // Addressing runs through target.blockPadAddr(idx, period, pad) (Tensile
+    // LdsBlockSizePerPad), applied identically on read and write. See
+    // gpu-f16-torch-parity-spec.md §2.
+    std::map<llvm::Value*, std::pair<uint32_t, uint32_t>> blockPadOfBase;
     // At most one dynamic (runtime-sized) shared array per kernel — the
     // extern unsized addrspace(3) region is a single base; multiple would
     // alias (CUDA extern __shared__ / HIP HIP_DYNAMIC_SHARED both single).
@@ -900,6 +906,29 @@ private:
                             "two (got " + std::to_string(swizStride) + ")");
         }
 
+        // `BlockPadded<T, Block, Pad>` — Tensile LdsBlockSizePerPad: insert `Pad`
+        // elements after every `Block` logical elements (physical = a + (a/Block)*Pad).
+        uint32_t blkPeriod = 0, blkPad = 0;
+        if (declType && declType->toCanonical().compare(
+                            0, std::string("cajeta.xpu.BlockPadded").size(),
+                            "cajeta.xpu.BlockPadded") == 0) {
+            auto cls = std::dynamic_pointer_cast<CajetaClass>(declType);
+            if (!cls || cls->getTypeArguments().size() != 3)
+                unsupported("BlockPadded requires <T, Block, Pad> (element type, "
+                            "block size, pad — both in elements)");
+            auto bk = std::dynamic_pointer_cast<CajetaConstantType>(
+                cls->getTypeArguments()[1]);
+            auto pd = std::dynamic_pointer_cast<CajetaConstantType>(
+                cls->getTypeArguments()[2]);
+            if (!bk || !pd)
+                unsupported("BlockPadded<T, Block, Pad>: Block and Pad must be "
+                            "integer constants");
+            blkPeriod = (uint32_t) bk->getValue();
+            blkPad = (uint32_t) pd->getValue();
+            if (blkPeriod == 0)
+                unsupported("BlockPadded<T, Block, Pad>: Block must be > 0");
+        }
+
         // Size from the array creator's single size operand.
         auto acr = std::dynamic_pointer_cast<ArrayCreatorRest>(ne->getCreatorRest());
         if (!acr) unsupported("shared local '" + nm +
@@ -977,6 +1006,7 @@ private:
             bufferElems[nm] = elemTy;
             bufferElemSigned[nm] = elemSigned;
             if (swizStride) swizzledBaseStride[gv] = swizStride;
+            if (blkPeriod && blkPad) blockPadOfBase[gv] = {blkPeriod, blkPad};
             return;
         }
         // Decay [n x T]* -> T* (addrspace 3) and register like a buffer base so
@@ -989,6 +1019,7 @@ private:
         bufferElems[nm] = elemTy;
         bufferElemSigned[nm] = elemSigned;
         if (swizStride) swizzledBaseStride[base] = swizStride;
+        if (blkPeriod && blkPad) blockPadOfBase[base] = {blkPeriod, blkPad};
     }
 
     // If `base` is a Swizzled<T,S> tile, permute the element index `idx` (i64)
@@ -997,8 +1028,13 @@ private:
     // writes of a swizzled tile agree on the physical slot.
     llvm::Value* maybeSwizzle(llvm::Value* base, llvm::Value* idx) {
         auto it = swizzledBaseStride.find(base);
-        if (it == swizzledBaseStride.end()) return idx;
-        return target.swizzleAddr(builder, idx, it->second);
+        if (it != swizzledBaseStride.end())
+            return target.swizzleAddr(builder, idx, it->second);
+        auto bp = blockPadOfBase.find(base);
+        if (bp != blockPadOfBase.end())
+            return target.blockPadAddr(builder, idx, bp->second.first,
+                                       bp->second.second);
+        return idx;
     }
 
     // The swizzle row stride S if `e` is a bare identifier naming a Swizzled<T,S>
@@ -1012,6 +1048,25 @@ private:
             }
         }
         return 0;
+    }
+
+    // {block period, pad} (elements) if `e` names a BlockPadded<T,Block,Pad> tile
+    // local, else {0,0}. Also returns the tile base in `*base` when found, so the
+    // coop load/store can GEP from the bare base (additive pad needs the absolute
+    // index — see LdsBlockPad).
+    std::pair<uint32_t, uint32_t> blockPadOfArg(const ExpressionPtr& e,
+                                                llvm::Value** base = nullptr) {
+        if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(e)) {
+            auto bb = bufferBases.find(id->getTextValue());
+            if (bb != bufferBases.end()) {
+                auto it = blockPadOfBase.find(bb->second);
+                if (it != blockPadOfBase.end()) {
+                    if (base) *base = bb->second;
+                    return it->second;
+                }
+            }
+        }
+        return {0, 0};
     }
 
     // Coerce any scalar to an i1 truth value (for conditions).
@@ -2187,14 +2242,16 @@ private:
                 auto cN = std::dynamic_pointer_cast<CajetaConstantType>(targs[0]);
                 if (!cN) unsupported("vload<N>: N must be an integer constant");
                 if (params.size() != 1) unsupported("vload<N> expects (index)");
-                llvm::Value* idx = toI64(params[0].expression);
+                // Block-padded/swizzled tile: relayout the base index (the wide run
+                // stays within one block, so the pad is constant across the vector).
+                llvm::Value* idx = maybeSwizzle(base, toI64(params[0].expression));
                 return target.vectorLoad(builder, mod, base, elemTy,
                                          (unsigned) cN->getValue(), idx);
             }
             // vstore(index, value) — N is implicit in the value's <N x T> type.
             if (params.size() != 2)
                 unsupported("vstore expects (index, value)");
-            llvm::Value* idx = toI64(params[0].expression);
+            llvm::Value* idx = maybeSwizzle(base, toI64(params[0].expression));
             llvm::Value* val = lowerExpr(params[1].expression);
             if (!val->getType()->isVectorTy())
                 unsupported("vstore value must be a Vector<T,N>");
@@ -3311,6 +3368,67 @@ private:
                                 const std::shared_ptr<MethodCallExpression>& mc) {
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
         llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+        // panelTransposed(dst, src, rowBase, colBase, rows, cols, ld, pad): wide
+        // 128-bit global load of `cols`-contiguous chunks, written TRANSPOSED into the
+        // padded LDS tile dst[c*(rows+pad)+r] (torch TransposeLDS=1 + LdsPad). The
+        // transpose makes the local write strided (expected; the prefetch hides it).
+        if (name == "panelTransposed") {
+            const auto& ta = mc->getParameters();
+            if (ta.size() != 8)
+                unsupported("CoopStage.panelTransposed expects (Shared dst, Buffer src, "
+                            "rowBase, colBase, rows, cols, ld, pad)");
+            llvm::Value* dB = nullptr; llvm::Type* dE = nullptr;
+            llvm::Value* sB = nullptr; llvm::Type* sE = nullptr;
+            if (!resolveBufferBase(ta[0].expression, dB, dE))
+                unsupported("CoopStage.panelTransposed: dst must be a Shared<T> local");
+            if (!resolveBufferBase(ta[1].expression, sB, sE))
+                unsupported("CoopStage.panelTransposed: src must be a Buffer<T> param");
+            llvm::Value* rB = coerceTo(lowerExpr(ta[2].expression), i32);
+            llvm::Value* cB = coerceTo(lowerExpr(ta[3].expression), i32);
+            llvm::Value* rws = coerceTo(lowerExpr(ta[4].expression), i32);
+            llvm::Value* cls = coerceTo(lowerExpr(ta[5].expression), i32);
+            llvm::Value* ldv = coerceTo(lowerExpr(ta[6].expression), i32);
+            llvm::Value* pdv = coerceTo(lowerExpr(ta[7].expression), i32);
+            unsigned eb = sE->getPrimitiveSizeInBits();
+            unsigned lanes = eb ? (128u / eb) : 1u;
+            if (lanes < 1) lanes = 1;
+            llvm::Value* lanesV = llvm::ConstantInt::get(i32, lanes);
+            llvm::Value* kpad = builder.CreateAdd(rws, pdv, "bt.kpad");
+            llvm::Value* cpr = builder.CreateUDiv(cls, lanesV, "bt.cpr");
+            llvm::Value* tot = builder.CreateMul(rws, cpr, "bt.total");
+            llvm::Value* tid = coerceTo(target.threadId(builder, mod, 0), i32);
+            llvm::Value* nth = coerceTo(target.workgroupDim(builder, mod, 0), i32);
+            llvm::Value* iv = entryAlloca(i32, "bt.e");
+            builder.CreateStore(tid, iv);
+            auto* h = llvm::BasicBlock::Create(ctx, "bt.head", fn);
+            auto* bd = llvm::BasicBlock::Create(ctx, "bt.body", fn);
+            auto* ex = llvm::BasicBlock::Create(ctx, "bt.exit", fn);
+            builder.CreateBr(h);
+            builder.SetInsertPoint(h);
+            llvm::Value* e = builder.CreateLoad(i32, iv, "bt.e.cur");
+            builder.CreateCondBr(builder.CreateICmpULT(e, tot), bd, ex);
+            builder.SetInsertPoint(bd);
+            llvm::Value* r = builder.CreateUDiv(e, cpr);
+            llvm::Value* cc = builder.CreateMul(builder.CreateURem(e, cpr), lanesV);
+            llvm::Value* gIdx = builder.CreateAdd(
+                builder.CreateMul(builder.CreateAdd(rB, r), ldv),
+                builder.CreateAdd(cB, cc), "bt.gidx");
+            llvm::Value* vec = target.vectorLoad(
+                builder, mod, sB, sE, lanes, builder.CreateZExt(gIdx, i64));
+            for (unsigned i = 0; i < lanes; ++i) {
+                llvm::Value* ci = builder.CreateAdd(cc, llvm::ConstantInt::get(i32, i));
+                llvm::Value* dIdx = builder.CreateAdd(
+                    builder.CreateMul(ci, kpad), r, "bt.didx");
+                llvm::Value* dPtr = target.bufferElementPtr(
+                    builder, mod, dB, dE, builder.CreateZExt(dIdx, i64));
+                llvm::Value* elt = builder.CreateExtractElement(vec, i);
+                builder.CreateStore(coerceTo(elt, dE), dPtr);
+            }
+            builder.CreateStore(builder.CreateAdd(e, nth), iv);
+            builder.CreateBr(h);
+            builder.SetInsertPoint(ex);
+            return llvm::ConstantInt::get(i32, 0);
+        }
         if (name != "panel")
             unsupported("CoopStage." + name + "()");
         const auto& args = mc->getParameters();
@@ -3551,19 +3669,35 @@ private:
             // is fine). 0 = a plain Shared tile (no swizzle).
             uint32_t swz = swizzleStrideOfArg(args[0].expression);
             llvm::Value* offset = lowerExpr(args[1].expression);
-            llvm::Value* ptr = resolveBufferTileArg(args[0].expression, offset);
+            // BlockPadded<T,Block,Pad>: additive pad doesn't distribute over
+            // base+offset, so GEP from the BARE base and carry the logical offset in
+            // LdsBlockPad — the fragment coord pads `offset + fragLocal`. (Other tiles
+            // keep the pre-offset ptr.)
+            llvm::Value* tileBase = nullptr;
+            auto bp = blockPadOfArg(args[0].expression, &tileBase);
+            LdsBlockPad blk;
+            llvm::Value* ptr;
+            if (bp.first) {
+                ptr = tileBase;
+                blk.period = bp.first;
+                blk.pad = bp.second;
+                blk.baseOffset =
+                    builder.CreateZExtOrTrunc(offset, llvm::Type::getInt32Ty(ctx));
+            } else {
+                ptr = resolveBufferTileArg(args[0].expression, offset);
+            }
             llvm::Value* layout = coerceTo(lowerExpr(args[2].expression), i32);
             llvm::Value* stride = coerceTo(lowerExpr(args[3].expression), i32);
             if (name == "load") {
                 llvm::Value* v = target.coopMatrixLoad(
                     builder, mod, ptr, layout, stride, slot.matrixType,
-                    slot.rows, slot.cols, slot.use, swz);
+                    slot.rows, slot.cols, slot.use, swz, blk);
                 builder.CreateStore(v, slot.alloca);
             } else {
                 llvm::Value* v = builder.CreateLoad(slot.matrixType, slot.alloca,
                                                     recv + ".val");
                 target.coopMatrixStore(builder, mod, ptr, v, layout, stride,
-                                       slot.rows, slot.cols, slot.use, swz);
+                                       slot.rows, slot.cols, slot.use, swz, blk);
             }
             return llvm::ConstantInt::get(i32, 0);
         }
@@ -4888,6 +5022,13 @@ llvm::Value* LoweringTarget::swizzleAddr(llvm::IRBuilderBase&, llvm::Value* idx,
     return idx;
 }
 
+// Default block padding: the identity. Like swizzling, it is a perf-only layout
+// transform; a backend without it stays correct by addressing the tile linearly.
+llvm::Value* LoweringTarget::blockPadAddr(llvm::IRBuilderBase&, llvm::Value* idx,
+                                          uint32_t /*period*/, uint32_t /*pad*/) {
+    return idx;
+}
+
 // Default device printf: rejected. CPU + NVPTX override; AMD/Vulkan need
 // hostcall / DebugPrintf runtime integration (deferred).
 void LoweringTarget::devicePrintf(llvm::IRBuilderBase&, llvm::Module&,
@@ -5139,7 +5280,7 @@ llvm::Value* LoweringTarget::coopMatrixLoad(
     llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/, llvm::Value* /*ptr*/,
     llvm::Value* /*layout*/, llvm::Value* /*stride*/, llvm::Type* /*matrixType*/,
     uint32_t /*rows*/, uint32_t /*cols*/, uint32_t /*use*/,
-    uint32_t /*swizzleStride*/) {
+    uint32_t /*swizzleStride*/, LdsBlockPad /*blockPad*/) {
     throw coopMatrixUnsupported(name());
 }
 
@@ -5147,7 +5288,7 @@ void LoweringTarget::coopMatrixStore(
     llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/, llvm::Value* /*ptr*/,
     llvm::Value* /*matrixVal*/, llvm::Value* /*layout*/, llvm::Value* /*stride*/,
     uint32_t /*rows*/, uint32_t /*cols*/, uint32_t /*use*/,
-    uint32_t /*swizzleStride*/) {
+    uint32_t /*swizzleStride*/, LdsBlockPad /*blockPad*/) {
     throw coopMatrixUnsupported(name());
 }
 
@@ -5507,6 +5648,11 @@ llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
 
     std::string kname = entryName.empty() ? method->getName() : entryName;
     llvm::Function* fn = target.createKernel(deviceModule, kname, params);
+
+    // @Occupancy override (kernel-occupancy-autotune §3): apply portable resource
+    // logistics before the §2 auto budgeting, so an explicit override wins.
+    if (auto attr = XpuKernelAttr::from(*method); attr && attr->hasOccupancy())
+        target.applyOccupancy(fn, *attr);
 
     DeviceLowerer lowerer(deviceModule, fn, target);
     lowerer.setParams(std::move(params));

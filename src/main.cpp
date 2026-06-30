@@ -11,6 +11,7 @@
 #include "cajeta/cli/DocCommand.h"
 #include "cajeta/cli/IdeCommands.h"
 #include "cajeta/cli/NativeCommands.h"
+#include "cajeta/cli/XpuProfileCommand.h"
 #include "cajeta/jit/CajetaJitHost.h"
 #include "cajeta/dap/DapServer.h"
 #include "cajeta/buildtool/BuildToolCommands.h"
@@ -207,6 +208,12 @@ int main(int argc, const char* argv[]) {
     if (argc >= 2 && (std::string(argv[1]) == "fetch"
                    || std::string(argv[1]) == "vendor")) {
         return cajeta::dispatchNative(argc, argv);
+    }
+
+    // `cajeta gpu-profile` — interrogate the active GPU + print its DeviceProfile
+    // as JSON (xpu-device-profile); the profile suite's env-capture consumes it.
+    if (argc >= 2 && std::string(argv[1]) == "gpu-profile") {
+        return cajeta::dispatchXpuProfile(argc, argv);
     }
 
     // `cajeta dap` — Debug Adapter Protocol server over stdio (docs/

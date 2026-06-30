@@ -26,12 +26,17 @@ namespace xpu {
     int emitKernelRegistration(Backend backend,
                                const std::vector<MethodPtr>& kernels,
                                llvm::Module& hostModule,
-                               const std::string& arch) {
+                               const std::string& arch,
+                               const std::unordered_map<std::string, unsigned>&
+                                   kernelMaxThreads) {
         switch (backend) {
             case Backend::Nvptx:
                 return nvidia::emitKernelRegistration(kernels, hostModule, arch);
             case Backend::Amdgpu:
-                return amd::emitKernelRegistration(kernels, hostModule, arch);
+                // Only AMDGPU consumes the launch workgroup sizes today
+                // (amdgpu-flat-work-group-size); other backends ignore them.
+                return amd::emitKernelRegistration(kernels, hostModule, arch,
+                                                   kernelMaxThreads);
             case Backend::Spirv:
                 return vulkan::emitKernelRegistration(kernels, hostModule, arch);
             case Backend::Cpu:

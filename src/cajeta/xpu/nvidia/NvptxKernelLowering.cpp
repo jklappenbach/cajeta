@@ -11,6 +11,7 @@
 
 #include "../lowering/KernelLowering.h"
 #include "../lowering/LoweringTarget.h"
+#include "../core/XpuKernelAttr.h"
 #include "cajeta/error/Exception.h"
 
 #include "llvm/IR/DerivedTypes.h"
@@ -227,6 +228,27 @@ public:
             ->addOperand(llvm::MDNode::get(ctx, ops));
     }
 
+    // @Occupancy override (kernel-occupancy-autotune §3) → nvvm.annotations:
+    // maxThreads→maxntidx (launch bound), minResident→minctasm (min CTAs/SM),
+    // maxRegisters→maxnreg. The portable analogue of the AMDGPU mapping.
+    void applyOccupancy(llvm::Function* fn, const XpuKernelAttr& attr) override {
+        llvm::Module& m = *fn->getParent();
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        auto annotate = [&](const char* key, unsigned val) {
+            llvm::Metadata* ops[] = {
+                llvm::ValueAsMetadata::get(fn),
+                llvm::MDString::get(ctx, key),
+                llvm::ValueAsMetadata::get(llvm::ConstantInt::get(i32, val)),
+            };
+            m.getOrInsertNamedMetadata("nvvm.annotations")
+                ->addOperand(llvm::MDNode::get(ctx, ops));
+        };
+        if (auto mt = attr.maxThreads())   annotate("maxntidx", *mt);
+        if (auto mr = attr.minResident())  annotate("minctasm", *mr);
+        if (auto rr = attr.maxRegisters()) annotate("maxnreg", *rr);
+    }
+
     // Wave ops: NVIDIA warps are 32 wide; shuffle + ballot are hardware.
     llvm::Value* waveWidth(llvm::IRBuilderBase& b, llvm::Module& m) override {
         return readSreg(b, m, llvm::Intrinsic::nvvm_read_ptx_sreg_warpsize);
@@ -325,7 +347,8 @@ public:
                                 llvm::Value* ptr, llvm::Value* layout,
                                 llvm::Value* stride, llvm::Type* matrixType,
                                 uint32_t /*rows*/, uint32_t /*cols*/,
-                                uint32_t use, uint32_t swz = 0) override {
+                                uint32_t use, uint32_t swz = 0,
+                                LdsBlockPad /*blk*/ = {}) override {
         if (swz) {
             // U5.3: degrade to identity, don't reject. The WMMA whole-tile load
             // can't permute per element, but swizzleAddr is already identity on
@@ -344,7 +367,8 @@ public:
     void coopMatrixStore(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
                          llvm::Value* matrixVal, llvm::Value* layout,
                          llvm::Value* stride, uint32_t /*rows*/, uint32_t /*cols*/,
-                         uint32_t /*use*/, uint32_t swz = 0) override {
+                         uint32_t /*use*/, uint32_t swz = 0,
+                         LdsBlockPad /*blk*/ = {}) override {
         if (swz) {
             // U5.3: degrade to identity, don't reject (see coopMatrixLoad).
             std::cerr << "note: [swizzle-tier] CooperativeMatrix.store to a "

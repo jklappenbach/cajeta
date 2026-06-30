@@ -7,23 +7,21 @@ import cajeta.xpu.KernelThread;
 import cajeta.xpu.Workgroup;
 import cajeta.xpu.Barrier;
 import cajeta.xpu.Shared;
+import cajeta.xpu.BlockPadded;
 import cajeta.xpu.CooperativeMatrix;
 
 import profile.Benchmark;
 
-// Register-prefetch-pipelined LDS-staged f16 WMMA GEMM (C = A·B, f16 multiplicands,
-// f32 accumulate) on the hardware matrix cores (gfx1151 v_wmma_f32_16x16x16_f16 —
-// the SAME instruction rocBLAS/PyTorch use for f16). 128x128 output tile / workgroup,
-// 16 waves (512 threads), each wave a 2x2 grid of 16x16 WMMA tiles (4 f32 accs).
-// Two ping-pong LDS panels; each K-step issues the NEXT panel's global loads into
-// REGISTERS, runs the current panel's WMMA, then stores those registers to the
-// alternate LDS buffer — a CK-style software pipeline that overlaps the long
-// global-load latency with the matrix-core compute. 20.6 TFLOP/s at n=2048 on HIP
-// (~70% of PyTorch's CK-tuned f16). KEY FINDING (gpu-gemm-occupancy U1/U3): the
-// kernel is LATENCY-bound, not occupancy-bound — the register prefetch trades
-// occupancy (16->12 waves/SIMD, vgpr 94->113, no spill) for latency hiding and is
-// net +18% at n2048 (and +43..52% at small n) over the linear-staging baseline.
-// A = identity, so C == B exactly (f32 holds the f16 values). Assumes n % 128 == 0.
+// Torch-recipe f16 WMMA GEMM (gpu-f16-torch-recipe) — implements torch's VERIFIED gfx1151
+// kernel shape: MT 96x128, depthU 64, MIWT 3x4 = 12 accumulators/wave, 4 waves (128 threads).
+// Wide 128-bit global loads on BOTH operands (GRVWA8/GRVWB8, vload<8>); B stored TRANSPOSED in
+// LDS so its WMMA fragment reads wide (ds_read_b128). BOTH A and B LDS tiles are PADDED to an
+// ODD half-stride (stride 66 = 64+2; 66/2=33 coprime with the 32 LDS banks) — THE lever:
+// rocprof showed unpadded/even-pad gives 84% LDS bank conflicts (every lane same bank), padding
+// both odd drops it to ~38% and lifts 11.9 -> 26.2 TFLOP/s @ n2048 (beats variant B's ~20). The
+// next-panel staging is interleaved one slice per K-substep (load->WMMA->commit, ~4 vectors
+// live). torch hits 38.2 with this shape + PGR2 + LRVW16; this build = wide-loads + transposed
+// + bank-conflict-free reads. A = identity ⇒ C == B. n % 128 == 0 (N); M (96-tile) bounds-checked.
 public class GpuMatMulF16Bench extends Benchmark {
 
     public float16[] a;
@@ -36,6 +34,7 @@ public class GpuMatMulF16Bench extends Benchmark {
     public int32 nDim;
     public uint32 nU;
     public uint32 gridX;
+    public uint32 gridM;
     public float64 bSum;
     public float64 cSum;
 
@@ -46,89 +45,127 @@ public class GpuMatMulF16Bench extends Benchmark {
         uint32 blockCol = Workgroup.x();
         uint32 tid = KernelThread.x();
         uint32 wave = tid / 32;
-        uint32 wi = wave / 4;
-        uint32 wj = wave % 4;
-        uint32 rb = blockRow * 128;
+        uint32 wm = wave / 2;
+        uint32 wn = wave % 2;
+        uint32 rb = blockRow * 96;
         uint32 cb = blockCol * 128;
-        Shared<float16> sa = shared float16[2 * 2048];
-        Shared<float16> sb = shared float16[2 * 2048];
-        CooperativeMatrix<float32,16,16,2> acc0_0; acc0_0.splat(0.0f);
-        CooperativeMatrix<float32,16,16,2> acc0_1; acc0_1.splat(0.0f);
-        CooperativeMatrix<float32,16,16,2> acc1_0; acc1_0.splat(0.0f);
-        CooperativeMatrix<float32,16,16,2> acc1_1; acc1_1.splat(0.0f);
+        // torch-faithful: A and B both WIDE b128 LDS write + read, de-conflicted by the block
+        // pad (BlockPadded<64,8> = torch's LBSPPB128/LPB8). B is fed TRANSPOSED from global so its
+        // LDS write is wide (no scatter); A is [M][K] (already K-contiguous). Logical stride 64.
+        // U4: SINGLE LDS buffer (6912+9216=16128 elem=32256 B) -> 2 workgroups/WGP occupancy on the
+        // 64KB gfx1151 LDS (the 26->38 lever; double-buffer's 64512 B capped us at 1 WG/WGP).
+        BlockPadded<float16,64,8> sa = shared float16[6912];   // A[96(M)][64(K)] logical, single buf
+        BlockPadded<float16,64,8> sb = shared float16[9216];   // B[128(N)][64(K)] logical, single buf
+        CooperativeMatrix<float32,16,16,2> a00; a00.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> a01; a01.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> a02; a02.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> a03; a03.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> a10; a10.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> a11; a11.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> a12; a12.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> a13; a13.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> a20; a20.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> a21; a21.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> a22; a22.splat(0.0f);
+        CooperativeMatrix<float32,16,16,2> a23; a23.splat(0.0f);
         CooperativeMatrix<float16,16,16,0> wa0;
         CooperativeMatrix<float16,16,16,0> wa1;
+        CooperativeMatrix<float16,16,16,0> wa2;
         CooperativeMatrix<float16,16,16,1> wb0;
         CooperativeMatrix<float16,16,16,1> wb1;
-
-        // Stage K-panel 0 into buffer 0 (A 128x16 row-major; B 16x128 row-major).
-        uint32 e = tid;
-        while (e < 2048) {
-            uint32 ar = e / 16; uint32 ac = e % 16;
-            sa[ar * 16 + ac] = a[(rb + ar) * n + ac];
-            uint32 br = e / 128; uint32 bc = e % 128;
-            sb[br * 128 + bc] = b[br * n + cb + bc];
-            e = e + 512;
+        CooperativeMatrix<float16,16,16,1> wb2;
+        CooperativeMatrix<float16,16,16,1> wb3;
+        uint32 ca = tid;
+        while (ca < 768) {
+            uint32 m = ca / 8; uint32 kk = (ca % 8) * 8;
+            if (rb + m < n) {
+                Vector<float16,8> va = a.vload<8>((rb + m) * n + kk);
+                sa.vstore(m * 64 + kk, va);
+            }
+            ca = ca + 128;
+        }
+        uint32 cbk = tid;
+        while (cbk < 1024) {
+            uint32 bn = cbk / 8; uint32 bk = (cbk % 8) * 8;        // B transposed: N-row, K-contiguous
+            Vector<float16,8> vb = b.vload<8>((cb + bn) * n + bk); // wide K load from transposed global B
+            sb.vstore(bn * 64 + bk, vb);                           // wide b128 LDS write [N][K]
+            cbk = cbk + 128;
         }
         Barrier.workgroup();
-
-        uint32 nsteps = n / 16;
-        uint32 ph = 0;
-        uint32 kt = 0;
-        while (kt < nsteps) {
-            uint32 konext = (kt + 1) * 16;
-            // U3 variant B: CK-style register-prefetch software pipeline. Issue the
-            // next panel's global loads into registers NOW (no wait), run the current
-            // panel's WMMA, then store the registers to LDS — so the long global-load
-            // latency overlaps the matrix-core compute. Each thread carries 4 A + 4 B
-            // elements (2048 / 512 threads), unrolled into scalars.
-            uint32 e0 = tid; uint32 e1 = tid + 512;
-            uint32 e2 = tid + 1024; uint32 e3 = tid + 1536;
-            float16 ra0 = (float16) 0.0; float16 ra1 = (float16) 0.0;
-            float16 ra2 = (float16) 0.0; float16 ra3 = (float16) 0.0;
-            float16 rb0 = (float16) 0.0; float16 rb1 = (float16) 0.0;
-            float16 rb2 = (float16) 0.0; float16 rb3 = (float16) 0.0;
-            boolean pf = kt + 1 < nsteps;
+        uint32 npanels = n / 64;
+        uint32 ao0 = (wm * 48 + 0) * 64;
+        uint32 ao1 = (wm * 48 + 16) * 64;
+        uint32 ao2 = (wm * 48 + 32) * 64;
+        uint32 cn0 = (wn * 64 + 0) * 64; uint32 cn1 = (wn * 64 + 16) * 64;
+        uint32 cn2 = (wn * 64 + 32) * 64; uint32 cn3 = (wn * 64 + 48) * 64;
+        uint32 bk = (tid % 8) * 8;        // B-staging: const K-offset; N-row = tid/8 + 16*slot
+        uint32 bnb = tid / 8;
+        uint32 p = 0;
+        while (p < npanels) {
+            // PGR2 single-buffer: prefetch the NEXT panel's B into registers (global loads issued
+            // before the compute -> in flight during the WMMA), then after the compute barrier write
+            // regs->LDS + stage A. Overlap restored AT 2 WG/WGP (the combined lever). B-only prefetch
+            // keeps VGPR < 256 (no spill).
+            boolean pf = p + 1 < npanels;
+            uint32 ko = (p + 1) * 64;
+            Vector<float16,8> pb0; Vector<float16,8> pb1; Vector<float16,8> pb2; Vector<float16,8> pb3;
+            Vector<float16,8> pb4; Vector<float16,8> pb5; Vector<float16,8> pb6; Vector<float16,8> pb7;
             if (pf) {
-                ra0 = a[(rb + e0 / 16) * n + konext + e0 % 16];
-                ra1 = a[(rb + e1 / 16) * n + konext + e1 % 16];
-                ra2 = a[(rb + e2 / 16) * n + konext + e2 % 16];
-                ra3 = a[(rb + e3 / 16) * n + konext + e3 % 16];
-                rb0 = b[(konext + e0 / 128) * n + cb + e0 % 128];
-                rb1 = b[(konext + e1 / 128) * n + cb + e1 % 128];
-                rb2 = b[(konext + e2 / 128) * n + cb + e2 % 128];
-                rb3 = b[(konext + e3 / 128) * n + cb + e3 % 128];
+                pb0 = b.vload<8>((cb + bnb +  0) * n + ko + bk);
+                pb1 = b.vload<8>((cb + bnb + 16) * n + ko + bk);
+                pb2 = b.vload<8>((cb + bnb + 32) * n + ko + bk);
+                pb3 = b.vload<8>((cb + bnb + 48) * n + ko + bk);
+                pb4 = b.vload<8>((cb + bnb + 64) * n + ko + bk);
+                pb5 = b.vload<8>((cb + bnb + 80) * n + ko + bk);
+                pb6 = b.vload<8>((cb + bnb + 96) * n + ko + bk);
+                pb7 = b.vload<8>((cb + bnb + 112) * n + ko + bk);
             }
-            uint32 base = ph * 2048;
-            wa0.load(sa, base + (wi * 2 + 0) * 256, 0, 16);
-            wa1.load(sa, base + (wi * 2 + 1) * 256, 0, 16);
-            wb0.load(sb, base + (wj * 2 + 0) * 16, 0, 128);
-            wb1.load(sb, base + (wj * 2 + 1) * 16, 0, 128);
-            acc0_0.mma(wa0, wb0); acc0_1.mma(wa0, wb1);
-            acc1_0.mma(wa1, wb0); acc1_1.mma(wa1, wb1);
-            if (pf) {
-                uint32 nb = (1 - ph) * 2048;
-                sa[nb + (e0 / 16) * 16 + e0 % 16] = ra0;
-                sa[nb + (e1 / 16) * 16 + e1 % 16] = ra1;
-                sa[nb + (e2 / 16) * 16 + e2 % 16] = ra2;
-                sa[nb + (e3 / 16) * 16 + e3 % 16] = ra3;
-                sb[nb + (e0 / 128) * 128 + e0 % 128] = rb0;
-                sb[nb + (e1 / 128) * 128 + e1 % 128] = rb1;
-                sb[nb + (e2 / 128) * 128 + e2 % 128] = rb2;
-                sb[nb + (e3 / 128) * 128 + e3 % 128] = rb3;
+            uint32 ks = 0;
+            while (ks < 4) {
+                uint32 ka = ks * 16;
+                wa0.load(sa, ao0 + ka, 0, 64);
+                wa1.load(sa, ao1 + ka, 0, 64);
+                wa2.load(sa, ao2 + ka, 0, 64);
+                wb0.load(sb, cn0 + ka, 1, 64);
+                wb1.load(sb, cn1 + ka, 1, 64);
+                wb2.load(sb, cn2 + ka, 1, 64);
+                wb3.load(sb, cn3 + ka, 1, 64);
+                a00.mma(wa0, wb0); a01.mma(wa0, wb1); a02.mma(wa0, wb2); a03.mma(wa0, wb3);
+                a10.mma(wa1, wb0); a11.mma(wa1, wb1); a12.mma(wa1, wb2); a13.mma(wa1, wb3);
+                a20.mma(wa2, wb0); a21.mma(wa2, wb1); a22.mma(wa2, wb2); a23.mma(wa2, wb3);
+                ks = ks + 1;
             }
             Barrier.workgroup();
-            ph = 1 - ph;
-            kt = kt + 1;
+            if (pf) {
+                sb.vstore((bnb +  0) * 64 + bk, pb0); sb.vstore((bnb + 16) * 64 + bk, pb1);
+                sb.vstore((bnb + 32) * 64 + bk, pb2); sb.vstore((bnb + 48) * 64 + bk, pb3);
+                sb.vstore((bnb + 64) * 64 + bk, pb4); sb.vstore((bnb + 80) * 64 + bk, pb5);
+                sb.vstore((bnb + 96) * 64 + bk, pb6); sb.vstore((bnb + 112) * 64 + bk, pb7);
+                uint32 ca2 = tid;
+                while (ca2 < 768) {
+                    uint32 m = ca2 / 8; uint32 kk = (ca2 % 8) * 8;
+                    if (rb + m < n) { Vector<float16,8> va = a.vload<8>((rb + m) * n + ko + kk);
+                        sa.vstore(m * 64 + kk, va); }
+                    ca2 = ca2 + 128;
+                }
+                Barrier.workgroup();
+            }
+            p = p + 1;
         }
-        uint32 rr0 = rb + (wi * 2 + 0) * 16;
-        uint32 rr1 = rb + (wi * 2 + 1) * 16;
-        uint32 ccc0 = cb + (wj * 2 + 0) * 16;
-        uint32 ccc1 = cb + (wj * 2 + 1) * 16;
-        acc0_0.store(c, rr0 * n + ccc0, 0, n);
-        acc0_1.store(c, rr0 * n + ccc1, 0, n);
-        acc1_0.store(c, rr1 * n + ccc0, 0, n);
-        acc1_1.store(c, rr1 * n + ccc1, 0, n);
+        uint32 r0 = rb + wm * 48;
+        uint32 c0 = cb + wn * 64;
+        if (r0 + 0 < n) {
+            a00.store(c, (r0 + 0) * n + c0 + 0, 0, n); a01.store(c, (r0 + 0) * n + c0 + 16, 0, n);
+            a02.store(c, (r0 + 0) * n + c0 + 32, 0, n); a03.store(c, (r0 + 0) * n + c0 + 48, 0, n);
+        }
+        if (r0 + 16 < n) {
+            a10.store(c, (r0 + 16) * n + c0 + 0, 0, n); a11.store(c, (r0 + 16) * n + c0 + 16, 0, n);
+            a12.store(c, (r0 + 16) * n + c0 + 32, 0, n); a13.store(c, (r0 + 16) * n + c0 + 48, 0, n);
+        }
+        if (r0 + 32 < n) {
+            a20.store(c, (r0 + 32) * n + c0 + 0, 0, n); a21.store(c, (r0 + 32) * n + c0 + 16, 0, n);
+            a22.store(c, (r0 + 32) * n + c0 + 32, 0, n); a23.store(c, (r0 + 32) * n + c0 + 48, 0, n);
+        }
     }
 
     public String name() {
@@ -244,15 +281,30 @@ public class GpuMatMulF16Bench extends Benchmark {
         }
         this.bSum = s;
 
+        // B is uploaded TRANSPOSED (bt[nn][k] = b[k][nn]) so the kernel's wide K-contiguous
+        // global load feeds a wide b128 LDS write. With A=identity, C[m][nn]=b[m][nn] still ⇒
+        // cSum == bSum (transpose preserves the sum). torch's Bljk variant does the same.
+        float16[] bt = heap float16[sz];
+        int32 ti = 0;
+        while (ti < this.nDim) {
+            int32 tj = 0;
+            while (tj < this.nDim) {
+                bt[ti * this.nDim + tj] = this.b[tj * this.nDim + ti];
+                tj = tj + 1;
+            }
+            ti = ti + 1;
+        }
+
         this.ka = heap KernelBuffer<float16>(sz);
         this.kb = heap KernelBuffer<float16>(sz);
         this.kc = heap KernelBuffer<float32>(sz);
         this.ka.upload(this.a);
-        this.kb.upload(this.b);
+        this.kb.upload(bt);
         this.kc.upload(this.c);
 
         this.nU = (uint32) this.nDim;
-        this.gridX = this.nU / 128;   // one workgroup per 128x128 output tile
+        this.gridX = this.nU / 128;          // N blocks: one workgroup per 128 cols
+        this.gridM = (this.nU + 95) / 96;    // M blocks: 96-row tiles (ceil; bounds-checked)
     }
 
     public int64 inputSize() {
@@ -260,7 +312,7 @@ public class GpuMatMulF16Bench extends Benchmark {
     }
 
     public void run(int32 iterations) {
-        gemmF16.launch(this.stream, grid: [this.gridX, this.gridX], block: [512])(
+        gemmF16.launch(this.stream, grid: [this.gridX, this.gridM], block: [128])(
             this.kc, this.ka, this.kb, this.nU);
         this.stream.sync();
     }

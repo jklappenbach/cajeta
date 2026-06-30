@@ -963,7 +963,8 @@ public:
                                 llvm::Value* ptr, llvm::Value* layout,
                                 llvm::Value* stride, llvm::Type* matrixType,
                                 uint32_t /*rows*/, uint32_t /*cols*/,
-                                uint32_t /*use*/, uint32_t swz = 0) override {
+                                uint32_t /*use*/, uint32_t swz = 0,
+                                LdsBlockPad /*blk*/ = {}) override {
         if (swz) {
             // U5.3: degrade to identity, don't reject. OpCooperativeMatrixLoadKHR
             // can't permute per element, but swizzleAddr is already identity on
@@ -983,7 +984,8 @@ public:
     void coopMatrixStore(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
                          llvm::Value* matrixVal, llvm::Value* layout,
                          llvm::Value* stride, uint32_t /*rows*/, uint32_t /*cols*/,
-                         uint32_t /*use*/, uint32_t swz = 0) override {
+                         uint32_t /*use*/, uint32_t swz = 0,
+                         LdsBlockPad /*blk*/ = {}) override {
         if (swz) {
             // U5.3: degrade to identity, don't reject (see coopMatrixLoad).
             std::cerr << "note: [swizzle-tier] CooperativeMatrix.store to a "
