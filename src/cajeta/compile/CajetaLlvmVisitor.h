@@ -444,6 +444,11 @@ namespace cajeta {
             CajetaType::getCanonicalMap()[qName->getTypeName()] =
                 static_pointer_cast<CajetaType>(structure);
 
+            // @GenerateMock: the generated `Mock<Name>` class name is pre-scanned
+            // into the archive registry (Compiler.cpp ArchivePrescanVisitor) so a
+            // forward reference resolves to a placeholder; CajetaClass::synthesizeMock
+            // fills that placeholder during this target's generatePrototype.
+
             // For templates, skip the body walk entirely. The body contains
             // unresolved type-parameter references (`T value`, `T method()`)
             // that FormalParameter / CajetaType resolution can't handle in
