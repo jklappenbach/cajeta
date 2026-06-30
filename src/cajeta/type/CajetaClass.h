@@ -1152,6 +1152,11 @@ namespace cajeta {
         // alongside @AllArgsConstructor / @Value as triggers.
         void synthesizeBuilder();
 
+        // @GenerateMock — generate a compile-time mock subclass `Mock<Name>`
+        // of this (target) type for cajeta-unit's AoT mocking (no runtime
+        // proxy). See docs/specs/mock-codegen-spec.md. Mirrors synthesizeBuilder.
+        void synthesizeMock();
+
         // Helper for the three ctor synthesizers: does the constructor
         // map already hold a ctor with `userArgs` user-visible params
         // (excluding `this`)?

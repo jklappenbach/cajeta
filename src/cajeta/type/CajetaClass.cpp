@@ -21,6 +21,7 @@
 #include "../method/SynthesizedWithMethod.h"
 #include "../method/SynthesizedBuilderMethods.h"
 #include "../method/SynthesizedEncodingMethods.h"
+#include "../method/SynthesizedMockClass.h"
 #include "CajetaArray.h"
 #include "../compile/CompilationContext.h"
 #include "../field/HeapField.h"
@@ -1242,6 +1243,65 @@ namespace cajeta {
         // this class; that method's LLVM function gets created via a
         // direct generatePrototype call inside synthesizeBuilder.
         synthesizeBuilder();
+
+        // @GenerateMock — generate Mock<Name> AFTER our own prototype is built
+        // (same ordering rationale as @Builder: the synthesizer walks a fresh
+        // CajetaClass through generatePrototype and references this class as its
+        // superclass, which must already be built).
+        synthesizeMock();
+    }
+
+    // M1 (docs/specs/mock-codegen-spec.md): recognize @GenerateMock on a target
+    // type and generate `Mock<SimpleName>` extending it, with a no-arg ctor.
+    // Forwarding overrides + the MockEngine field land in later stages.
+    void CajetaClass::synthesizeMock() {
+        auto ann = findAnnotation("GenerateMock");
+        if (!ann) return;
+
+        // The Mock<Name> shell was pre-registered during parse
+        // (CajetaLlvmVisitor::visitClassDeclaration) so user references resolved.
+        // Fill that SAME instance here, now that the target (its superclass) is
+        // built. Fall back to creating it if the pre-register didn't run.
+        std::string mockTypeName = std::string("Mock") + qName->getTypeName();
+        auto mockQName = QualifiedName::getOrInsert(
+            mockTypeName, qName->getPackageName());
+
+        CajetaClassPtr mock;
+        auto& canonicalMap = CajetaType::getCanonicalMap();
+        auto it = canonicalMap.find(mockQName->toCanonical());
+        if (it != canonicalMap.end()) {
+            mock = std::dynamic_pointer_cast<CajetaClass>(it->second);
+        }
+        if (!mock) {
+            // Unreferenced mock (no placeholder created): make one fresh.
+            std::list<QualifiedNamePtr> mockExtends{ qName };
+            std::list<QualifiedNamePtr> mockImplements;
+            mock = std::make_shared<CajetaClass>(
+                module, mockQName, mockExtends, mockImplements);
+            canonicalMap[mockQName->toCanonical()] =
+                std::static_pointer_cast<CajetaType>(mock);
+        }
+
+        // Fill the (possibly placeholder) mock with its real declaration —
+        // extends the target so `Mock<Name>` is-a target — and clear the
+        // placeholder flag. fillFromDeclaration mutates the SAME shared_ptr a
+        // forward reference already bound to, so that reference stays valid.
+        std::list<QualifiedNamePtr> mockExtends{ qName };
+        std::list<QualifiedNamePtr> mockImplements;
+        mock->fillFromDeclaration(module, mockQName, mockExtends, mockImplements);
+
+        // Synthesize the mock body (engine field + ctor + forwarding overrides)
+        // as Cajeta source and re-parse it into `mock`.
+        fillMockClassBody(
+            mock, std::static_pointer_cast<CajetaClass>(shared_from_this()),
+            module);
+
+        // Build the mock's prototype (LLVM struct, vtable, method prototypes).
+        mock->generatePrototype();
+
+        // Add to the module's structure roster so codegen emits it.
+        module->getStructures()[mockQName->toCanonical()] = mock;
+        CajetaModule::getStructureToModule()[mockQName->toCanonical()] = module;
     }
 
     std::vector<MethodPtr> CajetaClass::getFlattenedInterfaceMethods() {

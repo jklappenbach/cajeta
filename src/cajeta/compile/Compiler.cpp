@@ -215,6 +215,24 @@ namespace cajeta {
                                 /*markEnum=*/false,
                                 /*markValueType=*/classHasValueTypeAnnotation(ctx));
             captureTemplateMeta(ctx);
+            // @GenerateMock: the compiler generates a sibling `Mock<Name>` class
+            // (CajetaClass::synthesizeMock) with no source declaration of its own.
+            // Register its name in the archive so a forward reference
+            // (`heap MockGateway()`, before the target is visited) resolves to a
+            // placeholder that synthesizeMock later fills.
+            if (classHasGenerateMockAnnotation(ctx)) {
+                std::string mockShort =
+                    std::string("Mock") + ctx->identifier()->getText();
+                std::string canonical;
+                if (!package.empty()) canonical = package;
+                for (auto& e : enclosingStack) {
+                    if (!canonical.empty()) canonical += ".";
+                    canonical += e;
+                }
+                if (!canonical.empty()) canonical += ".";
+                canonical += mockShort;
+                CajetaType::registerArchive(canonical, mockShort);
+            }
             return defaultResult();
         }
 
@@ -270,6 +288,27 @@ namespace cajeta {
                 if (!qn) continue;
                 auto ids = qn->identifier();
                 if (!ids.empty() && ids.back()->getText() == "ValueType") {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // True if the class declaration is annotated @GenerateMock (the
+        // annotation precedes the `class` keyword on the enclosing
+        // typeDeclaration's modifier list, same shape as @ValueType).
+        static bool classHasGenerateMockAnnotation(
+                CajetaParser::ClassDeclarationContext* ctx) {
+            auto* td = dynamic_cast<CajetaParser::TypeDeclarationContext*>(
+                ctx->parent);
+            if (!td) return false;
+            for (auto* mod : td->classOrInterfaceModifier()) {
+                auto* ann = mod->annotation();
+                if (!ann) continue;
+                auto* qn = ann->qualifiedName();
+                if (!qn) continue;
+                auto ids = qn->identifier();
+                if (!ids.empty() && ids.back()->getText() == "GenerateMock") {
                     return true;
                 }
             }
