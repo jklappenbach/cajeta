@@ -8,6 +8,7 @@
 #include "CajetaParser.h"
 
 #include <list>
+#include <map>
 #include <set>
 #include <string>
 
@@ -15,9 +16,6 @@ using namespace std;
 
 namespace cajeta {
 
-    // Canonical names of the scalar primitives. M3 forwards only reference- /
-    // void-typed methods; methods touching primitives need boxing/unboxing and
-    // are deferred to M4 (left inheriting the real implementation for now).
     static bool isPrimitiveCanonical(const string& c) {
         static const std::set<string> prims = {
             "int8", "int16", "int32", "int64", "int128",
@@ -26,6 +24,19 @@ namespace cajeta {
             "boolean", "char"
         };
         return prims.count(c) > 0;
+    }
+
+    // The cajeta.lang box class for a scalar primitive, or "" if it has no box
+    // (int128/uint128). `<Box>.of(v)` boxes; `((<Box>) o).value()` unboxes.
+    static string boxClassFor(const string& canon) {
+        static const std::map<string, string> boxes = {
+            {"int8", "Int8"}, {"int16", "Int16"}, {"int32", "Int32"}, {"int64", "Int64"},
+            {"uint8", "UInt8"}, {"uint16", "UInt16"}, {"uint32", "UInt32"}, {"uint64", "UInt64"},
+            {"float16", "Float16"}, {"float32", "Float32"}, {"float64", "Float64"}, {"float128", "Float128"},
+            {"boolean", "Boolean"}, {"char", "Char"}
+        };
+        auto it = boxes.find(canon);
+        return it == boxes.end() ? "" : it->second;
     }
 
     static string canonicalOf(const CajetaTypePtr& t) {
@@ -54,31 +65,52 @@ namespace cajeta {
             CajetaTypePtr rt = m->getReturnType();
             string retCanon = canonicalOf(rt);
             bool isVoid = (!rt || retCanon == "void" || retCanon.empty());
-            bool hasPrim = (!isVoid && isPrimitiveCanonical(retCanon));
 
+            // Return: a primitive needs a box for the unbox path; bail if it has
+            // none (int128/uint128).
+            string retBox;
+            if (!isVoid && isPrimitiveCanonical(retCanon)) {
+                retBox = boxClassFor(retCanon);
+                if (retBox.empty()) continue;
+            }
+
+            // Params: reference args pass through; primitive args box via
+            // `<Box>.of(name)`. Bail on an unboxable primitive or an unnamed type.
+            bool skip = false;
             string paramDecl;
             string argList;
             for (auto& p : m->getParameterList()) {
                 if (!p || p->getName() == "this") continue;
                 string ptCanon = canonicalOf(p->getType());
-                if (ptCanon.empty() || isPrimitiveCanonical(ptCanon)) {
-                    hasPrim = true;
+                if (ptCanon.empty()) { skip = true; break; }
+                string arg;
+                if (isPrimitiveCanonical(ptCanon)) {
+                    string box = boxClassFor(ptCanon);
+                    if (box.empty()) { skip = true; break; }
+                    arg = "cajeta.lang." + box + ".of(" + p->getName() + ")";
+                } else {
+                    arg = p->getName();
                 }
                 if (!paramDecl.empty()) paramDecl += ", ";
                 paramDecl += ptCanon + " " + p->getName();
                 if (!argList.empty()) argList += ", ";
-                argList += p->getName();
+                argList += arg;
             }
-            if (hasPrim) continue;   // M4
+            if (skip) continue;
 
             string retDecl = isVoid ? "void" : retCanon;
+            string handleCall = "this.engine.handle(\"" + mname + "\", #a)";
             body += "    public " + retDecl + " " + mname + "(" + paramDecl + ") {\n";
             body += "        Object[] a = { " + argList + " };\n";
             if (isVoid) {
-                body += "        this.engine.handle(\"" + mname + "\", #a);\n";
+                body += "        " + handleCall + ";\n";
+            } else if (!retBox.empty()) {
+                // Primitive return: unbox the answer inline.
+                body += "        return ((cajeta.lang." + retBox + ") "
+                      + handleCall + ").value();\n";
             } else {
-                body += "        return (" + retCanon
-                      + ") this.engine.handle(\"" + mname + "\", #a);\n";
+                // Reference return: downcast the answer inline.
+                body += "        return (" + retCanon + ") " + handleCall + ";\n";
             }
             body += "    }\n";
         }

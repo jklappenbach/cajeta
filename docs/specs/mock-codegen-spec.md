@@ -146,7 +146,15 @@ aborts with `unresolved type` first. Fix (mirrors how source forward refs work):
       primitives are skipped (left inheriting the real impl) until M4. Validated
       end-to-end against cajeta-unit: a generated `MockMailer` stubs (`send ->
       "stubbed"`), verifies (`times`/`once`), and captures args.
-- [ ] **M4** — primitive arg boxing + primitive return unboxing.
+- [x] **M4** — primitive arg boxing (`<Box>.of(p)`) + primitive return unboxing
+      (`((<Box>) handle(...)).value()`) in the generated source, for all scalar
+      primitives with a `cajeta.lang` box (int8..int64, uint8..uint64,
+      float16..float128, boolean, char; int128/uint128 skipped). Validated: a
+      generated mock stubs+forwards `int64 charge(int64)` (in 99 → out 4242) and
+      `boolean isOpen()` (→ false). NB: capturing a boxed arg must be done inline
+      (`((Int64) engine.lastArgOf(...)).value()`) — binding it to an owned local
+      frees the engine-owned arg (the cajeta-unit ownership footgun, not an M4
+      bug).
 - [ ] **M5** — interface targets (`implements`); inherited-method walk; final/static
       filtering; method-name collisions.
 - [ ] **M6** — field-level `@Mock Gateway gw;`: rewrite field type to `MockS` +
