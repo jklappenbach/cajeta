@@ -53,13 +53,17 @@ TEST(SourceTaggedDropTests, heapClassLocalCarriesAllocLine) {
 }
 
 // Heap array local — different drop_fn (__cajeta_free_array), same
-// source-tag path.
+// source-tag path. Uses a non-primitive element type (String[]): a
+// non-escaping single-dim PRIMITIVE array is frame-arena-routed
+// (bump-allocated, reclaimed by scope reset, never on the drop chain — so no
+// source tag, by design), while a reference-element array still takes the
+// malloc + drop-chain + free_array path this test exercises.
 TEST(SourceTaggedDropTests, heapArrayLocalCarriesAllocLine) {
     auto src =
         "package test;\n"                                              // 1
         "public final class D {\n"                                     // 2
         "    public static int32 run() {\n"                            // 3
-        "        int32[] xs = heap int32[8];\n"                         // 4
+        "        String[] xs = heap String[8];\n"                       // 4
         "        return Cajeta.dropChainHeadAllocLine();\n"            // 5
         "    }\n"
         "}\n";
