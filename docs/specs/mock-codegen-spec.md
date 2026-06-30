@@ -126,10 +126,26 @@ aborts with `unresolved type` first. Fix (mirrors how source forward refs work):
       ctor; register so `heap MockS()` resolves and is-a `T`. Forward-reference
       ordering solved (prescan archive + placeholder fill). Validated: `heap
       MockGateway(); Gateway g = m; g.charge(7)` → 7 (inherited; forwarding is M3).
-- [ ] **M2** — add the `engine` field (resolve `MockEngine`) + ctor init.
-- [ ] **M3** — `SynthesizedMockMethod` forwarding for **reference-param,
-      void/reference-return** methods (no boxing). End-to-end test against
-      cajeta-unit: stub + verify a generated mock.
+- [x] **M2** — `engine` field + ctor init, via **source generation**: the mock
+      body is emitted as Cajeta source and re-parsed into the class (reusing the
+      front-end instead of hand-writing IR — `method/SynthesizedMockClass.cpp`).
+      Validated: generated `MockMailer.engine` is a real `dev.cajeta.unit.MockEngine`
+      and `Mock.when(m.engine, ...)` compiles.
+
+      > **Architecture note:** M2/M3 generate the mock as **Cajeta source** and
+      > re-parse it (the same mechanism templates use — `visitClassBody` with the
+      > structure stack rooted at the mock), NOT hand-written LLVM IR. This reuses
+      > all of type resolution, boxing, ownership, and codegen, and naturally
+      > references cajeta-unit's `MockEngine` (resolved from the classpath). The
+      > original IR-per-signature plan in the extension-points section is
+      > superseded by this.
+
+- [x] **M3** — forwarding overrides for **reference-param, void/reference-return**
+      methods (no boxing). Each override boxes args into an `Object[]`, calls
+      `engine.handle(name, #a)`, and returns the answer inline. Methods touching
+      primitives are skipped (left inheriting the real impl) until M4. Validated
+      end-to-end against cajeta-unit: a generated `MockMailer` stubs (`send ->
+      "stubbed"`), verifies (`times`/`once`), and captures args.
 - [ ] **M4** — primitive arg boxing + primitive return unboxing.
 - [ ] **M5** — interface targets (`implements`); inherited-method walk; final/static
       filtering; method-name collisions.

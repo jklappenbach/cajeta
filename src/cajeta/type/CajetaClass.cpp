@@ -21,6 +21,7 @@
 #include "../method/SynthesizedWithMethod.h"
 #include "../method/SynthesizedBuilderMethods.h"
 #include "../method/SynthesizedEncodingMethods.h"
+#include "../method/SynthesizedMockClass.h"
 #include "CajetaArray.h"
 #include "../field/HeapField.h"
 #include "../error/Exception.h"
@@ -1267,13 +1268,11 @@ namespace cajeta {
         std::list<QualifiedNamePtr> mockImplements;
         mock->fillFromDeclaration(module, mockQName, mockExtends, mockImplements);
 
-        // No-arg constructor (chains to the target's no-arg ctor).
-        {
-            auto ctor = std::make_shared<SynthesizedConstructorMethod>(
-                module, mock, std::vector<StructurePropertyPtr>{});
-            ctor->initParameters();
-            mock->addMethod(ctor);
-        }
+        // Synthesize the mock body (engine field + ctor + forwarding overrides)
+        // as Cajeta source and re-parse it into `mock`.
+        fillMockClassBody(
+            mock, std::static_pointer_cast<CajetaClass>(shared_from_this()),
+            module);
 
         // Build the mock's prototype (LLVM struct, vtable, method prototypes).
         mock->generatePrototype();
