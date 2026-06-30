@@ -1050,6 +1050,12 @@ namespace cajeta {
         // proxy). See docs/specs/mock-codegen-spec.md. Mirrors synthesizeBuilder.
         void synthesizeMock();
 
+        // Field-level @Mock (M6) — for each `@Mock T field;` on this class,
+        // rewrite the field's type to `Mock<T>` and synthesize a no-arg ctor that
+        // auto-initializes it (`this.field = heap Mock<T>()`). Runs before ctor
+        // synthesis so the init ctor becomes the class's no-arg ctor.
+        void synthesizeMockFields();
+
         // Helper for the three ctor synthesizers: does the constructor
         // map already hold a ctor with `userArgs` user-visible params
         // (excluding `this`)?

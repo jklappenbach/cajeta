@@ -1121,6 +1121,11 @@ namespace cajeta {
         // Otherwise an unannotated ctor-less class still gets the auto-
         // default. (Lombok's semantic: @AllArgsConstructor alone gives
         // only the all-args ctor, not also an implicit no-arg.)
+        // Field-level @Mock (M6): rewrite @Mock field types to Mock<T> and add
+        // an init ctor — BEFORE the ctor synthesizers, so the init ctor counts
+        // as this class's no-arg ctor and ensureDefaultConstructor skips its
+        // default.
+        synthesizeMockFields();
         synthesizeNoArgsConstructor();
         synthesizeAllArgsConstructor();
         synthesizeRequiredArgsConstructor();
@@ -1280,6 +1285,53 @@ namespace cajeta {
         // Add to the module's structure roster so codegen emits it.
         module->getStructures()[mockQName->toCanonical()] = mock;
         CajetaModule::getStructureToModule()[mockQName->toCanonical()] = module;
+    }
+
+    // M6 — field-level @Mock auto-init. See docs/specs/mock-codegen-spec.md.
+    void CajetaClass::synthesizeMockFields() {
+        std::vector<std::pair<std::string, std::string>> inits;
+        auto& canonicalMap = CajetaType::getCanonicalMap();
+
+        for (auto& prop : propertyList) {
+            if (!prop || prop->isStatic()) continue;
+            if (!prop->findAnnotation("Mock")) continue;
+
+            auto origType = prop->getType();
+            if (!origType || !origType->getQName()) continue;
+            auto origQ = origType->getQName();
+
+            // Mock<T> lives in T's package as `Mock<SimpleName>` (synthesizeMock's
+            // naming). Requires @GenerateMock on T (its synthesizeMock fills the
+            // class); we ensure a placeholder exists here so the field can be
+            // retyped even if T hasn't been processed yet.
+            std::string mockSimple = std::string("Mock") + origQ->getTypeName();
+            auto mockQName = QualifiedName::getOrInsert(
+                mockSimple, origQ->getPackageName());
+            std::string mockCanon = mockQName->toCanonical();
+
+            CajetaClassPtr mockType;
+            auto it = canonicalMap.find(mockCanon);
+            if (it != canonicalMap.end()) {
+                mockType = std::dynamic_pointer_cast<CajetaClass>(it->second);
+            }
+            if (!mockType) {
+                std::list<QualifiedNamePtr> ext{ origQ };
+                std::list<QualifiedNamePtr> impl;
+                mockType = std::make_shared<CajetaClass>(
+                    module, mockQName, ext, impl);
+                canonicalMap[mockCanon] =
+                    std::static_pointer_cast<CajetaType>(mockType);
+            }
+
+            prop->setType(std::static_pointer_cast<CajetaType>(mockType));
+            inits.push_back({ prop->getName(), mockCanon });
+        }
+
+        if (!inits.empty()) {
+            addMockFieldInitCtor(
+                std::static_pointer_cast<CajetaClass>(shared_from_this()),
+                inits, module);
+        }
     }
 
     std::vector<MethodPtr> CajetaClass::getFlattenedInterfaceMethods() {

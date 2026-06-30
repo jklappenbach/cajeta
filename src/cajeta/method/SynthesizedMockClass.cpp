@@ -117,13 +117,15 @@ namespace cajeta {
         return body;
     }
 
-    void fillMockClassBody(const CajetaClassPtr& mock,
-                           const CajetaClassPtr& target,
-                           const CajetaModulePtr& module) {
-        string mockName = mock->getQName()->getTypeName();
-        string src = "class " + mockName + " {\n"
-                   + synthesizeMockBody(mock, target)
-                   + "}\n";
+    // Parse `class <wrapper> { <body> }` and walk its class body with the
+    // structure stack rooted at `owner`, so the synthesized fields/methods/ctor
+    // land on `owner`. Returns the parsed ClassBodyDeclaration. Mirrors
+    // Method::instantiateMethodTemplateInternal's isolated re-parse.
+    static ClassBodyDeclarationPtr reparseBodyInto(const CajetaClassPtr& owner,
+                                                   const string& wrapperName,
+                                                   const string& body,
+                                                   const CajetaModulePtr& module) {
+        string src = "class " + wrapperName + " {\n" + body + "}\n";
 
         antlr4::ANTLRInputStream input(src);
         CajetaLexer lexer(&input);
@@ -141,20 +143,17 @@ namespace cajeta {
         }
         if (!classDecl) {
             throw Exception(
-                "@GenerateMock: synthesized mock source for '" + mockName
+                "@Mock: synthesized source for '" + wrapperName
                 + "' did not parse as a class declaration",
                 "CAJETA_ERROR_MOCK_SYNTH");
         }
 
-        // Walk the synthesized body with the structure stack rooted at the mock,
-        // so the field + methods land on it. Mirrors Method::instantiateMethod-
-        // TemplateInternal's isolated re-parse.
         auto prevActive = CajetaModule::getActiveModule();
         CajetaModule::setActiveModule(module);
         auto& stack = module->getStructureStack();
         list<CajetaClassPtr> saved;
         saved.swap(stack);
-        stack.push_back(mock);
+        stack.push_back(owner);
 
         CajetaLlvmVisitor visitor(module);
         auto bodyAny = visitor.visitClassBody(classDecl->classBody());
@@ -163,7 +162,33 @@ namespace cajeta {
         stack.swap(saved);
         CajetaModule::setActiveModule(prevActive);
 
-        auto classBody = std::any_cast<ClassBodyDeclarationPtr>(bodyAny);
+        return std::any_cast<ClassBodyDeclarationPtr>(bodyAny);
+    }
+
+    void fillMockClassBody(const CajetaClassPtr& mock,
+                           const CajetaClassPtr& target,
+                           const CajetaModulePtr& module) {
+        string mockName = mock->getQName()->getTypeName();
+        auto classBody = reparseBodyInto(
+            mock, mockName, synthesizeMockBody(mock, target), module);
         mock->setClassBody(classBody);
+    }
+
+    void addMockFieldInitCtor(
+            const CajetaClassPtr& owner,
+            const std::vector<std::pair<std::string, std::string>>& inits,
+            const CajetaModulePtr& module) {
+        string ownerName = owner->getQName()->getTypeName();
+        string ctorBody;
+        for (auto& fi : inits) {
+            // fi.second is the fully-qualified mock class canonical.
+            ctorBody += "        this." + fi.first + " = heap " + fi.second + "();\n";
+        }
+        string body = "    public " + ownerName + "() {\n" + ctorBody + "    }\n";
+        // setClassBody's updateParent is what registers the parsed member on the
+        // class (the walk alone doesn't). The reparsed body holds only this ctor,
+        // so owner's existing methods are untouched.
+        auto classBody = reparseBodyInto(owner, ownerName, body, module);
+        owner->setClassBody(classBody);
     }
 }

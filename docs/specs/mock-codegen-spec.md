@@ -157,8 +157,20 @@ aborts with `unresolved type` first. Fix (mirrors how source forward refs work):
       bug).
 - [ ] **M5** — interface targets (`implements`); inherited-method walk; final/static
       filtering; method-name collisions.
-- [ ] **M6** — field-level `@Mock Gateway gw;`: rewrite field type to `MockS` +
-      inject `this.gw = heap MockS()` into the enclosing no-arg ctor.
+- [x] **M6** — field-level `@Mock Gateway gw;` (`CajetaClass::synthesizeMockFields`,
+      run before the ctor synthesizers): for each `@Mock` field, rewrite its type
+      to `Mock<T>` (creating the placeholder if the target hasn't been processed)
+      and synthesize a no-arg ctor that auto-inits it (`this.gw = heap MockGateway()`).
+      The init must live in an **explicit** ctor — the synthesized *default* ctor
+      does not run field initializers. Adding the ctor before `ensureDefaultConstructor`
+      makes it the class's no-arg ctor. Registration goes through `setClassBody`
+      (the walk alone doesn't register the parsed member). Member resolution of
+      `gw.engine` happens at codegen, so the type rewrite at `generatePrototype`
+      is in time. Validated: `@Mock Gateway gw;` → `gw` auto-inited (non-null),
+      `gw.engine` usable with `Mock.when`/`MockVerify`. Requires `@GenerateMock` on
+      the target (so `Mock<T>` gets filled). Caveat: consuming a stubbed return
+      must avoid binding it to an owned local (the cajeta-unit footgun) — same as
+      any AoT mock use.
 
 ## Test fixture
 

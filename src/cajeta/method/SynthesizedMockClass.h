@@ -1,6 +1,9 @@
 #pragma once
 
 #include "../type/CajetaClass.h"
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace cajeta {
 
@@ -15,4 +18,13 @@ namespace cajeta {
     void fillMockClassBody(const CajetaClassPtr& mock,
                            const CajetaClassPtr& target,
                            const CajetaModulePtr& module);
+
+    // M6: synthesize a no-arg constructor on `owner` that auto-initializes each
+    // field-level @Mock field — `this.<field> = heap <mockCanonical>();`. Pairs
+    // are (fieldName, mockClassCanonicalName). The synthesized default ctor does
+    // not run field initializers, so the init must live in an explicit ctor.
+    void addMockFieldInitCtor(
+        const CajetaClassPtr& owner,
+        const std::vector<std::pair<std::string, std::string>>& inits,
+        const CajetaModulePtr& module);
 }
