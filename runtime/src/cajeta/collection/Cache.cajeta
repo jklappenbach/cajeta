@@ -179,7 +179,12 @@ public final class Cache<K, V> {
      * cache.put("session-7f3a", session);
      * ```
      */
-    public void put(K key, V value) {
+    public void put(#K key, V value) {
+        // The cache OWNS its key (callers transfer it): a cache entry must
+        // outlive the caller's key local — a borrowed cache key would dangle
+        // once the caller returns (e.g. DnsCache builds a fresh key per call).
+        // Ownership is forwarded to the backing HashMap, the canonical owner,
+        // which frees it on removal/clear.
         int64 now = Cajeta.currentTimeNanos();
         // HashMap.get returns the value directly (null on a miss for a
         // class V), NOT an Optional — null-check rather than isPresent().
@@ -188,10 +193,14 @@ public final class Cache<K, V> {
             node.value = value;
             node.accessedAt = now;
             this.moveToHead(node);
+            // Existing entry keeps its stored key; the incoming duplicate `key`
+            // is dropped at scope exit (we own it and don't store it).
             return;
         }
+        // The node borrows the key for reverse lookup on eviction; the map
+        // takes ownership of the canonical key via the `#key` transfer below.
         CacheNode<K, V> fresh = heap CacheNode<K, V>(key, value, now);
-        this.entries.put(key, #fresh);
+        this.entries.put(#key, #fresh);
         this.linkAtHead(fresh);
         if (this.entries.count() > this.maxEntries) {
             this.evictLru();
