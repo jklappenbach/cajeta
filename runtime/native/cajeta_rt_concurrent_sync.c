@@ -954,5 +954,11 @@ int64_t __cajeta_drop_count_get(void) {
 void __cajeta_drop_count_reset(void) {
     __atomic_store_n(&__cajeta_drop_count, 0, __ATOMIC_SEQ_CST);
 }
+// Add a batch of drops at once — the frame-arena reset (cajeta_rt_core.c) uses this
+// to account for the non-escaping primitive arrays it reclaims in one bump-reset,
+// restoring the pre-frame-arena per-array drop tick without the per-array free.
+void __cajeta_drop_count_add(int64_t n) {
+    __atomic_fetch_add(&__cajeta_drop_count, n, __ATOMIC_SEQ_CST);
+}
 
 // ----------------------------------------------------------------------------

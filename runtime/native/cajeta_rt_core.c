@@ -921,9 +921,17 @@ typedef struct {
     unsigned char* base;       // mmap base; NULL until first use
     size_t bump;               // current offset (bytes in use)
     size_t retained;           // high-water offset with pages physically committed
+    size_t count;              // live arena-array allocations — restores the
+                               // pre-frame-arena dropCount tick (one per array
+                               // reclaimed) on the O(1) reset; see __cajeta_arena_reset
 } cajeta_arena;
 
-static __thread cajeta_arena __cajeta_arena = { NULL, 0, 0 };
+static __thread cajeta_arena __cajeta_arena = { NULL, 0, 0, 0 };
+
+// Defined in cajeta_rt_concurrent_sync.c (included later in this TU). Adds a batch
+// of drops to the test drop-count — used by the arena reset to account for the
+// non-escaping primitive arrays it reclaims in bulk.
+void __cajeta_drop_count_add(int64_t n);
 
 static void __cajeta_arena_init(void) {
     void* p = mmap(NULL, CAJETA_ARENA_RESERVE, PROT_READ | PROT_WRITE,
@@ -999,19 +1007,34 @@ __attribute__((malloc)) void* __cajeta_new_array_header_arena(uint64_t header_si
     }
     void* hdr = __cajeta_arena_alloc((uint64_t) total);   // zeroed
     *((int64_t*) hdr) = (int64_t) count;
+    __cajeta_arena.count++;   // reclaimed (and drop-counted) at the next scope reset
     return hdr;
 }
 
-// Capture the current bump offset. Stash at scope entry; pass to reset on exit.
+// Capture the current bump offset AND the live array count. Stash at scope entry;
+// pass to reset on exit. Packed: count in the high bits, bump in the low — the
+// arena reserve is 4 GiB so bump < 2^32, well under bit 40, leaving 24 bits for a
+// live-array count (millions). The token is opaque to the compiler (Block.cpp only
+// stashes it and hands it back to reset), so packing changes nothing for codegen.
 uint64_t __cajeta_arena_mark(void) {
-    return (uint64_t) __cajeta_arena.bump;
+    return ((uint64_t) __cajeta_arena.count << 40) | (uint64_t) __cajeta_arena.bump;
 }
 
 // O(1) reclaim: restore the bump to `mark`. All objects allocated since the mark
 // are abandoned in place (their bytes reused on the next bump). Trim backstop:
 // when retained pages run well past the new mark, hand them back to the OS.
 void __cajeta_arena_reset(uint64_t mark) {
-    size_t m = (size_t) mark;
+    size_t m       = (size_t) (mark & (((uint64_t) 1 << 40) - 1));
+    size_t count_m = (size_t) (mark >> 40);
+    // Each non-escaping primitive array reclaimed here used to free() at scope exit
+    // (pre-frame-arena), ticking __cajeta_drop_count once via the drop chain. Frame-
+    // arena reclaims them in one O(1) bump-reset — no per-array free, no live-set —
+    // so account for the delta here in bulk. Keeps drop-count probes accurate
+    // without re-adding any per-array cost. Test-only instrumentation.
+    if (__cajeta_arena.count > count_m) {
+        __cajeta_drop_count_add((int64_t) (__cajeta_arena.count - count_m));
+    }
+    __cajeta_arena.count = count_m;
     __cajeta_arena.bump = m;
     if (__cajeta_arena.base
             && __cajeta_arena.retained > m + CAJETA_ARENA_TRIM_THRESHOLD) {
