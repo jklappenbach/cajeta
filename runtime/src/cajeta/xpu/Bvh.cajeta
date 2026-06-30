@@ -31,7 +31,11 @@ public final class Bvh {
     int32 widthVal;    // branching-width tag
     int32 prims;       // primitive count
 
-    public Bvh(float32[] block, Strategy strat, int32 widthVal, int32 prims) {
+    public Bvh(#float32[] block, Strategy strat, int32 widthVal, int32 prims) {
+        // The Bvh OWNS its block — the caller transfers the freshly-built array
+        // in (`#block`). Without ownership transfer, the build-site local drops
+        // at scope exit and frees the array `this.block` still references — a
+        // use-after-free on every later header/node read.
         this.block = block;
         this.strat = strat;
         this.widthVal = widthVal;
@@ -47,7 +51,7 @@ public final class Bvh {
      */
     public static #Bvh build(float32[] boxes, int32 count) {
         float32[] blk = Lbvh.build(boxes, count);
-        Bvh b = heap Bvh(blk, Strategy.Exact, 2, count);
+        Bvh b = heap Bvh(#blk, Strategy.Exact, 2, count);
         return #b;
     }
 
