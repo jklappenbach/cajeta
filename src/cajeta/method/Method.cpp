@@ -1427,6 +1427,30 @@ namespace cajeta {
                 }
                 return;
             }
+            if (auto ne = std::dynamic_pointer_cast<NewExpression>(node)) {
+                // Constructor arguments live in the CreatorRest's parameter list,
+                // NOT getChildren() (same split as MethodCallExpression). A `#arg`
+                // ctor argument transfers ownership INTO the new object, so the
+                // named value escapes the frame — e.g. `heap String(#buf, len)` in
+                // every byte-slice helper. Without seeing it here, `buf` is wrongly
+                // judged non-escaping and arena-routed; the arena recycles its
+                // memory at scope exit while the constructed object still points at
+                // it (UAF → corrupted String length → array-bounds aborts across
+                // the whole slice-pattern parser layer).
+                if (auto cr = std::dynamic_pointer_cast<ClassCreatorRest>(
+                        ne->getCreatorRest())) {
+                    for (auto& p : cr->getParameters()) {
+                        if (p.callerTransferred) {
+                            std::string n = arenaLeftmostId(p.expression);
+                            if (!n.empty()) escaping.insert(n);
+                        }
+                        arenaWalk(p.expression, escaping, candidates, arrayCandidates);
+                    }
+                }
+                for (auto& c : ne->getChildren())
+                    arenaWalk(c, escaping, candidates, arrayCandidates);
+                return;
+            }
             if (auto es = std::dynamic_pointer_cast<ExpressionStatement>(node)) {
                 arenaWalk(es->getExpression(), escaping, candidates, arrayCandidates);
                 return;
