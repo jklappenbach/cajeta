@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Prefix Sums and Their Applications
+description: The foundational treatment of the all-prefix-sums (scan) operation: the work-efficient two-phase (up-sweep/down-sweep) algorithm and a catalog of applications (compaction, radix sort, sparse ops) — the theory behind why scan is the root primitive.
+url: https://www.cs.cmu.edu/~guyb/papers/Ble93.pdf

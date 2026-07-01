@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Scan Primitives for GPU Computing
+description: Efficient GPU segmented scan and scan-based primitives (compaction, split, sort) — the source for segmented/ragged scan needed by batched and per-cluster workloads.
+url: https://escholarship.org/uc/item/8051p6nd
