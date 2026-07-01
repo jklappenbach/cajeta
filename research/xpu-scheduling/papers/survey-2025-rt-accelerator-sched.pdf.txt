@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: A Survey of Real-time Scheduling on Accelerator-based Heterogeneous Architecture for Time Critical Applications
+description: Survey of real-time scheduling on GPUs/accelerators (preemption, partitioning, priority, deadline models) for time-critical workloads — directly relevant to graphics-frame and control deadlines.
+url: https://arxiv.org/abs/2505.11970

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: REEF: Microsecond-scale Preemption for Concurrent GPU-accelerated DNN Inferences
+description: Reset-based instant kernel preemption plus dynamic kernel padding for biased concurrent execution, giving a best-effort/real-time GPU inference scheduler microsecond preemption while keeping the GPU busy.
+url: https://www.usenix.org/conference/osdi22/presentation/han

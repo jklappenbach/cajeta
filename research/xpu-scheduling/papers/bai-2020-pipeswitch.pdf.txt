@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: PipeSwitch: Fast Pipelined Context Switching for Deep Learning Applications
+description: Pipelined model transmission and execution enabling millisecond-scale switching between DL tasks on a GPU, so a GPU can be time-shared between training and inference at high utilization.
+url: https://www.usenix.org/conference/osdi20/presentation/bai

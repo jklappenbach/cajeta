@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: AntMan: Dynamic Scaling on GPU Clusters for Deep Learning
+description: Co-locates opportunistic and production DL jobs by dynamically scaling each job's GPU memory and compute (via a framework shim), harvesting spare capacity while protecting SLO jobs.
+url: https://www.usenix.org/conference/osdi20/presentation/xiao-wencong

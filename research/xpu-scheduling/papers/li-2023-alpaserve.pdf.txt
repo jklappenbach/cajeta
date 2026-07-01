@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: AlpaServe: Statistical Multiplexing with Model Parallelism for Deep Learning Serving
+description: Shows model-parallel placement plus statistical multiplexing of bursty requests across GPUs reduces tail latency and raises utilization for serving many large models.
+url: https://www.usenix.org/conference/osdi23/presentation/li-zhuohan

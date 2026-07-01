@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Nexus: A GPU Cluster Engine for Accelerating DNN-Based Video Analysis
+description: Serving engine that batches across models and applications and schedules with a batching-aware bin-packing algorithm to maximize GPU throughput under latency SLOs.
+url: https://dl.acm.org/doi/10.1145/3341301.3359658

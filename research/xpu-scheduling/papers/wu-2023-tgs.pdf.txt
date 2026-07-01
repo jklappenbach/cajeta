@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: TGS: Transparent GPU Sharing in Container Clouds for Deep Learning Workloads
+description: OS-layer transparent GPU sharing beneath containers using adaptive rate control and transparent unified memory to give high utilization with performance isolation, no app changes.
+url: https://www.usenix.org/conference/nsdi23/presentation/wu

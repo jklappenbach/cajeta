@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Better Performance at Lower Occupancy (GTC 2010)
+description: Classic result showing peak throughput does not require maximal occupancy: instruction-level parallelism and register reuse can hide latency at lower occupancy — key to occupancy-vs-ILP launch tuning.
+url: https://www.nvidia.com/content/gtc-2010/pdfs/2238_gtc2010.pdf

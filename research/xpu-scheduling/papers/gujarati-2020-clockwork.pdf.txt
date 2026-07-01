@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Serving DNNs like Clockwork: Performance Predictability from the Bottom Up
+description: Exploits the deterministic execution time of DNN inference to build a predictable serving system with centralized scheduling, achieving tight tail-latency SLOs at high GPU utilization.
+url: https://www.usenix.org/conference/osdi20/presentation/gujarati
