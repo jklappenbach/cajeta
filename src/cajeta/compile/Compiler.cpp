@@ -563,6 +563,7 @@ namespace cajeta {
     // thread tracks the lazy packages IT has parsed into its own (thread_local)
     // registries. Units 5-6 share frozen lazy packages under a one-time lock.
     static thread_local std::set<std::string> g_stdlibParsedPackages;  // every pkg parsed (eager + lazy)
+    static thread_local std::set<std::string> g_stdlibEagerBaseline;   // eager pkgs parsed at prime (reuse restore floor)
     static thread_local std::set<std::string> g_lazyPrescanned;        // lazy pkgs prescanned into the archive
     static thread_local std::set<std::string> g_lazyParsed;            // lazy pkgs fully parsed
     static thread_local std::vector<std::string> g_lazyQueue;          // lazy pkgs awaiting full parse
@@ -709,6 +710,12 @@ namespace cajeta {
             g_stdlibParsedPackages.insert(pkg);
         }
         module->setQName(originalQName);
+
+        // Snapshot the eager set: these packages stay parsed-and-available in the
+        // cached stdlib module across a reuse shard (only lazy packages are rolled
+        // back). resetLazyStdlibState restores the record to this floor so the
+        // parsed-package probe keeps reporting eager packages as parsed.
+        g_stdlibEagerBaseline = g_stdlibParsedPackages;
 
         // Stdlib code may call runtime helpers (e.g. constructors
         // pushing drop entries) — embed the runtime bitcode so
@@ -968,7 +975,15 @@ namespace cajeta {
     }
 
     void Compiler::resetLazyStdlibState() {
-        resetLazyStdlibStateImpl();
+        // Reuse-harness restore: lazy packages were rolled back from the cached
+        // stdlib module, so drop their bookkeeping; but eager packages remain
+        // parsed-and-available, so restore the record to the eager floor rather
+        // than clearing it (else the parsed-package probe wrongly reports the
+        // still-live eager packages as unparsed).
+        g_lazyPrescanned.clear();
+        g_lazyParsed.clear();
+        g_lazyQueue.clear();
+        g_stdlibParsedPackages = g_stdlibEagerBaseline;
     }
 
     void Compiler::compile(CajetaModulePtr module) {
