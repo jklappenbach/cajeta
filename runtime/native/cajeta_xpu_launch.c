@@ -954,10 +954,12 @@ static int caj_xpu_device_count(int backend) {
             return 1;
         }
         case CAJ_XPU_VULKAN: {
+#if defined(CAJETA_RT_HAS_VULKAN)
             uint32_t c = 0;
             if (g_xpu_vk.vkEnumeratePhysicalDevices && g_xpu_vk.instance &&
                 g_xpu_vk.vkEnumeratePhysicalDevices(g_xpu_vk.instance, &c, NULL)
                     == VK_SUCCESS && c > 0) return (int) c;
+#endif
             return 1;
         }
         case CAJ_XPU_CPU:

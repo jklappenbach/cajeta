@@ -912,7 +912,14 @@ void __cajeta_free(void* ptr) {
 // Reset optionally madvise(DONTNEED)s pages above the new mark once retained
 // capacity exceeds a threshold — the memory-pressure backstop (spec 6.1.5); pages
 // come back zero-filled on the next touch.
-#include <sys/mman.h>
+#if defined(_WIN32)
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  include <windows.h>          // VirtualAlloc/VirtualFree — Windows has no mmap
+#else
+#  include <sys/mman.h>
+#endif
 
 #define CAJETA_ARENA_RESERVE        ((size_t) 4 << 30)   // 4 GiB virtual / thread
 #define CAJETA_ARENA_TRIM_THRESHOLD ((size_t) 4 << 20)   // trim retained > 4 MiB over mark
@@ -924,9 +931,11 @@ typedef struct {
     size_t count;              // live arena-array allocations — restores the
                                // pre-frame-arena dropCount tick (one per array
                                // reclaimed) on the O(1) reset; see __cajeta_arena_reset
+    size_t committed;          // Windows: bytes VirtualAlloc(MEM_COMMIT)'d so far;
+                               // POSIX: set to RESERVE (the kernel commits on fault)
 } cajeta_arena;
 
-static __thread cajeta_arena __cajeta_arena = { NULL, 0, 0, 0 };
+static __thread cajeta_arena __cajeta_arena = { NULL, 0, 0, 0, 0 };
 
 // Defined in cajeta_rt_concurrent_sync.c (included later in this TU). Adds a batch
 // of drops to the test drop-count — used by the arena reset to account for the
@@ -934,12 +943,25 @@ static __thread cajeta_arena __cajeta_arena = { NULL, 0, 0, 0 };
 void __cajeta_drop_count_add(int64_t n);
 
 static void __cajeta_arena_init(void) {
+#if defined(_WIN32)
+    // No MAP_NORESERVE on Windows: reserve the address range now, commit pages
+    // lazily as the bump advances (__cajeta_arena_bump). Reserved-but-uncommitted
+    // pages fault on access, so a bump must commit before it hands out the region.
+    void* p = VirtualAlloc(NULL, CAJETA_ARENA_RESERVE, MEM_RESERVE, PAGE_READWRITE);
+    if (!p) {
+        fprintf(stderr, "cajeta: arena VirtualAlloc(MEM_RESERVE) failed\n");
+        abort();
+    }
+    __cajeta_arena.committed = 0;
+#else
     void* p = mmap(NULL, CAJETA_ARENA_RESERVE, PROT_READ | PROT_WRITE,
                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (p == MAP_FAILED) {
         fprintf(stderr, "cajeta: arena mmap failed\n");
         abort();
     }
+    __cajeta_arena.committed = CAJETA_ARENA_RESERVE;   // kernel commits on first touch
+#endif
     __cajeta_arena.base = (unsigned char*) p;
     __cajeta_arena.bump = 0;
     __cajeta_arena.retained = 0;
@@ -970,6 +992,21 @@ __attribute__((malloc)) static inline void* __cajeta_arena_bump(uint64_t size) {
     if (__cajeta_arena.bump > __cajeta_arena.retained) {
         __cajeta_arena.retained = __cajeta_arena.bump;
     }
+#if defined(_WIN32)
+    // Commit the page(s) the new [p, p+n) region spans before returning it.
+    if (__cajeta_arena.bump > __cajeta_arena.committed) {
+        size_t pg = 4096;                                   // x64 Windows page
+        size_t need = (__cajeta_arena.bump + (pg - 1)) & ~(pg - 1);
+        if (need > CAJETA_ARENA_RESERVE) need = CAJETA_ARENA_RESERVE;
+        if (!VirtualAlloc(__cajeta_arena.base + __cajeta_arena.committed,
+                          need - __cajeta_arena.committed,
+                          MEM_COMMIT, PAGE_READWRITE)) {
+            fprintf(stderr, "cajeta: arena VirtualAlloc(MEM_COMMIT) failed\n");
+            abort();
+        }
+        __cajeta_arena.committed = need;
+    }
+#endif
     return p;
 }
 
@@ -1038,12 +1075,22 @@ void __cajeta_arena_reset(uint64_t mark) {
     __cajeta_arena.bump = m;
     if (__cajeta_arena.base
             && __cajeta_arena.retained > m + CAJETA_ARENA_TRIM_THRESHOLD) {
+#if defined(_WIN32)
+        size_t pg = 4096;
+#else
         size_t pg = (size_t) sysconf(_SC_PAGESIZE);
         if (pg == 0) pg = 4096;
+#endif
         size_t from = (m + pg - 1) & ~(pg - 1);                       // round up
         size_t to   = (__cajeta_arena.retained + pg - 1) & ~(pg - 1);
         if (to > from) {
+#if defined(_WIN32)
+            // Hand the pages back to the OS; a later bump re-commits them.
+            VirtualFree(__cajeta_arena.base + from, to - from, MEM_DECOMMIT);
+            if (__cajeta_arena.committed > from) __cajeta_arena.committed = from;
+#else
             madvise(__cajeta_arena.base + from, to - from, MADV_DONTNEED);
+#endif
         }
         __cajeta_arena.retained = m;
     }

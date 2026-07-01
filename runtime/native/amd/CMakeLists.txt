@@ -8,11 +8,20 @@
 # The runtime locates the .so beside the cajeta binary, via $CAJETA_AMD_AMDTEX_LIB,
 # or by SONAME (see cajeta_xpu_load_amdtex).
 
+# Linux-only: the vendored addrlib's Apple path (#if __APPLE__ in addrtypes.h)
+# pulls a non-vendored `addrExtDef.h` maintained by Apple's driver team, so it
+# can't build on macOS — and Apple has no AMD/HIP/ROCm to emulate anyway. amdtex
+# is optional (dlopen'd), so skipping it there just leaves the feature absent.
+if(UNIX AND NOT APPLE)
+    set(_cajeta_amdtex_default ON)
+else()
+    set(_cajeta_amdtex_default OFF)
+endif()
 option(CAJETA_BUILD_AMDTEX
        "Build libcajeta_amdtex (AMD HIP mipmap/cube texture emulation helper)"
-       ${UNIX})
+       ${_cajeta_amdtex_default})
 
-if(NOT CAJETA_BUILD_AMDTEX OR NOT UNIX)
+if(NOT CAJETA_BUILD_AMDTEX OR NOT UNIX OR APPLE)
     return()
 endif()
 
