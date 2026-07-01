@@ -60,7 +60,7 @@ public class UnknownHostException extends NetException {
      */
     public int32 resolveErrno;
 
-    public UnknownHostException(String message, int32 resolveErrno) {
+    public UnknownHostException(#String message, int32 resolveErrno) {
         this.message = message;
         this.cause = 0;
         this.kind = 99;   // NetException.KIND_OTHER — DNS failures are discriminated by type, not errno

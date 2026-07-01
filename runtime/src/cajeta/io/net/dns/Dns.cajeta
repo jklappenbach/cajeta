@@ -200,12 +200,12 @@ public final class Dns {
             Dns.freeaddrinfoNative(handle);
             String detail = Dns.failureMessage(host);
             if (err == ResolveErrors.RESOLVE_NONAME) {
-                throw heap UnknownHostException(detail, err);
+                throw heap UnknownHostException(#detail, err);
             }
             if (err == ResolveErrors.RESOLVE_NODATA) {
-                throw heap UnknownHostException(detail, err);
+                throw heap UnknownHostException(#detail, err);
             }
-            throw heap ResolutionFailedException(detail, err);
+            throw heap ResolutionFailedException(#detail, err);
         }
 
         // Copy every entry out before releasing the native block.

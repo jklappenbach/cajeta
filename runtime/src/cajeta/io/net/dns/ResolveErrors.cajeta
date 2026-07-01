@@ -86,17 +86,17 @@ public class ResolveErrors {
      * [`Dns.resolve`](Dns.cajeta) failure path) decides whether to
      * `throw` it. Total over the ordinal space; never returns `null`.
      */
-    public static #NetException fromResolveErrno(int32 resolveErrno, String detail) {
+    public static #NetException fromResolveErrno(int32 resolveErrno, #String detail) {
         if (resolveErrno == 1) {            // RESOLVE_NONAME
-            return heap UnknownHostException(detail, resolveErrno);
+            return heap UnknownHostException(#detail, resolveErrno);
         }
         if (resolveErrno == 2) {            // RESOLVE_NODATA
-            return heap UnknownHostException(detail, resolveErrno);
+            return heap UnknownHostException(#detail, resolveErrno);
         }
         // AGAIN (3), FAIL (4), FAMILY (5), MEMORY (6), SYSTEM (7),
         // BADFLAGS (8), SERVICE (9), OTHER (99) — and the OK (0)
         // caller-bug guard, plus any unknown future ordinal — all fall
         // through to the transport/server/local failure bucket.
-        return heap ResolutionFailedException(detail, resolveErrno);
+        return heap ResolutionFailedException(#detail, resolveErrno);
     }
 }
