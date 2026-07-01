@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: DARIS: An Oversubscribed Spatio-Temporal Scheduler for Real-Time DNN Inference on GPUs
+description: Spatio-temporal GPU scheduling for oversubscribed real-time DNN inference (many models, limited GPU) with deadline guarantees — directly the robotics 'many pipelines, one edge GPU' scheduling problem.
+url: https://arxiv.org/abs/2504.08795

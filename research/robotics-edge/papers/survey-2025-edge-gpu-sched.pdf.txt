@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Scheduling Techniques of AI Models on Modern Heterogeneous Edge GPU — A Critical Review
+description: Survey of scheduling DNN inference across heterogeneous edge SoC engines (GPU + DLA + PVA + CPU) under real-time and memory-contention constraints — the map of edge/robotics scheduling techniques.
+url: https://arxiv.org/abs/2506.01377

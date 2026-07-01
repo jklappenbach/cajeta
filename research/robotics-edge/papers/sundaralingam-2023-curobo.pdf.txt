@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: cuRobo: Parallelized Collision-Free Minimum-Jerk Robot Motion Generation
+description: GPU-parallel motion generation — batched IK, a parallel geometric planner (100x faster than RRTConnect), collision checking, and trajectory optimization run as massively parallel kernels; the canonical GPU-accelerated planning workload.
+url: https://arxiv.org/abs/2310.17274

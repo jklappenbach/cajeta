@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Circuit and System Technologies for Energy-Efficient Edge Robotics
+description: Energy-efficiency techniques for edge robotics compute (perception, localization, planning) under strict power/payload budgets — why robotics scheduling must optimize energy, not just latency/throughput.
+url: https://arxiv.org/abs/2202.11237

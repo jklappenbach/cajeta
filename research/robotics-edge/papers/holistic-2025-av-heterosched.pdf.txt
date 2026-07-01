@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Holistic Heterogeneous Scheduling for Autonomous Systems
+description: Whole-system scheduling of an autonomous pipeline across heterogeneous accelerators (GPU/DLA/CPU) balancing latency-critical and best-effort tasks under deadlines and contention — the AV/robot orchestration case.
+url: https://arxiv.org/abs/2508.09503

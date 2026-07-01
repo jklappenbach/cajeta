@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: MegBA: A GPU-Based Distributed Library for Large-Scale Bundle Adjustment
+description: End-to-end vectorized bundle adjustment on GPU: distributed preconditioned conjugate gradient + Schur elimination over sparse camera/point blocks — the sparse-linear-algebra core of SLAM back-ends as GPU kernels.
+url: https://arxiv.org/abs/2112.01349

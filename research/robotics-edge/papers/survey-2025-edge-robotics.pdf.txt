@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Edge Computing and its Application in Robotics: A Survey
+description: Survey of edge computing for robotics: the perception->planning->control pipeline, onboard vs offloaded compute, latency/energy/payload constraints — the workload+constraint landscape for limited-hardware robots.
+url: https://arxiv.org/abs/2507.00523
