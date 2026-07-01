@@ -64,6 +64,20 @@ background without ever stalling the frame.
   transition; seams are removed by crack-free boundaries; loading hitches are
   removed by prefetch + background streaming that yields to frame work.
 
+### 1.5 Kernel status (current vs planned)
+
+This spec describes pipelines whose kernels are **mostly not yet built**. The
+library today has 7 kernels; **none** of this pipeline's passes exist yet.
+
+- **Built (reusable here):** none directly — geomorph is a `map` variant of
+  `arithF32`, but the specific kernel is unbuilt.
+- **Must build (see the local `xpu-kernel-library` backlog + master-spec gap
+  catalog):** `scan`, `scatter`, `stream compaction` (culling / LOD selection /
+  light binning), `stencil/convolution` (blur / AO / DoF), `radix sort`
+  (transparency), plus the **rasterization / visibility-buffer resolve / geomorph**
+  passes and the backend raster path. `scan` + `scatter` are the first
+  prerequisites.
+
 ## 2. The representation — cluster hierarchy + screen-space error
 
 ### 2.1 Requirement

@@ -54,6 +54,16 @@ KV-cache residency dominate achievable utilization.
   decoding turns sequential memory-bound steps into a batched verify — a scheduling
   lever, not just an algorithm.
 
+### 1.5 Kernel status (current vs planned)
+
+Of the decoder-layer kernels below, only the GEMM is built today.
+
+- **Built (reusable here):** `matmulF32` (dense GEMM) — the projection/MLP GEMMs.
+- **Must build (see the local `xpu-kernel-library` backlog + master-spec gap
+  catalog):** `attention` (flash + paged KV), `softmax`/`LayerNorm`/`RMSNorm`,
+  fused `activation` epilogues, `sampling`/top-k, `scatter` (MoE routing), and
+  `collectives` (all-reduce / all-to-all for tensor/expert parallel).
+
 ## 2. The kernel taxonomy of a decoder layer
 
 ### 2.1 Requirement

@@ -56,6 +56,19 @@ budget** that latency and throughput must respect.
   bound sustained compute; the scheduler trades detail/rate/precision (e.g.
   quantized inference) to hold deadlines within the power envelope.
 
+### 1.5 Kernel status (current vs planned)
+
+The robot stack draws on a few built kernels but needs a superset of the missing
+primitives.
+
+- **Built (reusable here):** `matmulF32` (dense solves / control), `reduceSumF32`,
+  `gatherF32`, `philoxUniformF32` (sampling planners), `fftStageF32`.
+- **Must build (see the local `xpu-kernel-library` backlog + master-spec gap
+  catalog):** `SpMV`/sparse-solve (bundle adjustment, pose-graph), `stencil`
+  (optical flow, stereo, TSDF), `scatter`/hash (voxel hashing, histogram),
+  nearest-neighbor `gather`+reduce (ICP), and the ML kernels (`attention`, `conv`,
+  norms) for perception/VLA. `scan` + `scatter` underlie the spatial structures.
+
 ## 2. The kernel taxonomy by stage
 
 ### 2.1 Requirement
