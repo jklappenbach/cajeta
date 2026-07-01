@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Progressive Buffers: Out-of-Core Rendering of Large Meshes with View-Dependent Geometry and Texture LOD
+description: Out-of-core, streaming LOD: keeps a view-dependent working set of geometry/texture resident, streams finer detail on demand, and geomorphs to hide transitions — the streaming + no-stutter + no-pop pattern for huge scenes.
+url: https://advances.realtimerendering.com/s2006/Chapter1-Out-of-Core_Rendering_of_Large_Meshes_with_Progressive_Buffers.pdf

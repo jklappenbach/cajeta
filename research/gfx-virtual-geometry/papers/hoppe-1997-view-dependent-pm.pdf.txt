@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: View-Dependent Refinement of Progressive Meshes
+description: Selective, view-dependent refinement of a progressive-mesh hierarchy with smooth geomorphs between refinement levels — the foundational technique for continuous, pop-free geometry LOD driven by screen-space criteria.
+url: https://people.eecs.berkeley.edu/~jrs/meshpapers/Hoppe.pdf

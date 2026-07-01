@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: The Visibility Buffer: A Cache-Friendly Approach to Deferred Shading
+description: Decouples rasterization from material shading by storing per-pixel primitive IDs (visibility) and shading in a deferred pass — lets the pipeline rasterize enormous triangle counts cheaply and shade once, key to a raster-maximizing GPU-driven renderer.
+url: https://jcgt.org/published/0002/02/04/
