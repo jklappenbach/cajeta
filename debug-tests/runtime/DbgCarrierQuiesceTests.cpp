@@ -20,6 +20,13 @@
 #include <thread>
 #include <unistd.h>
 
+// POSIX setenv is absent on mingw; shim onto _putenv_s (setting to "" also unsets).
+#if defined(_WIN32)
+#include <stdlib.h>
+static inline int setenv(const char* k, const char* v, int) { return _putenv_s(k, v ? v : ""); }
+static inline int unsetenv(const char* k) { return _putenv_s(k, ""); }
+#endif
+
 #include "cajeta/dbg/DebugController.h"
 
 extern "C" {

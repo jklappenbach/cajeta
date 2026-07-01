@@ -104,7 +104,9 @@ if(NOT WIN32)
     # HIP initializes in-process. Hide just the LLVM archives (the __cajeta_*
     # runtime symbols the JIT dlsym's stay exported). Unblocks in-process AMD
     # device tests. See src/CMakeLists.txt (CAJETA_LLVM_EXCLUDE_LIBS).
-    if(CAJETA_LLVM_EXCLUDE_LIBS)
+    # --exclude-libs is GNU-ld/LLD-only; Apple's ld64 rejects it (and macOS has no
+    # HIP to clash with), so skip it there.
+    if(CAJETA_LLVM_EXCLUDE_LIBS AND NOT APPLE)
         target_link_options(${BINARY} PRIVATE
                 "-Wl,--exclude-libs,${CAJETA_LLVM_EXCLUDE_LIBS}")
     endif()

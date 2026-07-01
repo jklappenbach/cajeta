@@ -957,8 +957,10 @@ if(NOT WIN32)
     set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES ENABLE_EXPORTS ON)
     target_link_options(${CMAKE_PROJECT_NAME} PRIVATE -rdynamic)
     # Don't export the static LLVM symbols (HIP's bundled LLVM would clash) —
-    # the __cajeta_* runtime symbols the JIT dlsym's stay exported.
-    if(CAJETA_LLVM_EXCLUDE_LIBS)
+    # the __cajeta_* runtime symbols the JIT dlsym's stay exported. `--exclude-libs`
+    # is a GNU-ld/LLD option (Linux + mingw); Apple's ld64 rejects it, and macOS has
+    # no HIP/ROCm to clash with, so skip it there.
+    if(CAJETA_LLVM_EXCLUDE_LIBS AND NOT APPLE)
         target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
                 "-Wl,--exclude-libs,${CAJETA_LLVM_EXCLUDE_LIBS}")
     endif()

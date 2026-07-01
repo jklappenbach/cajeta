@@ -12,13 +12,13 @@ Comfort, all while offering true zero-copy semantics with Views, a lightening fa
 
 Create amazing things with Cajeta.  
 
-> **Status.** Compiler is in active development; the language design is past v1. The full test suite runs 1717 tests across 32 shards. The list of working features below is exercised by tests; anything not on the list is either in progress or under design.
+> **Status.** Compiler is in active development; the language design is past v1. The full test suite runs over 4,800 tests across 32 shards. As of **v0.8.0** the compiler is **re-entrant / thread-safe** — independent compiles run concurrently on their own threads (each with its own `LLVMContext`), the substrate for multi-tenant, on-demand JIT compute. The list of working features below is exercised by tests; anything not on the list is either in progress or under design.
 
 ---
 
 ## Version
 
-**Current:** `0.1.0` &nbsp;·&nbsp; baked into the binary at configure time — `cajeta --version` reports it.
+**Current:** `0.8.0` &nbsp;·&nbsp; baked into the binary at configure time — `cajeta --version` reports it.
 
 Versioning is manual and tied to releases. The flow:
 
@@ -33,8 +33,7 @@ Supported binary targets (see [RELEASING.md](RELEASING.md) for the full matrix):
 | Linux x86_64 | `x86_64-linux-gnu` | `ubuntu-latest` |
 | Linux ARM64 (incl. NVIDIA Grace) | `aarch64-linux-gnu` | `ubuntu-24.04-arm` |
 | macOS Apple Silicon | `aarch64-apple-darwin` | `macos-14` |
-| Windows x86_64 | `x86_64-pc-windows-msvc` | `windows-latest` |
-| Linux RISC-V 64 *(best-effort, QEMU-cross)* | `riscv64-linux-gnu` | `ubuntu-latest` |
+| Windows x86_64 (MSYS2 / MinGW-w64) | `x86_64-w64-mingw32` | self-hosted (`Windows, X64, gpu`) |
 
 ---
 
@@ -203,7 +202,8 @@ Tests are GoogleTest. The fixture in `test/jit/JitTestHelper.{h,cpp}` compiles a
 > ```
 
 ```sh
-# Full suite (sharded for parallelism — finishes in ~2 min on Zen 5).
+# Full suite (sharded across cores; reuse-by-default primes the stdlib once
+# per suite-process, and the shard count auto-caps to available RAM).
 ./cajeta_tests.sh
 
 # Direct invocation. CAJETA_SOURCE_ROOT lets parse-flow tests locate sample .cajeta files.
