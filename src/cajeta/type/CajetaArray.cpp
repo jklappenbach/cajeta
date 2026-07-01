@@ -37,6 +37,15 @@ namespace cajeta {
         }
         if (dynamic_pointer_cast<CajetaView>(elementType) == nullptr) {
             if (auto klass = dynamic_pointer_cast<CajetaClass>(elementType)) {
+                // A wildcard instantiation (e.g. Class<?>) is a reference proxy
+                // that always flows by pointer — mirror CajetaClass::getLlvmType.
+                // Key off the immutable wildcard identity, not STRUCT_FLAG / the
+                // cached rawLlvmType: under stdlib reuse those drift to the
+                // concrete {vtable,rtti} struct after accumulation, collapsing
+                // Class<?>[] to 16-byte inline stride (the classesInPackage SIGSEGV).
+                if (klass->isWildcardInstantiation()) {
+                    return llvm::PointerType::get(*ctx, 0);
+                }
                 CajetaTypeFlags flags = klass->getTypeFlags();
                 if (!klass->isInterface()
                         && (flags & STRUCT_FLAG) == 0
