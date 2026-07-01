@@ -316,7 +316,43 @@ and the idea taken from each:
 | Real-time / deadline taxonomy | RT-accelerator survey, REEF | preemption + priority + partitioning for time-critical (gfx/control) |
 | Launch-config / occupancy footprint | xpu-device-profile, kernel-occupancy-autotune (this repo) | per-kernel footprint + roofline inputs to the scheduler |
 
-## 10. Integration with the Cajeta XPU runtime
+## 10. Kernel gap catalog — what the library must add
+
+The scheduler classifies and co-schedules kernels; it can only schedule kernels
+that exist. Today the library has **7** (`arithF32`/map, `reduceSumF32`,
+`gatherF32`, `matmulF32`/GEMM, `bitonicStepF32`, `fftStageF32`, `philoxUniformF32`/
+RNG), covering 5 of the Berkeley "13 dwarfs" computational motifs. The workload
+profiles above (scientific, ML, graphics/robotics) repeatedly need the same
+missing primitives; this catalog is the scheduler-facing view of that gap. The
+prioritized build order is tracked in the (local) `xpu-kernel-library` plan.
+
+| Primitive | Roofline | Status | Needed by |
+|---|---|---|---|
+| map / elementwise | memory | **have** (`arithF32`) | all |
+| reduce | memory | **have** (`reduceSumF32`) | all |
+| gather | memory | **have** (`gatherF32`) | all |
+| dense GEMM | compute | **have** (`matmulF32`) | ML, scientific, gfx |
+| FFT stage | mixed | **have** (`fftStageF32`) | scientific, signal |
+| sort step | memory | **have** (`bitonicStepF32`) | gfx, planning |
+| RNG | compute | **have** (`philoxUniformF32`) | Monte-Carlo, ML |
+| **scan / prefix-sum** | memory | **missing** | gfx culling/compaction, LLM batching, robotics hashing — *foundational* |
+| **scatter / scatter-add** | memory | **missing** | gfx binning, MoE routing, voxel hashing, histogram |
+| **stream compaction / filter** | memory | **missing** | gfx cluster compaction, planning pruning |
+| transpose, histogram, segmented reduce/scan, argmax/minmax | memory | **missing** | pervasive |
+| **stencil / convolution** | compute/memory | **missing** | scientific PDEs, gfx blur/AO, ML conv |
+| **SpMV / SpMM (sparse LA)** | memory (irregular) | **missing** | scientific solvers, SLAM bundle adjustment |
+| **radix sort (full)** | memory | **missing** | gfx transparency/particles, planning |
+| **attention (flash + paged)** | prefill compute / decode memory | **missing** | LLM serving, robot VLA |
+| **softmax / LayerNorm / RMSNorm** | memory | **missing** | ML, LLM |
+| **fused activation epilogues** | memory | **missing** | ML, LLM |
+| **sampling / top-k** | memory | **missing** | LLM decode |
+| **collectives (all-reduce, all-to-all)** | interconnect | **missing** | tensor/expert-parallel LLM, distributed BA |
+
+**Critical path:** `scan` + `scatter` gate nearly everything downstream
+(compaction, sort, histogram, routing, sparse builds, GPU-driven culling,
+continuous batching) — they are the highest-leverage first additions.
+
+## 11. Integration with the Cajeta XPU runtime
 
 - Lives in `cajeta.xpu.sched`, driven by the existing `@Kernel` launch path and
   `LoweringTarget` per-backend seam.
@@ -329,7 +365,7 @@ and the idea taken from each:
 - Correctness/portability discipline identical to the shipped XPU specs:
   results-invariant, on-device-measured wins, safe degradation per backend.
 
-## 11. Risks / dependencies
+## 12. Risks / dependencies
 
 1. **Hardware-scheduler opacity** — concurrent streams don't guarantee true
    co-execution on all GPUs; MPS/MIG/CU-mask availability varies. Mitigation:
@@ -344,7 +380,7 @@ and the idea taken from each:
 5. **Scheduling overhead** — the scheduler itself must stay off the critical
    path (10s of µs budget); use CUDA Graphs / batched submission.
 
-## 12. References
+## 13. References
 
 Full PDFs + markers in [`research/xpu-scheduling/papers/`](../../research/xpu-scheduling/papers/):
 Salus, REEF, Orion, Paella, TGS, AntMan, Gandiva, PipeSwitch, Clockwork,
