@@ -189,17 +189,40 @@ fi
 # $exit_file and reports the offending shard cleanly.
 set +m
 
-# Determine the worker count. Each worker runs tests one at a time, each in its
-# own short-lived process (see the launch loop), so the worker count is the
-# number of concurrent test processes. Default is 32 (the maximum); override
-# with `shard=N` (preferred) or PARALLEL=N. An explicit override is honored
-# verbatim — including above 32 — since the caller is asking for it.
+# Stdlib reuse (parallel sweep only): prime the stdlib ONCE per suite-process and
+# share it across that process's tests, instead of re-parsing+re-codegen'ing the
+# ~14s stdlib for every test. This is the dominant speed lever for a full sweep
+# (many-hours -> ~1.3h) and — because each process finishes far sooner — it also
+# LOWERS sustained memory pressure vs the non-reuse path. Correct as of the
+# per-thread reuse gate (concurrent-compile) + wildcard-array-element fix; the
+# harness still auto-falls-back per-test on any reuse hazard. On by default here;
+# opt out with REUSE=0. Serial single-suite/-test runs (the debug path, exec'd
+# earlier) stay fully isolated — reuse never changes what a dev is debugging.
+# Exported so every shard child process inherits it.
+if [ "${REUSE:-1}" != "0" ]; then export CAJETA_STDLIB_REUSE=1; else unset CAJETA_STDLIB_REUSE; fi
+
+# Determine the worker count = the number of concurrent test processes. An
+# explicit `shard=N` / PARALLEL=N is honored verbatim (the caller asked for it).
+# Otherwise the default is MEMORY-AWARE: use every core, but cap so the
+# concurrent suite-processes can't exhaust RAM and swap-thrash / OOM. Each
+# suite-process peaks around 0.4-0.9 GB under reuse (measured); budget
+# PER_PROC_MB conservatively and size against CURRENTLY-available RAM, so the run
+# automatically backs off when the box is already loaded (e.g. a second sweep in
+# a sibling repo) and uses full width when it's idle.
 if [[ "$shard_arg" =~ ^[0-9]+$ ]] && [ "$shard_arg" -ge 1 ]; then
     shards="$shard_arg"
 elif [[ "${PARALLEL:-}" =~ ^[0-9]+$ ]] && [ "${PARALLEL}" -gt 1 ]; then
     shards="${PARALLEL}"
 else
-    shards=32
+    cores=$(nproc 2>/dev/null || echo 8)
+    avail_mb=$(awk '/^MemAvailable:/{print int($2/1024)}' /proc/meminfo 2>/dev/null)
+    [ -z "$avail_mb" ] && avail_mb=$(( cores * 2048 ))   # /proc absent (macOS): assume ~2GB/core
+    per_proc_mb="${PER_PROC_MB:-1300}"
+    mem_cap=$(( avail_mb * 3 / 4 / per_proc_mb ))        # spend ~75% of available RAM
+    [ "$mem_cap" -lt 1 ] && mem_cap=1
+    shards=$cores
+    [ "$shards" -gt "$mem_cap" ] && shards=$mem_cap
+    echo ">> Auto shards=$shards (cores=$cores, availRAM=${avail_mb}MB, ~${per_proc_mb}MB/proc; override with shard=N or PER_PROC_MB=)" >&2
 fi
 [ "$shards" -lt 1 ] && shards=1
 
