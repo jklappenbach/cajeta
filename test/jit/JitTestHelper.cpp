@@ -10,8 +10,10 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <random>
 #include <stdexcept>
+#include <thread>
 
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CajetaModule.h"
@@ -585,6 +587,25 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     // fully-isolated compile. Opt in with CAJETA_STDLIB_REUSE=1.
     static const bool kReuseEnabled = std::getenv("CAJETA_STDLIB_REUSE") != nullptr;
     bool reuseStdlib = kReuseEnabled && stdlibReusable(opts);
+    // The reuse cache (one shared LLVMContext + a process-global captured
+    // baseline mutated by restoreBaseline) is single-threaded by construction;
+    // concurrent compiles racing on it corrupt the heap (ConcurrentCompileTests
+    // SIGABRT under reuse). Confine reuse to the thread that first primed it —
+    // off-owner-thread compiles take the fresh, fully-isolated path (the same
+    // one default mode uses, which those tests pass on). #14 (per-thread
+    // context) removes the restriction.
+    if (reuseStdlib) {
+        static std::mutex reuseOwnerMutex;
+        static std::thread::id reuseOwnerThread;
+        static bool reuseOwnerSet = false;
+        std::lock_guard<std::mutex> lk(reuseOwnerMutex);
+        if (!reuseOwnerSet) {
+            reuseOwnerThread = std::this_thread::get_id();
+            reuseOwnerSet = true;
+        } else if (std::this_thread::get_id() != reuseOwnerThread) {
+            reuseStdlib = false;
+        }
+    }
     auto& stdlibCache = StdlibReuseCache::instance();
 
     // The reuse path binds the process-global shared context (line ~499) per
