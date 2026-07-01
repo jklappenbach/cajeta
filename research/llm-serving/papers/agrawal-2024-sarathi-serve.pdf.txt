@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Taming the Throughput-Latency Tradeoff in LLM Inference (Sarathi-Serve)
+description: Chunked-prefill + stall-free batching: split long prefills into chunks and piggyback decode tokens so compute-bound prefill and memory-bound decode co-run in one batch without latency stalls.
+url: https://arxiv.org/abs/2403.02310

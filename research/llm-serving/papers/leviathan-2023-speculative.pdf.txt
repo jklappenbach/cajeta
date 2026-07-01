@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Fast Inference from Transformers via Speculative Decoding
+description: A small draft model proposes several tokens that the large model verifies in one parallel pass, turning sequential memory-bound decode steps into batched compute — changes the decode kernel's scheduling profile.
+url: https://arxiv.org/abs/2211.17192

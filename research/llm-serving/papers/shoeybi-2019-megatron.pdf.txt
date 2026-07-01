@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Megatron-LM: Training Multi-Billion Parameter Models with Model Parallelism
+description: Tensor (intra-layer) model parallelism that splits GEMMs across GPUs with all-reduce collectives — the source of the Communication kernel family and the tensor-parallel GEMM/collective interleave that must be scheduled.
+url: https://arxiv.org/abs/1909.08053

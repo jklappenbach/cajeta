@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: FlashInfer: Efficient and Customizable Attention Engine for LLM Serving
+description: A kernel library that factors LLM serving into Attention/GEMM/Communication/Sampling families, with block-sparse/composable KV-cache formats and JIT-customizable attention — the modern kernel-family taxonomy for serving.
+url: https://arxiv.org/abs/2501.01005

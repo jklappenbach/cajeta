@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: DistServe: Disaggregating Prefill and Decoding for Goodput-Optimized LLM Serving
+description: Runs the compute-bound prefill phase and the memory-bound decode phase on separate GPU pools so each is provisioned/parallelized independently, removing prefill-decode interference and raising goodput under SLOs.
+url: https://arxiv.org/abs/2401.09670

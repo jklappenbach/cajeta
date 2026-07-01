@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Efficient Memory Management for LLM Serving with PagedAttention (vLLM)
+description: PagedAttention manages the KV cache in non-contiguous pages (like OS virtual memory), eliminating fragmentation and enabling sharing — the memory substrate that lets many sequences batch on one GPU at high utilization.
+url: https://arxiv.org/abs/2309.06180

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Splitwise: Efficient Generative LLM Inference Using Phase Splitting
+description: Splits the prompt (prefill) and token-generation (decode) phases onto different machines matched to each phase's compute vs memory profile, cutting cost/power at fixed throughput — the phase-heterogeneity argument for scheduling.
+url: https://arxiv.org/abs/2311.18677

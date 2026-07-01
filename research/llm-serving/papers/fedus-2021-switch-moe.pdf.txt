@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Switch Transformers: Scaling to Trillion Parameter Models with MoE
+description: Sparse mixture-of-experts routing: each token goes to a few experts, adding a gather/scatter route + expert GEMMs + all-to-all communication — a distinct, dynamic, load-imbalanced kernel pattern to schedule.
+url: https://arxiv.org/abs/2101.03961

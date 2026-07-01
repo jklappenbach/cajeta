@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Towards Efficient Generative LLM Serving: A Survey
+description: Survey of generative LLM serving systems and algorithms — batching, memory/KV management, parallelism, scheduling, and kernel optimization — the landscape map for LLM inference scheduling.
+url: https://arxiv.org/abs/2312.15234
