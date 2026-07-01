@@ -42,6 +42,7 @@ namespace cajeta {
     }
 
     void SynthesizedStaticFactoryMethod::generateCode() {
+        auto& llvmFunction = llvmFunctionRef();  // U6.3b: frozen-aware
         // Static: (arg1, ..., argN) -> ptr (parent). Alloc the parent
         // class on the heap, init its vtable, call the wrapped ctor
         // with `(instance, arg1, ..., argN)`, return the instance.

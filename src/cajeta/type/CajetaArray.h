@@ -53,6 +53,17 @@ namespace cajeta {
         // llvm type for value-type elements, or `ptr` when elementType is itself an
         // array or other reference type.
         llvm::Type* getElementLlvmType(llvm::LLVMContext* ctx) const;
+
+        // U6.4.1 — build (intern) the array's `{ i64 size, [0 x T] data }` struct
+        // in `ctx` from the (immutable) element type + fixed length. Context-
+        // parameterized so the frozen-stdlib path can rebuild it in a thread's own
+        // context (U6.4.2); the ctor calls it with the home module's context.
+        llvm::Type* buildLlvmType(llvm::LLVMContext* ctx) const;
+
+        // U6.4.2 — when frozen and this thread's binding table is empty, rebuild
+        // the struct in the thread's current LLVM context. Inert while not frozen
+        // (delegates to the base, which returns the inline-bound type).
+        llvm::Type* getLlvmType() override;
     };
     typedef shared_ptr<CajetaArray> CajetaArrayPtr;
 }

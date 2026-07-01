@@ -32,76 +32,13 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // HashMapEntryStream}. Each source file under
 // runtime/src/cajeta/ adds one entry to
 // CajetaModule::strutureToModule via CajetaModule::create(),
-// counted whether the class is template or concrete. Bump when
-// stdlib grows.
-// Empirical count of stdlib structures that land in
-// getStructureToModule when compiling a trivial Test.cajeta. Excludes
-// enums (registered as int32 aliases, not as class structures). Bump
-// when stdlib's structure count actually changes; prior values
-// drifted ahead of reality during the multi-class push, so re-anchor
-// by running the test and reading the actual size if it diverges.
-// 2026-05-29: bumped 74 → 96 after the cajeta-xpu work merged the
-// cajeta.xpu prelude (Stream, Buffer, Thread, Workgroup, Barrier,
-// Event, Wave, …) into the implicitly-loaded stdlib — +22 structures.
-// --- cajeta-xpu lineage (xpu.core prelude growth) ---
-// 2026-06-01: 96 → 98 — Item 8 added cajeta.gfx.Texture2D + Sampler (+2).
-// 2026-06-03: 98 → 100 — Part C inc 3a added AccelerationStructure + RayQuery (+2).
-// 2026-06-04: 100 → 101 — Part C CM4 added CooperativeMatrix (+1).
-// 2026-06-05: 101 → 102 — B1 added the declared cajeta.math.Matrix value type (+1).
-// 2026-06-06: re-anchored 102 → 104 — Tier-1 sweep added cajeta.xpu.Bits (+ drift fix).
-// 2026-06-06: 104 → 105 — writable images added cajeta.xpu.Image2D (+1).
-// 2026-06-09: +1 — Part C minor added cajeta.xpu.Quad (quad-control); the
-//   live base had drifted to 277, so re-anchor to the actual modules.size()-1: 278.
-// --- main lineage (threading / time / json / net preludes) ---
-// 2026-05-31: 96 → 110 — cajeta.concurrent + Atomic + cajeta.time.Duration + #66 stream sweep.
-// 2026-06-02: 110 → 123 — feature/build-system merge (collection.Cache, codec.json getters, …).
-// 2026-06-06: 123 → 264 — cajeta-net merge (cajeta.io.net.{tcp,udp,dns,http,tls,ws}, …, +141).
-// --- merge of origin/main into cajeta-xpu ---
-// 2026-06-11: merge of origin/main (Reflection Phases 1–11 prelude) into
-// cajeta-xpu (cajeta.xpu prelude). Both preludes now load together: the
-// shared base + the reflection structures (cajeta.reflect.Class, Modifiers,
-// annotation/registry classes, reflective adapters) + the cajeta.xpu
-// structures HEAD added. This count is self-anchoring — anchored to the live
-// modules.size() after the merge build.
-// 2026-06-15: 320 → 328 — feature/json-schema merge added the SIMD JSON binding
-// stdlib (cajeta.codec.json.{JsonIndex,JsonCursor,JsonHandler,JsonSax,
-// JsonLinesWriter} + cajeta.io.Buffer; +8 prelude structures).
-// 2026-06-20: 328 → 342 — codec Phase 0/1 stdlib merge: the cajeta.wire tier
-// interfaces (Encoder/SchemaEncoder/Schema/Compressor/Decompressor) + the CSV
-// codec (cajeta.codec.csv.{CsvIndex,CsvReader,CsvWriter,Csv,CsvParseException})
-// + remaining JSON binding classes (+14 prelude structures).
-// 2026-06-20: 342 → 374 — cajeta.ifx merge (main into feature/native-deps): the
-// interaction-framework stdlib (Surface/Window/WindowEvent, Input/Audio/Video
-// backends + sinks, capability/permission/lifecycle vocabulary, IfxInfo/
-// IfxException, the Null* floors; +32 prelude structures).
-// 2026-06-21: still 374 — cajeta-gfx §1 added the graphics math value types
-// (cajeta.math.{Ray,Aabb,Sphere,Plane,Transform,Camera,Rotation,Frustum,Color}),
-// but cajeta.math is LAZILY parsed (loads only when imported), so it does not
-// change the fresh-process prelude count this test anchors to.
-// 2026-06-22: re-anchored 374 → 383 — main-lineage prelude growth that merged in
-// alongside the numpy-phase3 work. The numpy batch itself is all cajeta.math
-// (verified absent from the eager prelude — still lazy); the +9 are non-math
-// stdlib structures. Self-anchored to the live modules.size()-1 on a fresh build.
-// 2026-06-23: re-anchored 383 → 440 on feature/ifx. The 383 anchor was stale on
-// THIS branch: the eager cajeta.xpu §3 foundation classes added here
-// (LowDiscrepancy, Rng, Sdf, Noise, Octahedral) plus the branch's ifx-lineage
-// prelude growth had drifted the live count well past 383 (cajeta.xpu is eager;
-// only cajeta.math is lazy), so this test was already red before §3-a. +1 of the
-// jump is cajeta.xpu.Lbvh (the §3-a software-LBVH builder, Morton-code slice);
-// the rest absorbs the pre-existing drift. Self-anchored to the live
-// modules.size()-1 on a fresh build.
-// 2026-06-23: 440 → 441 — cajeta.xpu.PageCache (the §3 3.d residency cache, eager
-// cajeta.xpu prelude; +1).
-// 2026-06-23: 441 → 443 — cajeta.xpu.Reservoir + cajeta.xpu.Ris (the §3 3.b-rest
-// RIS reservoir value type + RIS/MIS estimators; eager cajeta.xpu prelude; +2).
-// 2026-06-23: 443 → 445 — cajeta.xpu.Sobol (the §3 3.b-rest-sobol low-discrepancy
-// (0,2)-sequence) + cajeta.xpu.BvhCodec (the §3 3.a-rest reinterpret/quantized-node
-// codec); both eager cajeta.xpu prelude; +2.
-// 2026-06-24: 445 → 446 — cajeta.xpu.Bvh (the cajeta-accel contract facade +
-// Reference adapter, plan unit 1) registers a structure; the sibling
-// cajeta.xpu.Strategy ENUM does not add a separate module, so the eager prelude
-// grew net +1.
-static constexpr size_t STDLIB_STRUCTURE_COUNT = 446;
+// counted whether the class is template or concrete.
+// The prelude count is asserted by PROPERTY, not a hardcoded anchor: a raw total
+// drifted on every legitimate prelude change and had no independent oracle (the
+// only way to know the "expected" eager count is to count it — tautological).
+// The tests instead assert what actually matters: the user's structure is
+// registered, the eager prelude loaded (floor), and lazy packages (cajeta.math)
+// stay lazy — the last directly guards the MathLazyParse regression class.
 
 TEST(CompilerTests, canParseOnValidShortPackage) {
     string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");
@@ -111,7 +48,14 @@ TEST(CompilerTests, canParseOnValidShortPackage) {
     CajetaModulePtr pModule = compiler.createModule(inputPath, sourceRootPath, outputPath);
     compiler.compile(pModule);
     auto modules = CajetaModule::getStructureToModule();
-    EXPECT_EQ(modules.size(), 1 + STDLIB_STRUCTURE_COUNT);
+    EXPECT_GT(modules.count("cajeta.Test"), 0u) << "user structure not registered";
+    EXPECT_GT(modules.size(), 100u) << "eager stdlib prelude did not load";
+    // cajeta.math is lazy: no cajeta.math.* structure may appear in the eager
+    // prelude of a trivial file (guards the MathLazyParse regression class).
+    size_t mathEager = 0;
+    for (auto& kv : modules)
+        if (kv.first.rfind("cajeta.math.", 0) == 0) ++mathEager;
+    EXPECT_EQ(mathEager, 0u) << "cajeta.math.* must stay lazy (not eager prelude)";
 }
 
 TEST(CompilerTests, canParseOnValidLongPackage) {
@@ -123,7 +67,8 @@ TEST(CompilerTests, canParseOnValidLongPackage) {
     compiler.compile(pModule);
     auto modules = CajetaModule::getStructureToModule();
     auto structure = pModule->getStructures()["foo.bar.baz.Test"];
-    EXPECT_EQ(modules.size(), 1 + STDLIB_STRUCTURE_COUNT);
+    EXPECT_GT(modules.count("foo.bar.baz.Test"), 0u) << "user structure not registered";
+    EXPECT_GT(modules.size(), 100u) << "eager stdlib prelude did not load";
     EXPECT_EQ(structure->getProperties().size(), 2);
     EXPECT_EQ(structure->getMethods().size(), 3);
 }

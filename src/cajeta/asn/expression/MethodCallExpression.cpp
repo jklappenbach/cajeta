@@ -4,6 +4,7 @@
 
 #include "MethodCallExpression.h"
 #include "cajeta/compile/CajetaModule.h"
+#include "cajeta/compile/Compiler.h"
 #include "cajeta/type/CajetaArray.h"
 #include "cajeta/type/CajetaVector.h"
 #include "cajeta/type/VectorOps.h"
@@ -4894,6 +4895,14 @@ namespace cajeta {
                 try {
                     candidate = candidate->instantiateMethodTemplate(
                         explicitMethodTypeArgs);
+                } catch (const cajeta::ReuseHazardAbort&) {
+                    // Reuse-mode fresh-fallback sentinel: a novel stdlib-template
+                    // instantiation that must re-run this test on a fresh Compiler.
+                    // MUST propagate to the harness's retry handler — swallowing it
+                    // here (via the generic catch below) strands the lambda arg
+                    // without an expectedType and hard-fails inference instead of
+                    // falling back like the no-lambda path does.
+                    throw;
                 } catch (...) {
                     candidate = nullptr;
                 }

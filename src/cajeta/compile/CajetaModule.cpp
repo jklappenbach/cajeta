@@ -28,20 +28,23 @@
 #include "llvm/Support/MemoryBuffer.h"
 
 namespace cajeta {
-    map<string, MethodPtr> CajetaModule::methods;
-    map<string, CajetaModulePtr> CajetaModule::strutureToModule;
-    CajetaModulePtr CajetaModule::activeModule;
-    CajetaModulePtr CajetaModule::currentCodegenModule;
-    CajetaModulePtr CajetaModule::reuseEmitModule;
-    llvm::Module* CajetaModule::currentEmitLlvmModule = nullptr;
-    uint64_t CajetaModule::reuseEpoch = 0;
-    CajetaModulePtr CajetaModule::stdlibModule;
+    // thread-safe-compiler Unit 3: per-compile registries thread_local.
+    thread_local map<string, MethodPtr> CajetaModule::methods;
+    thread_local map<string, CajetaModulePtr> CajetaModule::strutureToModule;
+    thread_local CajetaModulePtr CajetaModule::activeModule;
+    thread_local CajetaModulePtr CajetaModule::currentCodegenModule;
+    // U5 concurrency-first: each thread primes its OWN stdlib (memory-heavy,
+    // temporary — the frozen-shared optimization replaces this).
+    thread_local CajetaModulePtr CajetaModule::reuseEmitModule;
+    thread_local llvm::Module* CajetaModule::currentEmitLlvmModule = nullptr;
+    thread_local uint64_t CajetaModule::reuseEpoch = 0;
+    thread_local CajetaModulePtr CajetaModule::stdlibModule;
     std::function<void(const std::string&)> CajetaModule::stdlibImportHook;
-    map<string, CajetaModulePtr> CajetaModule::moduleVariables;
-    vector<CajetaClassPtr> CajetaModule::aspectClasses;
-    vector<CajetaModule::ComponentDescriptorPtr> CajetaModule::componentClasses;
-    vector<CajetaModule::FactoryDescriptorPtr> CajetaModule::factoryClasses;
-    string CajetaModule::activeProfile = "prod";
+    thread_local map<string, CajetaModulePtr> CajetaModule::moduleVariables;
+    thread_local vector<CajetaClassPtr> CajetaModule::aspectClasses;
+    thread_local vector<CajetaModule::ComponentDescriptorPtr> CajetaModule::componentClasses;
+    thread_local vector<CajetaModule::FactoryDescriptorPtr> CajetaModule::factoryClasses;
+    thread_local string CajetaModule::activeProfile = "prod";
 
     CajetaModule::CajetaModule(llvm::LLVMContext* llvmContext,
         QualifiedNamePtr qName,

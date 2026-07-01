@@ -49,6 +49,7 @@ namespace cajeta {
     }
 
     void SynthesizedWithMethod::generateCode() {
+        auto& llvmFunction = llvmFunctionRef();  // U6.3b: frozen-aware
         // Idempotent — Phase 2 codegen passes loop until quiescent and may
         // revisit this method. Without this guard, a second visit appends a
         // duplicate `entry` block to the function and the JIT bitcode parse

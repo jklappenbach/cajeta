@@ -203,6 +203,7 @@ namespace cajeta {
     }
 
     void SynthesizedToStringMethod::generateCode() {
+        auto& llvmFunction = llvmFunctionRef();  // U6.3b: frozen-aware
         // Signature post-prototype: (this) -> String/ptr. arg(0) is this.
         llvm::LLVMContext& ctx = *module->getLlvmContext();
         llvmBasicBlock = llvm::BasicBlock::Create(ctx, "entry", llvmFunction);

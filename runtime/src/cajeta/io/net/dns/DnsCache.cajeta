@@ -212,14 +212,17 @@ public final class DnsCache {
             // array is the caller's, and the cache then takes ownership
             // of the canonical port-0 `resolved` for the TTL window.
             SocketAddress[] baked = DnsCache.bakePort(resolved, port);
-            this.store.put(key, #DnsCacheEntry.positive(#resolved));
+            // Transfer the key into the cache: it must own the key, since this
+            // local `key` is freed when `resolve` returns (a borrowed cache key
+            // would dangle). Exactly one of the two put sites runs per call.
+            this.store.put(#key, #DnsCacheEntry.positive(#resolved));
             return #baked;
         } catch (NetException e) {
             // fall through to negative-cache + raise
         }
 
         if (this.cacheFailures) {
-            this.store.put(key, #DnsCacheEntry.negativeResult());
+            this.store.put(#key, #DnsCacheEntry.negativeResult());
         }
         throw heap NetException(DnsCache.failureMessage(host),
             NetException.KIND_OTHER);

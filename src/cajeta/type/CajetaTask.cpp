@@ -6,9 +6,19 @@
 #include "CajetaArray.h"
 #include "CajetaView.h"
 #include "../compile/CajetaModule.h"
+#include "../compile/CompilationContext.h"
 #include "llvm/TargetParser/Triple.h"
 
 namespace cajeta {
+
+    llvm::Type* CajetaTask::getLlvmType() {
+        if (isFrozen() && CajetaType::rawLlvmType() == nullptr) {
+            llvm::LLVMContext* ctx = currentLlvmContext();
+            if (!ctx && module) ctx = module->getLlvmContext();
+            if (ctx) setLlvmType(buildLlvmType(ctx));  // U6.4.2: per-thread rebuild
+        }
+        return CajetaClass::getLlvmType();
+    }
 
     CajetaTask::CajetaTask(CajetaModulePtr module, CajetaTypePtr elementType)
         : CajetaClass(module) {
@@ -30,8 +40,15 @@ namespace cajeta {
         // (task #47).
         setTypeArguments({elementType});
 
-        llvm::LLVMContext* ctx = module->getLlvmContext();
+        setLlvmType(buildLlvmType(module->getLlvmContext()));  // U6.4.1
+        typeFlags = STRUCT_FLAG | USER_DEFINED_FLAG;
+    }
 
+    // U6.4.1 — build (intern) the task's `{ T value, i32 done, ptr exception,
+    // ptr fiber }` struct in `ctx` from the (immutable) element type. Context-
+    // parameterized so the frozen-stdlib path can rebuild it in a thread's own
+    // context (U6.4.2); the ctor calls it with the home module's context.
+    llvm::Type* CajetaTask::buildLlvmType(llvm::LLVMContext* ctx) const {
         // Element-storage type: classes/arrays travel as `ptr` (heap-allocated,
         // pass-by-reference at the LLVM level). Primitives store their LLVM
         // type directly.
@@ -69,12 +86,12 @@ namespace cajeta {
             llvm::PointerType::get(*ctx, 0),
             llvm::PointerType::get(*ctx, 0),
         };
-        llvmType = CajetaType::getOrCreateLlvmType(ctx,
+        return CajetaType::getOrCreateLlvmType(ctx,
             string("#task.") + canonical, fields);
-        typeFlags = STRUCT_FLAG | USER_DEFINED_FLAG;
     }
 
     llvm::Function* CajetaTask::getOrCreateDropFunction() {
+        auto& llvmDropFunction = dropFnRef();  // U6.3: frozen-aware
         if (llvmDropFunction) return llvmDropFunction;
         auto& ctx = *module->getLlvmContext();
         auto* lmod = module->getLlvmModule();
@@ -148,7 +165,7 @@ namespace cajeta {
         llvm::Function* waitFn = module->getRuntimeFunction("__cajeta_task_wait");
         if (waitFn) {
             llvm::Value* doneAddr = b.CreateStructGEP(
-                llvmType, task, DONE_FIELD_INDEX, "task_done");
+                rawLlvmType(), task, DONE_FIELD_INDEX, "task_done");
             b.CreateCall(waitFn, {doneAddr});
         }
         // Throw path: scope_exit_to runs AFTER drop chain unwind, so any
@@ -158,7 +175,7 @@ namespace cajeta {
             "__cajeta_scope_deregister_task");
         if (deregFn) {
             const llvm::DataLayout& dl = lmod->getDataLayout();
-            uint64_t taskSize = dl.getTypeAllocSize(llvmType);
+            uint64_t taskSize = dl.getTypeAllocSize(rawLlvmType());
             llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
             b.CreateCall(deregFn, {task,
                 llvm::ConstantInt::get(i64Ty, taskSize)});

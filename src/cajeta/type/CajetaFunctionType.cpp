@@ -9,8 +9,37 @@
 #include "CajetaArray.h"
 #include "CajetaClass.h"
 #include "CajetaView.h"
+#include "../compile/CompilationContext.h"
+#include <unordered_map>
 
 namespace cajeta {
+
+    // U6.3b — per-thread side-table for a frozen function type's cached LLVM
+    // FunctionType (LLVMContext-bound). See getLlvmFunctionType / the header.
+    static std::unordered_map<const CajetaFunctionType*, llvm::FunctionType*>& frozenFnTypeBindings() {
+        static thread_local std::unordered_map<const CajetaFunctionType*, llvm::FunctionType*> tbl;
+        return tbl;
+    }
+
+    llvm::FunctionType* CajetaFunctionType::getLlvmFunctionType() const {
+        if (isFrozen()) {
+            auto& tbl = frozenFnTypeBindings();
+            auto it = tbl.find(this);
+            if (it != tbl.end()) return it->second;
+            // U6.4.2 — rebuild the signature in this thread's context on empty.
+            llvm::LLVMContext* ctx = currentLlvmContext();
+            if (!ctx) return nullptr;
+            llvm::FunctionType* t = buildLlvmFunctionType(ctx);
+            tbl[this] = t;
+            return t;
+        }
+        return llvmFunctionType;
+    }
+
+    void CajetaFunctionType::setLlvmFunctionType(llvm::FunctionType* t) {
+        if (isFrozen()) { frozenFnTypeBindings()[this] = t; return; }
+        llvmFunctionType = t;
+    }
 
     // Non-sret-eligible returns (primitive, void, interface fat-ptr, array,
     // view) have no semantic distinction between ownership and sret form —
@@ -61,8 +90,21 @@ namespace cajeta {
         // the slot type unchanged from L1 (still a single `ptr`); only the
         // pointed-to layout grew. Call sites load the record and indirect-
         // dispatch through fn_ptr, passing captures_ptr as the first arg.
-        llvm::Type* ptrTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
-        this->llvmType = ptrTy;
+        setLlvmType(llvm::PointerType::get(*module->getLlvmContext(), 0));  // U6.2
+        setLlvmFunctionType(buildLlvmFunctionType(module->getLlvmContext()));  // U6.4.1
+    }
+
+    // U6.4.1 — build the signature FunctionType in `ctx` from the (immutable)
+    // parameter/return types + returnsOwnership. Context-parameterized so the
+    // frozen-stdlib path can rebuild it in a thread's own context (U6.4.2); the
+    // ctor calls it with the home module's context.
+    llvm::FunctionType* CajetaFunctionType::buildLlvmFunctionType(llvm::LLVMContext* ctx) const {
+        // The value-side LLVM type is `ptr` — a function-typed local holds a
+        // pointer to a closure record `{ ptr fn, ptr captures }`. L2-1 keeps
+        // the slot type unchanged from L1 (still a single `ptr`); only the
+        // pointed-to layout grew. Call sites load the record and indirect-
+        // dispatch through fn_ptr, passing captures_ptr as the first arg.
+        llvm::Type* ptrTy = llvm::PointerType::get(*ctx, 0);
 
         // L2 calling convention: every lambda function takes `ptr captures`
         // as its first arg. Non-capturing lambdas pass null; capturing
@@ -102,14 +144,14 @@ namespace cajeta {
         // through the same coercion in Method::generatePrototype.
         llvm::Type* llvmRet;
         if (useSret) {
-            llvmRet = llvm::Type::getVoidTy(*module->getLlvmContext());
+            llvmRet = llvm::Type::getVoidTy(*ctx);
         } else {
             llvmRet = toCallingConvType(this->returnType, ptrTy);
             if (!llvmRet) {
-                llvmRet = llvm::Type::getVoidTy(*module->getLlvmContext());
+                llvmRet = llvm::Type::getVoidTy(*ctx);
             }
         }
-        this->llvmFunctionType = llvm::FunctionType::get(llvmRet, llvmParams, /*isVarArg=*/false);
+        return llvm::FunctionType::get(llvmRet, llvmParams, /*isVarArg=*/false);
     }
 
     bool CajetaFunctionType::usesSret() const {

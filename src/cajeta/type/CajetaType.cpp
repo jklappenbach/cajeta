@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <optional>
 #include <set>
+#include <unordered_map>
 #include "../compile/CajetaModule.h"
 #include "CajetaArray.h"
 #include "CajetaCapture.h"
@@ -17,10 +18,30 @@
 #include "CajetaMatrix.h"
 #include "CajetaQuaternion.h"
 #include "CajetaFunctionType.h"
+#include "../compile/CompilationContext.h"
 #include "../error/InvalidOperandException.h"
 #include "../error/Exception.h"
 
 namespace cajeta {
+
+    // U6.4.2 — rebuild a scalar (primitive) LLVM type in `ctx` from a prototype
+    // built in another context. TypeID + integer bit-width are context-independent
+    // metadata, so a frozen primitive (whose inline llvmType belongs to the prime
+    // context) can clone its shape into a compile thread's own context.
+    static llvm::Type* cloneScalarLlvmType(llvm::Type* proto, llvm::LLVMContext& ctx) {
+        if (!proto) return nullptr;
+        switch (proto->getTypeID()) {
+            case llvm::Type::HalfTyID:    return llvm::Type::getHalfTy(ctx);
+            case llvm::Type::BFloatTyID:  return llvm::Type::getBFloatTy(ctx);
+            case llvm::Type::FloatTyID:   return llvm::Type::getFloatTy(ctx);
+            case llvm::Type::DoubleTyID:  return llvm::Type::getDoubleTy(ctx);
+            case llvm::Type::FP128TyID:   return llvm::Type::getFP128Ty(ctx);
+            case llvm::Type::VoidTyID:    return llvm::Type::getVoidTy(ctx);
+            case llvm::Type::IntegerTyID: return llvm::Type::getIntNTy(ctx, proto->getIntegerBitWidth());
+            case llvm::Type::PointerTyID: return llvm::PointerType::get(ctx, 0);
+            default:                      return nullptr;
+        }
+    }
 
     #define CAJETA_NATIVE_PACKAGE ""
     #define NATIVE_TYPE_ENTRY(typeName, llvmType, typeFlags) CajetaType::create(QualifiedName::getOrInsert(typeName, CAJETA_NATIVE_PACKAGE), llvmType, typeFlags);
@@ -50,13 +71,50 @@ namespace cajeta {
             errId);
     }
 
-    map<string, CajetaTypePtr> CajetaType::canonicalMap;
-    map<string, map<string, int32_t>> CajetaType::enumConstants;
-    map<TypeKey, CajetaTypePtr> CajetaType::typeMap;
-    map<llvm::Type::TypeID, CajetaTypePtr> CajetaType::llvmTypeIdMap;
+    // thread-safe-compiler Unit 2: per-thread so concurrent compiles don't share.
+    thread_local map<string, CajetaTypePtr> CajetaType::canonicalMap;
+    thread_local map<string, map<string, int32_t>> CajetaType::enumConstants;
+    thread_local map<TypeKey, CajetaTypePtr> CajetaType::typeMap;
+    thread_local map<llvm::Type::TypeID, CajetaTypePtr> CajetaType::llvmTypeIdMap;
+
+    // threadsafe U6.1: per-thread LLVM-type binding for FROZEN (shared stdlib)
+    // CajetaType objects, keyed by the shared object. A frozen object has no valid
+    // inline `llvmType` (it would be one context's); each thread resolves/creates
+    // its own binding here in its own LLVMContext. Non-frozen objects keep using
+    // the inline member, so behavior is unchanged until the stdlib is frozen (6.4).
+    static std::unordered_map<const CajetaType*, llvm::Type*>& frozenTypeBindings() {
+        static thread_local std::unordered_map<const CajetaType*, llvm::Type*> tbl;
+        return tbl;
+    }
+
+    llvm::Type* CajetaType::rawLlvmType() const {
+        if (frozen) {
+            auto& tbl = frozenTypeBindings();
+            auto it = tbl.find(this);
+            return it != tbl.end() ? it->second : nullptr;
+        }
+        return llvmType;
+    }
+
+    llvm::Type* CajetaType::getLlvmType() {
+        // U6.4.2 — frozen primitive with an empty per-thread binding: clone its
+        // scalar shape (from the prime-context inline prototype) into this thread's
+        // context. Inert while not frozen. Composite/class types override this.
+        if (frozen && (typeFlags & PRIMITIVE_FLAG) && rawLlvmType() == nullptr && llvmType) {
+            if (llvm::LLVMContext* ctx = currentLlvmContext()) {
+                if (llvm::Type* t = cloneScalarLlvmType(llvmType, *ctx)) setLlvmType(t);
+            }
+        }
+        return rawLlvmType();
+    }
+
+    void CajetaType::setLlvmType(llvm::Type* t) {
+        if (frozen) { frozenTypeBindings()[this] = t; return; }
+        llvmType = t;
+    }
     // Archive — see CajetaType.h. Cleared by resetGlobals so each
     // fresh Compiler starts with an empty set.
-    static map<string, string> g_archive;
+    static thread_local map<string, string> g_archive;
     // Side set marking which archived canonical names are enum
     // declarations (rather than classes / interfaces / structs /
     // views). Read by fromContext's placeholder-synthesis path so
@@ -64,20 +122,20 @@ namespace cajeta {
     // to the proper i32-backed enum CajetaType instead of a
     // class-shaped placeholder. Populated by the prescan visitor's
     // visitEnumDeclaration override.
-    static set<string> g_enumArchive;
+    static thread_local set<string> g_enumArchive;
     // Archive entries known to be @ValueType classes. Read by
     // fromContext's placeholder-synthesis path so a cross-file
     // value-type-typed declaration gets a placeholder born with
     // VALUE_TYPE_FLAG | BY_VALUE_FLAG. Populated by the prescan
     // visitor's visitClassDeclaration when it sees the annotation.
-    static set<string> g_valueTypeArchive;
+    static thread_local set<string> g_valueTypeArchive;
     // Side set marking which archived canonical names are INTERFACE
     // declarations. Read by fromContext's placeholder-synthesis path so
     // a forward-referenced interface type (referenced by a field/param/
     // local before its own declaration is visited) is born as a fat
     // 24-byte interface pointer instead of a thin class pointer.
     // Populated by the prescan visitor's visitInterfaceDeclaration.
-    static set<string> g_interfaceArchive;
+    static thread_local set<string> g_interfaceArchive;
     // Per-class template metadata captured by the prescan when the
     // class declaration carries `typeParameters`. Lets the placeholder-
     // synthesis path in fromContext below pre-populate enough state on
@@ -95,7 +153,7 @@ namespace cajeta {
         vector<TypeParameter> typeParameters;
         string templateSource;
     };
-    static map<string, ArchiveTemplateMeta> g_archiveTemplateMeta;
+    static thread_local map<string, ArchiveTemplateMeta> g_archiveTemplateMeta;
     // Wildcard feature-flag override (Step 1). Set by tests via
     // CajetaType::setWildcardsEnabledForTest. Null means "fall back
     // to the CAJETA_WILDCARDS env var" (the production path).
@@ -108,7 +166,7 @@ namespace cajeta {
         CajetaType::WildcardKind kind;
         CajetaTypePtr bound;
     };
-    static map<string, WildcardInfoEntry> g_wildcardInfo;
+    static thread_local map<string, WildcardInfoEntry> g_wildcardInfo;
 
 
     TypeKey::TypeKey(llvm::Type* type) {
@@ -499,7 +557,7 @@ namespace cajeta {
     llvm::ConstantInt* CajetaType::getTypeAllocSize(CajetaModulePtr module) {
         const llvm::DataLayout& dataLayout = module->getLlvmModule()->getDataLayout();
         return llvm::ConstantInt::get(llvm::Type::getInt64Ty(*module->getLlvmContext()),
-            dataLayout.getTypeAllocSize(llvmType));
+            dataLayout.getTypeAllocSize(rawLlvmType()));
     }
 
     string CajetaType::toGeneric() {
@@ -1213,7 +1271,7 @@ namespace cajeta {
         CajetaTypePtr pointerType = CajetaType::of(pointerName);
         if (!pointerType) {
             pointerType = CajetaType::create(pointerName,
-                llvm::PointerType::get(llvmType->getContext(), 0), POINTER_FLAG);
+                llvm::PointerType::get(rawLlvmType()->getContext(), 0), POINTER_FLAG);
         }
         return pointerType;
     }
@@ -1249,6 +1307,14 @@ namespace cajeta {
         }
         return result;
 
+    }
+
+    llvm::StructType* CajetaType::getOrCreateLlvmStructNoRegister(llvm::LLVMContext* ctx, const string& name) {
+        llvm::StructType* result = llvm::StructType::getTypeByName(*ctx, name);
+        if (result == nullptr) {
+            result = llvm::StructType::create(*ctx, name);  // opaque; caller sets body
+        }
+        return result;
     }
 
     llvm::StructType* CajetaType::getOrCreateLlvmType(llvm::LLVMContext* ctx, string name, vector<llvm::Type*> properties) {
@@ -1310,14 +1376,14 @@ namespace cajeta {
                 case UINT32_TYPE_ID:
                 case UINT64_TYPE_ID:
                 case UINT128_TYPE_ID:
-                    result = module->getBuilder()->CreateIntCast(op, llvmType, false);
+                    result = module->getBuilder()->CreateIntCast(op, rawLlvmType(), false);
                     break;
                 case INT8_TYPE_ID:
                 case INT16_TYPE_ID:
                 case INT32_TYPE_ID:
                 case INT64_TYPE_ID:
                 case INT128_TYPE_ID:
-                    result = module->getBuilder()->CreateIntCast(op, llvmType, true);
+                    result = module->getBuilder()->CreateIntCast(op, rawLlvmType(), true);
                     break;
                 case FLOAT4E2M1_TYPE_ID:
                 case FLOAT6E2M3_TYPE_ID:
@@ -1334,7 +1400,7 @@ namespace cajeta {
                 case FLOAT32_TYPE_ID:
                 case FLOAT64_TYPE_ID:
                 case FLOAT128_TYPE_ID:
-                    result = module->getBuilder()->CreateFPCast(op, llvmType);
+                    result = module->getBuilder()->CreateFPCast(op, rawLlvmType());
                     break;
                 default:
                     throw Exception(string("Illegal execution error, attempting to normalize non-numeric type."), string("100"));

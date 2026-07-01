@@ -40,7 +40,28 @@ using namespace std;
 #define ERROR_ID_VARIABLE_DUPLICATE         "CAJETA_ERROR_VARIABLE_DUPLICATE"
 
 namespace cajeta {
-    map<string, MethodPtr> Method::archive;
+    thread_local map<string, MethodPtr> Method::archive;  // per-compile (U3)
+
+    // U6.3b — a method is frozen iff its parent class is frozen (shared stdlib).
+    bool Method::isFrozen() const {
+        return parent && parent->isFrozen();
+    }
+
+    // U6.3b — per-thread side-table for a frozen method's LLVMContext-bound bindings.
+    std::unordered_map<const Method*, MethodLlvmBindings>& Method::frozenMethodBindings() {
+        static thread_local std::unordered_map<const Method*, MethodLlvmBindings> tbl;
+        return tbl;
+    }
+
+    llvm::Function*& Method::llvmFunctionRef() {
+        return isFrozen() ? frozenMethodBindings()[this].llvmFunction : llvmFunction;
+    }
+    llvm::FunctionType*& Method::llvmFunctionTypeRef() {
+        return isFrozen() ? frozenMethodBindings()[this].llvmFunctionType : llvmFunctionType;
+    }
+    llvm::Function*& Method::llvmOriginalFunctionRef() {
+        return isFrozen() ? frozenMethodBindings()[this].llvmOriginalFunction : llvmOriginalFunction;
+    }
 
     // SIMD plan Phase 0.6: a method needs the implicit structured-concurrency
     // scope frame (save_top + scope_enter[HEAP-ALLOC] + exit_to) only when its
@@ -477,6 +498,8 @@ namespace cajeta {
     }
 
     void Method::emitNativeForwardingBody(const std::string& symbol) {
+        auto& llvmFunction = llvmFunctionRef();          // U6.3b: frozen-aware
+        auto& llvmFunctionType = llvmFunctionTypeRef();  // U6.3b
         // The forwarding wrapper IS this method's llvmFunction (in the emit
         // module); its runtime-symbol extern must be co-resident there.
         llvm::Module* lmod = getEmitModule()->getLlvmModule();
@@ -578,6 +601,17 @@ namespace cajeta {
                 b->CreateCall(popRun, {*eit});
             }
         }
+        // Frame-arena: reclaim this method's arena locals on the way out (after the
+        // drop chain, mirroring Block::generateCode's drops-then-reset order). A
+        // block ending in a terminator skips its own reset, so this is the only
+        // reclaim point for method-body-direct / early-returned arena arrays —
+        // and it ticks dropCount for them via __cajeta_arena_reset. Reset to the
+        // method-entry mark, which dominates every return.
+        if (methodArenaMark) {
+            if (llvm::Function* resetFn = module->getRuntimeFunction("__cajeta_arena_reset")) {
+                b->CreateCall(resetFn, {methodArenaMark});
+            }
+        }
     }
 
     // Emit one advice call. Validates v1 constraints (static, no
@@ -629,6 +663,7 @@ namespace cajeta {
     //     bug, not an arg-passing bug)
     void Method::emitNonNullParamChecks(CajetaModulePtr module) {
         if (parameterList.empty()) return;
+        auto& llvmFunction = llvmFunctionRef();  // U6.3b: frozen-aware
 
         llvm::IRBuilder<>* b = module->getBuilder();
         llvm::Function* throwFn = module->getRuntimeFunction("__cajeta_throw");
@@ -768,6 +803,7 @@ namespace cajeta {
 
     void Method::emitAfterThrowingTryPop(CajetaModulePtr module) {
         if (!hasAfterThrowingAdvice()) return;
+        auto& llvmOriginalFunction = llvmOriginalFunctionRef();  // U6.3b: frozen-aware
         // Only valid when we're inside the BODY-level try frame.
         // @Around-wrapped methods emit the body into
         // llvmOriginalFunction without a frame at that level — the
@@ -845,6 +881,8 @@ namespace cajeta {
         // instantiation pins each T to a real type. See
         // docs/specification/lang/MethodLevelTemplate.md.
         if (isMethodTemplate()) return;
+        auto& llvmFunction = llvmFunctionRef();          // U6.3b: frozen-aware
+        auto& llvmFunctionType = llvmFunctionTypeRef();  // U6.3b
         // Emit-target swap (test-reuse): for a stdlib-template instantiation
         // owned (emit-wise) by a user module, point `module` at the emit module
         // for the duration of prototype emission so the Function — and every
@@ -1315,6 +1353,25 @@ namespace cajeta {
                 }
                 return;
             }
+            // Lambda body: a closure captures outer-scope names, and its body is
+            // held in a separate `body` member (not getChildren()), so the default
+            // walk never sees it. Scan it for escapes — chiefly `#name` transfers
+            // INTO the closure: the closure takes ownership and may outlive the
+            // enclosing frame, so such a name must NOT be arena-routed (the arena
+            // reset would reclaim memory the closure still owns → UAF; and it would
+            // double-count against the closure's own drop). Borrow captures stay
+            // arena-eligible — an escaping borrow-capture closure is already a
+            // compile error (hasBorrowCaptures gate), so the array can't outlive its
+            // arena scope. Collect escapes only; the lambda's own locals live in a
+            // separate frame, so discard candidates gathered from its body.
+            if (auto lambda = std::dynamic_pointer_cast<LambdaExpression>(node)) {
+                std::vector<std::pair<std::string,
+                    std::shared_ptr<BinaryOpExpression>>> innerCands;
+                std::vector<std::pair<std::string,
+                    std::shared_ptr<NewExpression>>> innerArrays;
+                arenaWalk(lambda->getBody(), escaping, innerCands, innerArrays);
+                return;
+            }
             // return name → escapes to caller (return of a concat expr does not:
             // that builds a fresh value, the operands are borrowed).
             if (auto ret = std::dynamic_pointer_cast<ReturnStatement>(node)) {
@@ -1368,6 +1425,30 @@ namespace cajeta {
                     }
                     arenaWalk(p.expression, escaping, candidates, arrayCandidates);
                 }
+                return;
+            }
+            if (auto ne = std::dynamic_pointer_cast<NewExpression>(node)) {
+                // Constructor arguments live in the CreatorRest's parameter list,
+                // NOT getChildren() (same split as MethodCallExpression). A `#arg`
+                // ctor argument transfers ownership INTO the new object, so the
+                // named value escapes the frame — e.g. `heap String(#buf, len)` in
+                // every byte-slice helper. Without seeing it here, `buf` is wrongly
+                // judged non-escaping and arena-routed; the arena recycles its
+                // memory at scope exit while the constructed object still points at
+                // it (UAF → corrupted String length → array-bounds aborts across
+                // the whole slice-pattern parser layer).
+                if (auto cr = std::dynamic_pointer_cast<ClassCreatorRest>(
+                        ne->getCreatorRest())) {
+                    for (auto& p : cr->getParameters()) {
+                        if (p.callerTransferred) {
+                            std::string n = arenaLeftmostId(p.expression);
+                            if (!n.empty()) escaping.insert(n);
+                        }
+                        arenaWalk(p.expression, escaping, candidates, arrayCandidates);
+                    }
+                }
+                for (auto& c : ne->getChildren())
+                    arenaWalk(c, escaping, candidates, arrayCandidates);
                 return;
             }
             if (auto es = std::dynamic_pointer_cast<ExpressionStatement>(node)) {
@@ -1435,6 +1516,9 @@ namespace cajeta {
     }
 
     void Method::generateCode() {
+        auto& llvmFunction = llvmFunctionRef();                  // U6.3b: frozen-aware
+        auto& llvmFunctionType = llvmFunctionTypeRef();          // U6.3b
+        auto& llvmOriginalFunction = llvmOriginalFunctionRef();  // U6.3b
         // Emit-target swap (test-reuse): point `module` at the emit module for
         // the whole body. generateCode passes `module` DOWN to every statement/
         // expression (generateCode(CajetaModulePtr)), so this single swap
@@ -1715,6 +1799,8 @@ namespace cajeta {
                 }
             }
         }
+
+        methodArenaMark = nullptr;
 
         // Debugger CP5: push a debug frame for this method (no-op unless
         // --debug-info). Paired with __cajeta_dbg_frame_leave on every return
@@ -2127,6 +2213,21 @@ namespace cajeta {
         if (block) {
             block->resolveTypes(module);
             computeArenaEligibility();   // flag non-escaping concat locals (U2)
+            // Frame-arena: now that eligibility is known, capture the arena mark at
+            // method entry (still the straight-line entry region, so it dominates
+            // every return) so emitOwnerDrops can reclaim this method's arena locals
+            // on the way out — see Method.h methodArenaMark. The per-block reset is
+            // skipped when a block ends in a terminator (a return), so a
+            // method-body-direct or early-returned arena local would otherwise defer
+            // its reclaim (and dropCount tick) to an enclosing scope (the C++ caller
+            // for a top-level call, where it never fires).
+            if (usesArena()) {
+                if (llvm::Function* markFn =
+                        module->getRuntimeFunction("__cajeta_arena_mark")) {
+                    methodArenaMark = module->getBuilder()->CreateCall(
+                        markFn, {}, "method.arena.mark");
+                }
+            }
             block->generateCode(module);
         }
 
@@ -2266,6 +2367,9 @@ namespace cajeta {
     }
 
     void Method::emitAroundWrapper() {
+        auto& llvmFunction = llvmFunctionRef();                  // U6.3b: frozen-aware
+        auto& llvmFunctionType = llvmFunctionTypeRef();          // U6.3b
+        auto& llvmOriginalFunction = llvmOriginalFunctionRef();  // U6.3b
         // A7: collect every @Around match in matchingAdvice order
         // (already sorted by @Order during A3's resolveAdviceMatches
         // pass). aroundChain[0] is the outermost; aroundChain[N-1]

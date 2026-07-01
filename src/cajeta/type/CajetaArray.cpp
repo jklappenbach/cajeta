@@ -5,8 +5,18 @@
 #include "CajetaArray.h"
 #include "CajetaView.h"
 #include "../compile/CajetaModule.h"
+#include "../compile/CompilationContext.h"
 
 namespace cajeta {
+
+    llvm::Type* CajetaArray::getLlvmType() {
+        if (isFrozen() && CajetaType::rawLlvmType() == nullptr) {
+            llvm::LLVMContext* ctx = currentLlvmContext();
+            if (!ctx && module) ctx = module->getLlvmContext();
+            if (ctx) setLlvmType(buildLlvmType(ctx));  // U6.4.2: per-thread rebuild
+        }
+        return CajetaClass::getLlvmType();
+    }
 
     llvm::Type* CajetaArray::getElementLlvmType(llvm::LLVMContext* ctx) const {
         // Reference types are stored as opaque pointers in the array's
@@ -27,6 +37,15 @@ namespace cajeta {
         }
         if (dynamic_pointer_cast<CajetaView>(elementType) == nullptr) {
             if (auto klass = dynamic_pointer_cast<CajetaClass>(elementType)) {
+                // A wildcard instantiation (e.g. Class<?>) is a reference proxy
+                // that always flows by pointer — mirror CajetaClass::getLlvmType.
+                // Key off the immutable wildcard identity, not STRUCT_FLAG / the
+                // cached rawLlvmType: under stdlib reuse those drift to the
+                // concrete {vtable,rtti} struct after accumulation, collapsing
+                // Class<?>[] to 16-byte inline stride (the classesInPackage SIGSEGV).
+                if (klass->isWildcardInstantiation()) {
+                    return llvm::PointerType::get(*ctx, 0);
+                }
                 CajetaTypeFlags flags = klass->getTypeFlags();
                 if (!klass->isInterface()
                         && (flags & STRUCT_FLAG) == 0
@@ -54,7 +73,10 @@ namespace cajeta {
         qName = QualifiedName::getOrCreate(typeName);
         canonical = qName->toCanonical();
 
-        llvm::LLVMContext* ctx = module->getLlvmContext();
+        setLlvmType(buildLlvmType(module->getLlvmContext()));  // U6.4.1
+    }
+
+    llvm::Type* CajetaArray::buildLlvmType(llvm::LLVMContext* ctx) const {
         llvm::Type* i64Ty = llvm::Type::getInt64Ty(*ctx);
         llvm::Type* elemLlvm = getElementLlvmType(ctx);
 
@@ -78,6 +100,6 @@ namespace cajeta {
             i64Ty,
             llvm::ArrayType::get(elemLlvm, 0),
         };
-        llvmType = CajetaType::getOrCreateLlvmType(ctx, string("#array.") + canonical, fields);
+        return CajetaType::getOrCreateLlvmType(ctx, string("#array.") + canonical, fields);
     }
 }

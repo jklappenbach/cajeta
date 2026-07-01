@@ -167,22 +167,35 @@ namespace cajeta {
 class CajetaType : public Modifiable, public Annotatable,
         public std::enable_shared_from_this<CajetaType> {
     protected:
-        static map<string, CajetaTypePtr> canonicalMap;
-        static map<TypeKey, CajetaTypePtr> typeMap;
-        static map<llvm::Type::TypeID, CajetaTypePtr> llvmTypeIdMap;
+        // thread-safe-compiler Unit 2: the per-compile type registries are
+        // thread_local so concurrent compiles on different threads never share
+        // them. Single-threaded behavior is unchanged (resetGlobals clears the
+        // calling thread's copy each compile). Units 5-6 split these into a
+        // shared frozen-stdlib tier + a per-thread user tier.
+        static thread_local map<string, CajetaTypePtr> canonicalMap;
+        static thread_local map<TypeKey, CajetaTypePtr> typeMap;
+        static thread_local map<llvm::Type::TypeID, CajetaTypePtr> llvmTypeIdMap;
         // Enum constant registry. Keyed by the enum's short typeName
         // ("Direction") and then by constant name ("NORTH" / "SOUTH" / ...).
         // The value is the constant's int32 ordinal. DotExpression consults
         // this for `MyEnum.CONST` references; the enum CajetaType itself
         // is registered in canonicalMap as an i32-backed type.
-        static map<string, map<string, int32_t>> enumConstants;
+        static thread_local map<string, map<string, int32_t>> enumConstants;
         QualifiedNamePtr qName;
         llvm::Type* llvmType;
+        // threadsafe U6: when frozen (a shared stdlib instance), the LLVM binding
+        // is NOT the inline `llvmType` (one context) but a per-thread side-table
+        // entry keyed by `this`, so threads with different LLVMContexts each get
+        // their own binding for the one shared object. Default false → inline
+        // (unchanged behavior) until the stdlib is frozen in 6.4.
+        bool frozen = false;
         string canonical;
         string generic;
         CajetaTypeFlags typeFlags;
         int rank;
     public:
+        void markFrozen() { frozen = true; }
+        bool isFrozen() const { return frozen; }
         CajetaType() {
             this->typeFlags = STRUCT_FLAG;
             llvmType = nullptr;
@@ -263,9 +276,14 @@ class CajetaType : public Modifiable, public Annotatable,
             return qName;
         }
 
-        virtual llvm::Type* getLlvmType() {
-            return llvmType;
-        }
+        // Frozen-aware: returns the per-thread binding for a frozen (shared
+        // stdlib) object, else the inline `llvmType`. Out-of-line so it can reach
+        // the thread_local binding table (CajetaType.cpp). (threadsafe U6.1)
+        virtual llvm::Type* getLlvmType();
+        // Raw frozen-aware read of the cached binding: const, NO virtual dispatch
+        // and NO lazy-create. Subclasses + const methods use this for cache reads
+        // (the virtual getLlvmType has placeholder/wildcard branches). (U6.2)
+        llvm::Type* rawLlvmType() const;
 
         // Used by the placeholder-synthesis path so a forward-
         // referenced class has a named (body-less) struct type
@@ -273,7 +291,7 @@ class CajetaType : public Modifiable, public Annotatable,
         // calls setBody on the same struct (getOrCreateLlvmType
         // is canonical-keyed) so existing references compose
         // correctly.
-        void setLlvmType(llvm::Type* t) { llvmType = t; }
+        void setLlvmType(llvm::Type* t);
 
         CajetaTypePtr toPointerType();
 
@@ -422,6 +440,14 @@ class CajetaType : public Modifiable, public Annotatable,
 
         static llvm::StructType* getOrCreateLlvmType(llvm::LLVMContext* ctx, string name, vector<llvm::Type*> properties);
         static llvm::StructType* getOrCreateLlvmType(llvm::LLVMContext* ctx, string name);
+
+        // U6.4.2 — like getOrCreateLlvmType(ctx, name) but WITHOUT the
+        // canonicalMap registration side-effect. The frozen-stdlib per-thread
+        // struct rebuild needs only the (opaque) named StructType in the thread's
+        // context; it must NOT re-register a plain CajetaType over the shared
+        // class/view entry in the thread's registry. Returns the existing struct
+        // by name in `ctx` if present, else creates a fresh opaque one.
+        static llvm::StructType* getOrCreateLlvmStructNoRegister(llvm::LLVMContext* ctx, const string& name);
 
         static CajetaTypePtr create() {
             return CajetaType::create();

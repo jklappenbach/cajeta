@@ -23,7 +23,7 @@ package cajeta.xpu;
  *
  * The mesh is returned as a flat triangle **soup**: `float32[]` of nine floats
  * per triangle (three vertices, x/y/z each), so `result.count() / 9` is the
- * triangle count. A pure static-utility class, like {@link cajeta.xpu.Qem}.
+ * triangle count. A pure static-utility class, like {@link cajeta.xpu.mesh.Qem}.
  */
 public class MarchingTetrahedra {
 

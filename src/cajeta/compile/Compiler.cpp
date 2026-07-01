@@ -530,33 +530,43 @@ namespace cajeta {
     // dotted package -> indices into cajeta::stdlib::g_files. Built once;
     // g_files is constant for the process, so this survives resetGlobals.
     static const std::map<std::string, std::vector<size_t>>& stdlibPackageIndex() {
-        static std::map<std::string, std::vector<size_t>> index;
-        static bool built = false;
-        if (!built) {
+        // Built once from the embedded file table, then read-only — shared across
+        // threads (C++ guarantees thread-safe init of the function-local static;
+        // no mutation after, so concurrent reads are safe). (threadsafe U4 — the
+        // one Unit-4 datum kept shared rather than thread_local, per spec §8.3.)
+        static const std::map<std::string, std::vector<size_t>> index = [] {
+            std::map<std::string, std::vector<size_t>> m;
             for (size_t i = 0; i < cajeta::stdlib::g_fileCount; ++i) {
                 std::string rel = cajeta::stdlib::g_files[i].relativePath;
                 auto slash = rel.find_last_of('/');
                 std::string pkg = (slash == std::string::npos)
                     ? std::string() : rel.substr(0, slash);
                 std::replace(pkg.begin(), pkg.end(), '/', '.');
-                index[pkg].push_back(i);
+                m[pkg].push_back(i);
             }
-            built = true;
-        }
+            return m;
+        }();
         return index;
     }
 
     static bool isLazyStdlibPackage(const std::string& pkg) {
         // cajeta.math — the numpy-equivalent, including its nested submodules
         // (cajeta.math.linalg / fft / random / stats) — is parsed on demand.
-        return pkg == "cajeta.math" || pkg.rfind("cajeta.math.", 0) == 0;
+        if (pkg == "cajeta.math" || pkg.rfind("cajeta.math.", 0) == 0) return true;
+        // cajeta.xpu.mesh (Qem / MeshSimplifier) is the ONLY eager-prelude
+        // consumer of cajeta.math; making it lazy keeps cajeta.math out of the
+        // eager prelude (MathLazyParse — guarded by CompilerTests).
+        return pkg == "cajeta.xpu.mesh" || pkg.rfind("cajeta.xpu.mesh.", 0) == 0;
     }
 
-    // Instrumentation + lazy bookkeeping (process-global).
-    static std::set<std::string> g_stdlibParsedPackages;  // every pkg parsed (eager + lazy)
-    static std::set<std::string> g_lazyPrescanned;        // lazy pkgs prescanned into the archive
-    static std::set<std::string> g_lazyParsed;            // lazy pkgs fully parsed
-    static std::vector<std::string> g_lazyQueue;          // lazy pkgs awaiting full parse
+    // Instrumentation + lazy bookkeeping. thread_local (threadsafe U4): each
+    // thread tracks the lazy packages IT has parsed into its own (thread_local)
+    // registries. Units 5-6 share frozen lazy packages under a one-time lock.
+    static thread_local std::set<std::string> g_stdlibParsedPackages;  // every pkg parsed (eager + lazy)
+    static thread_local std::set<std::string> g_stdlibEagerBaseline;   // eager pkgs parsed at prime (reuse restore floor)
+    static thread_local std::set<std::string> g_lazyPrescanned;        // lazy pkgs prescanned into the archive
+    static thread_local std::set<std::string> g_lazyParsed;            // lazy pkgs fully parsed
+    static thread_local std::vector<std::string> g_lazyQueue;          // lazy pkgs awaiting full parse
 
     static void resetLazyStdlibStateImpl() {
         g_stdlibParsedPackages.clear();
@@ -700,6 +710,12 @@ namespace cajeta {
             g_stdlibParsedPackages.insert(pkg);
         }
         module->setQName(originalQName);
+
+        // Snapshot the eager set: these packages stay parsed-and-available in the
+        // cached stdlib module across a reuse shard (only lazy packages are rolled
+        // back). resetLazyStdlibState restores the record to this floor so the
+        // parsed-package probe keeps reporting eager packages as parsed.
+        g_stdlibEagerBaseline = g_stdlibParsedPackages;
 
         // Stdlib code may call runtime helpers (e.g. constructors
         // pushing drop entries) — embed the runtime bitcode so
@@ -959,7 +975,15 @@ namespace cajeta {
     }
 
     void Compiler::resetLazyStdlibState() {
-        resetLazyStdlibStateImpl();
+        // Reuse-harness restore: lazy packages were rolled back from the cached
+        // stdlib module, so drop their bookkeeping; but eager packages remain
+        // parsed-and-available, so restore the record to the eager floor rather
+        // than clearing it (else the parsed-package probe wrongly reports the
+        // still-live eager packages as unparsed).
+        g_lazyPrescanned.clear();
+        g_lazyParsed.clear();
+        g_lazyQueue.clear();
+        g_stdlibParsedPackages = g_stdlibEagerBaseline;
     }
 
     void Compiler::compile(CajetaModulePtr module) {

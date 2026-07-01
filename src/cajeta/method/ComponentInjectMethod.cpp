@@ -61,6 +61,7 @@ namespace cajeta {
     }
 
     void ComponentInjectMethod::generateCode() {
+        auto& llvmFunction = llvmFunctionRef();  // U6.3b: frozen-aware
         auto& ctx = *module->getLlvmContext();
         auto* lmod = module->getLlvmModule();
         llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);

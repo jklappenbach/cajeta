@@ -595,20 +595,38 @@ namespace cajeta {
                             if (targetCls) {
                                 vector<ParameterEntry> mcEntries;
                                 bool floatingAll = true;
+                                // This is a best-effort pre-analysis of the
+                                // callee's return-ownership to pick the local's
+                                // drop variant. If any argument type can't be
+                                // resolved here (e.g. a function/lambda-typed
+                                // arg whose identifier resolves to a null type),
+                                // skip the analysis rather than feed a null type
+                                // into resolveMethod -> buildGeneric ->
+                                // toGeneric (a null-deref crash). The real call
+                                // codegen below handles the resolution; falling
+                                // back to the default drop is sound.
+                                bool anyUnresolved = false;
                                 for (auto& p : mc->getParameters()) {
                                     if (!p.expression->getResolvedType()) {
                                         p.expression->resolveTypes(module);
                                     }
                                     CajetaTypePtr pType =
                                         p.expression->getResolvedType();
+                                    if (!pType) { anyUnresolved = true; break; }
                                     if (p.label.empty()) floatingAll = false;
                                     mcEntries.push_back(
                                         ParameterEntry(pType, p.label, nullptr));
                                 }
                                 string mcName = mc->getMethodCallName();
-                                MethodPtr resolved = targetCls->resolveMethod(
-                                    mcName, mcEntries,
-                                    /*isConstructor=*/false, floatingAll);
+                                // Skip resolveMethod when an arg type was
+                                // unresolved (a null arg type would crash
+                                // buildGeneric->toGeneric). `resolved` stays
+                                // null and the fn-typed-local fallback below
+                                // (M5b) handles it.
+                                MethodPtr resolved = anyUnresolved ? nullptr
+                                    : targetCls->resolveMethod(
+                                        mcName, mcEntries,
+                                        /*isConstructor=*/false, floatingAll);
                                 if (resolved && !resolved->isReturnsOwnership()) {
                                     if (resolved->returnsStackValue()) {
                                         // Value-return (sret + NRVO): the callee

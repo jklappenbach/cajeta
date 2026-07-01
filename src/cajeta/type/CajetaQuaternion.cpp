@@ -43,11 +43,11 @@ namespace cajeta {
     }
 
     llvm::Type* CajetaQuaternion::getLlvmType() {
-        if (!llvmType) {
-            llvmType = llvm::FixedVectorType::get(elementType->getLlvmType(),
-                                                  LANES);
-        }
-        return llvmType;
+        // frozen-aware lazy-create (threadsafe U6.2).
+        if (llvm::Type* cur = CajetaType::getLlvmType()) return cur;
+        llvm::Type* t = llvm::FixedVectorType::get(elementType->getLlvmType(), LANES);
+        setLlvmType(t);
+        return t;
     }
 
     shared_ptr<CajetaQuaternion> CajetaQuaternion::getOrCreate(

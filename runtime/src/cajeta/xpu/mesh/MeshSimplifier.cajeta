@@ -1,11 +1,11 @@
-package cajeta.xpu;
+package cajeta.xpu.mesh;
 
 import cajeta.math.Matrix;
-import cajeta.xpu.Qem;
+import cajeta.xpu.mesh.Qem;
 
 /**
  * MeshSimplifier — the appearance-preserving Garland–Heckbert edge-collapse
- * mesh simplifier (cajeta-gfx plan §2.a), built on {@link cajeta.xpu.Qem}.
+ * mesh simplifier (cajeta-gfx plan §2.a), built on {@link cajeta.xpu.mesh.Qem}.
  * Promoted to `cajeta.xpu` because physics, canela, and gfx all consume one
  * remeshing toolbox (spec §8.7).
  *
@@ -18,11 +18,11 @@ import cajeta.xpu.Qem;
  * The simplifier proceeds in the classic two phases:
  *
  *  1. **Accumulate** a per-vertex error quadric — `accumulateQuadrics` sums the
- *     {@link cajeta.xpu.Qem#faceQuadric} of every triangle incident to a vertex.
+ *     {@link cajeta.xpu.mesh.Qem#faceQuadric} of every triangle incident to a vertex.
  *     `Q[v]` measures the summed squared distance from a candidate position to
  *     all planes meeting at `v`.
  *  2. **Collapse** the cheapest edge repeatedly — the cost of collapsing edge
- *     `(u, v)` is {@link cajeta.xpu.Qem#edgeCollapseCost} of `Q[u]` and `Q[v]`,
+ *     `(u, v)` is {@link cajeta.xpu.mesh.Qem#edgeCollapseCost} of `Q[u]` and `Q[v]`,
  *     placing the new vertex at the error-minimizing position. (The iterative
  *     collapse driver lands in the next §2.a slice; this slice is the
  *     accumulation phase the cube/fan golden tests pin down.)
@@ -33,7 +33,7 @@ import cajeta.xpu.Qem;
  * per-vertex quadrics live in a flat, zero-initialized `float32[]` (16 entries
  * per vertex, row-major); `vertexQuadric` reconstructs a `Matrix` on demand
  * through the runtime-argument constructor (which, unlike a literal-only one,
- * compiles fine). A pure static-utility class, like {@link cajeta.xpu.Qem}.
+ * compiles fine). A pure static-utility class, like {@link cajeta.xpu.mesh.Qem}.
  */
 public class MeshSimplifier {
 
@@ -75,7 +75,7 @@ public class MeshSimplifier {
     /**
      * Reconstruct vertex `v`'s accumulated quadric as a `Matrix<float32,4,4>`
      * from the flat store produced by {@link #accumulateQuadrics}. Feed the
-     * result to {@link cajeta.xpu.Qem#error} / {@link cajeta.xpu.Qem#edgeCollapseCost}.
+     * result to {@link cajeta.xpu.mesh.Qem#error} / {@link cajeta.xpu.mesh.Qem#edgeCollapseCost}.
      */
     public static Matrix<float32,4,4> vertexQuadric(float32[] quadrics, int32 v) {
         int32 b = v * 16;
@@ -147,7 +147,7 @@ public class MeshSimplifier {
      *
      * Each iteration scans the live triangles for the cheapest collapsible edge
      * (`pairCost`), collapses its higher-index endpoint `b` into `a` — moving
-     * `a` to the merged quadric's optimal position ({@link cajeta.xpu.Qem#optimalPosition},
+     * `a` to the merged quadric's optimal position ({@link cajeta.xpu.mesh.Qem#optimalPosition},
      * falling back to the edge midpoint), merging `b`'s quadric into `a`,
      * remapping every `b` reference to `a`, and dropping the triangles that
      * thereby become degenerate (two equal corners). Quadrics merge by addition

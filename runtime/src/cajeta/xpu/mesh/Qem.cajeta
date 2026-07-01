@@ -1,4 +1,4 @@
-package cajeta.xpu;
+package cajeta.xpu.mesh;
 
 import cajeta.math.Matrix;
 

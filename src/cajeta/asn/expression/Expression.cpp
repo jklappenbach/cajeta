@@ -1858,7 +1858,7 @@ namespace cajeta {
 
     // --- LambdaExpression -------------------------------------------------
 
-    static int64_t lambdaCounter = 0;
+    static thread_local int64_t lambdaCounter = 0;  // per-thread (threadsafe U4)
 
     // Walk the lambda body's AST collecting names of free identifiers — names
     // referenced inside the body that aren't bound by the lambda's parameter
@@ -2976,7 +2976,7 @@ namespace cajeta {
 
     // --- MethodReferenceExpression ---------------------------------------
 
-    static int64_t methodRefCounter = 0;
+    static thread_local int64_t methodRefCounter = 0;  // per-thread (threadsafe U4)
 
     // Resolve a MethodReferenceExpression's LHS to a target class.
     // Returns the class plus whether the LHS resolved as a runtime VALUE
@@ -4191,7 +4191,7 @@ namespace cajeta {
 
         // Step 4: Synthesize the trampoline. Signature: void (ptr ctx).
         // The runtime is type-agnostic — it just calls trampoline(ctx).
-        static uint64_t trampolineCounter = 0;
+        static thread_local uint64_t trampolineCounter = 0;  // per-thread (threadsafe U4)
         string trampName = string("__cajeta_spawn_trampoline_")
             + std::to_string(trampolineCounter++);
         llvm::FunctionType* trampTy = llvm::FunctionType::get(

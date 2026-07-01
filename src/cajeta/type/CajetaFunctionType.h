@@ -45,7 +45,14 @@ namespace cajeta {
         const std::vector<CajetaTypePtr>& getParameterTypes() const { return parameterTypes; }
         CajetaTypePtr getReturnType() const { return returnType; }
         bool isReturnsOwnership() const { return returnsOwnership; }
-        llvm::FunctionType* getLlvmFunctionType() const { return llvmFunctionType; }
+        // U6.3b — frozen-aware. The cached LLVM FunctionType is LLVMContext-bound,
+        // so a frozen (shared) function type routes it through a per-thread
+        // side-table. Behaviour-identical while not frozen. Defined in the .cpp.
+        llvm::FunctionType* getLlvmFunctionType() const;
+        void setLlvmFunctionType(llvm::FunctionType* t);
+        // U6.4.1 — build the signature FunctionType in `ctx` from the param/return
+        // types. Context-parameterized for frozen-stdlib per-thread rebuild (U6.4.2).
+        llvm::FunctionType* buildLlvmFunctionType(llvm::LLVMContext* ctx) const;
 
         // True iff the LLVM signature uses the sret ABI: `void (ptr sret(R),
         // ptr captures, params...)`. Call sites consult this to allocate the

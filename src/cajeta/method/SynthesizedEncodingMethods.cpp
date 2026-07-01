@@ -97,6 +97,7 @@ namespace cajeta {
     }
 
     void SynthesizedEncodingCtor::generateCode() {
+        auto& llvmFunction = llvmFunctionRef();  // U6.3b: frozen-aware
         // Idempotent — Method-iteration paths can call generateCode
         // multiple times; bail if we've already emitted the body.
         if (llvmBasicBlock != nullptr) return;
@@ -207,6 +208,7 @@ namespace cajeta {
     }
 
     void SynthesizedEncodingToBytes::generateCode() {
+        auto& llvmFunction = llvmFunctionRef();  // U6.3b: frozen-aware
         if (llvmBasicBlock != nullptr) return;
         // Body: return MyEncoder.encode(this)
         llvm::LLVMContext& ctx = *module->getLlvmContext();

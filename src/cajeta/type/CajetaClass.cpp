@@ -23,6 +23,7 @@
 #include "../method/SynthesizedEncodingMethods.h"
 #include "../method/SynthesizedMockClass.h"
 #include "CajetaArray.h"
+#include "../compile/CompilationContext.h"
 #include "../field/HeapField.h"
 #include "../error/Exception.h"
 #include "../asn/expression/LiteralExpression.h"
@@ -52,6 +53,13 @@ namespace {
 using namespace std;
 
 namespace cajeta {
+    // U6.3 — per-thread side-table for a frozen (shared) class's LLVMContext-bound
+    // codegen bindings. See ClassLlvmBindings / the *Ref() accessors in the header.
+    std::unordered_map<const CajetaClass*, ClassLlvmBindings>& CajetaClass::frozenClassBindings() {
+        static thread_local std::unordered_map<const CajetaClass*, ClassLlvmBindings> tbl;
+        return tbl;
+    }
+
     // Forward declaration — defined further down. Needed by
     // generateStaticInitializers, which lives above the definition.
     static llvm::Constant* foldStaticInitializer(
@@ -68,7 +76,7 @@ namespace cajeta {
     }
 
     llvm::Type* CajetaClass::getLlvmType() {
-        if (llvmType) return llvmType;
+        if (llvm::Type* cur = rawLlvmType()) return cur;  // frozen-aware cache read (U6.2)
         if (placeholderFlag && module) {
             return llvm::PointerType::get(*module->getLlvmContext(), 0);
         }
@@ -96,17 +104,45 @@ namespace cajeta {
         if (isTemplate() && module) {
             return llvm::PointerType::get(*module->getLlvmContext(), 0);
         }
-        return llvmType;
+        // U6.4.2 — frozen per-thread rebuild: a frozen class's struct binding
+        // is per-thread (frozenTypeBindings); when this thread hasn't built it
+        // yet, recreate the named struct in the thread's context (no
+        // canonicalMap re-registration) and refill the body. Interface =
+        // 24-byte fat pointer; regular class = the full instance layout.
+        // Inert while not frozen.
+        if (isFrozen() && module) {
+            llvm::LLVMContext* ctx = currentLlvmContext();
+            if (!ctx) ctx = module->getLlvmContext();
+            if (ctx) {
+                string canonical = qName->toCanonical();
+                llvm::StructType* st =
+                    CajetaType::getOrCreateLlvmStructNoRegister(ctx, canonical);
+                setLlvmType(st);  // bind before body so self-referential fields resolve
+                if (st->isOpaque()) {
+                    if (isInterface()) {
+                        llvm::Type* ptrTy = llvm::PointerType::get(*ctx, 0);
+                        llvm::Type* i64Ty = llvm::Type::getInt64Ty(*ctx);
+                        vector<llvm::Type*> members{ ptrTy, ptrTy, i64Ty };
+                        st->setBody(llvm::ArrayRef<llvm::Type*>(members), false);
+                    } else {
+                        buildInstanceStructBody(ctx);
+                    }
+                }
+                return rawLlvmType();
+            }
+        }
+        return rawLlvmType();
     }
 
     llvm::Type* CajetaClass::getLlvmReferenceType() {
-        if (llvmReferenceType == nullptr) {
+        auto& refType = referenceTypeRef();
+        if (refType == nullptr) {
             vector<llvm::Type*> types;
             types.push_back(llvm::Type::getInt1Ty(*module->getLlvmContext()));
             types.push_back(llvm::PointerType::get(*module->getLlvmContext(), 0));
-            llvmReferenceType = llvm::StructType::create(*module->getLlvmContext(), llvm::ArrayRef<llvm::Type*>(types));
+            refType = llvm::StructType::create(*module->getLlvmContext(), llvm::ArrayRef<llvm::Type*>(types));
         }
-        return llvmReferenceType;
+        return refType;
     }
 
     bool CajetaClass::isParentOrKind(CajetaClassPtr source) {
@@ -486,8 +522,9 @@ namespace cajeta {
         if (!ancestor || ancestor == this) return 0;
         auto it = subObjectSlotMap.find(ancestor);
         if (it == subObjectSlotMap.end() || it->second == 0) return 0;
-        if (!llvmType || !llvm::isa<llvm::StructType>(llvmType)) return 0;
-        auto* st = llvm::cast<llvm::StructType>(llvmType);
+        llvm::Type* lt = rawLlvmType();
+        if (!lt || !llvm::isa<llvm::StructType>(lt)) return 0;
+        auto* st = llvm::cast<llvm::StructType>(lt);
         if (!st->isSized()) return 0;
         const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
         return dl.getStructLayout(st)->getElementOffset((unsigned) it->second);
@@ -496,8 +533,9 @@ namespace cajeta {
     std::vector<CajetaClass::NonFirstSubObject>
     CajetaClass::getNonFirstSubObjects() {
         std::vector<NonFirstSubObject> result;
-        if (!llvmType || !llvm::isa<llvm::StructType>(llvmType)) return result;
-        auto* st = llvm::cast<llvm::StructType>(llvmType);
+        llvm::Type* lt = rawLlvmType();
+        if (!lt || !llvm::isa<llvm::StructType>(lt)) return result;
+        auto* st = llvm::cast<llvm::StructType>(lt);
         if (!st->isSized()) return result;
         const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
         const auto* layout = dl.getStructLayout(st);
@@ -635,6 +673,7 @@ namespace cajeta {
             CajetaClassPtr parent) {
         if (!parent) return nullptr;
         std::string parentCanon = parent->getQName()->toCanonical();
+        auto& secondaryVTables = secondaryVTablesRef();
         auto cached = secondaryVTables.find(parentCanon);
         if (cached != secondaryVTables.end()) return cached->second;
 
@@ -756,153 +795,16 @@ namespace cajeta {
         return g;
     }
 
-    void CajetaClass::generatePrototype() {
-        // Idempotent — the deferred-prototype machinery
-        // (CajetaModule::buildPendingPrototypes) may attempt this multiple
-        // times as parents fill in. The flag is set at the end so a
-        // partial / aborted run doesn't claim done.
-        if (prototypeBuilt) return;
-        // Emit-target swap (test-reuse) — see Method::generatePrototype. For a
-        // stdlib-template instantiation owned (emit-wise) by a user module,
-        // point `module` at the emit module so this class's vtable / RTTI /
-        // struct-type globals land there, leaving the cached stdlib pristine.
-        // Layout/type resolution is context-bound (shared) + canonicalMap-keyed,
-        // so it is unaffected. No-op in production (emit==resolution).
-        CajetaModulePtr* moduleSlot = &module;
-        CajetaModulePtr savedModule = module;
-        if (emitModule && emitModule != module) module = emitModule;
-        struct RestoreModule {
-            CajetaModulePtr* slot; CajetaModulePtr saved;
-            ~RestoreModule() { *slot = saved; }
-        } restoreModule{moduleSlot, savedModule};
-
-        // Templates aren't types — `Box` alone has no layout, no methods to
-        // lower, no vtable to build. Defer the structural work until a
-        // concrete `Box<int32>` is referenced and `instantiate(...)` runs.
-        //
-        // We DO register the template in canonicalMap so type-use sites can
-        // find it by name and route through `instantiate`. We deliberately
-        // do NOT add it to module->getStructures() — that's the codegen
-        // worklist, and the template's body methods reference unresolved
-        // `T` placeholders which can't be lowered. Concrete instantiations
-        // (e.g. Box<int32>) are added to structures and codegen normally.
-        if (isTemplate()) {
-            canonicalMap[qName->toCanonical()] = static_pointer_cast<CajetaType>(shared_from_this());
-            canonicalMap[qName->getTypeName()] = static_pointer_cast<CajetaType>(shared_from_this());
-            return;
-        }
+    // U6.4.2 — instance struct layout, factored out of generatePrototype so a
+    // frozen class can rebuild its body in a thread's own LLVMContext. PURE
+    // layout: per-parent sub-object / vbase slot maps + the view-as-field
+    // rejection + setBody. No canonicalMap / typeMap / module registration and
+    // no method prototyping — those stay one-time in generatePrototype. The
+    // walk is deterministic given the same fields + ancestry, so re-running it
+    // in any context yields a byte-identical struct body. `rawLlvmType()` must
+    // already be the (opaque) struct to fill.
+    void CajetaClass::buildInstanceStructBody(llvm::LLVMContext* lctx) {
         string canonical = qName->toCanonical();
-
-        // Interfaces participate as types (registered in canonicalMap so
-        // variables can be declared at the interface type, and methods can
-        // be looked up by signature) but have no instance layout, no vtable
-        // of their own, and no default constructor. Their methods are
-        // abstract — Method::generatePrototype skips LLVM-function creation
-        // for them. Implementing classes' vtables carry concrete entries
-        // keyed under the interface methods' canonical hashes (see
-        // CajetaClass::buildVirtualTable).
-        if (isInterface()) {
-            // Interface fat pointer: { ptr data, ptr vtable, i64 kind }
-            // = 24 bytes. data points at the underlying class instance;
-            // vtable points at the per-(impl, iface) global synthesized
-            // by synthesizeInterfaceVTables; kind is one of
-            // IFACE_KIND_BORROWED_CLASS / OWNED_CLASS and drives
-            // drop-chain dispatch at scope exit.
-            llvmType = CajetaType::getOrCreateLlvmType(module->getLlvmContext(), canonical);
-            typeMap[TypeKey(llvmType)] = shared_from_this();
-            // The body may already be set if a forward reference synthesized
-            // this interface's fat placeholder (CajetaType::fromContext's
-            // born-fat interface branch) — setBody on a non-opaque struct
-            // asserts, so only populate it the first time.
-            if (((llvm::StructType*) llvmType)->isOpaque()) {
-                llvm::Type* ptrTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
-                llvm::Type* i64Ty = llvm::Type::getInt64Ty(*module->getLlvmContext());
-                vector<llvm::Type*> members{ ptrTy, ptrTy, i64Ty };
-                ((llvm::StructType*) llvmType)->setBody(llvm::ArrayRef<llvm::Type*>(members), false);
-            }
-
-            canonicalMap[canonical] = static_pointer_cast<CajetaType>(shared_from_this());
-            canonicalMap[qName->getTypeName()] = static_pointer_cast<CajetaType>(shared_from_this());
-            typeFlags = STRUCT_FLAG | USER_DEFINED_FLAG;
-            module->getStructures()[canonical] = static_pointer_cast<CajetaClass>(shared_from_this());
-            // Resolve interface-extends-interface chains so an
-            // implementing class's vtable can walk transitively
-            // through getSuperClasses() and pick up parent-interface
-            // method obligations.
-            resolveSuperClasses();
-            for (auto& m : methods) {
-                m.second->generatePrototype();
-            }
-            CajetaModule::getStructureToModule()[canonical] = module;
-            prototypeBuilt = true;
-            return;
-        }
-
-        llvmType = CajetaType::getOrCreateLlvmType(module->getLlvmContext(), canonical);
-        typeMap[TypeKey(llvmType)] = shared_from_this();
-        // Overwrite the plain-CajetaType placeholder `getOrCreateLlvmType` put
-        // in the canonical map so name lookups (e.g. `dynamic_pointer_cast<
-        // CajetaClass>(receiverType)` in MethodCallExpression) actually see
-        // this class. Also register the short typeName so unqualified
-        // references like `new Counter()` find the right entry.
-        canonicalMap[canonical] = static_pointer_cast<CajetaType>(shared_from_this());
-        canonicalMap[qName->getTypeName()] = static_pointer_cast<CajetaType>(shared_from_this());
-        typeFlags = STRUCT_FLAG | USER_DEFINED_FLAG;
-        // @ValueType (plans/value-type-overloading-plan.md): re-apply the by-value
-        // value-type marker AFTER the typeFlags reset above and BEFORE the methods
-        // below are prototyped — so the operator methods' borrow check (Method.cpp)
-        // and downstream dispatch see the class as a by-value value type, not a
-        // reference. POD validity is checked in the visitor once fields populate.
-        if (findAnnotation("ValueType")) {
-            typeFlags |= VALUE_TYPE_FLAG | BY_VALUE_FLAG;
-        }
-        module->getScopeStack().add(make_shared<Scope>(toCanonical(), module));
-
-        // Register self in the module's structure map BEFORE method/vtable
-        // generation so any later-declared subclass that lists us in its
-        // `extends` clause can find us by name. Also: resolve our own
-        // parents now — they must have been registered by their own
-        // prototype generation, which means declared earlier in the source.
-        module->getStructures()[canonical] = static_pointer_cast<CajetaClass>(shared_from_this());
-        resolveSuperClasses();
-        resolveImplementedInterfaces();
-
-        // Class instance layout: { ptr vtable, <inherited fields…>, <own
-        // fields…> }. The vtable pointer at LLVM index 0 is set by `new
-        // ClassName()` (see ClassCreatorRest). Inherited fields land
-        // immediately after the vtable at the SAME indices they occupy
-        // in their declaring parent's struct — so a GEP for an inherited
-        // field works on a subclass instance the same way it works on
-        // the parent (single-inheritance C++-style layout). Subclass own
-        // fields come after the inherited block; getFieldLlvmIndex's
-        // `countInheritedFields() + order + 1` formula accounts for the
-        // shift.
-        // Pick the LLVM type for a property when laying it out inside
-        // the enclosing class struct. Reference-typed fields — arrays
-        // AND plain class refs — are stored as **pointers** to the
-        // heap-allocated body, not inline.
-        //
-        // Why: embedding the body inline (a) leaves nowhere for the
-        // heap-returned pointer to land (the slot's bit-pattern would
-        // be the inline body, not a reference), and (b) for template
-        // instantiations whose body is a named/anonymous struct (e.g.
-        // `Stream<int32>` lowers to a `{ ptr vtable }` `%union.anon`),
-        // any call site passing the loaded field value to a `ptr`-typed
-        // parameter trips the LLVM verifier ("Call parameter type does
-        // not match function signature"). The methods-only / single-
-        // word case happens to round-trip under opaque pointers because
-        // the slot's bit-pattern is one pointer wide; classes with
-        // additional fields or distinct named types would crash
-        // unpredictably. Uniform `ptr` storage matches the Method
-        // signature convention (class params/returns are `ptr` — see
-        // Method.cpp:451) and the existing GEP+load code path that
-        // already loads class-ref fields through as `ptr`.
-        //
-        // CajetaView (zero-copy struct) and CajetaInterface (24-byte
-        // fat pointer) keep inline storage: views are by-design typed
-        // overlays on a wire-format buffer, and interface values are
-        // their fat pointer body.
-        auto* lctx = module->getLlvmContext();
         auto fieldLayoutType = [&](const StructurePropertyPtr& p) -> llvm::Type* {
             CajetaTypePtr t = p->getType();
             // A null field type at layout time means the declared type
@@ -1113,7 +1015,127 @@ namespace cajeta {
         embedSubObject(static_pointer_cast<CajetaClass>(shared_from_this()),
             /*ownVtable=*/hasVtablePointerAtSlotZero(), /*enclosingStart=*/0);
 
-        ((llvm::StructType*) llvmType)->setBody(llvm::ArrayRef<llvm::Type*>(llvmMembers), false);
+        ((llvm::StructType*) rawLlvmType())->setBody(llvm::ArrayRef<llvm::Type*>(llvmMembers), false);
+    }
+
+    void CajetaClass::generatePrototype() {
+        // Idempotent — the deferred-prototype machinery
+        // (CajetaModule::buildPendingPrototypes) may attempt this multiple
+        // times as parents fill in. The flag is set at the end so a
+        // partial / aborted run doesn't claim done.
+        if (prototypeBuilt) return;
+        // Emit-target swap (test-reuse) — see Method::generatePrototype. For a
+        // stdlib-template instantiation owned (emit-wise) by a user module,
+        // point `module` at the emit module so this class's vtable / RTTI /
+        // struct-type globals land there, leaving the cached stdlib pristine.
+        // Layout/type resolution is context-bound (shared) + canonicalMap-keyed,
+        // so it is unaffected. No-op in production (emit==resolution).
+        CajetaModulePtr* moduleSlot = &module;
+        CajetaModulePtr savedModule = module;
+        if (emitModule && emitModule != module) module = emitModule;
+        struct RestoreModule {
+            CajetaModulePtr* slot; CajetaModulePtr saved;
+            ~RestoreModule() { *slot = saved; }
+        } restoreModule{moduleSlot, savedModule};
+
+        // Templates aren't types — `Box` alone has no layout, no methods to
+        // lower, no vtable to build. Defer the structural work until a
+        // concrete `Box<int32>` is referenced and `instantiate(...)` runs.
+        //
+        // We DO register the template in canonicalMap so type-use sites can
+        // find it by name and route through `instantiate`. We deliberately
+        // do NOT add it to module->getStructures() — that's the codegen
+        // worklist, and the template's body methods reference unresolved
+        // `T` placeholders which can't be lowered. Concrete instantiations
+        // (e.g. Box<int32>) are added to structures and codegen normally.
+        if (isTemplate()) {
+            canonicalMap[qName->toCanonical()] = static_pointer_cast<CajetaType>(shared_from_this());
+            canonicalMap[qName->getTypeName()] = static_pointer_cast<CajetaType>(shared_from_this());
+            return;
+        }
+        string canonical = qName->toCanonical();
+
+        // Interfaces participate as types (registered in canonicalMap so
+        // variables can be declared at the interface type, and methods can
+        // be looked up by signature) but have no instance layout, no vtable
+        // of their own, and no default constructor. Their methods are
+        // abstract — Method::generatePrototype skips LLVM-function creation
+        // for them. Implementing classes' vtables carry concrete entries
+        // keyed under the interface methods' canonical hashes (see
+        // CajetaClass::buildVirtualTable).
+        if (isInterface()) {
+            // Interface fat pointer: { ptr data, ptr vtable, i64 kind }
+            // = 24 bytes. data points at the underlying class instance;
+            // vtable points at the per-(impl, iface) global synthesized
+            // by synthesizeInterfaceVTables; kind is one of
+            // IFACE_KIND_BORROWED_CLASS / OWNED_CLASS and drives
+            // drop-chain dispatch at scope exit.
+            llvm::Type* lt = CajetaType::getOrCreateLlvmType(module->getLlvmContext(), canonical);
+            setLlvmType(lt);
+            typeMap[TypeKey(lt)] = shared_from_this();
+            // The body may already be set if a forward reference synthesized
+            // this interface's fat placeholder (CajetaType::fromContext's
+            // born-fat interface branch) — setBody on a non-opaque struct
+            // asserts, so only populate it the first time.
+            if (((llvm::StructType*) lt)->isOpaque()) {
+                llvm::Type* ptrTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
+                llvm::Type* i64Ty = llvm::Type::getInt64Ty(*module->getLlvmContext());
+                vector<llvm::Type*> members{ ptrTy, ptrTy, i64Ty };
+                ((llvm::StructType*) lt)->setBody(llvm::ArrayRef<llvm::Type*>(members), false);
+            }
+
+            canonicalMap[canonical] = static_pointer_cast<CajetaType>(shared_from_this());
+            canonicalMap[qName->getTypeName()] = static_pointer_cast<CajetaType>(shared_from_this());
+            typeFlags = STRUCT_FLAG | USER_DEFINED_FLAG;
+            module->getStructures()[canonical] = static_pointer_cast<CajetaClass>(shared_from_this());
+            // Resolve interface-extends-interface chains so an
+            // implementing class's vtable can walk transitively
+            // through getSuperClasses() and pick up parent-interface
+            // method obligations.
+            resolveSuperClasses();
+            for (auto& m : methods) {
+                m.second->generatePrototype();
+            }
+            CajetaModule::getStructureToModule()[canonical] = module;
+            prototypeBuilt = true;
+            return;
+        }
+
+        setLlvmType(CajetaType::getOrCreateLlvmType(module->getLlvmContext(), canonical));
+        typeMap[TypeKey(rawLlvmType())] = shared_from_this();
+        // Overwrite the plain-CajetaType placeholder `getOrCreateLlvmType` put
+        // in the canonical map so name lookups (e.g. `dynamic_pointer_cast<
+        // CajetaClass>(receiverType)` in MethodCallExpression) actually see
+        // this class. Also register the short typeName so unqualified
+        // references like `new Counter()` find the right entry.
+        canonicalMap[canonical] = static_pointer_cast<CajetaType>(shared_from_this());
+        canonicalMap[qName->getTypeName()] = static_pointer_cast<CajetaType>(shared_from_this());
+        typeFlags = STRUCT_FLAG | USER_DEFINED_FLAG;
+        // @ValueType (plans/value-type-overloading-plan.md): re-apply the by-value
+        // value-type marker AFTER the typeFlags reset above and BEFORE the methods
+        // below are prototyped — so the operator methods' borrow check (Method.cpp)
+        // and downstream dispatch see the class as a by-value value type, not a
+        // reference. POD validity is checked in the visitor once fields populate.
+        if (findAnnotation("ValueType")) {
+            typeFlags |= VALUE_TYPE_FLAG | BY_VALUE_FLAG;
+        }
+        module->getScopeStack().add(make_shared<Scope>(toCanonical(), module));
+
+        // Register self in the module's structure map BEFORE method/vtable
+        // generation so any later-declared subclass that lists us in its
+        // `extends` clause can find us by name. Also: resolve our own
+        // parents now — they must have been registered by their own
+        // prototype generation, which means declared earlier in the source.
+        module->getStructures()[canonical] = static_pointer_cast<CajetaClass>(shared_from_this());
+        resolveSuperClasses();
+        resolveImplementedInterfaces();
+
+        // Class instance layout: { ptr vtable, <inherited fields…>, <own
+        // fields…> }. Per-parent sub-object embedding, vbase slots, field
+        // pointer-vs-inline choice, and the view-as-field rejection all live
+        // in buildInstanceStructBody (U6.4.2) so a frozen class can rebuild
+        // the same body in a thread's own LLVMContext.
+        buildInstanceStructBody(module->getLlvmContext());
 
         // Lombok ctor annotations run BEFORE ensureDefaultConstructor —
         // if @NoArgsConstructor (etc.) adds a ctor, the populated map
@@ -1365,6 +1387,7 @@ namespace cajeta {
     void CajetaClass::synthesizeInterfaceVTables() {
         if (implementedInterfaces.empty()) return;
 
+        auto& interfaceVTables = interfaceVTablesRef();
         auto& ctx = *module->getLlvmContext();
         auto* lmod = getEmitModule()->getLlvmModule();
         llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
@@ -2561,6 +2584,7 @@ namespace cajeta {
         const std::string globalName =
             qName->toCanonical() + "." + prop->getName();
 
+        auto& staticFieldGlobals = staticFieldGlobalsRef();
         auto it = staticFieldGlobals.find(prop->getName());
         llvm::GlobalVariable* g;
         if (it != staticFieldGlobals.end()) {
@@ -2615,11 +2639,14 @@ namespace cajeta {
     // module by construction, so the patch is module-local. Idempotent
     // via llvmDropFunctionPatched.
     void CajetaClass::patchVirtualTableDropFn() {
-        if (llvmDropFunctionPatched) return;
+        bool& dropFnPatched = dropFnPatchedRef();
+        if (dropFnPatched) return;
         llvm::Function* dropFn = getOrCreateDropFunction();
         if (!dropFn) return;
-        if (!llvmVirtualTableGlobal || !llvmVirtualTableType) return;
-        llvm::Constant* init = llvmVirtualTableGlobal->getInitializer();
+        llvm::GlobalVariable* vtGlobal = vtableGlobalRef();
+        llvm::StructType* vtType = vtableTypeRef();
+        if (!vtGlobal || !vtType) return;
+        llvm::Constant* init = vtGlobal->getInitializer();
         if (!init) return;
         auto* structInit = llvm::dyn_cast<llvm::ConstantStruct>(init);
         if (!structInit) return;
@@ -2631,13 +2658,14 @@ namespace cajeta {
         }
         if (elems.size() < 4) return;
         elems[3] = dropFn;
-        llvmVirtualTableGlobal->setInitializer(
-            llvm::ConstantStruct::get(llvmVirtualTableType,
+        vtGlobal->setInitializer(
+            llvm::ConstantStruct::get(vtType,
                 llvm::ArrayRef<llvm::Constant*>(elems)));
-        llvmDropFunctionPatched = true;
+        dropFnPatched = true;
     }
 
     llvm::Function* CajetaClass::getOrCreateStackDropFunction() {
+        auto& llvmStackDropFunction = stackDropFnRef();  // U6.3: frozen-aware
         if (llvmStackDropFunction) return llvmStackDropFunction;
         if (interfaceFlag) return nullptr;
         auto& ctx = *module->getLlvmContext();
@@ -2755,7 +2783,7 @@ namespace cajeta {
 
             unsigned fieldIdx = (unsigned) getFieldLlvmIndex(property);
             llvm::Value* slotPtr = b.CreateStructGEP(
-                llvmType, instance, fieldIdx,
+                rawLlvmType(), instance, fieldIdx,
                 std::string("stack_drop_field_") + property->getName());
             llvm::Value* refPtr = b.CreateLoad(ptrTy, slotPtr);
 
@@ -2920,7 +2948,7 @@ namespace cajeta {
                 }
                 if (!freeArrayFn) continue;
                 llvm::Value* slot = b.CreateStructGEP(
-                    llvmType, instance, fieldIdx,
+                    rawLlvmType(), instance, fieldIdx,
                     std::string("drop_arr_slot_") + property->getName());
                 llvm::Value* arrPtr = b.CreateLoad(ptrTy, slot,
                     std::string("drop_arr_ptr_") + property->getName());
@@ -2936,7 +2964,7 @@ namespace cajeta {
                     }
                     if (!ifaceDropFn) continue;
                     llvm::Value* bodyPtr = b.CreateStructGEP(
-                        llvmType, instance, fieldIdx,
+                        rawLlvmType(), instance, fieldIdx,
                         std::string("drop_iface_body_") + property->getName());
                     b.CreateCall(ifaceDropFn, {bodyPtr});
                     continue;
@@ -2949,7 +2977,7 @@ namespace cajeta {
                 if (!virtualDropFn) continue;
                 fieldClass->patchVirtualTableDropFn();
                 llvm::Value* slot = b.CreateStructGEP(
-                    llvmType, instance, fieldIdx,
+                    rawLlvmType(), instance, fieldIdx,
                     std::string("drop_ref_slot_") + property->getName());
                 llvm::Value* refPtr = b.CreateLoad(ptrTy, slot,
                     std::string("drop_ref_ptr_") + property->getName());
@@ -2984,6 +3012,7 @@ namespace cajeta {
         if (isWildcardInstantiation()) {
             return module->getRuntimeFunction("__cajeta_class_virtual_drop");
         }
+        auto& llvmDropFunction = dropFnRef();  // U6.3: frozen-aware
         if (llvmDropFunction) return llvmDropFunction;
         auto& ctx = *module->getLlvmContext();
         auto* lmod = getEmitModule()->getLlvmModule();
@@ -3103,6 +3132,7 @@ namespace cajeta {
     // emitReflectInvokeBody (post-quiescence). Shape:
     //   void __cajeta_<canonical>_reflect_invoke(ptr obj, i32 idx, ptr args, ptr ret)
     llvm::Function* CajetaClass::getOrCreateReflectInvokeDecl() {
+        auto& llvmReflectInvokeFunction = reflectInvokeFnRef();  // U6.3: frozen-aware
         if (llvmReflectInvokeFunction) return llvmReflectInvokeFunction;
         auto& ctx = *module->getLlvmContext();
         auto* lmod = module->getLlvmModule();
@@ -3134,6 +3164,8 @@ namespace cajeta {
     // default (no-op) arm. NOTE: does NOT create the declaration; only fills a
     // decl already referenced by this class's #Rtti.
     void CajetaClass::emitReflectInvokeBody() {
+        auto& llvmReflectInvokeBodyEmitted = reflectInvokeBodyEmittedRef();  // U6.3
+        auto& llvmReflectInvokeFunction = reflectInvokeFnRef();              // U6.3
         if (llvmReflectInvokeBodyEmitted) return;
         // Adopt the decl if a sibling CajetaClass instance built the RTTI (so
         // llvmReflectInvokeFunction is null on THIS instance but the #Rtti already
@@ -3250,6 +3282,7 @@ namespace cajeta {
     // by emitReflectNewBody (post-quiescence). Shape:
     //   ptr __cajeta_<canon>_reflect_new(i32 ctorIndex, ptr args)
     llvm::Function* CajetaClass::getOrCreateReflectNewDecl() {
+        auto& llvmReflectNewFunction = reflectNewFnRef();  // U6.3: frozen-aware
         if (llvmReflectNewFunction) return llvmReflectNewFunction;
         auto& ctx = *module->getLlvmContext();
         auto* lmod = module->getLlvmModule();
@@ -3276,6 +3309,8 @@ namespace cajeta {
     // + patch the virtual drop slot + run the chosen constructor, returning the
     // new instance. Unknown/unmarshallable constructors fall to a null return.
     void CajetaClass::emitReflectNewBody() {
+        auto& llvmReflectNewBodyEmitted = reflectNewBodyEmittedRef();  // U6.3
+        auto& llvmReflectNewFunction = reflectNewFnRef();              // U6.3
         if (llvmReflectNewBodyEmitted) return;
         // Adopt the decl if a sibling instance built the RTTI (see
         // emitReflectInvokeBody) so the body always fills and the symbol resolves.
@@ -4229,7 +4264,7 @@ namespace cajeta {
         // Idempotent: bail if we've already produced a vtable global. Callers
         // can invoke this at any point in prototype generation without
         // worrying about duplicate work.
-        if (llvmVirtualTableGlobal != nullptr) return;
+        if (vtableGlobalRef() != nullptr) return;
         buildVirtualTable();
         StructureMetadata(module).populate(
             static_pointer_cast<CajetaClass>(shared_from_this()));

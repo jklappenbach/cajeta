@@ -17,6 +17,7 @@
 #include "../type/Templates.h"
 #include "queue"
 #include "map"
+#include "unordered_map"
 
 using namespace std;
 
@@ -28,6 +29,17 @@ namespace cajeta {
     class Expression;
 
     class CajetaClass;
+
+    // U6.3b — a method's LLVMContext-bound codegen bindings. When the method's
+    // parent class is frozen (shared, immutable), each compile thread keeps its
+    // own copy in a per-thread side-table (frozenMethodBindings()) because these
+    // pointers belong to a per-thread LLVMContext. Behaviour is unchanged while
+    // not frozen — the inline members are used. Mirrors ClassLlvmBindings.
+    struct MethodLlvmBindings {
+        llvm::FunctionType* llvmFunctionType = nullptr;
+        llvm::Function* llvmFunction = nullptr;
+        llvm::Function* llvmOriginalFunction = nullptr;
+    };
 
     typedef shared_ptr<CajetaClass> CajetaClassPtr;
 
@@ -80,7 +92,7 @@ namespace cajeta {
 
     class Method : public Modifiable, public Annotatable, public std::enable_shared_from_this<Method> {
     protected:
-        static map<string, MethodPtr> archive;
+        static thread_local map<string, MethodPtr> archive;  // per-compile (U3)
         string name;
         CajetaClassPtr parent;
         CajetaTypePtr returnType;
@@ -197,6 +209,14 @@ namespace cajeta {
         // explicit `scope { }` the return is inside of — gets waited
         // and popped before the ret instruction.
         llvm::AllocaInst* scopeWatermark = nullptr;
+        // Frame-arena: the arena bump position captured at method entry. On every
+        // method-exit edge (emitOwnerDrops — explicit + fall-through return) the
+        // arena is reset to this mark, reclaiming any arena-routed locals whose own
+        // block reset was skipped because the block ended in a terminator (a
+        // return). Without it those reclaims (and their dropCount ticks) deferred
+        // to an enclosing scope — which for a top-level call is the C++ caller, so
+        // they never fired. Null when the method has no arena locals.
+        llvm::Value* methodArenaMark = nullptr;
         // Advice matches: each entry says "this aspect's advice
         // method applies to me." Populated by the pointcut-matching
         // pass (AspectModel.md § A3) that runs once per Compiler
@@ -215,11 +235,22 @@ namespace cajeta {
             CajetaTypePtr returnType,
             CajetaClassPtr parent);
 
+        // U6.3b — frozen-aware binding accessors. A method is "frozen" when its
+        // parent class is frozen; the check + the side-table live in Method.cpp
+        // (CajetaClass is incomplete here). While not frozen they alias the inline
+        // members (behaviour-identical to pre-U6.3b). Reference-returning so call
+        // sites read and write through them. Defined in Method.cpp.
+        bool isFrozen() const;
+        static std::unordered_map<const Method*, MethodLlvmBindings>& frozenMethodBindings();
+        llvm::Function*& llvmFunctionRef();
+        llvm::FunctionType*& llvmFunctionTypeRef();
+        llvm::Function*& llvmOriginalFunctionRef();
+
         llvm::FunctionType* getLlvmFunctionType() {
-            if (!llvmFunctionType) {
+            if (!llvmFunctionTypeRef()) {
                 generatePrototype();
             }
-            return llvmFunctionType;
+            return llvmFunctionTypeRef();
         }
 
         llvm::AllocaInst* getScopeWatermark() const { return scopeWatermark; }
@@ -323,12 +354,12 @@ namespace cajeta {
         // of multiple Arounds joins A7.
         void emitAroundWrapper();
 
-        llvm::Function* getLlvmFunction() { return llvmFunction; }
+        llvm::Function* getLlvmFunction() { return llvmFunctionRef(); }
         // Reuse-cache only (StdlibReuseCache::restoreBaseline): reset the cached
         // module-bound llvm::Function* to its stdlib-prime value (or null) so the
         // next reusing test regenerates the body into ITS module instead of
         // referencing a freed/foreign one. Not for production codegen.
-        void setLlvmFunction(llvm::Function* f) { llvmFunction = f; }
+        void setLlvmFunction(llvm::Function* f) { llvmFunctionRef() = f; }
         // Extracted-body function for @Around-wrapped methods. Null
         // unless A5 method extraction kicked in. External callers
         // shouldn't usually need this — the public entry is

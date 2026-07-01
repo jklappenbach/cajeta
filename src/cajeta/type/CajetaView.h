@@ -104,6 +104,12 @@ namespace cajeta {
         // MethodCallExpression when it sees `MyView(byte[])`.
         void generatePrototype() override;
 
+        // U6.4.2 — frozen per-thread rebuild: when frozen and this thread's
+        // binding is empty, re-create the view's fixed-prefix struct + setBody in
+        // the thread's context (no canonicalMap re-registration). Inert while not
+        // frozen (delegates to the base, returning the inline-bound struct).
+        llvm::Type* getLlvmType() override;
+
         // Byte size of the fixed prefix (sum of fixed-size fields, with
         // packed or natural alignment per annotation). Variable-size fields
         // contribute their i32 length-prefix; their data bytes are not

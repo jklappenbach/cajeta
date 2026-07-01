@@ -36,8 +36,8 @@ int32_t runI32(const std::string& imports, const std::string& body) {
 }
 
 const char* IMP =
-    "import cajeta.xpu.Qem;\n"
-    "import cajeta.xpu.MeshSimplifier;\n";
+    "import cajeta.xpu.mesh.Qem;\n"
+    "import cajeta.xpu.mesh.MeshSimplifier;\n";
 
 } // namespace
 

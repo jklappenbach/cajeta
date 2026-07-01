@@ -107,10 +107,10 @@ TEST(FlavorTests, missingBaseInCustomErrors) {
 
 // ─── Phase 8: property vocabulary + load-time validation ──────────
 
-TEST(FlavorTests, vocabularyHasAllFourteenKeys) {
+TEST(FlavorTests, vocabularyHasAllSixteenKeys) {
     using cajeta::buildtool::flavorPropertyVocab;
     const auto& v = flavorPropertyVocab();
-    EXPECT_EQ(v.size(), 14u);
+    EXPECT_EQ(v.size(), 16u);
     // Spot-check a key from each major group: optimization, target,
     // safety, sanitizer, instrumentation.
     bool sawOpt = false, sawCpu = false, sawBoundsCheck = false,
@@ -280,7 +280,7 @@ TEST(FlavorTests, xpuBackendSpecIsKnownEnum) {
     const auto* spec = findFlavorPropertySpec("xpu-backend");
     ASSERT_TRUE(spec);
     EXPECT_EQ(spec->kind,
-              cajeta::buildtool::FlavorPropertySpec::Kind::EnumString);
+              cajeta::buildtool::FlavorPropertySpec::Kind::EnumStringCsv);
     EXPECT_EQ(spec->allowed.size(), 5u);  // none/cpu/vulkan/nvptx/amdgpu
 }
 

@@ -1,7 +1,6 @@
 package cajeta.xpu;
 
 import cajeta.collection.HashMap;
-import cajeta.collection.CacheNode;
 
 /**
  * PageCache — generic feedback-driven residency cache with LRU eviction
@@ -13,15 +12,29 @@ import cajeta.collection.CacheNode;
  * it overflows — reporting the victim key ({@link #evictedKey}) so the consumer
  * can release that tile's GPU page.
  *
- * It reuses the same LRU machinery as {@link cajeta.collection.Cache}: a
- * {@link HashMap} from key to {@link CacheNode} for O(1) lookup, paired with a
- * doubly-linked list whose head is the most-recently-used tile and whose tail is
- * the least. {@link #touch} / {@link #admit} splice the node to the head; an
- * overflowing {@link #admit} drops the tail. The difference from `Cache` is the
- * RESIDENCY-feedback surface — `touch` returns hit/miss so the caller knows when
- * to load, and an eviction publishes the victim key — versus `Cache`'s
- * memoization surface (Optional get + TTL). There is no TTL: a page is resident
- * until it is the LRU victim, which is the streaming contract.
+ * ## Storage (and why it is array-backed)
+ *
+ * The cache is **borrowed-key**: {@link #admit} takes its key/value by borrow and
+ * the consumer keeps reusing the same key objects across `admit`/`touch`/
+ * `isResident`. So the cache must never free a key or value it was lent. Storage
+ * is therefore parallel **cache-owned arrays** indexed by slot — `slotKey`,
+ * `slotVal`, plus `slotPrev`/`slotNext` for an index-linked LRU list (head =
+ * most-recently-used, tail = least) and a free list threading unused slots. Array
+ * buffers don't recurse into their elements on free, so the borrowed keys/values
+ * in `slotKey`/`slotVal` are never dropped — eviction just rewires indices and
+ * overwrites a slot. A `HashMap<K,int32>` maps key → slot for O(1) lookup (the map
+ * borrows its keys via a plain `put`, so it never frees them either).
+ *
+ * An intrusive `CacheNode` doubly-linked list (as `cajeta.collection.Cache` uses)
+ * was rejected here: a `CacheNode` owns its `key`/`value` fields, and dropping the
+ * evicted node mid-frame frees the consumer's still-live key — a use-after-free.
+ * See `docs/specification/lang/FieldOwnership.md` (Solution B live-set).
+ *
+ * {@link #touch} / {@link #admit} splice the slot to the head; an overflowing
+ * {@link #admit} drops the tail and publishes its key via {@link #evictedKey}.
+ * The RESIDENCY-feedback surface — `touch` returns hit/miss, an eviction publishes
+ * the victim key — is what distinguishes it from `Cache`'s memoization surface.
+ * There is no TTL: a page is resident until it is the LRU victim.
  *
  * v1: K must be a CLASS type (HashMap keys on `hash()`/`equals()`, which
  * primitives lack) and keys match by identity unless K overrides them; the
@@ -30,10 +43,16 @@ import cajeta.collection.CacheNode;
  */
 public final class PageCache<K, V> {
 
-    HashMap<K, CacheNode<K, V>> entries;
-    CacheNode<K, V> mruHead;
-    CacheNode<K, V> lruTail;
+    K[] slotKey;
+    V[] slotVal;
+    int32[] slotPrev;
+    int32[] slotNext;
+    HashMap<K, int32> index;
+    int32 mruHead;
+    int32 lruTail;
+    int32 freeHead;
     int32 capacity;
+    int32 size;
     /** The key dropped by the most recent overflowing {@link #admit}, or null. */
     K evicted;
 
@@ -42,18 +61,36 @@ public final class PageCache<K, V> {
      * must be positive — a cache of size 0 evicts every tile on admit.
      */
     public PageCache(int32 capacity) {
-        // HashMap has no no-arg constructor; seed an explicit power-of-2 table.
-        this.entries = heap HashMap<K, CacheNode<K, V>>(16);
-        this.mruHead = null;
-        this.lruTail = null;
         this.capacity = capacity;
+        this.size = 0;
+        this.mruHead = -1;
+        this.lruTail = -1;
+        this.index = heap HashMap<K, int32>(16);
         this.evicted = null;
+        int32 cap = capacity;
+        if (cap < 1) {
+            cap = 1;
+        }
+        this.slotKey = heap K[cap];
+        this.slotVal = heap V[cap];
+        this.slotPrev = heap int32[cap];
+        this.slotNext = heap int32[cap];
+        int32 i = 0;
+        while (i < cap) {
+            if (i + 1 < cap) {
+                this.slotNext[i] = i + 1;
+            } else {
+                this.slotNext[i] = -1;
+            }
+            i = i + 1;
+        }
+        this.freeHead = 0;
     }
 
     /** Number of resident tiles. */
     @Inline
     public int32 count() {
-        return this.entries.count();
+        return this.size;
     }
 
     /** The configured residency bound. */
@@ -64,8 +101,7 @@ public final class PageCache<K, V> {
 
     /** True when `key`'s tile is resident. Does NOT promote it (a pure query). */
     public boolean isResident(K key) {
-        CacheNode<K, V> node = this.entries.get(key);
-        return node != null;
+        return this.index.containsKey(key);
     }
 
     /**
@@ -74,11 +110,11 @@ public final class PageCache<K, V> {
      * is a miss — the consumer should then load the tile and {@link #admit} it.
      */
     public boolean touch(K key) {
-        CacheNode<K, V> node = this.entries.get(key);
-        if (node == null) {
+        if (this.index.containsKey(key) == false) {
             return false;
         }
-        this.moveToHead(node);
+        int32 s = this.index.get(key);
+        this.moveToHead(s);
         return true;
     }
 
@@ -88,12 +124,12 @@ public final class PageCache<K, V> {
      * null/zero sentinel for an arbitrary value type).
      */
     public V getOrDefault(K key, V fallback) {
-        CacheNode<K, V> node = this.entries.get(key);
-        if (node == null) {
+        if (this.index.containsKey(key) == false) {
             return fallback;
         }
-        this.moveToHead(node);
-        return node.value;
+        int32 s = this.index.get(key);
+        this.moveToHead(s);
+        return this.slotVal[s];
     }
 
     /**
@@ -104,20 +140,32 @@ public final class PageCache<K, V> {
      * {@link #evictedKey}. Returns true exactly when a tile was evicted.
      */
     public boolean admit(K key, V value) {
-        CacheNode<K, V> node = this.entries.get(key);
-        if (node != null) {
-            node.value = value;
-            this.moveToHead(node);
+        if (this.index.containsKey(key)) {
+            int32 ex = this.index.get(key);
+            this.slotVal[ex] = value;
+            this.moveToHead(ex);
             return false;
         }
-        CacheNode<K, V> fresh = heap CacheNode<K, V>(key, value, 0);
-        this.entries.put(key, #fresh);
-        this.linkAtHead(fresh);
-        if (this.entries.count() > this.capacity) {
-            this.evictLru();
-            return true;
+        boolean evict = false;
+        int32 slot = -1;
+        if (this.size < this.capacity) {
+            slot = this.freeHead;
+            this.freeHead = this.slotNext[slot];
+            this.size = this.size + 1;
+        } else {
+            int32 victim = this.lruTail;
+            K vkey = this.slotKey[victim];
+            this.evicted = vkey;
+            this.index.remove(vkey);
+            this.unlink(victim);
+            slot = victim;
+            evict = true;
         }
-        return false;
+        this.slotKey[slot] = key;
+        this.slotVal[slot] = value;
+        this.index.put(key, slot);
+        this.linkAtHead(slot);
+        return evict;
     }
 
     /**
@@ -130,54 +178,43 @@ public final class PageCache<K, V> {
         return this.evicted;
     }
 
-    /** Splice `node` in as the new MRU head, seeding the tail if the list is empty. */
-    @Inline
-    void linkAtHead(CacheNode<K, V> node) {
-        node.prev = null;
-        node.next = this.mruHead;
-        if (this.mruHead != null) {
-            this.mruHead.prev = node;
+    /** Splice `slot` in as the new MRU head, seeding the tail if the list is empty. */
+    void linkAtHead(int32 slot) {
+        this.slotPrev[slot] = -1;
+        this.slotNext[slot] = this.mruHead;
+        if (this.mruHead != -1) {
+            this.slotPrev[this.mruHead] = slot;
         }
-        this.mruHead = node;
-        if (this.lruTail == null) {
-            this.lruTail = node;
+        this.mruHead = slot;
+        if (this.lruTail == -1) {
+            this.lruTail = slot;
         }
     }
 
-    /** Promote `node` to MRU head; no-op when it is already the head. */
-    @Inline
-    void moveToHead(CacheNode<K, V> node) {
-        if (node == this.mruHead) {
+    /** Promote `slot` to MRU head; no-op when it is already the head. */
+    void moveToHead(int32 slot) {
+        if (slot == this.mruHead) {
             return;
         }
-        this.unlinkOnly(node);
-        this.linkAtHead(node);
+        this.unlink(slot);
+        this.linkAtHead(slot);
     }
 
-    /** Detach `node` from the LRU list, mending head/tail and its neighbours. */
-    void unlinkOnly(CacheNode<K, V> node) {
-        if (node.prev != null) {
-            node.prev.next = node.next;
+    /** Detach `slot` from the LRU list, mending head/tail and its neighbours. */
+    void unlink(int32 slot) {
+        int32 p = this.slotPrev[slot];
+        int32 n = this.slotNext[slot];
+        if (p != -1) {
+            this.slotNext[p] = n;
         } else {
-            this.mruHead = node.next;
+            this.mruHead = n;
         }
-        if (node.next != null) {
-            node.next.prev = node.prev;
+        if (n != -1) {
+            this.slotPrev[n] = p;
         } else {
-            this.lruTail = node.prev;
+            this.lruTail = p;
         }
-        node.prev = null;
-        node.next = null;
-    }
-
-    /** Drop the LRU tail tile (the overflow victim), publishing its key. */
-    void evictLru() {
-        if (this.lruTail == null) {
-            return;
-        }
-        CacheNode<K, V> victim = this.lruTail;
-        this.evicted = victim.key;
-        this.unlinkOnly(victim);
-        this.entries.remove(victim.key);
+        this.slotPrev[slot] = -1;
+        this.slotNext[slot] = -1;
     }
 }
