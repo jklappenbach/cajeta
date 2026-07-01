@@ -16,7 +16,15 @@
 #include <string>
 #include <vector>
 
-#include <unistd.h>   // environ
+// environ: declare it extern at file scope on POSIX — macOS's <unistd.h> does
+// not expose `environ` to a non-main translation unit — while Windows' CRT
+// provides it (as a macro over _environ) via <stdlib.h>. Mirrors the idiom in
+// src/cajeta/buildtool/Properties.cpp.
+#if defined(_WIN32)
+#include <stdlib.h>
+#else
+extern char** environ;
+#endif
 
 using cajeta::dap::Json;
 using cajeta::buildtool::runSubprocess;

@@ -8,6 +8,7 @@
 #include "gtest/gtest.h"
 
 #include "cajeta/xpu/core/DeviceProfile.h"
+#include "../PortableEnv.h"   // setenv/unsetenv shim (absent on mingw)
 
 #include <cstdlib>
 #include <cstring>
