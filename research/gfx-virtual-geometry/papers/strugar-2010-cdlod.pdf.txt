@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: CDLOD: Continuous Distance-Dependent Level of Detail for Rendering Heightmaps
+description: A single continuous distance-based LOD function over a quadtree with GPU geomorphing and no stitching meshes; supports dynamic paging of large datasets — pop-free, crack-free terrain LOD with streaming.
+url: https://aggrobird.com/files/cdlod_latest.pdf

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Geometry Clipmaps: Terrain Rendering Using Nested Regular Grids
+description: Caches terrain in nested regular grids centered on the viewer, incrementally refilled as the view moves — visual continuity, uniform frame rate, complexity throttling, graceful degradation. The canonical view-centered streaming-LOD scheme for heightfields.
+url: https://hhoppe.com/proj/geomclipmap/

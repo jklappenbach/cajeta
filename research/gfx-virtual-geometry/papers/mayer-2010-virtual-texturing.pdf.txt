@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Virtual Texturing
+description: Sparse virtual texturing: simulate a huge texture with a small physical cache, resolve virtual->physical pages via a page table, and stream only visible pages via GPU feedback — the texture-side analogue of streaming geometry LOD.
+url: https://arxiv.org/abs/1005.3163

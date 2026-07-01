@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Aokana: A GPU-Driven Voxel Rendering Framework for Open World Games
+description: GPU-driven open-world renderer over a Sparse Voxel DAG with LOD + seamless streaming, Hi-Z occlusion culling, and a visibility buffer to cut memory traffic and overdraw — a modern end-to-end GPU-driven streaming-LOD pipeline.
+url: https://arxiv.org/abs/2505.02017

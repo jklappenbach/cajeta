@@ -221,7 +221,35 @@ progress **without ever pushing the frame over deadline**.
 4. Crack-free boundaries + geomorphing depend on the offline cluster build; the
    runtime enforces the invariants but cannot fix a bad hierarchy.
 
-## 9. References
+## 9. Adjacent streaming angles (same scheduling contract)
+
+The cluster-geometry pipeline above is one instance of a broader family of
+**view-dependent streaming** techniques; a complete renderer combines several,
+and they all present the orchestrator the *same* shape — a frame-critical
+consumer plus a background, preemptible residency streamer:
+
+- **Heightfield/terrain LOD** — view-centered nested grids (geometry clipmaps)
+  and continuous distance-based quadtree LOD (CDLOD) give pop-free, crack-free
+  terrain with the identical geomorph + paging model; the working set is the
+  rings/quadtree nodes around the viewer.
+- **Texture streaming (virtual texturing)** — the texture-side analogue: a small
+  physical cache backs a huge virtual texture, pages resolved via a page table
+  and streamed on GPU **feedback** of what was sampled. Runs on the same
+  residency manager + prefetch + background-decode path as geometry.
+- **Out-of-core / voxel & impostor far-field** — distant geometry collapses to
+  voxel/impostor representations (far-voxels, sparse-voxel DAGs) with Hi-Z
+  culling + visibility buffer; the near field is cluster geometry, the far field
+  is a coarser proxy — a single continuous cut across representations.
+- **Geometry/texture compression** — stream units are compressed; a background
+  transcode kernel (memory-bound) is the ideal async-compute co-runner to fill
+  bandwidth behind the frame.
+
+All four share §4's residency model, §3's anti-artifact rules, and §6's
+scheduling contract: **the frame never waits; the coarser resident band is always
+a valid fallback; streaming co-runs and yields.** The orchestrator treats them as
+one class of background producer feeding one class of deadline consumer.
+
+## 10. References
 
 Foundational papers + markers in
 [`research/gfx-virtual-geometry/papers/`](../../research/gfx-virtual-geometry/papers/):
