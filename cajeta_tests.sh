@@ -415,30 +415,24 @@ if [ "$shards" -gt "$unit_count" ]; then shards=$unit_count; fi
 declare -a shard_list
 declare -a shard_total
 for ((s=0; s<shards; s++)); do shard_list[$s]=""; shard_total[$s]=0; done
-if [ "$BATCH" = "1" ]; then
-    # Longest-processing-time first: assign each suite (largest test-count first)
-    # to the currently least-loaded shard, so workers get balanced test totals
-    # even though suites vary widely in size. Buckets carry the suite INDEX so
-    # the worker looks up its exact test list without an associative array.
-    sorted_suites=$(for ((i=0; i<num_suites; i++)); do
-        printf '%s\t%s\n' "${suite_count_idx[$i]}" "$i"
-    done | sort -rn -k1,1)
-    while IFS=$'\t' read -r cnt idx; do
-        [ -z "$idx" ] && continue
-        min_s=0; min_v=${shard_total[0]}
-        for ((s=1; s<shards; s++)); do
-            if [ "${shard_total[$s]}" -lt "$min_v" ]; then min_v=${shard_total[$s]}; min_s=$s; fi
-        done
-        shard_list[$min_s]+="${idx}"$'\n'
-        shard_total[$min_s]=$(( shard_total[$min_s] + cnt ))
-    done <<< "$sorted_suites"
-else
-    for ((i=0; i<num_tests; i++)); do
-        s=$((i % shards))
-        shard_list[$s]+="${tests[$i]}"$'\n'
-        shard_total[$s]=$(( shard_total[$s] + 1 ))
+# Longest-processing-time first over CHUNKS: assign each chunk (largest test-count
+# first) to the currently least-loaded shard, so workers get balanced test totals
+# even though chunks vary in size. Buckets carry the chunk INDEX; the worker looks
+# up its exact test list via chunk_list[] (no associative array needed). Both modes
+# pack chunks: in BATCH=1 a chunk is a suite-slice; in BATCH=0 each chunk is one
+# test (count 1), so this LPT reduces to the old round-robin for equal weights.
+sorted_chunks=$(for ((i=0; i<num_chunks; i++)); do
+    printf '%s\t%s\n' "${chunk_count[$i]}" "$i"
+done | sort -rn -k1,1 -s)
+while IFS=$'\t' read -r cnt idx; do
+    [ -z "$idx" ] && continue
+    min_s=0; min_v=${shard_total[0]}
+    for ((s=1; s<shards; s++)); do
+        if [ "${shard_total[$s]}" -lt "$min_v" ]; then min_v=${shard_total[$s]}; min_s=$s; fi
     done
-fi
+    shard_list[$min_s]+="${idx}"$'\n'
+    shard_total[$min_s]=$(( shard_total[$min_s] + cnt ))
+done <<< "$sorted_chunks"
 
 # PLAN_ONLY: emit the chunk->shard assignment and exit before spawning anything.
 # Used by test/harness/suite_split_test.sh to assert the scheduling math without
@@ -447,30 +441,15 @@ fi
 #   PLAN shards=<S> batch=<0|1> batch_max=<N> chunks=<C> tests=<T>
 #   CHUNK <idx> shard=<s> count=<k> name=<display> tests=<t1,t2,...>
 if [ -n "${PLAN_ONLY:-}" ]; then
-    plan_shards=$shards
-    [ "$plan_shards" -gt "$num_chunks" ] && plan_shards=$num_chunks
-    [ "$plan_shards" -lt 1 ] && plan_shards=1
-    declare -a _sh_load
-    for ((s=0; s<plan_shards; s++)); do _sh_load[$s]=0; done
-    _order=$(for ((i=0; i<num_chunks; i++)); do
-        printf '%s\t%s\n' "${chunk_count[$i]}" "$i"
-    done | sort -rn -k1,1 -s)
-    declare -a _chunk_shard
-    while IFS=$'\t' read -r _cc _ci2; do
-        [ -z "$_ci2" ] && continue
-        _ms=0; _mv=${_sh_load[0]}
-        for ((s=1; s<plan_shards; s++)); do
-            if [ "${_sh_load[$s]}" -lt "$_mv" ]; then _mv=${_sh_load[$s]}; _ms=$s; fi
-        done
-        _chunk_shard[$_ci2]=$_ms
-        _sh_load[$_ms]=$(( _sh_load[$_ms] + _cc ))
-    done <<< "$_order"
     printf 'PLAN shards=%s batch=%s batch_max=%s chunks=%s tests=%s\n' \
-        "$plan_shards" "$BATCH" "$BATCH_MAX" "$num_chunks" "$num_tests"
-    for ((i=0; i<num_chunks; i++)); do
-        _csv=$(printf '%s' "${chunk_list[$i]}" | grep -v '^$' | paste -sd, -)
-        printf 'CHUNK %s shard=%s count=%s name=%s tests=%s\n' \
-            "$i" "${_chunk_shard[$i]}" "${chunk_count[$i]}" "${chunk_name[$i]}" "$_csv"
+        "$shards" "$BATCH" "$BATCH_MAX" "$num_chunks" "$num_tests"
+    for ((s=0; s<shards; s++)); do
+        while IFS= read -r ci; do
+            [ -z "$ci" ] && continue
+            _csv=$(printf '%s' "${chunk_list[$ci]}" | grep -v '^$' | paste -sd, -)
+            printf 'CHUNK %s shard=%s count=%s name=%s tests=%s\n' \
+                "$ci" "$s" "${chunk_count[$ci]}" "${chunk_name[$ci]}" "$_csv"
+        done <<< "${shard_list[$s]}"
     done
     exit 0
 fi
@@ -538,22 +517,25 @@ run_one_test() {
     rm -f "$tf"
 }
 
-# Run a whole suite as ONE process so the stdlib cache primes once and is reused
-# across its tests. The filter is the exact list of the suite's selected tests
-# (not `Suite.*`), so a partially-selected suite runs only what was selected.
-# Deadline scales with suite size, capped at BATCH_CAP.
+# Run one CHUNK (a whole suite, or a BATCH_MAX-sized slice of an oversized one) as
+# ONE process so the stdlib cache primes once and is reused across the chunk's
+# tests. The filter is the exact list of the chunk's tests (not `Suite.*`), so a
+# partially-selected suite runs only what was selected. Deadline scales with the
+# CHUNK's test count, capped at BATCH_CAP — so a split suite's chunk gets a
+# proportional deadline (not the whole suite's), and a killed chunk falls back over
+# only its own <=BATCH_MAX tests instead of re-priming the entire suite per test.
 #
 # Trust the batched output IFF gtest ran to completion — its terminal
 # "[==========] N ... ran." line is present (true for a clean pass AND for a run
 # with ordinary [ FAILED ] assertions, which the aggregator already counts). If
-# that line is absent (segfault/abort mid-suite) or the process hit its deadline
-# (exit 124/137), discard the partial output and re-run every test in the suite
+# that line is absent (segfault/abort mid-chunk) or the process hit its deadline
+# (exit 124/137), discard the partial output and re-run every test in the chunk
 # individually via run_one_test — restoring exact crash/timeout attribution.
 run_suite_batch() {
     local out_file="$1" idx="$2" sname tf brc deadline n filter list
-    sname="${suites[$idx]}"
-    n="${suite_count_idx[$idx]}"
-    list="${suite_tests_idx[$idx]}"
+    sname="${chunk_name[$idx]}"
+    n="${chunk_count[$idx]}"
+    list="${chunk_list[$idx]}"
     deadline=$(( n * TEST_TIMEOUT ))
     [ "$deadline" -gt "$BATCH_CAP" ] && deadline=$BATCH_CAP
     [ "$deadline" -lt "$TEST_TIMEOUT" ] && deadline=$TEST_TIMEOUT
@@ -583,7 +565,7 @@ run_suite_batch() {
 }
 
 if [ "$BATCH" = "1" ]; then
-    echo ">> Running $num_tests tests across $shards shards (BATCH: $num_suites suites, one process each + per-test crash fallback)..."
+    echo ">> Running $num_tests tests across $shards shards (BATCH: $num_suites suites -> $num_chunks chunks of <=$BATCH_MAX, one process each + per-test crash fallback)..."
 else
     echo ">> Running $num_tests tests across $shards shards (one process per test)..."
 fi
@@ -616,7 +598,9 @@ for ((s=0; s<shards; s++)); do
             if [ "$BATCH" = "1" ]; then
                 run_suite_batch "$out_file" "$unit"
             else
-                run_one_test "$out_file" "$unit"
+                # BATCH=0: the unit is a chunk index whose list is a single test.
+                _t0="${chunk_list[$unit]}"; _t0="${_t0%$'\n'}"
+                run_one_test "$out_file" "$_t0"
             fi
         done <<< "${shard_list[$s]}"
         echo 0 > "$exit_file"
@@ -724,8 +708,11 @@ done
 
 elapsed=$((SECONDS - start_time))
 
-# Aggregate across every shard's output. Each test ran in its own process, so
-# the per-process gtest summary lines are what we count:
+# Aggregate across every shard's output. Chunk-transparent: splitting a suite into
+# k chunks just yields k `[ PASSED ] N` lines (which sum) and the same per-test
+# `[ FAILED ]`/`>>> TIMEOUT`/`>>> CRASH` markers, so the tallies are identical
+# whether or not a suite was split. Each test ran in its own process, so the
+# per-process gtest summary lines are what we count:
 #   passed   = sum of N over `[  PASSED  ] N test(s).` lines (one per process;
 #              N is 1 for a passing test, 0 for a failing one — so summing is
 #              correct regardless of --gtest_brief).
