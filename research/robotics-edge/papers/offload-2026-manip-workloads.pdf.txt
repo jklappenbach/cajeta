@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Offload or Overload: A Platform Measurement Study of Mobile Robotic Manipulation Workloads
+description: Measures where robotic manipulation compute goes (perception, planning, control kernels) across platforms and offload choices — empirical kernel-mix + timing data for scheduling a manipulation stack on limited hardware.
+url: https://arxiv.org/abs/2603.18284

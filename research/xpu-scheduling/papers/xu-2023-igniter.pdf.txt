@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: iGniter: Interference-Aware GPU Resource Provisioning for Predictable DNN Inference in the Cloud
+description: Analytical interference model over co-located inference kernels drives GPU resource provisioning (MPS %, batch) to meet SLOs cost-efficiently under contention.
+url: https://arxiv.org/abs/2211.01713

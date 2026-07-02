@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: MISO: Exploiting Multi-Instance GPU Capability on Multi-Tenant GPU Clusters
+description: Uses MIG (hardware spatial partitioning) predictively: profiles jobs and searches MIG partition configurations to place tenants for best throughput/isolation on A100-class GPUs.
+url: https://arxiv.org/abs/2207.11428

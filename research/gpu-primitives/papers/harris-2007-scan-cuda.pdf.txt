@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Parallel Prefix Sum (Scan) with CUDA (GPU Gems 3, Ch. 39)
+description: The canonical GPU scan tutorial: naive Hillis-Steele vs work-efficient Blelloch on-GPU, shared-memory (LDS) bank-conflict avoidance, and the block-scan then scan-block-sums then add hierarchy — the practical blueprint for a workgroup+device scan.
+url: https://developer.nvidia.com/gpugems/GPUGems3/gpugems3_ch39.html

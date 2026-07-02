@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Serving Heterogeneous ML Models on Multi-GPU Servers with Spatio-Temporal Sharing
+description: Combines spatial (MPS/partition) and temporal sharing to co-locate heterogeneous inference models, with an interference-aware scheduler maximizing throughput under latency targets.
+url: https://arxiv.org/abs/2109.01611

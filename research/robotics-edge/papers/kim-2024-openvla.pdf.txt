@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: OpenVLA: An Open-Source Vision-Language-Action Model
+description: A 7B vision-language-action model (DINOv2+SigLIP vision encoder -> projector -> LLaMA backbone) mapping camera+instruction to robot actions — the emerging on-robot LLM-class workload (transformer kernels at a control rate).
+url: https://arxiv.org/abs/2406.09246

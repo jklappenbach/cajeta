@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Clipper: A Low-Latency Online Prediction Serving System
+description: General serving layer introducing adaptive batching, caching, and model selection to trade latency for throughput/accuracy under SLOs — foundational for latency/throughput knobs in GPU serving.
+url: https://arxiv.org/abs/1612.03079

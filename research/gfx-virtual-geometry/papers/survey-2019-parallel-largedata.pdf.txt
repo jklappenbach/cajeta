@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Parallel Rendering and Large Data Visualization
+description: Survey of parallel rendering and large-data visualization: out-of-core data management, view-dependent LOD, multiresolution hierarchies, and streaming — the broad landscape of massive-scene rendering angles.
+url: https://arxiv.org/abs/1902.08755

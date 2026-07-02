@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: FlashAttention-2: Faster Attention with Better Parallelism and Work Partitioning
+description: Improves FlashAttention's parallelism (across sequence length) and work partitioning across warps to reach near-peak matrix-core utilization — the practical high-throughput attention kernel.
+url: https://arxiv.org/abs/2307.08691

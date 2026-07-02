@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Virtualized Gaussians: Flexible Cluster-based Level-of-Detail System for Real-Time Rendering
+description: A modern cluster-hierarchy (DAG) continuous-LOD system: primitives partitioned into clusters, a cut selected per-view by screen-space error, crack-free boundaries, and GPU-driven selection — a recent reference for virtualized cluster LOD.
+url: https://arxiv.org/abs/2505.06523

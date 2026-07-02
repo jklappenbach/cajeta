@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Single-pass Parallel Prefix Scan with Decoupled Look-back
+description: The modern SOTA device scan: a single memory pass using a decoupled look-back that overlaps local computation with global prefix propagation (basis of CUB). Fastest, but relies on forward-progress/atomic guarantees — the key portability tradeoff for a multi-backend implementation.
+url: https://research.nvidia.com/publication/2016-03_single-pass-parallel-prefix-scan-decoupled-look-back

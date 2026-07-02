@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Paella: Low-latency Model Serving with Software-defined GPU Scheduling
+description: Bypasses the opaque hardware block scheduler with a software-defined launch/dispatch layer so a serving system can control ordering and packing of concurrent inference kernels for lower latency.
+url: https://dl.acm.org/doi/10.1145/3600006.3613163

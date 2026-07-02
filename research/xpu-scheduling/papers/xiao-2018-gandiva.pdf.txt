@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Gandiva: Introspective Cluster Scheduling for Deep Learning
+description: Cluster scheduler that exploits DL job characteristics (predictable iterations, sensitivity to locality) with time-slicing, migration, and profiling to raise cluster-wide GPU utilization.
+url: https://www.usenix.org/conference/osdi18/presentation/xiao

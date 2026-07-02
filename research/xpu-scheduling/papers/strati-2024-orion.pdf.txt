@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Orion: Interference-aware, Fine-grained GPU Sharing for ML Applications
+description: Intercepts kernel launches from co-located clients and schedules them per-kernel using compute/memory-intensity profiles to minimize interference and tail latency while filling idle GPU resources.
+url: https://anakli.inf.ethz.ch/papers/orion_eurosys24.pdf

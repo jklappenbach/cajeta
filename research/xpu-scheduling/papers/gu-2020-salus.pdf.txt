@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Salus: Fine-Grained GPU Sharing Primitives for Deep Learning Applications
+description: Two primitives — fast job switching and memory sharing — that let multiple DL jobs share a single GPU with fine-grained time- and space-multiplexing, raising utilization without per-job GPU exclusivity.
+url: https://arxiv.org/abs/1902.04610

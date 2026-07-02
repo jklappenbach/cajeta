@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Real-time High Resolution Fusion of Depth Maps on GPU
+description: Real-time GPU fusion of depth maps into a volumetric (TSDF-style) model — the structured-grid / voxel-integration kernel underlying dense SLAM mapping (KinectFusion lineage), with voxel-hashing for scalability.
+url: https://arxiv.org/abs/1311.7194
