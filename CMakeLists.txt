@@ -184,13 +184,16 @@ else()
   file(RELATIVE_PATH CAJETA_SYMLINK_TARGET
        "${CMAKE_INSTALL_FULL_BINDIR}"
        "${CMAKE_INSTALL_FULL_LIBDIR}/cajeta/cajeta")
-  install(CODE "
-    set(_bindir \"\$ENV{DESTDIR}${CMAKE_INSTALL_FULL_BINDIR}\")
-    file(MAKE_DIRECTORY \"\${_bindir}\")
-    execute_process(COMMAND \"${CMAKE_COMMAND}\" -E create_symlink
-                    \"${CAJETA_SYMLINK_TARGET}\" \"\${_bindir}/cajeta\")
-    message(STATUS \"cajeta: symlinked \${_bindir}/cajeta -> ${CAJETA_SYMLINK_TARGET}\")
-  " COMPONENT cajeta)
+  # Stage the symlink in the build tree and install it via a RELATIVE destination
+  # so CPack relocates its location into the packaging prefix (.deb/.rpm -> /usr)
+  # just like the payload. A baked absolute install(CODE) path is NOT relocated,
+  # so it lands in the configure-time prefix (default /usr/local) and dangles.
+  set(CAJETA_SYMLINK_STAGE "${CMAKE_CURRENT_BINARY_DIR}/cajeta-bin-symlink/cajeta")
+  file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/cajeta-bin-symlink")
+  file(CREATE_LINK "${CAJETA_SYMLINK_TARGET}" "${CAJETA_SYMLINK_STAGE}" SYMBOLIC)
+  install(FILES "${CAJETA_SYMLINK_STAGE}"
+          DESTINATION "${CMAKE_INSTALL_BINDIR}"
+          COMPONENT cajeta)
 endif()
 
 # Documentation + license + version stamp.
