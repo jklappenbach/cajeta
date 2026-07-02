@@ -1,6 +1,8 @@
 [build]
   publish = "dist"
   command = "npm run build"
+[build.environment]
+  NODE_VERSION = "24"
 [build.processing.html]
   pretty_urls = false
 [[headers]]
