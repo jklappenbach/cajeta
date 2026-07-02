@@ -9,7 +9,6 @@
 #pragma once
 
 #include "cajeta/buildtool/Properties.h"
-#include "cajeta/buildtool/Task.h"
 
 #include <llvm/Support/Error.h>
 #include <llvm/Support/JSON.h>

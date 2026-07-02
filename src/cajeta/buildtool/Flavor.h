@@ -22,13 +22,11 @@
 
 #pragma once
 
-#include "cajeta/buildtool/Manifest.h"
 
 #include <llvm/ADT/StringRef.h>
 #include <llvm/Support/Error.h>
 #include <llvm/Support/JSON.h>
 
-#include <map>
 #include <set>
 #include <string>
 #include <vector>

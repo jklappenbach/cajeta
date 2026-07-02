@@ -18,14 +18,11 @@
 
 #pragma once
 
-#include "cajeta/buildtool/Manifest.h"
 #include "cajeta/buildtool/Properties.h"
 
-#include <llvm/Support/Error.h>
 
 #include <cstdint>
 #include <map>
-#include <optional>
 #include <string>
 #include <vector>
 
