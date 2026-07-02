@@ -49,4 +49,18 @@ namespace cajeta {
     // survive line-wrapping cleanly in terminal output.
     std::string formatDidYouMean(const std::vector<std::string>& suggestions);
 
+    // Emit one machine-readable diagnostic as a single self-contained NDJSON
+    // line to stderr — the payload of `--diag-format=json` (docs/CompilerModes.md
+    // § --diag-format). Fields: severity ("error" | "warning" | "note"), code
+    // (compiler error id; "" → JSON null), message, file (source path; "" → JSON
+    // null), line / column (1-based; ≤ 0 → JSON null). One line per call so a
+    // consumer (the IDE plugin, build tool) can parse diagnostics incrementally
+    // as they stream.
+    void emitJsonDiagnostic(const std::string& severity,
+                            const std::string& code,
+                            const std::string& message,
+                            const std::string& file = "",
+                            int line = -1,
+                            int column = -1);
+
 } // namespace cajeta

@@ -58,6 +58,13 @@ namespace cajeta {
         Verbose,        // code samples + suggested fixes + doc URLs
     };
 
+    // Compiler-diagnostic output format (the `--diag-format` flag; docs/
+    // CompilerModes.md § --diag-format). Text: human-readable stderr (the
+    // unchanged default). Json: one NDJSON diagnostic object per line on stderr
+    // for machine consumers (the IntelliJ plugin, the build tool) so they parse
+    // structured diagnostics instead of regex-scraping free text.
+    enum class DiagFormat { Text, Json };
+
     // LLVM IR optimization level for generated user code (the `--opt` flag).
     // Cajeta historically ran NO IR optimization on user code (only codegen);
     // O0 preserves that. O2/O3 run the full per-module pipeline (incl.
@@ -108,6 +115,7 @@ namespace cajeta {
         // ----- compiler diagnostic surface -----
         DiagVerbosity   diagVerbosity       = DiagVerbosity::Verbose;
         bool            diagHints           = true;   // "did you mean...", etc.
+        DiagFormat      diagFormat          = DiagFormat::Text;  // --diag-format (machine-readable diagnostics; mode-independent)
 
         // ----- profiling -----
         bool            profileCounters     = false;  // PGO-collection instrumentation

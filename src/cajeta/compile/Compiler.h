@@ -52,7 +52,10 @@ namespace cajeta {
     // archive registry BEFORE any module parses, so cross-file
     // forward references can create placeholders for names that
     // are known-to-exist somewhere in the compilation unit.
-    void prescanSourceRoot(const std::string& rootPath);
+    // suppressConsole removes ANTLR's default console error listener during the
+    // prescan (used under --diag-format=json so prescan syntax errors don't leak
+    // free text into the NDJSON stream; the authoritative parse re-reports them).
+    void prescanSourceRoot(const std::string& rootPath, bool suppressConsole = false);
 
     // Emit a per-module global ctor that registers UnrecoverableException's
     // vtable with the runtime (__cajeta_set_unrecoverable_vtable). Must be

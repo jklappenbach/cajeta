@@ -7,6 +7,7 @@
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CompilerMode.h"
 #include "cajeta/error/Exception.h"
+#include "cajeta/error/Diagnostics.h"
 #include "cajeta/cli/ArchiveCommands.h"
 #include "cajeta/cli/DocCommand.h"
 #include "cajeta/cli/IdeCommands.h"
@@ -82,6 +83,8 @@ void printUsage(const char* progname) {
               << "  --stack-trace-capture=on|off         backtrace(3) at throw site.\n"
               << "  --diag-verbosity=terse|normal|verbose  Compile-time diagnostic detail.\n"
               << "  --diag-hints=on|off                  \"Did you mean...\" suggestions.\n"
+              << "  --diag-format=text|json              Diagnostic output format. json = one NDJSON\n"
+              << "                                       object per line on stderr for tools/IDEs (default text).\n"
               << "  --profile-counters=on|off            Per-method PGO-collection instrumentation.\n"
               << "\n"
               << "Output:\n"
@@ -337,6 +340,12 @@ int main(int argc, const char* argv[]) {
                     compiler.getMutableFlags().diagVerbosity)) {
                 printUsage(argv[0]); return 1;
             }
+        } else if (match(arg, "diag-format", value)) {
+            if (!setEnumFlag<DiagFormat>("diag-format", value,
+                    { {"text", DiagFormat::Text}, {"json", DiagFormat::Json} },
+                    compiler.getMutableFlags().diagFormat)) {
+                printUsage(argv[0]); return 1;
+            }
         } else if (match(arg, "source-tags",         value)) { if (!setBoolFlag("source-tags",         value, compiler.getMutableFlags().sourceTags))         { printUsage(argv[0]); return 1; } }
           else if (match(arg, "poison-free",         value)) { if (!setBoolFlag("poison-free",         value, compiler.getMutableFlags().poisonFree))         { printUsage(argv[0]); return 1; } }
           else if (match(arg, "drop-chain-validate", value)) { if (!setBoolFlag("drop-chain-validate", value, compiler.getMutableFlags().dropChainValidate))  { printUsage(argv[0]); return 1; } }
@@ -541,13 +550,16 @@ int main(int argc, const char* argv[]) {
         compiler.getMutableFlags().treeShake = TreeShake::On;
     }
 
+    bool jsonDiag = compiler.getFlags().diagFormat == DiagFormat::Json;
     try {
         compiler.compile(positional[0], positional[1], positional[2]);
     } catch (cajeta::Exception& e) {
-        std::cerr << "cajeta: " << e.getErrorId() << ": " << e.getMessage() << "\n";
+        if (jsonDiag) cajeta::emitJsonDiagnostic("error", e.getErrorId(), e.getMessage());
+        else std::cerr << "cajeta: " << e.getErrorId() << ": " << e.getMessage() << "\n";
         return 1;
     } catch (const std::exception& e) {
-        std::cerr << "cajeta: " << e.what() << "\n";
+        if (jsonDiag) cajeta::emitJsonDiagnostic("error", "", e.what());
+        else std::cerr << "cajeta: " << e.what() << "\n";
         return 1;
     }
     return 0;
