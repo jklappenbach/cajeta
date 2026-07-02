@@ -28,14 +28,15 @@ class LaunchRouterTest {
     }
 
     @Test
-    fun buildFamilyGoesToBuildWindow_runAndDebuggableGoToRun() {
+    fun buildFamilyAndUserTasksGoToBuild_onlyRunBuiltinGoesToRun() {
         assertEquals("build", routed(builtin("compile"), model()))
         assertEquals("build", routed(builtin("package"), model()))
         assertEquals("run", routed(builtin("run"), model()))
-        // user task, not debuggable -> build; debuggable -> run
+        // every user task -> build, including a runnable `build` in a project with
+        // an entry method (regression: previously mis-routed to run).
         assertEquals("build", routed(task("gen"), model(CajetaTask("gen", runnable = false))))
-        assertEquals("run", routed(task("bench"),
-            model(CajetaTask("bench", runnable = true), coords = BuildLaunchCoords(entryMethod = "a.B::main"))))
+        assertEquals("build", routed(task("build"),
+            model(CajetaTask("build", runnable = true), coords = BuildLaunchCoords(entryMethod = "a.B::main"))))
     }
 
     @Test

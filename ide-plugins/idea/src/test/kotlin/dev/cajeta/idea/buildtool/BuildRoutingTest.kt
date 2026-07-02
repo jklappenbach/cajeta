@@ -32,21 +32,17 @@ class BuildRoutingTest {
     }
 
     @Test
-    fun nonDebuggableUserTaskRoutesToBuild_debuggableStaysOnRun() {
-        // Debuggable: runnable + project has debug coords -> Run window.
-        val runnable = CajetaTask("bench", runnable = true)
-        val debuggable = model(runnable, coords = BuildLaunchCoords(entryMethod = "a.B::main"))
-        assertFalse(BuildRouting.isBuildRouted(task("bench"), debuggable, true))
+    fun everyUserTaskRoutesToBuild_evenRunnableArtifactProducers() {
+        // A `build` task that PRODUCES a runnable executable (runnable=true) in a
+        // project that has an entry method is still a build action, not a program
+        // run -> Build window. (Regression: this used to mis-route to Run because
+        // isDebuggable conflated "produces a runnable artifact" with "runs it".)
+        val buildTask = CajetaTask("build", runnable = true, artifact = "build/api")
+        val withCoords = model(buildTask, coords = BuildLaunchCoords(entryMethod = "com.example.api.Main::main"))
+        assertTrue(BuildRouting.isBuildRouted(task("build"), withCoords, true))
 
-        // Not debuggable (no coords) -> Build window.
-        val noCoords = model(runnable, coords = null)
-        assertTrue(BuildRouting.isBuildRouted(task("bench"), noCoords, true))
-
-        // Not runnable -> Build window.
-        val notRunnable = model(CajetaTask("codegen", runnable = false), coords = BuildLaunchCoords(entryMethod = "a.B::main"))
-        assertTrue(BuildRouting.isBuildRouted(task("codegen"), notRunnable, true))
-
-        // Unknown task (not in model) -> Build window (non-executing default).
+        // Non-runnable task and unknown task also -> Build.
+        assertTrue(BuildRouting.isBuildRouted(task("codegen"), model(CajetaTask("codegen", runnable = false)), true))
         assertTrue(BuildRouting.isBuildRouted(task("mystery"), model(), true))
     }
 

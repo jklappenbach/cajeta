@@ -59,12 +59,16 @@ already-available data (`TaskTreeNode.Kind`, the builtin verb name,
   the **Build** tool window.
 - **2.2** As a developer, when I run the builtin **`run`** verb, then it runs in
   the **Run** tool window (it executes my program; its stdout is program output).
-- **2.3** As a developer, when I run a **user task** that is **not**
-  dap-debuggable (no runnable artifact / no entry method), then it runs in the
-  **Build** tool window.
-- **2.4** As a developer, when I run a **user task** that **is** dap-debuggable,
-  then it runs in the **Run** tool window (Run keeps its free Stop/Re-run/tabs
-  for something that executes).
+- **2.3** As a developer, when I run **any user task** (from the Tasks group),
+  then it runs in the **Build** tool window — a task is a build action. A task's
+  `runnable` flag means it *produces* a runnable artifact (so Debug can be
+  offered), **not** that running it executes the program: e.g. a `build` task
+  builds an executable but does not run it, so it is build-routed. (Corrected
+  from an earlier draft that mis-routed runnable/debuggable tasks to Run —
+  `buildCoords` is project-level, so that rule sent every build task to Run.)
+- **2.4** As a developer, when I **Debug** a task, then it uses the **Debug**
+  window (a separate explicit action) — the only way a task's *execution* is
+  surfaced; double-click/Run never executes a user task's program.
 - **2.5** As a developer, when I **Debug** any task, then routing is unaffected —
   it uses the Debug window exactly as today.
 - **2.6** The classification is centralized in one place so every entry point
