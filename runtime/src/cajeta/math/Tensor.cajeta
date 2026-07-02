@@ -1553,6 +1553,50 @@ public class Tensor<T> {
         return heap Tensor<E>(#st, 0, shp, strd);
     }
 
+    /**
+     * Batched matrix multiply (numpy `matmul` / `@` over a leading batch axis): `a` is
+     * `(B, M, K)`, `b` is `(B, K, N)`, result is `(B, M, N)` — the `b`-th output matrix
+     * is `a[b] · b[b]`. The batched analogue of {@link #matmul}; broadcasting a shared
+     * `(K, N)` operand across the batch is a later refinement. Multi-index reads via
+     * `getAt` so strided (non-contiguous) inputs work.
+     */
+    public static #Tensor<E> matmulBatched<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        int64 batch = a.shapeAt(0);
+        int64 m = a.shapeAt(1);
+        int64 k = a.shapeAt(2);
+        int64 n = b.shapeAt(2);
+        Storage<E> st = heap Storage<E>(batch * m * n);
+        int64[] ia = heap int64[3];
+        int64[] ib = heap int64[3];
+        int64 bt = 0;
+        while (bt < batch) {
+            int64 i = 0;
+            while (i < m) {
+                int64 j = 0;
+                while (j < n) {
+                    E acc = (E) 0;
+                    int64 p = 0;
+                    while (p < k) {
+                        ia[0] = bt; ia[1] = i; ia[2] = p;
+                        ib[0] = bt; ib[1] = p; ib[2] = j;
+                        acc = acc + a.getAt(ia) * b.getAt(ib);
+                        p = p + 1;
+                    }
+                    st.set(bt * m * n + i * n + j, acc);
+                    j = j + 1;
+                }
+                i = i + 1;
+            }
+            bt = bt + 1;
+        }
+        int64[] shp = heap int64[3];
+        shp[0] = batch;
+        shp[1] = m;
+        shp[2] = n;
+        int64[] strd = Tensor.contigStrides(shp);
+        return heap Tensor<E>(#st, 0, shp, strd);
+    }
+
     /** 1-D inner product `Σ a[i] * b[i]` as a scalar (numpy `dot` of two vectors). */
     public static E dot<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
         int64 n = a.size();
