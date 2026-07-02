@@ -100,18 +100,24 @@ fi
 
 TEST_BIN="${TEST_BIN:-build/test/cajeta_test}"
 
-if [ ! -f "build/build.ninja" ]; then
-    echo ">> No build/ found, running ./setup.sh"
-    ./setup.sh
-fi
+# CAJETA_TESTS_FILE injects a pre-discovered test list (one Suite.test per line),
+# used by test/harness/suite_split_test.sh to exercise the scheduler without a
+# built binary. When set, skip the build guards + the binary-existence check —
+# nothing is compiled or executed (the harness tests only run PLAN_ONLY).
+if [ -z "${CAJETA_TESTS_FILE:-}" ]; then
+    if [ ! -f "build/build.ninja" ]; then
+        echo ">> No build/ found, running ./setup.sh"
+        ./setup.sh
+    fi
 
-if [ -z "${NO_BUILD:-}" ]; then
-    ./build.sh
-fi
+    if [ -z "${NO_BUILD:-}" ]; then
+        ./build.sh
+    fi
 
-if [ ! -x "$TEST_BIN" ]; then
-    echo "error: $TEST_BIN not built" >&2
-    exit 1
+    if [ ! -x "$TEST_BIN" ]; then
+        echo "error: $TEST_BIN not built" >&2
+        exit 1
+    fi
 fi
 
 # Split args: anything starting with `--` is a gtest flag, the rest are filter
@@ -270,19 +276,28 @@ if [ ${#patterns[@]} -gt 0 ]; then
     done
     list_filter_args=("--gtest_filter=$lf")
 fi
-raw_list=$(CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" --gtest_list_tests "${list_filter_args[@]}" 2>/dev/null || true)
 tests=()
-current_suite=""
-while IFS= read -r line; do
-    if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)\.[[:space:]]*$ ]]; then
-        current_suite="${BASH_REMATCH[1]}"
-    elif [[ "$line" =~ ^[[:space:]]+([A-Za-z_][A-Za-z0-9_/]*) ]]; then
-        if [ -n "$current_suite" ]; then
-            test_name="${BASH_REMATCH[1]}"
-            tests+=("${current_suite}.${test_name}")
+if [ -n "${CAJETA_TESTS_FILE:-}" ]; then
+    # Injected list (test seam): one fully-qualified Suite.test per line, in the
+    # order the suites should group. No binary invoked.
+    while IFS= read -r line || [ -n "$line" ]; do
+        [ -z "$line" ] && continue
+        tests+=("$line")
+    done < "$CAJETA_TESTS_FILE"
+else
+    raw_list=$(CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" --gtest_list_tests "${list_filter_args[@]}" 2>/dev/null || true)
+    current_suite=""
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)\.[[:space:]]*$ ]]; then
+            current_suite="${BASH_REMATCH[1]}"
+        elif [[ "$line" =~ ^[[:space:]]+([A-Za-z_][A-Za-z0-9_/]*) ]]; then
+            if [ -n "$current_suite" ]; then
+                test_name="${BASH_REMATCH[1]}"
+                tests+=("${current_suite}.${test_name}")
+            fi
         fi
-    fi
-done <<< "$raw_list"
+    done <<< "$raw_list"
+fi
 
 num_tests=${#tests[@]}
 if [ "$num_tests" -eq 0 ]; then
@@ -305,6 +320,15 @@ BATCH="${BATCH:-1}"
 # (n * TEST_TIMEOUT) but never exceeds this, so one stuck test can't strand a
 # worker for the full n*TEST_TIMEOUT.
 BATCH_CAP="${BATCH_CAP:-1800}"
+# Max tests per batched chunk. A suite with more than this many selected tests is
+# split into ceil(n/BATCH_MAX) contiguous chunks that bin-pack across shards and
+# run concurrently — so one oversized suite is no longer a single-shard long pole
+# (e.g. the 49-test ParallelStreamP1Tests, which alone dominated the ~95min
+# Windows release-test leg). Each chunk still runs as ONE process, so the stdlib
+# prime is reused within the chunk; splitting pays the prime ceil(n/BATCH_MAX)
+# times instead of once, a net win because the extra shards were otherwise idle.
+# A suite with <= BATCH_MAX tests is exactly one chunk (unchanged behavior).
+BATCH_MAX="${BATCH_MAX:-16}"
 
 # Group discovered tests by suite using INDEXED arrays only — macOS ships bash
 # 3.2, which has no `declare -A` associative arrays. gtest --gtest_list_tests
@@ -332,9 +356,58 @@ for t in "${tests[@]}"; do
 done
 num_suites=${#suites[@]}
 
-# Cap shards at the number of schedulable units (suites in BATCH mode, else
-# tests) — extra shards just sit empty.
-if [ "$BATCH" = "1" ]; then unit_count=$num_suites; else unit_count=$num_tests; fi
+# Build the CHUNK list — the scheduling unit. In BATCH mode a suite with more
+# than BATCH_MAX selected tests is split into ceil(n/BATCH_MAX) contiguous slices
+# (each its own batched process, priming once); a suite <= BATCH_MAX is one chunk.
+# In BATCH=0 each test is its own chunk (count 1). Parallel indexed arrays only
+# (bash 3.2: no associative arrays). chunk_list[i] is the newline-joined test list.
+declare -a chunk_name chunk_list chunk_count
+num_chunks=0
+if [ "$BATCH" = "1" ]; then
+    for ((i=0; i<num_suites; i++)); do
+        _sn="${suites[$i]}"; _cnt="${suite_count_idx[$i]}"
+        if [ "$_cnt" -le "$BATCH_MAX" ]; then
+            chunk_name[$num_chunks]="$_sn"
+            chunk_list[$num_chunks]="${suite_tests_idx[$i]}"
+            chunk_count[$num_chunks]="$_cnt"
+            num_chunks=$(( num_chunks + 1 ))
+        else
+            _nparts=$(( (_cnt + BATCH_MAX - 1) / BATCH_MAX ))
+            _part=1; _incount=0; _slice=""
+            while IFS= read -r _t; do
+                [ -z "$_t" ] && continue
+                _slice+="${_t}"$'\n'
+                _incount=$(( _incount + 1 ))
+                if [ "$_incount" -eq "$BATCH_MAX" ]; then
+                    chunk_name[$num_chunks]="${_sn}[${_part}/${_nparts}]"
+                    chunk_list[$num_chunks]="$_slice"
+                    chunk_count[$num_chunks]="$_incount"
+                    num_chunks=$(( num_chunks + 1 ))
+                    _part=$(( _part + 1 )); _incount=0; _slice=""
+                fi
+            done <<< "${suite_tests_idx[$i]}"
+            if [ "$_incount" -gt 0 ]; then
+                chunk_name[$num_chunks]="${_sn}[${_part}/${_nparts}]"
+                chunk_list[$num_chunks]="$_slice"
+                chunk_count[$num_chunks]="$_incount"
+                num_chunks=$(( num_chunks + 1 ))
+            fi
+        fi
+    done
+else
+    for ((i=0; i<num_tests; i++)); do
+        chunk_name[$num_chunks]="${tests[$i]}"
+        chunk_list[$num_chunks]="${tests[$i]}"$'\n'
+        chunk_count[$num_chunks]=1
+        num_chunks=$(( num_chunks + 1 ))
+    done
+fi
+
+# Cap shards at the number of schedulable units (CHUNKS in BATCH mode, else
+# tests) — extra shards just sit empty. A split suite has more chunks than the
+# one suite, so the cap must count chunks, not suites, or a single large suite
+# would pin the run back to one shard.
+if [ "$BATCH" = "1" ]; then unit_count=$num_chunks; else unit_count=$num_tests; fi
 if [ "$shards" -gt "$unit_count" ]; then shards=$unit_count; fi
 
 # Distribute work into per-shard buckets. shard_total tracks how many TESTS each
@@ -365,6 +438,41 @@ else
         shard_list[$s]+="${tests[$i]}"$'\n'
         shard_total[$s]=$(( shard_total[$s] + 1 ))
     done
+fi
+
+# PLAN_ONLY: emit the chunk->shard assignment and exit before spawning anything.
+# Used by test/harness/suite_split_test.sh to assert the scheduling math without
+# building or running the binary. Longest-processing-time-first over chunks, the
+# same heuristic the executor uses. Output contract (stdout):
+#   PLAN shards=<S> batch=<0|1> batch_max=<N> chunks=<C> tests=<T>
+#   CHUNK <idx> shard=<s> count=<k> name=<display> tests=<t1,t2,...>
+if [ -n "${PLAN_ONLY:-}" ]; then
+    plan_shards=$shards
+    [ "$plan_shards" -gt "$num_chunks" ] && plan_shards=$num_chunks
+    [ "$plan_shards" -lt 1 ] && plan_shards=1
+    declare -a _sh_load
+    for ((s=0; s<plan_shards; s++)); do _sh_load[$s]=0; done
+    _order=$(for ((i=0; i<num_chunks; i++)); do
+        printf '%s\t%s\n' "${chunk_count[$i]}" "$i"
+    done | sort -rn -k1,1 -s)
+    declare -a _chunk_shard
+    while IFS=$'\t' read -r _cc _ci2; do
+        [ -z "$_ci2" ] && continue
+        _ms=0; _mv=${_sh_load[0]}
+        for ((s=1; s<plan_shards; s++)); do
+            if [ "${_sh_load[$s]}" -lt "$_mv" ]; then _mv=${_sh_load[$s]}; _ms=$s; fi
+        done
+        _chunk_shard[$_ci2]=$_ms
+        _sh_load[$_ms]=$(( _sh_load[$_ms] + _cc ))
+    done <<< "$_order"
+    printf 'PLAN shards=%s batch=%s batch_max=%s chunks=%s tests=%s\n' \
+        "$plan_shards" "$BATCH" "$BATCH_MAX" "$num_chunks" "$num_tests"
+    for ((i=0; i<num_chunks; i++)); do
+        _csv=$(printf '%s' "${chunk_list[$i]}" | grep -v '^$' | paste -sd, -)
+        printf 'CHUNK %s shard=%s count=%s name=%s tests=%s\n' \
+            "$i" "${_chunk_shard[$i]}" "${chunk_count[$i]}" "${chunk_name[$i]}" "$_csv"
+    done
+    exit 0
 fi
 
 tmpdir=$(mktemp -d -t cajeta_test_shards.XXXXXX)
