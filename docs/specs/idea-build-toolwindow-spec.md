@@ -89,18 +89,30 @@ already-available data (`TaskTreeNode.Kind`, the builtin verb name,
 
 ## 4. Problem parsing & Problems view
 
-- **4.1** As a developer, when the compiler prints a warning line matching the
-  degraded-mode grammar (`warning[:—-] [id] msg`), then a **warning** problem
-  node appears under the build, and in the Problems view.
-- **4.2** As a developer, when the compiler prints an error with a file/line
-  (`<path>:<line>[:<col>]: error: msg`), then an **error** problem node appears
-  with that message, and double-clicking it **navigates to that file/line**.
-- **4.3** As a developer, when a problem has no resolvable file position, then it
-  still appears as a message node under the build (not dropped), without
-  navigation.
-- **4.4** As a developer, when a build produces ≥1 error problem, then it also
-  finishes as **failure** (4.x problems and 3.3 status agree).
-- **4.5** Problem severity maps from the existing `Diagnostic.Severity`
+The compiler's diagnostics today are **unstructured text in three observed
+shapes** (verified against the built compiler). Parsing is regex over these; it
+upgrades to precise ranges when `cajeta --diag-format=json` lands (constraint
+§1.4.2). Because two of the three shapes **carry no file path**, navigation is
+available only for the path-bearing shape — an honest limit of current output,
+not of the bridge.
+
+- **4.1** As a developer, when the compiler prints `warning: [id] msg` (direct
+  cerr), then a **warning** problem node appears under the build and in the
+  Problems view (positionless — the bracket is an id, not a position).
+- **4.2** As a developer, when the compiler prints a semantic error in the
+  `CajetaLogger` shape — a `<path>[<line>:<col>]` (or `[<line>,<col>]`) line
+  followed by an `Error <id>: <msg>` line (optionally behind a glog `E…]`
+  prefix) — then an **error** node appears with that message and double-clicking
+  it **navigates to that file/line**.
+- **4.3** As a developer, when the compiler prints an ANTLR syntax error
+  `line <line>:<col> <msg>` (no path), then an **error** node appears carrying
+  the line:col in its text but **without navigation** (no path to resolve) —
+  it is not dropped (spec §4.4 / non-goal §1.5.1: precision awaits JSON).
+- **4.4** As a developer, when a problem has no resolvable file position, then it
+  still appears as a message node under the build, without navigation.
+- **4.5** As a developer, when a build produces ≥1 error problem, then it also
+  finishes as **failure** (§4 problems and §3.3 status agree).
+- **4.6** Problem severity maps from the existing `Diagnostic.Severity`
   (`ERROR → MessageEvent.Kind.ERROR`, `WARNING → WARNING`,
   `WEAK_WARNING → WARNING`), so there is one severity vocabulary.
 
