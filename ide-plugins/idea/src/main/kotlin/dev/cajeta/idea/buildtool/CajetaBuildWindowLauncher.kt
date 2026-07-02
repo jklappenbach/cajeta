@@ -23,7 +23,10 @@ object CajetaBuildWindowLauncher {
         val title = "cajeta ${spec.task}"
         val workDir = spec.manifestPath?.takeIf { it.isNotBlank() }?.let { File(it).parent }
             ?: project.basePath ?: "."
-        val argv = listOf(buildToolPath) + CajetaCommandLine.runArgv(spec)
+        // Structured diagnostics: the build tool forwards this to its compiler
+        // subprocesses, which emit NDJSON that BuildProblemParser consumes
+        // (json-diagnostics-spec §5.3).
+        val argv = listOf(buildToolPath) + CajetaCommandLine.runArgv(spec) + "--diag-format=json"
 
         val process = ProcessBuildTaskProcess(argv, workDir)
         val parser = BuildProblemParser()
