@@ -1665,6 +1665,55 @@ TEST(NumpyOpsTests, searchPartitionMatchNumpy) {
     EXPECT_EQ(runI32(src), 1);
 }
 
+// 7 (deferred) — real introselect partition/argpartition: element kth is the true kth
+// order statistic, smaller before / larger after (sides NOT fully ordered), across every
+// kth, plus a reverse-sorted stress input. Values 0..9 ⇒ the kth order statistic == kth.
+TEST(NumpyOpsTests, introselectPartitionMatchNumpy) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        // partition for every kth in [0,10); each lane a scramble of 0..9
+        "        int64 kk = 0;\n"
+        "        while (kk < 10) {\n"
+        "            int32[] dd = { 9,1,8,2,7,3,6,4,5,0 };\n"
+        "            int64[] sh = heap int64[1]; sh[0] = 10;\n"
+        "            Tensor<int32> t = Tensor.of<int32>(dd, sh);\n"
+        "            Tensor<int32> pt = Tensor.partition<int32>(t, kk, 0);\n"
+        "            int32 piv = pt.get1(kk);\n"
+        "            if (piv != (int32) kk) { return -1; }\n"
+        "            int64 i = 0;\n"
+        "            while (i < kk) { int32 v = pt.get1(i); if (v >= piv) { return -2; } i = i + 1; }\n"
+        "            i = kk + 1;\n"
+        "            while (i < 10) { int32 v = pt.get1(i); if (v <= piv) { return -3; } i = i + 1; }\n"
+        "            kk = kk + 1;\n"
+        "        }\n"
+        // argpartition, kth=4: t[at[4]] is the 4th smallest; index-space partition property
+        "        int32[] da = { 9,1,8,2,7,3,6,4,5,0 };\n"
+        "        int64[] sa = heap int64[1]; sa[0] = 10;\n"
+        "        Tensor<int32> ta = Tensor.of<int32>(da, sa);\n"
+        "        Tensor<int64> at = Tensor.argpartition<int32>(ta, 4, 0);\n"
+        "        int64 a4 = at.get1(4);\n"
+        "        if (ta.get1(a4) != 4) { return -4; }\n"
+        "        int64 j = 0;\n"
+        "        while (j < 4) { int64 aj = at.get1(j); int32 v = ta.get1(aj); if (v >= 4) { return -5; } j = j + 1; }\n"
+        "        j = 5;\n"
+        "        while (j < 10) { int64 aj = at.get1(j); int32 v = ta.get1(aj); if (v <= 4) { return -6; } j = j + 1; }\n"
+        // reverse-sorted stress input (exercises the quickselect recursion), kth=3
+        "        int32[] dr = { 9,8,7,6,5,4,3,2,1,0 };\n"
+        "        int64[] sr = heap int64[1]; sr[0] = 10;\n"
+        "        Tensor<int32> tr = Tensor.of<int32>(dr, sr);\n"
+        "        Tensor<int32> pr = Tensor.partition<int32>(tr, 3, 0);\n"
+        "        if (pr.get1(3) != 3) { return -7; }\n"
+        "        int64 m = 0;\n"
+        "        while (m < 3) { int32 v = pr.get1(m); if (v >= 3) { return -8; } m = m + 1; }\n"
+        "        m = 4;\n"
+        "        while (m < 10) { int32 v = pr.get1(m); if (v <= 3) { return -9; } m = m + 1; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
 // 7a — unique (sorted distinct values over the flattened input), flatnonzero (C-order
 // flat indices where != 0), nonzero (per-dimension coordinate arrays, the numpy tuple),
 // extract (arr elements where a condition is nonzero). All return fresh tensors.
