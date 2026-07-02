@@ -34,6 +34,7 @@ class CajetaConfigurable : Configurable {
     private var defaultFlavorField: JBTextField? = null
     private var jsonlStructuredCheck: JBCheckBox? = null
     private var jsonlLevelField: JBTextField? = null
+    private var buildInBuildWindowCheck: JBCheckBox? = null
     private var panel: JPanel? = null
 
     override fun getDisplayName(): String = "Cajeta"
@@ -93,6 +94,10 @@ class CajetaConfigurable : Configurable {
             settings.jsonlDefaultStructured,
         ).also { jsonlStructuredCheck = it }
         val jsonlLevel = JBTextField(settings.jsonlDefaultLevel, 12).also { jsonlLevelField = it }
+        val buildInBuildWindow = JBCheckBox(
+            "Run build tasks in the Build tool window (off = Run window)",
+            settings.buildTasksInBuildWindow,
+        ).also { buildInBuildWindowCheck = it }
 
         panel = FormBuilder.createFormBuilder()
             .addLabeledComponent(JBLabel("cajetac binary:"), pathField, 1, false)
@@ -117,6 +122,7 @@ class CajetaConfigurable : Configurable {
             .addLabeledComponent(JBLabel("Default flavor:"), flavorField, 1, false)
             .addComponent(jsonlStructured, 1)
             .addLabeledComponent(JBLabel("JSONL default level filter:"), jsonlLevel, 1, false)
+            .addComponent(buildInBuildWindow, 1)
             .addComponentFillVertically(JPanel(), 0)
             .panel
         return panel!!
@@ -137,7 +143,8 @@ class CajetaConfigurable : Configurable {
             (defaultProfileField?.text ?: "") != s.defaultProfile ||
             (defaultFlavorField?.text ?: "") != s.defaultFlavor ||
             (jsonlStructuredCheck?.isSelected ?: true) != s.jsonlDefaultStructured ||
-            (jsonlLevelField?.text ?: "") != s.jsonlDefaultLevel
+            (jsonlLevelField?.text ?: "") != s.jsonlDefaultLevel ||
+            (buildInBuildWindowCheck?.isSelected ?: true) != s.buildTasksInBuildWindow
     }
 
     override fun apply() {
@@ -158,6 +165,7 @@ class CajetaConfigurable : Configurable {
         s.defaultFlavor = defaultFlavorField?.text?.trim().orEmpty()
         s.jsonlDefaultStructured = jsonlStructuredCheck?.isSelected ?: true
         s.jsonlDefaultLevel = jsonlLevelField?.text?.trim().orEmpty()
+        s.buildTasksInBuildWindow = buildInBuildWindowCheck?.isSelected ?: true
     }
 
     override fun reset() {
@@ -176,6 +184,7 @@ class CajetaConfigurable : Configurable {
         defaultFlavorField?.text = s.defaultFlavor
         jsonlStructuredCheck?.isSelected = s.jsonlDefaultStructured
         jsonlLevelField?.text = s.jsonlDefaultLevel
+        buildInBuildWindowCheck?.isSelected = s.buildTasksInBuildWindow
     }
 
     override fun disposeUIResources() {
@@ -194,6 +203,7 @@ class CajetaConfigurable : Configurable {
         defaultFlavorField = null
         jsonlStructuredCheck = null
         jsonlLevelField = null
+        buildInBuildWindowCheck = null
         panel = null
     }
 }

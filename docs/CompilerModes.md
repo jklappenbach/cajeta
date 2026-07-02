@@ -314,6 +314,31 @@ ignored warnings, etc.
 - Release default: `off`. Suppresses noise on CI.
 - Affects the compiler's output.
 
+### `--diag-format=text|json`
+
+The **format** of the compiler's diagnostics (independent of `--diag-verbosity`,
+which controls their *detail*). `text` is the human-readable default — unchanged
+free-text on stderr. `json` emits **NDJSON**: one self-contained JSON object per
+line on stderr, so tools consume structured diagnostics instead of regex-scraping
+(the IntelliJ plugin and build tool are the consumers; see
+`docs/specs/idea-build-toolwindow-spec.md` §1.5.1).
+
+Each line is one diagnostic:
+
+```json
+{"severity":"error","code":"CAJETA_ERROR_UNRESOLVED_TYPE","message":"unresolved type 'Foo' in local variable declaration","file":null,"line":null,"column":null}
+{"severity":"error","code":"syntax","message":"mismatched input ';' expecting ...","file":"/abs/path/Test.cajeta","line":4,"column":17}
+```
+
+- `severity`: `"error"` \| `"warning"` \| `"note"`.
+- `code`: the compiler error id (semantic errors) or `"syntax"` (parser/lexer). May be null.
+- `message`: the human message. `file` / `line` / `column`: source location when
+  known (1-based line/column), else JSON null. Syntax errors carry a precise
+  location; today's semantic errors carry the id + message (location is a
+  follow-on as the exception surface gains spans).
+- Mode-independent (not changed by `--debug`/`--release`/etc.); default `text`.
+- A clean compile emits nothing. Consumers should skip any non-`{` line defensively.
+
 ### `--profile-counters=on|off`
 
 Emit per-method invocation counters + per-method total wall-time

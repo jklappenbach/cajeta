@@ -29,6 +29,7 @@
 #include "../type/FormalParameter.h"
 #include "../type/QualifiedName.h"
 #include "cajeta/error/CajetaExceptions.h"
+#include "cajeta/error/Diagnostics.h"
 #include "CajetaParserBaseVisitor.h"
 #include "../xpu/core/XpuAttributes.h"
 #include "../xpu/XpuTarget.h"
@@ -58,6 +59,7 @@
 #include <map>
 #include <set>
 #include <sys/stat.h>
+#include <memory>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -71,6 +73,27 @@ using namespace antlr4;
 using namespace std;
 
 namespace cajeta {
+
+    // --diag-format=json: capture ANTLR lexer/parser syntax errors and re-emit
+    // them as NDJSON (via emitJsonDiagnostic) instead of the default
+    // ConsoleErrorListener's "line L:col msg" text. Installed only for the user
+    // source parse; the stdlib/classpath parses keep the default listener.
+    class JsonSyntaxErrorListener : public antlr4::BaseErrorListener {
+    public:
+        explicit JsonSyntaxErrorListener(std::string file) : file(std::move(file)) {}
+        void syntaxError(antlr4::Recognizer* /*recognizer*/,
+                         antlr4::Token* /*offendingSymbol*/,
+                         size_t line, size_t charPositionInLine,
+                         const std::string& msg,
+                         std::exception_ptr /*e*/) override {
+            // ANTLR columns are 0-based; emitJsonDiagnostic wants 1-based.
+            emitJsonDiagnostic("error", "syntax", msg, file,
+                               static_cast<int>(line),
+                               static_cast<int>(charPositionInLine) + 1);
+        }
+    private:
+        std::string file;
+    };
 
     // 0c diagnostic: serialize the lean keep-set + per-class provenance to JSON.
     // Generated artifact (banner says do-not-edit); the leanness feedback surface.
@@ -394,12 +417,20 @@ namespace cajeta {
         std::string lastCanonical;
     };
 
-    // Pre-scan one source via ANTLR.
-    static void prescanSource(antlr4::ANTLRInputStream& input) {
+    // Pre-scan one source via ANTLR. Under --diag-format=json (suppressConsole)
+    // the default ConsoleErrorListener is removed so the prescan pass doesn't
+    // leak "line L:col msg" text into the machine-readable stream — the
+    // authoritative parseSource pass re-reports the same syntax errors as NDJSON.
+    static void prescanSource(antlr4::ANTLRInputStream& input,
+                              bool suppressConsole = false) {
         CajetaLexer lexer(&input);
         CommonTokenStream tokens(&lexer);
         tokens.fill();
         CajetaParser parser(&tokens);
+        if (suppressConsole) {
+            lexer.removeErrorListeners();
+            parser.removeErrorListeners();
+        }
         antlr4::tree::ParseTree* tree = parser.compilationUnit();
         ArchivePrescanVisitor v;
         tree->accept(&v);
@@ -409,7 +440,7 @@ namespace cajeta {
     // archive registry of class declarations available to the
     // compile. Called once at the start of Compiler::compile(
     // entryMethod, ...) before any modules parse.
-    void prescanSourceRoot(const std::string& rootPath) {
+    void prescanSourceRoot(const std::string& rootPath, bool suppressConsole) {
         using recursive_directory_iterator = std::filesystem::recursive_directory_iterator;
         std::filesystem::path root(rootPath);
         for (const auto& entry : recursive_directory_iterator(root)) {
@@ -418,7 +449,7 @@ namespace cajeta {
             std::ifstream in(entry.path());
             if (!in) continue;
             antlr4::ANTLRInputStream input(in);
-            prescanSource(input);
+            prescanSource(input, suppressConsole);
         }
     }
 
@@ -480,6 +511,17 @@ namespace cajeta {
         CommonTokenStream tokens(&lexer);
         tokens.fill();
         CajetaParser parser(&tokens);
+        // --diag-format=json (user source only): swap ANTLR's default console
+        // listener for one that emits structured NDJSON syntax diagnostics.
+        std::unique_ptr<JsonSyntaxErrorListener> jsonSyntax;
+        if (label && std::string(label) == "user" &&
+            module->getFlags().diagFormat == DiagFormat::Json) {
+            jsonSyntax = std::make_unique<JsonSyntaxErrorListener>(module->getSourcePath());
+            lexer.removeErrorListeners();
+            parser.removeErrorListeners();
+            lexer.addErrorListener(jsonSyntax.get());
+            parser.addErrorListener(jsonSyntax.get());
+        }
         antlr4::tree::ParseTree* parseTree = parser.compilationUnit();
         auto prevActive = CajetaModule::getActiveModule();
         CajetaModule::setActiveModule(module);
@@ -1061,7 +1103,7 @@ namespace cajeta {
         // anywhere under sourceRootPath into the archive registry.
         // Lets fromContext's miss path vouch for forward references
         // before deciding placeholder vs unknown-type error.
-        prescanSourceRoot(sourceRootPath);
+        prescanSourceRoot(sourceRootPath, getFlags().diagFormat == DiagFormat::Json);
 
         list<string>* modulePaths = listModulePaths(sourceRootPath);
 

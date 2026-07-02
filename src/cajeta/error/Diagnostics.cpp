@@ -2,9 +2,67 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
+#include <iostream>
 #include <vector>
 
 namespace cajeta {
+
+    namespace {
+        // Minimal RFC 8259 string escaping for the NDJSON diagnostic payload.
+        std::string jsonEscape(const std::string& s) {
+            std::string o;
+            o.reserve(s.size() + 8);
+            for (unsigned char c : s) {
+                switch (c) {
+                    case '"':  o += "\\\""; break;
+                    case '\\': o += "\\\\"; break;
+                    case '\n': o += "\\n";  break;
+                    case '\r': o += "\\r";  break;
+                    case '\t': o += "\\t";  break;
+                    case '\b': o += "\\b";  break;
+                    case '\f': o += "\\f";  break;
+                    default:
+                        if (c < 0x20) {          // other control chars → \u00XX
+                            char buf[8];
+                            std::snprintf(buf, sizeof(buf), "\\u%04x", c);
+                            o += buf;
+                        } else {
+                            o += static_cast<char>(c);
+                        }
+                }
+            }
+            return o;
+        }
+
+        // Emit a "key": value pair for a string field, or JSON null when empty.
+        void strOrNull(std::string& out, const char* key, const std::string& v) {
+            out += "\"";
+            out += key;
+            out += "\":";
+            if (v.empty()) out += "null";
+            else { out += "\""; out += jsonEscape(v); out += "\""; }
+        }
+    } // namespace
+
+    void emitJsonDiagnostic(const std::string& severity,
+                            const std::string& code,
+                            const std::string& message,
+                            const std::string& file,
+                            int line,
+                            int column) {
+        std::string o = "{";
+        strOrNull(o, "severity", severity); o += ",";
+        strOrNull(o, "code", code);         o += ",";
+        strOrNull(o, "message", message);   o += ",";
+        strOrNull(o, "file", file);         o += ",";
+        o += "\"line\":";   o += (line   > 0 ? std::to_string(line)   : "null"); o += ",";
+        o += "\"column\":"; o += (column > 0 ? std::to_string(column) : "null");
+        o += "}\n";
+        // stderr, unbuffered-friendly: one write per line so consumers reading
+        // the pipe see each diagnostic as it is produced.
+        std::cerr << o << std::flush;
+    }
 
     int levenshteinDistance(const std::string& a, const std::string& b) {
         // Two-row rolling DP keeps space at O(min(|a|, |b|)). We swap

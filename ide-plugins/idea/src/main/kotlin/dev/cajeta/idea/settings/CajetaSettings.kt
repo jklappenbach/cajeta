@@ -39,6 +39,10 @@ class CajetaSettings : PersistentStateComponent<CajetaSettings.State> {
         // Tool-window toolbar: group the tree by project root vs. flat. Persisted
         // so the grouping toggle survives restarts (spec §9.2.4).
         var buildGroupByProject: Boolean = true,
+        // Route build-family tasks (compile/package/… and non-runnable tasks) to
+        // the native Build tool window instead of the Run window (build-toolwindow
+        // spec §6). Escape hatch: off restores the old Run-window behaviour.
+        var buildTasksInBuildWindow: Boolean = true,
     )
 
     private var state = State()
@@ -112,6 +116,10 @@ class CajetaSettings : PersistentStateComponent<CajetaSettings.State> {
     var buildGroupByProject: Boolean
         get() = state.buildGroupByProject
         set(value) { state.buildGroupByProject = value }
+
+    var buildTasksInBuildWindow: Boolean
+        get() = state.buildTasksInBuildWindow
+        set(value) { state.buildTasksInBuildWindow = value }
 
     companion object {
         // Default points at the in-tree cajeta build. Users override

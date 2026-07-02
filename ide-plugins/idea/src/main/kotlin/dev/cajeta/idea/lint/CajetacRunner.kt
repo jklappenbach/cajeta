@@ -32,7 +32,7 @@ object CajetacRunner {
      * Both `warning:` and `warning —` forms are tolerated since the
      * compiler currently emits both.
      */
-    private val WARNING_RE = Regex(
+    internal val WARNING_RE = Regex(
         """^warning(?:\s*[:—-])\s*\[(?<id>[^\]]+)\]\s*(?<msg>.+)$""",
     )
 

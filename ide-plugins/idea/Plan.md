@@ -19,6 +19,13 @@
 > `docs/Debugging.md`. One open tail: **CP6f-2d** hard carrier-quiesce. See the
 > [Active worklist](#active-worklist-session-2026-06-24) for this session's scope.
 
+> **Follow-up landed (2026-07-02): Build tool window routing.** Build-family
+> tasks (compile/package/validate/install/deploy/test + non-runnable tasks) now
+> run in the IDE's native Build tool window (streaming console, success/failure/
+> cancelled, Stop/Restart, diagnostics-as-problems) instead of the Run window;
+> `run` + debuggable tasks stay on Run. Gated by a default-on setting. Specced in
+> `docs/specs/idea-build-toolwindow-spec.md` + `agents/idea-build-toolwindow-plan.md`.
+
 ## Active worklist (session 2026-06-24)
 
 Phase 2 has, in fact, landed through **CP7-6** on `main` (verified against the
