@@ -523,6 +523,17 @@ namespace cajeta {
             parser.addErrorListener(jsonSyntax.get());
         }
         antlr4::tree::ParseTree* parseTree = parser.compilationUnit();
+        // A syntax error leaves ANTLR's error-recovery tree malformed; handing
+        // it to the semantic visitor segfaults on some inputs. When the user
+        // source had syntax errors (already reported above via the JSON/console
+        // listener), abort before visiting.
+        if (label && std::string(label) == "user") {
+            size_t syntaxErrors = lexer.getNumberOfSyntaxErrors()
+                                + parser.getNumberOfSyntaxErrors();
+            if (syntaxErrors > 0) {
+                throw SyntaxErrorException(static_cast<int>(syntaxErrors));
+            }
+        }
         auto prevActive = CajetaModule::getActiveModule();
         CajetaModule::setActiveModule(module);
         auto visitor = new CajetaLlvmVisitor(module);
