@@ -19,6 +19,7 @@
 //   - otherwise              → archived-ir
 
 #include "cajeta/buildtool/Action.h"
+#include "cajeta/buildtool/DiagnosticFormat.h"
 #include "cajeta/buildtool/Flavor.h"
 #include "cajeta/buildtool/Manifest.h"
 #include "cajeta/buildtool/Reproducibility.h"
@@ -284,6 +285,13 @@ namespace cajeta::buildtool {
             argv.push_back(cajetaBin);
             argv.push_back("--mode=" + flavor);
             argv.push_back("--emit=" + compilerEmit);
+            // Forward the diagnostic format (json-diagnostics-spec §2): output-only,
+            // so it's kept out of the reproducibility flag set (identical artifact
+            // either way) and just makes the child emit NDJSON on stderr, which
+            // passes straight through to our stderr for the IDE plugin to consume.
+            if (diagnosticFormat() == DiagFormat::Json) {
+                argv.push_back("--diag-format=json");
+            }
             if (target != "host") {
                 argv.push_back("--target=" + target);
             }

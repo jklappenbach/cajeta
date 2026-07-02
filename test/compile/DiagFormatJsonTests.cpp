@@ -146,6 +146,24 @@ TEST(DiagFormatJson, SyntaxErrorEmitsNdjsonWithLocationAndNoLeakedText) {
         << "leaked non-JSON text in json mode:\n" << err;
 }
 
+TEST(DiagFormatJson, SyntaxErrorInExpressionDoesNotCrashCompiler) {
+    // Regression: a dangling binary operator makes ANTLR's error-recovery tree
+    // malformed; the compiler used to hand it to the semantic visitor and
+    // segfault. It must report the syntax diagnostic and fail cleanly instead.
+    auto root = freshTempDir("syncrash");
+    auto srcRoot = writeTest(root, "return 1 + ;");
+    std::string err;
+    int rc = compileCapturingStderr(srcRoot, "--diag-format=json", err);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_NE(rc, 0);
+    EXPECT_EQ(err.find("SIGSEGV"), std::string::npos)
+        << "compiler crashed instead of reporting a syntax error:\n" << err;
+    EXPECT_NE(err.find("\"code\":\"syntax\""), std::string::npos) << err;
+    EXPECT_TRUE(everyNonEmptyLineIsJson(err))
+        << "crash backtrace or free text leaked into the json stream:\n" << err;
+}
+
 TEST(DiagFormatJson, TextModeRemainsPlain) {
     auto root = freshTempDir("txt");
     auto srcRoot = writeTest(root, "NoSuchType z = NoSuchType.create();");

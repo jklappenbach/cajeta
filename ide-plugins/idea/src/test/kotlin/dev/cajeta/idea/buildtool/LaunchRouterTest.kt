@@ -48,14 +48,16 @@ class LaunchRouterTest {
     @Test
     fun parsedCompilerErrorFlipsStreamedBuildToFailure() {
         // Wire the real parser into the bridge (as production does) and stream an
-        // ANTLR error line: exit 0 but a parsed ERROR must finish the build failed.
+        // NDJSON error line: exit 0 but a parsed ERROR must finish the build failed.
         val recorded = mutableListOf<BuildEvent>()
         val listener = BuildProgressListener { _, e -> recorded.add(e) }
         val parser = BuildProblemParser()
         val lineParser = LineParser { line, pid -> parser.feed(line)?.toParsed(pid) }
         val process = object : BuildTaskProcess {
             override fun run(sink: OutputSink): ProcessOutcome {
-                sink.append("line 4:46 missing ';' at '}'\n", stdout = false)
+                sink.append(
+                    """{"severity":"error","message":"missing ';' at '}'","file":"/p/A.cajeta","line":4,"column":46}""" + "\n",
+                    stdout = false)
                 return ProcessOutcome(exitCode = 0, cancelled = false)
             }
             override fun cancel() {}

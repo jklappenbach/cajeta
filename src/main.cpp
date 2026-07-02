@@ -553,6 +553,10 @@ int main(int argc, const char* argv[]) {
     bool jsonDiag = compiler.getFlags().diagFormat == DiagFormat::Json;
     try {
         compiler.compile(positional[0], positional[1], positional[2]);
+    } catch (cajeta::SyntaxErrorException&) {
+        // Per-error syntax diagnostics were already emitted during parsing
+        // (NDJSON or console); fail the compile without re-reporting.
+        return 1;
     } catch (cajeta::Exception& e) {
         if (jsonDiag) cajeta::emitJsonDiagnostic("error", e.getErrorId(), e.getMessage());
         else std::cerr << "cajeta: " << e.getErrorId() << ": " << e.getMessage() << "\n";

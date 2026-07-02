@@ -11,78 +11,51 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * idea-build-toolwindow U3: regex-parse the compiler's unstructured diagnostics
- * (three verified shapes) into build-tree problem events (spec §4). Reuses the
- * degraded-lint severity vocabulary; navigation only for the path-bearing shape.
+ * json-diagnostics U4: `BuildProblemParser` turns the compiler's NDJSON into
+ * build-tree problems (navigable when the record carries a file). JSON-only —
+ * a non-NDJSON line is not a diagnostic.
  */
 class BuildProblemParserTest {
 
     @Test
-    fun directWarningIsPositionlessWarning() {
+    fun jsonErrorWithLocationIsNavigableError() {
         val p = BuildProblemParser()
-        val prob = p.feed("warning: [uncaught-throws] call to fetch can throw")!!
-        assertEquals(Diagnostic.Severity.WARNING, prob.severity)
-        assertNull(prob.file)
-        assertTrue(prob.message.contains("call to fetch"))
-        assertFalse(prob.isError)
-        val parsed = prob.toParsed("b")
-        assertTrue(parsed.event is MessageEventImpl && parsed.event !is FileMessageEventImpl)
-        assertEquals(MessageEvent.Kind.WARNING, (parsed.event as MessageEventImpl).kind)
-        assertFalse(parsed.isError)
-    }
-
-    @Test
-    fun cajetaLoggerErrorPairsLocationWithMessageAndNavigates() {
-        val p = BuildProblemParser()
-        assertNull("location line alone is pending", p.feed("/proj/src/A.cajeta[10:5]"))
-        val prob = p.feed("Error CJ123: type mismatch in return")!!
+        val prob = p.feed(
+            """{"severity":"error","code":"CJ1","message":"bad type","file":"/p/A.cajeta","line":10,"column":5}""")!!
         assertEquals(Diagnostic.Severity.ERROR, prob.severity)
-        assertEquals("/proj/src/A.cajeta", prob.file)
+        assertEquals("/p/A.cajeta", prob.file)
         assertEquals(10, prob.line)
-        assertEquals(5, prob.column)
-        assertTrue(prob.message.contains("type mismatch"))
+        assertTrue(prob.message.contains("bad type") && prob.message.contains("CJ1"))
         val ev = prob.toParsed("b").event
         assertTrue(ev is FileMessageEventImpl)
         assertEquals(9, (ev as FileMessageEventImpl).filePosition.startLine) // 1-based -> 0-based
-        assertEquals(5, ev.filePosition.startColumn)
+        assertEquals(4, ev.filePosition.startColumn)
         assertTrue(p.sawError)
     }
 
     @Test
-    fun glogPrefixedLocationAndCommaVariantParse() {
+    fun jsonWarningIsPositionlessWhenNoFile() {
         val p = BuildProblemParser()
-        assertNull(p.feed("E0702 15:32:01.123456 12345 CajetaLogger.cpp:51] /proj/src/B.cajeta[7,3]"))
-        val prob = p.feed("Error CJ9: bad thing")!!
-        assertEquals("/proj/src/B.cajeta", prob.file)
-        assertEquals(7, prob.line)
-        assertEquals(3, prob.column)
-    }
-
-    @Test
-    fun antlrSyntaxErrorHasLineColButNoFile() {
-        val p = BuildProblemParser()
-        val prob = p.feed("line 4:46 missing ';' at '}'")!!
-        assertEquals(Diagnostic.Severity.ERROR, prob.severity)
+        val prob = p.feed("""{"severity":"warning","message":"unused","file":null,"line":null,"column":null}""")!!
+        assertEquals(Diagnostic.Severity.WARNING, prob.severity)
         assertNull(prob.file)
-        assertEquals(4, prob.line)
-        assertEquals(46, prob.column)
-        assertTrue(prob.message.contains("missing ';'"))
-        // No path -> positionless message node (no navigation), but not dropped.
-        assertTrue(prob.toParsed("b").event.let { it is MessageEventImpl && it !is FileMessageEventImpl })
+        assertFalse(prob.isError)
+        val ev = prob.toParsed("b").event
+        assertTrue(ev is MessageEventImpl && ev !is FileMessageEventImpl)
+        assertEquals(MessageEvent.Kind.WARNING, (ev as MessageEventImpl).kind)
     }
 
     @Test
-    fun nonDiagnosticLineIsIgnoredAndDoesNotFlagError() {
+    fun noteMapsToWeakWarning() {
+        val prob = BuildProblemParser().feed("""{"severity":"note","message":"fyi"}""")!!
+        assertEquals(Diagnostic.Severity.WEAK_WARNING, prob.severity)
+    }
+
+    @Test
+    fun nonJsonLineIsIgnoredAndDoesNotFlagError() {
         val p = BuildProblemParser()
+        assertNull(p.feed("cajeta build: compiler exited 1"))
         assertNull(p.feed("Compiling module com.example.util…"))
-        assertNull(p.feed(""))
         assertFalse(p.sawError)
-    }
-
-    @Test
-    fun severityMapsToMessageEventKind() {
-        assertEquals(MessageEvent.Kind.ERROR, BuildProblem(Diagnostic.Severity.ERROR, "e").toParsed("b").event.let { (it as MessageEventImpl).kind })
-        assertEquals(MessageEvent.Kind.WARNING, BuildProblem(Diagnostic.Severity.WARNING, "w").toParsed("b").event.let { (it as MessageEventImpl).kind })
-        assertEquals(MessageEvent.Kind.WARNING, BuildProblem(Diagnostic.Severity.WEAK_WARNING, "ww").toParsed("b").event.let { (it as MessageEventImpl).kind })
     }
 }
