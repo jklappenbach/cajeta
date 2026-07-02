@@ -20,26 +20,35 @@ import dev.cajeta.idea.settings.CajetaSettings
  */
 object CajetaTaskLauncher {
 
-    fun launch(project: Project, manifestPath: String, node: TaskTreeNode) {
-        val settings = buildConfig(project, manifestPath, node) ?: return
-        ProgramRunnerUtil.executeConfiguration(settings, DefaultRunExecutor.getRunExecutorInstance())
+    fun launch(project: Project, manifestPath: String, node: TaskTreeNode, model: TaskModel) {
+        LaunchRouter.route(node, model, CajetaSettings.instance.buildTasksInBuildWindow,
+            toBuildWindow = {
+                val spec = TaskRunSpec(
+                    task = node.runName,
+                    manifestPath = manifestPath.ifBlank { null },
+                    profile = CajetaSettings.instance.defaultProfile.ifBlank { null },
+                    flavor = CajetaSettings.instance.defaultFlavor.ifBlank { null },
+                )
+                CajetaBuildWindowLauncher.run(project, spec) { launch(project, manifestPath, node, model) }
+            },
+            toRunWindow = {
+                buildConfig(project, manifestPath, node)?.let {
+                    ProgramRunnerUtil.executeConfiguration(it, DefaultRunExecutor.getRunExecutorInstance())
+                }
+            })
     }
 
     /** Run a task with an explicit [TaskRunSpec] from the Run-with-args dialog
-     *  (spec §12): the profile/flavor/properties/params override the defaults. */
-    fun launchWithSpec(project: Project, spec: TaskRunSpec) {
-        val type = ConfigurationTypeUtil.findConfigurationType(CajetaTaskConfigurationType::class.java)
-            ?: return
-        val runManager = RunManager.getInstance(project)
-        val settings = runManager.createConfiguration("cajeta ${spec.task}", type.configurationFactories[0])
-        val config = settings.configuration as CajetaTaskRunConfiguration
-        config.task = spec.task
-        config.manifestPath = spec.manifestPath ?: ""
-        config.profile = spec.profile ?: ""
-        config.flavor = spec.flavor ?: ""
-        config.propertiesText = KvText.format(spec.properties)
-        config.paramsText = KvText.format(spec.params)
-        ProgramRunnerUtil.executeConfiguration(settings, DefaultRunExecutor.getRunExecutorInstance())
+     *  (spec §12): the profile/flavor/properties/params override the defaults.
+     *  [node]/[model] classify the routing (spec §2.6) exactly as double-click. */
+    fun launchWithSpec(project: Project, spec: TaskRunSpec, node: TaskTreeNode, model: TaskModel) {
+        LaunchRouter.route(node, model, CajetaSettings.instance.buildTasksInBuildWindow,
+            toBuildWindow = { CajetaBuildWindowLauncher.run(project, spec) { launchWithSpec(project, spec, node, model) } },
+            toRunWindow = {
+                configFromSpec(project, spec)?.let {
+                    ProgramRunnerUtil.executeConfiguration(it, DefaultRunExecutor.getRunExecutorInstance())
+                }
+            })
     }
 
     /**
@@ -62,6 +71,15 @@ object CajetaTaskLauncher {
     /** Persist a task (with its active bindings) as a saved run configuration
      *  (spec §11.2.1) — editable in Run/Debug Configurations, not ephemeral. */
     fun saveConfig(project: Project, spec: TaskRunSpec): RunnerAndConfigurationSettings? {
+        val settings = configFromSpec(project, spec) ?: return null
+        val runManager = RunManager.getInstance(project)
+        runManager.addConfiguration(settings)
+        runManager.selectedConfiguration = settings
+        return settings
+    }
+
+    /** An ephemeral run configuration filled from an explicit [TaskRunSpec]. */
+    private fun configFromSpec(project: Project, spec: TaskRunSpec): RunnerAndConfigurationSettings? {
         val type = ConfigurationTypeUtil.findConfigurationType(CajetaTaskConfigurationType::class.java)
             ?: return null
         val runManager = RunManager.getInstance(project)
@@ -73,8 +91,6 @@ object CajetaTaskLauncher {
         config.flavor = spec.flavor ?: ""
         config.propertiesText = KvText.format(spec.properties)
         config.paramsText = KvText.format(spec.params)
-        runManager.addConfiguration(settings)
-        runManager.selectedConfiguration = settings
         return settings
     }
 

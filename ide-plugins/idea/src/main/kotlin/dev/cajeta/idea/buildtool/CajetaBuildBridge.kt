@@ -57,8 +57,9 @@ object CajetaBuildBridge {
         preflight: () -> String?,
         process: BuildTaskProcess,
         lineParser: LineParser = LineParser { _, _ -> null },
+        decorate: (DefaultBuildDescriptor) -> com.intellij.build.BuildDescriptor = { it },
     ): Result {
-        val descriptor = DefaultBuildDescriptor(buildId, title, workDir, startTime)
+        val descriptor = decorate(DefaultBuildDescriptor(buildId, title, workDir, startTime))
         listener.onEvent(buildId, StartBuildEventImpl(descriptor, "$title running…"))
 
         preflight()?.let { reason ->

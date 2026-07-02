@@ -226,7 +226,8 @@ class CajetaBuildToolPanel(private val project: Project) : SimpleToolWindowPanel
             .setTitle("Run Cajeta Task")
             .setItemChosenCallback { name ->
                 val manifest = CajetaManifest.path(project) ?: return@setItemChosenCallback
-                CajetaTaskLauncher.launch(project, manifest, TaskTreeNode(name, null, TaskTreeNode.Kind.TASK))
+                val model = rootModels[manifest] ?: lastModel ?: return@setItemChosenCallback
+                CajetaTaskLauncher.launch(project, manifest, TaskTreeNode(name, null, TaskTreeNode.Kind.TASK), model)
             }
             .createPopup()
             .showInFocusCenter()
@@ -333,7 +334,8 @@ class CajetaBuildToolPanel(private val project: Project) : SimpleToolWindowPanel
 
     private fun runSelected() {
         val leaf = selectedLeaf() ?: return
-        CajetaTaskLauncher.launch(project, leaf.manifestPath, leaf.data)
+        val model = rootModels[leaf.manifestPath] ?: return
+        CajetaTaskLauncher.launch(project, leaf.manifestPath, leaf.data, model)
     }
 
     private fun debugSelected(leaf: TaskLeaf) {
@@ -350,7 +352,7 @@ class CajetaBuildToolPanel(private val project: Project) : SimpleToolWindowPanel
             project, task, leaf.manifestPath,
             CajetaSettings.instance.defaultProfile, CajetaSettings.instance.defaultFlavor,
         )
-        if (dialog.showAndGet()) CajetaTaskLauncher.launchWithSpec(project, dialog.result())
+        if (dialog.showAndGet()) CajetaTaskLauncher.launchWithSpec(project, dialog.result(), leaf.data, model)
     }
 
     /** Whether the leaf maps to a dap-debuggable task (§5.2.2). */

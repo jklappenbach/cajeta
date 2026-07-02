@@ -18,6 +18,12 @@ import java.util.concurrent.CopyOnWriteArrayList
 class BuildRunTracker {
 
     private val active = CopyOnWriteArrayList<ProcessHandler>()
+    // Build-window launches aren't ProcessHandler-backed (they run through
+    // CajetaBuildBridge); they register a cancel hook so the toolbar Stop and
+    // activeCount cover them too (spec §5.4).
+    private val cancelables = CopyOnWriteArrayList<Cancelable>()
+
+    fun interface Cancelable { fun cancel() }
 
     fun register(handler: ProcessHandler) {
         active += handler
@@ -28,11 +34,15 @@ class BuildRunTracker {
         if (handler.isProcessTerminated) active.remove(handler)
     }
 
-    fun activeCount(): Int = active.size
+    fun registerCancelable(c: Cancelable) { cancelables += c }
+    fun unregisterCancelable(c: Cancelable) { cancelables.remove(c) }
+
+    fun activeCount(): Int = active.size + cancelables.size
 
     /** Cancel every active run (graceful, then forced by the handler). */
     fun stopAll() {
         for (h in active) h.destroyProcess()
+        for (c in cancelables) c.cancel()
     }
 
     companion object {
