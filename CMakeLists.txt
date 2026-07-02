@@ -30,6 +30,19 @@ endif()
 set(CMAKE_CXX_STANDARD 17)
 set(Java_JAVA_EXECUTABLE "java")
 
+# Build acceleration: route compiles through ccache when present so unchanged
+# translation units are served from cache on rebuilds/branch-switches. Opt-out
+# with -DCAJETA_USE_CCACHE=OFF.
+option(CAJETA_USE_CCACHE "Use ccache as the compiler launcher when available" ON)
+if(CAJETA_USE_CCACHE AND NOT CMAKE_CXX_COMPILER_LAUNCHER)
+    find_program(CCACHE_PROGRAM ccache)
+    if(CCACHE_PROGRAM)
+        set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
+        set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
+        message(STATUS "ccache enabled: ${CCACHE_PROGRAM}")
+    endif()
+endif()
+
 # Windows/MSYS2 convenience: glog, LLVM, zstd, antlr4, etc. are mingw-w64
 # packages whose *Config.cmake files live under C:/msys64/mingw64. Without
 # that prefix on CMAKE_PREFIX_PATH, a bare `cmake` from a shell that doesn't

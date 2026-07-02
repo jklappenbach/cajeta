@@ -30,7 +30,6 @@
 #pragma once
 
 #include <cstdint>
-#include <filesystem>
 #include <set>
 #include <string>
 #include <unordered_map>

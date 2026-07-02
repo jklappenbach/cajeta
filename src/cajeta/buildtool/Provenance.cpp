@@ -1,6 +1,7 @@
 #include "cajeta/buildtool/Provenance.h"
 
 #include <llvm/Support/FormatVariadic.h>
+#include <llvm/Support/JSON.h>
 #include <llvm/Support/raw_ostream.h>
 
 namespace cajeta::buildtool {

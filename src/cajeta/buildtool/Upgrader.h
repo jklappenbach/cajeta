@@ -21,7 +21,6 @@
 
 #pragma once
 
-#include "cajeta/buildtool/Dependency.h"
 #include "cajeta/buildtool/Manifest.h"
 
 #include <llvm/Support/Error.h>

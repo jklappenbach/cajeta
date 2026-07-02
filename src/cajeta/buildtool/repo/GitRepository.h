@@ -24,7 +24,6 @@
 
 #include "cajeta/buildtool/Repository.h"
 
-#include <memory>
 #include <mutex>
 #include <string>
 

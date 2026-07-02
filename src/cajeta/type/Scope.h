@@ -1,12 +1,9 @@
 #pragma once
 
-#include "llvm/ADT/StringMap.h"
-#include "llvm/ADT/StringRef.h"
 #include <string>
 #include <map>
 #include <list>
 #include <set>
-#include "llvm/IR/Value.h"
 #include "llvm/IR/Instructions.h"
 
 using namespace std;

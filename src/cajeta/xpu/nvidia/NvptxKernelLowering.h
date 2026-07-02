@@ -35,7 +35,6 @@
 #pragma once
 
 #include <memory>
-#include <string>
 
 namespace llvm {
     class Module;

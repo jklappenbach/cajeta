@@ -14,7 +14,6 @@
 #include "cajeta/buildtool/Repository.h"
 #include "cajeta/buildtool/Resolver.h"
 
-#include <memory>
 #include <string>
 
 namespace cajeta::buildtool {
