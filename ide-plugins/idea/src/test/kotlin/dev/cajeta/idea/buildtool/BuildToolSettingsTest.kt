@@ -25,6 +25,15 @@ class BuildToolSettingsTest {
         assertEquals("", s.defaultFlavor)
         assertTrue(s.jsonlDefaultStructured)                // §14.2.2 structured default
         assertEquals("", s.jsonlDefaultLevel)               // all levels
+        assertTrue(s.buildTasksInBuildWindow)               // build-toolwindow §6.1 default on
+    }
+
+    @Test
+    fun buildTasksInBuildWindowRoundTrips() {
+        val src = CajetaSettings.State(buildTasksInBuildWindow = false)
+        val dst = CajetaSettings.State()
+        XmlSerializerUtil.copyBean(src, dst)
+        assertEquals(false, dst.buildTasksInBuildWindow)
     }
 
     @Test

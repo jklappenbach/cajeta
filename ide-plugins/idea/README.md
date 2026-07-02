@@ -21,6 +21,17 @@ the v0.1 scope defined in [`Plan.md`](Plan.md):
   menu toggle-action — a global Settings → Cajeta checkbox covers
   the same need today.
 
+- **Build tool window** — build-family tasks (`compile`, `package`,
+  `validate`, `install`, `deploy`, `test`, and non-runnable user
+  tasks) run in the IDE's native **Build** tool window: streaming
+  console, success/failure/cancelled status, Stop/Restart, and
+  compiler diagnostics as problems (navigable when the message
+  carries a path). `run` and debuggable tasks stay on the **Run**
+  window (they execute your program). Toggle off via *Settings →
+  Cajeta → "Run build tasks in the Build tool window"* to route
+  everything back to the Run window. See
+  `docs/specs/idea-build-toolwindow-spec.md`.
+
 ## Build
 
 Requires JDK 21+ on `PATH`. From this directory:
