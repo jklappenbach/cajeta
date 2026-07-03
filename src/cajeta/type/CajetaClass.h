@@ -730,6 +730,23 @@ namespace cajeta {
         // getOrCreateStackDropFunction.
         bool hasTrivialStackDrop();
 
+        // slice-spec §6.1 (slices Unit 6b) — the synthesized value-copy/drop
+        // hook family. A VALUE type is shared-capable when it is Utf8 itself
+        // or transitively embeds a shared-capable value field; such values
+        // are non-trivial: copies retain, drops release, per Shared stake.
+        bool isSharedCapableValue();
+
+        // Emit the recursive per-field retain (copy hook) or release (drop
+        // hook) walk over a value of this type at `valuePtr`. O(shared
+        // fields); never traverses heap edges (spec §6.1 bounded copy).
+        void emitValueSharedOp(llvm::IRBuilder<>& b, llvm::Value* valuePtr,
+                               CajetaModulePtr cajModule,
+                               llvm::Module* bodyModule, bool retain);
+
+        // Synthesized `void(ptr)` release wrapper for drop-chain entries on
+        // shared-capable value locals (obj = the value's stack slot).
+        llvm::Function* getOrCreateValueReleaseFunction();
+
         // REFL-2: return (creating on first call) the DECLARATION of this
         // class's reflective invoke adapter — `void(ptr obj, i32 methodIndex,
         // ptr args, ptr ret)`. No body is emitted here; the #Rtti constant

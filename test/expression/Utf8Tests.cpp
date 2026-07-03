@@ -43,12 +43,13 @@ TEST(Utf8Tests, inlineConstructAndRead) {
         "return 1;"), 1);
 }
 
-// 6.1.2 — clamp at the Inline cap (12 B) is the documented 6a behavior; a
-// windowed (mode-2) source contributes its window bytes.
+// 6.1.2 — 6b lifted the 6a Inline clamp: a >12 B literal keeps its full
+// length (Static form). A windowed (mode-2) source contributes its window
+// bytes.
 TEST(Utf8Tests, inlineCapAndWindowedSource) {
     EXPECT_EQ(runJit(
-        "Utf8 cap = Utf8.of(\"abcdefghijklmnop\");\n"        // 16 -> clamps to 12
-        "if (cap.size() != 12) { return -1; }\n"
+        "Utf8 cap = Utf8.of(\"abcdefghijklmnop\");\n"        // 16 B -> Static
+        "if (cap.size() != 16) { return -1; }\n"
         "if (cap.charAt(11) != (int8) 108) { return -2; }\n" // 'l'
         "String a = \"abcdefghijklmnopqrstuvwxyz\";\n"
         "String b = \"0123456789\";\n"

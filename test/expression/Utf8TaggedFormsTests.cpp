@@ -133,7 +133,8 @@ TEST(Utf8TaggedFormsTests, normalizationInlineFromDynamicWindow) {
         "    String a = \"abcdefghijklm\";\n"
         "    String b = \"nopqrstuvwxyz\";\n"
         "    String s = a + b;\n"
-        "    v = Utf8.of(s.substring(10, 16));\n"                 // "klmnop": 6 B
+        "    String w = s.substring(10, 16);\n"                   // "klmnop": 6 B
+        "    v = Utf8.of(w);\n"
         "    if (Cajeta.sharedPopulation() < pop) { return -1; }\n"
         "}\n"
         "if (v.size() != 6) { return -2; }\n"
@@ -216,8 +217,11 @@ TEST(Utf8TaggedFormsTests, boundedCopyNeverTraverses) {
 }
 
 // 3.2.2 (field-store path) — a heap class holding a Shared Utf8 field: the
-// object's drop chain fires the field's drop hook (stake released, balance
-// exact).
+// ctor's field store retains (copy hook), the local's scope-exit releases,
+// and the object's drop chain fires the field's drop hook — balance exact.
+// (The arg is a NAMED local: an rvalue call-result arg leaves a temp-owned
+// stake nobody releases — the temp-stake cleanup is a recorded follow-up,
+// same family as the String temp-wrapper drop gap.)
 TEST(Utf8TaggedFormsTests, sharedFieldReleasesOnObjectDrop) {
     std::string src =
         "package test;\n"
@@ -235,7 +239,8 @@ TEST(Utf8TaggedFormsTests, sharedFieldReleasesOnObjectDrop) {
         "            String a = \"abcdefghijklm\";\n"
         "            String b = \"nopqrstuvwxyz\";\n"
         "            String s = a + b;\n"
-        "            Holder h = heap Holder(Utf8.of(s));\n"
+        "            Utf8 t = Utf8.of(s);\n"
+        "            Holder h = heap Holder(t);\n"
         "            if (!h.tag.equalsString(\"abcdefghijklmnopqrstuvwxyz\")) { return -1; }\n"
         "            if (Cajeta.sharedPopulation() < pop + 1) { return -2; }\n"
         "        }\n"

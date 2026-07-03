@@ -1052,6 +1052,18 @@ __attribute__((malloc)) void* __cajeta_new_array_header_arena(uint64_t header_si
     return hdr;
 }
 
+// Frame-arena membership probe (slice-spec §4 arena row). A pointer inside
+// the calling thread's arena reservation is frame-transient: it is recycled
+// by the scope-exit reset, so it can never back a Shared stake — escaping
+// slices of arena-backed buffers must COPY. Checks the full reservation
+// (not just the live bump) so stale pointers into reset regions also answer
+// true (they're equally unshareable).
+int __cajeta_arena_owns(const void* p) {
+    return __cajeta_arena.base
+        && (const unsigned char*) p >= __cajeta_arena.base
+        && (const unsigned char*) p < __cajeta_arena.base + CAJETA_ARENA_RESERVE;
+}
+
 // Capture the current bump offset AND the live array count. Stash at scope entry;
 // pass to reset on exit. Packed: count in the high bits, bump in the low — the
 // arena reserve is 4 GiB so bump < 2^32, well under bit 40, leaving 24 bits for a

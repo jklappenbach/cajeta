@@ -1420,6 +1420,34 @@ namespace cajeta {
                         }
                         llvm::Type* bodyTy = lhsCls->getLlvmType();
                         if (bodyTy && bodyTy->isStructTy()) {
+                            // slice-spec §6.1 copy/drop hooks: overwriting a
+                            // shared-capable value releases the OLD value's
+                            // stakes first; a copy from an LVALUE (identifier /
+                            // field / element / slice-cast) then retains the
+                            // new ones. Rvalue RHS (call result, aggregate-
+                            // init) carries its stakes with the bytes — no
+                            // retain. Syntactic self-assign (`v = v`) skips
+                            // the pair (release could free at rc==1 and the
+                            // retain would resurrect a dead buffer).
+                            bool hooked = lhsCls->isSharedCapableValue();
+                            bool selfAssign = false;
+                            if (hooked) {
+                                auto lId = dynamic_pointer_cast<IdentifierExpression>(lhsAst);
+                                auto rId = dynamic_pointer_cast<IdentifierExpression>(rhsAst);
+                                selfAssign = lId && rId
+                                    && lId->getTextValue() == rId->getTextValue();
+                            }
+                            bool rhsLvalue = rhsAst
+                                && (dynamic_pointer_cast<IdentifierExpression>(rhsAst)
+                                    || dynamic_pointer_cast<DotExpression>(rhsAst)
+                                    || dynamic_pointer_cast<ArrayIndexExpression>(rhsAst)
+                                    || dynamic_pointer_cast<CastExpression>(rhsAst));
+                            llvm::Module* hookModule =
+                                builder->GetInsertBlock()->getModule();
+                            if (hooked && !selfAssign) {
+                                lhsCls->emitValueSharedOp(*builder, lhs, module,
+                                    hookModule, /*retain=*/false);
+                            }
                             if (rhs->getType() == bodyTy) {
                                 builder->CreateStore(rhs, lhs);
                             } else if (rhs->getType()->isPointerTy()) {
@@ -1432,6 +1460,10 @@ namespace cajeta {
                                 builder->CreateMemCpy(lhs, align, rhs, align, size);
                             } else {
                                 builder->CreateStore(rhs, lhs);
+                            }
+                            if (hooked && !selfAssign && rhsLvalue) {
+                                lhsCls->emitValueSharedOp(*builder, lhs, module,
+                                    hookModule, /*retain=*/true);
                             }
                             result = lhs;
                             break;

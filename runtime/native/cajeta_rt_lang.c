@@ -95,6 +95,12 @@ void* __cajeta_object_clone(void* self) {
                 cajeta_string_layout* fs = (cajeta_string_layout*) src;
                 *slot = __cajeta_string_slice(src, 0, fs->byteLength);
             }
+        } else if (strcmp(f->type, "cajeta.lang.Utf8") == 0) {
+            // Inline value field: the memcpy duplicated the 16 bytes —
+            // a Shared form needs its own stake (no-op for Inline/Static).
+            // (Direct Utf8 fields only; a nested value-aggregate field's
+            // inner Utf8s aren't walked — RTTI lists direct fields.)
+            __cajeta_utf8_retain((char*) out + f->byteOffset);
         }
     }
     return out;

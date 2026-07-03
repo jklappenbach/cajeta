@@ -224,10 +224,18 @@ void* __cajeta_string_slice(void* src_v, int32_t begin, int32_t len) {
         return out;
     }
     int32_t srcOff = (src->mode == 2) ? (int32_t) src->ssoCount : 0;
-    if (src->bytes == (void*) &src->ssoCount) {
+    // Materialize (owned copy) when the root can't back a stake: SSO (the
+    // window lives in the wrapper's inline region — §8.3 invariant) or an
+    // ARENA-backed root (spec §4 arena row: the frame arena recycles at the
+    // scope-exit reset so a stake on it would dangle, and its reclaim never
+    // routes owner_drop so the rc entry could never retire). Zero-copy
+    // stands for heap-backed roots.
+    int __cajeta_arena_owns(const void* p);
+    if (src->bytes == (void*) &src->ssoCount
+            || (src->mode != 1 && __cajeta_arena_owns(src->bytes))) {
         void* buf = __cajeta_new_array_header(8, 1, (uint64_t) len + 1);
         *((int64_t*) buf) = len;
-        memcpy((char*) buf + 8, (char*) src->bytes + 8 + begin, (size_t) len);
+        memcpy((char*) buf + 8, (char*) src->bytes + 8 + srcOff + begin, (size_t) len);
         ((char*) buf)[8 + len] = 0;
         out->bytes = buf;
         out->byteLength = len;

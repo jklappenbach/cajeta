@@ -2635,6 +2635,68 @@ namespace cajeta {
                     resolvedType = CajetaType::of("String", "cajeta.lang");
                     return builder->CreateCall(fn, {s, b, l});
                 }
+                // ----- Utf8 tagged-form natives (slice-spec §8; slices Unit 6b) -----
+                // Internal ABI for cajeta.lang.Utf8's method bodies: the value's
+                // 16 bytes are reinterpreted C-side for the pointer forms
+                // (Static/Shared), so every op that needs the window pointer
+                // routes here. Args that are Utf8 values pass by ADDRESS:
+                // a value-type local/param/field lvalue already IS the storage
+                // address; `this` is an alloca HOLDING the pointer (load once).
+                auto utf8Addr = [&](size_t i) -> llvm::Value* {
+                    auto& p = parameters[i].expression;
+                    llvm::Value* v = p->generateCode(module);
+                    if (dynamic_pointer_cast<ThisExpression>(p)) {
+                        v = builder->CreateLoad(
+                            llvm::PointerType::get(llvmCtx, 0), v);
+                    }
+                    return v;
+                };
+                if (ns == "Cajeta" && methodCallName == "utf8OfString" && parameters.size() == 2) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_utf8_of_string");
+                    resolvedType = CajetaType::of("void");
+                    return builder->CreateCall(fn, {utf8Addr(0), loadValue(1)});
+                }
+                if (ns == "Cajeta" && methodCallName == "utf8ByteAt" && parameters.size() == 2) {
+                    llvm::Value* idx = loadValue(1);
+                    if (idx->getType() != i32Ty) idx = builder->CreateIntCast(idx, i32Ty, true);
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_utf8_byte_at");
+                    resolvedType = CajetaType::of("int8");
+                    return builder->CreateCall(fn, {utf8Addr(0), idx});
+                }
+                if (ns == "Cajeta" && methodCallName == "utf8Equals" && parameters.size() == 2) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_utf8_equals");
+                    resolvedType = CajetaType::of("boolean");
+                    llvm::Value* r = builder->CreateCall(fn, {utf8Addr(0), utf8Addr(1)});
+                    return builder->CreateICmpNE(r, llvm::ConstantInt::get(i32Ty, 0));
+                }
+                if (ns == "Cajeta" && methodCallName == "utf8EqualsString" && parameters.size() == 2) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_utf8_equals_string");
+                    resolvedType = CajetaType::of("boolean");
+                    llvm::Value* r = builder->CreateCall(fn, {utf8Addr(0), loadValue(1)});
+                    return builder->CreateICmpNE(r, llvm::ConstantInt::get(i32Ty, 0));
+                }
+                if (ns == "Cajeta" && methodCallName == "utf8Hash" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_utf8_hash");
+                    resolvedType = CajetaType::of("int64");
+                    return builder->CreateCall(fn, {utf8Addr(0)});
+                }
+                if (ns == "Cajeta" && methodCallName == "utf8Retain" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_utf8_retain");
+                    resolvedType = CajetaType::of("void");
+                    return builder->CreateCall(fn, {utf8Addr(0)});
+                }
+                if (ns == "Cajeta" && methodCallName == "utf8Release" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_utf8_release");
+                    resolvedType = CajetaType::of("void");
+                    return builder->CreateCall(fn, {utf8Addr(0)});
+                }
+                // sharedPopulation() -> int64: live shared side-table entry count
+                // (test-only introspection — asserts a stake was taken/released).
+                if (ns == "Cajeta" && methodCallName == "sharedPopulation" && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_shared_population");
+                    resolvedType = CajetaType::of("int64");
+                    return builder->CreateCall(fn, {});
+                }
                 // moveMask() -> int64: the caller-side ownership-transfer mask for
                 // THIS call (bit i set iff user-arg i was passed `#x`). Read once at
                 // method entry; the compiler sets the TLS before a `#`-bearing call

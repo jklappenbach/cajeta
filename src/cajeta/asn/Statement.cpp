@@ -1586,8 +1586,13 @@ namespace cajeta {
                         if (f && f->getDropEntry()) {
                             auto klass = dynamic_pointer_cast<CajetaClass>(f->getType());
                             auto view = dynamic_pointer_cast<CajetaView>(f->getType());
+                            // Value types are exempt: they return by COPY, and
+                            // a shared-capable value local's drop entry (slice-
+                            // spec §6.1) deactivates at return as a move-out —
+                            // no `#` needed for correctness.
                             bool transferShape =
-                                (klass && !klass->isInterface()) || (bool) view;
+                                (klass && !klass->isInterface()
+                                       && !klass->isValueType()) || (bool) view;
                             if (transferShape) {
                                 std::string canonical = m->toCanonical(false);
                                 throw Exception(
@@ -1751,6 +1756,28 @@ namespace cajeta {
             }
         }
         llvm::Value* val = expression->generateCode(module);
+        // slice-spec §6.1 copy hook, return-of-lvalue form: returning a
+        // shared-capable VALUE from a field / element (`return this.tag;`)
+        // COPIES it out while the owner keeps its stake — retain the source's
+        // stakes so the returned copy carries its own. (A returned LOCAL is
+        // the move-out case handled by the drop-entry deactivation above;
+        // rvalue returns carry their stakes with the bytes.)
+        if (val && val->getType()->isPointerTy()
+                && (dynamic_pointer_cast<DotExpression>(expression)
+                    || dynamic_pointer_cast<ArrayIndexExpression>(expression))) {
+            auto exprAst = dynamic_pointer_cast<Expression>(expression);
+            if (exprAst) {
+                if (!exprAst->getResolvedType()) exprAst->resolveTypes(module);
+                auto vClass = dynamic_pointer_cast<CajetaClass>(
+                    exprAst->getResolvedType());
+                if (vClass && vClass->isValueType()
+                        && vClass->isSharedCapableValue()) {
+                    vClass->emitValueSharedOp(*builder, val, module,
+                        builder->GetInsertBlock()->getModule(),
+                        /*retain=*/true);
+                }
+            }
+        }
         // Same check, deferred form: returning a fresh lambda directly
         // (`return () -> ...;`). We need the lambda's generateCode to
         // run first so its capture analysis populated the flag, hence
