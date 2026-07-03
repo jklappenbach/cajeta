@@ -336,15 +336,20 @@ Each line is one diagnostic:
   known (1-based line/column), else JSON null. Syntax errors carry a precise location;
   **semantic** errors carry one once their site is migrated (the flagship *unresolved
   type* does) — un-migrated sites still report null location.
-- **Collect-and-continue** (`--lint`; `docs/specs/diagnostic-engine-spec.md`): recoverable
-  semantic errors are *reported to a diagnostic engine and recovered* (the failed
-  resolution yields an **error type** so analysis continues) rather than aborting on the
-  first. A linted file surfaces **all** its migrated semantic errors at once, sorted by
-  span and deduped. Migration is incremental — an un-migrated site still throws (fatal /
-  abort-on-first), which is also how **full compile** behaves today.
-- Remaining sub-phase: run **codegen in collect mode** with error-type *absorption* (an
-  operation on an error type yields an error type, no secondary diagnostic) so use-site /
-  type-mismatch errors are collected too, and extend collect-and-continue to full compile.
+- **Collect-and-continue** (`--lint` **and full compile**;
+  `docs/specs/diagnostic-engine-spec.md`, `docs/specs/collect-continue-compile-spec.md`):
+  recoverable semantic errors are *reported to a diagnostic engine and recovered* (the
+  failed resolution yields an **error type** so analysis continues) rather than aborting on
+  the first. A file surfaces **all** its migrated pre-codegen semantic errors at once,
+  sorted by span and deduped. Full compile gates the codegen loop + artifact emit on the
+  engine being error-free — a broken tree reports every error and writes **no** artifact;
+  a clean tree compiles unchanged. Migration is incremental — an un-migrated site still
+  throws and is folded into the engine as one fatal diagnostic.
+- Remaining sub-phase (**codegen-in-collect-mode**): run **codegen over error types** with
+  per-site **absorption** (an operation on an error type yields an error type, no secondary
+  diagnostic) + IR-safe error values, so use-site / type-mismatch / unknown-method errors
+  are collected too. It is per-codegen-site work (there is no central assignability
+  predicate) and needs IR that survives error subtrees — its own effort.
 - Mode-independent (not changed by `--debug`/`--release`/etc.); default `text`.
 - A clean compile emits nothing. Consumers should skip any non-`{` line defensively.
 
