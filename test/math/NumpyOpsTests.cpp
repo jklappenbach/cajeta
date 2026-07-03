@@ -3189,6 +3189,94 @@ TEST(NumpyOpsTests, floatBitsIntrinsicRoundTrip) {
     EXPECT_EQ(runI32(src), 1);
 }
 
+// 11 (deferred) — general nonsymmetric eigenvalues via Francis double-shift QR
+// (elmhes + hqr). Complex eigenvalues emerge as conjugate pairs with real arithmetic only.
+// [[2,-1,0],[1,2,0],[0,0,5]] → {2-i, 2+i, 5} (numpy eigvals, compared as a sorted set).
+TEST(NumpyOpsTests, eigvalsNonsymmetricMatchNumpy) {
+    std::string src = std::string(PRE) +
+        "import cajeta.math.linalg.LinAlg;\n"
+        "public final class D {\n"
+        "    public static boolean close(float64 a, float64 b) {\n"
+        "        float64 d = a - b; if (d < 0.0) { d = -d; } return d < 0.0001;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        float64[] dm = { 2.0, -1.0, 0.0,  1.0, 2.0, 0.0,  0.0, 0.0, 5.0 };\n"
+        "        int64[] s33 = heap int64[2]; s33[0] = 3; s33[1] = 3;\n"
+        "        Tensor<float64> a = Tensor.of<float64>(dm, s33);\n"
+        "        Tensor<float64> ev = LinAlg.eigvals(a);\n"          // length 6 interleaved (re,im)
+        "        if (ev.size() != 6) { return -9; }\n"
+        "        float64[] re = heap float64[3];\n"
+        "        float64[] im = heap float64[3];\n"
+        "        int64 i = 0;\n"
+        "        while (i < 3) { re[i] = ev.get1(2 * i); im[i] = ev.get1(2 * i + 1); i = i + 1; }\n"
+        // insertion sort the (re, im) pairs by re then im
+        "        int64 aa = 1;\n"
+        "        while (aa < 3) {\n"
+        "            float64 kr = re[aa]; float64 ki = im[aa];\n"
+        "            int64 b = aa - 1; boolean placed = false;\n"
+        "            while (b >= 0 && !placed) {\n"
+        "                float64 br = re[b]; float64 bi = im[b];\n"
+        "                boolean gt = (br > kr) || (br == kr && bi > ki);\n"
+        "                if (gt) { re[b + 1] = re[b]; im[b + 1] = im[b]; b = b - 1; }\n"
+        "                else { placed = true; }\n"
+        "            }\n"
+        "            re[b + 1] = kr; im[b + 1] = ki; aa = aa + 1;\n"
+        "        }\n"
+        // expected sorted: (2,-1), (2,+1), (5,0)
+        "        float64 r0 = re[0]; float64 m0 = im[0];\n"
+        "        if (!D.close(r0, 2.0) || !D.close(m0, -1.0)) { return -1; }\n"
+        "        float64 r1 = re[1]; float64 m1 = im[1];\n"
+        "        if (!D.close(r1, 2.0) || !D.close(m1, 1.0)) { return -2; }\n"
+        "        float64 r2 = re[2]; float64 m2 = im[2];\n"
+        "        if (!D.close(r2, 5.0) || !D.close(m2, 0.0)) { return -3; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// 11 (deferred) — nonsymmetric eig on a DENSE matrix needing real QR convergence (not a
+// trivial block read-off). [[1,2,3],[4,5,6],[7,8,10]] → {-0.9057, 0.1982, 16.7075} (all real).
+TEST(NumpyOpsTests, eigvalsDenseRealMatchNumpy) {
+    std::string src = std::string(PRE) +
+        "import cajeta.math.linalg.LinAlg;\n"
+        "public final class D {\n"
+        "    public static boolean close(float64 a, float64 b) {\n"
+        "        float64 d = a - b; if (d < 0.0) { d = -d; } return d < 0.001;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        float64[] dm = { 1.0, 2.0, 3.0,  4.0, 5.0, 6.0,  7.0, 8.0, 10.0 };\n"
+        "        int64[] s33 = heap int64[2]; s33[0] = 3; s33[1] = 3;\n"
+        "        Tensor<float64> a = Tensor.of<float64>(dm, s33);\n"
+        "        Tensor<float64> ev = LinAlg.eigvals(a);\n"
+        "        float64[] re = heap float64[3];\n"
+        "        float64[] im = heap float64[3];\n"
+        "        int64 i = 0;\n"
+        "        while (i < 3) { re[i] = ev.get1(2 * i); im[i] = ev.get1(2 * i + 1); i = i + 1; }\n"
+        "        int64 aa = 1;\n"
+        "        while (aa < 3) {\n"
+        "            float64 kr = re[aa]; float64 ki = im[aa];\n"
+        "            int64 b = aa - 1; boolean placed = false;\n"
+        "            while (b >= 0 && !placed) {\n"
+        "                float64 br = re[b]; float64 bi = im[b];\n"
+        "                boolean gt = (br > kr) || (br == kr && bi > ki);\n"
+        "                if (gt) { re[b + 1] = re[b]; im[b + 1] = im[b]; b = b - 1; }\n"
+        "                else { placed = true; }\n"
+        "            }\n"
+        "            re[b + 1] = kr; im[b + 1] = ki; aa = aa + 1;\n"
+        "        }\n"
+        "        float64 r0 = re[0]; float64 m0 = im[0];\n"
+        "        if (!D.close(r0, -0.9057) || !D.close(m0, 0.0)) { return -1; }\n"
+        "        float64 r1 = re[1]; float64 m1 = im[1];\n"
+        "        if (!D.close(r1, 0.1982) || !D.close(m1, 0.0)) { return -2; }\n"
+        "        float64 r2 = re[2]; float64 m2 = im[2];\n"
+        "        if (!D.close(r2, 16.7075) || !D.close(m2, 0.0)) { return -3; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
 // 11b — native symmetric eig (Jacobi) + SVD (via eigh of A^T A). Eigenvalues ascending,
 // singular values descending; verified by spectrum + A·v=λ·v and U·diag(S)·Vt==A.
 TEST(NumpyOpsTests, linalgEighSvdMatchNumpy) {
