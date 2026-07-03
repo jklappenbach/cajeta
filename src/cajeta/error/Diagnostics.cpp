@@ -6,7 +6,22 @@
 #include <iostream>
 #include <vector>
 
+#include <antlr4-runtime.h>
+
+#include "cajeta/compile/CajetaModule.h"
+
 namespace cajeta {
+
+    Exception locatedException(antlr4::Token* token,
+                               const std::string& message,
+                               const std::string& errorId) {
+        std::string file;
+        if (auto m = CajetaModule::getActiveModule()) file = m->getSourcePath();
+        // ANTLR lines are 1-based; columns are 0-based — normalize to 1-based.
+        int line = token ? static_cast<int>(token->getLine()) : -1;
+        int column = token ? static_cast<int>(token->getCharPositionInLine()) + 1 : -1;
+        return Exception(message, errorId, file, line, column);
+    }
 
     namespace {
         // Minimal RFC 8259 string escaping for the NDJSON diagnostic payload.

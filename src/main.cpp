@@ -183,6 +183,21 @@ bool setBoolFlag(const char* flagName, const std::string& value, bool& out) {
 
 } // namespace
 
+// Emit a caught cajeta::Exception as an error diagnostic, carrying its source
+// span (located-semantic-diagnostics) when the throw site supplied one.
+static void emitException(cajeta::Exception& e, bool jsonDiag) {
+    if (jsonDiag) {
+        cajeta::emitJsonDiagnostic("error", e.getErrorId(), e.getMessage(),
+                                   e.getFile(), e.getLine(), e.getColumn());
+    } else if (e.hasLocation()) {
+        std::cerr << "cajeta: " << e.getFile() << ":" << e.getLine() << ":"
+                  << e.getColumn() << ": " << e.getErrorId() << ": "
+                  << e.getMessage() << "\n";
+    } else {
+        std::cerr << "cajeta: " << e.getErrorId() << ": " << e.getMessage() << "\n";
+    }
+}
+
 int main(int argc, const char* argv[]) {
     // Top-level subcommand dispatch. `cajeta archive ...` routes to
     // the archive-management surface (docs/ArchiveManagement.md);
@@ -571,8 +586,7 @@ int main(int argc, const char* argv[]) {
         } catch (cajeta::SyntaxErrorException&) {
             return 1;  // syntax diagnostics already emitted during parsing
         } catch (cajeta::Exception& e) {
-            if (jsonDiag) cajeta::emitJsonDiagnostic("error", e.getErrorId(), e.getMessage());
-            else std::cerr << "cajeta: " << e.getErrorId() << ": " << e.getMessage() << "\n";
+            emitException(e, jsonDiag);
             return 1;
         } catch (const std::exception& e) {
             if (jsonDiag) cajeta::emitJsonDiagnostic("error", "", e.what());
@@ -622,8 +636,7 @@ int main(int argc, const char* argv[]) {
         // (NDJSON or console); fail the compile without re-reporting.
         return 1;
     } catch (cajeta::Exception& e) {
-        if (jsonDiag) cajeta::emitJsonDiagnostic("error", e.getErrorId(), e.getMessage());
-        else std::cerr << "cajeta: " << e.getErrorId() << ": " << e.getMessage() << "\n";
+        emitException(e, jsonDiag);
         return 1;
     } catch (const std::exception& e) {
         if (jsonDiag) cajeta::emitJsonDiagnostic("error", "", e.what());

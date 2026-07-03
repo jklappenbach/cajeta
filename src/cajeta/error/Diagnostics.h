@@ -20,7 +20,19 @@
 #include <string>
 #include <vector>
 
+#include "Exception.h"
+
+namespace antlr4 { class Token; }
+
 namespace cajeta {
+
+    // Build a cajeta::Exception carrying `token`'s source location (1-based
+    // line/column) plus the active module's source path — for
+    // located-semantic-diagnostics. A null token yields an unlocated Exception.
+    Exception locatedException(antlr4::Token* token,
+                               const std::string& message,
+                               const std::string& errorId);
+
 
     // Compute the Levenshtein edit distance between two strings.
     // O(|a| · |b|) time and O(min(|a|, |b|)) space. Distance includes

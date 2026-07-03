@@ -20,6 +20,7 @@
 #include "cajeta/asn/ClassBodyDeclaration.h"
 #include "cajeta/asn/AnnotationParser.h"
 #include "cajeta/error/Exception.h"
+#include "cajeta/error/Diagnostics.h"
 
 
 namespace cajeta {
@@ -1908,7 +1909,7 @@ namespace cajeta {
             auto* typeCtx = ctx->typeType();
             CajetaTypePtr declType = CajetaType::fromContext(typeCtx, pModule);
             if (typeCtx != nullptr && !declType) {
-                throw Exception(
+                throw locatedException(typeCtx->getStart(),
                     "unresolved type '" + typeCtx->getText()
                         + "' in local variable declaration",
                     "CAJETA_ERROR_UNRESOLVED_TYPE");

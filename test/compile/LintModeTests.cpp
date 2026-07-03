@@ -283,6 +283,23 @@ TEST(LintSourceRoot, ShadowReplacesOnDiskTwin) {
     EXPECT_EQ(err.find("{\"severity\""), std::string::npos) << err;
 }
 
+// located-semantic-diagnostics 1.1.2 — an unresolved type carries its location.
+TEST(LintMode, UnresolvedTypeCarriesLineAndColumn) {
+    // writeFile puts the body on line 4, indented 8 spaces, so `NoSuchType`
+    // starts at column 9 (1-based).
+    auto file = writeFile(freshTempDir("loc"), "NoSuchType z = NoSuchType.create();");
+    std::string err;
+    int rc = lintCapturingStderr(file, "--diag-format=json", err);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_NE(rc, 0);
+    EXPECT_NE(err.find("CAJETA_ERROR_UNRESOLVED_TYPE"), std::string::npos) << err;
+    EXPECT_NE(err.find("\"line\":4"), std::string::npos)
+        << "unresolved-type diagnostic must carry its line; stderr:\n" << err;
+    EXPECT_NE(err.find("\"column\":9"), std::string::npos)
+        << "unresolved-type diagnostic must carry its 1-based column; stderr:\n" << err;
+}
+
 // 1.1.5 — a nonexistent --source-root fails clearly, not with the usage banner.
 TEST(LintSourceRoot, MissingSourceRootFailsClearly) {
     auto root = freshTempDir("badroot") / "src";
