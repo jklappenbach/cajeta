@@ -40,6 +40,16 @@ namespace cajeta {
                                const std::string& message,
                                const std::string& errorId);
 
+    // Migration primitive (diagnostic-engine): report a recoverable semantic
+    // error to the active DiagnosticEngine and return (so the caller recovers,
+    // e.g. with CajetaType::error()). When no engine is active — full compile
+    // that hasn't opted into collect-and-continue — it throws locatedException
+    // instead, preserving today's abort-on-first behavior. Two location forms.
+    void reportOrThrow(antlr4::Token* token,
+                       const std::string& errorId, const std::string& message);
+    void reportOrThrow(int line, int column,
+                       const std::string& errorId, const std::string& message);
+
 
     // Compute the Levenshtein edit distance between two strings.
     // O(|a| · |b|) time and O(min(|a|, |b|)) space. Distance includes

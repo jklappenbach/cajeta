@@ -1909,10 +1909,10 @@ namespace cajeta {
             auto* typeCtx = ctx->typeType();
             CajetaTypePtr declType = CajetaType::fromContext(typeCtx, pModule);
             if (typeCtx != nullptr && !declType) {
-                throw locatedException(typeCtx->getStart(),
+                reportOrThrow(typeCtx->getStart(), "CAJETA_ERROR_UNRESOLVED_TYPE",
                     "unresolved type '" + typeCtx->getText()
-                        + "' in local variable declaration",
-                    "CAJETA_ERROR_UNRESOLVED_TYPE");
+                        + "' in local variable declaration");
+                declType = CajetaType::error();  // recover: analysis continues
             }
             return static_pointer_cast<BlockStatement>(make_shared<LocalVariableDeclaration>(
                 modifiers,

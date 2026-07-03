@@ -9,8 +9,27 @@
 #include <antlr4-runtime.h>
 
 #include "cajeta/compile/CajetaModule.h"
+#include "cajeta/error/DiagnosticEngine.h"
 
 namespace cajeta {
+
+    void reportOrThrow(int line, int column,
+                       const std::string& errorId, const std::string& message) {
+        if (DiagnosticEngine* eng = DiagnosticEngine::active()) {
+            std::string file;
+            if (auto m = CajetaModule::getActiveModule()) file = m->getSourcePath();
+            eng->report("error", errorId, message, file, line, column);
+        } else {
+            throw locatedException(line, column, message, errorId);
+        }
+    }
+
+    void reportOrThrow(antlr4::Token* token,
+                       const std::string& errorId, const std::string& message) {
+        int line = token ? static_cast<int>(token->getLine()) : -1;
+        int column = token ? static_cast<int>(token->getCharPositionInLine()) + 1 : -1;
+        reportOrThrow(line, column, errorId, message);
+    }
 
     Exception locatedException(antlr4::Token* token,
                                const std::string& message,

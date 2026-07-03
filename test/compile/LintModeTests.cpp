@@ -300,6 +300,36 @@ TEST(LintMode, UnresolvedTypeCarriesLineAndColumn) {
         << "unresolved-type diagnostic must carry its 1-based column; stderr:\n" << err;
 }
 
+// diagnostic-engine 3.1.1 — multiple independent semantic errors all report,
+// each located, instead of aborting after the first.
+TEST(LintMode, MultipleUnresolvedTypesAllReported) {
+    auto dir = freshTempDir("multi");
+    fs::create_directories(dir / "demo");
+    auto file = dir / "demo" / "File.cajeta";
+    {
+        std::ofstream o(file);
+        o << "package demo;\n"
+             "public final class File {\n"
+             "    public static void main() {\n"
+             "        Bad1 a = null;\n"   // line 4
+             "        Bad2 b = null;\n"   // line 5
+             "    }\n}\n";
+    }
+    std::string err;
+    int rc = lintCapturingStderr(file, "--diag-format=json", err);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_NE(rc, 0);
+    EXPECT_NE(err.find("Bad1"), std::string::npos) << err;
+    EXPECT_NE(err.find("Bad2"), std::string::npos) << err;
+    EXPECT_NE(err.find("\"line\":4"), std::string::npos) << err;
+    EXPECT_NE(err.find("\"line\":5"), std::string::npos) << err;
+    // Exactly two error diagnostics (not one, not a cascade).
+    size_t n = 0, pos = 0;
+    while ((pos = err.find("\"severity\":\"error\"", pos)) != std::string::npos) { n++; pos++; }
+    EXPECT_EQ(n, 2u) << "expected exactly two errors; stderr:\n" << err;
+}
+
 // 1.1.5 — a nonexistent --source-root fails clearly, not with the usage banner.
 TEST(LintSourceRoot, MissingSourceRootFailsClearly) {
     auto root = freshTempDir("badroot") / "src";

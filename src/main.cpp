@@ -9,6 +9,7 @@
 #include "cajeta/compile/CompilerMode.h"
 #include "cajeta/error/Exception.h"
 #include "cajeta/error/Diagnostics.h"
+#include "cajeta/error/DiagnosticEngine.h"
 #include "cajeta/cli/ArchiveCommands.h"
 #include "cajeta/cli/DocCommand.h"
 #include "cajeta/cli/IdeCommands.h"
@@ -581,19 +582,25 @@ int main(int argc, const char* argv[]) {
                           << lintSourceRoot << "\n";
             return 1;
         }
+        // Collect-and-continue: recoverable semantic errors report to the engine
+        // (multiple, located) instead of aborting; un-migrated throw sites are
+        // caught and folded in. All emitted at the end (diagnostic-engine-spec).
+        cajeta::DiagnosticEngine engine;
+        cajeta::DiagnosticEngine::setActive(&engine);
         try {
             compiler.lint(lintFile, lintSourceRoot, lintShadow);
         } catch (cajeta::SyntaxErrorException&) {
+            cajeta::DiagnosticEngine::setActive(nullptr);
             return 1;  // syntax diagnostics already emitted during parsing
         } catch (cajeta::Exception& e) {
-            emitException(e, jsonDiag);
-            return 1;
+            engine.report("error", e.getErrorId(), e.getMessage(),
+                          e.getFile(), e.getLine(), e.getColumn());
         } catch (const std::exception& e) {
-            if (jsonDiag) cajeta::emitJsonDiagnostic("error", "", e.what());
-            else std::cerr << "cajeta: " << e.what() << "\n";
-            return 1;
+            engine.report("error", "", e.what());
         }
-        return 0;
+        cajeta::DiagnosticEngine::setActive(nullptr);
+        engine.emit(jsonDiag);
+        return engine.hasErrors() ? 1 : 0;
     }
 
     if (positional.size() < 3) {
