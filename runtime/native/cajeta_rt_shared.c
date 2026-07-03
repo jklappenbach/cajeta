@@ -263,6 +263,71 @@ void* __cajeta_string_resolve(void* src_v) {
     return out;
 }
 
+// --- Slice<T> escape machinery (slice-spec §7.2; slices plan Unit 7b) -----
+// A Slice<T> VALUE is {T[] store; i64 off; i64 len} — three words, no
+// wrapper. Locals are borrows (zero rc). A slice stored past its scope is
+// RESOLVED in place per the §4.2 table; copies of resolved values retain;
+// value drops release (both sign-bit-gated, so borrows stay free).
+
+typedef struct {
+    void*   store;    // CajetaArray root header {i64 count; data}
+    int64_t off;      // element offset from the root's data
+    int64_t len;      // window length in elements
+} caj_slice_layout;
+
+// Resolve at an escape site (field store): arena root or payload <= 256 B
+// copies into a FRESH root the destination owns (rc=1 shared, so the value
+// drop's release retires it); a larger heap window takes a stake on the
+// root (promote add-or-create: owner + this value). Static-rooted slices
+// don't exist today (array literals are heap) — the promote row covers any
+// future case safely.
+void __cajeta_slice_resolve(void* slice_v, int64_t elemSize) {
+    caj_slice_layout* s = (caj_slice_layout*) slice_v;
+    if (!s || !s->store || s->len <= 0 || elemSize <= 0) return;
+    int64_t payload = s->len * elemSize;
+    int __cajeta_arena_owns(const void* p);
+    if (__cajeta_arena_owns(s->store) || payload <= 256) {
+        void* buf = __cajeta_new_array_header(8, (uint64_t) elemSize,
+                                              (uint64_t) s->len);
+        *((int64_t*) buf) = s->len;
+        memcpy((char*) buf + 8,
+               (const char*) s->store + 8 + s->off * elemSize,
+               (size_t) payload);
+        __cajeta_shared_promote(buf, 1);
+        s->store = buf;
+        s->off = 0;
+        return;
+    }
+    __cajeta_shared_promote(s->store, 2);
+}
+
+// Copy hook arm: a copy of a RESOLVED (shared-rooted) slice holds its own
+// stake; borrow copies stay free (sign-bit gate).
+void __cajeta_slice_retain(void* slice_v) {
+    caj_slice_layout* s = (caj_slice_layout*) slice_v;
+    if (!s || !s->store) return;
+    if (*(const int64_t*) s->store < 0) {
+        __cajeta_shared_retain(s->store);
+    }
+}
+
+// Drop hook arm: release the stake of a resolved slice; the last stake
+// frees the root. Borrows (unshared roots) no-op. Poisons against
+// double-release.
+void __cajeta_slice_release(void* slice_v) {
+    caj_slice_layout* s = (caj_slice_layout*) slice_v;
+    if (!s || !s->store) return;
+    if (*(const int64_t*) s->store < 0) {
+        if (__cajeta_shared_release(s->store)) {
+            __cajeta_poison_buffer(s->store);
+            free(s->store);
+        }
+    }
+    s->store = NULL;
+    s->off = 0;
+    s->len = 0;
+}
+
 // Borrow-mode slice (slices plan 4.2.2 local-borrow downgrade): for a slice
 // the compiler PROVED never leaves its scope (no return, no `#`-move, no
 // lambda capture — field stores and call args resolve at their own sites),

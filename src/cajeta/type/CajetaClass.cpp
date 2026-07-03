@@ -3017,6 +3017,13 @@ namespace cajeta {
                 && qName->getPackageName() == "cajeta.lang") {
             return true;
         }
+        // Slice<T> instantiations (slice-spec §7.2): the store field can be
+        // a resolved (rc'd) root — copies retain, drops release.
+        if (qName && qName->getPackageName() == "cajeta.lang"
+                && qName->getTypeName().rfind("Slice", 0) == 0
+                && isValueType()) {
+            return true;
+        }
         if (!isValueType() || interfaceFlag) return false;
         for (auto& property : propertyList) {
             if (property->isStatic()) continue;
@@ -3038,6 +3045,15 @@ namespace cajeta {
                 && qName->getPackageName() == "cajeta.lang") {
             llvm::Function* fn = cajModule->getRuntimeFunction(
                 retain ? "__cajeta_utf8_retain" : "__cajeta_utf8_release",
+                bodyModule);
+            if (fn) b.CreateCall(fn, {valuePtr});
+            return;
+        }
+        if (qName && qName->getPackageName() == "cajeta.lang"
+                && qName->getTypeName().rfind("Slice", 0) == 0
+                && isValueType()) {
+            llvm::Function* fn = cajModule->getRuntimeFunction(
+                retain ? "__cajeta_slice_retain" : "__cajeta_slice_release",
                 bodyModule);
             if (fn) b.CreateCall(fn, {valuePtr});
             return;
@@ -5353,6 +5369,14 @@ namespace cajeta {
                         llvm::Value* spill = coerceBuilder->CreateAlloca(v->getType());
                         coerceBuilder->CreateStore(v, spill);
                         v = spill;
+                    } else if ((expected->isStructTy() || expected->isVectorTy()
+                                || expected->isArrayTy())
+                               && v->getType()->isPointerTy()) {
+                        // The mirror arm: the formal takes the aggregate BY
+                        // VALUE but we hold the value's ADDRESS (a fresh
+                        // value-expression alloca, e.g. `arr[a:b]` passed as
+                        // a Slice<T> arg). Load the aggregate through it.
+                        v = coerceBuilder->CreateLoad(expected, v);
                     }
                 }
             }

@@ -1470,7 +1470,44 @@ namespace cajeta {
                             } else {
                                 builder->CreateStore(rhs, lhs);
                             }
-                            if (hooked && !selfAssign && rhsLvalue) {
+                            // Slice<T> FIELD stores resolve in place per the
+                            // §4.2 table (slice-spec §7.2): arena / <=256 B
+                            // payload copies into a fresh field-owned root,
+                            // larger windows take a stake — for BOTH lvalue
+                            // and rvalue RHS (a fresh `arr[a:b]` is a borrow
+                            // of the array too). Local Slice assigns keep
+                            // borrow semantics (the generic retain arm's
+                            // sign-bit gate makes copies of resolved values
+                            // retain and borrow copies free).
+                            bool lhsIsSliceField = hooked && !selfAssign
+                                && dynamic_pointer_cast<DotExpression>(lhsAst)
+                                && lhsCls->getQName()
+                                && lhsCls->getQName()->getPackageName() == "cajeta.lang"
+                                && lhsCls->getQName()->getTypeName().rfind("Slice", 0) == 0;
+                            if (lhsIsSliceField) {
+                                int64_t elemSize = 8;
+                                auto& props = lhsCls->getProperties();
+                                auto pit = props.find("store");
+                                if (pit != props.end()) {
+                                    if (auto arrT = dynamic_pointer_cast<CajetaArray>(
+                                            pit->second->getType())) {
+                                        if (auto et = arrT->getElementType()) {
+                                            if (llvm::Type* lt = et->getLlvmType()) {
+                                                elemSize = (int64_t) module
+                                                    ->getLlvmModule()->getDataLayout()
+                                                    .getTypeAllocSize(lt);
+                                            }
+                                        }
+                                    }
+                                }
+                                if (llvm::Function* resolveSliceFn =
+                                        module->getRuntimeFunction("__cajeta_slice_resolve")) {
+                                    builder->CreateCall(resolveSliceFn, {lhs,
+                                        llvm::ConstantInt::get(
+                                            llvm::Type::getInt64Ty(*module->getLlvmContext()),
+                                            (uint64_t) elemSize)});
+                                }
+                            } else if (hooked && !selfAssign && rhsLvalue) {
                                 lhsCls->emitValueSharedOp(*builder, lhs, module,
                                     hookModule, /*retain=*/true);
                             }

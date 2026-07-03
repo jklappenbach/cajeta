@@ -89,6 +89,9 @@ TEST(ArraySliceTests, arraySliceEscapeResolves) {
         "        if (small.v[0] != (int64) 10) { return -3; }\n"
         "        if (large.v.count() != 100) { return -4; }\n"
         "        if (large.v[99] != (int64) 199) { return -5; }\n"
+        "        small.v = seed[0:0];\n"                           // detach both stakes
+        "        large.v = seed[0:0];\n"
+        "        if (Cajeta.sharedPopulation() != pop) { return -6; }\n" // exact retirement
         "        return 1;\n"
         "    }\n"
         "}\n";
@@ -131,7 +134,8 @@ TEST(ArraySliceTests, arraySliceOfArenaCopies) {
         "        }\n"
         "        if (k.v.count() != 8) { return -2; }\n"
         "        if (k.v[0] != (int64) 28) { return -3; }\n"      // arr[4]
-        "        if (Cajeta.sharedPopulation() != pop) { return -4; }\n" // copied: no stake
+        "        k.v = seed[0:0];\n"                               // detach the copied root
+        "        if (Cajeta.sharedPopulation() != pop) { return -4; }\n" // exact retirement
         "        return 1;\n"
         "    }\n"
         "}\n";
