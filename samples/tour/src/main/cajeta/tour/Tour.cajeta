@@ -100,7 +100,13 @@ public final class Tour {
         demos.stream().forEach((d) -> d.execute());
 
         System.stdout.println("");
-        System.stdout.println("=== tour complete ===");
+        if (DemoClass.failures > 0) {
+            System.stdout.println("=== tour FAILED: " + DemoClass.failures
+                + " of " + DemoClass.checks + " self-checks ===");
+            return 1;
+        }
+        System.stdout.println("=== tour complete: " + DemoClass.checks
+            + " self-checks passed ===");
         return 0;
     }
 }
