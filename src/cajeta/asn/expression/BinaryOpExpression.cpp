@@ -1783,7 +1783,20 @@ namespace cajeta {
                             }
                         }
                         llvm::Value* cstr = stringify(v, vt);
-                        llvm::Value* len = builder->CreateCall(strlenFn, {cstr}, "concat.clen");
+                        // Class String: take byteLength (slot 2) — bytes.data is
+                        // NUL-terminated only for literals; a String wrapped over
+                        // a bare byte array (String(#arr, n)) has no terminator
+                        // and strlen reads past its logical end.
+                        llvm::Value* len;
+                        if (isClassStringType(vt) && stringStructTy) {
+                            llvm::Value* blSlot = builder->CreateStructGEP(
+                                stringStructTy, v, 2, "concat.bytelen_slot");
+                            llvm::Value* bl32 = builder->CreateLoad(
+                                i32Ty, blSlot, "concat.bytelen");
+                            len = builder->CreateSExt(bl32, i64Ty, "concat.bytelen64");
+                        } else {
+                            len = builder->CreateCall(strlenFn, {cstr}, "concat.clen");
+                        }
                         return { false, nullptr, cstr, len };
                     };
                     ConcatOp opL = classify(l, lhsRT);
