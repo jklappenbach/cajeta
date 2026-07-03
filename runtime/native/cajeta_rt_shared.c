@@ -176,6 +176,28 @@ int __cajeta_shared_owner_drop(void* base) {
     return __cajeta_shared_release(base);
 }
 
+// C-string view of a String for the legacy const char* runtime ABI
+// (println/parse/log). Modes 0/1: the data pointer directly (writers guarantee
+// a trailing NUL). Mode 2 (windowed view): the window has no NUL at its end,
+// so materialize into a per-thread growable scratch — valid until the next
+// call on the same thread, which the immediate-consumption ABI satisfies.
+const char* __cajeta_string_cstr(void* s_v) {
+    static __thread char* scratch = NULL;
+    static __thread int64_t cap = 0;
+    if (!s_v) return NULL;
+    cajeta_string_layout* s = (cajeta_string_layout*) s_v;
+    if (s->bytes == NULL) return "";
+    if (s->mode != 2) return (const char*) s->bytes + 8;
+    int64_t len = (int64_t) s->byteLength;
+    if (len + 1 > cap) {
+        cap = len + 1 < 64 ? 64 : len + 1;
+        scratch = (char*) realloc(scratch, (size_t) cap);
+    }
+    memcpy(scratch, (const char*) s->bytes + 8 + s->ssoCount, (size_t) len);
+    scratch[len] = 0;
+    return scratch;
+}
+
 // Zero-copy String.substring (slice-spec §7.1; slices plan 2.2.1). Builds a
 // mode-2 WINDOWED view: `bytes` stays the ROOT array header (bounds checks
 // remain valid), the window's byte offset rides the otherwise-unused ssoCount

@@ -114,6 +114,19 @@ TEST(SubstringSliceTests, substringChainRoot) {
         "return 1;"), 1);
 }
 
+// 2.2.3 — the const char* runtime ABI (parse/println/log) sees the WINDOW of a
+// view, not the root: parse of a mid-string slice yields the sliced number.
+TEST(SubstringSliceTests, sliceCstrAbiWindows) {
+    EXPECT_EQ(runJit(
+        std::string(kDyn) +
+        "String digits = s.substring(26, 31);\n"   // "01234"
+        "int64 v = Long.parseLong(digits);\n"
+        "if (v != 1234) { return -1; }\n"           // "01234" -> 1234
+        "String d2 = s.substring(28, 30);\n"        // "23"
+        "if (Long.parseLong(d2) != 23) { return -2; }\n"
+        "return 1;"), 1);
+}
+
 // 2.1.6 (spot) — substring results behave like ordinary strings downstream:
 // equality both ways, indexOf on a view, concat of two views, trim of a view.
 TEST(SubstringSliceTests, sliceBehavesLikeString) {

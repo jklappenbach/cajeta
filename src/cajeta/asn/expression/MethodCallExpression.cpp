@@ -441,18 +441,13 @@ namespace cajeta {
                     && cls->getQName()->getPackageName() == "cajeta.lang"
                     && cls->getLlvmType()
                     && llvm::isa<llvm::StructType>(cls->getLlvmType())) {
-                auto* structTy =
-                    llvm::cast<llvm::StructType>(cls->getLlvmType());
-                llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
-                llvm::Type* i8Ty = llvm::Type::getInt8Ty(llvmCtx);
-                llvm::Type* i64Ty = llvm::Type::getInt64Ty(llvmCtx);
-                llvm::Value* bytesSlot = builder->CreateStructGEP(
-                    structTy, v, 1, "strArg.bytes_slot");
-                llvm::Value* bytesPtr = builder->CreateLoad(
-                    ptrTy, bytesSlot, "strArg.bytes_ptr");
-                v = builder->CreateInBoundsGEP(i8Ty, bytesPtr,
-                    llvm::ConstantInt::get(i64Ty, 8),
-                    "strArg.cstr");
+                // Runtime helper handles the mode split: modes 0/1 return the
+                // NUL-terminated data pointer directly; a mode-2 windowed view
+                // (slice-spec §7.1) has no NUL at its window end, so the helper
+                // materializes into a per-thread scratch.
+                llvm::Function* cstrFn =
+                    module->getRuntimeFunction("__cajeta_string_cstr");
+                v = builder->CreateCall(cstrFn, {v}, "strArg.cstr");
             }
         }
         return v;
