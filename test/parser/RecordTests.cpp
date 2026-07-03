@@ -192,15 +192,15 @@ TEST(RecordTests, emittedIrHasNoVtableSlot) {
 TEST(RecordTests, templateRecordMonomorphizes) {
     auto src =
         "package test;\n"
-        "public record Pair<A, B> {\n"
+        "public record RecPair<A, B> {\n"
         "    A first;\n"
         "    B second;\n"
-        "    public Pair(A f, B s) { this.first = f; this.second = s; }\n"
+        "    public RecPair(A f, B s) { this.first = f; this.second = s; }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Pair<int32, int32> p = heap Pair<int32, int32>(3, 4);\n"
-        "        Pair<float64, float64> q = heap Pair<float64, float64>(0.5, 0.25);\n"
+        "        RecPair<int32, int32> p = heap RecPair<int32, int32>(3, 4);\n"
+        "        RecPair<float64, float64> q = heap RecPair<float64, float64>(0.5, 0.25);\n"
         "        return p.first * 100 + p.second * 10 + (int32)(q.first * 4.0 + q.second * 8.0);\n"
         "    }\n"
         "}\n";
@@ -208,7 +208,7 @@ TEST(RecordTests, templateRecordMonomorphizes) {
 
     int valueTypedInstantiations = 0;
     for (auto& kv : cajeta::CajetaType::getCanonicalMap()) {
-        if (kv.first.rfind("test.Pair<", 0) != 0 || !kv.second) continue;
+        if (kv.first.rfind("test.RecPair<", 0) != 0 || !kv.second) continue;
         if (kv.second->getTypeFlags() & VALUE_TYPE_FLAG) valueTypedInstantiations++;
     }
     EXPECT_GE(valueTypedInstantiations, 2);
