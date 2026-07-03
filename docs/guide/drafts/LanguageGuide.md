@@ -85,10 +85,10 @@ null          // the null reference
 There is no unsigned-literal suffix (`2u` is a parse error); write the value and
 let the target type carry the signedness.
 
-See [`specification/lang/Primitives.md`](../specification/lang/Primitives.md),
-[`specification/lang/FloatingPointModel.md`](../specification/lang/FloatingPointModel.md),
-[`specification/lang/String.md`](../specification/lang/String.md) (`char` semantics), and
-[`specification/lang/EncodingPrefixedLiterals.md`](../specification/lang/EncodingPrefixedLiterals.md).
+See [`specification/lang/Primitives.md`](../../specification/lang/Primitives.md),
+[`specification/lang/FloatingPointModel.md`](../../specification/lang/FloatingPointModel.md),
+[`specification/lang/String.md`](../../specification/lang/String.md) (`char` semantics), and
+[`specification/lang/EncodingPrefixedLiterals.md`](../../specification/lang/EncodingPrefixedLiterals.md).
 
 ---
 
@@ -111,12 +111,12 @@ See [`specification/lang/Primitives.md`](../specification/lang/Primitives.md),
 | Ownership transfer | `#` (prefix — see §6) |
 
 Integer overflow and divide-by-zero are checked by default (configurable; see
-[`CompilerModes.md`](../specification/buildtool/CompilerModes.md)). User types can define most operators
-via `operator` overloads — see [`OperatorOverloading.md`](../specification/lang/OperatorOverloading.md).
+[`CompilerModes.md`](../../specification/buildtool/CompilerModes.md)). User types can define most operators
+via `operator` overloads — see [`OperatorOverloading.md`](../../specification/lang/OperatorOverloading.md).
 
 > On value types (Vector/Matrix) the comparison operators produce a *per-lane
 > mask*, not a single boolean; reduce with `.all()`/`.any()` and blend with
-> `.select(a, b)`. See [`gpu/MaskSelect.md`](../specification/gpu/MaskSelect.md).
+> `.select(a, b)`. See [`gpu/MaskSelect.md`](../../specification/gpu/MaskSelect.md).
 
 ---
 
@@ -155,8 +155,8 @@ mode is a property of the *value*, not the type, and the borrow checker tracks
 the lifetime. Class instances always pass and return by pointer (no slicing).
 
 `shared` is the third placement, used inside GPU kernels for workgroup-shared
-memory (§16). See [`specification/lang/UnifiedClasses.md`](../specification/lang/UnifiedClasses.md) and
-[`specification/lang/MemoryModel.md`](../specification/lang/MemoryModel.md).
+memory (§16). See [`specification/lang/UnifiedClasses.md`](../../specification/lang/UnifiedClasses.md) and
+[`specification/lang/MemoryModel.md`](../../specification/lang/MemoryModel.md).
 
 ---
 
@@ -181,10 +181,10 @@ Reclamation is automatic at scope exit via a per-thread drop chain (entries fire
 in reverse declaration order, and the throw path unwinds them so drops run on the
 exceptional path too). To release a value early, **reassign or null it** (`x =
 null`) — there is no `delete`/`free`. See
-[`specification/lang/MemoryModel.md`](../specification/lang/MemoryModel.md),
-[`specification/lang/FieldOwnership.md`](../specification/lang/FieldOwnership.md),
-[`specification/lang/OwnershipTransfer.md`](../specification/lang/OwnershipTransfer.md), and
-[`specification/lang/BorrowSoundness.md`](../specification/lang/BorrowSoundness.md).
+[`specification/lang/MemoryModel.md`](../../specification/lang/MemoryModel.md),
+[`specification/lang/FieldOwnership.md`](../../specification/lang/FieldOwnership.md),
+[`specification/lang/OwnershipTransfer.md`](../../specification/lang/OwnershipTransfer.md), and
+[`specification/lang/BorrowSoundness.md`](../../specification/lang/BorrowSoundness.md).
 
 ---
 
@@ -245,8 +245,8 @@ Stream<String> names = people.stream().map<String>(Person::getName);  // method 
 - Method references: `Class::staticMethod`, `instance::method`,
   `Class::instanceMethod`, `Class::heap` (constructor).
 
-See [`specification/lang/Lambdas.md`](../specification/lang/Lambdas.md) and
-[`specification/lang/MethodLevelTemplate.md`](../specification/lang/MethodLevelTemplate.md).
+See [`specification/lang/Lambdas.md`](../../specification/lang/Lambdas.md) and
+[`specification/lang/MethodLevelTemplate.md`](../../specification/lang/MethodLevelTemplate.md).
 
 ### Named arguments
 
@@ -306,8 +306,8 @@ Shape s = heap Square(5);   // 25 via vtable
 ```
 
 Diamond inheritance resolves through a hash-based vtable lookup. See
-[`specification/lang/UnifiedClasses.md`](../specification/lang/UnifiedClasses.md) and
-[`specification/lang/MultiClassing.md`](../specification/lang/MultiClassing.md).
+[`specification/lang/UnifiedClasses.md`](../../specification/lang/UnifiedClasses.md) and
+[`specification/lang/MultiClassing.md`](../../specification/lang/MultiClassing.md).
 
 ### Interfaces
 
@@ -325,7 +325,7 @@ public enum Color { RED, GREEN, BLUE; }
 A plain class of primitive fields can be marked a by-value POD (`@ValueType`) — it
 is copied like a primitive rather than referenced, and is the basis for the
 GPU/SIMD `Vector`/`Matrix` types. See
-[`gpu/ValueTypeCatalog.md`](../specification/gpu/ValueTypeCatalog.md).
+[`gpu/ValueTypeCatalog.md`](../../specification/gpu/ValueTypeCatalog.md).
 
 ### Views
 
@@ -344,7 +344,7 @@ PacketHeader h = stack PacketHeader(buf);   // borrow over buf; no copy
 ```
 
 Supports `@BigEndian`/`@LittleEndian`/`@HostEndian`/`@Align`, nested views, and
-borrow vs ownership-transfer construction. See [`specification/lang/Views.md`](../specification/lang/Views.md).
+borrow vs ownership-transfer construction. See [`specification/lang/Views.md`](../../specification/lang/Views.md).
 
 > `structure` and `record` are reserved words but are **not** implemented type
 > forms today — use `class`, `view`, or `@ValueType`.
@@ -372,9 +372,9 @@ public static R fold<R, T>(R seed, T[] items, (R, T) -> R fn) {  // method-level
 
 Bounded templates (`<T extends Bound>`), wildcards (`?`, `? extends Bound`, `?
 super Bound`), capture conversion, and PECS reads/writes are all supported, with
-at-least-Java-strength inference. See [`TemplateWildcard.md`](../specification/cajeta-templates/TemplateWildcard.md),
-[`CaptureConversion.md`](../specification/cajeta-templates/reified-capture-spec.md), and
-[`specification/lang/NumericBoundedTemplates.md`](../specification/lang/NumericBoundedTemplates.md).
+at-least-Java-strength inference. See [`TemplateWildcard.md`](../../specification/cajeta-templates/TemplateWildcard.md),
+[`CaptureConversion.md`](../../specification/cajeta-templates/reified-capture-spec.md), and
+[`specification/lang/NumericBoundedTemplates.md`](../../specification/lang/NumericBoundedTemplates.md).
 
 ---
 
@@ -395,9 +395,9 @@ int32 m = list.count();
 ```
 
 (`Vector.length()` is the geometric magnitude of a SIMD vector — a different
-operation.) See [`specification/collection/Collections.md`](../specification/collection/Collections.md),
-[`specification/lang/String.md`](../specification/lang/String.md), and
-[`specification/hash/Hashing.md`](../specification/hash/Hashing.md).
+operation.) See [`specification/collection/Collections.md`](../../specification/collection/Collections.md),
+[`specification/lang/String.md`](../../specification/lang/String.md), and
+[`specification/hash/Hashing.md`](../../specification/hash/Hashing.md).
 
 ---
 
@@ -416,7 +416,7 @@ try {
 }
 ```
 
-See [`specification/error/ErrorModel.md`](../specification/error/ErrorModel.md).
+See [`specification/error/ErrorModel.md`](../../specification/error/ErrorModel.md).
 
 ---
 
@@ -443,9 +443,9 @@ public static async int32 fetchAll(String[] urls) {
 The runtime schedules fibers over a work-stealing carrier pool — by default
 `min(cpus, 4)` OS-thread carriers, so spawned tasks run in parallel (set
 `CAJETA_CARRIERS=1` for deterministic single-carrier runs). See
-[`specification/concurrent/Concurrency.md`](../specification/concurrent/Concurrency.md),
-[`specification/concurrent/AsyncStatus.md`](../specification/concurrent/AsyncStatus.md), and the threading primitives in
-[`specification/concurrent/Concurrency.md`](../specification/concurrent/Concurrency.md).
+[`specification/concurrent/Concurrency.md`](../../specification/concurrent/Concurrency.md),
+[`specification/concurrent/AsyncStatus.md`](../../specification/concurrent/AsyncStatus.md), and the threading primitives in
+[`specification/concurrent/Concurrency.md`](../../specification/concurrent/Concurrency.md).
 
 ---
 
@@ -464,8 +464,8 @@ int32 total = xs.stream()
 ```
 
 `.parallel()` runs the chain across a `scope`/`spawn` worker fan-out over a
-splittable root. See [`specification/lang/stream/Streams.md`](../specification/lang/stream/Streams.md) and
-[`specification/lang/stream/StreamParallelism.md`](../specification/lang/stream/StreamParallelism.md).
+splittable root. See [`specification/lang/stream/Streams.md`](../../specification/lang/stream/Streams.md) and
+[`specification/lang/stream/StreamParallelism.md`](../../specification/lang/stream/StreamParallelism.md).
 
 ---
 
@@ -475,9 +475,9 @@ A Lombok-style annotation system over the language's reflection: `@Getter`/
 `@Setter`, `@Builder`, `@ToString`, `@EqualsAndHashCode`, `@Data`/`@Value`,
 `@With`, `@NonNull`, view-layout annotations (`@LittleEndian`, …), `@Encoding`,
 and the aspect/DI set (`@Aspect`, `@Component`, `@Inject`, `@Around`/`@Before`/
-`@After`). See [`specification/reflect/Annotations.md`](../specification/reflect/Annotations.md),
-[`specification/lang/AspectModel.md`](../specification/lang/AspectModel.md), and
-[`specification/reflect/Reflection.md`](../specification/reflect/Reflection.md).
+`@After`). See [`specification/reflect/Annotations.md`](../../specification/reflect/Annotations.md),
+[`specification/lang/AspectModel.md`](../../specification/lang/AspectModel.md), and
+[`specification/reflect/Reflection.md`](../../specification/reflect/Reflection.md).
 
 ---
 
@@ -513,9 +513,9 @@ All three parameters are optional. They lower per-backend (AMD →
 `maxnreg`) and are a no-op where a backend has no equivalent. An explicit
 `@Occupancy` always wins over the automatic budgeting.
 
-See [`gpu/xpu/CajetaXPU.md`](../specification/xpu/CajetaXPU.md),
-[`gpu/CajetaGPU.md`](../specification/gpu/CajetaGPU.md), and the capability matrix
-[`gpu/xpu/CajetaXPU-Matrix.md`](../specification/xpu/CajetaXPU-Matrix.md).
+See [`gpu/xpu/CajetaXPU.md`](../../specification/xpu/CajetaXPU.md),
+[`gpu/CajetaGPU.md`](../../specification/gpu/CajetaGPU.md), and the capability matrix
+[`gpu/xpu/CajetaXPU-Matrix.md`](../../specification/xpu/CajetaXPU-Matrix.md).
 
 ---
 
@@ -541,18 +541,18 @@ See [`gpu/xpu/CajetaXPU.md`](../specification/xpu/CajetaXPU.md),
 
 | Topic | Doc |
 |-------|-----|
-| Class model + allocation | [`specification/lang/UnifiedClasses.md`](../specification/lang/UnifiedClasses.md) |
-| Memory + ownership | [`specification/lang/MemoryModel.md`](../specification/lang/MemoryModel.md), [`specification/lang/FieldOwnership.md`](../specification/lang/FieldOwnership.md) |
-| Primitives + floats | [`specification/lang/Primitives.md`](../specification/lang/Primitives.md), [`specification/lang/FloatingPointModel.md`](../specification/lang/FloatingPointModel.md) |
-| Templates + wildcards | [`TemplateWildcard.md`](../specification/cajeta-templates/TemplateWildcard.md), [`CaptureConversion.md`](../specification/cajeta-templates/reified-capture-spec.md) |
-| Lambdas + function types | [`specification/lang/Lambdas.md`](../specification/lang/Lambdas.md) |
-| Operator overloading | [`OperatorOverloading.md`](../specification/lang/OperatorOverloading.md) |
-| Strings + collections | [`specification/lang/String.md`](../specification/lang/String.md), [`specification/collection/Collections.md`](../specification/collection/Collections.md) |
-| Streams | [`specification/lang/stream/Streams.md`](../specification/lang/stream/Streams.md), [`specification/lang/stream/StreamParallelism.md`](../specification/lang/stream/StreamParallelism.md) |
-| Annotations + aspects | [`specification/reflect/Annotations.md`](../specification/reflect/Annotations.md), [`specification/lang/AspectModel.md`](../specification/lang/AspectModel.md) |
-| Views / wire formats | [`specification/lang/Views.md`](../specification/lang/Views.md) |
-| Concurrency | [`specification/concurrent/Concurrency.md`](../specification/concurrent/Concurrency.md) |
-| Errors | [`specification/error/ErrorModel.md`](../specification/error/ErrorModel.md) |
-| GPU / compute | [`gpu/xpu/CajetaXPU.md`](../specification/xpu/CajetaXPU.md), [`gpu/CajetaGPU.md`](../specification/gpu/CajetaGPU.md) |
-| Compiler modes + flags | [`CompilerModes.md`](../specification/buildtool/CompilerModes.md) |
-| Lint rules | [`LintRules.md`](../specification/lang/LintRules.md) |
+| Class model + allocation | [`specification/lang/UnifiedClasses.md`](../../specification/lang/UnifiedClasses.md) |
+| Memory + ownership | [`specification/lang/MemoryModel.md`](../../specification/lang/MemoryModel.md), [`specification/lang/FieldOwnership.md`](../../specification/lang/FieldOwnership.md) |
+| Primitives + floats | [`specification/lang/Primitives.md`](../../specification/lang/Primitives.md), [`specification/lang/FloatingPointModel.md`](../../specification/lang/FloatingPointModel.md) |
+| Templates + wildcards | [`TemplateWildcard.md`](../../specification/cajeta-templates/TemplateWildcard.md), [`CaptureConversion.md`](../../specification/cajeta-templates/reified-capture-spec.md) |
+| Lambdas + function types | [`specification/lang/Lambdas.md`](../../specification/lang/Lambdas.md) |
+| Operator overloading | [`OperatorOverloading.md`](../../specification/lang/OperatorOverloading.md) |
+| Strings + collections | [`specification/lang/String.md`](../../specification/lang/String.md), [`specification/collection/Collections.md`](../../specification/collection/Collections.md) |
+| Streams | [`specification/lang/stream/Streams.md`](../../specification/lang/stream/Streams.md), [`specification/lang/stream/StreamParallelism.md`](../../specification/lang/stream/StreamParallelism.md) |
+| Annotations + aspects | [`specification/reflect/Annotations.md`](../../specification/reflect/Annotations.md), [`specification/lang/AspectModel.md`](../../specification/lang/AspectModel.md) |
+| Views / wire formats | [`specification/lang/Views.md`](../../specification/lang/Views.md) |
+| Concurrency | [`specification/concurrent/Concurrency.md`](../../specification/concurrent/Concurrency.md) |
+| Errors | [`specification/error/ErrorModel.md`](../../specification/error/ErrorModel.md) |
+| GPU / compute | [`gpu/xpu/CajetaXPU.md`](../../specification/xpu/CajetaXPU.md), [`gpu/CajetaGPU.md`](../../specification/gpu/CajetaGPU.md) |
+| Compiler modes + flags | [`CompilerModes.md`](../../specification/buildtool/CompilerModes.md) |
+| Lint rules | [`LintRules.md`](../../specification/lang/LintRules.md) |

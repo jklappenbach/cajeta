@@ -230,7 +230,7 @@ CAJETA_DUMP_IR=1 CAJETA_SOURCE_ROOT="$PWD" \
 
 ## Language reference
 
-This section is a feature tour. For a ground-up introduction that starts with the primitives, operators, and keywords and builds upward, see the [Cajeta Language Guide](docs/guide/LanguageGuide.md).
+This section is a feature tour. For a ground-up introduction that starts with the primitives, operators, and keywords and builds upward, see the [Cajeta Language Guide](docs/guide/drafts/LanguageGuide.md).
 
 ### Allocation: `stack` and `heap`
 
@@ -549,19 +549,19 @@ boolean   char (a 32-bit Unicode codepoint)
 
 There is no `byte` type — the canonical byte buffer is `int8[]` (or `uint8[]`). `pointer` is a low-level raw address; `uchar` is a deprecated alias for `uint8`.
 
-Literals follow Java-ish syntax: `42`, `42L`, `0xFF`, `0b1010`, `017` (octal), `1_000_000`, `3.14`, `3.14f`, `'A'`, `"hello"`, `true`, `false`, `null`. See the [Cajeta Language Guide](docs/guide/LanguageGuide.md), [`Primitives.md`](docs/specification/lang/Primitives.md), and [`FloatingPointModel.md`](docs/specification/lang/FloatingPointModel.md).
+Literals follow Java-ish syntax: `42`, `42L`, `0xFF`, `0b1010`, `017` (octal), `1_000_000`, `3.14`, `3.14f`, `'A'`, `"hello"`, `true`, `false`, `null`. See the [Cajeta Language Guide](docs/guide/drafts/LanguageGuide.md), [`Primitives.md`](docs/specification/lang/Primitives.md), and [`FloatingPointModel.md`](docs/specification/lang/FloatingPointModel.md).
 
 ---
 
 ## Documentation map
 
-**New to the language? Start with the [Cajeta Language Guide](docs/guide/LanguageGuide.md)** — a ground-up tour from primitives, operators, and keywords through the larger features, linking out to each deep-dive spec.
+**New to the language? Start with the [Cajeta Language Guide](docs/guide/drafts/LanguageGuide.md)** — a ground-up tour from primitives, operators, and keywords through the larger features, linking out to each deep-dive spec.
 
 The deep-dive specs live in `docs/`:
 
 | Topic                       | Doc |
 |-----------------------------|-----|
-| **Language guide (start here)** | [`LanguageGuide.md`](docs/guide/LanguageGuide.md) |
+| **Language guide (start here)** | [`LanguageGuide.md`](docs/guide/drafts/LanguageGuide.md) |
 | Class model + allocation    | [`UnifiedClasses.md`](docs/specification/lang/UnifiedClasses.md) |
 | System I/O + env + properties | [`lang/System.md`](docs/specification/lang/System.md) |
 | Memory + ownership          | [`MemoryModel.md`](docs/specification/lang/MemoryModel.md) |

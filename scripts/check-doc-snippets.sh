@@ -44,7 +44,7 @@ collect_files() {
         if [ -f "$r" ]; then
             echo "$r"
         elif [ -d "$r" ]; then
-            find "$r" -type f -name '*.md'
+            find "$r" -type f -name '*.md' -not -path '*/drafts/*'
         fi
     done
 }
