@@ -139,9 +139,9 @@ namespace cajeta {
     // Null in production: every Compiler owns its context and resets globals.
     // The test StdlibCache installs a shared context here so a primed stdlib
     // survives across Compiler instances (see Compiler ctor).
-    llvm::LLVMContext* Compiler::s_sharedContext = nullptr;
-    bool Compiler::s_sharedInitialized = false;
-    bool Compiler::s_reuseHazardArmed = false;
+    thread_local llvm::LLVMContext* Compiler::s_sharedContext = nullptr;
+    thread_local bool Compiler::s_sharedInitialized = false;
+    thread_local bool Compiler::s_reuseHazardArmed = false;
 
     void Compiler::rebuildTargetMachine() {
         string error;

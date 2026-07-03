@@ -40,7 +40,7 @@ namespace cajeta {
     thread_local llvm::Module* CajetaModule::currentEmitLlvmModule = nullptr;
     thread_local uint64_t CajetaModule::reuseEpoch = 0;
     thread_local CajetaModulePtr CajetaModule::stdlibModule;
-    std::function<void(const std::string&)> CajetaModule::stdlibImportHook;
+    thread_local std::function<void(const std::string&)> CajetaModule::stdlibImportHook;
     thread_local map<string, CajetaModulePtr> CajetaModule::moduleVariables;
     thread_local vector<CajetaClassPtr> CajetaModule::aspectClasses;
     thread_local vector<CajetaModule::ComponentDescriptorPtr> CajetaModule::componentClasses;
