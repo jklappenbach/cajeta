@@ -25,6 +25,11 @@ import cajeta.lang.Math;
     public float32 b;
     public float32 a;
 
+    /**
+     * Build a color from its r, g, b, a channels, each in [0,1].
+     *
+     * @EntryPoint
+     */
     public Color(float32 r, float32 g, float32 b, float32 a) {
         this.r = r;
         this.g = g;

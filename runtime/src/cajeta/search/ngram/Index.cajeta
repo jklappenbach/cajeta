@@ -42,13 +42,21 @@ public class Index<T> {
     /** gram size (3 = trigrams by default). */
     private int32 n;
 
-    /** Construct a trigram index (n = 3). */
+    /**
+     * Construct a trigram index (n = 3).
+     *
+     * @EntryPoint
+     */
     public Index() {
         this.postings = heap HashMap<String, ArrayList<T>>(64);
         this.n = 3;
     }
 
-    /** Construct an index with the given gram size. */
+    /**
+     * Construct an index with the given gram size.
+     *
+     * @EntryPoint
+     */
     public Index(int32 gramSize) {
         this.postings = heap HashMap<String, ArrayList<T>>(64);
         this.n = gramSize;

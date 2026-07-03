@@ -37,6 +37,8 @@ public class Command {
      * resolved against PATH). Ownership of `argv` moves into the command.
      * An empty `argv` is tolerated and surfaces as a launch failure
      * (`launched() == false`) at `run()` time.
+     *
+     * @EntryPoint
      */
     public Command(#String[] argv) {
         this.argv = argv;
@@ -102,6 +104,8 @@ public class Command {
      * return the result. Intrinsic-lowered to `__cajeta_proc_run`
      * (`MethodCallExpression.cpp`); this stub body exists only for the
      * parser/typechecker.
+     *
+     * @EntryPoint
      */
     public #ProcessResult run() {
         return heap ProcessResult();
@@ -112,6 +116,8 @@ public class Command {
      * its piped stdio plus wait/kill/pid. (Named `start()` rather than
      * `spawn()` because `spawn` is a reserved fiber keyword.) Intrinsic-lowered
      * to `__cajeta_proc_spawn`; this stub body exists only for the parser.
+     *
+     * @EntryPoint
      */
     public #Process start() {
         return heap Process();

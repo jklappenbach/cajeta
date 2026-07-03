@@ -45,6 +45,8 @@ public class MeshSimplifier {
      * quadric. `positions` holds the vertex positions flat (x, y, z per vertex),
      * `vertexCount` their number, and `indices` is a flat triangle list (length
      * a multiple of 3). Read a vertex's quadric back with {@link #vertexQuadric}.
+     *
+     * @EntryPoint
      */
     public static #float32[] accumulateQuadrics(float32[] positions,
                                                 int32[] indices,
@@ -159,6 +161,8 @@ public class MeshSimplifier {
      * list, `vertexCount` the vertex count. O(triangles²) for the linear
      * cheapest-edge scan — adequate for the v1 toolbox; a heap-ordered driver
      * is a later optimization.
+     *
+     * @EntryPoint
      */
     public static #int32[] simplify(float32[] positions,
                                     int32[] indices,

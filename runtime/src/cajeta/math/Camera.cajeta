@@ -29,6 +29,8 @@ public class Camera {
      * A right-handed perspective projection with clip depth [0,1].
      * `fovyRadians` is the vertical field of view in RADIANS, `aspect` is
      * width/height, `near`/`far` are positive view-space distances.
+     *
+     * @EntryPoint
      */
     public static Matrix<float32,4,4> perspective(float32 fovyRadians, float32 aspect,
                                                   float32 near, float32 far) {
@@ -50,6 +52,8 @@ public class Camera {
      * A right-handed orthographic projection with clip depth [0,1]. The box
      * `[left,right] x [bottom,top] x [near,far]` (view space, looking down -z)
      * maps to the clip cube `[-1,1] x [-1,1] x [0,1]`.
+     *
+     * @EntryPoint
      */
     public static Matrix<float32,4,4> ortho(float32 left, float32 right,
                                             float32 bottom, float32 top,
@@ -77,6 +81,8 @@ public class Camera {
      * `center` with the given `up` reference. The basis is right (s), true up
      * (u), and backward (-forward); the matrix maps `eye` to the view-space
      * origin.
+     *
+     * @EntryPoint
      */
     public static Matrix<float32,4,4> lookAt(Vector<float32,3> eye,
                                              Vector<float32,3> center,

@@ -20,6 +20,11 @@ public final class Generator {
     uint32 key0;
     uint32 key1;
 
+    /**
+     * Build a generator keyed by `seed`; the same seed reproduces the same stream.
+     *
+     * @EntryPoint
+     */
     public Generator(uint64 seed) {
         this.key0 = (uint32) seed;
         this.key1 = (uint32) (seed >>> 32);
@@ -81,6 +86,8 @@ public final class Generator {
      * `n` samples from the uniform distribution over `[0, 1)` (numpy `random`): a 1-D
      * `Tensor<float32>` where element `i` is the top 24 bits of `philox(i, key)[0]`
      * scaled to `[0, 1)`. Reproducible for a given seed; each element is independent.
+     *
+     * @EntryPoint
      */
     public #Tensor<float32> uniform(int64 n) {
         int64[] sh = heap int64[1];

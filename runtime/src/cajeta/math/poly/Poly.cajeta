@@ -12,7 +12,10 @@ import cajeta.math.Tensor;
 public final class Poly {
 
     /** Evaluate the polynomial `coeffs` (highest degree first) at `x` via Horner's
-     *  method (numpy `polyval`): `((a_n·x + a_{n-1})·x + …)·x + a_0`. */
+     *  method (numpy `polyval`): `((a_n·x + a_{n-1})·x + …)·x + a_0`.
+     *
+     * @EntryPoint
+     */
     public static E polyval<E extends Numeric>(Tensor<E> coeffs, E x) {
         int64 n = coeffs.size();
         E acc = (E) 0;
@@ -52,7 +55,10 @@ public final class Poly {
     }
 
     /** Product of two polynomials (numpy `polymul`): the convolution of the coefficient
-     *  sequences, `out[i+j] += a[i]·b[j]`. Result length `len_a + len_b - 1`. */
+     *  sequences, `out[i+j] += a[i]·b[j]`. Result length `len_a + len_b - 1`.
+     *
+     * @EntryPoint
+     */
     public static #Tensor<E> polymul<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
         int64 la = a.size();
         int64 lb = b.size();

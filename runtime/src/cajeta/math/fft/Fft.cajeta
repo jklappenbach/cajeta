@@ -22,13 +22,19 @@ public final class Fft {
     static final float32 TWO_PI = 6.2831853071795864769f;
 
     /** Forward DFT of an interleaved-`float32` complex signal (length `2N`, `N` a
-     *  power of two) → interleaved `float32` of the same length. */
+     *  power of two) → interleaved `float32` of the same length.
+     *
+     * @EntryPoint
+     */
     public static #Tensor<float32> fft(Tensor<float32> x) {
         return Fft.transform(x, false);
     }
 
     /** Inverse DFT (numpy `ifft`): conjugate twiddles + `1/N` scaling, so
-     *  `ifft(fft(x)) ≈ x`. Interleaved `float32` in and out. */
+     *  `ifft(fft(x)) ≈ x`. Interleaved `float32` in and out.
+     *
+     * @EntryPoint
+     */
     public static #Tensor<float32> ifft(Tensor<float32> x) {
         return Fft.transform(x, true);
     }
@@ -171,6 +177,8 @@ public final class Fft {
      * to interleaved (imag = 0), transforms, and returns the non-redundant half
      * spectrum — the first `n/2 + 1` complex bins, as interleaved `float32` of length
      * `2·(n/2+1)`. (`n` a power of two.)
+     *
+     * @EntryPoint
      */
     public static #Tensor<float32> rfft(Tensor<float32> real) {
         int64 n = real.size();

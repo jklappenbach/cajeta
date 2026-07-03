@@ -64,6 +64,8 @@ public final class BackendRegistry {
      * Because the floor registers first, a later-registered real backend wins on priority(); when no
      * real backend ever registers, the floor is what selection falls to (silent for headless/input/
      * audio, loud for an interactive window — see {@link #selectWindow}).
+     *
+     * @EntryPoint
      */
     public static BackendRegistry instance() {
         if (BackendRegistry.shared == null) {
@@ -91,6 +93,7 @@ public final class BackendRegistry {
      *
      * @param headless the call site's explicit intent — true: the app opts into offscreen rendering
      *                 and accepts the null floor; false: the app wants a real interactive window.
+     * @EntryPoint
      */
     public WindowBackend selectWindow(boolean headless) {
         // Env override (spec §4.2): CAJETA_IFX_WINDOW=<name> forces that registered backend over

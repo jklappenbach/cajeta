@@ -121,8 +121,10 @@ public class DType {
      * recovers `f32()`. Folds to a constant `codeOf<T>()` then decodes it.
      *
      * ```cajeta
-     * #DType dt = DType.of<float32>();   // == DType.f32()
+     * DType dt = DType.of<float32>();   // == DType.f32()
      * ```
+     *
+     * @EntryPoint
      */
     public static #DType of<T>() {
         int32 c = DType.codeOf<T>();
@@ -154,6 +156,8 @@ public class DType {
      *    int64+uint64 → float64).
      *  - complex with X → complex of the wider width (reserved; unreachable until
      *    complex primitives land).
+     *
+     * @EntryPoint
      */
     public static #DType promote(DType a, DType b) {
         int32 ak = a.kindCode;

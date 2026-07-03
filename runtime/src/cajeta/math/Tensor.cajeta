@@ -109,7 +109,11 @@ public class Tensor<T> {
         return heap Tensor<E>(#st, 0, shape, strides);
     }
 
-    /** Tensor of `shape` filled with the element zero (C-order). */
+    /**
+     * Tensor of `shape` filled with the element zero (C-order).
+     *
+     * @EntryPoint
+     */
     public static #Tensor<E> zeros<E>(int64[] shape) {
         int64 n = Tensor.productOf(shape);
         Storage<E> st = heap Storage<E>(n);
@@ -117,7 +121,11 @@ public class Tensor<T> {
         return heap Tensor<E>(#st, 0, shape, strides);
     }
 
-    /** Tensor of `shape` filled with the element one (C-order). */
+    /**
+     * Tensor of `shape` filled with the element one (C-order).
+     *
+     * @EntryPoint
+     */
     public static #Tensor<E> ones<E>(int64[] shape) {
         int64 n = Tensor.productOf(shape);
         Storage<E> st = heap Storage<E>(n);
@@ -144,7 +152,11 @@ public class Tensor<T> {
         return heap Tensor<E>(#st, 0, shape, strides);
     }
 
-    /** 1-D tensor `[0, 1, …, n-1]` cast to `E`. */
+    /**
+     * 1-D tensor `[0, 1, …, n-1]` cast to `E`.
+     *
+     * @EntryPoint
+     */
     public static #Tensor<E> arange<E>(int64 n) {
         Storage<E> st = heap Storage<E>(n);
         int64 i = 0;
@@ -185,7 +197,11 @@ public class Tensor<T> {
         return heap Tensor<E>(#st, 0, shape, strides);
     }
 
-    /** Tensor of `shape` (C-order) holding a copy of the first `size` of `data`. */
+    /**
+     * Tensor of `shape` (C-order) holding a copy of the first `size` of `data`.
+     *
+     * @EntryPoint
+     */
     public static #Tensor<E> of<E>(E[] data, int64[] shape) {
         int64 n = Tensor.productOf(shape);
         Storage<E> st = heap Storage<E>(n);

@@ -67,6 +67,8 @@ public final class KernelBuffer<T> {
      *     s.sync();
      *     x.download(hx);
      *     // device memory freed automatically when x leaves scope
+     *
+     * @EntryPoint
      */
     public KernelBuffer(uint64 elementCount) {
         this.elementCount = elementCount;
@@ -147,6 +149,8 @@ public final class KernelBuffer<T> {
      * handle would be rejected by the escape checker. For same-scope
      * allocations prefer `stack KernelBuffer<T>(...)` + `allocate()` at the use
      * site.
+     *
+     * @EntryPoint
      */
     public static #KernelBuffer<T> alloc(uint64 n) {
         KernelBuffer<T> buf = heap KernelBuffer<T>(n);   // RAII ctor allocates device memory

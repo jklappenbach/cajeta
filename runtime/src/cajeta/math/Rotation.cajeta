@@ -33,6 +33,8 @@ public class Rotation {
      * A rotation of `angleRadians` about `axis` (right-handed). The axis is
      * normalized internally, so a non-unit axis is fine. Closed form:
      * `q = (cos(θ/2), sin(θ/2) * axis)`.
+     *
+     * @EntryPoint
      */
     public static Quaternion<float32> fromAxisAngle(Vector<float32,3> axis, float32 angleRadians) {
         float32 half = angleRadians * 0.5f;
@@ -49,6 +51,8 @@ public class Rotation {
      * A rotation from Euler angles (radians), applied in the order roll (about
      * +z), then yaw (about +y), then pitch (about +x): `q = qZ * qY * qX`. Each
      * component is built with {@link #fromAxisAngle}.
+     *
+     * @EntryPoint
      */
     public static Quaternion<float32> fromEuler(float32 pitchX, float32 yawY, float32 rollZ) {
         // Single Quaternion operator per statement (the §1 compound-expression

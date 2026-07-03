@@ -39,7 +39,11 @@ public class Matcher<T> {
     /** entry id → value. */
     private ArrayList<T> values;
 
-    /** Construct an empty matcher (bigram index for transposition recall). */
+    /**
+     * Construct an empty matcher (bigram index for transposition recall).
+     *
+     * @EntryPoint
+     */
     public Matcher() {
         this.index = heap Index<int32>(2);
         this.keys = heap ArrayList<String>();

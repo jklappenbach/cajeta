@@ -144,7 +144,11 @@ public final class Npy {
 
     // ---- float32 ('<f4') -------------------------------------------------------
 
-    /** Save a `float32` tensor to `path` as a `.npy` (`'<f4'`, C-order). */
+    /**
+     * Save a `float32` tensor to `path` as a `.npy` (`'<f4'`, C-order).
+     *
+     * @EntryPoint
+     */
     public static void saveF32(String path, Tensor<float32> t) {
         int32 nd = t.ndim();
         int64 n = t.size();
@@ -169,7 +173,11 @@ public final class Npy {
         File.writeAllBytes(path, buf, (int32) fileLen);
     }
 
-    /** Load a `float32` `.npy` from `path`. */
+    /**
+     * Load a `float32` `.npy` from `path`.
+     *
+     * @EntryPoint
+     */
     public static #Tensor<float32> loadF32(String path) {
         int8[] buf = File.readAllBytes(path);
         int64 dataOff = Npy.dataOffset(buf);

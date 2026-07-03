@@ -20,6 +20,8 @@ public final class LinAlg {
      * elimination with partial pivoting + back-substitution. `A` is `(n,n)`, `b` is
      * `(n,)`; returns the solution vector `x` `(n,)`. The inputs are not modified
      * (works on copies).
+     *
+     * @EntryPoint
      */
     public static #Tensor<E> solve<E extends Floating>(Tensor<E> a, Tensor<E> b) {
         int64 n = a.shapeAt(0);
@@ -79,6 +81,8 @@ public final class LinAlg {
      * Determinant of a square `A` (numpy `linalg.det`) — the product of the pivots from
      * LU with partial pivoting, with the sign flipped once per row swap. Returns a
      * scalar `E`.
+     *
+     * @EntryPoint
      */
     public static E det<E extends Floating>(Tensor<E> a) {
         int64 n = a.shapeAt(0);
@@ -124,6 +128,8 @@ public final class LinAlg {
     /**
      * Inverse of a square `A` (numpy `linalg.inv`) — solve `A·X = I` column by column.
      * Returns the `(n,n)` inverse.
+     *
+     * @EntryPoint
      */
     public static #Tensor<E> inv<E extends Floating>(Tensor<E> a) {
         int64 n = a.shapeAt(0);
@@ -453,6 +459,8 @@ public final class LinAlg {
      * values in **descending** order. Computed natively from the symmetric eigenproblem
      * of `AᵀA` (right vectors `V` and σ²), then `U = A·V/σ`. (General nonsymmetric `eig`
      * — complex spectra — is deferred; it needs the interleaved-complex tier.)
+     *
+     * @EntryPoint
      */
     public static #Tensor<E>[] svd<E extends Floating>(Tensor<E> a) {
         int64 n = a.shapeAt(0);
