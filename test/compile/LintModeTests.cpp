@@ -330,6 +330,30 @@ TEST(LintMode, MultipleUnresolvedTypesAllReported) {
     EXPECT_EQ(n, 2u) << "expected exactly two errors; stderr:\n" << err;
 }
 
+// diagnostic-engine 5.1 — a SEMANTICALLY broken sibling (its own body has an
+// unresolved type) must not leak into the target's engine (the sibling parse
+// runs a suppressed engine). Distinct from the syntax-broken case, which throws
+// before the visitor.
+TEST(LintSourceRoot, SemanticBrokenSiblingDoesNotLeak) {
+    auto root = freshTempDir("semsib") / "src";
+    writeUnit(root, "Sibling",
+        "public final class Sibling {\n"
+        "    public static int32 add(int32 a, int32 b) { return a + b; }\n"
+        "    public static void oops() { Nope n = null; }\n"   // unresolved type in sibling
+        "}");
+    auto target = writeUnit(root, "Target",
+        "public final class Target {\n"
+        "    public static void main() { int32 x = Sibling.add(1, 2); }\n"
+        "}");
+    std::string err;
+    int rc = lintCapturingStderr(target, "--diag-format=json --source-root " + root.string(), err);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_EQ(rc, 0) << "target is clean; the sibling's error must not surface:\n" << err;
+    EXPECT_EQ(err.find("Nope"), std::string::npos) << "sibling diagnostic leaked:\n" << err;
+    EXPECT_EQ(err.find("{\"severity\""), std::string::npos) << err;
+}
+
 // 1.1.5 — a nonexistent --source-root fails clearly, not with the usage banner.
 TEST(LintSourceRoot, MissingSourceRootFailsClearly) {
     auto root = freshTempDir("badroot") / "src";

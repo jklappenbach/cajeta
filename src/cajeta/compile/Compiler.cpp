@@ -30,6 +30,7 @@
 #include "../type/QualifiedName.h"
 #include "cajeta/error/CajetaExceptions.h"
 #include "cajeta/error/Diagnostics.h"
+#include "cajeta/error/DiagnosticEngine.h"
 #include "CajetaParserBaseVisitor.h"
 #include "../xpu/core/XpuAttributes.h"
 #include "../xpu/XpuTarget.h"
@@ -1114,6 +1115,19 @@ namespace cajeta {
     void Compiler::registerLintContext(const string& root, const string& file,
                                        const string& shadow, bool json) {
         namespace fs = std::filesystem;
+        // Context files are parsed for signatures only — a semantic error in a
+        // sibling body must not report into the target's engine. Install a
+        // suppressed engine for the duration; restore the target's on the way out
+        // (RAII so it survives any escaping error).
+        struct EngineGuard {
+            DiagnosticEngine* prev;
+            explicit EngineGuard(DiagnosticEngine* e)
+                : prev(DiagnosticEngine::active()) { DiagnosticEngine::setActive(e); }
+            ~EngineGuard() { DiagnosticEngine::setActive(prev); }
+        };
+        DiagnosticEngine suppressed(/*suppressed=*/true);
+        EngineGuard guard(&suppressed);
+
         // Register all type NAMES first so cross-file references vouch, then the
         // signatures below fill them in.
         prescanSourceRoot(root, json);
