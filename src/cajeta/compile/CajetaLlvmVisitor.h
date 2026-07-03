@@ -19,6 +19,7 @@
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/asn/ClassBodyDeclaration.h"
 #include "cajeta/asn/AnnotationParser.h"
+#include "cajeta/compile/Compiler.h"
 #include "cajeta/error/Exception.h"
 
 
@@ -142,6 +143,8 @@ namespace cajeta {
                 try {
                     mem = std::any_cast<MemberDeclarationPtr>(
                         visitClassBodyDeclaration(cbd));
+                } catch (ReuseHazardAbort&) {
+                    throw;  // reuse rollback must reach the compile driver
                 } catch (...) { continue; }
                 if (auto methodDecl =
                         std::dynamic_pointer_cast<MethodDeclaration>(mem)) {
