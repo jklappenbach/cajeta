@@ -125,6 +125,9 @@ YIELD:              'yield';
 
 // Records
 RECORD:             'record';
+// Per-field mutation opt-in on records (records-spec §3.4). Soft keyword:
+// the parser's identifier rule also accepts it, so existing `mut` names parse.
+MUT:                'mut';
 
 // Sealed Classes
 SEALED:             'sealed';

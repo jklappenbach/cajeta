@@ -1229,7 +1229,11 @@ namespace cajeta {
                                 };
                             findP(recvClass);
                             bool staticField = found && found->isStatic();
-                            if (!ctorSelfInit && !staticField) {
+                            // Per-field mutation opt-in (records-spec §3.4):
+                            // a `mut` field accepts in-place writes.
+                            bool mutField = found
+                                && found->getModifiers().count(MUT);
+                            if (!ctorSelfInit && !staticField && !mutField) {
                                 throw Exception(
                                     "cannot assign to immutable field '"
                                         + recDotLhs->getIdentifier()

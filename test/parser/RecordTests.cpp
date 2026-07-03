@@ -852,3 +852,81 @@ TEST(RecordCompileErrorTests, omittedNonDefaultFieldRejected) {
         "}\n";
     EXPECT_ANY_THROW(CajetaJit::compile(src, "test.D"));
 }
+
+// ---------------------------------------------------------------------
+// Unit 6 — mutation opt-in: per-field `mut` (plan §6; spec 3.4)
+// ---------------------------------------------------------------------
+
+namespace {
+
+const char* kMutTickSrc =
+    "package test;\n"
+    "public record MTick {\n"
+    "    mut float64 price;\n"
+    "    int32 volume;\n"
+    "    public void reprice(float64 v) { this.price = v; }\n"
+    "}\n";
+
+} // namespace
+
+// 6.1.1 — a `mut` field may be written in place (locals and `this` alike);
+// the record's other fields keep their values.
+TEST(RecordTests, mutFieldWritesInPlace) {
+    auto src = std::string(kMutTickSrc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        MTick t = MTick { price: 1.0, volume: 7 };\n"
+        "        t.price = 2.5;\n"
+        "        t.reprice(t.price * 2.0);\n"
+        "        return (int32)(t.price * 10.0 + (float64) t.volume);\n"  // 50 + 7
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 57);
+}
+
+// 6.1.1 — non-`mut` fields still reject writes (default stays immutable).
+TEST(RecordCompileErrorTests, nonMutFieldStillRejected) {
+    auto src = std::string(kMutTickSrc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        MTick t = MTick { price: 1.0, volume: 7 };\n"
+        "        t.volume = 9;\n"
+        "        return t.volume;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_ANY_THROW(CajetaJit::compile(src, "test.D"));
+}
+
+// 6.1.2 — write-through: a `mut` field of a record EMBEDDED in a class
+// updates in place through the holder — no new record is constructed (the
+// sibling field is untouched and the write is visible through the same
+// embedded value).
+TEST(RecordTests, mutWriteThroughEmbeddedRecord) {
+    auto src = std::string(kMutTickSrc) +
+        "public class Book {\n"
+        "    MTick top;\n"
+        "    public Book() { this.top = MTick { price: 10.0, volume: 3 }; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Book b = heap Book();\n"
+        "        b.top.price = 42.0;\n"
+        "        return (int32)(b.top.price + (float64)(b.top.volume * 100));\n"  // 42 + 300
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 342);
+}
+
+// 6.1.1 corollary — `mut` stays a plain identifier outside the modifier
+// position (soft keyword; pre-existing code with `mut` names keeps parsing).
+TEST(RecordTests, mutRemainsUsableAsIdentifier) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32 mut = 21;\n"
+        "        return mut * 2;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
