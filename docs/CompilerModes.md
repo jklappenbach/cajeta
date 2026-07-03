@@ -334,8 +334,12 @@ Each line is one diagnostic:
 - `code`: the compiler error id (semantic errors) or `"syntax"` (parser/lexer). May be null.
 - `message`: the human message. `file` / `line` / `column`: source location when
   known (1-based line/column), else JSON null. Syntax errors carry a precise
-  location; today's semantic errors carry the id + message (location is a
-  follow-on as the exception surface gains spans).
+  location. **Semantic** errors carry a location once their throw site is migrated to
+  the located-exception helper (the flagship *unresolved type* does); the long tail is
+  being migrated incrementally, so an un-migrated semantic error still reports a null
+  location. Remaining follow-up (**Phase 2**): make semantic diagnostics
+  *collect-and-continue* so a file surfaces **multiple** semantic errors at once instead
+  of aborting on the first (see `docs/specs/located-semantic-diagnostics-spec.md` §1.4).
 - Mode-independent (not changed by `--debug`/`--release`/etc.); default `text`.
 - A clean compile emits nothing. Consumers should skip any non-`{` line defensively.
 
