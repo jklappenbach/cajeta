@@ -636,19 +636,24 @@ int main(int argc, const char* argv[]) {
     }
 
     bool jsonDiag = compiler.getFlags().diagFormat == DiagFormat::Json;
+    // Collect-and-continue for full compile too: migrated resolution sites report
+    // to the engine (recovering) instead of aborting; the codegen loop + emit are
+    // gated on the engine having no errors (Compiler::compile). All diagnostics
+    // are emitted here at the end (collect-continue-compile-spec).
+    cajeta::DiagnosticEngine engine;
+    cajeta::DiagnosticEngine::setActive(&engine);
     try {
         compiler.compile(positional[0], positional[1], positional[2]);
     } catch (cajeta::SyntaxErrorException&) {
-        // Per-error syntax diagnostics were already emitted during parsing
-        // (NDJSON or console); fail the compile without re-reporting.
-        return 1;
+        cajeta::DiagnosticEngine::setActive(nullptr);
+        return 1;  // syntax diagnostics already emitted during parsing
     } catch (cajeta::Exception& e) {
-        emitException(e, jsonDiag);
-        return 1;
+        engine.report("error", e.getErrorId(), e.getMessage(),
+                      e.getFile(), e.getLine(), e.getColumn());
     } catch (const std::exception& e) {
-        if (jsonDiag) cajeta::emitJsonDiagnostic("error", "", e.what());
-        else std::cerr << "cajeta: " << e.what() << "\n";
-        return 1;
+        engine.report("error", "", e.what());
     }
-    return 0;
+    cajeta::DiagnosticEngine::setActive(nullptr);
+    engine.emit(jsonDiag);
+    return engine.hasErrors() ? 1 : 0;
 }

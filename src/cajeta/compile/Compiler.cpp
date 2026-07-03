@@ -1278,6 +1278,14 @@ namespace cajeta {
         // synthesize singleton + factory helpers.
         CajetaModule::resolveDependencyGraph();
 
+        // Collect-and-continue gate (collect-continue-compile-spec §2): if the
+        // resolution passes reported recoverable errors to the engine, stop before
+        // codegen — a broken program produces no artifact, and error types must not
+        // reach codegen (it is not yet in collect mode).
+        if (DiagnosticEngine* eng = DiagnosticEngine::active()) {
+            if (eng->hasErrors()) return;
+        }
+
         // REFL-1.7: cajeta.reflect.Class is a template Class<T>. Force-build the
         // canonical wildcard instantiation Class<?> here — after all modules are
         // parsed/prototyped, before Phase 1/2 codegen — so (a) its method bodies

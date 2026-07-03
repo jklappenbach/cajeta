@@ -177,6 +177,36 @@ TEST(DiagFormatJson, TextModeRemainsPlain) {
         << "text mode must not emit JSON";
 }
 
+// collect-continue-compile 1.1 — full compile reports ALL pre-codegen errors
+// (not just the first) and writes no artifact when errors exist.
+TEST(DiagFormatJson, FullCompileCollectsMultipleErrorsNoArtifact) {
+    auto root = freshTempDir("fcmulti");
+    auto srcRoot = writeTest(root,
+        "NoSuchType1 z = NoSuchType1.create(); NoSuchType2 y = NoSuchType2.create();");
+    auto bin = compilerBinary();
+    if (!fs::exists(bin)) GTEST_SKIP() << "compiler binary unavailable";
+    auto out = freshTempDir("fcout");
+    auto errFile = out / "err.txt";
+    std::string cmd = bin + " --emit=ir --diag-format=json cajeta.Test.main "
+                    + srcRoot.string() + " " + out.string()
+                    + " > " CAJETA_DIAG_DEVNULL " 2> " + errFile.string();
+    int rc = std::system(cmd.c_str());
+    std::ifstream in(errFile);
+    std::stringstream ss; ss << in.rdbuf();
+    std::string err = ss.str();
+
+    EXPECT_NE(rc, 0);
+    size_t n = 0, p = 0;
+    while ((p = err.find("\"severity\":\"error\"", p)) != std::string::npos) { n++; p++; }
+    EXPECT_EQ(n, 2u) << "both unresolved types must report; stderr:\n" << err;
+    EXPECT_TRUE(everyNonEmptyLineIsJson(err)) << "pure NDJSON:\n" << err;
+
+    int artifacts = 0;
+    for (const auto& e : fs::recursive_directory_iterator(out))
+        if (e.path().extension() == ".ll") artifacts++;
+    EXPECT_EQ(artifacts, 0) << "no artifact may be emitted when errors exist";
+}
+
 TEST(DiagFormatJson, ValidCompileEmitsNoDiagnostics) {
     auto root = freshTempDir("ok");
     auto srcRoot = writeTest(root, "");  // empty body, valid
