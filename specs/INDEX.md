@@ -7,3 +7,4 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | Spec | Plan | Status |
 |------|------|--------|
 | [docs-refactor](docs-refactor-spec.md) | [plan](../agents/docs-refactor-plan.md) | active |
+| [jit-run-parse-abort](jit-run-parse-abort-spec.md) | — (unplanned) | draft |

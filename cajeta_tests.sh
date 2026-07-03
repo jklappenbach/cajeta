@@ -821,4 +821,13 @@ fi
 if [ "$total_failed" -gt 0 ] || [ "$num_timeouts" -gt 0 ] || [ "$num_crashes" -gt 0 ]; then
     exit 1
 fi
+
+# Docstring example lint (docs-refactor 2.2.3): doc-comment examples in
+# the stdlib/samples must be valid syntax — guards the `#Type local =`
+# regression class. Fast (one grep) and tree-clean, so it gates the
+# full suite. The broader docs checks (scripts/check-docs.sh) join once
+# the tree's known link/snippet violations are fixed.
+if ! "$SCRIPT_DIR/scripts/check-docstring-examples.sh"; then
+    exit 1
+fi
 exit 0
