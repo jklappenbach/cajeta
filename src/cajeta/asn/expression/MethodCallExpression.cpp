@@ -1563,6 +1563,9 @@ namespace cajeta {
                     llvm::Value* sizePtr = builder->CreateStructGEP(hdrTy, argsHdr,
                         CajetaArray::SIZE_FIELD_INDEX);
                     llvm::Value* count = builder->CreateLoad(i64Ty, sizePtr);
+                    // Mask the shared-state sign bit (slice-spec §3.3).
+                    count = builder->CreateAnd(count,
+                        llvm::ConstantInt::get(i64Ty, 0x7FFFFFFFFFFFFFFFULL));
                     llvm::Value* dataPtr = builder->CreateStructGEP(hdrTy, argsHdr,
                         CajetaArray::DATA_FIELD_INDEX);
 
@@ -4537,8 +4540,12 @@ namespace cajeta {
             auto arrayType = dynamic_pointer_cast<CajetaArray>(receiverType);
             llvm::Value* sizePtr = builder->CreateStructGEP(
                 arrayType->getLlvmType(), receiver, CajetaArray::SIZE_FIELD_INDEX);
-            return builder->CreateLoad(
-                llvm::Type::getInt64Ty(*module->getLlvmContext()), sizePtr);
+            llvm::Type* i64Ty = llvm::Type::getInt64Ty(*module->getLlvmContext());
+            llvm::Value* rawCount = builder->CreateLoad(i64Ty, sizePtr);
+            // Mask the shared-state sign bit (slice-spec §3.3) — every stdlib
+            // .count() funnels through here.
+            return builder->CreateAnd(rawCount,
+                llvm::ConstantInt::get(i64Ty, 0x7FFFFFFFFFFFFFFFULL));
         }
 
         // P6.6 — `arr.stream()` intrinsic. Lowers to
@@ -4587,6 +4594,11 @@ namespace cajeta {
                             CajetaArray::SIZE_FIELD_INDEX);
                         llvm::Value* sizeI64 = builder->CreateLoad(
                             llvm::Type::getInt64Ty(llvmCtx), sizePtr);
+                        // Mask the shared-state sign bit (slice-spec §3.3).
+                        sizeI64 = builder->CreateAnd(sizeI64,
+                            llvm::ConstantInt::get(
+                                llvm::Type::getInt64Ty(llvmCtx),
+                                0x7FFFFFFFFFFFFFFFULL));
                         llvm::Value* sizeI32 = builder->CreateIntCast(
                             sizeI64, llvm::Type::getInt32Ty(llvmCtx), true);
                         vector<ParameterEntry> entries;

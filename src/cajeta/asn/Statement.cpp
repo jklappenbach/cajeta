@@ -774,6 +774,10 @@ namespace cajeta {
         llvm::Value* sizePtr = builder->CreateStructGEP(hdrTy, arrayVal,
             CajetaArray::SIZE_FIELD_INDEX, "size");
         llvm::Value* sizeVal = builder->CreateLoad(i64Ty, sizePtr, "size_v");
+        // Mask the shared-state sign bit (slice-spec §3.3): the signed loop
+        // compare would see a shared buffer's count as negative (0 iterations).
+        sizeVal = builder->CreateAnd(sizeVal,
+            llvm::ConstantInt::get(i64Ty, 0x7FFFFFFFFFFFFFFFULL), "size_m");
 
         llvm::BasicBlock* headBB = llvm::BasicBlock::Create(ctx, "fe_head", parentFn);
         llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(ctx, "fe_body", parentFn);
