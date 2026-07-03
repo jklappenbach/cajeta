@@ -132,3 +132,86 @@ TEST(StackDropClassRefTests, heapInstanceBehaviorUnchanged) {
     expectRunsClean(kHolderLiteral,
         "Holder h = heap Holder();");
 }
+
+// ---- Unit 3: base-subobject, array, and interface fields ----------------
+
+// 3.1.1 — a base's String field must drop when the derived stack
+// instance leaves scope (own-fields-only walk leaks it today), and a
+// literal in the base field must not abort.
+TEST(StackDropClassRefTests, baseStringFieldDroppedOnce) {
+    auto cls =
+        "public class Base {\n"
+        "    public String value;\n"
+        "    public Base() { return; }\n"
+        "}\n"
+        "public class Derived extends Base {\n"
+        "    public Derived() { return; }\n"
+        "}\n";
+    EXPECT_EQ(liveDelta(cls,
+        "Derived d = stack Derived();\n"
+        "String a = \"h\";\n"
+        "d.value = a + \"i\";"), 0);
+    expectRunsClean(cls,
+        "Derived d = stack Derived();\n"
+        "d.value = \"lit\";");
+}
+
+// 3.1.2 — MI: both bases' class-ref fields drop.
+TEST(StackDropClassRefTests, miBothBasesFieldsDropped) {
+    auto cls =
+        "public class P1 {\n"
+        "    public String a;\n"
+        "    public P1() { return; }\n"
+        "}\n"
+        "public class P2 {\n"
+        "    public String b;\n"
+        "    public P2() { return; }\n"
+        "}\n"
+        "public class D2 extends P1, P2 {\n"
+        "    public D2() { return; }\n"
+        "}\n";
+    EXPECT_EQ(liveDelta(cls,
+        "D2 d = stack D2();\n"
+        "String x = \"h\";\n"
+        "d.a = x + \"1\";\n"
+        "d.b = x + \"2\";"), 0);
+}
+
+// 3.1.3 — diamond: the shared base's field drops exactly once (claim
+// guard makes a second attempt a no-op; the balance must be exact).
+TEST(StackDropClassRefTests, diamondSharedBaseFieldDroppedOnce) {
+    auto cls =
+        "public class Root {\n"
+        "    public String v;\n"
+        "    public Root() { return; }\n"
+        "    public void setV(String s) {\n"
+        "        this.v = s;\n"
+        "    }\n"
+        "}\n"
+        "public class L extends Root {\n"
+        "    public L() { return; }\n"
+        "}\n"
+        "public class R extends Root {\n"
+        "    public R() { return; }\n"
+        "}\n"
+        "public class DD extends L, R {\n"
+        "    public DD() { return; }\n"
+        "}\n";
+    EXPECT_EQ(liveDelta(cls,
+        "DD d = stack DD();\n"
+        "String x = \"h\";\n"
+        "d.setV(x + \"!\");"), 0);
+}
+
+// 3.2.2 — array field on a stack instance: freed like the heap path
+// does (__cajeta_free_array), not leaked.
+TEST(StackDropClassRefTests, arrayFieldFreedOnStackDrop) {
+    auto cls =
+        "public class Holder2 {\n"
+        "    public int32[] data;\n"
+        "    public Holder2() { return; }\n"
+        "}\n";
+    EXPECT_EQ(liveDelta(cls,
+        "Holder2 h = stack Holder2();\n"
+        "h.data = heap int32[4];"), 0);
+}

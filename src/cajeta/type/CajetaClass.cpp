@@ -2703,53 +2703,20 @@ namespace cajeta {
         b.CreateCondBr(isNull, done, doDrop);
         b.SetInsertPoint(doDrop);
 
-        // Call user-defined drop() if present. Same lookup pattern as
-        // the heap drop above.
-        MethodPtr userDrop;
-        for (auto& entry : methods) {
-            MethodPtr m = entry.second;
-            if (!m || m->isConstructor()) continue;
-            if (m->getName() != "drop") continue;
-            auto pl = m->getParameterList();
-            if (pl.size() == 1) {
-                userDrop = m;
-                break;
-            }
-        }
-        if (userDrop && userDrop->getLlvmFunction()) {
-            b.CreateCall(userDrop->getLlvmFunctionType(),
-                userDrop->getLlvmFunction(), {instance});
-        }
+        // Same structure as the heap wrapper (getOrCreateDropFunction):
+        // this class's user body + field drops, then every transitive
+        // ancestor in reverse-DFS deduped order — each contributing its
+        // own user body + field drops at its canonical sub-object offset.
+        // emitDropBodyInline routes class-ref fields through the claim-
+        // guarded __cajeta_class_virtual_drop (safe on literals / static
+        // globals / aliases), frees array fields, and drops interface
+        // fields — none of which the previous own-fields-only, direct-
+        // wrapper walk handled correctly. The only difference from the
+        // heap wrapper is the missing trailing __cajeta_free: the stack
+        // body is reclaimed by the function epilogue.
+        emitDropBodyInline(b, instance, module);
 
-        // Implicit destructor chaining (MemoryModel.md § 140, C++
-        // semantics). Each ancestor's user `~Class()` body runs after
-        // this class's body + own fields, in reverse-DFS reverse-decl
-        // deduped order. Diamond ancestors run exactly once (shared via
-        // vbase ABI). Adjusts `this` to each ancestor's canonical
-        // sub-object position so the ancestor body's field GEPs land
-        // on the right slots. Stack-local drops never call
-        // __cajeta_free, so unlike the heap wrapper there's no
-        // double-free to guard against — we still walk only ancestor
-        // user bodies (not their full drop wrappers) because we
-        // already handled this class's own-field walk above and
-        // ancestor field-walks for class-ref fields would be done by
-        // each level's separately-emitted stack-drop if needed (but
-        // stack class-ref fields are uncommon enough that the existing
-        // own-field-only emission below covers the practical cases).
         for (auto& ancestor : collectDestructorChain()) {
-            MethodPtr parentUserDrop;
-            for (auto& entry : ancestor->methods) {
-                MethodPtr m = entry.second;
-                if (!m || m->isConstructor()) continue;
-                if (m->getName() != "drop") continue;
-                if (m->getParameterList().size() == 1) {
-                    parentUserDrop = m;
-                    break;
-                }
-            }
-            if (!parentUserDrop || !parentUserDrop->getLlvmFunction()) {
-                continue;
-            }
             uint64_t off = getSubObjectByteOffset(ancestor.get());
             llvm::Value* ancestorThis = instance;
             if (off != 0) {
@@ -2760,45 +2727,7 @@ namespace cajeta {
                     std::string("stack_dtor_subobj_")
                         + ancestor->getQName()->getTypeName());
             }
-            llvm::Function* fn = CajetaModule::ensureFunctionInModule(
-                lmod, parentUserDrop->getLlvmFunction());
-            b.CreateCall(parentUserDrop->getLlvmFunctionType(),
-                fn, {ancestorThis});
-        }
-
-        // Walk owned class-ref fields in REVERSE declaration order.
-        // Route each through the claim-guarded __cajeta_class_virtual_drop
-        // — the same path emitDropBodyInline uses for heap instances. The
-        // per-class drop wrapper is unguarded and ends in an unconditional
-        // __cajeta_free: handed a non-heap pointer (a String literal's
-        // static global, an already-claimed alias) it corrupts the heap.
-        // The claim no-ops on null, static, and already-claimed pointers.
-        std::vector<StructurePropertyPtr> reversed(
-            propertyList.begin(), propertyList.end());
-        std::reverse(reversed.begin(), reversed.end());
-        llvm::Function* fieldVirtualDropFn = nullptr;
-        for (auto& property : reversed) {
-            auto fieldType = property->getType();
-            auto fieldClass = dynamic_pointer_cast<CajetaClass>(fieldType);
-            if (!fieldClass) continue;
-            if (dynamic_pointer_cast<CajetaView>(fieldType)) continue;
-            if (dynamic_pointer_cast<CajetaArray>(fieldType)) continue;
-            if (fieldClass->isInterface()) continue;
-            if (!fieldClass->hasVtablePointerAtSlotZero()) continue;
-
-            if (!fieldVirtualDropFn) {
-                fieldVirtualDropFn = module->getRuntimeFunction(
-                    "__cajeta_class_virtual_drop", lmod);
-            }
-            if (!fieldVirtualDropFn) continue;
-            fieldClass->patchVirtualTableDropFn();
-
-            unsigned fieldIdx = (unsigned) getFieldLlvmIndex(property);
-            llvm::Value* slotPtr = b.CreateStructGEP(
-                rawLlvmType(), instance, fieldIdx,
-                std::string("stack_drop_field_") + property->getName());
-            llvm::Value* refPtr = b.CreateLoad(ptrTy, slotPtr);
-            b.CreateCall(fieldVirtualDropFn, {refPtr});
+            ancestor->emitDropBodyInline(b, ancestorThis, module);
         }
 
         // No __cajeta_free — stack body is reclaimed by the function
