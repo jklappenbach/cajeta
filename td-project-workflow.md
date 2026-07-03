@@ -1,6 +1,6 @@
 ---
 name: td-project-workflow
-description: Standard project layout (docs/, agents/, spec/plan files, two-level work stack) and the spec→plan→develop workflow governed by the design and implement skills
+description: Standard project layout (specs/ with INDEX + archive, docs/ for user documentation only, agents/ plans + repo focus stack) and the spec→plan→develop workflow governed by the design and implement skills
 metadata:
   type: feedback
 ---
@@ -10,16 +10,22 @@ metadata:
 ## Project structure
 Initialize every project with this layout:
 - **This memory file** at the project root.
-- **`docs/`** off the root, with a **`specs/`** subdirectory.
+- **`specs/`** off the root — engineering work specs. Specs are **workflow
+  artifacts, not user documentation**: they never live under `docs/`.
+  - Specs live at `specs/[name]-spec.md`.
+  - **`specs/INDEX.md`** — the active-work index (spec ↔ plan ↔ status).
+  - **`specs/schemas/`** — machine-readable artifacts that accompany specs
+    (JSON schemas, protocol definitions).
+  - **`specs/archive/`** — completed specs.
+- **`docs/`** off the root — **user-facing documentation only** (guide,
+  reference). Authored in markdown; site builders import the markdown.
 - **`agents/`** off the root.
-- **Specs** live at `docs/specs/[name]-spec.md`.
-- **Plans** live at `agents/[name]-plan.md`.
-- **Work stacks** live in `agents/` too (maintained by the **implement** skill):
-  one **per-plan task stack** `agents/[name]-focus.md` (**shared** across clones —
-  single-writer per plan), under a **per-clone** cross-plan **focus stack**
-  `agents/state/[clone-id]/focus.md` (so clones sharing one `agents/` don't bleed
-  attention; `clone-id` = hostname + slugified working-copy path). Completion status
-  lives in the plan's checkboxes — there is **no** separate completed-log.
+  - Plans live at `agents/[name]-plan.md`; completed plans move to
+    **`agents/archive/`**.
+  - **`agents/focus.md`** — the repo's focus stack (maintained by the
+    **implement** skill). One stack per repo; assumes a single agent per repo.
+    Completion status lives in the plan's checkboxes — there is **no**
+    separate completed-log.
 
 ## What a spec is (a.k.a. SRD / SRS)
 A spec focuses on the **requirements and use cases** — the **why** and the **what**.
@@ -43,22 +49,31 @@ each containing three subsections of line items:
 
 The entire document is **numbered in outline format** so every section and line item
 has a unique identifier. The plan's checkboxes (`- [ ]` / `- [x]` / `- [~]`) are the
-**source of truth for what's done** — the stacks never record completion.
+**source of truth for what's done** — the stack never records completion.
 
-## Work state (the two-level stack)
-While implementing, work state is a **call stack**: the frame stack
-`agents/state/[clone-id]/focus.md` holds which plan/context you're in; each
-`agents/[name]-focus.md` is that plan's own task LIFO. A tangent *inside* the current
-plan pushes on that plan's stack; a jump to *another* plan (or free exploration) pushes a
-frame on `focus.md` — so popping always returns you to where you were, within a plan
-**and** across plans. The focus stack is **per-clone** (working copies sharing one
-`agents/` keep separate attention); the per-plan task stacks are **shared**. The
-**implement** skill governs this.
+## Lifecycle — INDEX + archive
+`specs/INDEX.md` lists **active work only**: one row per in-flight spec —
+spec ↔ plan ↔ status (`draft` while spec/plan are being authored, `active` once
+approved, `blocked` when stalled). Creating a spec adds its row. **Closing a plan
+removes it**: when every unit in `agents/[name]-plan.md` is `- [x]`, move
+`specs/[name]-spec.md` → `specs/archive/`, move `agents/[name]-plan.md` →
+`agents/archive/`, and drop the INDEX row. The archived spec + plan pair
+(checkboxes intact) is the durable record — never a separate completed-log.
+
+## Work state — the focus stack (`agents/focus.md`)
+A LIFO of attention: top = what you're working now. Entries are one line each —
+`<plan>:<outline-id>` for plan work, `[explore: <what>]` for unplanned work.
+Interrupts push; completions pop; what surfaces is what you were doing. The stack
+records **departures from plan order only** — the plan's checkboxes and
+dependency ordering already say what's next, so an empty stack means "follow the
+active plan." One stack per repo, one writer (a single agent per repo); a truly
+global stack would be corrupted by concurrent agents. The **implement** skill
+governs this.
 
 ## Workflow
 1. **Scoping new work** → first create a new spec and write it *with the developer*.
    Load the **design** skill — it governs the authoring of *both* the spec and
    the plan.
 2. **Once the spec and plan are complete and approved** → load the **implement**
-   skill. It drives the two-level work stack so the documents accurately store state,
-   and state stays visible to the developer.
+   skill. It drives the focus stack so the documents accurately store state, and
+   state stays visible to the developer.
