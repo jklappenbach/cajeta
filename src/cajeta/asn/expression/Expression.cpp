@@ -843,6 +843,10 @@ namespace cajeta {
             llvm::Value* sizePtr = builder->CreateStructGEP(headerTy, arrayVal,
                 CajetaArray::SIZE_FIELD_INDEX);
             llvm::Value* size = builder->CreateLoad(i64Ty, sizePtr);
+            // Mask the shared-state sign bit (slice-spec §3.3) so a shared
+            // buffer still bounds-checks against its true count.
+            size = builder->CreateAnd(size,
+                llvm::ConstantInt::get(i64Ty, 0x7FFFFFFFFFFFFFFFULL));
             llvm::Value* outOfBounds = builder->CreateICmpUGE(idx, size);
             llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
             llvm::BasicBlock* failBB = llvm::BasicBlock::Create(ctx, "bounds_fail", parentFn);

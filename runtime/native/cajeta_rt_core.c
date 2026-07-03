@@ -792,9 +792,13 @@ void* __cajeta_args_make(int64_t argc, char** argv,
 // owning local's chain pop both call this for the same array address; the
 // first one wins the live-set claim and actually frees, the second sees
 // the address is gone and returns silently.
+int __cajeta_shared_owner_drop(void* base);   // cajeta_rt_shared.c (same TU)
+
 void __cajeta_free_array(void* ptr) {
     if (!ptr) return;
-    if (!__cajeta_live_set_claim(ptr)) return;
+    // Shared-state seam (slice-spec §3.6): sign bit clear -> plain claim as
+    // today; set -> the owner's stake releases, free only at the last stake.
+    if (!__cajeta_shared_owner_drop(ptr)) return;
     __cajeta_poison_buffer(ptr);
     free(ptr);
 }
@@ -809,7 +813,7 @@ void __cajeta_free_array(void* ptr) {
 void __cajeta_view_drop_owned(void* data_ptr) {
     if (data_ptr == NULL) return;
     void* header = (void*) ((char*) data_ptr - 8);
-    if (!__cajeta_live_set_claim(header)) return;
+    if (!__cajeta_shared_owner_drop(header)) return;
     __cajeta_poison_buffer(header);
     free(header);
 }
@@ -1131,6 +1135,14 @@ void __cajeta_string_drop(void* s) {
     // (freed with the wrapper); view strings (mode 1) borrow their bytes.
     if (mode == 0 && bytes != NULL && bytes != (void*) &str->ssoCount) {
         __cajeta_free_array(bytes);
+    } else if (mode == 2 && bytes != NULL) {
+        // Windowed view (slice-spec §7.1): this wrapper holds one stake on the
+        // root buffer; free it only as the last stake (static roots no-op).
+        int __cajeta_shared_release(void* base);
+        if (__cajeta_shared_release(bytes)) {
+            __cajeta_poison_buffer(bytes);
+            free(bytes);
+        }
     }
     __cajeta_poison_buffer(s);
     free(s);

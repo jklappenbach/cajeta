@@ -441,18 +441,13 @@ namespace cajeta {
                     && cls->getQName()->getPackageName() == "cajeta.lang"
                     && cls->getLlvmType()
                     && llvm::isa<llvm::StructType>(cls->getLlvmType())) {
-                auto* structTy =
-                    llvm::cast<llvm::StructType>(cls->getLlvmType());
-                llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
-                llvm::Type* i8Ty = llvm::Type::getInt8Ty(llvmCtx);
-                llvm::Type* i64Ty = llvm::Type::getInt64Ty(llvmCtx);
-                llvm::Value* bytesSlot = builder->CreateStructGEP(
-                    structTy, v, 1, "strArg.bytes_slot");
-                llvm::Value* bytesPtr = builder->CreateLoad(
-                    ptrTy, bytesSlot, "strArg.bytes_ptr");
-                v = builder->CreateInBoundsGEP(i8Ty, bytesPtr,
-                    llvm::ConstantInt::get(i64Ty, 8),
-                    "strArg.cstr");
+                // Runtime helper handles the mode split: modes 0/1 return the
+                // NUL-terminated data pointer directly; a mode-2 windowed view
+                // (slice-spec §7.1) has no NUL at its window end, so the helper
+                // materializes into a per-thread scratch.
+                llvm::Function* cstrFn =
+                    module->getRuntimeFunction("__cajeta_string_cstr");
+                v = builder->CreateCall(cstrFn, {v}, "strArg.cstr");
             }
         }
         return v;
@@ -1563,6 +1558,9 @@ namespace cajeta {
                     llvm::Value* sizePtr = builder->CreateStructGEP(hdrTy, argsHdr,
                         CajetaArray::SIZE_FIELD_INDEX);
                     llvm::Value* count = builder->CreateLoad(i64Ty, sizePtr);
+                    // Mask the shared-state sign bit (slice-spec §3.3).
+                    count = builder->CreateAnd(count,
+                        llvm::ConstantInt::get(i64Ty, 0x7FFFFFFFFFFFFFFFULL));
                     llvm::Value* dataPtr = builder->CreateStructGEP(hdrTy, argsHdr,
                         CajetaArray::DATA_FIELD_INDEX);
 
@@ -2577,12 +2575,20 @@ namespace cajeta {
                 // (data at header+8, same ABI as loadU64) and calls the runtime
                 // __cajeta_hash_bytes. Backs String.hash(); len<=0 is the empty-
                 // input hash (the runtime clamps negative len to 0).
-                if (ns == "Cajeta" && methodCallName == "hashBytes" && parameters.size() == 2) {
+                if (ns == "Cajeta" && methodCallName == "hashBytes"
+                        && (parameters.size() == 2 || parameters.size() == 3)) {
                     auto* i8Ty = builder->getInt8Ty();
                     llvm::Value* hdr = loadValue(0);
-                    llvm::Value* len = loadValue(1);
+                    // 3-arg form: (buf, off, len) — off is the window start for
+                    // mode-2 sliced strings (slice-spec §7.1); 2-arg keeps off=0.
+                    const bool hasOff = parameters.size() == 3;
+                    llvm::Value* len = loadValue(hasOff ? 2 : 1);
                     llvm::Value* data = builder->CreateGEP(
                         i8Ty, hdr, builder->getInt64(8), "hash_data");
+                    if (hasOff) {
+                        llvm::Value* off = loadValue(1);
+                        data = builder->CreateGEP(i8Ty, data, off, "hash_win");
+                    }
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_hash_bytes");
                     resolvedType = CajetaType::of("int64");
                     return builder->CreateCall(fn, {data, len});
@@ -2611,6 +2617,23 @@ namespace cajeta {
                         module->getRuntimeFunction("__cajeta_new_array_header_uninit");
                     resolvedType = arrTy;
                     return builder->CreateCall(allocFn, {headerSize, elemSize, count});
+                }
+                // stringSlice(String s, int32 begin, int32 len) -> String: the
+                // zero-copy substring core (slice-spec §7.1) — builds a mode-2
+                // windowed view over s's root buffer (promote/retain per the
+                // source's mode; SSO sources materialize). Runtime does all
+                // construction; the wrapper is live-set tracked and owned by
+                // the caller.
+                if (ns == "Cajeta" && methodCallName == "stringSlice" && parameters.size() == 3) {
+                    auto* i32Ty = builder->getInt32Ty();
+                    llvm::Value* s = loadValue(0);
+                    llvm::Value* b = loadValue(1);
+                    if (b->getType() != i32Ty) b = builder->CreateIntCast(b, i32Ty, true);
+                    llvm::Value* l = loadValue(2);
+                    if (l->getType() != i32Ty) l = builder->CreateIntCast(l, i32Ty, true);
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_string_slice");
+                    resolvedType = CajetaType::of("String", "cajeta.lang");
+                    return builder->CreateCall(fn, {s, b, l});
                 }
                 // moveMask() -> int64: the caller-side ownership-transfer mask for
                 // THIS call (bit i set iff user-arg i was passed `#x`). Read once at
@@ -4537,8 +4560,12 @@ namespace cajeta {
             auto arrayType = dynamic_pointer_cast<CajetaArray>(receiverType);
             llvm::Value* sizePtr = builder->CreateStructGEP(
                 arrayType->getLlvmType(), receiver, CajetaArray::SIZE_FIELD_INDEX);
-            return builder->CreateLoad(
-                llvm::Type::getInt64Ty(*module->getLlvmContext()), sizePtr);
+            llvm::Type* i64Ty = llvm::Type::getInt64Ty(*module->getLlvmContext());
+            llvm::Value* rawCount = builder->CreateLoad(i64Ty, sizePtr);
+            // Mask the shared-state sign bit (slice-spec §3.3) — every stdlib
+            // .count() funnels through here.
+            return builder->CreateAnd(rawCount,
+                llvm::ConstantInt::get(i64Ty, 0x7FFFFFFFFFFFFFFFULL));
         }
 
         // P6.6 — `arr.stream()` intrinsic. Lowers to
@@ -4587,6 +4614,11 @@ namespace cajeta {
                             CajetaArray::SIZE_FIELD_INDEX);
                         llvm::Value* sizeI64 = builder->CreateLoad(
                             llvm::Type::getInt64Ty(llvmCtx), sizePtr);
+                        // Mask the shared-state sign bit (slice-spec §3.3).
+                        sizeI64 = builder->CreateAnd(sizeI64,
+                            llvm::ConstantInt::get(
+                                llvm::Type::getInt64Ty(llvmCtx),
+                                0x7FFFFFFFFFFFFFFFULL));
                         llvm::Value* sizeI32 = builder->CreateIntCast(
                             sizeI64, llvm::Type::getInt32Ty(llvmCtx), true);
                         vector<ParameterEntry> entries;

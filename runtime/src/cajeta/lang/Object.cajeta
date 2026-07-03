@@ -118,27 +118,26 @@ public class Object {
     public String toString();
 
     /**
-     * Returns a shallow copy of this object.
-     *
-     * The default implementation returns `null` until the synthesizer
-     * pass can walk field layouts and emit:
+     * Returns a shallow copy of this object (slice-spec §6.4 — the
+     * explicit sibling of the implicit value-copy). Live via the RTTI
+     * field walk in `__cajeta_object_clone`:
      *
      * - **value-typed fields** (primitives, structs, enums) — copied
      *   by `memcpy` of the bits
-     * - **class-typed fields** — copied by reference (both originals
-     *   then point at the same heap instance, matching Java's shallow
-     *   `Object.clone()`)
+     * - **String fields** — a fresh stake on the same immutable byte
+     *   buffer (wrapper-per-stake; cajeta has no GC, so aliasing one
+     *   wrapper would use-after-free when either owner drops)
+     * - **other class-typed fields** — copied by reference (Java's
+     *   shallow `Object.clone()`); override to deep-copy when that's
+     *   the right thing
+     * - a **String receiver** DETACHES: the (possibly windowed) text
+     *   materializes into a fresh owned buffer — the retention-
+     *   amplification valve (slice-spec §4.4)
      *
-     * Override `clone()` manually to deep-copy class-typed fields when
-     * that's the right thing. The base return type is `Object`;
-     * subclass overrides narrow it to the declaring class at every
-     * site, so call-site code doesn't need a cast.
-     *
-     * @returns a shallow copy of this object, or `null` until the
-     *          synthesizer lands.
+     * Returns ownership (`#Object`) — the caller owns the copy.
      */
     @Native("__cajeta_object_clone")
-    public Object clone();
+    public #Object clone();
 
     /**
      * Equality operator — true iff `this` and `other` hash equal.
