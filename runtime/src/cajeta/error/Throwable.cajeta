@@ -44,6 +44,74 @@ public class Throwable {
     private static int32 getTraceNative(Object throwable, int64[] outAddrs, int32 max);
     @Native("__cajeta_print_trace")
     private static void printTraceNative(Object throwable, int32 fd);
+    @Native("__cajeta_type_name_len")    private static int32 typeNameLen(Object o);
+    @Native("__cajeta_type_name_into")   private static void  typeNameInto(Object o, int8[] out);
+    @Native("__cajeta_json_escape_len")  private static int32 jsonEscapeLen(String s);
+    @Native("__cajeta_json_escape_into") private static void  jsonEscapeInto(String s, int8[] out);
+
+    /**
+     * The stable diagnostic `code`. Defaults to this throwable's canonical type
+     * name (e.g. `cajeta.error.Exception`); Unit 2 lets `@DiagnosticCode` override.
+     */
+    public #String code() {
+        int32 len = typeNameLen(this);
+        int8[] out = heap int8[len];
+        typeNameInto(this, out);
+        return heap String(#out, len);
+    }
+
+    /**
+     * The underlying cause, or `0` (none). `Exception` overrides this to expose
+     * its `cause` field; the bare hierarchy root has no cause.
+     */
+    public Throwable getCause() {
+        return null;
+    }
+
+    /** JSON-string-escape `s` (shared escaping with the compiler emitter). */
+    private static #String jsonEscape(String s) {
+        int32 len = jsonEscapeLen(s);
+        int8[] out = heap int8[len];
+        jsonEscapeInto(s, out);
+        return heap String(#out, len);
+    }
+
+    /**
+     * Render this throwable as a single NDJSON diagnostic object — a superset of
+     * the compiler's `--diag-format=json` shape (`severity`/`code`/`message`)
+     * plus `causeChain` (outer→inner) and `frames`. Built lazily, on call.
+     */
+    public #String toJson() {
+        String m = this.message;
+        String j = "{\"severity\":\"error\",\"code\":\"" + this.code() + "\"";
+        j = j + ",\"message\":\"" + jsonEscape(m) + "\"";
+        Throwable c = this.getCause();
+        if (c != null) {
+            j = j + ",\"causeChain\":[";
+            boolean first = true;
+            while (c != null) {
+                if (!first) { j = j + ","; }
+                String cm = c.message;
+                j = j + "{\"code\":\"" + c.code() + "\",\"message\":\"" + jsonEscape(cm) + "\"}";
+                first = false;
+                c = c.getCause();
+            }
+            j = j + "]";
+        }
+        StackFrame[] frames = this.getStackTrace();
+        int64 fn = frames.count();
+        j = j + ",\"frames\":[";
+        int64 i = 0;
+        while (i < fn) {
+            if (i > 0) { j = j + ","; }
+            StackFrame f = frames[i];
+            int64 addr = f.nativeAddress;
+            j = j + "{\"nativeAddress\":" + addr + "}";
+            i = i + 1;
+        }
+        j = j + "]}";
+        return j;
+    }
 
     /**
      * The captured stack frames, throw-site first. Empty when capture was off

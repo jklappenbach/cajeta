@@ -137,6 +137,44 @@ int32_t __cajeta_get_trace(void* throwable, void* out_arr, int32_t max) {
     return n;
 }
 
+// Print ONE throwable's header (its message, optionally prefixed "Caused by: ")
+// followed by its captured frames, to fd. Powers Throwable/Exception
+// .printStackTrace(): the Cajeta side calls this per cause-chain link and walks
+// getCause() polymorphically. Message extraction mirrors __cajeta_emit_uncaught
+// (Throwable.message@8 -> String -> int8[] payload@8 / byteLength@16), fully
+// null/low-address guarded so a legacy int-throw can't fault.
+void __cajeta_print_trace_one(void* throwable, int32_t fd, int32_t caused_by) {
+    FILE* out = (fd == 1) ? stdout : stderr;
+    const char* mbytes = NULL;
+    int mlen = 0;
+    if (throwable && (uintptr_t) throwable >= 4096) {
+        void* strObj = ((void**) throwable)[1];
+        if (strObj && (uintptr_t) strObj >= 4096) {
+            void* bytesArr = ((void**) strObj)[1];
+            int32_t blen = *(int32_t*) ((char*) strObj + 16);
+            if (bytesArr && (uintptr_t) bytesArr >= 4096 && blen > 0) {
+                mbytes = (const char*) bytesArr + 8;
+                mlen = blen;
+            }
+        }
+    }
+    if (caused_by) fprintf(out, "Caused by: ");
+    if (mbytes) fprintf(out, "%.*s\n", mlen, mbytes);
+    else fprintf(out, "(no message)\n");
+    pthread_mutex_lock(&__cajeta_trace_mutex);
+    struct cajeta_trace_entry* e = __cajeta_trace_table;
+    while (e && e->throwable != throwable) e = e->next;
+    if (e) {
+        char** syms = backtrace_symbols(e->frames, e->frame_count);
+        if (syms) {
+            for (int i = 0; i < e->frame_count; i++) fprintf(out, "  %s\n", syms[i]);
+            free(syms);
+        }
+    }
+    pthread_mutex_unlock(&__cajeta_trace_mutex);
+    fflush(out);
+}
+
 // Helper for the uncaught-throw path: print the throwable's message
 // (if any) and stack trace to stderr. Mirrors Java/Python's "Exception
 // in thread main: ... \n Traceback: ..." shape. Throwable layout is
@@ -428,6 +466,84 @@ int32_t __cajeta_bool_to_str_len(int32_t v) {
 void __cajeta_bool_to_str_into(int32_t v, void* out) {
     const char* s = v ? "true" : "false";
     cajeta_str_into(out, s, (int) strlen(s));
+}
+
+// --- diagnostic-exceptions Unit 1: canonical type name + JSON escaping --------
+//
+// Throwable.toJson() builds the NDJSON diagnostic in Cajeta; these two natives
+// supply the pieces Cajeta can't reach: the canonical RTTI type name (the
+// default diagnostic `code`) and JSON-string escaping (mirrors the compiler's
+// jsonEscape in Diagnostics.cpp so runtime + compile-time diagnostics agree).
+// Both use the length-then-fill idiom (see cajeta_str_into above).
+
+int32_t __cajeta_type_name_len(void* obj) {
+    if (!obj || (uintptr_t) obj < 4096) return 0;
+    void* r = cajeta_rtti_from_obj(obj);
+    const char* n = r ? ((CajetaRtti*) r)->typeName : NULL;
+    return n ? (int32_t) strlen(n) : 0;
+}
+void __cajeta_type_name_into(void* obj, void* out) {
+    const char* n = NULL;
+    if (obj && (uintptr_t) obj >= 4096) {
+        void* r = cajeta_rtti_from_obj(obj);
+        if (r) n = ((CajetaRtti*) r)->typeName;
+    }
+    cajeta_str_into(out, n ? n : "", n ? (int) strlen(n) : 0);
+}
+
+// Escape a cajeta.lang.String's UTF-8 bytes for embedding inside a JSON string
+// literal. `strObj` layout: { vtable@0, int8[] bytes@8, int32 byteLength@16 };
+// int8[] is { int64 count@0, payload@8 }. out == NULL just counts.
+static int cajeta_json_escape(void* strObj, char* out, int outcap) {
+    const char* src = NULL;
+    int n = 0;
+    if (strObj && (uintptr_t) strObj >= 4096) {
+        void* bytesArr = ((void**) strObj)[1];
+        int32_t blen = *(int32_t*) ((char*) strObj + 16);
+        if (bytesArr && (uintptr_t) bytesArr >= 4096 && blen > 0) {
+            src = (const char*) bytesArr + 8;
+            n = blen;
+        }
+    }
+    int w = 0;
+    for (int i = 0; i < n; i++) {
+        unsigned char c = (unsigned char) src[i];
+        char ubuf[8];
+        const char* esc;
+        int elen;
+        switch (c) {
+            case '"':  esc = "\\\""; elen = 2; break;
+            case '\\': esc = "\\\\"; elen = 2; break;
+            case '\n': esc = "\\n";  elen = 2; break;
+            case '\r': esc = "\\r";  elen = 2; break;
+            case '\t': esc = "\\t";  elen = 2; break;
+            case '\b': esc = "\\b";  elen = 2; break;
+            case '\f': esc = "\\f";  elen = 2; break;
+            default:
+                if (c < 0x20) {
+                    snprintf(ubuf, sizeof ubuf, "\\u%04x", c);
+                    esc = ubuf;
+                    elen = 6;
+                } else {
+                    if (out && w < outcap) out[w] = (char) c;
+                    w++;
+                    continue;
+                }
+        }
+        for (int k = 0; k < elen; k++) {
+            if (out && w < outcap) out[w] = esc[k];
+            w++;
+        }
+    }
+    return w;
+}
+int32_t __cajeta_json_escape_len(void* strObj) {
+    return (int32_t) cajeta_json_escape(strObj, NULL, 0);
+}
+void __cajeta_json_escape_into(void* strObj, void* out) {
+    if (!out) return;
+    int64_t cap = *((int64_t*) out);
+    cajeta_json_escape(strObj, (char*) out + 8, (int) cap);
 }
 
 // Copy `length` bytes from `data` into a freshly malloc'd null-terminated
