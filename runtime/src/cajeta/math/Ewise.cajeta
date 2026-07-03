@@ -526,4 +526,111 @@ public final class Ewise {
         }
         return #out;
     }
+
+    /**
+     * Range-copy kernel: `out[i+dstOff] = in[i+srcOff]` for `i < n` (numpy-porting Phase
+     * 5c — the structural-op primitive that concatenate/stack/split all reduce to: each
+     * thread copies one element from a source window to a destination window).
+     */
+    @Kernel
+    public static void copyRangeF32(KernelBuffer<float32> out, KernelBuffer<float32> in,
+                                    uint32 n, uint32 srcOff, uint32 dstOff) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) { out[i + dstOff] = in[i + srcOff]; }
+    }
+
+    /**
+     * Concatenate two 1-D `float32` tensors (numpy `concatenate`), routed on placement:
+     * both on-device → two {@link #copyRangeF32} launches into one output buffer;
+     * otherwise the CPU loop. The two agree (the Phase-5c structural cross-check).
+     * `stack` of two rows is the same copy into a `(2, n)` output shape.
+     */
+    public static #Tensor<float32> concatF32Op(Tensor<float32> a, Tensor<float32> b) {
+        int64 na = a.size();
+        int64 nb = b.size();
+        int64[] os = heap int64[1];
+        os[0] = na + nb;
+        Tensor<float32> out = Tensor.zeros<float32>(os);
+        if (a.isOnGpu() && b.isOnGpu()) {
+            out.gpu();
+            uint32 una = (uint32) na;
+            uint32 unb = (uint32) nb;
+            KernelStream s = KernelStream.current();
+            copyRangeF32.launch(s, grid: [(una + 63) / 64], block: [64])
+                (out.deviceBuffer(), a.deviceBuffer(), una, 0, 0);
+            copyRangeF32.launch(s, grid: [(unb + 63) / 64], block: [64])
+                (out.deviceBuffer(), b.deviceBuffer(), unb, 0, una);
+            s.sync();
+        } else {
+            int64 i = 0;
+            while (i < na) { out.flatSet(i, a.flatGet(i)); i = i + 1; }
+            int64 j = 0;
+            while (j < nb) { out.flatSet(na + j, b.flatGet(j)); j = j + 1; }
+        }
+        return #out;
+    }
+
+    /**
+     * The `[start, start+len)` slice of a 1-D `float32` tensor (numpy slice / one half of
+     * `split`), routed on placement: on-device → a single {@link #copyRangeF32} from the
+     * source window; otherwise the CPU loop. Agrees CPU/GPU (Phase-5c). A `split` is two
+     * such slices.
+     */
+    public static #Tensor<float32> sliceF32Op(Tensor<float32> t, int64 start, int64 len) {
+        int64[] os = heap int64[1];
+        os[0] = len;
+        Tensor<float32> out = Tensor.zeros<float32>(os);
+        if (t.isOnGpu()) {
+            out.gpu();
+            uint32 ul = (uint32) len;
+            uint32 us = (uint32) start;
+            KernelStream s = KernelStream.current();
+            copyRangeF32.launch(s, grid: [(ul + 63) / 64], block: [64])
+                (out.deviceBuffer(), t.deviceBuffer(), ul, us, 0);
+            s.sync();
+        } else {
+            int64 i = 0;
+            while (i < len) { out.flatSet(i, t.flatGet(start + i)); i = i + 1; }
+        }
+        return #out;
+    }
+
+    /** Sum-of-squares reduction kernel: `out[0] += in[i]*in[i]` via a float atomic-add. */
+    @Kernel
+    public static void reduceSumSqF32(KernelBuffer<float32> out, KernelBuffer<float32> in, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) { out.atomicAdd(0, in[i] * in[i]); }
+    }
+
+    /**
+     * Frobenius norm `sqrt(Σ xᵢ²)` of a `float32` tensor (numpy `linalg.norm`; the norm
+     * behind `linalg.cond`/`lstsq`), routed on placement: on-device → the
+     * {@link #reduceSumSqF32} atomic sum-of-squares then a host `sqrt`; otherwise the CPU
+     * loop. The two agree (a Phase-11 linalg GPU cross-check — the reduction-shaped linalg
+     * primitives lower to the same atomic-reduction template as `sumF32`).
+     */
+    public static float32 normFroF32(Tensor<float32> t) {
+        int64 n = t.size();
+        if (t.isOnGpu()) {
+            int64[] os = heap int64[1];
+            os[0] = 1;
+            Tensor<float32> acc = Tensor.zeros<float32>(os);
+            acc.gpu();
+            uint32 un = (uint32) n;
+            KernelStream s = KernelStream.current();
+            reduceSumSqF32.launch(s, grid: [(un + 63) / 64], block: [64])
+                (acc.deviceBuffer(), t.deviceBuffer(), un);
+            s.sync();
+            acc.cpu();
+            return Math.sqrt(acc.get1(0));
+        }
+        float32 sum = 0.0f;
+        int64 i = 0;
+        while (i < n) {
+            float32 v = t.flatGet(i);
+            sum = sum + v * v;
+            i = i + 1;
+        }
+        return Math.sqrt(sum);
+    }
 }

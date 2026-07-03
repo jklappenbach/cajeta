@@ -2054,6 +2054,82 @@ TEST(NumpyOpsTests, permutationShuffleChoice) {
     EXPECT_EQ(runI32(src), 1);
 }
 
+// 11 (deferred) — GPU linalg (representative): Ewise.normFroF32 routes on placement; the
+// device atomic sum-of-squares + sqrt agrees with the CPU floor. [2,3,6] → sqrt(49)=7.
+TEST(NumpyOpsTests, normFroCpuGpuAgree) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.math.Tensor;\n"
+        "import cajeta.math.Ewise;\n"
+        "public final class D {\n"
+        "    public static #Tensor<float32> data() {\n"
+        "        float32[] d = { 2.0f, 3.0f, 6.0f };\n"
+        "        int64[] s = heap int64[1]; s[0] = 3;\n"
+        "        return Tensor.of<float32>(d, s);\n"
+        "    }\n"
+        "    public static boolean close(float32 a, float32 b) {\n"
+        "        float32 d = a - b; if (d < 0.0f) { d = -d; } return d < 0.001f;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Tensor<float32> tc = D.data();\n"
+        "        float32 cpu = Ewise.normFroF32(tc);\n"
+        "        if (!D.close(cpu, 7.0f)) { return -1; }\n"
+        "        Tensor<float32> tg = D.data();\n"
+        "        tg.gpu();\n"
+        "        float32 gpu = Ewise.normFroF32(tg);\n"
+        "        if (!D.close(gpu, cpu)) { return -2; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Xpu(src), 1);
+}
+
+// 5c (deferred) — GPU structural ops: Ewise.concatF32Op / sliceF32Op route on placement;
+// the device range-copies agree with the CPU loop. concat([1,2,3],[4,5,6,7])→[1..7];
+// slice(that,2,3)→[3,4,5].
+TEST(NumpyOpsTests, concatSplitCpuGpuAgree) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.math.Tensor;\n"
+        "import cajeta.math.Ewise;\n"
+        "public final class D {\n"
+        "    public static #Tensor<float32> a() {\n"
+        "        float32[] d = { 1.0f, 2.0f, 3.0f };\n"
+        "        int64[] s = heap int64[1]; s[0] = 3;\n"
+        "        return Tensor.of<float32>(d, s);\n"
+        "    }\n"
+        "    public static #Tensor<float32> b() {\n"
+        "        float32[] d = { 4.0f, 5.0f, 6.0f, 7.0f };\n"
+        "        int64[] s = heap int64[1]; s[0] = 4;\n"
+        "        return Tensor.of<float32>(d, s);\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        // CPU concat then slice
+        "        Tensor<float32> ac = D.a();\n"
+        "        Tensor<float32> bc = D.b();\n"
+        "        Tensor<float32> cc = Ewise.concatF32Op(ac, bc);\n"          // [1,2,3,4,5,6,7]
+        "        if (cc.size() != 7 || cc.get1(0) != 1.0f || cc.get1(6) != 7.0f) { return -1; }\n"
+        "        Tensor<float32> sc = Ewise.sliceF32Op(cc, 2, 3);\n"        // [3,4,5]
+        "        if (sc.get1(0) != 3.0f || sc.get1(1) != 4.0f || sc.get1(2) != 5.0f) { return -2; }\n"
+        // GPU concat then slice, compare to CPU
+        "        Tensor<float32> ag = D.a();\n"
+        "        Tensor<float32> bg = D.b();\n"
+        "        ag.gpu();\n"
+        "        bg.gpu();\n"
+        "        Tensor<float32> cg = Ewise.concatF32Op(ag, bg);\n"
+        "        Tensor<float32> sg = Ewise.sliceF32Op(cg, 2, 3);\n"
+        "        cg.cpu();\n"
+        "        sg.cpu();\n"
+        "        int64 i = 0;\n"
+        "        while (i < 7) { if (cg.get1(i) != cc.get1(i)) { return -3; } i = i + 1; }\n"
+        "        i = 0;\n"
+        "        while (i < 3) { if (sg.get1(i) != sc.get1(i)) { return -4; } i = i + 1; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Xpu(src), 1);
+}
+
 // 4 (deferred) — GPU prefix scan: Ewise.cumsumF32Op routes on placement; the device
 // Hillis-Steele inclusive scan agrees with the CPU running sum. [1..8] → [1,3,6,10,15,21,28,36].
 TEST(NumpyOpsTests, prefixScanCpuGpuAgree) {
