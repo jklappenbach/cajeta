@@ -50,6 +50,8 @@ public class Semaphore {
      * ```cajeta
      * stack pool = Semaphore(8);   // 8 permits available up front
      * ```
+     *
+     * @EntryPoint
      */
     public Semaphore(int32 initial) {
         this.handle = Cajeta.lockNew();

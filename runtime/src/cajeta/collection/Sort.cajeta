@@ -57,6 +57,8 @@ public class Sort {
      * cutoff for runs under 16, and a manual range stack that recurses the smaller
      * band and loops the larger — O(log n) depth, no recursion, no stack-overflow
      * on adversarial input.
+     *
+     * @EntryPoint
      */
     public static void sort<T>(T[] a, int32 n, (T, T) -> int32 cmp) {
         if (n < 2) {
@@ -188,6 +190,8 @@ public class Sort {
      *     copying `buf` back into `a` after every pass, halving the memory
      *     traffic; a single final copy fixes parity when the result lands in
      *     `buf`.
+     *
+     * @EntryPoint
      */
     public static void sortStable<T>(T[] a, int32 n, (T, T) -> int32 cmp) {
         if (n < 2) {
@@ -1011,6 +1015,11 @@ public class Sort {
     // Natural-order unstable sort (numpy `kind='quicksort'`): ipnsort — a
     // pattern-defeating quicksort with a branchless lomcyc partition. See the
     // helper block above.
+    /**
+     * Natural-order unstable sort of `a[0..n)` by `<` on T (numpy `kind='quicksort'`).
+     *
+     * @EntryPoint
+     */
     public static void sort<T>(T[] a, int32 n) {
         if (n < 2) {
             return;

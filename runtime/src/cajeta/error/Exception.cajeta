@@ -31,6 +31,8 @@ public class Exception extends Throwable {
      * ```cajeta
      * throw heap Exception("invalid argument");
      * ```
+     *
+     * @EntryPoint
      */
     public Exception(#String message) {
         this.message = message;

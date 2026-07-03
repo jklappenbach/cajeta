@@ -61,6 +61,8 @@ public final class Heap<T> {
      * ```cajeta
      * Heap<int32> h = heap Heap<int32>();
      * ```
+     *
+     * @EntryPoint
      */
     public Heap() {
         this.capacity = 16;

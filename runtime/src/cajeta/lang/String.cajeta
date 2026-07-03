@@ -17,9 +17,9 @@ package cajeta.lang;
  *
  * ```cajeta
  * heap String s = "  Hello, World  ";
- * #String clean = s.trim();              // "Hello, World"
+ * String clean = s.trim();              // "Hello, World"
  * if (clean.startsWith("Hello") && clean.contains("World")) {
- *     #String loud = clean.toUpperCase(); // "HELLO, WORLD"
+ *     String loud = clean.toUpperCase(); // "HELLO, WORLD"
  *     int64 codepoints = clean.count();   // 12 (codepoints, not bytes)
  *     int64 firstComma = clean.indexOf(","); // 5
  * }
@@ -95,6 +95,8 @@ public final class String {
      * boolean blank = s.isEmpty();   // true
      * int64 n = s.count();           // 0
      * ```
+     *
+     * @EntryPoint
      */
     public String() {
         this.bytes = null;
@@ -124,6 +126,8 @@ public final class String {
      * heap String s = String(#buf, 3);   // view over "abc"
      * int64 bytes = s.size();             // 3
      * ```
+     *
+     * @EntryPoint
      */
     public String(#int8[] bytes, int32 byteLength) {
         this.bytes = bytes;

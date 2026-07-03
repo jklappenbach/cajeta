@@ -64,6 +64,8 @@ public final class RedBlackTree<K, V> {
      * #RedBlackTree<string, int32> counts = heap RedBlackTree<string, int32>();
      * counts.put("hits", 1);
      * ```
+     *
+     * @EntryPoint
      */
     public RedBlackTree() {
         this.root = null;

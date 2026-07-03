@@ -66,6 +66,8 @@ public class Stream<T> {
     /**
      * Pull the next element. Implementers override; default returns
      * an empty Optional.
+     *
+     * @EntryPoint
      */
     public Optional<T> next() {
         return stack Optional<T>(false, null);

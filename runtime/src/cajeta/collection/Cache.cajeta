@@ -89,6 +89,8 @@ public final class Cache<K, V> {
      * ```cajeta
      * Cache<String, User> cache = stack Cache<String, User>(256);
      * ```
+     *
+     * @EntryPoint
      */
     public Cache(int32 maxEntries) {
         // Heap-allocate the backing table with an explicit power-of-2

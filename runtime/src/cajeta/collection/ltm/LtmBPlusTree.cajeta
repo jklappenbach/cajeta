@@ -60,6 +60,8 @@ public final class LtmBPlusTree<K, V> {
      * String name = idx.get(42);   // "alice"
      * idx.close();                 // durable
      * ```
+     *
+     * @EntryPoint
      */
     public LtmBPlusTree(String path, Encoder<K> keyEnc, Encoder<V> valEnc,
                         int32 order, int32 capacity) {

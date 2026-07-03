@@ -144,6 +144,8 @@ public final class Class<T> {
      * spec's `o.getClass()`. Offered as a static factory so the root
      * `Object` need not depend on `cajeta.reflect`. The result is a borrow
      * of a cached per-type instance reached through `o`'s vtable.
+     *
+     * @EntryPoint
      */
     @Native("__cajeta_object_get_class")
     public static Class<?> of(Object o);
@@ -180,6 +182,8 @@ public final class Class<T> {
      *     int32 fields = c.get().getFieldCount();
      * }
      * ```
+     *
+     * @EntryPoint
      */
     public static Optional<Class<?>> forName(String name) {
         Class<?> c = forNameNative(name.bytes);
@@ -214,6 +218,8 @@ public final class Class<T> {
      * Optional<Shape> s = Class.heapInstance<Shape>(name);
      * if (s.isPresent()) { s.get().draw(); }
      * ```
+     *
+     * @EntryPoint
      */
     public static Optional<T> heapInstance<T>(String name, Class<?> bound) {
         Class<?> c = forNameNative(name.bytes);

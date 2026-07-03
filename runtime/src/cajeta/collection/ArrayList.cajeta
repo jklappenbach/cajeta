@@ -54,6 +54,8 @@ public final class ArrayList<T> {
      * ArrayList<int32> xs = heap ArrayList<int32>();
      * xs.add(42);
      * ```
+     *
+     * @EntryPoint
      */
     public ArrayList() {
         this.capacity = 16;

@@ -35,6 +35,8 @@ public final class Pair<K, V> {
      * String who = p.first();
      * int    yrs = p.second();
      * ```
+     *
+     * @EntryPoint
      */
     public Pair(K first, V second) {
         this.first = first;

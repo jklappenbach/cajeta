@@ -78,6 +78,8 @@ public final class HashMap<K, V> {
     /**
      * Construct a HashMap. `initialCapacity` is rounded up to a power of two
      * `>= 16`; the table grows from there at 0.75 load.
+     *
+     * @EntryPoint
      */
     public HashMap(int64 initialCapacity) {
         int64 c = 16;

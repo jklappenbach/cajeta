@@ -29,6 +29,8 @@ public final class AtomicInt64 {
      * ```cajeta
      * stack generation = AtomicInt64(1L);
      * ```
+     *
+     * @EntryPoint
      */
     public AtomicInt64(int64 initial) {
         this.cell = Cajeta.atomicI64New(initial);

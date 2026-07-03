@@ -11,7 +11,7 @@ package cajeta.lang;
  * StringBuilder sb = stack StringBuilder();
  * sb.append("Hello, ");
  * sb.append("world");
- * #String s = sb.toString();        // "Hello, world"
+ * String s = sb.toString();        // "Hello, world"
  * ```
  *
  * Small-string optimization (SSO): the first 64 bytes live in an inline buffer
@@ -36,7 +36,10 @@ public final class StringBuilder {
     boolean spilled;  // false => bytes in `small`; true => bytes in `large`
 
     /** Create an empty builder. No heap allocation — the inline buffer is used
-     *  until/unless the build exceeds 64 bytes. */
+     *  until/unless the build exceeds 64 bytes.
+     *
+     * @EntryPoint
+     */
     public StringBuilder() {
         this.len = 0;
         this.cap = 64;

@@ -112,6 +112,8 @@ public class Tasks {
      * Optional<int32> r = Tasks.withTimeout(Duration.ofMillis(50), t);
      * if (r.isPresent()) { use(r.get()); } else { handleTimeout(); }
      * ```
+     *
+     * @EntryPoint
      */
     public static Optional<R> withTimeout<R>(Duration d, Task<R> t) {
         int64 deadline = Cajeta.currentTimeNanos() + d.toNanos();
@@ -186,6 +188,8 @@ public class Tasks {
      * ```cajeta
      * int32 result = Tasks.runBlocking(() -> compute());
      * ```
+     *
+     * @EntryPoint
      */
     public static R runBlocking<R>(() -> R body) {
         Task<R> t = spawn body();
@@ -233,6 +237,8 @@ public class Tasks {
      * if (r.isPresent()) { handle(r.get()); }
      * else { ... every channel closed and drained ... }
      * ```
+     *
+     * @EntryPoint
      */
     public static Optional<SelectResult<T>> selectReceive<T>(Channel<T>[] channels) {
         int64 backoff = 100000;

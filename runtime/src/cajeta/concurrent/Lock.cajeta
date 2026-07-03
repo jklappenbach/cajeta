@@ -14,7 +14,7 @@ package cajeta.concurrent;
  * ```cajeta
  * Lock gate = heap Lock();
  * {
- *     #LockGuard g = gate.acquire();   // held for this block
+ *     LockGuard g = gate.acquire();   // held for this block
  *     // ... critical section ...
  * }                                    // g drops here -> auto release
  *
@@ -37,6 +37,8 @@ public class Lock {
      * ```cajeta
      * Lock gate = heap Lock();
      * ```
+     *
+     * @EntryPoint
      */
     public Lock() { this.handle = Cajeta.lockNew(); }
     public ~Lock() { Cajeta.lockDestroy(this.handle); }
@@ -47,7 +49,7 @@ public class Lock {
      * or the lock is released immediately.
      *
      * ```cajeta
-     * #LockGuard g = gate.acquire();
+     * LockGuard g = gate.acquire();
      * // ... critical section runs while g is alive ...
      * // g drops at end of scope -> lock released
      * ```

@@ -82,6 +82,8 @@ public class Math {
      * Math.max(1.5, 2.5)   // 2.5 (max<float64>)
      * ```
      * (For an element-wise vector max use `a.max(b)` on a `Vector<T,N>`.)
+     *
+     * @EntryPoint
      */
     public static T max<T>(T a, T b) {
         if (a > b) { return a; }
@@ -93,6 +95,8 @@ public class Math {
      * ```
      * Math.min(3, 7)   // 3
      * ```
+     *
+     * @EntryPoint
      */
     public static T min<T>(T a, T b) {
         if (a < b) { return a; }
@@ -107,6 +111,8 @@ public class Math {
      * Math.clamp(-5, 0, 10)   // 0   (below)
      * Math.clamp(5,  0, 10)   // 5   (in range)
      * ```
+     *
+     * @EntryPoint
      */
     public static T clamp<T>(T x, T lo, T hi) {
         return Math.max(lo, Math.min(hi, x));

@@ -67,6 +67,7 @@ public final class ImmutableList<T> {
      * ```
      *
      * @Param src the list whose elements to snapshot.
+     * @EntryPoint
      */
     public ImmutableList(ArrayList<T> src) {
         int32 n = src.count();

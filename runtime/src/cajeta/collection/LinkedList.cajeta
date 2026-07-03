@@ -56,6 +56,8 @@ public final class LinkedList<T> {
      * LinkedList<string> names = heap LinkedList<string>();
      * names.addTail("ada");
      * ```
+     *
+     * @EntryPoint
      */
     public LinkedList() {
         this.headNode = null;

@@ -47,6 +47,8 @@ public final class AtomicInt32 {
      * ```cajeta
      * stack seq = AtomicInt32(0);
      * ```
+     *
+     * @EntryPoint
      */
     public AtomicInt32(int32 initial) {
         this.cell = Cajeta.atomicI32New(initial);

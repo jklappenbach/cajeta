@@ -67,6 +67,7 @@ public final class ImmutableSet<T> {
      * ```
      *
      * @Param src the values to snapshot.
+     * @EntryPoint
      */
     public ImmutableSet(ArrayList<T> src) {
         int32 n = src.count();

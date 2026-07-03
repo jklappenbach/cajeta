@@ -64,6 +64,7 @@ public final class HashSet<T> {
      * @Param initialCapacity number of buckets to allocate; **must
      *        be a power of 2** (passed through to `HashMap`, which
      *        mask-indexes on the value).
+     * @EntryPoint
      */
     public HashSet(int64 initialCapacity) {
         this.map = heap HashMap<T, int8>(initialCapacity);

@@ -53,6 +53,8 @@ public final class BPlusTree<K, V> {
      * ```cajeta
      * BPlusTree<int64, String> index = heap BPlusTree<int64, String>();
      * ```
+     *
+     * @EntryPoint
      */
     public BPlusTree() {
         this.root = null;
