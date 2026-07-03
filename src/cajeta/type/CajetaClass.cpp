@@ -2766,13 +2766,17 @@ namespace cajeta {
                 fn, {ancestorThis});
         }
 
-        // Walk owned class-ref fields in REVERSE declaration order. For
-        // each plain class-ref (not view, not array, not interface), GEP
-        // the slot, load the pointer, call the referent class's own
-        // heap-drop fn.
+        // Walk owned class-ref fields in REVERSE declaration order.
+        // Route each through the claim-guarded __cajeta_class_virtual_drop
+        // — the same path emitDropBodyInline uses for heap instances. The
+        // per-class drop wrapper is unguarded and ends in an unconditional
+        // __cajeta_free: handed a non-heap pointer (a String literal's
+        // static global, an already-claimed alias) it corrupts the heap.
+        // The claim no-ops on null, static, and already-claimed pointers.
         std::vector<StructurePropertyPtr> reversed(
             propertyList.begin(), propertyList.end());
         std::reverse(reversed.begin(), reversed.end());
+        llvm::Function* fieldVirtualDropFn = nullptr;
         for (auto& property : reversed) {
             auto fieldType = property->getType();
             auto fieldClass = dynamic_pointer_cast<CajetaClass>(fieldType);
@@ -2780,17 +2784,21 @@ namespace cajeta {
             if (dynamic_pointer_cast<CajetaView>(fieldType)) continue;
             if (dynamic_pointer_cast<CajetaArray>(fieldType)) continue;
             if (fieldClass->isInterface()) continue;
+            if (!fieldClass->hasVtablePointerAtSlotZero()) continue;
+
+            if (!fieldVirtualDropFn) {
+                fieldVirtualDropFn = module->getRuntimeFunction(
+                    "__cajeta_class_virtual_drop", lmod);
+            }
+            if (!fieldVirtualDropFn) continue;
+            fieldClass->patchVirtualTableDropFn();
 
             unsigned fieldIdx = (unsigned) getFieldLlvmIndex(property);
             llvm::Value* slotPtr = b.CreateStructGEP(
                 rawLlvmType(), instance, fieldIdx,
                 std::string("stack_drop_field_") + property->getName());
             llvm::Value* refPtr = b.CreateLoad(ptrTy, slotPtr);
-
-            llvm::Function* refDrop = fieldClass->getOrCreateDropFunction();
-            if (!refDrop) continue;
-            refDrop = CajetaModule::ensureFunctionInModule(lmod, refDrop);
-            b.CreateCall(refDrop, {refPtr});
+            b.CreateCall(fieldVirtualDropFn, {refPtr});
         }
 
         // No __cajeta_free — stack body is reclaimed by the function
