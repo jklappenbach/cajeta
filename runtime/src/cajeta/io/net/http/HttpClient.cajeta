@@ -79,7 +79,11 @@ public class HttpClient {
      */
     public static final int32 MAX_REDIRECTS = 10;
 
-    /** A client trusting the OS CA store (the default public-PKI path). */
+    /**
+     * A client trusting the OS CA store (the default public-PKI path).
+     *
+     * @EntryPoint
+     */
     public HttpClient() {
         int8[] e = heap int8[0];
         this.trustPem = #e;
@@ -113,6 +117,8 @@ public class HttpClient {
      * full response (head + buffered body). The request-target comes from
      * `req` (origin-form); a missing `Host` header is filled from `uri`.
      * `Connection: close` is stamped (NET-8.1 is one exchange per socket).
+     *
+     * @EntryPoint
      */
     public #HttpResponse send(Uri uri, HttpRequest req) {
         boolean https = HttpClient.isHttps(uri.getScheme());
@@ -154,6 +160,8 @@ public class HttpClient {
      * e.g. GitHub `releases/.../download/...` 302s to a signed CDN URL. If the
      * redirect limit is hit, or a 3xx arrives with no `Location`, the last
      * response is returned as-is (the caller sees the 3xx status).
+     *
+     * @EntryPoint
      */
     public #HttpResponse get(String url) {
         String current = heap String(url.bytes, url.byteLength);

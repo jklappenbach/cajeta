@@ -19,7 +19,7 @@ import cajeta.lang.String;
  *
  * One-shot:
  * ```cajeta
- * #int8[] digest = Blake3.hash(bytes, bytes.count());
+ * int8[] digest = Blake3.hash(bytes, bytes.count());
  * String hex = Blake3.hashHex(bytes, bytes.count());
  * int8[] wide = heap int8[64];
  * Blake3.hashXof(bytes, bytes.count(), wide);   // 64 bytes of XOF output
@@ -30,7 +30,7 @@ import cajeta.lang.String;
  * Blake3 h = heap Blake3();
  * h.writeString(record.title);
  * h.writeInt64(record.id);
- * #int8[] digest = h.digest();
+ * int8[] digest = h.digest();
  * ```
  *
  * @See cajeta.hash.Hasher
@@ -42,7 +42,11 @@ public final class Blake3 implements Hasher {
     /** Opaque pointer to the native streaming hasher state. */
     public pointer state;
 
-    /** Construct a fresh streaming BLAKE3 hasher. */
+    /**
+     * Construct a fresh streaming BLAKE3 hasher.
+     *
+     * @EntryPoint
+     */
     public Blake3() {
         this.state = Blake3.allocState();
     }
@@ -99,8 +103,10 @@ public final class Blake3 implements Hasher {
      * One-shot 32-byte BLAKE3 digest of `data[0..len)`.
      *
      * ```cajeta
-     * #int8[] digest = Blake3.hash(bytes, bytes.count());
+     * int8[] digest = Blake3.hash(bytes, bytes.count());
      * ```
+     *
+     * @EntryPoint
      */
     public static #int8[] hash(int8[] data, int64 len) {
         int8[] out = heap int8[32];
@@ -127,6 +133,8 @@ public final class Blake3 implements Hasher {
      * ```cajeta
      * String h = Blake3.hashHex(bytes, bytes.count());
      * ```
+     *
+     * @EntryPoint
      */
     public static #String hashHex(int8[] data, int64 len) {
         int8[] hex = heap int8[64];

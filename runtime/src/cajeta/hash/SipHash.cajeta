@@ -68,6 +68,8 @@ public final class SipHash implements Hasher {
      * h.writeInt32(user.id);
      * int64 digest = h.finish();
      * ```
+     *
+     * @EntryPoint
      */
     public SipHash(int64 keyLow, int64 keyHigh) {
         this.k0 = keyLow;
@@ -133,6 +135,8 @@ public final class SipHash implements Hasher {
      * ```cajeta
      * int64 hash = SipHash.hashKeyed(bytes, bytes.count(), k0, k1);
      * ```
+     *
+     * @EntryPoint
      */
     @Inline
     public static int64 hashKeyed(int8[] data, int64 len, int64 keyLow, int64 keyHigh) {
@@ -145,6 +149,8 @@ public final class SipHash implements Hasher {
      * ```cajeta
      * int64 hash = SipHash.hashStringKeyed(user.name, k0, k1);
      * ```
+     *
+     * @EntryPoint
      */
     @Inline
     public static int64 hashStringKeyed(String s, int64 keyLow, int64 keyHigh) {

@@ -106,6 +106,8 @@ public final class Base64 {
      * Encode `data[0..len)` to standard Base64 (§4) **with** `=`
      * padding. The result `String` owns a freshly-allocated byte
      * buffer.
+     *
+     * @EntryPoint
      */
     @Inline
     public static #String encode(int8[] data, int64 len) {
@@ -116,6 +118,8 @@ public final class Base64 {
      * Encode `data[0..len)` to URL- and filename-safe Base64 (§5,
      * `-`/`_`) **without** `=` padding — the form expected in JWT
      * segments and URL query parameters.
+     *
+     * @EntryPoint
      */
     @Inline
     public static #String encodeUrlSafe(int8[] data, int64 len) {
@@ -203,6 +207,8 @@ public final class Base64 {
      * Decode a Base64 `String` (either alphabet, with or without
      * `=` padding) to its raw bytes. Throws [[Base64Exception]] on a
      * character outside the alphabet or an impossible length.
+     *
+     * @EntryPoint
      */
     @Inline
     public static #int8[] decode(String s) {

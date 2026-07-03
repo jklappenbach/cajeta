@@ -15,7 +15,7 @@ import cajeta.lang.Comparable;
  * ```cajeta
  * stack dt = LocalDateTime.of(2026, 6, 5, 14, 30);
  * stack next = dt.plusHours(12);            // rolls into 2026-06-06
- * #String text = next.iso();                // "2026-06-06T02:30"
+ * String text = next.iso();                // "2026-06-06T02:30"
  * Instant at = next.toInstant(ZoneOffset.UTC());
  * if (dt.isBefore(next)) { /* ... */ }
  * ```
@@ -44,6 +44,8 @@ public final class LocalDateTime implements Comparable<LocalDateTime> {
      * ```cajeta
      * stack dt = LocalDateTime.of(2026, 6, 5, 14, 30);
      * ```
+     *
+     * @EntryPoint
      */
     @NoInline
     public static LocalDateTime of(int32 year, int32 month, int32 day, int32 hour, int32 minute) {
@@ -71,6 +73,8 @@ public final class LocalDateTime implements Comparable<LocalDateTime> {
      * ```cajeta
      * stack dt = LocalDateTime.ofFull(2026, 6, 5, 14, 30, 15, 500000000);
      * ```
+     *
+     * @EntryPoint
      */
     @NoInline
     public static LocalDateTime ofFull(int32 year, int32 month, int32 day,
@@ -108,6 +112,8 @@ public final class LocalDateTime implements Comparable<LocalDateTime> {
      * stack dt = LocalDateTime.ofDateTime(LocalDate.of(2026, 6, 5),
      *                                     LocalTime.of(14, 30));
      * ```
+     *
+     * @EntryPoint
      */
     @Inline
     public static LocalDateTime ofDateTime(LocalDate date, LocalTime time) {
@@ -286,7 +292,7 @@ public final class LocalDateTime implements Comparable<LocalDateTime> {
      * Returns a freshly owned heap `String` (ownership transferred to caller).
      *
      * ```cajeta
-     * #String text = LocalDateTime.of(2026, 6, 5, 14, 30).iso(); // "2026-06-05T14:30"
+     * String text = LocalDateTime.of(2026, 6, 5, 14, 30).iso(); // "2026-06-05T14:30"
      * ```
      */
     public #String iso() {

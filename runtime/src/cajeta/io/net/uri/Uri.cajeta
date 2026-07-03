@@ -268,6 +268,8 @@ public class Uri {
      *
      * The returned `Uri` owns its component strings; the source
      * `input` may drop independently afterward.
+     *
+     * @EntryPoint
      */
     public static #Uri parse(String input) {
         if (input == null) {
@@ -957,6 +959,8 @@ public class Uri {
      * Setting a `host` implies an authority. `port` is recorded as an
      * explicit port (it will be serialized); leave it unset to omit the
      * `:port` (the scheme default is *not* auto-emitted on build).
+     *
+     * @EntryPoint
      */
     public static #UriBuilder builder() {
         return heap UriBuilder();
@@ -971,6 +975,11 @@ public class Uri {
 public class UriBuilder {
     private Uri u;
 
+    /**
+     * A fresh builder with no components set.
+     *
+     * @EntryPoint
+     */
     public UriBuilder() {
         this.u = heap Uri();
     }

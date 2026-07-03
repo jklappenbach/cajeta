@@ -36,6 +36,8 @@ public class Watcher {
      * ```cajeta
      * stack watcher = Watcher();
      * ```
+     *
+     * @EntryPoint
      */
     public Watcher() {
         this.handle = 0;

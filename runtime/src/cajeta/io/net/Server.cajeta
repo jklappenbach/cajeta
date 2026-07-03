@@ -133,6 +133,8 @@ public class Server {
      * [`SharedPoolServer.bind`](SharedPoolServer.cajeta#bind). See
      * [`docs/Net.md` §Server accept models](../../../../../docs/Net.md#server-accept-models)
      * for the when-to-use-which tradeoff.
+     *
+     * @EntryPoint
      */
     public static #ServerBuilder builder() {
         return heap ServerBuilder();
@@ -156,6 +158,7 @@ public class Server {
      *                [`localAddress`](#localAddress)).
      * @param handler the per-connection handler, `(TcpStream) -> void`.
      * @return an owned, bound — but not yet serving — `Server`.
+     * @EntryPoint
      */
     public static #Server bind(SocketAddress addr, (TcpStream) -> void handler) {
         TcpListener l = TcpListener.bind(addr);
@@ -168,6 +171,8 @@ public class Server {
      * Otherwise identical to [`bind`](#bind). The backlog is the NET-4.4
      * config knob the spec surfaces; the core honors it here so a server
      * built before NET-4.4 lands already gets a tunable accept queue.
+     *
+     * @EntryPoint
      */
     public static #Server bindWithBacklog(SocketAddress addr, int32 backlog,
                                           (TcpStream) -> void handler) {

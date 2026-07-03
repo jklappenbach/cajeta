@@ -56,6 +56,8 @@ public final class XXHash3 implements Hasher {
      * h.writeString(record.title);
      * int64 digest = h.finish();
      * ```
+     *
+     * @EntryPoint
      */
     public XXHash3() {
         this.seed = Hash.processSeed();
@@ -133,6 +135,8 @@ public final class XXHash3 implements Hasher {
      * ```cajeta
      * int64 h = XXHash3.hash(bytes, bytes.count());
      * ```
+     *
+     * @EntryPoint
      */
     public static int64 hash(int8[] data, int64 len) {
         int64 seed = Hash.processSeed();
@@ -160,6 +164,8 @@ public final class XXHash3 implements Hasher {
      * ```cajeta
      * int64 h = XXHash3.hashString("hello");
      * ```
+     *
+     * @EntryPoint
      */
     @Inline
     public static int64 hashString(String s) {
@@ -218,7 +224,7 @@ public final class XXHash3 implements Hasher {
      * owned 16-byte array (low64 LE, then high64 LE).
      *
      * ```cajeta
-     * #int8[] digest = XXHash3.hash128(bytes, bytes.count());
+     * int8[] digest = XXHash3.hash128(bytes, bytes.count());
      * ```
      */
     public static #int8[] hash128(int8[] data, int64 len) {
@@ -248,6 +254,8 @@ public final class XXHash3 implements Hasher {
      * ```cajeta
      * String etag = XXHash3.hash128Hex(bytes, bytes.count());
      * ```
+     *
+     * @EntryPoint
      */
     public static #String hash128Hex(int8[] data, int64 len) {
         return XXHash3.hash128HexSeeded(data, len, Hash.processSeed());

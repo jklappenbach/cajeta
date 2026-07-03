@@ -142,7 +142,7 @@ public final class JsonValue {
      * gates on `kind()` first if that matters.
      *
      * ```cajeta
-     * #String s = v.asString();
+     * String s = v.asString();
      * if (s != null) {
      *     // owns the materialized `String`
      * }

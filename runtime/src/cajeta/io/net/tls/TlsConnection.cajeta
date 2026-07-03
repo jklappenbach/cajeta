@@ -132,6 +132,8 @@ public class TlsConnection {
     /**
      * A fresh **client** connection (its own context). SNI/ALPN, if wanted,
      * are set before the first [`handshakeStep`](#handshakeStep).
+     *
+     * @EntryPoint
      */
     public static #TlsConnection client() {
         pointer ctx = TlsConnection.ctxNew(0);
@@ -146,6 +148,8 @@ public class TlsConnection {
      * trust anchors with [`addTrust`](#addTrust) and the expected name with
      * [`setVerifyHost`](#setVerifyHost) before the first handshake step. The
      * verify mode is fixed on the context here, before the connection is made.
+     *
+     * @EntryPoint
      */
     public static #TlsConnection verifyingClient() {
         pointer ctx = TlsConnection.ctxNew(0);
@@ -157,6 +161,8 @@ public class TlsConnection {
     /**
      * A fresh **server** connection presenting `certPem` (chain) + `keyPem`
      * (PEM bytes). Used by [`TlsListener`](TlsListener.cajeta) (NET-5.5).
+     *
+     * @EntryPoint
      */
     public static #TlsConnection server(int8[] certPem, int32 certLen,
                                         int8[] keyPem, int32 keyLen) {

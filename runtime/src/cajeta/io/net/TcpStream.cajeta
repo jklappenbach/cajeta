@@ -60,6 +60,8 @@ public class TcpStream implements ByteChannel {
      * `__cajeta_net_sockaddr_pack` → `__cajeta_net_socket` →
      * `__cajeta_net_connect`; on the connect failure sentinel the codegen
      * raises. Takes ownership of `addr`.
+     *
+     * @EntryPoint
      */
     public static #TcpStream connect(#SocketAddress addr) {
         return heap TcpStream(-1);
@@ -81,6 +83,8 @@ public class TcpStream implements ByteChannel {
      * The body is a placeholder; the call is intrinsic-lowered in
      * `MethodCallExpression` (the static `TcpStream.connect`/`connectAsync`
      * block), so this returns through the codegen, never the stub.
+     *
+     * @EntryPoint
      */
     public static #TcpStream connectAsync(#SocketAddress addr) {
         return heap TcpStream(-1);

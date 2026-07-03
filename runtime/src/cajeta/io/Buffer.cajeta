@@ -20,7 +20,11 @@ public final class Buffer<T> {
     int8[] data;        // owned backing bytes
     int64 len;          // valid byte length
 
-    /** Wrap (take ownership of) `data`; `byteLength` is the valid byte count. */
+    /**
+     * Wrap (take ownership of) `data`; `byteLength` is the valid byte count.
+     *
+     * @EntryPoint
+     */
     public Buffer(#int8[] data, int64 byteLength) {
         this.data = data;
         this.len = byteLength;

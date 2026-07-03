@@ -53,6 +53,8 @@ public class TcpListener {
      * `__cajeta_net_socket` → `__cajeta_net_set_reuseaddr` →
      * `__cajeta_net_sockaddr_pack` → `__cajeta_net_bind` →
      * `__cajeta_net_listen`, returning an owned, listening `TcpListener`.
+     *
+     * @EntryPoint
      */
     public static #TcpListener bind(SocketAddress addr) {
         return heap TcpListener(-1);

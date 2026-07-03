@@ -24,7 +24,7 @@ import cajeta.lang.String;
  *     if (t == JsonToken.NUMBER) {
  *         int64 n = reader.currentNumberAsInt64();
  *     } else if (t == JsonToken.STRING) {
- *         #String s = reader.currentString();
+ *         String s = reader.currentString();
  *     }
  *     t = reader.next();
  * }
@@ -32,7 +32,7 @@ import cajeta.lang.String;
  * Or expand the whole document into a `JsonValue` tree in one call:
  * ```cajeta
  * stack reader = JsonReader(buf, buf.count());
- * #JsonValue root = reader.readValue();
+ * JsonValue root = reader.readValue();
  * ```
  * Any malformed input throws `JsonParseException` carrying the byte
  * offset of the fault.
@@ -573,7 +573,7 @@ public final class JsonReader {
      *
      * ```cajeta
      * if (reader.next() == JsonToken.STRING) {
-     *     #int8[] raw = reader.currentBytes();
+     *     int8[] raw = reader.currentBytes();
      * }
      * ```
      */
@@ -843,7 +843,7 @@ public final class JsonReader {
      *
      * ```cajeta
      * stack reader = JsonReader(buf, buf.count());
-     * #JsonValue root = reader.readValue();
+     * JsonValue root = reader.readValue();
      * ```
      */
     public #JsonValue readValue() {

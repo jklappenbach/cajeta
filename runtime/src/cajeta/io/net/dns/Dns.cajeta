@@ -126,6 +126,7 @@ public final class Dns {
      *         least one element; a zero-address lookup raises instead).
      * @throws NetException on any resolution failure (NET-2.5 narrows
      *         this to `UnknownHost` / `ResolutionFailed`).
+     * @EntryPoint
      */
     public static #SocketAddress[] resolve(String host) {
         return Dns.resolve(host, 0, ResolveFamily.BOTH);
@@ -140,6 +141,7 @@ public final class Dns {
      *             [`SocketAddress`](../SocketAddress.cajeta).
      * @return a freshly owned, non-empty array of endpoints.
      * @throws NetException on any resolution failure.
+     * @EntryPoint
      */
     public static #SocketAddress[] resolve(String host, int32 port) {
         return Dns.resolve(host, port, ResolveFamily.BOTH);
@@ -164,6 +166,7 @@ public final class Dns {
      *         zero-address result (the native layer returns a NULL
      *         handle for all three; the resolve ordinal is carried in
      *         `kind`).
+     * @EntryPoint
      */
     public static #SocketAddress[] resolve(String host, int32 port,
                                            ResolveFamily family) {

@@ -87,7 +87,11 @@ public class Router {
     Route[] routes;
     int32 routeCount;
 
-    /** An empty router (no routes; everything 404s until registered). */
+    /**
+     * An empty router (no routes; everything 404s until registered).
+     *
+     * @EntryPoint
+     */
     public Router() {
         this.routes = heap Route[8];
         this.routeCount = 0;
@@ -102,6 +106,8 @@ public class Router {
      * convention used across the HTTP message types. Later registrations
      * for the same `(method, pattern)` are shadowed by this one (first
      * match wins at dispatch).
+     *
+     * @EntryPoint
      */
     public Router route(String method, String pattern,
                         (HttpRequest) -> #HttpResponse handler) {

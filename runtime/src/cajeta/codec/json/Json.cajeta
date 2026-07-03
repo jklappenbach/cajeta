@@ -133,6 +133,8 @@ public final class Json {
      * ```
      *
      * Throws `JsonParseException` on malformed input.
+     *
+     * @EntryPoint
      */
     public static #JsonValue parse(int8[] bytes, int64 length) {
         JsonReader r = heap JsonReader(bytes, length);
@@ -148,6 +150,8 @@ public final class Json {
      * ```cajeta
      * JsonValue v = Json.parse("{\"id\":1,\"name\":\"alice\"}");
      * ```
+     *
+     * @EntryPoint
      */
     public static #JsonValue parse(String s) {
         return Json.parse(s.bytes, (int64) s.byteLength);
@@ -161,6 +165,8 @@ public final class Json {
      * JsonValue v = Json.parse("{\"id\":1}");
      * int8[] out = Json.toBytes(v);                 // {"id":1}
      * ```
+     *
+     * @EntryPoint
      */
     public static #int8[] toBytes(JsonValue value) {
         JsonWriter w = heap JsonWriter();
@@ -189,6 +195,8 @@ public final class Json {
      * Throws `JsonParseException` if the synthesizer fails to engage.
      *
      * See docs/specification/codec/json/Json.md § Tier 1.
+     *
+     * @EntryPoint
      */
     // Tier-1 templated parse. Coexists with the Tier-3 `parse(int8[],
     // int64)` above — the resolver distinguishes by the call site's
@@ -211,6 +219,8 @@ public final class Json {
      * ```cajeta
      * User u = Json.parse<User>("{\"id\":7,\"name\":\"alice\"}");
      * ```
+     *
+     * @EntryPoint
      */
     public static T parse<T>(String s) {
         return Json.parse<T>(s.bytes, (int64) s.byteLength);
@@ -278,6 +288,8 @@ public final class Json {
      * u.id = 7;
      * int8[] bytes = Json.toBytes<User>(u);         // {"id":7,...}
      * ```
+     *
+     * @EntryPoint
      */
     public static int8[] toBytes<T>(T value) {
         throw heap JsonParseException(

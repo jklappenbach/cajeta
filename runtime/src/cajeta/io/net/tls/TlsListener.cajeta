@@ -46,6 +46,8 @@ public class TlsListener {
      * Bind a TLS-terminating listener to `addr`, presenting `cert` (chain) +
      * `key` (PEM bytes). A `0` port binds to an OS-assigned one — read it back
      * with [`boundPort`](#boundPort).
+     *
+     * @EntryPoint
      */
     public static #TlsListener bind(SocketAddress addr, int8[] cert, int32 certLen,
                                     int8[] key, int32 keyLen) {

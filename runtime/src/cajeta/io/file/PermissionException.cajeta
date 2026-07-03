@@ -16,7 +16,7 @@ import cajeta.lang.String;
  *
  * ```cajeta
  * try {
- *     #FileWriter w = File.openWrite("/etc/hosts");
+ *     FileWriter w = File.openWrite("/etc/hosts");
  *     // ... write to it
  * } catch (PermissionException e) {
  *     // not allowed — fall back to a user-writable path

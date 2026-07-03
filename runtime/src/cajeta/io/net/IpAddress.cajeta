@@ -140,6 +140,8 @@ public class IpAddress {
     /**
      * Build an `IpAddress` directly from four octet values
      * (`a.b.c.d`). Each is masked to its low 8 bits.
+     *
+     * @EntryPoint
      */
     public static #IpAddress fromV4(int32 a0, int32 a1, int32 a2, int32 a3) {
         IpAddress a = heap IpAddress();
@@ -241,6 +243,8 @@ public class IpAddress {
      * else is malformed. Throws a citing
      * [`MalformedAddressException`](MalformedAddressException.cajeta)
      * on bad input.
+     *
+     * @EntryPoint
      */
     public static #IpAddress parse(String input) {
         if (input == null) {

@@ -74,11 +74,13 @@ cajeta.io.net.ServerBuilder
 cajeta.io.net.http.HttpClient
 cajeta.io.net.http.HttpServer
 cajeta.io.net.http.Router
+cajeta.io.net.http.HttpServerBuilder
 cajeta.io.net.ws.WebSocket
 cajeta.io.net.tls.TlsConnection
 cajeta.io.net.tls.TlsListener
 cajeta.io.net.dns.Dns
 cajeta.io.net.uri.Uri
+cajeta.io.net.uri.UriBuilder
 cajeta.wire.Encoder
 cajeta.wire.Schema
 cajeta.wire.SchemaEncoder

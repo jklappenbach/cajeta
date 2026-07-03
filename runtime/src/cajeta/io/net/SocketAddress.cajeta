@@ -50,6 +50,8 @@ public class SocketAddress {
      * Build a `SocketAddress` from an existing `IpAddress` and a port.
      * Takes ownership of `addr`. A port outside `0..65535` raises a
      * citing exception.
+     *
+     * @EntryPoint
      */
     public static #SocketAddress of(#IpAddress addr, int32 port) {
         if (port < 0 || port > 65535) {
@@ -151,6 +153,8 @@ public class SocketAddress {
      * on bad input — an unbracketed IPv6 host (ambiguous colons), a
      * missing/extra bracket, a missing port, or a host the
      * [`IpAddress`](IpAddress.cajeta) parser rejects.
+     *
+     * @EntryPoint
      */
     public static #SocketAddress parse(String input) {
         if (input == null) {

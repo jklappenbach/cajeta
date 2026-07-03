@@ -65,6 +65,11 @@ public final class Sha1 implements Hasher {
      */
     public pointer state;
 
+    /**
+     * Construct a fresh streaming SHA-1 hasher.
+     *
+     * @EntryPoint
+     */
     public Sha1() {
         this.state = Sha1.allocState();
     }
@@ -122,6 +127,8 @@ public final class Sha1 implements Hasher {
     /**
      * One-shot 20-byte digest of `data[0..len)`. Allocates a fresh
      * `int8[20]` and transfers ownership to the caller.
+     *
+     * @EntryPoint
      */
     public static #int8[] hash(int8[] data, int64 len) {
         int8[] out = heap int8[20];
@@ -131,6 +138,8 @@ public final class Sha1 implements Hasher {
 
     /**
      * One-shot lowercase 40-char hex digest of `data[0..len)`.
+     *
+     * @EntryPoint
      */
     public static #String hashHex(int8[] data, int64 len) {
         int8[] hex = heap int8[40];

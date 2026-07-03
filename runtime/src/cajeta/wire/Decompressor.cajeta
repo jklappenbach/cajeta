@@ -14,13 +14,15 @@ package cajeta.wire;
  *
  * ```cajeta
  * Decompressor d = Snappy();
- * #int8[] plain = d.decompress(block, expandedLen);
+ * int8[] plain = d.decompress(block, expandedLen);
  * ```
  */
 public interface Decompressor {
     /**
      * Decompresses `src` into a fresh, caller-owned buffer of exactly
      * `expandedLen` bytes (the decompressed length carried by the block header).
+     *
+     * @EntryPoint
      */
     #int8[] decompress(int8[] src, int64 expandedLen);
 }

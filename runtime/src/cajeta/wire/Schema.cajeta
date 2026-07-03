@@ -16,7 +16,11 @@ package cajeta.wire;
 public final class Schema {
     int8[] definition;      // owned raw schema descriptor
 
-    /** Wraps (takes ownership of) the raw schema `definition` bytes. */
+    /**
+     * Wraps (takes ownership of) the raw schema `definition` bytes.
+     *
+     * @EntryPoint
+     */
     public Schema(#int8[] definition) {
         this.definition = definition;
     }

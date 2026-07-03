@@ -44,6 +44,8 @@ public final class Instant implements Comparable<Instant> {
      * ```cajeta
      * stack Instant t = Instant.ofEpochSecond(1717599600);
      * ```
+     *
+     * @EntryPoint
      */
     @Inline
     public static Instant ofEpochSecond(int64 epochSecond) {
@@ -74,6 +76,8 @@ public final class Instant implements Comparable<Instant> {
      * ```cajeta
      * stack Instant t = Instant.ofEpochMilli(1717599600000);
      * ```
+     *
+     * @EntryPoint
      */
     @Inline
     public static Instant ofEpochMilli(int64 epochMilli) {
@@ -92,6 +96,8 @@ public final class Instant implements Comparable<Instant> {
      * ```cajeta
      * stack Instant base = Instant.epoch();
      * ```
+     *
+     * @EntryPoint
      */
     @Inline
     public static Instant epoch() {
@@ -183,6 +189,8 @@ public final class Instant implements Comparable<Instant> {
      * ```cajeta
      * stack Duration d = Instant.between(start, end);
      * ```
+     *
+     * @EntryPoint
      */
     public static Duration between(Instant start, Instant end) {
         int64 secs = end.epochSecond - start.epochSecond;

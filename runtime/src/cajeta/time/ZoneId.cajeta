@@ -24,7 +24,7 @@ public class ZoneId {
      * ownership (`#ZoneId`) the way the rest of this package is constructed.
      *
      * ```cajeta
-     * #ZoneId la = ZoneId.of("America/Los_Angeles");
+     * ZoneId la = ZoneId.of("America/Los_Angeles");
      * ```
      */
     public ZoneId(String id) {
@@ -37,9 +37,11 @@ public class ZoneId {
      * the native lookup.
      *
      * ```cajeta
-     * #ZoneId paris = ZoneId.of("Europe/Paris");
+     * ZoneId paris = ZoneId.of("Europe/Paris");
      * ZoneOffset off = paris.offsetAt(Instant.now());   // DST-aware
      * ```
+     *
+     * @EntryPoint
      */
     public static #ZoneId of(String id) {
         return heap ZoneId(id);
@@ -50,8 +52,10 @@ public class ZoneId {
      * touching the tz database.
      *
      * ```cajeta
-     * #ZoneId z = ZoneId.utc();
+     * ZoneId z = ZoneId.utc();
      * ```
+     *
+     * @EntryPoint
      */
     public static #ZoneId utc() {
         return heap ZoneId("UTC");

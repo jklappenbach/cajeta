@@ -23,7 +23,7 @@ import cajeta.lang.String;
  * Drain a file through the streaming `read` loop:
  *
  * ```cajeta
- * #FileReader r = File.openRead("data.bin");
+ * FileReader r = File.openRead("data.bin");
  * int8[] buf = heap int8[4096];
  * int32 n = r.read(buf, 4096);
  * while (n != 0) {
@@ -37,8 +37,8 @@ import cajeta.lang.String;
  * via `Encoding` if the file isn't UTF-8):
  *
  * ```cajeta
- * #FileReader r = File.openRead("notes.txt");
- * #String text = r.readString(65536);
+ * FileReader r = File.openRead("notes.txt");
+ * String text = r.readString(65536);
  * r.close();
  * ```
  */
@@ -78,6 +78,8 @@ public class FileReader {
      * `__cajeta_file_read(this.fd, buf, max)` at the call site.
      * The stub below exists for the parser; codegen never enters
      * it.
+     *
+     * @EntryPoint
      */
     public int32 read(int8[] buf, int32 max) {
         return 0;
@@ -104,8 +106,8 @@ public class FileReader {
      * caller's responsibility.
      *
      * ```cajeta
-     * #FileReader r = File.openRead("notes.txt");
-     * #String head = r.readString(1024);
+     * FileReader r = File.openRead("notes.txt");
+     * String head = r.readString(1024);
      * r.close();
      * ```
      *
@@ -113,6 +115,8 @@ public class FileReader {
      * calls `__cajeta_file_read(this.fd, &buf[0], maxBytes)`,
      * shrinks the array's count word to the actual byte count
      * returned, and wraps the result in a class String shell.
+     *
+     * @EntryPoint
      */
     public #String readString(int32 maxBytes) {
         int8[] empty = heap int8[0];

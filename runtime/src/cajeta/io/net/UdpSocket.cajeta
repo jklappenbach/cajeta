@@ -58,6 +58,8 @@ public class UdpSocket {
      * (`V4` / `V6`) selects the socket family. Intrinsic-lowered to
      * `__cajeta_net_socket(family, SOCK_DGRAM, 0)` then
      * `__cajeta_net_bind(fd, packed(local))`.
+     *
+     * @EntryPoint
      */
     public static #UdpSocket bind(SocketAddress local) {
         return heap UdpSocket(-1);

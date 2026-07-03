@@ -161,6 +161,8 @@ public class WebSocket {
      * `reader`/`writer` over the accepted socket after the
      * [`WsServerHandshake`](WsServerHandshake.cajeta) `101` response. The
      * reader/writer are **borrowed**.
+     *
+     * @EntryPoint
      */
     public static #WebSocket forServer(AsyncReader reader, AsyncWriter writer) {
         WebSocket ws = heap WebSocket();
@@ -178,6 +180,8 @@ public class WebSocket {
      * decoder expects unmasked server frames and outbound frames are masked
      * (RFC 6455 §5.1) — see the class-doc client-masking scope note. The
      * reader/writer are **borrowed**.
+     *
+     * @EntryPoint
      */
     public static #WebSocket forClient(AsyncReader reader, AsyncWriter writer) {
         WebSocket ws = heap WebSocket();

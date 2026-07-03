@@ -226,6 +226,8 @@ public class HttpServer {
      * [`serveConnection`](#serveConnection) loop. To pick the shared-pool
      * model use [`bindWithModel`](#bindWithModel) (or the
      * [`builder`](#builder)).
+     *
+     * @EntryPoint
      */
     public static #HttpServer bind(String addr, (HttpRequest) -> #HttpResponse handler) {
         return HttpServer.bindAddress(SocketAddress.parse(addr), handler);
@@ -254,6 +256,8 @@ public class HttpServer {
      * ([`ServerModel.sharedPool`](../ServerModel.cajeta#sharedPool)). The
      * HTTP protocol loop is identical on both; only the underlying accept
      * dispatch differs.
+     *
+     * @EntryPoint
      */
     public static #HttpServer bindWithModel(String addr, ServerModel model,
                                             (HttpRequest) -> #HttpResponse handler) {
@@ -351,6 +355,8 @@ public class HttpServer {
      * this builder carries bind + model + a single handler). Defaults: the
      * fiber-per-connection model, no address (must be set), the identity-`500`
      * handler until one is supplied.
+     *
+     * @EntryPoint
      */
     public static #HttpServerBuilder builder() {
         return heap HttpServerBuilder();
@@ -1080,7 +1086,11 @@ public class HttpServerBuilder {
      */
     private (HttpRequest) -> #HttpResponse handler;
 
-    /** Start with the default (fiber-per-connection) model and no address/handler. */
+    /**
+     * Start with the default (fiber-per-connection) model and no address/handler.
+     *
+     * @EntryPoint
+     */
     public HttpServerBuilder() {
         this.addr = null;
         this.model = ServerModel.fiberPerConnection();
