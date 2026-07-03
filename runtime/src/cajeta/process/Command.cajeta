@@ -18,7 +18,7 @@ import cajeta.lang.String;
  * String[] argv = heap String[2];
  * argv[0] = "/bin/echo";
  * argv[1] = "hello";
- * Command cmd = heap Command(argv);
+ * Command cmd = heap Command(#argv);
  * cmd.captureStdout();
  * ProcessResult r = cmd.run();
  * ```
