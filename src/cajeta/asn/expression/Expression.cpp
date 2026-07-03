@@ -155,6 +155,12 @@ namespace cajeta {
                 // children[0] by the child loop at the bottom of this function.
                 result = make_shared<CallExpression>(ctx, token);
             }
+        } else if (ctx->LBRACK() && ctx->COLON() && !ctx->QUESTION()) {
+            // `base[a:b]` — the window form (slice-spec §7.2). COLON + LBRACK
+            // on the SAME ctx only occurs for the slice alternative (a ternary
+            // carries QUESTION; a ternary/index inside the brackets is a child
+            // context).
+            result = make_shared<ArraySliceExpression>(ctx, token);
         } else if (ctx->LBRACK()) {
             result = make_shared<ArrayIndexExpression>(ctx, token);
         // Grammar artifacts (annotation/creator/typeType-alone/RPAREN) are sub-rules that
@@ -388,6 +394,130 @@ namespace cajeta {
     ArrayIndexExpression::ArrayIndexExpression(CajetaParser::ExpressionContext* ctx, antlr4::Token* token) : Expression(
         token) {
 
+    }
+
+    ArraySliceExpression::ArraySliceExpression(
+        CajetaParser::ExpressionContext* ctx, antlr4::Token* token)
+        : Expression(token) {
+        // children [base, from, to] attach via fromContext's child loop.
+    }
+
+    void ArraySliceExpression::resolveTypes(CajetaModulePtr module) {
+        AbstractSyntaxNode::resolveTypes(module);
+        if (resolvedType || children.empty()) return;
+        auto base = dynamic_pointer_cast<Expression>(children[0]);
+        if (!base) return;
+        if (!base->getResolvedType()) base->resolveTypes(module);
+        CajetaTypePtr bt = base->getResolvedType();
+        if (auto arr = dynamic_pointer_cast<CajetaArray>(bt)) {
+            auto sliceTmpl = dynamic_pointer_cast<CajetaClass>(
+                CajetaType::of("Slice", "cajeta.lang"));
+            if (sliceTmpl) {
+                resolvedType = sliceTmpl->instantiate({arr->getElementType()});
+            }
+        } else if (auto cls = dynamic_pointer_cast<CajetaClass>(bt)) {
+            // Sub-slicing a Slice<T> keeps the type (O(1) composition).
+            if (cls->getQName()
+                    && cls->getQName()->getPackageName() == "cajeta.lang"
+                    && cls->getQName()->getTypeName().rfind("Slice", 0) == 0) {
+                resolvedType = bt;
+            }
+        }
+        // A null resolution here is tolerated: pre-pass sweeps run without
+        // the method scope, so the base identifier may not resolve yet.
+        // generateCode re-resolves with the live scope and hard-errors there.
+    }
+
+    llvm::Value* ArraySliceExpression::generateCode(CajetaModulePtr module) {
+        if (!resolvedType) resolveTypes(module);
+        if (!resolvedType) {
+            throw Exception(
+                "the window form `base[a:b]` requires an array or Slice<T> "
+                "base",
+                "CAJETA_ERROR_SLICE_BASE");
+        }
+        auto* builder = module->getBuilder();
+        auto& ctx = *module->getLlvmContext();
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+        llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
+
+        auto sliceCls = dynamic_pointer_cast<CajetaClass>(resolvedType);
+        auto base = dynamic_pointer_cast<Expression>(children[0]);
+        auto fromE = dynamic_pointer_cast<Expression>(children[1]);
+        auto toE = dynamic_pointer_cast<Expression>(children[2]);
+        if (!sliceCls || !base || !fromE || !toE) return nullptr;
+
+        auto asI64 = [&](ExpressionPtr e) {
+            llvm::Value* v = loadIfLValue(module, e->generateCode(module), e);
+            if (v->getType() != i64Ty) {
+                v = builder->CreateIntCast(v, i64Ty, /*isSigned=*/true);
+            }
+            return v;
+        };
+
+        // Field slots on the Slice<E> body (never hardcode indices).
+        llvm::StructType* bodyTy =
+            llvm::dyn_cast_or_null<llvm::StructType>(sliceCls->getLlvmType());
+        if (!bodyTy) return nullptr;
+        auto fieldIdx = [&](const char* name) -> unsigned {
+            auto& props = sliceCls->getProperties();
+            auto it = props.find(name);
+            return it == props.end() ? 0u
+                : (unsigned) sliceCls->getFieldLlvmIndex(it->second);
+        };
+        unsigned storeIdx = fieldIdx("store");
+        unsigned offIdx = fieldIdx("off");
+        unsigned lenIdx = fieldIdx("len");
+
+        llvm::Value* from = asI64(fromE);
+        llvm::Value* to = asI64(toE);
+        llvm::Value* zero = llvm::ConstantInt::get(i64Ty, 0);
+
+        llvm::Value* storeV;
+        llvm::Value* baseOff;
+        llvm::Value* limit;   // window length of the base (masked root count / base.len)
+        CajetaTypePtr bt = base->getResolvedType();
+        if (dynamic_pointer_cast<CajetaArray>(bt)) {
+            llvm::Value* arrPtr = loadIfLValue(module, base->generateCode(module), base);
+            storeV = arrPtr;
+            baseOff = zero;
+            // Root count word, masked of the shared sign bit (slice-spec §3.3).
+            llvm::Value* cnt = builder->CreateLoad(i64Ty, arrPtr, "slice_root_count");
+            limit = builder->CreateAnd(cnt,
+                llvm::ConstantInt::get(i64Ty, 0x7FFFFFFFFFFFFFFFULL));
+        } else {
+            // Slice base: its VALUE address (a value-type lvalue IS the storage).
+            llvm::Value* baseAddr = base->generateCode(module);
+            storeV = builder->CreateLoad(ptrTy,
+                builder->CreateStructGEP(bodyTy, baseAddr, storeIdx), "sub_store");
+            baseOff = builder->CreateLoad(i64Ty,
+                builder->CreateStructGEP(bodyTy, baseAddr, offIdx), "sub_off");
+            limit = builder->CreateLoad(i64Ty,
+                builder->CreateStructGEP(bodyTy, baseAddr, lenIdx), "sub_len");
+        }
+
+        // Clamp like String.substring: from = max(from, 0); to = min(to, limit);
+        // to = max(to, from).
+        from = builder->CreateSelect(
+            builder->CreateICmpSLT(from, zero), zero, from, "slice_from");
+        to = builder->CreateSelect(
+            builder->CreateICmpSGT(to, limit), limit, to, "slice_to");
+        to = builder->CreateSelect(
+            builder->CreateICmpSLT(to, from), from, to, "slice_to2");
+
+        // Build the value in an entry-block alloca (stable across the scope).
+        llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+        llvm::IRBuilder<> entryBuilder(&parentFn->getEntryBlock(),
+            parentFn->getEntryBlock().begin());
+        llvm::Value* out = entryBuilder.CreateAlloca(bodyTy, nullptr, "slice_val");
+
+        builder->CreateStore(storeV,
+            builder->CreateStructGEP(bodyTy, out, storeIdx));
+        builder->CreateStore(builder->CreateAdd(baseOff, from),
+            builder->CreateStructGEP(bodyTy, out, offIdx));
+        builder->CreateStore(builder->CreateSub(to, from),
+            builder->CreateStructGEP(bodyTy, out, lenIdx));
+        return out;
     }
 
     ArrayLiteralExpression::ArrayLiteralExpression(

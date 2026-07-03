@@ -2635,6 +2635,18 @@ namespace cajeta {
                     resolvedType = CajetaType::of("String", "cajeta.lang");
                     return builder->CreateCall(fn, {s, b, l});
                 }
+                // boundsFail(int64 idx, int64 size): report + abort via the
+                // same helper the array bounds check uses. Lets stdlib window
+                // types (Slice<T>) enforce their own [0, len) contract.
+                if (ns == "Cajeta" && methodCallName == "boundsFail" && parameters.size() == 2) {
+                    llvm::Value* i = loadValue(0);
+                    if (i->getType() != i64Ty) i = builder->CreateIntCast(i, i64Ty, true);
+                    llvm::Value* n = loadValue(1);
+                    if (n->getType() != i64Ty) n = builder->CreateIntCast(n, i64Ty, true);
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_array_bounds_fail");
+                    resolvedType = CajetaType::of("void");
+                    return fn ? builder->CreateCall(fn, {i, n}) : nullptr;
+                }
                 // stringSliceBorrow(String s, int32 begin, int32 len) -> String:
                 // the borrow-mode window (slices plan 4.2.2) — no rc at all;
                 // used by substringView/trimView for compiler-proven-local

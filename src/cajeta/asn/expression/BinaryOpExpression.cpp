@@ -411,6 +411,14 @@ namespace cajeta {
         if (dynamic_pointer_cast<CastExpression>(ast)) {
             return v;
         }
+        // `base[a:b]` yields a freshly built Slice<T> VALUE — the returned
+        // alloca IS the aggregate (same shape as the record upcast above).
+        // The class-ref catch-all would load its first word (the store
+        // pointer — the backing array header) and treat THAT as the value:
+        // the exact double-deref that handed count() the header bytes.
+        if (dynamic_pointer_cast<ArraySliceExpression>(ast)) {
+            return v;
+        }
         // REFL-1.5 — `T.class` returns the address of the type's #ClassObject
         // global, which IS the Class<T> reference (a process-lifetime constant
         // { Class<?>#VTable, rtti }). Same carve-out shape as NewExpression /
