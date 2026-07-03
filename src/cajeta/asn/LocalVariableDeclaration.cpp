@@ -13,6 +13,7 @@
 #include "../type/CajetaView.h"
 #include "../type/CajetaFunctionType.h"
 #include "expression/Expression.h"
+#include "Statement.h"
 #include "expression/LiteralExpression.h"
 #include "expression/DotExpression.h"
 #include "expression/Identifier.h"
@@ -178,6 +179,36 @@ namespace cajeta {
         if (auto m = module->getCurrentMethod()) m->registerDropEntry(entryPtr);
     }
 
+    // slices plan 4.2.1 — the LOCAL classification for the borrow downgrade.
+    // A name's use BLOCKS the downgrade when it appears under a return, a
+    // `#`-move, or a lambda (capture): those carry the VIEW itself out of the
+    // scope. Field stores and call args do NOT block — the value resolves at
+    // its own escape site (4.2.2 (a)). Name-based and conservative: any
+    // shadowed reuse of the name in a blocking context still blocks.
+    static bool subtreeUsesName(const AbstractSyntaxNodePtr& node,
+                                const std::string& name) {
+        if (!node) return false;
+        if (auto id = dynamic_pointer_cast<IdentifierExpression>(node)) {
+            if (id->getTextValue() == name) return true;
+        }
+        for (auto& child : node->getChildren()) {
+            if (subtreeUsesName(child, name)) return true;
+        }
+        return false;
+    }
+    static bool nameEscapesScope(const AbstractSyntaxNodePtr& node,
+                                 const std::string& name) {
+        if (!node) return false;
+        bool blocking = dynamic_pointer_cast<ReturnStatement>(node)
+            || dynamic_pointer_cast<MoveExpression>(node)
+            || dynamic_pointer_cast<LambdaExpression>(node);
+        if (blocking) return subtreeUsesName(node, name);
+        for (auto& child : node->getChildren()) {
+            if (nameEscapesScope(child, name)) return true;
+        }
+        return false;
+    }
+
     /**
      * If we have a primitive variable, we can store in on the stack and will immediately create an currentRegister.
      * Otherwise, we will create an currentRegister for a structure reference.  If the variable receives a new operator,
@@ -223,6 +254,49 @@ namespace cajeta {
                         // ABI so it can pick the sret-shaped fnType and
                         // synthesize the borrow→sret adapter thunk.
                         mref->setExpectedType(type);
+                    }
+                }
+            }
+            // slices plan 4.2.2 — local-borrow downgrade. A String local
+            // initialized from `recv.substring(...)` / `recv.trim()` whose
+            // name never appears under a return / `#`-move / lambda in this
+            // method gets the BORROW slice (zero rc): rewrite the call to
+            // the *View twin before the initializer generates. Escapes of
+            // the VALUE (field stores, args) resolve at their own sites.
+            {
+                auto declClass = dynamic_pointer_cast<CajetaClass>(type);
+                bool declIsString = declClass && declClass->getQName()
+                    && declClass->getQName()->getTypeName() == "String"
+                    && declClass->getQName()->getPackageName() == "cajeta.lang";
+                if (declIsString && initializer) {
+                    if (auto varInit = dynamic_pointer_cast<VariableInitializer>(initializer)) {
+                        auto& kids = varInit->getChildren();
+                        auto mc = kids.empty() ? nullptr
+                            : dynamic_pointer_cast<MethodCallExpression>(kids[0]);
+                        const std::string mcName = mc ? mc->getMethodCallName() : "";
+                        if (mc && (mcName == "substring" || mcName == "trim")) {
+                            auto& mck = mc->getChildren();
+                            auto recv = mck.empty() ? nullptr
+                                : dynamic_pointer_cast<Expression>(mck[0]);
+                            if (recv) {
+                                if (!recv->getResolvedType()) recv->resolveTypes(module);
+                                auto recvCls = dynamic_pointer_cast<CajetaClass>(
+                                    recv->getResolvedType());
+                                bool recvIsString = recvCls && recvCls->getQName()
+                                    && recvCls->getQName()->getTypeName() == "String"
+                                    && recvCls->getQName()->getPackageName() == "cajeta.lang";
+                                if (recvIsString) {
+                                    auto m = module->getCurrentMethod();
+                                    BlockPtr body = m ? m->getBlock() : nullptr;
+                                    if (body && !nameEscapesScope(body,
+                                            declarator->getIdentifier())) {
+                                        mc->setMethodCallName(
+                                            mcName == "substring" ? "substringView"
+                                                                  : "trimView");
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

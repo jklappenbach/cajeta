@@ -263,6 +263,52 @@ void* __cajeta_string_resolve(void* src_v) {
     return out;
 }
 
+// Borrow-mode slice (slices plan 4.2.2 local-borrow downgrade): for a slice
+// the compiler PROVED never leaves its scope (no return, no `#`-move, no
+// lambda capture — field stores and call args resolve at their own sites),
+// the view takes NO stake at all: zero rc traffic, zero side-table touch.
+// The wrapper is an ordinary mode-2 window whose drop's release no-ops on an
+// unregistered root; any later escape of the VALUE resolves (promote is
+// add-or-create). SSO sources still materialize (never alias a wrapper's
+// inline region); arena/heap/static roots alias freely — the borrow dies
+// with its scope, before its root.
+void* __cajeta_string_slice_borrow(void* src_v, int32_t begin, int32_t len) {
+    cajeta_string_layout* src = (cajeta_string_layout*) src_v;
+    cajeta_string_layout* out =
+        (cajeta_string_layout*) __cajeta_alloc(sizeof(cajeta_string_layout));
+    out->vtable = src->vtable;
+    out->cachedCpLength = -1;
+    out->ssoCount = 0;
+    memset(out->ssoData, 0, sizeof out->ssoData);
+    if (len <= 0 || src->bytes == NULL) {
+        out->bytes = NULL;
+        out->byteLength = 0;
+        out->mode = 0;
+        return out;
+    }
+    int32_t srcOff = (src->mode == 2) ? (int32_t) src->ssoCount : 0;
+    if (src->bytes == (void*) &src->ssoCount) {
+        void* buf = __cajeta_new_array_header(8, 1, (uint64_t) len + 1);
+        *((int64_t*) buf) = len;
+        memcpy((char*) buf + 8, (char*) src->bytes + 8 + srcOff + begin, (size_t) len);
+        ((char*) buf)[8 + len] = 0;
+        out->bytes = buf;
+        out->byteLength = len;
+        out->mode = 0;
+        return out;
+    }
+    out->bytes = src->bytes;
+    out->byteLength = len;
+    out->mode = 2;
+    out->ssoCount = (int64_t) (srcOff + begin);
+    // The borrow flag: ssoData[0] (unused when bytes != &ssoCount). A
+    // stakeless mode-2 wrapper must NOT release at drop — once an escape
+    // registers the root, an unflagged borrow's drop would steal a stake
+    // it never took.
+    out->ssoData[0] = 1;
+    return out;
+}
+
 void* __cajeta_string_slice(void* src_v, int32_t begin, int32_t len) {
     cajeta_string_layout* src = (cajeta_string_layout*) src_v;
     cajeta_string_layout* out =
@@ -300,7 +346,13 @@ void* __cajeta_string_slice(void* src_v, int32_t begin, int32_t len) {
     if (src->mode == 0) {
         __cajeta_shared_promote(root, 2);
     } else if (src->mode == 2) {
-        __cajeta_shared_retain(root);
+        // A borrow-flagged source holds NO stake: add-or-create (owner +
+        // this view) instead of retaining a possibly-absent entry.
+        if (src->ssoData[0]) {
+            __cajeta_shared_promote(root, 2);
+        } else {
+            __cajeta_shared_retain(root);
+        }
     }
     out->bytes = root;
     out->byteLength = len;

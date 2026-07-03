@@ -1150,10 +1150,14 @@ void __cajeta_string_drop(void* s) {
     } else if (mode == 2 && bytes != NULL) {
         // Windowed view (slice-spec §7.1): this wrapper holds one stake on the
         // root buffer; free it only as the last stake (static roots no-op).
-        int __cajeta_shared_release(void* base);
-        if (__cajeta_shared_release(bytes)) {
-            __cajeta_poison_buffer(bytes);
-            free(bytes);
+        // BORROW-flagged views (ssoData[0], slices plan 4.2.2) hold no stake
+        // and must not release one.
+        if (!str->ssoData[0]) {
+            int __cajeta_shared_release(void* base);
+            if (__cajeta_shared_release(bytes)) {
+                __cajeta_poison_buffer(bytes);
+                free(bytes);
+            }
         }
     }
     __cajeta_poison_buffer(s);

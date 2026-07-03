@@ -67,9 +67,7 @@ int32_t runJit(const std::string& runBody) {
 // Source is a doubling-concat (a large OWNED mode-0 heap buffer — the shape
 // that exercises the promote path; heapString's `String(#buf,n)` ctor makes
 // mode-1 views, which take no rc and would false-green this).
-// DISABLED: awaits 4.2.2's local-borrow downgrade — substring still
-// always-promotes at creation (sound interim; re-enable with (c)).
-TEST(SliceEscapeResolutionTests, DISABLED_localSubstringIsBorrow) {
+TEST(SliceEscapeResolutionTests, localSubstringIsBorrow) {
     EXPECT_EQ(runJit(
         "String s = makeBig(7);\n"                            // 1 KB owned (drop entry)
         "int64 pop = Cajeta.sharedPopulation();\n"

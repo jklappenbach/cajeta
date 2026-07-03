@@ -2635,6 +2635,21 @@ namespace cajeta {
                     resolvedType = CajetaType::of("String", "cajeta.lang");
                     return builder->CreateCall(fn, {s, b, l});
                 }
+                // stringSliceBorrow(String s, int32 begin, int32 len) -> String:
+                // the borrow-mode window (slices plan 4.2.2) — no rc at all;
+                // used by substringView/trimView for compiler-proven-local
+                // receivers.
+                if (ns == "Cajeta" && methodCallName == "stringSliceBorrow" && parameters.size() == 3) {
+                    auto* i32TyB = builder->getInt32Ty();
+                    llvm::Value* s = loadValue(0);
+                    llvm::Value* b = loadValue(1);
+                    if (b->getType() != i32TyB) b = builder->CreateIntCast(b, i32TyB, true);
+                    llvm::Value* l = loadValue(2);
+                    if (l->getType() != i32TyB) l = builder->CreateIntCast(l, i32TyB, true);
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_string_slice_borrow");
+                    resolvedType = CajetaType::of("String", "cajeta.lang");
+                    return builder->CreateCall(fn, {s, b, l});
+                }
                 // ----- Utf8 tagged-form natives (slice-spec §8; slices Unit 6b) -----
                 // Internal ABI for cajeta.lang.Utf8's method bodies: the value's
                 // 16 bytes are reinterpreted C-side for the pointer forms
