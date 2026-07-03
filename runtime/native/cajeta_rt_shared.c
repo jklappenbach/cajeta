@@ -209,6 +209,60 @@ const char* __cajeta_string_cstr(void* s_v) {
 //                        attribute to the root).
 //   mode-1 source     -> no rc (a static/borrowed root is never written; the
 //                        release at drop no-ops on unregistered roots).
+// Escape resolution (slice-spec §4.2; slices plan Unit 4). Called at an
+// escape site (a plain String field store whose RHS is a scope-owned local
+// wrapper): returns a FRESH wrapper the destination owns — the stored value
+// no longer aliases the source's wrapper (whose declaring scope frees it),
+// and the §4.2 row decides the backing:
+//   SSO / arena root / len <= threshold  -> materialized owned copy (mode 0)
+//   large heap root                      -> stake on the root (promote-or-
+//                                           retain; mode-2 window)
+//   static root (mode 1)                 -> free alias (no rc, mode 1)
+// [D-thresh] = 256 B.
+void* __cajeta_string_resolve(void* src_v) {
+    cajeta_string_layout* src = (cajeta_string_layout*) src_v;
+    if (!src) return NULL;
+    cajeta_string_layout* out =
+        (cajeta_string_layout*) __cajeta_alloc(sizeof(cajeta_string_layout));
+    out->vtable = src->vtable;
+    out->cachedCpLength = src->cachedCpLength;
+    out->ssoCount = 0;
+    memset(out->ssoData, 0, sizeof out->ssoData);
+    int32_t len = src->byteLength;
+    if (len <= 0 || src->bytes == NULL) {
+        out->bytes = NULL;
+        out->byteLength = 0;
+        out->mode = 0;
+        return out;
+    }
+    int32_t srcOff = (src->mode == 2) ? (int32_t) src->ssoCount : 0;
+    if (src->mode == 1) {                         // static root: alias freely
+        out->bytes = src->bytes;
+        out->byteLength = len;
+        out->mode = 1;
+        return out;
+    }
+    int __cajeta_arena_owns(const void* p);
+    if (src->bytes == (void*) &src->ssoCount
+            || __cajeta_arena_owns(src->bytes)
+            || len <= 256) {                      // copy-small + arena + SSO rows
+        void* buf = __cajeta_new_array_header(8, 1, (uint64_t) len + 1);
+        *((int64_t*) buf) = len;
+        memcpy((char*) buf + 8, (char*) src->bytes + 8 + srcOff, (size_t) len);
+        ((char*) buf)[8 + len] = 0;
+        out->bytes = buf;
+        out->byteLength = len;
+        out->mode = 0;
+        return out;
+    }
+    __cajeta_shared_promote(src->bytes, 2);       // share-large: add-or-create
+    out->bytes = src->bytes;
+    out->byteLength = len;
+    out->mode = 2;
+    out->ssoCount = (int64_t) srcOff;
+    return out;
+}
+
 void* __cajeta_string_slice(void* src_v, int32_t begin, int32_t len) {
     cajeta_string_layout* src = (cajeta_string_layout*) src_v;
     cajeta_string_layout* out =

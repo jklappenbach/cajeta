@@ -1509,6 +1509,85 @@ namespace cajeta {
                         }
                     }
                 }
+                // Escape resolution at the String field-store site (slice-spec
+                // §4.2; slices plan Unit 4). A plain `obj.f = w` where w is a
+                // scope-owned String LVALUE stored the BORROWED WRAPPER pointer
+                // — the declaring scope frees that wrapper at exit and the
+                // field dangles (UAF). Resolve instead: store a FRESH wrapper
+                // the field owns (copy ≤ threshold / stake on a large heap
+                // root / free alias of a static root — the runtime decides).
+                // Rvalue RHS (call result, concat, `#`-move) transfers its
+                // wrapper as before — no resolve.
+                if (auto dotLhs2 = dynamic_pointer_cast<DotExpression>(lhsAst)) {
+                    if (lhsAst && !lhsAst->getResolvedType()) lhsAst->resolveTypes(module);
+                    auto lhsCls2 = dynamic_pointer_cast<CajetaClass>(
+                        lhsAst->getResolvedType());
+                    bool lhsIsString = lhsCls2 && lhsCls2->getQName()
+                        && lhsCls2->getQName()->getTypeName() == "String"
+                        && lhsCls2->getQName()->getPackageName() == "cajeta.lang";
+                    if (lhsIsString && rhsAst) {
+                        if (!rhsAst->getResolvedType()) rhsAst->resolveTypes(module);
+                        auto rhsCls2 = dynamic_pointer_cast<CajetaClass>(
+                            rhsAst->getResolvedType());
+                        bool rhsIsString = rhsCls2 && rhsCls2->getQName()
+                            && rhsCls2->getQName()->getTypeName() == "String"
+                            && rhsCls2->getQName()->getPackageName() == "cajeta.lang";
+                        // A string-literal RHS is a String even when its
+                        // resolvedType is a null/placeholder (the unqualified
+                        // CajetaType::of("String") path) — detect structurally
+                        // so literal stores (`obj.f = "x"`) still old-drop.
+                        if (!rhsIsString) {
+                            if (auto lit = dynamic_pointer_cast<TextLiteralExpression>(rhsAst)) {
+                                LiteralType lt = lit->getLiteralType();
+                                rhsIsString = (lt == LITERAL_TYPE_STRING
+                                               || lt == LITERAL_TYPE_TEXT_BLOCK);
+                            }
+                        }
+                        bool rhsIsLvalue =
+                            dynamic_pointer_cast<IdentifierExpression>(rhsAst)
+                            || dynamic_pointer_cast<DotExpression>(rhsAst)
+                            || dynamic_pointer_cast<ArrayIndexExpression>(rhsAst);
+                        if (rhsIsString) {
+                            llvm::Function* resolveFn = rhsIsLvalue
+                                ? module->getRuntimeFunction("__cajeta_string_resolve")
+                                : nullptr;
+                            llvm::Value* srcWrapper = loadR(rhs);
+                            // Lvalue RHS: the source keeps its wrapper — the
+                            // field takes a FRESH resolved one (copy ≤
+                            // threshold / stake on a large heap root / static
+                            // alias). Rvalue RHS (literal, call result,
+                            // concat, `#`-move): the wrapper transfers as-is.
+                            llvm::Value* fresh = (rhsIsLvalue && resolveFn)
+                                ? builder->CreateCall(resolveFn, {srcWrapper},
+                                                      "str_resolve")
+                                : srcWrapper;
+                            // The field OWNS its wrapper (both arms), so
+                            // dropping the previous value on overwrite is safe
+                            // and closes the String-field overwrite leak.
+                            // SKIPPED inside constructors: stack-class bodies
+                            // aren't zero-initialized — a ctor's first store
+                            // would read garbage as the "old" wrapper (heap
+                            // bodies are zeroed; the skip costs at most a leak
+                            // on a ctor double-store).
+                            bool inCtor = false;
+                            if (auto cm = module->getCurrentMethod()) {
+                                inCtor = cm->isConstructor();
+                            }
+                            if (!inCtor) {
+                                llvm::Value* oldVal = builder->CreateLoad(
+                                    llvm::PointerType::get(*module->getLlvmContext(), 0),
+                                    lhs, "str_old");
+                                if (llvm::Function* dropFn =
+                                        module->getRuntimeFunction("__cajeta_string_drop")) {
+                                    builder->CreateCall(dropFn, {oldVal});
+                                }
+                            }
+                            builder->CreateStore(fresh, lhs);
+                            result = fresh;
+                            break;
+                        }
+                    }
+                }
                 llvm::Value* rhsVal = loadR(rhs);
                 // Coerce rhs to the destination's element type. Two slot shapes need
                 // this: (a) plain local-variable allocas, where the alloca carries the
