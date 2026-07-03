@@ -339,6 +339,33 @@ Each line is one diagnostic:
 - Mode-independent (not changed by `--debug`/`--release`/etc.); default `text`.
 - A clean compile emits nothing. Consumers should skip any non-`{` line defensively.
 
+### `--lint <file>`
+
+Run the diagnostic passes over **one** source file and report diagnostics, **without
+a build** — no codegen, no linking, no artifact, no entry-method. A distinct mode (like
+`archive` / `jit-run`): `<file>` is the sole positional; the three-positional
+`<entry-method> <source-root> <archive-root>` compile path does not apply.
+
+```
+cajeta --lint path/to/File.cajeta                     # text diagnostics
+cajeta --lint path/to/File.cajeta --diag-format=json  # NDJSON (IDE editor tier)
+```
+
+- Runs stdlib load → parse → placeholder/prototype/advice/dependency-graph passes, then
+  stops before codegen. Surfaces the same diagnostics a full compile's front-end does
+  (syntax with precise locations; semantic via error id + message).
+- Honors `--diag-format` exactly as a full compile (text default; `json` = NDJSON on
+  stderr, nothing on stdout).
+- Exit code: `0` iff no error-severity diagnostic; non-zero otherwise. A missing `<file>`
+  fails with a clear message, **not** the compile usage banner.
+- The IntelliJ plugin's editor-annotation tier (`CajetacRunner`) drives this mode.
+- **v1 limitation:** lint resolves only against the stdlib and declarations *within*
+  `<file>`. A reference to a type declared in a **sibling project file** reports a false
+  "unresolved type" diagnostic. Full-project resolution — `--lint <file> --source-root
+  <root>` (parse the project for context, report only for `<file>`) — is the follow-up;
+  it depends on semantic diagnostics gaining locations and collect-and-continue (see
+  `docs/specs/compiler-lint-mode-spec.md` §1.4).
+
 ### `--profile-counters=on|off`
 
 Emit per-method invocation counters + per-method total wall-time
