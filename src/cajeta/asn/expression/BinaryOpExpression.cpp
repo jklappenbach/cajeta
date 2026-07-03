@@ -5,6 +5,7 @@
 #include "BinaryOpExpression.h"
 #include "OperatorDispatch.h"
 #include "../../error/CajetaExceptions.h"
+#include "../../error/DiagnosticEngine.h"
 #include "../../error/Exception.h"
 #include "../../compile/CajetaModule.h"
 #include "../../type/CajetaClass.h"
@@ -1561,6 +1562,34 @@ namespace cajeta {
                                 ? builder->CreateCall(resolveFn, {srcWrapper},
                                                       "str_resolve")
                                 : srcWrapper;
+                            // 4.2.3 visibility lint: each silent resolution
+                            // is reported as a NOTE (never an error) so the
+                            // copy/share cost is visible; `#`-transfer makes
+                            // the store free. No-op without an active engine.
+                            // Stdlib-internal stores (the cajeta.* namespace,
+                            // which user code cannot extend) never lint into
+                            // user diagnostics.
+                            bool inStdlibClass = false;
+                            if (!module->getStructureStack().empty()) {
+                                auto owner = module->getStructureStack().back();
+                                if (owner && owner->getQName()) {
+                                    const std::string& pkg =
+                                        owner->getQName()->getPackageName();
+                                    inStdlibClass = pkg == "cajeta"
+                                        || pkg.rfind("cajeta.", 0) == 0;
+                                }
+                            }
+                            if (rhsIsLvalue && resolveFn && !inStdlibClass) {
+                                if (DiagnosticEngine* eng = DiagnosticEngine::active()) {
+                                    eng->report("note", "CAJETA_LINT_SLICE_RESOLVED",
+                                        "String store resolves silently (copies when "
+                                        "<= 256 B or arena/SSO-backed, otherwise takes "
+                                        "a shared stake); a `#` transfer of the source "
+                                        "would make this store free",
+                                        module->getSourcePath(),
+                                        (int) getSourceLine(), -1);
+                                }
+                            }
                             // The field OWNS its wrapper (both arms), so
                             // dropping the previous value on overwrite is safe
                             // and closes the String-field overwrite leak.
