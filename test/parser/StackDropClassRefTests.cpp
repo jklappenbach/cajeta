@@ -215,3 +215,35 @@ TEST(StackDropClassRefTests, arrayFieldFreedOnStackDrop) {
         "Holder2 h = stack Holder2();\n"
         "h.data = heap int32[4];"), 0);
 }
+
+// 4.1.1 — the tour's MultiInheritanceDemo shape in one scope: a
+// two-base MI instance plus stack Crate<int32> and Crate<String>,
+// all dropped at scope exit without abort.
+TEST(StackDropClassRefTests, tourMultiInheritanceShapeRunsClean) {
+    auto cls =
+        "public class Labeled {\n"
+        "    public String label;\n"
+        "    public Labeled() {\n"
+        "        this.label = \"<launch>\";\n"
+        "    }\n"
+        "}\n"
+        "public class Timed {\n"
+        "    public int32 t0;\n"
+        "    public Timed() {\n"
+        "        this.t0 = 100;\n"
+        "    }\n"
+        "}\n"
+        "public class Event extends Labeled, Timed {\n"
+        "    public Event() { return; }\n"
+        "}\n"
+        "public class Crate<T> {\n"
+        "    public T value;\n"
+        "    public Crate() { return; }\n"
+        "}\n";
+    expectRunsClean(cls,
+        "Event ev = stack Event();\n"
+        "Crate<int32> ci = stack Crate<int32>();\n"
+        "ci.value = 42;\n"
+        "Crate<String> cs = stack Crate<String>();\n"
+        "cs.value = \"hi\";");
+}
