@@ -184,7 +184,18 @@ void __cajeta_print_trace_one(void* throwable, int32_t fd, int32_t caused_by) {
 // IntToPtr), the message read may yield garbage; we print the raw
 // pointer in that case as a hex fallback. The trace is recorded at
 // throw time regardless of whether the throwable carries a message.
+// diagnostic-exceptions Unit 1 (1.2.3): under --diag-format=json an uncaught
+// throw emits one NDJSON diagnostic line instead of free text. Definitions live
+// with the other diagnostic natives further down; forward-declared here.
+static int  __cajeta_diag_json_enabled(void);
+static void __cajeta_emit_uncaught_json(void* value);
+static int  cajeta_json_escape(void* strObj, char* out, int outcap);
+
 static void __cajeta_emit_uncaught(void* value, int is_unrec) {
+    if (__cajeta_diag_json_enabled()) {
+        __cajeta_emit_uncaught_json(value);
+        return;
+    }
     const char* kind = is_unrec ? "unrecoverable" : "uncaught";
     // Throwable.message (slot 1) is a Cajeta String OBJECT, not a C string:
     //   Throwable { vtable@0, String message@8 }
@@ -544,6 +555,77 @@ void __cajeta_json_escape_into(void* strObj, void* out) {
     if (!out) return;
     int64_t cap = *((int64_t*) out);
     cajeta_json_escape(strObj, (char*) out + 8, (int) cap);
+}
+
+// Diagnostic output format for the uncaught-throw path. -1 = uninitialized (read
+// from the CAJETA_DIAG_FORMAT env once); 0 = text; 1 = json. The JIT host sets it
+// explicitly from --diag-format; an AOT exe picks it up from the environment.
+static int __cajeta_diag_format_json = -1;
+
+void __cajeta_set_diag_format_json(int enabled) {
+    __cajeta_diag_format_json = enabled ? 1 : 0;
+}
+static int __cajeta_diag_json_enabled(void) {
+    if (__cajeta_diag_format_json < 0) {
+        const char* v = getenv("CAJETA_DIAG_FORMAT");
+        __cajeta_diag_format_json = (v && strcmp(v, "json") == 0) ? 1 : 0;
+    }
+    return __cajeta_diag_format_json;
+}
+
+// Write one NDJSON diagnostic line for an uncaught throw (severity/code/message/
+// frames), a superset of the compiler's --diag-format=json shape. Reuses the
+// canonical type name (code), JSON escaping, and the throw-site trace table.
+static void __cajeta_emit_uncaught_json(void* value) {
+    void* strObj = NULL;
+    if (value && (uintptr_t) value >= 4096) strObj = ((void**) value)[1];
+    int esclen = cajeta_json_escape(strObj, NULL, 0);
+
+    const char* tn = NULL;
+    if (value && (uintptr_t) value >= 4096) {
+        void* r = cajeta_rtti_from_obj(value);
+        if (r) tn = ((CajetaRtti*) r)->typeName;
+    }
+    if (!tn) tn = "cajeta.error.Throwable";
+    size_t tnlen = strlen(tn);
+
+    // Copy the captured return addresses out under the trace lock.
+    uintptr_t addrs[CAJETA_TRACE_MAX_FRAMES];
+    int frame_count = 0;
+    pthread_mutex_lock(&__cajeta_trace_mutex);
+    struct cajeta_trace_entry* e = __cajeta_trace_table;
+    while (e && e->throwable != value) e = e->next;
+    if (e) {
+        frame_count = e->frame_count;
+        if (frame_count > CAJETA_TRACE_MAX_FRAMES) frame_count = CAJETA_TRACE_MAX_FRAMES;
+        for (int i = 0; i < frame_count; i++) addrs[i] = (uintptr_t) e->frames[i];
+    }
+    pthread_mutex_unlock(&__cajeta_trace_mutex);
+
+    size_t cap = 256 + (size_t) esclen + tnlen + (size_t) frame_count * 48;
+    char* buf = (char*) malloc(cap);
+    if (!buf) return;
+    size_t o = 0;
+    int w = snprintf(buf + o, cap - o,
+                     "{\"severity\":\"error\",\"code\":\"%.*s\",\"message\":\"",
+                     (int) tnlen, tn);
+    if (w > 0) o += (size_t) w;
+    if (o >= cap) o = cap - 1;
+    o += (size_t) cajeta_json_escape(strObj, buf + o, (int) (cap - o));
+    if (o >= cap) o = cap - 1;
+    w = snprintf(buf + o, cap - o, "\",\"frames\":[");
+    if (w > 0) o += (size_t) w;
+    for (int i = 0; i < frame_count && o < cap - 1; i++) {
+        w = snprintf(buf + o, cap - o, "%s{\"nativeAddress\":%llu}",
+                     i ? "," : "", (unsigned long long) addrs[i]);
+        if (w > 0) o += (size_t) w;
+        if (o >= cap) { o = cap - 1; break; }
+    }
+    w = snprintf(buf + o, cap - o, "]}\n");
+    if (w > 0) o += (size_t) w;
+    if (o > cap) o = cap;
+    (void) write(2, buf, o);
+    free(buf);
 }
 
 // Copy `length` bytes from `data` into a freshly malloc'd null-terminated
