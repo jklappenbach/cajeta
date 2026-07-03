@@ -44,19 +44,21 @@ public class Throwable {
     private static int32 getTraceNative(Object throwable, int64[] outAddrs, int32 max);
     @Native("__cajeta_print_trace")
     private static void printTraceNative(Object throwable, int32 fd);
-    @Native("__cajeta_type_name_len")    private static int32 typeNameLen(Object o);
-    @Native("__cajeta_type_name_into")   private static void  typeNameInto(Object o, int8[] out);
+    @Native("__cajeta_diag_code_len")    private static int32 diagCodeLen(Object o);
+    @Native("__cajeta_diag_code_into")   private static void  diagCodeInto(Object o, int8[] out);
     @Native("__cajeta_json_escape_len")  private static int32 jsonEscapeLen(String s);
     @Native("__cajeta_json_escape_into") private static void  jsonEscapeInto(String s, int8[] out);
+    @Native("__cajeta_diag_fields_len")  private static int32 diagFieldsLen(Object o);
+    @Native("__cajeta_diag_fields_into") private static void  diagFieldsInto(Object o, int8[] out);
 
     /**
      * The stable diagnostic `code`. Defaults to this throwable's canonical type
      * name (e.g. `cajeta.error.Exception`); Unit 2 lets `@DiagnosticCode` override.
      */
     public #String code() {
-        int32 len = typeNameLen(this);
+        int32 len = diagCodeLen(this);
         int8[] out = heap int8[len];
-        typeNameInto(this, out);
+        diagCodeInto(this, out);
         return heap String(#out, len);
     }
 
@@ -85,6 +87,13 @@ public class Throwable {
         String m = this.message;
         String j = "{\"severity\":\"error\",\"code\":\"" + this.code() + "\"";
         j = j + ",\"message\":\"" + jsonEscape(m) + "\"";
+        int32 flen = diagFieldsLen(this);
+        if (flen > 0) {
+            int8[] fout = heap int8[flen];
+            diagFieldsInto(this, fout);
+            String fstr = heap String(#fout, flen);
+            j = j + fstr;
+        }
         Throwable c = this.getCause();
         if (c != null) {
             j = j + ",\"causeChain\":[";

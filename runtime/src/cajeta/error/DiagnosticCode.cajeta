@@ -1,0 +1,20 @@
+package cajeta.error;
+
+/**
+ * Assigns a stable, machine-readable diagnostic `code` to a throwable type —
+ * the identifier tools and agents key on instead of the (refactorable) class
+ * name. When present, `Throwable.code()` and the `--diag-format=json` `code`
+ * field return this value; absent it, `code` defaults to the canonical type
+ * name (e.g. `cajeta.error.Exception`).
+ *
+ * ```cajeta
+ * @DiagnosticCode("CAJETA_ERR_IO_DISK_FULL")
+ * public class DiskFullException extends Exception { ... }
+ * ```
+ *
+ * The name is retained in the class RTTI, so it is readable at runtime on any
+ * platform (no debug info required). See docs/specification/error/ErrorModel.md.
+ */
+annotation DiagnosticCode {
+    String value() default "";
+}

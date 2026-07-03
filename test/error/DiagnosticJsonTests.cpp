@@ -9,6 +9,8 @@
 #include "../jit/JitTestHelper.h"
 
 #include <cstdint>
+#include <map>
+#include <string>
 
 using cajeta_test::CajetaJit;
 
@@ -92,6 +94,78 @@ TEST(DiagnosticJson, framesSerializeStackTrace) {
         "    return 0;\n"
         "}\n"
         "return -1;"), "test.S");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 1);
+}
+
+// 2.1.1: a user exception's public fields serialize into `fields` with correct
+// names + typed values (via reflection), with no per-type serialization code.
+TEST(DiagnosticJson, fieldsSerializeUserExceptionFields) {
+    std::map<std::string, std::string> sources;
+    sources["test.IoError"] =
+        "package test;\n"
+        "import cajeta.error.Exception;\n"
+        "public final class IoError extends Exception {\n"
+        "    public String path;\n"
+        "    public int32 status;\n"
+        "    public IoError(#String message, #String path, int32 status) {\n"
+        "        this.message = message;\n"
+        "        this.cause = 0;\n"
+        "        this.path = path;\n"
+        "        this.status = status;\n"
+        "    }\n"
+        "}\n";
+    sources["test.S"] =
+        "package test;\n"
+        "import cajeta.error.Exception;\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        try {\n"
+        "            throw heap IoError(\"open failed\", \"/etc/passwd\", 13);\n"
+        "        } catch (Exception e) {\n"
+        "            String j = e.toJson();\n"
+        "            boolean ok = j.contains(\"\\\"fields\\\"\")\n"
+        "                      && j.contains(\"\\\"path\\\":\\\"/etc/passwd\\\"\")\n"
+        "                      && j.contains(\"\\\"status\\\":13\");\n"
+        "            if (ok) { return 1; }\n"
+        "            return 0;\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(sources, "test.S");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 1);
+}
+
+// 2.1.2: @DiagnosticCode("...") on a type sets its JSON `code`; without it, code
+// stays the canonical type name (default covered by codeDefaultsToTypeName).
+TEST(DiagnosticJson, diagnosticCodeAnnotationOverridesDefault) {
+    std::map<std::string, std::string> sources;
+    sources["test.DiskFull"] =
+        "package test;\n"
+        "import cajeta.error.Exception;\n"
+        "import cajeta.error.DiagnosticCode;\n"
+        "@DiagnosticCode(\"CAJETA_ERR_IO_DISK_FULL\")\n"
+        "public final class DiskFull extends Exception {\n"
+        "    public DiskFull(#String message) { this.message = message; this.cause = 0; }\n"
+        "}\n";
+    sources["test.S"] =
+        "package test;\n"
+        "import cajeta.error.Exception;\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        try {\n"
+        "            throw heap DiskFull(\"no space left\");\n"
+        "        } catch (Exception e) {\n"
+        "            String j = e.toJson();\n"
+        "            boolean ok = j.contains(\"\\\"code\\\":\\\"CAJETA_ERR_IO_DISK_FULL\\\"\")\n"
+        "                      && j.contains(\"no space left\");\n"
+        "            if (ok) { return 1; }\n"
+        "            return 0;\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(sources, "test.S");
     auto fn = jit->lookup<int32_t (*)()>("run");
     EXPECT_EQ(fn(), 1);
 }
