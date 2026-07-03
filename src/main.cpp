@@ -1,3 +1,4 @@
+#include <filesystem>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -261,6 +262,10 @@ int main(int argc, const char* argv[]) {
 
     Compiler compiler(argc, argv);
     std::vector<std::string> positional;
+    // --lint <file>: single-file diagnostics mode (no codegen/emit/entry). The
+    // file is the sole positional; handled after the arg loop, before the
+    // three-positional compile path (compiler-lint-mode-spec §2).
+    bool lintMode = false;
     // Track whether --xpu-arch was given explicitly so the amdgpu backend can
     // default its arch to gfx1151 (vs the nvptx sm_89 default) only when the
     // user didn't pin one. The two backends share a single xpuArch field.
@@ -506,6 +511,8 @@ int main(int argc, const char* argv[]) {
                 return 1;
             }
             compiler.setOutputPath(argv[++i]);
+        } else if (arg == "--lint") {
+            lintMode = true;
         } else if (arg == "--help" || arg == "-h") {
             printUsage(argv[0]);
             return 0;
@@ -516,6 +523,40 @@ int main(int argc, const char* argv[]) {
         } else {
             positional.push_back(arg);
         }
+    }
+
+    // --lint <file>: run the diagnostic passes over one file and stop before
+    // codegen (compiler-lint-mode-spec). Distinct mode — takes the single
+    // positional as the file, never the three-positional compile path.
+    if (lintMode) {
+        bool jsonDiag = compiler.getFlags().diagFormat == DiagFormat::Json;
+        if (positional.empty()) {
+            std::cerr << "cajeta: --lint requires a <file>\n";
+            return 1;
+        }
+        const std::string& lintFile = positional[0];
+        if (!std::filesystem::exists(lintFile)) {
+            if (jsonDiag)
+                cajeta::emitJsonDiagnostic("error", "file-not-found",
+                                           "no such file: " + lintFile, lintFile);
+            else
+                std::cerr << "cajeta: no such file: " << lintFile << "\n";
+            return 1;
+        }
+        try {
+            compiler.lint(lintFile);
+        } catch (cajeta::SyntaxErrorException&) {
+            return 1;  // syntax diagnostics already emitted during parsing
+        } catch (cajeta::Exception& e) {
+            if (jsonDiag) cajeta::emitJsonDiagnostic("error", e.getErrorId(), e.getMessage());
+            else std::cerr << "cajeta: " << e.getErrorId() << ": " << e.getMessage() << "\n";
+            return 1;
+        } catch (const std::exception& e) {
+            if (jsonDiag) cajeta::emitJsonDiagnostic("error", "", e.what());
+            else std::cerr << "cajeta: " << e.what() << "\n";
+            return 1;
+        }
+        return 0;
     }
 
     if (positional.size() < 3) {

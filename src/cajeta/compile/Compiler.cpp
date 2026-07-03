@@ -1056,6 +1056,39 @@ namespace cajeta {
         CajetaModule::buildPendingPrototypes();
     }
 
+    void Compiler::lint(const string& file) {
+        // Single-file diagnostics: reuse the compile pipeline's parse +
+        // semantic/validation/DI passes, then STOP before the Phase-1/2 codegen
+        // loop and any emit (compiler-lint-mode-spec §3). The file's own
+        // directory is a degenerate source/target root; nothing is written.
+        ensureStdlibModule();
+
+        std::filesystem::path p(file);
+        string sourceRoot = p.has_parent_path() ? p.parent_path().string() : ".";
+        if (sourceRoot.empty() || sourceRoot.back() != '/') sourceRoot.append("/");
+
+        // Prescan ONLY this file (not its directory) so single-file lint stays
+        // isolated to stdlib + in-file declarations; cross-file project
+        // resolution is the documented follow-up (spec §1.4).
+        {
+            std::ifstream in(file);
+            if (in) {
+                antlr4::ANTLRInputStream input(in);
+                prescanSource(input, getFlags().diagFormat == DiagFormat::Json);
+            }
+        }
+
+        CajetaModulePtr module = createModule(file, sourceRoot, sourceRoot);
+        compile(module);  // parse (syntax diagnostics) + buildPendingPrototypes
+
+        // The remaining diagnostic passes the multi-file compile() runs after
+        // parsing — these surface semantic / placeholder / DI errors.
+        CajetaModule::validatePlaceholders();
+        CajetaModule::buildPendingPrototypes();
+        CajetaModule::resolveAdviceMatches();
+        CajetaModule::resolveDependencyGraph();
+    }
+
     void Compiler::compile(string entryMethod, string sourceRootPath, string archiveRootPath) {
         // Stash on the instance so the post-Phase-2 emitCMainShim call can
         // see what the user passed without threading it through Phase 1/2.
