@@ -8,6 +8,7 @@
 #include "CajetaParserVisitor.h"
 #include "CajetaLexer.h"
 #include "cajeta/type/CajetaClass.h"
+#include "cajeta/type/CajetaArray.h"
 #include "cajeta/type/CajetaView.h"
 #include "cajeta/type/CajetaView.h"
 #include <any>
@@ -107,6 +108,19 @@ namespace cajeta {
             for (auto& prop : cls->getPropertyList()) {
                 if (!prop || prop->isStatic()) continue;
                 auto ft = prop->getType();
+                // Inline array field (int8[12] etc.): expand per-element —
+                // `==` on the array itself would pointer-compare the GEPs.
+                if (auto arr = std::dynamic_pointer_cast<CajetaArray>(ft)) {
+                    if (arr->isInlineArray()) {
+                        for (int32_t i = 0; i < arr->getFixedLength(); ++i) {
+                            if (!expr.empty()) expr += " && ";
+                            string elem = "." + prop->getName()
+                                + "[" + std::to_string(i) + "]";
+                            expr += pathA + elem + " == " + pathB + elem;
+                        }
+                        continue;
+                    }
+                }
                 auto fieldClass = std::dynamic_pointer_cast<CajetaClass>(ft);
                 if (fieldClass && ft
                         && (ft->getTypeFlags() & VALUE_TYPE_FLAG)

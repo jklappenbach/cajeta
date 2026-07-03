@@ -4072,7 +4072,10 @@ namespace cajeta {
                     // for interfaces (mirrors the field-receiver branch below).
                     auto elemRc = dynamic_pointer_cast<CajetaClass>(receiverType);
                     bool elemIsInterface = elemRc && elemRc->isInterface();
-                    if (!elemIsInterface) {
+                    // Value-type elements store the aggregate INLINE — the
+                    // element GEP already IS the object address.
+                    bool elemIsValueType = elemRc && elemRc->isValueType();
+                    if (!elemIsInterface && !elemIsValueType) {
                         receiver = builder->CreateLoad(
                             llvm::PointerType::get(*module->getLlvmContext(), 0), receiver);
                     }
@@ -4107,7 +4110,11 @@ namespace cajeta {
                     // interface fields stay inline, so the slot IS the
                     // language-level value — skip the load there.
                     auto rc = dynamic_pointer_cast<CajetaClass>(receiverType);
-                    if (!rc->isInterface()) {
+                    // Value-type (record / @ValueType) fields and statics
+                    // store the aggregate INLINE — the GEP / global address
+                    // already IS the object; loading would read the first
+                    // field's bytes as `this` (nil/garbage SIGSEGV).
+                    if (!rc->isInterface() && !rc->isValueType()) {
                         receiver = builder->CreateLoad(
                             llvm::PointerType::get(*module->getLlvmContext(), 0),
                             receiver);
