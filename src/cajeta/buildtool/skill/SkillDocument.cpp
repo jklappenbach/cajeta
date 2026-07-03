@@ -1,6 +1,6 @@
 //
 // Skill document parsing + validation. See SkillDocument.h and
-// docs/specs/skill-discovery-spec.md §4.
+// specs/archive/skill-discovery-spec.md §4.
 //
 #include "cajeta/buildtool/skill/SkillDocument.h"
 

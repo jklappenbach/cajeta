@@ -1154,7 +1154,7 @@ namespace cajeta {
 
         // @GenerateMock — generate a compile-time mock subclass `Mock<Name>`
         // of this (target) type for cajeta-unit's AoT mocking (no runtime
-        // proxy). See docs/specs/mock-codegen-spec.md. Mirrors synthesizeBuilder.
+        // proxy). See specs/archive/mock-codegen-spec.md. Mirrors synthesizeBuilder.
         void synthesizeMock();
 
         // Field-level @Mock (M6) — for each `@Mock T field;` on this class,

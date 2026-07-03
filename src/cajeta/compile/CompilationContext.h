@@ -6,7 +6,7 @@ namespace cajeta {
 
 // Owns one compilation's mutable, per-thread state so independent compiles can
 // run concurrently on threads in one process (see
-// docs/specs/compiler-threadsafe-spec.md). Unit 1 establishes the thread-local
+// specs/archive/compiler-threadsafe-spec.md). Unit 1 establishes the thread-local
 // seam only; the ~49 process-global registries migrate onto it in later units.
 class CompilationContext {
 public:

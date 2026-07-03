@@ -2,7 +2,7 @@
 // A non-escaping owned concat local is bump-allocated from the frame arena (no
 // malloc, no live-set, no drop entry); an escaping one (returned / #-transferred /
 // stored) stays on the heap. Cajeta.arenaInUse() / Cajeta.liveCount() observe which
-// path a local took. (docs/specs/frame-arena-spec.md §3-5.)
+// path a local took. (specs/archive/frame-arena-spec.md §3-5.)
 
 #include <gtest/gtest.h>
 #include "../jit/JitTestHelper.h"

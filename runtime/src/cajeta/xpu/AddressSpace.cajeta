@@ -41,7 +41,7 @@ public final class Shared<T> { }
  * WMMA fragment loads). Declared and used exactly like `Shared<T>`
  * (`Swizzled<T,S> t = shared T[N];`); the compiler applies the swizzle at every
  * access. On a backend with no native swizzle the permutation is the identity
- * (correct, just unaccelerated). See docs/specs/xpu-pipelined-gemm-primitives-spec.md §3.
+ * (correct, just unaccelerated). See specs/xpu-pipelined-gemm-primitives-spec.md §3.
  */
 public final class Swizzled<T, uint32 S> { }
 
@@ -59,7 +59,7 @@ public final class Swizzled<T, uint32 S> { }
  * survive (an element XOR would scalarize them). The map is applied at every access
  * (direct index, CoopStage staging, and the WMMA fragment coord); a backend with no
  * block-pad support treats it as the identity. See
- * docs/specs/gpu-f16-torch-parity-spec.md §2.
+ * specs/archive/gpu-f16-torch-parity-spec.md §2.
  */
 public final class BlockPadded<T, uint32 Block, uint32 Pad> { }
 

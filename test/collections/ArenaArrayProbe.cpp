@@ -4,7 +4,7 @@
 // the frame arena (no malloc, no live-set, no free_array drop); an escaping one
 // stays on the heap. Element drops are a no-op for primitives, so the arena reset
 // fully reclaims it. Cajeta.arenaInUse()/Cajeta.liveCount() observe the path.
-// (docs/specs/frame-arena-spec.md §3.1, plan 3.1.)
+// (specs/archive/frame-arena-spec.md §3.1, plan 3.1.)
 
 #include <gtest/gtest.h>
 #include "../jit/JitTestHelper.h"

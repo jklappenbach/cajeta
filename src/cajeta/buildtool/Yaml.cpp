@@ -1,6 +1,6 @@
 //
 // YAML-header parser (frontmatter subset). See Yaml.h and
-// docs/specs/yaml-frontmatter-spec.md §3.
+// specs/archive/yaml-frontmatter-spec.md §3.
 //
 #include "cajeta/buildtool/Yaml.h"
 

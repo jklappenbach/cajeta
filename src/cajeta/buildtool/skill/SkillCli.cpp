@@ -1,6 +1,6 @@
 //
 // CLI adapter helpers for skill discovery. See SkillCli.h and
-// docs/specs/skill-discovery-spec.md §1.5.1.
+// specs/archive/skill-discovery-spec.md §1.5.1.
 //
 #include "cajeta/buildtool/skill/SkillCli.h"
 

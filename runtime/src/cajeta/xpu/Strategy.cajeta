@@ -2,7 +2,7 @@ package cajeta.xpu;
 
 /**
  * Strategy — the BVH encoding strategy (cajeta-accel; spec
- * docs/specs/cajeta-accel-spec.md §3). The ONLY axis that names a distinct
+ * specs/archive/cajeta-accel-spec.md §3). The ONLY axis that names a distinct
  * acceleration-structure encoding: the bound representation. Width (the branching
  * factor) and backend (where it runs) are ORTHOGONAL — width is lowered from
  * capability, backend is where the kernel executes — so neither appears here.

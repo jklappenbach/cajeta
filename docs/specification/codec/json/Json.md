@@ -13,7 +13,7 @@ Status: **shipped (v1 scalar baseline)**. The pull tokenizer
 (`JsonReader`), pull writer (`JsonWriter`), value tree (`JsonValue` /
 `JsonObject` / `JsonArray`), the `Json` entry points, and the Tier-1
 compile-time synthesizer all exist under
-[`runtime/src/cajeta/codec/json/`](../../../runtime/src/cajeta/codec/json/)
+[`runtime/src/cajeta/codec/json/`](../../../../runtime/src/cajeta/codec/json/)
 and are covered by tests (`test/parser/Json*Tests.cpp`). The forward
 items called out below (options structs, a `JsonNumber` wrapper, escape
 *decoding*, relaxed mode) are **planned**, not built — each is flagged

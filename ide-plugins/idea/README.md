@@ -30,7 +30,7 @@ the v0.1 scope defined in [`Plan.md`](Plan.md):
   window (they execute your program). Toggle off via *Settings →
   Cajeta → "Run build tasks in the Build tool window"* to route
   everything back to the Run window. See
-  `docs/specs/idea-build-toolwindow-spec.md`.
+  `specs/archive/idea-build-toolwindow-spec.md`.
 
 ## Build
 

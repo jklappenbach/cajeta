@@ -1,6 +1,6 @@
 //
 // Front-matter Markdown splitting. See FrontMatter.h and
-// docs/specs/yaml-frontmatter-spec.md §2.
+// specs/archive/yaml-frontmatter-spec.md §2.
 //
 #include "cajeta/buildtool/FrontMatter.h"
 

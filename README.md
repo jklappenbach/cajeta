@@ -230,7 +230,7 @@ CAJETA_DUMP_IR=1 CAJETA_SOURCE_ROOT="$PWD" \
 
 ## Language reference
 
-This section is a feature tour. For a ground-up introduction that starts with the primitives, operators, and keywords and builds upward, see the [Cajeta Language Guide](docs/LanguageGuide.md).
+This section is a feature tour. For a ground-up introduction that starts with the primitives, operators, and keywords and builds upward, see the [Cajeta Language Guide](docs/guide/LanguageGuide.md).
 
 ### Allocation: `stack` and `heap`
 
@@ -328,7 +328,7 @@ public class Algo {
 }
 ```
 
-**Bounded templates** (`<T extends Foo>`), **template wildcards** (`?`, `? extends Bound`, `? super Bound`), and **capture conversion** are all supported. See [`TemplateWildcard.md`](docs/TemplateWildcard.md) and [`CaptureConversion.md`](docs/CaptureConversion.md), and a runnable PECS + capture-read-back walk in [`samples/tour/src/main/cajeta/tour/lang/WildcardsDemo.cajeta`](samples/tour/src/main/cajeta/tour/lang/WildcardsDemo.cajeta).
+**Bounded templates** (`<T extends Foo>`), **template wildcards** (`?`, `? extends Bound`, `? super Bound`), and **capture conversion** are all supported. See [`TemplateWildcard.md`](docs/specification/cajeta-templates/TemplateWildcard.md) and [`CaptureConversion.md`](docs/specification/cajeta-templates/reified-capture-spec.md), and a runnable PECS + capture-read-back walk in [`samples/tour/src/main/cajeta/tour/lang/WildcardsDemo.cajeta`](samples/tour/src/main/cajeta/tour/lang/WildcardsDemo.cajeta).
 
 ```cajeta
 public void inspect(Box<? extends Animal> b) {
@@ -530,7 +530,7 @@ Cajeta supports `--debug`, `--release`, and `--debug-release` mode preselects th
 | `--emit=ir/exe`               | ir      | Output format: LLVM IR text or native binary. |
 | `--archive=archive/exploded`  | exploded | Output layout: 7z archive or flat directory tree. |
 
-See [`CompilerModes.md`](docs/CompilerModes.md) for the full table and per-mode defaults.
+See [`CompilerModes.md`](docs/specification/buildtool/CompilerModes.md) for the full table and per-mode defaults.
 
 ---
 
@@ -549,24 +549,24 @@ boolean   char (a 32-bit Unicode codepoint)
 
 There is no `byte` type — the canonical byte buffer is `int8[]` (or `uint8[]`). `pointer` is a low-level raw address; `uchar` is a deprecated alias for `uint8`.
 
-Literals follow Java-ish syntax: `42`, `42L`, `0xFF`, `0b1010`, `017` (octal), `1_000_000`, `3.14`, `3.14f`, `'A'`, `"hello"`, `true`, `false`, `null`. See the [Cajeta Language Guide](docs/LanguageGuide.md), [`Primitives.md`](docs/specification/lang/Primitives.md), and [`FloatingPointModel.md`](docs/specification/lang/FloatingPointModel.md).
+Literals follow Java-ish syntax: `42`, `42L`, `0xFF`, `0b1010`, `017` (octal), `1_000_000`, `3.14`, `3.14f`, `'A'`, `"hello"`, `true`, `false`, `null`. See the [Cajeta Language Guide](docs/guide/LanguageGuide.md), [`Primitives.md`](docs/specification/lang/Primitives.md), and [`FloatingPointModel.md`](docs/specification/lang/FloatingPointModel.md).
 
 ---
 
 ## Documentation map
 
-**New to the language? Start with the [Cajeta Language Guide](docs/LanguageGuide.md)** — a ground-up tour from primitives, operators, and keywords through the larger features, linking out to each deep-dive spec.
+**New to the language? Start with the [Cajeta Language Guide](docs/guide/LanguageGuide.md)** — a ground-up tour from primitives, operators, and keywords through the larger features, linking out to each deep-dive spec.
 
 The deep-dive specs live in `docs/`:
 
 | Topic                       | Doc |
 |-----------------------------|-----|
-| **Language guide (start here)** | [`LanguageGuide.md`](docs/LanguageGuide.md) |
+| **Language guide (start here)** | [`LanguageGuide.md`](docs/guide/LanguageGuide.md) |
 | Class model + allocation    | [`UnifiedClasses.md`](docs/specification/lang/UnifiedClasses.md) |
 | System I/O + env + properties | [`lang/System.md`](docs/specification/lang/System.md) |
 | Memory + ownership          | [`MemoryModel.md`](docs/specification/lang/MemoryModel.md) |
 | Field ownership / auto-drop | [`FieldOwnership.md`](docs/specification/lang/FieldOwnership.md) |
-| Templates + wildcards       | [`TemplateWildcard.md`](docs/TemplateWildcard.md), [`CaptureConversion.md`](docs/CaptureConversion.md) |
+| Templates + wildcards       | [`TemplateWildcard.md`](docs/specification/cajeta-templates/TemplateWildcard.md), [`CaptureConversion.md`](docs/specification/cajeta-templates/reified-capture-spec.md) |
 | Lambdas + method refs       | [`Lambdas.md`](docs/specification/lang/Lambdas.md) |
 | Streams                     | [`Streams.md`](docs/specification/lang/stream/Streams.md), [`StreamParallelism.md`](docs/specification/lang/stream/StreamParallelism.md) |
 | Annotations (Lombok-style)  | [`Annotations.md`](docs/specification/reflect/Annotations.md) |
@@ -574,9 +574,9 @@ The deep-dive specs live in `docs/`:
 | Aspects + DI                | [`AspectModel.md`](docs/specification/lang/AspectModel.md) |
 | Concurrency                 | [`Concurrency.md`](docs/specification/concurrent/Concurrency.md), [`AsyncStatus.md`](docs/specification/concurrent/AsyncStatus.md) |
 | Errors                      | [`ErrorModel.md`](docs/specification/error/ErrorModel.md) |
-| Lints                       | [`LintRules.md`](docs/LintRules.md) |
-| Compiler modes              | [`CompilerModes.md`](docs/CompilerModes.md) |
-| Embedded targets (roadmap)  | [`Embedded.md`](docs/Embedded.md) |
+| Lints                       | [`LintRules.md`](docs/specification/lang/LintRules.md) |
+| Compiler modes              | [`CompilerModes.md`](docs/specification/buildtool/CompilerModes.md) |
+| Embedded targets (roadmap)  | [`Embedded.md`](docs/specification/embedded/Embedded.md) |
 | JSON codec                  | [`specification/codec/json/Json.md`](docs/specification/codec/json/Json.md) |
 | Method-level templates      | [`MethodLevelTemplate.md`](docs/specification/lang/MethodLevelTemplate.md) |
 | Multi-classing              | [`MultiClassing.md`](docs/specification/lang/MultiClassing.md) |
@@ -585,7 +585,7 @@ The deep-dive specs live in `docs/`:
 | I/O                         | [`stdlib/io/`](docs/specification/io/) |
 | Time                        | [`Time.md`](docs/specification/time/Time.md) |
 
-Open work is tracked in [`todo.md`](todo.md). Historical implementation milestones are under [`docs/history/`](docs/history/).
+Open work is tracked in `todo.md`. Historical implementation milestones are under `docs/history/`.
 
 ## License
 

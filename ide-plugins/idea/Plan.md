@@ -24,7 +24,7 @@
 > run in the IDE's native Build tool window (streaming console, success/failure/
 > cancelled, Stop/Restart, diagnostics-as-problems) instead of the Run window;
 > `run` + debuggable tasks stay on Run. Gated by a default-on setting. Specced in
-> `docs/specs/idea-build-toolwindow-spec.md` + `agents/idea-build-toolwindow-plan.md`.
+> `specs/archive/idea-build-toolwindow-spec.md` + `agents/idea-build-toolwindow-plan.md`.
 
 ## Active worklist (session 2026-06-24)
 
@@ -49,7 +49,7 @@ implement skill's focus stack (`agents/idea-focus.md`).
   - [x] **W3a — CP6f-2d hard carrier-quiesce — IMPLEMENTED (2026-06-25).**
     Investigation revealed a real multi-carrier stop-the-world bug (only the
     hitting carrier parks; others keep running fibers; `liveFibers()` TOCTOU), so
-    it was specced as its own checkpoint (`docs/specs/carrier-quiesce-spec.md` +
+    it was specced as its own checkpoint (`specs/archive/carrier-quiesce-spec.md` +
     `agents/carrier-quiesce-plan.md`). **All 7 units now landed** — atomic fiber
     snapshot, the debug stop coordinator, cross-carrier convergence at
     safepoints/hand-off, bounded quiesce barrier + un-quiesced reporting,
@@ -1365,7 +1365,7 @@ wire contract, different backend.
 correctness gap: CP6f-2d** (hard cross-carrier quiesce). The runtime is
 multi-carrier, so at a breakpoint only the hitting carrier parks while others
 keep running fibers — the fibers view is therefore not yet safe stop-the-world
-(see the inline CP6f-2d note + `docs/specs/carrier-quiesce-spec.md`). Everything
+(see the inline CP6f-2d note + `specs/archive/carrier-quiesce-spec.md`). Everything
 else below is **DONE**. The FR-1 checkpoint table in
 [`ide-plugin-debug-fr-1.md`](ide-plugin-debug-fr-1.md) (all CP7 rows ✅) is the
 authoritative per-checkpoint record.
@@ -1409,7 +1409,7 @@ platform classes are thin delegates.
     `liveFibers()` enumerates a concurrently-mutated registry (TOCTOU). The
     earlier "carrier parked while enumerating" claim was wrong. Proper fix =
     cross-carrier stop-the-world quiesce, specified separately in
-    `docs/specs/carrier-quiesce-spec.md` + `agents/carrier-quiesce-plan.md`.**)**
+    `specs/archive/carrier-quiesce-spec.md` + `agents/carrier-quiesce-plan.md`.**)**
   - **CP6f-3** exception breakpoints — runtime throw-interception hook into
     `DebugController` + `setExceptionBreakpoints` + `stopped{reason:"exception"}`.
     **DONE** (CP6f-3b plugin wiring + arm-before-start; CP6f-3c throw-hang fix).

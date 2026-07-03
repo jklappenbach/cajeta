@@ -8,7 +8,7 @@
 # Env: PROFILE_RUN_ID, PROFILE_RUN_TS, PROFILE_LANGS (space-list filter),
 #      PROFILE_GPU_PY (a python with a WORKING ROCm torch; the shared
 #      ml/venv-rocm7.x is too old and segfaults on gfx1151 — use the pinned
-#      ml/venv-rocm-gfx1151, see docs/specs/gpu-vulkan-f64-spec / memory).
+#      ml/venv-rocm-gfx1151, see specs/gpu-vulkan-f64-spec / memory).
 set -uo pipefail
 
 DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"

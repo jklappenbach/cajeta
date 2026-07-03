@@ -1,6 +1,6 @@
 //
 // cja-skill:// URI parse/format + lockfile resolver. See SkillUri.h and
-// docs/specs/skill-discovery-spec.md §2.2.
+// specs/archive/skill-discovery-spec.md §2.2.
 //
 #include "cajeta/buildtool/skill/SkillUri.h"
 

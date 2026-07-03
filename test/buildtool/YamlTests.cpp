@@ -1,6 +1,6 @@
 // Tests for the YAML-header parser (frontmatter subset).
 // See src/cajeta/buildtool/Yaml.h and
-// docs/specs/yaml-frontmatter-spec.md §3 (plan unit D.Y2 — scalars + mappings).
+// specs/archive/yaml-frontmatter-spec.md §3 (plan unit D.Y2 — scalars + mappings).
 
 #include "cajeta/buildtool/Yaml.h"
 

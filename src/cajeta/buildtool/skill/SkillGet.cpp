@@ -1,6 +1,6 @@
 //
 // Skill Get core. See SkillGet.h and
-// docs/specs/skill-discovery-spec.md §2.1.
+// specs/archive/skill-discovery-spec.md §2.1.
 //
 #include "cajeta/buildtool/skill/SkillGet.h"
 

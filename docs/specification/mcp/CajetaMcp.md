@@ -6,7 +6,7 @@ implements its tools by shelling out to the `cajeta` compiler via
 `cajeta.process`. It dogfoods the language: the server itself is a cajeta program
 under `tools/mcp/`, built with the cajeta build tool.
 
-Spec: `docs/specs/cajeta-mcp-spec.md`. Plan: `agents/cajeta-mcp-plan.md`.
+Spec: `specs/archive/cajeta-mcp-spec.md`. Plan: `agents/cajeta-mcp-plan.md`.
 Source: `tools/mcp/src/main/cajeta/mcp/Server.cajeta`.
 Tests: `test/mcp/CajetaMcpServerTests.cpp` (a C++ gtest harness that builds the
 server once and drives it over stdio — every behavior below mirrors a passing

@@ -14,7 +14,7 @@ namespace cajeta {
     // signature. `mock` already extends `target` (set by synthesizeMock via
     // fillFromDeclaration). The caller runs `mock->generatePrototype()` afterward.
     //
-    // See docs/specs/mock-codegen-spec.md.
+    // See specs/archive/mock-codegen-spec.md.
     void fillMockClassBody(const CajetaClassPtr& mock,
                            const CajetaClassPtr& target,
                            const CajetaModulePtr& module);

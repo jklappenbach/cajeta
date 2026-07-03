@@ -3,7 +3,7 @@
 // compile-time integer literal) is stored as N contiguous elements INLINE in
 // the enclosing object — no pointer slot, no heap header — distinct from a
 // heap array reference `T[]`. Plan: agents/cajeta/string-builder-sso-plan.md
-// Unit 1. Spec: docs/specs/string-builder-sso-spec.md §2 (2.1.1-2.1.3,
+// Unit 1. Spec: specs/archive/string-builder-sso-spec.md §2 (2.1.1-2.1.3,
 // 2.1.5, 2.1.6-primitives, 2.1.8).
 //
 

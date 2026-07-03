@@ -15,7 +15,7 @@ Status: **designed, not implemented**. Tracked in Features.md.
 - network — see the **`cajeta.io.net`** transport stack
   ([`net/Networking.md`](net/Networking.md)). HTTP/WS/SSE are *not* stdlib — they
   live in the [cajeta-http](https://github.com/jklappenbach/cajeta-http) library.
-- subprocess — see [`cajeta.process`](../Process.md).
+- subprocess — see [`cajeta.process`](../lang/Process.md).
 
 ## `Buffer` + `BufferChain` — the byte substrate
 
@@ -120,4 +120,4 @@ first concrete I/O subpackage that needs it. Tracked in Features.md.
   See [`net/Networking.md`](net/Networking.md). The HTTP/WebSocket/SSE *application*
   layer is the separate [cajeta-http](https://github.com/jklappenbach/cajeta-http)
   library over it.
-- `cajeta.process` — subprocess management ([`Process.md`](../Process.md)).
+- `cajeta.process` — subprocess management ([`Process.md`](../lang/Process.md)).

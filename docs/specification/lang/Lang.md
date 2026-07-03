@@ -7,11 +7,11 @@ return them.
 
 `System` is a sibling namespace (not a class) that exposes process-
 level I/O, env-var access, and tunable string properties via compiler
-intrinsics — see **[`lang/System.md`](./lang/System.md)**.
+intrinsics — see **[`lang/System.md`](System.md)**.
 
 ## `Object` — universal root
 
-See **[`lang/Object.md`](./lang/Object.md)** for the full spec
+See **[`lang/Object.md`](Object.md)** for the full spec
 (implicit-extends invariant, the four methods, override-pair
 enforcement, `@Hash` algorithm-class registry, equal-implies-same-
 hash contract, pending design questions on `Hasher` interface +
@@ -19,7 +19,7 @@ security-level enforcement).
 
 ## `String` — immutable, encoding-aware
 
-See **[`lang/String.md`](./lang/String.md)** for the full spec and
+See **[`lang/String.md`](String.md)** for the full spec and
 roadmap. `String` is a **class** (`cajeta.lang.String`), not a
 primitive. Internal storage is a UTF-8 `int8[]` plus a byte count, a
 mode discriminator, and a cached code-point count:
@@ -40,7 +40,7 @@ String literals lower directly to view-mode instances over `.rodata`.
 
 ### Shipped surface
 
-Verified in [`runtime/src/cajeta/lang/String.cajeta`](../../runtime/src/cajeta/lang/String.cajeta)
+Verified in [`runtime/src/cajeta/lang/String.cajeta`](../../../runtime/src/cajeta/lang/String.cajeta)
 and pinned by `test/expression/StringMethodsTests.cpp`:
 
 ```cajeta
@@ -90,7 +90,7 @@ helper-produced Strings currently leak at scope exit
 (`test/parser/OwnedStringDropTests.cpp`). The named view API
 (`viewOf` / `toOwned` / `cString`) from earlier drafts does **not**
 exist; the only view entry point today is the `String(#int8[],
-int32)` constructor. See [`lang/String.md` § Memory model](./lang/String.md#memory-model).
+int32)` constructor. See [`lang/String.md` § Memory model](String.md#memory-model).
 
 ### Examples
 
@@ -120,7 +120,7 @@ codepoint/byte iteration streams, and the codepoint-indexed view
 ## `Encoding` enum
 
 The enum **ships** as
-[`cajeta.lang.Encoding`](../../runtime/src/cajeta/lang/Encoding.cajeta)
+[`cajeta.lang.Encoding`](../../../runtime/src/cajeta/lang/Encoding.cajeta)
 with 12 members. The byte ↔ text conversion methods that *consume* it
 (`String.fromBytes` / `String.getBytes`) are not yet implemented, so
 today an `Encoding` value is just selected by name; the runtime
@@ -142,10 +142,10 @@ public enum Encoding {
 ```
 
 Conversion error behavior is governed by the companion
-[`EncodingErrorPolicy`](../../runtime/src/cajeta/lang/EncodingErrorPolicy.cajeta)
+[`EncodingErrorPolicy`](../../../runtime/src/cajeta/lang/EncodingErrorPolicy.cajeta)
 enum (`{ FAIL, REPAIR }`, FAIL default — both shipped). Operations
 that can't represent a code point under `FAIL` throw
-[`EncodingException`](../../runtime/src/cajeta/lang/EncodingException.cajeta)
+[`EncodingException`](../../../runtime/src/cajeta/lang/EncodingException.cajeta)
 (a `RecoverableException` subtype, shipped).
 
 ## `Optional<T>` — value-typed sum

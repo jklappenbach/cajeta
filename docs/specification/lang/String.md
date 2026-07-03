@@ -479,7 +479,7 @@ primitive originally designed.
 **In a loop, each `+`-chain still allocates** — the right semantics
 for immutable strings, but a perf trap. The planned `StringBuilder`
 (see below — not yet implemented) is the intended fix; the lint rule
-`string-concat-in-loop` (see [LintRules.md](../../LintRules.md))
+`string-concat-in-loop` (see [LintRules.md](LintRules.md))
 catches the bad shape.
 
 ---
@@ -527,7 +527,7 @@ at parse time:
   arg, `%s` requires anything-Object, etc.).
 
 Mismatches surface via the lint rule **`format-template-arg-mismatch`**
-(see [LintRules.md](../../LintRules.md) — added in the String spec
+(see [LintRules.md](LintRules.md) — added in the String spec
 pass). At runtime, the format methods raise `IllegalArgumentException`
 if a non-literal template doesn't match its args.
 
@@ -658,7 +658,7 @@ Grapheme-aware reverse needs Unicode tables; see v2 plan below.
 - **`#` on view-mode is a no-op.** `#"literal"` doesn't transfer
   anything (there's nothing to transfer). The compiler emits the
   lint warning **`transfer-on-view-string`** (see
-  [LintRules.md](../../LintRules.md)) so the meaningless `#` is
+  [LintRules.md](LintRules.md)) so the meaningless `#` is
   visible. Suppress via `@SuppressLint("transfer-on-view-string")`
   for the rare deliberate case.
 - **Memory-cost trade-off.** Long-running processes that produce
@@ -693,7 +693,7 @@ Locale)`. The no-arg overloads default to `Locale.ROOT` (Unicode
 tables without language-specific overrides).
 
 `Locale` is a separate spec (tracked in
-[Features.md](../../../Features.md)) — BCP 47-shaped value class,
+[Features.md](../../Features.md)) — BCP 47-shaped value class,
 no thread-local default. Both `Locale` and String ship in tandem so
 the case-folding surface is coherent on day one.
 
@@ -761,14 +761,14 @@ the convention via `EncodingErrorPolicy`.
 - [Object.md](./Object.md) — the universal-root spec; covers
   `hash()` pluggable model and `operator==` defaults that String
   overrides.
-- [Lang.md](../Lang.md) — broader `cajeta.lang` overview;
+- [Lang.md](Lang.md) — broader `cajeta.lang` overview;
   historically the String section lived inline there.
-- [LintRules.md](../../LintRules.md) — the three lint rules
+- [LintRules.md](LintRules.md) — the three lint rules
   String introduces: `string-concat-in-loop`, `transfer-on-view-
   string`, `format-template-arg-mismatch`.
-- [Hashing.md](../Hashing.md) — `cajeta.hash.Hash` namespace and
+- [Hashing.md](../hash/Hashing.md) — `cajeta.hash.Hash` namespace and
   the `@Hash` algorithm-class registry.
-- [ErrorModel.md](../ErrorModel.md) — `EncodingException` extends
+- [ErrorModel.md](../error/ErrorModel.md) — `EncodingException` extends
   `RecoverableException`; `RecoverableException` doctrine.
 - [`Locale.md`](./Locale.md) (pending) — companion spec.
 

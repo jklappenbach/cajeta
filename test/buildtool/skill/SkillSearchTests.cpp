@@ -1,6 +1,6 @@
 // Tests for the Search core.
 // See src/cajeta/buildtool/skill/SkillSearch.h and
-// docs/specs/skill-discovery-spec.md §3.2–§3.5 (plan unit D.5).
+// specs/archive/skill-discovery-spec.md §3.2–§3.5 (plan unit D.5).
 
 #include "cajeta/buildtool/skill/SkillSearch.h"
 

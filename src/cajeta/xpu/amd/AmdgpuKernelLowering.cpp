@@ -1005,7 +1005,7 @@ private:
         // offset (the unrolled-K case), so the K-loop carries zero pad VALU and e rides into
         // the ds_read offset: immediate. Otherwise fall back to padding the e=0 base once and
         // re-adding e (affine in e, reads stay ds_read_b128). ptr is the bare base; baseOffset
-        // is logical. See docs/specs/amdgpu-constant-folded-lds-spec.md §1.4.
+        // is logical. See specs/archive/amdgpu-constant-folded-lds-spec.md §1.4.
         if (blk.period) {
             llvm::Value* eC = llvm::ConstantInt::get(i32, e);
             bool canFold = false;

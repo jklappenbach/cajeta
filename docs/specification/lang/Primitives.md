@@ -22,7 +22,7 @@ a codepoint, not a byte.
 
 This doc covers the boxed wrapper types and the static parse/format intrinsics
 that operate on primitives. For the broader language tour, see
-[`../LanguageGuide.md`](../LanguageGuide.md).
+[`../LanguageGuide.md`](../../guide/LanguageGuide.md).
 
 ## Status
 

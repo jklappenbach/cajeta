@@ -28,7 +28,7 @@ declared with native stubs — `__cajeta_object_to_string` and
 `runtime/native/cajeta_runtime.c`). Structural synthesis ships via
 the `@AutoHash` and `@ToString` annotations (v1, primitive fields
 only — see below). `clone` synthesis is tracked in
-[Features.md](../../../Features.md).
+[Features.md](../../Features.md).
 
 > **Note on `operator==`.** It is declared as a **static** two-arg
 > operator (`operator==(Object a, Object b)`), not an instance
@@ -45,7 +45,7 @@ only — see below). `clone` synthesis is tracked in
 Two distinct instances with the same field values compare unequal
 and hash differently by default — same shape as Java's
 `Object.equals` / `Object.hashCode`. Structural value-equality is
-opt-in via `@AutoHash` (see [Hashing.md](../Hashing.md)) or by
+opt-in via `@AutoHash` (see [Hashing.md](../hash/Hashing.md)) or by
 overriding `operator==` and `hash()` manually.
 
 ```cajeta
@@ -85,7 +85,7 @@ violating it means an inserted key becomes un-findable.
 **The lint pass surfaces unpaired overrides.** A class that
 declares one of `operator==` / `hash()` but inherits the other from
 `Object` triggers the `equals-hash-pair` lint warning (see
-[LintRules.md](../../LintRules.md) § `equals-hash-pair`). Build
+[LintRules.md](LintRules.md) § `equals-hash-pair`). Build
 proceeds; the warning makes the likely bug visible at compile time
 without blocking iteration. Suppress via
 `@SuppressLint("equals-hash-pair")` for the rare case where the
@@ -322,7 +322,7 @@ Tracked in Features.md.
 
 - **equal/hash override pair check** — lint warning, not compile
   error. Rule ID `equals-hash-pair` in
-  [LintRules.md](../../LintRules.md). User can suppress per-class.
+  [LintRules.md](LintRules.md). User can suppress per-class.
 
 ## Open questions
 
@@ -339,16 +339,16 @@ Only one genuinely open follow-up:
 
 ## Cross-references
 
-- [Lang.md](../Lang.md) — the broader `cajeta.lang` overview
+- [Lang.md](Lang.md) — the broader `cajeta.lang` overview
   (Object historically lived inline there; this doc is the
   authoritative spec going forward, Lang.md trimmed to a pointer).
 - [String.md](./String.md) — String's `hash()` override (FNV-1a)
   and its value-equality via `hash()` (it does not override
   `operator==`).
-- [Hashing.md](../Hashing.md) — the broader hashing doctrine,
+- [Hashing.md](../hash/Hashing.md) — the broader hashing doctrine,
   `cajeta.hash.Hash` namespace, `@AutoHash` synthesizer design,
   per-process seed lifecycle.
-- [MultiClassing.md](../MultiClassing.md) — how multi-parent
+- [MultiClassing.md](MultiClassing.md) — how multi-parent
   hierarchies resolve the implicit `extends Object` (every class
   extends Object; multiple-inheritance shares the single Object
   sub-object).

@@ -1256,7 +1256,7 @@ namespace cajeta {
         synthesizeMock();
     }
 
-    // M1 (docs/specs/mock-codegen-spec.md): recognize @GenerateMock on a target
+    // M1 (specs/archive/mock-codegen-spec.md): recognize @GenerateMock on a target
     // type and generate `Mock<SimpleName>` extending it, with a no-arg ctor.
     // Forwarding overrides + the MockEngine field land in later stages.
     void CajetaClass::synthesizeMock() {
@@ -1309,7 +1309,7 @@ namespace cajeta {
         CajetaModule::getStructureToModule()[mockQName->toCanonical()] = module;
     }
 
-    // M6 — field-level @Mock auto-init. See docs/specs/mock-codegen-spec.md.
+    // M6 — field-level @Mock auto-init. See specs/archive/mock-codegen-spec.md.
     void CajetaClass::synthesizeMockFields() {
         std::vector<std::pair<std::string, std::string>> inits;
         auto& canonicalMap = CajetaType::getCanonicalMap();

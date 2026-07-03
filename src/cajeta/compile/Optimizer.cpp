@@ -36,7 +36,7 @@ namespace {
 // cross-module where it doesn't fire, and a pre-link IPSCCP breaks the link
 // (private-symbol/summary desync). Kept here as a reference probe; the real
 // solution is deterministic, total specialization in CIR. See
-// docs/specs/cajeta-ir-spec.md §1.2.
+// specs/archive/cajeta-ir-spec.md §1.2.
 //
 // TO RE-ENABLE (the validated non-LTO probe): call tuneFunctionSpecialization()
 // at the top of optimizeModule() (the O1/O2/O3 path). For ThinLTO the backend

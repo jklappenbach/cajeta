@@ -6,7 +6,7 @@ most popular solutions in Rust, C++, Java, Python, and Go on community-recognize
 workloads, and emits a fully reproducible record (versions, flags, hardware, timing,
 memory, correctness cross-check) plus a **Cajeta-themed HTML report site**.
 
-Spec: [`docs/specs/profile-spec.md`](../../docs/specs/profile-spec.md). Plan:
+Spec: [`specs/profile-spec.md`](../../specs/profile-spec.md). Plan:
 `agents/cajeta/profile/profile-plan.md`.
 
 ## Quick start

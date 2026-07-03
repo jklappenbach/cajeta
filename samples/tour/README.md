@@ -10,7 +10,7 @@ A walkthrough of every load-bearing language feature, one class per feature. Eac
 
 This is a standard cajeta project: a `cajeta.json` manifest at the root and
 sources under `src/main/cajeta/<package>/` (see
-[`docs/BuildTool.md`](../../docs/BuildTool.md) and
+[`docs/BuildTool.md`](../../docs/specification/buildtool/BuildTool.md) and
 [`samples/buildtool/basic`](../buildtool/basic)). It builds with the **cajeta
 build tool** — no hand-rolled compile/link scripts.
 
@@ -128,8 +128,8 @@ cajeta tasks        # list the tasks defined in cajeta.json
 | `release` | `cajeta release`         | optimized `build/tour` |
 | `clean`   | `cajeta clean`           | removes `build/` |
 
-See [`docs/BuildTool.md`](../../docs/BuildTool.md) for the manifest/task
-reference and [`docs/Compilation.md`](../../docs/Compilation.md) for the
+See [`docs/BuildTool.md`](../../docs/specification/buildtool/BuildTool.md) for the manifest/task
+reference and [`docs/Compilation.md`](../../docs/specification/buildtool/Compilation.md) for the
 compiler output modes.
 
 ## What you'll see

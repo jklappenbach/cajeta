@@ -26,7 +26,7 @@ core. (cazo was renamed primavera; the policy layer it owns is unchanged.)
 | Compile-time graph resolution, generated bootstrap, ownership integration | **core** |
 | `@PostConstruct` / `@PreDestroy` lifecycle | **core** |
 | Aspect weaving (`@Aspect` / advice / `@Order` / `@Original`) | **core** |
-| Test override seam (`@Inject` runtime override) | **core** — see [`../../DI-override-hook.md`](../../DI-override-hook.md) |
+| Test override seam (`@Inject` runtime override) | **core** — see [`../../DI-override-hook.md`](DI-override-hook.md) |
 | Request / session scope | **primavera** policy |
 | Web request/response model, `@RestServer`, handler API, pluggable executor | **primavera** policy |
 | Stereotypes (`@Repository`, `@Service`), deployment `@Profile`, `@TestComponent` | **primavera** policy |
@@ -163,7 +163,7 @@ container — direct calls.
 seam (`--profile=test`) lets a harness substitute a mock per type, keyed on the
 type's `reflect.Class` pointer identity, with production builds emitting the
 unchanged zero-cost path. This seam is core (any framework or test harness can use
-it). Full design: [`../../DI-override-hook.md`](../../DI-override-hook.md).
+it). Full design: [`../../DI-override-hook.md`](DI-override-hook.md).
 
 ---
 

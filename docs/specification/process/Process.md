@@ -6,7 +6,7 @@ stdio plus wait / timeout / kill (streaming). Backed by `__cajeta_proc_*` C
 bridges (`posix_spawn`-based on POSIX; a `CreateProcess` Windows port is stubbed),
 intrinsic-lowered at the call site like `cajeta.io.file`.
 
-Spec: `docs/specs/cajeta-process-spec.md`. Tests: `test/process/ProcessTests.cpp`
+Spec: `specs/archive/cajeta-process-spec.md`. Tests: `test/process/ProcessTests.cpp`
 (the executable examples — every snippet below mirrors a passing test).
 
 ## Command

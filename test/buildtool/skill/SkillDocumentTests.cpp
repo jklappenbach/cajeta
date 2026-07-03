@@ -1,6 +1,6 @@
 // Tests for the skill document model + parser.
 // See src/cajeta/buildtool/skill/SkillDocument.h and
-// docs/specs/skill-discovery-spec.md §4 (plan unit D.1).
+// specs/archive/skill-discovery-spec.md §4 (plan unit D.1).
 
 #include "cajeta/buildtool/skill/SkillDocument.h"
 

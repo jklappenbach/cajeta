@@ -1,6 +1,6 @@
 // Tests for the CLI adapter helpers + context loader.
 // See src/cajeta/buildtool/skill/SkillCli.h and
-// docs/specs/skill-discovery-spec.md §1.5.1 (plan unit D.7).
+// specs/archive/skill-discovery-spec.md §1.5.1 (plan unit D.7).
 
 #include "cajeta/buildtool/skill/SkillCli.h"
 
