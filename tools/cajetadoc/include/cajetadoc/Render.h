@@ -44,6 +44,11 @@ std::string renderPackageIndex(const Package& pkg, const std::string& cssHref,
 std::string renderOverview(const Model& model, const std::string& cssHref,
                            const SymbolIndex* index = nullptr, const SiteMeta& meta = {});
 
+// Render the site-wide index of @EntryPoint-tagged methods, grouped by package.
+std::string renderEntryPointsIndex(const Model& model, const std::string& cssHref,
+                                   const SymbolIndex* index = nullptr,
+                                   const SiteMeta& meta = {});
+
 // The built-in themeable stylesheet (cascade layers + :where() + tokens).
 std::string defaultStylesheet();
 

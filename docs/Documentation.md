@@ -231,6 +231,7 @@ the method header, a dedicated section in the parameter list).
 | `@Blocks`                  | Method may block the calling fiber (I/O, lock acquisition). Scheduler yields. |
 | `@NonBlocking`             | Method completes without yielding. Suitable for hot critical sections.        |
 | `@Complexity O(...)`       | Asymptotic time complexity. Multiple allowed (e.g. time + space).             |
+| `@EntryPoint`              | The method is a package front door — a starting point users call first. Renders a badge and feeds the site-wide Entry Points index (`entry-points.html`). |
 
 ```cajeta
 /**
@@ -250,6 +251,10 @@ public void push(#T value);
 ```
 
 The structured tags drive doc-tool features beyond just rendering:
+- `@EntryPoint` methods get aggregated into the "Entry Points" index
+  page (`entry-points.html`), grouped by package — the map of where
+  to start in each package. Also exposed in `--emit-model-json` for
+  tooling (reference-doc and tour coverage checks key off it).
 - `@FiberSafe` declarations get aggregated into a "Fiber-safe API
   index" page in the generated docs.
 - `@Complexity` tags fuel a complexity-sortable view (find all
