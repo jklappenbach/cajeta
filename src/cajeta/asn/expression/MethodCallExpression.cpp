@@ -4680,6 +4680,119 @@ namespace cajeta {
             }
         }
 
+        // Record copy-with intrinsic (records-spec §3.3 / plan 3.2.2):
+        // `r.with(field: v, ...)` builds a NEW record — a copy of the
+        // receiver with each labeled field replaced. Compiler-intrinsic
+        // rather than synthesized source: one synthesized method can't take
+        // "any subset of fields" (default-param fill is trailing-positional,
+        // not label-aware) and per-field overloads collide in the unlabeled
+        // method maps. A user-declared `with` wins — the intrinsic only
+        // fires when the record doesn't define one.
+        if (receiver && methodCallName == "with") {
+            auto recClass = dynamic_pointer_cast<CajetaClass>(receiverType);
+            bool userDefinedWith = false;
+            if (recClass && recClass->isRecordType()) {
+                for (auto& m : recClass->getMethodList()) {
+                    if (m && m->getName() == "with") { userDefinedWith = true; break; }
+                }
+            }
+            llvm::Type* recBodyTy = (recClass && recClass->isRecordType())
+                ? recClass->getLlvmType() : nullptr;
+            if (recClass && recClass->isRecordType() && !userDefinedWith
+                    && recBodyTy && recBodyTy->isStructTy()) {
+                const llvm::DataLayout& dl =
+                    module->getLlvmModule()->getDataLayout();
+                llvm::Align align(dl.getABITypeAlign(recBodyTy));
+                llvm::Value* sizeV = llvm::ConstantInt::get(
+                    llvm::Type::getInt64Ty(*module->getLlvmContext()),
+                    dl.getTypeAllocSize(recBodyTy));
+                llvm::Value* src = receiver;
+                if (src->getType() == recBodyTy) {
+                    llvm::Value* tmp = builder->CreateAlloca(recBodyTy);
+                    builder->CreateStore(src, tmp);
+                    src = tmp;
+                }
+                llvm::Value* copy = builder->CreateAlloca(
+                    recBodyTy, nullptr, "with.copy");
+                builder->CreateMemCpy(copy, align, src, align, sizeV);
+                for (auto& p : parameters) {
+                    // parameterLabel's getText() keeps the trailing ':'.
+                    string fieldName = p.label;
+                    if (!fieldName.empty() && fieldName.back() == ':') {
+                        fieldName.pop_back();
+                    }
+                    if (fieldName.empty()) {
+                        throw Exception(
+                            "with(...) on record '"
+                                + recClass->getQName()->toCanonical()
+                                + "' requires labeled arguments (field: value)",
+                            "CAJETA_ERROR_RECORD_WITH");
+                    }
+                    StructurePropertyPtr prop;
+                    std::function<bool(const CajetaClassPtr&)> findP =
+                        [&](const CajetaClassPtr& cls) -> bool {
+                            if (!cls) return false;
+                            auto pit = cls->getProperties().find(fieldName);
+                            if (pit != cls->getProperties().end()) {
+                                prop = pit->second;
+                                return true;
+                            }
+                            for (auto& sup : cls->getSuperClasses()) {
+                                if (findP(sup)) return true;
+                            }
+                            return false;
+                        };
+                    findP(recClass);
+                    if (!prop || prop->isStatic()) {
+                        throw Exception(
+                            "record '" + recClass->getQName()->toCanonical()
+                                + "' has no field '" + fieldName
+                                + "' (with(...) labels must name declared "
+                                  "instance fields)",
+                            "CAJETA_ERROR_UNKNOWN_FIELD");
+                    }
+                    unsigned fieldIdx =
+                        (unsigned) recClass->getFieldLlvmIndex(prop);
+                    if (p.expression
+                            && !p.expression->getResolvedType()) {
+                        p.expression->resolveTypes(module);
+                    }
+                    llvm::Value* value = p.expression->generateCode(module);
+                    value = loadIfLValue(module, value, p.expression);
+                    auto propClass =
+                        dynamic_pointer_cast<CajetaClass>(prop->getType());
+                    llvm::Type* propLlvm = prop->getType()
+                        ? prop->getType()->getLlvmType() : nullptr;
+                    if (propClass && propClass->isValueType()
+                            && !dynamic_pointer_cast<CajetaView>(prop->getType())
+                            && propLlvm && propLlvm->isStructTy()
+                            && value && value->getType()->isPointerTy()) {
+                        value = builder->CreateLoad(propLlvm, value);
+                    }
+                    if (propLlvm && value && value->getType() != propLlvm) {
+                        llvm::Type* srcTy = value->getType();
+                        if (propLlvm->isIntegerTy() && srcTy->isIntegerTy()) {
+                            value = builder->CreateIntCast(value, propLlvm, true);
+                        } else if (propLlvm->isFloatingPointTy()
+                                && srcTy->isFloatingPointTy()) {
+                            value = builder->CreateFPCast(value, propLlvm);
+                        } else if (propLlvm->isFloatingPointTy()
+                                && srcTy->isIntegerTy()) {
+                            value = builder->CreateSIToFP(value, propLlvm);
+                        } else if (propLlvm->isIntegerTy()
+                                && srcTy->isFloatingPointTy()) {
+                            value = builder->CreateFPToSI(value, propLlvm);
+                        }
+                    }
+                    llvm::Value* slot = builder->CreateStructGEP(
+                        recBodyTy, copy, fieldIdx, "with." + fieldName);
+                    builder->CreateStore(value, slot);
+                }
+                resolvedType = recClass;
+                return copy;
+            }
+        }
+
         // Resolve the target class either from the receiver (cross-object call) or from
         // the enclosing class on the structure stack (bare call).
         CajetaClassPtr targetClass;

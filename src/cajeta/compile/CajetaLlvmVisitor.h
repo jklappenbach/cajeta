@@ -359,6 +359,7 @@ namespace cajeta {
                               "records have none; use a class",
                         "CAJETA_ERROR_RECORD_IMPLEMENTS");
                 }
+                structure->setRecordType(true);
                 structure->addModifier(FINAL);
                 if (!structure->findAnnotation("ValueType")) {
                     structure->addAnnotationInstance(make_shared<AnnotationInstance>(

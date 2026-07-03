@@ -121,8 +121,8 @@ TEST(RecordTests, assignmentCopiesByValue) {
         "    public static int32 run() {\n"
         "        Point a = Point { x: 1.0, y: 2.0 };\n"
         "        Point b = a;\n"
-        "        b.x = 9.0;\n"
-        "        return (int32)(a.x * 10.0 + b.x);\n"  // copy => 19, alias => 99
+        "        a = a.with(x: 9.0);\n"  // rebind the LOCAL (fields are immutable)
+        "        return (int32)(b.x * 10.0 + a.x);\n"  // copy => 19, alias => 99
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 19);
@@ -449,4 +449,136 @@ TEST(RecordTests, recordBindingCopiesSourceStaysLive) {
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 1321);
+}
+
+// ---------------------------------------------------------------------
+// Unit 3 — immutability + copy-with (plan §3; spec 3.2, 3.3)
+// ---------------------------------------------------------------------
+
+// 3.1.1 — a field write on a (default-immutable) record is a compile error.
+TEST(RecordCompileErrorTests, fieldWriteRejected) {
+    auto src = std::string(kPointSrc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Point p = Point { x: 1.0, y: 2.0 };\n"
+        "        p.x = 9.0;\n"
+        "        return (int32) p.x;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_ANY_THROW(CajetaJit::compile(src, "test.D"));
+}
+
+// 3.1.1 — a record's own non-constructor method may not mutate `this` either.
+TEST(RecordCompileErrorTests, methodSelfWriteRejected) {
+    auto src =
+        "package test;\n"
+        "public record RMut {\n"
+        "    float64 x;\n"
+        "    public void bump() { this.x = this.x + 1.0; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n";
+    EXPECT_ANY_THROW(CajetaJit::compile(src, "test.D"));
+}
+
+// 3.1.1 corollary — a record CONSTRUCTOR still initializes its own fields.
+TEST(RecordTests, ctorInitializesImmutableFields) {
+    auto src =
+        "package test;\n"
+        "public record RCtor {\n"
+        "    float64 x;\n"
+        "    float64 y;\n"
+        "    public RCtor(float64 x, float64 y) { this.x = x; this.y = y; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        RCtor c = heap RCtor(1.5, 2.5);\n"
+        "        return (int32)(c.x * 10.0 + c.y * 100.0);\n"  // 15 + 250
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 265);
+}
+
+// 3.1.1 corollary — a CLASS field that holds a record stays assignable
+// (the receiver is the class; the record value is replaced wholesale).
+TEST(RecordTests, classFieldHoldingRecordReassignable) {
+    auto src = std::string(kPointSrc) +
+        "public class RHolder {\n"
+        "    Point p;\n"
+        "    public RHolder() { this.p = Point { x: 1.0, y: 2.0 }; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        RHolder h = heap RHolder();\n"
+        "        h.p = Point { x: 4.0, y: 8.0 };\n"
+        "        return (int32)(h.p.x * 10.0 + h.p.y);\n"  // 48
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 48);
+}
+
+// 3.1.2 — with(field: v) yields a NEW record: one field replaced, the rest
+// copied, the original untouched.
+TEST(RecordTests, withReplacesOneFieldCopiesRest) {
+    auto src = std::string(kPointSrc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Point p = Point { x: 1.5, y: 2.5 };\n"
+        "        Point q = p.with(x: 4.5);\n"
+        "        return (int32)(q.x * 10.0 + q.y * 100.0 + p.x * 1000.0);\n"  // 45+250+1500
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1795);
+}
+
+// 3.3.1 — with round-trips field values exactly: replacing a field with the
+// original value compares structurally equal; multi-field with works.
+TEST(RecordTests, withRoundTripsAndMultiField) {
+    auto src = std::string(kPointSrc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Point p = Point { x: 1.25, y: 2.75 };\n"
+        "        Point same = p.with(x: p.x);\n"
+        "        Point both = p.with(x: 9.0, y: 8.0);\n"
+        "        int32 r = 0;\n"
+        "        if (same == p) { r = r + 1; }\n"
+        "        if (both == p) { r = r + 10; }\n"
+        "        r = r + (int32)(both.x + both.y * 10.0);\n"  // 9 + 80
+        "        return r;\n"  // 1 + 0 + 89
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 90);
+}
+
+// 3.1.2 — with() on a template-record instantiation.
+TEST(RecordTests, withOnTemplateRecordInstantiation) {
+    auto src =
+        "package test;\n"
+        "public record WPair<A, B> {\n"
+        "    A first;\n"
+        "    B second;\n"
+        "    public WPair(A f, B s) { this.first = f; this.second = s; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        WPair<int32, int32> p = heap WPair<int32, int32>(3, 4);\n"
+        "        WPair<int32, int32> q = p.with(second: 9);\n"
+        "        return q.first * 100 + q.second * 10 + p.second;\n"  // 300+90+4
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 394);
+}
+
+// 3.1.2 — an unknown field label in with(...) is a compile error.
+TEST(RecordCompileErrorTests, withUnknownFieldRejected) {
+    auto src = std::string(kPointSrc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Point p = Point { x: 1.0, y: 2.0 };\n"
+        "        Point q = p.with(z: 3.0);\n"
+        "        return (int32) q.x;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_ANY_THROW(CajetaJit::compile(src, "test.D"));
 }

@@ -744,6 +744,7 @@ namespace cajeta {
         // body walk emits method IR (prototype-on-reference), so the emit target
         // must already be in place.
         auto inst = make_shared<CajetaClass>(module, instQName, instExtended, instImplemented);
+        if (recordDecl) inst->setRecordType(true);
         if (emitOwner != module) inst->setEmitModule(emitOwner);
         // Carry the template's class-level annotations onto the instantiation —
         // they describe the class shape, which the instantiation shares (e.g.
