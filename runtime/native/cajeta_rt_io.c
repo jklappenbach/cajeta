@@ -116,6 +116,27 @@ void __cajeta_print_trace(void* throwable, int32_t fd) {
     pthread_mutex_unlock(&__cajeta_trace_mutex);
 }
 
+// Copy up to `max` captured frame return-addresses for `throwable` into the
+// Cajeta int64[] `out_arr` (layout { i64 count@0, i64 payload@8 }), returning
+// the number written. 0 when no trace was recorded (capture off / fiber /
+// Windows / already evicted). Powers Throwable.getStackTrace().
+int32_t __cajeta_get_trace(void* throwable, void* out_arr, int32_t max) {
+    if (!throwable || !out_arr || max <= 0) return 0;
+    int64_t cap = *((int64_t*) out_arr);               // element capacity
+    int64_t* out = (int64_t*) ((char*) out_arr + 8);   // payload
+    pthread_mutex_lock(&__cajeta_trace_mutex);
+    struct cajeta_trace_entry* e = __cajeta_trace_table;
+    while (e && e->throwable != throwable) e = e->next;
+    if (!e) { pthread_mutex_unlock(&__cajeta_trace_mutex); return 0; }
+    int n = e->frame_count;
+    if (n > max) n = max;
+    if (n > cap) n = (int) cap;
+    for (int i = 0; i < n; i++)
+        out[i] = (int64_t) (uintptr_t) e->frames[i];
+    pthread_mutex_unlock(&__cajeta_trace_mutex);
+    return n;
+}
+
 // Helper for the uncaught-throw path: print the throwable's message
 // (if any) and stack trace to stderr. Mirrors Java/Python's "Exception
 // in thread main: ... \n Traceback: ..." shape. Throwable layout is

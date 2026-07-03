@@ -1,0 +1,18 @@
+package cajeta.error;
+
+/**
+ * One frame of a captured stack trace, as returned by
+ * `Throwable.getStackTrace()`.
+ *
+ * MVP (ExceptionReview §5): carries the raw native return address only.
+ * Symbol resolution and source `file:line` (`Package.Class.method(File.cajeta:NN)`)
+ * are tracked follow-ups (§4) — a frame today is an address a symbolizer can
+ * later resolve, not yet a human-readable location.
+ */
+public final class StackFrame {
+    public int64 nativeAddress;
+
+    public StackFrame(int64 nativeAddress) {
+        this.nativeAddress = nativeAddress;
+    }
+}

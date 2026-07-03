@@ -39,4 +39,35 @@ public class Throwable {
     public String getMessage() {
         return this.message;
     }
+
+    @Native("__cajeta_get_trace")
+    private static int32 getTraceNative(Object throwable, int64[] outAddrs, int32 max);
+    @Native("__cajeta_print_trace")
+    private static void printTraceNative(Object throwable, int32 fd);
+
+    /**
+     * The captured stack frames, throw-site first. Empty when capture was off
+     * (`--stack-trace-capture=off`, the Release default) or on a context that
+     * doesn't capture (Windows, in-fiber throws). Frames currently carry the
+     * native return address only; symbol + `file:line` are follow-ups (§4).
+     */
+    public StackFrame[] getStackTrace() {
+        int64[] addrs = heap int64[64];
+        int32 n = getTraceNative(this, addrs, 64);
+        StackFrame[] frames = heap StackFrame[n];
+        int32 i = 0;
+        while (i < n) {
+            frames[i] = heap StackFrame(addrs[i]);
+            i = i + 1;
+        }
+        return frames;
+    }
+
+    /**
+     * Print this throwable's stack trace to stderr. A no-op body of frames when
+     * no trace was captured (message still surfaces via the uncaught handler).
+     */
+    public void printStackTrace() {
+        printTraceNative(this, 2);
+    }
 }

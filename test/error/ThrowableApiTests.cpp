@@ -72,3 +72,50 @@ TEST(ThrowableApi, getCauseNullWhenNoCause) {
     auto fn = jit->lookup<int32_t (*)()>("run");
     EXPECT_EQ(fn(), 1);
 }
+
+// §5: printStackTrace() wraps __cajeta_print_trace via the object bridge and
+// runs without crashing from user code.
+TEST(ThrowableApi, printStackTraceRuns) {
+    auto jit = CajetaJit::compile(src(
+        "try {\n"
+        "    throw heap Exception(\"boom\");\n"
+        "} catch (Exception e) {\n"
+        "    e.printStackTrace();\n"
+        "    return 1;\n"
+        "}\n"
+        "return -1;"), "test.S");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 1);
+}
+
+// §5: getStackTrace() returns non-empty frames on a capture-on (JIT default)
+// Linux build. Acceptance #2: top frame is the throw site (non-empty here).
+TEST(ThrowableApi, getStackTraceNonEmpty) {
+    auto jit = CajetaJit::compile(src(
+        "try {\n"
+        "    throw heap Exception(\"boom\");\n"
+        "} catch (Exception e) {\n"
+        "    StackFrame[] f = e.getStackTrace();\n"
+        "    return f.count();\n"
+        "}\n"
+        "return -1;"), "test.S");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_GT(fn(), 0);
+}
+
+// §5: each frame carries a resolvable (non-zero) native address.
+TEST(ThrowableApi, getStackTraceTopAddressNonZero) {
+    auto jit = CajetaJit::compile(src(
+        "try {\n"
+        "    throw heap Exception(\"boom\");\n"
+        "} catch (Exception e) {\n"
+        "    StackFrame[] f = e.getStackTrace();\n"
+        "    if (f.count() == 0) { return 0; }\n"
+        "    StackFrame top = f[0];\n"
+        "    if (top.nativeAddress != 0) { return 1; }\n"
+        "    return 0;\n"
+        "}\n"
+        "return -1;"), "test.S");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 1);
+}
