@@ -40,6 +40,23 @@ const char* kPointSrc =
     "    float64 y;\n"
     "}\n";
 
+// True when the IR keeps a real CALL to `symbol` (its `define` line always
+// exists; only call sites matter for the inline check). Same oracle as
+// ValueTypeInlineSizeTests.
+bool hasCallTo(const std::string& ir, const std::string& symbol) {
+    const std::string needle = "@\"" + symbol;
+    size_t pos = 0;
+    while ((pos = ir.find(needle, pos)) != std::string::npos) {
+        size_t lineStart = ir.rfind('\n', pos);
+        std::string line = ir.substr(
+            lineStart == std::string::npos ? 0 : lineStart,
+            pos - (lineStart == std::string::npos ? 0 : lineStart));
+        if (line.find("call ") != std::string::npos) return true;
+        pos += 1;
+    }
+    return false;
+}
+
 } // namespace
 
 // 1.1.1 — `record Point { float64 x; float64 y; }` parses; Point is a usable
@@ -185,6 +202,9 @@ TEST(RecordTests, emittedIrHasNoVtableSlot) {
     EXPECT_NE(ir.find("%test.Point = type { double, double }"),
               std::string::npos);
     EXPECT_NE(ir.find("alloca %test.Point"), std::string::npos);
+    // No vtable-pointer store into the value either — slot 0 is field x,
+    // not a header (aggregate-init must not write one).
+    EXPECT_EQ(ir.find("store ptr @\"test.Point#VTable\""), std::string::npos);
 }
 
 // 1.1.5 — a template record monomorphizes per type-arg list; every
@@ -251,4 +271,182 @@ TEST(RecordTests, nestedRecordFieldIsValueSubAggregate) {
     EXPECT_TRUE(inner->getElementType(0)->isDoubleTy());
     EXPECT_TRUE(inner->getElementType(1)->isDoubleTy());
     EXPECT_TRUE(st->getElementType(1)->isDoubleTy());
+}
+
+// ---------------------------------------------------------------------
+// Unit 2 — constraint gates (plan §2; spec 1.3, 2.4, 2.5.4, 2.6.4–2.6.5)
+// ---------------------------------------------------------------------
+
+// 2.1.1 — a record may carry pure methods + operator overloads; both dispatch
+// directly (no per-instance vtable exists to dispatch through).
+// 2.2.3 — a small record operator is force-inlined (@ValueType alwaysinline
+// path): no CALL to it survives in the O0 post-AlwaysInline IR.
+TEST(RecordTests, methodsAndOperatorsDispatchDirectly) {
+    auto src =
+        "package test;\n"
+        "public record RVec {\n"
+        "    float64 x;\n"
+        "    float64 y;\n"
+        "    public float64 length2() { return this.x * this.x + this.y * this.y; }\n"
+        "    public static RVec operator+ (RVec a, RVec b) {\n"
+        "        return RVec { x: a.x + b.x, y: a.y + b.y };\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        RVec a = RVec { x: 1.0, y: 2.0 };\n"
+        "        RVec b = RVec { x: 3.0, y: 4.0 };\n"
+        "        RVec c = a + b;\n"
+        "        return (int32) c.length2();\n"  // 16 + 36 = 52
+        "    }\n"
+        "}\n";
+    CajetaJit::Options opts;
+    opts.captureIr = true;
+    auto jit = CajetaJit::compile(src, "test.D", opts);
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 52);
+    EXPECT_FALSE(hasCallTo(jit->getModuleIr(), "test.RVec::operator+"));
+}
+
+// 2.1.3 — a @ValueType class field is allowed in a record (value aggregates
+// compose); one more leaf of the value-only field rule.
+TEST(RecordTests, valueTypeClassFieldAllowed) {
+    auto src =
+        "package test;\n"
+        "@ValueType public final class Vt2 {\n"
+        "    public float64 a;\n"
+        "    public float64 b;\n"
+        "}\n"
+        "public record RVt {\n"
+        "    Vt2 v;\n"
+        "    float64 c;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        RVt r = RVt { v: Vt2 { a: 1.0, b: 2.0 }, c: 3.0 };\n"
+        "        return (int32)(r.v.a + r.v.b * 10.0 + r.c * 100.0);\n"  // 321
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 321);
+}
+
+// 2.1.4 — one-way containment: a (reference) class may hold a record field.
+TEST(RecordTests, classContainingRecordFieldAllowed) {
+    auto src = std::string(kPointSrc) +
+        "public class Holder {\n"
+        "    Point p;\n"
+        "    public Holder() {\n"
+        "        this.p = Point { x: 1.5, y: 2.5 };\n"
+        "    }\n"
+        "    public float64 sum() { return this.p.x + this.p.y; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Holder h = heap Holder();\n"
+        "        return (int32)(h.sum() * 10.0);\n"  // 40
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 40);
+}
+
+// 2.1.2 — a body-less (abstract/virtual) method on a record is a compile
+// error: records have no vtable, every method needs a body.
+TEST(RecordCompileErrorTests, abstractMethodRejected) {
+    auto src =
+        "package test;\n"
+        "public record RAbs {\n"
+        "    float64 w;\n"
+        "    public float64 area();\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n";
+    EXPECT_ANY_THROW(CajetaJit::compile(src, "test.D"));
+}
+
+// 2.1.2 — `implements <Interface>` on a record is a compile error (parsed for
+// the diagnostic, rejected in the visitor).
+TEST(RecordCompileErrorTests, implementsInterfaceRejected) {
+    auto src =
+        "package test;\n"
+        "public interface Tagged {\n"
+        "    public int32 tag();\n"
+        "}\n"
+        "public record RIface implements Tagged {\n"
+        "    int32 a;\n"
+        "    public int32 tag() { return this.a; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n";
+    EXPECT_ANY_THROW(CajetaJit::compile(src, "test.D"));
+}
+
+// 2.1.2 — an `abstract` record declaration is a compile error.
+TEST(RecordCompileErrorTests, abstractRecordRejected) {
+    auto src =
+        "package test;\n"
+        "public abstract record RA {\n"
+        "    int32 a;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n";
+    EXPECT_ANY_THROW(CajetaJit::compile(src, "test.D"));
+}
+
+// 2.1.3 — a reference-type (heap class) field in a record is a compile error.
+TEST(RecordCompileErrorTests, referenceClassFieldRejected) {
+    auto src =
+        "package test;\n"
+        "public class RefBox {\n"
+        "    public int32 a;\n"
+        "}\n"
+        "public record RBad {\n"
+        "    RefBox b;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n";
+    EXPECT_ANY_THROW(CajetaJit::compile(src, "test.D"));
+}
+
+// 2.1.3 — String is a heap class: a String record field is rejected (the
+// future Utf8 value type is the blessed text field; no special case).
+TEST(RecordCompileErrorTests, stringFieldRejected) {
+    auto src =
+        "package test;\n"
+        "public record RStr {\n"
+        "    String s;\n"
+        "    int32 id;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n";
+    EXPECT_ANY_THROW(CajetaJit::compile(src, "test.D"));
+}
+
+// 2.1.3 corollary — a record binding into another record COPIES (value
+// semantics): the source local stays live and readable after the init (no
+// use-after-move; reference-class bindings DO move).
+TEST(RecordTests, recordBindingCopiesSourceStaysLive) {
+    auto src =
+        "package test;\n"
+        "public record RInner {\n"
+        "    float64 a;\n"
+        "    float64 b;\n"
+        "}\n"
+        "public record ROuter {\n"
+        "    RInner i;\n"
+        "    float64 c;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        RInner q = RInner { a: 1.0, b: 2.0 };\n"
+        "        ROuter o = ROuter { i: q, c: 3.0 };\n"
+        "        return (int32)(o.i.a + o.i.b * 10.0 + o.c * 100.0 + q.a * 1000.0);\n"  // 1321
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1321);
 }

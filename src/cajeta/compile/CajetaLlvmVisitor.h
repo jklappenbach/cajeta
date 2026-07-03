@@ -198,11 +198,9 @@ namespace cajeta {
         }
 
         virtual std::any visitRecordDeclaration(CajetaParser::RecordDeclarationContext* ctx) override {
-            std::vector<CajetaParser::TypeListContext*> typeLists;
-            if (auto* tl = ctx->typeList()) typeLists.push_back(tl);
             return std::any(buildClassLike(ctx, ctx->identifier()->getText(),
-                ctx->typeParameters(), ctx->EXTENDS(), nullptr, nullptr,
-                typeLists, /*isRecord=*/true));
+                ctx->typeParameters(), ctx->EXTENDS(), ctx->IMPLEMENTS(),
+                nullptr, ctx->typeList(), /*isRecord=*/true));
         }
 
         // Shared builder for class-like declarations (class / record).
@@ -349,6 +347,18 @@ namespace cajeta {
             // (flags in generatePrototype, POD validation below, template
             // annotation-carry at instantiation) with no parallel machinery.
             if (isRecord) {
+                // Interface dispatch needs a vtable/itable; records have
+                // neither (records-spec §2.5.4). Runs for templates too —
+                // the gate fires at declaration, before any instantiation.
+                if (!qImplemented.empty()) {
+                    throw Exception(
+                        "record '" + qName->toCanonical()
+                            + "' cannot implement interface '"
+                            + qImplemented.front()->toCanonical()
+                            + "' — interface dispatch needs a vtable and "
+                              "records have none; use a class",
+                        "CAJETA_ERROR_RECORD_IMPLEMENTS");
+                }
                 structure->addModifier(FINAL);
                 if (!structure->findAnnotation("ValueType")) {
                     structure->addAnnotationInstance(make_shared<AnnotationInstance>(
@@ -423,6 +433,16 @@ namespace cajeta {
                     // classOrInterfaceModifier is EITHER an annotation OR a
                     // keyword — annotation() is null for the keyword form.
                     if (!mod->annotation()) {
+                        // `abstract` maps to Modifier::NONE, so gate on the
+                        // raw keyword: an abstract record contradicts the
+                        // no-vtable value model.
+                        if (isRecord && mod->getText() == "abstract") {
+                            throw Exception(
+                                "record '" + qName->toCanonical()
+                                    + "' cannot be abstract — records are "
+                                      "concrete no-vtable value types",
+                                "CAJETA_ERROR_RECORD_ABSTRACT");
+                        }
                         Modifier m = Modifiable::toModifier(mod->getText());
                         if (m != NONE) structure->addModifier(m);
                         continue;
@@ -569,6 +589,17 @@ namespace cajeta {
                     if (mname == "operator==") hasOpEq = true;
                     if (mname == "operator!=") hasOpNe = true;
                     if (mname == "hash")       hasHash = true;
+                    // Records have no vtable: a body-less (abstract/virtual)
+                    // method has nothing to dispatch through (records-spec
+                    // §2.5.4). Template records re-check at instantiation.
+                    if (isRecord && kv.second->isAbstract()) {
+                        throw Exception(
+                            "record '" + qName->toCanonical()
+                                + "' declares abstract method '" + mname
+                                + "' — records have no vtable; every record "
+                                  "method needs a body",
+                            "CAJETA_ERROR_RECORD_ABSTRACT_METHOD");
+                    }
                 }
                 bool isObject = structure->getQName()->toCanonical()
                               == "cajeta.lang.Object";
@@ -695,9 +726,10 @@ namespace cajeta {
                 // template still gets the value-type flags so its instantiations
                 // and array storage are treated by value.
                 if (!structure->isTemplate()) {
+                    const string kind = isRecord ? "record" : "@ValueType class";
                     if (structure->countInheritedFields() != 0) {
                         throw Exception(
-                            "@ValueType class '" + structure->toCanonical()
+                            kind + " '" + structure->toCanonical()
                                 + "' must not inherit fields — value types are flat POD",
                             "CAJETA_ERROR_VALUE_TYPE");
                     }
@@ -711,15 +743,20 @@ namespace cajeta {
                                 || ((ft->getTypeFlags() & VALUE_TYPE_FLAG) != 0));
                         if (!ok) {
                             throw Exception(
-                                "@ValueType field '" + prop->getName()
-                                    + "' must be a primitive, Vector, or another "
-                                      "@ValueType (got a non-POD type)",
+                                kind + " '" + structure->toCanonical()
+                                    + "' field '" + prop->getName()
+                                    + "' must be a value type (primitive, Vector, "
+                                      "record, or @ValueType); '"
+                                    + (ft && ft->getQName()
+                                        ? ft->getQName()->toCanonical()
+                                        : string("<unresolved>"))
+                                    + "' is a reference (heap) type",
                                 "CAJETA_ERROR_VALUE_TYPE");
                         }
                     }
                     if (!sawField) {
                         throw Exception(
-                            "@ValueType class '" + structure->toCanonical()
+                            kind + " '" + structure->toCanonical()
                                 + "' must declare at least one field",
                             "CAJETA_ERROR_VALUE_TYPE");
                     }

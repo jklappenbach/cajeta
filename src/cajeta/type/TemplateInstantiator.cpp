@@ -653,12 +653,8 @@ namespace cajeta {
         ssize_t extKw = kwIdx(classDecl ? classDecl->EXTENDS() : recordDecl->EXTENDS());
         ssize_t implKw = classDecl ? kwIdx(classDecl->IMPLEMENTS()) : -1;
         ssize_t permKw = classDecl ? kwIdx(classDecl->PERMITS()) : -1;
-        std::vector<CajetaParser::TypeListContext*> declTypeLists;
-        if (classDecl) {
-            declTypeLists = classDecl->typeList();
-        } else if (auto* tl = recordDecl->typeList()) {
-            declTypeLists.push_back(tl);
-        }
+        std::vector<CajetaParser::TypeListContext*> declTypeLists =
+            classDecl ? classDecl->typeList() : recordDecl->typeList();
         for (auto* tl : declTypeLists) {
             ssize_t tlIdx = tl->getStart()
                 ? (ssize_t) tl->getStart()->getTokenIndex() : -1;
@@ -813,6 +809,22 @@ namespace cajeta {
         auto bodyAny = visitor.visitClassBody(
             classDecl ? classDecl->classBody() : recordDecl->classBody());
         inst->setClassBody(std::any_cast<ClassBodyDeclarationPtr>(bodyAny));
+
+        // Record templates skip the declaration-time body walk, so the
+        // no-abstract-method gate re-runs here per instantiation.
+        if (recordDecl) {
+            for (auto& kv : inst->getMethods()) {
+                if (kv.second && kv.second->isAbstract()) {
+                    throw Exception(
+                        "record '" + instQName->toCanonical()
+                            + "' declares abstract method '"
+                            + kv.second->getName()
+                            + "' — records have no vtable; every record "
+                              "method needs a body",
+                        "CAJETA_ERROR_RECORD_ABSTRACT_METHOD");
+                }
+            }
+        }
 
         // Emit target was set on `inst` before the walk and propagated to each
         // method at construction (Method ctor reads parent->getEmitModule()), so
