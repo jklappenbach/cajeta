@@ -2,6 +2,7 @@ package dev.cajeta.idea.lint
 
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.util.TextRange
+import dev.cajeta.idea.buildtool.JsonDiagnosticParser
 import dev.cajeta.idea.settings.CajetaSettings
 import java.io.File
 import java.io.IOException
@@ -12,29 +13,14 @@ import java.nio.file.StandardOpenOption
 import java.util.concurrent.TimeUnit
 
 /**
- * Spawns cajetac against a source buffer and parses its diagnostic
- * output. v0.1 ships in degraded mode: cajetac doesn't yet have
- * `--lint --diag-format=json --stdin`, so we write the buffer to a
- * temp file, invoke the compiler against it, and regex-parse the
- * human-readable warnings off stderr.
- *
- * TODO(cajetac-json-diagnostics): replace this with the structured
- * JSON path once the compiler-side refactor lands (see
- * ide-plugins/idea/Plan.md § Follow-up).
+ * Spawns cajetac against a source buffer with `--diag-format=json` and turns the
+ * NDJSON stderr into editor [Diagnostic]s at precise ranges (json-diagnostics
+ * spec §4). JSON-only — the compiler always emits structured diagnostics under
+ * the flag, so there is no regex scraping and no text fallback.
  */
 object CajetacRunner {
 
     private val log = Logger.getInstance(CajetacRunner::class.java)
-
-    /**
-     * Regex matches lines like:
-     *     warning: [uncaught-throws] call to fetch can throw ...
-     * Both `warning:` and `warning —` forms are tolerated since the
-     * compiler currently emits both.
-     */
-    internal val WARNING_RE = Regex(
-        """^warning(?:\s*[:—-])\s*\[(?<id>[^\]]+)\]\s*(?<msg>.+)$""",
-    )
 
     fun lint(filePath: String, bufferText: String): List<Diagnostic> {
         val compilerPath = CajetaSettings.instance.compilerPath
@@ -45,11 +31,34 @@ object CajetacRunner {
 
         val tempFile = stageBufferToTemp(filePath, bufferText) ?: return emptyList()
         try {
-            val stderr = runCompiler(compilerPath, tempFile) ?: return emptyList()
-            return parseStderr(stderr, bufferText)
+            // Resolve cross-file references against the project: pass the source
+            // root (derived from the file's package) and shadow the on-disk twin
+            // so the staged buffer replaces it (lint-source-root-spec §5/§7).
+            val sourceRoot = sourceRootOf(filePath, bufferText)
+            val stderr = runCompiler(compilerPath, tempFile, sourceRoot, filePath)
+                ?: return emptyList()
+            return parseDiagnostics(stderr, bufferText)
         } finally {
             runCatching { Files.deleteIfExists(tempFile) }
         }
+    }
+
+    private val PACKAGE_RE = Regex("""(?m)^\s*package\s+([A-Za-z_][\w.]*)\s*;""")
+
+    /** The project source root for [filePath]: its directory with the file's
+     *  `package a.b.c;` path segments stripped off the tail (so `<root>/a/b/c/
+     *  Foo.cajeta` → `<root>`). Falls back to the file's own directory when there
+     *  is no package or the on-disk layout doesn't match the package. */
+    internal fun sourceRootOf(filePath: String, bufferText: String): String {
+        val parent = File(filePath).parentFile ?: return File(filePath).absolutePath
+        val pkg = PACKAGE_RE.find(bufferText)?.groupValues?.get(1)
+        if (pkg.isNullOrBlank()) return parent.path
+        var root: File = parent
+        for (seg in pkg.split('.').asReversed()) {
+            val up = root.parentFile
+            if (root.name == seg && up != null) root = up else return parent.path
+        }
+        return root.path
     }
 
     private fun stageBufferToTemp(filePath: String, text: String): Path? {
@@ -69,17 +78,32 @@ object CajetacRunner {
         }
     }
 
-    private fun runCompiler(compilerPath: String, file: Path): String? {
+    /** The single-file lint invocation: `cajeta --lint <file> --diag-format=json`
+     *  (compiler-lint-mode spec §4). Runs the diagnostic passes on one file with
+     *  no codegen/emit/entry-method — unlike a full compile, which needs three
+     *  positionals and would just print usage. */
+    internal fun lintArgv(
+        compilerPath: String,
+        file: String,
+        sourceRoot: String? = null,
+        shadow: String? = null,
+    ): List<String> {
+        val args = mutableListOf(compilerPath, "--lint", file, "--diag-format=json")
+        if (sourceRoot != null) {
+            args += listOf("--source-root", sourceRoot)
+            if (shadow != null) args += listOf("--shadow", shadow)
+        }
+        return args
+    }
+
+    private fun runCompiler(
+        compilerPath: String,
+        file: Path,
+        sourceRoot: String? = null,
+        shadow: String? = null,
+    ): String? {
         return try {
-            // Run the compiler with --emit=ir to keep it cheap (no linker,
-            // no native codegen output) while still triggering the lint
-            // pass. We don't care about the output artifact.
-            val args = listOf(
-                compilerPath,
-                "--emit=ir",
-                "--diag-verbosity=normal",
-                file.toString(),
-            )
+            val args = lintArgv(compilerPath, file.toString(), sourceRoot, shadow)
             val pb = ProcessBuilder(args).redirectErrorStream(false)
             val process = pb.start()
             process.outputStream.close()
@@ -99,56 +123,53 @@ object CajetacRunner {
         }
     }
 
-    private fun parseStderr(stderr: String, bufferText: String): List<Diagnostic> {
-        // Degraded mode: regex doesn't carry offsets, so we attach each
-        // diagnostic to the first line that mentions any quoted token
-        // from the message, falling back to line 1.
+    internal fun parseDiagnostics(stderr: String, bufferText: String): List<Diagnostic> {
         val diagnostics = mutableListOf<Diagnostic>()
         for (line in stderr.lineSequence()) {
-            val match = WARNING_RE.matchEntire(line.trim()) ?: continue
-            val id = match.groups["id"]?.value ?: continue
-            val msg = match.groups["msg"]?.value ?: continue
-            val range = guessRangeFromMessage(msg, bufferText)
+            val d = JsonDiagnosticParser.parse(line) ?: continue
             diagnostics += Diagnostic(
-                ruleId = id,
-                severity = Diagnostic.Severity.WARNING,
-                message = msg,
-                range = range,
+                ruleId = d.code ?: "cajeta",
+                severity = d.severity,
+                message = d.message,
+                range = rangeFor(d.line, d.column, bufferText),
             )
         }
         return diagnostics
     }
 
-    /**
-     * Try to attach the warning to a meaningful place in the source.
-     * Looks for the first identifier-shaped token in the message and
-     * finds the first occurrence of it in the buffer. Falls back to
-     * the first line.
-     */
-    private fun guessRangeFromMessage(message: String, bufferText: String): TextRange {
-        val identifierRe = Regex("""\b[a-zA-Z_][a-zA-Z0-9_]*\b""")
-        for (m in identifierRe.findAll(message)) {
-            val token = m.value
-            if (token.length < 3 || token in COMMON_WORDS) continue
-            val pos = bufferText.indexOf(token)
-            if (pos >= 0) return TextRange(pos, pos + token.length)
+    /** 1-based line/column from the compiler → a buffer [TextRange]: the token at
+     *  the position (letters/digits/underscore), else to end of line; a
+     *  positionless diagnostic falls back to the first non-blank line. */
+    private fun rangeFor(line1: Int?, col1: Int?, buffer: String): TextRange {
+        if (line1 == null) return firstNonBlankRange(buffer)
+        val start = offsetOf(buffer, line1, col1 ?: 1)
+        if (start < 0 || start >= buffer.length) return firstNonBlankRange(buffer)
+        var end = start
+        while (end < buffer.length && (buffer[end].isLetterOrDigit() || buffer[end] == '_')) end++
+        if (end == start) {
+            val nl = buffer.indexOf('\n', start)
+            end = if (nl < 0) buffer.length else nl
+            if (end == start) end = minOf(start + 1, buffer.length)
         }
-        // Fallback: highlight first non-blank line.
-        val firstNonBlank = bufferText.lineSequence()
-            .withIndex()
-            .firstOrNull { it.value.isNotBlank() }
-        return if (firstNonBlank != null) {
-            val lineStart = bufferText.split('\n').take(firstNonBlank.index).sumOf { it.length + 1 }
-            val lineEnd = lineStart + firstNonBlank.value.length
-            TextRange(lineStart, lineEnd)
-        } else {
-            TextRange(0, minOf(1, bufferText.length))
-        }
+        return TextRange(start, end)
     }
 
-    private val COMMON_WORDS = setOf(
-        "the", "and", "can", "throw", "throws", "but", "neither", "nor",
-        "call", "to", "from", "warning", "error", "method", "class",
-        "into", "with", "for", "this", "that", "not", "via",
-    )
+    private fun offsetOf(buffer: String, line1: Int, col1: Int): Int {
+        var offset = 0
+        var ln = 1
+        while (ln < line1) {
+            val nl = buffer.indexOf('\n', offset)
+            if (nl < 0) return -1
+            offset = nl + 1
+            ln++
+        }
+        return (offset + (col1 - 1)).coerceIn(0, buffer.length)
+    }
+
+    private fun firstNonBlankRange(buffer: String): TextRange {
+        val firstNonBlank = buffer.lineSequence().withIndex().firstOrNull { it.value.isNotBlank() }
+            ?: return TextRange(0, minOf(1, buffer.length))
+        val lineStart = buffer.split('\n').take(firstNonBlank.index).sumOf { it.length + 1 }
+        return TextRange(lineStart, lineStart + firstNonBlank.value.length)
+    }
 }

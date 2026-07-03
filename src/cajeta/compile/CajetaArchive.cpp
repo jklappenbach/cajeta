@@ -1,6 +1,7 @@
 #include "CajetaArchive.h"
 
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <ostream>

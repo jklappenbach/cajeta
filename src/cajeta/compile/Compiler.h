@@ -340,6 +340,14 @@ namespace cajeta {
 
         void compile(CajetaModulePtr module);
 
+        // Single-file diagnostics (compiler-lint-mode-spec): stdlib + this one
+        // file through the semantic/validation/DI passes, then STOP before
+        // codegen/emit. No entry method. Diagnostics surface as the compile
+        // path's do (syntax via the JSON/console listener; semantic via thrown
+        // cajeta::Exception caught by the caller).
+        void lint(const string& file, const string& sourceRoot = "",
+                  const string& shadow = "");
+
         // Ensure the Compiler's dedicated stdlib module exists and is
         // parsed + prototype-built. Idempotent — created lazily on
         // first call, returned thereafter. Driven by every entry
@@ -477,6 +485,10 @@ namespace cajeta {
         llvm::TargetMachine* getTargetMachine() const { return targetMachine; }
 
         CajetaModulePtr createModule(string sourcePath, string sourceRootPath, string targetRootPath);
+
+        // --lint --source-root: register sibling files' signatures (see .cpp).
+        void registerLintContext(const string& root, const string& file,
+                                 const string& shadow, bool json);
 
         list<CajetaModulePtr> getModules() {
             return modules;

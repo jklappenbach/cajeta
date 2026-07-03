@@ -26,6 +26,14 @@
 > `run` + debuggable tasks stay on Run. Gated by a default-on setting. Specced in
 > `docs/specs/idea-build-toolwindow-spec.md` + `agents/idea-build-toolwindow-plan.md`.
 
+> **Follow-up landed (2026-07-02): editor-lint tier wired to `--lint`.** The compiler
+> now has a real `cajeta --lint <file> --diag-format=json` single-file diagnostics mode
+> (`docs/specs/compiler-lint-mode-spec.md`), and `CajetacRunner` drives it — superseding
+> the never-built `cajetac --lint --json --stdin` sketch below. Before this the tier
+> invoked `--emit=ir <file>` (one positional) and the compiler just printed usage → zero
+> squigglies. Known v1 limit: single-file resolution only (sibling-project types report
+> false "unresolved" until the `--source-root` follow-up).
+
 ## Active worklist (session 2026-06-24)
 
 Phase 2 has, in fact, landed through **CP7-6** on `main` (verified against the

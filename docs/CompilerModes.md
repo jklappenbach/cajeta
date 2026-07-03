@@ -333,11 +333,61 @@ Each line is one diagnostic:
 - `severity`: `"error"` \| `"warning"` \| `"note"`.
 - `code`: the compiler error id (semantic errors) or `"syntax"` (parser/lexer). May be null.
 - `message`: the human message. `file` / `line` / `column`: source location when
-  known (1-based line/column), else JSON null. Syntax errors carry a precise
-  location; today's semantic errors carry the id + message (location is a
-  follow-on as the exception surface gains spans).
+  known (1-based line/column), else JSON null. Syntax errors carry a precise location;
+  **semantic** errors carry one once their site is migrated (the flagship *unresolved
+  type* does) — un-migrated sites still report null location.
+- **Collect-and-continue** (`--lint`; `docs/specs/diagnostic-engine-spec.md`): recoverable
+  semantic errors are *reported to a diagnostic engine and recovered* (the failed
+  resolution yields an **error type** so analysis continues) rather than aborting on the
+  first. A linted file surfaces **all** its migrated semantic errors at once, sorted by
+  span and deduped. Migration is incremental — an un-migrated site still throws (fatal /
+  abort-on-first), which is also how **full compile** behaves today.
+- Remaining sub-phase: run **codegen in collect mode** with error-type *absorption* (an
+  operation on an error type yields an error type, no secondary diagnostic) so use-site /
+  type-mismatch errors are collected too, and extend collect-and-continue to full compile.
 - Mode-independent (not changed by `--debug`/`--release`/etc.); default `text`.
 - A clean compile emits nothing. Consumers should skip any non-`{` line defensively.
+
+### `--lint <file>`
+
+Run the diagnostic passes over **one** source file and report diagnostics, **without
+a build** — no codegen, no linking, no artifact, no entry-method. A distinct mode (like
+`archive` / `jit-run`): `<file>` is the sole positional; the three-positional
+`<entry-method> <source-root> <archive-root>` compile path does not apply.
+
+```
+cajeta --lint path/to/File.cajeta                     # text diagnostics
+cajeta --lint path/to/File.cajeta --diag-format=json  # NDJSON (IDE editor tier)
+cajeta --lint /tmp/buf.cajeta --source-root proj/src --shadow proj/src/app/File.cajeta --diag-format=json
+```
+
+- Runs stdlib load → parse → placeholder/prototype/advice/dependency-graph passes, then
+  stops before codegen. Surfaces the same diagnostics a full compile's front-end does
+  (syntax with precise locations; semantic via error id + message).
+- Honors `--diag-format` exactly as a full compile (text default; `json` = NDJSON on
+  stderr, nothing on stdout).
+- Exit code: `0` iff no error-severity diagnostic; non-zero otherwise. A missing `<file>`
+  fails with a clear message, **not** the compile usage banner.
+- The IntelliJ plugin's editor-annotation tier (`CajetacRunner`) drives this mode.
+
+**`--source-root <root>`** (optional): resolve `<file>`'s references against the whole
+project. Every `.cajeta` under `<root>` is parsed for its **signatures only** (front-end,
+no codegen — the same work `--classpath` does for `.cja` deps) and registered as context;
+only `<file>`'s diagnostics are reported. A broken sibling is skipped, never aborting or
+polluting the linted file. This is what makes `foo.bar()` on a sibling-file type resolve
+instead of squiggling. A non-directory `--source-root` fails clearly.
+
+**`--shadow <realpath>`** (optional, with `--source-root`): skip `<realpath>` in the root
+walk so the linted `<file>` (a staged, unsaved editor buffer) replaces its on-disk twin —
+the edited content is analyzed, with no duplicate-definition clash. A no-op if `<realpath>`
+is not under `<root>`.
+
+- **Remaining follow-up (separate effort):** semantic diagnostics are still
+  `throw`-based — **single-shot and location-less**, so the linted file still yields one
+  semantic diagnostic at no precise offset. Making them *collect-and-continue with spans*
+  (multiple, located semantic squigglies) is its own diagnostics-architecture rework
+  (see `docs/specs/lint-source-root-spec.md` §1.4). `--source-root` removes false
+  *cross-file* positives; it does not change that.
 
 ### `--profile-counters=on|off`
 

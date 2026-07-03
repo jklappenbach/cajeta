@@ -1,3 +1,4 @@
+#include <filesystem>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -8,6 +9,7 @@
 #include "cajeta/compile/CompilerMode.h"
 #include "cajeta/error/Exception.h"
 #include "cajeta/error/Diagnostics.h"
+#include "cajeta/error/DiagnosticEngine.h"
 #include "cajeta/cli/ArchiveCommands.h"
 #include "cajeta/cli/DocCommand.h"
 #include "cajeta/cli/IdeCommands.h"
@@ -182,6 +184,21 @@ bool setBoolFlag(const char* flagName, const std::string& value, bool& out) {
 
 } // namespace
 
+// Emit a caught cajeta::Exception as an error diagnostic, carrying its source
+// span (located-semantic-diagnostics) when the throw site supplied one.
+static void emitException(cajeta::Exception& e, bool jsonDiag) {
+    if (jsonDiag) {
+        cajeta::emitJsonDiagnostic("error", e.getErrorId(), e.getMessage(),
+                                   e.getFile(), e.getLine(), e.getColumn());
+    } else if (e.hasLocation()) {
+        std::cerr << "cajeta: " << e.getFile() << ":" << e.getLine() << ":"
+                  << e.getColumn() << ": " << e.getErrorId() << ": "
+                  << e.getMessage() << "\n";
+    } else {
+        std::cerr << "cajeta: " << e.getErrorId() << ": " << e.getMessage() << "\n";
+    }
+}
+
 int main(int argc, const char* argv[]) {
     // Top-level subcommand dispatch. `cajeta archive ...` routes to
     // the archive-management surface (docs/ArchiveManagement.md);
@@ -261,6 +278,12 @@ int main(int argc, const char* argv[]) {
 
     Compiler compiler(argc, argv);
     std::vector<std::string> positional;
+    // --lint <file>: single-file diagnostics mode (no codegen/emit/entry). The
+    // file is the sole positional; handled after the arg loop, before the
+    // three-positional compile path (compiler-lint-mode-spec §2).
+    bool lintMode = false;
+    std::string lintSourceRoot;  // --source-root: project context (lint-source-root-spec)
+    std::string lintShadow;      // --shadow: on-disk twin the linted buffer replaces
     // Track whether --xpu-arch was given explicitly so the amdgpu backend can
     // default its arch to gfx1151 (vs the nvptx sm_89 default) only when the
     // user didn't pin one. The two backends share a single xpuArch field.
@@ -506,6 +529,20 @@ int main(int argc, const char* argv[]) {
                 return 1;
             }
             compiler.setOutputPath(argv[++i]);
+        } else if (arg == "--lint") {
+            lintMode = true;
+        } else if (arg == "--source-root") {
+            if (i + 1 >= argc) {
+                std::cerr << "cajeta: --source-root requires a path\n";
+                return 1;
+            }
+            lintSourceRoot = argv[++i];
+        } else if (arg == "--shadow") {
+            if (i + 1 >= argc) {
+                std::cerr << "cajeta: --shadow requires a path\n";
+                return 1;
+            }
+            lintShadow = argv[++i];
         } else if (arg == "--help" || arg == "-h") {
             printUsage(argv[0]);
             return 0;
@@ -516,6 +553,54 @@ int main(int argc, const char* argv[]) {
         } else {
             positional.push_back(arg);
         }
+    }
+
+    // --lint <file>: run the diagnostic passes over one file and stop before
+    // codegen (compiler-lint-mode-spec). Distinct mode — takes the single
+    // positional as the file, never the three-positional compile path.
+    if (lintMode) {
+        bool jsonDiag = compiler.getFlags().diagFormat == DiagFormat::Json;
+        if (positional.empty()) {
+            std::cerr << "cajeta: --lint requires a <file>\n";
+            return 1;
+        }
+        const std::string& lintFile = positional[0];
+        if (!std::filesystem::exists(lintFile)) {
+            if (jsonDiag)
+                cajeta::emitJsonDiagnostic("error", "file-not-found",
+                                           "no such file: " + lintFile, lintFile);
+            else
+                std::cerr << "cajeta: no such file: " << lintFile << "\n";
+            return 1;
+        }
+        if (!lintSourceRoot.empty() && !std::filesystem::is_directory(lintSourceRoot)) {
+            if (jsonDiag)
+                cajeta::emitJsonDiagnostic("error", "source-root",
+                                           "not a directory: " + lintSourceRoot);
+            else
+                std::cerr << "cajeta: --source-root not a directory: "
+                          << lintSourceRoot << "\n";
+            return 1;
+        }
+        // Collect-and-continue: recoverable semantic errors report to the engine
+        // (multiple, located) instead of aborting; un-migrated throw sites are
+        // caught and folded in. All emitted at the end (diagnostic-engine-spec).
+        cajeta::DiagnosticEngine engine;
+        cajeta::DiagnosticEngine::setActive(&engine);
+        try {
+            compiler.lint(lintFile, lintSourceRoot, lintShadow);
+        } catch (cajeta::SyntaxErrorException&) {
+            cajeta::DiagnosticEngine::setActive(nullptr);
+            return 1;  // syntax diagnostics already emitted during parsing
+        } catch (cajeta::Exception& e) {
+            engine.report("error", e.getErrorId(), e.getMessage(),
+                          e.getFile(), e.getLine(), e.getColumn());
+        } catch (const std::exception& e) {
+            engine.report("error", "", e.what());
+        }
+        cajeta::DiagnosticEngine::setActive(nullptr);
+        engine.emit(jsonDiag);
+        return engine.hasErrors() ? 1 : 0;
     }
 
     if (positional.size() < 3) {
@@ -553,9 +638,12 @@ int main(int argc, const char* argv[]) {
     bool jsonDiag = compiler.getFlags().diagFormat == DiagFormat::Json;
     try {
         compiler.compile(positional[0], positional[1], positional[2]);
+    } catch (cajeta::SyntaxErrorException&) {
+        // Per-error syntax diagnostics were already emitted during parsing
+        // (NDJSON or console); fail the compile without re-reporting.
+        return 1;
     } catch (cajeta::Exception& e) {
-        if (jsonDiag) cajeta::emitJsonDiagnostic("error", e.getErrorId(), e.getMessage());
-        else std::cerr << "cajeta: " << e.getErrorId() << ": " << e.getMessage() << "\n";
+        emitException(e, jsonDiag);
         return 1;
     } catch (const std::exception& e) {
         if (jsonDiag) cajeta::emitJsonDiagnostic("error", "", e.what());

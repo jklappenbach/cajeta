@@ -2,6 +2,7 @@
 
 #include "cajeta/buildtool/Action.h"
 #include "cajeta/buildtool/ArtifactCache.h"
+#include "cajeta/buildtool/DiagnosticFormat.h"
 #include "cajeta/buildtool/InitTemplates.h"
 #include "cajeta/buildtool/JsonC.h"
 #include "cajeta/buildtool/Lockfile.h"
@@ -57,6 +58,14 @@ namespace cajeta::buildtool {
             if (arg.compare(0, prefix.size(), prefix) != 0) return false;
             value = std::string(arg.substr(prefix.size()));
             return true;
+        }
+
+        // Apply a `--diag-format=text|json` value to the process-wide diagnostic
+        // format (json-diagnostics-spec §2). Returns false on an invalid value.
+        bool applyDiagFormatArg(const std::string& value) {
+            if (value == "json") { setDiagnosticFormat(DiagFormat::Json); return true; }
+            if (value == "text") { setDiagnosticFormat(DiagFormat::Text); return true; }
+            return false;
         }
 
         // `cajeta info` — loads the manifest, optionally resolves
@@ -1202,6 +1211,12 @@ namespace cajeta::buildtool {
                     overrides.flavor = value;
                 } else if (match(arg, "profile", value)) {
                     overrides.profile = value;
+                } else if (match(arg, "diag-format", value)) {
+                    if (!applyDiagFormatArg(value)) {
+                        std::cerr << "cajeta " << taskName
+                                  << ": --diag-format must be text|json\n";
+                        return 1;
+                    }
                 } else {
                     std::cerr << "cajeta " << taskName
                               << ": unknown argument '" << arg << "'\n";
@@ -1887,6 +1902,12 @@ namespace cajeta::buildtool {
                     memberFilter = std::move(value);
                 } else if (match(arg, "manifest", value)) {
                     explicitRoot = std::move(value);
+                } else if (match(arg, "diag-format", value)) {
+                    if (!applyDiagFormatArg(value)) {
+                        std::cerr << "cajeta workspace " << taskName
+                                  << ": --diag-format must be text|json\n";
+                        return 1;
+                    }
                 } else {
                     std::cerr << "cajeta workspace " << taskName
                               << ": unknown argument '" << arg << "'\n";
