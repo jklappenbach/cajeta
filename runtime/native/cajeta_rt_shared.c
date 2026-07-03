@@ -175,3 +175,52 @@ int __cajeta_shared_owner_drop(void* base) {
     }
     return __cajeta_shared_release(base);
 }
+
+// Zero-copy String.substring (slice-spec §7.1; slices plan 2.2.1). Builds a
+// mode-2 WINDOWED view: `bytes` stays the ROOT array header (bounds checks
+// remain valid), the window's byte offset rides the otherwise-unused ssoCount
+// field, and readers add `off = (mode==2) ? (int32) ssoCount : 0`.
+//   SSO source        -> materialized owned copy (never view a wrapper's
+//                        inline region — §8.3 invariant).
+//   mode-0 source     -> promote(root, 2): owner + this view.
+//   mode-2 source     -> retain(root); offsets accumulate (chained substrings
+//                        attribute to the root).
+//   mode-1 source     -> no rc (a static/borrowed root is never written; the
+//                        release at drop no-ops on unregistered roots).
+void* __cajeta_string_slice(void* src_v, int32_t begin, int32_t len) {
+    cajeta_string_layout* src = (cajeta_string_layout*) src_v;
+    cajeta_string_layout* out =
+        (cajeta_string_layout*) __cajeta_alloc(sizeof(cajeta_string_layout));
+    out->vtable = src->vtable;
+    out->cachedCpLength = -1;
+    out->ssoCount = 0;
+    memset(out->ssoData, 0, sizeof out->ssoData);
+    if (len <= 0 || src->bytes == NULL) {
+        out->bytes = NULL;
+        out->byteLength = 0;
+        out->mode = 0;
+        return out;
+    }
+    int32_t srcOff = (src->mode == 2) ? (int32_t) src->ssoCount : 0;
+    if (src->bytes == (void*) &src->ssoCount) {
+        void* buf = __cajeta_new_array_header(8, 1, (uint64_t) len + 1);
+        *((int64_t*) buf) = len;
+        memcpy((char*) buf + 8, (char*) src->bytes + 8 + begin, (size_t) len);
+        ((char*) buf)[8 + len] = 0;
+        out->bytes = buf;
+        out->byteLength = len;
+        out->mode = 0;
+        return out;
+    }
+    void* root = src->bytes;
+    if (src->mode == 0) {
+        __cajeta_shared_promote(root, 2);
+    } else if (src->mode == 2) {
+        __cajeta_shared_retain(root);
+    }
+    out->bytes = root;
+    out->byteLength = len;
+    out->mode = 2;
+    out->ssoCount = (int64_t) (srcOff + begin);
+    return out;
+}

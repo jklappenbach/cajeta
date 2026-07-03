@@ -1135,6 +1135,14 @@ void __cajeta_string_drop(void* s) {
     // (freed with the wrapper); view strings (mode 1) borrow their bytes.
     if (mode == 0 && bytes != NULL && bytes != (void*) &str->ssoCount) {
         __cajeta_free_array(bytes);
+    } else if (mode == 2 && bytes != NULL) {
+        // Windowed view (slice-spec §7.1): this wrapper holds one stake on the
+        // root buffer; free it only as the last stake (static roots no-op).
+        int __cajeta_shared_release(void* base);
+        if (__cajeta_shared_release(bytes)) {
+            __cajeta_poison_buffer(bytes);
+            free(bytes);
+        }
     }
     __cajeta_poison_buffer(s);
     free(s);

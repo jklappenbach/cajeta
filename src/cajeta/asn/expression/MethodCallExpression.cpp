@@ -2580,12 +2580,20 @@ namespace cajeta {
                 // (data at header+8, same ABI as loadU64) and calls the runtime
                 // __cajeta_hash_bytes. Backs String.hash(); len<=0 is the empty-
                 // input hash (the runtime clamps negative len to 0).
-                if (ns == "Cajeta" && methodCallName == "hashBytes" && parameters.size() == 2) {
+                if (ns == "Cajeta" && methodCallName == "hashBytes"
+                        && (parameters.size() == 2 || parameters.size() == 3)) {
                     auto* i8Ty = builder->getInt8Ty();
                     llvm::Value* hdr = loadValue(0);
-                    llvm::Value* len = loadValue(1);
+                    // 3-arg form: (buf, off, len) — off is the window start for
+                    // mode-2 sliced strings (slice-spec §7.1); 2-arg keeps off=0.
+                    const bool hasOff = parameters.size() == 3;
+                    llvm::Value* len = loadValue(hasOff ? 2 : 1);
                     llvm::Value* data = builder->CreateGEP(
                         i8Ty, hdr, builder->getInt64(8), "hash_data");
+                    if (hasOff) {
+                        llvm::Value* off = loadValue(1);
+                        data = builder->CreateGEP(i8Ty, data, off, "hash_win");
+                    }
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_hash_bytes");
                     resolvedType = CajetaType::of("int64");
                     return builder->CreateCall(fn, {data, len});
@@ -2614,6 +2622,23 @@ namespace cajeta {
                         module->getRuntimeFunction("__cajeta_new_array_header_uninit");
                     resolvedType = arrTy;
                     return builder->CreateCall(allocFn, {headerSize, elemSize, count});
+                }
+                // stringSlice(String s, int32 begin, int32 len) -> String: the
+                // zero-copy substring core (slice-spec §7.1) — builds a mode-2
+                // windowed view over s's root buffer (promote/retain per the
+                // source's mode; SSO sources materialize). Runtime does all
+                // construction; the wrapper is live-set tracked and owned by
+                // the caller.
+                if (ns == "Cajeta" && methodCallName == "stringSlice" && parameters.size() == 3) {
+                    auto* i32Ty = builder->getInt32Ty();
+                    llvm::Value* s = loadValue(0);
+                    llvm::Value* b = loadValue(1);
+                    if (b->getType() != i32Ty) b = builder->CreateIntCast(b, i32Ty, true);
+                    llvm::Value* l = loadValue(2);
+                    if (l->getType() != i32Ty) l = builder->CreateIntCast(l, i32Ty, true);
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_string_slice");
+                    resolvedType = CajetaType::of("String", "cajeta.lang");
+                    return builder->CreateCall(fn, {s, b, l});
                 }
                 // moveMask() -> int64: the caller-side ownership-transfer mask for
                 // THIS call (bit i set iff user-arg i was passed `#x`). Read once at

@@ -1782,6 +1782,34 @@ namespace cajeta {
                                 return { true, iv, buf, len };
                             }
                         }
+                        if (isClassStringType(vt) && stringStructTy) {
+                            // Direct (bytes+8+off, byteLength): a mode-2 windowed
+                            // view (slice-spec §7.1) has no NUL at its window end,
+                            // so the strlen path would over-read into the root.
+                            llvm::Value* bytesPtr = builder->CreateLoad(
+                                builder->getPtrTy(),
+                                builder->CreateStructGEP(stringStructTy, v, 1,
+                                    "cat.bytes"));
+                            llvm::Value* blen = builder->CreateLoad(i32Ty,
+                                builder->CreateStructGEP(stringStructTy, v, 2,
+                                    "cat.blen"));
+                            llvm::Value* mode = builder->CreateLoad(i32Ty,
+                                builder->CreateStructGEP(stringStructTy, v, 3,
+                                    "cat.mode"));
+                            llvm::Value* sso = builder->CreateLoad(i64Ty,
+                                builder->CreateStructGEP(stringStructTy, v, 5,
+                                    "cat.sso"));
+                            llvm::Value* off = builder->CreateSelect(
+                                builder->CreateICmpEQ(mode,
+                                    llvm::ConstantInt::get(i32Ty, 2)),
+                                sso, llvm::ConstantInt::get(i64Ty, 0), "cat.off");
+                            llvm::Value* data = builder->CreateGEP(i8Ty, bytesPtr,
+                                builder->getInt64(8), "cat.base");
+                            data = builder->CreateGEP(i8Ty, data, off, "cat.data");
+                            llvm::Value* lenI64 = builder->CreateIntCast(
+                                blen, i64Ty, /*isSigned=*/false, "cat.len");
+                            return { false, nullptr, data, lenI64 };
+                        }
                         llvm::Value* cstr = stringify(v, vt);
                         llvm::Value* len = builder->CreateCall(strlenFn, {cstr}, "concat.clen");
                         return { false, nullptr, cstr, len };
