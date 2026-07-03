@@ -930,3 +930,61 @@ TEST(RecordTests, mutRemainsUsableAsIdentifier) {
         "}\n";
     EXPECT_EQ(runI32(src), 42);
 }
+
+// ---------------------------------------------------------------------
+// Unit 7 — schema reflectability (plan §7; spec 6.1–6.4)
+// ---------------------------------------------------------------------
+
+// 7.1.1 — Class<Point> enumerates field NAMES and TYPE flags in declared
+// order (count/offset/size were pinned in Unit 1's reflectionFieldOffsetZero).
+TEST(RecordTests, reflectionEnumeratesFieldNamesAndTypes) {
+    auto src = std::string(kPointSrc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Class<Point> c = Point.class;\n"
+        "        String f0 = c.getFieldName(0);\n"
+        "        String f1 = c.getFieldName(1);\n"
+        "        int64 t0 = c.getFieldTypeFlags(0);\n"
+        "        int32 r = 0;\n"
+        "        if (f0 == \"x\") { r = r + 1; }\n"
+        "        if (f1 == \"y\") { r = r + 10; }\n"
+        "        if ((t0 & 1) != 0) { r = r + 100; }\n"  // primitive bit (float64)
+        "        return r;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 111);
+}
+
+// 7.1.2 — a record used as a type argument exposes its field set INSIDE the
+// instantiation: Box<Tick> reflects over T's fields. DISABLED: `T.class`
+// inside a template body does not resolve the substituted type argument —
+// ClassLiteralExpression::resolveTypes (Expression.cpp) looks `namedTypeName`
+// up in canonicalMap ONLY and never consults the module's active type-
+// substitution stack, so `T` stays unresolved and generateCode throws
+// CAJETA_ERROR_CLASS_LITERAL. Template-GENERIC gap, not record-specific:
+// a plain class type argument fails identically (records ARE registered
+// "identically to classes" — 7.2.1 holds). Pending scoping.
+TEST(RecordTests, DISABLED_recordTypeArgumentReflectsInsideInstantiation) {
+    auto src =
+        "package test;\n"
+        "public record RfTick {\n"
+        "    float64 price;\n"
+        "    int32 volume;\n"
+        "}\n"
+        "public class Box<T> {\n"
+        "    public int32 probe() {\n"
+        "        Class<T> c = T.class;\n"
+        "        int32 r = c.getFieldCount();\n"
+        "        String f0 = c.getFieldName(0);\n"
+        "        if (f0 == \"price\") { r = r + 100; }\n"
+        "        return r;\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box<RfTick> b = heap Box<RfTick>();\n"
+        "        return b.probe();\n"  // 2 + 100
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 102);
+}
