@@ -1,5 +1,18 @@
 # `cajeta.lang.String` — immutable UTF-8 text
 
+> **AMENDED (2026-07-03, [`slice-spec.md`](slice-spec.md) §7–§8):** `substring` (and `trim`)
+> are now **zero-copy**: they return a **mode-2 windowed view** — `bytes` stays the ROOT array
+> header (bounds checks stay valid), the window's byte offset rides the otherwise-unused
+> `ssoCount` field, and every reader computes `off = (mode==2) ? (int32) ssoCount : 0`. The
+> root buffer is co-owned via the `shared` state (one stake per wrapper), freed exactly once
+> at the last stake; literal roots are static (no counting); SSO sources materialize (never a
+> view into a wrapper's inline region). The legacy `const char*` runtime ABI sees the window
+> via `__cajeta_string_cstr` (mode-2 materializes into a per-thread scratch). `mode` is now
+> 0 = owned, 1 = static view, **2 = windowed shared view**. `clone()` on a windowed String
+> **detaches** (materializes the window — the retention valve). The 16-byte `Utf8` value type
+> (`Utf8.cajeta`, Inline form shipped) is the record-field text carrier; the full String
+> re-core over the tagged union is staged as slices-plan Unit 6c.
+
 Single source of truth for the String surface in Cajeta. Captures
 the 2026-05-18 design pass with the user (15 questions + tidy-up),
 annotated against what has since shipped.

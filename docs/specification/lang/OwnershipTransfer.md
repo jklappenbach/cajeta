@@ -1,5 +1,14 @@
 # Ownership Transfer at Call Sites
 
+> **AMENDED (2026-07-03, [`slice-spec.md`](slice-spec.md) §9):** with the `shared` state, `#`
+> transfers an **owning stake** — formerly always *the unique* ownership, now possibly one
+> stake among co-owners of an immutable slice backing. A `#`-move is **rc-neutral** (memcpy +
+> source-drop deactivation, no count traffic — a codegen path distinct from copy). Everything
+> below is unchanged in shape; read "ownership" as "stake." `#` remains the zero-cost escape
+> path (`list.add(#s)` costs neither a copy nor a count); the explicit trichotomy is borrow
+> (`=`) / move (`#`) / copy-detach (`clone()`), and **share has no spelling** — it is
+> exclusively a compiler-inserted resolution.
+
 > **Status.** Phases 1–3a (caller-side `#x` syntax, the `(#T, x)` rejection,
 > and the body-side return/re-transfer escape check) are **shipped**:
 > `CAJETA_ERROR_TRANSFER_REQUIRED` and `CAJETA_ERROR_BORROW_PARAM_ESCAPES`
