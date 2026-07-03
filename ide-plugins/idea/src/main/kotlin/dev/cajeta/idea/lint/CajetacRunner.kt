@@ -55,16 +55,16 @@ object CajetacRunner {
         }
     }
 
+    /** The single-file lint invocation: `cajeta --lint <file> --diag-format=json`
+     *  (compiler-lint-mode spec §4). Runs the diagnostic passes on one file with
+     *  no codegen/emit/entry-method — unlike a full compile, which needs three
+     *  positionals and would just print usage. */
+    internal fun lintArgv(compilerPath: String, file: String): List<String> =
+        listOf(compilerPath, "--lint", file, "--diag-format=json")
+
     private fun runCompiler(compilerPath: String, file: Path): String? {
         return try {
-            // --emit=ir keeps it cheap (no linker / native codegen) while still
-            // running the diagnostic passes; --diag-format=json makes stderr NDJSON.
-            val args = listOf(
-                compilerPath,
-                "--emit=ir",
-                "--diag-format=json",
-                file.toString(),
-            )
+            val args = lintArgv(compilerPath, file.toString())
             val pb = ProcessBuilder(args).redirectErrorStream(false)
             val process = pb.start()
             process.outputStream.close()

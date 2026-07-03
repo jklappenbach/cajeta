@@ -50,4 +50,15 @@ class CajetacRunnerTest {
         val stderr = "Compiling module p…\ncajeta: done\n"
         assertTrue(CajetacRunner.parseDiagnostics(stderr, buffer).isEmpty())
     }
+
+    @Test
+    fun lintArgvUsesLintModeNotFullCompile() {
+        // compiler-lint-mode U2: the runner drives the single-file `--lint`
+        // mode, not `--emit=ir` + a bare positional (which the compiler rejects).
+        val argv = CajetacRunner.lintArgv("/usr/bin/cajeta", "/tmp/Buf.cajeta")
+        assertEquals(
+            listOf("/usr/bin/cajeta", "--lint", "/tmp/Buf.cajeta", "--diag-format=json"),
+            argv,
+        )
+    }
 }
