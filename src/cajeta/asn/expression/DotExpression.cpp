@@ -350,6 +350,17 @@ namespace cajeta {
             };
         gatherProps(klass);
         if (allMatches.empty()) {
+            // A value-type (record / @ValueType) receiver has no static/
+            // package/late-bound member surface — an unmatched name is a
+            // field typo, not something a later resolution pass can claim
+            // (records-spec §5.2). Reference classes keep the silent
+            // fall-through their qualified-name resolution relies on.
+            if (klass->isValueType()) {
+                throw cajeta::Exception(
+                    "'" + klass->getQName()->toCanonical()
+                        + "' has no field '" + identifier + "'",
+                    "CAJETA_ERROR_UNKNOWN_FIELD");
+            }
             return nullptr;
         }
         // Self-shadow resolves ambiguity. Take the receiver class's

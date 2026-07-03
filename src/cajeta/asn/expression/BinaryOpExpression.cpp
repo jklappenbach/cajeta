@@ -1315,6 +1315,40 @@ namespace cajeta {
                         break;
                     }
                 }
+                // Value-type (record / @ValueType) FIELD assignment
+                // (`this.p = e`). The field stores the aggregate INLINE
+                // (CajetaClass::buildInstanceStructBody), while the RHS is
+                // usually an ADDRESS (aggregate-init alloca, value local
+                // slot, field-read GEP) — a plain store would write the
+                // pointer bits over the first field. Copy the whole body;
+                // a first-class struct value (by-value return) stores
+                // directly.
+                if (dynamic_pointer_cast<DotExpression>(lhsAst)) {
+                    if (!lhsAst->getResolvedType()) lhsAst->resolveTypes(module);
+                    auto lhsCls = dynamic_pointer_cast<CajetaClass>(lhsAst->getResolvedType());
+                    if (lhsCls && lhsCls->isValueType()
+                            && !lhsCls->isInterface()
+                            && !dynamic_pointer_cast<CajetaView>(lhsAst->getResolvedType())) {
+                        llvm::Type* bodyTy = lhsCls->getLlvmType();
+                        if (bodyTy && bodyTy->isStructTy()) {
+                            if (rhs->getType() == bodyTy) {
+                                builder->CreateStore(rhs, lhs);
+                            } else if (rhs->getType()->isPointerTy()) {
+                                const llvm::DataLayout& dl =
+                                    module->getLlvmModule()->getDataLayout();
+                                llvm::Value* size = llvm::ConstantInt::get(
+                                    llvm::Type::getInt64Ty(*module->getLlvmContext()),
+                                    dl.getTypeAllocSize(bodyTy));
+                                llvm::Align align(dl.getABITypeAlign(bodyTy));
+                                builder->CreateMemCpy(lhs, align, rhs, align, size);
+                            } else {
+                                builder->CreateStore(rhs, lhs);
+                            }
+                            result = lhs;
+                            break;
+                        }
+                    }
+                }
                 // Interface-typed FIELD assignment (`this.enc = e`). An
                 // interface field stores the 24-byte {data, vtable, kind}
                 // body INLINE in the parent struct (S9.5.4 / CajetaClass::

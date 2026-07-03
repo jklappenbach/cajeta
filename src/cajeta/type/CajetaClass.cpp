@@ -838,6 +838,14 @@ namespace cajeta {
                 if (cls->isInterface()) {
                     return t->getLlvmType();  // inline 24-byte fat pointer
                 }
+                // Value-type (record / @ValueType) field: inline value
+                // sub-aggregate — no pointer slot, no heap aliasing
+                // (records-spec §2.5.2/2.6). Reads skip the load-through via
+                // DotExpression's lhsIsValueType guard; drop's field walk
+                // already skips no-vtable field classes.
+                if (cls->isValueType()) {
+                    return t->getLlvmType();
+                }
                 return llvm::PointerType::get(*lctx, 0);
             }
             return t->getLlvmType();
