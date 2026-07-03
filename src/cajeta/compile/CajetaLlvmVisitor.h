@@ -478,6 +478,15 @@ namespace cajeta {
                 }
                 bool isObject = structure->getQName()->toCanonical()
                               == "cajeta.lang.Object";
+                // @AutoHash (and @Data / @Value, which imply it) synthesize a
+                // structural hash() — but only later, in tryGeneratePrototype's
+                // synthesizeAutoHash(). This check runs before that, so treat
+                // the annotation itself as satisfying hash().
+                if (structure->findAnnotation("AutoHash")
+                        || structure->findAnnotation("Data")
+                        || structure->findAnnotation("Value")) {
+                    hasHash = true;
+                }
                 // Reject `operator!=` declared without `operator==` —
                 // != derives from == automatically. Standalone != is
                 // almost always a bug (forgot to define == too).
