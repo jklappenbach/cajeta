@@ -300,6 +300,25 @@ TEST(LintMode, UnresolvedTypeCarriesLineAndColumn) {
         << "unresolved-type diagnostic must carry its 1-based column; stderr:\n" << err;
 }
 
+// Regression (review finding): a file that declares a package must not leak the
+// package-path-mismatch plain-text error into the NDJSON stream. Its lint/temp
+// path can't match the declared package, but that's a false positive for a
+// staged buffer — the whole stream must stay machine-parseable.
+TEST(LintMode, PackagedFileEmitsNoTextLeak) {
+    auto file = writeFile(freshTempDir("pkg"), "int32 x = 1;");  // clean, `package demo;`
+    std::string err;
+    int rc = lintCapturingStderr(file, "--diag-format=json", err);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_EQ(rc, 0) << err;
+    std::istringstream ss(err);
+    std::string line;
+    int leak = 0;
+    while (std::getline(ss, line))
+        if (!line.empty() && line[0] != '{') leak++;
+    EXPECT_EQ(leak, 0) << "plain text leaked into the json stream:\n" << err;
+}
+
 // diagnostic-engine 3.1.1 — multiple independent semantic errors all report,
 // each located, instead of aborting after the first.
 TEST(LintMode, MultipleUnresolvedTypesAllReported) {
@@ -328,6 +347,8 @@ TEST(LintMode, MultipleUnresolvedTypesAllReported) {
     size_t n = 0, pos = 0;
     while ((pos = err.find("\"severity\":\"error\"", pos)) != std::string::npos) { n++; pos++; }
     EXPECT_EQ(n, 2u) << "expected exactly two errors; stderr:\n" << err;
+    EXPECT_TRUE(everyNonEmptyLineIsJson(err))
+        << "stream must be pure NDJSON (no text leak):\n" << err;
 }
 
 // diagnostic-engine 5.1 — a SEMANTICALLY broken sibling (its own body has an

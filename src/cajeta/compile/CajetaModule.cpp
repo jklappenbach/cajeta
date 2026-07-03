@@ -8,6 +8,7 @@
 #include <utility>
 #include "llvm/TargetParser/Triple.h"
 #include "../error/Exception.h"
+#include "../error/DiagnosticEngine.h"
 
 #include "CajetaModule.h"
 #include "../logging/CajetaLogger.h"
@@ -262,6 +263,13 @@ namespace cajeta {
         }
 
         if (qName->getPackageName() != packageName) {
+            // Under lint (an active DiagnosticEngine), the file's disk path is not
+            // authoritative — it may be a staged, unsaved buffer whose temp path
+            // can't match its declared package. Skip the check rather than leak a
+            // false-positive plain-text error into the NDJSON stream. (Full
+            // compile keeps validating; routing it through the engine is part of
+            // the full-compile collect-and-continue sub-phase.)
+            if (DiagnosticEngine::active()) return;
             string message = "Declared package name " + packageName + " must match the compilation unit path of " +
                 qName->getPackageName();
             CajetaLogger::log(ERROR, ctx, "CAJETA_ERROR_PACKAGE_MISMATCH", sourcePath, message);
