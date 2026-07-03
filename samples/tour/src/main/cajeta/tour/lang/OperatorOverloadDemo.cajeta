@@ -35,6 +35,8 @@ import tour.Counter;
 
 // 2-D vector with the canonical static-operator surface. Compare to
 // any C# / Rust / Scala Vec2 — same shape, different syntax skin.
+// @AutoHash keeps hash() structural, matching operator== (HashMap keys).
+@AutoHash
 public class Vec2 {
     public int32 x;
     public int32 y;

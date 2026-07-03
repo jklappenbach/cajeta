@@ -55,7 +55,7 @@ public class HashDemo extends DemoClass {
         //    multiple keys / a wide stream from one hash.
         int8[] wide = heap int8[64];
         Blake3.hashXof(bytes, len, wide);
-        #int8[] digest = Blake3.hash(bytes, len);
+        int8[] digest = Blake3.hash(bytes, len);
         boolean prefixMatches = true;
         int32 i = 0;
         while (i < 32) {
