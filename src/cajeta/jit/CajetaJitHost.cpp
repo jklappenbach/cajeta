@@ -189,24 +189,34 @@ BuiltJit buildJit(const JitRunOptions& opts) {
     cajeta::CajetaModule::setActiveProfile("debug");
     cajeta::CajetaModule::resolveDependencyGraph();
 
-    // Phase 1 (signatures) + Phase 2 (bodies) to quiescence.
-    size_t prevMethodCount = 0;
-    while (true) {
-        size_t methodCount = 0;
-        for (auto& m : compiler->getModules()) methodCount += m->getAllMethods().size();
-        for (auto& m : compiler->getModules())
-            for (auto& method : m->getAllMethods()) method->getLlvmFunctionType();
-        for (auto& m : compiler->getModules())
-            for (auto& method : m->getAllMethods()) method->generateCode();
-        size_t after = 0;
-        for (auto& m : compiler->getModules()) after += m->getAllMethods().size();
-        if (after == methodCount && after == prevMethodCount) break;
-        prevMethodCount = after;
-    }
+    // Phase 1 (signatures) + Phase 2 (bodies) to quiescence. Codegen-phase
+    // diagnostics (immutable-field writes, unknown with(...) labels, …)
+    // throw from generateCode — report them like parse-phase errors instead
+    // of escaping to std::terminate.
+    try {
+        size_t prevMethodCount = 0;
+        while (true) {
+            size_t methodCount = 0;
+            for (auto& m : compiler->getModules()) methodCount += m->getAllMethods().size();
+            for (auto& m : compiler->getModules())
+                for (auto& method : m->getAllMethods()) method->getLlvmFunctionType();
+            for (auto& m : compiler->getModules())
+                for (auto& method : m->getAllMethods()) method->generateCode();
+            size_t after = 0;
+            for (auto& m : compiler->getModules()) after += m->getAllMethods().size();
+            if (after == methodCount && after == prevMethodCount) break;
+            prevMethodCount = after;
+        }
 
-    for (auto& m : compiler->getModules())
-        for (auto& [name, klass] : m->getStructures())
-            if (klass) klass->generateStaticInitializers();
+        for (auto& m : compiler->getModules())
+            for (auto& [name, klass] : m->getStructures())
+                if (klass) klass->generateStaticInitializers();
+    } catch (cajeta::Exception& e) {
+        std::cerr << "cajeta jit: [" << e.getErrorId() << "] "
+                  << e.getMessage() << "\n";
+        out.errorCode = 1;
+        return out;
+    }
 
     // REFL-2 — fill the reflective invoke-adapter bodies + finalize/register
     // #ClassObjects now that every method's LLVM function exists. Mirrors

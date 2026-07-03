@@ -113,6 +113,8 @@ typedef void (*cajeta_ctor_fn)(void* self);
 // grouped behind the cajeta_xpu.c module aggregator.
 // ===========================================================================
 #include "cajeta_rt_core.c"
+#include "cajeta_rt_shared.c"
+#include "cajeta_rt_utf8.c"
 #include "cajeta_rt_concurrent_exec.c"
 #include "cajeta_rt_concurrent_sync.c"
 #include "cajeta_rt_vtable_reflect.c"

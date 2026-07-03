@@ -8,6 +8,7 @@
 #include "CajetaParserVisitor.h"
 #include "CajetaLexer.h"
 #include "cajeta/type/CajetaClass.h"
+#include "cajeta/type/CajetaArray.h"
 #include "cajeta/type/CajetaView.h"
 #include "cajeta/type/CajetaView.h"
 #include <any>
@@ -19,6 +20,7 @@
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/asn/ClassBodyDeclaration.h"
 #include "cajeta/asn/AnnotationParser.h"
+#include "cajeta/compile/Compiler.h"
 #include "cajeta/error/Exception.h"
 
 
@@ -92,6 +94,109 @@ namespace cajeta {
             }
         }
 
+        // Records have structural equality (records-spec §2.5.3): synthesize a
+        // static field-wise `operator==` when the user didn't declare one.
+        // Same fragment-parse pipeline as synthesizeLoggerField (and the same
+        // deliberate ANTLR-pipeline leak — the AST holds token pointers).
+        // Nested record fields are flattened to primitive-leaf compares
+        // (`a.i.x == b.i.x`) rather than dispatching the inner operator== —
+        // a value-type FIELD passed as a by-value operator arg currently
+        // marshals as a pointer and trips the JIT verifier. `!=` derives
+        // automatically.
+        // Parents of a class-like during the visit pass: superClasses when
+        // already resolved, else the declared extends names via canonicalMap
+        // (resolveSuperClasses hasn't run yet at synthesis time).
+        static std::vector<CajetaClassPtr> resolvedParentsOf(
+                const CajetaClassPtr& cls) {
+            std::vector<CajetaClassPtr> out;
+            if (!cls) return out;
+            if (!cls->getSuperClasses().empty()) {
+                for (auto& s : cls->getSuperClasses()) if (s) out.push_back(s);
+                return out;
+            }
+            auto& cmap = CajetaType::getCanonicalMap();
+            for (auto& qn : cls->getQExtended()) {
+                if (!qn) continue;
+                auto it = cmap.find(qn->toCanonical());
+                if (it == cmap.end()) it = cmap.find(qn->getTypeName());
+                if (it == cmap.end() || !it->second) continue;
+                if (auto c = std::dynamic_pointer_cast<CajetaClass>(it->second)) {
+                    out.push_back(c);
+                }
+            }
+            return out;
+        }
+
+        void appendRecordFieldCompares(const string& pathA, const string& pathB,
+                const CajetaClassPtr& cls, string& expr) {
+            // Inherited record fields first — mirrors the flat layout's
+            // ancestor-prefix order; access paths stay flat (a.f resolves
+            // inherited fields via the super walk).
+            for (auto& sup : resolvedParentsOf(cls)) {
+                appendRecordFieldCompares(pathA, pathB, sup, expr);
+            }
+            for (auto& prop : cls->getPropertyList()) {
+                if (!prop || prop->isStatic()) continue;
+                auto ft = prop->getType();
+                // Inline array field (int8[12] etc.): expand per-element —
+                // `==` on the array itself would pointer-compare the GEPs.
+                if (auto arr = std::dynamic_pointer_cast<CajetaArray>(ft)) {
+                    if (arr->isInlineArray()) {
+                        for (int32_t i = 0; i < arr->getFixedLength(); ++i) {
+                            if (!expr.empty()) expr += " && ";
+                            string elem = "." + prop->getName()
+                                + "[" + std::to_string(i) + "]";
+                            expr += pathA + elem + " == " + pathB + elem;
+                        }
+                        continue;
+                    }
+                }
+                auto fieldClass = std::dynamic_pointer_cast<CajetaClass>(ft);
+                if (fieldClass && ft
+                        && (ft->getTypeFlags() & VALUE_TYPE_FLAG)
+                        && !fieldClass->getPropertyList().empty()) {
+                    appendRecordFieldCompares(
+                        pathA + "." + prop->getName(),
+                        pathB + "." + prop->getName(), fieldClass, expr);
+                    continue;
+                }
+                if (!expr.empty()) expr += " && ";
+                expr += pathA + "." + prop->getName() + " == "
+                    + pathB + "." + prop->getName();
+            }
+        }
+
+        void synthesizeRecordEquality(CajetaClassPtr structure) {
+            for (auto& kv : structure->getMethods()) {
+                if (kv.second && kv.second->getName() == "operator==") return;
+            }
+            string typeName = structure->getQName()->getTypeName();
+            string expr;
+            appendRecordFieldCompares("a", "b", structure, expr);
+            if (expr.empty()) return;
+            string src = "{ public static boolean operator== (" + typeName
+                + " a, " + typeName + " b) { return " + expr + "; } }";
+            auto* input = new antlr4::ANTLRInputStream(src);
+            auto* lexer = new CajetaLexer(input);
+            auto* tokens = new antlr4::CommonTokenStream(lexer);
+            tokens->fill();
+            auto* parser = new CajetaParser(tokens);
+            auto* body = parser->classBody();
+            for (auto* cbd : body->classBodyDeclaration()) {
+                MemberDeclarationPtr mem;
+                try {
+                    mem = std::any_cast<MemberDeclarationPtr>(
+                        visitClassBodyDeclaration(cbd));
+                } catch (ReuseHazardAbort&) {
+                    throw;  // reuse rollback must reach the compile driver
+                } catch (...) { continue; }
+                if (auto methodDecl =
+                        std::dynamic_pointer_cast<MethodDeclaration>(mem)) {
+                    methodDecl->updateParent(structure);
+                }
+            }
+        }
+
         virtual std::any visitCompilationUnit(CajetaParser::CompilationUnitContext* ctx) override {
             pModule->onPackageDeclaration(ctx->packageDeclaration());
             for (auto& importDeclarationContext: ctx->importDeclaration()) {
@@ -131,8 +236,27 @@ namespace cajeta {
         }
 
         virtual std::any visitClassDeclaration(CajetaParser::ClassDeclarationContext* ctx) override {
+            return std::any(buildClassLike(ctx, ctx->identifier()->getText(),
+                ctx->typeParameters(), ctx->EXTENDS(), ctx->IMPLEMENTS(),
+                ctx->PERMITS(), ctx->typeList(), /*isRecord=*/false));
+        }
+
+        virtual std::any visitRecordDeclaration(CajetaParser::RecordDeclarationContext* ctx) override {
+            return std::any(buildClassLike(ctx, ctx->identifier()->getText(),
+                ctx->typeParameters(), ctx->EXTENDS(), ctx->IMPLEMENTS(),
+                nullptr, ctx->typeList(), /*isRecord=*/true));
+        }
+
+        // Shared builder for class-like declarations (class / record).
+        CajetaClassPtr buildClassLike(antlr4::ParserRuleContext* ctx,
+                const string& name,
+                CajetaParser::TypeParametersContext* typeParametersCtx,
+                antlr4::tree::TerminalNode* extendsKw,
+                antlr4::tree::TerminalNode* implementsKw,
+                antlr4::tree::TerminalNode* permitsKw,
+                const std::vector<CajetaParser::TypeListContext*>& typeLists,
+                bool isRecord) {
             string packageAdj;
-            string name = ctx->identifier()->getText();
             for (auto& structure: pModule->getStructureStack()) {
                 packageAdj.append(".");
                 packageAdj.append(structure->getQName()->getTypeName());
@@ -153,10 +277,10 @@ namespace cajeta {
             auto kwIdx = [](antlr4::tree::TerminalNode* n) -> ssize_t {
                 return n && n->getSymbol() ? (ssize_t) n->getSymbol()->getTokenIndex() : -1;
             };
-            ssize_t extKw = kwIdx(ctx->EXTENDS());
-            ssize_t implKw = kwIdx(ctx->IMPLEMENTS());
-            ssize_t permKw = kwIdx(ctx->PERMITS());
-            for (auto* tl : ctx->typeList()) {
+            ssize_t extKw = kwIdx(extendsKw);
+            ssize_t implKw = kwIdx(implementsKw);
+            ssize_t permKw = kwIdx(permitsKw);
+            for (auto* tl : typeLists) {
                 ssize_t tlIdx = tl->getStart()
                     ? (ssize_t) tl->getStart()->getTokenIndex() : -1;
                 // Determine which keyword this typeList follows by picking
@@ -262,6 +386,31 @@ namespace cajeta {
             }
             structure->setQImplementedTypeArgs(std::move(qImplementedTypeArgs));
 
+            // record = @ValueType final class with no vtable. Synthesizing the
+            // annotation routes records through every existing @ValueType path
+            // (flags in generatePrototype, POD validation below, template
+            // annotation-carry at instantiation) with no parallel machinery.
+            if (isRecord) {
+                // Interface dispatch needs a vtable/itable; records have
+                // neither (records-spec §2.5.4). Runs for templates too —
+                // the gate fires at declaration, before any instantiation.
+                if (!qImplemented.empty()) {
+                    throw Exception(
+                        "record '" + qName->toCanonical()
+                            + "' cannot implement interface '"
+                            + qImplemented.front()->toCanonical()
+                            + "' — interface dispatch needs a vtable and "
+                              "records have none; use a class",
+                        "CAJETA_ERROR_RECORD_IMPLEMENTS");
+                }
+                structure->setRecordType(true);
+                structure->addModifier(FINAL);
+                if (!structure->findAnnotation("ValueType")) {
+                    structure->addAnnotationInstance(make_shared<AnnotationInstance>(
+                        QualifiedName::getOrInsert("ValueType", "")));
+                }
+            }
+
             // Template parameters — capture name + optional `extends` bounds.
             // Bounds are resolved to QualifiedNamePtrs here so we don't need
             // to hold the parse tree past per-module build. The class becomes
@@ -272,7 +421,7 @@ namespace cajeta {
             // cheap and the result is cached per instantiation. ANTLR context
             // nodes carry parent links to the compilation unit, so pinning a
             // single class would transitively pin the whole file's tree.
-            if (auto* tps = ctx->typeParameters()) {
+            if (auto* tps = typeParametersCtx) {
                 vector<TypeParameter> params;
                 for (auto* tp : tps->typeParameter()) {
                     TypeParameter param(tp->identifier()->getText());
@@ -329,6 +478,16 @@ namespace cajeta {
                     // classOrInterfaceModifier is EITHER an annotation OR a
                     // keyword — annotation() is null for the keyword form.
                     if (!mod->annotation()) {
+                        // `abstract` maps to Modifier::NONE, so gate on the
+                        // raw keyword: an abstract record contradicts the
+                        // no-vtable value model.
+                        if (isRecord && mod->getText() == "abstract") {
+                            throw Exception(
+                                "record '" + qName->toCanonical()
+                                    + "' cannot be abstract — records are "
+                                      "concrete no-vtable value types",
+                                "CAJETA_ERROR_RECORD_ABSTRACT");
+                        }
                         Modifier m = Modifiable::toModifier(mod->getText());
                         if (m != NONE) structure->addModifier(m);
                         continue;
@@ -475,6 +634,17 @@ namespace cajeta {
                     if (mname == "operator==") hasOpEq = true;
                     if (mname == "operator!=") hasOpNe = true;
                     if (mname == "hash")       hasHash = true;
+                    // Records have no vtable: a body-less (abstract/virtual)
+                    // method has nothing to dispatch through (records-spec
+                    // §2.5.4). Template records re-check at instantiation.
+                    if (isRecord && kv.second->isAbstract()) {
+                        throw Exception(
+                            "record '" + qName->toCanonical()
+                                + "' declares abstract method '" + mname
+                                + "' — records have no vtable; every record "
+                                  "method needs a body",
+                            "CAJETA_ERROR_RECORD_ABSTRACT_METHOD");
+                    }
                 }
                 bool isObject = structure->getQName()->toCanonical()
                               == "cajeta.lang.Object";
@@ -567,6 +737,11 @@ namespace cajeta {
             if (!structure->isTemplate() && structure->findAnnotation("Logged")) {
                 synthesizeLoggerField(structure);
             }
+            // Template records synthesize per-instantiation (future work);
+            // the template body walk is skipped so there are no fields here.
+            if (isRecord && !structure->isTemplate()) {
+                synthesizeRecordEquality(structure);
+            }
             // tryGeneratePrototype is the deferred-aware variant: if any
             // superclass / implemented interface is still a placeholder
             // (forward reference whose declaration hasn't been parsed
@@ -596,9 +771,74 @@ namespace cajeta {
                 // template still gets the value-type flags so its instantiations
                 // and array storage are treated by value.
                 if (!structure->isTemplate()) {
-                    if (structure->countInheritedFields() != 0) {
+                    const string kind = isRecord ? "record" : "@ValueType class";
+                    if (isRecord) {
+                        // Static non-virtual inheritance (records-spec §2.6):
+                        // every ancestor must itself be a record (Object, the
+                        // fieldless auto-extend root, is exempt).
+                        std::function<void(const CajetaClassPtr&)> checkAnc =
+                            [&](const CajetaClassPtr& cls) {
+                                for (auto& sup : cls->getSuperClasses()) {
+                                    if (!sup) continue;
+                                    auto qn = sup->getQName();
+                                    bool isObj = qn
+                                        && qn->getTypeName() == "Object"
+                                        && qn->getPackageName() == "cajeta.lang";
+                                    if (isObj) continue;
+                                    if (!sup->isRecordType()) {
+                                        throw Exception(
+                                            "record '" + structure->toCanonical()
+                                                + "' cannot extend '"
+                                                + sup->toCanonical()
+                                                + "' — records may only extend "
+                                                  "records (static, non-virtual "
+                                                  "composition)",
+                                            "CAJETA_ERROR_RECORD_EXTENDS");
+                                    }
+                                    checkAnc(sup);
+                                }
+                            };
+                        checkAnc(structure);
+                        // 4.2.2 add-but-not-redefine: a derived record may not
+                        // override/shadow an inherited instance method (static
+                        // methods — operators, factories — dispatch on the
+                        // static type and are exempt; so are constructors).
+                        for (auto& kv : structure->getMethods()) {
+                            auto& m = kv.second;
+                            if (!m || m->isConstructor()) continue;
+                            if (m->getModifiers().count(STATIC)) continue;
+                            std::function<CajetaClassPtr(const CajetaClassPtr&)>
+                                findShadowed = [&](const CajetaClassPtr& cls)
+                                        -> CajetaClassPtr {
+                                    for (auto& sup : cls->getSuperClasses()) {
+                                        if (!sup || !sup->isRecordType()) continue;
+                                        for (auto& skv : sup->getMethods()) {
+                                            auto& sm = skv.second;
+                                            if (!sm || sm->isConstructor()) continue;
+                                            if (sm->getModifiers().count(STATIC)) continue;
+                                            if (sm->getName() == m->getName()) {
+                                                return sup;
+                                            }
+                                        }
+                                        if (auto hit = findShadowed(sup)) return hit;
+                                    }
+                                    return nullptr;
+                                };
+                            if (auto owner = findShadowed(structure)) {
+                                throw Exception(
+                                    "record '" + structure->toCanonical()
+                                        + "' method '" + m->getName()
+                                        + "' overrides/shadows '"
+                                        + owner->toCanonical() + "." + m->getName()
+                                        + "' — record inheritance is "
+                                          "add-but-not-redefine (overriding is "
+                                          "the vtable line; use a class)",
+                                    "CAJETA_ERROR_RECORD_OVERRIDE");
+                            }
+                        }
+                    } else if (structure->countInheritedFields() != 0) {
                         throw Exception(
-                            "@ValueType class '" + structure->toCanonical()
+                            kind + " '" + structure->toCanonical()
                                 + "' must not inherit fields — value types are flat POD",
                             "CAJETA_ERROR_VALUE_TYPE");
                     }
@@ -612,15 +852,21 @@ namespace cajeta {
                                 || ((ft->getTypeFlags() & VALUE_TYPE_FLAG) != 0));
                         if (!ok) {
                             throw Exception(
-                                "@ValueType field '" + prop->getName()
-                                    + "' must be a primitive, Vector, or another "
-                                      "@ValueType (got a non-POD type)",
+                                kind + " '" + structure->toCanonical()
+                                    + "' field '" + prop->getName()
+                                    + "' must be a value type (primitive, Vector, "
+                                      "record, or @ValueType); '"
+                                    + (ft && ft->getQName()
+                                        ? ft->getQName()->toCanonical()
+                                        : string("<unresolved>"))
+                                    + "' is a reference (heap) type",
                                 "CAJETA_ERROR_VALUE_TYPE");
                         }
                     }
-                    if (!sawField) {
+                    if (!sawField
+                            && !(isRecord && structure->countInheritedFields() != 0)) {
                         throw Exception(
-                            "@ValueType class '" + structure->toCanonical()
+                            kind + " '" + structure->toCanonical()
                                 + "' must declare at least one field",
                             "CAJETA_ERROR_VALUE_TYPE");
                     }

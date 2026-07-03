@@ -100,6 +100,42 @@ namespace cajeta {
         if (auto m = module->getCurrentMethod()) m->registerDropEntry(entryPtr);
     }
 
+    // Variant for shared-capable VALUE locals (slice-spec §6.1 drop hook):
+    // the drop entry's obj is the value's stack slot ITSELF (the alloca is
+    // the storage, not a pointer to be loaded), and the drop fn is the
+    // class's synthesized per-field release walk.
+    static void emitValueDropEntryFor(CajetaModulePtr module, FieldPtr field,
+                                       llvm::Function* releaseFn,
+                                       int allocLine = 0) {
+        DropPushChoice push = pickDropPush(module);
+        if (!push.pushFn || !releaseFn) return;
+        releaseFn = CajetaModule::ensureFunctionInModule(
+            module->getLlvmModule(), releaseFn);
+        auto* builder = module->getBuilder();
+        auto& ctx = *module->getLlvmContext();
+        llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+
+        llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+        llvm::IRBuilder<> entryBuilder(&parentFn->getEntryBlock(),
+            parentFn->getEntryBlock().begin());
+        llvm::Value* entryPtr = entryBuilder.CreateAlloca(
+            llvm::ArrayType::get(i8Ty, push.entryBytes));
+
+        llvm::Value* ownerPtr = field->getOrCreateAllocation();
+        if (push.debug) {
+            llvm::Constant* fileConst = module->getOrCreateSourceFileConstant(
+                module->getSourcePath());
+            llvm::Constant* lineConst = llvm::ConstantInt::get(i32Ty, allocLine);
+            builder->CreateCall(push.pushFn, {entryPtr, ownerPtr, releaseFn, fileConst, lineConst});
+        } else {
+            builder->CreateCall(push.pushFn, {entryPtr, ownerPtr, releaseFn});
+        }
+
+        field->setDropEntry(entryPtr);
+        if (auto m = module->getCurrentMethod()) m->registerDropEntry(entryPtr);
+    }
+
     // Variant for class-instance locals — same drop-chain wiring, but
     // takes an already-resolved drop function (the class's synthesized
     // wrapper) directly instead of a runtime-helper name. The wrapper
@@ -201,6 +237,42 @@ namespace cajeta {
             module->getScopeStack().peek()->putField(field);
             field->getOrCreateAllocation();
 
+            // slice-spec §6.1 copy/drop hooks for shared-capable VALUE locals
+            // (Utf8 / value aggregates embedding it). The init copy already
+            // happened inside getOrCreateAllocation:
+            //   - init from an LVALUE (identifier / field / element / record
+            //     slice-cast) duplicated existing stakes -> retain each.
+            //   - init from an RVALUE (call result, aggregate-init, stack
+            //     ctor) carries its stakes with the bytes -> no retain.
+            // Every such local registers a release drop entry (obj = the
+            // slot itself); return-of-local deactivates it (move-out).
+            if (wantsInlineSlot) {
+                auto vClass = dynamic_pointer_cast<CajetaClass>(type);
+                if (vClass && vClass->isSharedCapableValue()) {
+                    bool initFromLvalue = false;
+                    if (auto varInit = dynamic_pointer_cast<VariableInitializer>(initializer)) {
+                        auto& kids = varInit->getChildren();
+                        if (!kids.empty()) {
+                            initFromLvalue =
+                                dynamic_pointer_cast<IdentifierExpression>(kids[0])
+                                || dynamic_pointer_cast<DotExpression>(kids[0])
+                                || dynamic_pointer_cast<ArrayIndexExpression>(kids[0])
+                                || dynamic_pointer_cast<CastExpression>(kids[0]);
+                        }
+                    }
+                    auto* builder = module->getBuilder();
+                    if (initFromLvalue) {
+                        vClass->emitValueSharedOp(*builder,
+                            field->getOrCreateAllocation(), module,
+                            builder->GetInsertBlock()->getModule(),
+                            /*retain=*/true);
+                    }
+                    emitValueDropEntryFor(module, field,
+                        vClass->getOrCreateValueReleaseFunction(),
+                        getSourceLine());
+                }
+            }
+
             // Debugger CP5/CP7-1b: this local is registered in the current
             // debug frame at the END of this method (see emitDbgLocal below),
             // NOT here. The ownership facet is sourced from field->getDropEntry(),
@@ -233,6 +305,18 @@ namespace cajeta {
                         }
                     }
                     auto srcClass = dynamic_pointer_cast<CajetaClass>(srcType);
+                    // Record conversions are never implicit — an upcast
+                    // SLICES (data loss stays visible at the cast site).
+                    if (srcClass && srcClass.get() != dstClass.get()
+                            && (srcClass->isRecordType() || dstClass->isRecordType())) {
+                        throw Exception(
+                            "cannot implicitly convert '" + srcClass->toCanonical()
+                                + "' to '" + dstClass->toCanonical()
+                                + "' — record upcasts slice; write an explicit "
+                                  "cast: (" + dstClass->getQName()->getTypeName()
+                                + ") value",
+                            "CAJETA_ERROR_RECORD_IMPLICIT_CAST");
+                    }
                     if (srcClass && srcClass.get() != dstClass.get()
                             && !srcClass->isInterface()) {
                         uint64_t off = srcClass->getSubObjectByteOffset(

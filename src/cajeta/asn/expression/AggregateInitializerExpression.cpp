@@ -101,12 +101,16 @@ namespace cajeta {
         // Initialize vtable pointer at slot 0 — matches the ClassCreatorRest
         // heap path. Applied uniformly to both stack and heap paths so
         // dispatch on an aggregate-init'd class works regardless of storage.
-        if (llvm::GlobalVariable* vt = classType->getVirtualTableGlobal()) {
-            llvm::Constant* vtRef = CajetaModule::ensureGlobalInModule(
-                module->getLlvmModule(), vt);
-            llvm::Value* vtableSlot = builder->CreateStructGEP(
-                bodyTy, bodyPtr, /*idx=*/0, "vtable_slot");
-            builder->CreateStore(vtRef, vtableSlot);
+        // Value types (record / @ValueType) have NO slot-0 vtable — writing
+        // one would clobber the first field's bytes.
+        if (classType->hasVtablePointerAtSlotZero()) {
+            if (llvm::GlobalVariable* vt = classType->getVirtualTableGlobal()) {
+                llvm::Constant* vtRef = CajetaModule::ensureGlobalInModule(
+                    module->getLlvmModule(), vt);
+                llvm::Value* vtableSlot = builder->CreateStructGEP(
+                    bodyTy, bodyPtr, /*idx=*/0, "vtable_slot");
+                builder->CreateStore(vtRef, vtableSlot);
+            }
         }
         llvm::Value* bodyAlloca = bodyPtr;  // keep the downstream name
 
@@ -125,9 +129,24 @@ namespace cajeta {
             }
             // getFieldLlvmIndex dispatches via the virtual override:
             // CajetaView skips the vtable header; CajetaClass adds it.
-            auto& props = classType->getProperties();
-            auto it = props.find(b.label);
-            if (it == props.end()) {
+            // Inherited fields (record static inheritance) live on ancestor
+            // property maps — walk supers like field access does.
+            StructurePropertyPtr prop;
+            std::function<bool(const CajetaClassPtr&)> findProp =
+                [&](const CajetaClassPtr& cls) -> bool {
+                    if (!cls) return false;
+                    auto pit = cls->getProperties().find(b.label);
+                    if (pit != cls->getProperties().end()) {
+                        prop = pit->second;
+                        return true;
+                    }
+                    for (auto& sup : cls->getSuperClasses()) {
+                        if (findProp(sup)) return true;
+                    }
+                    return false;
+                };
+            findProp(classType);
+            if (!prop) {
                 char buf[512];
                 snprintf(buf, sizeof(buf),
                     "aggregate initializer for '%s' names field '%s' that the "
@@ -135,7 +154,6 @@ namespace cajeta {
                     typeName.c_str(), b.label.c_str());
                 throw Exception(buf, "CAJETA_ERROR_AGGREGATE_INIT_UNKNOWN_FIELD");
             }
-            StructurePropertyPtr prop = it->second;
             unsigned fieldIdx = (unsigned) classType->getFieldLlvmIndex(prop);
 
             // Evaluate the binding expression; load through if it's still
@@ -147,6 +165,19 @@ namespace cajeta {
             llvm::Value* value = b.expression->generateCode(module);
             if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(value)) {
                 value = builder->CreateLoad(a->getAllocatedType(), a);
+            }
+            // Value-type source reached by address (e.g. a field-read GEP):
+            // load the aggregate so the store below copies the body, not
+            // the pointer, into the inline field slot.
+            {
+                auto propClass = dynamic_pointer_cast<CajetaClass>(prop->getType());
+                llvm::Type* propLlvm = prop->getType() ? prop->getType()->getLlvmType() : nullptr;
+                if (propClass && propClass->isValueType()
+                        && !dynamic_pointer_cast<CajetaView>(prop->getType())
+                        && propLlvm && propLlvm->isStructTy()
+                        && value && value->getType()->isPointerTy()) {
+                    value = builder->CreateLoad(propLlvm, value);
+                }
             }
 
             // Coerce the value's LLVM type to the field's declared type
@@ -196,10 +227,14 @@ namespace cajeta {
             // ref whose drop the struct must skip) still need per-instance
             // ownership tracking and remain deferred.
             auto fieldClass = dynamic_pointer_cast<CajetaClass>(prop->getType());
+            // Value-type bindings COPY (inline aggregate, no drop entry) —
+            // the source stays live and usable; only reference-class
+            // bindings transfer ownership.
             bool fieldIsClassRef = fieldClass != nullptr
                 && !dynamic_pointer_cast<CajetaView>(prop->getType())
                 && !dynamic_pointer_cast<CajetaArray>(prop->getType())
-                && !fieldClass->isInterface();
+                && !fieldClass->isInterface()
+                && !fieldClass->isValueType();
             if (fieldIsClassRef) {
                 if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(b.expression)) {
                     auto scope = module->getScopeStack().peek();

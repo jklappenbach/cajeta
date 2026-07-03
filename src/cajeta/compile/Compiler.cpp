@@ -281,6 +281,16 @@ namespace cajeta {
             return defaultResult();
         }
 
+        std::any visitRecordDeclaration(
+                CajetaParser::RecordDeclarationContext* ctx) override {
+            // Records are value types from birth — cross-file placeholders
+            // must carry VALUE_TYPE_FLAG | BY_VALUE_FLAG (same as @ValueType).
+            registerAndRecurse(ctx->identifier()->getText(), ctx,
+                                /*markEnum=*/false, /*markValueType=*/true);
+            captureTemplateMeta(ctx);
+            return defaultResult();
+        }
+
         std::any visitEnumDeclaration(
                 CajetaParser::EnumDeclarationContext* ctx) override {
             // markEnum=true so fromContext's placeholder synthesis

@@ -1,0 +1,91 @@
+package cajeta.lang;
+
+import cajeta.lang.String;
+
+/**
+ * `Utf8` — a 16-byte value-type text field (slice-spec §8; slices plan Unit 6).
+ * A tagged design over one 16-byte value, discriminated by length:
+ *
+ *   len <= 12   Inline — the bytes live directly in `data`; pure POD, no heap
+ *               buffer, no refcount. Every <= 12 B result is built Inline
+ *               (the normalization rule), whatever its source.
+ *   len >  12   a pointer form (the runtime overlays {lenTag, offset, base}
+ *               on the same 16 bytes — see cajeta_rt_utf8.c):
+ *               Static — windows a never-freed root (string literals); no rc.
+ *               Shared — holds one refcounted stake on its root buffer
+ *               (`len`'s sign bit, mirroring the count-word convention);
+ *               copies retain, drops release, the last stake frees.
+ *
+ * Being a value type with synthesized copy/drop hooks for the Shared form,
+ * `Utf8` is legal as a `record`/`@ValueType` field (records reject heap-class
+ * fields like `String`) at ANY length: symbols and venue codes stay Inline;
+ * descriptions and URLs share their source buffer zero-copy.
+ *
+ * Equality and hashing are over the window bytes — representation-independent
+ * across all three forms, with `hash()` in XXH parity with `String.hash()`.
+ */
+@ValueType
+public final class Utf8 {
+    int32 len;
+    int8[12] data;
+
+    /**
+     * Build from `s` (byte-indexed, any mode — owned, static, SSO, or a
+     * windowed view): <= 12 B copies Inline; longer text windows the source's
+     * root buffer (Static for literals, Shared with a stake otherwise).
+     */
+    public static Utf8 of(String s) {
+        Utf8 u = stack Utf8();
+        u.len = 0;
+        if (s != null) {
+            Cajeta.utf8OfString(u, s);
+        }
+        return u;
+    }
+
+    /** Byte length of the text. */
+    public int64 size() {
+        return (int64) (this.len & 0x7FFFFFFF);
+    }
+
+    /** True when zero bytes. */
+    public boolean isEmpty() {
+        return (this.len & 0x7FFFFFFF) == 0;
+    }
+
+    /** Raw byte at `idx`; 0 out of range (the `charAt` convention). */
+    public int8 charAt(int32 idx) {
+        return Cajeta.utf8ByteAt(this, idx);
+    }
+
+    /** Byte-for-byte equality over the window (representation-independent). */
+    public boolean equals(Utf8 other) {
+        return Cajeta.utf8Equals(this, other);
+    }
+
+    /** Byte-for-byte equality against a String's window. */
+    public boolean equalsString(String s) {
+        if (s == null) {
+            return (this.len & 0x7FFFFFFF) == 0;
+        }
+        return Cajeta.utf8EqualsString(this, s);
+    }
+
+    /** XXH3 over the window bytes — String.hash parity: equal texts hash
+     *  equal across every form and against String itself. */
+    public int64 hash() {
+        return Cajeta.utf8Hash(this);
+    }
+
+    /** Materialize as an owned `String`. */
+    public #String toString() {
+        int32 n = this.len & 0x7FFFFFFF;
+        int8[] out = Cajeta.allocBytes((int64) n);
+        int32 i = 0;
+        while (i < n) {
+            out[i] = Cajeta.utf8ByteAt(this, i);
+            i = i + 1;
+        }
+        return heap String(#out, n);
+    }
+}

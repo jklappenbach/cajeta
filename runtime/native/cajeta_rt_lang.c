@@ -46,13 +46,64 @@ void* __cajeta_object_to_string(void* self) {
     return NULL;
 }
 
-// Placeholder clone — same stub-with-NULL pattern as toString. The
-// field-walking memcpy/shallow-ref-copy implementation lands with the
-// synthesizer; until then, manual clone() overrides (or just avoiding
-// the call) are the workaround.
+// clone() — live as of the slices plan Unit 5 (slice-spec §6.4): the explicit
+// sibling of the implicit value-copy. Shallow copy (memcpy of the instance)
+// plus per-heap-field fixup: a String field becomes a FRESH STAKE on the same
+// buffer (wrapper-per-stake — cajeta has no GC, so aliasing one wrapper would
+// UAF when either owner drops); other class-reference fields stay aliased
+// (Java-shallow; override clone() to deep-copy, exactly as Object.md says).
+// A String receiver DETACHES: the window is materialized into an owned buffer
+// (the retention-amplification valve, slice-spec §4.4).
 void* __cajeta_object_clone(void* self) {
-    (void) self;
-    return NULL;
+    if (!self) return NULL;
+    CajetaRtti* r = (CajetaRtti*) cajeta_rtti_from_obj(self);
+    if (!r || r->allocationSize <= 0) return NULL;
+    if (r->typeName && strcmp(r->typeName, "cajeta.lang.String") == 0) {
+        cajeta_string_layout* s = (cajeta_string_layout*) self;
+        int32_t len = s->byteLength;
+        cajeta_string_layout* out =
+            (cajeta_string_layout*) __cajeta_alloc(sizeof(cajeta_string_layout));
+        out->vtable = s->vtable;
+        out->cachedCpLength = s->cachedCpLength;
+        out->ssoCount = 0;
+        memset(out->ssoData, 0, sizeof out->ssoData);
+        if (len <= 0 || s->bytes == NULL) {
+            out->bytes = NULL;
+            out->byteLength = 0;
+            out->mode = 0;
+            return out;
+        }
+        int32_t off = (s->mode == 2) ? (int32_t) s->ssoCount : 0;
+        void* buf = __cajeta_new_array_header(8, 1, (uint64_t) len + 1);
+        *((int64_t*) buf) = len;
+        memcpy((char*) buf + 8, (const char*) s->bytes + 8 + off, (size_t) len);
+        ((char*) buf)[8 + len] = 0;
+        out->bytes = buf;
+        out->byteLength = len;
+        out->mode = 0;
+        return out;
+    }
+    void* out = __cajeta_alloc((uint64_t) r->allocationSize);
+    memcpy(out, self, (size_t) r->allocationSize);
+    for (int32_t i = 0; i < (int32_t) r->propertyCount; i++) {
+        const CajetaFieldDesc* f = &r->properties[i];
+        if (f->byteOffset < 0 || !f->type) continue;
+        if (strcmp(f->type, "cajeta.lang.String") == 0) {
+            void** slot = (void**) ((char*) out + f->byteOffset);
+            void* src = *slot;
+            if (src) {
+                cajeta_string_layout* fs = (cajeta_string_layout*) src;
+                *slot = __cajeta_string_slice(src, 0, fs->byteLength);
+            }
+        } else if (strcmp(f->type, "cajeta.lang.Utf8") == 0) {
+            // Inline value field: the memcpy duplicated the 16 bytes —
+            // a Shared form needs its own stake (no-op for Inline/Static).
+            // (Direct Utf8 fields only; a nested value-aggregate field's
+            // inner Utf8s aren't walked — RTTI lists direct fields.)
+            __cajeta_utf8_retain((char*) out + f->byteOffset);
+        }
+    }
+    return out;
 }
 
 // --- parsing helpers --------------------------------------------------------

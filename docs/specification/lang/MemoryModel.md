@@ -7,6 +7,28 @@
 - **Static safety, no user-visible annotations.** All borrow/lifetime errors are compile-time. Scope-based inference; no lifetime syntax for users to write.
 - **Zero runtime cost in release.** Heap blocks are plain memory; drops happen at owner scope-end. A debug build flag adds runtime verification for testing the static checker.
 
+> **AMENDED (2026-07-03): a THIRD ownership state — `shared`** (governed by
+> [`slice-spec.md`](slice-spec.md), approved 2026-07-02). Cajeta's model is an **implicit
+> smart-pointer family** — the kind is always inferred, never annotated:
+>
+> | State | Discipline | Analog |
+> |---|---|---|
+> | **owned** | single responsible dropper; `#` transfers the stake | `Box`/`unique_ptr` |
+> | **borrow** | non-owning; must not outlive its source (static) | `&T` |
+> | **shared** | co-owned **immutable leaf buffers**; runtime count; freed at the last stake | `Rc`/`shared_ptr` |
+>
+> `shared` exists for exactly one thing v1: a **slice** (`String.substring`, later `Slice<T>`)
+> that outlives the value it was sliced from — the case borrow must reject and copying is too
+> expensive to force. Promotion is one-way (`owned → shared`); moves are **rc-neutral**; the
+> count lives in a side table keyed by buffer base with a stolen count-word sign bit (no layout
+> change); buffers never sliced-and-stored pay one predicted bit-test at drop and nothing else.
+> Scoped to immutable leaf buffers ⇒ the shared graph is acyclic ⇒ no cycles, no `weak`, no
+> leaks. An **escaping borrow of an eligible source resolves** (copy small / share large / copy
+> arena-backed) instead of erroring; identity/mutable objects keep the error-and-`#` discipline
+> (slice-spec §4, §9 — the transparent-only boundary). `Object.clone()` = shallow copy +
+> stake-share per String field (slice-spec §6.4; LIVE). The "single-owner heap" goal above is
+> thereby refined: single owner **or counted co-owners for immutable slice backings**.
+
 ## Non-goals (v1)
 
 - Multi-threading safety (deferred — needs Send/Sync-style protocol).

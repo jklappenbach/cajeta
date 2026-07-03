@@ -1,5 +1,14 @@
 # Borrow soundness — detection beyond the type system
 
+> **AMENDED (2026-07-03, [`slice-spec.md`](slice-spec.md)):** the `shared` state adds a third
+> resolution for an escaping borrow of an **immutable slice backing**: instead of rejection,
+> the compiler **resolves** — copy (small), share (large immutable buffer; the tentative
+> `refcount?` header slot of this doc's sketch is now real, as a side-table count keyed by
+> buffer base + a count-word sign bit), or copy-always (arena-backed). The resolution analysis
+> must be a **sound over-approximation**: unsure ⇒ resolve, never silently borrow (over-pinning
+> is a wasted count; under-pinning is a UAF). Identity/mutable objects keep the rejection
+> discipline described below unchanged.
+
 ## Motivation
 
 [`OwnershipTransfer`](OwnershipTransfer.md) shipped the two-sided
