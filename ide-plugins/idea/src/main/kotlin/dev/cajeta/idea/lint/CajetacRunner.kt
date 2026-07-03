@@ -31,11 +31,34 @@ object CajetacRunner {
 
         val tempFile = stageBufferToTemp(filePath, bufferText) ?: return emptyList()
         try {
-            val stderr = runCompiler(compilerPath, tempFile) ?: return emptyList()
+            // Resolve cross-file references against the project: pass the source
+            // root (derived from the file's package) and shadow the on-disk twin
+            // so the staged buffer replaces it (lint-source-root-spec §5/§7).
+            val sourceRoot = sourceRootOf(filePath, bufferText)
+            val stderr = runCompiler(compilerPath, tempFile, sourceRoot, filePath)
+                ?: return emptyList()
             return parseDiagnostics(stderr, bufferText)
         } finally {
             runCatching { Files.deleteIfExists(tempFile) }
         }
+    }
+
+    private val PACKAGE_RE = Regex("""(?m)^\s*package\s+([A-Za-z_][\w.]*)\s*;""")
+
+    /** The project source root for [filePath]: its directory with the file's
+     *  `package a.b.c;` path segments stripped off the tail (so `<root>/a/b/c/
+     *  Foo.cajeta` → `<root>`). Falls back to the file's own directory when there
+     *  is no package or the on-disk layout doesn't match the package. */
+    internal fun sourceRootOf(filePath: String, bufferText: String): String {
+        val parent = File(filePath).parentFile ?: return File(filePath).absolutePath
+        val pkg = PACKAGE_RE.find(bufferText)?.groupValues?.get(1)
+        if (pkg.isNullOrBlank()) return parent.path
+        var root: File = parent
+        for (seg in pkg.split('.').asReversed()) {
+            val up = root.parentFile
+            if (root.name == seg && up != null) root = up else return parent.path
+        }
+        return root.path
     }
 
     private fun stageBufferToTemp(filePath: String, text: String): Path? {
@@ -55,16 +78,32 @@ object CajetacRunner {
         }
     }
 
-    private fun runCompiler(compilerPath: String, file: Path): String? {
+    /** The single-file lint invocation: `cajeta --lint <file> --diag-format=json`
+     *  (compiler-lint-mode spec §4). Runs the diagnostic passes on one file with
+     *  no codegen/emit/entry-method — unlike a full compile, which needs three
+     *  positionals and would just print usage. */
+    internal fun lintArgv(
+        compilerPath: String,
+        file: String,
+        sourceRoot: String? = null,
+        shadow: String? = null,
+    ): List<String> {
+        val args = mutableListOf(compilerPath, "--lint", file, "--diag-format=json")
+        if (sourceRoot != null) {
+            args += listOf("--source-root", sourceRoot)
+            if (shadow != null) args += listOf("--shadow", shadow)
+        }
+        return args
+    }
+
+    private fun runCompiler(
+        compilerPath: String,
+        file: Path,
+        sourceRoot: String? = null,
+        shadow: String? = null,
+    ): String? {
         return try {
-            // --emit=ir keeps it cheap (no linker / native codegen) while still
-            // running the diagnostic passes; --diag-format=json makes stderr NDJSON.
-            val args = listOf(
-                compilerPath,
-                "--emit=ir",
-                "--diag-format=json",
-                file.toString(),
-            )
+            val args = lintArgv(compilerPath, file.toString(), sourceRoot, shadow)
             val pb = ProcessBuilder(args).redirectErrorStream(false)
             val process = pb.start()
             process.outputStream.close()

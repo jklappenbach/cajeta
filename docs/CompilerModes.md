@@ -339,6 +339,47 @@ Each line is one diagnostic:
 - Mode-independent (not changed by `--debug`/`--release`/etc.); default `text`.
 - A clean compile emits nothing. Consumers should skip any non-`{` line defensively.
 
+### `--lint <file>`
+
+Run the diagnostic passes over **one** source file and report diagnostics, **without
+a build** — no codegen, no linking, no artifact, no entry-method. A distinct mode (like
+`archive` / `jit-run`): `<file>` is the sole positional; the three-positional
+`<entry-method> <source-root> <archive-root>` compile path does not apply.
+
+```
+cajeta --lint path/to/File.cajeta                     # text diagnostics
+cajeta --lint path/to/File.cajeta --diag-format=json  # NDJSON (IDE editor tier)
+cajeta --lint /tmp/buf.cajeta --source-root proj/src --shadow proj/src/app/File.cajeta --diag-format=json
+```
+
+- Runs stdlib load → parse → placeholder/prototype/advice/dependency-graph passes, then
+  stops before codegen. Surfaces the same diagnostics a full compile's front-end does
+  (syntax with precise locations; semantic via error id + message).
+- Honors `--diag-format` exactly as a full compile (text default; `json` = NDJSON on
+  stderr, nothing on stdout).
+- Exit code: `0` iff no error-severity diagnostic; non-zero otherwise. A missing `<file>`
+  fails with a clear message, **not** the compile usage banner.
+- The IntelliJ plugin's editor-annotation tier (`CajetacRunner`) drives this mode.
+
+**`--source-root <root>`** (optional): resolve `<file>`'s references against the whole
+project. Every `.cajeta` under `<root>` is parsed for its **signatures only** (front-end,
+no codegen — the same work `--classpath` does for `.cja` deps) and registered as context;
+only `<file>`'s diagnostics are reported. A broken sibling is skipped, never aborting or
+polluting the linted file. This is what makes `foo.bar()` on a sibling-file type resolve
+instead of squiggling. A non-directory `--source-root` fails clearly.
+
+**`--shadow <realpath>`** (optional, with `--source-root`): skip `<realpath>` in the root
+walk so the linted `<file>` (a staged, unsaved editor buffer) replaces its on-disk twin —
+the edited content is analyzed, with no duplicate-definition clash. A no-op if `<realpath>`
+is not under `<root>`.
+
+- **Remaining follow-up (separate effort):** semantic diagnostics are still
+  `throw`-based — **single-shot and location-less**, so the linted file still yields one
+  semantic diagnostic at no precise offset. Making them *collect-and-continue with spans*
+  (multiple, located semantic squigglies) is its own diagnostics-architecture rework
+  (see `docs/specs/lint-source-root-spec.md` §1.4). `--source-root` removes false
+  *cross-file* positives; it does not change that.
+
 ### `--profile-counters=on|off`
 
 Emit per-method invocation counters + per-method total wall-time
