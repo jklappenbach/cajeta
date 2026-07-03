@@ -93,3 +93,4 @@ build-three/
 samples/profile/.rocprofv3/
 .rocprofv3/
 tmp/
+build-tsan/
