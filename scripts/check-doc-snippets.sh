@@ -130,9 +130,13 @@ EOF
 
     checked=$((checked + wrote))
     local log="$srcroot/compile.log"
-    if ! "$CAJETA" jit-run "$srcroot/src" snipcheck.Driver.check >"$log" 2>&1; then
+    # jit-run can exit 0 despite parse/semantic errors in packages the
+    # driver never reaches — scan the log for diagnostics too.
+    if ! "$CAJETA" jit-run "$srcroot/src" snipcheck.Driver.check >"$log" 2>&1 \
+        || grep -qE "line [0-9]+:[0-9]+ |CAJETA_ERROR|extraneous input|no viable alternative|mismatched input" "$log"; then
         echo "SNIPPET FAIL: $f ($wrote block(s) in batch)"
-        tail -5 "$log" | sed 's/^/    /'
+        grep -E "line [0-9]+:[0-9]+ |CAJETA_ERROR|extraneous|no viable|mismatched" "$log" | head -3 | sed 's/^/    /'
+        tail -2 "$log" | sed 's/^/    /'
         failures=$((failures + 1))
     fi
 }

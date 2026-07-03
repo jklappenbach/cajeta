@@ -209,8 +209,9 @@ the shipped stdlib surface. This spec defines the target state for all four.
    (`Sha1`, `SipHash`), file I/O (`Path`, `Watcher`), net (`UdpSocket`,
    `Server`/`ServerBuilder`), gfx (swapchain, render graph).
 5. Core-language gap demos: interfaces (fat-pointer dispatch), `@Encoding` binary
-   serialization, static nested classes, static fields, try-with-resources,
-   `Optional<T>`, `Pair<K,V>`, stream `collect`/Collectors.
+   serialization, static nested classes, static fields, `Optional<T>`,
+   `Pair<K,V>`, stream `collect`/Collectors. (try-with-resources removed by
+   design — the drop chain covers it; no demo.)
 6. The main tour output mentions the separate xpu tour so GPU coverage is
    discoverable.
 7. Designed-only packages are listed as pending tour work in the tour README, not

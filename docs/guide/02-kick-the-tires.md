@@ -1,50 +1,47 @@
 # 02 — Kick the tires
 
-One binary does everything. `cajeta <subcommand>` runs a built-in command;
-anything else is looked up as a task in your project's `cajeta.json`.
+Four steps to prove the install works: check the version, scaffold hello
+world, compile it to an executable, run it.
 
-## The commands you'll use daily
-
-| Command | What it does |
-|---|---|
-| `cajeta init [type] [dir]` | Scaffold a project (`init --list` shows the archetypes) |
-| `cajeta build` | Build the current project |
-| `cajeta test` | Run the project's tests |
-| `cajeta tasks` | List the project's tasks with descriptions |
-| `cajeta clean` | Wipe build outputs |
-| `cajeta add / remove / upgrade / pin` | Manage dependencies in the manifest |
-| `cajeta install` | Publish this project's library into the local repository |
-| `cajeta publish` | Publish to a remote repository |
-| `cajeta info / show` | Inspect the project / a dependency |
-
-## The rest of the surface
-
-- **Archives** — `cajeta archive <cmd>` creates, inspects, and signs `.cja`
-  archives.
-- **Docs** — `cajeta doc <source-root>` generates API documentation
-  (`--emit-model-json` for tooling).
-- **Skills** — `cajeta search-skill`, `list-skills`, `get-skills` find
-  implementation guidance shipped inside resolved dependencies.
-- **Quality** — `cajeta coverage`, `verify`, `verify-reproducible`, `trust`.
-- **Workspace** — `cajeta workspace` / `members` for multi-project trees.
-- **Toolchain** — `cajeta toolchain`, `cajeta which`, `cajeta sandbox-info`.
-- **IDE & debugging** — `cajeta ide install` (IntelliJ plugin),
-  `cajeta dap` (Debug Adapter Protocol server), `cajeta jit-run` (compile +
-  run an entry point without a project).
-
-## Task fallthrough
-
-Unknown subcommands resolve against `cajeta.json` tasks. That's how
-`cajeta run` works in projects that define a `run` task — it's a task, not a
-built-in. `cajeta tasks` always shows what your project offers:
+## 1. Check the install
 
 ```bash
-$ cajeta tasks
-  build    Local development build
-  clean    Wipe build outputs
-  lint     Run native + plugin lint actions
-  release  Release build + ship
-  test     Unit tests with coverage instrumentation
+$ cajeta --version
+cajeta 0.8.0 (8190ee59)
 ```
+
+A version string means the toolchain is on your PATH and healthy.
+
+## 2. Create hello world
+
+```bash
+$ cajeta init basic hello
+Initialized 'basic' archetype in hello:
+  cajeta.json
+  src/main/cajeta/com/example/basic/Main.cajeta
+$ cd hello
+```
+
+## 3. Compile to an executable
+
+```bash
+$ cajeta build
+Task 'build' outputs:
+  path = build/exe/com.example.basic
+  sha256 = sha256:...
+```
+
+The output is a native binary.
+
+## 4. Run it
+
+```bash
+$ ./build/exe/com.example.basic
+hello from com.example.basic
+```
+
+That's the whole loop: `init` → `build` → run. Everything else — what the
+manifest means, the other project types, the rest of the `cajeta` command —
+comes next.
 
 Next: [Your first project](03-your-first-project.md).

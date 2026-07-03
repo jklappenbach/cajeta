@@ -1,24 +1,9 @@
 # 03 — Your first project
 
-## Scaffold, build, run
+[Chapter 02](02-kick-the-tires.md) built and ran `hello`. Now look at what
+`init` actually created, and what else the toolchain can make.
 
-```bash
-$ cajeta init basic hello
-Initialized 'basic' archetype in hello:
-  cajeta.json
-  src/main/cajeta/com/example/basic/Main.cajeta
-
-$ cd hello
-$ cajeta build
-Task 'build' outputs:
-  path = build/exe/com.example.basic
-  ...
-
-$ ./build/exe/com.example.basic
-hello from com.example.basic
-```
-
-The layout is fixed convention:
+## The layout
 
 ```
 hello/
@@ -37,7 +22,16 @@ hello/
   (`com.example.basic.Main::main`) — the presence of an entry method is what
   makes this a binary project.
 - **`tasks`** — named action pipelines. The archetype ships `build`, `test`,
-  `clean`, `lint`, and `release`; you add your own.
+  `clean`, `lint`, and `release`; you add your own. `cajeta tasks` lists them:
+
+```bash
+$ cajeta tasks
+  build    Local development build
+  clean    Wipe build outputs
+  lint     Run native + plugin lint actions
+  release  Release build + ship
+  test     Unit tests with coverage instrumentation
+```
 
 ## Project types
 
@@ -77,6 +71,27 @@ The `package` action turns build outputs into distributables. Shipped today:
 
 Deferred (the build tool rejects these with a "deferred slice" error for now):
 `deb`, `rpm`, `msi`, `app-bundle`, `pkg`, `dmg`, `appimage`, `flatpak`, `snap`.
+
+## The wider command surface
+
+One binary does everything; unknown subcommands fall through to your
+manifest's tasks (that's how `cajeta run` works when a `run` task exists —
+[chapter 04](04-running.md)).
+
+| Command | What it does |
+|---|---|
+| `cajeta build / test / clean` | Project tasks |
+| `cajeta add / remove / upgrade / pin` | Manage dependencies |
+| `cajeta install / publish` | Publish locally / remotely |
+| `cajeta info / show` | Inspect the project / a dependency |
+| `cajeta archive <cmd>` | Create, inspect, sign `.cja` archives |
+| `cajeta doc <root>` | Generate API documentation |
+| `cajeta search-skill / list-skills / get-skills` | Skill discovery in dependencies |
+| `cajeta coverage / verify / verify-reproducible / trust` | Quality and provenance |
+| `cajeta workspace / members / toolchain / which / sandbox-info` | Environment |
+| `cajeta ide / dap / jit-run` | IDE plugin, debug server, quick runs |
+
+`cajeta --help` shows the same list.
 
 For the longer walk — dependencies, publishing, uber-archives end to end — see
 [Build your first package](../tour-build-your-first-package.md) and the
