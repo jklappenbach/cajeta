@@ -931,14 +931,18 @@ namespace cajeta {
         CajetaParser parser(&tokens);
         auto* compUnit = parser.compilationUnit();
 
-        CajetaParser::ClassDeclarationContext* classDecl = nullptr;
+        CajetaParser::ClassBodyContext* declBody = nullptr;
         for (auto* td : compUnit->typeDeclaration()) {
             if (auto* cd = td->classDeclaration()) {
-                classDecl = cd;
+                declBody = cd->classBody();
+                break;
+            }
+            if (auto* rd = td->recordDeclaration()) {
+                declBody = rd->classBody();
                 break;
             }
         }
-        if (!classDecl) {
+        if (!declBody) {
             throw Exception(
                 "diamond inference: template snippet missing classDeclaration",
                 "CAJETA_ERROR_TYPE_INFERENCE");
@@ -955,7 +959,7 @@ namespace cajeta {
         // slot consistently.
         vector<std::map<string, CajetaTypePtr>> viableBindings;
 
-        for (auto* bdCtx : classDecl->classBody()->classBodyDeclaration()) {
+        for (auto* bdCtx : declBody->classBodyDeclaration()) {
             auto* md = bdCtx->memberDeclaration();
             if (!md) continue;
             auto* ctorDecl = md->constructorDeclaration();
