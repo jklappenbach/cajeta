@@ -32,4 +32,11 @@ public class Throwable {
     public Throwable(#String message) {
         this.message = message;
     }
+
+    /**
+     * The human-readable message this throwable was constructed with.
+     */
+    public String getMessage() {
+        return this.message;
+    }
 }

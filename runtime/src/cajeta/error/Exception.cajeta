@@ -36,4 +36,11 @@ public class Exception extends Throwable {
         this.message = message;
         this.cause = 0;
     }
+
+    /**
+     * The underlying cause carried with this exception, or `0` (none).
+     */
+    public Throwable getCause() {
+        return this.cause;
+    }
 }
