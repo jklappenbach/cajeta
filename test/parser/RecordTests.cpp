@@ -732,3 +732,123 @@ TEST(RecordCompileErrorTests, recordExtendsClassRejected) {
         "}\n";
     EXPECT_ANY_THROW(CajetaJit::compile(src, "test.D"));
 }
+
+// ---------------------------------------------------------------------
+// Unit 5 — construction extras: positional + defaults (plan §5; spec 4.2–4.4)
+// ---------------------------------------------------------------------
+
+// 5.1.1 — un-labeled initializer expressions bind positionally in declared
+// order.
+TEST(RecordTests, positionalBindingInDeclaredOrder) {
+    auto src = std::string(kPointSrc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Point p = Point { 1.5, 2.25 };\n"
+        "        return (int32)(p.x * 10.0 + p.y * 100.0);\n"  // 15 + 225
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 240);
+}
+
+// 5.1.1 — positional binding spans inherited fields (ancestors-first, the
+// flat layout order).
+TEST(RecordTests, positionalBindingWithInheritance) {
+    auto src = std::string(kTickHierarchy) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        TradeTick t = TradeTick { 2.5, 4, 0.5 };\n"
+        "        return (int32)(t.notional() * 10.0 + t.commission * 4.0 + t.price);\n"  // 104
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 104);
+}
+
+// 5.1.1 — arity mismatch is a compile error (too many; too few without
+// defaults).
+TEST(RecordCompileErrorTests, positionalTooManyRejected) {
+    auto src = std::string(kPointSrc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Point p = Point { 1.0, 2.0, 3.0 };\n"
+        "        return (int32) p.x;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_ANY_THROW(CajetaJit::compile(src, "test.D"));
+}
+
+TEST(RecordCompileErrorTests, positionalTooFewRejected) {
+    auto src = std::string(kPointSrc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Point p = Point { 1.0 };\n"
+        "        return (int32) p.x;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_ANY_THROW(CajetaJit::compile(src, "test.D"));
+}
+
+// 5.3.1 — mixing labeled and positional bindings in one initializer rejects.
+TEST(RecordCompileErrorTests, mixedLabeledPositionalRejected) {
+    auto src = std::string(kPointSrc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Point p = Point { x: 1.0, 2.0 };\n"
+        "        return (int32) p.x;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_ANY_THROW(CajetaJit::compile(src, "test.D"));
+}
+
+// 5.1.2 — a field with a declared default may be omitted (labeled form);
+// the default expression fills it.
+TEST(RecordTests, fieldDefaultFillsOmitted) {
+    auto src =
+        "package test;\n"
+        "public record Conf {\n"
+        "    float64 rate = 2.5;\n"
+        "    int32 retries = 3;\n"
+        "    float64 cap;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Conf c = Conf { cap: 10.0 };\n"
+        "        return (int32)(c.rate * 4.0 + (float64) c.retries * 100.0 + c.cap);\n"  // 10+300+10
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 320);
+}
+
+// 5.1.2 — positional form: trailing omitted fields fill from defaults.
+TEST(RecordTests, positionalTrailingDefaultsFill) {
+    auto src =
+        "package test;\n"
+        "public record Conf2 {\n"
+        "    float64 a;\n"
+        "    float64 b = 9.0;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Conf2 c = Conf2 { 1.0 };\n"
+        "        return (int32)(c.a * 10.0 + c.b);\n"  // 10 + 9
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 19);
+}
+
+// 5.1.2 — omitting a field WITHOUT a default is a compile error (labeled
+// form).
+TEST(RecordCompileErrorTests, omittedNonDefaultFieldRejected) {
+    auto src =
+        "package test;\n"
+        "public record Conf3 {\n"
+        "    float64 rate = 2.5;\n"
+        "    float64 cap;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Conf3 c = Conf3 { rate: 1.0 };\n"
+        "        return (int32) c.cap;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_ANY_THROW(CajetaJit::compile(src, "test.D"));
+}
