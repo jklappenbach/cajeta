@@ -5,6 +5,7 @@
 #pragma once
 
 #include <iostream>
+#include <mutex>
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Support/InitLLVM.h>
 #include <llvm/IR/LLVMContext.h>
@@ -123,15 +124,19 @@ namespace cajeta {
         // non-null, newly constructed Compilers bind to it and SKIP the
         // global-state reset/init (the StdlibCache owns that lifecycle).
         // nullptr in production — every Compiler is fully self-contained.
-        static llvm::LLVMContext* s_sharedContext;
+        // thread_local: the shared-context reuse is single-threaded by
+        // construction (JIT harness), so per-thread state makes off-owner
+        // threads take the fresh path automatically and removes the data race
+        // on these globals under concurrent compiles.
+        static thread_local llvm::LLVMContext* s_sharedContext;
         // One-time guard: the FIRST Compiler built under a shared context
         // resets + inits the global type tables in that context (priming);
         // every Compiler after reuses them. Reset to false when the shared
         // context is cleared so a later priming starts clean.
-        static bool s_sharedInitialized;
+        static thread_local bool s_sharedInitialized;
         // Armed only during a JIT-harness stdlib-reuse attempt; see
         // setReuseHazardArmed / ReuseHazardAbort. Always false in production.
-        static bool s_reuseHazardArmed;
+        static thread_local bool s_reuseHazardArmed;
         string cpu = "generic";
         string features = "";
         llvm::TargetMachine* targetMachine;
@@ -294,10 +299,16 @@ namespace cajeta {
         Compiler(int argc, const char* argv[]) : Compiler() { }
 
         Compiler() {
-            llvm::InitializeAllTargets();
-            llvm::InitializeAllTargetMCs();
-            llvm::InitializeAllAsmPrinters();
-            llvm::InitializeAllAsmParsers();
+            // LLVM target registration writes process-global registries
+            // (getTheX86Target() &c.); running it in every ctor races when
+            // Compilers are constructed concurrently. Do it exactly once.
+            static std::once_flag llvmTargetInitOnce;
+            std::call_once(llvmTargetInitOnce, [] {
+                llvm::InitializeAllTargets();
+                llvm::InitializeAllTargetMCs();
+                llvm::InitializeAllAsmPrinters();
+                llvm::InitializeAllAsmParsers();
+            });
             targetTriple = llvm::sys::getDefaultTargetTriple();
             if (s_sharedContext) {
                 // Stdlib-reuse path (tests): a process-global context + the

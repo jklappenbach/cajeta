@@ -186,7 +186,9 @@ namespace cajeta {
         // installed hook is a no-op for non-lazy packages. Lives here (not
         // on Compiler) so the resolver / onImportDeclaration can fire it
         // without a Compiler dependency. See Compiler's lazy stdlib loader.
-        static std::function<void(const std::string&)> stdlibImportHook;
+        // Per-compile (each thread installs its own during setup); thread_local
+        // so concurrent compiles don't race on the std::function.
+        static thread_local std::function<void(const std::string&)> stdlibImportHook;
     private:
         static thread_local vector<ComponentDescriptorPtr> componentClasses;
         static thread_local vector<FactoryDescriptorPtr> factoryClasses;

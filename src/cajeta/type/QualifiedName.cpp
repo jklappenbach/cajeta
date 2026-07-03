@@ -2,6 +2,8 @@
 // Created by James Klappenbach on 10/2/22.
 //
 
+#include <cstring>
+
 #include "QualifiedName.h"
 
 namespace cajeta {
@@ -27,7 +29,10 @@ namespace cajeta {
         int value = typeName.find('.');
         if (value >= 0) {
             char* str = (char*) typeName.c_str();
-            char* val = std::strtok(str, ".");
+            // strtok_r (not strtok): strtok keeps tokenization state in a global,
+            // so concurrent compiles race on it. The saveptr is local.
+            char* saveptr = nullptr;
+            char* val = strtok_r(str, ".", &saveptr);
             do {
                 if (name) {
                     if (!package.empty()) {
@@ -36,7 +41,7 @@ namespace cajeta {
                     package.append(string(name));
                 }
                 name = val;
-            } while ((val = std::strtok(nullptr, ".")));
+            } while ((val = strtok_r(nullptr, ".", &saveptr)));
             className = string(name);
         } else {
             className = typeName;
