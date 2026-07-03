@@ -131,8 +131,20 @@ namespace cajeta {
         }
 
         virtual std::any visitClassDeclaration(CajetaParser::ClassDeclarationContext* ctx) override {
+            return std::any(buildClassLike(ctx, ctx->identifier()->getText(),
+                ctx->typeParameters(), ctx->EXTENDS(), ctx->IMPLEMENTS(),
+                ctx->PERMITS(), ctx->typeList()));
+        }
+
+        // Shared builder for class-like declarations (class / record).
+        CajetaClassPtr buildClassLike(antlr4::ParserRuleContext* ctx,
+                const string& name,
+                CajetaParser::TypeParametersContext* typeParametersCtx,
+                antlr4::tree::TerminalNode* extendsKw,
+                antlr4::tree::TerminalNode* implementsKw,
+                antlr4::tree::TerminalNode* permitsKw,
+                const std::vector<CajetaParser::TypeListContext*>& typeLists) {
             string packageAdj;
-            string name = ctx->identifier()->getText();
             for (auto& structure: pModule->getStructureStack()) {
                 packageAdj.append(".");
                 packageAdj.append(structure->getQName()->getTypeName());
@@ -153,10 +165,10 @@ namespace cajeta {
             auto kwIdx = [](antlr4::tree::TerminalNode* n) -> ssize_t {
                 return n && n->getSymbol() ? (ssize_t) n->getSymbol()->getTokenIndex() : -1;
             };
-            ssize_t extKw = kwIdx(ctx->EXTENDS());
-            ssize_t implKw = kwIdx(ctx->IMPLEMENTS());
-            ssize_t permKw = kwIdx(ctx->PERMITS());
-            for (auto* tl : ctx->typeList()) {
+            ssize_t extKw = kwIdx(extendsKw);
+            ssize_t implKw = kwIdx(implementsKw);
+            ssize_t permKw = kwIdx(permitsKw);
+            for (auto* tl : typeLists) {
                 ssize_t tlIdx = tl->getStart()
                     ? (ssize_t) tl->getStart()->getTokenIndex() : -1;
                 // Determine which keyword this typeList follows by picking
@@ -272,7 +284,7 @@ namespace cajeta {
             // cheap and the result is cached per instantiation. ANTLR context
             // nodes carry parent links to the compilation unit, so pinning a
             // single class would transitively pin the whole file's tree.
-            if (auto* tps = ctx->typeParameters()) {
+            if (auto* tps = typeParametersCtx) {
                 vector<TypeParameter> params;
                 for (auto* tp : tps->typeParameter()) {
                     TypeParameter param(tp->identifier()->getText());
