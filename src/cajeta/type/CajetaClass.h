@@ -137,6 +137,7 @@ namespace cajeta {
         // fixed-point marker: a class with all-non-placeholder parents
         // and !prototypeBuilt is the next candidate to lay out.
         bool prototypeBuilt = false;
+        bool recordType = false;
         CajetaModulePtr module;
         // Emit target for this class's own IR (vtable / RTTI / clinit / static
         // fields). Null → getEmitModule() falls back to `module` (production /
@@ -384,6 +385,7 @@ namespace cajeta {
         }
         list<CajetaClassPtr>& getImplementedInterfaces() { return implementedInterfaces; }
         const list<QualifiedNamePtr>& getQImplemented() const { return qImplemented; }
+        const list<QualifiedNamePtr>& getQExtended() const { return qExtended; }
         void setQImplemented(list<QualifiedNamePtr> q) { qImplemented = std::move(q); }
         const list<vector<QualifiedNamePtr>>& getQImplementedTypeArgs() const {
             return qImplementedTypeArgs;
@@ -828,6 +830,12 @@ namespace cajeta {
         // layout builder + getFieldLlvmIndex + construction skip the slot 0
         // vtable, so fields live at indices 0,1,… — register-friendly POD.
         virtual bool hasVtablePointerAtSlotZero() const { return !isValueType(); }
+
+        // `record` declarations only (subset of value types): immutable
+        // fields, intrinsic with(...). Set by the visitor / template
+        // instantiator; plain @ValueType classes stay mutable.
+        void setRecordType(bool v) { recordType = v; }
+        bool isRecordType() const { return recordType; }
 
         // Synthesize a per-(class, interface) vtable global for every
         // interface this class implements. Called from generatePrototype

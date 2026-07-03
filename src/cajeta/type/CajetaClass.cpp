@@ -959,6 +959,11 @@ namespace cajeta {
             // records vbaseSlotMap entries — embedded sub-objects'
             // vbases use their OWN class's map (populated when that
             // class's standalone generatePrototype runs / ran).
+            // Value types (record static inheritance) stay flat POD: no
+            // vbase pointer slots — dispatch is static and upcasts SLICE,
+            // so no indirection is ever needed. getFieldLlvmIndex mirrors
+            // via cls->vbaseAncestors, which stays empty for these.
+            if (cls->isValueType()) return;
             auto ancestors = collectAncestors(cls);
             for (auto& anc : ancestors) {
                 if (cls.get() == selfRaw) {

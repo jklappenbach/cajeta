@@ -401,6 +401,15 @@ namespace cajeta {
         if (dynamic_pointer_cast<MethodCallExpression>(ast)) {
             return v;
         }
+        // A cast's result is ALWAYS an r-value: primitive casts return the
+        // converted value, class casts return the (possibly guard-checked)
+        // instance pointer, and a record upcast returns the freshly sliced
+        // aggregate's alloca — the pointer IS the value (aggregate-init
+        // shape). The class-ref catch-all below would load through it and
+        // hand back the first field's bytes as a "pointer".
+        if (dynamic_pointer_cast<CastExpression>(ast)) {
+            return v;
+        }
         // REFL-1.5 — `T.class` returns the address of the type's #ClassObject
         // global, which IS the Class<T> reference (a process-lifetime constant
         // { Class<?>#VTable, rtti }). Same carve-out shape as NewExpression /
@@ -1181,6 +1190,59 @@ namespace cajeta {
         // target address and only rhs needs r-value coercion.
         switch (binaryOp) {
             case BINARY_OP_ASSIGN: {
+                // Record immutability (records-spec §3.2 / plan 3.2.1): a
+                // record field only initializes inside the record's own
+                // constructor (`this.f = v`); every other field write is a
+                // compile error. Statics stay assignable (immutability is a
+                // per-instance value property). Assigning TO a class field
+                // that merely HOLDS a record stays legal — the receiver
+                // there is the class, not the record.
+                if (auto recDotLhs = dynamic_pointer_cast<DotExpression>(lhsAst)) {
+                    auto& rch = recDotLhs->getChildren();
+                    auto recv = rch.empty() ? nullptr
+                        : dynamic_pointer_cast<Expression>(rch[0]);
+                    if (recv) {
+                        if (!recv->getResolvedType()) recv->resolveTypes(module);
+                        auto recvClass = dynamic_pointer_cast<CajetaClass>(
+                            recv->getResolvedType());
+                        if (recvClass && recvClass->isRecordType()) {
+                            bool ctorSelfInit = false;
+                            if (dynamic_pointer_cast<ThisExpression>(recv)) {
+                                auto cur = module->getCurrentMethod();
+                                ctorSelfInit = cur && cur->isConstructor()
+                                    && cur->getParent().get() == recvClass.get();
+                            }
+                            StructurePropertyPtr found;
+                            std::function<bool(const CajetaClassPtr&)> findP =
+                                [&](const CajetaClassPtr& cls) -> bool {
+                                    if (!cls) return false;
+                                    auto pit = cls->getProperties().find(
+                                        recDotLhs->getIdentifier());
+                                    if (pit != cls->getProperties().end()) {
+                                        found = pit->second;
+                                        return true;
+                                    }
+                                    for (auto& sup : cls->getSuperClasses()) {
+                                        if (findP(sup)) return true;
+                                    }
+                                    return false;
+                                };
+                            findP(recvClass);
+                            bool staticField = found && found->isStatic();
+                            if (!ctorSelfInit && !staticField) {
+                                throw Exception(
+                                    "cannot assign to immutable field '"
+                                        + recDotLhs->getIdentifier()
+                                        + "' of record '"
+                                        + recvClass->getQName()->toCanonical()
+                                        + "' — records are immutable; use "
+                                          "with(" + recDotLhs->getIdentifier()
+                                        + ": value) to produce an updated copy",
+                                    "CAJETA_ERROR_RECORD_IMMUTABLE");
+                            }
+                        }
+                    }
+                }
                 // Matrix element assignment: `m[r][c] = e` (B1). The LHS is
                 // ArrayIndex(ArrayIndex(m, r), c) with m a CajetaMatrix. Writing
                 // through the row temporary (the vector path below) would drop the
@@ -1323,12 +1385,39 @@ namespace cajeta {
                 // pointer bits over the first field. Copy the whole body;
                 // a first-class struct value (by-value return) stores
                 // directly.
-                if (dynamic_pointer_cast<DotExpression>(lhsAst)) {
+                if (dynamic_pointer_cast<DotExpression>(lhsAst)
+                        || dynamic_pointer_cast<IdentifierExpression>(lhsAst)) {
                     if (!lhsAst->getResolvedType()) lhsAst->resolveTypes(module);
                     auto lhsCls = dynamic_pointer_cast<CajetaClass>(lhsAst->getResolvedType());
+                    // Identifier LHS: only an inline value slot (alloca of the
+                    // body type) takes the copy path — a ptr-typed slot is a
+                    // reference and keeps the pointer store below.
+                    bool identInlineSlot = true;
+                    if (dynamic_pointer_cast<IdentifierExpression>(lhsAst)) {
+                        auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(lhs);
+                        identInlineSlot = a && !a->getAllocatedType()->isPointerTy();
+                    }
                     if (lhsCls && lhsCls->isValueType()
+                            && identInlineSlot
                             && !lhsCls->isInterface()
                             && !dynamic_pointer_cast<CajetaView>(lhsAst->getResolvedType())) {
+                        if (rhsAst) {
+                            if (!rhsAst->getResolvedType()) rhsAst->resolveTypes(module);
+                            auto rhsCls = dynamic_pointer_cast<CajetaClass>(
+                                rhsAst->getResolvedType());
+                            if (rhsCls && rhsCls.get() != lhsCls.get()
+                                    && (rhsCls->isRecordType() || lhsCls->isRecordType())) {
+                                throw Exception(
+                                    "cannot implicitly convert '"
+                                        + rhsCls->toCanonical() + "' to '"
+                                        + lhsCls->toCanonical()
+                                        + "' — record upcasts slice; write an "
+                                          "explicit cast: ("
+                                        + lhsCls->getQName()->getTypeName()
+                                        + ") value",
+                                    "CAJETA_ERROR_RECORD_IMPLICIT_CAST");
+                            }
+                        }
                         llvm::Type* bodyTy = lhsCls->getLlvmType();
                         if (bodyTy && bodyTy->isStructTy()) {
                             if (rhs->getType() == bodyTy) {

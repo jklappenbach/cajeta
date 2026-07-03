@@ -233,6 +233,18 @@ namespace cajeta {
                         }
                     }
                     auto srcClass = dynamic_pointer_cast<CajetaClass>(srcType);
+                    // Record conversions are never implicit — an upcast
+                    // SLICES (data loss stays visible at the cast site).
+                    if (srcClass && srcClass.get() != dstClass.get()
+                            && (srcClass->isRecordType() || dstClass->isRecordType())) {
+                        throw Exception(
+                            "cannot implicitly convert '" + srcClass->toCanonical()
+                                + "' to '" + dstClass->toCanonical()
+                                + "' — record upcasts slice; write an explicit "
+                                  "cast: (" + dstClass->getQName()->getTypeName()
+                                + ") value",
+                            "CAJETA_ERROR_RECORD_IMPLICIT_CAST");
+                    }
                     if (srcClass && srcClass.get() != dstClass.get()
                             && !srcClass->isInterface()) {
                         uint64_t off = srcClass->getSubObjectByteOffset(

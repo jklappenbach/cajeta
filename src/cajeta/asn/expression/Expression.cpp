@@ -1279,6 +1279,54 @@ namespace cajeta {
             CajetaTypePtr srcCajetaType = childAst->getResolvedType();
             auto srcClass = dynamic_pointer_cast<CajetaClass>(srcCajetaType);
             auto dstClass = dynamic_pointer_cast<CajetaClass>(destType);
+            // Record upcast (records-spec §2.6.3 / plan 4.2.3): explicit
+            // `(Base) derived` SLICES — copies the base-field prefix (the
+            // flat layout embeds ancestors first) into a fresh Base value.
+            // Any other record-to-record cast has no meaning (no vtable, no
+            // reinterpretation) and rejects.
+            if (srcClass && dstClass
+                    && srcClass->isRecordType() && dstClass->isRecordType()
+                    && srcClass.get() != dstClass.get()) {
+                bool dstIsAncestor = false;
+                std::function<void(const CajetaClassPtr&)> walkSup =
+                    [&](const CajetaClassPtr& c) {
+                        for (auto& sup : c->getSuperClasses()) {
+                            if (!sup || dstIsAncestor) continue;
+                            if (sup.get() == dstClass.get()) {
+                                dstIsAncestor = true;
+                                return;
+                            }
+                            walkSup(sup);
+                        }
+                    };
+                walkSup(srcClass);
+                if (!dstIsAncestor) {
+                    throw Exception(
+                        "cannot cast record '" + srcClass->toCanonical()
+                            + "' to '" + dstClass->toCanonical()
+                            + "' — records cast only to their own ancestors "
+                              "(an upcast slices to the base fields)",
+                        "CAJETA_ERROR_RECORD_CAST");
+                }
+                llvm::Type* dstBody = dstClass->getLlvmType();
+                llvm::Value* srcAddr = raw;
+                if (!srcAddr->getType()->isPointerTy()) {
+                    llvm::Value* tmp = builder->CreateAlloca(srcAddr->getType());
+                    builder->CreateStore(srcAddr, tmp);
+                    srcAddr = tmp;
+                }
+                const llvm::DataLayout& dl =
+                    module->getLlvmModule()->getDataLayout();
+                llvm::Value* slice = builder->CreateAlloca(
+                    dstBody, nullptr, "slice");
+                llvm::Align align(dl.getABITypeAlign(dstBody));
+                builder->CreateMemCpy(slice, align, srcAddr, align,
+                    llvm::ConstantInt::get(
+                        llvm::Type::getInt64Ty(*module->getLlvmContext()),
+                        dl.getTypeAllocSize(dstBody)));
+                resolvedType = destType;
+                return slice;
+            }
             bool srcIsIface = srcClass && srcClass->isInterface();
             bool dstIsIface = dstClass && dstClass->isInterface();
             if (srcIsIface && dstClass && !dstIsIface) {
