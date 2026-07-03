@@ -66,6 +66,19 @@ fs::path writeFile(const fs::path& dir, const std::string& body) {
     return file;
 }
 
+// Write <root>/demo/<Name>.cajeta with the given class body (already inside
+// `package demo;`); returns the file path.
+fs::path writeUnit(const fs::path& root, const std::string& name,
+                   const std::string& classBody) {
+    auto dir = root / "demo";
+    fs::create_directories(dir);
+    auto file = dir / (name + ".cajeta");
+    std::ofstream out(file);
+    out << "package demo;\n" << classBody << "\n";
+    out.close();
+    return file;
+}
+
 // Run `cajeta --lint <file> [flags]`; capture stderr into `err`, return exit code
 // (-1 if the binary is unavailable). stdout is discarded to /dev/null.
 int lintCapturingStderr(const fs::path& file, const std::string& flags,
@@ -182,4 +195,105 @@ TEST(LintMode, WritesNoArtifact) {
         EXPECT_TRUE(ext != ".ll" && ext != ".o" && ext != ".cja" && ext != ".bc")
             << "lint emitted an artifact: " << e.path();
     }
+}
+
+// ---- --source-root / --shadow (lint-source-root-spec) ----
+
+const char* SIBLING =
+    "public final class Sibling {\n"
+    "    public static Sibling make() { return null; }\n"
+    "    public static int32 add(int32 a, int32 b) { return a + b; }\n"
+    "}";
+
+// 1.1.1 — a cross-file TYPE reference resolves with --source-root; is unresolved without.
+TEST(LintSourceRoot, CrossFileTypeResolvesWithRootUnresolvedWithout) {
+    auto root = freshTempDir("xtype") / "src";
+    writeUnit(root, "Sibling", SIBLING);
+    auto target = writeUnit(root, "Target",
+        "public final class Target {\n"
+        "    public static void main() { Sibling z = Sibling.make(); }\n"  // local of sibling type
+        "}");
+    std::string withErr, withoutErr;
+    int rcWith = lintCapturingStderr(target, "--diag-format=json --source-root " + root.string(), withErr);
+    int rcWithout = lintCapturingStderr(target, "--diag-format=json", withoutErr);
+    if (rcWith == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_EQ(rcWith, 0) << "with --source-root, Sibling must resolve; stderr:\n" << withErr;
+    EXPECT_EQ(withErr.find("{\"severity\""), std::string::npos) << withErr;
+    EXPECT_NE(rcWithout, 0) << "without --source-root, Sibling must be unresolved";
+}
+
+// 1.1.2 — a cross-file METHOD call resolves with --source-root (signatures, not just names).
+TEST(LintSourceRoot, CrossFileMethodResolvesWithRoot) {
+    auto root = freshTempDir("xmethod") / "src";
+    writeUnit(root, "Sibling", SIBLING);
+    auto target = writeUnit(root, "Target",
+        "public final class Target {\n"
+        "    public static void main() { int32 x = Sibling.add(1, 2); }\n"
+        "}");
+    std::string err;
+    int rc = lintCapturingStderr(target, "--diag-format=json --source-root " + root.string(), err);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_EQ(rc, 0) << "Sibling.add must resolve with --source-root; stderr:\n" << err;
+    EXPECT_EQ(err.find("{\"severity\""), std::string::npos) << err;
+}
+
+// 1.1.3 — a broken sibling neither aborts nor leaks into a clean target's lint.
+TEST(LintSourceRoot, BrokenSiblingDoesNotAbortOrLeak) {
+    auto root = freshTempDir("broken") / "src";
+    // Sibling has a syntax error; the target never references it.
+    writeUnit(root, "Sibling", "public final class Sibling { public int32 f() { return 1 + ; } }");
+    auto target = writeUnit(root, "Target",
+        "public final class Target { public static void main() { int32 x = 1; } }");
+    std::string err;
+    int rc = lintCapturingStderr(target, "--diag-format=json --source-root " + root.string(), err);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_EQ(rc, 0) << "a broken sibling must not fail a clean target; stderr:\n" << err;
+    EXPECT_EQ(err.find("{\"severity\""), std::string::npos)
+        << "the sibling's diagnostics must not leak; stderr:\n" << err;
+    EXPECT_EQ(err.find("SIGSEGV"), std::string::npos) << err;
+}
+
+// 1.1.4 — --shadow: the staged buffer replaces its on-disk twin under the root.
+TEST(LintSourceRoot, ShadowReplacesOnDiskTwin) {
+    auto root = freshTempDir("shadow") / "src";
+    writeUnit(root, "Sibling", SIBLING);
+    // On-disk Target: clean, does NOT reference Sibling.
+    auto onDisk = writeUnit(root, "Target",
+        "public final class Target { public static void main() {} }");
+    // Staged buffer (outside the root): an edited Target that DOES reference Sibling.
+    auto buffer = writeFile(freshTempDir("buf"),  // writeFile wraps in class File — use writeUnit-style instead
+        "");
+    // Overwrite the staged buffer with a full edited Target.
+    {
+        std::ofstream out(buffer);
+        out << "package demo;\n"
+               "public final class Target {\n"
+               "    public static void main() { int32 x = Sibling.add(3, 4); }\n"
+               "}\n";
+    }
+    std::string err;
+    int rc = lintCapturingStderr(
+        buffer, "--diag-format=json --source-root " + root.string() + " --shadow " + onDisk.string(), err);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_EQ(rc, 0) << "the edited buffer's Sibling ref must resolve, no dup-def; stderr:\n" << err;
+    EXPECT_EQ(err.find("{\"severity\""), std::string::npos) << err;
+}
+
+// 1.1.5 — a nonexistent --source-root fails clearly, not with the usage banner.
+TEST(LintSourceRoot, MissingSourceRootFailsClearly) {
+    auto root = freshTempDir("badroot") / "src";
+    auto target = writeUnit(root, "Target",
+        "public final class Target { public static void main() {} }");
+    std::string err;
+    int rc = lintCapturingStderr(
+        target, "--diag-format=json --source-root /no/such/root_xyzzy", err);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_NE(rc, 0);
+    EXPECT_EQ(err.find("<source-root-path>"), std::string::npos)
+        << "must not print the compile usage banner; stderr:\n" << err;
 }

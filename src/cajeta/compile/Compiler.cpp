@@ -506,15 +506,21 @@ namespace cajeta {
     // for canonical naming of its own types).
     static void parseSource(CajetaModulePtr module,
                             antlr4::ANTLRInputStream& input,
-                            const char* label) {
+                            const char* label,
+                            bool quiet = false) {
         CajetaLexer lexer(&input);
         CommonTokenStream tokens(&lexer);
         tokens.fill();
         CajetaParser parser(&tokens);
-        // --diag-format=json (user source only): swap ANTLR's default console
-        // listener for one that emits structured NDJSON syntax diagnostics.
+        // `quiet` (lint context/sibling files): suppress ALL diagnostics — the
+        // file is parsed only for signatures, its own errors must not surface.
+        // Else, --diag-format=json (user source only): swap ANTLR's default
+        // console listener for one that emits structured NDJSON diagnostics.
         std::unique_ptr<JsonSyntaxErrorListener> jsonSyntax;
-        if (label && std::string(label) == "user" &&
+        if (quiet) {
+            lexer.removeErrorListeners();
+            parser.removeErrorListeners();
+        } else if (label && std::string(label) == "user" &&
             module->getFlags().diagFormat == DiagFormat::Json) {
             jsonSyntax = std::make_unique<JsonSyntaxErrorListener>(module->getSourcePath());
             lexer.removeErrorListeners();
@@ -524,15 +530,15 @@ namespace cajeta {
         }
         antlr4::tree::ParseTree* parseTree = parser.compilationUnit();
         // A syntax error leaves ANTLR's error-recovery tree malformed; handing
-        // it to the semantic visitor segfaults on some inputs. When the user
-        // source had syntax errors (already reported above via the JSON/console
-        // listener), abort before visiting.
-        if (label && std::string(label) == "user") {
-            size_t syntaxErrors = lexer.getNumberOfSyntaxErrors()
-                                + parser.getNumberOfSyntaxErrors();
-            if (syntaxErrors > 0) {
-                throw SyntaxErrorException(static_cast<int>(syntaxErrors));
-            }
+        // it to the semantic visitor segfaults on some inputs. Abort before
+        // visiting whenever the parse had syntax errors (diagnostics already
+        // reported by the listener above, or suppressed under `quiet`). The
+        // stdlib/classpath re-parses are always well-formed, so this never
+        // fires for them.
+        size_t syntaxErrors = lexer.getNumberOfSyntaxErrors()
+                            + parser.getNumberOfSyntaxErrors();
+        if (syntaxErrors > 0) {
+            throw SyntaxErrorException(static_cast<int>(syntaxErrors));
         }
         auto prevActive = CajetaModule::getActiveModule();
         CajetaModule::setActiveModule(module);
@@ -1056,37 +1062,96 @@ namespace cajeta {
         CajetaModule::buildPendingPrototypes();
     }
 
-    void Compiler::lint(const string& file) {
+    void Compiler::lint(const string& file, const string& sourceRoot,
+                        const string& shadow) {
         // Single-file diagnostics: reuse the compile pipeline's parse +
         // semantic/validation/DI passes, then STOP before the Phase-1/2 codegen
-        // loop and any emit (compiler-lint-mode-spec §3). The file's own
-        // directory is a degenerate source/target root; nothing is written.
+        // loop and any emit (compiler-lint-mode-spec §3). With --source-root,
+        // the project's sibling files are registered for their signatures via
+        // the classpath-ingest path (external modules — canonical-map only, no
+        // emit, not in the validated `modules` set) so cross-file references
+        // resolve while diagnostics stay scoped to the target
+        // (lint-source-root-spec §3/§4).
         ensureStdlibModule();
+        const bool json = getFlags().diagFormat == DiagFormat::Json;
 
-        std::filesystem::path p(file);
-        string sourceRoot = p.has_parent_path() ? p.parent_path().string() : ".";
-        if (sourceRoot.empty() || sourceRoot.back() != '/') sourceRoot.append("/");
+        std::filesystem::path targetPath(file);
+        string dir = targetPath.has_parent_path()
+            ? targetPath.parent_path().string() : ".";
+        if (dir.empty() || dir.back() != '/') dir.append("/");
 
-        // Prescan ONLY this file (not its directory) so single-file lint stays
-        // isolated to stdlib + in-file declarations; cross-file project
-        // resolution is the documented follow-up (spec §1.4).
+        if (!sourceRoot.empty()) {
+            registerLintContext(sourceRoot, file, shadow, json);
+        }
+
+        // Prescan the target file so its own (possibly forward) declarations
+        // register before its body is walked.
         {
             std::ifstream in(file);
             if (in) {
                 antlr4::ANTLRInputStream input(in);
-                prescanSource(input, getFlags().diagFormat == DiagFormat::Json);
+                prescanSource(input, json);
             }
         }
 
-        CajetaModulePtr module = createModule(file, sourceRoot, sourceRoot);
-        compile(module);  // parse (syntax diagnostics) + buildPendingPrototypes
+        CajetaModulePtr module = createModule(file, dir, dir);
+        compile(module);  // parse (target diagnostics) + buildPendingPrototypes
 
         // The remaining diagnostic passes the multi-file compile() runs after
-        // parsing — these surface semantic / placeholder / DI errors.
+        // parsing. They iterate `modules` (the target only), so context/sibling
+        // files never contribute diagnostics.
         CajetaModule::validatePlaceholders();
         CajetaModule::buildPendingPrototypes();
         CajetaModule::resolveAdviceMatches();
         CajetaModule::resolveDependencyGraph();
+    }
+
+    // --source-root: register every sibling `.cajeta` under `root` (except the
+    // target `file` and any `--shadow` twin) for its SIGNATURES only — parsed
+    // quietly into `externalModules` (never `modules`, never emitted), each in
+    // its own try/catch so a mid-edit broken sibling is skipped rather than
+    // aborting or leaking (lint-source-root-spec §3/§4/§5).
+    void Compiler::registerLintContext(const string& root, const string& file,
+                                       const string& shadow, bool json) {
+        namespace fs = std::filesystem;
+        // Register all type NAMES first so cross-file references vouch, then the
+        // signatures below fill them in.
+        prescanSourceRoot(root, json);
+
+        auto canon = [](const string& p) {
+            std::error_code ec; auto c = fs::weakly_canonical(p, ec);
+            return ec ? fs::path(p) : c;
+        };
+        fs::path targetCanon = canon(file);
+        fs::path shadowCanon = shadow.empty() ? fs::path() : canon(shadow);
+
+        string rootSlash = root;
+        if (rootSlash.empty() || rootSlash.back() != '/') rootSlash.append("/");
+
+        std::error_code ec;
+        for (fs::recursive_directory_iterator it(root, ec), end; it != end; it.increment(ec)) {
+            if (ec) break;
+            if (!it->is_regular_file()) continue;
+            if (it->path().extension() != CAJETA_EXTENSION) continue;
+            fs::path here = canon(it->path().string());
+            if (here == targetCanon) continue;                 // parsed as the target
+            if (!shadow.empty() && here == shadowCanon) continue;  // replaced by the buffer
+            try {
+                std::ifstream in(it->path());
+                if (!in) continue;
+                antlr4::ANTLRInputStream input(in);
+                CajetaModulePtr sib = createModule(it->path().string(), rootSlash, rootSlash);
+                externalModules.push_back(sib);
+                auto prev = CajetaModule::getActiveModule();
+                parseSource(sib, input, /*label=*/"context", /*quiet=*/true);
+                CajetaModule::setActiveModule(prev);
+            } catch (...) {
+                // Broken sibling: contributes no (or partial) signatures. Skip.
+            }
+        }
+        // Build the siblings' prototypes so their member signatures are ready
+        // before the target resolves against them.
+        CajetaModule::buildPendingPrototypes();
     }
 
     void Compiler::compile(string entryMethod, string sourceRootPath, string archiveRootPath) {

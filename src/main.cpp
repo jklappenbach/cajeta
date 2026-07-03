@@ -266,6 +266,8 @@ int main(int argc, const char* argv[]) {
     // file is the sole positional; handled after the arg loop, before the
     // three-positional compile path (compiler-lint-mode-spec §2).
     bool lintMode = false;
+    std::string lintSourceRoot;  // --source-root: project context (lint-source-root-spec)
+    std::string lintShadow;      // --shadow: on-disk twin the linted buffer replaces
     // Track whether --xpu-arch was given explicitly so the amdgpu backend can
     // default its arch to gfx1151 (vs the nvptx sm_89 default) only when the
     // user didn't pin one. The two backends share a single xpuArch field.
@@ -513,6 +515,18 @@ int main(int argc, const char* argv[]) {
             compiler.setOutputPath(argv[++i]);
         } else if (arg == "--lint") {
             lintMode = true;
+        } else if (arg == "--source-root") {
+            if (i + 1 >= argc) {
+                std::cerr << "cajeta: --source-root requires a path\n";
+                return 1;
+            }
+            lintSourceRoot = argv[++i];
+        } else if (arg == "--shadow") {
+            if (i + 1 >= argc) {
+                std::cerr << "cajeta: --shadow requires a path\n";
+                return 1;
+            }
+            lintShadow = argv[++i];
         } else if (arg == "--help" || arg == "-h") {
             printUsage(argv[0]);
             return 0;
@@ -543,8 +557,17 @@ int main(int argc, const char* argv[]) {
                 std::cerr << "cajeta: no such file: " << lintFile << "\n";
             return 1;
         }
+        if (!lintSourceRoot.empty() && !std::filesystem::is_directory(lintSourceRoot)) {
+            if (jsonDiag)
+                cajeta::emitJsonDiagnostic("error", "source-root",
+                                           "not a directory: " + lintSourceRoot);
+            else
+                std::cerr << "cajeta: --source-root not a directory: "
+                          << lintSourceRoot << "\n";
+            return 1;
+        }
         try {
-            compiler.lint(lintFile);
+            compiler.lint(lintFile, lintSourceRoot, lintShadow);
         } catch (cajeta::SyntaxErrorException&) {
             return 1;  // syntax diagnostics already emitted during parsing
         } catch (cajeta::Exception& e) {
