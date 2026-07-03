@@ -1,0 +1,325 @@
+package cajeta.math.npio;
+
+import cajeta.math.Tensor;
+import cajeta.math.npio.Npy;
+import cajeta.io.file.File;
+import cajeta.lang.String;
+
+/**
+ * `cajeta.math.npio` — NumPy `.npz` archive I/O (numpy-porting-plan Phase 10.5).
+ * A `.npz` is a ZIP archive whose members are individual `.npy` images, one per
+ * named array — exactly what `numpy.savez` / `numpy.load` read and write. Members
+ * are **STORED** (compression method 0, no deflate), matching `np.savez`'s default;
+ * each member still carries a CRC-32 as the ZIP spec requires, computed here by
+ * {@link #crc32} (reflected polynomial `0xEDB88320`). Member names are `key + ".npy"`.
+ *
+ * Write with an {@link NpzWriter} (`heap NpzWriter()`, `addF32`/`addF64`/`addI32`/
+ * `addI64`, then `save(path)`); read one named array back with the typed
+ * {@link #loadF32}/`loadF64`/`loadI32`/`loadI64` (the caller supplies the dtype, as
+ * everywhere in `cajeta.math`). Each member's bytes are the same `.npy` v1.0 image
+ * {@link Npy} produces, so `.npy` and `.npz` share one encode/decode core.
+ */
+public final class Npz {
+
+    // ---- little-endian byte helpers --------------------------------------------
+
+    /** Write the low 16 bits of `v` little-endian at `b[o..o+2)`. */
+    static void putU16(int8[] b, int64 o, int32 v) {
+        b[o + 0] = (int8) (v & 255);
+        b[o + 1] = (int8) ((v >> 8) & 255);
+    }
+
+    /** Write the low 32 bits of `v` little-endian at `b[o..o+4)`. */
+    static void putU32(int8[] b, int64 o, int64 v) {
+        b[o + 0] = (int8) (v & 255);
+        b[o + 1] = (int8) ((v >> 8) & 255);
+        b[o + 2] = (int8) ((v >> 16) & 255);
+        b[o + 3] = (int8) ((v >> 24) & 255);
+    }
+
+    /** Read a little-endian `uint16` at `b[o..o+2)`. */
+    static int32 readU16(int8[] b, int64 o) {
+        return ((int32) b[o + 0] & 255) | (((int32) b[o + 1] & 255) << 8);
+    }
+
+    /** Read a little-endian `uint32` at `b[o..o+4)` (widened to int64). */
+    static int64 readU32(int8[] b, int64 o) {
+        int64 b0 = (int64) ((int32) b[o + 0] & 255);
+        int64 b1 = (int64) ((int32) b[o + 1] & 255);
+        int64 b2 = (int64) ((int32) b[o + 2] & 255);
+        int64 b3 = (int64) ((int32) b[o + 3] & 255);
+        return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+    }
+
+    /** ZIP CRC-32 over `buf[off..off+len)` (reflected poly `0xEDB88320`). */
+    static int64 crc32(int8[] buf, int64 off, int64 len) {
+        int64 crc = 4294967295;                       // 0xFFFFFFFF
+        int64 i = 0;
+        while (i < len) {
+            int64 b = (int64) ((int32) buf[off + i] & 255);
+            crc = crc ^ b;
+            int32 k = 0;
+            while (k < 8) {
+                int64 mask = 0 - (crc & 1);            // low bit set -> all-ones
+                crc = (crc >> 1) ^ (3988292384 & mask);   // 0xEDB88320
+                k = k + 1;
+            }
+            i = i + 1;
+        }
+        return (crc ^ 4294967295) & 4294967295;
+    }
+
+    /** True iff the `blen`-byte name at `buf[off..)` equals `key + ".npy"`. */
+    static boolean nameMatches(int8[] buf, int64 off, int32 blen, String key) {
+        int32 klen = (int32) key.count();
+        if (blen != klen + 4) { return false; }
+        int32 i = 0;
+        while (i < klen) {
+            if (buf[off + i] != key.charAt(i)) { return false; }
+            i = i + 1;
+        }
+        if (buf[off + klen + 0] != (int8) 46) { return false; }    // '.'
+        if (buf[off + klen + 1] != (int8) 110) { return false; }   // 'n'
+        if (buf[off + klen + 2] != (int8) 112) { return false; }   // 'p'
+        if (buf[off + klen + 3] != (int8) 121) { return false; }   // 'y'
+        return true;
+    }
+
+    // ---- reader: extract one member's raw .npy bytes ---------------------------
+
+    /** Copy the `.npy` image of member `key` out of the ZIP `z` (empty if absent). */
+    static #int8[] extractMember(int8[] z, int64 zlen, String key) {
+        int64 eocd = zlen - 22;                       // no archive comment (we never write one)
+        int32 nent = Npz.readU16(z, eocd + 10);
+        int64 cdOff = Npz.readU32(z, eocd + 16);
+        int64 p = cdOff;
+        int32 i = 0;
+        while (i < nent) {
+            int32 nameLen = Npz.readU16(z, p + 28);
+            int32 extraLen = Npz.readU16(z, p + 30);
+            int32 commLen = Npz.readU16(z, p + 32);
+            int64 lho = Npz.readU32(z, p + 42);
+            if (Npz.nameMatches(z, p + 46, nameLen, key)) {
+                int32 lnl = Npz.readU16(z, lho + 26);
+                int32 lel = Npz.readU16(z, lho + 28);
+                int64 payloadOff = lho + 30 + (int64) lnl + (int64) lel;
+                int64 usize = Npz.readU32(z, lho + 22);
+                int8[] mem = heap int8[usize];
+                int64 kk = 0;
+                while (kk < usize) { mem[kk] = z[payloadOff + kk]; kk = kk + 1; }
+                return #mem;
+            }
+            p = p + 46 + (int64) nameLen + (int64) extraLen + (int64) commLen;
+            i = i + 1;
+        }
+        int8[] empty = heap int8[0];
+        return #empty;
+    }
+
+    /** Load member `key` from the `.npz` at `path` as a `float32` tensor. */
+    public static #Tensor<float32> loadF32(String path, String key) {
+        int8[] z = File.readAllBytes(path);
+        int64 zlen = z.count();
+        int8[] mem = Npz.extractMember(z, zlen, key);
+        return Npy.decodeF32(mem);
+    }
+
+    /** Load member `key` from the `.npz` at `path` as a `float64` tensor. */
+    public static #Tensor<float64> loadF64(String path, String key) {
+        int8[] z = File.readAllBytes(path);
+        int64 zlen = z.count();
+        int8[] mem = Npz.extractMember(z, zlen, key);
+        return Npy.decodeF64(mem);
+    }
+
+    /** Load member `key` from the `.npz` at `path` as an `int32` tensor. */
+    public static #Tensor<int32> loadI32(String path, String key) {
+        int8[] z = File.readAllBytes(path);
+        int64 zlen = z.count();
+        int8[] mem = Npz.extractMember(z, zlen, key);
+        return Npy.decodeI32(mem);
+    }
+
+    /** Load member `key` from the `.npz` at `path` as an `int64` tensor. */
+    public static #Tensor<int64> loadI64(String path, String key) {
+        int8[] z = File.readAllBytes(path);
+        int64 zlen = z.count();
+        int8[] mem = Npz.extractMember(z, zlen, key);
+        return Npy.decodeI64(mem);
+    }
+}
+
+/**
+ * Accumulating writer for a `.npz` archive: `heap NpzWriter()`, then one
+ * `add<dtype>(name, tensor)` per array, then `save(path)`. Everything is kept in
+ * flat scalar buffers (a growable byte image + parallel metadata arrays) — no
+ * arrays-of-tensors — so it sidesteps cajeta's owning-array move hazards.
+ */
+public final class NpzWriter {
+    int8[] buf;                // the ZIP image being built
+    int64 len;                 // bytes written so far
+    int64 cap;                 // capacity of `buf`
+    int32 count;               // members written
+    int64[] hdrOff;            // local-header byte offset per member
+    int64[] crcArr;            // CRC-32 per member
+    int64[] sizeArr;           // member .npy byte length (STORED: comp == uncomp)
+    int64[] nameOffArr;        // member name start in `nameBuf`
+    int64[] nameLenArr;        // member name length (key + ".npy")
+    int8[] nameBuf;            // concatenated member-name bytes
+    int64 nameLen;             // bytes used in `nameBuf`
+    int64 nameCap;
+
+    public NpzWriter() {
+        this.cap = 1048576;                     // 1 MiB start (tests never grow)
+        this.buf = heap int8[this.cap];
+        this.len = 0;
+        this.count = 0;
+        this.hdrOff = heap int64[256];
+        this.crcArr = heap int64[256];
+        this.sizeArr = heap int64[256];
+        this.nameOffArr = heap int64[256];
+        this.nameLenArr = heap int64[256];
+        this.nameCap = 65536;
+        this.nameBuf = heap int8[this.nameCap];
+        this.nameLen = 0;
+    }
+
+    /** Grow `buf` so at least `need` more bytes fit past `len`. */
+    void ensureCap(int64 need) {
+        if (this.len + need > this.cap) {
+            int64 nc = this.cap * 2;
+            while (nc < this.len + need) { nc = nc * 2; }
+            int8[] nb = heap int8[nc];
+            int64 i = 0;
+            while (i < this.len) { nb[i] = this.buf[i]; i = i + 1; }
+            this.buf = nb;
+            this.cap = nc;
+        }
+    }
+
+    /** Append one STORED member: local header + `key + ".npy"` + `mem[0..mlen)`. */
+    void writeMember(String key, int8[] mem, int64 mlen) {
+        int64 crc = Npz.crc32(mem, 0, mlen);
+        int32 klen = (int32) key.count();
+        int32 memberNameLen = klen + 4;
+        this.ensureCap(30 + (int64) memberNameLen + mlen);
+        int8[] b = this.buf;                          // hoist field to a local (field-arg codegen bug)
+        int64 off = this.len;
+        this.hdrOff[this.count] = off;
+        Npz.putU32(b, off + 0, 67324752);             // 0x04034b50 local file header
+        Npz.putU16(b, off + 4, 20);                   // version needed
+        Npz.putU16(b, off + 6, 0);                    // flags
+        Npz.putU16(b, off + 8, 0);                    // method = STORED
+        Npz.putU16(b, off + 10, 0);                   // mod time
+        Npz.putU16(b, off + 12, 33);                  // mod date = 0x0021 (1980-01-01)
+        Npz.putU32(b, off + 14, crc);
+        Npz.putU32(b, off + 18, mlen);                // compressed size
+        Npz.putU32(b, off + 22, mlen);                // uncompressed size
+        Npz.putU16(b, off + 26, memberNameLen);
+        Npz.putU16(b, off + 28, 0);                   // extra length
+        int64 p = off + 30;
+        int32 ci = 0;
+        while (ci < klen) { b[p] = key.charAt(ci); p = p + 1; ci = ci + 1; }
+        b[p] = (int8) 46; p = p + 1;                  // '.'
+        b[p] = (int8) 110; p = p + 1;                 // 'n'
+        b[p] = (int8) 112; p = p + 1;                 // 'p'
+        b[p] = (int8) 121; p = p + 1;                 // 'y'
+        int64 di = 0;
+        while (di < mlen) { b[p] = mem[di]; p = p + 1; di = di + 1; }
+        this.len = p;
+        this.crcArr[this.count] = crc;
+        this.sizeArr[this.count] = mlen;
+        this.nameOffArr[this.count] = this.nameLen;
+        this.nameLenArr[this.count] = (int64) memberNameLen;
+        int32 cj = 0;
+        while (cj < klen) {
+            this.nameBuf[this.nameLen] = key.charAt(cj);
+            this.nameLen = this.nameLen + 1;
+            cj = cj + 1;
+        }
+        this.nameBuf[this.nameLen] = (int8) 46; this.nameLen = this.nameLen + 1;
+        this.nameBuf[this.nameLen] = (int8) 110; this.nameLen = this.nameLen + 1;
+        this.nameBuf[this.nameLen] = (int8) 112; this.nameLen = this.nameLen + 1;
+        this.nameBuf[this.nameLen] = (int8) 121; this.nameLen = this.nameLen + 1;
+        this.count = this.count + 1;
+    }
+
+    /** Add a `float32` array under `name` (stored as `name.npy`). */
+    public void addF32(String name, Tensor<float32> t) {
+        int8[] mem = Npy.encodeF32(t);
+        int64 mlen = mem.count();
+        this.writeMember(name, mem, mlen);
+    }
+
+    /** Add a `float64` array under `name`. */
+    public void addF64(String name, Tensor<float64> t) {
+        int8[] mem = Npy.encodeF64(t);
+        int64 mlen = mem.count();
+        this.writeMember(name, mem, mlen);
+    }
+
+    /** Add an `int32` array under `name`. */
+    public void addI32(String name, Tensor<int32> t) {
+        int8[] mem = Npy.encodeI32(t);
+        int64 mlen = mem.count();
+        this.writeMember(name, mem, mlen);
+    }
+
+    /** Add an `int64` array under `name`. */
+    public void addI64(String name, Tensor<int64> t) {
+        int8[] mem = Npy.encodeI64(t);
+        int64 mlen = mem.count();
+        this.writeMember(name, mem, mlen);
+    }
+
+    /** Emit the central directory + end-of-central-directory and write to `path`. */
+    public void save(String path) {
+        int64 cdStart = this.len;
+        int32 i = 0;
+        while (i < this.count) {
+            int64 no = this.nameOffArr[i];
+            int64 nl = this.nameLenArr[i];
+            this.ensureCap(46 + nl);
+            int8[] b = this.buf;                       // hoist after ensureCap (field-arg codegen bug)
+            int8[] nb = this.nameBuf;
+            int64 off = this.len;
+            Npz.putU32(b, off + 0, 33639248);          // 0x02014b50 central dir header
+            Npz.putU16(b, off + 4, 20);                // version made by
+            Npz.putU16(b, off + 6, 20);                // version needed
+            Npz.putU16(b, off + 8, 0);                 // flags
+            Npz.putU16(b, off + 10, 0);                // method
+            Npz.putU16(b, off + 12, 0);                // mod time
+            Npz.putU16(b, off + 14, 33);               // mod date
+            Npz.putU32(b, off + 16, this.crcArr[i]);
+            Npz.putU32(b, off + 20, this.sizeArr[i]);
+            Npz.putU32(b, off + 24, this.sizeArr[i]);
+            Npz.putU16(b, off + 28, (int32) nl);
+            Npz.putU16(b, off + 30, 0);                // extra length
+            Npz.putU16(b, off + 32, 0);                // comment length
+            Npz.putU16(b, off + 34, 0);                // disk number start
+            Npz.putU16(b, off + 36, 0);                // internal attrs
+            Npz.putU32(b, off + 38, 0);                // external attrs
+            Npz.putU32(b, off + 42, this.hdrOff[i]);
+            int64 p = off + 46;
+            int64 k = 0;
+            while (k < nl) { b[p] = nb[no + k]; p = p + 1; k = k + 1; }
+            this.len = p;
+            i = i + 1;
+        }
+        int64 cdSize = this.len - cdStart;
+        this.ensureCap(22);
+        int8[] b = this.buf;
+        int64 eo = this.len;
+        Npz.putU32(b, eo + 0, 101010256);              // 0x06054b50 EOCD
+        Npz.putU16(b, eo + 4, 0);                      // disk number
+        Npz.putU16(b, eo + 6, 0);                      // disk with central dir
+        Npz.putU16(b, eo + 8, this.count);             // entries on this disk
+        Npz.putU16(b, eo + 10, this.count);            // total entries
+        Npz.putU32(b, eo + 12, cdSize);
+        Npz.putU32(b, eo + 16, cdStart);               // central dir offset
+        Npz.putU16(b, eo + 20, 0);                     // comment length
+        this.len = eo + 22;
+        int64 outLen = this.len;
+        File.writeAllBytes(path, b, (int32) outLen);
+    }
+}
