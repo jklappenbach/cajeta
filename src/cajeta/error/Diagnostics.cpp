@@ -23,6 +23,14 @@ namespace cajeta {
         return Exception(message, errorId, file, line, column);
     }
 
+    Exception locatedException(int line, int column,
+                               const std::string& message,
+                               const std::string& errorId) {
+        std::string file;
+        if (auto m = CajetaModule::getActiveModule()) file = m->getSourcePath();
+        return Exception(message, errorId, file, line, column);
+    }
+
     namespace {
         // Minimal RFC 8259 string escaping for the NDJSON diagnostic payload.
         std::string jsonEscape(const std::string& s) {

@@ -33,6 +33,13 @@ namespace cajeta {
                                const std::string& message,
                                const std::string& errorId);
 
+    // Overload for AST-node throw sites: explicit 1-based line/column (from
+    // AbstractSyntaxNode::getSourceLine()/getSourceColumn() + 1) + the active
+    // module's source path.
+    Exception locatedException(int line, int column,
+                               const std::string& message,
+                               const std::string& errorId);
+
 
     // Compute the Levenshtein edit distance between two strings.
     // O(|a| · |b|) time and O(min(|a|, |b|)) space. Distance includes

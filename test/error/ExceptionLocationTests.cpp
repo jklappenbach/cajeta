@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include "cajeta/error/Exception.h"
+#include "cajeta/error/Diagnostics.h"
 
 using cajeta::Exception;
 
@@ -23,4 +24,15 @@ TEST(ExceptionLocation, ReportsNoLocationForTheTwoArgForm) {
     EXPECT_LE(e.getLine(), 0);
     EXPECT_LE(e.getColumn(), 0);
     EXPECT_TRUE(e.getFile().empty());
+}
+
+// The node-based overload (used at AST-node throw sites, e.g. aggregate-init):
+// it stamps the explicit 1-based line/column; file comes from the active module
+// (none in a unit test → empty).
+TEST(ExceptionLocation, NodeOverloadStampsExplicitLineColumn) {
+    Exception e = cajeta::locatedException(12, 5, "msg", "CJ_Z");
+    EXPECT_EQ(e.getLine(), 12);
+    EXPECT_EQ(e.getColumn(), 5);
+    EXPECT_TRUE(e.hasLocation());
+    EXPECT_EQ(e.getErrorId(), "CJ_Z");
 }

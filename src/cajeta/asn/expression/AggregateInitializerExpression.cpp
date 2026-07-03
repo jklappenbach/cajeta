@@ -5,6 +5,7 @@
 #include "AggregateInitializerExpression.h"
 #include "Identifier.h"
 #include "../../compile/CajetaModule.h"
+#include "../../error/Diagnostics.h"
 #include "../../type/CajetaView.h"
 #include "../../type/CajetaArray.h"
 #include "../../type/CajetaClass.h"
@@ -42,7 +43,8 @@ namespace cajeta {
             snprintf(buf, sizeof(buf),
                 "aggregate initializer for unknown type '%s'",
                 typeName.c_str());
-            throw Exception(buf, "CAJETA_ERROR_AGGREGATE_INIT_UNKNOWN_TYPE");
+            throw locatedException(getSourceLine(), getSourceColumn() + 1, buf,
+                "CAJETA_ERROR_AGGREGATE_INIT_UNKNOWN_TYPE");
         }
         if (dynamic_pointer_cast<CajetaView>(type)) {
             char buf[256];
