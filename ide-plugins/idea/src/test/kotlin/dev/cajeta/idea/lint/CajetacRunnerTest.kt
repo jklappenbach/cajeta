@@ -61,4 +61,37 @@ class CajetacRunnerTest {
             argv,
         )
     }
+
+    @Test
+    fun lintArgvWithSourceRootAndShadow() {
+        // lint-source-root U2: project-context resolution forwards --source-root
+        // (+ the real path to shadow the staged buffer's on-disk twin).
+        val argv = CajetacRunner.lintArgv(
+            "/c", "/tmp/T.cajeta", "/proj/src", "/proj/src/demo/T.cajeta")
+        assertEquals(
+            listOf("/c", "--lint", "/tmp/T.cajeta", "--diag-format=json",
+                   "--source-root", "/proj/src", "--shadow", "/proj/src/demo/T.cajeta"),
+            argv,
+        )
+    }
+
+    @Test
+    fun lintArgvWithoutSourceRootIsSingleFile() {
+        val argv = CajetacRunner.lintArgv("/c", "/tmp/T.cajeta", null, null)
+        assertEquals(listOf("/c", "--lint", "/tmp/T.cajeta", "--diag-format=json"), argv)
+    }
+
+    @Test
+    fun sourceRootDerivedByStrippingPackageFromPath() {
+        // <root>/demo/app/Foo.cajeta with `package demo.app;` → root = <root>.
+        val root = CajetacRunner.sourceRootOf(
+            "/proj/src/demo/app/Foo.cajeta", "package demo.app;\nclass Foo {}")
+        assertEquals("/proj/src", root)
+    }
+
+    @Test
+    fun sourceRootFallsBackToParentWhenNoPackage() {
+        val root = CajetacRunner.sourceRootOf("/proj/scratch/Foo.cajeta", "class Foo {}")
+        assertEquals("/proj/scratch", root)
+    }
 }
