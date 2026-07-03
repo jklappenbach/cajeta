@@ -600,17 +600,16 @@ namespace cajeta {
         CajetaParser parser(&tokens);
         auto* compUnit = parser.compilationUnit();
 
-        // The synthesized input wraps one class declaration. Find it; bail
-        // loudly if the snippet structure is somehow wrong (would mean the
-        // capture in the visitor produced bad text).
+        // The synthesized input wraps one class (or record) declaration. Find
+        // it; bail loudly if the snippet structure is somehow wrong (would
+        // mean the capture in the visitor produced bad text).
         CajetaParser::ClassDeclarationContext* classDecl = nullptr;
+        CajetaParser::RecordDeclarationContext* recordDecl = nullptr;
         for (auto* td : compUnit->typeDeclaration()) {
-            if (auto* cd = td->classDeclaration()) {
-                classDecl = cd;
-                break;
-            }
+            if ((classDecl = td->classDeclaration())) break;
+            if ((recordDecl = td->recordDeclaration())) break;
         }
-        if (!classDecl) {
+        if (!classDecl && !recordDecl) {
             throw "template snippet does not contain a classDeclaration";
         }
 
@@ -651,10 +650,16 @@ namespace cajeta {
         auto kwIdx = [](antlr4::tree::TerminalNode* n) -> ssize_t {
             return n && n->getSymbol() ? (ssize_t) n->getSymbol()->getTokenIndex() : -1;
         };
-        ssize_t extKw = kwIdx(classDecl->EXTENDS());
-        ssize_t implKw = kwIdx(classDecl->IMPLEMENTS());
-        ssize_t permKw = kwIdx(classDecl->PERMITS());
-        for (auto* tl : classDecl->typeList()) {
+        ssize_t extKw = kwIdx(classDecl ? classDecl->EXTENDS() : recordDecl->EXTENDS());
+        ssize_t implKw = classDecl ? kwIdx(classDecl->IMPLEMENTS()) : -1;
+        ssize_t permKw = classDecl ? kwIdx(classDecl->PERMITS()) : -1;
+        std::vector<CajetaParser::TypeListContext*> declTypeLists;
+        if (classDecl) {
+            declTypeLists = classDecl->typeList();
+        } else if (auto* tl = recordDecl->typeList()) {
+            declTypeLists.push_back(tl);
+        }
+        for (auto* tl : declTypeLists) {
             ssize_t tlIdx = tl->getStart()
                 ? (ssize_t) tl->getStart()->getTokenIndex() : -1;
             ssize_t best = -1;
@@ -805,7 +810,8 @@ namespace cajeta {
         // generatePrototype lowers the class to LLVM types + functions exactly
         // as it would for a non-templated class.
         CajetaLlvmVisitor visitor(module);
-        auto bodyAny = visitor.visitClassBody(classDecl->classBody());
+        auto bodyAny = visitor.visitClassBody(
+            classDecl ? classDecl->classBody() : recordDecl->classBody());
         inst->setClassBody(std::any_cast<ClassBodyDeclarationPtr>(bodyAny));
 
         // Emit target was set on `inst` before the walk and propagated to each

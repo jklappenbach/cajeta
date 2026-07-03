@@ -48,7 +48,7 @@ importDeclaration
 
 typeDeclaration
     : classOrInterfaceModifier*
-      (classDeclaration | viewDeclaration | enumDeclaration | interfaceDeclaration | annotationTypeDeclaration)
+      (classDeclaration | recordDeclaration | viewDeclaration | enumDeclaration | interfaceDeclaration | annotationTypeDeclaration)
     | ';'
     ;
 
@@ -94,6 +94,16 @@ classDeclaration
 // absent. Body reuses classBody.
 viewDeclaration
     : VIEW identifier typeParameters?
+      classBody
+    ;
+
+// Value-type record (docs/specification/nucleo/records-spec.md): lowers to a
+// @ValueType final class with no vtable. EXTENDS = static non-virtual
+// inheritance (single base, Unit 4); no IMPLEMENTS — records never carry a
+// vtable/itable. Body reuses classBody.
+recordDeclaration
+    : RECORD identifier typeParameters?
+      (EXTENDS typeList)?
       classBody
     ;
 

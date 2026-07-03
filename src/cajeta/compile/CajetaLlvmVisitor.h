@@ -92,6 +92,64 @@ namespace cajeta {
             }
         }
 
+        // Records have structural equality (records-spec §2.5.3): synthesize a
+        // static field-wise `operator==` when the user didn't declare one.
+        // Same fragment-parse pipeline as synthesizeLoggerField (and the same
+        // deliberate ANTLR-pipeline leak — the AST holds token pointers).
+        // Nested record fields are flattened to primitive-leaf compares
+        // (`a.i.x == b.i.x`) rather than dispatching the inner operator== —
+        // a value-type FIELD passed as a by-value operator arg currently
+        // marshals as a pointer and trips the JIT verifier. `!=` derives
+        // automatically.
+        void appendRecordFieldCompares(const string& pathA, const string& pathB,
+                const CajetaClassPtr& cls, string& expr) {
+            for (auto& prop : cls->getPropertyList()) {
+                if (!prop || prop->isStatic()) continue;
+                auto ft = prop->getType();
+                auto fieldClass = std::dynamic_pointer_cast<CajetaClass>(ft);
+                if (fieldClass && ft
+                        && (ft->getTypeFlags() & VALUE_TYPE_FLAG)
+                        && !fieldClass->getPropertyList().empty()) {
+                    appendRecordFieldCompares(
+                        pathA + "." + prop->getName(),
+                        pathB + "." + prop->getName(), fieldClass, expr);
+                    continue;
+                }
+                if (!expr.empty()) expr += " && ";
+                expr += pathA + "." + prop->getName() + " == "
+                    + pathB + "." + prop->getName();
+            }
+        }
+
+        void synthesizeRecordEquality(CajetaClassPtr structure) {
+            for (auto& kv : structure->getMethods()) {
+                if (kv.second && kv.second->getName() == "operator==") return;
+            }
+            string typeName = structure->getQName()->getTypeName();
+            string expr;
+            appendRecordFieldCompares("a", "b", structure, expr);
+            if (expr.empty()) return;
+            string src = "{ public static boolean operator== (" + typeName
+                + " a, " + typeName + " b) { return " + expr + "; } }";
+            auto* input = new antlr4::ANTLRInputStream(src);
+            auto* lexer = new CajetaLexer(input);
+            auto* tokens = new antlr4::CommonTokenStream(lexer);
+            tokens->fill();
+            auto* parser = new CajetaParser(tokens);
+            auto* body = parser->classBody();
+            for (auto* cbd : body->classBodyDeclaration()) {
+                MemberDeclarationPtr mem;
+                try {
+                    mem = std::any_cast<MemberDeclarationPtr>(
+                        visitClassBodyDeclaration(cbd));
+                } catch (...) { continue; }
+                if (auto methodDecl =
+                        std::dynamic_pointer_cast<MethodDeclaration>(mem)) {
+                    methodDecl->updateParent(structure);
+                }
+            }
+        }
+
         virtual std::any visitCompilationUnit(CajetaParser::CompilationUnitContext* ctx) override {
             pModule->onPackageDeclaration(ctx->packageDeclaration());
             for (auto& importDeclarationContext: ctx->importDeclaration()) {
@@ -133,7 +191,15 @@ namespace cajeta {
         virtual std::any visitClassDeclaration(CajetaParser::ClassDeclarationContext* ctx) override {
             return std::any(buildClassLike(ctx, ctx->identifier()->getText(),
                 ctx->typeParameters(), ctx->EXTENDS(), ctx->IMPLEMENTS(),
-                ctx->PERMITS(), ctx->typeList()));
+                ctx->PERMITS(), ctx->typeList(), /*isRecord=*/false));
+        }
+
+        virtual std::any visitRecordDeclaration(CajetaParser::RecordDeclarationContext* ctx) override {
+            std::vector<CajetaParser::TypeListContext*> typeLists;
+            if (auto* tl = ctx->typeList()) typeLists.push_back(tl);
+            return std::any(buildClassLike(ctx, ctx->identifier()->getText(),
+                ctx->typeParameters(), ctx->EXTENDS(), nullptr, nullptr,
+                typeLists, /*isRecord=*/true));
         }
 
         // Shared builder for class-like declarations (class / record).
@@ -143,7 +209,8 @@ namespace cajeta {
                 antlr4::tree::TerminalNode* extendsKw,
                 antlr4::tree::TerminalNode* implementsKw,
                 antlr4::tree::TerminalNode* permitsKw,
-                const std::vector<CajetaParser::TypeListContext*>& typeLists) {
+                const std::vector<CajetaParser::TypeListContext*>& typeLists,
+                bool isRecord) {
             string packageAdj;
             for (auto& structure: pModule->getStructureStack()) {
                 packageAdj.append(".");
@@ -273,6 +340,18 @@ namespace cajeta {
                 structure = make_shared<CajetaClass>(pModule, qName, qExtended, qImplemented);
             }
             structure->setQImplementedTypeArgs(std::move(qImplementedTypeArgs));
+
+            // record = @ValueType final class with no vtable. Synthesizing the
+            // annotation routes records through every existing @ValueType path
+            // (flags in generatePrototype, POD validation below, template
+            // annotation-carry at instantiation) with no parallel machinery.
+            if (isRecord) {
+                structure->addModifier(FINAL);
+                if (!structure->findAnnotation("ValueType")) {
+                    structure->addAnnotationInstance(make_shared<AnnotationInstance>(
+                        QualifiedName::getOrInsert("ValueType", "")));
+                }
+            }
 
             // Template parameters — capture name + optional `extends` bounds.
             // Bounds are resolved to QualifiedNamePtrs here so we don't need
@@ -578,6 +657,11 @@ namespace cajeta {
             // visitClassDeclaration per instantiation, so they synthesize then.
             if (!structure->isTemplate() && structure->findAnnotation("Logged")) {
                 synthesizeLoggerField(structure);
+            }
+            // Template records synthesize per-instantiation (future work);
+            // the template body walk is skipped so there are no fields here.
+            if (isRecord && !structure->isTemplate()) {
+                synthesizeRecordEquality(structure);
             }
             // tryGeneratePrototype is the deferred-aware variant: if any
             // superclass / implemented interface is still a placeholder
