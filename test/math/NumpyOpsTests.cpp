@@ -2054,6 +2054,154 @@ TEST(NumpyOpsTests, permutationShuffleChoice) {
     EXPECT_EQ(runI32(src), 1);
 }
 
+// 4 (deferred) — GPU prefix scan: Ewise.cumsumF32Op routes on placement; the device
+// Hillis-Steele inclusive scan agrees with the CPU running sum. [1..8] → [1,3,6,10,15,21,28,36].
+TEST(NumpyOpsTests, prefixScanCpuGpuAgree) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.math.Tensor;\n"
+        "import cajeta.math.Ewise;\n"
+        "public final class D {\n"
+        "    public static #Tensor<float32> data() {\n"
+        "        float32[] d = { 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f };\n"
+        "        int64[] s = heap int64[1]; s[0] = 8;\n"
+        "        return Tensor.of<float32>(d, s);\n"
+        "    }\n"
+        "    public static boolean close(float32 a, float32 b) {\n"
+        "        float32 d = a - b; if (d < 0.0f) { d = -d; } return d < 0.001f;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Tensor<float32> tc = D.data();\n"
+        "        Tensor<float32> cpu = Ewise.cumsumF32Op(tc);\n"
+        "        float32[] want = { 1.0f, 3.0f, 6.0f, 10.0f, 15.0f, 21.0f, 28.0f, 36.0f };\n"
+        "        int64 i = 0;\n"
+        "        while (i < 8) {\n"
+        "            float32 wv = want[(int32) i]; float32 gv = cpu.get1(i);\n"
+        "            if (!D.close(gv, wv)) { return -1; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        Tensor<float32> tg = D.data();\n"
+        "        tg.gpu();\n"
+        "        Tensor<float32> gpu = Ewise.cumsumF32Op(tg);\n"
+        "        gpu.cpu();\n"
+        "        i = 0;\n"
+        "        while (i < 8) {\n"
+        "            if (!D.close(gpu.get1(i), cpu.get1(i))) { return -2; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Xpu(src), 1);
+}
+
+// 4 (deferred) — GPU min/max reduction: Ewise.minF32/maxF32 route on placement; the device
+// atomic-min/max agrees with the CPU loop. data=[3,-1,4,1,-5,9,2,6] → min=-5, max=9.
+TEST(NumpyOpsTests, minMaxReduceCpuGpuAgree) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.math.Tensor;\n"
+        "import cajeta.math.Ewise;\n"
+        "public final class D {\n"
+        "    public static #Tensor<float32> data() {\n"
+        "        float32[] d = { 3.0f, -1.0f, 4.0f, 1.0f, -5.0f, 9.0f, 2.0f, 6.0f };\n"
+        "        int64[] s = heap int64[1]; s[0] = 8;\n"
+        "        return Tensor.of<float32>(d, s);\n"
+        "    }\n"
+        "    public static boolean close(float32 a, float32 b) {\n"
+        "        float32 d = a - b; if (d < 0.0f) { d = -d; } return d < 0.001f;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Tensor<float32> tc = D.data();\n"
+        "        float32 cpuMin = Ewise.minF32(tc);\n"
+        "        Tensor<float32> tc2 = D.data();\n"
+        "        float32 cpuMax = Ewise.maxF32(tc2);\n"
+        "        if (!D.close(cpuMin, -5.0f) || !D.close(cpuMax, 9.0f)) { return -1; }\n"
+        "        Tensor<float32> tg = D.data();\n"
+        "        tg.gpu();\n"
+        "        float32 gpuMin = Ewise.minF32(tg);\n"
+        "        Tensor<float32> tg2 = D.data();\n"
+        "        tg2.gpu();\n"
+        "        float32 gpuMax = Ewise.maxF32(tg2);\n"
+        "        if (!D.close(gpuMin, cpuMin) || !D.close(gpuMax, cpuMax)) { return -2; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Xpu(src), 1);
+}
+
+// 5e (deferred) — GPU scatter: Ewise.scatterF32Op routes on placement; the device scatter
+// (out[idx[i]]=in[i]) agrees with the CPU loop. values=[10,20,30,40] idx=[3,1,0,2] → [30,20,40,10].
+TEST(NumpyOpsTests, scatterCpuGpuAgree) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.math.Tensor;\n"
+        "import cajeta.math.Ewise;\n"
+        "public final class D {\n"
+        "    public static #Tensor<float32> data() {\n"
+        "        float32[] d = { 10.0f, 20.0f, 30.0f, 40.0f };\n"
+        "        int64[] s = heap int64[1]; s[0] = 4;\n"
+        "        return Tensor.of<float32>(d, s);\n"
+        "    }\n"
+        "    public static #Tensor<int64> idx() {\n"
+        "        int64[] d = { 3, 1, 0, 2 };\n"
+        "        int64[] s = heap int64[1]; s[0] = 4;\n"
+        "        return Tensor.of<int64>(d, s);\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Tensor<float32> vc = D.data();\n"
+        "        Tensor<int64> ic = D.idx();\n"
+        "        Tensor<float32> cpu = Ewise.scatterF32Op(vc, ic, 4);\n"       // host → [30,20,40,10]
+        "        if (cpu.get1(0) != 30.0f || cpu.get1(1) != 20.0f || cpu.get1(2) != 40.0f || cpu.get1(3) != 10.0f) { return -1; }\n"
+        "        Tensor<float32> vg = D.data();\n"
+        "        Tensor<int64> ig = D.idx();\n"
+        "        vg.gpu();\n"
+        "        ig.gpu();\n"
+        "        Tensor<float32> gpu = Ewise.scatterF32Op(vg, ig, 4);\n"       // device → scatter kernel
+        "        gpu.cpu();\n"
+        "        int64 i = 0;\n"
+        "        while (i < 4) {\n"
+        "            if (gpu.get1(i) != cpu.get1(i)) { return -2; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Xpu(src), 1);
+}
+
+// 10 (deferred) — GPU atomic-scatter bincount: Ewise.bincountI64Op routes on placement;
+// the device atomic scatter agrees with the CPU loop. vals=[0,1,1,2,2,2,3] → counts=[1,2,3,1].
+TEST(NumpyOpsTests, bincountCpuGpuAgree) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.math.Tensor;\n"
+        "import cajeta.math.Ewise;\n"
+        "public final class D {\n"
+        "    public static #Tensor<int64> data() {\n"
+        "        int64[] d = { 0, 1, 1, 2, 2, 2, 3 };\n"
+        "        int64[] s = heap int64[1]; s[0] = 7;\n"
+        "        return Tensor.of<int64>(d, s);\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Tensor<int64> tc = D.data();\n"
+        "        Tensor<int32> cpu = Ewise.bincountI32Op(tc, 4);\n"           // host → [1,2,3,1]
+        "        if (cpu.get1(0) != 1 || cpu.get1(1) != 2 || cpu.get1(2) != 3 || cpu.get1(3) != 1) { return -1; }\n"
+        "        Tensor<int64> tg = D.data();\n"
+        "        tg.gpu();\n"
+        "        Tensor<int32> gpu = Ewise.bincountI32Op(tg, 4);\n"           // device → atomic scatter
+        "        gpu.cpu();\n"
+        "        int64 i = 0;\n"
+        "        while (i < 4) {\n"
+        "            if (gpu.get1(i) != cpu.get1(i)) { return -2; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Xpu(src), 1);
+}
+
 // 8b — GPU FFT: FftGpu.fftF32Op routes on placement, lowering to the butterfly-stage
 // network (host-driven log2(N) stages over the device buffer). Cross-check: the device
 // FFT == the Fft.fft CPU floor within a float tolerance. N=8 (interleaved length 16).
