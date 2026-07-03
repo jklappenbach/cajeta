@@ -333,9 +333,18 @@ Each line is one diagnostic:
 - `severity`: `"error"` \| `"warning"` \| `"note"`.
 - `code`: the compiler error id (semantic errors) or `"syntax"` (parser/lexer). May be null.
 - `message`: the human message. `file` / `line` / `column`: source location when
-  known (1-based line/column), else JSON null. Syntax errors carry a precise
-  location; today's semantic errors carry the id + message (location is a
-  follow-on as the exception surface gains spans).
+  known (1-based line/column), else JSON null. Syntax errors carry a precise location;
+  **semantic** errors carry one once their site is migrated (the flagship *unresolved
+  type* does) — un-migrated sites still report null location.
+- **Collect-and-continue** (`--lint`; `docs/specs/diagnostic-engine-spec.md`): recoverable
+  semantic errors are *reported to a diagnostic engine and recovered* (the failed
+  resolution yields an **error type** so analysis continues) rather than aborting on the
+  first. A linted file surfaces **all** its migrated semantic errors at once, sorted by
+  span and deduped. Migration is incremental — an un-migrated site still throws (fatal /
+  abort-on-first), which is also how **full compile** behaves today.
+- Remaining sub-phase: run **codegen in collect mode** with error-type *absorption* (an
+  operation on an error type yields an error type, no secondary diagnostic) so use-site /
+  type-mismatch errors are collected too, and extend collect-and-continue to full compile.
 - Mode-independent (not changed by `--debug`/`--release`/etc.); default `text`.
 - A clean compile emits nothing. Consumers should skip any non-`{` line defensively.
 

@@ -506,6 +506,14 @@ class CajetaType : public Modifiable, public Annotatable,
         // through parsing and the template-instantiation cache only.
         static CajetaTypePtr wildcardSentinel();
 
+        // The error/poison type (diagnostic-engine-spec §3): a singleton returned
+        // when resolution fails, so semantic analysis continues instead of
+        // throwing. Not registered in the type map (unfindable by name). Codegen
+        // is gated on the diagnostic engine having no errors, so it is never
+        // lowered. `isError()` is true only for this sentinel.
+        static CajetaTypePtr error();
+        bool isError() const;
+
         // Step 6 — bounded wildcards. Lazy per-(kind, bound) sentinels
         // cached in canonicalMap under canonicals "? extends <bound>"
         // and "? super <bound>". All wildcard sentinels share the

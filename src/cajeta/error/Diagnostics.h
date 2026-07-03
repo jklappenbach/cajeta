@@ -20,7 +20,36 @@
 #include <string>
 #include <vector>
 
+#include "Exception.h"
+
+namespace antlr4 { class Token; }
+
 namespace cajeta {
+
+    // Build a cajeta::Exception carrying `token`'s source location (1-based
+    // line/column) plus the active module's source path — for
+    // located-semantic-diagnostics. A null token yields an unlocated Exception.
+    Exception locatedException(antlr4::Token* token,
+                               const std::string& message,
+                               const std::string& errorId);
+
+    // Overload for AST-node throw sites: explicit 1-based line/column (from
+    // AbstractSyntaxNode::getSourceLine()/getSourceColumn() + 1) + the active
+    // module's source path.
+    Exception locatedException(int line, int column,
+                               const std::string& message,
+                               const std::string& errorId);
+
+    // Migration primitive (diagnostic-engine): report a recoverable semantic
+    // error to the active DiagnosticEngine and return (so the caller recovers,
+    // e.g. with CajetaType::error()). When no engine is active — full compile
+    // that hasn't opted into collect-and-continue — it throws locatedException
+    // instead, preserving today's abort-on-first behavior. Two location forms.
+    void reportOrThrow(antlr4::Token* token,
+                       const std::string& errorId, const std::string& message);
+    void reportOrThrow(int line, int column,
+                       const std::string& errorId, const std::string& message);
+
 
     // Compute the Levenshtein edit distance between two strings.
     // O(|a| · |b|) time and O(min(|a|, |b|)) space. Distance includes

@@ -283,6 +283,98 @@ TEST(LintSourceRoot, ShadowReplacesOnDiskTwin) {
     EXPECT_EQ(err.find("{\"severity\""), std::string::npos) << err;
 }
 
+// located-semantic-diagnostics 1.1.2 — an unresolved type carries its location.
+TEST(LintMode, UnresolvedTypeCarriesLineAndColumn) {
+    // writeFile puts the body on line 4, indented 8 spaces, so `NoSuchType`
+    // starts at column 9 (1-based).
+    auto file = writeFile(freshTempDir("loc"), "NoSuchType z = NoSuchType.create();");
+    std::string err;
+    int rc = lintCapturingStderr(file, "--diag-format=json", err);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_NE(rc, 0);
+    EXPECT_NE(err.find("CAJETA_ERROR_UNRESOLVED_TYPE"), std::string::npos) << err;
+    EXPECT_NE(err.find("\"line\":4"), std::string::npos)
+        << "unresolved-type diagnostic must carry its line; stderr:\n" << err;
+    EXPECT_NE(err.find("\"column\":9"), std::string::npos)
+        << "unresolved-type diagnostic must carry its 1-based column; stderr:\n" << err;
+}
+
+// Regression (review finding): a file that declares a package must not leak the
+// package-path-mismatch plain-text error into the NDJSON stream. Its lint/temp
+// path can't match the declared package, but that's a false positive for a
+// staged buffer — the whole stream must stay machine-parseable.
+TEST(LintMode, PackagedFileEmitsNoTextLeak) {
+    auto file = writeFile(freshTempDir("pkg"), "int32 x = 1;");  // clean, `package demo;`
+    std::string err;
+    int rc = lintCapturingStderr(file, "--diag-format=json", err);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_EQ(rc, 0) << err;
+    std::istringstream ss(err);
+    std::string line;
+    int leak = 0;
+    while (std::getline(ss, line))
+        if (!line.empty() && line[0] != '{') leak++;
+    EXPECT_EQ(leak, 0) << "plain text leaked into the json stream:\n" << err;
+}
+
+// diagnostic-engine 3.1.1 — multiple independent semantic errors all report,
+// each located, instead of aborting after the first.
+TEST(LintMode, MultipleUnresolvedTypesAllReported) {
+    auto dir = freshTempDir("multi");
+    fs::create_directories(dir / "demo");
+    auto file = dir / "demo" / "File.cajeta";
+    {
+        std::ofstream o(file);
+        o << "package demo;\n"
+             "public final class File {\n"
+             "    public static void main() {\n"
+             "        Bad1 a = null;\n"   // line 4
+             "        Bad2 b = null;\n"   // line 5
+             "    }\n}\n";
+    }
+    std::string err;
+    int rc = lintCapturingStderr(file, "--diag-format=json", err);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_NE(rc, 0);
+    EXPECT_NE(err.find("Bad1"), std::string::npos) << err;
+    EXPECT_NE(err.find("Bad2"), std::string::npos) << err;
+    EXPECT_NE(err.find("\"line\":4"), std::string::npos) << err;
+    EXPECT_NE(err.find("\"line\":5"), std::string::npos) << err;
+    // Exactly two error diagnostics (not one, not a cascade).
+    size_t n = 0, pos = 0;
+    while ((pos = err.find("\"severity\":\"error\"", pos)) != std::string::npos) { n++; pos++; }
+    EXPECT_EQ(n, 2u) << "expected exactly two errors; stderr:\n" << err;
+    EXPECT_TRUE(everyNonEmptyLineIsJson(err))
+        << "stream must be pure NDJSON (no text leak):\n" << err;
+}
+
+// diagnostic-engine 5.1 — a SEMANTICALLY broken sibling (its own body has an
+// unresolved type) must not leak into the target's engine (the sibling parse
+// runs a suppressed engine). Distinct from the syntax-broken case, which throws
+// before the visitor.
+TEST(LintSourceRoot, SemanticBrokenSiblingDoesNotLeak) {
+    auto root = freshTempDir("semsib") / "src";
+    writeUnit(root, "Sibling",
+        "public final class Sibling {\n"
+        "    public static int32 add(int32 a, int32 b) { return a + b; }\n"
+        "    public static void oops() { Nope n = null; }\n"   // unresolved type in sibling
+        "}");
+    auto target = writeUnit(root, "Target",
+        "public final class Target {\n"
+        "    public static void main() { int32 x = Sibling.add(1, 2); }\n"
+        "}");
+    std::string err;
+    int rc = lintCapturingStderr(target, "--diag-format=json --source-root " + root.string(), err);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_EQ(rc, 0) << "target is clean; the sibling's error must not surface:\n" << err;
+    EXPECT_EQ(err.find("Nope"), std::string::npos) << "sibling diagnostic leaked:\n" << err;
+    EXPECT_EQ(err.find("{\"severity\""), std::string::npos) << err;
+}
+
 // 1.1.5 — a nonexistent --source-root fails clearly, not with the usage banner.
 TEST(LintSourceRoot, MissingSourceRootFailsClearly) {
     auto root = freshTempDir("badroot") / "src";

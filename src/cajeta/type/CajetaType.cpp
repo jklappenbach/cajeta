@@ -415,6 +415,18 @@ namespace cajeta {
             && it->second.kind != WildcardKind::None;
     }
 
+    CajetaTypePtr CajetaType::error() {
+        // Singleton, built directly (not via create()) so it never lands in the
+        // type registry / canonicalMap and can't be found by name.
+        static CajetaTypePtr sentinel =
+            std::make_shared<CajetaType>(QualifiedName::getOrCreate("<error>"));
+        return sentinel;
+    }
+
+    bool CajetaType::isError() const {
+        return this == error().get();
+    }
+
     CajetaType::WildcardKind CajetaType::wildcardKind() const {
         if (!qName) return WildcardKind::None;
         auto it = g_wildcardInfo.find(qName->toCanonical());
