@@ -57,6 +57,7 @@ modifier
     | NATIVE
     | TRANSIENT
     | VOLATILE
+    | MUT  // record per-field mutation opt-in (records-spec §3.4)
     ;
 
 classOrInterfaceModifier
@@ -572,6 +573,9 @@ identifier
     // tree -> bad any_cast at AST-build time. (Unlike its placement siblings
     // HEAP/STACK, which are reserved, `shared` collides with real user code.)
     | SHARED
+    // `mut` is likewise contextual: meaningful only as a record field
+    // modifier; everywhere else it stays a plain identifier.
+    | MUT
     ;
 
 localTypeDeclaration
