@@ -56,5 +56,15 @@ chk     "run task absent from archetype"       bash -c "! $CAJETA tasks | grep -
 chkgrep "dap subcommand advertised"            'dap'                    "$CAJETA" --help
 chkgrep "ide subcommand advertised"            'ide'                    "$CAJETA" --help
 
+# ch02 — the build-tool family is discoverable from --help (unit 8)
+chkgrep "help lists init"                      '^  init'                "$CAJETA" --help
+chkgrep "help lists build"                     '^  build'               "$CAJETA" --help
+chkgrep "help lists test"                      '^  test'                "$CAJETA" --help
+chkgrep "help lists tasks"                     '^  tasks'               "$CAJETA" --help
+chkgrep "help lists install/publish"           '^  install|^  publish'  "$CAJETA" --help
+chkgrep "help lists dependency mgmt"           'add.*remove.*upgrade|^  add' "$CAJETA" --help
+chkgrep "help lists doc"                       '^  doc'                 "$CAJETA" --help
+chkgrep "help mentions task fallthrough"       'manifest task|cajeta\.json task' "$CAJETA" --help
+
 if [ "$fails" -gt 0 ]; then echo "check-guide-part1: $fails failure(s)"; exit 1; fi
 echo "check-guide-part1: OK"
