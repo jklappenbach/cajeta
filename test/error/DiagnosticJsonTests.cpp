@@ -137,6 +137,62 @@ TEST(DiagnosticJson, fieldsSerializeUserExceptionFields) {
     EXPECT_EQ(fn(), 1);
 }
 
+// 2.1.3: category affordances default false and serialize; a subclass override
+// flips them. 2.1.4: remediation round-trips when hint()/docUrl() are set, and
+// is absent otherwise.
+TEST(DiagnosticJson, categoryDefaultsAndRemediationAbsent) {
+    auto jit = CajetaJit::compile(src(
+        "try {\n"
+        "    throw heap Exception(\"plain\");\n"
+        "} catch (Exception e) {\n"
+        "    String j = e.toJson();\n"
+        "    boolean ok = j.contains(\"\\\"category\\\":{\\\"retryable\\\":false\")\n"
+        "              && j.contains(\"\\\"userActionable\\\":false\")\n"
+        "              && !j.contains(\"\\\"remediation\\\"\");\n"
+        "    if (ok) { return 1; }\n"
+        "    return 0;\n"
+        "}\n"
+        "return -1;"), "test.S");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 1);
+}
+
+TEST(DiagnosticJson, categoryOverrideAndRemediationRoundTrip) {
+    std::map<std::string, std::string> sources;
+    sources["test.Flaky"] =
+        "package test;\n"
+        "import cajeta.error.Exception;\n"
+        "public final class Flaky extends Exception {\n"
+        "    public Flaky(#String message) { this.message = message; this.cause = 0; }\n"
+        "    public boolean isRetryable() { return true; }\n"
+        "    public boolean isTransient() { return true; }\n"
+        "    public String hint() { return \"retry with backoff\"; }\n"
+        "    public String docUrl() { return \"https://cajeta.dev/e/flaky\"; }\n"
+        "}\n";
+    sources["test.S"] =
+        "package test;\n"
+        "import cajeta.error.Exception;\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        try {\n"
+        "            throw heap Flaky(\"timeout\");\n"
+        "        } catch (Exception e) {\n"
+        "            String j = e.toJson();\n"
+        "            boolean ok = j.contains(\"\\\"retryable\\\":true\")\n"
+        "                      && j.contains(\"\\\"transient\\\":true\")\n"
+        "                      && j.contains(\"\\\"remediation\\\":{\")\n"
+        "                      && j.contains(\"\\\"hint\\\":\\\"retry with backoff\\\"\")\n"
+        "                      && j.contains(\"https://cajeta.dev/e/flaky\");\n"
+        "            if (ok) { return 1; }\n"
+        "            return 0;\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(sources, "test.S");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 1);
+}
+
 // 2.1.2: @DiagnosticCode("...") on a type sets its JSON `code`; without it, code
 // stays the canonical type name (default covered by codeDefaultsToTypeName).
 TEST(DiagnosticJson, diagnosticCodeAnnotationOverridesDefault) {

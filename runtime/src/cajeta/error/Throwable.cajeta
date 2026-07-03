@@ -70,6 +70,25 @@ public class Throwable {
         return null;
     }
 
+    // Category affordances (diagnostic-exceptions §3). Overridable; the base
+    // defaults are conservative (a bare throwable claims nothing). They serialize
+    // into the JSON `category` object so a caller/agent can decide retry vs bail.
+
+    /** Whether retrying the failed operation may succeed. Default `false`. */
+    public boolean isRetryable() { return false; }
+    /** Whether the failure is transient (environmental, likely self-clearing). Default `false`. */
+    public boolean isTransient() { return false; }
+    /** Whether a human/agent action is required to resolve this. Default `false`. */
+    public boolean isUserActionable() { return false; }
+
+    // Remediation (diagnostic-exceptions §3). Overridable; `null` = unset, in
+    // which case the JSON `remediation` object is omitted entirely.
+
+    /** A short human/agent-readable fix hint, or `null` when none. */
+    public String hint() { return null; }
+    /** A documentation URL for this error, or `null` when none. */
+    public String docUrl() { return null; }
+
     /** JSON-string-escape `s` (shared escaping with the compiler emitter). */
     private static #String jsonEscape(String s) {
         int32 len = jsonEscapeLen(s);
@@ -93,6 +112,24 @@ public class Throwable {
             diagFieldsInto(this, fout);
             String fstr = heap String(#fout, flen);
             j = j + fstr;
+        }
+        j = j + ",\"category\":{\"retryable\":" + this.isRetryable()
+              + ",\"transient\":" + this.isTransient()
+              + ",\"userActionable\":" + this.isUserActionable() + "}";
+        String h = this.hint();
+        String du = this.docUrl();
+        if (h != null || du != null) {
+            j = j + ",\"remediation\":{";
+            boolean firstR = true;
+            if (h != null) {
+                j = j + "\"hint\":\"" + jsonEscape(h) + "\"";
+                firstR = false;
+            }
+            if (du != null) {
+                if (!firstR) { j = j + ","; }
+                j = j + "\"docUrl\":\"" + jsonEscape(du) + "\"";
+            }
+            j = j + "}";
         }
         Throwable c = this.getCause();
         if (c != null) {
