@@ -91,7 +91,11 @@ void __cajeta_utf8_of_string(void* out_v, void* s_v) {
         __cajeta_shared_promote(root, 2);
         out->lenTag = len | CAJ_UTF8_SHARED_BIT;
     } else if (s->mode == 2) {
-        __cajeta_shared_retain(root);
+        if (s->ssoData[0]) {
+            __cajeta_shared_promote(root, 2);   // borrow source holds no stake
+        } else {
+            __cajeta_shared_retain(root);
+        }
         out->lenTag = len | CAJ_UTF8_SHARED_BIT;
     } else {
         out->lenTag = len;                 // Static: no rc

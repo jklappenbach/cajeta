@@ -251,6 +251,22 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
+    // Array/slice window: `base[a:b]` (slice-spec §2/§7.2; slices plan Unit 7).
+    // children = [base, from, to]. Yields a `Slice<E>` VALUE (an alloca of the
+    // 3-word {store, off, len} body):
+    //   - array base:  {arr, a, b-a} windowing the root (from/to clamped to
+    //     [0, count] like String.substring);
+    //   - slice base:  {base.store, base.off + a, b-a} — O(1) composition
+    //     attributing to the ROOT.
+    class ArraySliceExpression : public Expression {
+    public:
+        ArraySliceExpression(CajetaParser::ExpressionContext* ctx, antlr4::Token* token);
+
+        void resolveTypes(CajetaModulePtr module) override;
+
+        llvm::Value* generateCode(CajetaModulePtr module) override;
+    };
+
     // List literal: `[e1, e2, ...]` (and the empty `[]`). Grammar:
     // `arrayLiteral : '[' expressionList? ']'`, reachable from `primary`
     // (CajetaParser.g4). Introduced for the XPU launch dimensions

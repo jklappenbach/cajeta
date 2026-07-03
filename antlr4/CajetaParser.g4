@@ -739,6 +739,9 @@ expression
        | HEAP nonWildcardTypeArguments? innerCreator
        | SUPER superSuffix
       )
+    // Array/slice window (slice-spec §7.2): `arr[a:b]` yields Slice<T>.
+    // Listed before the plain index form so the longer bracketed shape wins.
+    | expression '[' expression COLON expression ']'
     | expression '[' expression ']'
     // XPU: postfix call applied to the result of an expression — the
     // `(args)` that follows `kernel.launch(stream, grid:, block:)`. General

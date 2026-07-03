@@ -209,6 +209,171 @@ const char* __cajeta_string_cstr(void* s_v) {
 //                        attribute to the root).
 //   mode-1 source     -> no rc (a static/borrowed root is never written; the
 //                        release at drop no-ops on unregistered roots).
+// Escape resolution (slice-spec §4.2; slices plan Unit 4). Called at an
+// escape site (a plain String field store whose RHS is a scope-owned local
+// wrapper): returns a FRESH wrapper the destination owns — the stored value
+// no longer aliases the source's wrapper (whose declaring scope frees it),
+// and the §4.2 row decides the backing:
+//   SSO / arena root / len <= threshold  -> materialized owned copy (mode 0)
+//   large heap root                      -> stake on the root (promote-or-
+//                                           retain; mode-2 window)
+//   static root (mode 1)                 -> free alias (no rc, mode 1)
+// [D-thresh] = 256 B.
+void* __cajeta_string_resolve(void* src_v) {
+    cajeta_string_layout* src = (cajeta_string_layout*) src_v;
+    if (!src) return NULL;
+    cajeta_string_layout* out =
+        (cajeta_string_layout*) __cajeta_alloc(sizeof(cajeta_string_layout));
+    out->vtable = src->vtable;
+    out->cachedCpLength = src->cachedCpLength;
+    out->ssoCount = 0;
+    memset(out->ssoData, 0, sizeof out->ssoData);
+    int32_t len = src->byteLength;
+    if (len <= 0 || src->bytes == NULL) {
+        out->bytes = NULL;
+        out->byteLength = 0;
+        out->mode = 0;
+        return out;
+    }
+    int32_t srcOff = (src->mode == 2) ? (int32_t) src->ssoCount : 0;
+    if (src->mode == 1) {                         // static root: alias freely
+        out->bytes = src->bytes;
+        out->byteLength = len;
+        out->mode = 1;
+        return out;
+    }
+    int __cajeta_arena_owns(const void* p);
+    if (src->bytes == (void*) &src->ssoCount
+            || __cajeta_arena_owns(src->bytes)
+            || len <= 256) {                      // copy-small + arena + SSO rows
+        void* buf = __cajeta_new_array_header(8, 1, (uint64_t) len + 1);
+        *((int64_t*) buf) = len;
+        memcpy((char*) buf + 8, (char*) src->bytes + 8 + srcOff, (size_t) len);
+        ((char*) buf)[8 + len] = 0;
+        out->bytes = buf;
+        out->byteLength = len;
+        out->mode = 0;
+        return out;
+    }
+    __cajeta_shared_promote(src->bytes, 2);       // share-large: add-or-create
+    out->bytes = src->bytes;
+    out->byteLength = len;
+    out->mode = 2;
+    out->ssoCount = (int64_t) srcOff;
+    return out;
+}
+
+// --- Slice<T> escape machinery (slice-spec §7.2; slices plan Unit 7b) -----
+// A Slice<T> VALUE is {T[] store; i64 off; i64 len} — three words, no
+// wrapper. Locals are borrows (zero rc). A slice stored past its scope is
+// RESOLVED in place per the §4.2 table; copies of resolved values retain;
+// value drops release (both sign-bit-gated, so borrows stay free).
+
+typedef struct {
+    void*   store;    // CajetaArray root header {i64 count; data}
+    int64_t off;      // element offset from the root's data
+    int64_t len;      // window length in elements
+} caj_slice_layout;
+
+// Resolve at an escape site (field store): arena root or payload <= 256 B
+// copies into a FRESH root the destination owns (rc=1 shared, so the value
+// drop's release retires it); a larger heap window takes a stake on the
+// root (promote add-or-create: owner + this value). Static-rooted slices
+// don't exist today (array literals are heap) — the promote row covers any
+// future case safely.
+void __cajeta_slice_resolve(void* slice_v, int64_t elemSize) {
+    caj_slice_layout* s = (caj_slice_layout*) slice_v;
+    if (!s || !s->store || s->len <= 0 || elemSize <= 0) return;
+    int64_t payload = s->len * elemSize;
+    int __cajeta_arena_owns(const void* p);
+    if (__cajeta_arena_owns(s->store) || payload <= 256) {
+        void* buf = __cajeta_new_array_header(8, (uint64_t) elemSize,
+                                              (uint64_t) s->len);
+        *((int64_t*) buf) = s->len;
+        memcpy((char*) buf + 8,
+               (const char*) s->store + 8 + s->off * elemSize,
+               (size_t) payload);
+        __cajeta_shared_promote(buf, 1);
+        s->store = buf;
+        s->off = 0;
+        return;
+    }
+    __cajeta_shared_promote(s->store, 2);
+}
+
+// Copy hook arm: a copy of a RESOLVED (shared-rooted) slice holds its own
+// stake; borrow copies stay free (sign-bit gate).
+void __cajeta_slice_retain(void* slice_v) {
+    caj_slice_layout* s = (caj_slice_layout*) slice_v;
+    if (!s || !s->store) return;
+    if (*(const int64_t*) s->store < 0) {
+        __cajeta_shared_retain(s->store);
+    }
+}
+
+// Drop hook arm: release the stake of a resolved slice; the last stake
+// frees the root. Borrows (unshared roots) no-op. Poisons against
+// double-release.
+void __cajeta_slice_release(void* slice_v) {
+    caj_slice_layout* s = (caj_slice_layout*) slice_v;
+    if (!s || !s->store) return;
+    if (*(const int64_t*) s->store < 0) {
+        if (__cajeta_shared_release(s->store)) {
+            __cajeta_poison_buffer(s->store);
+            free(s->store);
+        }
+    }
+    s->store = NULL;
+    s->off = 0;
+    s->len = 0;
+}
+
+// Borrow-mode slice (slices plan 4.2.2 local-borrow downgrade): for a slice
+// the compiler PROVED never leaves its scope (no return, no `#`-move, no
+// lambda capture — field stores and call args resolve at their own sites),
+// the view takes NO stake at all: zero rc traffic, zero side-table touch.
+// The wrapper is an ordinary mode-2 window whose drop's release no-ops on an
+// unregistered root; any later escape of the VALUE resolves (promote is
+// add-or-create). SSO sources still materialize (never alias a wrapper's
+// inline region); arena/heap/static roots alias freely — the borrow dies
+// with its scope, before its root.
+void* __cajeta_string_slice_borrow(void* src_v, int32_t begin, int32_t len) {
+    cajeta_string_layout* src = (cajeta_string_layout*) src_v;
+    cajeta_string_layout* out =
+        (cajeta_string_layout*) __cajeta_alloc(sizeof(cajeta_string_layout));
+    out->vtable = src->vtable;
+    out->cachedCpLength = -1;
+    out->ssoCount = 0;
+    memset(out->ssoData, 0, sizeof out->ssoData);
+    if (len <= 0 || src->bytes == NULL) {
+        out->bytes = NULL;
+        out->byteLength = 0;
+        out->mode = 0;
+        return out;
+    }
+    int32_t srcOff = (src->mode == 2) ? (int32_t) src->ssoCount : 0;
+    if (src->bytes == (void*) &src->ssoCount) {
+        void* buf = __cajeta_new_array_header(8, 1, (uint64_t) len + 1);
+        *((int64_t*) buf) = len;
+        memcpy((char*) buf + 8, (char*) src->bytes + 8 + srcOff + begin, (size_t) len);
+        ((char*) buf)[8 + len] = 0;
+        out->bytes = buf;
+        out->byteLength = len;
+        out->mode = 0;
+        return out;
+    }
+    out->bytes = src->bytes;
+    out->byteLength = len;
+    out->mode = 2;
+    out->ssoCount = (int64_t) (srcOff + begin);
+    // The borrow flag: ssoData[0] (unused when bytes != &ssoCount). A
+    // stakeless mode-2 wrapper must NOT release at drop — once an escape
+    // registers the root, an unflagged borrow's drop would steal a stake
+    // it never took.
+    out->ssoData[0] = 1;
+    return out;
+}
+
 void* __cajeta_string_slice(void* src_v, int32_t begin, int32_t len) {
     cajeta_string_layout* src = (cajeta_string_layout*) src_v;
     cajeta_string_layout* out =
@@ -246,7 +411,13 @@ void* __cajeta_string_slice(void* src_v, int32_t begin, int32_t len) {
     if (src->mode == 0) {
         __cajeta_shared_promote(root, 2);
     } else if (src->mode == 2) {
-        __cajeta_shared_retain(root);
+        // A borrow-flagged source holds NO stake: add-or-create (owner +
+        // this view) instead of retaining a possibly-absent entry.
+        if (src->ssoData[0]) {
+            __cajeta_shared_promote(root, 2);
+        } else {
+            __cajeta_shared_retain(root);
+        }
     }
     out->bytes = root;
     out->byteLength = len;

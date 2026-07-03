@@ -502,6 +502,27 @@ public final class String {
         return Cajeta.stringSlice(this, begin, len);
     }
 
+    /**
+     * INTERNAL (slices plan 4.2.2): borrow-mode substring — identical window
+     * semantics, but the view takes NO stake (zero rc). The compiler rewrites
+     * `substring` calls to this when the receiving local provably never
+     * leaves its scope; escapes of the VALUE resolve at their own sites.
+     * Not intended for direct use.
+     */
+    public #String substringView(int32 begin, int32 end) {
+        if (begin < 0) {
+            begin = 0;
+        }
+        if (end > this.byteLength) {
+            end = this.byteLength;
+        }
+        if (end < begin) {
+            end = begin;
+        }
+        int32 len = end - begin;
+        return Cajeta.stringSliceBorrow(this, begin, len);
+    }
+
     // 0x80 in each byte of `v` whose value lies in [lo, hi]. Valid only when
     // every byte of `v` is < 0x80 (no inter-byte carry): byte+0x80-lo sets the
     // high bit iff byte >= lo, and the same for hi+1 gives byte > hi.
@@ -660,6 +681,21 @@ public final class String {
         }
         // Zero-copy: the trimmed run is a window of this String (slice-spec §7.1).
         return Cajeta.stringSlice(this, start, end - start);
+    }
+
+    /** INTERNAL (slices plan 4.2.2): borrow-mode trim — see substringView. */
+    public #String trimView() {
+        int32 o = 0;
+        if (this.mode == 2) { o = (int32) this.ssoCount; }
+        int32 start = 0;
+        int32 end = this.byteLength;
+        while (start < end && (((int32) this.bytes[o + start]) & 0xff) <= 0x20) {
+            start = start + 1;
+        }
+        while (end > start && (((int32) this.bytes[o + end - 1]) & 0xff) <= 0x20) {
+            end = end - 1;
+        }
+        return Cajeta.stringSliceBorrow(this, start, end - start);
     }
 
     /**

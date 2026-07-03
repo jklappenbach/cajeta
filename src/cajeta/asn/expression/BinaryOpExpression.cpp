@@ -5,6 +5,7 @@
 #include "BinaryOpExpression.h"
 #include "OperatorDispatch.h"
 #include "../../error/CajetaExceptions.h"
+#include "../../error/DiagnosticEngine.h"
 #include "../../error/Exception.h"
 #include "../../compile/CajetaModule.h"
 #include "../../type/CajetaClass.h"
@@ -408,6 +409,14 @@ namespace cajeta {
         // shape). The class-ref catch-all below would load through it and
         // hand back the first field's bytes as a "pointer".
         if (dynamic_pointer_cast<CastExpression>(ast)) {
+            return v;
+        }
+        // `base[a:b]` yields a freshly built Slice<T> VALUE — the returned
+        // alloca IS the aggregate (same shape as the record upcast above).
+        // The class-ref catch-all would load its first word (the store
+        // pointer — the backing array header) and treat THAT as the value:
+        // the exact double-deref that handed count() the header bytes.
+        if (dynamic_pointer_cast<ArraySliceExpression>(ast)) {
             return v;
         }
         // REFL-1.5 — `T.class` returns the address of the type's #ClassObject
@@ -1461,7 +1470,44 @@ namespace cajeta {
                             } else {
                                 builder->CreateStore(rhs, lhs);
                             }
-                            if (hooked && !selfAssign && rhsLvalue) {
+                            // Slice<T> FIELD stores resolve in place per the
+                            // §4.2 table (slice-spec §7.2): arena / <=256 B
+                            // payload copies into a fresh field-owned root,
+                            // larger windows take a stake — for BOTH lvalue
+                            // and rvalue RHS (a fresh `arr[a:b]` is a borrow
+                            // of the array too). Local Slice assigns keep
+                            // borrow semantics (the generic retain arm's
+                            // sign-bit gate makes copies of resolved values
+                            // retain and borrow copies free).
+                            bool lhsIsSliceField = hooked && !selfAssign
+                                && dynamic_pointer_cast<DotExpression>(lhsAst)
+                                && lhsCls->getQName()
+                                && lhsCls->getQName()->getPackageName() == "cajeta.lang"
+                                && lhsCls->getQName()->getTypeName().rfind("Slice", 0) == 0;
+                            if (lhsIsSliceField) {
+                                int64_t elemSize = 8;
+                                auto& props = lhsCls->getProperties();
+                                auto pit = props.find("store");
+                                if (pit != props.end()) {
+                                    if (auto arrT = dynamic_pointer_cast<CajetaArray>(
+                                            pit->second->getType())) {
+                                        if (auto et = arrT->getElementType()) {
+                                            if (llvm::Type* lt = et->getLlvmType()) {
+                                                elemSize = (int64_t) module
+                                                    ->getLlvmModule()->getDataLayout()
+                                                    .getTypeAllocSize(lt);
+                                            }
+                                        }
+                                    }
+                                }
+                                if (llvm::Function* resolveSliceFn =
+                                        module->getRuntimeFunction("__cajeta_slice_resolve")) {
+                                    builder->CreateCall(resolveSliceFn, {lhs,
+                                        llvm::ConstantInt::get(
+                                            llvm::Type::getInt64Ty(*module->getLlvmContext()),
+                                            (uint64_t) elemSize)});
+                                }
+                            } else if (hooked && !selfAssign && rhsLvalue) {
                                 lhsCls->emitValueSharedOp(*builder, lhs, module,
                                     hookModule, /*retain=*/true);
                             }
@@ -1505,6 +1551,113 @@ namespace cajeta {
                                 builder->CreateMemCpy(lhs, align, srcBody, align, size);
                             }
                             result = lhs;
+                            break;
+                        }
+                    }
+                }
+                // Escape resolution at the String field-store site (slice-spec
+                // §4.2; slices plan Unit 4). A plain `obj.f = w` where w is a
+                // scope-owned String LVALUE stored the BORROWED WRAPPER pointer
+                // — the declaring scope frees that wrapper at exit and the
+                // field dangles (UAF). Resolve instead: store a FRESH wrapper
+                // the field owns (copy ≤ threshold / stake on a large heap
+                // root / free alias of a static root — the runtime decides).
+                // Rvalue RHS (call result, concat, `#`-move) transfers its
+                // wrapper as before — no resolve.
+                if (auto dotLhs2 = dynamic_pointer_cast<DotExpression>(lhsAst)) {
+                    if (lhsAst && !lhsAst->getResolvedType()) lhsAst->resolveTypes(module);
+                    auto lhsCls2 = dynamic_pointer_cast<CajetaClass>(
+                        lhsAst->getResolvedType());
+                    bool lhsIsString = lhsCls2 && lhsCls2->getQName()
+                        && lhsCls2->getQName()->getTypeName() == "String"
+                        && lhsCls2->getQName()->getPackageName() == "cajeta.lang";
+                    if (lhsIsString && rhsAst) {
+                        if (!rhsAst->getResolvedType()) rhsAst->resolveTypes(module);
+                        auto rhsCls2 = dynamic_pointer_cast<CajetaClass>(
+                            rhsAst->getResolvedType());
+                        bool rhsIsString = rhsCls2 && rhsCls2->getQName()
+                            && rhsCls2->getQName()->getTypeName() == "String"
+                            && rhsCls2->getQName()->getPackageName() == "cajeta.lang";
+                        // A string-literal RHS is a String even when its
+                        // resolvedType is a null/placeholder (the unqualified
+                        // CajetaType::of("String") path) — detect structurally
+                        // so literal stores (`obj.f = "x"`) still old-drop.
+                        if (!rhsIsString) {
+                            if (auto lit = dynamic_pointer_cast<TextLiteralExpression>(rhsAst)) {
+                                LiteralType lt = lit->getLiteralType();
+                                rhsIsString = (lt == LITERAL_TYPE_STRING
+                                               || lt == LITERAL_TYPE_TEXT_BLOCK);
+                            }
+                        }
+                        bool rhsIsLvalue =
+                            dynamic_pointer_cast<IdentifierExpression>(rhsAst)
+                            || dynamic_pointer_cast<DotExpression>(rhsAst)
+                            || dynamic_pointer_cast<ArrayIndexExpression>(rhsAst);
+                        if (rhsIsString) {
+                            llvm::Function* resolveFn = rhsIsLvalue
+                                ? module->getRuntimeFunction("__cajeta_string_resolve")
+                                : nullptr;
+                            llvm::Value* srcWrapper = loadR(rhs);
+                            // Lvalue RHS: the source keeps its wrapper — the
+                            // field takes a FRESH resolved one (copy ≤
+                            // threshold / stake on a large heap root / static
+                            // alias). Rvalue RHS (literal, call result,
+                            // concat, `#`-move): the wrapper transfers as-is.
+                            llvm::Value* fresh = (rhsIsLvalue && resolveFn)
+                                ? builder->CreateCall(resolveFn, {srcWrapper},
+                                                      "str_resolve")
+                                : srcWrapper;
+                            // 4.2.3 visibility lint: each silent resolution
+                            // is reported as a NOTE (never an error) so the
+                            // copy/share cost is visible; `#`-transfer makes
+                            // the store free. No-op without an active engine.
+                            // Stdlib-internal stores (the cajeta.* namespace,
+                            // which user code cannot extend) never lint into
+                            // user diagnostics.
+                            bool inStdlibClass = false;
+                            if (!module->getStructureStack().empty()) {
+                                auto owner = module->getStructureStack().back();
+                                if (owner && owner->getQName()) {
+                                    const std::string& pkg =
+                                        owner->getQName()->getPackageName();
+                                    inStdlibClass = pkg == "cajeta"
+                                        || pkg.rfind("cajeta.", 0) == 0;
+                                }
+                            }
+                            if (rhsIsLvalue && resolveFn && !inStdlibClass) {
+                                if (DiagnosticEngine* eng = DiagnosticEngine::active()) {
+                                    eng->report("note", "CAJETA_LINT_SLICE_RESOLVED",
+                                        "String store resolves silently (copies when "
+                                        "<= 256 B or arena/SSO-backed, otherwise takes "
+                                        "a shared stake); a `#` transfer of the source "
+                                        "would make this store free",
+                                        module->getSourcePath(),
+                                        (int) getSourceLine(), -1);
+                                }
+                            }
+                            // The field OWNS its wrapper (both arms), so
+                            // dropping the previous value on overwrite is safe
+                            // and closes the String-field overwrite leak.
+                            // SKIPPED inside constructors: stack-class bodies
+                            // aren't zero-initialized — a ctor's first store
+                            // would read garbage as the "old" wrapper (heap
+                            // bodies are zeroed; the skip costs at most a leak
+                            // on a ctor double-store).
+                            bool inCtor = false;
+                            if (auto cm = module->getCurrentMethod()) {
+                                inCtor = cm->isConstructor();
+                            }
+                            if (!inCtor) {
+                                llvm::Value* oldVal = builder->CreateLoad(
+                                    llvm::PointerType::get(*module->getLlvmContext(), 0),
+                                    lhs, "str_old");
+                                if (llvm::Function* dropFn =
+                                        module->getRuntimeFunction("__cajeta_string_drop")) {
+                                    builder->CreateCall(dropFn, {oldVal});
+                                }
+                            }
+                            builder->CreateStore(fresh, lhs);
+                            result = fresh;
                             break;
                         }
                     }
