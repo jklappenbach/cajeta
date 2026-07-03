@@ -385,6 +385,7 @@ namespace cajeta {
         }
         list<CajetaClassPtr>& getImplementedInterfaces() { return implementedInterfaces; }
         const list<QualifiedNamePtr>& getQImplemented() const { return qImplemented; }
+        const list<QualifiedNamePtr>& getQExtended() const { return qExtended; }
         void setQImplemented(list<QualifiedNamePtr> q) { qImplemented = std::move(q); }
         const list<vector<QualifiedNamePtr>>& getQImplementedTypeArgs() const {
             return qImplementedTypeArgs;

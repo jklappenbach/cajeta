@@ -582,3 +582,153 @@ TEST(RecordCompileErrorTests, withUnknownFieldRejected) {
         "}\n";
     EXPECT_ANY_THROW(CajetaJit::compile(src, "test.D"));
 }
+
+// ---------------------------------------------------------------------
+// Unit 4 — static non-virtual inheritance (plan §4; spec 2.6.1–2.6.3)
+// ---------------------------------------------------------------------
+
+namespace {
+
+const char* kTickHierarchy =
+    "package test;\n"
+    "public record BaseTick {\n"
+    "    float64 price;\n"
+    "    int32 volume;\n"
+    "    public float64 notional() { return this.price * (float64) this.volume; }\n"
+    "}\n"
+    "public record TradeTick extends BaseTick {\n"
+    "    float64 commission;\n"
+    "}\n";
+
+} // namespace
+
+// 4.1.1 — a derived record is-a base: inherits fields + non-virtual methods
+// statically; the layout stays flat (base-field prefix, no vtable/header).
+TEST(RecordTests, staticInheritanceFieldsAndMethods) {
+    auto src = std::string(kTickHierarchy) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        TradeTick t = TradeTick { price: 2.5, volume: 4, commission: 0.5 };\n"
+        "        return (int32)(t.notional() * 10.0 + t.commission * 4.0 + t.price);\n"  // 100+2+2
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 104);
+
+    auto derived = classOf("test.TradeTick");
+    ASSERT_NE(derived, nullptr);
+    EXPECT_FALSE(derived->hasVtablePointerAtSlotZero());
+    auto* st = llvm::dyn_cast<llvm::StructType>(derived->getLlvmType());
+    ASSERT_NE(st, nullptr);
+    // Flat: { double price, i32 volume, double commission } — base prefix,
+    // no vtable slot, no trailing vbase pointer.
+    ASSERT_EQ(st->getNumElements(), 3u);
+    EXPECT_TRUE(st->getElementType(0)->isDoubleTy());
+    EXPECT_TRUE(st->getElementType(1)->isIntegerTy(32));
+    EXPECT_TRUE(st->getElementType(2)->isDoubleTy());
+}
+
+// 4.1.1 — inherited fields participate in structural equality.
+TEST(RecordTests, inheritedFieldsInEquality) {
+    auto src = std::string(kTickHierarchy) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        TradeTick a = TradeTick { price: 1.0, volume: 2, commission: 3.0 };\n"
+        "        TradeTick b = TradeTick { price: 1.0, volume: 2, commission: 3.0 };\n"
+        "        TradeTick c = TradeTick { price: 9.0, volume: 2, commission: 3.0 };\n"
+        "        int32 r = 0;\n"
+        "        if (a == b) { r = r + 1; }\n"
+        "        if (a == c) { r = r + 10; }\n"
+        "        return r;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// 4.1.3 — explicit upcast slices: the base copy holds only base fields;
+// the derived original is untouched.
+TEST(RecordTests, explicitUpcastSlices) {
+    auto src = std::string(kTickHierarchy) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        TradeTick t = TradeTick { price: 2.5, volume: 4, commission: 0.5 };\n"
+        "        BaseTick b = (BaseTick) t;\n"
+        "        BaseTick expect = BaseTick { price: 2.5, volume: 4 };\n"
+        "        int32 r = 0;\n"
+        "        if (b == expect) { r = r + 1; }\n"
+        "        r = r + (int32)(b.notional() * 10.0 + t.commission * 4.0);\n"  // 100 + 2
+        "        return r;\n"  // 103
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 103);
+}
+
+// 4.1.2 — overriding/shadowing an inherited method is a compile error.
+TEST(RecordCompileErrorTests, inheritedMethodOverrideRejected) {
+    auto src = std::string(kTickHierarchy) +
+        "public record FeeTick extends BaseTick {\n"
+        "    float64 fee;\n"
+        "    public float64 notional() { return 0.0; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n";
+    EXPECT_ANY_THROW(CajetaJit::compile(src, "test.D"));
+}
+
+// 4.1.3 — implicit upcast is rejected (both declaration and assignment).
+TEST(RecordCompileErrorTests, implicitUpcastRejectedAtDecl) {
+    auto src = std::string(kTickHierarchy) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        TradeTick t = TradeTick { price: 2.5, volume: 4, commission: 0.5 };\n"
+        "        BaseTick b = t;\n"
+        "        return (int32) b.price;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_ANY_THROW(CajetaJit::compile(src, "test.D"));
+}
+
+TEST(RecordCompileErrorTests, implicitUpcastRejectedAtAssign) {
+    auto src = std::string(kTickHierarchy) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        TradeTick t = TradeTick { price: 2.5, volume: 4, commission: 0.5 };\n"
+        "        BaseTick b = BaseTick { price: 0.0, volume: 0 };\n"
+        "        b = t;\n"
+        "        return (int32) b.price;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_ANY_THROW(CajetaJit::compile(src, "test.D"));
+}
+
+// 4.1.3 — a downcast/sideways record cast has no meaning and rejects.
+TEST(RecordCompileErrorTests, recordDowncastRejected) {
+    auto src = std::string(kTickHierarchy) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        BaseTick b = BaseTick { price: 1.0, volume: 2 };\n"
+        "        TradeTick t = (TradeTick) b;\n"
+        "        return (int32) t.commission;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_ANY_THROW(CajetaJit::compile(src, "test.D"));
+}
+
+// 4.2.1 — a record extending a reference class is a compile error.
+TEST(RecordCompileErrorTests, recordExtendsClassRejected) {
+    auto src =
+        "package test;\n"
+        "public class PlainBase {\n"
+        "    public int32 a;\n"
+        "}\n"
+        "public record RBadExt extends PlainBase {\n"
+        "    int32 b;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n";
+    EXPECT_ANY_THROW(CajetaJit::compile(src, "test.D"));
+}

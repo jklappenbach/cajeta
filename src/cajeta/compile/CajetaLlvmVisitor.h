@@ -103,8 +103,38 @@ namespace cajeta {
         // a value-type FIELD passed as a by-value operator arg currently
         // marshals as a pointer and trips the JIT verifier. `!=` derives
         // automatically.
+        // Parents of a class-like during the visit pass: superClasses when
+        // already resolved, else the declared extends names via canonicalMap
+        // (resolveSuperClasses hasn't run yet at synthesis time).
+        static std::vector<CajetaClassPtr> resolvedParentsOf(
+                const CajetaClassPtr& cls) {
+            std::vector<CajetaClassPtr> out;
+            if (!cls) return out;
+            if (!cls->getSuperClasses().empty()) {
+                for (auto& s : cls->getSuperClasses()) if (s) out.push_back(s);
+                return out;
+            }
+            auto& cmap = CajetaType::getCanonicalMap();
+            for (auto& qn : cls->getQExtended()) {
+                if (!qn) continue;
+                auto it = cmap.find(qn->toCanonical());
+                if (it == cmap.end()) it = cmap.find(qn->getTypeName());
+                if (it == cmap.end() || !it->second) continue;
+                if (auto c = std::dynamic_pointer_cast<CajetaClass>(it->second)) {
+                    out.push_back(c);
+                }
+            }
+            return out;
+        }
+
         void appendRecordFieldCompares(const string& pathA, const string& pathB,
                 const CajetaClassPtr& cls, string& expr) {
+            // Inherited record fields first — mirrors the flat layout's
+            // ancestor-prefix order; access paths stay flat (a.f resolves
+            // inherited fields via the super walk).
+            for (auto& sup : resolvedParentsOf(cls)) {
+                appendRecordFieldCompares(pathA, pathB, sup, expr);
+            }
             for (auto& prop : cls->getPropertyList()) {
                 if (!prop || prop->isStatic()) continue;
                 auto ft = prop->getType();
@@ -742,7 +772,71 @@ namespace cajeta {
                 // and array storage are treated by value.
                 if (!structure->isTemplate()) {
                     const string kind = isRecord ? "record" : "@ValueType class";
-                    if (structure->countInheritedFields() != 0) {
+                    if (isRecord) {
+                        // Static non-virtual inheritance (records-spec §2.6):
+                        // every ancestor must itself be a record (Object, the
+                        // fieldless auto-extend root, is exempt).
+                        std::function<void(const CajetaClassPtr&)> checkAnc =
+                            [&](const CajetaClassPtr& cls) {
+                                for (auto& sup : cls->getSuperClasses()) {
+                                    if (!sup) continue;
+                                    auto qn = sup->getQName();
+                                    bool isObj = qn
+                                        && qn->getTypeName() == "Object"
+                                        && qn->getPackageName() == "cajeta.lang";
+                                    if (isObj) continue;
+                                    if (!sup->isRecordType()) {
+                                        throw Exception(
+                                            "record '" + structure->toCanonical()
+                                                + "' cannot extend '"
+                                                + sup->toCanonical()
+                                                + "' — records may only extend "
+                                                  "records (static, non-virtual "
+                                                  "composition)",
+                                            "CAJETA_ERROR_RECORD_EXTENDS");
+                                    }
+                                    checkAnc(sup);
+                                }
+                            };
+                        checkAnc(structure);
+                        // 4.2.2 add-but-not-redefine: a derived record may not
+                        // override/shadow an inherited instance method (static
+                        // methods — operators, factories — dispatch on the
+                        // static type and are exempt; so are constructors).
+                        for (auto& kv : structure->getMethods()) {
+                            auto& m = kv.second;
+                            if (!m || m->isConstructor()) continue;
+                            if (m->getModifiers().count(STATIC)) continue;
+                            std::function<CajetaClassPtr(const CajetaClassPtr&)>
+                                findShadowed = [&](const CajetaClassPtr& cls)
+                                        -> CajetaClassPtr {
+                                    for (auto& sup : cls->getSuperClasses()) {
+                                        if (!sup || !sup->isRecordType()) continue;
+                                        for (auto& skv : sup->getMethods()) {
+                                            auto& sm = skv.second;
+                                            if (!sm || sm->isConstructor()) continue;
+                                            if (sm->getModifiers().count(STATIC)) continue;
+                                            if (sm->getName() == m->getName()) {
+                                                return sup;
+                                            }
+                                        }
+                                        if (auto hit = findShadowed(sup)) return hit;
+                                    }
+                                    return nullptr;
+                                };
+                            if (auto owner = findShadowed(structure)) {
+                                throw Exception(
+                                    "record '" + structure->toCanonical()
+                                        + "' method '" + m->getName()
+                                        + "' overrides/shadows '"
+                                        + owner->toCanonical() + "." + m->getName()
+                                        + "' — record inheritance is "
+                                          "add-but-not-redefine (overriding is "
+                                          "the vtable line; use a class)",
+                                    "CAJETA_ERROR_RECORD_OVERRIDE");
+                            }
+                        }
+                    } else if (structure->countInheritedFields() != 0) {
                         throw Exception(
                             kind + " '" + structure->toCanonical()
                                 + "' must not inherit fields — value types are flat POD",
@@ -769,7 +863,8 @@ namespace cajeta {
                                 "CAJETA_ERROR_VALUE_TYPE");
                         }
                     }
-                    if (!sawField) {
+                    if (!sawField
+                            && !(isRecord && structure->countInheritedFields() != 0)) {
                         throw Exception(
                             kind + " '" + structure->toCanonical()
                                 + "' must declare at least one field",

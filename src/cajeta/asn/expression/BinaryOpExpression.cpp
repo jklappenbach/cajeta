@@ -401,6 +401,15 @@ namespace cajeta {
         if (dynamic_pointer_cast<MethodCallExpression>(ast)) {
             return v;
         }
+        // A cast's result is ALWAYS an r-value: primitive casts return the
+        // converted value, class casts return the (possibly guard-checked)
+        // instance pointer, and a record upcast returns the freshly sliced
+        // aggregate's alloca — the pointer IS the value (aggregate-init
+        // shape). The class-ref catch-all below would load through it and
+        // hand back the first field's bytes as a "pointer".
+        if (dynamic_pointer_cast<CastExpression>(ast)) {
+            return v;
+        }
         // REFL-1.5 — `T.class` returns the address of the type's #ClassObject
         // global, which IS the Class<T> reference (a process-lifetime constant
         // { Class<?>#VTable, rtti }). Same carve-out shape as NewExpression /
@@ -1392,6 +1401,23 @@ namespace cajeta {
                             && identInlineSlot
                             && !lhsCls->isInterface()
                             && !dynamic_pointer_cast<CajetaView>(lhsAst->getResolvedType())) {
+                        if (rhsAst) {
+                            if (!rhsAst->getResolvedType()) rhsAst->resolveTypes(module);
+                            auto rhsCls = dynamic_pointer_cast<CajetaClass>(
+                                rhsAst->getResolvedType());
+                            if (rhsCls && rhsCls.get() != lhsCls.get()
+                                    && (rhsCls->isRecordType() || lhsCls->isRecordType())) {
+                                throw Exception(
+                                    "cannot implicitly convert '"
+                                        + rhsCls->toCanonical() + "' to '"
+                                        + lhsCls->toCanonical()
+                                        + "' — record upcasts slice; write an "
+                                          "explicit cast: ("
+                                        + lhsCls->getQName()->getTypeName()
+                                        + ") value",
+                                    "CAJETA_ERROR_RECORD_IMPLICIT_CAST");
+                            }
+                        }
                         llvm::Type* bodyTy = lhsCls->getLlvmType();
                         if (bodyTy && bodyTy->isStructTy()) {
                             if (rhs->getType() == bodyTy) {

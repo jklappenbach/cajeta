@@ -129,9 +129,24 @@ namespace cajeta {
             }
             // getFieldLlvmIndex dispatches via the virtual override:
             // CajetaView skips the vtable header; CajetaClass adds it.
-            auto& props = classType->getProperties();
-            auto it = props.find(b.label);
-            if (it == props.end()) {
+            // Inherited fields (record static inheritance) live on ancestor
+            // property maps — walk supers like field access does.
+            StructurePropertyPtr prop;
+            std::function<bool(const CajetaClassPtr&)> findProp =
+                [&](const CajetaClassPtr& cls) -> bool {
+                    if (!cls) return false;
+                    auto pit = cls->getProperties().find(b.label);
+                    if (pit != cls->getProperties().end()) {
+                        prop = pit->second;
+                        return true;
+                    }
+                    for (auto& sup : cls->getSuperClasses()) {
+                        if (findProp(sup)) return true;
+                    }
+                    return false;
+                };
+            findProp(classType);
+            if (!prop) {
                 char buf[512];
                 snprintf(buf, sizeof(buf),
                     "aggregate initializer for '%s' names field '%s' that the "
@@ -139,7 +154,6 @@ namespace cajeta {
                     typeName.c_str(), b.label.c_str());
                 throw Exception(buf, "CAJETA_ERROR_AGGREGATE_INIT_UNKNOWN_FIELD");
             }
-            StructurePropertyPtr prop = it->second;
             unsigned fieldIdx = (unsigned) classType->getFieldLlvmIndex(prop);
 
             // Evaluate the binding expression; load through if it's still
