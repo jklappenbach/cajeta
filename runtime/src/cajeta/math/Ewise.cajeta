@@ -395,6 +395,78 @@ public final class Ewise {
     }
 
     /**
+     * Tiled **float64** GEMM — the {@link #matmulF32} cooperative-matrix kernel replicated
+     * for a second dtype (numpy-porting Phase 6.6, coop GEMM non-f32). The software
+     * cooperative-matrix tier is dtype-generic, so the same 16x16 tile / K-loop `mma`
+     * structure lowers for `float64` (a `note: [mma-tiering]` since f64 has no native
+     * config). `rows`/`cols`/`depth` multiples of 16.
+     */
+    @Kernel
+    public static void matmulF64(KernelBuffer<float64> c, KernelBuffer<float64> a,
+                                 KernelBuffer<float64> b, uint32 rows, uint32 cols, uint32 depth) {
+        uint32 ntiles = cols / 16;
+        uint32 wid = Workgroup.x();
+        uint32 mi = wid / ntiles;
+        uint32 nj = wid % ntiles;
+        uint32 ktiles = depth / 16;
+        CooperativeMatrix<float64,16,16,2> mc;
+        mc.splat(0.0);
+        CooperativeMatrix<float64,16,16,0> ma;
+        CooperativeMatrix<float64,16,16,1> mb;
+        uint32 kk = 0;
+        while (kk < ktiles) {
+            ma.load(a, mi * 16 * depth + kk * 16, 0, depth);
+            mb.load(b, kk * 16 * cols + nj * 16, 0, cols);
+            mc.mma(ma, mb);
+            kk = kk + 1;
+        }
+        mc.store(c, mi * 16 * cols + nj * 16, 0, cols);
+    }
+
+    /**
+     * 2-D **float64** matrix product routed on placement: both on-device → the
+     * {@link #matmulF64} coop GEMM; otherwise the CPU triple-loop. Agrees with the generic
+     * {@link Tensor#matmul} float64 floor (Phase-6.6 non-f32 coop cross-check). GPU path
+     * needs `m`/`n`/`k` multiples of 16.
+     */
+    public static #Tensor<float64> matmulF64Op(Tensor<float64> a, Tensor<float64> b) {
+        int64 m = a.shapeAt(0);
+        int64 k = a.shapeAt(1);
+        int64 n = b.shapeAt(1);
+        int64[] shp = heap int64[2];
+        shp[0] = m;
+        shp[1] = n;
+        Tensor<float64> out = Tensor.zeros<float64>(shp);
+        if (a.isOnGpu() && b.isOnGpu()) {
+            out.gpu();
+            uint32 um = (uint32) m;
+            uint32 un = (uint32) n;
+            uint32 uk = (uint32) k;
+            KernelStream s = KernelStream.current();
+            matmulF64.launch(s, grid: [(um / 16) * (un / 16)], block: [64])
+                (out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), um, un, uk);
+            s.sync();
+        } else {
+            int64 i = 0;
+            while (i < m) {
+                int64 j = 0;
+                while (j < n) {
+                    float64 acc = 0.0;
+                    int64 p = 0;
+                    while (p < k) {
+                        acc = acc + a.get2(i, p) * b.get2(p, j);
+                        p = p + 1;
+                    }
+                    out.flatSet(i * n + j, acc);
+                    j = j + 1;
+                }
+                i = i + 1;
+            }
+        }
+        return #out;
+    }
+
+    /**
      * One compare-exchange stage of a bitonic sort over `data` (numpy-porting Phase
      * 7, 7b — the GPU sort primitive). Each thread `i` pairs with `i ^ j`; the
      * partner with the higher index does the swap, ascending when `(i & k) == 0`

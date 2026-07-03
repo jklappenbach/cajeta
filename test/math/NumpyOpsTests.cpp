@@ -2084,6 +2084,67 @@ TEST(NumpyOpsTests, normFroCpuGpuAgree) {
     EXPECT_EQ(runI32Xpu(src), 1);
 }
 
+// 6.6 (deferred) — coop GEMM non-f32: Ewise.matmulF64Op runs the CooperativeMatrix tiled
+// GEMM for float64 (the software coop tier is dtype-generic); the device result equals the
+// generic Tensor.matmul<float64> floor bit-for-bit (32x32x32, integer-valued so exact).
+TEST(NumpyOpsTests, matmulCoopF64CpuGpuAgree) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.math.Tensor;\n"
+        "import cajeta.math.Ewise;\n"
+        "public final class D {\n"
+        "    public static #Tensor<float64> mkA() {\n"
+        "        float64[] d = heap float64[1024];\n"
+        "        int32 i = 0;\n"
+        "        while (i < 32) {\n"
+        "            int32 p = 0;\n"
+        "            while (p < 32) { d[i * 32 + p] = (float64) ((i + p) % 3); p = p + 1; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        int64[] s = heap int64[2]; s[0] = 32; s[1] = 32;\n"
+        "        return Tensor.of<float64>(d, s);\n"
+        "    }\n"
+        "    public static #Tensor<float64> mkB() {\n"
+        "        float64[] d = heap float64[1024];\n"
+        "        int32 p = 0;\n"
+        "        while (p < 32) {\n"
+        "            int32 j = 0;\n"
+        "            while (j < 32) { d[p * 32 + j] = (float64) ((2 * p + j) % 2); j = j + 1; }\n"
+        "            p = p + 1;\n"
+        "        }\n"
+        "        int64[] s = heap int64[2]; s[0] = 32; s[1] = 32;\n"
+        "        return Tensor.of<float64>(d, s);\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Tensor<float64> aRef = D.mkA();\n"
+        "        Tensor<float64> bRef = D.mkB();\n"
+        "        Tensor<float64> cpuRef = Tensor.matmul<float64>(aRef, bRef);\n"
+        "        Tensor<float64> aG = D.mkA();\n"
+        "        Tensor<float64> bG = D.mkB();\n"
+        "        aG.gpu();\n"
+        "        bG.gpu();\n"
+        "        Tensor<float64> cGpu = Ewise.matmulF64Op(aG, bG);\n"
+        "        cGpu.cpu();\n"
+        "        int64 i = 0;\n"
+        "        while (i < 32) {\n"
+        "            int64 j = 0;\n"
+        "            while (j < 32) {\n"
+        "                float64 want = cpuRef.get2(i, j);\n"
+        "                if (cGpu.get2(i, j) != want) { return -1; }\n"
+        "                j = j + 1;\n"
+        "            }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        float64 total = 0.0;\n"
+        "        i = 0;\n"
+        "        while (i < 32) { total = total + cpuRef.get2(0, i); i = i + 1; }\n"
+        "        if (total <= 0.0) { return -3; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Xpu(src), 1);
+}
+
 // 5c (deferred) — GPU structural ops: Ewise.concatF32Op / sliceF32Op route on placement;
 // the device range-copies agree with the CPU loop. concat([1,2,3],[4,5,6,7])→[1..7];
 // slice(that,2,3)→[3,4,5].
