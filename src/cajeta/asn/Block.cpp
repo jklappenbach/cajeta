@@ -7,6 +7,7 @@
 #include "../method/Method.h"
 #include "../compile/CajetaModule.h"
 #include "cajeta/dbg/DebugLocTable.h"
+#include "cajeta/dbg/LineInfoCodegen.h"
 
 namespace cajeta {
 
@@ -94,6 +95,7 @@ namespace cajeta {
             }
         }
         bool debugInfo = module->getFlags().debugInfo;
+        bool lineInfo = module->getFlags().lineInfo;
         for (auto child: children) {
             // Stop emitting once the current BB has a terminator —
             // anything after a return / throw / break / continue is
@@ -109,6 +111,8 @@ namespace cajeta {
             if (insertBB && insertBB->hasTerminator()) break;
             // CP2: statement-boundary safepoint before each statement.
             if (debugInfo) emitDebugSafepoint(module, child);
+            // U3: mark the current shadow frame's line at each statement boundary.
+            if (lineInfo) dbg::emitLineMark(module, child->getSourceLine());
             child->generateCode(module);
         }
 

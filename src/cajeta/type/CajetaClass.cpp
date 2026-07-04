@@ -2823,6 +2823,19 @@ namespace cajeta {
     // runtime free (`__cajeta_free*`) or a referent's drop, which is a
     // declaration / has its own freeing calls. Indirect calls and invokes are
     // conservatively treated as non-trivial.
+    // Balanced instrumentation calls (line-info shadow stack, debug frame chain)
+    // do no reclamation — a drop that only calls these is still a no-op drop.
+    // Treat them as transparent so --line-info (default on) / --debug-info don't
+    // defeat trivial-stack-drop elision (the ~230x value-type drop tax).
+    static bool isInstrumentationCall(const llvm::Function* f) {
+        if (!f) return false;
+        llvm::StringRef n = f->getName();
+        return n == "__cajeta_line_enter" || n == "__cajeta_line_mark"
+            || n == "__cajeta_line_leave" || n == "__cajeta_dbg_frame_enter"
+            || n == "__cajeta_dbg_frame_leave" || n == "__cajeta_dbg_local"
+            || n == "__cajeta_dbg_safepoint";
+    }
+
     static bool isNoOpDropFn(llvm::Function* f,
                              std::unordered_set<llvm::Function*>& seen) {
         if (!f || f->isDeclaration()) return false;
@@ -2830,6 +2843,7 @@ namespace cajeta {
         for (auto& bb : *f) {
             for (auto& inst : bb) {
                 if (auto* ci = llvm::dyn_cast<llvm::CallInst>(&inst)) {
+                    if (isInstrumentationCall(ci->getCalledFunction())) continue;
                     if (!isNoOpDropFn(ci->getCalledFunction(), seen)) return false;
                 } else if (llvm::isa<llvm::InvokeInst>(&inst)) {
                     return false;
