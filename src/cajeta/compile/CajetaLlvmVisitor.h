@@ -426,6 +426,7 @@ namespace cajeta {
                 vector<TypeParameter> params;
                 for (auto* tp : tps->typeParameter()) {
                     TypeParameter param(tp->identifier()->getText());
+                    param.owningRequired = (tp->REFERENCE() != nullptr);  // element-ownership §4.1.5
                     if (auto* pt = tp->primitiveType()) {
                         // Non-type (integer-constant) parameter: `primitiveType identifier`.
                         param.isNonType = true;
@@ -1122,6 +1123,7 @@ namespace cajeta {
                 vector<TypeParameter> params;
                 for (auto* tp : tps->typeParameter()) {
                     TypeParameter param(tp->identifier()->getText());
+                    param.owningRequired = (tp->REFERENCE() != nullptr);  // element-ownership §4.1.5
                     if (auto* bound = tp->typeBound()) {
                         for (auto* tt : bound->typeType()) {
                             if (auto* coi = tt->classOrInterfaceType()) {
@@ -1635,6 +1637,7 @@ namespace cajeta {
                 isMethodTemplate = true;
                 for (auto* tp : tps->typeParameter()) {
                     TypeParameter param(tp->identifier()->getText());
+                    param.owningRequired = (tp->REFERENCE() != nullptr);  // element-ownership §4.1.5
                     if (auto* pt = tp->primitiveType()) {
                         // Non-type (integer-constant) method parameter:
                         // `primitiveType identifier` (e.g. `<uint32 N>`).

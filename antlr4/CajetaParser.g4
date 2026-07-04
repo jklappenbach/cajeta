@@ -114,8 +114,12 @@ typeParameters
     : '<' typeParameter (',' typeParameter)* '>'
     ;
 
+// element-ownership §8.4.2 — an optional REFERENCE ('#') prefix on the parameter
+// identifier declares it owning-required (`class Cache<#K, V>`): every
+// instantiation must supply `#`, and the requirement is contagious through
+// inheritance (§8.6). Distinct from the type-argument `#` above.
 typeParameter
-    : annotation* identifier (EXTENDS annotation* typeBound)? (ASSIGN typeType)?
+    : annotation* REFERENCE? identifier (EXTENDS annotation* typeBound)? (ASSIGN typeType)?
     | primitiveType identifier
     ;
 
@@ -382,8 +386,12 @@ classOrInterfaceType
     : identifier typeArguments? ('.' identifier typeArguments?)*
     ;
 
+// element-ownership §8.4.1 — an optional REFERENCE ('#') prefix on a
+// class-typed argument marks this instantiation position as owning
+// (`HashMap<#String, V>`). Semantic checks (value-type args, gating) are later
+// units. The `#` is never infix, so this stays unambiguous.
 typeArgument
-    : typeType
+    : REFERENCE? typeType
     | primitiveType
     | integerLiteral
     | annotation* '?' ((EXTENDS | SUPER) typeType)?

@@ -389,6 +389,7 @@ namespace cajeta {
             std::vector<cajeta::TypeParameter> params;
             for (auto* tp : tps->typeParameter()) {
                 cajeta::TypeParameter param(tp->identifier()->getText());
+                param.owningRequired = (tp->REFERENCE() != nullptr);  // element-ownership §4.1.5
                 if (auto* pt = tp->primitiveType()) {
                     // Non-type (integer-constant) parameter: `primitiveType identifier`.
                     param.isNonType = true;

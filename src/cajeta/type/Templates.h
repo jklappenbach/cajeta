@@ -40,6 +40,13 @@ namespace cajeta {
         bool isNonType = false;
         string nonTypePrimitive;         // declared primitive name when isNonType
 
+        // element-ownership §4.1.5 — declaration-`#`: `class Cache<#K, V>` marks
+        // K owning-required (non-dissolvable, contagious through inheritance,
+        // §8.6). Distinct from a use-site `#K` marker, which permits owning and
+        // dissolves to a borrow. Set by the class-declaration visitor from the
+        // `REFERENCE?` prefix on the `typeParameter` grammar rule (§8.4.2).
+        bool owningRequired = false;
+
         // Default type argument — `<T = float32>`. The text of the default
         // `typeType` (e.g. "float32"), captured at parse time (no module is
         // available at the prescan capture site, so it can't be resolved to a

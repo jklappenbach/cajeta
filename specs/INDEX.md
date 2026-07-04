@@ -12,6 +12,8 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [embedded-targets](embedded-targets-spec.md) | [plan](../agents/embedded-targets-plan.md) | active |
 | [memory-viewer](memory-viewer-spec.md) | [plan](../agents/memory-viewer-plan.md) | active |
 | [diagnostic-engine](diagnostic-engine-spec.md) | — (engine + lint collect-and-continue landed; remaining scope unverified) | active |
+| [optional-absence](optional-absence-spec.md) | [plan](../agents/optional-absence-plan.md) | active |
+| [element-ownership](element-ownership-spec.md) | [plan](../agents/element-ownership-plan.md) | active |
 | [profile](profile-spec.md) | — | draft |
 | [jit-run-parse-abort](jit-run-parse-abort-spec.md) | — | draft |
 | [cajeta-ir-phase-b](cajeta-ir-phase-b-spec.md) | — (§4/§5 resolved; §2 forwarding, §3 captures remain) | draft |
