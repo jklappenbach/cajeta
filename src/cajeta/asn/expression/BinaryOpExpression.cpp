@@ -22,6 +22,8 @@
 #include "DotExpression.h"
 #include "MethodCallExpression.h"
 #include "Identifier.h"
+#include "../../field/ParameterField.h"
+#include "../../type/FormalParameter.h"
 #include "AggregateInitializerExpression.h"
 #include "NewExpression.h"
 #include "LiteralExpression.h"
@@ -1597,6 +1599,34 @@ namespace cajeta {
                             dynamic_pointer_cast<IdentifierExpression>(rhsAst)
                             || dynamic_pointer_cast<DotExpression>(rhsAst)
                             || dynamic_pointer_cast<ArrayIndexExpression>(rhsAst);
+                        // element-ownership §6.1.1 / plan 3.2.1 — gate the
+                        // resolution on statically-known SOURCE ownership. A
+                        // bare identifier bound to a `#`-transfer parameter is
+                        // an OWNED source: storing it MOVES the wrapper into the
+                        // field, exactly like an explicit `#`-move rvalue. It
+                        // must NOT resolve — a fresh copy would strand the
+                        // moved-in source (leak 15.12.1: `this.f = param` on a
+                        // `#String param`). The `#` on the formal is the static
+                        // proof of ownership; no runtime moveMask read is
+                        // needed. Demote such an identifier out of the lvalue
+                        // (borrow-resolve) class so it transfers as-is below.
+                        if (rhsIsLvalue) {
+                            if (auto idRhs = dynamic_pointer_cast<
+                                    IdentifierExpression>(rhsAst)) {
+                                if (auto sc = module->getScopeStack().peek()) {
+                                    FieldPtr srcField =
+                                        sc->getField(idRhs->getTextValue());
+                                    if (auto pf = dynamic_pointer_cast<
+                                            ParameterField>(srcField)) {
+                                        if (pf->getFormalParameter()
+                                                && pf->getFormalParameter()
+                                                    ->isTransferred()) {
+                                            rhsIsLvalue = false;
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         if (rhsIsString) {
                             llvm::Function* resolveFn = rhsIsLvalue
                                 ? module->getRuntimeFunction("__cajeta_string_resolve")
