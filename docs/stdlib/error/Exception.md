@@ -1,8 +1,8 @@
 # Exception
 
 `cajeta.error.Exception` — general-purpose thrown error and the base of the
-catchable exception hierarchy. Extends `Throwable` (the hierarchy root, which
-carries the `message` field) and is itself the parent of
+catchable exception hierarchy. Extends [Throwable](Throwable.md) (the
+hierarchy root, which carries the `message` field) and is itself the parent of
 [RecoverableException](RecoverableException.md) and
 [UnrecoverableException](UnrecoverableException.md) — the runtime walks that
 vtable chain on a throw to decide whether it propagates to abort. Beyond the
@@ -23,6 +23,8 @@ try {
 | Signature | |
 |---|---|
 | `Exception(#String message)` ⚑ | Construct an exception carrying `message`; `cause` is initialized to none (`0`) |
+| `Exception(#String message, #Throwable cause)` | Construct an exception wrapping a lower-level `cause`; ownership of `cause` transfers into this exception's `cause` chain |
+| `Throwable getCause()` | The underlying cause carried with this exception, or none |
 
 ⚑ = `@EntryPoint`
 
@@ -30,5 +32,6 @@ try {
 
 - Tour: [ErrorsDemo](../../../samples/tour/src/main/cajeta/tour/error/ErrorsDemo.cajeta)
 - Source: [`runtime/src/cajeta/error/Exception.cajeta`](../../../runtime/src/cajeta/error/Exception.cajeta)
+- [Throwable](Throwable.md) — the hierarchy root: diagnostic code, stack trace, `toJson()`
 - [RecoverableException](RecoverableException.md) — for errors a caller can handle;
   [UnrecoverableException](UnrecoverableException.md) — for fatal conditions

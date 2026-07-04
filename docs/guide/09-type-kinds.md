@@ -1,8 +1,8 @@
 # 09 — Type kinds
 
-Five type kinds ship today: `class`, `interface`, `enum`, `view`, and
-`annotation`; a method becomes a GPU kernel with `@Kernel`. `record` and
-`structure` are reserved words with no syntax yet.
+Six type kinds ship today: `class`, `interface`, `enum`, `record`, `view`,
+and `annotation`; a method becomes a GPU kernel with `@Kernel`. `structure`
+is a reserved word with no syntax yet.
 
 ## class
 
@@ -53,6 +53,53 @@ public enum Color {
     BLUE
 }
 ```
+
+## record
+
+A value type: a flat bundle of fields with no per-instance header and no
+vtable — the in-memory value is exactly the field bytes
+([records spec](../specification/nucleo/records-spec.md) §1.4). Assignment
+copies, `==` compares field-by-field (structural equality), and fields are
+immutable unless a field opts in with `mut`.
+
+```cajeta
+public record Tick {
+    mut float64 price;
+    int32 volume = 1;
+}
+
+public class TickDemo {
+    public void demo() {
+        Tick a = Tick { price: 2.5, volume: 4 };  // labeled binding
+        Tick b = Tick { 2.5, 4 };                 // positional, declared order
+        boolean same = a == b;                    // structural equality: true
+        Tick c = Tick { price: 9.0 };             // volume fills from its default
+        Tick d = a.with(price: 3.0);              // copy-with; a is untouched
+        a.price = 3.5;                            // mut field writes in place
+    }
+}
+```
+
+Construction is the aggregate initializer, labeled or positional (never
+mixed in one initializer); a field with a declared default may be omitted —
+in the positional form, only trailing fields. A
+record can also declare an ordinary constructor and be built with `heap` /
+`stack` like a class. Writing a non-`mut` field is a compile error — use
+`with(...)`, which returns a copy with the named fields replaced.
+
+Records may `extends` another record: static, non-virtual inheritance —
+derived adds fields and methods but cannot override. What a record cannot
+have: virtual or abstract methods, `implements`, or reference-type fields
+(a class field, including `String`, is a compile error). A class may hold
+record fields; never the reverse.
+
+Records reflect like classes: `Tick.class` enumerates field names, types,
+offsets, and sizes ([chapter 21](21-reflection.md)). One gap today: `T.class`
+inside a template body does not yet resolve the substituted type argument —
+that applies to any type argument, not just records.
+
+The stdlib dogfoods it: [`Color`](../stdlib/math/Color.md)
+(`cajeta.math.Color`) is a record over four `float32` channels.
 
 ## view
 
@@ -112,9 +159,8 @@ public final class Kernels {
 
 Tour: [`XpuTour.cajeta`](../../samples/tour/xpu/src/tour/xpu/XpuTour.cajeta).
 
-## Reserved: record and structure
+## Reserved: structure
 
-Neither has declaration syntax — writing one is a parse error today. Their
-value-type role is covered by `class` plus the construction-site storage class.
+`structure` has no declaration syntax — writing one is a parse error today.
 
 Next: [Allocation](10-allocation.md).

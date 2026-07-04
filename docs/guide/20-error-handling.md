@@ -7,16 +7,22 @@ Tour demo: [ErrorsDemo](../../samples/tour/src/main/cajeta/tour/error/ErrorsDemo
 
 ## The hierarchy
 
-Four roots live in `cajeta.error`:
+One root lives in `cajeta.error`: every throwable type derives from
+[`Throwable`](../stdlib/error/Throwable.md).
 
-- `Throwable` — anything throwable; carries `message`.
-- `Exception` — adds `cause` for chain-of-causality.
-- `RecoverableException` — normal failure the caller may handle.
-- `UnrecoverableException` — the alarm; the program shouldn't continue.
+- `Throwable` — the root; carries `message` and the whole diagnostics
+  surface below.
+- `Exception extends Throwable` — adds `cause` for chain-of-causality.
+- `RecoverableException extends Exception` — normal failure the caller may
+  handle.
+- `UnrecoverableException extends Exception` — the alarm; the program
+  shouldn't continue.
 
 Domain exceptions extend one of these from their owning packages
 (`cajeta.io.file.IoException`, `cajeta.io.net.TimedOutException`,
-`cajeta.codec.Base64Exception`, ...). Your own exceptions do the same.
+`cajeta.codec.Base64Exception`, ...). Your own exceptions do the same. One
+mechanical note: `super(...)` isn't supported yet, so a subclass constructor
+writes the inherited fields directly (`this.message = message;`).
 
 ## throw, try, catch, finally
 
@@ -44,7 +50,7 @@ public class Robust {
         try {
             return l.load(-1);
         } catch (RecoverableException e) {
-            System.stdout.println("recovered: " + e.message);
+            System.stdout.println("recovered: " + e.getMessage());
             return -1;
         } finally {
             System.stdout.println("attempt finished");
@@ -89,6 +95,66 @@ a stack trace by default (`--stack-trace-capture=off` disables it).
 
 On fibers, a recoverable throw is stored on the `Task` and re-raised at
 `await`; a `scope` cancels siblings with the first failure and re-raises it.
+
+## Inspecting a throwable
+
+`Throwable` carries the trace and diagnostics surface — every exception
+inherits it:
+
+```cajeta
+import cajeta.error.StackFrame;
+import cajeta.error.Throwable;
+
+public class Reporter {
+    public void report(Throwable t) {
+        String msg = t.getMessage();
+        Throwable cause = t.getCause();           // null when none
+        StackFrame[] frames = t.getStackTrace();  // throw-site first
+        t.printStackTrace();                      // human-readable, to stderr
+        String json = t.toJson();                 // one NDJSON diagnostic object
+    }
+}
+```
+
+Each [`StackFrame`](../stdlib/error/Throwable.md) carries `declaringType`,
+`method`, `file`, `line`, a role (User / Stdlib / Runtime), and the raw
+`nativeAddress`. The semantic fields are resolved from the runtime's line-info
+shadow stack — no debug info needed; when capture was off
+(`--stack-trace-capture=off`) or unavailable, frames fall back to native
+addresses only.
+
+## Machine-readable diagnostics
+
+Every throwable has a stable diagnostic `code()` — by default its canonical
+type name (`cajeta.error.RecoverableException`). Pin a refactor-proof
+identifier with `@DiagnosticCode`:
+
+```cajeta
+import cajeta.error.DiagnosticCode;
+import cajeta.error.Exception;
+
+@DiagnosticCode("APP_ERR_CONFIG_MISSING")
+public class ConfigMissingException extends Exception {
+    public ConfigMissingException(#String message) {
+        this.message = message;
+        this.cause = null;
+    }
+}
+```
+
+`toJson()` renders the throwable as one NDJSON object: `severity`, `code`,
+`message`, a `category` object (`retryable` / `transient` / `userActionable`
+— overridable predicates on `Throwable`), optional `remediation`
+(`hint()` / `docUrl()`), the `causeChain` outer-to-inner, and `frames`.
+
+The compiler flag `--diag-format=json` puts the whole toolchain on that
+wire format: compile-time diagnostics come out as one NDJSON object per
+line on stderr, and an *uncaught* throw at runtime is reported the same
+way instead of the human-readable trace:
+
+```json
+{"severity":"error","code":"cajeta.error.RecoverableException","message":"nobody catches this","frames":[{"declaringType":"snip.Uncaught","method":"run","file":"Uncaught.cajeta","line":7,"role":"User"}]}
+```
 
 ## No try-with-resources
 

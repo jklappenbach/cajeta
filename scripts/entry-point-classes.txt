@@ -9,6 +9,7 @@ cajeta.lang.Optional
 cajeta.lang.Pair
 cajeta.lang.Math
 cajeta.lang.Guid
+cajeta.lang.Slice
 cajeta.lang.stream.Stream
 cajeta.lang.stream.ArrayStream
 cajeta.reflect.Class
@@ -35,6 +36,7 @@ cajeta.concurrent.Lock
 cajeta.concurrent.AtomicInt32
 cajeta.concurrent.AtomicInt64
 cajeta.concurrent.FiberLocal
+cajeta.error.Throwable
 cajeta.error.Exception
 cajeta.error.RecoverableException
 cajeta.error.UnrecoverableException

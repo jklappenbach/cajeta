@@ -28,6 +28,8 @@ public class Throwable {
      * ```cajeta
      * heap Throwable err = Throwable("unexpected end of input");
      * ```
+     *
+     * @EntryPoint
      */
     public Throwable(#String message) {
         this.message = message;
@@ -140,6 +142,8 @@ public class Throwable {
      * Render this throwable as a single NDJSON diagnostic object — a superset of
      * the compiler's `--diag-format=json` shape (`severity`/`code`/`message`)
      * plus `causeChain` (outer→inner) and `frames`. Built lazily, on call.
+     *
+     * @EntryPoint
      */
     public #String toJson() {
         String m = this.message;
@@ -210,8 +214,12 @@ public class Throwable {
     /**
      * The captured stack frames, throw-site first. Empty when capture was off
      * (`--stack-trace-capture=off`, the Release default) or on a context that
-     * doesn't capture (Windows, in-fiber throws). Frames currently carry the
-     * native return address only; symbol + `file:line` are follow-ups (§4).
+     * doesn't capture (Windows, in-fiber throws). When the line-info shadow
+     * snapshot is available a frame carries the resolved semantic location
+     * (declaring type, method, file, line, role); otherwise frames fall back
+     * to the raw native return address only.
+     *
+     * @EntryPoint
      */
     public StackFrame[] getStackTrace() {
         // Preferred: semantic frames from the line-info shadow snapshot.
@@ -246,6 +254,8 @@ public class Throwable {
     /**
      * Print this throwable's stack trace to stderr. A no-op body of frames when
      * no trace was captured (message still surfaces via the uncaught handler).
+     *
+     * @EntryPoint
      */
     public void printStackTrace() {
         printTraceNative(this, 2);

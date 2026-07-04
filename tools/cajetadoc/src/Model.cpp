@@ -10,6 +10,7 @@ const char* toString(TypeKind k) {
         case TypeKind::Interface: return "interface";
         case TypeKind::Enum: return "enum";
         case TypeKind::View: return "view";
+        case TypeKind::Record: return "record";
         case TypeKind::Annotation: return "annotation";
         case TypeKind::Unknown: default: return "unknown";
     }

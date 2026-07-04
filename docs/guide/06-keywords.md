@@ -30,13 +30,14 @@ reserved words.
 
 | Keywords | |
 |---|---|
-| `class` `interface` `enum` `annotation` `view` | type kinds ([chapter 09](09-type-kinds.md)) |
+| `class` `interface` `enum` `record` `annotation` `view` | type kinds ([chapter 09](09-type-kinds.md)) |
 | `package` `import` | namespacing |
 | `extends` `implements` | inheritance |
 | `sealed` `non-sealed` `permits` | sealed hierarchies |
 | `void` | no return value |
 | `var` | reserved for local type inference; parses but does not resolve yet |
-| `record` `structure` | reserved; no declaration syntax yet — using them is a parse error |
+| `mut` | contextual: record field mutation opt-in ([chapter 09](09-type-kinds.md)); an ordinary identifier everywhere else |
+| `structure` | reserved; no declaration syntax yet — using it is a parse error |
 
 ## Control flow
 

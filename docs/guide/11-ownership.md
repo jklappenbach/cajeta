@@ -97,6 +97,58 @@ The checker is static and scope-based. Beyond use-after-move it rejects:
   exists (e.g. `list.add(...)` inside a `for` iterating `list`).
 - **Definite assignment** — reading a local before it is assigned.
 
+## Slices and the `shared` state
+
+`arr[a:b]` yields a [`Slice<T>`](../stdlib/lang/Slice.md) — three machine
+words (buffer, offset, length) windowing the array's storage. No element
+copy; indexing is window-relative and bounds-checked; sub-slicing composes
+against the root in O(1). `substring()` and `trim()` return windowed strings
+the same way ([chapter 13](13-strings.md)).
+
+```cajeta
+public class Windows {
+    public int32 firstOfMiddle(int32[] xs) {
+        Slice<int32> mid = xs[2:5];       // zero-copy window
+        int64 n = mid.count();            // 3
+        return mid[0];                    // xs[2]
+    }
+}
+```
+
+A slice that stays local is a plain borrow — it dies with its scope, no
+bookkeeping. When a slice *escapes* (stored in a field or container), the
+compiler resolves the escape: small payloads copy; large buffers promote
+the root from **owned** to **shared** — refcounted, freed at the last drop.
+The promotion is automatic; `shared` here is an ownership state the
+compiler tracks, not something you write (unrelated to the `@Kernel`
+placement keyword).
+
+The store-past-scope idiom is transfer: hand the window to the container
+with `#`, and the compiler keeps a stake on the root so the view survives
+its source's drop.
+
+```cajeta
+import cajeta.collection.ArrayList;
+
+public class Grams {
+    // Rolling n-grams of a dying local — the views outlive `lower`.
+    public #ArrayList<String> grams(String key, int32 n) {
+        ArrayList<String> out = heap ArrayList<String>();
+        String lower = key.toLowerCase();
+        int32 len = (int32) lower.count();
+        int32 i = 0;
+        while (i + n <= len) {
+            String g = lower.substring(i, i + n);
+            out.add(#g);                  // transfer — g escapes into the list
+            i = i + 1;
+        }
+        return out;                       // root buffer lives until the last view drops
+    }
+}
+```
+
+Spec: [slice-spec](../specification/lang/slice-spec.md).
+
 Details: [MemoryModel](../specification/lang/MemoryModel.md),
 [OwnershipTransfer](../specification/lang/OwnershipTransfer.md), and
 [FieldOwnership](../specification/lang/FieldOwnership.md) for how fields

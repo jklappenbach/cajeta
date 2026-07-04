@@ -21,16 +21,30 @@ boolean eq = trimmed.equals("Hello, Cajeta!");    // byte-for-byte
 
 Run it: [StringDemo](../../samples/tour/src/main/cajeta/tour/lang/StringDemo.cajeta).
 
-## Literals vs owned strings
+## Literals, owned strings, and windows
 
-A string literal is a **view**: it points at the program's static data, costs
-no allocation, and is never freed. A string a method *builds* — the result of
-`trim()`, `substring()`, `replace()`, a `+` concatenation — is an **owned**
-heap value. Transforming methods are declared `#String` (they transfer
-ownership, chapter 11), so bind the result to a plain local and the drop
-chain reclaims it at scope exit. You never free a string either way; the
-distinction only matters as "literals are free, built strings are owned by
-whoever binds them".
+One type, three storage shapes underneath:
+
+- A **literal** is a view of the program's static data — no allocation,
+  never freed.
+- A string a method **builds** — `replace()`, `toUpperCase()`, a `+`
+  concatenation, `StringBuilder.toString()` — owns a heap buffer. Building
+  from your own bytes works too: `heap String(#buf, n)` takes ownership of
+  the buffer (the `#` transfers it; the String's drop frees it).
+- `substring()` and `trim()` are **zero-copy**: the result is a windowed
+  view sharing the source's root buffer — no byte copy, whatever the length.
+  Small-string-optimized sources are the exception; a window into an inline
+  buffer would dangle, so those materialize a copy.
+
+Transforming methods are declared `#String` (they transfer ownership,
+[chapter 11](11-ownership.md)), so bind the result to a plain local and the
+drop chain reclaims it at scope exit. Windows follow the slice rules from
+chapter 11: a window that escapes its scope keeps the root buffer alive —
+the root is promoted to the `shared` state and freed when the last view
+drops. You never free a string in any of the three shapes.
+
+`substring(begin, end)` is byte-indexed and half-open; indices clamp to the
+valid range. Full method list: [String reference](../stdlib/lang/String.md).
 
 ## Concatenation with `+`
 

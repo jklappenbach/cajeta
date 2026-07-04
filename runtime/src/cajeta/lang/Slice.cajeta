@@ -23,7 +23,11 @@ public final class Slice<T> {
     int64 off;
     int64 len;
 
-    /** Window length — independent of the backing buffer's capacity. */
+    /**
+     * Window length — independent of the backing buffer's capacity.
+     *
+     * @EntryPoint
+     */
     public int64 count() {
         return this.len;
     }
@@ -33,7 +37,11 @@ public final class Slice<T> {
         return this.len == (int64) 0;
     }
 
-    /** Window-relative element read; out-of-window aborts (spec 2.2). */
+    /**
+     * Window-relative element read; out-of-window aborts (spec 2.2).
+     *
+     * @EntryPoint
+     */
     public T operator[] (int64 idx) {
         if (idx < (int64) 0 || idx >= this.len) {
             Cajeta.boundsFail(idx, this.len);

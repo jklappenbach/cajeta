@@ -23,7 +23,7 @@ struct SourceRef {
     int col = 0;      // 0-based (antlr convention)
 };
 
-enum class TypeKind { Class, Interface, Enum, View, Annotation, Unknown };
+enum class TypeKind { Class, Interface, Enum, View, Record, Annotation, Unknown };
 enum class MemberKind { Field, Constructor, Destructor, Method, EnumConstant };
 
 // Java/cajeta visibility. `Package` is the default (no explicit modifier).

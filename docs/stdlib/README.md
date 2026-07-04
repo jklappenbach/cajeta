@@ -16,6 +16,7 @@ tutorial; it links here for API detail. Docs link the
 | [Pair](lang/Pair.md) | Two-field generic value type |
 | [Math](lang/Math.md) | Numeric utilities + device math intrinsics |
 | [Guid](lang/Guid.md) | 128-bit UUID backed by a single `uint128` |
+| [Slice](lang/Slice.md) | Zero-copy array window, the `arr[a:b]` result type |
 
 ## cajeta.lang.stream
 
@@ -215,6 +216,7 @@ tutorial; it links here for API detail. Docs link the
 
 | Class | |
 |---|---|
+| [Throwable](error/Throwable.md) | Root of the exception hierarchy: message, diagnostic code, stack trace, JSON |
 | [Exception](error/Exception.md) | Base of the catchable exception hierarchy |
 | [RecoverableException](error/RecoverableException.md) | Errors a caller might handle and proceed past |
 | [UnrecoverableException](error/UnrecoverableException.md) | Fatal conditions: invariant violations, OOM |
