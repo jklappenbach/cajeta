@@ -1162,6 +1162,10 @@ namespace cajeta {
                     }
                     if (templateClass && templateClass->isTemplate()) {
                         vector<CajetaTypePtr> args;
+                        // element-ownership §2 — parallel to args: a `#`-prefixed
+                        // class-typed argument (`HashMap<#String,V>`) marks that
+                        // position owning. Only the typeType branch can carry it.
+                        vector<bool> argOwning;
                         for (auto* targ : targs->typeArgument()) {
                             // Wildcard branch — `?`, `? extends T`, or
                             // `? super T`. Grammar
@@ -1198,6 +1202,7 @@ namespace cajeta {
                                     throw "wildcard sentinel construction failed — CajetaType::init not run?";
                                 }
                                 args.push_back(wild);
+                                argOwning.push_back(false);  // §8.5.2: `#?` out of scope
                                 continue;
                             }
                             if (targ->integerLiteral() != nullptr) {
@@ -1211,6 +1216,7 @@ namespace cajeta {
                                 args.push_back(CajetaConstantType::of(
                                     CajetaConstantType::parseLiteral(
                                         targ->integerLiteral())));
+                                argOwning.push_back(false);  // non-type arg: no ownership
                                 continue;
                             }
                             if (!targ->typeType()) {
@@ -1224,8 +1230,9 @@ namespace cajeta {
                                 throw "unresolved template argument";
                             }
                             args.push_back(argType);
+                            argOwning.push_back(targ->REFERENCE() != nullptr);  // element-ownership §2
                         }
-                        type = templateClass->instantiate(args);
+                        type = templateClass->instantiate(args, argOwning);
                     }
                 }
             } else {

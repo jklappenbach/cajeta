@@ -43,10 +43,15 @@ namespace cajeta {
     // Build `<arg0,arg1,...>` from the type arguments using each arg's
     // canonical name. Used both for the instantiation's class name suffix
     // and for the structure-map cache key.
-    static string buildArgSuffix(const vector<CajetaTypePtr>& args) {
+    static string buildArgSuffix(const vector<CajetaTypePtr>& args,
+                                 const vector<bool>& argOwning = {}) {
         string s = "<";
         for (size_t i = 0; i < args.size(); ++i) {
             if (i > 0) s += ",";
+            // element-ownership §2/§8.3.1 — an owning (`#`) argument mangles
+            // with a leading '#' so `HashMap<#String,V>` and `HashMap<String,V>`
+            // are distinct cache entries / distinct monomorphizations.
+            if (i < argOwning.size() && argOwning[i]) s += "#";
             s += args[i]->getQName()->toCanonical();
         }
         s += ">";
@@ -77,8 +82,9 @@ namespace cajeta {
         return out;
     }
 
-    CajetaClassPtr CajetaClass::instantiate(vector<CajetaTypePtr> args) {
-        CajetaClassPtr result = instantiateInternal(std::move(args));
+    CajetaClassPtr CajetaClass::instantiate(vector<CajetaTypePtr> args,
+                                            vector<bool> argOwning) {
+        CajetaClassPtr result = instantiateInternal(std::move(args), std::move(argOwning));
         // Incremental compilation (Phase 2/3): if this produced a genuine
         // instantiation (a different object than the template `this` — not a
         // non-template passthrough or placeholder short-circuit) and it's
@@ -94,7 +100,8 @@ namespace cajeta {
         return result;
     }
 
-    CajetaClassPtr CajetaClass::instantiateInternal(vector<CajetaTypePtr> args) {
+    CajetaClassPtr CajetaClass::instantiateInternal(vector<CajetaTypePtr> args,
+                                                    vector<bool> argOwning) {
         // Non-templates pass through unchanged. Lets callers do
         // `cls->instantiate(args)` without guarding on isTemplate themselves.
         if (!isTemplate()) {
@@ -348,7 +355,10 @@ namespace cajeta {
         }
 
         // Cache key: full canonical name with args, e.g. `pkg.Box<cajeta.int32>`.
-        string suffix = buildArgSuffix(args);
+        // Keep argOwning parallel to args after any default-fill above (filled
+        // positions are borrow). element-ownership §2.
+        if (argOwning.size() < args.size()) argOwning.resize(args.size(), false);
+        string suffix = buildArgSuffix(args, argOwning);
         string instCanonical = qName->toCanonical() + suffix;
 
         // Emit target (resolution/emit separation, reuse-gated). The
@@ -517,6 +527,7 @@ namespace cajeta {
             if (emitOwner != module) ifInst->setEmitModule(emitOwner);
             ifInst->setTypeParameters(typeParameters);
             ifInst->setTypeArguments(args);
+            ifInst->setTypeArgumentOwning(argOwning);  // element-ownership §2
             ifInst->setTemplateOrigin(
                 static_pointer_cast<CajetaClass>(shared_from_this()));
 
@@ -759,6 +770,7 @@ namespace cajeta {
         inst->setQImplementedTypeArgs(std::move(instImplementedTypeArgs));
         inst->setTypeParameters(typeParameters);   // retained for debugging / introspection
         inst->setTypeArguments(args);
+        inst->setTypeArgumentOwning(argOwning);     // element-ownership §2
         // Remember which template produced this instantiation. Used by
         // inferDiamondArgs (TPL-N3) to recognize that `List<int32>` is "a
         // List" when unifying against a `List<T>` parameter declaration.
