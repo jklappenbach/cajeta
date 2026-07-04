@@ -1,0 +1,100 @@
+package tour.codec;
+
+import tour.DemoClass;
+import cajeta.codec.Base64;
+import cajeta.lang.String;
+
+// cajeta.codec.Base64 — RFC 4648 byte <-> text codec, pure Cajeta (no
+// @Native bridge; base64 is index arithmetic, cheap enough that a C
+// primitive would only add an ABI boundary).
+//
+// The surface is four statics:
+//
+//   Base64.encode(bytes, len)          standard alphabet (+ /), = padded
+//   Base64.encodeUrlSafe(bytes, len)   url-safe alphabet (- _), unpadded
+//   Base64.encode(bytes, len, urlSafe, pad)   explicit control of both
+//   Base64.decode(text)               either alphabet, padding optional
+//
+// Decoding is alphabet-agnostic: '-'/'_' and '+'/'/' are both accepted,
+// so a caller need not know whether the text came from a Basic-auth
+// header (standard) or a JWT segment (url-safe). Bad input throws
+// Base64Exception with the offending byte offset.
+public class Base64Demo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- cajeta.codec.Base64: RFC 4648 encode/decode --");
+
+        // 1. The RFC's own worked example: "Man" is three bytes, which
+        //    pack into exactly four sextets — M,a,n -> T,W,F,u.
+        String man = "Man";
+        String manB64 = Base64.encode(man.bytes, (int64) man.byteLength);
+        System.stdout.println("  encode(\"Man\")           = " + manB64);
+        this.check(manB64.equals("TWFu"), "encode(\"Man\") == \"TWFu\"");
+
+        // 2. Padding. Input lengths that aren't a multiple of 3 leave a
+        //    short final group; standard encoding rounds the text to a
+        //    multiple of 4 with '='. Two bytes -> one '=', one byte -> two.
+        String ma = "Ma";
+        String m = "M";
+        String maB64 = Base64.encode(ma.bytes, (int64) ma.byteLength);
+        String mB64 = Base64.encode(m.bytes, (int64) m.byteLength);
+        System.stdout.println("  encode(\"Ma\")            = " + maB64);
+        System.stdout.println("  encode(\"M\")             = " + mB64);
+        this.check(maB64.equals("TWE="), "encode(\"Ma\") == \"TWE=\"");
+        this.check(mB64.equals("TQ=="), "encode(\"M\") == \"TQ==\"");
+
+        // 3. URL-safe form: '-'/'_' for sextets 62/63 and NO padding —
+        //    the shape JWT segments and URL query parameters expect.
+        String maUrl = Base64.encodeUrlSafe(ma.bytes, (int64) ma.byteLength);
+        System.stdout.println("  encodeUrlSafe(\"Ma\")     = " + maUrl);
+        this.check(maUrl.equals("TWE"), "encodeUrlSafe(\"Ma\") == \"TWE\" (unpadded)");
+
+        // 4. Decode reconstructs the raw bytes. "TWFu" -> 'M','a','n'
+        //    (77, 97, 110). The result is a fresh caller-owned int8[].
+        int8[] manRaw = Base64.decode(manB64);
+        System.stdout.println("  decode(\"TWFu\").count()  = " + manRaw.count());
+        this.check(this.sameBytes(manRaw, man.bytes),
+            "decode(\"TWFu\") == bytes of \"Man\"");
+
+        // 5. Round-trip arbitrary binary — including high-bit bytes,
+        //    which exercise the '+'/'/' (or '-'/'_') tail of the
+        //    alphabet. Encode standard-padded, decode, compare.
+        int8[] blob = heap int8[5];
+        blob[0] = (int8) 0;
+        blob[1] = (int8) -5;      // 0xfb — lands in the +/- sextet range
+        blob[2] = (int8) 127;
+        blob[3] = (int8) -1;      // 0xff
+        blob[4] = (int8) 64;
+        String blobB64 = Base64.encode(blob, blob.count());
+        int8[] blobBack = Base64.decode(blobB64);
+        System.stdout.println("  binary round-trip        = " + blobB64);
+        this.check(this.sameBytes(blobBack, blob),
+            "decode(encode(blob)) == blob");
+
+        // 6. Alphabet-agnostic decode: the SAME bytes encoded url-safe
+        //    (different symbols for 62/63, no '=') decode to the same
+        //    result — the decoder recognises both alphabets and
+        //    reconstructs the byte count from the unpadded length.
+        String blobUrl = Base64.encodeUrlSafe(blob, blob.count());
+        int8[] blobBack2 = Base64.decode(blobUrl);
+        System.stdout.println("  url-safe form            = " + blobUrl);
+        this.check(this.sameBytes(blobBack2, blob),
+            "decode(url-safe, unpadded) == blob");
+    }
+
+    // Byte-for-byte equality of two buffers (both borrowed).
+    public boolean sameBytes(int8[] a, int8[] b) {
+        if (a.count() != b.count()) {
+            return false;
+        }
+        int32 n = (int32) a.count();
+        int32 i = 0;
+        while (i < n) {
+            if (a[i] != b[i]) {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+}

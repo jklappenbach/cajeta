@@ -1,0 +1,100 @@
+package tour.io;
+
+import tour.DemoClass;
+import cajeta.io.file.Path;
+import cajeta.lang.String;
+
+// cajeta.io.file.Path — an immutable filesystem path. A Path wraps the
+// raw OS-path bytes (UTF-8 octets, '/' separator on Linux) and offers
+// pure-path queries that never touch the filesystem:
+//
+//   Path.of(String)   — construct; the Path copies the String's bytes
+//   isAbsolute()      — leading '/' marks an absolute path
+//   name()            — last segment, extension included
+//   stem()            — last segment minus its trailing extension
+//   extension()       — text after the rightmost dot (or "")
+//   parent()          — everything before the last separator
+//   resolve(segment)  — join one segment, inserting '/' only when needed
+//
+// Everything below is string manipulation on the stored bytes — no
+// syscalls, no filesystem state. (The stat predicates exists/isFile/
+// isDir and the mkdirs/delete mutations are the syscall-backed layer;
+// FileIoDemo covers actual file reads and writes.)
+public class PathDemo extends DemoClass {
+
+    // Render a Path's raw bytes as a String so results can be compared
+    // with String.equals. The bytes are copied into a fresh array the
+    // String owns, so the Path and the String drop independently.
+    public static #String text(Path p) {
+        int32 n = (int32) p.bytes.count();
+        int8[] copy = heap int8[n];
+        int32 i = 0;
+        while (i < n) {
+            copy[i] = p.bytes[i];
+            i = i + 1;
+        }
+        return heap String(#copy, n);
+    }
+
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Paths: pure-path queries (cajeta.io.file.Path) --");
+
+        // 1. Construction + the absolute/relative split. The only test
+        // is the first byte: '/' means absolute.
+        Path abs = Path.of("/home/julian/notes/todo.txt");
+        Path rel = Path.of("src/lang");
+        this.check(abs.isAbsolute(), "leading '/' makes a path absolute");
+        this.check(rel.isRelative(), "no leading '/' makes a path relative");
+        System.stdout.println("  \"/home/julian/notes/todo.txt\" absolute = "
+            + abs.isAbsolute() + "; \"src/lang\" relative = " + rel.isRelative());
+
+        // 2. Decomposing the last segment: name keeps the extension,
+        // stem strips it, extension is the text after the rightmost dot.
+        String leaf = abs.name();
+        this.check(leaf.equals("todo.txt"), "name() is the last segment");
+        this.check(abs.stem().equals("todo"), "stem() drops the extension");
+        this.check(abs.extension().equals("txt"), "extension() is the suffix");
+        System.stdout.println("  name = " + leaf + "; stem = " + abs.stem()
+            + "; extension = " + abs.extension());
+
+        // 3. Only the RIGHTMOST dot splits — "archive.tar.gz" stems to
+        // "archive.tar" with extension "gz" (the pathlib pairing).
+        Path tarball = Path.of("archive.tar.gz");
+        this.check(tarball.stem().equals("archive.tar"),
+            "single-dot strip: stem keeps earlier dots");
+        this.check(tarball.extension().equals("gz"),
+            "extension is only the last suffix");
+        System.stdout.println("  archive.tar.gz -> stem " + tarball.stem()
+            + ", extension " + tarball.extension());
+
+        // 4. parent() walks up one level; the root is its own parent, so
+        // repeated parent() calls terminate instead of underflowing.
+        Path dir = abs.parent();
+        String dirText = text(dir);
+        this.check(dirText.equals("/home/julian/notes"),
+            "parent() strips the last segment");
+        Path root = Path.of("/");
+        Path rootParent = root.parent();
+        String rootText = text(rootParent);
+        this.check(rootText.equals("/"), "parent of the root is the root");
+        System.stdout.println("  parent = " + dirText
+            + "; parent of \"/\" = " + rootText);
+
+        // 5. resolve() joins one segment per call, adding a '/' only when
+        // the left side doesn't already end in one — so chains read like
+        // the path they build.
+        Path srcDir = rel.resolve("stream");
+        Path srcFile = srcDir.resolve("Stream.cajeta");
+        String joined = text(srcFile);
+        this.check(joined.equals("src/lang/stream/Stream.cajeta"),
+            "resolve() chains with single separators");
+        Path slashed = Path.of("/tmp/");
+        Path log = slashed.resolve("x.log");
+        String logText = text(log);
+        this.check(logText.equals("/tmp/x.log"),
+            "no double '/' after a trailing separator");
+        System.stdout.println("  joined = " + joined + "; \"/tmp/\" + x.log = "
+            + logText);
+    }
+}

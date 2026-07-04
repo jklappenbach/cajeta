@@ -1,0 +1,70 @@
+package tour.collection;
+
+import tour.DemoClass;
+import cajeta.collection.Cache;
+import cajeta.time.Duration;
+import cajeta.lang.String;
+
+// cajeta.collection.Cache — a bounded in-memory cache: LRU eviction
+// plus an optional TTL. The primitive for "memoize this lookup but
+// don't grow without bound."
+//
+// Every operation is in service of that: put() inserts at the
+// most-recently-used head and evicts the least-recently-used tail
+// once count() exceeds the bound; get() returns Optional<V> and
+// promotes the hit to the head, so recently-read entries outlive
+// colder ones. containsKey() peeks WITHOUT promoting — handy below
+// for inspecting the LRU state without disturbing it.
+public class CacheDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Cache (bounded LRU + TTL) --");
+
+        // A cache bounded at three entries. Keys 1..3 fill it; the
+        // LRU order (oldest first) is now 1, 2, 3.
+        Cache<int32, String> cache = heap Cache<int32, String>(3);
+        cache.put(1, "one");
+        cache.put(2, "two");
+        cache.put(3, "three");
+        this.check(cache.count() == 3, "cache holds 3 entries at capacity");
+
+        // A hit resolves through Optional — and promotes key 1 to
+        // most-recently-used, so the eviction order becomes 2, 3, 1.
+        Optional<String> hit = cache.get(1);
+        this.check(hit.isPresent(), "get(1) hits");
+        this.check(hit.get().equals("one"), "get(1) returns the stored value");
+        System.stdout.println("  get(1) after 3 puts = " + hit.get());
+
+        // Insert beyond capacity: put(4) pushes count past the bound
+        // and the LRU tail — key 2, the coldest entry — is evicted.
+        // Key 1 survives only because the get() above promoted it.
+        cache.put(4, "four");
+        this.check(cache.count() == 3, "insert beyond capacity keeps count at the bound");
+        this.check(!cache.containsKey(2), "the LRU entry (key 2) was evicted");
+        this.check(cache.containsKey(1), "the get()-promoted entry survived eviction");
+        this.check(cache.containsKey(3) && cache.containsKey(4), "warm entries survived");
+        System.stdout.println("  after put(4): contains 2 = " + cache.containsKey(2)
+            + ", contains 1 = " + cache.containsKey(1));
+
+        // A miss (absent or evicted key) is Optional.empty, not null.
+        Optional<String> miss = cache.get(2);
+        this.check(miss.isEmpty(), "get on the evicted key misses");
+
+        // TTL: setMaxAge() arms time-based expiration on top of the
+        // size bound. Arm a 1ns max age and spin the clock 1µs past
+        // the put — the entry is then expired deterministically, and
+        // the next lookup both misses AND reclaims the stale entry.
+        Cache<int32, String> ttl = heap Cache<int32, String>(3);
+        ttl.setMaxAge(Duration.ofNanos(1));
+        ttl.put(7, "ephemeral");
+        int64 t0 = Cajeta.currentTimeNanos();
+        int32 spin = 0;
+        while (Cajeta.currentTimeNanos() - t0 < 1000L) {
+            spin = spin + 1;
+        }
+        Optional<String> stale = ttl.get(7);
+        this.check(stale.isEmpty(), "TTL-expired entry misses on lookup");
+        this.check(ttl.count() == 0, "the expired entry is reclaimed by the lookup");
+        System.stdout.println("  1ns-TTL entry after ~1us: present = " + stale.isPresent());
+    }
+}

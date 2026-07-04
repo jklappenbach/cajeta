@@ -1,0 +1,135 @@
+package tour.net;
+
+import tour.DemoClass;
+
+// cajeta.io.net.Server — the TCP server core: a bound listener, a
+// per-connection handler contract, in-flight accounting, and graceful
+// drain. Server.builder() is the way in — a fluent surface that picks
+// the accept model without naming a concrete class:
+//
+//   Server.builder()
+//       .bind("127.0.0.1:0")                       // :0 = ephemeral port
+//       .model(ServerModel.fiberPerConnection())    // Model A, the default
+//       .handler((conn) -> handle(conn))            // owns + closes conn
+//       .build();
+//
+// Two accept models hide behind that one .model(...) call: Model A
+// spawns one fiber per accepted connection; Model B
+// (ServerModel.sharedPool(n)) feeds a bounded pool of n worker fibers.
+// The builder is a pure value until build() — it just records the
+// choices — so its selection logic is inspectable without a socket.
+//
+// In production the core runs autonomously: spawn server.runAsync()
+// parks an accept loop on its own fiber and shutdown(deadline) stops
+// accepting + drains. Here the demo drives ONE accept iteration by
+// hand through the same public seams the loop uses — acceptNext(),
+// dispatch(), drainInflight() — so the walk stays deterministic and
+// every step is visible.
+
+import cajeta.io.net.IpAddress;
+import cajeta.io.net.Server;
+import cajeta.io.net.ServerBuilder;
+import cajeta.io.net.ServerModel;
+import cajeta.io.net.ServerState;
+import cajeta.io.net.SocketAddress;
+import cajeta.io.net.TcpListener;
+import cajeta.io.net.TcpStream;
+import cajeta.time.Duration;
+
+public class ServerDemo extends DemoClass {
+
+    // The per-connection handler: echo one message back, then close.
+    // Handlers are (TcpStream) -> void — each runs on its own fiber,
+    // owns the accepted stream, and closes it. The async read/write
+    // forms park the fiber (never a carrier thread) while bytes are
+    // in flight.
+    public static void echoOnce(TcpStream conn) {
+        int8[] buf = heap int8[8];
+        int64 n = conn.readAsync(buf, (int64) 0, (int64) 8);
+        conn.writeAllAsync(buf, (int64) 0, n);
+        conn.close();
+    }
+
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Networking: TCP server core (cajeta.io.net.Server) --");
+
+        // 1. The builder records configuration; nothing binds until
+        // build(). Unset, the model is fiber-per-connection (Model A)
+        // and the backlog is the platform default.
+        ServerBuilder b = Server.builder();
+        b.bind("127.0.0.1:0");
+        b.handler((conn) -> ServerDemo.echoOnce(conn));
+        this.check(b.serverModel.isFiberPerConnection(),
+            "builder defaults to fiber-per-connection");
+        this.check(b.backlog == ServerBuilder.UNSET_BACKLOG,
+            "backlog defaults to the platform value");
+
+        // 2. .model(...) swaps the accept stack — the only line that
+        // changes when a server moves from Model A to a shared pool.
+        b.model(ServerModel.sharedPool(8));
+        this.check(b.serverModel.isSharedPool()
+            && b.serverModel.getPoolSize() == 8,
+            "sharedPool(8) records Model B with 8 workers");
+        System.stdout.println("  builder: default Model A; .model(sharedPool(8)) -> Model B");
+
+        // 3. The live core. The listener and handler live in this
+        // scope, and the server borrows them — the core starts in
+        // ServerState.NEW with nothing in flight.
+        (TcpStream) -> void h = (conn) -> ServerDemo.echoOnce(conn);
+        IpAddress lip = IpAddress.loopbackV4();
+        SocketAddress bindAddr = SocketAddress.of(#lip, 0);
+        TcpListener listener = TcpListener.bind(bindAddr);
+        int32 port = listener.boundPort();
+        Server s = heap Server(listener, h);
+        this.check(s.currentState() == ServerState.NEW,
+            "a built server starts in NEW");
+        this.check(port > 0, "bind :0 resolves an ephemeral port");
+        System.stdout.println("  core bound on 127.0.0.1 (port > 0 = "
+            + (port > 0) + "), state NEW");
+
+        scope {
+            // One accept iteration, exactly what serve() does per
+            // connection. The client connects and writes first (the
+            // kernel completes the connect into the listen backlog),
+            // so every step below returns without waiting.
+            IpAddress ip = IpAddress.loopbackV4();
+            SocketAddress addr = SocketAddress.of(#ip, port);
+            TcpStream client = TcpStream.connect(#addr);
+            int8[] msg = heap int8[4];
+            msg[0] = (int8) 101;   // 'e'
+            msg[1] = (int8) 99;    // 'c'
+            msg[2] = (int8) 104;   // 'h'
+            msg[3] = (int8) 111;   // 'o'
+            client.write(msg, (int64) 0, (int64) 4);
+
+            // acceptNext() pulls the pending connection; dispatch()
+            // bumps the in-flight count and spawns the handler on its
+            // own fiber (the connection moves in — the handler owns it).
+            TcpStream conn = s.acceptNext();
+            s.dispatch(#conn);
+
+            // The handler fiber echoes; readAsync parks this fiber
+            // until the reply lands.
+            int8[] back = heap int8[4];
+            int64 got = client.readAsync(back, (int64) 0, (int64) 4);
+            boolean echoed = got == (int64) 4
+                && back[0] == (int8) 101 && back[1] == (int8) 99
+                && back[2] == (int8) 104 && back[3] == (int8) 111;
+            this.check(echoed, "dispatched handler echoed the 4 bytes");
+            System.stdout.println("  handler echoed " + got
+                + " bytes; matches \"echo\" = " + echoed);
+            client.close();
+
+            // The drain shutdown(deadline) performs: wait until every
+            // dispatched handler has returned (the handler's finally
+            // drops the count even if it throws), bounded by a deadline.
+            boolean drained = s.drainInflight(Duration.ofSeconds(5));
+            this.check(drained, "in-flight handlers drained clean");
+        }
+        // The scope's } joined the handler fiber; nothing is left.
+        this.check(s.inflightCount() == 0, "no handlers left in flight");
+        System.stdout.println("  drain clean; in-flight = " + s.inflightCount());
+        listener.close();
+    }
+}

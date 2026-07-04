@@ -1,0 +1,105 @@
+package tour.collection;
+
+import tour.DemoClass;
+import cajeta.collection.ArrayList;
+import cajeta.collection.Sort;
+
+// cajeta.collection.Sort — the general-purpose sorting statics, plus
+// binary search over sorted data. Two kinds, numpy-style:
+//
+//   * Sort.sort       — unstable, fast (pattern-defeating quicksort).
+//   * Sort.sortStable — stable merge sort: equal keys KEEP their
+//                       input order, at the cost of O(n) scratch.
+//
+// Every algorithm is written once against a comparator seam — a
+// function value (T, T) -> int32 (negative / zero / positive, like
+// Comparable) — and the natural-order entry points are thin wrappers
+// passing a <-based comparator. ArrayList exposes the same engines as
+// the instance methods sort() / sortStable() over its backing array.
+public class SortDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Sort --");
+
+        // Natural-order unstable sort of a raw array.
+        int32[] a = {5, 3, 8, 1, 9, 2, 7};
+        Sort.sort<int32>(a, 7);
+        boolean ascending = true;
+        for (int32 i = 1; i < 7; i = i + 1) {
+            if (a[i] < a[i - 1]) {
+                ascending = false;
+            }
+        }
+        this.check(ascending, "Sort.sort orders the array ascending");
+        this.check(a[0] == 1 && a[6] == 9, "min lands first, max lands last");
+        System.stdout.println("  sorted: first = " + a[0] + ", last = " + a[6]);
+
+        // Binary search over the sorted array: index of the first
+        // match, or -1 when absent. a is now [1,2,3,5,7,8,9].
+        this.check(Sort.binarySearch<int32>(a, 7, 8) == 5, "binarySearch finds 8 at index 5");
+        this.check(Sort.binarySearch<int32>(a, 7, 6) == -1, "binarySearch misses an absent key");
+
+        // lowerBound / upperBound bracket a run of duplicates
+        // (numpy searchsorted side='left' / side='right').
+        int32[] dups = {1, 2, 2, 2, 3};
+        int32 lo = Sort.lowerBound<int32>(dups, 5, 2);
+        int32 hi = Sort.upperBound<int32>(dups, 5, 2);
+        this.check(lo == 1 && hi == 4, "lowerBound/upperBound bracket the run of 2s");
+        System.stdout.println("  run of 2s spans [" + lo + ", " + hi + ")");
+
+        // The comparator seam: flip the order by returning the
+        // opposite sign. Same engine, descending result.
+        Sort.sort<int32>(a, 7, (x, y) -> {
+            if (x > y) { return -1; }
+            if (x < y) { return 1; }
+            return 0;
+        });
+        this.check(a[0] == 9 && a[6] == 1, "a comparator flips the sort order");
+
+        // Stability. Encode 40 records as key * 100 + arrival index
+        // (keys cycle 0..3), then sortStable by the KEY ALONE. A
+        // stable sort must group the keys AND keep each group's
+        // arrival indices increasing; an unstable key-only sort is
+        // free to scramble them. 40 elements exceeds the merge sort's
+        // run-building block (32), so real merge passes run here.
+        int32[] recs = heap int32[40];
+        for (int32 i = 0; i < 40; i = i + 1) {
+            recs[i] = (i % 4) * 100 + i;
+        }
+        Sort.sortStable<int32>(recs, 40, (x, y) -> {
+            if (x / 100 < y / 100) { return -1; }
+            if (x / 100 > y / 100) { return 1; }
+            return 0;
+        });
+        boolean grouped = true;
+        boolean stable = true;
+        for (int32 i = 1; i < 40; i = i + 1) {
+            int32 prevKey = recs[i - 1] / 100;
+            int32 curKey = recs[i] / 100;
+            if (curKey < prevKey) {
+                grouped = false;
+            }
+            if (curKey == prevKey && recs[i] % 100 < recs[i - 1] % 100) {
+                stable = false;
+            }
+        }
+        this.check(grouped, "sortStable groups equal keys together");
+        this.check(stable, "sortStable keeps equal keys in input order");
+        System.stdout.println("  stable sort over 40 records: grouped = " + grouped
+            + ", input order kept = " + stable);
+
+        // ArrayList wires the same engines up as instance methods,
+        // sorting the backing array in place.
+        ArrayList<int32> xs = heap ArrayList<int32>();
+        xs.add(3);
+        xs.add(1);
+        xs.add(2);
+        xs.sort();
+        this.check(xs.get(0) == 1 && xs.get(1) == 2 && xs.get(2) == 3,
+            "ArrayList.sort() orders the list in place");
+        xs.add(0);
+        xs.sortStable();
+        this.check(xs.get(0) == 0 && xs.get(3) == 3,
+            "ArrayList.sortStable() re-sorts after an append");
+    }
+}

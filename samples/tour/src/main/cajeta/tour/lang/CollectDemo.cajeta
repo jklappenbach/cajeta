@@ -1,0 +1,57 @@
+package tour.lang;
+
+import tour.DemoClass;
+import cajeta.collection.ArrayList;
+import cajeta.collection.Collectors;
+
+// Stream.collect — the terminal operation that drains a pipeline into
+// a container. Where forEach runs a side effect and reduce folds to a
+// single scalar, collect hands the stream a Collector: a (supplier,
+// accumulator, combiner) triple that says how to start an empty
+// result, fold each element in, and merge partial results (the
+// combiner is what makes the same collector safe under .parallel()).
+//
+// This demo shows the mechanics with one collector,
+// Collectors.toList<T>() — every element into a fresh ArrayList<T>
+// in stream order. The rest of the factory family lives in
+// CollectorsDemo.
+public class CollectDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Stream.collect --");
+
+        ArrayList<int32> src = heap ArrayList<int32>();
+        src.add(3);
+        src.add(1);
+        src.add(4);
+        src.add(1);
+        src.add(5);
+
+        // The basic shape: stream -> collect(collector) -> container.
+        // toList's supplier makes the empty list, its accumulator
+        // appends, and ownership of the result flows out to us.
+        ArrayList<int32> copy = src.stream()
+            .collect(Collectors.toList<int32>());
+        System.stdout.println("  collect(toList) count = " + copy.count());
+        this.check(copy.count() == 5, "collect drained every element");
+        this.check(copy.get(0) == 3 && copy.get(4) == 5,
+            "toList preserves stream order");
+
+        // The collected list is a NEW container, not a view — mutating
+        // it leaves the source untouched.
+        copy.add(9);
+        this.check(src.count() == 5 && copy.count() == 6,
+            "collected list is independent of the source");
+
+        // collect terminates a whole pipeline: intermediate stages
+        // run lazily, then the collector materializes the survivors.
+        ArrayList<int32> doubledEvens = src.stream()
+            .filter((x) -> x % 2 == 0)
+            .map<int32>((x) -> x * 2)
+            .collect(Collectors.toList<int32>());
+        System.stdout.println("  filter(even).map(x2)  -> count = "
+            + doubledEvens.count());
+        this.check(doubledEvens.count() == 1, "pipeline stages ran before collection");
+        this.check(doubledEvens.get(0) == 8, "collected element carries the mapped value");
+    }
+}

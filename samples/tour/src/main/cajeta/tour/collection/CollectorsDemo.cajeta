@@ -1,0 +1,93 @@
+package tour.collection;
+
+import tour.DemoClass;
+import tour.Counter;
+import cajeta.collection.ArrayList;
+import cajeta.collection.Collector;
+import cajeta.collection.Collectors;
+
+// cajeta.collection.Collectors — the standard Collector factories for
+// Stream's collect<R> terminal. A Collector<T, R> bundles three
+// callables: a supplier (fresh R partial), an accumulator (fold one T
+// into the partial), and a combiner (merge two partials). The
+// combiner is REQUIRED — it's what lets the same collector run under
+// .parallel() with per-worker partials, no re-engineering.
+//
+// The factories are method-level templated, so each call site
+// monomorphizes per element type: toList<int32>() and toList<int64>()
+// are distinct symbols. This demo runs the factory at the end of real
+// pipelines (filter, map, parallel) and then builds a CUSTOM
+// Collector from the same three-callable shape — the extension point
+// the whole family is made of.
+public class CollectorsDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Collectors --");
+
+        int32[] data = {5, 1, 4, 2, 3, 6};
+
+        // toList at the end of a filter pipeline: the accumulator
+        // appends in stream order, so encounter order is preserved.
+        ArrayList<int32> evens = data.stream()
+            .filter((x) -> x % 2 == 0)
+            .collect(Collectors.toList<int32>());
+        this.check(evens.count() == 3, "toList collects every surviving element");
+        this.check(evens.get(0) == 4 && evens.get(1) == 2 && evens.get(2) == 6,
+            "toList preserves encounter order");
+        System.stdout.println("  filter(even).toList count = " + evens.count());
+
+        // Per-T monomorphization: after map<int64> the pipeline's
+        // element type is int64, so the matching factory is
+        // toList<int64>() — a different instantiation than above.
+        ArrayList<int64> wide = data.stream()
+            .map<int64>((x) -> (int64) x * 10L)
+            .collect(Collectors.toList<int64>());
+        this.check(wide.count() == 6 && wide.get(0) == 50L && wide.get(5) == 60L,
+            "toList<int64> collects the mapped stream");
+
+        // Under .parallel() each worker calls the supplier for its
+        // own partial list and the orchestrator merges partials with
+        // the combiner (appendAll). The result is COMPLETE — every
+        // element lands exactly once — but the merged order follows
+        // the split enumeration, not the source order, so treat a
+        // parallel-collected list as a bag unless you sort it.
+        int32[] xs = heap int32[200];
+        for (int32 i = 0; i < 200; i = i + 1) {
+            xs[i] = i + 1;
+        }
+        ArrayList<int32> par = xs.stream()
+            .parallel()
+            .collect(Collectors.toList<int32>());
+        this.check(par.count() == 200, "parallel collect merges every worker partial");
+        // Exactly-once coverage: tally each collected value and
+        // verify every source value was seen exactly once.
+        int32[] seen = heap int32[201];
+        for (int32 i = 0; i < 200; i = i + 1) {
+            int32 v = par.get(i);
+            if (v >= 1 && v <= 200) {
+                seen[v] = seen[v] + 1;
+            }
+        }
+        boolean exactlyOnce = true;
+        for (int32 i = 1; i <= 200; i = i + 1) {
+            if (seen[i] != 1) {
+                exactlyOnce = false;
+            }
+        }
+        this.check(exactlyOnce, "no element lost or duplicated across workers");
+        System.stdout.println("  parallel collect: count = " + par.count()
+            + ", exactly-once = " + exactlyOnce);
+
+        // A custom collector from the same (supplier, accumulator,
+        // combiner) triple — a counting collector into the tour's
+        // Counter class. The combiner folds one partial's total into
+        // the other, so this shape parallelizes too.
+        Collector<int32, Counter> counting = stack Collector<int32, Counter>(
+            () -> heap Counter(),
+            (acc, x) -> { acc.bump(); return acc; },
+            (left, right) -> { left.bumpBy(right.value()); return left; });
+        Counter n = data.stream().collect<Counter>(counting);
+        this.check(n.value() == 6, "custom counting collector sees every element");
+        System.stdout.println("  custom counting collector = " + n.value());
+    }
+}

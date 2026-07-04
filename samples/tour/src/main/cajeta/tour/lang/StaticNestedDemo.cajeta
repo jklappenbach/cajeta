@@ -1,0 +1,77 @@
+package tour.lang;
+
+import tour.DemoClass;
+
+// Static nested classes — Java-style `public static class Inner { }`
+// declared inside another class body. The nested class is an
+// independent type that lives under the outer's canonical namespace:
+// you name it `Outer.Inner` at every use site. There is no implicit
+// outer-this reference (that's what "static" means here); nesting is
+// purely a namespacing and code-organization tool for helper types
+// that only make sense next to their owner.
+
+public class Ledger {
+    // The helper type: one line in the ledger. Nested because nothing
+    // outside Ledger has any business creating bare entries — but as
+    // a *static* nested class it is still a free-standing type once
+    // you spell its full name.
+    public static class Entry {
+        public int32 amount;
+        public Entry(int32 amount) { this.amount = amount; }
+        public boolean isCredit() { return this.amount >= 0; }
+    }
+
+    // A second nested type under the same outer — siblings coexist.
+    public static class Totals {
+        public int32 credits;
+        public int32 debits;
+        public Totals() {
+            this.credits = 0;
+            this.debits = 0;
+        }
+        public void absorb(Ledger.Entry e) {
+            if (e.isCredit()) {
+                this.credits = this.credits + e.amount;
+            } else {
+                this.debits = this.debits + e.amount;
+            }
+        }
+    }
+
+    // The outer class has its own state, independent of any Entry.
+    public int32 entryCount;
+    public Ledger() { this.entryCount = 0; }
+}
+
+public class StaticNestedDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Static nested classes --");
+
+        // Instantiate the nested type through its qualified name.
+        Ledger.Entry pay = heap Ledger.Entry(1500);
+        Ledger.Entry rent = heap Ledger.Entry(-900);
+        System.stdout.println("  Ledger.Entry(1500).isCredit() = " + pay.isCredit());
+        System.stdout.println("  Ledger.Entry(-900).isCredit() = " + rent.isCredit());
+        this.check(pay.amount == 1500, "nested-class ctor stores its field");
+        this.check(pay.isCredit(), "nested-class method sees positive amount");
+        this.check(!rent.isCredit(), "nested-class method sees negative amount");
+
+        // Nested types can take each other as parameters — they are
+        // ordinary classes with long names.
+        Ledger.Totals t = heap Ledger.Totals();
+        t.absorb(pay);
+        t.absorb(rent);
+        System.stdout.println("  Totals: credits=" + t.credits
+            + " debits=" + t.debits);
+        this.check(t.credits == 1500, "sibling nested class accumulates credits");
+        this.check(t.debits == -900, "sibling nested class accumulates debits");
+
+        // Outer and nested instances live independently — no hidden
+        // link from an Entry back to some Ledger.
+        Ledger book = heap Ledger();
+        book.entryCount = 2;
+        this.check(book.entryCount + pay.amount == 1502,
+            "outer and nested instances coexist independently");
+    }
+}

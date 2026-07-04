@@ -1,0 +1,77 @@
+package tour.lang;
+
+import tour.DemoClass;
+import cajeta.lang.Optional;
+
+// cajeta.lang.Optional<T> — a value that is either present or empty,
+// stated in the type instead of a sentinel like -1 or null. T can be
+// anything: primitive, class reference, even another Optional.
+//
+// v1 surface (runtime/src/cajeta/lang/Optional.cajeta):
+//   construction   Optional<T>(present, value)   // Some/None factories
+//                                                // land with generic
+//                                                // static-call syntax
+//   inspection     isPresent() / isEmpty()
+//   extraction     get()      — the held value; throws on empty
+//                  orElse(f)  — the held value, or f when empty
+//
+// The lambda combinators (map / filter / ifPresent / ...) are a
+// planned later phase; today you branch on isPresent() and unwrap.
+public class OptionalDemo extends DemoClass {
+
+    // The idiomatic producer shape: return an Optional instead of a
+    // magic "not found" number. Here: index of `needle` in a tiny
+    // fixed sequence, or empty. Optionals are small values — with a
+    // plain (non-#) return type the `stack` instance is copied into
+    // the caller's slot on return (sret), no heap traffic at all.
+    public Optional<int32> indexOf(int32 needle) {
+        int32[] data = { 10, 20, 30 };
+        int32 i = 0;
+        while (i < 3) {
+            if (data[i] == needle) {
+                return stack Optional<int32>(true, i);
+            }
+            i = i + 1;
+        }
+        return stack Optional<int32>(false, 0);
+    }
+
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Optional --");
+
+        // Construction: one ctor, the boolean picks present or empty.
+        // For an empty one the value slot is ignored — pass a zero.
+        Optional<int32> hit = stack Optional<int32>(true, 42);
+        Optional<int32> miss = stack Optional<int32>(false, 0);
+
+        // Inspection — the two queries are exact complements.
+        System.stdout.println("  hit.isPresent()  = " + hit.isPresent()
+            + "   miss.isEmpty() = " + miss.isEmpty());
+        this.check(hit.isPresent(), "present optional reports isPresent");
+        this.check(!hit.isEmpty(), "present optional is not empty");
+        this.check(miss.isEmpty(), "empty optional reports isEmpty");
+
+        // Extraction. get() is for the guarded path — check first,
+        // then unwrap (it throws on empty). orElse() never throws:
+        // it collapses the two cases into a value plus a fallback.
+        int32 v = 0;
+        if (hit.isPresent()) {
+            v = hit.get();
+        }
+        System.stdout.println("  hit.get()        = " + v);
+        this.check(v == 42, "get() unwraps the held value");
+        this.check(hit.orElse(-1) == 42, "orElse on present returns the value");
+        this.check(miss.orElse(-1) == -1, "orElse on empty returns the fallback");
+
+        // The producer pattern in action: no -1 convention to
+        // remember, the type says "may be absent".
+        Optional<int32> found = this.indexOf(20);
+        Optional<int32> absent = this.indexOf(99);
+        System.stdout.println("  indexOf(20)      = " + found.orElse(-1)
+            + "   indexOf(99) = " + absent.orElse(-1));
+        this.check(found.isPresent() && found.get() == 1,
+            "returned optional carries the found index");
+        this.check(absent.isEmpty(), "no match returns the empty optional");
+    }
+}

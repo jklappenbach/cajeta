@@ -82,7 +82,17 @@ public final class Tour {
         demos.add(heap FactoryDemo());
         demos.add(heap WildcardsDemo());
         demos.add(heap SwitchTernaryDemo());
+        demos.add(heap InterfacesDemo());
+        demos.add(heap EncodingDemo());
+        demos.add(heap StaticNestedDemo());
+        demos.add(heap StaticFieldsDemo());
+        demos.add(heap OptionalDemo());
+        demos.add(heap PairDemo());
+        demos.add(heap CollectDemo());
         demos.add(heap FileIoDemo());
+        demos.add(heap PathDemo());
+        demos.add(heap UdpDemo());
+        demos.add(heap ServerDemo());
         demos.add(heap OperatorOverloadDemo());
         demos.add(heap LinearAlgebraDemo());
         demos.add(heap QuaternionDemo());
@@ -92,8 +102,14 @@ public final class Tour {
         demos.add(heap HeapDemo());
         demos.add(heap RedBlackTreeDemo());
         demos.add(heap BPlusTreeDemo());
+        demos.add(heap CacheDemo());
+        demos.add(heap CollectorsDemo());
+        demos.add(heap SortDemo());
         demos.add(heap LtmBPlusTreeDemo());
         demos.add(heap HashDemo());
+        demos.add(heap Base64Demo());
+        demos.add(heap CsvDemo());
+        demos.add(heap SchemaDemo());
 
         // Stream over the list — virtual dispatch lands each
         // subclass's execute() override.
