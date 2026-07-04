@@ -1,0 +1,84 @@
+package tour.math;
+
+import tour.DemoClass;
+import cajeta.lang.Math;
+import cajeta.math.Tensor;
+import cajeta.math.stats.Stats;
+
+// cajeta.math.stats.Stats — descriptive statistics with numpy's exact
+// bucket semantics:
+//
+//   * histogram — equal-width bins over [lo, hi]; out-of-range values drop,
+//     and a value EQUAL to hi lands in the last bin (numpy's closed-right
+//     final edge).
+//   * bincount  — counts of each non-negative integer, length max+1.
+//   * digitize  — out[i] = number of edges <= t[i] (numpy right=False).
+//   * median    — order statistic with linear interpolation.
+//
+// All counts here are exact integers on a small fixed array.
+public class StatsDemo extends DemoClass {
+    static boolean close(float32 a, float32 b) {
+        float32 d = Math.abs(a - b);
+        return d < 0.0001f;
+    }
+
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- cajeta.math.stats (histogram / bincount / digitize) --");
+
+        // histogram: 7 samples into 4 bins over [0,4]. 0.5 -> bin0;
+        // 1.5, 1.7 -> bin1; 2.5 -> bin2; 3.2, 3.9 -> bin3; and 4.0 (== hi)
+        // ALSO lands in bin3 — numpy's closed-right final edge.
+        float32[] hd = {0.5f, 1.5f, 1.7f, 2.5f, 3.2f, 3.9f, 4.0f};
+        int64[] s7 = heap int64[1];
+        s7[0] = 7;
+        Tensor<float32> h = Tensor.of<float32>(hd, s7);
+        Tensor<int64> counts = Stats.histogram<float32>(h, 4, 0.0f, 4.0f);
+        System.stdout.println("  histogram(4 bins over [0,4]) = ["
+            + counts.get1(0) + ", " + counts.get1(1) + ", "
+            + counts.get1(2) + ", " + counts.get1(3) + "]   (expect [1, 2, 1, 3])");
+        this.check(counts.size() == 4, "histogram returns one count per bin");
+        this.check(counts.get1(0) == 1 && counts.get1(1) == 2
+            && counts.get1(2) == 1 && counts.get1(3) == 3,
+            "histogram counts == [1, 2, 1, 3] (hi edge in last bin)");
+
+        // bincount over [1, 2, 2, 3, 3, 3]: value v appears out[v] times,
+        // length max+1 = 4, and 0 never appears.
+        int64[] s6 = heap int64[1];
+        s6[0] = 6;
+        Tensor<int64> b = Tensor.zeros<int64>(s6);
+        b.set1(0, 1);
+        b.set1(1, 2);
+        b.set1(2, 2);
+        b.set1(3, 3);
+        b.set1(4, 3);
+        b.set1(5, 3);
+        Tensor<int64> bc = Stats.bincount(b);
+        this.check(bc.size() == 4, "bincount length == max(t) + 1");
+        this.check(bc.get1(0) == 0 && bc.get1(1) == 1 && bc.get1(2) == 2
+            && bc.get1(3) == 3, "bincount([1,2,2,3,3,3]) == [0, 1, 2, 3]");
+
+        // digitize against edges [1, 2, 3]: out[i] counts edges <= t[i],
+        // so 0.5 -> 0, 1.5 -> 1, 2.5 -> 2, 3.5 -> 3.
+        float32[] dv = {0.5f, 1.5f, 2.5f, 3.5f};
+        int64[] s4 = heap int64[1];
+        s4[0] = 4;
+        Tensor<float32> d = Tensor.of<float32>(dv, s4);
+        float32[] ev = {1.0f, 2.0f, 3.0f};
+        int64[] s3 = heap int64[1];
+        s3[0] = 3;
+        Tensor<float32> edges = Tensor.of<float32>(ev, s3);
+        Tensor<int64> bins = Stats.digitize<float32>(d, edges);
+        this.check(bins.get1(0) == 0 && bins.get1(1) == 1
+            && bins.get1(2) == 2 && bins.get1(3) == 3,
+            "digitize([0.5,1.5,2.5,3.5], [1,2,3]) == [0, 1, 2, 3]");
+
+        // median: odd count -> the middle order statistic, exactly.
+        float32[] md = {5.0f, 1.0f, 3.0f, 2.0f, 4.0f};
+        int64[] s5 = heap int64[1];
+        s5[0] = 5;
+        Tensor<float32> m = Tensor.of<float32>(md, s5);
+        float32 med = Stats.median<float32>(m);
+        this.check(close(med, 3.0f), "median([5,1,3,2,4]) == 3");
+    }
+}

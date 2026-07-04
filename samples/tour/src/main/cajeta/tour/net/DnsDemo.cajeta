@@ -1,0 +1,68 @@
+package tour.net;
+
+import tour.DemoClass;
+
+// cajeta.io.net.dns — blocking host resolution over the platform's
+// getaddrinfo. Dns.resolve(host, port) returns every endpoint the name
+// maps to as SocketAddress values (the port baked into each).
+//
+// The tour stays loopback-only, so it resolves exactly two things that
+// never leave this machine:
+//
+//   - "127.0.0.1"  — a numeric literal: getaddrinfo parses it through
+//                    without any lookup, so the result is exact.
+//   - "localhost"  — served from the local hosts database; the answer
+//                    is some loopback (127.0.0.1, ::1, or both,
+//                    depending on the platform's hosts file).
+//
+// The layered pieces — Dns.resolveAsync (fiber-parking), DnsCache
+// (TTL), the UnknownHost/ResolutionFailed taxonomy — reuse this same
+// lookup; the net test suite covers them.
+
+import cajeta.io.net.IpAddress;
+import cajeta.io.net.SocketAddress;
+import cajeta.io.net.dns.Dns;
+
+public class DnsDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Networking: DNS resolution (cajeta.io.net.dns) --");
+
+        // 1. Numeric literal: parse-through, no resolver involved.
+        // Exactly one V4 endpoint comes back, carrying the asked port.
+        SocketAddress[] addrs = Dns.resolve("127.0.0.1", 8080);
+        this.check(addrs.count() == 1,
+            "numeric literal resolves to exactly one endpoint");
+        SocketAddress a0 = addrs[0];
+        IpAddress ip = a0.getIp();
+        IpAddress lo4 = IpAddress.loopbackV4();
+        this.check(ip.isV4() && ip.equals(lo4),
+            "127.0.0.1 parses through to the V4 loopback");
+        this.check(a0.getPort() == 8080,
+            "the requested port is baked into the endpoint");
+        System.stdout.println("  resolve(\"127.0.0.1\", 8080) -> "
+            + a0.toString());
+
+        // 2. "localhost": answered from the local hosts database. The
+        // address set is platform-dependent (v4-only, v6-only, or
+        // both), so the check accepts any loopback in the result.
+        SocketAddress[] lh = Dns.resolve("localhost", 80);
+        int32 n = lh.count();
+        this.check(n >= 1, "localhost resolves to at least one endpoint");
+        IpAddress lo6 = IpAddress.loopbackV6();
+        boolean sawLoopback = false;
+        int32 i = 0;
+        while (i < n) {
+            SocketAddress sa = lh[i];
+            IpAddress lip = sa.getIp();
+            if (lip.equals(lo4) || lip.equals(lo6)) {
+                sawLoopback = true;
+            }
+            i = i + 1;
+        }
+        this.check(sawLoopback,
+            "localhost includes a loopback address (127.0.0.1 or ::1)");
+        System.stdout.println("  resolve(\"localhost\", 80) -> " + n
+            + " endpoint(s); loopback present = " + sawLoopback);
+    }
+}

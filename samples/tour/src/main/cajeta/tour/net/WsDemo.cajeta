@@ -1,0 +1,137 @@
+package tour.net;
+
+import tour.DemoClass;
+
+// cajeta.io.net.ws — WebSockets per RFC 6455. Two layers walk here:
+//
+//   Handshake, pure — WsClientHandshake builds the HTTP Upgrade
+//     request from a ws:// Uri + key; WsServerHandshake validates it
+//     and answers 101 Switching Protocols with the computed
+//     Sec-WebSocket-Accept; the client validates that token binds to
+//     its key. No socket — the handshake is plain HttpRequest /
+//     HttpResponse data.
+//
+//   Live echo, loopback — WsUpgrade runs that same handshake over a
+//     real 127.0.0.1 socket (connectClient on the client side,
+//     acceptServer on the accepted side), yielding a WebSocket on
+//     each end. The client sends one text and one binary message; a
+//     spawned server fiber echoes each back preserving the type.
+//     send()/receive() park the fiber, never a carrier thread; the
+//     frame layer masks client->server traffic and reassembles
+//     fragmented messages per RFC 6455.
+//
+// (An HTTP route can also hand a matched Upgrade request over to
+//  WsServerHandshake — that server-mounted path is the same accept
+//  logic this demo drives directly.)
+
+import cajeta.io.net.AsyncReader;
+import cajeta.io.net.AsyncWriter;
+import cajeta.io.net.IpAddress;
+import cajeta.io.net.SocketAddress;
+import cajeta.io.net.TcpListener;
+import cajeta.io.net.TcpStream;
+import cajeta.io.net.http.HttpRequest;
+import cajeta.io.net.http.HttpResponse;
+import cajeta.io.net.uri.Uri;
+import cajeta.io.net.ws.WebSocket;
+import cajeta.io.net.ws.WsClientHandshake;
+import cajeta.io.net.ws.WsMessage;
+import cajeta.io.net.ws.WsServerHandshake;
+import cajeta.io.net.ws.WsUpgrade;
+
+public class WsDemo extends DemoClass {
+
+    // Server fiber: accept one connection, upgrade it, echo two
+    // messages (text back as text, binary back as binary), close.
+    // Returns len1 * 100 + len2 so the main fiber can verify what the
+    // server actually received.
+    public static async int32 wsServer(#TcpListener listener) {
+        TcpStream sock = listener.acceptAsync();
+        AsyncReader reader = heap AsyncReader(sock);
+        AsyncWriter writer = heap AsyncWriter(sock);
+        WebSocket ws = WsUpgrade.acceptServer(reader, writer);
+
+        WsMessage m1 = ws.receive();
+        String text = heap String(m1.getPayload(), m1.length());
+        ws.send(text);
+
+        WsMessage m2 = ws.receive();
+        ws.sendBinary(m2.getPayload());
+
+        sock.close();
+        return m1.length() * 100 + m2.length();
+    }
+
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Networking: WebSockets (cajeta.io.net.ws) --");
+
+        // 1. The opening handshake, pure. The client's Upgrade request
+        // carries a key; the server's 101 carries the SHA-1-derived
+        // accept token; validateAccept binds the two.
+        Uri huri = Uri.builder()
+            .scheme("ws").host("example.test").port(80).path("/chat")
+            .build();
+        String key = WsClientHandshake.placeholderKey(42);
+        HttpRequest upgrade = WsClientHandshake.buildRequest(huri, key);
+        this.check(WsServerHandshake.isUpgradeRequest(upgrade),
+            "client handshake builds a valid Upgrade request");
+        HttpResponse hresp = WsServerHandshake.accept(upgrade);
+        this.check(hresp.statusCode() == 101,
+            "server handshake answers 101 Switching Protocols");
+        this.check(WsClientHandshake.validateAccept(hresp, key),
+            "Sec-WebSocket-Accept binds to the client's key");
+        System.stdout.println("  handshake: Upgrade -> 101 -> accept token validated");
+
+        // 2. Live loopback echo. The listener moves into the server
+        // fiber; the client upgrades over its own connection, then
+        // round-trips a text and a binary message.
+        scope {
+            IpAddress la = IpAddress.loopbackV4();
+            SocketAddress bindAddr = SocketAddress.of(#la, 0);
+            TcpListener listener = TcpListener.bind(bindAddr);
+            int32 port = listener.boundPort();
+            Task<int32> t = spawn wsServer(#listener);
+
+            IpAddress ca = IpAddress.loopbackV4();
+            SocketAddress connAddr = SocketAddress.of(#ca, port);
+            TcpStream sock = TcpStream.connectAsync(#connAddr);
+            AsyncReader reader = heap AsyncReader(sock);
+            AsyncWriter writer = heap AsyncWriter(sock);
+            Uri curi = Uri.builder()
+                .scheme("ws").host("127.0.0.1").port(port).path("/")
+                .build();
+            WebSocket ws = WsUpgrade.connectClient(reader, writer, curi, 1234567);
+
+            // Text round-trip: "ping" out, "ping" back, still TEXT.
+            ws.send("ping");
+            WsMessage e1 = ws.receive();
+            int8[] p1 = e1.getPayload();
+            boolean textOk = e1.isText() && e1.length() == 4
+                && p1[0] == (int8) 112 && p1[1] == (int8) 105
+                && p1[2] == (int8) 110 && p1[3] == (int8) 103;
+            this.check(textOk, "text message echoed intact (4 bytes, TEXT)");
+
+            // Binary round-trip: three raw bytes, still BINARY.
+            int8[] bin = heap int8[3];
+            bin[0] = (int8) 1;
+            bin[1] = (int8) 2;
+            bin[2] = (int8) 3;
+            ws.sendBinary(bin);
+            WsMessage e2 = ws.receive();
+            int8[] p2 = e2.getPayload();
+            boolean binOk = e2.isBinary() && e2.length() == 3
+                && p2[0] == (int8) 1 && p2[1] == (int8) 2
+                && p2[2] == (int8) 3;
+            this.check(binOk, "binary message echoed intact (3 bytes, BINARY)");
+
+            // The server saw the same lengths it echoed.
+            int32 sret = await t;
+            sock.close();
+            this.check(sret == 403,
+                "server fiber received a 4-byte text + 3-byte binary");
+            System.stdout.println("  echo: text ok = " + textOk
+                + ", binary ok = " + binOk + ", server code = " + sret);
+        }
+    }
+}

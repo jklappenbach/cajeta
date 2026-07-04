@@ -1,0 +1,138 @@
+package tour.ifx;
+
+import cajeta.ifx.BackendRegistry;
+import cajeta.ifx.WindowBackend;
+import cajeta.ifx.NullWindowBackend;
+import cajeta.ifx.Window;
+import cajeta.ifx.WindowEvent;
+import cajeta.ifx.LifecyclePhase;
+import cajeta.ifx.Surface;
+import cajeta.ifx.IfxInfo;
+import cajeta.ifx.IfxException;
+import cajeta.ifx.Feature;
+
+// Cajeta ifx tour — the platform backend contract (window / input / audio)
+// exercised HEADLESSLY against the Null backend floor.
+//
+// cajeta.ifx separates the app-facing contract (BackendRegistry, Window,
+// Surface, events) from per-platform backends. The registry holds every
+// registered backend; selection picks the highest-priority backend whose
+// probe() succeeds. The Null floor (priority -1000, probe always true) is
+// auto-registered on BackendRegistry.instance(), so selection always has a
+// lawful answer:
+//   - selectWindow(true)  — headless is acceptable: the floor binds silently.
+//   - selectWindow(false) — an interactive session: if only the floor is
+//     viable the registry throws IfxException instead of handing the app a
+//     silent black screen.
+// CAJETA_IFX_WINDOW=<name> (also _INPUT/_AUDIO) force a specific backend.
+//
+// Everything below is deterministic — no display server is touched — so each
+// demo self-checks and main() exits nonzero on any failure.
+public final class IfxTour {
+
+    static int32 checks = 0;
+    static int32 failures = 0;
+
+    // Assert `cond`; quiet when it holds, loud when it doesn't.
+    static void check(boolean cond, String what) {
+        IfxTour.checks = IfxTour.checks + 1;
+        if (!cond) {
+            IfxTour.failures = IfxTour.failures + 1;
+            System.stdout.println("  FAIL: " + what);
+        }
+    }
+
+    // Selection: the shared registry auto-registers the Null floor, so a
+    // headless request always binds — and reports exactly what it bound.
+    static void runSelection() {
+        System.stdout.println("");
+        System.stdout.println("-- backend selection: headless bind to the Null floor --");
+        WindowBackend wb = BackendRegistry.instance().selectWindow(true);
+        System.stdout.println("  selectWindow(headless=true) -> name='" + wb.name()
+                            + "' priority=" + wb.priority()
+                            + " probe=" + wb.probe());
+        IfxTour.check(wb.name().equals("null"), "selection: floor backend name is 'null'");
+        IfxTour.check(wb.priority() == -1000, "selection: floor priority is -1000");
+        IfxTour.check(wb.probe(), "selection: floor probe() always true");
+        IfxTour.check(!wb.supports(Feature.Hdr), "selection: floor supports() nothing");
+    }
+
+    // Loud-fail policy: an INTERACTIVE request that can only be satisfied by
+    // the floor throws instead of silently rendering to nowhere.
+    static void runLoudFail() {
+        System.stdout.println("");
+        System.stdout.println("-- policy: interactive request on a floor-only registry throws --");
+        BackendRegistry r = heap BackendRegistry();
+        r.registerWindow(heap NullWindowBackend());
+        boolean threw = false;
+        try {
+            WindowBackend wb = r.selectWindow(false);
+            System.stdout.println("  unexpectedly bound '" + wb.name() + "'");
+        } catch (IfxException e) {
+            threw = true;
+            System.stdout.println("  selectWindow(headless=false) threw IfxException (as specified)");
+        }
+        IfxTour.check(threw, "policy: interactive floor-only selection throws");
+    }
+
+    // The window contract against the Null backend: every verb is a lawful
+    // no-op — createWindow/surfaceOf/poll/pollLifecycle return null, destroy
+    // does nothing. Apps can drive one code path everywhere.
+    static void runWindowContract() {
+        System.stdout.println("");
+        System.stdout.println("-- window contract: Null backend no-ops --");
+        WindowBackend wb = BackendRegistry.instance().selectWindow(true);
+        Window w = wb.createWindow("ifx tour", 640, 480);
+        IfxTour.check(w == null, "window: Null createWindow yields no window");
+        WindowEvent[] events = wb.poll(w);
+        IfxTour.check(events == null, "window: Null poll yields no events");
+        LifecyclePhase[] phases = wb.pollLifecycle(w);
+        IfxTour.check(phases == null, "window: Null pollLifecycle yields no phases");
+        Surface s = wb.surfaceOf(w);
+        IfxTour.check(s == null, "window: Null surfaceOf yields no surface");
+        wb.destroy(w);   // lawful no-op
+        System.stdout.println("  createWindow/poll/pollLifecycle/surfaceOf -> null; destroy() no-op");
+        // A headless Surface value: nativeHandle 0 marks it headless.
+        Surface headless = heap Surface(0, 0, 640, 480);
+        System.stdout.println("  Surface(handle=0).isHeadless() = " + headless.isHeadless()
+                            + ", " + (int32) headless.surfaceWidth()
+                            + "x" + (int32) headless.surfaceHeight());
+        IfxTour.check(headless.isHeadless(), "surface: zero handle is headless");
+        IfxTour.check(headless.surfaceWidth() == 640, "surface: width carried");
+    }
+
+    // IfxInfo: the headless-tolerant facade snapshot — never throws, reports
+    // the bound backend names per domain (all "null" on a floor-only host).
+    static void runInfo() {
+        System.stdout.println("");
+        System.stdout.println("-- IfxInfo: facade snapshot --");
+        IfxInfo info = IfxInfo.describe();
+        System.stdout.println("  version=" + IfxInfo.version()
+                            + " window='" + info.windowBackendName()
+                            + "' input='" + info.inputBackendName()
+                            + "' audio='" + info.audioBackendName() + "'");
+        IfxTour.check(IfxInfo.version() == 1, "info: contract version 1");
+        IfxTour.check(info.windowBackendName().equals("null"), "info: window floor bound");
+        IfxTour.check(info.inputBackendName().equals("null"), "info: input floor bound");
+        IfxTour.check(info.audioBackendName().equals("null"), "info: audio floor bound");
+    }
+
+    public static int32 main(String[] args) {
+        System.stdout.println("=== Cajeta ifx tour ===");
+        System.stdout.println("  the window/input/audio backend contract, headless");
+        System.stdout.println("  against the always-viable Null floor.");
+        runSelection();
+        runLoudFail();
+        runWindowContract();
+        runInfo();
+        System.stdout.println("");
+        if (IfxTour.failures > 0) {
+            System.stdout.println("=== ifx tour FAILED: " + IfxTour.failures
+                + " of " + IfxTour.checks + " self-checks ===");
+            return 1;
+        }
+        System.stdout.println("=== ifx tour complete: " + IfxTour.checks
+            + " self-checks passed ===");
+        return 0;
+    }
+}

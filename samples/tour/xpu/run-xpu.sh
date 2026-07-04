@@ -74,6 +74,36 @@ echo "[2/3] Linking → $OUT_BINARY"
 # link-time dependency, so the binary links and runs on a box without any of
 # them (the dispatcher then falls to the CPU if `cpu` was bundled). -ldl for
 # dlopen; -lpthread/-lm for the runtime.
+#
+# cajeta_tls.o + -lssl -lcrypto: the stdlib object always references the
+# `__cajeta_tls_*` natives (eager clinit global-constructors root every class,
+# so --gc-sections cannot drop the unused TLS subsystem). `--emit=exe` links
+# them automatically; this manual `--emit=obj` + clang link must add them.
+# The compiled TLS native object sits next to the compiler binary.
+TLS_OBJ="$(dirname "$CAJETA_BIN")/cajeta_tls.o"
+if [[ ! -f "$TLS_OBJ" ]]; then
+    echo "error: TLS native object not found at $TLS_OBJ" >&2
+    echo "       (built alongside the compiler; rebuild with ./build.sh)" >&2
+    exit 1
+fi
+# Weak OptiX stubs, same as --emit=exe generates: the AccelerationStructure
+# noun references `cajeta_xpu_optix_*`; on a non-NVIDIA host `available()`
+# returns 0 and the runtime takes the software-BVH path.
+OPTIX_STUB="${BUILD_DIR}/__cajeta_xpu_optix_stub.c"
+cat > "$OPTIX_STUB" <<'EOF'
+#include <stdint.h>
+#define W __attribute__((weak))
+W int      cajeta_xpu_optix_available(void){return 0;}
+W void*    cajeta_xpu_optix_context(void){return 0;}
+W void*    cajeta_xpu_optix_cuda_context(void){return 0;}
+W int64_t  cajeta_xpu_optix_accel_build_aabbs(const float*a,uint32_t b){(void)a;(void)b;return 0;}
+W int64_t  cajeta_xpu_optix_accel_build_triangles(const float*a,uint32_t b,uint32_t c){(void)a;(void)b;(void)c;return 0;}
+W uint64_t cajeta_xpu_optix_traversable(int64_t a){(void)a;return 0;}
+W uint64_t cajeta_xpu_optix_accel_boxes(int64_t a){(void)a;return 0;}
+W void     cajeta_xpu_optix_accel_free(int64_t a){(void)a;}
+W int      cajeta_xpu_optix_launch(const char*a,uint64_t b,const char*c,const char*d,const char*e,const char*f,const void*g,uint64_t h,uint32_t i){(void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h;(void)i;return -1;}
+W int      cajeta_xpu_optix_launch_tri(const char*a,uint64_t b,const char*c,const char*d,const char*e,const char*f,const void*g,uint64_t h,uint32_t i){(void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h;(void)i;return -1;}
+EOF
 LINK_FLAGS=( -Wl,--gc-sections )
 if [[ "${DEBUG:-}" != "1" ]]; then
     LINK_FLAGS+=( -Wl,--strip-all )
@@ -81,6 +111,10 @@ fi
 "$CLANG_BIN" \
     -o "$OUT_BINARY" \
     "${OBJECTS[@]}" \
+    "$TLS_OBJ" \
+    "$OPTIX_STUB" \
+    -lssl \
+    -lcrypto \
     -ldl \
     -lpthread \
     -lm \

@@ -1,0 +1,81 @@
+package tour.search;
+
+import tour.DemoClass;
+import cajeta.search.distance.Distance;
+import cajeta.search.ngram.Index;
+import cajeta.search.fuzzy.Matcher;
+import cajeta.search.fuzzy.Match;
+import cajeta.collection.ArrayList;
+
+// cajeta.search — fuzzy string lookup in three composable layers:
+//
+//   1. cajeta.search.distance.Distance — the SCORING half. Pure edit
+//      distances: `levenshtein` (insert/delete/substitute) and
+//      `damerau` (optimal string alignment: an adjacent transposition
+//      — the classic typo — costs 1 instead of 2).
+//   2. cajeta.search.ngram.Index<T> — the RECALL half. An n-gram
+//      inverted index mapping keys to values; `candidates(query)`
+//      returns every value whose key shares at least one gram — a
+//      cheap superset to score, not a ranked answer.
+//   3. cajeta.search.fuzzy.Matcher<T> — the two glued together:
+//      bigram-index prefilter, damerau scoring, a length-scaled
+//      threshold, results ranked closest-first as Match records
+//      (value + key + distance).
+public class SearchDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- cajeta.search: edit distance, n-gram index, fuzzy matcher --");
+
+        // 1. Edit distances. kitten -> sitting is the textbook case:
+        // substitute k->s, substitute e->i, insert g = 3 edits.
+        int32 lev = Distance.levenshtein("kitten", "sitting");
+        System.stdout.println("  levenshtein(kitten, sitting) = " + lev);
+        this.check(lev == 3, "levenshtein(kitten, sitting) == 3");
+
+        // Where the two differ: a swapped adjacent pair. Levenshtein
+        // needs two substitutions; damerau counts one transposition.
+        int32 levSwap = Distance.levenshtein("flie", "file");
+        int32 damSwap = Distance.damerau("flie", "file");
+        System.stdout.println("  flie -> file: levenshtein = " + levSwap
+            + ", damerau = " + damSwap);
+        this.check(levSwap == 2, "levenshtein counts a swap as 2 edits");
+        this.check(damSwap == 1, "damerau counts an adjacent swap as 1 edit");
+
+        // 2. N-gram candidate generation. The trigram index answers
+        // "which stored values COULD match?" — the typo "aple" still
+        // shares the trigram "ple" with "apple", while "zebra" shares
+        // nothing, so it is never even scored.
+        Index<int32> idx = heap Index<int32>();
+        idx.add("apple", 1);
+        idx.add("zebra", 2);
+        ArrayList<int32> cands = idx.candidates("aple");
+        System.stdout.println("  trigram candidates for aple = " + cands.count()
+            + " (apple survives, zebra is pruned)");
+        this.check(cands.count() == 1 && cands.get(0) == 1,
+            "aple shares a trigram with apple only");
+        ArrayList<int32> none = idx.candidates("qqqq");
+        this.check(none.count() == 0, "no shared gram means no candidates");
+
+        // 3. End-to-end typo-tolerant lookup. Matcher prefilters with
+        // bigrams, scores with damerau, and ranks ascending distance
+        // (ties broken by key), so the closest key is always hits[0].
+        Matcher<int32> m = heap Matcher<int32>();
+        m.add("apple", 10);
+        m.add("maple", 20);
+        m.add("zebra", 30);
+        ArrayList<Match<int32>> hits = m.match("aple");
+        System.stdout.println("  fuzzy match(aple) hits = " + hits.count());
+        this.check(hits.count() == 2, "aple fuzzy-matches apple and maple, not zebra");
+        Match<int32> first = hits.get(0);
+        System.stdout.println("  best: key = " + first.key() + ", value = "
+            + first.value() + ", distance = " + first.distance());
+        this.check(first.key().equals("apple") && first.value() == 10,
+            "distance tie ranks by key: apple before maple");
+        this.check(first.distance() == 1, "one insertion away from apple");
+
+        // An exact key is just distance 0 — it always ranks first.
+        ArrayList<Match<int32>> exact = m.match("zebra");
+        this.check(exact.count() == 1 && exact.get(0).distance() == 0,
+            "exact key matches at distance 0");
+    }
+}

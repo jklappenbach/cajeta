@@ -7,18 +7,18 @@ dispatcher**. The *same* source compiles for NVIDIA (NVPTX → CUDA), AMD (AMDGP
 one available at launch (`CUDA → HIP → Vulkan → CPU`), falling to the CPU when no
 accelerator is present.
 
-This is the companion to the language tour one folder up (`samples/Tour/`, the
+This is the companion to the language tour one folder up (`samples/tour/`, the
 stdlib / language-feature walkthrough). It lives in its own subfolder because XPU
 programs need the `--xpu-backend` flag and a device-or-CPU-fallback to run.
 
 ```
-samples/Tour/
-├── src/tour/          ← the stdlib / language tour (build-bin.sh, build-uber.sh)
-└── gpu/               ← you are here
+samples/tour/
+├── src/main/cajeta/tour/  ← the stdlib / language tour (cajeta build)
+└── xpu/               ← you are here
     ├── README.md
     ├── run-xpu.sh     ← compile + (optionally) run the GPU tour
-    └── src/tour/gpu/
-        └── XpuTour.cajeta   ← @Kernel SAXPY + vecAdd + waveReduce, dispatched at runtime
+    └── src/tour/xpu/
+        └── XpuTour.cajeta   ← the @Kernel demos, dispatched at runtime
 ```
 
 ## Run it
@@ -60,8 +60,21 @@ reports 16 on an AVX-512 CPU, 8 on AVX2, and 32/64 on a GPU:
 -- waveReduce: sum across each wave, in[i]=1 --
   wave width (queried, not hardcoded) = 16        # 64 on an AMD GPU, 32 on NVIDIA
   every lane of a wave agrees: sums[0]=16 sums[1]=16
-=== gpu tour complete ===
+-- rayQuery: BVH point-containment over 3 AABBs --
+  hits at x=0,5,10,19.7 = 1 0 1 1  (expect 1 0 1 1)
+-- SDF: signed distances + CSG + sphere tracing (host-side) --
+  sphere=1 box=2 union=3 subtract=2 trace t=2  (expect 1 2 3 2 2)
+-- MeshSimplifier: Garland-Heckbert edge collapse (host-side) --
+  no-op   (target 100): 8 of 8 triangles survive  (expect 8)
+  simplify (target 2):  8 -> 1 triangles  (expect 1..2)
+  survivors planar (z=0): true   non-degenerate: true
+=== gpu tour complete: 13 self-checks passed ===
 ```
+
+(Excerpted — the binary also walks buffer slices, atomics, histogram, shader
+clock, bit ops, DP4a, textures in every dimension, mipmaps, wave rotate /
+reductions / prefix scans, and quad ops. The newer demos — ray query, SDF,
+mesh simplification — self-check and turn any failure into a nonzero exit.)
 
 ### Knobs
 
@@ -175,6 +188,23 @@ and one wave-cooperative kernel (correct everywhere, at the hardware's wave widt
   never hardcodes a wave size, so the same source is correct whether the wave is
   16 (AVX-512), 8 (AVX2), 32 (NVIDIA), or 64 (AMD). With all-ones input each
   lane's wave-sum *is* the wave width, so the demo prints the width it discovered.
+- `rayCountHits` — **inline ray query over an acceleration structure**. The
+  host builds an `AccelerationStructure` over three AABBs (RAII, borrowed by
+  the launch until sync); each thread walks it with a kernel-local `RayQuery`
+  cursor. A near-zero-length ray (`tMax=0.001`) at a query point turns candidate
+  enumeration into point containment — AABB candidates (`candidateType()==1`)
+  are counted, not committed. Native `SPV_KHR_ray_query` on a capable Vulkan
+  device; the portable software-BVH walk on CPU / AMD / NVIDIA (device-verified
+  here on gfx1151) — same source, same counts.
+- `runSdf` — **signed distance fields, host-side**. `cajeta.xpu.Sdf`: sphere /
+  box distances, CSG combinators (`opUnion`/`opSubtract`), and a full
+  sphere-trace march to a hit at a known `t`. `Sdf` is a plain static math
+  utility today (not yet `@Device`-annotated, so not callable from a `@Kernel`
+  body); every value is a fixed checkable constant.
+- `runMeshSimplify` — **Garland–Heckbert mesh simplification, host-side**
+  (`cajeta.xpu.mesh.MeshSimplifier`). A flat 3×3 grid (8 triangles) collapses
+  at zero geometric cost: target-met is a no-op (8 survive), target 2 reduces
+  to ≤2 with every survivor still on the z=0 plane and no degenerate triangles.
 
 The two demos deliberately use the two `KernelBuffer<T>` forms. `KernelBuffer<T>` is RAII —
 the constructor allocates device memory, `~KernelBuffer()` frees it via the drop chain

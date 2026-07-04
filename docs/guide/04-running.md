@@ -34,20 +34,19 @@ The [tour](../../samples/tour/cajeta.json) uses exactly this shape.
 
 ## Capabilities
 
-A Cajeta program touches only what its manifest declares. `settings.capabilities`
-lists what the program may do:
+`settings.capabilities` declares what the program touches. The vocabulary is
+`filesystem`, `process`, `network`, and `env`:
 
 ```json
-"capabilities": ["filesystem", "clock"]
+"capabilities": ["filesystem", "network", "process"]
 ```
 
-Code that reaches for an undeclared capability — say, opening a socket without
-`"network"` — fails rather than silently succeeding. This is the security
-model: the manifest is the audit surface, and a dependency can't quietly
-exceed it. The [tour's manifest](../../samples/tour/cajeta.json) documents why
-each of its capabilities is present; do the same in yours.
-
-Capability violations can also be trapped in the debugger — see
-[chapter 05](05-debugging.md).
+Today the list is the audit surface — a reviewer reads it instead of the
+whole dependency tree — and build-tool plugins are held to it: a plugin runs
+against the allowlist intersection of what it asks for and what the manifest
+grants. Runtime enforcement for the program's own native code (an undeclared
+socket open failing) is designed but not yet wired. Declare honestly anyway;
+the [tour's manifest](../../samples/tour/cajeta.json) documents why each of
+its capabilities is present.
 
 Next: [Debugging](05-debugging.md).

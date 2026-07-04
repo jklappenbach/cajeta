@@ -30,10 +30,11 @@ Cajeta-specific state (fibers, drop chains) is easier in a DAP client.
 ## The DAP server
 
 `cajeta dap` speaks Debug Adapter Protocol over stdio. Any DAP-capable editor
-can drive it: breakpoints, stepping, variable inspection, plus
-Cajeta-specific views — the fiber pane, drop-chain inspection, ownership
-annotations on variables, and capability-violation breakpoints. The full
-surface is specified in
+can drive it: breakpoints, stepping, variable inspection, break-on-throw,
+plus what's Cajeta-specific today — every fiber appears as a thread (the
+stopped fiber plus all live fibers' chains), and each variable carries its
+ownership role as an annotation. Drop-chain inspection and
+capability-violation breakpoints are designed but not yet implemented — see
 [the debugging design](../specification/debugging/Debugging.md).
 
 ## IntelliJ

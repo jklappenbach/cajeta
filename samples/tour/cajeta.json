@@ -21,9 +21,10 @@
     },
 
     "settings": {
-        // The tour exercises file I/O (FileIoDemo) and the clock
-        // (time/async demos); no network capability needed.
-        "capabilities": ["filesystem", "clock"],
+        // The tour exercises file I/O (FileIoDemo, NpyDemo), loopback
+        // sockets (net demos: TCP/UDP/HTTP/WS), and subprocesses
+        // (ProcessDemo). Vocabulary: filesystem, process, network, env.
+        "capabilities": ["filesystem", "network", "process"],
 
         // The core stdlib (cajeta.lang, cajeta.io, cajeta.concurrent,
         // cajeta.time, …) is built into the toolchain — not declared or

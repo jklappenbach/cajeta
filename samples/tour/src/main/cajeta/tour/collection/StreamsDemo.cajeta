@@ -1,9 +1,15 @@
 package tour.collection;
 
 import tour.DemoClass;
+import cajeta.lang.stream.Stream;
+import cajeta.lang.stream.ArrayStream;
 
 // Pull-protocol streams over an int32[]. Intermediate ops (`filter`,
 // `map`, ...) compose; terminals (`reduce`, `forEach`, ...) consume.
+// `xs.stream()` is sugar for wrapping the array in the splittable
+// root `cajeta.lang.stream.ArrayStream<T>`; every combinator then
+// returns a `Stream<T>`, so a chain can be held in an explicitly
+// typed local just as well as chained inline.
 public class StreamsDemo extends DemoClass {
     public void execute() {
         System.stdout.println("");
@@ -14,10 +20,26 @@ public class StreamsDemo extends DemoClass {
             .filter((x) -> x % 2 == 0)
             .reduce(0, (a, b) -> a + b);
         System.stdout.println("  sum of evens in [1..10] = " + sumOfEvens);
+        this.check(sumOfEvens == 30, "filter + reduce sums the evens to 30");
         // sum of squares: 1 + 4 + 9 + ... + 100 = 385.
         int32 sumOfSquares = xs.stream()
             .map<int32>((x) -> x * x)
             .reduce(0, (a, b) -> a + b);
         System.stdout.println("  sum of squares in [1..10] = " + sumOfSquares);
+        this.check(sumOfSquares == 385, "map + reduce sums the squares to 385");
+        // A stream is a value: hold one in a Stream<int32> local (the
+        // static type of any combinator chain), then consume it with a
+        // terminal later. Each stream is single-use — one terminal
+        // drains it — so each pipeline below starts fresh.
+        Stream<int32> odds = xs.stream().filter((x) -> x % 2 == 1);
+        int32 oddCount = odds.count();
+        System.stdout.println("  odds in [1..10] held in a Stream<int32> local, count = "
+            + oddCount);
+        this.check(oddCount == 5, "Stream<int32> local drains to 5 odd elements");
+        // The desugared form of xs.stream(): an ArrayStream<int32>
+        // root constructed directly over the array.
+        ArrayStream<int32> root = heap ArrayStream<int32>(xs, 10);
+        this.check(root.count() == 10, "explicit ArrayStream root sees all 10 elements");
+        this.check(xs.stream().anyMatch((x) -> x == 7), "anyMatch finds 7 in [1..10]");
     }
 }

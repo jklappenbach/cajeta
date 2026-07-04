@@ -1,0 +1,74 @@
+package tour.io;
+
+import tour.DemoClass;
+import cajeta.io.Buffer;
+
+// cajeta.io.Buffer<T> — typed, REINTERPRETING access over raw bytes.
+// A plain int8[] can only hand back one byte at a time; Buffer wraps
+// an owned int8[] and adds the serialization/SWAR primitive that
+// view can't express: `loadU64(off)` — an UNALIGNED little-endian
+// 64-bit load at an arbitrary BYTE offset (it lowers to a single
+// `load i64, align 1`, no byte-assembly loop).
+//
+// v1 ships the read core: `byteCount()`, `byteAt(off)`, `loadU64(off)`.
+// The store family, strided element access, and explicit big-endian
+// variants land as scenarios demand them. The caller keeps loadU64's
+// offset within [0, byteCount - 8] — it is deliberately unchecked
+// (this is the hot inner-loop primitive; byteAt covers the safe path).
+public class BufferDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- cajeta.io.Buffer: reinterpreting byte views --");
+
+        // Lay out 12 bytes by hand: a little-endian int32 (42) in
+        // bytes [0..3], then the bytes 1..8 in [4..11]. The Buffer
+        // ctor #-takes the array — the buffer owns the bytes now.
+        int8[] data = heap int8[12];
+        data[0] = (int8) 42;   // 42 = 0x2A, LE int32 low byte first
+        data[1] = (int8) 0;
+        data[2] = (int8) 0;
+        data[3] = (int8) 0;
+        int32 i = 0;
+        while (i < 8) {
+            data[4 + i] = (int8) (i + 1);
+            i = i + 1;
+        }
+        Buffer<int8> buf = heap Buffer<int8>(#data, 12L);
+        this.check(buf.byteCount() == 12L, "byteCount() reports the valid length");
+
+        // Byte-level view: byteAt is the bounds-friendly single-byte
+        // read (it indexes the backing array).
+        this.check((int32) buf.byteAt(0L) == 42, "byteAt(0) sees the int32's low byte");
+        this.check((int32) buf.byteAt(11L) == 8, "byteAt(11) sees the last payload byte");
+
+        // Reassemble the int32 from its bytes, little-endian: byte j
+        // contributes at bit position 8*j.
+        int32 word32 = ((int32) buf.byteAt(0L) & 255)
+            | (((int32) buf.byteAt(1L) & 255) << 8)
+            | (((int32) buf.byteAt(2L) & 255) << 16)
+            | (((int32) buf.byteAt(3L) & 255) << 24);
+        System.stdout.println("  int32 reassembled from bytes [0..3] = " + word32);
+        this.check(word32 == 42, "LE byte order round-trips the int32");
+
+        // The wide reinterpretation: one loadU64 reads bytes [4..11]
+        // as a little-endian 64-bit word. Bytes 01 02 .. 08 read back
+        // as 0x0807060504030201.
+        int64 word64 = buf.loadU64(4L);
+        System.stdout.println("  loadU64(4) over bytes 01..08 = " + word64);
+        this.check(word64 == 578437695752307201L,
+            "loadU64 is little-endian: bytes 01..08 -> 0x0807060504030201");
+
+        // Unaligned by construction: offset 1 is no slower and no
+        // different in meaning — the load must equal what assembling
+        // the same 8 bytes by hand produces.
+        int64 manual = 0L;
+        int64 j = 0L;
+        while (j < 8L) {
+            int64 b = (int64) buf.byteAt(1L + j) & 255L;
+            manual = manual | (b << (j * 8L));
+            j = j + 1L;
+        }
+        this.check(buf.loadU64(1L) == manual,
+            "unaligned loadU64(1) matches byte-by-byte assembly");
+    }
+}

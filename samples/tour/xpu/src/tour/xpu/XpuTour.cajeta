@@ -6,6 +6,10 @@ import cajeta.xpu.KernelThread;
 import cajeta.xpu.Wave;
 import cajeta.xpu.Quad;
 import cajeta.xpu.Bits;
+import cajeta.xpu.AccelerationStructure;
+import cajeta.xpu.RayQuery;
+import cajeta.xpu.Sdf;
+import cajeta.xpu.mesh.MeshSimplifier;
 import cajeta.gfx.Texture2D;
 import cajeta.gfx.Texture1D;
 import cajeta.gfx.Texture3D;
@@ -35,6 +39,21 @@ import cajeta.lang.Math;
 //
 // (Workgroup barriers on the CPU remain a later increment.)
 public final class XpuTour {
+
+    // Self-check counters, mirroring the main tour's DemoClass: the newer
+    // demos verify their own output instead of only printing it, and run()
+    // turns any failure into a nonzero exit code.
+    static int32 checks = 0;
+    static int32 failures = 0;
+
+    // Assert `cond`; quiet when it holds, loud when it doesn't.
+    static void check(boolean cond, String what) {
+        XpuTour.checks = XpuTour.checks + 1;
+        if (!cond) {
+            XpuTour.failures = XpuTour.failures + 1;
+            System.stdout.println("  FAIL: " + what);
+        }
+    }
 
     // y[i] = a*x[i] + y[i] — the canonical accelerator "hello world".
     //
@@ -583,6 +602,35 @@ public final class XpuTour {
         }
     }
 
+    // ---- Ray query: inline ray tracing over an acceleration structure --------
+    // rayCountHits: each thread walks the scene BVH with a kernel-local RayQuery
+    // cursor. The AccelerationStructure is a host-built RAII noun (here over
+    // AABBs); the SAME @Kernel lowers to the native SPV_KHR_ray_query tier on a
+    // capable Vulkan device and to the portable software-BVH walk on CPU / AMD /
+    // NVIDIA — identical results either way. A near-zero-length ray (tMax=0.001)
+    // at a query point turns candidate enumeration into a point-containment
+    // query: AABB candidates (candidateType()==1) are enumerated, not committed,
+    // so counting them counts the boxes overlapping the point.
+    @Kernel
+    public static void rayCountHits(AccelerationStructure scene,
+                                    KernelBuffer<float32> qx, KernelBuffer<float32> qy,
+                                    KernelBuffer<float32> qz, KernelBuffer<uint32> out,
+                                    uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            RayQuery rq;
+            rq.initialize(scene, 0, 255,
+                          qx[i], qy[i], qz[i], 0.0f,
+                          0.0f, 0.0f, 1.0f, 0.001f);
+            uint32 c = 0;
+            while (rq.proceed()) {
+                if (rq.candidateType() == 1) { c = c + 1; }
+            }
+            out[i] = c;
+        }
+    }
+
+
     // waveReduceOps: the reduction family beyond sum — max/min/and/or/xor across
     // the wave. Lane 0 holds a distinguished value so every reduction has a
     // wave-width-agnostic answer (100/5/3/3/1) on CPU (8/16), AMD/NVIDIA (32/64),
@@ -652,8 +700,17 @@ public final class XpuTour {
         runWaveReduceOps();
         runWavePrefix();
         runQuad();
+        runRayQuery();
+        runSdf();
+        runMeshSimplify();
         System.stdout.println("");
-        System.stdout.println("=== gpu tour complete ===");
+        if (XpuTour.failures > 0) {
+            System.stdout.println("=== gpu tour FAILED: " + XpuTour.failures
+                + " of " + XpuTour.checks + " self-checks ===");
+            return 1;
+        }
+        System.stdout.println("=== gpu tour complete: " + XpuTour.checks
+            + " self-checks passed ===");
         return 0;
     }
 
@@ -1363,5 +1420,143 @@ public final class XpuTour {
                             + (int32) hout[3] + " " + (int32) hout[4] + " "
                             + (int32) hout[5] + " " + (int32) hout[6] + " "
                             + (int32) hout[7] + "  (expect 0 0 0 0 4 4 4 4)");
+    }
+
+    // Ray query over a 3-box scene: boxes centered at x = 0, 10, 20 (unit
+    // half-extents), point-containment probes at x = 0, 5, 10, 19.7. The BVH is
+    // built host-side by the AccelerationStructure constructor (RAII: the launch
+    // borrows it until sync; device memory freed at scope exit).
+    static void runRayQuery() {
+        System.stdout.println("");
+        System.stdout.println("-- rayQuery: BVH point-containment over 3 AABBs --");
+        uint32 np = 3;
+        float32[] boxes = heap float32[np * 6];
+        boxes[0] = -0.5f;  boxes[1] = -0.5f;  boxes[2] = -0.5f;
+        boxes[3] = 0.5f;   boxes[4] = 0.5f;   boxes[5] = 0.5f;
+        boxes[6] = 9.5f;   boxes[7] = -0.5f;  boxes[8] = -0.5f;
+        boxes[9] = 10.5f;  boxes[10] = 0.5f;  boxes[11] = 0.5f;
+        boxes[12] = 19.5f; boxes[13] = -0.5f; boxes[14] = -0.5f;
+        boxes[15] = 20.5f; boxes[16] = 0.5f;  boxes[17] = 0.5f;
+        AccelerationStructure scene = heap AccelerationStructure(boxes, np);
+        uint32 n = 4;
+        float32[] hqx = heap float32[n];
+        float32[] hqy = heap float32[n];
+        float32[] hqz = heap float32[n];
+        uint32[] hout = heap uint32[n];
+        hqx[0] = 0.0f;  hqy[0] = 0.0f; hqz[0] = 0.0f;
+        hqx[1] = 5.0f;  hqy[1] = 0.0f; hqz[1] = 0.0f;
+        hqx[2] = 10.0f; hqy[2] = 0.0f; hqz[2] = 0.0f;
+        hqx[3] = 19.7f; hqy[3] = 0.0f; hqz[3] = 0.0f;
+        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 9; }
+        KernelBuffer<float32> qx = stack KernelBuffer<float32>(n);
+        KernelBuffer<float32> qy = stack KernelBuffer<float32>(n);
+        KernelBuffer<float32> qz = stack KernelBuffer<float32>(n);
+        KernelBuffer<uint32> out = stack KernelBuffer<uint32>(n);
+        qx.upload(hqx);
+        qy.upload(hqy);
+        qz.upload(hqz);
+        out.upload(hout);
+        KernelStream s = KernelStream.current();
+        rayCountHits.launch(s, grid: [1], block: [64])(scene, qx, qy, qz, out, n);
+        s.sync();
+        out.download(hout);
+        System.stdout.println("  hits at x=0,5,10,19.7 = " + (int32) hout[0] + " "
+                            + (int32) hout[1] + " " + (int32) hout[2] + " "
+                            + (int32) hout[3] + "  (expect 1 0 1 1)");
+        XpuTour.check(hout[0] == 1, "rayQuery: point in box 0");
+        XpuTour.check(hout[1] == 0, "rayQuery: point in empty space");
+        XpuTour.check(hout[2] == 1, "rayQuery: point in box 1");
+        XpuTour.check(hout[3] == 1, "rayQuery: point in box 2");
+    }
+
+    // SDF distances, CSG combinators, and a sphere-trace march — the
+    // cajeta.xpu.Sdf analytic toolbox. HOST-side today: Sdf is a plain static
+    // math utility (not yet @Device-annotated, so it can't be called from a
+    // @Kernel body — that wiring is a later increment). Every value is a fixed
+    // checkable constant:
+    //   sphere r=1 at origin, probe (2,0,0)                 -> 1
+    //   box half-extents 1, probe (0,3,0)                   -> 2
+    //   opUnion(3,5) = min                                  -> 3
+    //   opSubtract(-1,-2) = max(a,-b)                       -> 2
+    //   sphere-trace from (-3,0,0) along +x to unit sphere  -> t ~= 2
+    static void runSdf() {
+        System.stdout.println("");
+        System.stdout.println("-- SDF: signed distances + CSG + sphere tracing (host-side) --");
+        float32 dSphere = Sdf.sphere(2.0f, 0.0f, 0.0f, 1.0f);
+        float32 dBox = Sdf.box(0.0f, 3.0f, 0.0f, 1.0f, 1.0f, 1.0f);
+        float32 dUnion = Sdf.opUnion(3.0f, 5.0f);
+        float32 dSub = Sdf.opSubtract(-1.0f, -2.0f);
+        float32 t = Sdf.sphereTraceSphere(-3.0f, 0.0f, 0.0f,
+                                          1.0f, 0.0f, 0.0f,
+                                          0.0f, 0.0f, 0.0f, 1.0f,
+                                          10.0f, 64, 0.0001f);
+        System.stdout.println("  sphere=" + (int32)(dSphere + 0.5f)
+                            + " box=" + (int32)(dBox + 0.5f)
+                            + " union=" + (int32)(dUnion + 0.5f)
+                            + " subtract=" + (int32)(dSub + 0.5f)
+                            + " trace t=" + (int32)(t + 0.5f)
+                            + "  (expect 1 2 3 2 2)");
+        XpuTour.check(dSphere > 0.99f && dSphere < 1.01f, "sdf: sphere distance");
+        XpuTour.check(dBox > 1.99f && dBox < 2.01f, "sdf: box distance");
+        XpuTour.check(dUnion > 2.99f && dUnion < 3.01f, "sdf: opUnion");
+        XpuTour.check(dSub > 1.99f && dSub < 2.01f, "sdf: opSubtract");
+        XpuTour.check(t > 1.99f && t < 2.01f, "sdf: sphere trace hit t");
+    }
+
+    // Garland–Heckbert mesh simplification (cajeta.xpu.mesh.MeshSimplifier) —
+    // a HOST-side remeshing utility (no kernel launch): iterative edge collapse
+    // driven by per-vertex error quadrics. A flat 3x3 grid (9 vertices, 8
+    // triangles) collapses at zero geometric cost, so simplify() reaches the
+    // target while every survivor stays on the z=0 plane.
+    static void runMeshSimplify() {
+        System.stdout.println("");
+        System.stdout.println("-- MeshSimplifier: Garland-Heckbert edge collapse (host-side) --");
+        // 3x3 flat grid: positions x=i%3, y=i/3, z=0; 8 triangles.
+        float32[] pos = heap float32[27];
+        for (int32 v = 0; v < 9; v = v + 1) {
+            pos[v * 3] = (float32) (v % 3);
+            pos[v * 3 + 1] = (float32) (v / 3);
+            pos[v * 3 + 2] = 0.0f;
+        }
+        int32[] idx = heap int32[24];
+        idx[0] = 0;  idx[1] = 1;  idx[2] = 4;
+        idx[3] = 0;  idx[4] = 4;  idx[5] = 3;
+        idx[6] = 1;  idx[7] = 2;  idx[8] = 5;
+        idx[9] = 1;  idx[10] = 5; idx[11] = 4;
+        idx[12] = 3; idx[13] = 4; idx[14] = 7;
+        idx[15] = 3; idx[16] = 7; idx[17] = 6;
+        idx[18] = 4; idx[19] = 5; idx[20] = 8;
+        idx[21] = 4; idx[22] = 8; idx[23] = 7;
+        // Target already met -> no-op: all 8 triangles survive untouched.
+        int32[] keep = MeshSimplifier.simplify(pos, idx, 9, 100);
+        int32 kept = (int32) (keep.count() / 3);
+        System.stdout.println("  no-op   (target 100): " + kept
+                            + " of 8 triangles survive  (expect 8)");
+        XpuTour.check(kept == 8, "meshSimplify: no-op keeps all triangles");
+        // Simplify 8 -> 2: collapse reduces the count; survivors stay planar
+        // (positions is mutated in place to the error-minimizing collapses).
+        int32[] out = MeshSimplifier.simplify(pos, idx, 9, 2);
+        int32 rc = (int32) (out.count() / 3);
+        System.stdout.println("  simplify (target 2):  8 -> " + rc
+                            + " triangles  (expect 1..2)");
+        XpuTour.check(rc >= 1 && rc <= 2, "meshSimplify: reached target count");
+        boolean planar = true;
+        boolean degenerate = false;
+        for (int32 t = 0; t < rc; t = t + 1) {
+            int32 a = out[t * 3];
+            int32 b = out[t * 3 + 1];
+            int32 c = out[t * 3 + 2];
+            if (a == b || b == c || a == c) { degenerate = true; }
+            float32 za = pos[a * 3 + 2];
+            float32 zb = pos[b * 3 + 2];
+            float32 zc = pos[c * 3 + 2];
+            if (za < -0.01f || za > 0.01f) { planar = false; }
+            if (zb < -0.01f || zb > 0.01f) { planar = false; }
+            if (zc < -0.01f || zc > 0.01f) { planar = false; }
+        }
+        System.stdout.println("  survivors planar (z=0): " + planar
+                            + "   non-degenerate: " + !degenerate);
+        XpuTour.check(planar, "meshSimplify: flat sheet stays on z=0");
+        XpuTour.check(!degenerate, "meshSimplify: no degenerate survivors");
     }
 }

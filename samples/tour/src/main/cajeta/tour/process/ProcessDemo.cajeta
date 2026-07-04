@@ -1,0 +1,107 @@
+package tour.process;
+
+import tour.DemoClass;
+import cajeta.process.Command;
+import cajeta.process.Process;
+import cajeta.process.ProcessResult;
+import cajeta.io.file.FileReader;
+import cajeta.io.file.FileWriter;
+import cajeta.lang.String;
+
+// cajeta.process — subprocesses in two shapes:
+//
+//   1. One-shot: build a `Command` (argv[0] is the program), configure
+//      capture/env/cwd/stdin, then `run()` to completion. The result is
+//      a `ProcessResult`: launch success, exit code, captured bytes.
+//      A NON-ZERO EXIT IS A NORMAL RESULT, not an error — inspect
+//      `code()`. Even a failure to launch (program not found) comes
+//      back as `launched() == false`, never a throw.
+//   2. Streaming: `start()` spawns without waiting and returns a
+//      `Process` handle whose piped stdio surfaces as the same
+//      FileReader/FileWriter used for files. (The method is start(),
+//      not spawn() — `spawn` is a reserved fiber keyword.)
+//
+// Command construction does NO OS work — nothing is spawned until
+// run()/start() — and the ctor #-takes its argv (`heap Command(#argv)`),
+// so the array is not reused after construction.
+public class ProcessDemo extends DemoClass {
+
+    // Render captured stdout bytes as a String for equals() checks.
+    // The bytes are copied into a fresh array the String owns, so the
+    // ProcessResult and the String drop independently.
+    public static #String text(int8[] raw) {
+        int32 n = (int32) raw.count();
+        int8[] copy = heap int8[n];
+        int32 i = 0;
+        while (i < n) {
+            copy[i] = raw[i];
+            i = i + 1;
+        }
+        return heap String(#copy, n);
+    }
+
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- cajeta.process: Command.run() / Process via start() --");
+
+        // 1. One-shot run with stdout capture. /bin/echo is fully
+        // deterministic: exit 0, stdout "hello, tour\n".
+        String[] argv = heap String[2];
+        argv[0] = "/bin/echo";
+        argv[1] = "hello, tour";
+        Command cmd = heap Command(#argv);
+        cmd.captureStdout();
+        ProcessResult r = cmd.run();
+        this.check(r.launched(), "echo launched");
+        this.check(r.exited() && r.code() == 0, "echo exited with code 0");
+        String out = ProcessDemo.text(r.stdout());
+        System.stdout.println("  /bin/echo captured stdout = " + out.trim()
+            + " (" + r.stdout().count() + " bytes, exit " + r.code() + ")");
+        this.check(out.equals("hello, tour\n"), "captured stdout is the echoed text");
+
+        // 2. Non-zero exit is a value, not an exception: /bin/false
+        // launches fine and reports code 1.
+        String[] argvFalse = heap String[1];
+        argvFalse[0] = "/bin/false";
+        Command failing = heap Command(#argvFalse);
+        ProcessResult rf = failing.run();
+        System.stdout.println("  /bin/false -> launched = " + rf.launched()
+            + ", code = " + rf.code());
+        this.check(rf.launched() && rf.code() == 1, "/bin/false is a normal result with code 1");
+
+        // 3. Launch failure (program not found) is ALSO a value:
+        // launched() false, code() -1 — never a throw (spec §8.2).
+        String[] argvMissing = heap String[1];
+        argvMissing[0] = "/no/such/prog_tour";
+        Command missing = heap Command(#argvMissing);
+        ProcessResult rm = missing.run();
+        System.stdout.println("  missing program -> launched = " + rm.launched()
+            + ", code = " + rm.code());
+        this.check(rm.launched() == false && rm.code() == -1,
+            "launch failure is flagged, not raised");
+
+        // 4. Streaming: pipe /bin/cat's stdin + stdout, start() it,
+        // write a request, read the echoed response, then waitFor()
+        // + close() to reap the child (no drop-on-scope reaper yet —
+        // close() is what prevents a zombie).
+        String[] argvCat = heap String[1];
+        argvCat[0] = "/bin/cat";
+        Command catCmd = heap Command(#argvCat);
+        catCmd.pipeStdin();
+        catCmd.pipeStdout();
+        Process p = catCmd.start();
+        this.check(p.launched(), "cat started via start()");
+        this.check(p.pid() > 0, "live child has a positive pid");
+        FileWriter w = p.stdin();
+        w.writeString("ping\n");
+        w.close();
+        FileReader rd = p.stdout();
+        String echoed = rd.readString(64);
+        ProcessResult res = p.waitFor();
+        p.close();
+        System.stdout.println("  /bin/cat echoed " + echoed.trim()
+            + " back through the pipes, exit " + res.code());
+        this.check(echoed.equals("ping\n"), "piped stdout echoes piped stdin");
+        this.check(res.code() == 0, "cat exited 0 after stdin closed");
+    }
+}
