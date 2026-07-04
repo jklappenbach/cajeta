@@ -280,6 +280,10 @@ namespace cajeta {
             : Statement(token), tryBlock(tryBlock),
               catchClauses(std::move(catches)), finallyBlock(finallyBlock) { }
 
+        BlockPtr getTryBlock() const { return tryBlock; }
+        const std::vector<CatchClause>& getCatchClauses() const { return catchClauses; }
+        BlockPtr getFinallyBlock() const { return finallyBlock; }
+
         void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
@@ -314,6 +318,9 @@ namespace cajeta {
         SwitchStatement(antlr4::Token* token, ExpressionPtr subject,
                         std::vector<SwitchGroup> groups)
             : Statement(token), subject(subject), groups(std::move(groups)) { }
+
+        ExpressionPtr getSubject() const { return subject; }
+        const std::vector<SwitchGroup>& getGroups() const { return groups; }
 
         void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
@@ -361,6 +368,8 @@ namespace cajeta {
     public:
         ThrowStatement(antlr4::Token* token, ExpressionPtr expression = nullptr)
             : Statement(token), expression(expression) { }
+
+        ExpressionPtr getExpression() const { return expression; }
 
         void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;

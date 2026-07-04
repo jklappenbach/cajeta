@@ -21,6 +21,7 @@
 #include "../method/Method.h"
 #include "expression/BinaryOpExpression.h"
 #include "expression/NewExpression.h"
+#include "expression/CreatorRest.h"
 #include "expression/AggregateInitializerExpression.h"
 #include "../method/Method.h"
 #include "../error/CajetaExceptions.h"
@@ -180,18 +181,96 @@ namespace cajeta {
     }
 
     // slices plan 4.2.1 — the LOCAL classification for the borrow downgrade.
+    //
+    // The default AbstractSyntaxNode child walk is NOT enough here: most
+    // statement types keep their subtrees in private members, not in
+    // `children` (ExpressionStatement's own comment: "The wrapped expression
+    // isn't in `children` so the default walk skips it"), and method-call /
+    // constructor arguments live in MethodCallParameter vectors. An analysis
+    // whose safe direction is over-approximation (slice-spec §4.3) must see
+    // ALL of them — missing a use meant the borrow downgrade fired on views
+    // that escape via `out.add(#g)` (NgramIndexTests regression). This
+    // collector enumerates children plus every hidden subtree.
+    static void collectSubNodes(const AbstractSyntaxNodePtr& node,
+                                std::vector<AbstractSyntaxNodePtr>& out) {
+        for (auto& child : node->getChildren()) out.push_back(child);
+        if (auto es = dynamic_pointer_cast<ExpressionStatement>(node)) {
+            if (es->getExpression()) out.push_back(es->getExpression());
+        }
+        if (auto ls = dynamic_pointer_cast<LabelStatement>(node)) {
+            if (ls->getBlock()) out.push_back(ls->getBlock());
+        }
+        if (auto sc = dynamic_pointer_cast<ScopeStatement>(node)) {
+            if (sc->getBlock()) out.push_back(sc->getBlock());
+        }
+        if (auto is = dynamic_pointer_cast<IfStatement>(node)) {
+            if (is->getCondition()) out.push_back(is->getCondition());
+            if (is->getThenBranch()) out.push_back(is->getThenBranch());
+            if (is->getElseBranch()) out.push_back(is->getElseBranch());
+        }
+        if (auto fs = dynamic_pointer_cast<ForStatement>(node)) {
+            if (fs->getInit()) out.push_back(fs->getInit());
+            if (fs->getCondition()) out.push_back(fs->getCondition());
+            for (auto& u : fs->getUpdate()) if (u) out.push_back(u);
+            if (fs->getBody()) out.push_back(fs->getBody());
+        }
+        if (auto efs = dynamic_pointer_cast<EnhancedForStatement>(node)) {
+            if (efs->getIterableExpr()) out.push_back(efs->getIterableExpr());
+            if (efs->getBody()) out.push_back(efs->getBody());
+        }
+        if (auto ws = dynamic_pointer_cast<WhileStatement>(node)) {
+            if (ws->getCondition()) out.push_back(ws->getCondition());
+            if (ws->getBody()) out.push_back(ws->getBody());
+        }
+        if (auto ds = dynamic_pointer_cast<DoStatement>(node)) {
+            if (ds->getBody()) out.push_back(ds->getBody());
+            if (ds->getCondition()) out.push_back(ds->getCondition());
+        }
+        if (auto ts = dynamic_pointer_cast<TryStatement>(node)) {
+            if (ts->getTryBlock()) out.push_back(ts->getTryBlock());
+            for (auto& c : ts->getCatchClauses()) if (c.body) out.push_back(c.body);
+            if (ts->getFinallyBlock()) out.push_back(ts->getFinallyBlock());
+        }
+        if (auto sw = dynamic_pointer_cast<SwitchStatement>(node)) {
+            if (sw->getSubject()) out.push_back(sw->getSubject());
+            for (auto& g : sw->getGroups()) {
+                for (auto& v : g.caseValues) if (v) out.push_back(v);
+                for (auto& st : g.statements) if (st) out.push_back(st);
+            }
+        }
+        if (auto rs = dynamic_pointer_cast<ReturnStatement>(node)) {
+            if (rs->getExpression()) out.push_back(rs->getExpression());
+        }
+        if (auto th = dynamic_pointer_cast<ThrowStatement>(node)) {
+            if (th->getExpression()) out.push_back(th->getExpression());
+        }
+        if (auto mc = dynamic_pointer_cast<MethodCallExpression>(node)) {
+            for (auto& pm : mc->getParameters())
+                if (pm.expression) out.push_back(pm.expression);
+        }
+        if (auto ne = dynamic_pointer_cast<NewExpression>(node)) {
+            if (ne->getCreatorRest()) out.push_back(ne->getCreatorRest());
+        }
+        if (auto cr = dynamic_pointer_cast<ClassCreatorRest>(node)) {
+            for (auto& pm : cr->getParameters())
+                if (pm.expression) out.push_back(pm.expression);
+        }
+    }
+
     // A name's use BLOCKS the downgrade when it appears under a return, a
-    // `#`-move, or a lambda (capture): those carry the VIEW itself out of the
-    // scope. Field stores and call args do NOT block — the value resolves at
-    // its own escape site (4.2.2 (a)). Name-based and conservative: any
-    // shadowed reuse of the name in a blocking context still blocks.
+    // `#`-move, a lambda (capture), or a `#`-TRANSFERRED call/ctor argument:
+    // those carry the VIEW itself out of the scope. Plain (borrow) call args
+    // and field stores do NOT block — the value resolves at its own escape
+    // site (4.2.2 (a)). Name-based and conservative.
     static bool subtreeUsesName(const AbstractSyntaxNodePtr& node,
                                 const std::string& name) {
         if (!node) return false;
         if (auto id = dynamic_pointer_cast<IdentifierExpression>(node)) {
             if (id->getTextValue() == name) return true;
         }
-        for (auto& child : node->getChildren()) {
+        std::vector<AbstractSyntaxNodePtr> subs;
+        collectSubNodes(node, subs);
+        for (auto& child : subs) {
             if (subtreeUsesName(child, name)) return true;
         }
         return false;
@@ -203,7 +282,28 @@ namespace cajeta {
             || dynamic_pointer_cast<MoveExpression>(node)
             || dynamic_pointer_cast<LambdaExpression>(node);
         if (blocking) return subtreeUsesName(node, name);
-        for (auto& child : node->getChildren()) {
+        // A `#name` transfer at argument position is a move, but lands as
+        // MethodCallParameter.callerTransferred with a plain identifier
+        // expression rather than a MoveExpression node — treat it as
+        // blocking or the callee receives a stakeless borrow whose root
+        // dies with this scope.
+        if (auto mc = dynamic_pointer_cast<MethodCallExpression>(node)) {
+            for (const auto& pm : mc->getParameters()) {
+                if (pm.callerTransferred && subtreeUsesName(pm.expression, name)) {
+                    return true;
+                }
+            }
+        }
+        if (auto cr = dynamic_pointer_cast<ClassCreatorRest>(node)) {
+            for (const auto& pm : cr->getParameters()) {
+                if (pm.callerTransferred && subtreeUsesName(pm.expression, name)) {
+                    return true;
+                }
+            }
+        }
+        std::vector<AbstractSyntaxNodePtr> subs;
+        collectSubNodes(node, subs);
+        for (auto& child : subs) {
             if (nameEscapesScope(child, name)) return true;
         }
         return false;
