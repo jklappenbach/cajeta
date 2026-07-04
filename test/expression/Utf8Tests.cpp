@@ -85,18 +85,9 @@ TEST(Utf8Tests, equalityHashRepresentationIndependent) {
 // `this` (MethodCallExpression receiver branches; fixed alongside the
 // array-element receiver shape).
 //
-// NOTE: the liveCount-balance assert is BLOCKED on a pre-existing slices
-// String gap, not a record/embed issue — `heap String(#out, n)` orphans the
-// `#`-transferred buffer (the ctor is VIEW-mode and never claims ownership
-// while the call site deactivates the caller's drop entry). 4-line repro
-// with no Utf8/record involved:
-//     int8[] out = Cajeta.allocBytes((int64) 3);
-//     String s = heap String(#out, 3);
-//     // scope exit -> liveCount +1
-// Every stdlib `return heap String(#out, n)` (Number/Boolean/Guid/
-// StringBuilder/Utf8.toString) has the shape. The balance assert lands when
-// that ctor path takes ownership (same convention as
-// SharedFieldDropTests.containerHeldStakesRelease).
+// The liveCount-balance assert is LIVE: slices plan 9.1 fixed the
+// `heap String(#out, n)` orphan (the ctor now OWNS the transferred buffer
+// — mode 0 — so toString results reclaim on drop).
 TEST(Utf8Tests, utf8AsRecordField) {
     std::string src =
         "package test;\n"
@@ -106,6 +97,7 @@ TEST(Utf8Tests, utf8AsRecordField) {
         "}\n"
         "public final class Ut {\n"
         "    public static int32 run() {\n"
+        "        int64 base = Cajeta.liveCount();\n"
         "        {\n"
         "            Utf8 nyse = Utf8.of(\"NYSE\");\n"
         "            Tick t = Tick { venue: nyse, price: 42.5 };\n"
@@ -115,6 +107,7 @@ TEST(Utf8Tests, utf8AsRecordField) {
         "            String round = u.venue.toString();\n"
         "            if (round.size() != 4) { return -3; }\n"
         "        }\n"
+        "        if (Cajeta.liveCount() != base) { return -4; }\n"
         "        return 1;\n"
         "    }\n"
         "}\n";

@@ -90,7 +90,7 @@ void __cajeta_utf8_of_string(void* out_v, void* s_v) {
     if (s->mode == 0) {
         __cajeta_shared_promote(root, 2);
         out->lenTag = len | CAJ_UTF8_SHARED_BIT;
-    } else if (s->mode == 2) {
+    } else if (s->mode == 2 && !s->ssoData[1]) {
         if (s->ssoData[0]) {
             __cajeta_shared_promote(root, 2);   // borrow source holds no stake
         } else {
@@ -98,7 +98,8 @@ void __cajeta_utf8_of_string(void* out_v, void* s_v) {
         }
         out->lenTag = len | CAJ_UTF8_SHARED_BIT;
     } else {
-        out->lenTag = len;                 // Static: no rc
+        out->lenTag = len;                 // Static root: no rc (mode 1, or a
+                                           // mode-2 view marked ssoData[1])
     }
     out->off = srcOff;
     out->base = (char*) root;

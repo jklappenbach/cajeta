@@ -104,31 +104,27 @@ public final class String {
     }
 
     /**
-     * View-mode constructor — borrows the caller's byte buffer without
-     * claiming ownership. The drop chain will NOT reclaim `bytes` when
-     * this String is dropped; the underlying buffer's lifetime is the
-     * caller's responsibility.
+     * Ownership-transfer constructor — takes the caller's byte buffer
+     * (`#`: the caller's drop entry deactivates) and OWNS it: this
+     * String's drop frees `bytes` (mode 0). This is the builder path —
+     * every `return heap String(#out, n)` in the stdlib
+     * (Number/Boolean/Guid/StringBuilder/Utf8.toString) transfers a
+     * freshly built buffer here.
      *
-     * This is the path string literals will eventually go through
-     * (Phase 2b-β.3): literal codegen will materialize an instance
-     * pointing at a static byte buffer in the process's data segment,
-     * with mode = 1 so the drop chain doesn't try to free static
-     * storage.
+     * History (slices plan 9.1): this ctor used to set mode = 1 (view)
+     * while STILL taking `#` — the signature transferred ownership the
+     * body then declined, so every transferred buffer was orphaned
+     * (+1 leak per toString). Static-buffer literals never route here
+     * (literal codegen materializes its own mode-1 instances), so the
+     * view behavior protected nothing.
      *
      * `cachedCpLength` is initialized to -1 (not yet computed); the
      * first `count()` call walks `bytes` and caches the result.
-     *
-     * ```cajeta
-     * int8[] buf = heap int8[3];
-     * buf[0] = (int8) 0x61;  buf[1] = (int8) 0x62;  buf[2] = (int8) 0x63;
-     * heap String s = String(#buf, 3);   // view over "abc"
-     * int64 bytes = s.size();             // 3
-     * ```
      */
     public String(#int8[] bytes, int32 byteLength) {
         this.bytes = bytes;
         this.byteLength = byteLength;
-        this.mode = 1;
+        this.mode = 0;
         this.cachedCpLength = -1;
     }
 
@@ -785,6 +781,25 @@ public final class String {
         int32 o = 0;
         if (this.mode == 2) { o = (int32) this.ssoCount; }
         return this.bytes[o + index];
+    }
+
+    /**
+     * The effective byte window as a fresh caller-owned array — the
+     * view-safe replacement for reading `.bytes` raw (a windowed view's
+     * `bytes` points at the ROOT buffer; the window offset would be
+     * silently ignored). Copies `byteLength` bytes.
+     */
+    public #int8[] toBytes() {
+        int32 n = this.byteLength;
+        int8[] out = heap int8[n];
+        int32 o = 0;
+        if (this.mode == 2) { o = (int32) this.ssoCount; }
+        int32 i = 0;
+        while (i < n) {
+            out[i] = this.bytes[o + i];
+            i = i + 1;
+        }
+        return #out;
     }
 
     /**

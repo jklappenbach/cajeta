@@ -242,6 +242,14 @@ void* __cajeta_string_resolve(void* src_v) {
         out->mode = 1;
         return out;
     }
+    if (src->mode == 2 && src->ssoData[1]) {      // static-rooted view: alias
+        out->bytes = src->bytes;
+        out->byteLength = len;
+        out->mode = 2;
+        out->ssoCount = (int64_t) srcOff;
+        out->ssoData[1] = 1;
+        return out;
+    }
     int __cajeta_arena_owns(const void* p);
     if (src->bytes == (void*) &src->ssoCount
             || __cajeta_arena_owns(src->bytes)
@@ -371,6 +379,12 @@ void* __cajeta_string_slice_borrow(void* src_v, int32_t begin, int32_t len) {
     // registers the root, an unflagged borrow's drop would steal a stake
     // it never took.
     out->ssoData[0] = 1;
+    // Static-root marker (ssoData[1]): stake-taking consumers of this
+    // borrow (string_slice, utf8_of, resolve) must not promote a static
+    // root into the shared table.
+    if (src->mode == 1 || src->ssoData[1]) {
+        out->ssoData[1] = 1;
+    }
     return out;
 }
 
@@ -408,7 +422,13 @@ void* __cajeta_string_slice(void* src_v, int32_t begin, int32_t len) {
         return out;
     }
     void* root = src->bytes;
-    if (src->mode == 0) {
+    // Static roots (mode-1 source, or a view already marked static via
+    // ssoData[1]) never enter the shared table: no stake, no free. Without
+    // the marker a borrow-flagged view over a literal would promote its
+    // STATIC root here and the last release would free static memory.
+    if (src->mode == 1 || src->ssoData[1]) {
+        out->ssoData[1] = 1;
+    } else if (src->mode == 0) {
         __cajeta_shared_promote(root, 2);
     } else if (src->mode == 2) {
         // A borrow-flagged source holds NO stake: add-or-create (owner +

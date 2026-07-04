@@ -538,7 +538,11 @@ blockStatement
     ;
 
 localVariableDeclaration
-    : variableModifier* (typeType variableDeclarators | VAR identifier '=' expression)
+    // Optional REFERENCE ('#') prefix mirrors parameter/return positions: an
+    // owned-transfer binding (`#String t = s.trim();`). Documented syntax that
+    // previously only parsed via ANTLR error recovery (single-token deletion) —
+    // the strict syntax gate made it a hard error, so it is now grammatical.
+    : variableModifier* (REFERENCE? typeType variableDeclarators | VAR identifier '=' expression)
     ;
 
 identifier

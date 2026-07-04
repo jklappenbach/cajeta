@@ -171,7 +171,7 @@ public final class Dns {
             throw heap NetException("cannot resolve a null host",
                 NetException.KIND_INVALID);
         }
-        int8[] hostBytes = host.bytes;
+        int8[] hostBytes = host.toBytes();
         int32 hostLen = host.byteLength;
         int32 filter = Dns.nativeFilter(family);
 
@@ -274,7 +274,7 @@ public final class Dns {
         prefix[16] = (int8) 101;  // 'e'
         prefix[17] = (int8) 32;   // ' '
 
-        int8[] hostBytes = host.bytes;
+        int8[] hostBytes = host.toBytes();
         int32 hostLen = host.byteLength;
         int32 total = 18 + hostLen;
         int8[] msg = heap int8[total];

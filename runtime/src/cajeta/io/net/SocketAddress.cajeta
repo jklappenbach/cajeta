@@ -162,7 +162,7 @@ public class SocketAddress {
             throw heap MalformedAddressException(
                 "empty socket address", (int64) -1);
         }
-        int8[] b = input.bytes;
+        int8[] b = input.toBytes();
 
         if (SocketAddress.byteAt(b, 0) == 91) {     // '[' → bracketed IPv6
             // Find the closing ']'.
@@ -271,7 +271,7 @@ public class SocketAddress {
     public #String toString() {
         String ipStr = this.ip.toString();
         int32 ipLen = ipStr.byteLength;
-        int8[] ipBytes = ipStr.bytes;
+        int8[] ipBytes = ipStr.toBytes();
         boolean v6 = this.ip.isV6();
 
         // Size the output: ip text, optional 2 brackets, ':' + up to 5

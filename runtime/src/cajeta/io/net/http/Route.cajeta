@@ -62,8 +62,8 @@ public class Route {
      */
     public Route(String method, String pattern,
                  (HttpRequest) -> #HttpResponse handler) {
-        this.method = heap String(method.bytes, method.byteLength);
-        this.pattern = heap String(pattern.bytes, pattern.byteLength);
+        this.method = method.substring(0, method.byteLength);
+        this.pattern = pattern.substring(0, pattern.byteLength);
         this.handler = handler;
         this.splitPattern(pattern);
     }

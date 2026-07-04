@@ -245,7 +245,7 @@ public final class DnsCache {
         } else if (family == ResolveFamily.V6_ONLY) {
             tag = 2;
         }
-        int8[] hostBytes = host.bytes;
+        int8[] hostBytes = host.toBytes();
         int32 hostLen = host.byteLength;
         int32 total = hostLen + 1;
         int8[] keyBytes = heap int8[total];
@@ -314,7 +314,7 @@ public final class DnsCache {
         prefix[16] = (int8) 101;  // 'e'
         prefix[17] = (int8) 32;   // ' '
 
-        int8[] hostBytes = host.bytes;
+        int8[] hostBytes = host.toBytes();
         int32 hostLen = host.byteLength;
         int32 total = 18 + hostLen;
         int8[] msg = heap int8[total];

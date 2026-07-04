@@ -252,7 +252,7 @@ public class IpAddress {
             throw heap MalformedAddressException("empty IP address",
                 (int64) -1);
         }
-        int8[] b = input.bytes;
+        int8[] b = input.toBytes();
 
         // Family detection: first ':' ⇒ v6, first '.' before any ':' ⇒ v4.
         int32 firstColon = -1;
