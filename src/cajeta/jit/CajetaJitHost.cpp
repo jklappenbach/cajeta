@@ -18,6 +18,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <memory>
@@ -734,6 +735,13 @@ int dispatchJitRun(int argc, const char* argv[]) {
             opts.debugInfo = true;
         } else if (a == "--debug-info=off") {
             opts.debugInfo = false;
+        } else if (a == "--diag-format=json") {
+            // Route an uncaught throw through the runtime NDJSON emitter. The
+            // in-process JIT runtime reads CAJETA_DIAG_FORMAT lazily on the first
+            // uncaught throw (diagnostic-exceptions U1, 1.2.3).
+            ::setenv("CAJETA_DIAG_FORMAT", "json", 1);
+        } else if (a == "--diag-format=text") {
+            ::setenv("CAJETA_DIAG_FORMAT", "text", 1);
         } else {
             positional.push_back(a);
         }

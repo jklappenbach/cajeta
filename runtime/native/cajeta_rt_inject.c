@@ -669,6 +669,10 @@ struct cajeta_exception_frame {
     // Drop-chain watermark snapshotted at try-entry. On throw, the runtime
     // unwinds drops between the current top and this watermark before longjmp.
     struct cajeta_drop_entry* drop_watermark;
+    // Line-info shadow-stack depth at try-entry (diagnostic-exceptions U3). A
+    // throw doesn't run __cajeta_line_leave for the frames it unwinds, so on
+    // catch __cajeta_throw restores __cajeta_shadow_top to this value.
+    int32_t shadow_watermark;
 };
 
 // Exposed as a compile-time-known size for the IR side; the compiler allocates a
@@ -701,6 +705,8 @@ void __cajeta_exc_push(struct cajeta_exception_frame* f) {
     f->thrown_value = NULL;
     // Snapshot the current drop-chain top so a throw can unwind back to here.
     f->drop_watermark = *dropTop;
+    // Snapshot the shadow line-stack depth so a caught throw restores it (U3).
+    f->shadow_watermark = __cajeta_shadow_top;
     *top = f;
 }
 
