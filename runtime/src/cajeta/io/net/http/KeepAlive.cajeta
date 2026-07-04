@@ -197,7 +197,7 @@ public final class KeepAlive {
 
     /** Copy a literal into a fresh owned `String` (the emitted token). */
     static #String lit(String s) {
-        return heap String(s.bytes, s.byteLength);
+        return s.substring(0, s.byteLength);
     }
 
     /**

@@ -13,7 +13,6 @@
 
 #include <llvm/Support/Error.h>
 
-#include <cstdint>
 #include <string>
 #include <vector>
 

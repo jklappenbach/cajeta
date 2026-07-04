@@ -1,0 +1,40 @@
+package cajeta.error;
+
+/**
+ * One frame of a captured stack trace, as returned by
+ * `Throwable.getStackTrace()` (diagnostic-exceptions §5.1.1).
+ *
+ * When `--line-info` was on at compile time (the default), a frame carries a
+ * resolved semantic location — `declaringType`, `method`, `file`, `line`, and a
+ * [`FrameRole`](FrameRole.cajeta) — recovered from the runtime shadow line-stack
+ * with no debug info. When `--line-info` was off (or the throw was inside a
+ * fiber), only `nativeAddress` is populated: `declaringType`/`method`/`file` are
+ * empty and `line` is `0` — the address is what a symbolizer could later resolve.
+ *
+ * Not a value `record`: a record's fields must be value types, but a frame needs
+ * `String` locations, so `StackFrame` stays a `final class`.
+ */
+public final class StackFrame {
+    /** Canonical declaring type, e.g. `test.App`; empty when unresolved. */
+    public String declaringType;
+    /** Method name, e.g. `run`; empty when unresolved. */
+    public String method;
+    /** Source file, e.g. `App.cajeta`; empty when unresolved. */
+    public String file;
+    /** 1-based source line; `0` when line-info was unavailable. */
+    public int32 line;
+    /** Which layer this frame belongs to (User / Stdlib / Runtime). */
+    public FrameRole role;
+    /** Raw native return address (`0` when built purely from line-info). */
+    public int64 nativeAddress;
+
+    public StackFrame(#String declaringType, #String method, #String file,
+                      int32 line, FrameRole role, int64 nativeAddress) {
+        this.declaringType = declaringType;
+        this.method = method;
+        this.file = file;
+        this.line = line;
+        this.role = role;
+        this.nativeAddress = nativeAddress;
+    }
+}

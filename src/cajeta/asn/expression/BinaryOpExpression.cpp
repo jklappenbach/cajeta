@@ -5,6 +5,7 @@
 #include "BinaryOpExpression.h"
 #include "OperatorDispatch.h"
 #include "../../error/CajetaExceptions.h"
+#include "../../error/DiagnosticEngine.h"
 #include "../../error/Exception.h"
 #include "../../compile/CajetaModule.h"
 #include "../../type/CajetaClass.h"
@@ -399,6 +400,23 @@ namespace cajeta {
         // ctor / method call site. NewExpression has the same carve-
         // out for the same reason.
         if (dynamic_pointer_cast<MethodCallExpression>(ast)) {
+            return v;
+        }
+        // A cast's result is ALWAYS an r-value: primitive casts return the
+        // converted value, class casts return the (possibly guard-checked)
+        // instance pointer, and a record upcast returns the freshly sliced
+        // aggregate's alloca — the pointer IS the value (aggregate-init
+        // shape). The class-ref catch-all below would load through it and
+        // hand back the first field's bytes as a "pointer".
+        if (dynamic_pointer_cast<CastExpression>(ast)) {
+            return v;
+        }
+        // `base[a:b]` yields a freshly built Slice<T> VALUE — the returned
+        // alloca IS the aggregate (same shape as the record upcast above).
+        // The class-ref catch-all would load its first word (the store
+        // pointer — the backing array header) and treat THAT as the value:
+        // the exact double-deref that handed count() the header bytes.
+        if (dynamic_pointer_cast<ArraySliceExpression>(ast)) {
             return v;
         }
         // REFL-1.5 — `T.class` returns the address of the type's #ClassObject
@@ -1181,6 +1199,63 @@ namespace cajeta {
         // target address and only rhs needs r-value coercion.
         switch (binaryOp) {
             case BINARY_OP_ASSIGN: {
+                // Record immutability (records-spec §3.2 / plan 3.2.1): a
+                // record field only initializes inside the record's own
+                // constructor (`this.f = v`); every other field write is a
+                // compile error. Statics stay assignable (immutability is a
+                // per-instance value property). Assigning TO a class field
+                // that merely HOLDS a record stays legal — the receiver
+                // there is the class, not the record.
+                if (auto recDotLhs = dynamic_pointer_cast<DotExpression>(lhsAst)) {
+                    auto& rch = recDotLhs->getChildren();
+                    auto recv = rch.empty() ? nullptr
+                        : dynamic_pointer_cast<Expression>(rch[0]);
+                    if (recv) {
+                        if (!recv->getResolvedType()) recv->resolveTypes(module);
+                        auto recvClass = dynamic_pointer_cast<CajetaClass>(
+                            recv->getResolvedType());
+                        if (recvClass && recvClass->isRecordType()) {
+                            bool ctorSelfInit = false;
+                            if (dynamic_pointer_cast<ThisExpression>(recv)) {
+                                auto cur = module->getCurrentMethod();
+                                ctorSelfInit = cur && cur->isConstructor()
+                                    && cur->getParent().get() == recvClass.get();
+                            }
+                            StructurePropertyPtr found;
+                            std::function<bool(const CajetaClassPtr&)> findP =
+                                [&](const CajetaClassPtr& cls) -> bool {
+                                    if (!cls) return false;
+                                    auto pit = cls->getProperties().find(
+                                        recDotLhs->getIdentifier());
+                                    if (pit != cls->getProperties().end()) {
+                                        found = pit->second;
+                                        return true;
+                                    }
+                                    for (auto& sup : cls->getSuperClasses()) {
+                                        if (findP(sup)) return true;
+                                    }
+                                    return false;
+                                };
+                            findP(recvClass);
+                            bool staticField = found && found->isStatic();
+                            // Per-field mutation opt-in (records-spec §3.4):
+                            // a `mut` field accepts in-place writes.
+                            bool mutField = found
+                                && found->getModifiers().count(MUT);
+                            if (!ctorSelfInit && !staticField && !mutField) {
+                                throw Exception(
+                                    "cannot assign to immutable field '"
+                                        + recDotLhs->getIdentifier()
+                                        + "' of record '"
+                                        + recvClass->getQName()->toCanonical()
+                                        + "' — records are immutable; use "
+                                          "with(" + recDotLhs->getIdentifier()
+                                        + ": value) to produce an updated copy",
+                                    "CAJETA_ERROR_RECORD_IMMUTABLE");
+                            }
+                        }
+                    }
+                }
                 // Matrix element assignment: `m[r][c] = e` (B1). The LHS is
                 // ArrayIndex(ArrayIndex(m, r), c) with m a CajetaMatrix. Writing
                 // through the row temporary (the vector path below) would drop the
@@ -1315,6 +1390,136 @@ namespace cajeta {
                         break;
                     }
                 }
+                // Value-type (record / @ValueType) FIELD assignment
+                // (`this.p = e`). The field stores the aggregate INLINE
+                // (CajetaClass::buildInstanceStructBody), while the RHS is
+                // usually an ADDRESS (aggregate-init alloca, value local
+                // slot, field-read GEP) — a plain store would write the
+                // pointer bits over the first field. Copy the whole body;
+                // a first-class struct value (by-value return) stores
+                // directly.
+                if (dynamic_pointer_cast<DotExpression>(lhsAst)
+                        || dynamic_pointer_cast<IdentifierExpression>(lhsAst)) {
+                    if (!lhsAst->getResolvedType()) lhsAst->resolveTypes(module);
+                    auto lhsCls = dynamic_pointer_cast<CajetaClass>(lhsAst->getResolvedType());
+                    // Identifier LHS: only an inline value slot (alloca of the
+                    // body type) takes the copy path — a ptr-typed slot is a
+                    // reference and keeps the pointer store below.
+                    bool identInlineSlot = true;
+                    if (dynamic_pointer_cast<IdentifierExpression>(lhsAst)) {
+                        auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(lhs);
+                        identInlineSlot = a && !a->getAllocatedType()->isPointerTy();
+                    }
+                    if (lhsCls && lhsCls->isValueType()
+                            && identInlineSlot
+                            && !lhsCls->isInterface()
+                            && !dynamic_pointer_cast<CajetaView>(lhsAst->getResolvedType())) {
+                        if (rhsAst) {
+                            if (!rhsAst->getResolvedType()) rhsAst->resolveTypes(module);
+                            auto rhsCls = dynamic_pointer_cast<CajetaClass>(
+                                rhsAst->getResolvedType());
+                            if (rhsCls && rhsCls.get() != lhsCls.get()
+                                    && (rhsCls->isRecordType() || lhsCls->isRecordType())) {
+                                throw Exception(
+                                    "cannot implicitly convert '"
+                                        + rhsCls->toCanonical() + "' to '"
+                                        + lhsCls->toCanonical()
+                                        + "' — record upcasts slice; write an "
+                                          "explicit cast: ("
+                                        + lhsCls->getQName()->getTypeName()
+                                        + ") value",
+                                    "CAJETA_ERROR_RECORD_IMPLICIT_CAST");
+                            }
+                        }
+                        llvm::Type* bodyTy = lhsCls->getLlvmType();
+                        if (bodyTy && bodyTy->isStructTy()) {
+                            // slice-spec §6.1 copy/drop hooks: overwriting a
+                            // shared-capable value releases the OLD value's
+                            // stakes first; a copy from an LVALUE (identifier /
+                            // field / element / slice-cast) then retains the
+                            // new ones. Rvalue RHS (call result, aggregate-
+                            // init) carries its stakes with the bytes — no
+                            // retain. Syntactic self-assign (`v = v`) skips
+                            // the pair (release could free at rc==1 and the
+                            // retain would resurrect a dead buffer).
+                            bool hooked = lhsCls->isSharedCapableValue();
+                            bool selfAssign = false;
+                            if (hooked) {
+                                auto lId = dynamic_pointer_cast<IdentifierExpression>(lhsAst);
+                                auto rId = dynamic_pointer_cast<IdentifierExpression>(rhsAst);
+                                selfAssign = lId && rId
+                                    && lId->getTextValue() == rId->getTextValue();
+                            }
+                            bool rhsLvalue = rhsAst
+                                && (dynamic_pointer_cast<IdentifierExpression>(rhsAst)
+                                    || dynamic_pointer_cast<DotExpression>(rhsAst)
+                                    || dynamic_pointer_cast<ArrayIndexExpression>(rhsAst)
+                                    || dynamic_pointer_cast<CastExpression>(rhsAst));
+                            llvm::Module* hookModule =
+                                builder->GetInsertBlock()->getModule();
+                            if (hooked && !selfAssign) {
+                                lhsCls->emitValueSharedOp(*builder, lhs, module,
+                                    hookModule, /*retain=*/false);
+                            }
+                            if (rhs->getType() == bodyTy) {
+                                builder->CreateStore(rhs, lhs);
+                            } else if (rhs->getType()->isPointerTy()) {
+                                const llvm::DataLayout& dl =
+                                    module->getLlvmModule()->getDataLayout();
+                                llvm::Value* size = llvm::ConstantInt::get(
+                                    llvm::Type::getInt64Ty(*module->getLlvmContext()),
+                                    dl.getTypeAllocSize(bodyTy));
+                                llvm::Align align(dl.getABITypeAlign(bodyTy));
+                                builder->CreateMemCpy(lhs, align, rhs, align, size);
+                            } else {
+                                builder->CreateStore(rhs, lhs);
+                            }
+                            // Slice<T> FIELD stores resolve in place per the
+                            // §4.2 table (slice-spec §7.2): arena / <=256 B
+                            // payload copies into a fresh field-owned root,
+                            // larger windows take a stake — for BOTH lvalue
+                            // and rvalue RHS (a fresh `arr[a:b]` is a borrow
+                            // of the array too). Local Slice assigns keep
+                            // borrow semantics (the generic retain arm's
+                            // sign-bit gate makes copies of resolved values
+                            // retain and borrow copies free).
+                            bool lhsIsSliceField = hooked && !selfAssign
+                                && dynamic_pointer_cast<DotExpression>(lhsAst)
+                                && lhsCls->getQName()
+                                && lhsCls->getQName()->getPackageName() == "cajeta.lang"
+                                && lhsCls->getQName()->getTypeName().rfind("Slice", 0) == 0;
+                            if (lhsIsSliceField) {
+                                int64_t elemSize = 8;
+                                auto& props = lhsCls->getProperties();
+                                auto pit = props.find("store");
+                                if (pit != props.end()) {
+                                    if (auto arrT = dynamic_pointer_cast<CajetaArray>(
+                                            pit->second->getType())) {
+                                        if (auto et = arrT->getElementType()) {
+                                            if (llvm::Type* lt = et->getLlvmType()) {
+                                                elemSize = (int64_t) module
+                                                    ->getLlvmModule()->getDataLayout()
+                                                    .getTypeAllocSize(lt);
+                                            }
+                                        }
+                                    }
+                                }
+                                if (llvm::Function* resolveSliceFn =
+                                        module->getRuntimeFunction("__cajeta_slice_resolve")) {
+                                    builder->CreateCall(resolveSliceFn, {lhs,
+                                        llvm::ConstantInt::get(
+                                            llvm::Type::getInt64Ty(*module->getLlvmContext()),
+                                            (uint64_t) elemSize)});
+                                }
+                            } else if (hooked && !selfAssign && rhsLvalue) {
+                                lhsCls->emitValueSharedOp(*builder, lhs, module,
+                                    hookModule, /*retain=*/true);
+                            }
+                            result = lhs;
+                            break;
+                        }
+                    }
+                }
                 // Interface-typed FIELD assignment (`this.enc = e`). An
                 // interface field stores the 24-byte {data, vtable, kind}
                 // body INLINE in the parent struct (S9.5.4 / CajetaClass::
@@ -1350,6 +1555,113 @@ namespace cajeta {
                                 builder->CreateMemCpy(lhs, align, srcBody, align, size);
                             }
                             result = lhs;
+                            break;
+                        }
+                    }
+                }
+                // Escape resolution at the String field-store site (slice-spec
+                // §4.2; slices plan Unit 4). A plain `obj.f = w` where w is a
+                // scope-owned String LVALUE stored the BORROWED WRAPPER pointer
+                // — the declaring scope frees that wrapper at exit and the
+                // field dangles (UAF). Resolve instead: store a FRESH wrapper
+                // the field owns (copy ≤ threshold / stake on a large heap
+                // root / free alias of a static root — the runtime decides).
+                // Rvalue RHS (call result, concat, `#`-move) transfers its
+                // wrapper as before — no resolve.
+                if (auto dotLhs2 = dynamic_pointer_cast<DotExpression>(lhsAst)) {
+                    if (lhsAst && !lhsAst->getResolvedType()) lhsAst->resolveTypes(module);
+                    auto lhsCls2 = dynamic_pointer_cast<CajetaClass>(
+                        lhsAst->getResolvedType());
+                    bool lhsIsString = lhsCls2 && lhsCls2->getQName()
+                        && lhsCls2->getQName()->getTypeName() == "String"
+                        && lhsCls2->getQName()->getPackageName() == "cajeta.lang";
+                    if (lhsIsString && rhsAst) {
+                        if (!rhsAst->getResolvedType()) rhsAst->resolveTypes(module);
+                        auto rhsCls2 = dynamic_pointer_cast<CajetaClass>(
+                            rhsAst->getResolvedType());
+                        bool rhsIsString = rhsCls2 && rhsCls2->getQName()
+                            && rhsCls2->getQName()->getTypeName() == "String"
+                            && rhsCls2->getQName()->getPackageName() == "cajeta.lang";
+                        // A string-literal RHS is a String even when its
+                        // resolvedType is a null/placeholder (the unqualified
+                        // CajetaType::of("String") path) — detect structurally
+                        // so literal stores (`obj.f = "x"`) still old-drop.
+                        if (!rhsIsString) {
+                            if (auto lit = dynamic_pointer_cast<TextLiteralExpression>(rhsAst)) {
+                                LiteralType lt = lit->getLiteralType();
+                                rhsIsString = (lt == LITERAL_TYPE_STRING
+                                               || lt == LITERAL_TYPE_TEXT_BLOCK);
+                            }
+                        }
+                        bool rhsIsLvalue =
+                            dynamic_pointer_cast<IdentifierExpression>(rhsAst)
+                            || dynamic_pointer_cast<DotExpression>(rhsAst)
+                            || dynamic_pointer_cast<ArrayIndexExpression>(rhsAst);
+                        if (rhsIsString) {
+                            llvm::Function* resolveFn = rhsIsLvalue
+                                ? module->getRuntimeFunction("__cajeta_string_resolve")
+                                : nullptr;
+                            llvm::Value* srcWrapper = loadR(rhs);
+                            // Lvalue RHS: the source keeps its wrapper — the
+                            // field takes a FRESH resolved one (copy ≤
+                            // threshold / stake on a large heap root / static
+                            // alias). Rvalue RHS (literal, call result,
+                            // concat, `#`-move): the wrapper transfers as-is.
+                            llvm::Value* fresh = (rhsIsLvalue && resolveFn)
+                                ? builder->CreateCall(resolveFn, {srcWrapper},
+                                                      "str_resolve")
+                                : srcWrapper;
+                            // 4.2.3 visibility lint: each silent resolution
+                            // is reported as a NOTE (never an error) so the
+                            // copy/share cost is visible; `#`-transfer makes
+                            // the store free. No-op without an active engine.
+                            // Stdlib-internal stores (the cajeta.* namespace,
+                            // which user code cannot extend) never lint into
+                            // user diagnostics.
+                            bool inStdlibClass = false;
+                            if (!module->getStructureStack().empty()) {
+                                auto owner = module->getStructureStack().back();
+                                if (owner && owner->getQName()) {
+                                    const std::string& pkg =
+                                        owner->getQName()->getPackageName();
+                                    inStdlibClass = pkg == "cajeta"
+                                        || pkg.rfind("cajeta.", 0) == 0;
+                                }
+                            }
+                            if (rhsIsLvalue && resolveFn && !inStdlibClass) {
+                                if (DiagnosticEngine* eng = DiagnosticEngine::active()) {
+                                    eng->report("note", "CAJETA_LINT_SLICE_RESOLVED",
+                                        "String store resolves silently (copies when "
+                                        "<= 256 B or arena/SSO-backed, otherwise takes "
+                                        "a shared stake); a `#` transfer of the source "
+                                        "would make this store free",
+                                        module->getSourcePath(),
+                                        (int) getSourceLine(), -1);
+                                }
+                            }
+                            // The field OWNS its wrapper (both arms), so
+                            // dropping the previous value on overwrite is safe
+                            // and closes the String-field overwrite leak.
+                            // SKIPPED inside constructors: stack-class bodies
+                            // aren't zero-initialized — a ctor's first store
+                            // would read garbage as the "old" wrapper (heap
+                            // bodies are zeroed; the skip costs at most a leak
+                            // on a ctor double-store).
+                            bool inCtor = false;
+                            if (auto cm = module->getCurrentMethod()) {
+                                inCtor = cm->isConstructor();
+                            }
+                            if (!inCtor) {
+                                llvm::Value* oldVal = builder->CreateLoad(
+                                    llvm::PointerType::get(*module->getLlvmContext(), 0),
+                                    lhs, "str_old");
+                                if (llvm::Function* dropFn =
+                                        module->getRuntimeFunction("__cajeta_string_drop")) {
+                                    builder->CreateCall(dropFn, {oldVal});
+                                }
+                            }
+                            builder->CreateStore(fresh, lhs);
+                            result = fresh;
                             break;
                         }
                     }
@@ -1781,6 +2093,34 @@ namespace cajeta {
                                     i64BufFn, {iv, buf}, "concat.ilen");
                                 return { true, iv, buf, len };
                             }
+                        }
+                        if (isClassStringType(vt) && stringStructTy) {
+                            // Direct (bytes+8+off, byteLength): a mode-2 windowed
+                            // view (slice-spec §7.1) has no NUL at its window end,
+                            // so the strlen path would over-read into the root.
+                            llvm::Value* bytesPtr = builder->CreateLoad(
+                                builder->getPtrTy(),
+                                builder->CreateStructGEP(stringStructTy, v, 1,
+                                    "cat.bytes"));
+                            llvm::Value* blen = builder->CreateLoad(i32Ty,
+                                builder->CreateStructGEP(stringStructTy, v, 2,
+                                    "cat.blen"));
+                            llvm::Value* mode = builder->CreateLoad(i32Ty,
+                                builder->CreateStructGEP(stringStructTy, v, 3,
+                                    "cat.mode"));
+                            llvm::Value* sso = builder->CreateLoad(i64Ty,
+                                builder->CreateStructGEP(stringStructTy, v, 5,
+                                    "cat.sso"));
+                            llvm::Value* off = builder->CreateSelect(
+                                builder->CreateICmpEQ(mode,
+                                    llvm::ConstantInt::get(i32Ty, 2)),
+                                sso, llvm::ConstantInt::get(i64Ty, 0), "cat.off");
+                            llvm::Value* data = builder->CreateGEP(i8Ty, bytesPtr,
+                                builder->getInt64(8), "cat.base");
+                            data = builder->CreateGEP(i8Ty, data, off, "cat.data");
+                            llvm::Value* lenI64 = builder->CreateIntCast(
+                                blen, i64Ty, /*isSigned=*/false, "cat.len");
+                            return { false, nullptr, data, lenI64 };
                         }
                         llvm::Value* cstr = stringify(v, vt);
                         // Class String: take byteLength (slot 2) — bytes.data is

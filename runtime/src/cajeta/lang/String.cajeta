@@ -17,9 +17,9 @@ package cajeta.lang;
  *
  * ```cajeta
  * heap String s = "  Hello, World  ";
- * String clean = s.trim();              // "Hello, World"
+ * #String clean = s.trim();              // "Hello, World"
  * if (clean.startsWith("Hello") && clean.contains("World")) {
- *     String loud = clean.toUpperCase(); // "HELLO, WORLD"
+ *     #String loud = clean.toUpperCase(); // "HELLO, WORLD"
  *     int64 codepoints = clean.count();   // 12 (codepoints, not bytes)
  *     int64 firstComma = clean.indexOf(","); // 5
  * }
@@ -106,33 +106,29 @@ public final class String {
     }
 
     /**
-     * View-mode constructor — borrows the caller's byte buffer without
-     * claiming ownership. The drop chain will NOT reclaim `bytes` when
-     * this String is dropped; the underlying buffer's lifetime is the
-     * caller's responsibility.
+     * Ownership-transfer constructor — takes the caller's byte buffer
+     * (`#`: the caller's drop entry deactivates) and OWNS it: this
+     * String's drop frees `bytes` (mode 0). This is the builder path —
+     * every `return heap String(#out, n)` in the stdlib
+     * (Number/Boolean/Guid/StringBuilder/Utf8.toString) transfers a
+     * freshly built buffer here.
      *
-     * This is the path string literals will eventually go through
-     * (Phase 2b-β.3): literal codegen will materialize an instance
-     * pointing at a static byte buffer in the process's data segment,
-     * with mode = 1 so the drop chain doesn't try to free static
-     * storage.
+     * History (slices plan 9.1): this ctor used to set mode = 1 (view)
+     * while STILL taking `#` — the signature transferred ownership the
+     * body then declined, so every transferred buffer was orphaned
+     * (+1 leak per toString). Static-buffer literals never route here
+     * (literal codegen materializes its own mode-1 instances), so the
+     * view behavior protected nothing.
      *
      * `cachedCpLength` is initialized to -1 (not yet computed); the
      * first `count()` call walks `bytes` and caches the result.
-     *
-     * ```cajeta
-     * int8[] buf = heap int8[3];
-     * buf[0] = (int8) 0x61;  buf[1] = (int8) 0x62;  buf[2] = (int8) 0x63;
-     * heap String s = String(#buf, 3);   // view over "abc"
-     * int64 bytes = s.size();             // 3
-     * ```
      *
      * @EntryPoint
      */
     public String(#int8[] bytes, int32 byteLength) {
         this.bytes = bytes;
         this.byteLength = byteLength;
-        this.mode = 1;
+        this.mode = 0;
         this.cachedCpLength = -1;
     }
 
@@ -159,7 +155,9 @@ public final class String {
         // bytes==null implies byteLength==0 (both ctors), and the XXH3
         // len==0 path never dereferences the data pointer, so the null
         // and empty cases yield the same seed-derived value with no guard.
-        return Cajeta.hashBytes(this.bytes, (int64) this.byteLength);
+        int32 o = 0;
+        if (this.mode == 2) { o = (int32) this.ssoCount; }
+        return Cajeta.hashBytes(this.bytes, (int64) o, (int64) this.byteLength);
     }
 
     /**
@@ -193,10 +191,12 @@ public final class String {
             this.cachedCpLength = 0;
             return 0;
         }
+        int32 o = 0;
+        if (this.mode == 2) { o = (int32) this.ssoCount; }
         int32 cps = 0;
         int32 i = 0;
         while (i < this.byteLength) {
-            int32 b = ((int32) this.bytes[i]) & 0xff;
+            int32 b = ((int32) this.bytes[o + i]) & 0xff;
             if ((b & 0x80) == 0) {
                 // ASCII byte — one codepoint, one byte.
                 cps = cps + 1;
@@ -212,7 +212,7 @@ public final class String {
                 cps = cps + 1;
                 i = i + 1;
                 while (i < this.byteLength
-                        && (((int32) this.bytes[i]) & 0xC0) == 0x80) {
+                        && (((int32) this.bytes[o + i]) & 0xC0) == 0x80) {
                     i = i + 1;
                 }
             }
@@ -271,9 +271,13 @@ public final class String {
         if (this.byteLength != other.byteLength) {
             return false;
         }
+        int32 o = 0;
+        if (this.mode == 2) { o = (int32) this.ssoCount; }
+        int32 oo = 0;
+        if (other.mode == 2) { oo = (int32) other.ssoCount; }
         int32 i = 0;
         while (i < this.byteLength) {
-            if (this.bytes[i] != other.bytes[i]) {
+            if (this.bytes[o + i] != other.bytes[oo + i]) {
                 return false;
             }
             i = i + 1;
@@ -321,7 +325,9 @@ public final class String {
         if (idx < 0 || idx >= this.byteLength) {
             return (int8) 0;
         }
-        return this.bytes[idx];
+        int32 o = 0;
+        if (this.mode == 2) { o = (int32) this.ssoCount; }
+        return this.bytes[o + idx];
     }
 
     /**
@@ -353,8 +359,12 @@ public final class String {
         }
         int64 hlen = (int64) this.byteLength;
         int64 lim = hlen - (int64) nlen;          // last valid start offset
-        int8 first = needle.bytes[0];
-        int8 last = needle.bytes[nlen - 1];
+        int64 ho = 0;
+        if (this.mode == 2) { ho = this.ssoCount; }
+        int32 no = 0;
+        if (needle.mode == 2) { no = (int32) needle.ssoCount; }
+        int8 first = needle.bytes[no];
+        int8 last = needle.bytes[no + nlen - 1];
         // SIMD memmem (two-byte prefilter, 32 bytes/iter -> AVX2 under cpu=native).
         // For each block, vector-compare the first-byte window bytes[i..i+31] to
         // `first` AND the last-byte window bytes[i+nlen-1..+31] to `last`; only
@@ -366,8 +376,8 @@ public final class String {
         int64 blockEnd = lim - 31;                 // last i with both 32-byte loads in bounds
         int64 nm1 = (int64) nlen - 1;
         while (i <= blockEnd) {
-            Vector<int8,32> va = this.bytes.vload<32>(i);
-            Vector<int8,32> vb = this.bytes.vload<32>(i + nm1);
+            Vector<int8,32> va = this.bytes.vload<32>(ho + i);
+            Vector<int8,32> vb = this.bytes.vload<32>(ho + i + nm1);
             int32 cand = va.eqMask(first) & vb.eqMask(last);
             while (cand != 0) {
                 int64 at = i + (int64) Cajeta.ctz64((int64) cand);
@@ -380,7 +390,7 @@ public final class String {
         }
         // Tail (short haystacks, or the final < 32-byte window): scalar scan.
         while (i <= lim) {
-            if (this.bytes[i] == first && this.regionMatches(i, needle, nlen)) {
+            if (this.bytes[ho + i] == first && this.regionMatches(i, needle, nlen)) {
                 return i;
             }
             i = i + 1;
@@ -393,9 +403,13 @@ public final class String {
     // the scalar tail and any SWAR false positive are handled uniformly.)
     @Inline
     private boolean regionMatches(int64 at, String needle, int32 nlen) {
+        int64 ho = 0;
+        if (this.mode == 2) { ho = this.ssoCount; }
+        int32 no = 0;
+        if (needle.mode == 2) { no = (int32) needle.ssoCount; }
         int32 j = 0;
         while (j < nlen) {
-            if (this.bytes[at + (int64) j] != needle.bytes[j]) {
+            if (this.bytes[ho + at + (int64) j] != needle.bytes[no + j]) {
                 return false;
             }
             j = j + 1;
@@ -415,9 +429,13 @@ public final class String {
         if (prefix.byteLength > this.byteLength) {
             return false;
         }
+        int32 o = 0;
+        if (this.mode == 2) { o = (int32) this.ssoCount; }
+        int32 po = 0;
+        if (prefix.mode == 2) { po = (int32) prefix.ssoCount; }
         int32 i = 0;
         while (i < prefix.byteLength) {
-            if (this.bytes[i] != prefix.bytes[i]) {
+            if (this.bytes[o + i] != prefix.bytes[po + i]) {
                 return false;
             }
             i = i + 1;
@@ -437,9 +455,13 @@ public final class String {
             return false;
         }
         int32 off = this.byteLength - suffix.byteLength;
+        int32 o = 0;
+        if (this.mode == 2) { o = (int32) this.ssoCount; }
+        int32 so = 0;
+        if (suffix.mode == 2) { so = (int32) suffix.ssoCount; }
         int32 i = 0;
         while (i < suffix.byteLength) {
-            if (this.bytes[off + i] != suffix.bytes[i]) {
+            if (this.bytes[o + off + i] != suffix.bytes[so + i]) {
                 return false;
             }
             i = i + 1;
@@ -460,10 +482,11 @@ public final class String {
     /**
      * Returns a half-open byte-indexed slice `[begin, end)` of this
      * String. Indices are clamped to [0, byteLength]; if end < begin
-     * after clamping the result is empty. Substring allocates a
-     * fresh byte buffer and copies — view-mode slicing is a planned
-     * follow-up that needs pointer arithmetic on `int8[]` (today the
-     * language has no surface syntax for `&this.bytes[begin]`).
+     * after clamping the result is empty. ZERO-COPY (slice-spec §7.1):
+     * the result is a mode-2 windowed view sharing this String's root
+     * buffer — the runtime promotes/retains the root per the source's
+     * mode; SSO sources materialize a copy (never a view into a
+     * wrapper's inline region).
      */
     public #String substring(int32 begin, int32 end) {
         if (begin < 0) {
@@ -476,13 +499,28 @@ public final class String {
             end = begin;
         }
         int32 len = end - begin;
-        int8[] out = Cajeta.allocBytes((int64) len);   // fully written below
-        int32 i = 0;
-        while (i < len) {
-            out[i] = this.bytes[begin + i];
-            i = i + 1;
+        return Cajeta.stringSlice(this, begin, len);
+    }
+
+    /**
+     * INTERNAL (slices plan 4.2.2): borrow-mode substring — identical window
+     * semantics, but the view takes NO stake (zero rc). The compiler rewrites
+     * `substring` calls to this when the receiving local provably never
+     * leaves its scope; escapes of the VALUE resolve at their own sites.
+     * Not intended for direct use.
+     */
+    public #String substringView(int32 begin, int32 end) {
+        if (begin < 0) {
+            begin = 0;
         }
-        return heap String(#out, len);
+        if (end > this.byteLength) {
+            end = this.byteLength;
+        }
+        if (end < begin) {
+            end = begin;
+        }
+        int32 len = end - begin;
+        return Cajeta.stringSliceBorrow(this, begin, len);
     }
 
     // 0x80 in each byte of `v` whose value lies in [lo, hi]. Valid only when
@@ -520,14 +558,16 @@ public final class String {
         int32 n = this.byteLength;
         int8[] out = Cajeta.allocBytes((int64) n);   // every byte written below
         int8[] src = this.bytes;
+        int32 so = 0;
+        if (this.mode == 2) { so = (int32) this.ssoCount; }
         uint64 high = (uint64) 0x8080808080808080;
         int32 k = 0;
         // 32 bytes/iter (4 words, one ASCII guard); clears bit 5 ([a-z]->[A-Z]).
         while (k + 32 <= n) {
-            uint64 v0 = (uint64) Cajeta.loadU64(src, (int64) k);
-            uint64 v1 = (uint64) Cajeta.loadU64(src, (int64) (k + 8));
-            uint64 v2 = (uint64) Cajeta.loadU64(src, (int64) (k + 16));
-            uint64 v3 = (uint64) Cajeta.loadU64(src, (int64) (k + 24));
+            uint64 v0 = (uint64) Cajeta.loadU64(src, (int64) (so + k));
+            uint64 v1 = (uint64) Cajeta.loadU64(src, (int64) (so + k + 8));
+            uint64 v2 = (uint64) Cajeta.loadU64(src, (int64) (so + k + 16));
+            uint64 v3 = (uint64) Cajeta.loadU64(src, (int64) (so + k + 24));
             if ((((v0 | v1) | (v2 | v3)) & high) == (uint64) 0) {
                 Cajeta.storeU64(out, (int64) k, (int64) String.swarUpper(v0));
                 Cajeta.storeU64(out, (int64) (k + 8), (int64) String.swarUpper(v1));
@@ -536,30 +576,30 @@ public final class String {
             } else {
                 int32 j = 0;
                 while (j < 32) {
-                    int32 b = ((int32) src[k + j]) & 0xff;
-                    out[k + j] = (b >= 0x61 && b <= 0x7A) ? (int8) (b - 32) : src[k + j];
+                    int32 b = ((int32) src[so + k + j]) & 0xff;
+                    out[k + j] = (b >= 0x61 && b <= 0x7A) ? (int8) (b - 32) : src[so + k + j];
                     j = j + 1;
                 }
             }
             k = k + 32;
         }
         while (k + 8 <= n) {
-            uint64 v = (uint64) Cajeta.loadU64(src, (int64) k);
+            uint64 v = (uint64) Cajeta.loadU64(src, (int64) (so + k));
             if ((v & high) == (uint64) 0) {
                 Cajeta.storeU64(out, (int64) k, (int64) String.swarUpper(v));
             } else {
                 int32 j = 0;
                 while (j < 8) {
-                    int32 b = ((int32) src[k + j]) & 0xff;
-                    out[k + j] = (b >= 0x61 && b <= 0x7A) ? (int8) (b - 32) : src[k + j];
+                    int32 b = ((int32) src[so + k + j]) & 0xff;
+                    out[k + j] = (b >= 0x61 && b <= 0x7A) ? (int8) (b - 32) : src[so + k + j];
                     j = j + 1;
                 }
             }
             k = k + 8;
         }
         while (k < n) {
-            int32 b = ((int32) src[k]) & 0xff;
-            out[k] = (b >= 0x61 && b <= 0x7A) ? (int8) (b - 32) : src[k];
+            int32 b = ((int32) src[so + k]) & 0xff;
+            out[k] = (b >= 0x61 && b <= 0x7A) ? (int8) (b - 32) : src[so + k];
             k = k + 1;
         }
         return heap String(#out, n);
@@ -574,14 +614,16 @@ public final class String {
         int32 n = this.byteLength;
         int8[] out = Cajeta.allocBytes((int64) n);   // every byte written below
         int8[] src = this.bytes;
+        int32 so = 0;
+        if (this.mode == 2) { so = (int32) this.ssoCount; }
         uint64 high = (uint64) 0x8080808080808080;
         int32 k = 0;
         // 32 bytes/iter (4 words, one ASCII guard); sets bit 5 ([A-Z]->[a-z]).
         while (k + 32 <= n) {
-            uint64 v0 = (uint64) Cajeta.loadU64(src, (int64) k);
-            uint64 v1 = (uint64) Cajeta.loadU64(src, (int64) (k + 8));
-            uint64 v2 = (uint64) Cajeta.loadU64(src, (int64) (k + 16));
-            uint64 v3 = (uint64) Cajeta.loadU64(src, (int64) (k + 24));
+            uint64 v0 = (uint64) Cajeta.loadU64(src, (int64) (so + k));
+            uint64 v1 = (uint64) Cajeta.loadU64(src, (int64) (so + k + 8));
+            uint64 v2 = (uint64) Cajeta.loadU64(src, (int64) (so + k + 16));
+            uint64 v3 = (uint64) Cajeta.loadU64(src, (int64) (so + k + 24));
             if ((((v0 | v1) | (v2 | v3)) & high) == (uint64) 0) {
                 Cajeta.storeU64(out, (int64) k, (int64) String.swarLower(v0));
                 Cajeta.storeU64(out, (int64) (k + 8), (int64) String.swarLower(v1));
@@ -590,30 +632,30 @@ public final class String {
             } else {
                 int32 j = 0;
                 while (j < 32) {
-                    int32 b = ((int32) src[k + j]) & 0xff;
-                    out[k + j] = (b >= 0x41 && b <= 0x5A) ? (int8) (b + 32) : src[k + j];
+                    int32 b = ((int32) src[so + k + j]) & 0xff;
+                    out[k + j] = (b >= 0x41 && b <= 0x5A) ? (int8) (b + 32) : src[so + k + j];
                     j = j + 1;
                 }
             }
             k = k + 32;
         }
         while (k + 8 <= n) {
-            uint64 v = (uint64) Cajeta.loadU64(src, (int64) k);
+            uint64 v = (uint64) Cajeta.loadU64(src, (int64) (so + k));
             if ((v & high) == (uint64) 0) {
                 Cajeta.storeU64(out, (int64) k, (int64) String.swarLower(v));
             } else {
                 int32 j = 0;
                 while (j < 8) {
-                    int32 b = ((int32) src[k + j]) & 0xff;
-                    out[k + j] = (b >= 0x41 && b <= 0x5A) ? (int8) (b + 32) : src[k + j];
+                    int32 b = ((int32) src[so + k + j]) & 0xff;
+                    out[k + j] = (b >= 0x41 && b <= 0x5A) ? (int8) (b + 32) : src[so + k + j];
                     j = j + 1;
                 }
             }
             k = k + 8;
         }
         while (k < n) {
-            int32 b = ((int32) src[k]) & 0xff;
-            out[k] = (b >= 0x41 && b <= 0x5A) ? (int8) (b + 32) : src[k];
+            int32 b = ((int32) src[so + k]) & 0xff;
+            out[k] = (b >= 0x41 && b <= 0x5A) ? (int8) (b + 32) : src[so + k];
             k = k + 1;
         }
         return heap String(#out, n);
@@ -627,22 +669,33 @@ public final class String {
      * the planned `strip()` companion once Locale lands.
      */
     public #String trim() {
+        int32 o = 0;
+        if (this.mode == 2) { o = (int32) this.ssoCount; }
         int32 start = 0;
         int32 end = this.byteLength;
-        while (start < end && (((int32) this.bytes[start]) & 0xff) <= 0x20) {
+        while (start < end && (((int32) this.bytes[o + start]) & 0xff) <= 0x20) {
             start = start + 1;
         }
-        while (end > start && (((int32) this.bytes[end - 1]) & 0xff) <= 0x20) {
+        while (end > start && (((int32) this.bytes[o + end - 1]) & 0xff) <= 0x20) {
             end = end - 1;
         }
-        int32 len = end - start;
-        int8[] out = Cajeta.allocBytes((int64) len);   // fully written below
-        int32 i = 0;
-        while (i < len) {
-            out[i] = this.bytes[start + i];
-            i = i + 1;
+        // Zero-copy: the trimmed run is a window of this String (slice-spec §7.1).
+        return Cajeta.stringSlice(this, start, end - start);
+    }
+
+    /** INTERNAL (slices plan 4.2.2): borrow-mode trim — see substringView. */
+    public #String trimView() {
+        int32 o = 0;
+        if (this.mode == 2) { o = (int32) this.ssoCount; }
+        int32 start = 0;
+        int32 end = this.byteLength;
+        while (start < end && (((int32) this.bytes[o + start]) & 0xff) <= 0x20) {
+            start = start + 1;
         }
-        return heap String(#out, len);
+        while (end > start && (((int32) this.bytes[o + end - 1]) & 0xff) <= 0x20) {
+            end = end - 1;
+        }
+        return Cajeta.stringSliceBorrow(this, start, end - start);
     }
 
     /**
@@ -684,19 +737,23 @@ public final class String {
         // @Inline copyRange). (A hand-inlined continuous SWAR scan here measured
         // SLOWER — its jump-and-reload control flow optimizes worse than this
         // simple walk — so the per-match indexOfFrom call is kept.)
+        int64 ho = 0;
+        if (this.mode == 2) { ho = this.ssoCount; }
+        int64 ro = 0;
+        if (repl.mode == 2) { ro = repl.ssoCount; }
         int64 src = 0;
         int64 dst = 0;
         int64 at = this.indexOfFrom(from, 0);
         while (at >= (int64) 0) {
             int64 seg = at - src;
-            String.copyRange(out, dst, this.bytes, src, seg);
+            String.copyRange(out, dst, this.bytes, ho + src, seg);
             dst = dst + seg;
-            String.copyRange(out, dst, repl.bytes, 0, tlen);
+            String.copyRange(out, dst, repl.bytes, ro, tlen);
             dst = dst + tlen;
             src = at + flen64;
             at = this.indexOfFrom(from, src);
         }
-        String.copyRange(out, dst, this.bytes, src, hlen - src);
+        String.copyRange(out, dst, this.bytes, ho + src, hlen - src);
         return heap String(#out, (int32) outLen);
     }
 
@@ -725,7 +782,28 @@ public final class String {
      */
     @Inline
     public int8 byteAt(int32 index) {
-        return this.bytes[index];
+        int32 o = 0;
+        if (this.mode == 2) { o = (int32) this.ssoCount; }
+        return this.bytes[o + index];
+    }
+
+    /**
+     * The effective byte window as a fresh caller-owned array — the
+     * view-safe replacement for reading `.bytes` raw (a windowed view's
+     * `bytes` points at the ROOT buffer; the window offset would be
+     * silently ignored). Copies `byteLength` bytes.
+     */
+    public #int8[] toBytes() {
+        int32 n = this.byteLength;
+        int8[] out = heap int8[n];
+        int32 o = 0;
+        if (this.mode == 2) { o = (int32) this.ssoCount; }
+        int32 i = 0;
+        while (i < n) {
+            out[i] = this.bytes[o + i];
+            i = i + 1;
+        }
+        return #out;
     }
 
     /**
@@ -742,10 +820,12 @@ public final class String {
      * from whatever bytes ARE present.
      */
     public char codepointAt(int32 cpIdx) {
+        int32 o = 0;
+        if (this.mode == 2) { o = (int32) this.ssoCount; }
         int32 i = 0;       // byte cursor
         int32 cp = 0;      // current codepoint index
         while (i < this.byteLength) {
-            int32 b0 = ((int32) this.bytes[i]) & 0xff;
+            int32 b0 = ((int32) this.bytes[o + i]) & 0xff;
             int32 width = 1;
             int32 decoded = 0;
             if ((b0 & 0x80) == 0) {
@@ -755,15 +835,15 @@ public final class String {
             } else if ((b0 & 0xE0) == 0xC0) {
                 // 2-byte (110xxxxx 10xxxxxx).
                 int32 b1 = (i + 1 < this.byteLength)
-                    ? (((int32) this.bytes[i + 1]) & 0xff) : 0;
+                    ? (((int32) this.bytes[o + i + 1]) & 0xff) : 0;
                 decoded = ((b0 & 0x1F) << 6) | (b1 & 0x3F);
                 width = 2;
             } else if ((b0 & 0xF0) == 0xE0) {
                 // 3-byte.
                 int32 b1 = (i + 1 < this.byteLength)
-                    ? (((int32) this.bytes[i + 1]) & 0xff) : 0;
+                    ? (((int32) this.bytes[o + i + 1]) & 0xff) : 0;
                 int32 b2 = (i + 2 < this.byteLength)
-                    ? (((int32) this.bytes[i + 2]) & 0xff) : 0;
+                    ? (((int32) this.bytes[o + i + 2]) & 0xff) : 0;
                 decoded = ((b0 & 0x0F) << 12)
                         | ((b1 & 0x3F) << 6)
                         |  (b2 & 0x3F);
@@ -771,11 +851,11 @@ public final class String {
             } else if ((b0 & 0xF8) == 0xF0) {
                 // 4-byte.
                 int32 b1 = (i + 1 < this.byteLength)
-                    ? (((int32) this.bytes[i + 1]) & 0xff) : 0;
+                    ? (((int32) this.bytes[o + i + 1]) & 0xff) : 0;
                 int32 b2 = (i + 2 < this.byteLength)
-                    ? (((int32) this.bytes[i + 2]) & 0xff) : 0;
+                    ? (((int32) this.bytes[o + i + 2]) & 0xff) : 0;
                 int32 b3 = (i + 3 < this.byteLength)
-                    ? (((int32) this.bytes[i + 3]) & 0xff) : 0;
+                    ? (((int32) this.bytes[o + i + 3]) & 0xff) : 0;
                 decoded = ((b0 & 0x07) << 18)
                         | ((b1 & 0x3F) << 12)
                         | ((b2 & 0x3F) << 6)

@@ -306,7 +306,7 @@ public class Router {
         int32 aLen = acc.byteLength;
         int32 tLen = token.byteLength;
         if (aLen == 0) {
-            return heap String(token.bytes, tLen);
+            return token.substring(0, tLen);
         }
         int32 total = aLen + 2 + tLen;      // acc + ", " + token
         int8[] out = heap int8[total];

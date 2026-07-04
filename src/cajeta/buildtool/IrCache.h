@@ -28,7 +28,6 @@
 #include <llvm/Support/Error.h>
 
 #include <chrono>
-#include <map>
 #include <optional>
 #include <string>
 #include <vector>

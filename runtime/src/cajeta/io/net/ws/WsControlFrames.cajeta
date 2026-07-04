@@ -145,7 +145,7 @@ public class WsControlFrames {
         pay[1] = (int8) (code & 255);
         int32 i = 0;
         while (i < rLen) {
-            pay[2 + i] = reason.bytes[i];
+            pay[2 + i] = reason.byteAt(i);
             i = i + 1;
         }
         return WsFrame.of(true, WsOpcode.CLOSE, false, #pay);

@@ -38,4 +38,24 @@ public class Exception extends Throwable {
         this.message = message;
         this.cause = 0;
     }
+
+    /**
+     * Construct an exception wrapping a lower-level `cause`; ownership of `cause`
+     * transfers into this exception's `cause` chain.
+     *
+     * ```cajeta
+     * throw heap Exception("config load failed", heap Exception("file missing"));
+     * ```
+     */
+    public Exception(#String message, #Throwable cause) {
+        this.message = message;
+        this.cause = cause;
+    }
+
+    /**
+     * The underlying cause carried with this exception, or `0` (none).
+     */
+    public Throwable getCause() {
+        return this.cause;
+    }
 }

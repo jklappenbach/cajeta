@@ -315,7 +315,7 @@ TEST(OperatorOverloadTests, notEqualsDerivesFromEquals) {
         "    public static boolean operator== (Tag a, Tag b) {\n"
         "        return a.v == b.v;\n"
         "    }\n"
-        "    public int64 hash() override { return (int64) this.v; }\n"
+        "    public int64 hash() { return (int64) this.v; }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"

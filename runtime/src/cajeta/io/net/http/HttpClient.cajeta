@@ -133,7 +133,7 @@ public class HttpClient {
         TcpStream sock = HttpClient.connectAny(host, port);
 
         if (https) {
-            int8[] hostBytes = host.bytes;
+            int8[] hostBytes = host.toBytes();
             int32 hostLen = host.byteLength;
             TlsStream tls = HttpClient.wrapTls(#sock, hostBytes, hostLen,
                                                this.trustPem, this.trustLen,
@@ -164,7 +164,7 @@ public class HttpClient {
      * @EntryPoint
      */
     public #HttpResponse get(String url) {
-        String current = heap String(url.bytes, url.byteLength);
+        String current = url.substring(0, url.byteLength);
         int32 hops = 0;
         while (true) {
             Uri uri = Uri.parse(current);
@@ -200,7 +200,7 @@ public class HttpClient {
      */
     static #String resolveRedirect(String base, String loc) {
         if (loc.startsWith("https://") || loc.startsWith("http://")) {
-            return heap String(loc.bytes, loc.byteLength);
+            return loc.substring(0, loc.byteLength);
         }
         Uri b = Uri.parse(base);
         String origin = b.getScheme() + "://" + b.getHost();
@@ -360,7 +360,7 @@ public class HttpClient {
         if (scheme.byteLength != 5) {
             return false;
         }
-        int8[] b = scheme.bytes;
+        int8[] b = scheme.toBytes();
         return b[0] == (int8) 104    // 'h'
             && b[1] == (int8) 116    // 't'
             && b[2] == (int8) 116    // 't'

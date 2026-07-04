@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <map>
 #include <sstream>
 
 namespace cajeta::buildtool {

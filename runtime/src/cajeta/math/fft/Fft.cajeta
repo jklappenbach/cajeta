@@ -249,4 +249,116 @@ public final class Fft {
         }
         return #out;
     }
+
+    /**
+     * N-dimensional DFT (numpy `fftn`/`ifftn`): an interleaved-`float32` complex tensor
+     * whose logical complex shape is `dims[0..nd)` (row-major, length `2·∏dims`), FFT'd
+     * along every axis in turn. Each axis is a strided walk over its "lines" (fix all
+     * other axindices), each line gathered contiguous, transformed by the 1-D core, and
+     * scattered back. `ifftn` uses the inverse core, so its per-axis `1/dims[a]` factors
+     * accumulate to the numpy `1/∏dims` scaling. Every `dims[a]` must be a power of two.
+     */
+    static #Tensor<float32> transformN(Tensor<float32> x, int64[] dims, int32 nd, boolean inverse) {
+        int64 total = 1;
+        int32 d = 0;
+        while (d < nd) { total = total * dims[d]; d = d + 1; }
+        int64 len = 2 * total;
+        int64[] shp = heap int64[1];
+        shp[0] = len;
+        Tensor<float32> out = Tensor.zeros<float32>(shp);
+        int64 c = 0;
+        while (c < len) { out.set1(c, x.get1(c)); c = c + 1; }
+        int32 a = 0;
+        while (a < nd) {
+            int64 na = dims[a];
+            int64 stride = 1;                              // complex stride along axis a
+            int32 j = a + 1;
+            while (j < nd) { stride = stride * dims[j]; j = j + 1; }
+            int64 blocks = total / (na * stride);          // ∏dims[0..a)
+            int64 hi = 0;
+            while (hi < blocks) {
+                int64 low = 0;
+                while (low < stride) {
+                    int64 base = hi * (na * stride) + low; // complex index of sample 0
+                    int64[] tsh = heap int64[1];
+                    tsh[0] = 2 * na;
+                    Tensor<float32> line = Tensor.zeros<float32>(tsh);
+                    int64 s = 0;
+                    while (s < na) {
+                        int64 ci = base + s * stride;
+                        line.set1(2 * s, out.get1(2 * ci));
+                        line.set1(2 * s + 1, out.get1(2 * ci + 1));
+                        s = s + 1;
+                    }
+                    Tensor<float32> fl = Fft.transform(line, inverse);
+                    s = 0;
+                    while (s < na) {
+                        int64 ci = base + s * stride;
+                        out.set1(2 * ci, fl.get1(2 * s));
+                        out.set1(2 * ci + 1, fl.get1(2 * s + 1));
+                        s = s + 1;
+                    }
+                    low = low + 1;
+                }
+                hi = hi + 1;
+            }
+            a = a + 1;
+        }
+        return #out;
+    }
+
+    /** Forward N-D DFT over an interleaved-`float32` tensor of complex shape `dims`. */
+    public static #Tensor<float32> fftn(Tensor<float32> x, int64[] dims, int32 nd) {
+        return Fft.transformN(x, dims, nd, false);
+    }
+
+    /** Inverse N-D DFT (numpy `ifftn`); `1/∏dims` scaled. */
+    public static #Tensor<float32> ifftn(Tensor<float32> x, int64[] dims, int32 nd) {
+        return Fft.transformN(x, dims, nd, true);
+    }
+
+    /** 2-D DFT (numpy `fft2`) of a `rows×cols` interleaved-complex matrix. */
+    public static #Tensor<float32> fft2(Tensor<float32> x, int64 rows, int64 cols) {
+        int64[] dd = heap int64[2];
+        dd[0] = rows;
+        dd[1] = cols;
+        return Fft.transformN(x, dd, 2, false);
+    }
+
+    /** Inverse 2-D DFT (numpy `ifft2`). */
+    public static #Tensor<float32> ifft2(Tensor<float32> x, int64 rows, int64 cols) {
+        int64[] dd = heap int64[2];
+        dd[0] = rows;
+        dd[1] = cols;
+        return Fft.transformN(x, dd, 2, true);
+    }
+
+    /**
+     * FFT of a Hermitian-symmetric spectrum → a real signal of length `n` (numpy
+     * `hfft`). Uses the identity `hfft(a, n) == irfft(conj(a), n) · n`: conjugate the
+     * half spectrum, run {@link #irfft}, and undo its `1/n` by scaling back up.
+     */
+    public static #Tensor<float32> hfft(Tensor<float32> half, int64 n) {
+        int64 m = half.size() / 2;                        // complex bins in `half`
+        int64[] hsh = heap int64[1];
+        hsh[0] = 2 * m;
+        Tensor<float32> conj = Tensor.zeros<float32>(hsh);
+        int64 k = 0;
+        while (k < m) {
+            conj.set1(2 * k, half.get1(2 * k));
+            conj.set1(2 * k + 1, -half.get1(2 * k + 1));
+            k = k + 1;
+        }
+        Tensor<float32> r = Fft.irfft(conj, n);
+        int64[] rsh = heap int64[1];
+        rsh[0] = n;
+        Tensor<float32> out = Tensor.zeros<float32>(rsh);
+        float32 fn = (float32) n;
+        int64 i = 0;
+        while (i < n) {
+            out.set1(i, r.get1(i) * fn);
+            i = i + 1;
+        }
+        return #out;
+    }
 }

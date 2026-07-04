@@ -260,22 +260,24 @@ Tracked in Features.md.
 
 ---
 
-## `clone()` — deferred
+## `clone()` — LIVE (2026-07-03, slice-spec §6.4)
 
-Default returns `null` until the synthesizer pass can walk field
-layouts and emit:
+`__cajeta_object_clone` performs a shallow copy via the RTTI field
+walk (`allocationSize` memcpy + per-field fixup); returns ownership
+(`#Object`):
 
 - **value-typed fields** (primitives, structs, enums) — copied by
   `memcpy` of the bits
-- **class-typed fields** — copied by reference (both originals then
-  point at the same heap instance — Java-shallow semantics)
+- **String fields** — a fresh stake on the same immutable byte buffer
+  (wrapper-per-stake; no GC means aliasing one wrapper would
+  use-after-free when either owner drops)
+- **other class-typed fields** — copied by reference (Java-shallow);
+  override `clone()` to deep-copy when shallow isn't right
+- a **String receiver** DETACHES — the (possibly windowed) text
+  materializes into a fresh owned buffer (the retention-amplification
+  valve, slice-spec §4.4)
 
-Override `clone()` manually to deep-copy class-typed fields when
-shallow isn't right. The base return type is `Object`; subclass
-overrides narrow it to the declaring class at every site, so
-call-site code doesn't need a cast (covariant return).
-
-Tracked in Features.md.
+User overrides replace the native default and dispatch normally.
 
 ---
 

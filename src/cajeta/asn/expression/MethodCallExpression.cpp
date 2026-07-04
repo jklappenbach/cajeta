@@ -441,18 +441,13 @@ namespace cajeta {
                     && cls->getQName()->getPackageName() == "cajeta.lang"
                     && cls->getLlvmType()
                     && llvm::isa<llvm::StructType>(cls->getLlvmType())) {
-                auto* structTy =
-                    llvm::cast<llvm::StructType>(cls->getLlvmType());
-                llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
-                llvm::Type* i8Ty = llvm::Type::getInt8Ty(llvmCtx);
-                llvm::Type* i64Ty = llvm::Type::getInt64Ty(llvmCtx);
-                llvm::Value* bytesSlot = builder->CreateStructGEP(
-                    structTy, v, 1, "strArg.bytes_slot");
-                llvm::Value* bytesPtr = builder->CreateLoad(
-                    ptrTy, bytesSlot, "strArg.bytes_ptr");
-                v = builder->CreateInBoundsGEP(i8Ty, bytesPtr,
-                    llvm::ConstantInt::get(i64Ty, 8),
-                    "strArg.cstr");
+                // Runtime helper handles the mode split: modes 0/1 return the
+                // NUL-terminated data pointer directly; a mode-2 windowed view
+                // (slice-spec §7.1) has no NUL at its window end, so the helper
+                // materializes into a per-thread scratch.
+                llvm::Function* cstrFn =
+                    module->getRuntimeFunction("__cajeta_string_cstr");
+                v = builder->CreateCall(cstrFn, {v}, "strArg.cstr");
             }
         }
         return v;
@@ -1563,6 +1558,9 @@ namespace cajeta {
                     llvm::Value* sizePtr = builder->CreateStructGEP(hdrTy, argsHdr,
                         CajetaArray::SIZE_FIELD_INDEX);
                     llvm::Value* count = builder->CreateLoad(i64Ty, sizePtr);
+                    // Mask the shared-state sign bit (slice-spec §3.3).
+                    count = builder->CreateAnd(count,
+                        llvm::ConstantInt::get(i64Ty, 0x7FFFFFFFFFFFFFFFULL));
                     llvm::Value* dataPtr = builder->CreateStructGEP(hdrTy, argsHdr,
                         CajetaArray::DATA_FIELD_INDEX);
 
@@ -2577,12 +2575,20 @@ namespace cajeta {
                 // (data at header+8, same ABI as loadU64) and calls the runtime
                 // __cajeta_hash_bytes. Backs String.hash(); len<=0 is the empty-
                 // input hash (the runtime clamps negative len to 0).
-                if (ns == "Cajeta" && methodCallName == "hashBytes" && parameters.size() == 2) {
+                if (ns == "Cajeta" && methodCallName == "hashBytes"
+                        && (parameters.size() == 2 || parameters.size() == 3)) {
                     auto* i8Ty = builder->getInt8Ty();
                     llvm::Value* hdr = loadValue(0);
-                    llvm::Value* len = loadValue(1);
+                    // 3-arg form: (buf, off, len) — off is the window start for
+                    // mode-2 sliced strings (slice-spec §7.1); 2-arg keeps off=0.
+                    const bool hasOff = parameters.size() == 3;
+                    llvm::Value* len = loadValue(hasOff ? 2 : 1);
                     llvm::Value* data = builder->CreateGEP(
                         i8Ty, hdr, builder->getInt64(8), "hash_data");
+                    if (hasOff) {
+                        llvm::Value* off = loadValue(1);
+                        data = builder->CreateGEP(i8Ty, data, off, "hash_win");
+                    }
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_hash_bytes");
                     resolvedType = CajetaType::of("int64");
                     return builder->CreateCall(fn, {data, len});
@@ -2611,6 +2617,112 @@ namespace cajeta {
                         module->getRuntimeFunction("__cajeta_new_array_header_uninit");
                     resolvedType = arrTy;
                     return builder->CreateCall(allocFn, {headerSize, elemSize, count});
+                }
+                // stringSlice(String s, int32 begin, int32 len) -> String: the
+                // zero-copy substring core (slice-spec §7.1) — builds a mode-2
+                // windowed view over s's root buffer (promote/retain per the
+                // source's mode; SSO sources materialize). Runtime does all
+                // construction; the wrapper is live-set tracked and owned by
+                // the caller.
+                if (ns == "Cajeta" && methodCallName == "stringSlice" && parameters.size() == 3) {
+                    auto* i32Ty = builder->getInt32Ty();
+                    llvm::Value* s = loadValue(0);
+                    llvm::Value* b = loadValue(1);
+                    if (b->getType() != i32Ty) b = builder->CreateIntCast(b, i32Ty, true);
+                    llvm::Value* l = loadValue(2);
+                    if (l->getType() != i32Ty) l = builder->CreateIntCast(l, i32Ty, true);
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_string_slice");
+                    resolvedType = CajetaType::of("String", "cajeta.lang");
+                    return builder->CreateCall(fn, {s, b, l});
+                }
+                // boundsFail(int64 idx, int64 size): report + abort via the
+                // same helper the array bounds check uses. Lets stdlib window
+                // types (Slice<T>) enforce their own [0, len) contract.
+                if (ns == "Cajeta" && methodCallName == "boundsFail" && parameters.size() == 2) {
+                    llvm::Value* i = loadValue(0);
+                    if (i->getType() != i64Ty) i = builder->CreateIntCast(i, i64Ty, true);
+                    llvm::Value* n = loadValue(1);
+                    if (n->getType() != i64Ty) n = builder->CreateIntCast(n, i64Ty, true);
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_array_bounds_fail");
+                    resolvedType = CajetaType::of("void");
+                    return fn ? builder->CreateCall(fn, {i, n}) : nullptr;
+                }
+                // stringSliceBorrow(String s, int32 begin, int32 len) -> String:
+                // the borrow-mode window (slices plan 4.2.2) — no rc at all;
+                // used by substringView/trimView for compiler-proven-local
+                // receivers.
+                if (ns == "Cajeta" && methodCallName == "stringSliceBorrow" && parameters.size() == 3) {
+                    auto* i32TyB = builder->getInt32Ty();
+                    llvm::Value* s = loadValue(0);
+                    llvm::Value* b = loadValue(1);
+                    if (b->getType() != i32TyB) b = builder->CreateIntCast(b, i32TyB, true);
+                    llvm::Value* l = loadValue(2);
+                    if (l->getType() != i32TyB) l = builder->CreateIntCast(l, i32TyB, true);
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_string_slice_borrow");
+                    resolvedType = CajetaType::of("String", "cajeta.lang");
+                    return builder->CreateCall(fn, {s, b, l});
+                }
+                // ----- Utf8 tagged-form natives (slice-spec §8; slices Unit 6b) -----
+                // Internal ABI for cajeta.lang.Utf8's method bodies: the value's
+                // 16 bytes are reinterpreted C-side for the pointer forms
+                // (Static/Shared), so every op that needs the window pointer
+                // routes here. Args that are Utf8 values pass by ADDRESS:
+                // a value-type local/param/field lvalue already IS the storage
+                // address; `this` is an alloca HOLDING the pointer (load once).
+                auto utf8Addr = [&](size_t i) -> llvm::Value* {
+                    auto& p = parameters[i].expression;
+                    llvm::Value* v = p->generateCode(module);
+                    if (dynamic_pointer_cast<ThisExpression>(p)) {
+                        v = builder->CreateLoad(
+                            llvm::PointerType::get(llvmCtx, 0), v);
+                    }
+                    return v;
+                };
+                if (ns == "Cajeta" && methodCallName == "utf8OfString" && parameters.size() == 2) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_utf8_of_string");
+                    resolvedType = CajetaType::of("void");
+                    return builder->CreateCall(fn, {utf8Addr(0), loadValue(1)});
+                }
+                if (ns == "Cajeta" && methodCallName == "utf8ByteAt" && parameters.size() == 2) {
+                    llvm::Value* idx = loadValue(1);
+                    if (idx->getType() != i32Ty) idx = builder->CreateIntCast(idx, i32Ty, true);
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_utf8_byte_at");
+                    resolvedType = CajetaType::of("int8");
+                    return builder->CreateCall(fn, {utf8Addr(0), idx});
+                }
+                if (ns == "Cajeta" && methodCallName == "utf8Equals" && parameters.size() == 2) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_utf8_equals");
+                    resolvedType = CajetaType::of("boolean");
+                    llvm::Value* r = builder->CreateCall(fn, {utf8Addr(0), utf8Addr(1)});
+                    return builder->CreateICmpNE(r, llvm::ConstantInt::get(i32Ty, 0));
+                }
+                if (ns == "Cajeta" && methodCallName == "utf8EqualsString" && parameters.size() == 2) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_utf8_equals_string");
+                    resolvedType = CajetaType::of("boolean");
+                    llvm::Value* r = builder->CreateCall(fn, {utf8Addr(0), loadValue(1)});
+                    return builder->CreateICmpNE(r, llvm::ConstantInt::get(i32Ty, 0));
+                }
+                if (ns == "Cajeta" && methodCallName == "utf8Hash" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_utf8_hash");
+                    resolvedType = CajetaType::of("int64");
+                    return builder->CreateCall(fn, {utf8Addr(0)});
+                }
+                if (ns == "Cajeta" && methodCallName == "utf8Retain" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_utf8_retain");
+                    resolvedType = CajetaType::of("void");
+                    return builder->CreateCall(fn, {utf8Addr(0)});
+                }
+                if (ns == "Cajeta" && methodCallName == "utf8Release" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_utf8_release");
+                    resolvedType = CajetaType::of("void");
+                    return builder->CreateCall(fn, {utf8Addr(0)});
+                }
+                // sharedPopulation() -> int64: live shared side-table entry count
+                // (test-only introspection — asserts a stake was taken/released).
+                if (ns == "Cajeta" && methodCallName == "sharedPopulation" && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_shared_population");
+                    resolvedType = CajetaType::of("int64");
+                    return builder->CreateCall(fn, {});
                 }
                 // moveMask() -> int64: the caller-side ownership-transfer mask for
                 // THIS call (bit i set iff user-arg i was passed `#x`). Read once at
@@ -4049,7 +4161,10 @@ namespace cajeta {
                     // for interfaces (mirrors the field-receiver branch below).
                     auto elemRc = dynamic_pointer_cast<CajetaClass>(receiverType);
                     bool elemIsInterface = elemRc && elemRc->isInterface();
-                    if (!elemIsInterface) {
+                    // Value-type elements store the aggregate INLINE — the
+                    // element GEP already IS the object address.
+                    bool elemIsValueType = elemRc && elemRc->isValueType();
+                    if (!elemIsInterface && !elemIsValueType) {
                         receiver = builder->CreateLoad(
                             llvm::PointerType::get(*module->getLlvmContext(), 0), receiver);
                     }
@@ -4084,7 +4199,11 @@ namespace cajeta {
                     // interface fields stay inline, so the slot IS the
                     // language-level value — skip the load there.
                     auto rc = dynamic_pointer_cast<CajetaClass>(receiverType);
-                    if (!rc->isInterface()) {
+                    // Value-type (record / @ValueType) fields and statics
+                    // store the aggregate INLINE — the GEP / global address
+                    // already IS the object; loading would read the first
+                    // field's bytes as `this` (nil/garbage SIGSEGV).
+                    if (!rc->isInterface() && !rc->isValueType()) {
                         receiver = builder->CreateLoad(
                             llvm::PointerType::get(*module->getLlvmContext(), 0),
                             receiver);
@@ -4537,8 +4656,12 @@ namespace cajeta {
             auto arrayType = dynamic_pointer_cast<CajetaArray>(receiverType);
             llvm::Value* sizePtr = builder->CreateStructGEP(
                 arrayType->getLlvmType(), receiver, CajetaArray::SIZE_FIELD_INDEX);
-            return builder->CreateLoad(
-                llvm::Type::getInt64Ty(*module->getLlvmContext()), sizePtr);
+            llvm::Type* i64Ty = llvm::Type::getInt64Ty(*module->getLlvmContext());
+            llvm::Value* rawCount = builder->CreateLoad(i64Ty, sizePtr);
+            // Mask the shared-state sign bit (slice-spec §3.3) — every stdlib
+            // .count() funnels through here.
+            return builder->CreateAnd(rawCount,
+                llvm::ConstantInt::get(i64Ty, 0x7FFFFFFFFFFFFFFFULL));
         }
 
         // P6.6 — `arr.stream()` intrinsic. Lowers to
@@ -4587,6 +4710,11 @@ namespace cajeta {
                             CajetaArray::SIZE_FIELD_INDEX);
                         llvm::Value* sizeI64 = builder->CreateLoad(
                             llvm::Type::getInt64Ty(llvmCtx), sizePtr);
+                        // Mask the shared-state sign bit (slice-spec §3.3).
+                        sizeI64 = builder->CreateAnd(sizeI64,
+                            llvm::ConstantInt::get(
+                                llvm::Type::getInt64Ty(llvmCtx),
+                                0x7FFFFFFFFFFFFFFFULL));
                         llvm::Value* sizeI32 = builder->CreateIntCast(
                             sizeI64, llvm::Type::getInt32Ty(llvmCtx), true);
                         vector<ParameterEntry> entries;
@@ -4677,6 +4805,119 @@ namespace cajeta {
                     st->setAlignment(elemAlign);
                     return st;
                 }
+            }
+        }
+
+        // Record copy-with intrinsic (records-spec §3.3 / plan 3.2.2):
+        // `r.with(field: v, ...)` builds a NEW record — a copy of the
+        // receiver with each labeled field replaced. Compiler-intrinsic
+        // rather than synthesized source: one synthesized method can't take
+        // "any subset of fields" (default-param fill is trailing-positional,
+        // not label-aware) and per-field overloads collide in the unlabeled
+        // method maps. A user-declared `with` wins — the intrinsic only
+        // fires when the record doesn't define one.
+        if (receiver && methodCallName == "with") {
+            auto recClass = dynamic_pointer_cast<CajetaClass>(receiverType);
+            bool userDefinedWith = false;
+            if (recClass && recClass->isRecordType()) {
+                for (auto& m : recClass->getMethodList()) {
+                    if (m && m->getName() == "with") { userDefinedWith = true; break; }
+                }
+            }
+            llvm::Type* recBodyTy = (recClass && recClass->isRecordType())
+                ? recClass->getLlvmType() : nullptr;
+            if (recClass && recClass->isRecordType() && !userDefinedWith
+                    && recBodyTy && recBodyTy->isStructTy()) {
+                const llvm::DataLayout& dl =
+                    module->getLlvmModule()->getDataLayout();
+                llvm::Align align(dl.getABITypeAlign(recBodyTy));
+                llvm::Value* sizeV = llvm::ConstantInt::get(
+                    llvm::Type::getInt64Ty(*module->getLlvmContext()),
+                    dl.getTypeAllocSize(recBodyTy));
+                llvm::Value* src = receiver;
+                if (src->getType() == recBodyTy) {
+                    llvm::Value* tmp = builder->CreateAlloca(recBodyTy);
+                    builder->CreateStore(src, tmp);
+                    src = tmp;
+                }
+                llvm::Value* copy = builder->CreateAlloca(
+                    recBodyTy, nullptr, "with.copy");
+                builder->CreateMemCpy(copy, align, src, align, sizeV);
+                for (auto& p : parameters) {
+                    // parameterLabel's getText() keeps the trailing ':'.
+                    string fieldName = p.label;
+                    if (!fieldName.empty() && fieldName.back() == ':') {
+                        fieldName.pop_back();
+                    }
+                    if (fieldName.empty()) {
+                        throw Exception(
+                            "with(...) on record '"
+                                + recClass->getQName()->toCanonical()
+                                + "' requires labeled arguments (field: value)",
+                            "CAJETA_ERROR_RECORD_WITH");
+                    }
+                    StructurePropertyPtr prop;
+                    std::function<bool(const CajetaClassPtr&)> findP =
+                        [&](const CajetaClassPtr& cls) -> bool {
+                            if (!cls) return false;
+                            auto pit = cls->getProperties().find(fieldName);
+                            if (pit != cls->getProperties().end()) {
+                                prop = pit->second;
+                                return true;
+                            }
+                            for (auto& sup : cls->getSuperClasses()) {
+                                if (findP(sup)) return true;
+                            }
+                            return false;
+                        };
+                    findP(recClass);
+                    if (!prop || prop->isStatic()) {
+                        throw Exception(
+                            "record '" + recClass->getQName()->toCanonical()
+                                + "' has no field '" + fieldName
+                                + "' (with(...) labels must name declared "
+                                  "instance fields)",
+                            "CAJETA_ERROR_UNKNOWN_FIELD");
+                    }
+                    unsigned fieldIdx =
+                        (unsigned) recClass->getFieldLlvmIndex(prop);
+                    if (p.expression
+                            && !p.expression->getResolvedType()) {
+                        p.expression->resolveTypes(module);
+                    }
+                    llvm::Value* value = p.expression->generateCode(module);
+                    value = loadIfLValue(module, value, p.expression);
+                    auto propClass =
+                        dynamic_pointer_cast<CajetaClass>(prop->getType());
+                    llvm::Type* propLlvm = prop->getType()
+                        ? prop->getType()->getLlvmType() : nullptr;
+                    if (propClass && propClass->isValueType()
+                            && !dynamic_pointer_cast<CajetaView>(prop->getType())
+                            && propLlvm && propLlvm->isStructTy()
+                            && value && value->getType()->isPointerTy()) {
+                        value = builder->CreateLoad(propLlvm, value);
+                    }
+                    if (propLlvm && value && value->getType() != propLlvm) {
+                        llvm::Type* srcTy = value->getType();
+                        if (propLlvm->isIntegerTy() && srcTy->isIntegerTy()) {
+                            value = builder->CreateIntCast(value, propLlvm, true);
+                        } else if (propLlvm->isFloatingPointTy()
+                                && srcTy->isFloatingPointTy()) {
+                            value = builder->CreateFPCast(value, propLlvm);
+                        } else if (propLlvm->isFloatingPointTy()
+                                && srcTy->isIntegerTy()) {
+                            value = builder->CreateSIToFP(value, propLlvm);
+                        } else if (propLlvm->isIntegerTy()
+                                && srcTy->isFloatingPointTy()) {
+                            value = builder->CreateFPToSI(value, propLlvm);
+                        }
+                    }
+                    llvm::Value* slot = builder->CreateStructGEP(
+                        recBodyTy, copy, fieldIdx, "with." + fieldName);
+                    builder->CreateStore(value, slot);
+                }
+                resolvedType = recClass;
+                return copy;
             }
         }
 

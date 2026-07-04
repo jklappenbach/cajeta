@@ -31,10 +31,7 @@
 #pragma once
 
 #include <llvm/Support/Error.h>
-#include <llvm/Support/JSON.h>
 
-#include <map>
-#include <optional>
 #include <string>
 
 namespace cajeta::buildtool {

@@ -477,11 +477,24 @@ namespace cajeta {
                         std::string("ts.l32.") + prop->getName());
                     llvm::Value* len64 = b.CreateSExt(len32, i64Ty,
                         std::string("ts.l64.") + prop->getName());
-                    // Skip the 8-byte CajetaArray count header.
+                    // Skip the 8-byte CajetaArray count header, plus the
+                    // window offset for a mode-2 sliced String (slice-spec §7.1).
+                    llvm::Value* modeV = b.CreateLoad(i32Ty,
+                        b.CreateStructGEP(stringStructTy, sPtr, 3,
+                            std::string("ts.md.") + prop->getName()));
+                    llvm::Value* ssoV = b.CreateLoad(i64Ty,
+                        b.CreateStructGEP(stringStructTy, sPtr, 5,
+                            std::string("ts.so.") + prop->getName()));
+                    llvm::Value* offV = b.CreateSelect(
+                        b.CreateICmpEQ(modeV, llvm::ConstantInt::get(i32Ty, 2)),
+                        ssoV, llvm::ConstantInt::get(i64Ty, 0),
+                        std::string("ts.off.") + prop->getName());
                     llvm::Value* dataPtr = b.CreateInBoundsGEP(
                         i8Ty, bytesPtr,
                         llvm::ConstantInt::get(i64Ty, 8),
                         std::string("ts.dp.") + prop->getName());
+                    dataPtr = b.CreateInBoundsGEP(i8Ty, dataPtr, offV,
+                        std::string("ts.dpw.") + prop->getName());
                     llvm::Value* okRes = b.CreateCall(jsonQuoteBuf,
                         {dataPtr, len64},
                         std::string("ts.jor.") + prop->getName());

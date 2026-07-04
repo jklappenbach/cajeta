@@ -8,6 +8,7 @@
 #include <utility>
 #include "llvm/TargetParser/Triple.h"
 #include "../error/Exception.h"
+#include "../error/DiagnosticEngine.h"
 
 #include "CajetaModule.h"
 #include "../logging/CajetaLogger.h"
@@ -39,7 +40,7 @@ namespace cajeta {
     thread_local llvm::Module* CajetaModule::currentEmitLlvmModule = nullptr;
     thread_local uint64_t CajetaModule::reuseEpoch = 0;
     thread_local CajetaModulePtr CajetaModule::stdlibModule;
-    std::function<void(const std::string&)> CajetaModule::stdlibImportHook;
+    thread_local std::function<void(const std::string&)> CajetaModule::stdlibImportHook;
     thread_local map<string, CajetaModulePtr> CajetaModule::moduleVariables;
     thread_local vector<CajetaClassPtr> CajetaModule::aspectClasses;
     thread_local vector<CajetaModule::ComponentDescriptorPtr> CajetaModule::componentClasses;
@@ -262,6 +263,13 @@ namespace cajeta {
         }
 
         if (qName->getPackageName() != packageName) {
+            // Under lint (an active DiagnosticEngine), the file's disk path is not
+            // authoritative — it may be a staged, unsaved buffer whose temp path
+            // can't match its declared package. Skip the check rather than leak a
+            // false-positive plain-text error into the NDJSON stream. (Full
+            // compile keeps validating; routing it through the engine is part of
+            // the full-compile collect-and-continue sub-phase.)
+            if (DiagnosticEngine::active()) return;
             string message = "Declared package name " + packageName + " must match the compilation unit path of " +
                 qName->getPackageName();
             CajetaLogger::log(ERROR, ctx, "CAJETA_ERROR_PACKAGE_MISMATCH", sourcePath, message);

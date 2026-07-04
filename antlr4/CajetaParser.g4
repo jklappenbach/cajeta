@@ -48,7 +48,7 @@ importDeclaration
 
 typeDeclaration
     : classOrInterfaceModifier*
-      (classDeclaration | viewDeclaration | enumDeclaration | interfaceDeclaration | annotationTypeDeclaration)
+      (classDeclaration | recordDeclaration | viewDeclaration | enumDeclaration | interfaceDeclaration | annotationTypeDeclaration)
     | ';'
     ;
 
@@ -57,6 +57,7 @@ modifier
     | NATIVE
     | TRANSIENT
     | VOLATILE
+    | MUT  // record per-field mutation opt-in (records-spec §3.4)
     ;
 
 classOrInterfaceModifier
@@ -94,6 +95,18 @@ classDeclaration
 // absent. Body reuses classBody.
 viewDeclaration
     : VIEW identifier typeParameters?
+      classBody
+    ;
+
+// Value-type record (docs/specification/nucleo/records-spec.md): lowers to a
+// @ValueType final class with no vtable. EXTENDS = static non-virtual
+// inheritance (single base, Unit 4). IMPLEMENTS parses only so the visitor
+// can reject it with a proper diagnostic — records never carry a
+// vtable/itable. Body reuses classBody.
+recordDeclaration
+    : RECORD identifier typeParameters?
+      (EXTENDS typeList)?
+      (IMPLEMENTS typeList)?
       classBody
     ;
 
@@ -525,7 +538,11 @@ blockStatement
     ;
 
 localVariableDeclaration
-    : variableModifier* (typeType variableDeclarators | VAR identifier '=' expression)
+    // Optional REFERENCE ('#') prefix mirrors parameter/return positions: an
+    // owned-transfer binding (`#String t = s.trim();`). Documented syntax that
+    // previously only parsed via ANTLR error recovery (single-token deletion) —
+    // the strict syntax gate made it a hard error, so it is now grammatical.
+    : variableModifier* (REFERENCE? typeType variableDeclarators | VAR identifier '=' expression)
     ;
 
 identifier
@@ -560,6 +577,9 @@ identifier
     // tree -> bad any_cast at AST-build time. (Unlike its placement siblings
     // HEAP/STACK, which are reserved, `shared` collides with real user code.)
     | SHARED
+    // `mut` is likewise contextual: meaningful only as a record field
+    // modifier; everywhere else it stays a plain identifier.
+    | MUT
     ;
 
 localTypeDeclaration
@@ -727,6 +747,9 @@ expression
        | HEAP nonWildcardTypeArguments? innerCreator
        | SUPER superSuffix
       )
+    // Array/slice window (slice-spec §7.2): `arr[a:b]` yields Slice<T>.
+    // Listed before the plain index form so the longer bracketed shape wins.
+    | expression '[' expression COLON expression ']'
     | expression '[' expression ']'
     // XPU: postfix call applied to the result of an expression — the
     // `(args)` that follows `kernel.launch(stream, grid:, block:)`. General

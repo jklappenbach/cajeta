@@ -600,17 +600,16 @@ namespace cajeta {
         CajetaParser parser(&tokens);
         auto* compUnit = parser.compilationUnit();
 
-        // The synthesized input wraps one class declaration. Find it; bail
-        // loudly if the snippet structure is somehow wrong (would mean the
-        // capture in the visitor produced bad text).
+        // The synthesized input wraps one class (or record) declaration. Find
+        // it; bail loudly if the snippet structure is somehow wrong (would
+        // mean the capture in the visitor produced bad text).
         CajetaParser::ClassDeclarationContext* classDecl = nullptr;
+        CajetaParser::RecordDeclarationContext* recordDecl = nullptr;
         for (auto* td : compUnit->typeDeclaration()) {
-            if (auto* cd = td->classDeclaration()) {
-                classDecl = cd;
-                break;
-            }
+            if ((classDecl = td->classDeclaration())) break;
+            if ((recordDecl = td->recordDeclaration())) break;
         }
-        if (!classDecl) {
+        if (!classDecl && !recordDecl) {
             throw "template snippet does not contain a classDeclaration";
         }
 
@@ -651,10 +650,12 @@ namespace cajeta {
         auto kwIdx = [](antlr4::tree::TerminalNode* n) -> ssize_t {
             return n && n->getSymbol() ? (ssize_t) n->getSymbol()->getTokenIndex() : -1;
         };
-        ssize_t extKw = kwIdx(classDecl->EXTENDS());
-        ssize_t implKw = kwIdx(classDecl->IMPLEMENTS());
-        ssize_t permKw = kwIdx(classDecl->PERMITS());
-        for (auto* tl : classDecl->typeList()) {
+        ssize_t extKw = kwIdx(classDecl ? classDecl->EXTENDS() : recordDecl->EXTENDS());
+        ssize_t implKw = classDecl ? kwIdx(classDecl->IMPLEMENTS()) : -1;
+        ssize_t permKw = classDecl ? kwIdx(classDecl->PERMITS()) : -1;
+        std::vector<CajetaParser::TypeListContext*> declTypeLists =
+            classDecl ? classDecl->typeList() : recordDecl->typeList();
+        for (auto* tl : declTypeLists) {
             ssize_t tlIdx = tl->getStart()
                 ? (ssize_t) tl->getStart()->getTokenIndex() : -1;
             ssize_t best = -1;
@@ -743,6 +744,7 @@ namespace cajeta {
         // body walk emits method IR (prototype-on-reference), so the emit target
         // must already be in place.
         auto inst = make_shared<CajetaClass>(module, instQName, instExtended, instImplemented);
+        if (recordDecl) inst->setRecordType(true);
         if (emitOwner != module) inst->setEmitModule(emitOwner);
         // Carry the template's class-level annotations onto the instantiation —
         // they describe the class shape, which the instantiation shares (e.g.
@@ -805,8 +807,25 @@ namespace cajeta {
         // generatePrototype lowers the class to LLVM types + functions exactly
         // as it would for a non-templated class.
         CajetaLlvmVisitor visitor(module);
-        auto bodyAny = visitor.visitClassBody(classDecl->classBody());
+        auto bodyAny = visitor.visitClassBody(
+            classDecl ? classDecl->classBody() : recordDecl->classBody());
         inst->setClassBody(std::any_cast<ClassBodyDeclarationPtr>(bodyAny));
+
+        // Record templates skip the declaration-time body walk, so the
+        // no-abstract-method gate re-runs here per instantiation.
+        if (recordDecl) {
+            for (auto& kv : inst->getMethods()) {
+                if (kv.second && kv.second->isAbstract()) {
+                    throw Exception(
+                        "record '" + instQName->toCanonical()
+                            + "' declares abstract method '"
+                            + kv.second->getName()
+                            + "' — records have no vtable; every record "
+                              "method needs a body",
+                        "CAJETA_ERROR_RECORD_ABSTRACT_METHOD");
+                }
+            }
+        }
 
         // Emit target was set on `inst` before the walk and propagated to each
         // method at construction (Method ctor reads parent->getEmitModule()), so
@@ -925,14 +944,18 @@ namespace cajeta {
         CajetaParser parser(&tokens);
         auto* compUnit = parser.compilationUnit();
 
-        CajetaParser::ClassDeclarationContext* classDecl = nullptr;
+        CajetaParser::ClassBodyContext* declBody = nullptr;
         for (auto* td : compUnit->typeDeclaration()) {
             if (auto* cd = td->classDeclaration()) {
-                classDecl = cd;
+                declBody = cd->classBody();
+                break;
+            }
+            if (auto* rd = td->recordDeclaration()) {
+                declBody = rd->classBody();
                 break;
             }
         }
-        if (!classDecl) {
+        if (!declBody) {
             throw Exception(
                 "diamond inference: template snippet missing classDeclaration",
                 "CAJETA_ERROR_TYPE_INFERENCE");
@@ -949,7 +972,7 @@ namespace cajeta {
         // slot consistently.
         vector<std::map<string, CajetaTypePtr>> viableBindings;
 
-        for (auto* bdCtx : classDecl->classBody()->classBodyDeclaration()) {
+        for (auto* bdCtx : declBody->classBodyDeclaration()) {
             auto* md = bdCtx->memberDeclaration();
             if (!md) continue;
             auto* ctorDecl = md->constructorDeclaration();

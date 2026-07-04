@@ -13,6 +13,7 @@
 #include "../type/CajetaView.h"
 #include "../type/CajetaFunctionType.h"
 #include "expression/Expression.h"
+#include "Statement.h"
 #include "expression/LiteralExpression.h"
 #include "expression/DotExpression.h"
 #include "expression/Identifier.h"
@@ -100,6 +101,42 @@ namespace cajeta {
         if (auto m = module->getCurrentMethod()) m->registerDropEntry(entryPtr);
     }
 
+    // Variant for shared-capable VALUE locals (slice-spec §6.1 drop hook):
+    // the drop entry's obj is the value's stack slot ITSELF (the alloca is
+    // the storage, not a pointer to be loaded), and the drop fn is the
+    // class's synthesized per-field release walk.
+    static void emitValueDropEntryFor(CajetaModulePtr module, FieldPtr field,
+                                       llvm::Function* releaseFn,
+                                       int allocLine = 0) {
+        DropPushChoice push = pickDropPush(module);
+        if (!push.pushFn || !releaseFn) return;
+        releaseFn = CajetaModule::ensureFunctionInModule(
+            module->getLlvmModule(), releaseFn);
+        auto* builder = module->getBuilder();
+        auto& ctx = *module->getLlvmContext();
+        llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+
+        llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+        llvm::IRBuilder<> entryBuilder(&parentFn->getEntryBlock(),
+            parentFn->getEntryBlock().begin());
+        llvm::Value* entryPtr = entryBuilder.CreateAlloca(
+            llvm::ArrayType::get(i8Ty, push.entryBytes));
+
+        llvm::Value* ownerPtr = field->getOrCreateAllocation();
+        if (push.debug) {
+            llvm::Constant* fileConst = module->getOrCreateSourceFileConstant(
+                module->getSourcePath());
+            llvm::Constant* lineConst = llvm::ConstantInt::get(i32Ty, allocLine);
+            builder->CreateCall(push.pushFn, {entryPtr, ownerPtr, releaseFn, fileConst, lineConst});
+        } else {
+            builder->CreateCall(push.pushFn, {entryPtr, ownerPtr, releaseFn});
+        }
+
+        field->setDropEntry(entryPtr);
+        if (auto m = module->getCurrentMethod()) m->registerDropEntry(entryPtr);
+    }
+
     // Variant for class-instance locals — same drop-chain wiring, but
     // takes an already-resolved drop function (the class's synthesized
     // wrapper) directly instead of a runtime-helper name. The wrapper
@@ -140,6 +177,36 @@ namespace cajeta {
 
         field->setDropEntry(entryPtr);
         if (auto m = module->getCurrentMethod()) m->registerDropEntry(entryPtr);
+    }
+
+    // slices plan 4.2.1 — the LOCAL classification for the borrow downgrade.
+    // A name's use BLOCKS the downgrade when it appears under a return, a
+    // `#`-move, or a lambda (capture): those carry the VIEW itself out of the
+    // scope. Field stores and call args do NOT block — the value resolves at
+    // its own escape site (4.2.2 (a)). Name-based and conservative: any
+    // shadowed reuse of the name in a blocking context still blocks.
+    static bool subtreeUsesName(const AbstractSyntaxNodePtr& node,
+                                const std::string& name) {
+        if (!node) return false;
+        if (auto id = dynamic_pointer_cast<IdentifierExpression>(node)) {
+            if (id->getTextValue() == name) return true;
+        }
+        for (auto& child : node->getChildren()) {
+            if (subtreeUsesName(child, name)) return true;
+        }
+        return false;
+    }
+    static bool nameEscapesScope(const AbstractSyntaxNodePtr& node,
+                                 const std::string& name) {
+        if (!node) return false;
+        bool blocking = dynamic_pointer_cast<ReturnStatement>(node)
+            || dynamic_pointer_cast<MoveExpression>(node)
+            || dynamic_pointer_cast<LambdaExpression>(node);
+        if (blocking) return subtreeUsesName(node, name);
+        for (auto& child : node->getChildren()) {
+            if (nameEscapesScope(child, name)) return true;
+        }
+        return false;
     }
 
     /**
@@ -190,6 +257,49 @@ namespace cajeta {
                     }
                 }
             }
+            // slices plan 4.2.2 — local-borrow downgrade. A String local
+            // initialized from `recv.substring(...)` / `recv.trim()` whose
+            // name never appears under a return / `#`-move / lambda in this
+            // method gets the BORROW slice (zero rc): rewrite the call to
+            // the *View twin before the initializer generates. Escapes of
+            // the VALUE (field stores, args) resolve at their own sites.
+            {
+                auto declClass = dynamic_pointer_cast<CajetaClass>(type);
+                bool declIsString = declClass && declClass->getQName()
+                    && declClass->getQName()->getTypeName() == "String"
+                    && declClass->getQName()->getPackageName() == "cajeta.lang";
+                if (declIsString && initializer) {
+                    if (auto varInit = dynamic_pointer_cast<VariableInitializer>(initializer)) {
+                        auto& kids = varInit->getChildren();
+                        auto mc = kids.empty() ? nullptr
+                            : dynamic_pointer_cast<MethodCallExpression>(kids[0]);
+                        const std::string mcName = mc ? mc->getMethodCallName() : "";
+                        if (mc && (mcName == "substring" || mcName == "trim")) {
+                            auto& mck = mc->getChildren();
+                            auto recv = mck.empty() ? nullptr
+                                : dynamic_pointer_cast<Expression>(mck[0]);
+                            if (recv) {
+                                if (!recv->getResolvedType()) recv->resolveTypes(module);
+                                auto recvCls = dynamic_pointer_cast<CajetaClass>(
+                                    recv->getResolvedType());
+                                bool recvIsString = recvCls && recvCls->getQName()
+                                    && recvCls->getQName()->getTypeName() == "String"
+                                    && recvCls->getQName()->getPackageName() == "cajeta.lang";
+                                if (recvIsString) {
+                                    auto m = module->getCurrentMethod();
+                                    BlockPtr body = m ? m->getBlock() : nullptr;
+                                    if (body && !nameEscapesScope(body,
+                                            declarator->getIdentifier())) {
+                                        mc->setMethodCallName(
+                                            mcName == "substring" ? "substringView"
+                                                                  : "trimView");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             FieldPtr field;
             if (wantsInlineSlot) {
                 field = make_shared<StackField>(module, declarator->getIdentifier(), type,
@@ -200,6 +310,42 @@ namespace cajeta {
             }
             module->getScopeStack().peek()->putField(field);
             field->getOrCreateAllocation();
+
+            // slice-spec §6.1 copy/drop hooks for shared-capable VALUE locals
+            // (Utf8 / value aggregates embedding it). The init copy already
+            // happened inside getOrCreateAllocation:
+            //   - init from an LVALUE (identifier / field / element / record
+            //     slice-cast) duplicated existing stakes -> retain each.
+            //   - init from an RVALUE (call result, aggregate-init, stack
+            //     ctor) carries its stakes with the bytes -> no retain.
+            // Every such local registers a release drop entry (obj = the
+            // slot itself); return-of-local deactivates it (move-out).
+            if (wantsInlineSlot) {
+                auto vClass = dynamic_pointer_cast<CajetaClass>(type);
+                if (vClass && vClass->isSharedCapableValue()) {
+                    bool initFromLvalue = false;
+                    if (auto varInit = dynamic_pointer_cast<VariableInitializer>(initializer)) {
+                        auto& kids = varInit->getChildren();
+                        if (!kids.empty()) {
+                            initFromLvalue =
+                                dynamic_pointer_cast<IdentifierExpression>(kids[0])
+                                || dynamic_pointer_cast<DotExpression>(kids[0])
+                                || dynamic_pointer_cast<ArrayIndexExpression>(kids[0])
+                                || dynamic_pointer_cast<CastExpression>(kids[0]);
+                        }
+                    }
+                    auto* builder = module->getBuilder();
+                    if (initFromLvalue) {
+                        vClass->emitValueSharedOp(*builder,
+                            field->getOrCreateAllocation(), module,
+                            builder->GetInsertBlock()->getModule(),
+                            /*retain=*/true);
+                    }
+                    emitValueDropEntryFor(module, field,
+                        vClass->getOrCreateValueReleaseFunction(),
+                        getSourceLine());
+                }
+            }
 
             // Debugger CP5/CP7-1b: this local is registered in the current
             // debug frame at the END of this method (see emitDbgLocal below),
@@ -233,6 +379,18 @@ namespace cajeta {
                         }
                     }
                     auto srcClass = dynamic_pointer_cast<CajetaClass>(srcType);
+                    // Record conversions are never implicit — an upcast
+                    // SLICES (data loss stays visible at the cast site).
+                    if (srcClass && srcClass.get() != dstClass.get()
+                            && (srcClass->isRecordType() || dstClass->isRecordType())) {
+                        throw Exception(
+                            "cannot implicitly convert '" + srcClass->toCanonical()
+                                + "' to '" + dstClass->toCanonical()
+                                + "' — record upcasts slice; write an explicit "
+                                  "cast: (" + dstClass->getQName()->getTypeName()
+                                + ") value",
+                            "CAJETA_ERROR_RECORD_IMPLICIT_CAST");
+                    }
                     if (srcClass && srcClass.get() != dstClass.get()
                             && !srcClass->isInterface()) {
                         uint64_t off = srcClass->getSubObjectByteOffset(

@@ -137,6 +137,7 @@ namespace cajeta {
         // fixed-point marker: a class with all-non-placeholder parents
         // and !prototypeBuilt is the next candidate to lay out.
         bool prototypeBuilt = false;
+        bool recordType = false;
         CajetaModulePtr module;
         // Emit target for this class's own IR (vtable / RTTI / clinit / static
         // fields). Null → getEmitModule() falls back to `module` (production /
@@ -384,6 +385,7 @@ namespace cajeta {
         }
         list<CajetaClassPtr>& getImplementedInterfaces() { return implementedInterfaces; }
         const list<QualifiedNamePtr>& getQImplemented() const { return qImplemented; }
+        const list<QualifiedNamePtr>& getQExtended() const { return qExtended; }
         void setQImplemented(list<QualifiedNamePtr> q) { qImplemented = std::move(q); }
         const list<vector<QualifiedNamePtr>>& getQImplementedTypeArgs() const {
             return qImplementedTypeArgs;
@@ -728,6 +730,23 @@ namespace cajeta {
         // getOrCreateStackDropFunction.
         bool hasTrivialStackDrop();
 
+        // slice-spec §6.1 (slices Unit 6b) — the synthesized value-copy/drop
+        // hook family. A VALUE type is shared-capable when it is Utf8 itself
+        // or transitively embeds a shared-capable value field; such values
+        // are non-trivial: copies retain, drops release, per Shared stake.
+        bool isSharedCapableValue();
+
+        // Emit the recursive per-field retain (copy hook) or release (drop
+        // hook) walk over a value of this type at `valuePtr`. O(shared
+        // fields); never traverses heap edges (spec §6.1 bounded copy).
+        void emitValueSharedOp(llvm::IRBuilder<>& b, llvm::Value* valuePtr,
+                               CajetaModulePtr cajModule,
+                               llvm::Module* bodyModule, bool retain);
+
+        // Synthesized `void(ptr)` release wrapper for drop-chain entries on
+        // shared-capable value locals (obj = the value's stack slot).
+        llvm::Function* getOrCreateValueReleaseFunction();
+
         // REFL-2: return (creating on first call) the DECLARATION of this
         // class's reflective invoke adapter — `void(ptr obj, i32 methodIndex,
         // ptr args, ptr ret)`. No body is emitted here; the #Rtti constant
@@ -828,6 +847,12 @@ namespace cajeta {
         // layout builder + getFieldLlvmIndex + construction skip the slot 0
         // vtable, so fields live at indices 0,1,… — register-friendly POD.
         virtual bool hasVtablePointerAtSlotZero() const { return !isValueType(); }
+
+        // `record` declarations only (subset of value types): immutable
+        // fields, intrinsic with(...). Set by the visitor / template
+        // instantiator; plain @ValueType classes stay mutable.
+        void setRecordType(bool v) { recordType = v; }
+        bool isRecordType() const { return recordType; }
 
         // Synthesize a per-(class, interface) vtable global for every
         // interface this class implements. Called from generatePrototype

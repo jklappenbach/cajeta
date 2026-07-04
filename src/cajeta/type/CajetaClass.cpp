@@ -838,6 +838,14 @@ namespace cajeta {
                 if (cls->isInterface()) {
                     return t->getLlvmType();  // inline 24-byte fat pointer
                 }
+                // Value-type (record / @ValueType) field: inline value
+                // sub-aggregate — no pointer slot, no heap aliasing
+                // (records-spec §2.5.2/2.6). Reads skip the load-through via
+                // DotExpression's lhsIsValueType guard; drop's field walk
+                // already skips no-vtable field classes.
+                if (cls->isValueType()) {
+                    return t->getLlvmType();
+                }
                 return llvm::PointerType::get(*lctx, 0);
             }
             return t->getLlvmType();
@@ -951,6 +959,11 @@ namespace cajeta {
             // records vbaseSlotMap entries — embedded sub-objects'
             // vbases use their OWN class's map (populated when that
             // class's standalone generatePrototype runs / ran).
+            // Value types (record static inheritance) stay flat POD: no
+            // vbase pointer slots — dispatch is static and upcasts SLICE,
+            // so no indirection is ever needed. getFieldLlvmIndex mirrors
+            // via cls->vbaseAncestors, which stays empty for these.
+            if (cls->isValueType()) return;
             auto ancestors = collectAncestors(cls);
             for (auto& anc : ancestors) {
                 if (cls.get() == selfRaw) {
@@ -2747,6 +2760,19 @@ namespace cajeta {
     // runtime free (`__cajeta_free*`) or a referent's drop, which is a
     // declaration / has its own freeing calls. Indirect calls and invokes are
     // conservatively treated as non-trivial.
+    // Balanced instrumentation calls (line-info shadow stack, debug frame chain)
+    // do no reclamation — a drop that only calls these is still a no-op drop.
+    // Treat them as transparent so --line-info (default on) / --debug-info don't
+    // defeat trivial-stack-drop elision (the ~230x value-type drop tax).
+    static bool isInstrumentationCall(const llvm::Function* f) {
+        if (!f) return false;
+        llvm::StringRef n = f->getName();
+        return n == "__cajeta_line_enter" || n == "__cajeta_line_mark"
+            || n == "__cajeta_line_leave" || n == "__cajeta_dbg_frame_enter"
+            || n == "__cajeta_dbg_frame_leave" || n == "__cajeta_dbg_local"
+            || n == "__cajeta_dbg_safepoint";
+    }
+
     static bool isNoOpDropFn(llvm::Function* f,
                              std::unordered_set<llvm::Function*>& seen) {
         if (!f || f->isDeclaration()) return false;
@@ -2754,6 +2780,7 @@ namespace cajeta {
         for (auto& bb : *f) {
             for (auto& inst : bb) {
                 if (auto* ci = llvm::dyn_cast<llvm::CallInst>(&inst)) {
+                    if (isInstrumentationCall(ci->getCalledFunction())) continue;
                     if (!isNoOpDropFn(ci->getCalledFunction(), seen)) return false;
                 } else if (llvm::isa<llvm::InvokeInst>(&inst)) {
                     return false;
@@ -2895,6 +2922,18 @@ namespace cajeta {
 
             if (auto fieldClass = dynamic_pointer_cast<CajetaClass>(fieldType)) {
                 if (dynamic_pointer_cast<CajetaView>(fieldType)) continue;
+                // Shared-capable VALUE fields (Utf8 / value aggregates
+                // embedding it) store inline — no body to free, but each
+                // Shared stake must release (slice-spec §6.1 drop hook).
+                if (fieldClass->isValueType()
+                        && fieldClass->isSharedCapableValue()) {
+                    llvm::Value* slot = b.CreateStructGEP(
+                        rawLlvmType(), instance, fieldIdx,
+                        std::string("drop_vshared_") + property->getName());
+                    fieldClass->emitValueSharedOp(b, slot, cajModule,
+                                                  bodyModule, /*retain=*/false);
+                    continue;
+                }
                 if (fieldClass->isInterface()) {
                     if (!ifaceDropFn) {
                         ifaceDropFn = cajModule->getRuntimeFunction("__cajeta_iface_drop", bodyModule);
@@ -2922,6 +2961,102 @@ namespace cajeta {
                 continue;
             }
         }
+    }
+
+    bool CajetaClass::isSharedCapableValue() {
+        if (qName && qName->getTypeName() == "Utf8"
+                && qName->getPackageName() == "cajeta.lang") {
+            return true;
+        }
+        // Slice<T> instantiations (slice-spec §7.2): the store field can be
+        // a resolved (rc'd) root — copies retain, drops release.
+        if (qName && qName->getPackageName() == "cajeta.lang"
+                && qName->getTypeName().rfind("Slice", 0) == 0
+                && isValueType()) {
+            return true;
+        }
+        if (!isValueType() || interfaceFlag) return false;
+        for (auto& property : propertyList) {
+            if (property->isStatic()) continue;
+            auto fieldClass = dynamic_pointer_cast<CajetaClass>(property->getType());
+            if (fieldClass && !dynamic_pointer_cast<CajetaView>(property->getType())
+                    && fieldClass->isSharedCapableValue()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void CajetaClass::emitValueSharedOp(llvm::IRBuilder<>& b,
+                                        llvm::Value* valuePtr,
+                                        CajetaModulePtr cajModule,
+                                        llvm::Module* bodyModule,
+                                        bool retain) {
+        if (qName && qName->getTypeName() == "Utf8"
+                && qName->getPackageName() == "cajeta.lang") {
+            llvm::Function* fn = cajModule->getRuntimeFunction(
+                retain ? "__cajeta_utf8_retain" : "__cajeta_utf8_release",
+                bodyModule);
+            if (fn) b.CreateCall(fn, {valuePtr});
+            return;
+        }
+        if (qName && qName->getPackageName() == "cajeta.lang"
+                && qName->getTypeName().rfind("Slice", 0) == 0
+                && isValueType()) {
+            llvm::Function* fn = cajModule->getRuntimeFunction(
+                retain ? "__cajeta_slice_retain" : "__cajeta_slice_release",
+                bodyModule);
+            if (fn) b.CreateCall(fn, {valuePtr});
+            return;
+        }
+        for (auto& property : propertyList) {
+            if (property->isStatic()) continue;
+            auto fieldClass = dynamic_pointer_cast<CajetaClass>(property->getType());
+            if (!fieldClass || dynamic_pointer_cast<CajetaView>(property->getType())
+                    || !fieldClass->isSharedCapableValue()) {
+                continue;
+            }
+            unsigned fieldIdx = (unsigned) getFieldLlvmIndex(property);
+            llvm::Value* slot = b.CreateStructGEP(
+                rawLlvmType(), valuePtr, fieldIdx,
+                std::string(retain ? "vret_" : "vrel_") + property->getName());
+            fieldClass->emitValueSharedOp(b, slot, cajModule, bodyModule, retain);
+        }
+    }
+
+    llvm::Function* CajetaClass::getOrCreateValueReleaseFunction() {
+        auto& ctx = *module->getLlvmContext();
+        auto* lmod = getEmitModule()->getLlvmModule();
+        std::string relName = std::string("__cajeta_vrel_") + qName->toCanonical();
+        for (char& c : relName) {
+            if (c == ':' || c == '.' || c == '<' || c == '>' || c == ',' || c == ' ') {
+                c = '_';
+            }
+        }
+        // Reuse-safe: resolve by name in the current emit module every call
+        // (mirrors getOrCreateDropFunction's existing-function fast path).
+        if (llvm::Function* existing = lmod->getFunction(relName)) {
+            return existing;
+        }
+        llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
+        llvm::FunctionType* fnTy = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(ctx), {(llvm::Type*) ptrTy},
+            /*isVarArg=*/false);
+        llvm::Function* fn = llvm::Function::Create(fnTy,
+            llvm::Function::ExternalLinkage, relName, lmod);
+        // Same emit-module pinning dance as getOrCreateDropFunction: the
+        // body's runtime callees must land in `lmod`.
+        llvm::Module* prevEmitLlvm = CajetaModule::getCurrentEmitLlvmModule();
+        CajetaModule::setCurrentEmitLlvmModule(lmod);
+        struct RestoreEmitLlvm {
+            llvm::Module* prev;
+            ~RestoreEmitLlvm() { CajetaModule::setCurrentEmitLlvmModule(prev); }
+        } restoreEmitLlvm{prevEmitLlvm};
+        llvm::BasicBlock* bb = llvm::BasicBlock::Create(ctx, "entry", fn);
+        llvm::IRBuilder<> b(bb);
+        emitValueSharedOp(b, fn->getArg(0), module, lmod, /*retain=*/false);
+        b.CreateRetVoid();
+        return fn;
     }
 
     llvm::Function* CajetaClass::getOrCreateDropFunction() {
@@ -5185,6 +5320,14 @@ namespace cajeta {
                         llvm::Value* spill = coerceBuilder->CreateAlloca(v->getType());
                         coerceBuilder->CreateStore(v, spill);
                         v = spill;
+                    } else if ((expected->isStructTy() || expected->isVectorTy()
+                                || expected->isArrayTy())
+                               && v->getType()->isPointerTy()) {
+                        // The mirror arm: the formal takes the aggregate BY
+                        // VALUE but we hold the value's ADDRESS (a fresh
+                        // value-expression alloca, e.g. `arr[a:b]` passed as
+                        // a Slice<T> arg). Load the aggregate through it.
+                        v = coerceBuilder->CreateLoad(expected, v);
                     }
                 }
             }

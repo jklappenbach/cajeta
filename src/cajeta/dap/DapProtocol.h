@@ -12,7 +12,6 @@
 
 #include <istream>
 #include <ostream>
-#include <string>
 
 #include "cajeta/dap/Json.h"
 

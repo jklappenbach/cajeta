@@ -83,6 +83,7 @@ namespace cajeta {
         const vector<MethodCallParameter>& getParameters() const { return parameters; }
 
         const string& getMethodCallName() const { return methodCallName; }
+        void setMethodCallName(const string& name) { methodCallName = name; }
         bool isSuperCtorCall() const { return superCtorCall; }
         const vector<CajetaTypePtr>& getExplicitMethodTypeArgs() const {
             return explicitMethodTypeArgs;

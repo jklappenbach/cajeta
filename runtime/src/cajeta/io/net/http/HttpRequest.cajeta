@@ -141,8 +141,8 @@ public class HttpRequest {
      */
     public static #HttpRequest of(String method, String target) {
         HttpRequest r = heap HttpRequest();
-        r.method = heap String(method.bytes, method.byteLength);
-        r.target = heap String(target.bytes, target.byteLength);
+        r.method = method.substring(0, method.byteLength);
+        r.target = target.substring(0, target.byteLength);
         return #r;
     }
 
@@ -168,7 +168,7 @@ public class HttpRequest {
      */
     public static #HttpRequest fromUri(String method, Uri uri) {
         HttpRequest r = heap HttpRequest();
-        r.method = heap String(method.bytes, method.byteLength);
+        r.method = method.substring(0, method.byteLength);
         r.target = HttpRequest.originForm(uri);
         if (uri.hasAuthority) {
             String hostValue = HttpRequest.hostHeader(uri);
@@ -231,7 +231,7 @@ public class HttpRequest {
         String host = uri.getHost();
         int32 hLen = host.byteLength;
         if (!uri.hasExplicitPort) {
-            return heap String(host.bytes, hLen);
+            return host.substring(0, hLen);
         }
         // host ":" decimal-port
         String portStr = HttpRequest.decimal(uri.getPort());
@@ -328,7 +328,7 @@ public class HttpRequest {
 
     /** Override the HTTP-version string and return `this`. */
     public HttpRequest version(String v) {
-        this.version = heap String(v.bytes, v.byteLength);
+        this.version = v.substring(0, v.byteLength);
         return this;
     }
 

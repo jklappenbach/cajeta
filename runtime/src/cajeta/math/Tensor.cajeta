@@ -1569,6 +1569,50 @@ public class Tensor<T> {
         return heap Tensor<E>(#st, 0, shp, strd);
     }
 
+    /**
+     * Batched matrix multiply (numpy `matmul` / `@` over a leading batch axis): `a` is
+     * `(B, M, K)`, `b` is `(B, K, N)`, result is `(B, M, N)` — the `b`-th output matrix
+     * is `a[b] · b[b]`. The batched analogue of {@link #matmul}; broadcasting a shared
+     * `(K, N)` operand across the batch is a later refinement. Multi-index reads via
+     * `getAt` so strided (non-contiguous) inputs work.
+     */
+    public static #Tensor<E> matmulBatched<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        int64 batch = a.shapeAt(0);
+        int64 m = a.shapeAt(1);
+        int64 k = a.shapeAt(2);
+        int64 n = b.shapeAt(2);
+        Storage<E> st = heap Storage<E>(batch * m * n);
+        int64[] ia = heap int64[3];
+        int64[] ib = heap int64[3];
+        int64 bt = 0;
+        while (bt < batch) {
+            int64 i = 0;
+            while (i < m) {
+                int64 j = 0;
+                while (j < n) {
+                    E acc = (E) 0;
+                    int64 p = 0;
+                    while (p < k) {
+                        ia[0] = bt; ia[1] = i; ia[2] = p;
+                        ib[0] = bt; ib[1] = p; ib[2] = j;
+                        acc = acc + a.getAt(ia) * b.getAt(ib);
+                        p = p + 1;
+                    }
+                    st.set(bt * m * n + i * n + j, acc);
+                    j = j + 1;
+                }
+                i = i + 1;
+            }
+            bt = bt + 1;
+        }
+        int64[] shp = heap int64[3];
+        shp[0] = batch;
+        shp[1] = m;
+        shp[2] = n;
+        int64[] strd = Tensor.contigStrides(shp);
+        return heap Tensor<E>(#st, 0, shp, strd);
+    }
+
     /** 1-D inner product `Σ a[i] * b[i]` as a scalar (numpy `dot` of two vectors). */
     public static E dot<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
         int64 n = a.size();
@@ -2168,26 +2212,246 @@ public class Tensor<T> {
         return #out;
     }
 
+    /** Swap the two lane positions `x` and `y` (`idx[axis]` scans the lane of `out`). */
+    static void swapLane<E extends Numeric>(Tensor<E> out, int64[] idx, int32 axis, int64 x, int64 y) {
+        idx[axis] = x;
+        E vx = out.getAt(idx);
+        idx[axis] = y;
+        E vy = out.getAt(idx);
+        out.setAt(idx, vx);                          // idx[axis] == y → write y = vx
+        idx[axis] = x;
+        out.setAt(idx, vy);
+    }
+
+    /** Read the lane value at position `x`. */
+    static E laneVal<E extends Numeric>(Tensor<E> out, int64[] idx, int32 axis, int64 x) {
+        idx[axis] = x;
+        return out.getAt(idx);
+    }
+
+    /** `2·⌊log2(span)⌋` — the introselect depth limit before the sort fallback. */
+    static int32 introDepthLimit(int64 span) {
+        int32 depth = 0;
+        int64 s = span;
+        while (s > 1) { s = s / 2; depth = depth + 1; }
+        return depth * 2;
+    }
+
+    /**
+     * In-place introselect of the lane `[lo0, hi0]` of `out` about the `kth` order
+     * statistic: median-of-three quickselect recursing into only the side containing
+     * `kth` (so it's an iterative loop), with a depth-limit fallback to insertion sort
+     * of the current range. That fallback bounds the worst case to O(n log n) while the
+     * common case stays O(n) — the practical introselect of `std::nth_element`. On
+     * return `out`'s lane satisfies the partition contract: element `kth` is its final
+     * sorted value, all smaller before it, all larger after.
+     */
+    static void introselectLane<E extends Numeric>(Tensor<E> out, int64[] idx, int32 axis, int64 lo0, int64 hi0, int64 kth) {
+        int64 lo = lo0;
+        int64 hi = hi0;
+        int32 maxDepth = Tensor.introDepthLimit(hi0 - lo0 + 1);
+        int32 depth = 0;
+        while (lo < hi) {
+            if (depth >= maxDepth) {
+                int64 a = lo + 1;                    // insertion-sort fallback of [lo,hi]
+                while (a <= hi) {
+                    E key = Tensor.laneVal<E>(out, idx, axis, a);
+                    int64 b = a - 1;
+                    boolean placed = false;
+                    while (b >= lo && !placed) {
+                        E vb = Tensor.laneVal<E>(out, idx, axis, b);
+                        if (vb > key) {
+                            idx[axis] = b + 1;
+                            out.setAt(idx, vb);
+                            b = b - 1;
+                        } else { placed = true; }
+                    }
+                    idx[axis] = b + 1;
+                    out.setAt(idx, key);
+                    a = a + 1;
+                }
+                return;
+            }
+            int64 mid = (lo + hi) / 2;               // median-of-three pivot → move to hi
+            E vlo = Tensor.laneVal<E>(out, idx, axis, lo);
+            E vmid = Tensor.laneVal<E>(out, idx, axis, mid);
+            E vhi = Tensor.laneVal<E>(out, idx, axis, hi);
+            int64 medPos = mid;
+            if ((vlo <= vmid && vmid <= vhi) || (vhi <= vmid && vmid <= vlo)) { medPos = mid; }
+            else if ((vmid <= vlo && vlo <= vhi) || (vhi <= vlo && vlo <= vmid)) { medPos = lo; }
+            else { medPos = hi; }
+            Tensor.swapLane<E>(out, idx, axis, medPos, hi);
+            E pv = Tensor.laneVal<E>(out, idx, axis, hi);
+            int64 store = lo;                        // Lomuto partition around pv
+            int64 j = lo;
+            while (j < hi) {
+                E vj = Tensor.laneVal<E>(out, idx, axis, j);
+                if (vj < pv) {
+                    Tensor.swapLane<E>(out, idx, axis, store, j);
+                    store = store + 1;
+                }
+                j = j + 1;
+            }
+            Tensor.swapLane<E>(out, idx, axis, store, hi);
+            if (kth == store) { return; }
+            else if (kth < store) { hi = store - 1; }
+            else { lo = store + 1; }
+            depth = depth + 1;
+        }
+    }
+
     /**
      * Partitioned copy of `t` along `axis` about the `kth` order statistic (numpy
-     * `partition`): the element at index `kth` lands in its fully-sorted position,
-     * with all smaller elements before it and all larger after. The CPU floor
-     * returns a **fully-ordered** lane — a valid (stronger-than-required) partition;
-     * `kth` is accepted for numpy parity. (A true O(n) introselect is an
-     * optimization; the partition *contract* is what callers rely on.)
+     * `partition`): element `kth` lands in its final sorted position, everything
+     * smaller before it and everything larger after (the two sides are *not* further
+     * ordered). Each lane along `axis` is partitioned independently by an in-place
+     * {@link #introselectLane} introselect (O(n) average, O(n log n) worst case).
      */
     public static #Tensor<E> partition<E extends Numeric>(Tensor<E> t, int64 kth, int32 axis) {
-        return Tensor.sort<E>(t, axis);
+        Tensor<E> out = t.copy();
+        int32 nd = t.ndim();
+        int64 axisLen = t.shapeAt(axis);
+        int64[] idx = heap int64[nd];
+        int32 z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        int64 outer = 1;
+        int32 d = 0;
+        while (d < nd) {
+            if (d != axis) { outer = outer * t.shapeAt(d); }
+            d = d + 1;
+        }
+        int64 oc = 0;
+        while (oc < outer) {
+            Tensor.introselectLane<E>(out, idx, axis, 0, axisLen - 1, kth);
+            oc = oc + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                if (ax == axis) { ax = ax - 1; }
+                else {
+                    idx[ax] = idx[ax] + 1;
+                    if (idx[ax] >= t.shapeAt(ax)) { idx[ax] = 0; ax = ax - 1; }
+                    else { carry = false; }
+                }
+            }
+        }
+        return #out;
+    }
+
+    /** Read the lane value the perm entry `perm[x]` points at (for argpartition). */
+    static E permVal<E extends Numeric>(Tensor<E> t, int64[] idx, int32 axis, int64[] perm, int64 x) {
+        idx[axis] = perm[x];
+        return t.getAt(idx);
+    }
+
+    /**
+     * Introselect of `perm[lo0..hi0]` (an index list into the lane of `t`) about the
+     * `kth` order statistic, ordering by the lane *values* the entries point at. The
+     * `perm`-space analogue of {@link #introselectLane}: swaps entries of `perm`, never
+     * touching `t`. After it returns, `perm[kth]` is the index of the `kth`-smallest.
+     */
+    static void introselectPerm<E extends Numeric>(Tensor<E> t, int64[] idx, int32 axis, int64[] perm, int64 lo0, int64 hi0, int64 kth) {
+        int64 lo = lo0;
+        int64 hi = hi0;
+        int32 maxDepth = Tensor.introDepthLimit(hi0 - lo0 + 1);
+        int32 depth = 0;
+        while (lo < hi) {
+            if (depth >= maxDepth) {
+                int64 a = lo + 1;                    // insertion-sort fallback of perm[lo,hi]
+                while (a <= hi) {
+                    int64 keyIdx = perm[a];
+                    idx[axis] = keyIdx;
+                    E key = t.getAt(idx);
+                    int64 b = a - 1;
+                    boolean placed = false;
+                    while (b >= lo && !placed) {
+                        E vb = Tensor.permVal<E>(t, idx, axis, perm, b);
+                        if (vb > key) {
+                            perm[b + 1] = perm[b];
+                            b = b - 1;
+                        } else { placed = true; }
+                    }
+                    perm[b + 1] = keyIdx;
+                    a = a + 1;
+                }
+                return;
+            }
+            int64 mid = (lo + hi) / 2;
+            E vlo = Tensor.permVal<E>(t, idx, axis, perm, lo);
+            E vmid = Tensor.permVal<E>(t, idx, axis, perm, mid);
+            E vhi = Tensor.permVal<E>(t, idx, axis, perm, hi);
+            int64 medPos = mid;
+            if ((vlo <= vmid && vmid <= vhi) || (vhi <= vmid && vmid <= vlo)) { medPos = mid; }
+            else if ((vmid <= vlo && vlo <= vhi) || (vhi <= vlo && vlo <= vmid)) { medPos = lo; }
+            else { medPos = hi; }
+            int64 tmpm = perm[medPos]; perm[medPos] = perm[hi]; perm[hi] = tmpm;
+            E pv = Tensor.permVal<E>(t, idx, axis, perm, hi);
+            int64 store = lo;
+            int64 j = lo;
+            while (j < hi) {
+                E vj = Tensor.permVal<E>(t, idx, axis, perm, j);
+                if (vj < pv) {
+                    int64 tj = perm[store]; perm[store] = perm[j]; perm[j] = tj;
+                    store = store + 1;
+                }
+                j = j + 1;
+            }
+            int64 ts = perm[store]; perm[store] = perm[hi]; perm[hi] = ts;
+            if (kth == store) { return; }
+            else if (kth < store) { hi = store - 1; }
+            else { lo = store + 1; }
+            depth = depth + 1;
+        }
     }
 
     /**
      * Index permutation that partitions `t` along `axis` about the `kth` order
-     * statistic (numpy `argpartition`): `t[..., out[kth], ...]` is the `kth`
-     * smallest, with smaller-valued indices before and larger after. CPU floor: the
-     * full `argsort` permutation (a valid stronger partition); `kth` for parity.
+     * statistic (numpy `argpartition`): `t[..., out[kth], ...]` is the `kth` smallest,
+     * with smaller-valued indices before and larger after. Each lane's index list is
+     * introselected in perm-space by {@link #introselectPerm} (O(n) average).
      */
     public static #Tensor<int64> argpartition<E extends Numeric>(Tensor<E> t, int64 kth, int32 axis) {
-        return Tensor.argsort<E>(t, axis);
+        int32 nd = t.ndim();
+        int64 axisLen = t.shapeAt(axis);
+        int64[] shp = heap int64[nd];
+        int32 c = 0;
+        while (c < nd) { shp[c] = t.shapeAt(c); c = c + 1; }
+        Tensor<int64> out = Tensor.zeros<int64>(shp);
+        int64[] idx = heap int64[nd];
+        int32 z = 0;
+        while (z < nd) { idx[z] = 0; z = z + 1; }
+        int64[] perm = heap int64[axisLen];
+        int64 outer = 1;
+        int32 d = 0;
+        while (d < nd) {
+            if (d != axis) { outer = outer * t.shapeAt(d); }
+            d = d + 1;
+        }
+        int64 oc = 0;
+        while (oc < outer) {
+            int64 p = 0;
+            while (p < axisLen) { perm[p] = p; p = p + 1; }
+            Tensor.introselectPerm<E>(t, idx, axis, perm, 0, axisLen - 1, kth);
+            int64 w = 0;
+            while (w < axisLen) {
+                idx[axis] = w;
+                int64 pv = perm[w];
+                out.setAt(idx, pv);
+                w = w + 1;
+            }
+            oc = oc + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                if (ax == axis) { ax = ax - 1; }
+                else {
+                    idx[ax] = idx[ax] + 1;
+                    if (idx[ax] >= t.shapeAt(ax)) { idx[ax] = 0; ax = ax - 1; }
+                    else { carry = false; }
+                }
+            }
+        }
+        return #out;
     }
 
     /**

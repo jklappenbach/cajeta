@@ -213,13 +213,18 @@ public class Uri {
             || c == 43 || c == 45 || c == 46;
     }
 
-    /** Read byte `i` of `b` as an unsigned 0..255 int32. */
-    private static int32 byteAt(int8[] b, int32 i) {
+    /** Read byte `i` of `b` as an unsigned 0..255 int32 (view-aware). */
+    private static int32 byteAt(String b, int32 i) {
+        return ((int32) b.byteAt(i)) & 0xff;
+    }
+
+    /** Raw-array twin for helpers that scan a locally built buffer. */
+    private static int32 rawByteAt(int8[] b, int32 i) {
         return ((int32) b[i]) & 0xff;
     }
 
     /** Slice `[begin, end)` of `b` into a fresh owned String. */
-    private static #String slice(int8[] b, int32 begin, int32 end) {
+    private static #String slice(String b, int32 begin, int32 end) {
         int32 len = end - begin;
         if (len < 0) {
             len = 0;
@@ -227,7 +232,7 @@ public class Uri {
         int8[] out = heap int8[len];
         int32 i = 0;
         while (i < len) {
-            out[i] = b[begin + i];
+            out[i] = b.byteAt(begin + i);
             i = i + 1;
         }
         return heap String(#out, len);
@@ -279,7 +284,7 @@ public class Uri {
         if (n == 0) {
             throw heap MalformedUriException("empty URI", (int64) -1);
         }
-        int8[] b = input.bytes;
+        String b = input;
 
         Uri u = heap Uri();
 
@@ -420,7 +425,7 @@ public class Uri {
      * bracket form is detected first so a ':' inside `[::1]` is not
      * mistaken for the port delimiter.
      */
-    private static void parseAuthority(Uri u, int8[] b, int32 start, int32 end) {
+    private static void parseAuthority(Uri u, String b, int32 start, int32 end) {
         int32 hostStart = start;
 
         // userinfo: up to the LAST '@' in the authority (an '@' may
@@ -497,7 +502,7 @@ public class Uri {
      * non-digit or an out-of-range value (> 65535) is a malformed
      * URI.
      */
-    private static void parsePort(Uri u, int8[] b, int32 start, int32 end) {
+    private static void parsePort(Uri u, String b, int32 start, int32 end) {
         if (start >= end) {
             // Empty port — leave hasExplicitPort false; scheme default
             // is applied by the caller.
@@ -536,7 +541,7 @@ public class Uri {
         int32 i = 0;
         int32 m = src.byteLength;
         while (i < m) {
-            dst[at + i] = src.bytes[i];
+            dst[at + i] = src.byteAt(i);
             i = i + 1;
         }
         return at + m;
@@ -681,7 +686,7 @@ public class Uri {
         int8[] in = heap int8[n];
         int32 z = 0;
         while (z < n) {
-            in[z] = path.bytes[z];
+            in[z] = path.byteAt(z);
             z = z + 1;
         }
         // Output is never larger than the (possibly grown-by-one via the
@@ -702,8 +707,8 @@ public class Uri {
                 i = i + 2;
             } else if (Uri.startsAt(in, n, i, 47, 46, 47)) { // B: "/./"
                 i = i + 2;                                    // leave one '/'
-            } else if (i + 2 == n && Uri.byteAt(in, i) == 47
-                    && Uri.byteAt(in, i + 1) == 46) {         // B: "/." end
+            } else if (i + 2 == n && Uri.rawByteAt(in, i) == 47
+                    && Uri.rawByteAt(in, i + 1) == 46) {         // B: "/." end
                 in[i + 1] = (int8) 47;                        // -> "/"
                 i = i + 1;
             } else if (Uri.startsAt(in, n, i, 47, 46, 46)
@@ -712,17 +717,17 @@ public class Uri {
                 i = i + 2;
                 olen = Uri.popSegment(out, olen);
             } else if (Uri.startsAt(in, n, i, 47, 46, 46)
-                    && Uri.byteAt(in, i + 3) == 47) {         // C: "/../"
+                    && Uri.rawByteAt(in, i + 3) == 47) {         // C: "/../"
                 i = i + 3;                                    // leave one '/'
                 olen = Uri.popSegment(out, olen);
             } else if (Uri.isDot(in, n, i)) {                // D: "." or ".."
                 i = n;
             } else {                                          // E: move segment
                 int32 start = i;
-                if (Uri.byteAt(in, i) == 47) {
+                if (Uri.rawByteAt(in, i) == 47) {
                     i = i + 1;
                 }
-                while (i < n && Uri.byteAt(in, i) != 47) {
+                while (i < n && Uri.rawByteAt(in, i) != 47) {
                     i = i + 1;
                 }
                 int32 k = start;
@@ -746,26 +751,26 @@ public class Uri {
     private static boolean startsAt(int8[] b, int32 n, int32 i,
                                     int32 a, int32 c, int32 d) {
         return i + 2 < n
-            && Uri.byteAt(b, i) == a
-            && Uri.byteAt(b, i + 1) == c
-            && Uri.byteAt(b, i + 2) == d;
+            && Uri.rawByteAt(b, i) == a
+            && Uri.rawByteAt(b, i + 1) == c
+            && Uri.rawByteAt(b, i + 2) == d;
     }
 
     /** True iff bytes at `i` are the two given ASCII codes. */
     private static boolean startsAt2(int8[] b, int32 n, int32 i,
                                      int32 a, int32 c) {
         return i + 1 < n
-            && Uri.byteAt(b, i) == a
-            && Uri.byteAt(b, i + 1) == c;
+            && Uri.rawByteAt(b, i) == a
+            && Uri.rawByteAt(b, i + 1) == c;
     }
 
     /** True iff the remainder from `i` is exactly "." or "..". */
     private static boolean isDot(int8[] b, int32 n, int32 i) {
-        if (i + 1 == n && Uri.byteAt(b, i) == 46) {
+        if (i + 1 == n && Uri.rawByteAt(b, i) == 46) {
             return true;
         }
-        if (i + 2 == n && Uri.byteAt(b, i) == 46
-                && Uri.byteAt(b, i + 1) == 46) {
+        if (i + 2 == n && Uri.rawByteAt(b, i) == 46
+                && Uri.rawByteAt(b, i + 1) == 46) {
             return true;
         }
         return false;
@@ -779,7 +784,7 @@ public class Uri {
     private static int32 popSegment(int8[] out, int32 olen) {
         int32 j = olen;
         // back over the last segment's chars
-        while (j > 0 && Uri.byteAt(out, j - 1) != 47) {
+        while (j > 0 && Uri.rawByteAt(out, j - 1) != 47) {
             j = j - 1;
         }
         // back over the preceding '/' too
@@ -810,7 +815,7 @@ public class Uri {
         int32 i = 0;
         int32 bn = base.path.byteLength;
         while (i < bn) {
-            if (Uri.byteAt(base.path.bytes, i) == 47) {
+            if (Uri.byteAt(base.path, i) == 47) {
                 lastSlash = i;
             }
             i = i + 1;
@@ -820,7 +825,7 @@ public class Uri {
         int8[] out = heap int8[len];
         int32 k = 0;
         while (k < keep) {
-            out[k] = base.path.bytes[k];
+            out[k] = base.path.byteAt(k);
             k = k + 1;
         }
         Uri.copyInto(out, keep, refPath);
@@ -888,7 +893,7 @@ public class Uri {
                         t.hasQuery = base.hasQuery;
                     }
                 } else {
-                    if (Uri.byteAt(ref.path.bytes, 0) == 47) {  // absolute
+                    if (Uri.byteAt(ref.path, 0) == 47) {  // absolute
                         t.path = Uri.removeDotSegments(ref.path);
                     } else {
                         String merged = Uri.merge(base, ref.path);
@@ -917,7 +922,7 @@ public class Uri {
         int8[] out = heap int8[n];
         int32 i = 0;
         while (i < n) {
-            out[i] = s.bytes[i];
+            out[i] = s.byteAt(i);
             i = i + 1;
         }
         return heap String(#out, n);

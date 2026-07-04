@@ -247,6 +247,14 @@ Every built-in subcommand and every task accepts
 `${flavor}` property to whichever `build` action the task
 invokes.
 
+`--diag-format=text|json` (default `text`) forwards to the compiler
+subprocesses that `build` actions spawn: `json` makes them emit one
+machine-readable NDJSON diagnostic per line on stderr (severity,
+code, message, file, line, column — see
+`docs/CompilerModes.md § --diag-format`), which passes straight
+through for tools/IDEs to consume. It is output-only and never
+affects the built artifact.
+
 ---
 
 ## Project layout

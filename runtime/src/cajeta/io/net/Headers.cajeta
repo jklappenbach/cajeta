@@ -176,7 +176,7 @@ public class Headers {
         while (i < this.sizeCount) {
             if (this.keys[i].equals(lname)) {
                 String v = this.values[i];
-                out[w] = heap String(v.bytes, v.byteLength);
+                out[w] = v.substring(0, v.byteLength);
                 w = w + 1;
             }
             i = i + 1;
@@ -219,7 +219,7 @@ public class Headers {
             // Single value, or a no-fold header (Set-Cookie): return a
             // fresh view over the first value's bytes, no concatenation.
             String v = this.values[first];
-            return heap String(v.bytes, v.byteLength);
+            return v.substring(0, v.byteLength);
         }
         return this.foldValues(lname);
     }
