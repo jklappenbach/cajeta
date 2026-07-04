@@ -103,8 +103,11 @@ TEST(ThrowableApi, getStackTraceNonEmpty) {
     EXPECT_GT(fn(), 0);
 }
 
-// §5: each frame carries a resolvable (non-zero) native address.
-TEST(ThrowableApi, getStackTraceTopAddressNonZero) {
+// §5: the top frame carries a resolved location. With --line-info on (the
+// default, diagnostic-exceptions U3) frames are semantic — method/line resolved,
+// nativeAddress 0. (The old address-only assertion held under the MVP; semantic
+// frames are now the default. The address-only path is covered by 3.1.4.)
+TEST(ThrowableApi, getStackTraceTopFrameResolved) {
     auto jit = CajetaJit::compile(src(
         "try {\n"
         "    throw heap Exception(\"boom\");\n"
@@ -112,7 +115,8 @@ TEST(ThrowableApi, getStackTraceTopAddressNonZero) {
         "    StackFrame[] f = e.getStackTrace();\n"
         "    if (f.count() == 0) { return 0; }\n"
         "    StackFrame top = f[0];\n"
-        "    if (top.nativeAddress != 0) { return 1; }\n"
+        "    String m = top.method;\n"
+        "    if (m.count() > 0 && top.line > 0) { return 1; }\n"
         "    return 0;\n"
         "}\n"
         "return -1;"), "test.S");

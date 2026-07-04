@@ -16,6 +16,11 @@ struct cajeta_trace_entry {
     void* throwable;
     void** frames;
     int frame_count;
+    // diagnostic-exceptions U3: semantic line-info frames snapshotted from the
+    // shadow line-stack at throw time (innermost-first), or NULL when line-info
+    // was off. Resolved by getStackTrace into StackFrame type/method/file/line.
+    CajetaShadowFrame* shadow;
+    int shadow_count;
     struct cajeta_trace_entry* next;
 };
 
@@ -65,6 +70,22 @@ static void __cajeta_trace_record(void* throwable) {
     e->throwable = throwable;
     e->frames = frames;
     e->frame_count = n;
+    // U3: snapshot the shadow line-stack (semantic frames) alongside the raw
+    // addresses. Present only when codegen emitted line-info (enter/mark/leave).
+    e->shadow = NULL;
+    e->shadow_count = 0;
+    {
+        int32_t sc = __cajeta_shadow_get_top();
+        if (sc > CAJETA_SHADOW_MAX) sc = CAJETA_SHADOW_MAX;
+        if (sc > 0) {
+            CajetaShadowFrame* snap =
+                (CajetaShadowFrame*) malloc((size_t) sc * sizeof(CajetaShadowFrame));
+            if (snap) {
+                e->shadow_count = __cajeta_shadow_snapshot(snap, sc);
+                e->shadow = snap;
+            }
+        }
+    }
     pthread_mutex_lock(&__cajeta_trace_mutex);
     // Dedup: drop any prior entry for this same throwable address so a reused
     // address can't surface a stale trace.
@@ -73,6 +94,7 @@ static void __cajeta_trace_record(void* throwable) {
             struct cajeta_trace_entry* dead = *pp;
             *pp = dead->next;
             free(dead->frames);
+            free(dead->shadow);
             free(dead);
             __cajeta_trace_count--;
         } else {
@@ -87,6 +109,7 @@ static void __cajeta_trace_record(void* throwable) {
             struct cajeta_trace_entry* dead = *tail;
             *tail = NULL;
             free(dead->frames);
+            free(dead->shadow);
             free(dead);
             __cajeta_trace_count--;
         }
@@ -99,17 +122,37 @@ static void __cajeta_trace_record(void* throwable) {
 
 // Print the trace for `throwable` to fd (1=stdout, 2=stderr). No-op if
 // no trace was recorded for this throwable.
+// Basename of a source path (last component after '/' or '\\').
+static const char* cajeta_basename(const char* p) {
+    const char* base = p ? p : "";
+    if (p) for (const char* q = p; *q; q++) if (*q == '/' || *q == '\\') base = q + 1;
+    return base;
+}
+
 void __cajeta_print_trace(void* throwable, int32_t fd) {
+    FILE* out = (fd == 1) ? stdout : stderr;
     pthread_mutex_lock(&__cajeta_trace_mutex);
     struct cajeta_trace_entry* e = __cajeta_trace_table;
     while (e && e->throwable != throwable) e = e->next;
     if (!e) { pthread_mutex_unlock(&__cajeta_trace_mutex); return; }
+    // U3: prefer the semantic shadow frames — Type.method(File.cajeta:NN).
+    if (e->shadow && e->shadow_count > 0) {
+        for (int i = 0; i < e->shadow_count; i++) {
+            const CajetaFrameDesc* d = e->shadow[i].desc;
+            const char* t = (d && d->typeName)   ? d->typeName   : "?";
+            const char* m = (d && d->methodName) ? d->methodName : "?";
+            const char* f = (d && d->fileName)   ? d->fileName   : "?";
+            fprintf(out, "  at %s.%s(%s:%d)\n", t, m,
+                    cajeta_basename(f), e->shadow[i].line);
+        }
+        fflush(out);
+        pthread_mutex_unlock(&__cajeta_trace_mutex);
+        return;
+    }
+    // Fallback: raw addresses symbolized by the C library.
     char** syms = backtrace_symbols(e->frames, e->frame_count);
     if (syms) {
-        FILE* out = (fd == 1) ? stdout : stderr;
-        for (int i = 0; i < e->frame_count; i++) {
-            fprintf(out, "  %s\n", syms[i]);
-        }
+        for (int i = 0; i < e->frame_count; i++) fprintf(out, "  %s\n", syms[i]);
         fflush(out);
         free(syms);
     }
@@ -277,6 +320,10 @@ void __cajeta_throw(void* value) {
         }
         *dropTop = e->prev;
     }
+    // U3: the unwound frames never ran __cajeta_line_leave, so restore the
+    // shadow line-stack depth to the catching try-frame's watermark before we
+    // resume in its catch block. Snapshot already taken in __cajeta_trace_record.
+    __cajeta_shadow_set_top((*excTop)->shadow_watermark);
     (*excTop)->thrown_value = value;
     longjmp((*excTop)->buf, 1);
 }
@@ -677,6 +724,84 @@ void __cajeta_diag_fields_into(void* obj, void* out) {
     cajeta_diag_fields(obj, (char*) out + 8, (int) cap);
 }
 
+// --- diagnostic-exceptions Unit 3: semantic-frame accessors ------------------
+//
+// getStackTrace() reads the shadow snapshot recorded at throw time: a count,
+// then per frame a #FrameDesc pointer + line. The desc string readers resolve
+// type/method/file (length-then-fill); the role derives from the type package.
+
+// Number of semantic (line-info) frames for `throwable`, 0 if none captured.
+int32_t __cajeta_trace_shadow_count(void* throwable) {
+    if (!throwable) return 0;
+    pthread_mutex_lock(&__cajeta_trace_mutex);
+    struct cajeta_trace_entry* e = __cajeta_trace_table;
+    while (e && e->throwable != throwable) e = e->next;
+    int32_t c = e ? e->shadow_count : 0;
+    pthread_mutex_unlock(&__cajeta_trace_mutex);
+    return c;
+}
+// The #FrameDesc handle for semantic frame `i` (innermost = 0), or 0. An opaque
+// int64 (CajetaFrameDesc*) so the Cajeta @Native ABI stays pure i64/i32.
+int64_t __cajeta_trace_shadow_desc(void* throwable, int32_t i) {
+    if (!throwable || i < 0) return 0;
+    pthread_mutex_lock(&__cajeta_trace_mutex);
+    struct cajeta_trace_entry* e = __cajeta_trace_table;
+    while (e && e->throwable != throwable) e = e->next;
+    int64_t d = (e && i < e->shadow_count && e->shadow)
+                  ? (int64_t) (uintptr_t) e->shadow[i].desc : 0;
+    pthread_mutex_unlock(&__cajeta_trace_mutex);
+    return d;
+}
+// The source line for semantic frame `i`, or 0.
+int32_t __cajeta_trace_shadow_line(void* throwable, int32_t i) {
+    if (!throwable || i < 0) return 0;
+    pthread_mutex_lock(&__cajeta_trace_mutex);
+    struct cajeta_trace_entry* e = __cajeta_trace_table;
+    while (e && e->throwable != throwable) e = e->next;
+    int32_t ln = (e && i < e->shadow_count && e->shadow) ? e->shadow[i].line : 0;
+    pthread_mutex_unlock(&__cajeta_trace_mutex);
+    return ln;
+}
+
+int32_t __cajeta_desc_type_len(int64_t desc) {
+    const CajetaFrameDesc* d = (const CajetaFrameDesc*) (uintptr_t) desc;
+    const char* s = d ? d->typeName : NULL;
+    return s ? (int32_t) strlen(s) : 0;
+}
+void __cajeta_desc_type_into(int64_t desc, void* out) {
+    const CajetaFrameDesc* d = (const CajetaFrameDesc*) (uintptr_t) desc;
+    const char* s = d ? d->typeName : NULL;
+    cajeta_str_into(out, s ? s : "", s ? (int) strlen(s) : 0);
+}
+int32_t __cajeta_desc_method_len(int64_t desc) {
+    const CajetaFrameDesc* d = (const CajetaFrameDesc*) (uintptr_t) desc;
+    const char* s = d ? d->methodName : NULL;
+    return s ? (int32_t) strlen(s) : 0;
+}
+void __cajeta_desc_method_into(int64_t desc, void* out) {
+    const CajetaFrameDesc* d = (const CajetaFrameDesc*) (uintptr_t) desc;
+    const char* s = d ? d->methodName : NULL;
+    cajeta_str_into(out, s ? s : "", s ? (int) strlen(s) : 0);
+}
+int32_t __cajeta_desc_file_len(int64_t desc) {
+    const CajetaFrameDesc* d = (const CajetaFrameDesc*) (uintptr_t) desc;
+    const char* s = d ? d->fileName : NULL;
+    return s ? (int32_t) strlen(s) : 0;
+}
+void __cajeta_desc_file_into(int64_t desc, void* out) {
+    const CajetaFrameDesc* d = (const CajetaFrameDesc*) (uintptr_t) desc;
+    const char* s = d ? d->fileName : NULL;
+    cajeta_str_into(out, s ? s : "", s ? (int) strlen(s) : 0);
+}
+// FrameRole ordinal: 0 User, 1 Stdlib (cajeta.* package), 2 Runtime (no desc).
+int32_t __cajeta_desc_role(int64_t desc) {
+    const CajetaFrameDesc* d = (const CajetaFrameDesc*) (uintptr_t) desc;
+    if (!d) return 2;
+    const char* tn = d->typeName;
+    if (tn && strncmp(tn, "cajeta.", 7) == 0) return 1;
+    return 0;
+}
+
 // Diagnostic output format for the uncaught-throw path. -1 = uninitialized (read
 // from the CAJETA_DIAG_FORMAT env once); 0 = text; 1 = json. The JIT host sets it
 // explicitly from --diag-format; an AOT exe picks it up from the environment.
@@ -705,20 +830,38 @@ static void __cajeta_emit_uncaught_json(void* value) {
     if (!tn) tn = "cajeta.error.Throwable";
     size_t tnlen = strlen(tn);
 
-    // Copy the captured return addresses out under the trace lock.
+    // Copy the frame info out under the trace lock: semantic shadow frames when
+    // present (type/method/file/line), else raw return addresses.
     uintptr_t addrs[CAJETA_TRACE_MAX_FRAMES];
-    int frame_count = 0;
+    int addr_count = 0;
+    CajetaShadowFrame sh[CAJETA_TRACE_MAX_FRAMES];
+    int sh_count = 0;
+    size_t sh_strbytes = 0;
     pthread_mutex_lock(&__cajeta_trace_mutex);
     struct cajeta_trace_entry* e = __cajeta_trace_table;
     while (e && e->throwable != value) e = e->next;
-    if (e) {
-        frame_count = e->frame_count;
-        if (frame_count > CAJETA_TRACE_MAX_FRAMES) frame_count = CAJETA_TRACE_MAX_FRAMES;
-        for (int i = 0; i < frame_count; i++) addrs[i] = (uintptr_t) e->frames[i];
+    if (e && e->shadow && e->shadow_count > 0) {
+        sh_count = e->shadow_count;
+        if (sh_count > CAJETA_TRACE_MAX_FRAMES) sh_count = CAJETA_TRACE_MAX_FRAMES;
+        for (int i = 0; i < sh_count; i++) {
+            sh[i] = e->shadow[i];
+            const CajetaFrameDesc* d = sh[i].desc;
+            if (d) {
+                if (d->typeName)   sh_strbytes += strlen(d->typeName);
+                if (d->methodName) sh_strbytes += strlen(d->methodName);
+                if (d->fileName)   sh_strbytes += strlen(d->fileName);
+            }
+        }
+    } else if (e) {
+        addr_count = e->frame_count;
+        if (addr_count > CAJETA_TRACE_MAX_FRAMES) addr_count = CAJETA_TRACE_MAX_FRAMES;
+        for (int i = 0; i < addr_count; i++) addrs[i] = (uintptr_t) e->frames[i];
     }
     pthread_mutex_unlock(&__cajeta_trace_mutex);
 
-    size_t cap = 256 + (size_t) esclen + tnlen + (size_t) frame_count * 48;
+    size_t cap = 256 + (size_t) esclen + tnlen
+               + (size_t) addr_count * 48
+               + (size_t) sh_count * 96 + sh_strbytes;
     char* buf = (char*) malloc(cap);
     if (!buf) return;
     size_t o = 0;
@@ -731,11 +874,29 @@ static void __cajeta_emit_uncaught_json(void* value) {
     if (o >= cap) o = cap - 1;
     w = snprintf(buf + o, cap - o, "\",\"frames\":[");
     if (w > 0) o += (size_t) w;
-    for (int i = 0; i < frame_count && o < cap - 1; i++) {
-        w = snprintf(buf + o, cap - o, "%s{\"nativeAddress\":%llu}",
-                     i ? "," : "", (unsigned long long) addrs[i]);
-        if (w > 0) o += (size_t) w;
-        if (o >= cap) { o = cap - 1; break; }
+    if (sh_count > 0) {
+        for (int i = 0; i < sh_count && o < cap - 1; i++) {
+            const CajetaFrameDesc* d = sh[i].desc;
+            const char* t = (d && d->typeName)   ? d->typeName   : "";
+            const char* m = (d && d->methodName) ? d->methodName : "";
+            const char* f = (d && d->fileName)   ? cajeta_basename(d->fileName) : "";
+            const char* role = (d && d->typeName
+                                && strncmp(d->typeName, "cajeta.", 7) == 0)
+                                   ? "Stdlib" : "User";
+            w = snprintf(buf + o, cap - o,
+                "%s{\"declaringType\":\"%s\",\"method\":\"%s\",\"file\":\"%s\","
+                "\"line\":%d,\"role\":\"%s\"}",
+                i ? "," : "", t, m, f, sh[i].line, role);
+            if (w > 0) o += (size_t) w;
+            if (o >= cap) { o = cap - 1; break; }
+        }
+    } else {
+        for (int i = 0; i < addr_count && o < cap - 1; i++) {
+            w = snprintf(buf + o, cap - o, "%s{\"nativeAddress\":%llu}",
+                         i ? "," : "", (unsigned long long) addrs[i]);
+            if (w > 0) o += (size_t) w;
+            if (o >= cap) { o = cap - 1; break; }
+        }
     }
     w = snprintf(buf + o, cap - o, "]}\n");
     if (w > 0) o += (size_t) w;

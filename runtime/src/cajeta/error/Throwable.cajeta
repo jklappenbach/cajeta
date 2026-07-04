@@ -44,6 +44,45 @@ public class Throwable {
     private static int32 getTraceNative(Object throwable, int64[] outAddrs, int32 max);
     @Native("__cajeta_print_trace")
     private static void printTraceNative(Object throwable, int32 fd);
+    @Native("__cajeta_trace_shadow_count") private static int32 shadowCount(Object t);
+    @Native("__cajeta_trace_shadow_desc")  private static int64 shadowDesc(Object t, int32 i);
+    @Native("__cajeta_trace_shadow_line")  private static int32 shadowLine(Object t, int32 i);
+    @Native("__cajeta_desc_type_len")    private static int32 descTypeLen(int64 d);
+    @Native("__cajeta_desc_type_into")   private static void  descTypeInto(int64 d, int8[] out);
+    @Native("__cajeta_desc_method_len")  private static int32 descMethodLen(int64 d);
+    @Native("__cajeta_desc_method_into") private static void  descMethodInto(int64 d, int8[] out);
+    @Native("__cajeta_desc_file_len")    private static int32 descFileLen(int64 d);
+    @Native("__cajeta_desc_file_into")   private static void  descFileInto(int64 d, int8[] out);
+    @Native("__cajeta_desc_role")        private static int32 descRole(int64 d);
+
+    private static #String descType(int64 d) {
+        int32 len = descTypeLen(d);
+        int8[] out = heap int8[len];
+        descTypeInto(d, out);
+        return heap String(#out, len);
+    }
+    private static #String descMethod(int64 d) {
+        int32 len = descMethodLen(d);
+        int8[] out = heap int8[len];
+        descMethodInto(d, out);
+        return heap String(#out, len);
+    }
+    private static #String descFile(int64 d) {
+        int32 len = descFileLen(d);
+        int8[] out = heap int8[len];
+        descFileInto(d, out);
+        return heap String(#out, len);
+    }
+    private static FrameRole roleOf(int32 r) {
+        if (r == 1) { return FrameRole.Stdlib; }
+        if (r == 2) { return FrameRole.Runtime; }
+        return FrameRole.User;
+    }
+    private static String roleName(FrameRole r) {
+        if (r == FrameRole.Stdlib) { return "Stdlib"; }
+        if (r == FrameRole.Runtime) { return "Runtime"; }
+        return "User";
+    }
     @Native("__cajeta_diag_code_len")    private static int32 diagCodeLen(Object o);
     @Native("__cajeta_diag_code_into")   private static void  diagCodeInto(Object o, int8[] out);
     @Native("__cajeta_json_escape_len")  private static int32 jsonEscapeLen(String s);
@@ -151,8 +190,17 @@ public class Throwable {
         while (i < fn) {
             if (i > 0) { j = j + ","; }
             StackFrame f = frames[i];
+            String dt = f.declaringType;
+            String mn = f.method;
+            String fl = f.file;
+            int32 ln = f.line;
             int64 addr = f.nativeAddress;
-            j = j + "{\"nativeAddress\":" + addr + "}";
+            j = j + "{\"declaringType\":\"" + jsonEscape(dt) + "\""
+                  + ",\"method\":\"" + jsonEscape(mn) + "\""
+                  + ",\"file\":\"" + jsonEscape(fl) + "\""
+                  + ",\"line\":" + ln
+                  + ",\"role\":\"" + roleName(f.role) + "\""
+                  + ",\"nativeAddress\":" + addr + "}";
             i = i + 1;
         }
         j = j + "]}";
@@ -166,12 +214,30 @@ public class Throwable {
      * native return address only; symbol + `file:line` are follow-ups (§4).
      */
     public StackFrame[] getStackTrace() {
+        // Preferred: semantic frames from the line-info shadow snapshot.
+        int32 sc = shadowCount(this);
+        if (sc > 0) {
+            StackFrame[] frames = heap StackFrame[sc];
+            int32 i = 0;
+            while (i < sc) {
+                int64 d = shadowDesc(this, i);
+                int32 ln = shadowLine(this, i);
+                String t = descType(d);
+                String m = descMethod(d);
+                String f = descFile(d);
+                FrameRole role = roleOf(descRole(d));
+                frames[i] = heap StackFrame(#t, #m, #f, ln, role, 0);
+                i = i + 1;
+            }
+            return frames;
+        }
+        // Fallback: raw return-address frames (line-info off / fiber / Windows).
         int64[] addrs = heap int64[64];
         int32 n = getTraceNative(this, addrs, 64);
         StackFrame[] frames = heap StackFrame[n];
         int32 i = 0;
         while (i < n) {
-            frames[i] = heap StackFrame(addrs[i]);
+            frames[i] = heap StackFrame("", "", "", 0, FrameRole.Runtime, addrs[i]);
             i = i + 1;
         }
         return frames;

@@ -11,6 +11,7 @@
 #include "expression/AggregateInitializerExpression.h"
 #include "../compile/CajetaModule.h"
 #include "cajeta/dbg/DebugCodegen.h"
+#include "cajeta/dbg/LineInfoCodegen.h"
 #include "../field/HeapField.h"
 #include "../field/StackField.h"
 #include "../field/ParameterField.h"
@@ -1359,6 +1360,9 @@ namespace cajeta {
         // explicit-return chokepoint that funnels through here. No-op unless
         // --debug-info.
         dbg::emitDbgFrameLeave(module);
+        // diagnostic-exceptions U3: pop the line-info shadow frame on this return
+        // path (no-op unless --line-info). Same every-return coverage as above.
+        dbg::emitLineLeave(module);
         auto m = module->getCurrentMethod();
         if (!m) return;
         llvm::AllocaInst* mark = m->getScopeWatermark();

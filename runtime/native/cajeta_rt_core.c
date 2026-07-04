@@ -366,6 +366,70 @@ void __cajeta_dbg_frame_leave(void) {
     free(f);
 }
 
+// --- diagnostic-exceptions Unit 3: line-info shadow stack --------------------
+//
+// A lightweight per-thread stack mirroring the active Cajeta call frames, used
+// to attach exact `file:line` to captured stack traces WITHOUT DWARF. Codegen
+// (gated `--line-info`) emits `__cajeta_line_enter(desc)` at each method
+// prologue, `__cajeta_line_mark(line)` at each statement boundary, and
+// `__cajeta_line_leave()` on every normal return path. `desc` is a codegen-
+// emitted `{typeName, methodName, fileName}` constant (program lifetime). On a
+// throw the runtime snapshots this stack into the trace side table (see
+// `__cajeta_trace_record`), and `getStackTrace()` resolves each frame from it.
+//
+// Unlike the debugger frame chain above, this never mallocs (fixed array) and
+// stores the line directly (no compiler-side loc table), so it resolves fully
+// in an AOT exe. `leave` fires only on normal returns; an exception unwind is
+// handled by restoring `__cajeta_shadow_top` to the catching try-frame's
+// watermark in `__cajeta_throw` (see cajeta_rt_io.c) — so a throw-across-frames
+// leaves no stale entries. Fiber line-info is deferred (spec §1.5): a fiber's
+// enter/mark/leave run on the carrier thread's TLS stack, which can leave stale
+// entries across a yield — bounded + memory-safe (fixed array), never resolved
+// for in-fiber throws (trace capture already skips fibers).
+typedef struct {
+    const char* typeName;    // "test.App"
+    const char* methodName;  // "run"
+    const char* fileName;    // "App.cajeta"
+} CajetaFrameDesc;
+
+typedef struct {
+    const CajetaFrameDesc* desc;
+    int32_t line;
+} CajetaShadowFrame;
+
+#define CAJETA_SHADOW_MAX 512
+static __thread CajetaShadowFrame __cajeta_shadow[CAJETA_SHADOW_MAX];
+static __thread int32_t __cajeta_shadow_top = 0;
+
+void __cajeta_line_enter(const void* desc) {
+    int32_t t = __cajeta_shadow_top;
+    if (t >= 0 && t < CAJETA_SHADOW_MAX) {
+        __cajeta_shadow[t].desc = (const CajetaFrameDesc*) desc;
+        __cajeta_shadow[t].line = 0;
+    }
+    __cajeta_shadow_top = t + 1;   // count past the cap so leave stays balanced
+}
+void __cajeta_line_mark(int32_t line) {
+    int32_t t = __cajeta_shadow_top;
+    if (t > 0 && t <= CAJETA_SHADOW_MAX) __cajeta_shadow[t - 1].line = line;
+}
+void __cajeta_line_leave(void) {
+    if (__cajeta_shadow_top > 0) __cajeta_shadow_top--;
+}
+int32_t __cajeta_shadow_get_top(void) { return __cajeta_shadow_top; }
+void __cajeta_shadow_set_top(int32_t watermark) {
+    if (watermark >= 0) __cajeta_shadow_top = watermark;
+}
+// Snapshot the live shadow frames innermost-first into `out` (caller-sized to
+// `max`), returning the number copied. `out[0]` is the throw-site frame.
+int32_t __cajeta_shadow_snapshot(CajetaShadowFrame* out, int32_t max) {
+    int32_t n = __cajeta_shadow_top;
+    if (n > CAJETA_SHADOW_MAX) n = CAJETA_SHADOW_MAX;  // deepest-past-cap unstored
+    int32_t w = 0;
+    for (int32_t i = n - 1; i >= 0 && w < max; i--) out[w++] = __cajeta_shadow[i];
+    return w;
+}
+
 void __cajeta_dbg_local(const char* name, const char* type, void* addr,
                         uint8_t alloc, uint8_t ownership, void* drop_entry) {
     struct cajeta_dbg_frame** top = __cajeta_dbg_top_ptr();

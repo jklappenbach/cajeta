@@ -153,6 +153,15 @@ namespace cajeta {
         // ordinary builds and the existing test suite are unaffected.
         bool            debugInfo           = false;
 
+        // Emit the line-info shadow-stack calls (__cajeta_line_enter/mark/leave)
+        // + a per-method #FrameDesc so a captured stack trace resolves to
+        // Package.Class.method(File.cajeta:NN) with NO debug info (diagnostic-
+        // exceptions §5/§8). Default ON in every flavor (semantic traces are the
+        // ergonomic default); --line-info=off drops all of it for zero cost.
+        // Perf: v1 marks each statement with a call — measure before relying on
+        // default-on in release (see the plan's Unit 3 perf note).
+        bool            lineInfo            = true;
+
         // ----- experimental perf -----
         // Skip the per-method prologue __cajeta_scope_enter() (the implicit
         // function-body structured-concurrency frame). That frame heap-allocs

@@ -26,6 +26,7 @@
 #include "../field/ParameterField.h"
 #include "../field/BoundClosureField.h"
 #include "cajeta/dbg/DebugCodegen.h"
+#include "cajeta/dbg/LineInfoCodegen.h"
 #include "../util/Printer.h"
 #include "../xpu/core/KernelArgTrait.h"
 #include "../xpu/core/XpuAttributes.h"
@@ -1807,6 +1808,15 @@ namespace cajeta {
         // path (emitScopeExitToWatermark + the synthetic fall-through below).
         dbg::emitDbgFrameEnter(module, getLlvmSymbolName());
 
+        // diagnostic-exceptions U3: push a line-info shadow frame carrying this
+        // method's type/method/file (no-op unless --line-info). Paired with
+        // __cajeta_line_leave on every return path (emitScopeExitToWatermark).
+        {
+            std::string typeName = (parent && parent->getQName())
+                ? parent->getQName()->toCanonical() : std::string();
+            dbg::emitLineEnter(module, typeName, getName(), module->getSourcePath());
+        }
+
         // Register the parameters as locals in the debug frame. Materializing
         // their slots here (getOrCreateAllocation) is the same store-arg-to-
         // alloca the body would do on first use; doing it at entry just makes
@@ -2276,6 +2286,10 @@ namespace cajeta {
             // return path (mirrors the explicit-return path in
             // emitScopeExitToWatermark). No-op unless --debug-info.
             dbg::emitDbgFrameLeave(module);
+            // U3: pop the line-info shadow frame on this fall-through return too
+            // (else a fall-through method — e.g. a constructor — leaks its frame
+            // and pollutes the next throw's trace). No-op unless --line-info.
+            dbg::emitLineLeave(module);
             // Fire scope-end drops before the synthetic return so the chain is
             // unwound the same way an explicit `return` would do it.
             emitOwnerDrops(module);

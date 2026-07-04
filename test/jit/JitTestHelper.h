@@ -62,6 +62,10 @@ public:
         // throw records its native stack via backtrace(3)); tests
         // verifying the off path explicitly opt out.
         bool stackTraceCaptureEnabled = true;
+        // Line-info shadow-stack emission (--line-info). Default true (the
+        // compiler default), so getStackTrace() yields semantic frames. Tests
+        // exercising the address-only fallback set this false.
+        bool lineInfoEnabled = true;
         // XPU device backend(s) to register @Kernels for and bundle in the
         // runtime manifest. Empty defaults to {Nvptx} (the legacy NVIDIA
         // host-launch path). The CPU dispatcher tests set {Cpu} to exercise

@@ -1,0 +1,17 @@
+package cajeta.error;
+
+/**
+ * Classifies a `StackFrame` by which layer of code it belongs to, so a reader
+ * (developer or agent) can visually separate their own code from library and
+ * runtime frames in a trace (diagnostic-exceptions §5).
+ */
+public enum FrameRole {
+    /** Application code — a type outside the `cajeta.*` standard library. */
+    User,
+
+    /** A `cajeta.*` standard-library frame. */
+    Stdlib,
+
+    /** A runtime/native frame with no resolved Cajeta descriptor. */
+    Runtime
+}
