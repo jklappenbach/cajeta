@@ -1610,6 +1610,16 @@ namespace cajeta {
                         // proof of ownership; no runtime moveMask read is
                         // needed. Demote such an identifier out of the lvalue
                         // (borrow-resolve) class so it transfers as-is below.
+                        // element-ownership 3C — a PLAIN formal source may
+                        // still be a runtime transfer (`m.put(#k, v)` on a
+                        // `K key` formal: the dual-role moveMask contract).
+                        // Its mask bit (index among non-`this` formals)
+                        // decides move-vs-resolve at RUNTIME — the ungated
+                        // copy was the 15.12.1 strand (slot got a copy, the
+                        // transferred original's drop was already
+                        // deactivated at the call). Unit 4/8's static `#K`
+                        // formals retire the runtime branch.
+                        int maskBit = -1;
                         if (rhsIsLvalue) {
                             if (auto idRhs = dynamic_pointer_cast<
                                     IdentifierExpression>(rhsAst)) {
@@ -1618,10 +1628,21 @@ namespace cajeta {
                                         sc->getField(idRhs->getTextValue());
                                     if (auto pf = dynamic_pointer_cast<
                                             ParameterField>(srcField)) {
-                                        if (pf->getFormalParameter()
-                                                && pf->getFormalParameter()
-                                                    ->isTransferred()) {
+                                        auto fp = pf->getFormalParameter();
+                                        if (fp && fp->isTransferred()) {
                                             rhsIsLvalue = false;
+                                        } else if (fp) {
+                                            if (auto cm = module->getCurrentMethod()) {
+                                                int idx = 0;
+                                                for (auto& p : cm->getParameterList()) {
+                                                    if (!p || p->getName() == "this") continue;
+                                                    if (p->getName() == fp->getName()) {
+                                                        maskBit = idx;
+                                                        break;
+                                                    }
+                                                    idx++;
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -1631,16 +1652,56 @@ namespace cajeta {
                             llvm::Function* resolveFn = rhsIsLvalue
                                 ? module->getRuntimeFunction("__cajeta_string_resolve")
                                 : nullptr;
+                            llvm::Function* maskGetFn =
+                                (rhsIsLvalue && resolveFn && maskBit >= 0)
+                                ? module->getRuntimeFunction("__cajeta_move_mask_get")
+                                : nullptr;
                             llvm::Value* srcWrapper = loadR(rhs);
                             // Lvalue RHS: the source keeps its wrapper — the
                             // field takes a FRESH resolved one (copy ≤
                             // threshold / stake on a large heap root / static
                             // alias). Rvalue RHS (literal, call result,
                             // concat, `#`-move): the wrapper transfers as-is.
-                            llvm::Value* fresh = (rhsIsLvalue && resolveFn)
-                                ? builder->CreateCall(resolveFn, {srcWrapper},
-                                                      "str_resolve")
-                                : srcWrapper;
+                            // Plain-formal lvalue: runtime moveMask branch —
+                            // move when the caller transferred, resolve
+                            // otherwise.
+                            llvm::Value* fresh = nullptr;
+                            if (maskGetFn) {
+                                auto& lctx = *module->getLlvmContext();
+                                llvm::Value* mask = builder->CreateCall(
+                                    maskGetFn, {}, "fld_mvm");
+                                llvm::Value* bit = builder->CreateAnd(
+                                    builder->CreateLShr(mask, maskBit),
+                                    llvm::ConstantInt::get(
+                                        llvm::Type::getInt64Ty(lctx), 1));
+                                llvm::Value* isMove = builder->CreateICmpNE(
+                                    bit, llvm::ConstantInt::get(
+                                        llvm::Type::getInt64Ty(lctx), 0),
+                                    "fld_is_move");
+                                llvm::Function* fnOwner =
+                                    builder->GetInsertBlock()->getParent();
+                                auto* bbResolve = llvm::BasicBlock::Create(
+                                    lctx, "fld_resolve", fnOwner);
+                                auto* bbStore = llvm::BasicBlock::Create(
+                                    lctx, "fld_store", fnOwner);
+                                auto* bbFrom = builder->GetInsertBlock();
+                                builder->CreateCondBr(isMove, bbStore, bbResolve);
+                                builder->SetInsertPoint(bbResolve);
+                                llvm::Value* resolved = builder->CreateCall(
+                                    resolveFn, {srcWrapper}, "fld_resolved");
+                                builder->CreateBr(bbStore);
+                                builder->SetInsertPoint(bbStore);
+                                llvm::PHINode* phi = builder->CreatePHI(
+                                    llvm::PointerType::get(lctx, 0), 2, "fld_fresh");
+                                phi->addIncoming(srcWrapper, bbFrom);
+                                phi->addIncoming(resolved, bbResolve);
+                                fresh = phi;
+                            } else {
+                                fresh = (rhsIsLvalue && resolveFn)
+                                    ? builder->CreateCall(resolveFn, {srcWrapper},
+                                                          "str_resolve")
+                                    : srcWrapper;
+                            }
                             // 4.2.3 visibility lint: each silent resolution
                             // is reported as a NOTE (never an error) so the
                             // copy/share cost is visible; `#`-transfer makes
@@ -1693,6 +1754,146 @@ namespace cajeta {
                             builder->CreateStore(fresh, lhs);
                             result = fresh;
                             break;
+                        }
+                    }
+                }
+                // element-ownership §7.1.3 (plan 3.1.3–3.1.4) — borrow→owning
+                // materialize at the ARRAY-ELEMENT String store (`data[i] = v`
+                // in an owning monomorph's mutator). 3B's teardown walk drops
+                // whatever an owning slot holds, so a raw borrowed wrapper
+                // stored here dangles once the source scope exits and then
+                // double-frees at teardown. Gate mirrors the field-store
+                // above: borrow lvalue source → resolve to a fresh slot-owned
+                // wrapper; `#`-formal identifier (owned) or rvalue → transfer
+                // as-is. No old-drop: the array header word is CAPACITY, so
+                // slots past the live count hold garbage — overwrite drops
+                // belong to mutators that know the live bound (HashMap's
+                // replace arm runs its own Cajeta.dropValue; Unit 8 sweeps
+                // the rest).
+                if (auto idxLhs = dynamic_pointer_cast<ArrayIndexExpression>(lhsAst)) {
+                    auto elemCls = dynamic_pointer_cast<CajetaClass>(
+                        lhsAst->getResolvedType());
+                    bool elemIsString = elemCls && elemCls->getQName()
+                        && elemCls->getQName()->getTypeName() == "String"
+                        && elemCls->getQName()->getPackageName() == "cajeta.lang";
+                    if (elemIsString && rhsAst && !idxLhs->getChildren().empty()) {
+                        std::string baseField;
+                        auto& baseAst = idxLhs->getChildren()[0];
+                        if (auto dotBase = dynamic_pointer_cast<DotExpression>(baseAst)) {
+                            baseField = dotBase->getIdentifier();
+                        } else if (auto idBase = dynamic_pointer_cast<
+                                       IdentifierExpression>(baseAst)) {
+                            baseField = idBase->getTextValue();
+                        }
+                        bool owningSlot = false;
+                        if (!baseField.empty()) {
+                            if (auto cm = module->getCurrentMethod()) {
+                                if (auto owner = cm->getParent()) {
+                                    auto pit = owner->getProperties().find(baseField);
+                                    if (pit != owner->getProperties().end()
+                                            && pit->second) {
+                                        int k = pit->second
+                                            ->getOriginElementTypeParamIndex();
+                                        owningSlot = k >= 0
+                                            && owner->isTypeArgumentOwning((size_t) k);
+                                    }
+                                }
+                            }
+                        }
+                        if (owningSlot) {
+                            bool rhsIsBorrowLvalue =
+                                dynamic_pointer_cast<IdentifierExpression>(rhsAst)
+                                || dynamic_pointer_cast<DotExpression>(rhsAst)
+                                || dynamic_pointer_cast<ArrayIndexExpression>(rhsAst);
+                            // A PLAIN formal source may still be a runtime
+                            // transfer (`list.add(#s)` on a `T v` formal — the
+                            // dual-role moveMask contract): its mask bit
+                            // (index among non-`this` formals) decides
+                            // move-vs-materialize at RUNTIME. A `#`-formal is
+                            // a static move; a local/field lvalue is a static
+                            // borrow. Unit 4/8's `#K` formals retire the
+                            // runtime branch.
+                            int maskBit = -1;
+                            if (rhsIsBorrowLvalue) {
+                                if (auto idRhs = dynamic_pointer_cast<
+                                        IdentifierExpression>(rhsAst)) {
+                                    if (auto sc = module->getScopeStack().peek()) {
+                                        FieldPtr srcField =
+                                            sc->getField(idRhs->getTextValue());
+                                        if (auto pf = dynamic_pointer_cast<
+                                                ParameterField>(srcField)) {
+                                            auto fp = pf->getFormalParameter();
+                                            if (fp && fp->isTransferred()) {
+                                                rhsIsBorrowLvalue = false;
+                                            } else if (fp) {
+                                                if (auto cm = module->getCurrentMethod()) {
+                                                    int idx = 0;
+                                                    for (auto& p : cm->getParameterList()) {
+                                                        if (!p || p->getName() == "this") continue;
+                                                        if (p->getName() == fp->getName()) {
+                                                            maskBit = idx;
+                                                            break;
+                                                        }
+                                                        idx++;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if (rhsIsBorrowLvalue) {
+                                llvm::Function* resolveFn =
+                                    module->getRuntimeFunction(
+                                        "__cajeta_string_resolve");
+                                llvm::Function* maskGetFn = maskBit >= 0
+                                    ? module->getRuntimeFunction(
+                                          "__cajeta_move_mask_get")
+                                    : nullptr;
+                                if (resolveFn) {
+                                    auto& lctx = *module->getLlvmContext();
+                                    llvm::Value* srcWrapper = loadR(rhs);
+                                    llvm::Value* fresh = nullptr;
+                                    if (maskGetFn) {
+                                        // if ((moveMask >> bit) & 1) move else resolve
+                                        llvm::Value* mask = builder->CreateCall(
+                                            maskGetFn, {}, "elem_mvm");
+                                        llvm::Value* bit = builder->CreateAnd(
+                                            builder->CreateLShr(mask, maskBit),
+                                            llvm::ConstantInt::get(
+                                                llvm::Type::getInt64Ty(lctx), 1));
+                                        llvm::Value* isMove = builder->CreateICmpNE(
+                                            bit, llvm::ConstantInt::get(
+                                                llvm::Type::getInt64Ty(lctx), 0),
+                                            "elem_is_move");
+                                        llvm::Function* fnOwner =
+                                            builder->GetInsertBlock()->getParent();
+                                        auto* bbResolve = llvm::BasicBlock::Create(
+                                            lctx, "elem_resolve", fnOwner);
+                                        auto* bbStore = llvm::BasicBlock::Create(
+                                            lctx, "elem_store", fnOwner);
+                                        auto* bbFrom = builder->GetInsertBlock();
+                                        builder->CreateCondBr(isMove, bbStore, bbResolve);
+                                        builder->SetInsertPoint(bbResolve);
+                                        llvm::Value* resolved = builder->CreateCall(
+                                            resolveFn, {srcWrapper}, "elem_resolved");
+                                        builder->CreateBr(bbStore);
+                                        builder->SetInsertPoint(bbStore);
+                                        llvm::PHINode* phi = builder->CreatePHI(
+                                            llvm::PointerType::get(lctx, 0), 2,
+                                            "elem_fresh");
+                                        phi->addIncoming(srcWrapper, bbFrom);
+                                        phi->addIncoming(resolved, bbResolve);
+                                        fresh = phi;
+                                    } else {
+                                        fresh = builder->CreateCall(
+                                            resolveFn, {srcWrapper}, "elem_resolve");
+                                    }
+                                    builder->CreateStore(fresh, lhs);
+                                    result = fresh;
+                                    break;
+                                }
+                            }
                         }
                     }
                 }
