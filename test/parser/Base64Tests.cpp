@@ -46,11 +46,12 @@ std::string runEncode(const std::string& input) {
         "import cajeta.codec.Base64;\n"
         "import cajeta.lang.String;\n"
         "public final class D {\n"
-        "    public static pointer run() {\n"
+        "    public static #int8[] run() {\n"
         + emitDataArray(input) +
         "        String s = Base64.encode(data, "
         + std::to_string(input.size()) + "L);\n"
-        "        return s.bytes;\n"
+        "        int8[] out = s.toBytes();\n"
+        "        return #out;\n"
         "    }\n"
         "}\n";
     auto jit = CajetaJit::compile(src, "test.D");
@@ -69,11 +70,12 @@ std::string runEncodeUrlSafe(const std::string& input) {
         "import cajeta.codec.Base64;\n"
         "import cajeta.lang.String;\n"
         "public final class D {\n"
-        "    public static pointer run() {\n"
+        "    public static #int8[] run() {\n"
         + emitDataArray(input) +
         "        String s = Base64.encodeUrlSafe(data, "
         + std::to_string(input.size()) + "L);\n"
-        "        return s.bytes;\n"
+        "        int8[] out = s.toBytes();\n"
+        "        return #out;\n"
         "    }\n"
         "}\n";
     auto jit = CajetaJit::compile(src, "test.D");

@@ -30,14 +30,15 @@ std::string oneShotHex(const std::string& input) {
         "import cajeta.hash.Sha256;\n"
         "import cajeta.lang.String;\n"
         "public final class D {\n"
-        "    public static pointer run() {\n"
+        "    public static #int8[] run() {\n"
         "        int8[] data = heap int8[" + std::to_string(input.size()) + "];\n";
     for (size_t i = 0; i < input.size(); i++) {
         src += "        data[" + std::to_string(i) + "L] = (int8) "
              + std::to_string((int)(signed char) input[i]) + ";\n";
     }
     src += "        String s = Sha256.hashHex(data, " + std::to_string(input.size()) + "L);\n"
-        "        return s.bytes;\n"
+        "        int8[] out = s.toBytes();\n"
+        "        return #out;\n"
         "    }\n"
         "}\n";
     auto jit = CajetaJit::compile(src, "test.D");
@@ -59,13 +60,14 @@ std::string oneShotHexRepeated(int val, size_t count) {
         "import cajeta.hash.Sha256;\n"
         "import cajeta.lang.String;\n"
         "public final class D {\n"
-        "    public static pointer run() {\n"
+        "    public static #int8[] run() {\n"
         "        int64 n = " + std::to_string(count) + "L;\n"
         "        int8[] data = heap int8[n];\n"
         "        int64 i = 0L;\n"
         "        while (i < n) { data[i] = (int8) " + std::to_string(val) + "; i = i + 1L; }\n"
         "        String s = Sha256.hashHex(data, n);\n"
-        "        return s.bytes;\n"
+        "        int8[] out = s.toBytes();\n"
+        "        return #out;\n"
         "    }\n"
         "}\n";
     auto jit = CajetaJit::compile(src, "test.D");
@@ -87,7 +89,7 @@ std::string incrementalHexByteAtATime(const std::string& input) {
         "import cajeta.hash.Sha256;\n"
         "import cajeta.lang.String;\n"
         "public final class D {\n"
-        "    public static pointer run() {\n"
+        "    public static #int8[] run() {\n"
         "        Sha256 h = heap Sha256();\n"
         "        int8[] one = heap int8[1];\n";
     for (size_t i = 0; i < input.size(); i++) {
@@ -96,7 +98,8 @@ std::string incrementalHexByteAtATime(const std::string& input) {
     }
     src +=
         "        String s = h.hex();\n"
-        "        return s.bytes;\n"
+        "        int8[] out = s.toBytes();\n"
+        "        return #out;\n"
         "    }\n"
         "}\n";
     auto jit = CajetaJit::compile(src, "test.D");
@@ -201,13 +204,14 @@ TEST(Sha256Tests, instanceHexMatchesOneShot) {
         "import cajeta.hash.Sha256;\n"
         "import cajeta.lang.String;\n"
         "public final class D {\n"
-        "    public static pointer run() {\n"
+        "    public static #int8[] run() {\n"
         "        int8[] data = heap int8[3];\n"
         "        data[0L] = (int8) 97; data[1L] = (int8) 98; data[2L] = (int8) 99;\n"
         "        Sha256 h = heap Sha256();\n"
         "        h.update(data, 3L);\n"
         "        String s = h.hex();\n"
-        "        return s.bytes;\n"
+        "        int8[] out = s.toBytes();\n"
+        "        return #out;\n"
         "    }\n"
         "}\n";
     auto jit = CajetaJit::compile(src, "test.D");

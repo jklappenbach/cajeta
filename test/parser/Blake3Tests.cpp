@@ -20,13 +20,14 @@ std::string b3hex(size_t count) {
         "import cajeta.hash.Blake3;\n"
         "import cajeta.lang.String;\n"
         "public final class D {\n"
-        "    public static pointer run() {\n"
+        "    public static #int8[] run() {\n"
         "        int64 n = " + std::to_string(count) + "L;\n"
         "        int8[] data = heap int8[n];\n"
         "        int64 i = 0L;\n"
         "        while (i < n) { data[i] = (int8) (i % 251L); i = i + 1L; }\n"
         "        String s = Blake3.hashHex(data, n);\n"
-        "        return s.bytes;\n"
+        "        int8[] out = s.toBytes();\n"
+        "        return #out;\n"
         "    }\n"
         "}\n";
     auto jit = CajetaJit::compile(src, "test.D");
@@ -114,7 +115,7 @@ TEST(Blake3Tests, xofExtendsHash) {
         "import cajeta.hash.Blake3;\n"
         "import cajeta.lang.String;\n"
         "public final class D {\n"
-        "    public static pointer run() {\n"
+        "    public static #int8[] run() {\n"
         "        int8[] data = heap int8[0];\n"
         "        int8[] wide = heap int8[64];\n"
         "        Blake3.hashXof(data, 0L, wide);\n"
@@ -132,7 +133,8 @@ TEST(Blake3Tests, xofExtendsHash) {
         "            j = j + 1L;\n"
         "        }\n"
         "        String s = heap String(#hex, 128);\n"
-        "        return s.bytes;\n"
+        "        int8[] out = s.toBytes();\n"
+        "        return #out;\n"
         "    }\n"
         "}\n";
     auto jit = CajetaJit::compile(src, "test.D");

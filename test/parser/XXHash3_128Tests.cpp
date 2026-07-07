@@ -79,11 +79,12 @@ TEST(XXHash3_128Tests, hexCanonicalForm) {
         "import cajeta.hash.XXHash3;\n"
         "import cajeta.lang.String;\n"
         "public final class D {\n"
-        "    public static pointer run() {\n"
+        "    public static #int8[] run() {\n"
         "        int8[] data = heap int8[3];\n"
         "        data[0L] = (int8) 97; data[1L] = (int8) 98; data[2L] = (int8) 99;\n"
         "        String s = XXHash3.hash128HexSeeded(data, 3L, 0L);\n"
-        "        return s.bytes;\n"
+        "        int8[] out = s.toBytes();\n"
+        "        return #out;\n"
         "    }\n"
         "}\n";
     auto jit = CajetaJit::compile(src, "test.D");

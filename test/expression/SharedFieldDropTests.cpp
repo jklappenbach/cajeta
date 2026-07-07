@@ -59,16 +59,18 @@ TEST(SharedFieldDropTests, fieldHeldStakeReleasesOnObjectDrop) {
 }
 
 // 3.1.3 — slices held in a container read correctly and the scope exits
-// cleanly (no double free, no dangle). NOTE: a liveCount-balance assert is
-// BLOCKED on a pre-existing container gap discovered here — #-taken elements
-// of ArrayList<String> (and local String[]) are NOT reclaimed on drop today,
-// for OWNED strings just as for slices (verified by owned-string controls).
-// Slices behave at parity; the balance assert lands when that gap is fixed.
+// cleanly (no double free, no dangle), and the liveCount balance holds.
+// The balance assert was BLOCKED on the container element-drop gap (slices
+// 9.2.1); element-ownership Unit 3 closed it — an OWNING instantiation
+// (`ArrayList<#String>`) drops its elements at teardown, so `#`-transferred
+// slices belong in one. (The borrow instantiation deliberately does not
+// drop — see OwnershipLeakProbe.arrayListBorrowElementsUntouched.)
 TEST(SharedFieldDropTests, containerHeldStakesRelease) {
     EXPECT_EQ(runJit(
+        "int64 base = Cajeta.liveCount();\n"
         "{\n" +
         std::string(kDyn) +
-        "    ArrayList<String> parts = heap ArrayList<String>();\n"
+        "    ArrayList<#String> parts = heap ArrayList<#String>();\n"
         "    String p0 = s.substring(0, 10);\n"
         "    String p1 = s.substring(10, 20);\n"
         "    String p2 = s.substring(20, 36);\n"
@@ -80,6 +82,8 @@ TEST(SharedFieldDropTests, containerHeldStakesRelease) {
         "    String e2 = parts.get(2);\n"
         "    if (!e2.equals(\"uvwxyz0123456789\")) { return -2; }\n"
         "}\n"
+        "int64 after = Cajeta.liveCount();\n"
+        "if (after != base) { return -3; }\n"
         "return 1;"), 1);
 }
 
