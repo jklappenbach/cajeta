@@ -48,7 +48,7 @@ public class Optional<T> {
 ```
 
 Both forms appear in `ToDo.md` Priority 2 §§ 2–3 and §7, and in
-`Features.md` row L-22. The rest of the stdlib has been written around
+`specs/Features.md` row L-22. The rest of the stdlib has been written around
 their absence: `Stream<T>.reduce(T, (T, T) -> T)` is the same-type
 degenerate case of fold; `Optional<int32>` callers write `heap
 Optional<int32>(true, 42)` instead of `Optional<int32>.Some(42)`.
@@ -626,7 +626,7 @@ Once this lands, these existing notes need to be revised:
   parameters (P2.3)" gets a link to this doc.
 - `ToDo.md` § Priority 2 §§ 2, 3, 7 — mark these as unblocked once
   Phase 1 lands.
-- `Features.md` row L-22 — flip to implemented once Phase 2 lands.
+- `specs/Features.md` row L-22 — flip to implemented once Phase 2 lands.
 
 ## Status
 

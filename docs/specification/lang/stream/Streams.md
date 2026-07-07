@@ -256,7 +256,7 @@ call (present case) and empty thereafter.
 > Implementation status: today `Optional<T>` does NOT yet multiple-
 > inherit `Stream<T>` (see `runtime/src/cajeta/lang/Optional.cajeta` —
 > no `extends Stream<T>` clause). Lands once multiple inheritance is
-> verified end-to-end on the codegen path. Tracked in Features.md.
+> verified end-to-end on the codegen path. Tracked in specs/Features.md.
 
 ## Constructing streams from collections
 
@@ -295,7 +295,7 @@ Complete features have pinned test files:
 
 ## Open items
 
-Tracked in root `Features.md`:
+Tracked in `specs/Features.md`:
 
 - Multiple-inheritance for `Optional<T>` to `extends Stream<T>` —
   ergonomic but blocked on end-to-end multi-inheritance codegen.

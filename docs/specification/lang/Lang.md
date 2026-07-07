@@ -186,7 +186,7 @@ Optional<int32> hit = xs.stream().findFirst((int32 v) -> { return v > 3; });
 
 Construction, `isPresent`/`isEmpty`/`get`/`orElse` — shipped.
 `get()` on empty throws `CAJETA_ERROR_NONE_UNWRAP`.
-Multiple-inherits-Stream — not yet, tracked in Features.md.
+Multiple-inherits-Stream — not yet, tracked in specs/Features.md.
 Pinned by `test/parser/OptionalTests.cpp` (6 tests) and
 `test/parser/OptionalAndAllocateTests.cpp` (6 tests).
 

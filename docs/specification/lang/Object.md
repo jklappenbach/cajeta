@@ -28,7 +28,7 @@ declared with native stubs — `__cajeta_object_to_string` and
 `runtime/native/cajeta_runtime.c`). Structural synthesis ships via
 the `@AutoHash` and `@ToString` annotations (v1, primitive fields
 only — see below). `clone` synthesis is tracked in
-[Features.md](../../Features.md).
+specs/Features.md.
 
 > **Note on `operator==`.** It is declared as a **static** two-arg
 > operator (`operator==(Object a, Object b)`), not an instance
@@ -256,7 +256,7 @@ default is intentionally debug-shaped, not presentation-quality —
 production user-facing strings are localization concerns and
 shouldn't fall out of `toString` automatically.
 
-Tracked in Features.md.
+Tracked in specs/Features.md.
 
 ---
 

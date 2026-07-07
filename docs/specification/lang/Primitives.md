@@ -126,7 +126,7 @@ Pinned by `test/expression/ConversionIntrinsicTests.cpp`,
 
 ## Open items
 
-Tracked in Features.md:
+Tracked in specs/Features.md:
 
 - Arithmetic/conversion helpers for the low-precision float formats
   (`float4*`/`float6*`/`float8*` are storage-only today)

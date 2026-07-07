@@ -9,7 +9,7 @@ write end. Cajeta exposes two kinds:
 - **Named pipe / FIFO** (`Fifo`) — a filesystem rendezvous (`mkfifo`) that two
   *unrelated* processes open by path. POSIX-only, niche.
 
-Status: **designed, not implemented.** Tracked in `Features.md`; implementation
+Status: **designed, not implemented.** Tracked in `specs/Features.md`; implementation
 plan in `plans/io/pipes-plan.md`. Sibling concern to `cajeta.io.file` and
 `cajeta.process`.
 

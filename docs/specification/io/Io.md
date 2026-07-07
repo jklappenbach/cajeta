@@ -5,7 +5,7 @@ members are the shared abstractions — **buffers**, **views**, **streams** — 
 files, pipes, network, and subprocess alike; concrete I/O kinds live in nested
 subpackages so a file-only program doesn't drag in a TLS stack.
 
-Status: **designed, not implemented**. Tracked in Features.md.
+Status: **designed, not implemented**. Tracked in specs/Features.md.
 
 ## Subpackages
 
@@ -109,7 +109,7 @@ while (src.read(buf) > 0) { dst.write(buf); }
 
 All of `cajeta.io` (Buffer, BufferChain, views, `Stream<T>`, InputStream/
 OutputStream/Reader/Writer) is unimplemented. Lands with the fiber reactor and the
-first concrete I/O subpackage that needs it. Tracked in Features.md.
+first concrete I/O subpackage that needs it. Tracked in specs/Features.md.
 
 ## See also
 

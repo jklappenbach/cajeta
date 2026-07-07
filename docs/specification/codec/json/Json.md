@@ -17,7 +17,7 @@ compile-time synthesizer all exist under
 and are covered by tests (`test/parser/Json*Tests.cpp`). The forward
 items called out below (options structs, a `JsonNumber` wrapper, escape
 *decoding*, relaxed mode) are **planned**, not built — each is flagged
-inline. Features.md S-1101 / S-1102.
+inline. specs/Features.md S-1101 / S-1102.
 
 ## Performance at a glance
 
@@ -1015,4 +1015,4 @@ scalar baseline first and layer SIMD on later without API breakage.
   today).
 - `docs/specification/lang/MethodLevelTemplate.md` — `Json.parse<T>` /
   `Json.toBytes` follow the standard final-method-template contract.
-- `Features.md` S-1101 (this spec), S-1102 (the implementation).
+- `specs/Features.md` S-1101 (this spec), S-1102 (the implementation).

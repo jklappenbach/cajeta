@@ -6,7 +6,7 @@ exit status). Stdin / stdout / stderr stream through the same
 `InputStream` / `OutputStream` interfaces used everywhere else, so
 the pumps are fiber-aware automatically.
 
-Status: **designed, not implemented**. Tracked in Features.md.
+Status: **designed, not implemented**. Tracked in specs/Features.md.
 
 ## Surface
 
@@ -82,6 +82,6 @@ redirects to a file fd; `Stdio.INHERIT` shares the parent's; `Stdio.NULL` uses
 
 ## Open items
 
-All of `cajeta.process` is unimplemented. Tracked in Features.md.
+All of `cajeta.process` is unimplemented. Tracked in specs/Features.md.
 Lands with the fiber reactor (subprocess waits park the calling
 fiber on SIGCHLD).

@@ -39,7 +39,7 @@ throw sites with auto-print on uncaught.
 > non-blocking fd registration / wait. Atomics ship as
 > `cajeta.concurrent.AtomicInt32/64` (R8.1).
 
-**R5-C / R5-D — shipped (named here precisely, since `Features.md` S-805 long read "designed"):**
+**R5-C / R5-D — shipped (named here precisely, since `specs/Features.md` S-805 long read "designed"):**
 - [x] R5-C cooperative cancellation — scope sets each surviving child fiber's `cancel_with` marker to the **trigger Throwable** (the first thrower); `__cajeta_task_wait` re-raises that trigger on the next park-resume (commit `fa7c7f8`). There is **no `CancellationException` type** — the trigger itself propagates.
 - [x] R5-D scope exception-escalation — `scope_exit`/`scope_exit_to` join children, cancel surviving siblings on the first non-null exception slot (with the trigger), then re-raise the first throw into the containing frame.
 

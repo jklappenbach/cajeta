@@ -935,7 +935,7 @@ to think about later.
 
 - `docs/specification/lang/UnifiedClasses.md` § Inheritance — the rest of the L-03
   surface.
-- `docs/Features.md` L-03 — current implementation status of the
+- `specs/Features.md` L-03 — current implementation status of the
   multi-inheritance feature row.
 - `ToDo.md` Priority 2 § 5 — running gap list (Gap 9 =
   `super<Base>.method()`, now shipped; diamond / virtual base = Phase 3

@@ -2,7 +2,7 @@
 
 Modeled on `java.time` (JSR-310), pared down for cajeta's needs.
 Status: **designed, not implemented**. No runtime stdlib files exist
-yet. Tracked in Features.md.
+yet. Tracked in specs/Features.md.
 
 ## `Clock` — static "what time is it" surface
 
@@ -73,4 +73,4 @@ ZonedDateTime here = now.atZone(ZoneId.of("America/Los_Angeles"));
 
 ## Open items
 
-All of `cajeta.time` is unimplemented. Tracked in Features.md.
+All of `cajeta.time` is unimplemented. Tracked in specs/Features.md.

@@ -16,7 +16,7 @@ existing **intra-kernel** work:
   launch-config picker + measured roofline.
 - [`kernel-occupancy-autotune`](archive/kernel-occupancy-autotune-spec.md) — per-kernel
   register/occupancy budgeting + `@Occupancy`.
-- [`xpu-kernel-scheduling-hints`](archive/xpu-kernel-scheduling-hints-spec.md) —
+- [`xpu-kernel-scheduling-hints`](xpu-kernel-scheduling-hints-spec.md) —
   *instruction*-schedule hints inside one `@Kernel`.
 
 Those tune a **single kernel in isolation**. This spec schedules a **stream of

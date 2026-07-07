@@ -706,7 +706,7 @@ Locale)`. The no-arg overloads default to `Locale.ROOT` (Unicode
 tables without language-specific overrides).
 
 `Locale` is a separate spec (tracked in
-[Features.md](../../Features.md)) — BCP 47-shaped value class,
+specs/Features.md) — BCP 47-shaped value class,
 no thread-local default. Both `Locale` and String ship in tandem so
 the case-folding surface is coherent on day one.
 

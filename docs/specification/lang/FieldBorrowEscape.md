@@ -171,7 +171,7 @@ terminate). The project already chose this: shallow default, manual
 
 `clone()` is **deferred**. The default returns `null` today; the
 synthesizer that walks field layouts isn't built yet (Object.md §
-"clone() — deferred", tracked in Features.md). Consequences:
+"clone() — deferred", tracked in specs/Features.md). Consequences:
 
 - Until clone lands, the fix-it must **not** advertise `.clone()` — it
   would trade a dangling pointer for a null deref. Lead with the

@@ -240,8 +240,13 @@ quickstart, and links to both the guide (`docs/guide/`) and the stdlib reference
 (`docs/stdlib/`) — not 31KB of mixed content.
 
 ### 6.2 Features.md
-Moves to `docs/Features.md` (linked from the README). The status column reflects
-the source tree (e.g. HashSet, LinkedList, Heap, Collectors are shipped, not
+AMENDED 2026-07-06: `docs/` is site-bound user documentation only — never
+state tracking. Features.md is a status register (a workflow artifact), so it
+moves to `specs/Features.md` instead of `docs/` (move executed; the ~20
+"tracked in Features.md" references across `docs/specification/` rewritten to
+plain-text `specs/Features.md` pointers — site-bound markdown must not link
+outside `docs/`). The status column still gets refreshed against the source
+tree (e.g. HashSet, LinkedList, Heap, Collectors are shipped, not
 "designed"); rows link to guide chapters and tour demos where they exist.
 
 ### 6.3 Docs site checkout
