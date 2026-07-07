@@ -301,7 +301,7 @@ const char* kTriDriver =
     "            verts[t*9+3]=bx+1.0f; verts[t*9+4]=0.0f;     verts[t*9+5]=z;\n"
     "            verts[t*9+6]=bx;      verts[t*9+7]=1.0f;     verts[t*9+8]=z;\n"
     "        }\n"
-    "        AccelerationStructure mesh = heap AccelerationStructure(verts, nt, 3u);\n"
+    "        AccelerationStructure mesh = heap AccelerationStructure(verts, nt, 3);\n"
     "        uint32 n = 5;\n"
     "        float32[] hox = heap float32[n]; float32[] hoy = heap float32[n];\n"
     "        uint32[] hout = heap uint32[n];\n"

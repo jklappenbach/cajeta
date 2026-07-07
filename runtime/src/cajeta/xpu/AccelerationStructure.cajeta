@@ -99,7 +99,7 @@ public final class AccelerationStructure {
      * overload would collide — distinct arity is the idiom). Software (CPU) only in
      * v1; the Vulkan triangle BLAS is a follow-up.
      *
-     *     AccelerationStructure mesh = heap AccelerationStructure(verts, nTris, 3u);
+     *     AccelerationStructure mesh = heap AccelerationStructure(verts, nTris, 3);
      */
     public AccelerationStructure(float32[] vertices, uint32 triangleCount,
                                  uint32 vertexStride) {
