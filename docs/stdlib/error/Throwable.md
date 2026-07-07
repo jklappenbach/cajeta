@@ -31,12 +31,12 @@ try {
 | `Throwable(#String message)` ⚑ | Wrap a message into a throwable |
 | `String getMessage()` | The human-readable message this throwable was constructed with |
 | `#String code()` | The stable diagnostic code; defaults to the canonical type name, `@DiagnosticCode` overrides |
-| `Throwable getCause()` | The underlying cause, or none; `Exception` overrides this to expose its `cause` field |
+| `Optional<Throwable> getCause()` | The underlying cause; empty when none — `Exception` overrides this to wrap its `cause` field |
 | `boolean isRetryable()` | Whether retrying the failed operation may succeed (default `false`) |
 | `boolean isTransient()` | Whether the failure is transient — environmental, likely self-clearing (default `false`) |
 | `boolean isUserActionable()` | Whether a human/agent action is required to resolve this (default `false`) |
-| `String hint()` | A short human/agent-readable fix hint, or `null` when none |
-| `String docUrl()` | A documentation URL for this error, or `null` when none |
+| `Optional<String> hint()` | A short human/agent-readable fix hint; empty when none |
+| `Optional<String> docUrl()` | A documentation URL for this error; empty when none |
 | `#String toJson()` ⚑ | Render as one NDJSON diagnostic object: `severity`/`code`/`message` plus `category`, `remediation`, `causeChain` (outer→inner), and `frames` |
 | `StackFrame[] getStackTrace()` ⚑ | The captured stack frames, throw-site first; empty when capture was off |
 | `void printStackTrace()` ⚑ | Print this throwable's stack trace to stderr |

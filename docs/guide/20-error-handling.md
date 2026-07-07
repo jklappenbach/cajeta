@@ -108,7 +108,7 @@ import cajeta.error.Throwable;
 public class Reporter {
     public void report(Throwable t) {
         String msg = t.getMessage();
-        Throwable cause = t.getCause();           // null when none
+        Optional<Throwable> cause = t.getCause(); // empty when none
         StackFrame[] frames = t.getStackTrace();  // throw-site first
         t.printStackTrace();                      // human-readable, to stderr
         String json = t.toJson();                 // one NDJSON diagnostic object

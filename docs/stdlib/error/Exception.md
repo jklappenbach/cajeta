@@ -24,7 +24,7 @@ try {
 |---|---|
 | `Exception(#String message)` ⚑ | Construct an exception carrying `message`; `cause` is initialized to none (`0`) |
 | `Exception(#String message, #Throwable cause)` | Construct an exception wrapping a lower-level `cause`; ownership of `cause` transfers into this exception's `cause` chain |
-| `Throwable getCause()` | The underlying cause carried with this exception, or none |
+| `Optional<Throwable> getCause()` | The underlying cause carried with this exception; empty when none |
 
 ⚑ = `@EntryPoint`
 

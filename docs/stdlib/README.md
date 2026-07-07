@@ -219,6 +219,7 @@ tutorial; it links here for API detail. Docs link the
 | [Throwable](error/Throwable.md) | Root of the exception hierarchy: message, diagnostic code, stack trace, JSON |
 | [Exception](error/Exception.md) | Base of the catchable exception hierarchy |
 | [RecoverableException](error/RecoverableException.md) | Errors a caller might handle and proceed past |
+| [NoOptionalValueException](error/NoOptionalValueException.md) | Unwrap of an empty `Optional` — catchable, not panic |
 | [UnrecoverableException](error/UnrecoverableException.md) | Fatal conditions: invariant violations, OOM |
 
 ## cajeta.reflect
