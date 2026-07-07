@@ -1271,7 +1271,14 @@ namespace cajeta {
         return ensureFunctionInModule(target, defFn);
     }
 
-    llvm::Constant* CajetaModule::getOrCreateSourceFileConstant(const std::string& path) {
+    llvm::Constant* CajetaModule::getOrCreateSourceFileConstant(const std::string& rawPath) {
+        // Reproducible IR (docs-refactor 15.12.2): every IR-embedded source
+        // path routes through --debug-prefix-map / the sourceRoot-relative
+        // fallback, exactly like source_filename. Remap before the cache
+        // lookup so the constants (and their dedup keys) are the
+        // machine-independent form.
+        const std::string path =
+            remapSourcePath(rawPath, sourceRoot, compilerFlags.debugPrefixMap);
         auto it = sourceFileConstants.find(path);
         if (it != sourceFileConstants.end()) return it->second;
 

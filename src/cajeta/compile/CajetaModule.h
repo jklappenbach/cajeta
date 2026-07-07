@@ -756,6 +756,16 @@ namespace cajeta {
         // bitcode across hosts. No-op for synthetic modules (empty sourcePath).
         void canonicalizeSourceFileName();
 
+        // The module's source path in its machine-independent form — what
+        // every IR-embedded path must use (source_filename, line-info frame
+        // descriptors, source-tagged drop entries), so emitted IR is
+        // byte-identical across build roots (docs-refactor 15.12.2).
+        // Compile-time DIAGNOSTICS keep the raw absolute path (clickable).
+        std::string remappedSourcePath() const {
+            return remapSourcePath(sourcePath, sourceRoot,
+                                   compilerFlags.debugPrefixMap);
+        }
+
         // Pure mapping behind canonicalizeSourceFileName(), exposed for tests.
         // Applies a `--debug-prefix-map=<from>=<to>` (split on the first '=',
         // matching the GCC/Clang convention) when `sourcePath` starts with

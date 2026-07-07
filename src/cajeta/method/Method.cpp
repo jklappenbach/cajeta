@@ -1814,7 +1814,10 @@ namespace cajeta {
         {
             std::string typeName = (parent && parent->getQName())
                 ? parent->getQName()->toCanonical() : std::string();
-            dbg::emitLineEnter(module, typeName, getName(), module->getSourcePath());
+            // Remapped form — frame descriptors are IR-embedded and must be
+            // byte-identical across build roots (docs-refactor 15.12.2).
+            dbg::emitLineEnter(module, typeName, getName(),
+                               module->remappedSourcePath());
         }
 
         // Register the parameters as locals in the debug frame. Materializing
