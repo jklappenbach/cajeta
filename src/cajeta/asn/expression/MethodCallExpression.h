@@ -53,7 +53,7 @@ namespace cajeta {
         // Explicit method-level template type arguments from the
         // `identifier<TypeArgs>(args)` call-site syntax (Form C). Empty
         // for ordinary calls (type args inferred via unification at
-        // resolveMethod time). See docs/specification/lang/MethodLevelTemplate.md.
+        // resolveMethod time). See docs/specification/lang/templates/MethodLevelTemplate.md.
         vector<CajetaTypePtr> explicitMethodTypeArgs;
         // Capture identity for the read-back pattern. `resolvedType` is
         // the projected bound (via captureProject) for user-facing
@@ -71,7 +71,16 @@ namespace cajeta {
         // generateCode may run more than once; this ensures the arg is injected
         // exactly once.
         bool boundedReflInjected = false;
+        // element-ownership 3.4.3: whether the resolved callee declares an
+        // ownership-transferring (`#T`) return. Set during generateCode's
+        // resolution; an enclosing call site consults it to classify this
+        // call's result as a fresh owned temporary that the enclosing
+        // statement must reclaim when consumed as a borrow argument.
+        // Stays false on intrinsic paths that never resolve a user
+        // method — conservative (no reclamation).
+        bool resolvedReturnsOwnership = false;
     public:
+        bool isResolvedReturnsOwnership() const { return resolvedReturnsOwnership; }
         CajetaTypePtr getPreProjectionReturnType() const {
             return preProjectionReturnType;
         }

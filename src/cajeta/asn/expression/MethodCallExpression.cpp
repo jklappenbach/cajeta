@@ -23,6 +23,7 @@
 #include "cajeta/error/Exception.h"
 #include "cajeta/util/MemoryManager.h"
 #include "Expression.h"
+#include "BinaryOpExpression.h"
 #include "DotExpression.h"
 #include "Identifier.h"
 #include "LiteralExpression.h"
@@ -271,7 +272,7 @@ namespace cajeta {
     //
     // The optional `<typeList>` between name and '(' is Form C explicit
     // call-site type args for method-templated callees (see
-    // docs/specification/lang/MethodLevelTemplate.md). Inference is the
+    // docs/specification/lang/templates/MethodLevelTemplate.md). Inference is the
     // common case; explicit args are required only when inference
     // can't bind every type parameter (e.g. T appears only in the
     // return type).
@@ -451,6 +452,34 @@ namespace cajeta {
             }
         }
         return v;
+    }
+
+    // element-ownership 3.4.3 — classify an argument/receiver expression as
+    // a FRESH OWNED String temporary: an anonymous rvalue nobody registers a
+    // drop entry for (the arena pre-pass routes only name-bound concats).
+    // Two producer shapes: an inline String concat (Phase 2b-γ mallocs the
+    // wrapper unless arena-routed) and a call whose resolved callee declares
+    // a `#String` return. Named locals, literals, and dotted reads never
+    // classify; borrow-returning calls (plain getters) keep their flag
+    // false. Consumers emit the guarded __cajeta_string_drop for temps that
+    // no formal took ownership of.
+    static bool freshOwnedStringTemp(const AbstractSyntaxNodePtr& e) {
+        auto isLangString = [](CajetaTypePtr t) -> bool {
+            auto cls = dynamic_pointer_cast<CajetaClass>(t);
+            return cls && cls->getQName()
+                && cls->getQName()->getTypeName() == "String"
+                && cls->getQName()->getPackageName() == "cajeta.lang";
+        };
+        if (auto bop = dynamic_pointer_cast<BinaryOpExpression>(e)) {
+            return bop->getBinaryOp() == BINARY_OP_ADD
+                && !bop->isArenaEligible()
+                && isLangString(bop->getResolvedType());
+        }
+        if (auto amce = dynamic_pointer_cast<MethodCallExpression>(e)) {
+            return amce->isResolvedReturnsOwnership()
+                && isLangString(amce->getResolvedType());
+        }
+        return false;
     }
 
     llvm::Value* MethodCallExpression::generateCode(CajetaModulePtr module) {
@@ -1518,7 +1547,35 @@ namespace cajeta {
                         }
                         fn = module->getRuntimeFunction(base + "_f64");
                     }
-                    if (fn) return builder->CreateCall(fn, {streamArg, arg});
+                    if (fn) {
+                        llvm::Value* printResult =
+                            builder->CreateCall(fn, {streamArg, arg});
+                        // element-ownership 3.4.3 — the intrinsic print path
+                        // bypasses formal resolution entirely (println
+                        // borrows by definition), so a fresh String temp arg
+                        // (`println("x=" + v)` — the single most common
+                        // concat consumer) leaked one wrapper per call.
+                        // loadStringArg wrapped the class String in
+                        // __cajeta_string_cstr; recover the wrapper from
+                        // that call's operand and emit the guarded drop.
+                        if (freshOwnedStringTemp(parameters[0].expression)) {
+                            if (auto* cstrCall =
+                                    llvm::dyn_cast<llvm::CallInst>(arg)) {
+                                llvm::Function* callee =
+                                    cstrCall->getCalledFunction();
+                                if (callee && callee->getName()
+                                        == "__cajeta_string_cstr") {
+                                    if (llvm::Function* sdrop =
+                                            module->getRuntimeFunction(
+                                                "__cajeta_string_drop")) {
+                                        builder->CreateCall(sdrop,
+                                            {cstrCall->getArgOperand(0)});
+                                    }
+                                }
+                            }
+                        }
+                        return printResult;
+                    }
                 }
                 if (methodCallName == "printf" && parameters.size() >= 2) {
                     // printf(fmt, String[] args) lowering: pass (fd, fmt, size, &data[0]).
@@ -7702,6 +7759,72 @@ namespace cajeta {
             callResult = phi;
         }
 
+        // element-ownership 3.4.3 — reclaim fresh String temporaries this
+        // call consumed as BORROW arguments (and a fresh receiver). An
+        // anonymous rvalue like `d.ignore(x + "!")` or
+        // `d.ignore(x.substring(0, 3))` has no owner anywhere: the arena
+        // pre-pass only routes name-bound concats, no drop entry is ever
+        // registered, and a borrow formal never takes ownership — one
+        // wrapper leaked per call (masked before Unit 3 by the String
+        // drop gaps). The callee cannot retain a borrow beyond its frame
+        // (stores materialize copies/stakes — 3A / slice stakes), so the
+        // temp is dead once the call returns: emit the guarded
+        // __cajeta_string_drop here. `#T` formals are skipped — the
+        // callee owns the temp (e.g. `d.take(x + "!")` stores it; its
+        // field drop reclaims it). Named locals / literals / dotted
+        // reads never classify as fresh. Splice/varargs paths that
+        // reshape `entries` are skipped by the size guard. A throwing
+        // callee leaks the temp (no unwind entry) — same as before,
+        // strictly narrower.
+        {
+            bool callFloatingT = true;
+            for (auto& e : entries) {
+                if (e.label.empty()) { callFloatingT = false; break; }
+            }
+            MethodPtr tempTarget = targetClass
+                ? targetClass->resolveMethod(methodCallName, entries,
+                      /*isConstructor=*/false, callFloatingT,
+                      /*explicitMethodTypeArgs=*/explicitMethodTypeArgs)
+                : nullptr;
+            llvm::Function* strDropFn = module->getRuntimeFunction(
+                "__cajeta_string_drop");
+            if (tempTarget && strDropFn
+                    && entries.size() == parameters.size()) {
+                resolvedReturnsOwnership = tempTarget->isReturnsOwnership();
+                auto fpl = tempTarget->getParameterList();
+                bool isStaticT = tempTarget->getModifiers().find(STATIC)
+                    != tempTarget->getModifiers().end();
+                bool hasThisT = !fpl.empty()
+                    && fpl.front()->getName() == "this";
+                int offT = (isStaticT || !hasThisT) ? 0 : 1;
+                // Borrow arguments: drop each fresh String temp.
+                for (size_t ai = 0; ai < parameters.size(); ++ai) {
+                    size_t fi = ai + (size_t) offT;
+                    if (fi >= fpl.size()) break;
+                    if (!fpl[fi] || fpl[fi]->isTransferred()) continue;
+                    if (parameters[ai].callerTransferred) continue;
+                    if (!freshOwnedStringTemp(parameters[ai].expression)) continue;
+                    llvm::Value* tempV = entries[ai].value;
+                    if (tempV && tempV->getType()->isPointerTy()) {
+                        builder->CreateCall(strDropFn, {tempV});
+                    }
+                }
+                // Fresh receiver (`(a + b).substring(...)`): same leak, same
+                // reclamation — methods borrow `this` (no #this today; the
+                // hasThisT formal's transferred bit guards a future one).
+                // Slice-typed returns viewing the receiver's buffer hold
+                // their own stake (slice-spec §7.1), so the receiver drop
+                // releases only its own.
+                if (offT == 1 && !fpl.empty() && fpl.front()
+                        && !fpl.front()->isTransferred()
+                        && !children.empty() && thisValue
+                        && thisValue->getType()->isPointerTy()
+                        && freshOwnedStringTemp(children[0])) {
+                    builder->CreateCall(strDropFn, {thisValue});
+                }
+            }
+        }
+
         // Pin resolvedType to the called method's return type so a caller
         // using this MCE as a ctor / method argument can recover the
         // static type instead of CajetaType::of(value)'s opaque-pointer
@@ -7731,6 +7854,9 @@ namespace cajeta {
             MethodPtr resolved = targetClass->resolveMethod(
                 methodCallName, entries, /*isConstructor=*/false, callFloating,
                 /*explicitMethodTypeArgs=*/explicitMethodTypeArgs);
+            if (resolved) {
+                resolvedReturnsOwnership = resolved->isReturnsOwnership();
+            }
             if (resolved && resolved->getReturnType()) {
                 // Capture conversion (P2-2 item 1): when the receiver
                 // is a bounded-wildcard instantiation, the method's
