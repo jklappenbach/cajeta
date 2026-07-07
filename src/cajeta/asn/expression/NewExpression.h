@@ -19,6 +19,9 @@ namespace cajeta {
         // non-templated `new Foo(...)` and for diamond-form `new Box<>(...)`
         // (TPL-7 fills these in by inference at codegen time).
         vector<CajetaTypePtr> typeArguments;
+        // element-ownership §2 (plan 2.4) — parallel to typeArguments:
+        // true where the use-site argument was written `#T`.
+        vector<bool> typeArgumentOwning;
         bool isDiamond = false;
         CreatorRestPtr creatorRest;
         // Captured at construction-time (parse walk) when `typeName` matches
@@ -89,12 +92,21 @@ namespace cajeta {
                         auto* lastTad = tads.back();
                         if (auto* targs = lastTad->typeArguments()) {
                             for (auto* targ : targs->typeArgument()) {
+                                // element-ownership §2 (plan 2.4) — capture the
+                                // use-site `#` per argument, kept parallel to
+                                // typeArguments (non-type/wildcard args are
+                                // never owning). Threaded into instantiate()
+                                // in resolveTypes so `heap ArrayList<#String>()`
+                                // builds the OWNING monomorph, matching what
+                                // CajetaType::fromContext resolves for the
+                                // declared type.
                                 if (targ->integerLiteral() != nullptr) {
                                     // Non-type (integer) template argument —
                                     // the `N` in `new Vector<float32, 4>(...)`.
                                     typeArguments.push_back(CajetaConstantType::of(
                                         CajetaConstantType::parseLiteral(
                                             targ->integerLiteral())));
+                                    typeArgumentOwning.push_back(false);
                                     continue;
                                 }
                                 // Wildcard arg — `?`, `? extends T`, `? super T`
@@ -126,6 +138,7 @@ namespace cajeta {
                                         throw "wildcard sentinel construction failed";
                                     }
                                     typeArguments.push_back(wild);
+                                    typeArgumentOwning.push_back(false);
                                     continue;
                                 }
                                 if (!targ->typeType()) {
@@ -141,6 +154,8 @@ namespace cajeta {
                                     throw "unresolved template argument in `new`";
                                 }
                                 typeArguments.push_back(argType);
+                                typeArgumentOwning.push_back(
+                                    targ->REFERENCE() != nullptr);
                             }
                         } else {
                             // Diamond form: typeArgumentsOrDiamond has '<' '>'

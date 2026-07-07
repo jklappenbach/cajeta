@@ -867,6 +867,28 @@ void __cajeta_free_array(void* ptr) {
     free(ptr);
 }
 
+// element-ownership §7.1.4 — drop the live elements of an OWNING container's
+// backing array, ahead of __cajeta_free_array on the buffer itself. `count`
+// is the container's @ElementCount-designated live count, NOT the header
+// word (which stores allocated capacity — slots past the live count are
+// uninitialized and must not be touched). `header` and `stride` mirror the
+// __cajeta_new_array_header allocation exactly (both DataLayout sizes
+// computed by the compiler): String elements occupy inline 64-byte value
+// slots, class refs 8-byte ptr slots — in both layouts the reference
+// pointer sits at the SLOT BASE (the element-store codegen writes it
+// there). `drop_fn` is compiler-chosen per the monomorphized element type
+// (__cajeta_string_drop / __cajeta_class_virtual_drop), both idempotent via
+// the live-set claim, so an element also owned elsewhere frees exactly once.
+void __cajeta_drop_array_elements(void* arr, int64_t count, int64_t header,
+                                  int64_t stride, void (*drop_fn)(void*)) {
+    if (arr == NULL || drop_fn == NULL || stride <= 0) return;
+    char* data = (char*) arr + header;
+    for (int64_t i = 0; i < count; i++) {
+        void* elem = *(void**) (data + i * stride);
+        if (elem != NULL) drop_fn(elem);
+    }
+}
+
 // Drop helper for OWNING views (Views.md § Construction).
 // A view value is a pointer into the data region of a byte[] (the view-ctor
 // codegen GEPs past the 8-byte array header). For an owning view, scope-exit

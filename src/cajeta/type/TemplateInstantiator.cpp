@@ -823,6 +823,41 @@ namespace cajeta {
             classDecl ? classDecl->classBody() : recordDecl->classBody());
         inst->setClassBody(std::any_cast<ClassBodyDeclarationPtr>(bodyAny));
 
+        // element-ownership §7.1.4 (plan 3.2.2) — field→type-param linkage.
+        // The walk above resolved every field type through the substitution
+        // stack, so `T[] data` became `String[] data` and the monomorphized
+        // property no longer knows its element type CAME FROM a type
+        // parameter. The parse tree still spells it `T[]`; record the
+        // parameter index on the instantiated property so the drop walk can
+        // pair it with isTypeArgumentOwning(index) and decide owned-element
+        // teardown (emitDropBodyInline). Array-of-param storage only —
+        // scalar `P`-typed fields already ride the class-ref drop branch.
+        if (classDecl && classDecl->classBody()) {
+            for (auto* bodyDecl : classDecl->classBody()->classBodyDeclaration()) {
+                auto* member = bodyDecl->memberDeclaration();
+                if (!member || !member->fieldDeclaration()) continue;
+                auto* fieldDecl = member->fieldDeclaration();
+                if (!fieldDecl->typeType() || !fieldDecl->variableDeclarators()) continue;
+                const string declared = fieldDecl->typeType()->getText();
+                int paramIndex = -1;
+                for (size_t k = 0; k < typeParameters.size(); k++) {
+                    if (declared == typeParameters[k].name + "[]") {
+                        paramIndex = (int) k;
+                        break;
+                    }
+                }
+                if (paramIndex < 0) continue;
+                for (auto* vd : fieldDecl->variableDeclarators()->variableDeclarator()) {
+                    if (!vd->variableDeclaratorId()) continue;
+                    auto it = inst->getProperties().find(
+                        vd->variableDeclaratorId()->getText());
+                    if (it != inst->getProperties().end() && it->second) {
+                        it->second->setOriginElementTypeParamIndex(paramIndex);
+                    }
+                }
+            }
+        }
+
         // Record templates skip the declaration-time body walk, so the
         // no-abstract-method gate re-runs here per instantiation.
         if (recordDecl) {

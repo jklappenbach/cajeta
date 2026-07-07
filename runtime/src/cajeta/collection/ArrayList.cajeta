@@ -43,6 +43,10 @@ public final class ArrayList<T> {
     // Field name aligned with HashMap/HashSet/LinkedList — `count` as a
     // bare field name conflicts with the public `count()` accessor at
     // method resolution sites (templated-class dispatch ambiguity).
+    // @ElementCount designates this as the live-element bound for
+    // owned-element teardown of `#`-instantiations (`ArrayList<#String>`):
+    // the data array's header word is capacity, not live count.
+    @ElementCount
     int32 sizeCount;
     int32 capacity;
 

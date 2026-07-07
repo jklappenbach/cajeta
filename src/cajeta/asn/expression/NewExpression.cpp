@@ -130,7 +130,9 @@ namespace cajeta {
                 if (auto t = CajetaType::findTemplateByShortName(typeName)) klass = dynamic_pointer_cast<CajetaClass>(t);
             }
             if (klass && klass->isTemplate()) {
-                type = klass->instantiate(typeArguments);
+                // element-ownership §2 (plan 2.4): thread the use-site `#`
+                // bits so the owning monomorph is built, not the borrow one.
+                type = klass->instantiate(typeArguments, typeArgumentOwning);
             }
         } else if (!isDiamond) {
             // Bare `heap Box(args)` of a default-bearing template → Box<defaults>.
@@ -306,7 +308,9 @@ namespace cajeta {
                 if (auto t = CajetaType::findTemplateByShortName(typeName)) klass = dynamic_pointer_cast<CajetaClass>(t);
             }
             if (klass && klass->isTemplate()) {
-                type = klass->instantiate(typeArguments);
+                // element-ownership §2 (plan 2.4): same threading as
+                // resolveTypes — both paths must land the same monomorph.
+                type = klass->instantiate(typeArguments, typeArgumentOwning);
             }
         }
         // Diamond form (`new Box<>(args)`): infer type arguments from the

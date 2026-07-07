@@ -25,6 +25,15 @@ namespace cajeta {
         // into the LLVM global's initializer. For instance fields, kept
         // for future <init> emission. nullptr when no initializer.
         AbstractSyntaxNodePtr initializer;
+        // element-ownership §7.1.4 — when this field's DECLARED type in the
+        // template was `P[]` (array of type parameter P), the index of P in
+        // the template's parameter list; -1 otherwise. Monomorphization
+        // resolves the field type to the concrete element type, losing the
+        // came-from-a-type-parameter fact; this preserves it so the drop
+        // walk can pair the field with isTypeArgumentOwning(index) and
+        // decide owned-element teardown. Set by TemplateInstantiator's
+        // post-walk linkage pass.
+        int originElementTypeParamIndex = -1;
     public:
         StructureProperty(string name, int order) {
             this->name = name;
@@ -70,6 +79,9 @@ namespace cajeta {
 
         AbstractSyntaxNodePtr getInitializer() const { return initializer; }
         void setInitializer(AbstractSyntaxNodePtr init) { initializer = init; }
+
+        int getOriginElementTypeParamIndex() const { return originElementTypeParamIndex; }
+        void setOriginElementTypeParamIndex(int idx) { originElementTypeParamIndex = idx; }
     };
 
     typedef shared_ptr<StructureProperty> StructurePropertyPtr;

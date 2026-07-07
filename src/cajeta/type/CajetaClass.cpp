@@ -2916,6 +2916,87 @@ namespace cajeta {
                     std::string("drop_arr_slot_") + property->getName());
                 llvm::Value* arrPtr = b.CreateLoad(ptrTy, slot,
                     std::string("drop_arr_ptr_") + property->getName());
+                // element-ownership §7.1.4 (plan 3.2.2): owning-instantiated
+                // element storage drops its LIVE elements before the buffer is
+                // freed. Gated on (a) the field's template-declared type being
+                // `P[]` (originElementTypeParamIndex, TemplateInstantiator),
+                // (b) this instantiation marking P owning (`#`), (c) a
+                // droppable element type (String → __cajeta_string_drop,
+                // vtable class → __cajeta_class_virtual_drop; both idempotent
+                // via the live-set claim, so aliased elements free once), and
+                // (d) an @ElementCount-marked field bounding the loop — the
+                // array header word is CAPACITY, not live count, so an
+                // unmarked walk would drop garbage in [size..capacity).
+                // No marker → no loop (borrow-era status quo; non-contiguous
+                // slot stores like HashMap keep their bespoke destructor).
+                int originIdx = property->getOriginElementTypeParamIndex();
+                if (originIdx >= 0 && isTypeArgumentOwning((size_t) originIdx)) {
+                    llvm::Function* elemDropFn = nullptr;
+                    auto elemType = arrField->getElementType();
+                    if (auto elemClass = dynamic_pointer_cast<CajetaClass>(elemType)) {
+                        bool elemIsString =
+                            elemClass->getQName()->getTypeName() == "String"
+                            && elemClass->getQName()->getPackageName() == "cajeta.lang";
+                        if (elemIsString) {
+                            elemDropFn = cajModule->getRuntimeFunction(
+                                "__cajeta_string_drop", bodyModule);
+                        } else if (!dynamic_pointer_cast<CajetaView>(elemType)
+                                   && !elemClass->isInterface()
+                                   && elemClass->hasVtablePointerAtSlotZero()) {
+                            elemClass->patchVirtualTableDropFn();
+                            elemDropFn = cajModule->getRuntimeFunction(
+                                "__cajeta_class_virtual_drop", bodyModule);
+                        }
+                    }
+                    StructurePropertyPtr countProp;
+                    if (elemDropFn) {
+                        for (auto& p : propertyList) {
+                            if (p && !p->isStatic()
+                                    && p->findAnnotation("ElementCount")) {
+                                countProp = p;
+                                break;
+                            }
+                        }
+                    }
+                    if (elemDropFn && countProp) {
+                        llvm::Function* dropElemsFn = cajModule->getRuntimeFunction(
+                            "__cajeta_drop_array_elements", bodyModule);
+                        if (dropElemsFn) {
+                            unsigned countIdx =
+                                (unsigned) getFieldLlvmIndex(countProp);
+                            llvm::Value* countSlot = b.CreateStructGEP(
+                                rawLlvmType(), instance, countIdx,
+                                std::string("drop_elem_count_slot_")
+                                    + property->getName());
+                            llvm::Type* countTy =
+                                countProp->getType()->getLlvmType();
+                            llvm::Value* count = b.CreateLoad(countTy, countSlot,
+                                std::string("drop_elem_count_")
+                                    + property->getName());
+                            llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+                            if (countTy != i64Ty) {
+                                count = b.CreateSExt(count, i64Ty);
+                            }
+                            // Header + stride mirror the
+                            // __cajeta_new_array_header allocation
+                            // (ArrayInitializer/ArrayCreatorRest): String
+                            // elements are inline 64-byte value slots,
+                            // class refs 8-byte ptr slots; the reference
+                            // pointer sits at the slot base either way.
+                            const llvm::DataLayout& dl =
+                                bodyModule->getDataLayout();
+                            uint64_t headerBytes =
+                                dl.getTypeAllocSize(arrField->getLlvmType());
+                            uint64_t strideBytes = dl.getTypeAllocSize(
+                                arrField->getElementLlvmType(&ctx));
+                            b.CreateCall(dropElemsFn, {
+                                arrPtr, count,
+                                llvm::ConstantInt::get(i64Ty, headerBytes),
+                                llvm::ConstantInt::get(i64Ty, strideBytes),
+                                elemDropFn});
+                        }
+                    }
+                }
                 b.CreateCall(freeArrayFn, {arrPtr});
                 continue;
             }

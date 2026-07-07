@@ -518,8 +518,16 @@ and the drop, fixed below regardless of which mechanism a container uses.
    Required whether the container is static or runtime.
 4. **Element-drop completeness fixed independently of the mechanism.** Owned
    class-typed elements must be dropped at teardown. Static path: a `#K`/`#V`-
-   marked storage field joins the automatic field-drop walk, dropping elements
-   with no hand-written destructor. Runtime path: the container drops owned
+   marked storage field joins the automatic field-drop walk via a synthesized
+   loop bounded by a container-designated **live-count field** (an explicit
+   count marker — the array header word is capacity, not live count, so an
+   unmarked walk would drop garbage in `[size..capacity)`), dropping elements
+   with no hand-written destructor **for contiguous count-bounded containers**;
+   a non-contiguous slot store (HashMap's ctrl-mapped `MapEntry[]` shape) keeps
+   a bespoke ctrl-aware destructor. Element drops route through the idempotent
+   live-set claim, so aliased elements free exactly once. *(Amended 2026-07-06,
+   plan 3.2.2 sign-off, per the prior owning-collections design.)* Runtime
+   path: the container drops owned
    elements in its destructor (as `~HashMap` and `~StringSet` do). This closes
    the second leak family (15.13): `ArrayList`, `HashSet`, `Heap`, and the trees
    have **no** element-drop destructor today (`~HashMap` is the only one in the
