@@ -1,5 +1,7 @@
 package cajeta.error;
 
+import cajeta.lang.Optional;
+
 /**
  * Root of the cajeta exception hierarchy — every throwable type derives
  * from `Throwable`, carrying a human-readable `message`. Subtypes split the
@@ -104,11 +106,12 @@ public class Throwable {
     }
 
     /**
-     * The underlying cause, or `0` (none). `Exception` overrides this to expose
-     * its `cause` field; the bare hierarchy root has no cause.
+     * The underlying cause; empty when there is none (the error package's
+     * one absence idiom — optional-absence spec §3). `Exception` overrides
+     * this to wrap its `cause` field; the bare hierarchy root never has one.
      */
-    public Throwable getCause() {
-        return null;
+    public Optional<Throwable> getCause() {
+        return stack Optional<Throwable>(false, #null);
     }
 
     // Category affordances (diagnostic-exceptions §3). Overridable; the base
@@ -125,10 +128,10 @@ public class Throwable {
     // Remediation (diagnostic-exceptions §3). Overridable; `null` = unset, in
     // which case the JSON `remediation` object is omitted entirely.
 
-    /** A short human/agent-readable fix hint, or `null` when none. */
-    public String hint() { return null; }
+    /** A short human/agent-readable fix hint; empty when none. */
+    public Optional<String> hint() { return stack Optional<String>(false, #null); }
     /** A documentation URL for this error, or `null` when none. */
-    public String docUrl() { return null; }
+    public Optional<String> docUrl() { return stack Optional<String>(false, #null); }
 
     /** JSON-string-escape `s` (shared escaping with the compiler emitter). */
     private static #String jsonEscape(String s) {
@@ -159,31 +162,38 @@ public class Throwable {
         j = j + ",\"category\":{\"retryable\":" + this.isRetryable()
               + ",\"transient\":" + this.isTransient()
               + ",\"userActionable\":" + this.isUserActionable() + "}";
-        String h = this.hint();
-        String du = this.docUrl();
-        if (h != null || du != null) {
+        Optional<String> oh = this.hint();
+        Optional<String> odu = this.docUrl();
+        if (oh.isPresent() || odu.isPresent()) {
             j = j + ",\"remediation\":{";
             boolean firstR = true;
-            if (h != null) {
-                j = j + "\"hint\":\"" + jsonEscape(h) + "\"";
+            if (oh.isPresent()) {
+                j = j + "\"hint\":\"" + jsonEscape(oh.get()) + "\"";
                 firstR = false;
             }
-            if (du != null) {
+            if (odu.isPresent()) {
                 if (!firstR) { j = j + ","; }
-                j = j + "\"docUrl\":\"" + jsonEscape(du) + "\"";
+                j = j + "\"docUrl\":\"" + jsonEscape(odu.get()) + "\"";
             }
             j = j + "}";
         }
-        Throwable c = this.getCause();
-        if (c != null) {
+        Optional<Throwable> oc = this.getCause();
+        if (oc.isPresent()) {
             j = j + ",\"causeChain\":[";
             boolean first = true;
-            while (c != null) {
+            Throwable c = oc.get();
+            boolean walking = true;
+            while (walking) {
                 if (!first) { j = j + ","; }
                 String cm = c.message;
                 j = j + "{\"code\":\"" + c.code() + "\",\"message\":\"" + jsonEscape(cm) + "\"}";
                 first = false;
-                c = c.getCause();
+                Optional<Throwable> nxt = c.getCause();
+                if (nxt.isPresent()) {
+                    c = nxt.get();
+                } else {
+                    walking = false;
+                }
             }
             j = j + "]";
         }

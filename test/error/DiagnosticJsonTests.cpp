@@ -163,11 +163,11 @@ TEST(DiagnosticJson, categoryOverrideAndRemediationRoundTrip) {
         "package test;\n"
         "import cajeta.error.Exception;\n"
         "public final class Flaky extends Exception {\n"
-        "    public Flaky(#String message) { this.message = message; this.cause = 0; }\n"
+        "    public Flaky(#String message) { this.message = message; this.cause = null; }\n"
         "    public boolean isRetryable() { return true; }\n"
         "    public boolean isTransient() { return true; }\n"
-        "    public String hint() { return \"retry with backoff\"; }\n"
-        "    public String docUrl() { return \"https://cajeta.dev/e/flaky\"; }\n"
+        "    public Optional<String> hint() { return stack Optional<String>(true, \"retry with backoff\"); }\n"
+        "    public Optional<String> docUrl() { return stack Optional<String>(true, \"https://cajeta.dev/e/flaky\"); }\n"
         "}\n";
     sources["test.S"] =
         "package test;\n"

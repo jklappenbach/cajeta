@@ -39,6 +39,7 @@ cajeta.concurrent.FiberLocal
 cajeta.error.Throwable
 cajeta.error.Exception
 cajeta.error.RecoverableException
+cajeta.error.NoOptionalValueException
 cajeta.error.UnrecoverableException
 cajeta.hash.XXHash3
 cajeta.hash.Blake3

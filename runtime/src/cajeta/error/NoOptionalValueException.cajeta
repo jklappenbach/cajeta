@@ -1,0 +1,29 @@
+package cajeta.error;
+
+/**
+ * Thrown by `Optional.get()` when the Optional is empty (optional-absence
+ * spec §2). Recoverable: an unwrap miss is catchable and the program
+ * continues — `UnrecoverableException` is reserved for panic. Prefer
+ * guarding with `isPresent()` or using `orElse()` over catching this;
+ * the type exists so an unguarded unwrap fails loudly at the fault with
+ * a stable diagnostic code (`cajeta.error.NoOptionalValueException`).
+ *
+ * ```cajeta
+ * Optional<int32> miss = stack Optional<int32>(false, 0);
+ * try {
+ *     int32 v = miss.get();
+ * } catch (NoOptionalValueException e) {
+ *     // reached: unwrap of an empty Optional
+ * }
+ * ```
+ */
+public class NoOptionalValueException extends RecoverableException {
+    /**
+     * Wrap a heap `#String` message describing the unwrap site.
+     *
+     * @EntryPoint
+     */
+    public NoOptionalValueException(#String message) {
+        super(#message);
+    }
+}

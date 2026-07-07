@@ -56,16 +56,14 @@ TEST(ThrowableApi, getMessageRoundTrip) {
     EXPECT_EQ(fn(), 9);
 }
 
-// §5: getCause() accessor returns the cause link (none => null) without throwing.
-// A plain Exception("...") sets cause = 0, so getCause() is null and the guard
-// returns 1.
-TEST(ThrowableApi, getCauseNullWhenNoCause) {
+// §5, migrated by optional-absence §3: getCause() returns Optional<Throwable>;
+// a plain Exception("...") has no cause, so the Optional is empty.
+TEST(ThrowableApi, getCauseEmptyWhenNoCause) {
     auto jit = CajetaJit::compile(src(
         "try {\n"
         "    throw heap Exception(\"no cause\");\n"
         "} catch (Exception e) {\n"
-        "    Throwable c = e.getCause();\n"
-        "    if (c == null) { return 1; }\n"
+        "    if (e.getCause().isEmpty()) { return 1; }\n"
         "    return 0;\n"
         "}\n"
         "return -1;"), "test.S");
