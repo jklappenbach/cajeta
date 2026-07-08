@@ -253,7 +253,7 @@ public class Server {
         while (i < args.count()) {
             String a = args[i];
             if (a.startsWith("--cajeta=")) {
-                return a.substring(9, (int32) a.count());
+                return Server.dup(a.substring(9, (int32) a.count()));
             }
             i = i + 1;
         }
@@ -272,7 +272,7 @@ public class Server {
         while (i < args.count()) {
             String a = args[i];
             if (a.startsWith(prefix)) {
-                return a.substring(prefix.byteLength, (int32) a.count());
+                return Server.dup(a.substring(prefix.byteLength, (int32) a.count()));
             }
             i = i + 1;
         }
@@ -794,9 +794,17 @@ public class Server {
 
     // ---- C3: compile tool (filesystem ops shell out via cajeta.process) ----
 
-    /** Owned copy of `s` (cajeta has no String concat / copy primitive). */
+    /**
+     * Owned, NUL-terminated copy of `s`. `substring` is now ZERO-COPY (returns
+     * a mode-2 windowed view sharing the source's root buffer), so it can NOT
+     * be used to materialize an owned copy — a view's raw `.bytes[i]` reads the
+     * ROOT buffer at the wrong offset. `toBytes()` copies the effective window
+     * (mode-aware); rangeToString wraps it as a fresh owned String. This keeps
+     * plain `.bytes[i]` indexing valid everywhere downstream (every parsing
+     * helper reads bytes directly), by ensuring the strings it sees are owned.
+     */
     public static #String dup(String s) {
-        return s.substring(0, s.byteLength);
+        return Server.rangeToString(s.toBytes(), 0, s.byteLength);
     }
 
     /**
@@ -990,12 +998,16 @@ public class Server {
 
     /** `pkg.Class.method` -> `Class.cja` (artifact filename for --emit=cja). */
     public static #String artifactName(String entry) {
-        int32 n = entry.byteLength;
+        // Own `entry` up front so the raw `.bytes[i]` scan and the substring
+        // below both operate on owned (mode-0) storage — the caller may hand us
+        // a view.
+        String e = Server.dup(entry);
+        int32 n = e.byteLength;
         int32 d1 = -1;
         int32 d2 = -1;
         int32 i = 0;
         while (i < n) {
-            if (((int32) entry.bytes[i]) == 46) {
+            if (((int32) e.bytes[i]) == 46) {
                 d2 = d1;
                 d1 = i;
             }
@@ -1009,7 +1021,7 @@ public class Server {
             begin = d2 + 1;
             end = d1;
         }
-        String simple = entry.substring(begin, end);
+        String simple = Server.dup(e.substring(begin, end));
         return Server.concat(simple, ".cja");
     }
 
