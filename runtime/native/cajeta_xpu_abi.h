@@ -6,7 +6,7 @@
  * This header is the SINGLE SOURCE OF TRUTH for the compute FFI contract:
  * the compiler emit side (src/cajeta/xpu/...), the C runtime
  * (runtime/native/cajeta_runtime.c), and any external port (numerics /
- * PyTorch / Toffee-SPELA) all agree through the declarations here. Before
+ * PyTorch / Caramelo-SPELA) all agree through the declarations here. Before
  * this header existed, the per-parameter kind values were hand-synced
  * between KernelLowering.h and the runtime's CAJETA_KP_* literals; the enum
  * below makes those numbers exist exactly once.

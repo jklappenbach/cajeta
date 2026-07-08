@@ -111,7 +111,7 @@ noun's recorded impl.
 
 ## Worked example — range count with a degenerate ray (CPU software path)
 
-Mirrors `test/xpu/ToffeeSpatialIndexDeviceTests.cpp` (`kRqMinDriver`): build a BVH over 3 AABBs
+Mirrors `test/xpu/CarameloSpatialIndexDeviceTests.cpp` (`kRqMinDriver`): build a BVH over 3 AABBs
 and, per query point, count the boxes that contain it.
 
 ```cajeta

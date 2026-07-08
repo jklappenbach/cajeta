@@ -67,7 +67,7 @@ TEST(XpuComputeProbeDeviceTests, torchMatmulAtomicScatterOnVulkan) {
         << " (100+idx: matmul mismatch; 200+bin: scatter-add mismatch)";
 }
 
-// Target 3: Toffee/SPELA — fused forward + local-loss + weight update, on device.
+// Target 3: Caramelo/SPELA — fused forward + local-loss + weight update, on device.
 TEST(XpuComputeProbeDeviceTests, spelaFusedLayerOnVulkan) {
     if (!VulkanDriver::available()) {
         GTEST_SKIP() << "no Vulkan compute device available";

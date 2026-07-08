@@ -1,15 +1,15 @@
 //
-// Toffee P1.0 — SpatialIndex exec test (cajeta-gpu Part C inc 3c).
+// Caramelo P1.0 — SpatialIndex exec test (cajeta-gpu Part C inc 3c).
 //
-// Toffee is a consumer of the cajeta-gpu foundation; its first real code is the
-// RT-as-compute SpatialIndex primitive (`cajeta-toffee/src/toffee/spatial/
+// Caramelo is a consumer of the cajeta-gpu foundation; its first real code is the
+// RT-as-compute SpatialIndex primitive (`cajeta-caramelo/src/caramelo/spatial/
 // SpatialIndex.cajeta`). It has no standalone build/test harness yet, so we
 // exec-verify it here, through the cajeta compiler's JIT: compile the authoritative
-// SpatialIndex source (read from the sibling cajeta-toffee repo) alongside a driver
+// SpatialIndex source (read from the sibling cajeta-caramelo repo) alongside a driver
 // program via the multi-source overload, and run a fixed-radius neighbour count on
 // a real ray-query device.
 //
-// Gated twice: on a ray-query-capable Vulkan device, and on the cajeta-toffee
+// Gated twice: on a ray-query-capable Vulkan device, and on the cajeta-caramelo
 // source being present next to this checkout. Either missing -> SKIP.
 //
 
@@ -33,14 +33,14 @@ using cajeta::xpu::vulkan::VulkanDriver;
 
 namespace {
 
-// The authoritative SpatialIndex.cajeta lives in the sibling cajeta-toffee repo.
+// The authoritative SpatialIndex.cajeta lives in the sibling cajeta-caramelo repo.
 // Resolve it relative to CAJETA_SOURCE_ROOT (the cajeta checkout) — its parent is
-// the cpp/ workspace dir, with cajeta-toffee alongside. Returns "" if unreadable.
+// the cpp/ workspace dir, with cajeta-caramelo alongside. Returns "" if unreadable.
 std::string readSpatialIndexSource() {
     const char* root = std::getenv("CAJETA_SOURCE_ROOT");
     if (!root || !*root) return "";
     std::string path = std::string(root) +
-        "/../cajeta-toffee/src/toffee/spatial/SpatialIndex.cajeta";
+        "/../cajeta-caramelo/src/caramelo/spatial/SpatialIndex.cajeta";
     std::ifstream f(path);
     if (!f) return "";
     std::ostringstream ss;
@@ -56,8 +56,8 @@ const char* kDriver =
     "package test;\n"
     "import cajeta.xpu.KernelBuffer;\n"
     "import cajeta.xpu.KernelStream;\n"
-    "import toffee.spatial.SpatialIndex;\n"
-    "public class ToffeeRQ {\n"
+    "import caramelo.spatial.SpatialIndex;\n"
+    "public class CarameloRQ {\n"
     "    public static int32 run() {\n"
     "        uint32 np = 3;\n"
     "        float32[] pts = heap float32[np * 3];\n"
@@ -99,8 +99,8 @@ const char* kExactDriver =
     "package test;\n"
     "import cajeta.xpu.KernelBuffer;\n"
     "import cajeta.xpu.KernelStream;\n"
-    "import toffee.spatial.SpatialIndex;\n"
-    "public class ToffeeExact {\n"
+    "import caramelo.spatial.SpatialIndex;\n"
+    "public class CarameloExact {\n"
     "    public static int32 run() {\n"
     "        uint32 np = 3;\n"
     "        float32[] pts = heap float32[np * 3];\n"
@@ -143,25 +143,25 @@ const char* kExactDriver =
 
 } // namespace
 
-// The Toffee SpatialIndex primitive, end to end on a real RT device: build a BVH
+// The Caramelo SpatialIndex primitive, end to end on a real RT device: build a BVH
 // over points, run a fixed-radius neighbour count through the public verb. Proves
 // the foundation's ray-query path (3a/3b) is consumable as a library abstraction
 // (3c) — the user writes `idx.countWithin(...)`, never a ray.
-TEST(ToffeeSpatialIndexDeviceTests, fixedRadiusCountOnDevice) {
+TEST(CarameloSpatialIndexDeviceTests, fixedRadiusCountOnDevice) {
     if (!VulkanDriver::rayQueryAvailable()) {
         GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
     }
     std::string lib = readSpatialIndexSource();
     if (lib.empty()) {
-        GTEST_SKIP() << "cajeta-toffee SpatialIndex.cajeta not found beside checkout";
+        GTEST_SKIP() << "cajeta-caramelo SpatialIndex.cajeta not found beside checkout";
     }
     std::map<std::string, std::string> sources = {
-        {"toffee.spatial.SpatialIndex", lib},
-        {"test.ToffeeRQ", kDriver},
+        {"caramelo.spatial.SpatialIndex", lib},
+        {"test.CarameloRQ", kDriver},
     };
     CajetaJit::Options o;
     o.xpuBackends = {cajeta::xpu::Backend::Spirv};
-    auto jit = CajetaJit::compile(sources, "test.ToffeeRQ", o);
+    auto jit = CajetaJit::compile(sources, "test.CarameloRQ", o);
     ASSERT_NE(jit, nullptr);
     auto fn = jit->lookup<int (*)()>("run");
     ASSERT_NE(fn, nullptr);
@@ -174,21 +174,21 @@ TEST(ToffeeSpatialIndexDeviceTests, fixedRadiusCountOnDevice) {
 // OpRayQueryGetIntersectionPrimitiveIndexKHR op). The box approximation over-counts
 // (3 of 3 boxes contain the origin); radiusExact recovers each candidate's data
 // point and keeps only the one within the true Euclidean radius (1).
-TEST(ToffeeSpatialIndexDeviceTests, exactL2RefinementOnDevice) {
+TEST(CarameloSpatialIndexDeviceTests, exactL2RefinementOnDevice) {
     if (!VulkanDriver::rayQueryAvailable()) {
         GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
     }
     std::string lib = readSpatialIndexSource();
     if (lib.empty()) {
-        GTEST_SKIP() << "cajeta-toffee SpatialIndex.cajeta not found beside checkout";
+        GTEST_SKIP() << "cajeta-caramelo SpatialIndex.cajeta not found beside checkout";
     }
     std::map<std::string, std::string> sources = {
-        {"toffee.spatial.SpatialIndex", lib},
-        {"test.ToffeeExact", kExactDriver},
+        {"caramelo.spatial.SpatialIndex", lib},
+        {"test.CarameloExact", kExactDriver},
     };
     CajetaJit::Options o;
     o.xpuBackends = {cajeta::xpu::Backend::Spirv};
-    auto jit = CajetaJit::compile(sources, "test.ToffeeExact", o);
+    auto jit = CajetaJit::compile(sources, "test.CarameloExact", o);
     ASSERT_NE(jit, nullptr);
     auto fn = jit->lookup<int (*)()>("run");
     ASSERT_NE(fn, nullptr);
@@ -197,11 +197,11 @@ TEST(ToffeeSpatialIndexDeviceTests, exactL2RefinementOnDevice) {
                       << " (3xx: box approx != 3; 2xx: exact-L2 count != 1)";
 }
 
-// Minimal self-contained CPU ray-query exec (no SpatialIndex / cajeta-toffee
+// Minimal self-contained CPU ray-query exec (no SpatialIndex / cajeta-caramelo
 // dependency): build an AccelerationStructure over 3 AABBs and run a RayQuery walk
 // in a kernel on the CPU software path. Directly exercises the ray-query-to-core
 // integration (software BVH builder + SoftwareRayQuery walk) without the broader
-// stdlib closure. Same 1/0/1/1 expectation as the Toffee fixed-radius scene.
+// stdlib closure. Same 1/0/1/1 expectation as the Caramelo fixed-radius scene.
 const char* kRqMinDriver =
     "package test;\n"
     "import cajeta.xpu.AccelerationStructure;\n"
@@ -437,7 +437,7 @@ const char* kNearestDriver =
     "    }\n"
     "}\n";
 
-TEST(ToffeeSpatialIndexDeviceTests, nearestHitOnCpuSoftwareBvh) {
+TEST(CarameloSpatialIndexDeviceTests, nearestHitOnCpuSoftwareBvh) {
     std::map<std::string, std::string> sources = {{"test.NearRq", kNearestDriver}};
     CajetaJit::Options o;
     o.xpuBackends = {cajeta::xpu::Backend::Cpu};
@@ -450,7 +450,7 @@ TEST(ToffeeSpatialIndexDeviceTests, nearestHitOnCpuSoftwareBvh) {
                       << " (100: committed type; 101: nearest distance; 102: prim)";
 }
 
-TEST(ToffeeSpatialIndexDeviceTests, candidateGettersOnCpuSoftwareBvh) {
+TEST(CarameloSpatialIndexDeviceTests, candidateGettersOnCpuSoftwareBvh) {
     std::map<std::string, std::string> sources = {{"test.BaryRq", kBaryDriver}};
     CajetaJit::Options o;
     o.xpuBackends = {cajeta::xpu::Backend::Cpu};
@@ -520,7 +520,7 @@ const char* kFrontDriver =
     "    }\n"
     "}\n";
 
-TEST(ToffeeSpatialIndexDeviceTests, frontFaceOnCpuSoftwareBvh) {
+TEST(CarameloSpatialIndexDeviceTests, frontFaceOnCpuSoftwareBvh) {
     std::map<std::string, std::string> sources = {{"test.FrontRq", kFrontDriver}};
     CajetaJit::Options o;
     o.xpuBackends = {cajeta::xpu::Backend::Cpu};
@@ -532,7 +532,7 @@ TEST(ToffeeSpatialIndexDeviceTests, frontFaceOnCpuSoftwareBvh) {
     EXPECT_EQ(r, 777) << "fail code " << r << " (100: front hit; 101: back hit)";
 }
 
-TEST(ToffeeSpatialIndexDeviceTests, frontFaceOnDevice) {
+TEST(CarameloSpatialIndexDeviceTests, frontFaceOnDevice) {
     if (!VulkanDriver::rayQueryAvailable()) {
         GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
     }
@@ -550,7 +550,7 @@ TEST(ToffeeSpatialIndexDeviceTests, frontFaceOnDevice) {
 // Inc 3b native cross-checks: the SAME getter / nearest-hit sources on the Vulkan
 // NATIVE path (OpRayQueryGetIntersectionT / Barycentrics, Confirm/Generate via the
 // new cajeta-llvm fork intrinsics) must match the CPU software results.
-TEST(ToffeeSpatialIndexDeviceTests, candidateGettersOnDevice) {
+TEST(CarameloSpatialIndexDeviceTests, candidateGettersOnDevice) {
     if (!VulkanDriver::rayQueryAvailable()) {
         GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
     }
@@ -566,7 +566,7 @@ TEST(ToffeeSpatialIndexDeviceTests, candidateGettersOnDevice) {
                       << " (Vulkan native candidate getters != software)";
 }
 
-TEST(ToffeeSpatialIndexDeviceTests, nearestHitOnDevice) {
+TEST(CarameloSpatialIndexDeviceTests, nearestHitOnDevice) {
     if (!VulkanDriver::rayQueryAvailable()) {
         GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
     }
@@ -582,7 +582,7 @@ TEST(ToffeeSpatialIndexDeviceTests, nearestHitOnDevice) {
                       << " (Vulkan native nearest-hit (confirm) != software)";
 }
 
-TEST(ToffeeSpatialIndexDeviceTests, triangleRayQueryOnCpuSoftwareBvh) {
+TEST(CarameloSpatialIndexDeviceTests, triangleRayQueryOnCpuSoftwareBvh) {
     std::map<std::string, std::string> sources = {{"test.TriRq", kTriDriver}};
     CajetaJit::Options o;
     o.xpuBackends = {cajeta::xpu::Backend::Cpu};
@@ -599,7 +599,7 @@ TEST(ToffeeSpatialIndexDeviceTests, triangleRayQueryOnCpuSoftwareBvh) {
 // NATIVE path (VK_GEOMETRY_TYPE_TRIANGLES_KHR + OpRayQuery, Möller-Trumbore in
 // hardware) must produce the same hit counts as the CPU software walk above.
 // Non-opaque geometry so triangle candidates enumerate in the proceed() loop.
-TEST(ToffeeSpatialIndexDeviceTests, triangleRayQueryOnDevice) {
+TEST(CarameloSpatialIndexDeviceTests, triangleRayQueryOnDevice) {
     if (!VulkanDriver::rayQueryAvailable()) {
         GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
     }
@@ -615,7 +615,7 @@ TEST(ToffeeSpatialIndexDeviceTests, triangleRayQueryOnDevice) {
                       << " (Vulkan native triangle ray query != software)";
 }
 
-TEST(ToffeeSpatialIndexDeviceTests, minimalRayQueryOnCpuSoftwareBvh) {
+TEST(CarameloSpatialIndexDeviceTests, minimalRayQueryOnCpuSoftwareBvh) {
     std::map<std::string, std::string> sources = {{"test.RqMin", kRqMinDriver}};
     CajetaJit::Options o;
     o.xpuBackends = {cajeta::xpu::Backend::Cpu};
@@ -628,7 +628,7 @@ TEST(ToffeeSpatialIndexDeviceTests, minimalRayQueryOnCpuSoftwareBvh) {
                       << " (CPU software ray query: wrong hit count)";
 }
 
-// ── Ray-query-to-core (inc 1): the SAME Toffee source on the CPU SOFTWARE path ──
+// ── Ray-query-to-core (inc 1): the SAME Caramelo source on the CPU SOFTWARE path ──
 // No ray-query-capable device required — the AccelerationStructure builds a
 // portable software BVH (runtime/native/cajeta_bvh.c) and RayQuery lowers to the
 // cajeta SoftwareRayQuery walk. The results must match the Vulkan native path
@@ -636,18 +636,18 @@ TEST(ToffeeSpatialIndexDeviceTests, minimalRayQueryOnCpuSoftwareBvh) {
 // Each ctest case is a fresh process, so the CPU-only bundle selects the CPU
 // backend (priority CUDA>HIP>Vulkan>CPU is moot when only CPU is bundled).
 
-TEST(ToffeeSpatialIndexDeviceTests, fixedRadiusCountOnCpuSoftwareBvh) {
+TEST(CarameloSpatialIndexDeviceTests, fixedRadiusCountOnCpuSoftwareBvh) {
     std::string lib = readSpatialIndexSource();
     if (lib.empty()) {
-        GTEST_SKIP() << "cajeta-toffee SpatialIndex.cajeta not found beside checkout";
+        GTEST_SKIP() << "cajeta-caramelo SpatialIndex.cajeta not found beside checkout";
     }
     std::map<std::string, std::string> sources = {
-        {"toffee.spatial.SpatialIndex", lib},
-        {"test.ToffeeRQ", kDriver},
+        {"caramelo.spatial.SpatialIndex", lib},
+        {"test.CarameloRQ", kDriver},
     };
     CajetaJit::Options o;
     o.xpuBackends = {cajeta::xpu::Backend::Cpu};
-    auto jit = CajetaJit::compile(sources, "test.ToffeeRQ", o);
+    auto jit = CajetaJit::compile(sources, "test.CarameloRQ", o);
     ASSERT_NE(jit, nullptr);
     auto fn = jit->lookup<int (*)()>("run");
     ASSERT_NE(fn, nullptr);
@@ -656,18 +656,18 @@ TEST(ToffeeSpatialIndexDeviceTests, fixedRadiusCountOnCpuSoftwareBvh) {
                       << " (CPU software BVH/RayQuery: wrong neighbour count)";
 }
 
-TEST(ToffeeSpatialIndexDeviceTests, exactL2RefinementOnCpuSoftwareBvh) {
+TEST(CarameloSpatialIndexDeviceTests, exactL2RefinementOnCpuSoftwareBvh) {
     std::string lib = readSpatialIndexSource();
     if (lib.empty()) {
-        GTEST_SKIP() << "cajeta-toffee SpatialIndex.cajeta not found beside checkout";
+        GTEST_SKIP() << "cajeta-caramelo SpatialIndex.cajeta not found beside checkout";
     }
     std::map<std::string, std::string> sources = {
-        {"toffee.spatial.SpatialIndex", lib},
-        {"test.ToffeeExact", kExactDriver},
+        {"caramelo.spatial.SpatialIndex", lib},
+        {"test.CarameloExact", kExactDriver},
     };
     CajetaJit::Options o;
     o.xpuBackends = {cajeta::xpu::Backend::Cpu};
-    auto jit = CajetaJit::compile(sources, "test.ToffeeExact", o);
+    auto jit = CajetaJit::compile(sources, "test.CarameloExact", o);
     ASSERT_NE(jit, nullptr);
     auto fn = jit->lookup<int (*)()>("run");
     ASSERT_NE(fn, nullptr);
@@ -879,7 +879,7 @@ const char* kImplProbeDriver =
 // ray-query Vulkan device must RECORD native (implTag 1) -> 701. Before the Win32
 // un-gate of caj_native_rayquery_available(), AUTO resolved to software (-> 700)
 // on Windows even on the 4090, so this test guards the fix on-device.
-TEST(ToffeeSpatialIndexDeviceTests, autoRecordsNativeImplOnDevice) {
+TEST(CarameloSpatialIndexDeviceTests, autoRecordsNativeImplOnDevice) {
     if (!VulkanDriver::rayQueryAvailable()) {
         GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
     }
@@ -899,7 +899,7 @@ TEST(ToffeeSpatialIndexDeviceTests, autoRecordsNativeImplOnDevice) {
 // Native leg: kRqMinDriver (default Auto ctor) on a ray-query-capable Vulkan
 // device — the native BLAS + OpRayQuery. The reference 777 the forced-software
 // leg below must match.
-TEST(ToffeeSpatialIndexDeviceTests, minimalRayQueryOnDevice) {
+TEST(CarameloSpatialIndexDeviceTests, minimalRayQueryOnDevice) {
     if (!VulkanDriver::rayQueryAvailable()) {
         GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
     }
@@ -919,7 +919,7 @@ TEST(ToffeeSpatialIndexDeviceTests, minimalRayQueryOnDevice) {
 // device builds a software BVH and runs the $sw variant; its 777 == the native leg
 // above == the CPU leg (minimalRayQueryOnCpuSoftwareBvh). One backend, either
 // impl, the verb following the noun.
-TEST(ToffeeSpatialIndexDeviceTests, forcedSoftwareOfApiOnDevice) {
+TEST(CarameloSpatialIndexDeviceTests, forcedSoftwareOfApiOnDevice) {
     if (!VulkanDriver::rayQueryAvailable()) {
         GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
     }
@@ -941,7 +941,7 @@ TEST(ToffeeSpatialIndexDeviceTests, forcedSoftwareOfApiOnDevice) {
 // leg == the CPU leg. The explicit override proves native is selectable on its
 // own, not just as the AUTO default — so this stays green even if a future change
 // alters the AUTO/caj_native_rayquery_available policy.
-TEST(ToffeeSpatialIndexDeviceTests, forcedNativeOfApiOnDevice) {
+TEST(CarameloSpatialIndexDeviceTests, forcedNativeOfApiOnDevice) {
     if (!VulkanDriver::rayQueryAvailable()) {
         GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
     }
@@ -981,7 +981,7 @@ namespace { struct AsImplEnvGuard {
     ~AsImplEnvGuard() { unsetenv("CAJETA_GPU_AS_IMPL"); }
 }; }
 
-TEST(ToffeeSpatialIndexDeviceTests, minimalRayQueryOnNvptxSoftwareBvh) {
+TEST(CarameloSpatialIndexDeviceTests, minimalRayQueryOnNvptxSoftwareBvh) {
     if (!cajeta::xpu::nvidia::CudaDriver::available()) {
         GTEST_SKIP() << "no CUDA device/driver available";
     }
@@ -998,7 +998,7 @@ TEST(ToffeeSpatialIndexDeviceTests, minimalRayQueryOnNvptxSoftwareBvh) {
                       << " (NVPTX software AABB ray query: wrong hit count)";
 }
 
-TEST(ToffeeSpatialIndexDeviceTests, triangleRayQueryOnNvptxSoftwareBvh) {
+TEST(CarameloSpatialIndexDeviceTests, triangleRayQueryOnNvptxSoftwareBvh) {
     if (!cajeta::xpu::nvidia::CudaDriver::available()) {
         GTEST_SKIP() << "no CUDA device/driver available";
     }
@@ -1015,7 +1015,7 @@ TEST(ToffeeSpatialIndexDeviceTests, triangleRayQueryOnNvptxSoftwareBvh) {
                       << " (NVPTX software triangle ray query != CPU)";
 }
 
-TEST(ToffeeSpatialIndexDeviceTests, nearestHitOnNvptxSoftwareBvh) {
+TEST(CarameloSpatialIndexDeviceTests, nearestHitOnNvptxSoftwareBvh) {
     if (!cajeta::xpu::nvidia::CudaDriver::available()) {
         GTEST_SKIP() << "no CUDA device/driver available";
     }
@@ -1032,7 +1032,7 @@ TEST(ToffeeSpatialIndexDeviceTests, nearestHitOnNvptxSoftwareBvh) {
                       << " (NVPTX nearest-hit confirm/committed != CPU)";
 }
 
-TEST(ToffeeSpatialIndexDeviceTests, candidateGettersOnNvptxSoftwareBvh) {
+TEST(CarameloSpatialIndexDeviceTests, candidateGettersOnNvptxSoftwareBvh) {
     if (!cajeta::xpu::nvidia::CudaDriver::available()) {
         GTEST_SKIP() << "no CUDA device/driver available";
     }
@@ -1049,7 +1049,7 @@ TEST(ToffeeSpatialIndexDeviceTests, candidateGettersOnNvptxSoftwareBvh) {
                       << " (NVPTX candidate distance/barycentrics != CPU)";
 }
 
-TEST(ToffeeSpatialIndexDeviceTests, frontFaceOnNvptxSoftwareBvh) {
+TEST(CarameloSpatialIndexDeviceTests, frontFaceOnNvptxSoftwareBvh) {
     if (!cajeta::xpu::nvidia::CudaDriver::available()) {
         GTEST_SKIP() << "no CUDA device/driver available";
     }
@@ -1098,7 +1098,7 @@ const char* kOptixImplDriver =
     "    }\n"
     "}\n";
 
-TEST(ToffeeSpatialIndexDeviceTests, optixRecordsImplOnNvptxDevice) {
+TEST(CarameloSpatialIndexDeviceTests, optixRecordsImplOnNvptxDevice) {
     if (!cajeta::xpu::nvidia::CudaDriver::available()) {
         GTEST_SKIP() << "no CUDA device/driver available";
     }
@@ -1142,7 +1142,7 @@ const char* kImplSetDriver =
     "    }\n"
     "}\n";
 
-TEST(ToffeeSpatialIndexDeviceTests, multiImplAsRecordsSoftwareAndOptix) {
+TEST(CarameloSpatialIndexDeviceTests, multiImplAsRecordsSoftwareAndOptix) {
     if (!cajeta::xpu::nvidia::CudaDriver::available()) {
         GTEST_SKIP() << "no CUDA device/driver available";
     }
@@ -1168,7 +1168,7 @@ TEST(ToffeeSpatialIndexDeviceTests, multiImplAsRecordsSoftwareAndOptix) {
 // M3 Phase 1 — implSet() on an AUTO (software-primary) AS reports software-only
 // (bit 1), and implTag() still returns the single primary tag. Backward-compat:
 // AUTO on CUDA stays software (the M2 4-C policy holds until M3 Phase 4 flips it).
-TEST(ToffeeSpatialIndexDeviceTests, multiImplAsSoftwareOnlyUnderAuto) {
+TEST(CarameloSpatialIndexDeviceTests, multiImplAsSoftwareOnlyUnderAuto) {
     if (!cajeta::xpu::nvidia::CudaDriver::available()) {
         GTEST_SKIP() << "no CUDA device/driver available";
     }
@@ -1282,7 +1282,7 @@ const char* kSelectDriver =
 
 // 2a — the decisive launch-time-selection test: one AS, a supported kernel on the RT
 // cores and an Unsupported-shape kernel on the software floor, both correct (777).
-TEST(ToffeeSpatialIndexDeviceTests, sameAsTwoKernelsSelectsPerLaunch) {
+TEST(CarameloSpatialIndexDeviceTests, sameAsTwoKernelsSelectsPerLaunch) {
     if (!cajeta::xpu::nvidia::CudaDriver::available()) {
         GTEST_SKIP() << "no CUDA device/driver available";
     }
@@ -1355,7 +1355,7 @@ const char* kUnsupOptixDriver =
     "    }\n"
     "}\n";
 
-TEST(ToffeeSpatialIndexDeviceTests, forcedOptixUnsupportedShapeFallsBackToSoftware) {
+TEST(CarameloSpatialIndexDeviceTests, forcedOptixUnsupportedShapeFallsBackToSoftware) {
     if (!cajeta::xpu::nvidia::CudaDriver::available()) {
         GTEST_SKIP() << "no CUDA device/driver available";
     }
@@ -1382,7 +1382,7 @@ TEST(ToffeeSpatialIndexDeviceTests, forcedOptixUnsupportedShapeFallsBackToSoftwa
 // reads it. The SAME kOptixImplDriver as optixRecordsImplOnNvptxDevice, no env: 700
 // (software), NOT 702. Guards against an accidental AUTO→OptiX flip. See the OptiX
 // AUTO-policy note + the M2 codegen plan (4-C).
-TEST(ToffeeSpatialIndexDeviceTests, autoRecordsSoftwareImplOnNvptxDevice) {
+TEST(CarameloSpatialIndexDeviceTests, autoRecordsSoftwareImplOnNvptxDevice) {
     if (!cajeta::xpu::nvidia::CudaDriver::available()) {
         GTEST_SKIP() << "no CUDA device/driver available";
     }
@@ -1465,7 +1465,7 @@ const char* kLazySoftOnlyDriver =
     "    }\n"
     "}\n";
 
-TEST(ToffeeSpatialIndexDeviceTests, softwareOnlyConsumerSkipsOptixBuild) {
+TEST(CarameloSpatialIndexDeviceTests, softwareOnlyConsumerSkipsOptixBuild) {
     if (!cajeta::xpu::nvidia::CudaDriver::available()) {
         GTEST_SKIP() << "no CUDA device/driver available";
     }
@@ -1548,7 +1548,7 @@ const char* kLazyBuildDriver =
     "    }\n"
     "}\n";
 
-TEST(ToffeeSpatialIndexDeviceTests, lazyOptixBuiltOnFirstNativeLaunch) {
+TEST(CarameloSpatialIndexDeviceTests, lazyOptixBuiltOnFirstNativeLaunch) {
     if (!cajeta::xpu::nvidia::CudaDriver::available()) {
         GTEST_SKIP() << "no CUDA device/driver available";
     }
@@ -1635,7 +1635,7 @@ const char* kNoFloorDriver =
     "    }\n"
     "}\n";
 
-TEST(ToffeeSpatialIndexDeviceTests, dropSoftwareFloorHintHonored) {
+TEST(CarameloSpatialIndexDeviceTests, dropSoftwareFloorHintHonored) {
     if (!cajeta::xpu::nvidia::CudaDriver::available()) {
         GTEST_SKIP() << "no CUDA device/driver available";
     }
@@ -1718,7 +1718,7 @@ const char* kAutoTriDriver =
     "    }\n"
     "}\n";
 
-TEST(ToffeeSpatialIndexDeviceTests, autoPrefersOptixForTriangleShape) {
+TEST(CarameloSpatialIndexDeviceTests, autoPrefersOptixForTriangleShape) {
     if (!cajeta::xpu::nvidia::CudaDriver::available()) {
         GTEST_SKIP() << "no CUDA device/driver available";
     }
@@ -1750,7 +1750,7 @@ TEST(ToffeeSpatialIndexDeviceTests, autoPrefersOptixForTriangleShape) {
 // the verb following the noun onto a fifth path. On a box without the OptiX runtime
 // the AS records software and this still returns 777 via the software cubin (the
 // launch's impl branch falls through); on the 4090 it runs on the RT cores.
-TEST(ToffeeSpatialIndexDeviceTests, aabbCountRayQueryOnOptixDevice) {
+TEST(CarameloSpatialIndexDeviceTests, aabbCountRayQueryOnOptixDevice) {
     if (!cajeta::xpu::nvidia::CudaDriver::available()) {
         GTEST_SKIP() << "no CUDA device/driver available";
     }
@@ -1773,7 +1773,7 @@ TEST(ToffeeSpatialIndexDeviceTests, aabbCountRayQueryOnOptixDevice) {
 // program set (raygen with the baked ray + closesthit committing T/type/prim + miss),
 // and the launch dispatches to cajeta_xpu_optix_launch_tri (built-in triangle
 // traversal). Its 777 must equal the nearestHitOnNvptxSoftwareBvh / CPU legs.
-TEST(ToffeeSpatialIndexDeviceTests, nearestHitRayQueryOnOptixDevice) {
+TEST(CarameloSpatialIndexDeviceTests, nearestHitRayQueryOnOptixDevice) {
     if (!cajeta::xpu::nvidia::CudaDriver::available()) {
         GTEST_SKIP() << "no CUDA device/driver available";
     }
@@ -1797,7 +1797,7 @@ TEST(ToffeeSpatialIndexDeviceTests, nearestHitRayQueryOnOptixDevice) {
 // optixGetTriangleBarycentrics into out[0..2] then optixIgnoreIntersection + miss),
 // and the launch dispatches to cajeta_xpu_optix_launch_tri (anyhit hitgroup). Its 777
 // (distance=5, u=v=0.25) must equal the candidateGettersOnNvptxSoftwareBvh / CPU legs.
-TEST(ToffeeSpatialIndexDeviceTests, candidateGettersRayQueryOnOptixDevice) {
+TEST(CarameloSpatialIndexDeviceTests, candidateGettersRayQueryOnOptixDevice) {
     if (!cajeta::xpu::nvidia::CudaDriver::available()) {
         GTEST_SKIP() << "no CUDA device/driver available";
     }
@@ -1820,7 +1820,7 @@ TEST(ToffeeSpatialIndexDeviceTests, candidateGettersRayQueryOnOptixDevice) {
 // initialize() args as const-or-buffer[i] loads), built-in triangle traversal,
 // closesthit writes out[i] (hit-flag for the count kernel; front-face 1/2 for the
 // front-face kernel). Each 777 must equal the *OnNvptxSoftwareBvh / CPU legs.
-TEST(ToffeeSpatialIndexDeviceTests, triangleCountRayQueryOnOptixDevice) {
+TEST(CarameloSpatialIndexDeviceTests, triangleCountRayQueryOnOptixDevice) {
     if (!cajeta::xpu::nvidia::CudaDriver::available()) {
         GTEST_SKIP() << "no CUDA device/driver available";
     }
@@ -1837,7 +1837,7 @@ TEST(ToffeeSpatialIndexDeviceTests, triangleCountRayQueryOnOptixDevice) {
                       << " (OptiX RT-core triangle hit-count via the compiler != CPU)";
 }
 
-TEST(ToffeeSpatialIndexDeviceTests, frontFaceRayQueryOnOptixDevice) {
+TEST(CarameloSpatialIndexDeviceTests, frontFaceRayQueryOnOptixDevice) {
     if (!cajeta::xpu::nvidia::CudaDriver::available()) {
         GTEST_SKIP() << "no CUDA device/driver available";
     }
@@ -1867,7 +1867,7 @@ TEST(ToffeeSpatialIndexDeviceTests, frontFaceRayQueryOnOptixDevice) {
 // device.
 // ---------------------------------------------------------------------------
 
-TEST(ToffeeSpatialIndexDeviceTests, minimalRayQueryOnAmdSoftwareBvh) {
+TEST(CarameloSpatialIndexDeviceTests, minimalRayQueryOnAmdSoftwareBvh) {
     if (!cajeta::xpu::amd::HipDriver::available()) {
         GTEST_SKIP() << "no ROCm/HIP device available";
     }
@@ -1883,7 +1883,7 @@ TEST(ToffeeSpatialIndexDeviceTests, minimalRayQueryOnAmdSoftwareBvh) {
                       << " (AMD software AABB ray query: wrong hit count)";
 }
 
-TEST(ToffeeSpatialIndexDeviceTests, triangleRayQueryOnAmdSoftwareBvh) {
+TEST(CarameloSpatialIndexDeviceTests, triangleRayQueryOnAmdSoftwareBvh) {
     if (!cajeta::xpu::amd::HipDriver::available()) {
         GTEST_SKIP() << "no ROCm/HIP device available";
     }
@@ -1899,7 +1899,7 @@ TEST(ToffeeSpatialIndexDeviceTests, triangleRayQueryOnAmdSoftwareBvh) {
                       << " (AMD software triangle ray query != CPU)";
 }
 
-TEST(ToffeeSpatialIndexDeviceTests, nearestHitOnAmdSoftwareBvh) {
+TEST(CarameloSpatialIndexDeviceTests, nearestHitOnAmdSoftwareBvh) {
     if (!cajeta::xpu::amd::HipDriver::available()) {
         GTEST_SKIP() << "no ROCm/HIP device available";
     }
@@ -1915,7 +1915,7 @@ TEST(ToffeeSpatialIndexDeviceTests, nearestHitOnAmdSoftwareBvh) {
                       << " (AMD nearest-hit confirm/committed != CPU)";
 }
 
-TEST(ToffeeSpatialIndexDeviceTests, candidateGettersOnAmdSoftwareBvh) {
+TEST(CarameloSpatialIndexDeviceTests, candidateGettersOnAmdSoftwareBvh) {
     if (!cajeta::xpu::amd::HipDriver::available()) {
         GTEST_SKIP() << "no ROCm/HIP device available";
     }
@@ -1931,7 +1931,7 @@ TEST(ToffeeSpatialIndexDeviceTests, candidateGettersOnAmdSoftwareBvh) {
                       << " (AMD candidate distance/barycentrics != CPU)";
 }
 
-TEST(ToffeeSpatialIndexDeviceTests, frontFaceOnAmdSoftwareBvh) {
+TEST(CarameloSpatialIndexDeviceTests, frontFaceOnAmdSoftwareBvh) {
     if (!cajeta::xpu::amd::HipDriver::available()) {
         GTEST_SKIP() << "no ROCm/HIP device available";
     }
