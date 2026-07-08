@@ -237,7 +237,7 @@ device-verified · **◐** emit-only (NVIDIA) · **◷** intended-core, fallback
 | `storeImage` / `loadImage` (`Image2D` storage RMW) | ● | ● | ● | ◐ | ✗ |
 
 **◑** AMD mipmaps: code complete + emit-verified, but `hipMallocMipmappedArray` is
-unsupported on gfx1151/ROCm 7.2.2 — degrades gracefully, device test SKIPs.
+unsupported on gfx1151/ROCm 7.11.0 — degrades gracefully, device test SKIPs.
 
 ### 3.5 Capability primitives
 

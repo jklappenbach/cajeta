@@ -169,7 +169,7 @@ static int64_t cajeta_xpu_hip_tex2darray_alloc(uint32_t w, uint32_t h,
 }
 
 // TextureCube on AMD: EMULATED as a 6-LAYER LAYERED array (hipArrayCubemap is
-// unsupported by the HIP runtime on gfx1151 — invalid-arg, confirmed ROCm 7.2.2 +
+// unsupported by the HIP runtime on gfx1151 — invalid-arg, confirmed ROCm 7.11.0 +
 // 7.11.0; see reference_amd_hip_mipmap_cubemap_unsupported). A layered array IS
 // supported, so we store the 6 faces as 6 layers and do the major-axis face
 // projection IN-KERNEL (AmdgpuKernelLowering::sampleTextureCube) → sample the
@@ -258,7 +258,7 @@ static int cajeta_hip_tex_mip_supported(void) {
 }
 
 // === Emulated mip Texture2D (option B) =======================================
-// When the HIP runtime lacks mipmapped arrays (true on gfx1151, ROCm 7.2.2/7.11),
+// When the HIP runtime lacks mipmapped arrays (true on gfx1151, ROCm 7.11),
 // a mip texture is a single plain hipMalloc tiled by addrlib, sampled through a
 // HAND-BUILT gfx11 image SRD. Proven bit-exact on-device in the de-risk probe
 // (plans/gpu/xpu/probes/mipprobe.cpp); the SRD field semantics come from Mesa's
@@ -431,7 +431,7 @@ static int64_t cajeta_xpu_hip_tex_alloc_mip(uint32_t w, uint32_t h, int32_t form
     void* mipmap = NULL;
     // NB: on gfx1151 hipMallocMipmappedArray returns hipErrorNotSupported(801) —
     // mipmapped arrays are unimplemented in the HIP runtime on this APU (ROCm
-    // 7.2.2 + 7.11.0). With the emulation above that no longer matters; this
+    // 7.11.0). With the emulation above that no longer matters; this
     // native path remains for HW/runtimes that DO implement mipmapped arrays.
     if (g_xpu_hip.hipMallocMipmappedArray(&mipmap, &cd, ext, levels, 0) != 0 ||
         !mipmap)

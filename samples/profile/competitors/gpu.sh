@@ -35,7 +35,7 @@ if want python; then
 fi
 
 # ---- cpp: rocBLAS (rocblas_dgemm) — second GPU peer (plan U4 4.2.b) ----
-# gfx1151 needs a NEWER rocBLAS than the system 7.2.2 (which segfaults); run
+# gfx1151 needs a newer rocBLAS than older system builds (which segfault on this arch); run
 # against the gfx1151 venv's rocm libs (the same stack PyTorch uses) via
 # LD_LIBRARY_PATH. Override with PROFILE_GPU_ROCM_LIB.
 if want cpp; then
