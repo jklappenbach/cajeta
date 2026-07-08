@@ -237,6 +237,17 @@ fi
 # per-shard cap — a worker runs until its whole bucket is exhausted.
 TEST_TIMEOUT="${TEST_TIMEOUT:-120}"
 
+# Duration-weighted scheduling (perf). Persist per-test wall-clock (ms) across
+# runs and pack shards by MEASURED time instead of test count, so a cluster of
+# slow tests (e.g. device/GPU suites) doesn't become the long pole that bounds
+# the whole sweep. The file is a plain `Suite.test<TAB>ms` TSV, gitignored,
+# updated after every run (tests not run this time keep their prior value).
+# First run (no file) falls back to count-based packing via DEFAULT_TEST_MS.
+# Opt out with WEIGHTED=0.
+DURATIONS_FILE="${CAJETA_TEST_DURATIONS:-$SCRIPT_DIR/.test-durations.tsv}"
+DEFAULT_TEST_MS="${DEFAULT_TEST_MS:-1500}"
+WEIGHTED="${WEIGHTED:-1}"
+
 # Portable per-test timeout wrapper. GNU coreutils `timeout` is standard on
 # Linux and MSYS2 but ABSENT on macOS (where coreutils, if brew-installed,
 # ships it as `gtimeout`). Without this detection every test invocation on
@@ -410,28 +421,56 @@ fi
 if [ "$BATCH" = "1" ]; then unit_count=$num_chunks; else unit_count=$num_tests; fi
 if [ "$shards" -gt "$unit_count" ]; then shards=$unit_count; fi
 
-# Distribute work into per-shard buckets. shard_total tracks how many TESTS each
-# shard owns (the live display denominator), regardless of unit granularity.
+# Per-chunk WEIGHT = sum of member tests' last-known durations (ms), the
+# quantity the LPT packer balances. With no history a test contributes
+# DEFAULT_TEST_MS, so a first run (or WEIGHTED=0) degrades to count-based
+# packing (every test equal). One awk pass loads the durations TSV and sums per
+# chunk (bash 3.2 has no associative arrays, so the map lives in awk).
+declare -a chunk_weight
+for ((i=0; i<num_chunks; i++)); do chunk_weight[$i]=0; done
+if [ "$WEIGHTED" != "0" ]; then
+    _wtmp="$(mktemp)"
+    for ((i=0; i<num_chunks; i++)); do
+        while IFS= read -r _t; do
+            [ -n "$_t" ] && printf '%s\t%s\n' "$i" "$_t"
+        done <<< "${chunk_list[$i]}"
+    done | awk -v durfile="$DURATIONS_FILE" -v def="$DEFAULT_TEST_MS" '
+        BEGIN { while ((getline l < durfile) > 0) { if (split(l,a,"\t") >= 2) d[a[1]] = a[2] } }
+        { w[$1] += (($2) in d) ? d[$2] : def }
+        END { for (c in w) printf "%s\t%s\n", c, w[c] }
+    ' > "$_wtmp"
+    while IFS=$'\t' read -r _ci _cw; do
+        [ -n "$_ci" ] && chunk_weight[$_ci]=$_cw
+    done < "$_wtmp"
+    rm -f "$_wtmp"
+else
+    for ((i=0; i<num_chunks; i++)); do chunk_weight[$i]=$(( chunk_count[$i] * DEFAULT_TEST_MS )); done
+fi
+
+# Distribute work into per-shard buckets. shard_weight is the packing load
+# (summed ms) the LPT balances; shard_total tracks TEST COUNT (the live-display
+# denominator) alongside it.
 declare -a shard_list
 declare -a shard_total
-for ((s=0; s<shards; s++)); do shard_list[$s]=""; shard_total[$s]=0; done
-# Longest-processing-time first over CHUNKS: assign each chunk (largest test-count
-# first) to the currently least-loaded shard, so workers get balanced test totals
-# even though chunks vary in size. Buckets carry the chunk INDEX; the worker looks
-# up its exact test list via chunk_list[] (no associative array needed). Both modes
-# pack chunks: in BATCH=1 a chunk is a suite-slice; in BATCH=0 each chunk is one
-# test (count 1), so this LPT reduces to the old round-robin for equal weights.
+declare -a shard_weight
+for ((s=0; s<shards; s++)); do shard_list[$s]=""; shard_total[$s]=0; shard_weight[$s]=0; done
+# Longest-processing-time first over CHUNKS: assign each chunk (heaviest by
+# measured time first) to the shard with the least accumulated time, so workers
+# get balanced WALL-CLOCK totals — a slow device suite no longer piles onto an
+# already-long shard just because another shard has more (fast) tests. Buckets
+# carry the chunk INDEX; the worker looks up its test list via chunk_list[].
 sorted_chunks=$(for ((i=0; i<num_chunks; i++)); do
-    printf '%s\t%s\n' "${chunk_count[$i]}" "$i"
+    printf '%s\t%s\n' "${chunk_weight[$i]}" "$i"
 done | sort -rn -k1,1 -s)
-while IFS=$'\t' read -r cnt idx; do
+while IFS=$'\t' read -r wt idx; do
     [ -z "$idx" ] && continue
-    min_s=0; min_v=${shard_total[0]}
+    min_s=0; min_v=${shard_weight[0]}
     for ((s=1; s<shards; s++)); do
-        if [ "${shard_total[$s]}" -lt "$min_v" ]; then min_v=${shard_total[$s]}; min_s=$s; fi
+        if [ "${shard_weight[$s]}" -lt "$min_v" ]; then min_v=${shard_weight[$s]}; min_s=$s; fi
     done
     shard_list[$min_s]+="${idx}"$'\n'
-    shard_total[$min_s]=$(( shard_total[$min_s] + cnt ))
+    shard_weight[$min_s]=$(( shard_weight[$min_s] + wt ))
+    shard_total[$min_s]=$(( shard_total[$min_s] + chunk_count[$idx] ))
 done <<< "$sorted_chunks"
 
 # PLAN_ONLY: emit the chunk->shard assignment and exit before spawning anything.
@@ -444,11 +483,12 @@ if [ -n "${PLAN_ONLY:-}" ]; then
     printf 'PLAN shards=%s batch=%s batch_max=%s chunks=%s tests=%s\n' \
         "$shards" "$BATCH" "$BATCH_MAX" "$num_chunks" "$num_tests"
     for ((s=0; s<shards; s++)); do
+        printf 'SHARD %s weight=%s tests=%s\n' "$s" "${shard_weight[$s]}" "${shard_total[$s]}"
         while IFS= read -r ci; do
             [ -z "$ci" ] && continue
             _csv=$(printf '%s' "${chunk_list[$ci]}" | grep -v '^$' | paste -sd, -)
-            printf 'CHUNK %s shard=%s count=%s name=%s tests=%s\n' \
-                "$ci" "$s" "${chunk_count[$ci]}" "${chunk_name[$ci]}" "$_csv"
+            printf 'CHUNK %s shard=%s count=%s weight=%s name=%s tests=%s\n' \
+                "$ci" "$s" "${chunk_count[$ci]}" "${chunk_weight[$ci]}" "${chunk_name[$ci]}" "$_csv"
         done <<< "${shard_list[$s]}"
     done
     exit 0
@@ -468,7 +508,13 @@ live=0
 if [ -t 1 ] && [ "${TUI:-1}" != "0" ] && [ "${VERBOSE:-}" != "1" ]; then
     live=1
 fi
-if [ "$live" = "1" ]; then shard_brief="--gtest_brief=0"; else shard_brief="--gtest_brief=1"; fi
+# Always emit full per-test output (`--gtest_brief=0`) to the shard tmp files:
+# the live dashboard needs the `[ RUN ]`/`[ OK ]` lines, and the duration-metrics
+# recorder needs the per-test `[ OK ] Suite.test (N ms)` timings (brief=1
+# suppresses them). It only enlarges the temp shard logs (deleted at exit); the
+# `[ PASSED ]/[ FAILED ]` lines the aggregator counts print either way, and the
+# console still shows only the compact summary in non-live mode.
+shard_brief="--gtest_brief=0"
 
 # Run ONE test in its own process, appending its output + a synthetic
 # >>> CRASH / >>> TIMEOUT marker (counted by the aggregator) to $1. This is the
@@ -754,6 +800,34 @@ for ((s=0; s<shards; s++)); do
         [ -n "$line" ] && crash_lines+=("$line")
     done < <(grep -E '^>>> CRASH ' "$out_file" 2>/dev/null || true)
 done
+
+# Record per-test durations for the next run's weighted packing. Pull the
+# `[ OK ] Suite.test (N ms)` / `[ FAILED ] Suite.test (N ms)` lines from every
+# shard (the `[^ ]+ (N ms)` shape excludes gtest's count-summary lines), then
+# MERGE onto the existing TSV: tests run this time get their fresh time, tests
+# NOT run (a filtered invocation) keep their prior value, so the history
+# accumulates across partial runs. Best-effort — a metrics hiccup never changes
+# the run's verdict.
+if [ "$WEIGHTED" != "0" ]; then
+    _newdur="$tmpdir/durations.new"
+    : > "$_newdur"
+    for ((s=0; s<shards; s++)); do
+        sed -nE 's/^\[ *OK *\] ([^ ]+) \(([0-9]+) ms\)$/\1\t\2/p; s/^\[  FAILED  \] ([^ ]+) \(([0-9]+) ms\)$/\1\t\2/p' \
+            "$tmpdir/shard_${s}.out" 2>/dev/null >> "$_newdur"
+    done
+    if [ -s "$_newdur" ]; then
+        touch "$DURATIONS_FILE" 2>/dev/null || true
+        _merged="$tmpdir/durations.merged"
+        # dedup new (last wins per test), then overlay onto the old file.
+        if awk -F'\t' '
+                NR==FNR { n[$1] = $2; next }                 # new durations
+                { if ($1 in n) { print $1"\t"n[$1]; delete n[$1] } else print }
+                END { for (k in n) print k"\t"n[k] }
+            ' "$_newdur" "$DURATIONS_FILE" > "$_merged" 2>/dev/null; then
+            mv "$_merged" "$DURATIONS_FILE" 2>/dev/null || true
+        fi
+    fi
+fi
 
 num_timeouts=${#timeout_lines[@]}
 num_crashes=${#crash_lines[@]}
