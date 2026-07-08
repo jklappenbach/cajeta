@@ -51,18 +51,36 @@ void ensureTargetsInitialized() {
     });
 }
 
-// Locate the ROCm device-bitcode directory (ockl/oclc). Honors ROCM_PATH, else
+// Locate the ROCm device-bitcode directory (ockl/ocml). Honors ROCM_PATH, else
 // the canonical /opt/rocm install. Empty if neither has the bitcode.
+//
+// The bitcode's location within a ROCm root moved across releases: classic
+// installs put it at `<root>/amdgcn/bitcode`, while ROCm 7.x ships it under the
+// bundled LLVM at `<root>/lib/llvm/amdgcn/bitcode`. Probe every known layout per
+// root so a modern install (where only the lib/llvm path exists) isn't reported
+// as "bitcode not found" — the failure that made device math / texture sampling
+// silently unlinkable and the code object fail to load (hipError 209).
 std::string findRocmBitcodeDir() {
     auto has = [](const std::string& d) {
         return llvm::sys::fs::exists(d + "/ockl.bc");
     };
+    // Candidate subpaths within a ROCm root, in preference order.
+    static const char* kSubdirs[] = {
+        "/amdgcn/bitcode",           // classic layout
+        "/lib/llvm/amdgcn/bitcode",  // ROCm 7.x (bundled LLVM)
+        "/lib/rocm-device-libs/amdgcn/bitcode",
+    };
+    auto probe = [&](const std::string& root) -> std::string {
+        for (const char* sub : kSubdirs) {
+            std::string d = root + sub;
+            if (has(d)) return d;
+        }
+        return {};
+    };
     if (const char* rp = std::getenv("ROCM_PATH")) {
-        std::string d = std::string(rp) + "/amdgcn/bitcode";
-        if (has(d)) return d;
+        if (std::string d = probe(rp); !d.empty()) return d;
     }
-    std::string d = "/opt/rocm/amdgcn/bitcode";
-    if (has(d)) return d;
+    if (std::string d = probe("/opt/rocm"); !d.empty()) return d;
     return {};
 }
 
