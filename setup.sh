@@ -40,6 +40,30 @@ if [[ -f "${_CAJETA_SETUP_DIR}/scripts/llvm-env.local.sh" ]]; then
     source "${_CAJETA_SETUP_DIR}/scripts/llvm-env.local.sh"
 fi
 
+# Auto-detect the cajeta-llvm fork so a build NEVER silently falls back to a
+# vendor LLVM (notably ROCm's /opt/rocm*/llvm, built RTTI=OFF). The fork is a
+# sibling clone by workspace convention; if it's installed and LLVM_DIR wasn't
+# already pinned (by the local file above or the environment), use it and put
+# its bin ahead of everything so bare llvm-config/clang resolve to the fork.
+# This removes the "forgot to source llvm-env.local.sh" failure mode entirely —
+# the fork is found by location, not by a machine-specific script.
+if [[ -z "${LLVM_DIR:-}" ]]; then
+    for _fork in \
+        "${CAJETA_LLVM_FORK:-}" \
+        "${_CAJETA_SETUP_DIR}/../cajeta-llvm/llvm-install" \
+        "${_CAJETA_SETUP_DIR}/../cajeta-llvm/build"; do
+        [[ -n "$_fork" ]] || continue
+        if [[ -f "${_fork}/lib/cmake/llvm/LLVMConfig.cmake" ]]; then
+            _fork="$(cd "$_fork" && pwd)"
+            export LLVM_DIR="${_fork}/lib/cmake/llvm"
+            export CMAKE_PREFIX_PATH="${_fork}${CMAKE_PREFIX_PATH:+:${CMAKE_PREFIX_PATH}}"
+            export PATH="${_fork}/bin:${PATH}"
+            echo ">> setup: using cajeta-llvm fork at ${_fork}"
+            break
+        fi
+    done
+fi
+
 LLVM_VER="${CAJETA_LLVM_VERSION:-23}"
 
 # macOS Homebrew formula for LLVM. Homebrew keeps the newest LLVM as the
@@ -72,6 +96,28 @@ case "$(uname -s)" in
         LLVM_DIR="${LLVM_DIR:-/usr/lib/llvm-${LLVM_VER}/lib/cmake/llvm}"
         ;;
 esac
+
+# RTTI guard. cajeta uses C++ RTTI against LLVM types (dynamic_cast on
+# llvm::ErrorInfoBase, etc.), so an LLVM built LLVM_ENABLE_RTTI=OFF links but
+# then fails on undefined llvm::ErrorInfoBase typeinfo — the classic symptom of
+# accidentally resolving ROCm's /opt/rocm*/llvm. Detect it HERE, at configure
+# time, with an actionable message instead of a cryptic link error deep into the
+# build. Non-fatal if llvm-config can't be found (older layouts) — the build
+# still proceeds.
+_llvm_config="${LLVM_DIR%/lib/cmake/llvm}/bin/llvm-config"
+if [[ -x "$_llvm_config" ]]; then
+    if [[ "$("$_llvm_config" --has-rtti 2>/dev/null)" == "NO" ]]; then
+        echo "error: the resolved LLVM is built RTTI=OFF and cannot link cajeta" >&2
+        echo "       LLVM_DIR=${LLVM_DIR}" >&2
+        echo "       ($("$_llvm_config" --version 2>/dev/null), $("$_llvm_config" --prefix 2>/dev/null))" >&2
+        echo "  This is almost always a vendor LLVM (e.g. ROCm's /opt/rocm*/llvm)." >&2
+        echo "  cajeta needs the RTTI-enabled cajeta-llvm fork. Fix by either:" >&2
+        echo "    - cloning cajeta-llvm as a sibling (../cajeta-llvm/llvm-install), or" >&2
+        echo "    - setting CAJETA_LLVM_FORK / LLVM_DIR to the fork's install, or" >&2
+        echo "    - creating scripts/llvm-env.local.sh (see the .example)." >&2
+        exit 1
+    fi
+fi
 
 # ---------------------------------------------------------------------------
 # Dependency install
