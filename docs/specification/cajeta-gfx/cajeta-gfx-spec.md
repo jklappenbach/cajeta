@@ -1,4 +1,4 @@
-# cajeta.xpu.gfx — Graphics Primitives Spec
+# cajeta.gfx — Graphics Primitives Spec
 
 **Status:** Draft for review · 2026-06-18 · supersedes the framing in
 `plans/gpu/gfx/cajeta-gfx-plan.md` and `docs/gpu/gfx/CajetaGFX.md` (both drifted).

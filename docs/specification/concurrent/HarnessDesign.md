@@ -1,4 +1,4 @@
-# HarnessDesign.md
+# HarnessDesign
 
 A stress-test harness for measuring cajeta's threading model and
 buffer-pipeline performance, plus the methodology for comparing those

@@ -78,7 +78,7 @@ while keeping the software floor selectable and intact.
 
 ## 4. Use Cases
 
-- Toffee spatial-index queries (`ToffeeSpatialIndexDeviceTests`) running on HW
+- Caramelo spatial-index queries (`CarameloSpatialIndexDeviceTests`) running on HW
   RT cores instead of the software walk.
 - A future perf comparison (native RT cores vs software BVH) on identical inputs
   — out of scope to *measure* here, but the parity tests establish the inputs.

@@ -13,6 +13,11 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [memory-viewer](memory-viewer-spec.md) | [plan](../agents/memory-viewer-plan.md) | active |
 | [diagnostic-engine](diagnostic-engine-spec.md) | — (engine + lint collect-and-continue landed; remaining scope unverified) | active |
 | [element-ownership](element-ownership-spec.md) | [plan](../agents/element-ownership-plan.md) | active |
+| [cajetadoc-model-fidelity](cajetadoc-model-fidelity-spec.md) | — (docs-refactor 15.1) | draft |
+| [stack-return-transfer-error](stack-return-transfer-error-spec.md) | — (docs-refactor 15.4) | draft |
+| [net-server-shutdown-wake](net-server-shutdown-wake-spec.md) | — (docs-refactor 15.6) | draft |
+| [matrix-element-callarg](matrix-element-callarg-spec.md) | — (docs-refactor 15.8) | draft |
+| [kernel-device-call-diagnostic](kernel-device-call-diagnostic-spec.md) | — (docs-refactor 15.9) | draft |
 | [profile](profile-spec.md) | — | draft |
 | [jit-run-parse-abort](jit-run-parse-abort-spec.md) | — | draft |
 | [cajeta-ir-phase-b](cajeta-ir-phase-b-spec.md) | — (§4/§5 resolved; §2 forwarding, §3 captures remain) | draft |
@@ -25,4 +30,5 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [xpu-gfx-streaming-geometry](xpu-gfx-streaming-geometry-spec.md) | — | draft |
 | [xpu-build-ergonomics](xpu-build-ergonomics-spec.md) | — | draft |
 | [simd-numeric-kernels](simd-numeric-kernels-spec.md) | — | draft |
+| [quaternion-vector-stdlib](quaternion-vector-stdlib-spec.md) | [plan](../agents/quaternion-vector-stdlib-plan.md) | draft |
 | [ternary-int-codegen](ternary-int-codegen-spec.md) | — | draft |

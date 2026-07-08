@@ -1,7 +1,7 @@
 # Cajeta XPU — the launch & kernel-arg FFI contract
 
 This is the **frozen C ABI** that external code — the numerics stack, the
-PyTorch/Keras ports, the Toffee/SPELA trainer — registers kernels and dispatches
+PyTorch/Keras ports, the Caramelo/SPELA trainer — registers kernels and dispatches
 compute through. It is the Stage-12 deliverable of
 `../../../plans/gpu/xpu/cajeta-xpu-plan.md`.
 The single source of truth for every declaration here is the header

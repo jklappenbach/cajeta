@@ -147,7 +147,7 @@ error: method 'fold' introduces method-level type parameter 'R'
        but is not declared 'final' or 'static'. Method-level
        templates are non-virtual (they occupy no vtable slot) and
        must be marked explicitly to surface that property at the
-       declaration site. See docs/specification/lang/MethodLevelTemplate.md.
+       declaration site. See docs/specification/lang/templates/MethodLevelTemplate.md.
        fix: add 'final' modifier (or 'static' if no receiver is
        needed).
 ```

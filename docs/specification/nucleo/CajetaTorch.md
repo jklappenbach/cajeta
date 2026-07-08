@@ -1,4 +1,4 @@
-# CajetaTorch.md
+# CajetaTorch
 
 > **Status: design specification — not implemented.** No `cajeta.torch` code
 > exists in the workspace: there is no `torch.*` / `cajeta.torch.*` package, no

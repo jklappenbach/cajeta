@@ -24,7 +24,7 @@ inline. specs/Features.md S-1101 / S-1102.
 Measured on one machine (AMD Ryzen AI Max+ 395), MB/s, against Jackson
 (Java's reference JSON library) on the standard simdjson corpus. The
 SIMD scanner is pure Cajeta on the built-in `Vector<T,N>` (no `@Native`
-C) — see `docs/specification/math/Simd.md` and the harness in `bench/`.
+C) — see `docs/specification/cajeta-math/Simd.md` and the harness in `bench/`.
 
 | workload | twitter | citm | canada | vs Jackson |
 |---|---|---|---|---|
@@ -947,7 +947,7 @@ harness used to produce the table.
 ### SIMD scanner — beats Jackson (2026-06)
 
 A simdjson-style scanner in **pure Cajeta** on the built-in `Vector<T,N>`
-(`docs/specification/math/Simd.md`): 16-byte block load (`Cajeta.vload16`), compare→movemask
+(`docs/specification/cajeta-math/Simd.md`): 16-byte block load (`Cajeta.vload16`), compare→movemask
 (`Vector.eqMask`), an integer prefix-XOR string mask (escaped/in-string `,{}[]`
 correctly excluded), and `popcount64`. The reader's token count is exactly
 `#brackets + #strings + #scalars`, each a popcount of a stage-1 mask.
@@ -1013,6 +1013,6 @@ scalar baseline first and layer SIMD on later without API breakage.
 - `docs/specification/lang/stream/Streams.md` — `JsonArray` / `JsonObject` are planned to
   multiple-inherit `Stream<...>` (not built; iterate by index/position
   today).
-- `docs/specification/lang/MethodLevelTemplate.md` — `Json.parse<T>` /
+- `docs/specification/lang/templates/MethodLevelTemplate.md` — `Json.parse<T>` /
   `Json.toBytes` follow the standard final-method-template contract.
 - `specs/Features.md` S-1101 (this spec), S-1102 (the implementation).

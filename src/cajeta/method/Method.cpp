@@ -880,7 +880,7 @@ namespace cajeta {
         // Their formals/return types include placeholder T-vars and the
         // actual function signature isn't known until a concrete
         // instantiation pins each T to a real type. See
-        // docs/specification/lang/MethodLevelTemplate.md.
+        // docs/specification/lang/templates/MethodLevelTemplate.md.
         if (isMethodTemplate()) return;
         auto& llvmFunction = llvmFunctionRef();          // U6.3b: frozen-aware
         auto& llvmFunctionType = llvmFunctionTypeRef();  // U6.3b
@@ -1200,7 +1200,7 @@ namespace cajeta {
         // Two-layer naming: instantiations of a same-canonical template
         // get distinct LLVM symbols via getLlvmSymbolName() (= canonical
         // + method-arg suffix). Ordinary methods get plain canonical.
-        // See docs/specification/lang/MethodLevelTemplate.md § two-layer naming.
+        // See docs/specification/lang/templates/MethodLevelTemplate.md § two-layer naming.
         string canonical = getLlvmSymbolName();
         // Generate-prototype runs multiple times on the same method
         // (CajetaClass::generatePrototype iterates, visitClassBody
@@ -2655,7 +2655,7 @@ namespace cajeta {
     }
 
 
-    // Two-layer naming helpers (docs/specification/lang/MethodLevelTemplate.md
+    // Two-layer naming helpers (docs/specification/lang/templates/MethodLevelTemplate.md
     // § Status / Known limitations). For instantiations of a method-
     // template, append the concrete method-level type args so the map
     // key and LLVM symbol disambiguate two instantiations that would

@@ -94,7 +94,6 @@ manifest's tasks (that's how `cajeta run` works when a `run` task exists —
 `cajeta --help` shows the same list.
 
 For the longer walk — dependencies, publishing, uber-archives end to end — see
-[Build your first package](../tour-build-your-first-package.md) and the
-[build tool reference](../specification/buildtool/BuildTool.md).
+the [build tool reference](../specification/buildtool/BuildTool.md).
 
 Next: [Running your application](04-running.md).

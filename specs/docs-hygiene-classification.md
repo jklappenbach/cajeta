@@ -15,17 +15,17 @@ Verdicts: **guide** → seeds `docs/guide/` · **specification** →
 | Documentation.md | specification | specification/buildtool/ |
 | IncrementalCompilation.md | specification | specification/buildtool/ |
 | CajetaMath.md | specification | specification/cajeta-math/ |
-| CajetaToffee.md | specification | specification/cajeta-toffee/ (new) |
+| CajetaCaramelo.md | moved out | relocated to the cajeta-caramelo repo (docs/specification/CajetaCaramelo.md) — Caramelo is a consumer, not a foundation spec |
 | Debugging.md | specification | specification/debugging/ (new) |
 | DI-override-hook.md | specification | specification/lang/ |
 | Embedded.md | specification | specification/embedded/ (new) |
 | HarnessDesign.md | specification | specification/concurrent/ (see questions) |
 | LintRules.md | specification | specification/lang/ |
 | OperatorOverloading.md | specification | specification/lang/ (no existing counterpart — clean move) |
-| TemplateWildcard.md | specification | specification/cajeta-templates/ |
+| TemplateWildcard.md | specification | specification/lang/templates/ |
 | olla-ci-publish.md | specification | specification/buildtool/ (CI runbook; windows-ci/ precedent) |
 | CajetaTorch.md | retire | superseded by specification/nucleo/torch-facade-spec.md (see questions) |
-| CaptureConversion.md | retire | superseded by specification/cajeta-templates/reified-capture-spec.md (see questions) |
+| CaptureConversion.md | retire | superseded by specification/lang/templates/reified-capture-spec.md (see questions) |
 | Net.md | retire | self-declared tombstone; specification/io/net/Networking.md |
 | SkillDiscovery.md | retire | superseded by skill-discovery spec (archived); concise framing may seed a guide chapter (see questions) |
 

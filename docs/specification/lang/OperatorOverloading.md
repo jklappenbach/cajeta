@@ -1,4 +1,4 @@
-# OperatorOverloading.md
+# OperatorOverloading
 
 Specification for operator overloading in Cajeta. Two design rules
 carry everything else:

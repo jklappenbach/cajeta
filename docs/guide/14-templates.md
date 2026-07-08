@@ -24,7 +24,7 @@ after the method *name*, not before the return type, and the method must be
 `final` (instance) or `static` — templated methods are excluded from the
 vtable, and the modifier makes that explicit. Each call-site type tuple
 monomorphizes separately. See
-[MethodLevelTemplate.md](../specification/lang/MethodLevelTemplate.md).
+[MethodLevelTemplate.md](../specification/lang/templates/MethodLevelTemplate.md).
 
 ```cajeta
 public class Pick {
@@ -42,7 +42,7 @@ the primitive op directly — no boxing, no vtable hop. Instantiating outside
 the bound (`Bitset<float64>`) fails at compile time with
 `CAJETA_ERROR_TYPE_PARAMETER_BOUND`. Tour demo:
 [NumericTemplatesDemo](../../samples/tour/src/main/cajeta/tour/lang/NumericTemplatesDemo.cajeta);
-spec: [numeric-bounds-spec.md](../specification/cajeta-templates/numeric-bounds-spec.md).
+spec: [numeric-bounds-spec.md](../specification/lang/templates/numeric-bounds-spec.md).
 
 ```cajeta
 public class Duo<T extends Numeric> {
@@ -77,7 +77,7 @@ bits.set(3);
 express variance at the use site, the standard PECS shape (Producer Extends,
 Consumer Super). Tour demo:
 [WildcardsDemo](../../samples/tour/src/main/cajeta/tour/lang/WildcardsDemo.cajeta);
-spec: [TemplateWildcard.md](../specification/cajeta-templates/TemplateWildcard.md).
+spec: [TemplateWildcard.md](../specification/lang/templates/TemplateWildcard.md).
 
 ```cajeta
 public class Animal {

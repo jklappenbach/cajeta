@@ -21,7 +21,7 @@ primitive doesn't fit:
 | Need | Use | Not |
 |------|-----|-----|
 | In-process, typed, structured streaming between fibers | [`Channel<T>`](../concurrent/Concurrency.md) | a pipe |
-| Talk to a child process's stdin/stdout/stderr | `Pipe` via `Stdio.PIPE` ([`Process.md`](../lang/Process.md)) | a FIFO |
+| Talk to a child process's stdin/stdout/stderr | `Pipe` via `Stdio.PIPE` ([`Process.md`](../process/Process-design.md)) | a FIFO |
 | Cross-process, bidirectional / structured IPC | a Unix-domain socket (preferred; reuses the `cajeta.io.net` socket + reactor machinery) | a FIFO |
 | Cross-process, one-way byte rendezvous on a known path | `Fifo` (POSIX) | — |
 
@@ -70,7 +70,7 @@ the buffer is full, `read` parks when it is empty — the same shape as
 
 ### Subprocess stdio (the primary consumer)
 
-`Process` (see [`Process.md`](../lang/Process.md)) builds on this primitive. When a
+`Process` (see [`Process.md`](../process/Process-design.md)) builds on this primitive. When a
 stream is configured `Stdio.PIPE`, the builder creates a `Pipe`, hands the child
 the appropriate end at fork/exec, and exposes the parent end as
 `process.stdin()` / `stdout()` / `stderr()`:
@@ -150,6 +150,6 @@ once the I/O destructor work lands.
 ## See also
 
 - [`Concurrency.md`](../concurrent/Concurrency.md) — `Channel<T>`, the in-process choice.
-- [`Process.md`](../lang/Process.md) — subprocess management; the main `Pipe` consumer.
+- [`Process.md`](../process/Process-design.md) — subprocess management; the main `Pipe` consumer.
 - [`io/file/File.md`](file/File.md) — the file API a FIFO is opened through.
 - [`Io.md`](Io.md) — the I/O umbrella and the shared stream interfaces.

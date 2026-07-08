@@ -2,7 +2,7 @@
 
 This walks from "I'm processing bytes one at a time" to "I'm classifying 16
 bytes per instruction" — the leap that lets a JSON scanner beat Jackson. It
-assumes you've met `cajeta.io.Buffer`. Spec: `docs/specification/math/Simd.md`.
+assumes you've met `cajeta.io.Buffer`. Spec: `docs/specification/cajeta-math/Simd.md`.
 
 The running example is the heart of a fast JSON scanner: **find every quote and
 structural character in a block, with one operation per block instead of per

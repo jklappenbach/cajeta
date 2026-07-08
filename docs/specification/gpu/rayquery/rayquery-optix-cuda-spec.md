@@ -6,7 +6,7 @@ cajeta's `RayQuery` runs today on four backends. Three use the **portable
 software BVH** (`SoftwareRayQuery` walk over a `Buffer<float32>`): CPU, NVPTX
 (CUDA), AMDGPU (HIP). One uses a **native hardware** path: Vulkan, via
 `OpRayQuery` over a `VK_KHR_acceleration_structure` BLAS/TLAS — now on-device
-validated on the RTX 4090 (see `docs/specification/gpu-rayquery-native/`).
+validated on the RTX 4090 (see `docs/specification/gpu/rayquery/`).
 
 On NVIDIA's **CUDA** backend the RT cores are *not* reachable from a compute
 kernel: there is no inline-ray-query NVVM/PTX intrinsic (verified — empty grep of
@@ -71,7 +71,7 @@ RT hardware.
   minimal program set, with the proceed-loop's candidate body restructured into
   the anyhit/closesthit program.
 - **R4 — Canonical shapes (phased).** Support, in order: (a) **count AABB
-  candidates** within range (the Toffee spatial-index / RTNN pattern — anyhit
+  candidates** within range (the Caramelo spatial-index / RTNN pattern — anyhit
   accumulate), (b) **nearest hit** (closesthit: committed type / T / primitive
   index), (c) **candidate getters** (barycentrics, front-face). General arbitrary
   proceed-loop bodies are explicitly out of v1.
@@ -88,7 +88,7 @@ RT hardware.
 
 ## 5. Use Cases
 
-- Toffee `SpatialIndex` neighbour queries running on the 4090's RT cores via OptiX
+- Caramelo `SpatialIndex` neighbour queries running on the 4090's RT cores via OptiX
   (today they run the software walk on CUDA).
 - A vendor-complete RT story: Vulkan native (done), AMD native (pending hardware),
   NVIDIA-CUDA native via OptiX (this spec).
@@ -117,4 +117,4 @@ RT hardware.
    otherwise; no regression to the existing CUDA software-BVH ray-query tests.
 5. The build links OptiX under mingw and stays buildable without the SDK.
 6. Docs (matrix + RayQuery.md) and memory updated; spec/plan under
-   `docs/specification/gpu-rayquery-optix/`.
+   `docs/specification/gpu/rayquery/`.

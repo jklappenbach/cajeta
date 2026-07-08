@@ -143,4 +143,4 @@ via `AsImpl.NativeNoFloor` (`dropSoftwareFloorHintHonored` → 704, OptiX-only i
    pointed to force software where AUTO would now choose OptiX).
 7. Docs + memory updated (RayQuery.md §6 selection model + the AUTO-on-CUDA flip;
    `[[optix-auto-policy]]` superseded/updated; `[[optix-env]]`); spec/plan under
-   `docs/specification/gpu-rayquery-optix/`.
+   `docs/specification/gpu/rayquery/`.

@@ -8,7 +8,7 @@ today does construction, swizzles, lane-wise arithmetic, and geometry helpers
 (dot/length/normalize/…). This spec adds: compare→mask, `movemask`,
 `tableLookup` (pshufb), `clmul`, bitwise lane ops, and `Buffer` block load/store
 — so CPU SIMD and GPU kernels share one lane vocabulary. Companion plan:
-`plans/Simd-plan.md`. Tour: `docs/specification/math/Simd-tour.md`._
+`plans/Simd-plan.md`. Tour: `docs/specification/cajeta-math/Simd-tour.md`._
 
 ## 1. Why this exists
 

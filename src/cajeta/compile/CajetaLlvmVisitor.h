@@ -1498,7 +1498,7 @@ namespace cajeta {
                                 "virtual (they occupy no vtable slot) and must "
                                 "be marked explicitly to surface that property "
                                 "at the declaration site. See docs/"
-                                "specification/lang/MethodLevelTemplate.md. Fix: add "
+                                "specification/lang/templates/MethodLevelTemplate.md. Fix: add "
                                 "'final' modifier (or 'static' if no receiver "
                                 "is needed).",
                                 m->getName().c_str());
@@ -1622,7 +1622,7 @@ namespace cajeta {
         virtual std::any visitMethodDeclaration(CajetaParser::MethodDeclarationContext* ctx) override {
             string name = ctx->identifier()->getText();
 
-            // Method-level templates (docs/specification/lang/MethodLevelTemplate.md):
+            // Method-level templates (docs/specification/lang/templates/MethodLevelTemplate.md):
             // capture <R, ...> if present, push a placeholder substitution so
             // formals + return type referencing R resolve cleanly during this
             // pass, then capture the body source for per-call re-parse instead

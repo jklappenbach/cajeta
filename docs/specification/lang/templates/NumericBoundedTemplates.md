@@ -143,8 +143,8 @@ constraint pass checks each bound independently.
 
 - [`Templates`](MethodLevelTemplate.md) — method-level templates and the
   monomorphization caching strategy.
-- [`Primitives`](Primitives.md) — the flag system the category checks
+- [`Primitives`](../Primitives.md) — the flag system the category checks
   consult.
-- [`ValueReturns`](ValueReturns.md) — `Vec3<T>::add` ships its result
+- [`ValueReturns`](../ValueReturns.md) — `Vec3<T>::add` ships its result
   via sret + NRVO, so the per-instantiation arithmetic stays
   allocation-free.

@@ -4972,7 +4972,7 @@ namespace cajeta {
             }
         }
 
-        // Method-template fallback (docs/specification/lang/MethodLevelTemplate.md):
+        // Method-template fallback (docs/specification/lang/templates/MethodLevelTemplate.md):
         // if no exact / subtype match was found, look for a method-templated
         // candidate with the same name and arity whose T-vars unify with the
         // supplied arg types. On a hit, instantiate the template into a

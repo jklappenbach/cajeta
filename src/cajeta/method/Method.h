@@ -136,7 +136,7 @@ namespace cajeta {
         vector<QualifiedNamePtr> throwsList;
         int virtualTableIndex;
 
-        // Method-level templates (docs/specification/lang/MethodLevelTemplate.md).
+        // Method-level templates (docs/specification/lang/templates/MethodLevelTemplate.md).
         // `methodTypeParameters` non-empty AND `methodTypeArguments` empty =
         // a method-template declaration (no LLVM function emitted; body source
         // captured for re-parse at call sites that instantiate it). Both non-
@@ -623,7 +623,7 @@ namespace cajeta {
         // and T=String thereby get distinct keys even though their
         // value-param signatures (and so their `toCanonical()`) are
         // identical — which is what lets addMethod's duplicate-static
-        // check accept both. See docs/specification/lang/MethodLevelTemplate.md
+        // check accept both. See docs/specification/lang/templates/MethodLevelTemplate.md
         // § two-layer naming.
         //
         // resolveMethod looks up ordinary methods by their plain

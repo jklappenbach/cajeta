@@ -1,4 +1,4 @@
-# Compilation.md
+# Compilation
 
 Specification for how cajeta source becomes a runnable program: the
 source-tree layout the compiler expects, the phases the compiler

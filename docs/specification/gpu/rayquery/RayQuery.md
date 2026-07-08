@@ -19,7 +19,7 @@ built and cross-checked against the Vulkan native path (§8); what remains is th
 > the noun and readable via `AccelerationStructure.implTag()` (0 = software BVH,
 > 1 = native BLAS, 2 = OptiX). Proof: `autoRecordsNativeImplOnDevice` (AUTO records
 > native on the 4090) + `forcedNativeOfApiOnDevice`/`forcedSoftwareOfApiOnDevice` in
-> `ToffeeSpatialIndexDeviceTests`. AMD's HIP backend still uses the software BVH.
+> `CarameloSpatialIndexDeviceTests`. AMD's HIP backend still uses the software BVH.
 
 > **NVIDIA CUDA — OptiX RT-core tier (verb validated end-to-end, 2026-06-17).**
 > NVIDIA's RT cores are reached via **OptiX** (a pipeline model, not inline ray query —
@@ -51,7 +51,7 @@ built and cross-checked against the Vulkan native path (§8); what remains is th
 > engine is the driver's `nvoptix.dll`). See `documents/gpu-rayquery-optix/`. It is the
 headline item of the GPU foundation
 (`plans/gpu/cajeta-gpu-plan.md §3.3`) and the
-worked example of the model in [`CajetaGPU.md §1` / `§4`](CajetaGPU.md). Read those
+worked example of the model in [`CajetaGPU.md §1` / `§4`](../CajetaGPU.md). Read those
 first for the *why*; this doc is the *what* and the *how*, including the BVH noun.
 
 Ray query is the keystone because it is the first core feature that needs **both
@@ -81,8 +81,8 @@ establishes here.
   refit. Built by `__cajeta_xpu_accel_build_aabbs`, which dispatches **only** to
   `cajeta_xpu_vk_accel_build_aabbs` (`CAJ_XPU_VULKAN`); any other backend returns
   handle 0.
-- **Consumer** — Toffee `SpatialIndex.countWithin` / `radiusExact`
-  (`ToffeeSpatialIndexDeviceTests`), the device-verified proof the path works — but
+- **Consumer** — Caramelo `SpatialIndex.countWithin` / `radiusExact`
+  (`CarameloSpatialIndexDeviceTests`), the device-verified proof the path works — but
   gated `if (!VulkanDriver::rayQueryAvailable()) SKIP`.
 
 So today ray query carries *core intent* with a *Vulkan-only* reality. That gap — a
@@ -115,7 +115,7 @@ Two changes from the CoopMatrix precedent:
    impl was built** — a software BVH buffer ⇒ software traversal; a Vulkan AS ⇒
    `OpRayQuery`. The noun is selected once at build time (by the capability heuristic,
    §6); the verb follows. This *is* "the noun's chosen implementation determines the
-   verb's lowering" from [`CajetaGPU.md §1.4`](CajetaGPU.md).
+   verb's lowering" from [`CajetaGPU.md §1.4`](../CajetaGPU.md).
 2. **The default flips the failure mode.** Today the default seam *throws*. After this
    work the default seam *emits the software traversal*. A `RayQuery` in a kernel on
    CPU / AMD / NVIDIA then **runs** (over a software BVH) instead of failing — the same
@@ -149,7 +149,7 @@ any other buffer, on any backend). Two regions, both `uint32`/`float32` words:
   fixed-iteration walk the lowerer emits.
 - **primRef** — `uint32` indices remapping sorted leaf order → original primitive id
   (so `candidatePrimitiveIndex()` returns the *caller's* index, matching the Vulkan
-  semantics the Toffee exact-L2 test depends on).
+  semantics the Caramelo exact-L2 test depends on).
 - **primData** — the geometry itself: AABBs as 6×f32; triangles as 3×(3×f32) (or an
   index buffer into a shared vertex buffer — TBD in inc 2).
 
@@ -179,7 +179,7 @@ ray-**triangle** queries (mesh Monte-Carlo, SDF / curvature, ICP / 6-D pose,
 mesh-NN / fVDB) *and* the AABB / procedural path (3-D Gaussian, point clouds). A core
 BVH that only does AABBs would re-introduce the same half-feature gap one layer down.
 AABBs land first (they cross-check directly against today's Vulkan AABB path and the
-existing Toffee tests); triangles follow in the same layout.
+existing Caramelo tests); triangles follow in the same layout.
 
 ---
 
@@ -282,14 +282,14 @@ foundation plan §1; ray query is what makes them real rather than speculative.
 The model's correctness rule is **bit/result-compatible cross-check** between a portable
 path and a native path. Ray query already has the harness:
 
-- `ToffeeSpatialIndexDeviceTests.fixedRadiusCountOnDevice` and `exactL2RefinementOnDevice`
+- `CarameloSpatialIndexDeviceTests.fixedRadiusCountOnDevice` and `exactL2RefinementOnDevice`
   run `countWithin` / `radiusExact` on the **Vulkan native** path today.
 - After inc 1 these same tests run on the **CPU software** path — *same source, same
   results* (777 / 888) — un-gated from `rayQueryAvailable()` for the software leg. A
   software/native agreement test (same scene, both impls, identical neighbour counts)
   is the acceptance criterion for each increment.
 
-When the software AABB path matches the Vulkan AABB path on the existing Toffee scenes,
+When the software AABB path matches the Vulkan AABB path on the existing Caramelo scenes,
 the AABB half of "genuinely core" is *proven*, not asserted. Triangles get an analogous
 mesh cross-check.
 
@@ -314,12 +314,12 @@ Legend: `[ ]` not started · `[~]` partial · `[x]` done.
       `initialize`/`proceed`/`committedType`/`candidateType`/`candidatePrimitiveIndex`.
 - [x] Noun-impl → verb-lowering coupling (§5) — per-backend: `LoweringTarget.softwareRayQuery()`
       (CPU true → software walk + AS-as-buffer; Vulkan false → native `OpRayQuery`).
-- [x] **Cross-check:** `ToffeeSpatialIndexDeviceTests` `fixedRadius` (777) + `exactL2` (888)
+- [x] **Cross-check:** `CarameloSpatialIndexDeviceTests` `fixedRadius` (777) + `exactL2` (888)
       pass on the **CPU** backend, matching the Vulkan native path; plus a self-contained
       `minimalRayQueryOnCpuSoftwareBvh` and the `SoftwareBvhBuilderTests` noun unit tests.
 - Incidental fixes this slice surfaced (pre-existing, off-path): `KernelBuffer.upload/downloadAsync`
   class-param-field idiom; `Quad` host @Native stubs (missing since the quad commit — it
-  also un-broke the Vulkan native Toffee test); boolean literals in the device lowerer.
+  also un-broke the Vulkan native Caramelo test); boolean literals in the device lowerer.
 
 **Inc 2 — Triangles. ✅ DONE.**
 - [x] Triangle geometry in the layout + builder — a primData region (9 floats/tri) +
@@ -432,12 +432,12 @@ over a Vulkan BLAS where the device advertises it, a portable stackless BVH walk
 the **Software default**, mirroring `CooperativeMatrix`. The noun impl is chosen once at
 build time by the capability heuristic (overridable) and determines the verb lowering.
 Software is always a valid answer, never a failure (XPU-N02 stops being thrown for ray
-query). Correctness is the software-vs-native cross-check on the existing Toffee scenes.
+query). Correctness is the software-vs-native cross-check on the existing Caramelo scenes.
 
 ## See also
 
-- Foundation model — [`CajetaGPU.md §1` / `§4`](CajetaGPU.md).
+- Foundation model — [`CajetaGPU.md §1` / `§4`](../CajetaGPU.md).
 - Foundation plan — `../../plans/gpu/cajeta-gpu-plan.md §3.3`.
 - The tier precedent — `CooperativeMatrix` (`runtime/.../core/CooperativeMatrix.cajeta`),
   `LoweringTarget.coopMatrixTier`.
-- Vendor SPI that depends on this noun seam — [`VendorExtensionSDK.md`](VendorExtensionSDK.md).
+- Vendor SPI that depends on this noun seam — [`VendorExtensionSDK.md`](../VendorExtensionSDK.md).

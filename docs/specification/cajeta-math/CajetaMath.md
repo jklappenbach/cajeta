@@ -1,4 +1,4 @@
-# CajetaMath.md
+# cajeta.math
 
 A design for `cajeta.math`, the numerical foundation library for
 cajeta — and the layer everything else numerical builds on.

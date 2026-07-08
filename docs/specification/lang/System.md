@@ -162,6 +162,6 @@ Both errors surface cleanly through the CLI's top-level try/catch in `src/main.c
 ## Cross-references
 
 - [`Lang.md`](Lang.md) — overall stdlib `cajeta.lang` package surface.
-- [`Process.md`](Process.md) — subprocess I/O streams (`ProcessBuilder` + `Process`); unrelated to `System.stdout` but uses the same `Stdio` enum.
+- [`Process.md`](../process/Process-design.md) — subprocess I/O streams (`ProcessBuilder` + `Process`); unrelated to `System.stdout` but uses the same `Stdio` enum.
 - [`io/`](../io/) — file I/O streams; complements stdout/stderr/stdin for non-process-local files.
 - [`Annotations.md`](../reflect/Annotations.md) — `@SuppressLint` etc.; orthogonal to System but the cajeta-wide annotation surface.

@@ -246,7 +246,7 @@ Stream<String> names = people.stream().map<String>(Person::getName);  // method 
   `Class::instanceMethod`, `Class::heap` (constructor).
 
 See [`specification/lang/Lambdas.md`](../../specification/lang/Lambdas.md) and
-[`specification/lang/MethodLevelTemplate.md`](../../specification/lang/MethodLevelTemplate.md).
+[`specification/lang/templates/MethodLevelTemplate.md`](../../specification/lang/templates/MethodLevelTemplate.md).
 
 ### Named arguments
 
@@ -372,9 +372,9 @@ public static R fold<R, T>(R seed, T[] items, (R, T) -> R fn) {  // method-level
 
 Bounded templates (`<T extends Bound>`), wildcards (`?`, `? extends Bound`, `?
 super Bound`), capture conversion, and PECS reads/writes are all supported, with
-at-least-Java-strength inference. See [`TemplateWildcard.md`](../../specification/cajeta-templates/TemplateWildcard.md),
-[`CaptureConversion.md`](../../specification/cajeta-templates/reified-capture-spec.md), and
-[`specification/lang/NumericBoundedTemplates.md`](../../specification/lang/NumericBoundedTemplates.md).
+at-least-Java-strength inference. See [`TemplateWildcard.md`](../../specification/lang/templates/TemplateWildcard.md),
+[`CaptureConversion.md`](../../specification/lang/templates/reified-capture-spec.md), and
+[`specification/lang/templates/NumericBoundedTemplates.md`](../../specification/lang/templates/NumericBoundedTemplates.md).
 
 ---
 
@@ -544,7 +544,7 @@ See [`gpu/xpu/CajetaXPU.md`](../../specification/xpu/CajetaXPU.md),
 | Class model + allocation | [`specification/lang/UnifiedClasses.md`](../../specification/lang/UnifiedClasses.md) |
 | Memory + ownership | [`specification/lang/MemoryModel.md`](../../specification/lang/MemoryModel.md), [`specification/lang/FieldOwnership.md`](../../specification/lang/FieldOwnership.md) |
 | Primitives + floats | [`specification/lang/Primitives.md`](../../specification/lang/Primitives.md), [`specification/lang/FloatingPointModel.md`](../../specification/lang/FloatingPointModel.md) |
-| Templates + wildcards | [`TemplateWildcard.md`](../../specification/cajeta-templates/TemplateWildcard.md), [`CaptureConversion.md`](../../specification/cajeta-templates/reified-capture-spec.md) |
+| Templates + wildcards | [`TemplateWildcard.md`](../../specification/lang/templates/TemplateWildcard.md), [`CaptureConversion.md`](../../specification/lang/templates/reified-capture-spec.md) |
 | Lambdas + function types | [`specification/lang/Lambdas.md`](../../specification/lang/Lambdas.md) |
 | Operator overloading | [`OperatorOverloading.md`](../../specification/lang/OperatorOverloading.md) |
 | Strings + collections | [`specification/lang/String.md`](../../specification/lang/String.md), [`specification/collection/Collections.md`](../../specification/collection/Collections.md) |

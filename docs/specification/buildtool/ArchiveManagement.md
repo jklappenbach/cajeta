@@ -1,4 +1,4 @@
-# ArchiveManagement.md
+# ArchiveManagement
 
 Specification for `cajeta archive`, the CLI surface for inspecting,
 extracting, transforming, and verifying `.cja` (Cajeta ARchive) files.

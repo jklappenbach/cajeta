@@ -415,8 +415,8 @@ them.
 
 - Foundation contract & the two seams — [`CajetaGPU.md`](CajetaGPU.md) (esp. §1.2–1.5, §4).
 - Value types used here — [`ValueTypeCatalog.md`](ValueTypeCatalog.md),
-  [`Quaternions.md`](Quaternions.md), [`MaskSelect.md`](MaskSelect.md).
+  [`Quaternions.md`](../cajeta-math/Quaternions.md), [`MaskSelect.md`](MaskSelect.md).
 - Storage images / ray query the splat paths build on — [`WritableImages.md`](WritableImages.md),
-  [`RayQuery.md`](RayQuery.md).
+  [`RayQuery.md`](rayquery/RayQuery.md).
 - The virtual-geometry consumer — `../../plans/gpu/gfx/canela-plan.md`.
 - Research library (PDFs) — `../../plans/gpu/gfx/research/gfx/splats/`.

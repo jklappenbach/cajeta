@@ -1,4 +1,4 @@
-# `cajeta.process` — Subprocess management
+# `cajeta.process` — Subprocess management (design)
 
 Sibling of `cajeta.io` and `cajeta.thread`, not nested under either —
 a subprocess is its own concern (fork/exec lifecycle, signal model,
@@ -6,7 +6,11 @@ exit status). Stdin / stdout / stderr stream through the same
 `InputStream` / `OutputStream` interfaces used everywhere else, so
 the pumps are fiber-aware automatically.
 
-Status: **designed, not implemented**. Tracked in specs/Features.md.
+Status: **design document — superseded in part.** `cajeta.process` shipped v1
+with a different surface (`Command` / `ProcessResult`, blocking waits); see
+[`Process.md`](Process.md) for what exists. This document keeps the
+fiber-aware direction (fiber-parking `waitFor`, `Stdio` plumbing over
+[`cajeta.io.pipe`](../io/Pipes.md), capability gating) that v1 deferred.
 
 ## Surface
 
@@ -82,6 +86,6 @@ redirects to a file fd; `Stdio.INHERIT` shares the parent's; `Stdio.NULL` uses
 
 ## Open items
 
-All of `cajeta.process` is unimplemented. Tracked in specs/Features.md.
-Lands with the fiber reactor (subprocess waits park the calling
-fiber on SIGCHLD).
+The fiber-aware pieces land with the fiber reactor (subprocess waits park
+the calling fiber on SIGCHLD). v1 shipped without them — see
+[`Process.md`](Process.md) § v1 limits.

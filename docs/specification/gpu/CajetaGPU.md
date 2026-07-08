@@ -53,7 +53,7 @@ opinions. The numpy-equivalent numerical library (the `Tensor` + core ops + `lin
 it is the generic n-d array every framework wraps, so it is canonical-in-stdlib, while the
 *opinions layered on it* are not. Opinionated ML frameworks (a `torch`/`keras` surface —
 autograd-by-default, the `nn` module set, optimizers), the scipy/sklearn breadth
-(`cajeta.sci`/`cajeta.learn`), and applications (a spatial-index engine like Toffee) are
+(`cajeta.sci`/`cajeta.learn`), and applications (a spatial-index engine like Caramelo) are
 **separate libraries** built on `cajeta.math` — keeping cajeta from taking a framework stance
 in its own stdlib.
 
@@ -306,7 +306,7 @@ A kernel-local cursor: `initialize → proceed* → getters`. Built today: `init
 committedType / candidateType / candidatePrimitiveIndex` — AABB-only, and unable to commit a
 hit. To be core it needs the **`T` (distance)** + **barycentrics / frontFace** getters and
 **`confirm` / `generate` intersection** — without those it can only *count* candidates, not
-return a **nearest** hit (why Toffee's `countWithin` only counts). The portable lowering is a
+return a **nearest** hit (why Caramelo's `countWithin` only counts). The portable lowering is a
 **software traversal kernel** over the §4.2 BVH: a fixed/stackless stack, **Möller-Trumbore**
 for triangle leaves, custom intersection for AABB leaves; the getters then compute directly.
 

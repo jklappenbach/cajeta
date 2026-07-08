@@ -1,4 +1,4 @@
-# Documentation.md
+# Documentation
 
 Specification for cajeta source code documentation — the comment
 syntax authors use, the conventions for what gets documented, the

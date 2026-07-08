@@ -1,4 +1,4 @@
-# BuildTool.md
+# BuildTool
 
 The cajeta toolchain ships a single binary, `cajeta`, that handles
 project initialization, dependency management, builds, tests,

@@ -1,4 +1,4 @@
-# Annotations.md
+# Annotations
 
 Catalog of every annotation cajeta recognizes, including the
 Lombok-mirror surface (`@Getter` / `@Setter` / `@Data` / `@Builder` / …,

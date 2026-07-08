@@ -1,4 +1,4 @@
-# Quaternions
+# cajeta.math.Quaternion
 
 A `Quaternion<T>` is a compact, gimbal-lock-free representation of a 3-D rotation
 — four floats `(w, x, y, z)` = `w + x·i + y·j + z·k`, lowering to a flat

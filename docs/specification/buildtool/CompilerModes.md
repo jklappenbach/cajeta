@@ -1,4 +1,4 @@
-# CompilerModes.md
+# CompilerModes
 
 Specification for cajeta's two-flavor compilation model: **debug
 mode** (maximum diagnostics, hand-holding for newcomers, runtime

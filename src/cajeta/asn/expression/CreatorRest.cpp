@@ -93,7 +93,7 @@ namespace cajeta {
         // Template-instantiation skip from MCE doesn't fire here (ctors
         // aren't method-templated under the current grammar — the doc
         // explicitly excludes constructors from method-level templates,
-        // see docs/specification/lang/MethodLevelTemplate.md § Constructors
+        // see docs/specification/lang/templates/MethodLevelTemplate.md § Constructors
         // and operators excluded).
         if (auto klass = dynamic_pointer_cast<CajetaClass>(targetType)) {
             bool anyLambda = false;

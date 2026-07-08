@@ -11,7 +11,7 @@
 
 ## Non-goals (v1)
 
-- Per-lambda type parameters (`<U> (U) -> U`). Lambdas with their own type-parameter list aren't supported; the lambda would need its own vtable concern in addition to the captures it already carries. (Method-level templates on `final` / `static` methods *do* work — see `docs/specification/lang/MethodLevelTemplate.md`. The vtable concern for those is sidestepped by the templating itself excluding the method from the vtable, and the mandatory `final` / `static` modifier makes the non-virtuality explicit at the declaration site.) Class-level `<T>` referenced inside a lambda body is fine; T is bound by the enclosing class.
+- Per-lambda type parameters (`<U> (U) -> U`). Lambdas with their own type-parameter list aren't supported; the lambda would need its own vtable concern in addition to the captures it already carries. (Method-level templates on `final` / `static` methods *do* work — see `docs/specification/lang/templates/MethodLevelTemplate.md`. The vtable concern for those is sidestepped by the templating itself excluding the method from the vtable, and the mandatory `final` / `static` modifier makes the non-virtuality explicit at the declaration site.) Class-level `<T>` referenced inside a lambda body is fine; T is bound by the enclosing class.
 - Target-type inference for ambiguous method references. The LHS function type or method-parameter type must disambiguate; if it can't, the user writes an explicit lambda.
 - "By-reference" capture of primitives. Primitives capture by value. If you need shared mutable primitive state across closures, wrap it in a heap value.
 - Variadic lambdas (`(T...) -> R`). Out of scope for v1; revisit if there's demand.
@@ -388,7 +388,7 @@ class List<T> {
 }
 ```
 
-(`map<U>` is a method-level template — supported via `final <U> List<U> map((T) -> U fn)` per `docs/specification/lang/MethodLevelTemplate.md`. Each (T, U) pair gets its own monomorphization; the templating itself excludes the method from the vtable, and the mandatory `final` modifier makes that explicit at the declaration site. Call sites can rely on inference or spell `xs.map<int64>(...)` explicitly — Form C, type args after the identifier.)
+(`map<U>` is a method-level template — supported via `final <U> List<U> map((T) -> U fn)` per `docs/specification/lang/templates/MethodLevelTemplate.md`. Each (T, U) pair gets its own monomorphization; the templating itself excludes the method from the vtable, and the mandatory `final` modifier makes that explicit at the declaration site. Call sites can rely on inference or spell `xs.map<int64>(...)` explicitly — Form C, type args after the identifier.)
 
 Use sites:
 

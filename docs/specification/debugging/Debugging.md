@@ -1,4 +1,4 @@
-# Debugging.md
+# Debugging
 
 Specification for cajeta's debugging story: the Debug Adapter
 Protocol (DAP) server that makes IDE plugin authoring trivial, the

@@ -4,7 +4,7 @@
 
 M0 proved the OptiX RT-core path reproduces cajeta's software ray-query oracle on
 the 4090; M1 landed the runtime AS provider (`CAJ_AS_IMPL_OPTIX` — build + record an
-OptiX AS, `docs/specification/gpu-rayquery-optix/rayquery-optix-cuda-{spec,plan}.md`). What's
+OptiX AS, `docs/specification/gpu/rayquery/rayquery-optix-cuda-{spec,plan}.md`). What's
 missing is the **verb**: a cajeta `@Kernel` using `RayQuery` actually traversing the
 OptiX AS on the RT cores. Today NVPTX RayQuery kernels lower to the `SoftwareRayQuery`
 walk (`accelImpl() == SoftwareBvh`); M2 adds an OptiX lowering tier.
@@ -91,4 +91,4 @@ to OptiX.
 4. AUTO-on-CUDA → OptiX selectable; forced-software still correct; no regression to
    the NVPTX software path, the Vulkan native path, or M0/M1 tests.
 5. Unsupported RayQuery shapes throw a clear diagnostic.
-6. Docs + memory updated; spec/plan under `docs/specification/gpu-rayquery-optix/`.
+6. Docs + memory updated; spec/plan under `docs/specification/gpu/rayquery/`.
