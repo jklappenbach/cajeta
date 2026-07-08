@@ -55,18 +55,24 @@ static int cj_proc_buf_append(cj_proc_buf* b, const char* src, size_t n) {
 }
 
 // Copy a cajeta `String*`'s bytes into a fresh NUL-terminated C string.
-// String layout: vtable@0, bytes(int8[])@off_bytes, byteLength(int32)@off_len.
-// The int8[] payload begins 8 bytes past the array header (the count word).
+//
+// Delegates to __cajeta_string_cstr, the canonical mode-aware accessor: a
+// mode-2 WINDOWED view (every String.substring result — the shape the MCP
+// server builds argv from) keeps `bytes` pointing at the ROOT buffer with the
+// window's byte offset in `ssoCount`, so a naive `bytes + 8` read returns the
+// wrong bytes (the root's prefix), not the window. That produced a garbage
+// argv[0] and posix_spawnp failed with launched()==false. The accessor reads
+// `bytes + 8 + ssoCount` for view strings; its result is valid until the next
+// call on this thread, and we strdup it immediately, so the per-argv loop below
+// is safe. (off_bytes/off_len are now unused — the accessor needs only the
+// String*; kept in the signature so the intrinsic lowering is unchanged.)
+extern const char* __cajeta_string_cstr(void* s);
 static char* cj_proc_str_dup(void* str, int64_t off_bytes, int64_t off_len) {
+    (void) off_bytes;
+    (void) off_len;
     if (!str) return NULL;
-    void* bytes = *(void**) ((char*) str + off_bytes);
-    int32_t len = *(int32_t*) ((char*) str + off_len);
-    if (len < 0) len = 0;
-    char* s = (char*) malloc((size_t) len + 1);
-    if (!s) return NULL;
-    if (len > 0 && bytes) memcpy(s, (char*) bytes + 8, (size_t) len);
-    s[len] = '\0';
-    return s;
+    const char* c = __cajeta_string_cstr(str);
+    return strdup(c ? c : "");
 }
 
 // Marshal a cajeta `String[]` into a NULL-terminated char** (each element a
