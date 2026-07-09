@@ -37,6 +37,22 @@ namespace cajeta::synth {
     using BodySynthesizer =
         std::function<std::optional<std::string>(const SynthesisContext&)>;
 
+    // What a member synthesizer returns: a `{ ... }` class-body fragment to
+    // inject into the target, plus any short-name imports the fragment needs
+    // (each injected only-when-unbound). A synthesizer that validates its
+    // trigger and finds it invalid throws a cajeta::Exception (validate-first,
+    // spec §6) — the caller surfaces it as a user-attributed compile error and
+    // injects nothing.
+    struct MemberSynthesisResult {
+        std::string classBodyFragment;
+        std::vector<std::pair<std::string, std::string>> imports;  // (short, package)
+    };
+
+    // A member synthesizer inspects the target (via the context's `parent`) and
+    // either declines (nullopt) or returns a fragment to inject.
+    using MemberSynthesizer =
+        std::function<std::optional<MemberSynthesisResult>(const SynthesisContext&)>;
+
     class SynthesizerRegistry {
     public:
         SynthesizerRegistry() = default;
@@ -46,6 +62,18 @@ namespace cajeta::synth {
 
         // Register a body synthesizer under a stable label (used in diagnostics).
         void registerBody(std::string label, BodySynthesizer fn);
+
+        // Register a member synthesizer under a stable label.
+        void registerMember(std::string label, MemberSynthesizer fn);
+
+        // Collect the fragments of every member synthesizer that claims the
+        // target (composition — several may inject into one declaration). A
+        // synthesizer that throws (validate-first rejection) propagates. The
+        // caller injects the returned fragments and detects name collisions.
+        std::vector<std::pair<std::string, MemberSynthesisResult>>
+            collectMembers(const SynthesisContext& ctx) const;
+
+        std::size_t memberCount() const { return memberSynths.size(); }
 
         // Dispatch a body trigger: try every registered body synthesizer. AT
         // MOST ONE may claim the declaration — two matches throw a loud
@@ -57,6 +85,7 @@ namespace cajeta::synth {
 
     private:
         std::vector<std::pair<std::string, BodySynthesizer>> bodySynths;
+        std::vector<std::pair<std::string, MemberSynthesizer>> memberSynths;
     };
 
     // Register the compiler's built-in body synthesizers (the codecs) into the

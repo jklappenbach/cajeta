@@ -73,3 +73,47 @@ TEST(SynthesizerRegistryTests, emptyRegistryFallsThrough) {
     EXPECT_EQ(reg.bodyCount(), 0u);
     EXPECT_FALSE(reg.dispatchBody(ctxFor("anything")).has_value());
 }
+
+namespace {
+    cajeta::synth::MemberSynthesizer memberClaiming(std::string want, std::string frag) {
+        return [want, frag](const SynthesisContext& c)
+                -> std::optional<cajeta::synth::MemberSynthesisResult> {
+            if (c.methodName != want) return std::nullopt;
+            cajeta::synth::MemberSynthesisResult r;
+            r.classBodyFragment = frag;
+            return r;
+        };
+    }
+}
+
+// 3.1.3 (mechanic) — member synthesizers COMPOSE: several may inject into one
+// declaration, and collectMembers returns every one that claims the target.
+TEST(SynthesizerRegistryTests, collectMembersComposesAllClaimers) {
+    SynthesizerRegistry reg;
+    reg.registerMember("a", memberClaiming("T", "{ int a; }"));
+    reg.registerMember("b", memberClaiming("T", "{ int b; }"));
+    reg.registerMember("c", memberClaiming("OTHER", "{ int c; }"));  // declines
+    auto claimed = reg.collectMembers(ctxFor("T"));
+    ASSERT_EQ(claimed.size(), 2u);
+    EXPECT_EQ(claimed[0].first, "a");
+    EXPECT_EQ(claimed[1].first, "b");
+}
+
+// A member synthesizer that declines contributes nothing (failsafe).
+TEST(SynthesizerRegistryTests, collectMembersEmptyWhenNoneClaim) {
+    SynthesizerRegistry reg;
+    reg.registerMember("a", memberClaiming("T", "{ int a; }"));
+    EXPECT_TRUE(reg.collectMembers(ctxFor("nope")).empty());
+}
+
+// 3.1.4 (mechanic) — validate-first: a member synthesizer that rejects its
+// trigger throws, and collectMembers propagates it (the caller surfaces a
+// user-attributed compile error and injects nothing).
+TEST(SynthesizerRegistryTests, collectMembersPropagatesValidateFirstThrow) {
+    SynthesizerRegistry reg;
+    reg.registerMember("strict", [](const SynthesisContext&)
+            -> std::optional<cajeta::synth::MemberSynthesisResult> {
+        throw cajeta::Exception("bad trigger args", "CAJETA_ERROR_SYNTH_VALIDATE");
+    });
+    EXPECT_THROW(reg.collectMembers(ctxFor("T")), cajeta::Exception);
+}
