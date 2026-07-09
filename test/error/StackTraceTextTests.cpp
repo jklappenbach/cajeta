@@ -61,6 +61,21 @@ fs::path writeProject(const fs::path& root, const std::string& body) {
     return root;
 }
 
+// Same as writeProject but the caller supplies the whole class body, so a test
+// can declare helper methods and build a cause chain.
+fs::path writeProjectClass(const fs::path& root, const std::string& classBody) {
+    auto dir = root / "test";
+    fs::create_directories(dir);
+    std::ofstream src(dir / "App.cajeta");
+    src << "package test;\n"
+           "import cajeta.error.Exception;\n"
+           "public final class App {\n"
+        << classBody
+        << "}\n";
+    src.close();
+    return root;
+}
+
 int runJitCapturingStderr(const fs::path& proj, std::string& err) {
     auto bin = compilerBinary();
     if (!fs::exists(bin)) return -1;
@@ -92,4 +107,70 @@ TEST(StackTraceText, uncaughtPrintsSemanticFrame) {
     ASSERT_TRUE(std::regex_search(err, m, frame))
         << "expected a semantic frame in the trace; stderr:\n" << err;
     EXPECT_GT(std::stoi(m[1].str()), 0) << "line number must be positive";
+}
+
+// ExceptionReview 5.7 — printStackTrace() prints the throwable's own message
+// before its frames. It previously printed frames with no message line at all.
+TEST(StackTraceText, printStackTracePrintsMessageThenFrames) {
+    auto proj = writeProjectClass(freshTempDir("msg"),
+        "    public static void run() {\n"
+        "        try {\n"
+        "            deep();\n"
+        "        } catch (Exception e) {\n"
+        "            e.printStackTrace();\n"
+        "        }\n"
+        "    }\n"
+        "    private static void deep() {\n"
+        "        throw heap Exception(\"outer failure\");\n"
+        "    }\n");
+    std::string err;
+    int rc = runJitCapturingStderr(proj, err);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_EQ(rc, 0) << "the throw is caught; the run must succeed. stderr:\n" << err;
+    EXPECT_NE(err.find("outer failure"), std::string::npos)
+        << "message line missing; stderr:\n" << err;
+    std::regex frame(R"(test\.App\.deep\(App\.cajeta:(\d+)\))");
+    EXPECT_TRUE(std::regex_search(err, frame))
+        << "expected a semantic frame for the throw site; stderr:\n" << err;
+    // Message precedes frames.
+    EXPECT_LT(err.find("outer failure"), err.find("at test.App.deep"))
+        << "message must precede frames; stderr:\n" << err;
+}
+
+// ExceptionReview 5.7 / optional-borrow-ownership 5.1.2 — printStackTrace() walks
+// getCause(), emitting a "Caused by: " link per level. The native helper
+// (__cajeta_print_trace_one) always carried the prefix but had zero call sites.
+// The walk itself was blocked until Optional's `#T` ctor became mode-dependent:
+// before that, the loop-scoped Optional dropped and freed the borrowed cause.
+TEST(StackTraceText, printStackTracePrintsCauseChain) {
+    auto proj = writeProjectClass(freshTempDir("cause"),
+        "    public static void run() {\n"
+        "        try {\n"
+        "            deep();\n"
+        "        } catch (Exception e) {\n"
+        "            e.printStackTrace();\n"
+        "        }\n"
+        "    }\n"
+        "    private static void deep() {\n"
+        "        throw heap Exception(\"outer failure\",\n"
+        "            heap Exception(\"root cause\"));\n"
+        "    }\n");
+    std::string err;
+    int rc = runJitCapturingStderr(proj, err);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_EQ(rc, 0) << "the throw is caught; the run must succeed. stderr:\n" << err;
+    EXPECT_NE(err.find("outer failure"), std::string::npos)
+        << "top throwable's message missing; stderr:\n" << err;
+    EXPECT_NE(err.find("Caused by: root cause"), std::string::npos)
+        << "cause chain not printed; stderr:\n" << err;
+    // The top throwable was thrown, so it carries semantic frames. The cause was
+    // constructed but never thrown -> no frames, per throw-site capture (3.1).
+    std::regex frame(R"(test\.App\.deep\(App\.cajeta:(\d+)\))");
+    EXPECT_TRUE(std::regex_search(err, frame))
+        << "expected a semantic frame for the throw site; stderr:\n" << err;
+    // Ordering: the cause link must follow the top throwable's message.
+    EXPECT_LT(err.find("outer failure"), err.find("Caused by: root cause"))
+        << "cause must print after the wrapping throwable; stderr:\n" << err;
 }
