@@ -48,6 +48,8 @@ public class Throwable {
     private static int32 getTraceNative(Object throwable, int64[] outAddrs, int32 max);
     @Native("__cajeta_print_trace")
     private static void printTraceNative(Object throwable, int32 fd);
+    @Native("__cajeta_print_trace_one")
+    private static void printTraceOneNative(Object throwable, int32 fd, int32 causedBy);
     @Native("__cajeta_trace_shadow_count") private static int32 shadowCount(Object t);
     @Native("__cajeta_trace_shadow_desc")  private static int64 shadowDesc(Object t, int32 i);
     @Native("__cajeta_trace_shadow_line")  private static int32 shadowLine(Object t, int32 i);
@@ -262,12 +264,23 @@ public class Throwable {
     }
 
     /**
-     * Print this throwable's stack trace to stderr. A no-op body of frames when
-     * no trace was captured (message still surfaces via the uncaught handler).
+     * Print this throwable's message followed by its stack trace to stderr.
+     * Frames are omitted when no trace was captured — capture happens at the
+     * throw site, so a throwable constructed but never thrown carries none.
+     *
+     * ```
+     * outer failure
+     *   at test.App.deep(App.cajeta:12)
+     * ```
+     *
+     * The `Caused by: ` cause-chain walk is NOT emitted yet: `Exception.getCause()`
+     * hands a borrowed field to the owning `Optional(boolean, #T)` ctor, so the
+     * Optional's drop frees a cause the Exception still owns. Walking the chain in
+     * a loop therefore reads freed memory (ExceptionReview 5.8).
      *
      * @EntryPoint
      */
     public void printStackTrace() {
-        printTraceNative(this, 2);
+        printTraceOneNative(this, 2, 0);
     }
 }
