@@ -1707,12 +1707,26 @@ namespace cajeta {
     // REFL-1.5: `T.class`.
     void ClassLiteralExpression::resolveTypes(CajetaModulePtr module) {
         if (resolvedType) return;
-        // Resolve the named type by name from canonicalMap (keyed by both short
-        // typeName and full canonical), now that every class is registered.
+        // Template type-parameter substitution first: inside an instantiation
+        // body walk, a bare `T.class` names a type parameter, which must resolve
+        // to the concrete argument bound for this instantiation — consulted via
+        // the module's active substitution stack (the same path
+        // CajetaType::fromContext uses). The stack is live only during the walk
+        // (IR emits between push/popTypeSubstitution), so resolve + cache the
+        // binding eagerly here; `namedType`/`resolvedType` persist to codegen.
         auto& cmap = CajetaType::getCanonicalMap();
-        auto nit = cmap.find(namedTypeName);
-        if (nit != cmap.end()) {
-            namedType = nit->second;
+        if (module) {
+            if (auto bound = module->lookupTypeParameter(namedTypeName)) {
+                namedType = bound;
+            }
+        }
+        // Otherwise resolve the named type by name from canonicalMap (keyed by
+        // both short typeName and full canonical), now that every class is registered.
+        if (!namedType) {
+            auto nit = cmap.find(namedTypeName);
+            if (nit != cmap.end()) {
+                namedType = nit->second;
+            }
         }
         if (!namedType) return;   // unresolved type — generateCode reports it
         // resolvedType = Class<T> (the wildcard-phantom template instantiated

@@ -1586,6 +1586,37 @@ namespace cajeta {
         // per method, not once per generateCode invocation.
         cajeta::xpu::validateKernelParams(shared_from_this());
 
+        // Template-instantiation substitution for the BODY. When this method
+        // belongs to an instantiated generic class (e.g. `Box<RfTick>`), its
+        // body may name the class type parameters — a `T`-typed local, or a
+        // `T.class` reflection literal. Declaration types were substituted
+        // during the instantiation walk (TemplateInstantiator pushes {T->arg}
+        // around visitClassBody), but the body's IR and its resolveTypes
+        // pre-pass run HERE, after that walk popped its frame. Re-establish
+        // {T -> arg} for the duration of body lowering so nodes that resolve
+        // lazily at codegen (ClassLiteralExpression consults
+        // module->lookupTypeParameter) see the concrete argument. RAII-popped
+        // on every exit path. No-op for non-instantiated methods.
+        struct SubstFrameGuard {
+            CajetaModulePtr mod; bool pushed = false;
+            ~SubstFrameGuard() { if (pushed) mod->popTypeSubstitution(); }
+        } substGuard{module};
+        if (parent && parent->isInstantiation()) {
+            const auto& tparams = parent->getTypeParameters();
+            const auto& targs = parent->getTypeArguments();
+            if (!tparams.empty() && tparams.size() == targs.size()) {
+                std::map<std::string, CajetaTypePtr> frame;
+                if (auto inherited = module->getCurrentTypeSubstitution()) {
+                    frame = *inherited;
+                }
+                for (size_t i = 0; i < tparams.size(); ++i) {
+                    frame[tparams[i].name] = targs[i];
+                }
+                module->pushTypeSubstitution(std::move(frame));
+                substGuard.pushed = true;
+            }
+        }
+
         // CajetaXPU: a @Kernel — or a @Device helper — taking Buffer<T>
         // arguments operates on device memory and cannot execute on the host:
         // buffer indexing (buf[i]) is device-only (CajetaXPU.md §3.6). Its real
