@@ -498,16 +498,19 @@ namespace cajeta::buildtool {
                 for (auto& [rel, digest] : perSource) {
                     std::string bcSlot = fs::absolute(
                         irCache.keyFor(probeOut, digest)).string();
-                    // Obligations ride beside the .bc under the same key.
-                    std::string oblSlot =
-                        bcSlot.substr(0, bcSlot.size() - 3) + ".obligations";
+                    // Obligations + native object ride beside the .bc under
+                    // the same key (the .o slot is Phase 6-alt: clean modules
+                    // skip target lowering when it's populated).
+                    std::string stem = bcSlot.substr(0, bcSlot.size() - 3);
+                    std::string oblSlot = stem + ".obligations";
                     bool clean = fs::exists(bcSlot) && fs::exists(oblSlot);
                     if (clean) cleanCount++;
                     sources.push_back(llvm::json::Object{
                         {"path", rel},
                         {"clean", clean},
                         {"bc", bcSlot},
-                        {"obligations", oblSlot}});
+                        {"obligations", oblSlot},
+                        {"obj", stem + ".o"}});
                 }
                 llvm::json::Object manifestJson{
                     {"version", "cache-manifest-v1"},

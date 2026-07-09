@@ -275,6 +275,7 @@ namespace cajeta {
         bool incrementalClean = false;
         string cacheBcSlot;
         string cacheObligationsSlot;
+        string cacheObjSlot;   // optional (Phase 6-alt .o cache)
 
         // Compiler-level options that codegen consults. Set on the module by the
         // Compiler at creation time (so each module produces IR consistent with the
@@ -824,10 +825,12 @@ namespace cajeta {
         const string& getCacheObligationsSlot() const {
             return cacheObligationsSlot;
         }
-        void setCacheSlots(string bc, string obligations) {
+        void setCacheSlots(string bc, string obligations, string obj = "") {
             cacheBcSlot = std::move(bc);
             cacheObligationsSlot = std::move(obligations);
+            cacheObjSlot = std::move(obj);
         }
+        const string& getCacheObjSlot() const { return cacheObjSlot; }
         // Write this module's obligations to the manifest slot (unlike the
         // archive-root sidecar, ALWAYS written — explicitly empty when the
         // set is: slot absence must mean "never built", not "no obligations").

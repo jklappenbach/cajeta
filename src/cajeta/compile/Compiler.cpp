@@ -1199,6 +1199,10 @@ namespace cajeta {
         auto pairs = cacheFlagPairs(flags, emitName, targetTriple);
         // @Profile gating changes which components codegen at all.
         pairs.emplace_back("profile", CajetaModule::getActiveProfile());
+        // Subtarget selection changes native-object output (Phase 6-alt
+        // caches .o files under this same key).
+        pairs.emplace_back("cpu", cpu);
+        pairs.emplace_back("features", features);
         // A changed classpath archive changes user-module IR (signatures,
         // inlined dep declarations) without touching any source digest —
         // fold each archive's CONTENT into the key so a dep bump re-keys
@@ -1333,7 +1337,8 @@ namespace cajeta {
                     ? sp.substr(sourceRootPath.size()) : sp;
                 const CacheManifestEntry* entry = cacheManifest->find(rel);
                 if (!entry) continue;
-                module->setCacheSlots(entry->bcPath, entry->obligationsPath);
+                module->setCacheSlots(entry->bcPath, entry->obligationsPath,
+                                      entry->objPath);
                 if (!entry->clean) continue;
                 if (!std::filesystem::exists(entry->bcPath)
                     || !std::filesystem::exists(entry->obligationsPath)) {
@@ -1757,7 +1762,39 @@ namespace cajeta {
         if (emitMode == EmitMode::Cja || emitMode == EmitMode::Uber) {
             emitArchive(archiveRootPath, emitMode == EmitMode::Uber);
         } else {
+            // Phase 6-alt: a clean module whose native object is cached
+            // skips target lowering entirely — copy the cached .o to its
+            // archive path and register it for the link. (Its .bc was still
+            // loaded above: the drop-fn backfill scan and cja emit need it.)
+            const bool objEmit =
+                emitMode == EmitMode::Obj || emitMode == EmitMode::Exe;
+            auto objPathFor = [](const CajetaModulePtr& m) {
+                string p = m->getArchiveRoot() + m->getArchivePath();
+                if (p.size() >= 3 && p.substr(p.size() - 3) == ".ll") {
+                    p.replace(p.size() - 3, 3, ".o");
+                }
+                return p;
+            };
+            int reusedObjects = 0;
             for (auto& module: modules) {
+                if (objEmit && module->isIncrementalClean()
+                    && !module->getCacheObjSlot().empty()
+                    && std::filesystem::exists(module->getCacheObjSlot())) {
+                    string objPath = objPathFor(module);
+                    std::error_code ec;
+                    std::filesystem::create_directories(
+                        std::filesystem::path(objPath).parent_path(), ec);
+                    std::filesystem::copy_file(
+                        module->getCacheObjSlot(), objPath,
+                        std::filesystem::copy_options::overwrite_existing,
+                        ec);
+                    if (!ec) {
+                        objectFiles.push_back(objPath);
+                        reusedObjects++;
+                        continue;
+                    }
+                    // Unreadable slot → fall through to a real lowering.
+                }
                 // Runtime is linked once into the stdlib module (see
                 // parseStdlibInto); user modules carry only extern decls
                 // for runtime helpers, resolved by the JIT/AOT link step.
@@ -1768,7 +1805,29 @@ namespace cajeta {
                 // re-derived this build).
                 if (!module->isIncrementalClean()) {
                     module->writeObligationsSidecar();
+                    // Phase 6-alt: store the freshly lowered object for the
+                    // next build's skip (atomic temp+rename).
+                    if (objEmit && cacheManifest
+                        && !module->getCacheObjSlot().empty()) {
+                        string objPath = objPathFor(module);
+                        std::error_code ec;
+                        if (std::filesystem::exists(objPath, ec)) {
+                            const string& slot = module->getCacheObjSlot();
+                            std::filesystem::create_directories(
+                                std::filesystem::path(slot).parent_path(),
+                                ec);
+                            string tmp = slot + ".tmp";
+                            std::filesystem::copy_file(objPath, tmp,
+                                std::filesystem::copy_options::
+                                    overwrite_existing, ec);
+                            if (!ec) std::filesystem::rename(tmp, slot, ec);
+                        }
+                    }
                 }
+            }
+            if (reusedObjects > 0) {
+                cout << "[incremental] reused " << reusedObjects
+                     << " cached object(s)\n";
             }
             // Classpath deps for binary emit: emit each (now body-generated)
             // external module's object so its symbols are defined at link. The

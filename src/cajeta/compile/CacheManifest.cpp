@@ -59,6 +59,7 @@ namespace cajeta {
             e.clean = *clean;
             e.bcPath = bc->str();
             e.obligationsPath = obligations->str();
+            if (auto obj = o->getString("obj")) e.objPath = obj->str();
             if (m.populateMode() && e.clean)
                 return manifestError(path,
                     "populate mode (empty discriminator) is write-only, but `"

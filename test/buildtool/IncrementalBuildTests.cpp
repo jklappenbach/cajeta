@@ -207,6 +207,10 @@ TEST(IncrementalBuild, SecondBuildSkipsAllSourcesUserObjectsUnchanged) {
     ASSERT_EQ(p.build(), 0) << p.buildOutput();
     std::string out = p.buildOutput();
     EXPECT_TRUE(contains(out, "[incremental] skip t/Main.cajeta")) << out;
+    // Phase 6-alt: both clean modules' native objects come from the cache —
+    // no target lowering at all.
+    EXPECT_TRUE(contains(out, "[incremental] reused 2 cached object"))
+        << out;
     EXPECT_TRUE(contains(out, "[incremental] skip t/Util.cajeta")) << out;
     EXPECT_EQ(p.runExe(), 7);
     EXPECT_EQ(readAll(exeDir / "Main.o"), mainO1)

@@ -29,6 +29,8 @@ namespace cajeta {
         bool clean = false;
         std::string bcPath;           // absolute slot for the module's .bc
         std::string obligationsPath;  // absolute slot for the obligations sidecar
+        std::string objPath;          // OPTIONAL slot for the native object
+                                      // (Phase 6-alt; empty = no .o caching)
     };
 
     struct CacheManifest {
