@@ -155,6 +155,14 @@ struct Project {
         return exitCodeOf(std::system(cmd.c_str()));
     }
 
+    // Force the next build past the Phase-0 whole-artifact layer so it
+    // exercises the manifest/codegen-skip path (artifact evicted, IR slots
+    // intact — a real cache state).
+    void dropArtifactCache() const {
+        std::error_code ec;
+        fs::remove_all(root / ".cajeta" / "cache" / "artifact", ec);
+    }
+
     // Files under .cajeta/cache/ir/ with the given extension.
     int cacheFileCount(const std::string& ext) const {
         int n = 0;
@@ -195,6 +203,7 @@ TEST(IncrementalBuild, SecondBuildSkipsAllSourcesUserObjectsUnchanged) {
     auto utilO1 = readAll(exeDir / "Util.o");
     ASSERT_FALSE(mainO1.empty());
 
+    p.dropArtifactCache();   // exercise the manifest path, not the Phase-0 hit
     ASSERT_EQ(p.build(), 0) << p.buildOutput();
     std::string out = p.buildOutput();
     EXPECT_TRUE(contains(out, "[incremental] skip t/Main.cajeta")) << out;
@@ -281,6 +290,13 @@ TEST(IncrementalBuild, IncrementalIsTheDefault) {
     ASSERT_EQ(p.build(), 0) << p.buildOutput();
     EXPECT_EQ(p.cacheFileCount(".bc"), 2) << "default-on must populate";
 
+    // No-change rebuild: the Phase-0 whole-artifact layer answers first.
+    ASSERT_EQ(p.build(), 0) << p.buildOutput();
+    EXPECT_TRUE(contains(p.buildOutput(), "[cache] hit")) << p.buildOutput();
+    EXPECT_EQ(p.runExe(), 7);
+
+    // With the artifact evicted, the manifest layer answers: all skipped.
+    p.dropArtifactCache();
     ASSERT_EQ(p.build(), 0) << p.buildOutput();
     std::string out = p.buildOutput();
     EXPECT_TRUE(contains(out, "[incremental] skip t/Main.cajeta")) << out;
@@ -320,6 +336,7 @@ TEST(IncrementalBuild, RebuildAfterEvictionByteIdenticalIr) {
     ASSERT_EQ(before.size(), 2u);
 
     fs::remove_all(p.cacheIrDir());
+    p.dropArtifactCache();
     ASSERT_EQ(p.build(), 0) << p.buildOutput();
     for (auto& [path, bytes] : before) {
         ASSERT_TRUE(fs::exists(path)) << "slot did not repopulate: " << path;
@@ -365,6 +382,9 @@ TEST(IncrementalBuild, TourSmokeBuildsIncrementally) {
     EXPECT_FALSE(contains(readAll(log), "[incremental] skip"))
         << readAll(log);
 
+    // Force past the Phase-0 layer so the manifest/skip path is what runs.
+    std::error_code aec;
+    fs::remove_all(root / ".cajeta" / "cache" / "artifact", aec);
     ASSERT_EQ(build(), 0) << readAll(log);
     std::string out = readAll(log);
     EXPECT_TRUE(contains(out, "[incremental] skip tour/Tour.cajeta")) << out;
@@ -375,4 +395,84 @@ TEST(IncrementalBuild, TourSmokeBuildsIncrementally) {
         skips++;
     EXPECT_GE(skips, 80) << "expected ~87 skipped sources, got " << skips
                          << ":\n" << out;
+
+    // And a third, untouched build takes the Phase-0 fast path outright.
+    ASSERT_EQ(build(), 0) << readAll(log);
+    EXPECT_TRUE(contains(readAll(log), "[cache] hit")) << readAll(log);
+}
+
+// Phase 0: whole-artifact fast path. A no-change second build computes the
+// same whole-build digest, finds the cached artifact, and re-publishes it
+// WITHOUT running a compile: `cache = hit` in the outputs, byte-identical
+// artifact, and none of the incremental machinery's output.
+TEST(IncrementalBuild, WholeArtifactHitSkipsTheCompile) {
+    if (!fs::exists(compilerBinary()))
+        GTEST_SKIP() << "compiler binary unavailable";
+    auto p = Project::create("wahit");
+
+    ASSERT_EQ(p.build(), 0) << p.buildOutput();
+    EXPECT_FALSE(contains(p.buildOutput(), "[cache] hit")) << p.buildOutput();
+    ASSERT_EQ(p.runExe(), 7);
+    auto exe1 = readAll(p.exePath());
+
+    ASSERT_EQ(p.build(), 0) << p.buildOutput();
+    std::string out = p.buildOutput();
+    EXPECT_TRUE(contains(out, "[cache] hit")) << out;
+    EXPECT_FALSE(contains(out, "[incremental] skip"))
+        << "a whole-artifact hit must not reach the compile at all:\n" << out;
+    EXPECT_EQ(readAll(p.exePath()), exe1);
+    EXPECT_EQ(p.runExe(), 7);
+}
+
+// A touch misses the whole-artifact layer and falls through to the normal
+// incremental build; the NEXT no-change build hits with the new artifact.
+TEST(IncrementalBuild, WholeArtifactMissFallsThroughThenRehits) {
+    if (!fs::exists(compilerBinary()))
+        GTEST_SKIP() << "compiler binary unavailable";
+    auto p = Project::create("wamiss");
+
+    ASSERT_EQ(p.build(), 0) << p.buildOutput();
+    ASSERT_EQ(p.runExe(), 7);
+
+    p.writeSources(/*mainBias=*/5);   // touch Main → 8
+    ASSERT_EQ(p.build(), 0) << p.buildOutput();
+    std::string out = p.buildOutput();
+    EXPECT_FALSE(contains(out, "[cache] hit")) << out;
+    EXPECT_TRUE(contains(out, "[incremental] skip t/Util.cajeta")) << out;
+    ASSERT_EQ(p.runExe(), 8);
+    auto exe2 = readAll(p.exePath());
+
+    ASSERT_EQ(p.build(), 0) << p.buildOutput();
+    EXPECT_TRUE(contains(p.buildOutput(), "[cache] hit")) << p.buildOutput();
+    EXPECT_EQ(readAll(p.exePath()), exe2);
+    EXPECT_EQ(p.runExe(), 8);
+}
+
+// `no-cache: true` bypasses BOTH cache layers: no artifact reuse, no
+// manifest — every build is a plain full compile.
+TEST(IncrementalBuild, NoCacheParamBypassesBothLayers) {
+    if (!fs::exists(compilerBinary()))
+        GTEST_SKIP() << "compiler binary unavailable";
+    Project p{freshTempDir("nocache")};
+    {
+        std::ofstream m(p.root / "cajeta.json");
+        m << "{\n"
+             "  \"details\": { \"name\": \"t.app\", \"version\": \"0.1.0\",\n"
+             "                 \"cajeta-lang-version\": \"1.0\" },\n"
+             "  \"settings\": { \"build\": {\n"
+             "      \"entry-method\": \"t.Main::run\" } },\n"
+             "  \"tasks\": { \"build\": { \"actions\": [\n"
+             "      { \"action\": \"build\", \"flavor\": \"debug\",\n"
+             "        \"no-cache\": true, \"id\": \"art\" } ] } }\n"
+             "}\n";
+    }
+    p.writeSources(/*mainBias=*/4);
+
+    ASSERT_EQ(p.build(), 0) << p.buildOutput();
+    ASSERT_EQ(p.build(), 0) << p.buildOutput();
+    std::string out = p.buildOutput();
+    EXPECT_FALSE(contains(out, "[cache] hit")) << out;
+    EXPECT_FALSE(contains(out, "[incremental] skip")) << out;
+    EXPECT_EQ(p.cacheFileCount(".bc"), 0);
+    EXPECT_EQ(p.runExe(), 7);
 }

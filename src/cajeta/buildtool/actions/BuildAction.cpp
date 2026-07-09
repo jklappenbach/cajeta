@@ -22,11 +22,13 @@
 #include "cajeta/buildtool/DiagnosticFormat.h"
 #include "cajeta/buildtool/Flavor.h"
 #include "cajeta/buildtool/IrCache.h"
+#include "cajeta/buildtool/Lockfile.h"   // sha256Hex
 #include "cajeta/buildtool/Manifest.h"
 #include "cajeta/buildtool/Reproducibility.h"
 #include "cajeta/buildtool/Resolver.h"
 #include "cajeta/buildtool/SourceDigest.h"
 
+#include <algorithm>
 #include <llvm/Support/JSON.h>
 #include <llvm/Support/raw_ostream.h>
 
@@ -373,11 +375,19 @@ namespace cajeta::buildtool {
             // The discriminator comes from the compiler itself
             // (--print-cache-discriminator probe on the exact flag set built
             // above) so flag resolution is never re-derived here.
-            bool incremental = true;
+            // Layered in FRONT (Phase 0): the whole-artifact cache — same
+            // digests folded into one whole-build key; a hit re-publishes
+            // the cached artifact without any compile at all.
+            // `no-cache: true` bypasses both layers.
+            bool noCache = false;
+            if (auto v = params.getBoolean("no-cache")) noCache = *v;
+            bool incremental = !noCache;
             bool incrementalExplicit = false;
-            if (auto v = params.getBoolean("incremental")) {
-                incremental = *v;
-                incrementalExplicit = true;
+            if (!noCache) {
+                if (auto v = params.getBoolean("incremental")) {
+                    incremental = *v;
+                    incrementalExplicit = true;
+                }
             }
             std::string projectRoot = ctx.manifest()
                 ? projectRootFromManifest(*ctx.manifest()) : std::string(".");
@@ -413,27 +423,88 @@ namespace cajeta::buildtool {
                     incremental = false;
                 }
             }
+            fs::path artifactSlot;   // set when the whole-artifact layer is live
             if (incremental) {
                 SourceDigestRegistry digests({sourceRoot});
-                llvm::json::Array sources;
+                std::vector<std::pair<std::string, std::string>> perSource;
                 std::error_code ec2;
                 for (auto& e : fs::recursive_directory_iterator(
                                    sourceRoot, ec2)) {
                     if (!e.is_regular_file()
                         || e.path().extension() != ".cajeta") continue;
-                    sourceCount++;
                     auto digest = digests.digestOf(e.path().string());
                     if (!digest) return digest.takeError();
+                    perSource.emplace_back(
+                        fs::relative(e.path(), sourceRoot).generic_string(),
+                        *digest);
+                }
+                sourceCount = static_cast<int>(perSource.size());
+                std::sort(perSource.begin(), perSource.end());
+
+                // Phase 0 whole-artifact layer — single-file artifacts only
+                // (exe/cja); exploded-ir has no one artifact to re-publish.
+                // Key = discriminator ⊕ entry ⊕ every (path, digest): the
+                // discriminator already folds flags/emit/target/profile/
+                // classpath, but NOT the entry method (positional).
+                if (!outputPath.empty()) {
+                    std::string wholeInput = probeOut;
+                    wholeInput.push_back('\0');
+                    wholeInput += *entry;
+                    wholeInput.push_back('\0');
+                    for (auto& [rel, digest] : perSource) {
+                        wholeInput += rel + "=" + digest + "\n";
+                    }
+                    std::string wholeDigest = sha256Hex(wholeInput);
+                    const std::string pre = "sha256:";
+                    if (wholeDigest.rfind(pre, 0) == 0)
+                        wholeDigest = wholeDigest.substr(pre.size());
+                    artifactSlot = fs::path(projectRoot) / ".cajeta"
+                                 / "cache" / "artifact" / wholeDigest
+                                 / outputPath.filename();
+                    if (fs::exists(artifactSlot)) {
+                        fs::create_directories(outputPath.parent_path(), ec2);
+                        fs::copy_file(
+                            artifactSlot, outputPath,
+                            fs::copy_options::overwrite_existing, ec2);
+                        if (!ec2) {
+                            fs::permissions(outputPath,
+                                fs::perms::owner_exec | fs::perms::group_exec
+                                    | fs::perms::others_exec,
+                                fs::perm_options::add, ec2);
+                            // Direct line (not just an action output): task
+                            // output echo depends on the task DECLARING
+                            // outputs, and the skip must be visible always.
+                            llvm::outs() << "[cache] hit — re-published "
+                                         << outputPath.string() << "\n";
+                            ActionResult hit;
+                            hit.outputs["format"] = formatLabel;
+                            hit.outputs["flavor"] = flavor;
+                            if (!profile.empty())
+                                hit.outputs["profile"] = profile;
+                            hit.outputs["cache"] = "hit";
+                            hit.outputs["path"] = outputPath.string();
+                            hit.outputs["sha256"] =
+                                sha256OfFile(outputPath.string());
+                            std::error_code szEc;
+                            hit.outputs["size"] = std::to_string(
+                                fs::file_size(outputPath, szEc));
+                            return hit;
+                        }
+                        // Unreadable slot → fall through to a real build.
+                    }
+                }
+
+                llvm::json::Array sources;
+                for (auto& [rel, digest] : perSource) {
                     std::string bcSlot = fs::absolute(
-                        irCache.keyFor(probeOut, *digest)).string();
+                        irCache.keyFor(probeOut, digest)).string();
                     // Obligations ride beside the .bc under the same key.
                     std::string oblSlot =
                         bcSlot.substr(0, bcSlot.size() - 3) + ".obligations";
                     bool clean = fs::exists(bcSlot) && fs::exists(oblSlot);
                     if (clean) cleanCount++;
                     sources.push_back(llvm::json::Object{
-                        {"path", fs::relative(e.path(), sourceRoot)
-                                     .generic_string()},
+                        {"path", rel},
                         {"clean", clean},
                         {"bc", bcSlot},
                         {"obligations", oblSlot}});
@@ -477,6 +548,20 @@ namespace cajeta::buildtool {
             if (exitCode != 0) {
                 return err("build: compiler exited " +
                            std::to_string(exitCode));
+            }
+
+            // Phase 0: record (whole digest → artifact) so the next
+            // no-change build re-publishes without compiling.
+            if (!artifactSlot.empty() && !outputPath.empty()) {
+                std::error_code ec3;
+                if (fs::exists(outputPath, ec3)) {
+                    fs::create_directories(artifactSlot.parent_path(), ec3);
+                    fs::path tmp = artifactSlot;
+                    tmp += ".tmp";
+                    fs::copy_file(outputPath, tmp,
+                                  fs::copy_options::overwrite_existing, ec3);
+                    if (!ec3) fs::rename(tmp, artifactSlot, ec3);
+                }
             }
 
             // Post-build cache eviction per settings.build.cache. Runs only
