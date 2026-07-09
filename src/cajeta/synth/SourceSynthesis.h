@@ -6,10 +6,26 @@
 //
 #pragma once
 
+#include <memory>
 #include <string>
 #include <vector>
 
+namespace cajeta {
+    class CajetaModule;
+    using CajetaModulePtr = std::shared_ptr<CajetaModule>;
+}
+
 namespace cajeta::synth {
+
+    // Inject `import <packageName>.<shortName>` into the module ONLY when
+    // `shortName` is otherwise unbound. Synthesized source uses short type
+    // names (`Logger`, `Log`); a fully-qualified static call resolves to null
+    // in expression position, so the matching import must exist — but a user's
+    // own same-short-name import must always win, hence only-when-unbound.
+    // (spec §3.2; the @Logged respect-user-import rule.)
+    void injectImportIfUnbound(const CajetaModulePtr& module,
+                               const std::string& shortName,
+                               const std::string& packageName);
 
     // Deterministic, collision-resistant identifier for a synthesized
     // wrapper/instance, derived from the trigger's canonical identity and its

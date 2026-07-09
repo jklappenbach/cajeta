@@ -31,6 +31,7 @@
 #include "../error/Exception.h"
 #include "CajetaParser.h"
 #include "CajetaLexer.h"
+#include "cajeta/synth/SourceSynthesisParse.h"
 
 #include "antlr4-runtime/antlr4-runtime.h"
 
@@ -378,12 +379,11 @@ namespace cajeta {
             + effectiveSource + "\n"
             + "}\n";
 
-        antlr4::ANTLRInputStream inputStream(input);
-        CajetaLexer lexer(&inputStream);
-        antlr4::CommonTokenStream tokens(&lexer);
-        tokens.fill();
-        CajetaParser parser(&tokens);
-        auto* compUnit = parser.compilationUnit();
+        // Leaking parse (shared helper): the extracted method's AST holds token
+        // pointers the later body codegen dereferences, so the pipeline must
+        // outlive this call — the stack-local parse this replaced was a latent
+        // dangle that only survived by not-yet-reused freed memory.
+        auto* compUnit = cajeta::synth::parseSynthesizedUnit(input);
 
         CajetaParser::ClassDeclarationContext* classDecl = nullptr;
         for (auto* td : compUnit->typeDeclaration()) {

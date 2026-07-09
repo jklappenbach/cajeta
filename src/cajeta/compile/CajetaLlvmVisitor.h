@@ -7,6 +7,8 @@
 #include "antlr4-runtime.h"
 #include "CajetaParserVisitor.h"
 #include "CajetaLexer.h"
+#include "cajeta/synth/SourceSynthesis.h"
+#include "cajeta/synth/SourceSynthesisParse.h"
 #include "cajeta/type/CajetaClass.h"
 #include "cajeta/type/CajetaArray.h"
 #include "cajeta/type/CajetaView.h"
@@ -65,23 +67,11 @@ namespace cajeta {
             // (`org.cajeta.logging.Log.defaultFor(...)`) silently resolves to
             // null in expression position. Inject only when the short name is
             // otherwise unbound, so a user's own `Log`/`Logger` import wins.
-            auto& imports = pModule->getImports();
-            if (imports.find("Logger") == imports.end()) {
-                imports["Logger"]["org.cajeta.logging"] =
-                    QualifiedName::getOrInsert("Logger", "org.cajeta.logging");
-            }
-            if (imports.find("Log") == imports.end()) {
-                imports["Log"]["org.cajeta.logging"] =
-                    QualifiedName::getOrInsert("Log", "org.cajeta.logging");
-            }
+            cajeta::synth::injectImportIfUnbound(pModule, "Logger", "org.cajeta.logging");
+            cajeta::synth::injectImportIfUnbound(pModule, "Log", "org.cajeta.logging");
             std::string src = "{ static Logger log = "
                 "Log.defaultFor(\"" + canonical + "\"); }";
-            auto* input = new antlr4::ANTLRInputStream(src);
-            auto* lexer = new CajetaLexer(input);
-            auto* tokens = new antlr4::CommonTokenStream(lexer);
-            tokens->fill();
-            auto* parser = new CajetaParser(tokens);
-            auto* body = parser->classBody();
+            auto* body = cajeta::synth::parseClassBodyFragment(src);
             for (auto* cbd : body->classBodyDeclaration()) {
                 MemberDeclarationPtr mem;
                 try {
@@ -177,12 +167,7 @@ namespace cajeta {
             if (expr.empty()) return;
             string src = "{ public static boolean operator== (" + typeName
                 + " a, " + typeName + " b) { return " + expr + "; } }";
-            auto* input = new antlr4::ANTLRInputStream(src);
-            auto* lexer = new CajetaLexer(input);
-            auto* tokens = new antlr4::CommonTokenStream(lexer);
-            tokens->fill();
-            auto* parser = new CajetaParser(tokens);
-            auto* body = parser->classBody();
+            auto* body = cajeta::synth::parseClassBodyFragment(src);
             for (auto* cbd : body->classBodyDeclaration()) {
                 MemberDeclarationPtr mem;
                 try {
