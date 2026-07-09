@@ -138,14 +138,12 @@ TEST(StackTraceText, printStackTracePrintsMessageThenFrames) {
         << "message must precede frames; stderr:\n" << err;
 }
 
-// ExceptionReview 5.7, BLOCKED on 5.8. The native helper
-// (__cajeta_print_trace_one) already carries the "Caused by: " prefix, but the
-// Cajeta-side walk cannot ship: Exception.getCause() passes its borrowed `cause`
-// field to Optional's owning `#T` ctor, so a loop-scoped Optional drops and frees
-// the cause. A chain of depth >= 2 then reads freed memory (verified SIGSEGV).
-// Throwable.toJson() has the same latent defect; its only nested-cause test is
-// one level deep. Re-enable once 5.8 lands.
-TEST(StackTraceText, DISABLED_printStackTracePrintsCauseChain) {
+// ExceptionReview 5.7 / optional-borrow-ownership 5.1.2 — printStackTrace() walks
+// getCause(), emitting a "Caused by: " link per level. The native helper
+// (__cajeta_print_trace_one) always carried the prefix but had zero call sites.
+// The walk itself was blocked until Optional's `#T` ctor became mode-dependent:
+// before that, the loop-scoped Optional dropped and freed the borrowed cause.
+TEST(StackTraceText, printStackTracePrintsCauseChain) {
     auto proj = writeProjectClass(freshTempDir("cause"),
         "    public static void run() {\n"
         "        try {\n"

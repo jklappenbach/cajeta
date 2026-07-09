@@ -264,23 +264,37 @@ public class Throwable {
     }
 
     /**
-     * Print this throwable's message followed by its stack trace to stderr.
-     * Frames are omitted when no trace was captured — capture happens at the
-     * throw site, so a throwable constructed but never thrown carries none.
+     * Print this throwable's message and stack trace to stderr, then each link of
+     * the cause chain prefixed with `Caused by: `. Frames are omitted for a link
+     * with no captured trace — capture happens at the throw site, so a cause that
+     * was constructed but never thrown carries none.
      *
      * ```
      * outer failure
      *   at test.App.deep(App.cajeta:12)
+     * Caused by: root cause
      * ```
-     *
-     * The `Caused by: ` cause-chain walk is NOT emitted yet: `Exception.getCause()`
-     * hands a borrowed field to the owning `Optional(boolean, #T)` ctor, so the
-     * Optional's drop frees a cause the Exception still owns. Walking the chain in
-     * a loop therefore reads freed memory (ExceptionReview 5.8).
      *
      * @EntryPoint
      */
     public void printStackTrace() {
         printTraceOneNative(this, 2, 0);
+        Optional<Throwable> oc = this.getCause();
+        if (oc.isPresent()) {
+            Throwable c = oc.get();
+            boolean walking = true;
+            int32 depth = 0;
+            // Bounded: a user-built cause cycle must not spin forever.
+            while (walking && depth < 64) {
+                printTraceOneNative(c, 2, 1);
+                depth = depth + 1;
+                Optional<Throwable> nxt = c.getCause();
+                if (nxt.isPresent()) {
+                    c = nxt.get();
+                } else {
+                    walking = false;
+                }
+            }
+        }
     }
 }
