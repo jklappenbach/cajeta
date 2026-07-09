@@ -26,7 +26,9 @@ Initialize every project with this layout:
     copy* (maintained by the **implement** skill), where `[clone-id]` is
     `<hostname>-<slugified-absolute-path>`. Plans are shared across clones;
     attention is not. Completion status lives in the plan's checkboxes — there is
-    **no** separate completed-log.
+    **no** separate completed-log. **Plans carry no focus of their own** — there
+    are no per-plan `[name]-focus.md` files. Write only your own clone's file;
+    never read or edit a sibling clone's.
 
 ## What a spec is (a.k.a. SRD / SRS)
 A spec focuses on the **requirements and use cases** — the **why** and the **what**.
@@ -68,6 +70,12 @@ Interrupts push; completions pop; what surfaces is what you were doing. The stac
 records **departures from plan order only** — the plan's checkboxes and
 dependency ordering already say what's next, so an empty stack means "follow the
 active plan."
+
+**Plans carry no focus.** A plan's checkboxes own completion and its dependency
+ordering says what is next, so "where I was in plan X" is always derivable — it is
+that plan's first unchecked (`- [ ]`) or blocked (`- [~]`) item. Per-plan
+`[name]-focus.md` files were retired 2026-07-09; a second copy of that state only
+created a way for the two to disagree.
 
 The stack is **homed per working copy** under `agents/state/[clone-id]/focus.md`,
 where `[clone-id]` is `<hostname>-<slug>` and `<slug>` is the clone's absolute
