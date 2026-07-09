@@ -151,6 +151,10 @@ public final class Sha1 implements Hasher {
      * One-shot 20-byte digest of a String's UTF-8 bytes.
      */
     public static #int8[] hashString(String s) {
+        if (s.byteOffset() != (int64) 0) {
+            int8[] w = s.toBytes();
+            return Sha1.hash(w, (int64) s.byteLength);
+        }
         return Sha1.hash(s.bytes, (int64) s.byteLength);
     }
 
@@ -158,6 +162,10 @@ public final class Sha1 implements Hasher {
      * One-shot lowercase hex digest of a String's UTF-8 bytes.
      */
     public static #String hashStringHex(String s) {
+        if (s.byteOffset() != (int64) 0) {
+            int8[] w = s.toBytes();
+            return Sha1.hashHex(w, (int64) s.byteLength);
+        }
         return Sha1.hashHex(s.bytes, (int64) s.byteLength);
     }
 
@@ -215,6 +223,11 @@ public final class Sha1 implements Hasher {
     }
 
     public void writeString(String s) {
+        if (s.byteOffset() != (int64) 0) {
+            int8[] w = s.toBytes();
+            Sha1.updateNative(this.state, w, (int64) s.byteLength);
+            return;
+        }
         Sha1.updateNative(this.state, s.bytes, (int64) s.byteLength);
     }
 

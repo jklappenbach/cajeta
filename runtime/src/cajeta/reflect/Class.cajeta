@@ -186,7 +186,11 @@ public final class Class<T> {
      * @EntryPoint
      */
     public static Optional<Class<?>> forName(String name) {
-        Class<?> c = forNameNative(name.bytes);
+        // toBytes(), not raw `.bytes`: the native reads the array's count
+        // word, so a windowed view's root (longer count, offset window)
+        // would never match. The copy sizes the array to the exact window.
+        int8[] nb = name.toBytes();
+        Class<?> c = forNameNative(nb);
         if (c == null) {
             return stack Optional<Class<?>>(false, #null);
         }
@@ -222,7 +226,8 @@ public final class Class<T> {
      * @EntryPoint
      */
     public static Optional<T> heapInstance<T>(String name, Class<?> bound) {
-        Class<?> c = forNameNative(name.bytes);
+        int8[] nb = name.toBytes();
+        Class<?> c = forNameNative(nb);
         if (c == null) {
             return stack Optional<T>(false, #null);
         }

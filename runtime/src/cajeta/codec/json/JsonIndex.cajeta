@@ -155,12 +155,13 @@ public final class JsonIndex {
      */
     public static boolean keyEq(int8[] b, int64 keyPos, String name) {
         int8[] nb = name.bytes;
+        int64 no = name.byteOffset();
         int32 nlen = name.byteLength;
         int32 i = 0;
         while (i < nlen) {
             int64 bp = keyPos + 1 + (int64) i;
             int8 cb = b[bp];
-            int8 nbi = nb[i];
+            int8 nbi = nb[no + i];
             if (cb != nbi) { return false; }
             i = i + 1;
         }

@@ -788,6 +788,22 @@ public final class String {
     }
 
     /**
+     * Byte offset of this String's window within its root buffer — 0
+     * for owned/static/SSO strings, the window offset for mode-2 views.
+     * With `bytes` + `byteLength` this is the zero-copy window contract
+     * for consumers that pass the raw buffer to natives: when it is 0
+     * (and the callee takes an explicit length) the raw fast path is
+     * window-exact; otherwise materialize via `toBytes()`.
+     */
+    @Inline
+    public int64 byteOffset() {
+        if (this.mode == 2) {
+            return this.ssoCount;
+        }
+        return (int64) 0;
+    }
+
+    /**
      * The effective byte window as a fresh caller-owned array — the
      * view-safe replacement for reading `.bytes` raw (a windowed view's
      * `bytes` points at the ROOT buffer; the window offset would be

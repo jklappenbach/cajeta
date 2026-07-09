@@ -169,6 +169,10 @@ public final class XXHash3 implements Hasher {
      */
     @Inline
     public static int64 hashString(String s) {
+        if (s.byteOffset() != (int64) 0) {
+            int8[] w = s.toBytes();
+            return XXHash3.oneshot(w, (int64) s.byteLength, Hash.processSeed());
+        }
         return XXHash3.oneshot(s.bytes, (int64) s.byteLength, Hash.processSeed());
     }
 
@@ -181,6 +185,10 @@ public final class XXHash3 implements Hasher {
      */
     @Inline
     public static int64 hashStringSeeded(String s, int64 seedArg) {
+        if (s.byteOffset() != (int64) 0) {
+            int8[] w = s.toBytes();
+            return XXHash3.oneshot(w, (int64) s.byteLength, seedArg);
+        }
         return XXHash3.oneshot(s.bytes, (int64) s.byteLength, seedArg);
     }
 
@@ -327,6 +335,11 @@ public final class XXHash3 implements Hasher {
 
     /** Feed a `String`'s UTF-8 bytes into the running hash. */
     public void writeString(String s) {
+        if (s.byteOffset() != (int64) 0) {
+            int8[] w = s.toBytes();
+            XXHash3.updateNative(this.state, w, (int64) s.byteLength);
+            return;
+        }
         XXHash3.updateNative(this.state, s.bytes, (int64) s.byteLength);
     }
 

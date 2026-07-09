@@ -1113,8 +1113,7 @@ namespace cajeta {
         } else if (etcanon == "cajeta.lang.String") {
             writeOne = "cajeta.lang.String " + elemVar + " = value." +
                        fieldName + "[wi_" + fieldName + "]; "
-                       "w.writeString(" + elemVar + ".bytes, " +
-                       elemVar + ".byteLength);";
+                       "w.writeString(" + elemVar + ");";
         } else if (elementIsClass) {
             writeOne = etcanon + " " + elemVar + " = value." +
                        fieldName + "[wi_" + fieldName + "]; "
@@ -1182,7 +1181,7 @@ namespace cajeta {
             } else if (innerCanon == "cajeta.lang.String") {
                 innerWrite =
                     "cajeta.lang.String os = value." + fieldName + ".get();\n"
-                    "            w.writeString(os.bytes, os.byteLength);";
+                    "            w.writeString(os);";
             } else {
                 return "";
             }
@@ -1207,10 +1206,9 @@ namespace cajeta {
             } else if (tcanon == "float64") {
                 value << "w.writeNumber(value." << fieldName << ");\n";
             } else if (tcanon == "cajeta.lang.String") {
-                // Read String's bytes and byteLength fields directly; the
-                // writer copies bytes through with quote/escape handling.
-                value << "w.writeString(value." << fieldName
-                      << ".bytes, value." << fieldName << ".byteLength);\n";
+                // String overload: view-safe (a mode-2 field would make raw
+                // .bytes reads window-blind — 10.3.1 audit).
+                value << "w.writeString(value." << fieldName << ");\n";
             } else if (std::dynamic_pointer_cast<CajetaClass>(ty)) {
                 // Nested class field — recurse via toBytesObjectInto.
                 // Short name `Json` for same-package reasons as the read side.

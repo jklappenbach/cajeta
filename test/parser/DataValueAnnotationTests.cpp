@@ -14,6 +14,26 @@
 
 using cajeta_test::CajetaJit;
 
+namespace {
+// Synthesized toString now returns a REAL cajeta.lang.String (slices plan
+// 6.1.4 audit — __cajeta_string_wrap_cstr at the synthesizer tail), so read
+// the object layout instead of treating the pointer as a C string.
+struct DvStringLayout {
+    const void* vtable;
+    const void* bytes;
+    int32_t byteLength;
+    int32_t mode;
+    int32_t cachedCpLength;
+};
+std::string readToString(const void* raw) {
+    if (!raw) return "<null>";
+    const auto* s = static_cast<const DvStringLayout*>(raw);
+    if (!s->bytes || s->byteLength <= 0) return "";
+    const char* data = (const char*) s->bytes + sizeof(int64_t);
+    return std::string(data, (size_t) s->byteLength);
+}
+}  // namespace
+
 // @Data: getter works.
 TEST(DataValueAnnotationTests, dataEnablesGetter) {
     auto src =
@@ -68,8 +88,8 @@ TEST(DataValueAnnotationTests, dataEnablesToString) {
         "    }\n"
         "}\n";
     auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<const char* (*)()>("run");
-    EXPECT_STREQ(fn(), "P(n=5)");
+    auto fn = jit->lookup<const void* (*)()>("run");
+    EXPECT_EQ(readToString(fn()), "P(n=5)");
 }
 
 // @Data: @RequiredArgsConstructor — final fields only.
@@ -107,8 +127,8 @@ TEST(DataValueAnnotationTests, valueGivesGetterAllArgsCtorAndToString) {
         "    }\n"                              // exercises getter codegen
         "}\n";
     auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<const char* (*)()>("run");
-    EXPECT_STREQ(fn(), "Point(x=3,y=4)");
+    auto fn = jit->lookup<const void* (*)()>("run");
+    EXPECT_EQ(readToString(fn()), "Point(x=3,y=4)");
 }
 
 // @Value: no setter is generated even though @Setter would normally fire.

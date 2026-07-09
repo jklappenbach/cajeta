@@ -114,16 +114,17 @@ public final class DateTimeFormatter {
         // each literal byte is itself. Oversized; the String length is exact.
         int32 cap = n * 16 + 16;
         int8[] buf = heap int8[cap];
+        int64 po = this.pattern.byteOffset();
         int32 p = 0;
         int32 i = 0;
         while (i < n) {
-            int32 c = ((int32) this.pattern.bytes[i]) & 0xff;
+            int32 c = ((int32) this.pattern.bytes[po + i]) & 0xff;
             if (c == 37 && i + 1 < n) { // '%'
-                int32 code = ((int32) this.pattern.bytes[i + 1]) & 0xff;
+                int32 code = ((int32) this.pattern.bytes[po + i + 1]) & 0xff;
                 p = DateTimeFormatter.emit(buf, p, code, f);
                 i = i + 2;
             } else {
-                buf[p] = this.pattern.bytes[i];
+                buf[p] = this.pattern.bytes[po + i];
                 p = p + 1;
                 i = i + 1;
             }
@@ -233,6 +234,8 @@ public final class DateTimeFormatter {
             return Fmt.writeUint(buf, p, (int64) doy, 3);
         }
         if (code == 98 || code == 104) { // b / h short month
+            // month/dow names are internal literals (never windowed views),
+            // so the raw .bytes reads below are window-exact (10.3.1 audit).
             String mn = DateTimeFormatter.monthShort(f.month);
             return Fmt.writeBytes(buf, p, mn.bytes, mn.byteLength);
         }

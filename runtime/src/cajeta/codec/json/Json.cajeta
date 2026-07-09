@@ -154,6 +154,10 @@ public final class Json {
      * @EntryPoint
      */
     public static #JsonValue parse(String s) {
+        if (s.byteOffset() != (int64) 0) {
+            int8[] w = s.toBytes();
+            return Json.parse(w, (int64) s.byteLength);
+        }
         return Json.parse(s.bytes, (int64) s.byteLength);
     }
 
@@ -223,6 +227,10 @@ public final class Json {
      * @EntryPoint
      */
     public static T parse<T>(String s) {
+        if (s.byteOffset() != (int64) 0) {
+            int8[] w = s.toBytes();
+            return Json.parse<T>(w, (int64) s.byteLength);
+        }
         return Json.parse<T>(s.bytes, (int64) s.byteLength);
     }
 

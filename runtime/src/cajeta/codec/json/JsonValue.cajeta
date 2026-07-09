@@ -209,6 +209,12 @@ public final class JsonValue {
      * deactivates).
      */
     public JsonValue setString(String s) {
+        if (s.byteOffset() != (int64) 0) {
+            // A borrow of a toBytes() temp would dangle; transfer an
+            // owned window copy instead.
+            int8[] w = s.toBytes();
+            return this.setStringOwned(#w, s.byteLength);
+        }
         return this.setString(s.bytes, s.byteLength);
     }
 

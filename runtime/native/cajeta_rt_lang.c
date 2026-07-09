@@ -167,6 +167,37 @@ char* __cajeta_str_fromChar(int8_t c) {
     return out;
 }
 
+// Wrap a malloc'd C string into a fresh owned cajeta.lang.String whose
+// vtable the caller supplies (the synthesized-@ToString tail). Frees the
+// input: the legacy __cajeta_str_concat chain hands over its final buffer,
+// and downstream code receives a REAL String object — so String methods,
+// println, and field stores all work on a toString() result.
+void* __cajeta_string_wrap_cstr(char* cstr, void* vtable) {
+    size_t len = cstr ? strlen(cstr) : 0;
+    cajeta_string_layout* out =
+        (cajeta_string_layout*) __cajeta_alloc(sizeof(cajeta_string_layout));
+    out->vtable = vtable;
+    out->cachedCpLength = -1;
+    out->ssoCount = 0;
+    memset(out->ssoData, 0, sizeof out->ssoData);
+    if (len == 0) {
+        out->bytes = NULL;
+        out->byteLength = 0;
+        out->mode = 0;
+        if (cstr) free(cstr);
+        return out;
+    }
+    void* buf = __cajeta_new_array_header(8, 1, (uint64_t) len + 1);
+    *((int64_t*) buf) = (int64_t) len;
+    memcpy((char*) buf + 8, cstr, len);
+    ((char*) buf)[8 + len] = 0;
+    out->bytes = buf;
+    out->byteLength = (int32_t) len;
+    out->mode = 0;
+    free(cstr);
+    return out;
+}
+
 char* __cajeta_str_concat(const char* a, const char* b) {
     if (!a) a = "null";
     if (!b) b = "null";

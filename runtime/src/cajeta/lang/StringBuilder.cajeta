@@ -70,14 +70,15 @@ public final class StringBuilder {
         if (this.len + add > this.cap) {
             this.grow(this.len + add);
         }
+        int64 o = s.byteOffset();
         if (this.spilled) {
-            StringBuilder.blit(this.large, (int64) this.len, s.bytes, 0, (int64) add);
+            StringBuilder.blit(this.large, (int64) this.len, s.bytes, o, (int64) add);
         } else {
             int8[] src = s.bytes;
             int32 base = this.len;
             int32 i = 0;
             while (i < add) {
-                this.small[base + i] = src[i];
+                this.small[base + i] = src[o + i];
                 i = i + 1;
             }
         }

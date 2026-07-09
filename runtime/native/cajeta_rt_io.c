@@ -199,8 +199,11 @@ void __cajeta_print_trace_one(void* throwable, int32_t fd, int32_t caused_by) {
         if (strObj && (uintptr_t) strObj >= 4096) {
             void* bytesArr = ((void**) strObj)[1];
             int32_t blen = *(int32_t*) ((char*) strObj + 16);
+            /* mode-2 windowed view: bytes = ROOT, offset rides ssoCount@32 */
+            int32_t smode = *(int32_t*) ((char*) strObj + 20);
+            int64_t soff = (smode == 2) ? *(int64_t*) ((char*) strObj + 32) : 0;
             if (bytesArr && (uintptr_t) bytesArr >= 4096 && blen > 0) {
-                mbytes = (const char*) bytesArr + 8;
+                mbytes = (const char*) bytesArr + 8 + soff;
                 mlen = blen;
             }
         }
@@ -252,8 +255,10 @@ static void __cajeta_emit_uncaught(void* value, int is_unrec) {
         if (strObj && (uintptr_t) strObj >= 4096) {
             void* bytesArr = ((void**) strObj)[1];           // String.bytes (int8[])
             int32_t blen = *(int32_t*) ((char*) strObj + 16);  // String.byteLength
+            int32_t smode = *(int32_t*) ((char*) strObj + 20);
+            int64_t soff = (smode == 2) ? *(int64_t*) ((char*) strObj + 32) : 0;
             if (bytesArr && (uintptr_t) bytesArr >= 4096 && blen > 0) {
-                mbytes = (const char*) bytesArr + 8;         // skip the i64 count header
+                mbytes = (const char*) bytesArr + 8 + soff;  // skip count header + window
                 mlen = blen;
             }
         }
@@ -597,8 +602,10 @@ static int cajeta_json_escape(void* strObj, char* out, int outcap) {
     if (strObj && (uintptr_t) strObj >= 4096) {
         void* bytesArr = ((void**) strObj)[1];
         int32_t blen = *(int32_t*) ((char*) strObj + 16);
+        int32_t smode = *(int32_t*) ((char*) strObj + 20);
+        int64_t soff = (smode == 2) ? *(int64_t*) ((char*) strObj + 32) : 0;
         if (bytesArr && (uintptr_t) bytesArr >= 4096 && blen > 0) {
-            src = (const char*) bytesArr + 8;
+            src = (const char*) bytesArr + 8 + soff;
             n = blen;
         }
     }

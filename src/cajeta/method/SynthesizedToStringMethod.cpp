@@ -231,6 +231,7 @@ namespace cajeta {
         llvm::Function* strConcat  = getOrDeclareTSFn(module, "__cajeta_str_concat", concatTy);
         llvm::Function* vtLookup   = getOrDeclareTSFn(module, "__cajeta_vtable_lookup", lookupTy);
         llvm::Function* jsonQuoteBuf = getOrDeclareTSFn(module, "__cajeta_json_quote_buf", jsonQuoteBufTy);
+        llvm::Function* strCstr    = getOrDeclareTSFn(module, "__cajeta_string_cstr", toStringCallTy);
 
         llvm::Value* thisPtr = llvmFunction->getArg(0);
 
@@ -295,14 +296,16 @@ namespace cajeta {
                 llvm::Value* lbl = emitLiteralPtr(b, lmod, superLabel, "supLbl");
                 acc = b.CreateCall(strConcat, {acc, lbl}, "ts.acc");
 
-                // Direct call: parent's toString(this) — returns the
-                // same char*-shape every other synthesizer arm produces,
-                // so it concats straight into `acc`. JSON nesting needs
-                // the parent to ALSO be @ToString(format=TO_STRING_JSON)
-                // for the result to remain valid JSON — same caveat as
-                // class-ref recursion.
+                // Direct call: parent's toString(this) returns a real
+                // cajeta.lang.String object (synthesized ones wrap at the
+                // tail; user ones always did) — extract the C string via
+                // the mode-aware cstr helper before concat. JSON nesting
+                // needs the parent to ALSO be @ToString(format=
+                // TO_STRING_JSON) for the result to remain valid JSON —
+                // same caveat as class-ref recursion.
                 llvm::Value* superStr = b.CreateCall(
                     sFn, {thisPtr}, "ts.supcall");
+                superStr = b.CreateCall(strCstr, {superStr}, "ts.supcstr");
                 acc = b.CreateCall(strConcat, {acc, superStr}, "ts.acc");
                 superEmitted = true;
             }
@@ -397,6 +400,10 @@ namespace cajeta {
                     }, std::string("ts.fn.") + prop->getName());
                     callStr = b.CreateCall(toStringCallTy, fnPtr, {objPtr},
                         std::string("ts.cr.") + prop->getName());
+                    // toString() returns a real String object — extract
+                    // the C string for the concat chain.
+                    callStr = b.CreateCall(strCstr, {callStr},
+                        std::string("ts.crc.") + prop->getName());
                 }
                 b.CreateBr(mergeBB);
 
@@ -526,14 +533,19 @@ namespace cajeta {
                     llvm::Value* nullLit = emitLiteralPtr(b, lmod, "null", "snull");
                     b.CreateBr(mergeBB);
 
+                    // __cajeta_str_concat consumes C strings — extract the
+                    // window via the mode-aware cstr helper (a bare String
+                    // OBJECT pointer here read the vtable bytes as text).
                     b.SetInsertPoint(okBB);
+                    llvm::Value* okCstr = b.CreateCall(strCstr, {sPtr},
+                        std::string("ts.scstr.") + prop->getName());
                     b.CreateBr(mergeBB);
 
                     b.SetInsertPoint(mergeBB);
                     llvm::PHINode* phi = b.CreatePHI(ptrTy, 2,
                         std::string("ts.sphi.") + prop->getName());
                     phi->addIncoming(nullLit, nullBB);
-                    phi->addIncoming(sPtr, okBB);
+                    phi->addIncoming(okCstr, okBB);
                     fieldStr = phi;
                 }
             } else {
@@ -592,6 +604,23 @@ namespace cajeta {
         llvm::Value* closeLit = emitLiteralPtr(
             b, lmod, isJson ? std::string("}") : std::string(")"), "close");
         acc = b.CreateCall(strConcat, {acc, closeLit}, "ts.acc");
+
+        // The concat chain built a malloc'd C string; callers expect a real
+        // cajeta.lang.String (String methods / println on toString() results
+        // read the object layout). Wrap-and-free at the boundary.
+        auto* wrapTy = llvm::FunctionType::get(ptrTy, {ptrTy, ptrTy}, false);
+        llvm::Function* strWrap = getOrDeclareTSFn(
+            module, "__cajeta_string_wrap_cstr", wrapTy);
+        llvm::Value* vtableRef = llvm::ConstantPointerNull::get(
+            llvm::cast<llvm::PointerType>(ptrTy));
+        if (auto stringClass = dynamic_pointer_cast<CajetaClass>(
+                CajetaType::of("String"))) {
+            if (auto* vt = stringClass->getVirtualTableGlobal()) {
+                vtableRef = CajetaModule::ensureGlobalInModule(
+                    module->getLlvmModule(), vt);
+            }
+        }
+        acc = b.CreateCall(strWrap, {acc, vtableRef}, "ts.wrapstr");
         b.CreateRet(acc);
     }
 

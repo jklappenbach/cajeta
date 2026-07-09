@@ -6188,9 +6188,25 @@ namespace cajeta {
                                 sStructTy, sPtr, 1, "fw.str.bytes_slot");
                             llvm::Value* arr = builder->CreateLoad(
                                 ptrTy, bytesSlot, "fw.str.arr");
+                            // A mode-2 windowed view keeps bytes = ROOT with
+                            // the window offset in ssoCount — add it, or a
+                            // substring writes the root's prefix bytes.
+                            llvm::Value* modeV = builder->CreateLoad(i32Ty,
+                                builder->CreateStructGEP(sStructTy, sPtr, 3,
+                                    "fw.str.mode_slot"), "fw.str.mode");
+                            llvm::Value* ssoV = builder->CreateLoad(i64Ty,
+                                builder->CreateStructGEP(sStructTy, sPtr, 5,
+                                    "fw.str.ssoCount_slot"), "fw.str.sso");
+                            llvm::Value* offV = builder->CreateSelect(
+                                builder->CreateICmpEQ(modeV,
+                                    llvm::ConstantInt::get(i32Ty, 2)),
+                                ssoV, llvm::ConstantInt::get(i64Ty, 0),
+                                "fw.str.off");
                             llvm::Value* dataPtr = builder->CreateInBoundsGEP(
                                 i8Ty, arr,
-                                llvm::ConstantInt::get(i64Ty, 8),
+                                builder->CreateAdd(
+                                    llvm::ConstantInt::get(i64Ty, 8), offV,
+                                    "fw.str.dataoff"),
                                 "fw.str.data");
                             llvm::Value* byteLenSlot = builder->CreateStructGEP(
                                 sStructTy, sPtr, 2, "fw.str.byteLength_slot");
