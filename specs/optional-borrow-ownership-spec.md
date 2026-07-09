@@ -54,10 +54,37 @@ Verified on `main` @ `5f527bea`, via `cajeta jit-run`:
 | 1 | ok | ok |
 | **2** | **SIGSEGV** | **SIGSEGV** |
 
-The crash lands on the second loop iteration, immediately after the first
-`Optional<Throwable> nxt = c.getCause();` goes out of scope. The identical straight-line
-walk with method-scope Optionals completes cleanly at depth 3 — that difference is the
-proof it is the Optional's drop and not the chain itself.
+### 1.4.1 Isolation
+The chain depth is incidental. Four probes separate the causes:
+
+- **A — the Optional's drop, alone.** A loop that binds `Optional<Throwable> tmp =
+  e.getCause();` and reads `tmp.get().getMessage()`, with **no** `Throwable` local and
+  **no** reassignment, over a **1**-link chain: prints the message, then **SIGSEGVs on the
+  second iteration**. The first iteration's scoped Optional dropped and freed `e`'s cause.
+- **B — local reassignment, alone.** `Throwable c = o1.get(); c = o2.get();` with
+  method-scope Optionals: **ok**. Reassigning a class local is not the culprit.
+- **D — no exceptions involved.** `stack Optional<Throwable>(true, ex)` over a borrowed
+  local `ex` does not even compile: **`CAJETA_ERROR_TRANSFER_REQUIRED`**. User code cannot
+  express a borrowing Optional at all.
+- **E — the owned spelling already works.** `Optional<#Throwable>` parses, runs, and
+  returns its payload today.
+
+So the real statement of the bug is **not** "deep cause chains crash". It is:
+
+> `Optional`'s `#T` constructor parameter is **not mode-dependent**. In plain
+> (`Optional<T>`, borrow-mode) instantiations it still demands a transfer *and* still
+> drops the payload. A **field read** (`this.cause`) satisfies the transfer checker
+> without the enclosing object relinquishing the field, so the Optional silently becomes
+> a second owner. Any **present** borrowing Optional dropped in a scope narrower than the
+> field's owner frees that field.
+
+`toJson()` merely trips it at depth 2, because that is the first depth at which its
+loop-scoped `nxt` is *present* when it drops. The straight-line walk with method-scope
+Optionals completes cleanly at depth 3 — their drops land after last use.
+
+Note the asymmetry D exposes: the checker is strict enough to reject the borrow at a
+user call site, and permissive enough to accept it from a field. Both halves are wrong
+for a borrow-mode instantiation.
 
 ### 1.5 Severity
 `Throwable.toJson()` is **shipped and reachable from user code** (`@EntryPoint`). It is
@@ -85,6 +112,13 @@ a view of a field without claiming it.
   borrowed payload, and the walk must be safe to arbitrary depth.
 - **2.2.4** As a caller, when I take an owning `Optional<T>` and let it drop without
   calling `get()`, then the payload is released exactly once (no leak, no double free).
+- **2.2.5** As a caller, when I construct a plain `Optional<T>` from a **borrowed** local
+  (`stack Optional<T>(true, x)`, no `#`), then it compiles. Today this is rejected with
+  `CAJETA_ERROR_TRANSFER_REQUIRED` (spec 1.4.1 probe D), which is why no user code can
+  express the borrowing Optional that `getCause()` needs.
+- **2.2.6** As a caller, when I construct an owning `Optional<#T>`, then the compiler
+  still demands a `#`-transfer and the Optional still drops at scope exit — i.e. the
+  fix for 2.2.5 must not relax the owned mode.
 
 ---
 
