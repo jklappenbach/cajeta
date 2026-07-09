@@ -964,7 +964,7 @@ TEST(RecordTests, reflectionEnumeratesFieldNamesAndTypes) {
 // CAJETA_ERROR_CLASS_LITERAL. Template-GENERIC gap, not record-specific:
 // a plain class type argument fails identically (records ARE registered
 // "identically to classes" — 7.2.1 holds). Pending scoping.
-TEST(RecordTests, DISABLED_recordTypeArgumentReflectsInsideInstantiation) {
+TEST(RecordTests, recordTypeArgumentReflectsInsideInstantiation) {
     auto src =
         "package test;\n"
         "public record RfTick {\n"
