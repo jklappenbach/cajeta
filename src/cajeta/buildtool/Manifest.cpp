@@ -317,6 +317,12 @@ namespace cajeta::buildtool {
         if (const auto* cf = build->getObject("custom-flavors")) {
             out.customFlavorsRaw = *cf;
         }
+        if (const auto* cache = build->getObject("cache")) {
+            if (auto v = cache->getInteger("max-bytes"); v && *v > 0)
+                out.cacheMaxBytes = static_cast<uint64_t>(*v);
+            if (auto v = cache->getInteger("max-age-seconds"); v && *v > 0)
+                out.cacheMaxAgeSeconds = static_cast<uint64_t>(*v);
+        }
         if (const auto* binaries = build->getObject("binaries")) {
             for (const auto& kv : *binaries) {
                 BinarySpec b;

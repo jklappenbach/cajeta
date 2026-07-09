@@ -311,6 +311,11 @@ int main(int argc, const char* argv[]) {
     // for --emit=exe (below) only applies when the user didn't pin a mode.
     bool linkModeExplicit = false;
     bool treeShakeExplicit = false;
+    // --print-cache-discriminator: print the incremental-compilation cache
+    // discriminator for exactly this flag set and exit (no compile). The
+    // build tool probes this before authoring a cache manifest so flag
+    // resolution stays single-sourced here.
+    bool printCacheDiscriminator = false;
 
     auto parseModeName = [&](const std::string& name) -> bool {
         if (name == "debug")            { compiler.setMode(CompilerMode::Debug); return true; }
@@ -449,6 +454,8 @@ int main(int argc, const char* argv[]) {
             // designation + cache slots (cache-manifest-v1). See
             // docs/specification/buildtool/IncrementalCompilation.md.
             compiler.setCacheManifestPath(value);
+        } else if (arg == "--print-cache-discriminator") {
+            printCacheDiscriminator = true;
         } else if (match(arg, "skill-root", value)) {
             // Where the package's hand-authored skills/ dir lives (skill-
             // discovery D.3). The build tool passes the PROJECT root here so
@@ -626,6 +633,16 @@ int main(int argc, const char* argv[]) {
         cajeta::DiagnosticEngine::setActive(nullptr);
         engine.emit(jsonDiag);
         return engine.hasErrors() ? 1 : 0;
+    }
+
+    // Manifest builds force tree-shake off + link-mode full
+    // (Compiler::setupCacheManifest); mirror that so the probed value keys
+    // the same cache tree the actual manifest build will use.
+    if (printCacheDiscriminator) {
+        compiler.getMutableFlags().treeShake = TreeShake::Off;
+        compiler.getMutableFlags().linkMode = LinkMode::Full;
+        std::cout << compiler.computeOwnCacheDiscriminator() << "\n";
+        return 0;
     }
 
     if (positional.size() < 3) {

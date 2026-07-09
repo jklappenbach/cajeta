@@ -63,6 +63,11 @@ namespace cajeta::buildtool {
         std::map<std::string, BinarySpec> binaries;     // named-binary registry
         // Phase 5b: custom-flavors map; left raw for now.
         llvm::json::Object customFlavorsRaw;
+        // settings.build.cache — IR-cache eviction policy applied after a
+        // successful incremental build. Zero = that pass is skipped.
+        //   { "max-bytes": <int>, "max-age-seconds": <int> }
+        uint64_t cacheMaxBytes = 0;
+        uint64_t cacheMaxAgeSeconds = 0;
     };
 
     // settings.native-libraries entry — a native C/C++ library a Cajeta

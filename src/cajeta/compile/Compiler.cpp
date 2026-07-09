@@ -5,6 +5,7 @@
 #include "Compiler.h"
 #include "CajetaArchive.h"
 #include "cajeta/buildtool/IrCache.h"
+#include "cajeta/buildtool/Lockfile.h"   // sha256Hex
 #include "cajeta/buildtool/skill/SkillPackager.h"
 #include "ObligationReplay.h"
 #include "CajetaModule.h"
@@ -1187,8 +1188,21 @@ namespace cajeta {
             : emitMode == EmitMode::Obj ? "obj"
             : emitMode == EmitMode::Cja ? "cja"
             : emitMode == EmitMode::Uber ? "uber" : "exe";
-        return buildtool::computeCacheDiscriminator(
-            CAJETA_VERSION, cacheFlagPairs(flags, emitName, targetTriple));
+        auto pairs = cacheFlagPairs(flags, emitName, targetTriple);
+        // @Profile gating changes which components codegen at all.
+        pairs.emplace_back("profile", CajetaModule::getActiveProfile());
+        // A changed classpath archive changes user-module IR (signatures,
+        // inlined dep declarations) without touching any source digest —
+        // fold each archive's CONTENT into the key so a dep bump re-keys
+        // the whole cache tree (coarse, sound).
+        for (const auto& cp : classpath) {
+            std::ifstream in(cp, std::ios::binary);
+            std::stringstream ss;
+            ss << in.rdbuf();
+            pairs.emplace_back("classpath:" + cp,
+                               buildtool::sha256Hex(ss.str()));
+        }
+        return buildtool::computeCacheDiscriminator(CAJETA_VERSION, pairs);
     }
 
     bool Compiler::setupCacheManifest() {
@@ -1648,17 +1662,17 @@ namespace cajeta {
             }
         }
 
-        // Archive emit bundles every parsed module's bitcode into one
-        // `.cja` file. The exploded per-module loop below is skipped —
-        // a single artifact is the whole point.
-        if (emitMode == EmitMode::Cja || emitMode == EmitMode::Uber) {
-            emitArchive(archiveRootPath, emitMode == EmitMode::Uber);
-        } else {
+        // Incremental: settle every module's IR before the emit branch.
+        // Clean modules swap in their cached .bc wholesale (the parse-module
+        // holds only declarations; codegen never ran, so a load failure is
+        // unrecoverable — fail loud, the caller retries manifest-less).
+        // Dirty modules snapshot post-codegen, pre-target-lowering IR +
+        // obligations into their slots (emitForModule's opt/lowering may
+        // mutate the module, and the clean path re-enters emit at exactly
+        // this point). Hoisted above the branch so archive emit (cja/uber)
+        // serializes the swapped modules too.
+        if (cacheManifest) {
             for (auto& module: modules) {
-                // Incremental: a clean module's IR is the cached .bc, swapped
-                // in wholesale (the parse-module holds only declarations).
-                // Codegen never ran for it, so a load failure here is
-                // unrecoverable — fail loud; the caller retries manifest-less.
                 if (module->isIncrementalClean()) {
                     if (!module->loadBitcodeFromSlot()) {
                         throw std::runtime_error(
@@ -1666,28 +1680,37 @@ namespace cajeta {
                             + module->getCacheBcSlot()
                             + " — rebuild without --cache-manifest");
                     }
-                    emitForModule(module);
-                    continue;   // keep its sidecar + slots as recorded
+                } else {
+                    if (!module->writeBitcodeToSlot()) {
+                        cerr << "cajeta: [incremental] failed writing .bc"
+                                " slot " << module->getCacheBcSlot() << "\n";
+                    }
+                    if (!module->writeObligationsToSlot()) {
+                        cerr << "cajeta: [incremental] failed writing"
+                                " obligations slot "
+                             << module->getCacheObligationsSlot() << "\n";
+                    }
                 }
-                // Dirty module under a manifest: snapshot post-codegen,
-                // pre-target-lowering IR into the .bc slot (emitForModule's
-                // opt/lowering may mutate the module, and the clean path
-                // re-enters emitForModule at exactly this point).
-                if (cacheManifest && !module->writeBitcodeToSlot()) {
-                    cerr << "cajeta: [incremental] failed writing .bc slot "
-                         << module->getCacheBcSlot() << "\n";
-                }
+            }
+        }
+
+        // Archive emit bundles every parsed module's bitcode into one
+        // `.cja` file. The exploded per-module loop below is skipped —
+        // a single artifact is the whole point.
+        if (emitMode == EmitMode::Cja || emitMode == EmitMode::Uber) {
+            emitArchive(archiveRootPath, emitMode == EmitMode::Uber);
+        } else {
+            for (auto& module: modules) {
                 // Runtime is linked once into the stdlib module (see
                 // parseStdlibInto); user modules carry only extern decls
                 // for runtime helpers, resolved by the JIT/AOT link step.
                 emitForModule(module);
                 // Incremental compilation (Phase 2): emit the per-module
-                // instantiation-obligation sidecar alongside its IR.
-                module->writeObligationsSidecar();
-                if (cacheManifest && !module->writeObligationsToSlot()) {
-                    cerr << "cajeta: [incremental] failed writing obligations"
-                            " slot " << module->getCacheObligationsSlot()
-                         << "\n";
+                // instantiation-obligation sidecar alongside its IR. A clean
+                // module keeps its recorded sidecar (its set was never
+                // re-derived this build).
+                if (!module->isIncrementalClean()) {
+                    module->writeObligationsSidecar();
                 }
             }
             // Classpath deps for binary emit: emit each (now body-generated)

@@ -208,10 +208,6 @@ namespace cajeta {
         // a discriminator mismatch just warns and drops the manifest.
         bool setupCacheManifest();
 
-        // The compiler's own cache discriminator for the current flag set
-        // (CAJETA_VERSION + cacheFlagPairs). Valid after flags are final.
-        string computeOwnCacheDiscriminator() const;
-
         // --classpath archive paths. Set via CLI (one or more
         // --classpath=a.cja,b.cja args; comma-separates and repeats both
         // accumulate). Consumed twice:
@@ -508,6 +504,14 @@ namespace cajeta {
         void setPruneUber(bool v) { pruneUber = v; }
         void setSkillRootOverride(string s) { skillRootOverride = std::move(s); }
         void setCacheManifestPath(string p) { cacheManifestPath = std::move(p); }
+
+        // The compiler's cache discriminator for the current configuration:
+        // CAJETA_VERSION + cacheFlagPairs + active profile + a content hash
+        // per classpath archive (a changed dep must re-key the cache — source
+        // digests don't see dep edits). Valid once flags/emit/target/
+        // classpath/profile are final; `--print-cache-discriminator` exposes
+        // it so the build tool never re-derives flag resolution.
+        string computeOwnCacheDiscriminator() const;
         bool getPruneUber() const { return pruneUber; }
 
         const string& getOutputPath() const { return outputPath; }
