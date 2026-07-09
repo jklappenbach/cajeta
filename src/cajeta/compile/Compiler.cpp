@@ -4,7 +4,9 @@
 
 #include "Compiler.h"
 #include "CajetaArchive.h"
+#include "cajeta/buildtool/IrCache.h"
 #include "cajeta/buildtool/skill/SkillPackager.h"
+#include "ObligationReplay.h"
 #include "CajetaModule.h"
 #include "NativeLink.h"
 #include "CajetaLlvmVisitor.h"
@@ -1179,6 +1181,49 @@ namespace cajeta {
         CajetaModule::buildPendingPrototypes();
     }
 
+    string Compiler::computeOwnCacheDiscriminator() const {
+        const char* emitName =
+            emitMode == EmitMode::IR ? "ir"
+            : emitMode == EmitMode::Obj ? "obj"
+            : emitMode == EmitMode::Cja ? "cja"
+            : emitMode == EmitMode::Uber ? "uber" : "exe";
+        return buildtool::computeCacheDiscriminator(
+            CAJETA_VERSION, cacheFlagPairs(flags, emitName, targetTriple));
+    }
+
+    bool Compiler::setupCacheManifest() {
+        cacheManifest.reset();
+        if (cacheManifestPath.empty()) return true;
+
+        auto loaded = CacheManifest::load(cacheManifestPath);
+        if (!loaded) {
+            // Malformed manifest = the caller's contract is broken; silently
+            // proceeding would produce an artifact the caller mis-keys.
+            throw std::runtime_error(llvm::toString(loaded.takeError()));
+        }
+
+        // v1 interaction guards (plan Phase 3): tree-shake RTA and the lean
+        // keep-set both derive from LIVE codegen, which clean modules don't
+        // produce — a skipped module's stdlib references would be pruned and
+        // its reflection usage missed. Forced values feed the discriminator,
+        // so manifest builds key their own consistent cache tree.
+        flags.treeShake = TreeShake::Off;
+        flags.linkMode = LinkMode::Full;
+
+        string own = computeOwnCacheDiscriminator();
+        cout << "[incremental] discriminator " << own << "\n";
+
+        if (!loaded->populateMode() && loaded->discriminator != own) {
+            cerr << "cajeta: [incremental] cache-manifest discriminator "
+                    "mismatch (manifest " << loaded->discriminator
+                 << " != compiler " << own
+                 << ") — ignoring cache, full rebuild\n";
+            return true;   // manifest dropped; plain full build
+        }
+        cacheManifest = std::move(*loaded);
+        return true;
+    }
+
     void Compiler::compile(string entryMethod, string sourceRootPath, string archiveRootPath) {
         // Stash on the instance so the post-Phase-2 emitCMainShim call can
         // see what the user passed without threading it through Phase 1/2.
@@ -1189,6 +1234,11 @@ namespace cajeta {
         // cache), so a flag left set by a prior reflection-using build would
         // wrongly force keep-all here. Repopulated during the codegen loop.
         CajetaModule::resetReflectionKeep();
+
+        // Incremental compilation: load + gate the cache manifest BEFORE any
+        // module (incl. stdlib) is created, so the v1 flag guards it forces
+        // are what every module's codegen sees. Throws on a malformed file.
+        setupCacheManifest();
 
         if (sourceRootPath[sourceRootPath.size() - 1] != '/') {
             sourceRootPath.append("/");
@@ -1247,6 +1297,31 @@ namespace cajeta {
             cout << "\n";
         }
 
+        // Incremental compilation: bind manifest entries to their parsed
+        // modules. Clean designation is honored only when both cache slots
+        // actually exist (eviction between manifest authoring and now
+        // degrades that source to dirty — never a build failure).
+        if (cacheManifest) {
+            for (auto& module : modules) {
+                const string& sp = module->getSourcePath();
+                string rel = sp.rfind(sourceRootPath, 0) == 0
+                    ? sp.substr(sourceRootPath.size()) : sp;
+                const CacheManifestEntry* entry = cacheManifest->find(rel);
+                if (!entry) continue;
+                module->setCacheSlots(entry->bcPath, entry->obligationsPath);
+                if (!entry->clean) continue;
+                if (!std::filesystem::exists(entry->bcPath)
+                    || !std::filesystem::exists(entry->obligationsPath)) {
+                    cerr << "cajeta: [incremental] cache slot missing for "
+                         << rel << " — recompiling\n";
+                    continue;
+                }
+                // The `skip` line prints after obligation replay — a failed
+                // replay degrades the module back to dirty.
+                module->setIncrementalClean(true);
+            }
+        }
+
 //        Method* method = Method::getArchive()[entryMethod];
 //        if (method == nullptr) {
 //            return;
@@ -1299,6 +1374,39 @@ namespace cajeta {
         // reflected type's #ClassObject regardless of the static T.
         CajetaClass::ensureClassWildcardInstantiated();
 
+        // Incremental: replay clean modules' recorded obligations so this
+        // build (re)contains every instantiation their cached .bc references
+        // — stdlib is re-primed fresh each compile, so a skipped module's
+        // template uses would otherwise never be instantiated. Runs BEFORE
+        // the codegen loop (bodies then generate normally); outside any
+        // codegen frame, so replay itself records no new obligations. Any
+        // failure degrades that module to dirty — sound, just slower.
+        if (cacheManifest) {
+            for (auto& module : modules) {
+                if (!module->isIncrementalClean()) continue;
+                std::ifstream obligations(module->getCacheObligationsSlot());
+                std::string line;
+                while (module->isIncrementalClean()
+                       && std::getline(obligations, line)) {
+                    std::string err;
+                    if (!replayObligation(line, err)) {
+                        cerr << "cajeta: [incremental] obligation replay"
+                                " failed for " << module->getSourcePath()
+                             << ": " << err << " — recompiling\n";
+                        module->setIncrementalClean(false);
+                    }
+                }
+            }
+            for (auto& module : modules) {
+                if (!module->isIncrementalClean()) continue;
+                const string& sp = module->getSourcePath();
+                cout << "[incremental] skip "
+                     << (sp.rfind(sourceRootPath, 0) == 0
+                         ? sp.substr(sourceRootPath.size()) : sp)
+                     << "\n";
+            }
+        }
+
         // Phase 1 (signatures) + Phase 2 (bodies), looped until quiescent.
         // A user method body can trigger a stdlib template instantiation
         // mid-codegen (e.g. `xs.stream()` → ArrayStream<int32>); the new
@@ -1342,6 +1450,10 @@ namespace cajeta {
                 }
             }
             for (auto& module: codegenModules) {
+                // Incremental: clean modules keep Phase-1 prototypes (other
+                // modules resolve calls against them) but skip Phase-2 bodies
+                // — their IR arrives wholesale from the cached .bc at emit.
+                if (module->isIncrementalClean()) continue;
                 for (auto& method: module->getAllMethods()) {
                     method->generateCode();
                 }
@@ -1468,6 +1580,12 @@ namespace cajeta {
         // without a decl are a no-op. Runs once, before clinit/emit.
         for (auto& [key, type] : CajetaType::getCanonicalMap()) {
             if (auto klass = std::dynamic_pointer_cast<CajetaClass>(type)) {
+                // Incremental: a clean module's cached .bc already carries its
+                // reflect bodies + finalized #ClassObjects; re-emitting here
+                // would mutate the parse-module that the emit-time swap
+                // discards (at best) or double-define (at worst).
+                if (auto mod = klass->getModule();
+                    mod && mod->isIncrementalClean()) continue;
                 klass->emitReflectInvokeBody();
                 klass->emitReflectNewBody();
                 // REFL-8/10: patch + register #ClassObjects deferred at populate
@@ -1485,6 +1603,7 @@ namespace cajeta {
         // with llvm.global_ctors so the JIT (and AOT) module-load
         // step executes it before any user code.
         for (auto& module: modules) {
+            if (module->isIncrementalClean()) continue;  // clinits ride the cached .bc
             for (auto& [name, klass] : module->getStructures()) {
                 if (klass) klass->generateStaticInitializers();
             }
@@ -1536,6 +1655,28 @@ namespace cajeta {
             emitArchive(archiveRootPath, emitMode == EmitMode::Uber);
         } else {
             for (auto& module: modules) {
+                // Incremental: a clean module's IR is the cached .bc, swapped
+                // in wholesale (the parse-module holds only declarations).
+                // Codegen never ran for it, so a load failure here is
+                // unrecoverable — fail loud; the caller retries manifest-less.
+                if (module->isIncrementalClean()) {
+                    if (!module->loadBitcodeFromSlot()) {
+                        throw std::runtime_error(
+                            "[incremental] unusable cached bitcode "
+                            + module->getCacheBcSlot()
+                            + " — rebuild without --cache-manifest");
+                    }
+                    emitForModule(module);
+                    continue;   // keep its sidecar + slots as recorded
+                }
+                // Dirty module under a manifest: snapshot post-codegen,
+                // pre-target-lowering IR into the .bc slot (emitForModule's
+                // opt/lowering may mutate the module, and the clean path
+                // re-enters emitForModule at exactly this point).
+                if (cacheManifest && !module->writeBitcodeToSlot()) {
+                    cerr << "cajeta: [incremental] failed writing .bc slot "
+                         << module->getCacheBcSlot() << "\n";
+                }
                 // Runtime is linked once into the stdlib module (see
                 // parseStdlibInto); user modules carry only extern decls
                 // for runtime helpers, resolved by the JIT/AOT link step.
@@ -1543,6 +1684,11 @@ namespace cajeta {
                 // Incremental compilation (Phase 2): emit the per-module
                 // instantiation-obligation sidecar alongside its IR.
                 module->writeObligationsSidecar();
+                if (cacheManifest && !module->writeObligationsToSlot()) {
+                    cerr << "cajeta: [incremental] failed writing obligations"
+                            " slot " << module->getCacheObligationsSlot()
+                         << "\n";
+                }
             }
             // Classpath deps for binary emit: emit each (now body-generated)
             // external module's object so its symbols are defined at link. The
@@ -2177,6 +2323,9 @@ namespace cajeta {
         if (res.code() != 0) {
             cerr << "cajeta: link failed — '" << usedDriver << "' exited "
                  << res.code() << std::endl;
+            // A failed link must fail the build: a stale executable at the
+            // output path otherwise masquerades as a successful compile.
+            throw std::runtime_error("--emit=exe link failed");
         }
     }
 

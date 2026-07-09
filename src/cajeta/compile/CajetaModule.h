@@ -264,6 +264,18 @@ namespace cajeta {
         // travel with the module's own IR).
         std::set<std::string> instantiationObligations;
 
+        // Incremental compilation (Phase 3): manifest-designated state for
+        // this module. A clean module is parsed for declarations (+ Phase-1
+        // prototypes) but codegen-skipped: no generateCode, no reflect-body /
+        // clinit / sidecar emission; at emit time its llvm::Module is
+        // REPLACED by the cached `.bc` from cacheBcSlot, and the obligations
+        // recorded at cacheObligationsSlot are replayed into stdlib before
+        // the codegen loop. Slots are also set on DIRTY modules (write
+        // targets); both empty when no manifest is active.
+        bool incrementalClean = false;
+        string cacheBcSlot;
+        string cacheObligationsSlot;
+
         // Compiler-level options that codegen consults. Set on the module by the
         // Compiler at creation time (so each module produces IR consistent with the
         // current invocation's CLI flags). The CompilerFlags struct (docs/
@@ -804,6 +816,31 @@ namespace cajeta {
         // the set is empty, so a module that drops its last cross-module use
         // doesn't leave a misleading file behind.
         void writeObligationsSidecar() const;
+
+        // Incremental compilation (Phase 3) — manifest-designated state.
+        bool isIncrementalClean() const { return incrementalClean; }
+        void setIncrementalClean(bool clean) { incrementalClean = clean; }
+        const string& getCacheBcSlot() const { return cacheBcSlot; }
+        const string& getCacheObligationsSlot() const {
+            return cacheObligationsSlot;
+        }
+        void setCacheSlots(string bc, string obligations) {
+            cacheBcSlot = std::move(bc);
+            cacheObligationsSlot = std::move(obligations);
+        }
+        // Write this module's obligations to the manifest slot (unlike the
+        // archive-root sidecar, ALWAYS written — explicitly empty when the
+        // set is: slot absence must mean "never built", not "no obligations").
+        // Returns false on I/O failure.
+        bool writeObligationsToSlot() const;
+        // Serialize the module's current llvm::Module to the .bc slot
+        // (atomic temp+rename). Returns false on I/O failure.
+        bool writeBitcodeToSlot() const;
+        // Replace this module's llvm::Module with the bitcode at the .bc
+        // slot, parsed into the SAME LLVMContext (the emit-time swap for a
+        // clean module). Returns false (module untouched) on read/parse
+        // failure — caller falls back to treating the module dirty.
+        bool loadBitcodeFromSlot();
 
         // Intern a source-file path as a module-global constant `const char*`
         // for the debug-mode source-tagging machinery. Subsequent calls with

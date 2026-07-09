@@ -21,6 +21,7 @@
 #include "../runtime/EmbeddedRuntime.h"
 
 #include "llvm/Bitcode/BitcodeReader.h"
+#include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/MDBuilder.h"
@@ -230,6 +231,57 @@ namespace cajeta {
         for (const auto& name : instantiationObligations) { // std::set → sorted
             out << name << "\n";
         }
+    }
+
+    bool CajetaModule::writeObligationsToSlot() const {
+        if (cacheObligationsSlot.empty()) return true;
+        std::error_code ec;
+        std::filesystem::create_directories(
+            std::filesystem::path(cacheObligationsSlot).parent_path(), ec);
+        std::ofstream out(cacheObligationsSlot, std::ios::trunc);
+        if (!out) return false;
+        // Unlike the archive-root sidecar, an empty set still writes the
+        // (empty) file: slot absence must mean "never built".
+        for (const auto& name : instantiationObligations) {
+            out << name << "\n";
+        }
+        return static_cast<bool>(out);
+    }
+
+    bool CajetaModule::writeBitcodeToSlot() const {
+        if (cacheBcSlot.empty()) return true;
+        std::error_code ec;
+        std::filesystem::create_directories(
+            std::filesystem::path(cacheBcSlot).parent_path(), ec);
+        // Atomic: temp in the same dir, then rename over the slot.
+        std::string tmp = cacheBcSlot + ".tmp";
+        {
+            std::error_code fec;
+            llvm::raw_fd_ostream os(tmp, fec);
+            if (fec) return false;
+            llvm::WriteBitcodeToFile(*llvmModule, os);
+            os.close();
+            if (os.has_error()) return false;
+        }
+        std::filesystem::rename(tmp, cacheBcSlot, ec);
+        return !ec;
+    }
+
+    bool CajetaModule::loadBitcodeFromSlot() {
+        if (cacheBcSlot.empty()) return false;
+        auto buf = llvm::MemoryBuffer::getFile(cacheBcSlot);
+        if (!buf) return false;
+        auto parsed = llvm::parseBitcodeFile((*buf)->getMemBufferRef(),
+                                             *llvmContext);
+        if (!parsed) {
+            cerr << "cajeta: [incremental] failed to parse cached bitcode "
+                 << cacheBcSlot << ": "
+                 << llvm::toString(parsed.takeError()) << std::endl;
+            return false;
+        }
+        delete llvmModule;
+        llvmModule = parsed->release();
+        return true;
     }
 
     llvm::IRBuilder<>* CajetaModule::getBuilder() const {

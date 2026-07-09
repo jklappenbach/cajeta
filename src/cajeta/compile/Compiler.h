@@ -21,6 +21,8 @@
 #include "CajetaParser.h"
 #include "CompilerMode.h"
 #include "CompilationContext.h"
+#include "CacheManifest.h"
+#include <optional>
 #include <string>
 #include <set>
 #include <vector>
@@ -192,6 +194,23 @@ namespace cajeta {
 
         // Collected .o paths from Obj/Exe emissions, fed to the linker for Exe mode.
         std::vector<string> objectFiles;
+
+        // Incremental compilation (--cache-manifest=<path>): the build tool's
+        // clean/dirty designation + cache slots. Loaded and discriminator-
+        // checked at compile start; an empty optional afterwards means "no
+        // manifest / manifest rejected" — the full-rebuild path.
+        string cacheManifestPath;
+        std::optional<CacheManifest> cacheManifest;
+
+        // Load + validate the manifest, force the v1 interaction guards
+        // (treeShake=Off, linkMode=Full), and run the discriminator check.
+        // Returns false only on a hard manifest error (malformed file) —
+        // a discriminator mismatch just warns and drops the manifest.
+        bool setupCacheManifest();
+
+        // The compiler's own cache discriminator for the current flag set
+        // (CAJETA_VERSION + cacheFlagPairs). Valid after flags are final.
+        string computeOwnCacheDiscriminator() const;
 
         // --classpath archive paths. Set via CLI (one or more
         // --classpath=a.cja,b.cja args; comma-separates and repeats both
@@ -488,6 +507,7 @@ namespace cajeta {
         // scan can't see.
         void setPruneUber(bool v) { pruneUber = v; }
         void setSkillRootOverride(string s) { skillRootOverride = std::move(s); }
+        void setCacheManifestPath(string p) { cacheManifestPath = std::move(p); }
         bool getPruneUber() const { return pruneUber; }
 
         const string& getOutputPath() const { return outputPath; }
