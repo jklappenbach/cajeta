@@ -61,8 +61,35 @@ TEST(DiagnosticJson, codeDefaultsToTypeName) {
     EXPECT_EQ(fn(), 1);
 }
 
+// optional-borrow-ownership 1.1.2 — toJson() SIGSEGVs on a chain of TWO causes.
+//
+// Exception.getCause() wraps its borrowed `cause` field in Optional's owning
+// `#T` ctor, so the loop-scoped `Optional<Throwable> nxt` in toJson()'s walk
+// drops each iteration and frees the link the walk just aliased. Iteration two
+// then reads freed memory. Depth 0 and 1 pass (the drop lands after last use),
+// which is why causeChainSerializesNestedCauses below — exactly one cause deep —
+// has never caught it.
+//
+// DISABLED_ because it crashes the process, not the assertion. Re-enable in
+// optional-borrow-ownership 4.1.1, once Optional can borrow.
+TEST(DiagnosticJson, DISABLED_causeChainDepth2DoesNotCrash) {
+    auto jit = CajetaJit::compile(src(
+        "try {\n"
+        "    throw heap Exception(\"L1\", heap Exception(\"L2\", heap Exception(\"L3\")));\n"
+        "} catch (Exception e) {\n"
+        "    String j = e.toJson();\n"
+        "    boolean ok = j.contains(\"L1\") && j.contains(\"L2\") && j.contains(\"L3\");\n"
+        "    if (ok) { return 1; }\n"
+        "    return 0;\n"
+        "}\n"
+        "return -1;"), "test.S");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 1);
+}
+
 // 1.1.3: nested causes serialize as a causeChain array (outer→inner), each with
-// its own message.
+// its own message. NOTE: exactly ONE cause deep — the depth that works. See
+// DISABLED_causeChainDepth2DoesNotCrash above for the boundary.
 TEST(DiagnosticJson, causeChainSerializesNestedCauses) {
     auto jit = CajetaJit::compile(src(
         "try {\n"
