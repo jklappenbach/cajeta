@@ -102,6 +102,14 @@ namespace cajeta {
         if (auto m = module->getCurrentMethod()) m->registerDropEntry(entryPtr);
     }
 
+    // Public bridge for post-declaration ownership creation (9.3.1
+    // move-assign into a bare-declared local). Same wiring; binds the
+    // slot's CURRENT value, so callers invoke it after their store.
+    void LocalVariableDeclaration::emitOwnerDropEntry(CajetaModulePtr module,
+            FieldPtr field, const std::string& dropFnName, int allocLine) {
+        emitDropEntryFor(module, field, dropFnName, allocLine);
+    }
+
     // Variant for shared-capable VALUE locals (slice-spec §6.1 drop hook):
     // the drop entry's obj is the value's stack slot ITSELF (the alloca is
     // the storage, not a pointer to be loaded), and the drop fn is the
@@ -1227,6 +1235,25 @@ namespace cajeta {
             if (isCajetaString && !isArray && !isStructType
                     && !initIsBorrow && !initIsStackAlloc && initializer
                     && !arenaEligible) {
+                emitDropEntryFor(module, field, "__cajeta_string_drop", getSourceLine());
+            }
+            // 9.3.1 — a BARE String declaration (`String d;`) registers a
+            // NULL-obj entry in its OWN frame so a later move-assign —
+            // possibly in an inner block — can retarget it in place
+            // (BinaryOpExpression stores the moved ptr into e->obj). The
+            // drop chain is strict LIFO, so the entry must be registered at
+            // the declaration, never at the assignment. If no move ever
+            // lands, the drop of the null obj no-ops. The slot is nulled
+            // first so the entry captures a well-defined obj (bare class
+            // slots are otherwise uninitialized; definite-assignment still
+            // gates reads).
+            if (isCajetaString && !isArray && !isStructType && !initializer) {
+                auto* b = module->getBuilder();
+                auto& lctx2 = *module->getLlvmContext();
+                b->CreateStore(
+                    llvm::ConstantPointerNull::get(
+                        llvm::PointerType::get(lctx2, 0)),
+                    field->getOrCreateAllocation());
                 emitDropEntryFor(module, field, "__cajeta_string_drop", getSourceLine());
             }
             // @ValueType locals are Copy PODs living inline in their slot —

@@ -4,6 +4,7 @@
 
 #include "BinaryOpExpression.h"
 #include "OperatorDispatch.h"
+#include "../LocalVariableDeclaration.h"
 #include "../../error/CajetaExceptions.h"
 #include "../../error/DiagnosticEngine.h"
 #include "../../error/Exception.h"
@@ -2187,6 +2188,50 @@ namespace cajeta {
                 if (auto lhsId = dynamic_pointer_cast<IdentifierExpression>(lhsAst)) {
                     if (auto sc = module->getScopeStack().peek()) {
                         sc->markAssigned(lhsId->getTextValue());
+                    }
+                }
+                // 9.3.1 — a move-assign transfers ownership INTO the local:
+                // `String d; d = #t;` needs the value dropped at d's scope
+                // exit. The runtime drop chain is strict LIFO (pop-mismatch
+                // aborts), so pushing a NEW entry here would land it in the
+                // ASSIGNING block's frame — freed too early when d is
+                // declared in an outer scope (`String keep; { keep = #t; }`,
+                // the substringOutlivesSource shape). Instead
+                // LocalVariableDeclaration registers a null-obj entry at the
+                // DECLARATION (drop of null no-ops), and the move RETARGETS
+                // it in place: e->obj = moved ptr, e->active = 1. No chain
+                // mutation, so LIFO and frame membership hold. A repeated
+                // move-assign orphans the prior value (the documented
+                // reassign-leak family); borrow-initialized locals have no
+                // entry and keep today's behavior.
+                if (dynamic_pointer_cast<MoveExpression>(rhsAst)) {
+                    if (auto lhsId = dynamic_pointer_cast<IdentifierExpression>(lhsAst)) {
+                        auto lhsClass = dynamic_pointer_cast<CajetaClass>(
+                            lhsAst->getResolvedType());
+                        bool lhsIsString = lhsClass && lhsClass->getQName()
+                            && lhsClass->getQName()->getTypeName() == "String"
+                            && lhsClass->getQName()->getPackageName() == "cajeta.lang";
+                        if (lhsIsString) {
+                            if (auto sc = module->getScopeStack().peek()) {
+                                FieldPtr dstField = sc->getField(lhsId->getTextValue());
+                                if (dstField && dstField->getDropEntry()
+                                        && rhsVal && rhsVal->getType()->isPointerTy()) {
+                                    llvm::Value* entry = dstField->getDropEntry();
+                                    auto& ectx = *module->getLlvmContext();
+                                    builder->CreateStore(rhsVal, entry);
+                                    llvm::Value* activeSlot =
+                                        builder->CreateInBoundsGEP(
+                                            llvm::Type::getInt8Ty(ectx), entry,
+                                            llvm::ConstantInt::get(
+                                                llvm::Type::getInt64Ty(ectx), 24),
+                                            "mvassign.active");
+                                    builder->CreateStore(
+                                        llvm::ConstantInt::get(
+                                            llvm::Type::getInt8Ty(ectx), 1),
+                                        activeSlot);
+                                }
+                            }
+                        }
                     }
                 }
                 // The expression's value is the assigned r-value (C/Java convention),
