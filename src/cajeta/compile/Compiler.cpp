@@ -884,6 +884,36 @@ namespace cajeta {
         return (stat(sourcePath.c_str(), &buffer) == 0);
     }
 
+    // Emitted per user module, not into the stdlib module: ensureStdlibModule
+    // early-returns on the reuse path, so a flag-dependent ctor there would
+    // bake in the first compile's value (ExceptionReview 3.7).
+    void emitStackTraceCaptureInit(CajetaModulePtr module) {
+        llvm::Module* lmod = module->getLlvmModule();
+        if (!lmod) return;
+        const char* ctorName = "__cajeta_init_stack_trace_capture";
+        if (lmod->getFunction(ctorName)) return;   // re-entry guard
+
+        auto& llvmCtx = *module->getLlvmContext();
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(llvmCtx);
+        // Setter is defined by the linked runtime bitcode.
+        llvm::FunctionType* setterTy = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(llvmCtx), {i32Ty}, /*isVarArg=*/false);
+        llvm::FunctionCallee setter = lmod->getOrInsertFunction(
+            "__cajeta_set_stack_trace_capture", setterTy);
+
+        llvm::FunctionType* ctorTy = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(llvmCtx), /*isVarArg=*/false);
+        llvm::Function* ctor = llvm::Function::Create(
+            ctorTy, llvm::Function::PrivateLinkage, ctorName, lmod);
+        llvm::BasicBlock* bb = llvm::BasicBlock::Create(llvmCtx, "entry", ctor);
+        llvm::IRBuilder<> b(bb);
+        b.CreateCall(setter, {llvm::ConstantInt::get(
+            i32Ty, module->getFlags().stackTraceCapture ? 1 : 0)});
+        b.CreateRetVoid();
+
+        llvm::appendToGlobalCtors(*lmod, ctor, /*Priority=*/65535);
+    }
+
     CajetaModulePtr Compiler::createModule(string sourcePath, string sourceRootPath, string targetRootPath) {
         if (!fileExists(sourcePath))
             throw FileNotFoundException(sourcePath);
@@ -900,6 +930,7 @@ namespace cajeta {
         // set, scrub the absolute source path the constructor embedded so the
         // emitted IR is byte-identical across hosts.
         module->canonicalizeSourceFileName();
+        emitStackTraceCaptureInit(module);
         return module;
     }
 

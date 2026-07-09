@@ -840,19 +840,28 @@ namespace cajeta {
                 if (!fieldDecl->typeType() || !fieldDecl->variableDeclarators()) continue;
                 const string declared = fieldDecl->typeType()->getText();
                 int paramIndex = -1;
+                int scalarParamIndex = -1;
                 for (size_t k = 0; k < typeParameters.size(); k++) {
                     if (declared == typeParameters[k].name + "[]") {
                         paramIndex = (int) k;
                         break;
                     }
+                    // optional-borrow-ownership 2.2.3.b — a bare `P` field.
+                    if (declared == typeParameters[k].name) {
+                        scalarParamIndex = (int) k;
+                        break;
+                    }
                 }
-                if (paramIndex < 0) continue;
+                if (paramIndex < 0 && scalarParamIndex < 0) continue;
                 for (auto* vd : fieldDecl->variableDeclarators()->variableDeclarator()) {
                     if (!vd->variableDeclaratorId()) continue;
                     auto it = inst->getProperties().find(
                         vd->variableDeclaratorId()->getText());
                     if (it != inst->getProperties().end() && it->second) {
-                        it->second->setOriginElementTypeParamIndex(paramIndex);
+                        if (paramIndex >= 0)
+                            it->second->setOriginElementTypeParamIndex(paramIndex);
+                        else
+                            it->second->setOriginTypeParamIndex(scalarParamIndex);
                     }
                 }
             }

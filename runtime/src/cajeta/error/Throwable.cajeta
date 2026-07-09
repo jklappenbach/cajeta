@@ -48,6 +48,8 @@ public class Throwable {
     private static int32 getTraceNative(Object throwable, int64[] outAddrs, int32 max);
     @Native("__cajeta_print_trace")
     private static void printTraceNative(Object throwable, int32 fd);
+    @Native("__cajeta_print_trace_one")
+    private static void printTraceOneNative(Object throwable, int32 fd, int32 causedBy);
     @Native("__cajeta_trace_shadow_count") private static int32 shadowCount(Object t);
     @Native("__cajeta_trace_shadow_desc")  private static int64 shadowDesc(Object t, int32 i);
     @Native("__cajeta_trace_shadow_line")  private static int32 shadowLine(Object t, int32 i);
@@ -262,12 +264,37 @@ public class Throwable {
     }
 
     /**
-     * Print this throwable's stack trace to stderr. A no-op body of frames when
-     * no trace was captured (message still surfaces via the uncaught handler).
+     * Print this throwable's message and stack trace to stderr, then each link of
+     * the cause chain prefixed with `Caused by: `. Frames are omitted for a link
+     * with no captured trace — capture happens at the throw site, so a cause that
+     * was constructed but never thrown carries none.
+     *
+     * ```
+     * outer failure
+     *   at test.App.deep(App.cajeta:12)
+     * Caused by: root cause
+     * ```
      *
      * @EntryPoint
      */
     public void printStackTrace() {
-        printTraceNative(this, 2);
+        printTraceOneNative(this, 2, 0);
+        Optional<Throwable> oc = this.getCause();
+        if (oc.isPresent()) {
+            Throwable c = oc.get();
+            boolean walking = true;
+            int32 depth = 0;
+            // Bounded: a user-built cause cycle must not spin forever.
+            while (walking && depth < 64) {
+                printTraceOneNative(c, 2, 1);
+                depth = depth + 1;
+                Optional<Throwable> nxt = c.getCause();
+                if (nxt.isPresent()) {
+                    c = nxt.get();
+                } else {
+                    walking = false;
+                }
+            }
+        }
     }
 }

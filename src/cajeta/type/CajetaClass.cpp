@@ -2899,6 +2899,14 @@ namespace cajeta {
             if (property->isStatic()) continue;
             auto fieldType = property->getType();
             if (!fieldType) continue;
+            // optional-borrow-ownership 2.2.3.b — a scalar `P`-typed field in a
+            // BORROW-mode instantiation (`Optional<T>`, not `Optional<#T>`) is a
+            // view: the caller still owns it, so this teardown must not drop it.
+            // Monomorphization erased the came-from-a-type-parameter fact;
+            // TemplateInstantiator restores it as originTypeParamIndex.
+            int scalarOrigin = property->getOriginTypeParamIndex();
+            if (scalarOrigin >= 0 && !isTypeArgumentOwning((size_t) scalarOrigin))
+                continue;
             unsigned fieldIdx = (unsigned) getFieldLlvmIndex(property);
 
             if (auto arrField = dynamic_pointer_cast<CajetaArray>(fieldType)) {

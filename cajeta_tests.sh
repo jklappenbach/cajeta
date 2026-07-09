@@ -242,9 +242,23 @@ TEST_TIMEOUT="${TEST_TIMEOUT:-120}"
 # slow tests (e.g. device/GPU suites) doesn't become the long pole that bounds
 # the whole sweep. The file is a plain `Suite.test<TAB>ms` TSV, gitignored,
 # updated after every run (tests not run this time keep their prior value).
-# First run (no file) falls back to count-based packing via DEFAULT_TEST_MS.
 # Opt out with WEIGHTED=0.
+#
+# COLD START: a fresh clone and every CI runner have no local history, which
+# silently degraded packing back to count-based (every test = DEFAULT_TEST_MS)
+# — the very long-pole imbalance this scheduler exists to remove. So reads fall
+# back to a CHECKED-IN seed of measured per-test times. Writes always go to the
+# local file, which starts as `seed + this run's timings` and drifts toward the
+# host's own measurements. Refresh the seed with scripts/update-test-durations.sh.
 DURATIONS_FILE="${CAJETA_TEST_DURATIONS:-$SCRIPT_DIR/.test-durations.tsv}"
+DURATIONS_SEED="${CAJETA_TEST_DURATIONS_SEED:-$SCRIPT_DIR/test/test-durations.seed.tsv}"
+if [ -s "$DURATIONS_FILE" ]; then
+    DURATIONS_READ="$DURATIONS_FILE"
+elif [ -s "$DURATIONS_SEED" ]; then
+    DURATIONS_READ="$DURATIONS_SEED"
+else
+    DURATIONS_READ="/dev/null"
+fi
 DEFAULT_TEST_MS="${DEFAULT_TEST_MS:-1500}"
 WEIGHTED="${WEIGHTED:-1}"
 
@@ -434,7 +448,7 @@ if [ "$WEIGHTED" != "0" ]; then
         while IFS= read -r _t; do
             [ -n "$_t" ] && printf '%s\t%s\n' "$i" "$_t"
         done <<< "${chunk_list[$i]}"
-    done | awk -v durfile="$DURATIONS_FILE" -v def="$DEFAULT_TEST_MS" '
+    done | awk -v durfile="$DURATIONS_READ" -v def="$DEFAULT_TEST_MS" '
         BEGIN { while ((getline l < durfile) > 0) { if (split(l,a,"\t") >= 2) d[a[1]] = a[2] } }
         { w[$1] += (($2) in d) ? d[$2] : def }
         END { for (c in w) printf "%s\t%s\n", c, w[c] }
@@ -816,14 +830,17 @@ if [ "$WEIGHTED" != "0" ]; then
             "$tmpdir/shard_${s}.out" 2>/dev/null >> "$_newdur"
     done
     if [ -s "$_newdur" ]; then
-        touch "$DURATIONS_FILE" 2>/dev/null || true
         _merged="$tmpdir/durations.merged"
-        # dedup new (last wins per test), then overlay onto the old file.
+        # dedup new (last wins per test), then overlay onto whatever we READ from
+        # (local history, else the checked-in seed). Overlaying onto DURATIONS_FILE
+        # would be wrong on a cold start: a filtered run would replace the seed with
+        # just the handful of tests it ran, and the next run would pack those few by
+        # time and everything else by count.
         if awk -F'\t' '
                 NR==FNR { n[$1] = $2; next }                 # new durations
                 { if ($1 in n) { print $1"\t"n[$1]; delete n[$1] } else print }
                 END { for (k in n) print k"\t"n[k] }
-            ' "$_newdur" "$DURATIONS_FILE" > "$_merged" 2>/dev/null; then
+            ' "$_newdur" "$DURATIONS_READ" > "$_merged" 2>/dev/null; then
             mv "$_merged" "$DURATIONS_FILE" 2>/dev/null || true
         fi
     fi

@@ -129,12 +129,10 @@ static const char* cajeta_basename(const char* p) {
     return base;
 }
 
-void __cajeta_print_trace(void* throwable, int32_t fd) {
-    FILE* out = (fd == 1) ? stdout : stderr;
-    pthread_mutex_lock(&__cajeta_trace_mutex);
-    struct cajeta_trace_entry* e = __cajeta_trace_table;
-    while (e && e->throwable != throwable) e = e->next;
-    if (!e) { pthread_mutex_unlock(&__cajeta_trace_mutex); return; }
+// Print `e`'s frames to `out`. Caller holds __cajeta_trace_mutex; `e` may be NULL
+// (no trace recorded), in which case nothing is printed.
+static void cajeta_print_frames_locked(struct cajeta_trace_entry* e, FILE* out) {
+    if (!e) return;
     // U3: prefer the semantic shadow frames — Type.method(File.cajeta:NN).
     if (e->shadow && e->shadow_count > 0) {
         for (int i = 0; i < e->shadow_count; i++) {
@@ -145,17 +143,23 @@ void __cajeta_print_trace(void* throwable, int32_t fd) {
             fprintf(out, "  at %s.%s(%s:%d)\n", t, m,
                     cajeta_basename(f), e->shadow[i].line);
         }
-        fflush(out);
-        pthread_mutex_unlock(&__cajeta_trace_mutex);
         return;
     }
     // Fallback: raw addresses symbolized by the C library.
     char** syms = backtrace_symbols(e->frames, e->frame_count);
     if (syms) {
         for (int i = 0; i < e->frame_count; i++) fprintf(out, "  %s\n", syms[i]);
-        fflush(out);
         free(syms);
     }
+}
+
+void __cajeta_print_trace(void* throwable, int32_t fd) {
+    FILE* out = (fd == 1) ? stdout : stderr;
+    pthread_mutex_lock(&__cajeta_trace_mutex);
+    struct cajeta_trace_entry* e = __cajeta_trace_table;
+    while (e && e->throwable != throwable) e = e->next;
+    cajeta_print_frames_locked(e, out);
+    fflush(out);
     pthread_mutex_unlock(&__cajeta_trace_mutex);
 }
 
@@ -207,13 +211,7 @@ void __cajeta_print_trace_one(void* throwable, int32_t fd, int32_t caused_by) {
     pthread_mutex_lock(&__cajeta_trace_mutex);
     struct cajeta_trace_entry* e = __cajeta_trace_table;
     while (e && e->throwable != throwable) e = e->next;
-    if (e) {
-        char** syms = backtrace_symbols(e->frames, e->frame_count);
-        if (syms) {
-            for (int i = 0; i < e->frame_count; i++) fprintf(out, "  %s\n", syms[i]);
-            free(syms);
-        }
-    }
+    cajeta_print_frames_locked(e, out);
     pthread_mutex_unlock(&__cajeta_trace_mutex);
     fflush(out);
 }

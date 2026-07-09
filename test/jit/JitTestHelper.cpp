@@ -714,6 +714,7 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
             compiler->getMutableFlags().liveSet = *opts.liveSetMode;
         }
         compiler->getMutableFlags().lineInfo = opts.lineInfoEnabled;
+        compiler->getMutableFlags().stackTraceCapture = opts.stackTraceCaptureEnabled;
         // CAJETA_LAZY_SCOPE=1 runs the whole suite under --lazy-scope so the
         // safe lazy-frame path (ensure_at at spawn sites) gets full coverage.
         if (const char* lz = std::getenv("CAJETA_LAZY_SCOPE")) {
@@ -1197,14 +1198,9 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     }
     ::__cajeta_set_drop_chain_validate(desiredValidate);
 
-    int desiredTrace = opts.stackTraceCaptureEnabled ? 1 : 0;
-    if (auto sym = activeJit->lookup(activeDylib, "__cajeta_set_stack_trace_capture")) {
-        auto setFn = reinterpret_cast<void(*)(int)>(sym->getValue());
-        if (setFn) setFn(desiredTrace);
-    } else {
-        cajeta::jittest::consumeError(sym.takeError());
-    }
-    ::__cajeta_set_stack_trace_capture(desiredTrace);
+    // stackTraceCapture is NOT set here: the compiler emits a module global
+    // ctor from CompilerFlags, which jit->initialize() above already ran.
+    // Poking the setter here would mask a regression in that codegen.
 
     // Reuse mode: release this test's user struct-type names from the shared
     // context so the next test can re-declare same-named classes (`test.S`)

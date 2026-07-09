@@ -82,6 +82,15 @@ namespace cajeta {
 
         int getOriginElementTypeParamIndex() const { return originElementTypeParamIndex; }
         void setOriginElementTypeParamIndex(int idx) { originElementTypeParamIndex = idx; }
+
+        // optional-borrow-ownership 2.2.3.b — same idea for a SCALAR `P`-typed
+        // field (`T value` on Optional). Unit 3B covered `P[]` only and left these
+        // on the mode-unaware class-ref drop branch, so a borrow-mode
+        // instantiation freed a payload it never owned.
+        int originTypeParamIndex = -1;
+
+        int getOriginTypeParamIndex() const { return originTypeParamIndex; }
+        void setOriginTypeParamIndex(int idx) { originTypeParamIndex = idx; }
     };
 
     typedef shared_ptr<StructureProperty> StructurePropertyPtr;
