@@ -1,6 +1,8 @@
 #include "ObligationReplay.h"
 
+#include "../compile/CajetaModule.h"
 #include "../method/Method.h"
+#include "../type/CajetaArray.h"
 #include "../type/CajetaClass.h"
 
 #include <set>
@@ -68,6 +70,28 @@ namespace cajeta {
         auto hit = canon.find(s);
         if (hit != canon.end()) return hit->second;
 
+        // Array canonical `T[]` (heap reference form): resolve the element
+        // and wrap, mirroring the parse-path bracket loop. Fixed-size `T[N]`
+        // stays unsupported (never a template argument in practice) — falls
+        // through to the unresolvable error below.
+        if (s.size() > 2 && s.compare(s.size() - 2, 2, "[]") == 0) {
+            CajetaTypePtr elem = resolveCanonicalType(
+                s.substr(0, s.size() - 2), err);
+            if (!elem) return nullptr;
+            CajetaModulePtr owner;
+            if (auto k = std::dynamic_pointer_cast<CajetaClass>(elem))
+                owner = k->getModule();
+            if (!owner) owner = CajetaModule::getStdlibModule();
+            if (!owner) {
+                err = "no owning module for array canonical `" + s + "`";
+                return nullptr;
+            }
+            auto arr = std::make_shared<CajetaArray>(owner, elem);
+            owner->getStructures()[arr->toCanonical()] =
+                std::static_pointer_cast<CajetaClass>(arr);
+            return arr;
+        }
+
         auto lt = s.find('<');
         if (lt == std::string::npos || s.back() != '>') {
             err = "unresolvable canonical `" + s + "`";
@@ -103,6 +127,14 @@ namespace cajeta {
         if (sep == std::string::npos)
             return resolveCanonicalType(key, err) != nullptr;
 
+        // Lambda-specialization clones (`…$spec$__cajeta_lambda_N`) are
+        // codegen artifacts, not instantiations replay can (or need to)
+        // recreate: the clone's body lands in the module whose codegen drove
+        // it, so a clean module's cached .bc already carries its own clones
+        // byte-frozen. (A clone a skipped module drove INTO stdlib would be
+        // missing — that fails loud at link, never silently; v1 accepts it.)
+        if (key.find("$spec$") != std::string::npos) return true;
+
         // Method form: host::name(params)<targs>. Resolving the host
         // instantiates it if missing, so a host-class obligation need not
         // precede its method obligations in the sidecar.
@@ -115,19 +147,29 @@ namespace cajeta {
         }
         std::string methodName = trim(rest.substr(0, paren));
 
-        // Step past the (nesting-aware) value-param list — ignored per D2.
+        // Step past the (nesting-aware) value-param list. Its TYPES are
+        // ignored per D2, but the param COUNT disambiguates same-name
+        // overloaded method templates below.
         int depth = 0;
         size_t i = paren;
         for (; i < rest.size(); ++i) {
             if (rest[i] == '(') depth++;
             else if (rest[i] == ')' && --depth == 0) { ++i; break; }
         }
+        std::string paramsInner =
+            trim(rest.substr(paren + 1, (i - 1) - (paren + 1)));
+        size_t keyParamCount =
+            paramsInner.empty() ? 0 : splitTopLevel(paramsInner).size();
         std::vector<CajetaTypePtr> targs;
         if (i < rest.size() && rest[i] == '<' && rest.back() == '>') {
             std::vector<bool> ignoredOwning;
             if (!resolveArgList(rest.substr(i + 1, rest.size() - i - 2),
                                 targs, ignoredOwning, err))
                 return false;
+        }
+        if (targs.empty()) {
+            err = "method obligation lacks type arguments `" + key + "`";
+            return false;
         }
 
         CajetaTypePtr hostType = resolveCanonicalType(host, err);
@@ -139,30 +181,64 @@ namespace cajeta {
         }
 
         // The methods map can reach the same template under several keys;
-        // dedupe by identity. >1 DISTINCT same-name template = the D2
-        // ambiguity (value-param signatures not compared in v1) — fail loud.
-        std::set<Method*> distinct;
-        MethodPtr tmpl;
+        // dedupe by identity. Same-name overloads (Json.parse, Tensor.add)
+        // disambiguate by declared value-param count against the key's —
+        // exact first, then key-count-1 (keys captured after `this`
+        // insertion carry one extra leading param). Only a tie WITHIN a
+        // count remains the D2 ambiguity — fail loud.
+        std::set<Method*> seen;
+        std::vector<MethodPtr> named;
         for (auto& [mapKey, m] : hostClass->getMethods()) {
-            if (m && m->isMethodTemplate() && m->getName() == methodName) {
-                distinct.insert(m.get());
-                tmpl = m;
+            if (m && m->isMethodTemplate() && m->getName() == methodName
+                && seen.insert(m.get()).second) {
+                named.push_back(m);
             }
         }
-        if (distinct.empty()) {
+        if (named.empty()) {
             err = "no method template `" + methodName + "` on `" + host + "`";
             return false;
         }
-        if (distinct.size() > 1) {
-            err = "ambiguous method template `" + methodName + "` on `"
-                + host + "` (v1 replay does not compare value-param"
-                          " signatures)";
-            return false;
+        MethodPtr tmpl;
+        if (named.size() == 1) {
+            tmpl = named.front();
+        } else {
+            for (size_t wantOffset = 0; !tmpl && wantOffset <= 1;
+                 ++wantOffset) {
+                if (keyParamCount < wantOffset) break;
+                size_t want = keyParamCount - wantOffset;
+                MethodPtr match;
+                bool tie = false;
+                for (auto& m : named) {
+                    if (m->getParameters().size() != want) continue;
+                    if (match) { tie = true; break; }
+                    match = m;
+                }
+                if (tie) {
+                    err = "ambiguous method template `" + methodName
+                        + "` on `" + host + "` (multiple overloads with "
+                        + std::to_string(want) + " params; v1 replay does"
+                          " not compare value-param signatures)";
+                    return false;
+                }
+                tmpl = match;
+            }
+            if (!tmpl) {
+                err = "no method template `" + methodName + "` on `" + host
+                    + "` matches " + std::to_string(keyParamCount)
+                    + " value params";
+                return false;
+            }
         }
-        if (!tmpl->instantiateMethodTemplate(std::move(targs))) {
+        MethodPtr inst = tmpl->instantiateMethodTemplate(std::move(targs));
+        if (!inst) {
             err = "method-template instantiation failed for `" + key + "`";
             return false;
         }
+        // A call site would bring the instantiation to life (register +
+        // prototype + body); replay has no call site, so do it explicitly —
+        // otherwise the body never emits and the skipped module's reference
+        // is undefined at link.
+        hostClass->ensureMethodInstantiationAlive(std::move(inst));
         return true;
     }
 

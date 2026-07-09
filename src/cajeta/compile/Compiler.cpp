@@ -8,6 +8,14 @@
 #include "cajeta/buildtool/Lockfile.h"   // sha256Hex
 #include "cajeta/buildtool/skill/SkillPackager.h"
 #include "ObligationReplay.h"
+
+// Stamped by CMake add_compile_definitions; fallbacks for editors/tools.
+#ifndef CAJETA_VERSION
+#define CAJETA_VERSION "0.0.0-unknown"
+#endif
+#ifndef CAJETA_GIT_HASH
+#define CAJETA_GIT_HASH "unknown"
+#endif
 #include "CajetaModule.h"
 #include "NativeLink.h"
 #include "CajetaLlvmVisitor.h"
@@ -1202,7 +1210,10 @@ namespace cajeta {
             pairs.emplace_back("classpath:" + cp,
                                buildtool::sha256Hex(ss.str()));
         }
-        return buildtool::computeCacheDiscriminator(CAJETA_VERSION, pairs);
+        // Fold the git hash in: two dev builds of the same VERSION can differ
+        // in codegen, and reusing IR across them would be a silent miscompile.
+        return buildtool::computeCacheDiscriminator(
+            CAJETA_VERSION "+" CAJETA_GIT_HASH, pairs);
     }
 
     bool Compiler::setupCacheManifest() {
@@ -1402,8 +1413,19 @@ namespace cajeta {
                 std::string line;
                 while (module->isIncrementalClean()
                        && std::getline(obligations, line)) {
+                    // Replay must NEVER abort the build — recompiling the
+                    // module is always the sound fallback, so anything an
+                    // instantiation throws degrades to dirty too.
                     std::string err;
-                    if (!replayObligation(line, err)) {
+                    bool ok = false;
+                    try {
+                        ok = replayObligation(line, err);
+                    } catch (const std::exception& e) {
+                        err = e.what();
+                    } catch (...) {
+                        err = "instantiation threw during replay";
+                    }
+                    if (!ok) {
                         cerr << "cajeta: [incremental] obligation replay"
                                 " failed for " << module->getSourcePath()
                              << ": " << err << " — recompiling\n";
@@ -1690,6 +1712,41 @@ namespace cajeta {
                                 " obligations slot "
                              << module->getCacheObligationsSlot() << "\n";
                     }
+                }
+            }
+            // Drop-function backfill. A full build synthesizes a type's
+            // stack/heap drop wrappers lazily when a CONSUMER's codegen
+            // drops a value of the type; a skipped consumer never fires
+            // that, leaving its cached .bc with dangling extern drop
+            // declarations (incl. for instantiations created only
+            // INDIRECTLY during stdlib codegen — the obligation set can't
+            // enumerate these). Scan every loaded .bc for undefined
+            // `__cajeta[_stack]_<type>_drop` declarations and synthesize
+            // exactly those into the type's own module — the full-build
+            // layout. Mangling mirrors getOrCreate{Stack,}DropFunction.
+            auto mangleDropPart = [](std::string s) {
+                for (char& c : s) {
+                    if (c == ':' || c == '.' || c == '<' || c == '>'
+                        || c == ',' || c == ' ') c = '_';
+                }
+                return s;
+            };
+            std::map<std::string, CajetaClassPtr> classByDropSymbol;
+            for (auto& [canon, type] : CajetaType::getCanonicalMap()) {
+                auto klass = std::dynamic_pointer_cast<CajetaClass>(type);
+                if (!klass || klass->isTemplate()) continue;
+                std::string m = mangleDropPart(canon);
+                classByDropSymbol["__cajeta_stack_" + m + "_drop"] = klass;
+                classByDropSymbol["__cajeta_" + m + "_drop"] = klass;
+            }
+            for (auto& module: modules) {
+                if (!module->isIncrementalClean()) continue;
+                for (auto& fn : module->getLlvmModule()->functions()) {
+                    if (!fn.isDeclaration()) continue;
+                    auto hit = classByDropSymbol.find(fn.getName().str());
+                    if (hit == classByDropSymbol.end()) continue;
+                    hit->second->getOrCreateStackDropFunction();
+                    hit->second->getOrCreateDropFunction();
                 }
             }
         }

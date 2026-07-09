@@ -366,40 +366,54 @@ namespace cajeta::buildtool {
                                projectRootFromManifest(*ctx.manifest()));
             }
 
-            // Incremental compilation (incremental-compilation plan Phase 4).
-            // Opt-in via the `incremental` action param until Phase 5 flips
-            // the default. Authors a cache-manifest-v1 for the compiler:
-            // per-source transitive digest → IrCache slot; clean when both
-            // slots exist. The discriminator comes from the compiler itself
+            // Incremental compilation (incremental-compilation plan Phase 4;
+            // DEFAULT-ON per Phase 5 — `incremental: false` opts out).
+            // Authors a cache-manifest-v1 for the compiler: per-source
+            // transitive digest → IrCache slot; clean when both slots exist.
+            // The discriminator comes from the compiler itself
             // (--print-cache-discriminator probe on the exact flag set built
             // above) so flag resolution is never re-derived here.
-            bool incremental = false;
-            if (auto v = params.getBoolean("incremental")) incremental = *v;
+            bool incremental = true;
+            bool incrementalExplicit = false;
+            if (auto v = params.getBoolean("incremental")) {
+                incremental = *v;
+                incrementalExplicit = true;
+            }
             std::string projectRoot = ctx.manifest()
                 ? projectRootFromManifest(*ctx.manifest()) : std::string(".");
             IrCache irCache((fs::path(projectRoot) / ".cajeta" / "cache"
                              / "ir").string());
             int cleanCount = 0, sourceCount = 0;
+            std::string probeOut;
             if (incremental) {
                 std::vector<std::string> probeArgv = argv;
                 probeArgv.push_back("--print-cache-discriminator");
                 SubprocessOptions probeOpt;
                 probeOpt.argv = probeArgv;
-                std::string probeOut;
                 probeOpt.outData = &probeOut;
                 SubprocessResult probeRes = runSubprocess(probeOpt);
-                if (!probeRes.launched || probeRes.code() != 0) {
-                    return err("build: cache-discriminator probe failed"
-                               " (--print-cache-discriminator)");
+                bool probeOk = probeRes.launched && probeRes.code() == 0;
+                if (probeOk) {
+                    while (!probeOut.empty() && (probeOut.back() == '\n'
+                                                 || probeOut.back() == '\r'))
+                        probeOut.pop_back();
+                    probeOk = !probeOut.empty();
                 }
-                while (!probeOut.empty()
-                       && (probeOut.back() == '\n' || probeOut.back() == '\r'))
-                    probeOut.pop_back();
-                if (probeOut.empty()) {
-                    return err("build: cache-discriminator probe printed"
-                               " nothing");
+                if (!probeOk) {
+                    // Explicitly requested → fail loud. Default-on → a full
+                    // (non-incremental) build is always sound; degrade so
+                    // e.g. an older toolchain on PATH can't brick builds.
+                    if (incrementalExplicit) {
+                        return err("build: cache-discriminator probe failed"
+                                   " (--print-cache-discriminator)");
+                    }
+                    llvm::errs() << "warning: build: cache-discriminator"
+                                    " probe failed — building without the"
+                                    " IR cache\n";
+                    incremental = false;
                 }
-
+            }
+            if (incremental) {
                 SourceDigestRegistry digests({sourceRoot});
                 llvm::json::Array sources;
                 std::error_code ec2;

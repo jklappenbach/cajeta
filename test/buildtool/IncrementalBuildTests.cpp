@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <random>
 #include <sstream>
 #include <string>
@@ -88,7 +89,10 @@ struct Project {
     fs::path exePath() const { return root / "build" / "exe" / "t.app"; }
     fs::path outLog() const { return root / "out.log"; }
 
-    void writeManifest(const std::string& cacheSettings) const {
+    // `incrementalParam`: "" omits the param (exercises the default),
+    // otherwise spliced verbatim ("true" / "false").
+    void writeManifest(const std::string& cacheSettings,
+                       const std::string& incrementalParam = "true") const {
         std::ofstream m(root / "cajeta.json");
         m << "{\n"
              "  \"details\": { \"name\": \"t.app\", \"version\": \"0.1.0\",\n"
@@ -98,8 +102,10 @@ struct Project {
         if (!cacheSettings.empty()) m << ",\n      \"cache\": " << cacheSettings;
         m << " } },\n"
              "  \"tasks\": { \"build\": { \"actions\": [\n"
-             "      { \"action\": \"build\", \"flavor\": \"debug\",\n"
-             "        \"incremental\": true, \"id\": \"art\" } ] } }\n"
+             "      { \"action\": \"build\", \"flavor\": \"debug\",\n";
+        if (!incrementalParam.empty())
+            m << "        \"incremental\": " << incrementalParam << ",\n";
+        m << "        \"id\": \"art\" } ] } }\n"
              "}\n";
     }
 
@@ -127,9 +133,10 @@ struct Project {
     }
 
     static Project create(const std::string& tag,
-                          const std::string& cacheSettings = "") {
+                          const std::string& cacheSettings = "",
+                          const std::string& incrementalParam = "true") {
         Project p{freshTempDir(tag)};
-        p.writeManifest(cacheSettings);
+        p.writeManifest(cacheSettings, incrementalParam);
         p.writeSources(/*mainBias=*/4);   // streamed 3 + 4 = 7
         return p;
     }
@@ -262,4 +269,110 @@ TEST(IncrementalBuild, CacheSizeCapEvictsAfterBuild) {
     EXPECT_FALSE(contains(p.buildOutput(), "[incremental] skip"))
         << p.buildOutput();
     ASSERT_EQ(p.runExe(), 7);
+}
+
+// Phase 5: incremental is the DEFAULT for `cajeta build` — a manifest with
+// no `incremental` param behaves like `incremental: true`.
+TEST(IncrementalBuild, IncrementalIsTheDefault) {
+    if (!fs::exists(compilerBinary()))
+        GTEST_SKIP() << "compiler binary unavailable";
+    auto p = Project::create("dflt", "", /*incrementalParam=*/"");
+
+    ASSERT_EQ(p.build(), 0) << p.buildOutput();
+    EXPECT_EQ(p.cacheFileCount(".bc"), 2) << "default-on must populate";
+
+    ASSERT_EQ(p.build(), 0) << p.buildOutput();
+    std::string out = p.buildOutput();
+    EXPECT_TRUE(contains(out, "[incremental] skip t/Main.cajeta")) << out;
+    EXPECT_TRUE(contains(out, "[incremental] skip t/Util.cajeta")) << out;
+    EXPECT_EQ(p.runExe(), 7);
+}
+
+// `incremental: false` opts out entirely: no probe, no cache tree, no skips.
+TEST(IncrementalBuild, ExplicitOptOutDisablesCache) {
+    if (!fs::exists(compilerBinary()))
+        GTEST_SKIP() << "compiler binary unavailable";
+    auto p = Project::create("optout", "", /*incrementalParam=*/"false");
+
+    ASSERT_EQ(p.build(), 0) << p.buildOutput();
+    EXPECT_EQ(p.cacheFileCount(".bc"), 0);
+
+    ASSERT_EQ(p.build(), 0) << p.buildOutput();
+    EXPECT_FALSE(contains(p.buildOutput(), "[incremental] skip"))
+        << p.buildOutput();
+    EXPECT_EQ(p.runExe(), 7);
+}
+
+// Rebuild after eviction produces byte-identical IR — the build-tool-plan
+// Phase 5b criterion. Populate, snapshot every .bc slot, wipe the cache,
+// rebuild: the same slot paths reappear with the same bytes (deterministic
+// codegen + content-addressed keys).
+TEST(IncrementalBuild, RebuildAfterEvictionByteIdenticalIr) {
+    if (!fs::exists(compilerBinary()))
+        GTEST_SKIP() << "compiler binary unavailable";
+    auto p = Project::create("evictbytes");
+
+    ASSERT_EQ(p.build(), 0) << p.buildOutput();
+    std::map<std::string, std::string> before;
+    for (auto& e : fs::recursive_directory_iterator(p.cacheIrDir()))
+        if (e.is_regular_file() && e.path().extension() == ".bc")
+            before[e.path().string()] = readAll(e.path());
+    ASSERT_EQ(before.size(), 2u);
+
+    fs::remove_all(p.cacheIrDir());
+    ASSERT_EQ(p.build(), 0) << p.buildOutput();
+    for (auto& [path, bytes] : before) {
+        ASSERT_TRUE(fs::exists(path)) << "slot did not repopulate: " << path;
+        EXPECT_EQ(readAll(path), bytes)
+            << "rebuild after eviction must be byte-identical: " << path;
+    }
+}
+
+// Phase 5 real-source-tree smoke: samples/tour (~87 sources, no deps)
+// builds end-to-end under default-on incremental, and a no-change rebuild
+// skips every source. Runs the suite's usual CI lane, satisfying the
+// "wire into CI" criterion.
+TEST(IncrementalBuild, TourSmokeBuildsIncrementally) {
+    if (!fs::exists(compilerBinary()))
+        GTEST_SKIP() << "compiler binary unavailable";
+    const char* envRoot = std::getenv("CAJETA_SOURCE_ROOT");
+    std::string repoRoot;
+    if (envRoot && *envRoot) repoRoot = envRoot;
+    else {
+#ifdef CAJETA_SOURCE_ROOT_DEFAULT
+        repoRoot = CAJETA_SOURCE_ROOT_DEFAULT;
+#else
+        repoRoot = ".";
+#endif
+    }
+    fs::path tour = fs::path(repoRoot) / "samples" / "tour";
+    if (!fs::exists(tour / "cajeta.json"))
+        GTEST_SKIP() << "samples/tour unavailable";
+
+    auto root = freshTempDir("tour");
+    std::error_code ec;
+    fs::copy(tour / "cajeta.json", root / "cajeta.json", ec);
+    fs::copy(tour / "src", root / "src", fs::copy_options::recursive, ec);
+    ASSERT_FALSE(ec) << ec.message();
+
+    auto log = root / "out.log";
+    auto build = [&]() {
+        std::string cmd = "cd " + root.string() + " && " + compilerBinary()
+            + " build > " + log.string() + " 2>&1";
+        return exitCodeOf(std::system(cmd.c_str()));
+    };
+    ASSERT_EQ(build(), 0) << readAll(log);
+    EXPECT_FALSE(contains(readAll(log), "[incremental] skip"))
+        << readAll(log);
+
+    ASSERT_EQ(build(), 0) << readAll(log);
+    std::string out = readAll(log);
+    EXPECT_TRUE(contains(out, "[incremental] skip tour/Tour.cajeta")) << out;
+    // Every source clean on the no-change rebuild — no compile lines for any.
+    int skips = 0;
+    for (size_t pos = 0; (pos = out.find("[incremental] skip", pos))
+                         != std::string::npos; ++pos)
+        skips++;
+    EXPECT_GE(skips, 80) << "expected ~87 skipped sources, got " << skips
+                         << ":\n" << out;
 }

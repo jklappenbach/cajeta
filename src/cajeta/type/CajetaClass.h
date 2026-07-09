@@ -1072,6 +1072,13 @@ namespace cajeta {
             const vector<CajetaTypePtr>& explicitMethodTypeArgs = {},
             CajetaModulePtr activeModule = nullptr);
 
+        // Register + prototype + generate a method-template instantiation
+        // exactly as a call site would (bringMethodTemplateInstantiationToLife).
+        // Incremental-compilation obligation replay uses this: a skipped
+        // module's call sites never fire, so the replayed instantiation must
+        // be brought to life explicitly or its body never emits. Idempotent.
+        void ensureMethodInstantiationAlive(MethodPtr inst);
+
         // Named arguments — option C (positional prefix + named suffix). When a
         // call mixes positional and named args (`f(a, b, x: 1, y: 2)`), reorder
         // `parameters` into formal declaration order and strip the labels, so the

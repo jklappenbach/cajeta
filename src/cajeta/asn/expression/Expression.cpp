@@ -4378,8 +4378,12 @@ namespace cajeta {
             + std::to_string(trampolineCounter++);
         llvm::FunctionType* trampTy = llvm::FunctionType::get(
             llvm::Type::getVoidTy(llvmCtx), {ptrTy}, false);
+        // Internal, like lambdas: only ever reached through the address the
+        // spawn site takes in this same module. External linkage made the
+        // counter-numbered name a cross-object collision under incremental
+        // builds (a cached module's frozen trampoline_N vs a fresh module's).
         llvm::Function* trampFn = llvm::Function::Create(
-            trampTy, llvm::Function::ExternalLinkage, trampName, lmod);
+            trampTy, llvm::Function::InternalLinkage, trampName, lmod);
         llvm::BasicBlock* trampEntry = llvm::BasicBlock::Create(
             llvmCtx, "entry", trampFn);
         outerBuilder->SetInsertPoint(trampEntry);

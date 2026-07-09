@@ -4885,6 +4885,16 @@ namespace cajeta {
         }
     }
 
+    void CajetaClass::ensureMethodInstantiationAlive(MethodPtr inst) {
+        // Registration ONLY — the codegen fixed-point loop then emits the
+        // prototype + body with full cursor context (builder/scope/structure
+        // stacks), exactly like any other registered method. Running
+        // generateCode here (pre-loop, as bringMethodTemplateInstantiation-
+        // ToLife does at a live call site) crashes on the missing cursor.
+        if (methods.find(inst->getMapKey()) != methods.end()) return;
+        addMethod(std::move(inst));
+    }
+
     MethodPtr CajetaClass::resolveMethod(string& methodName, vector<ParameterEntry>& parameters,
             bool isConstructor, bool floatingParams,
             const vector<CajetaTypePtr>& explicitMethodTypeArgs,
