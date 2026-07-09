@@ -2847,21 +2847,23 @@ TEST(NumpyOpsTests, npyNumpyInteropF32) {
              "    ok = a.dtype == np.float32 and a.shape == (3, 2) and np.array_equal(a, exp)\n"
              "    sys.exit(0 if ok else 1)\n";
     }
-    // Prefer an explicit interpreter via $CAJETA_PYTHON (the one with numpy) — the bare
-    // `python` cmd.exe resolves can be a different install without numpy.
+    // Prefer an explicit interpreter via $CAJETA_PYTHON (the one with numpy); default to
+    // `python3` (Linux-standard). Probe numpy availability FIRST and skip cleanly if absent —
+    // a failed `system()` exec inside this threaded process can leave the heap corrupted and
+    // SIGABRT the next test, so we must not reach the harness fork when numpy is missing.
     const char* pyEnv = std::getenv("CAJETA_PYTHON");
-    std::string py = pyEnv ? std::string(pyEnv) : std::string("python");
-    auto run = [&](const std::string& mode, const std::string& path) {
-        // Wrap the whole command in an extra quote pair (cmd /c "...") so quoted
-        // exe/script/path tokens survive on Windows.
-        std::string inner = "\"" + py + "\" \"" + script + "\" " + mode + " \"" + path + "\"";
-        std::string cmd = "\"" + inner + "\"";
-        return std::system(cmd.c_str());
-    };
-    // 1. numpy writes the array. If python/numpy unavailable, skip the harness.
-    if (run("write", fromNp) != 0) {
+    std::string py = pyEnv ? std::string(pyEnv) : std::string("python3");
+    if (std::system((py + " -c \"import numpy\"").c_str()) != 0) {
         GTEST_SKIP() << "python/numpy unavailable — skipping npio interop harness";
     }
+    auto run = [&](const std::string& mode, const std::string& path) {
+        // Plain, POSIX-correct invocation (no `cmd /c` outer-quote wrap — that only parses
+        // on Windows and makes /bin/sh treat the whole string as one command name).
+        std::string cmd = py + " \"" + script + "\" " + mode + " \"" + path + "\"";
+        return std::system(cmd.c_str());
+    };
+    // 1. numpy writes the array.
+    ASSERT_EQ(run("write", fromNp), 0) << "numpy harness failed to write the .npy";
     std::string fromNpC = fromNp, toCjC = toCj;
     std::replace(fromNpC.begin(), fromNpC.end(), '\\', '/');
     std::replace(toCjC.begin(), toCjC.end(), '\\', '/');
@@ -3011,11 +3013,17 @@ TEST(NumpyOpsTests, npyNumpyInteropDtypes) {
              "    ok = a.dtype == npdt and a.shape == (3, 2) and np.array_equal(a, exp)\n"
              "    sys.exit(0 if ok else 1)\n";
     }
+    // Prefer $CAJETA_PYTHON, else `python3`. Probe numpy up front and skip cleanly if absent —
+    // never reach the harness fork on a numpy-less box (a failed exec can corrupt the heap and
+    // SIGABRT the following test).
     const char* pyEnv = std::getenv("CAJETA_PYTHON");
-    std::string py = pyEnv ? std::string(pyEnv) : std::string("python");
+    std::string py = pyEnv ? std::string(pyEnv) : std::string("python3");
+    if (std::system((py + " -c \"import numpy\"").c_str()) != 0) {
+        GTEST_SKIP() << "python/numpy unavailable — skipping npio dtype interop";
+    }
     auto run = [&](const std::string& mode, const std::string& path, const std::string& dt) {
-        std::string inner = "\"" + py + "\" \"" + script + "\" " + mode + " \"" + path + "\" " + dt;
-        std::string cmd = "\"" + inner + "\"";
+        // POSIX-correct invocation (no `cmd /c` outer-quote wrap).
+        std::string cmd = py + " \"" + script + "\" " + mode + " \"" + path + "\" " + dt;
         return std::system(cmd.c_str());
     };
     // dt tag → (loader, saver, cajeta element type). Same array [[10,20],[-3,4],[7,8]].
@@ -3025,15 +3033,10 @@ TEST(NumpyOpsTests, npyNumpyInteropDtypes) {
         {"i4", "loadI32", "saveI32", "int32"},
         {"i8", "loadI64", "saveI64", "int64"},
     };
-    bool ranAny = false;
     for (const Case& c : cases) {
         std::string fromNp = (dir / (std::string("cajeta_interop_from_np_") + c.tag + ".npy")).string();
         std::string toCj   = (dir / (std::string("cajeta_interop_to_cj_") + c.tag + ".npy")).string();
-        if (run("write", fromNp, c.tag) != 0) {
-            if (!ranAny) { GTEST_SKIP() << "python/numpy unavailable — skipping npio dtype interop"; }
-            continue;
-        }
-        ranAny = true;
+        ASSERT_EQ(run("write", fromNp, c.tag), 0) << "numpy harness failed to write dtype " << c.tag;
         std::string fromNpC = fromNp, toCjC = toCj;
         std::replace(fromNpC.begin(), fromNpC.end(), '\\', '/');
         std::replace(toCjC.begin(), toCjC.end(), '\\', '/');
