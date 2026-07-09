@@ -20,11 +20,7 @@
 #include "../type/CajetaClass.h"
 #include "../type/QualifiedName.h"
 #include "../asn/ClassBodyDeclaration.h"
-#include "../codec/JsonSynthesizer.h"
-#include "../codec/CsvSynthesizer.h"
-#include "../codec/ProtobufSynthesizer.h"
-#include "../codec/IonSynthesizer.h"
-#include "../codec/AvroSynthesizer.h"
+#include "cajeta/synth/SynthesizerRegistry.h"
 #include "../compile/CajetaModule.h"
 #include "../compile/CajetaLlvmVisitor.h"
 #include "../compile/Compiler.h"
@@ -340,29 +336,30 @@ namespace cajeta {
                 if (fp->getName() == "this") continue;
                 paramTypes.push_back(fp->getType());
             }
-            std::string synthesized;
-            if (synthesizeJsonMethodSource(parent, name, args, paramTypes,
-                    synthesized)) {
-                effectiveSource = std::move(synthesized);
+            // Dispatch through the source-synthesis registry (spec §2). The
+            // codec if-else chain that used to live here is now registered body
+            // synthesizers; dispatchBody returns the single match (or nullopt =
+            // failsafe, keeping the captured throw-body). Two matches are a loud
+            // error (§1.5 [S2]).
+            cajeta::synth::registerBuiltinSynthesizers();
+            cajeta::synth::SynthesisContext ctx;
+            ctx.parent = parent;
+            ctx.methodName = name;
+            ctx.typeArgs = args;
+            ctx.paramTypes = paramTypes;
+            ctx.module = module;
+            if (auto body = cajeta::synth::SynthesizerRegistry::instance()
+                    .dispatchBody(ctx)) {
+                effectiveSource = std::move(*body);
                 if (const char* dump = std::getenv("CAJETA_DUMP_IR")) {
                     if (dump[0] == '1') {
-                        std::cerr << "[JsonSynthesizer] for " << name
-                                  << "<" << args[0]->getQName()->toCanonical()
+                        std::cerr << "[Synthesizer] for " << name << "<"
+                                  << (args.empty() || !args[0] || !args[0]->getQName()
+                                      ? std::string("?")
+                                      : args[0]->getQName()->toCanonical())
                                   << ">:\n" << effectiveSource << "\n";
                     }
                 }
-            } else if (synthesizeCsvMethodSource(parent, name, args, paramTypes,
-                    synthesized)) {
-                effectiveSource = std::move(synthesized);
-            } else if (synthesizeProtobufMethodSource(parent, name, args,
-                    paramTypes, synthesized)) {
-                effectiveSource = std::move(synthesized);
-            } else if (synthesizeIonMethodSource(parent, name, args,
-                    paramTypes, synthesized)) {
-                effectiveSource = std::move(synthesized);
-            } else if (synthesizeAvroMethodSource(parent, name, args,
-                    paramTypes, synthesized)) {
-                effectiveSource = std::move(synthesized);
             }
         }
 
