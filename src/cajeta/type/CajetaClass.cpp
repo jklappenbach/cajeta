@@ -40,9 +40,19 @@ namespace {
     // FNV-1a 64-bit — must match the runtime's __cajeta_signature_hash
     // exactly so compile-time and runtime hashes of the same canonical
     // signature agree.
+    //
+    // `#` is skipped (mode-erased dispatch, element-ownership §5.1.4): a
+    // mode-agnostic method template compiles once against the plain
+    // spelling (`Vault<T>` → `Vault<Elem>`) yet must virtually dispatch on
+    // a `Vault<#Elem>` receiver. Ownership mode is a compile-time property
+    // — the two instantiations have identical layout and slot order — so
+    // dispatch identity ignores it. `#`-only overloads within one class
+    // cannot exist (borrow-mode dissolution would collide them), so the
+    // erasure cannot alias two distinct methods in one vtable.
     int64_t signatureHash(const std::string& s) {
         uint64_t h = 0xcbf29ce484222325ULL;
         for (unsigned char c : s) {
+            if (c == '#') continue;
             h ^= c;
             h *= 0x100000001b3ULL;
         }
@@ -3050,6 +3060,47 @@ namespace cajeta {
                 continue;
             }
         }
+    }
+
+    bool CajetaClass::isBorrowModeContainer() {
+        if (!isInstantiation()) return false;
+        // Does leaving position k plain make this container dangerous to
+        // let escape? Only when the argument has reference semantics — a
+        // value-type element is stored by copy/share (Unit 3 manages the
+        // shared-capable ones) and a primitive by value; neither can
+        // dangle. Placeholder args (mode-agnostic method-template walks,
+        // unfilled forward refs) don't confine — their shape isn't known.
+        auto argConfines = [&](int k) {
+            if (k < 0 || (size_t) k >= typeArguments.size()) return false;
+            if (isTypeArgumentOwning((size_t) k)) return false;
+            auto argClass = dynamic_pointer_cast<CajetaClass>(typeArguments[k]);
+            return argClass && !argClass->isPlaceholder()
+                && !argClass->isWildcard()
+                && !argClass->isValueType();
+        };
+        // `methods` (unlike methodList) also holds constructors, so an
+        // authored `#T` ctor formal (the Optional shape) is seen too.
+        for (auto& [key, m] : methods) {
+            if (!m) continue;
+            for (auto& [pname, fp] : m->getParameters()) {
+                if (fp && fp->wasAuthoredTransferred()
+                        && argConfines(fp->getOriginTypeParamIndex())) {
+                    return true;
+                }
+            }
+            if (m->isReturnsOwnership()
+                    && argConfines(m->getOriginReturnTypeParamIndex())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool CajetaClass::isStdlibTemplateInstantiation() {
+        auto origin = templateOrigin ? templateOrigin : shared_from_this();
+        auto originClass = dynamic_pointer_cast<CajetaClass>(origin);
+        return originClass && originClass->getModule()
+            && originClass->getModule() == CajetaModule::getStdlibModule();
     }
 
     bool CajetaClass::isSharedCapableValue() {

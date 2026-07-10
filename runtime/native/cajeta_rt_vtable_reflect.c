@@ -485,11 +485,19 @@ struct cajeta_vtable_entry {
 // FNV-1a 64-bit hash. Stable across runs and platforms — both the compiler
 // (at vtable build time) and the runtime (at dispatch time) compute the
 // same hash for the same canonical signature.
+//
+// '#' bytes are skipped (mode-erased dispatch, element-ownership spec
+// §5.1.4): owning and borrowing instantiations of one template share slot
+// layout and must dispatch interchangeably from mode-agnostic template
+// bodies. Must stay in lockstep with the two compiler-side copies
+// (CajetaClass.cpp, StructureMetadata.cpp).
 int64_t __cajeta_signature_hash(const char* s) {
     if (!s) return 0;
     uint64_t h = 0xcbf29ce484222325ULL;     // FNV offset basis
     while (*s) {
-        h ^= (uint8_t) *s++;
+        uint8_t c = (uint8_t) *s++;
+        if (c == '#') continue;
+        h ^= c;
         h *= 0x100000001b3ULL;              // FNV prime
     }
     return (int64_t) h;

@@ -1779,6 +1779,8 @@ namespace cajeta {
             if (ctx->typeTypeOrVoid()
                     && ctx->typeTypeOrVoid()->REFERENCE() != nullptr) {
                 method->setReturnsOwnership(true);
+                rejectBorrowModeEscape(returnType, "`#` return of operator",
+                    methodName);
             }
             return static_pointer_cast<MemberDeclaration>(
                 make_shared<MethodDeclaration>(method, ctx->getStart()));
@@ -1930,6 +1932,7 @@ namespace cajeta {
             // on typeTypeOrVoid (`REFERENCE? typeType`); see MemoryModel.md.
             if (ctx->typeTypeOrVoid() && ctx->typeTypeOrVoid()->REFERENCE() != nullptr) {
                 method->setReturnsOwnership(true);
+                rejectBorrowModeEscape(returnType, "`#` return of method", name);
             }
             // element-ownership §4.1.4 (plan 4A): return→type-param provenance.
             // During an instantiation body walk the parse tree still spells the
@@ -2053,6 +2056,32 @@ namespace cajeta {
             return static_pointer_cast<MemberDeclaration>(make_shared<MethodDeclaration>(method, ctx->getStart()));
         }
 
+        // element-ownership §5.1.1 (plan 7.2.1) — borrow-mode confinement at
+        // the two declaration-side escape hatches: a `#` return transfers the
+        // container past the scope of the elements it borrows; a field lets
+        // it outlive that scope outright. Stdlib template instantiations are
+        // transitionally exempt (Unit 8 sweeps stdlib owning and removes
+        // this with the 4B exemptions).
+        void rejectBorrowModeEscape(CajetaTypePtr type, const string& what,
+                                    const string& name) {
+            auto klass = dynamic_pointer_cast<CajetaClass>(type);
+            if (!klass || !klass->isBorrowModeContainer()
+                    || klass->isStdlibTemplateInstantiation()) {
+                return;
+            }
+            throw Exception(
+                what + " `" + name + "` would let borrow-mode container `"
+                    + type->toCanonical() + "` escape its scope: the "
+                    "container's author-marked `#` element positions were "
+                    "instantiated plain, so it borrows elements it does not "
+                    "own and must not outlive them. Fix: instantiate owning "
+                    "(mark the element type arguments `#`) so the container "
+                    "owns what it holds, or keep the scratch container local "
+                    "and materialize an owning copy at the boundary "
+                    "(element-ownership spec §5.1.1)",
+                "CAJETA_ERROR_BORROW_MODE_CONFINED");
+        }
+
         virtual std::any visitFieldDeclaration(CajetaParser::FieldDeclarationContext* ctx) override {
             CajetaTypePtr type = any_cast<CajetaTypePtr>(visitTypeType(ctx->typeType()));
             // Forward-reference tolerance: fromContext synthesizes a
@@ -2076,6 +2105,10 @@ namespace cajeta {
                         + "'; not a primitive, native, or user-defined type",
                     "CAJETA_ERROR_UNKNOWN_TYPE");
             }
+            // element-ownership §5.1.1 (plan 7.2.1): a field store is one of
+            // the escapes confinement forbids for a borrow-mode container.
+            rejectBorrowModeEscape(type, "field",
+                ctx->variableDeclarators()->getText());
             return static_pointer_cast<MemberDeclaration>(
                 make_shared<FieldDeclaration>(
                 type,

@@ -243,8 +243,13 @@ TEST(ElementOwnershipModeTests, authorHashFormalDissolvesUnderBorrowMode) {
         "}\n"
         "public class Ut {\n"
         "  public Cache<#Elem> owned;\n"
-        "  public Cache<Elem> scratch;\n"
-        "  public static int32 run() { return 0; }\n"
+        // The borrow-mode instantiation is forced via a LOCAL — a field of
+        // borrow-mode container type is a Unit 7 confinement error
+        // (CAJETA_ERROR_BORROW_MODE_CONFINED, spec §5.1.1).
+        "  public static int32 run() {\n"
+        "    Cache<Elem> scratch = heap Cache<Elem>();\n"
+        "    return 0;\n"
+        "  }\n"
         "}\n";
     Compiler compiler;
     auto module = compileForInspection(compiler, src, "test.Ut");

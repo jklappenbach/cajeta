@@ -86,6 +86,14 @@ CAJETA_ERROR_ELEMENT_TRANSFER_MODE  // `#` into a borrow-mode type-argument posi
 CAJETA_ERROR_ELEMENT_EXTRACT_MODE   // `#V`-returning extractor on a borrow-mode instantiation
 ```
 
+Borrow-mode **confinement** (element-ownership spec §5.1.1, §8.2.2) extends
+the family to the container *value* itself:
+
+```
+CAJETA_ERROR_BORROW_MODE_CONFINED   // borrow-mode container escapes: field store, `#` return
+CAJETA_ERROR_BORROW_MODE_OWNED      // `#` on a borrow-mode container: type argument, `#` formal
+```
+
 ## What is statically knowable
 
 At an assignment `target.field = src` we classify two things:

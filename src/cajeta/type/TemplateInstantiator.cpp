@@ -406,6 +406,28 @@ namespace cajeta {
                               "(element-ownership spec §8.1)",
                         "CAJETA_ERROR_TYPE_PARAMETER_OWNERSHIP");
                 }
+                // element-ownership §8.2.2 (plan 7.2.2): you cannot `#`-own a
+                // borrow-mode container. It borrows its elements and owns
+                // nothing, so an owning position would carry those borrows
+                // past their scope through a longer-lived owner. Stdlib
+                // template instantiations are transitionally exempt (Unit 8
+                // sweeps them owning and removes this, with the 4B set).
+                if (argClass->isBorrowModeContainer()
+                        && !argClass->isStdlibTemplateInstantiation()) {
+                    throw Exception(
+                        "template " + qName->toCanonical()
+                            + ": '#' on type argument " + std::to_string(i + 1)
+                            + " (" + args[i]->toCanonical()
+                            + ") — cannot own a borrow-mode container: its "
+                              "author-marked '#' element positions were "
+                              "instantiated plain, so it borrows elements it "
+                              "does not own. Fix: make the inner container "
+                              "owning (mark its element arguments '#') so the "
+                              "owner holds a self-contained subtree, or drop "
+                              "this '#' and accept the container's scope "
+                              "confinement (element-ownership spec §8.2.2)",
+                        "CAJETA_ERROR_BORROW_MODE_OWNED");
+                }
                 continue;
             }
             // Non-class, non-array: a primitive. (An integer-constant arg in a

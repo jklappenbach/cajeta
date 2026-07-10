@@ -1013,6 +1013,21 @@ namespace cajeta {
             return i < typeArgumentOwning.size() && typeArgumentOwning[i];
         }
         const vector<bool>& getTypeArgumentOwning() const { return typeArgumentOwning; }
+        // element-ownership §5.1.1 — true when this instantiation left a type
+        // argument plain at a position the template author marked `#` (a
+        // dissolved `#K` formal, or a `#K` extractor return), and that
+        // argument has reference semantics (a borrowed value type is
+        // share/copy-managed — nothing to outlive). Such a container borrows
+        // elements it does not own, so its VALUE is scope-confined: no field
+        // store, no `#` return, no owning containment (§8.2.2). Queried by
+        // the Unit 7 confinement gates. Defined in CajetaClass.cpp.
+        bool isBorrowModeContainer();
+        // Transitional (element-ownership Unit 7, removed by Unit 8): the
+        // confinement gates skip instantiations of STDLIB templates —
+        // stdlib calling conventions (plain `Optional<T>` returns,
+        // `Cache<String,..>` fields) predate the static model and are swept
+        // to owning instantiations in Unit 8, alongside the 4B exemptions.
+        bool isStdlibTemplateInstantiation();
         void setTypeArgumentOwning(vector<bool> v) { typeArgumentOwning = std::move(v); }
         void setTypeParameters(vector<TypeParameter> params) { typeParameters = std::move(params); }
         void setTypeArguments(vector<CajetaTypePtr> args) { typeArguments = std::move(args); }

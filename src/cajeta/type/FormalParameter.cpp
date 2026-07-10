@@ -6,6 +6,7 @@
 #include "../compile/CajetaModule.h"
 #include "../asn/expression/Expression.h"
 #include "../asn/AnnotationParser.h"
+#include "../error/Exception.h"
 #include "CajetaArray.h"
 
 namespace cajeta {
@@ -93,6 +94,30 @@ namespace cajeta {
                             parameter->setTransferred(false);  // §4.2 dissolve
                         }
                         break;
+                    }
+                }
+            }
+            // element-ownership §8.2.2 (plan 7.2.2): a `#` formal takes
+            // ownership of its argument, and a borrow-mode container cannot
+            // be owned — it borrows elements it does not own, so owning it
+            // would carry those borrows past their scope. Checked on the
+            // FINAL transferred state (after the §4.2 dissolution above).
+            // Stdlib template instantiations are transitionally exempt
+            // (removed by the Unit 8 sweep, with the 4B exemptions).
+            if (parameter->isTransferred()) {
+                if (auto pc = dynamic_pointer_cast<CajetaClass>(type)) {
+                    if (pc->isBorrowModeContainer()
+                            && !pc->isStdlibTemplateInstantiation()) {
+                        throw Exception(
+                            "parameter `#" + name + "` takes ownership of "
+                                "borrow-mode container `" + type->toCanonical()
+                                + "` — its author-marked `#` element positions "
+                                "were instantiated plain, so it borrows "
+                                "elements it does not own and cannot be owned. "
+                                "Fix: make the container owning (mark its "
+                                "element type arguments `#`), or drop the `#` "
+                                "and borrow it (element-ownership spec §8.2.2)",
+                            "CAJETA_ERROR_BORROW_MODE_OWNED");
                     }
                 }
             }
