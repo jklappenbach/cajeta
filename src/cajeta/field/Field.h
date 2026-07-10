@@ -57,6 +57,11 @@ namespace cajeta {
         cajeta::CajetaTypePtr type;
         llvm::AllocaInst* alloca;
         llvm::Value* dropEntry = nullptr;
+        // slices 9.2.1 — for OWNING String-element array locals: the stack
+        // sidecar shared by the element-store helpers and the element-walk
+        // drop entry (LocalVariableDeclaration registers both). nullptr for
+        // every other field; element stores fall back to the raw store.
+        llvm::Value* elemOwnSidecar = nullptr;
         bool _hasBorrowCaptures = false;
         // For struct view-mode locals (`Header h = Header(bytes)`):
         // the field this view aliases. Set at LocalVariableDeclaration
@@ -171,6 +176,8 @@ namespace cajeta {
         // when the owner pushes onto the chain.
         llvm::Value* getDropEntry() const { return dropEntry; }
         void setDropEntry(llvm::Value* e) { dropEntry = e; }
+        llvm::Value* getElemOwnSidecar() const { return elemOwnSidecar; }
+        void setElemOwnSidecar(llvm::Value* s) { elemOwnSidecar = s; }
 
         // L3-2: set on function-typed fields that hold a closure with
         // borrow captures. Such a closure is scope-bound — returning it

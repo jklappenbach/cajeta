@@ -1890,6 +1890,33 @@ namespace cajeta {
                 value = module->getBuilder()->CreateLoad(a->getAllocatedType(), a);
             }
         }
+        // slices 9.2.1 — `#arr[i]`: move an element OUT of an owning local
+        // String[]. The runtime take hands back the wrapper, NULLS the slot
+        // (the element walk skips it) and unmarks its owned bit; ownership
+        // rides to the receiving site. Arrays without a sidecar (params,
+        // fields, non-String elements) keep the prior behavior.
+        if (auto aixInner = dynamic_pointer_cast<ArrayIndexExpression>(inner)) {
+            if (value && value->getType()->isPointerTy()
+                    && !aixInner->getChildren().empty()) {
+                if (auto idBase = dynamic_pointer_cast<IdentifierExpression>(
+                        aixInner->getChildren()[0])) {
+                    if (auto scope = module->getScopeStack().peek()) {
+                        if (FieldPtr baseField = scope->getField(
+                                idBase->getTextValue())) {
+                            if (llvm::Value* sidecar =
+                                    baseField->getElemOwnSidecar()) {
+                                if (llvm::Function* takeFn =
+                                        module->getRuntimeFunction(
+                                            "__cajeta_string_array_elem_take")) {
+                                    value = module->getBuilder()->CreateCall(
+                                        takeFn, {sidecar, value}, "elem.take");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(inner)) {
             auto scope = module->getScopeStack().peek();
             if (scope) {

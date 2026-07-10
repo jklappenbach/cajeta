@@ -110,6 +110,74 @@ namespace cajeta {
         emitDropEntryFor(module, field, dropFnName, allocLine);
     }
 
+    // slices 9.2.1 — one extra chain entry per OWNING String-element array
+    // local, pushed right after the storage (free_array) entry so LIFO runs
+    // the element walk BEFORE the buffer frees. obj = a stack sidecar
+    // {arr_slot, storage_entry, owned_bits, owned_cap, stride, header} the
+    // element-store helpers and the walk share; store sites reach it via
+    // field->getElemOwnSidecar(). Pushed in the DECLARING frame (the 9.3.1
+    // placement rule) so loop-body / inner-block stores can't be freed at
+    // the wrong scope exit.
+    static void emitStringArrayElemDropEntry(CajetaModulePtr module,
+            FieldPtr field, const shared_ptr<CajetaArray>& arrType,
+            int allocLine = 0) {
+        DropPushChoice push = pickDropPush(module);
+        llvm::Function* dropFn = module->getRuntimeFunction(
+            "__cajeta_string_array_owned_drop");
+        if (!push.pushFn || !dropFn) return;
+        auto* builder = module->getBuilder();
+        auto& ctx = *module->getLlvmContext();
+        llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+
+        llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+        llvm::IRBuilder<> entryBuilder(&parentFn->getEntryBlock(),
+            parentFn->getEntryBlock().begin());
+        llvm::Value* entryPtr = entryBuilder.CreateAlloca(
+            llvm::ArrayType::get(i8Ty, push.entryBytes));
+        llvm::Value* sidecar = entryBuilder.CreateAlloca(
+            llvm::ArrayType::get(i64Ty, 6), nullptr, "str_arr_sidecar");
+
+        const llvm::DataLayout& dl =
+            module->getLlvmModule()->getDataLayout();
+        uint64_t strideBytes = dl.getTypeAllocSize(
+            arrType->getElementLlvmType(&ctx));
+        uint64_t headerBytes = dl.getTypeAllocSize(arrType->getLlvmType());
+        auto slotAt = [&](unsigned i, const char* nm) -> llvm::Value* {
+            return builder->CreateInBoundsGEP(i64Ty, sidecar,
+                llvm::ConstantInt::get(i64Ty, i), nm);
+        };
+        builder->CreateStore(field->getOrCreateAllocation(),
+            slotAt(0, "sc.arrslot"));
+        llvm::Value* storageEntry = field->getDropEntry();
+        llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
+        builder->CreateStore(storageEntry
+                ? storageEntry
+                : (llvm::Value*) llvm::ConstantPointerNull::get(ptrTy),
+            slotAt(1, "sc.storage"));
+        builder->CreateStore(llvm::ConstantInt::get(i64Ty, 0),
+            slotAt(2, "sc.bits"));
+        builder->CreateStore(llvm::ConstantInt::get(i64Ty, 0),
+            slotAt(3, "sc.cap"));
+        builder->CreateStore(llvm::ConstantInt::get(i64Ty, strideBytes),
+            slotAt(4, "sc.stride"));
+        builder->CreateStore(llvm::ConstantInt::get(i64Ty, headerBytes),
+            slotAt(5, "sc.header"));
+
+        if (push.debug) {
+            llvm::Constant* fileConst = module->getOrCreateSourceFileConstant(
+                module->getSourcePath());
+            llvm::Constant* lineConst = llvm::ConstantInt::get(i32Ty, allocLine);
+            builder->CreateCall(push.pushFn,
+                {entryPtr, sidecar, dropFn, fileConst, lineConst});
+        } else {
+            builder->CreateCall(push.pushFn, {entryPtr, sidecar, dropFn});
+        }
+        if (auto m = module->getCurrentMethod()) m->registerDropEntry(entryPtr);
+        field->setElemOwnSidecar(sidecar);
+    }
+
     // Variant for shared-capable VALUE locals (slice-spec §6.1 drop hook):
     // the drop entry's obj is the value's stack slot ITSELF (the alloca is
     // the storage, not a pointer to be loaded), and the drop fn is the
@@ -1023,6 +1091,24 @@ namespace cajeta {
             // duplicating the drop here double-frees at scope exit.
             if (isArray && !initIsBorrow && !arenaEligible) {
                 emitDropEntryFor(module, field, "__cajeta_free_array", getSourceLine());
+                // slices 9.2.1 — a local String[] owns what its stores TOOK
+                // (the array-slot store already deactivates an identifier
+                // source's drop entry); register the element walk that
+                // finally reclaims them. String-scoped like 9.3.1; general
+                // owned-class elements are the noted follow-up.
+                if (auto arrT = dynamic_pointer_cast<CajetaArray>(type)) {
+                    auto elemCls = dynamic_pointer_cast<CajetaClass>(
+                        arrT->getElementType());
+                    bool elemIsString = elemCls
+                        && !dynamic_pointer_cast<CajetaView>(arrT->getElementType())
+                        && elemCls->getQName()
+                        && elemCls->getQName()->getTypeName() == "String"
+                        && elemCls->getQName()->getPackageName() == "cajeta.lang";
+                    if (elemIsString && !arrT->isInlineArray()) {
+                        emitStringArrayElemDropEntry(module, field, arrT,
+                            getSourceLine());
+                    }
+                }
             }
 
             // Gap 4 — record a live read-borrow on the scope so a later
