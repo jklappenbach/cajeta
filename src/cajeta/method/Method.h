@@ -107,6 +107,14 @@ namespace cajeta {
         // `#`-returning element extractor is valid only on an owning
         // instantiation (a borrow-mode container has no ownership to hand out).
         int originReturnTypeParamIndex = -1;
+        // True when this method was injected by a registered member
+        // synthesizer (source-synthesis facility). Consulted by checks that
+        // distinguish compiler-generated members from user-authored ones —
+        // e.g. the record add-but-not-redefine shadow ban exempts a shadow of
+        // a SYNTHESIZED parent method (each record level gets its own typed
+        // `clone()`; static dispatch picks by declared type, so the shadow is
+        // benign).
+        bool synthesizedMember = false;
         // Cached result of the value-return body scan. -1 = not computed,
         // 0 = false, 1 = true. A method "returns a stack value" iff (it does
         // not transfer ownership and) a return statement hands back a `stack`
@@ -506,6 +514,9 @@ namespace cajeta {
 
         int getOriginReturnTypeParamIndex() const { return originReturnTypeParamIndex; }
         void setOriginReturnTypeParamIndex(int idx) { originReturnTypeParamIndex = idx; }
+
+        bool isSynthesizedMember() const { return synthesizedMember; }
+        void setSynthesizedMember(bool v) { synthesizedMember = v; }
 
         // True iff this method returns a `stack`-constructed value by copy
         // (lowered via the sret + NRVO ABI). Computed lazily by scanning the

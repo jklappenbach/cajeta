@@ -129,6 +129,12 @@ namespace cajeta {
                                 && !seen.insert(memberName).second) {
                             collide(label, memberName);
                         }
+                        if (methodDecl->getMethod()) {
+                            // Mark compiler-generated so member-shape checks
+                            // (record shadow ban) can distinguish it from a
+                            // user-authored method.
+                            methodDecl->getMethod()->setSynthesizedMember(true);
+                        }
                         methodDecl->updateParent(structure);
                         continue;
                     }
@@ -919,6 +925,14 @@ namespace cajeta {
                                             auto& sm = skv.second;
                                             if (!sm || sm->isConstructor()) continue;
                                             if (sm->getModifiers().count(STATIC)) continue;
+                                            // A SYNTHESIZED parent member (e.g.
+                                            // the auto value-clone each record
+                                            // level gets) may be shadowed —
+                                            // static dispatch picks by declared
+                                            // type, so each level's typed copy
+                                            // is benign. The ban protects
+                                            // user-authored behavior only.
+                                            if (sm->isSynthesizedMember()) continue;
                                             if (sm->getName() == m->getName()) {
                                                 return sup;
                                             }

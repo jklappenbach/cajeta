@@ -53,7 +53,7 @@ Status legend:
 |----|------|-------------|--------|-------------|
 | S-101 | `Object` base | Universal root; identity defaults | shipped | `docs/specification/lang/Lang.md` |
 | S-102 | `String` (intrinsic ops) | `+`, contains, indexOf, substring, upper/lower, trim, replace, equals, size, split | shipped | `test/expression/StringMethodsTests.cpp` |
-| S-103 | `String` owned vs view modes | `viewOf`, `toOwned`, lifetime tying | designed | `docs/specification/lang/Lang.md` |
+| S-103 | `String` owned vs view modes | duplication via reserved `clone()` (element-ownership spec §6); the earlier `viewOf`/`toOwned` draft API is disavowed | designed | `docs/specification/lang/Lang.md` |
 | S-104 | `String.fromCodePoints` / `.repeat` / `.lines` / `getBytes` / `codePointAt` / `compare` / `lastIndexOf` | Less common String surface | designed | `docs/specification/lang/Lang.md` |
 | S-105 | `Encoding` enum | Explicit encoding type for String construction | designed | UTF-8 currently hardcoded |
 | S-106 | `Optional<T>` construction + extraction | `isPresent`/`isEmpty`/`get`/`orElse` | shipped | `test/parser/OptionalTests.cpp` (6), `test/parser/OptionalAndAllocateTests.cpp` (6) |
