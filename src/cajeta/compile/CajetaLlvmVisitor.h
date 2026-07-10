@@ -7,6 +7,9 @@
 #include "antlr4-runtime.h"
 #include "CajetaParserVisitor.h"
 #include "CajetaLexer.h"
+#include "cajeta/synth/SourceSynthesis.h"
+#include "cajeta/synth/SourceSynthesisParse.h"
+#include "cajeta/synth/SynthesizerRegistry.h"
 #include "cajeta/type/CajetaClass.h"
 #include "cajeta/type/CajetaArray.h"
 #include "cajeta/type/CajetaView.h"
@@ -43,54 +46,92 @@ namespace cajeta {
             return pModule;
         }
 
-        // @Logged (Cajeta's @Slf4j): synthesize `static Logger log =
-        // Log.defaultFor("<canonical>")` into a class carrying @Logged, so a
-        // ready-to-use `log` is available with no boilerplate. We PARSE a
-        // class-body fragment rather than hand-build the AST — the call's
-        // MethodCallExpression / String-literal nodes only have parser-context
-        // constructors — so the field flows through the normal pipeline:
-        // FieldDeclaration -> StructureProperty (with a real call initializer)
-        // -> generateStaticInitializers emits the clinit. Fully-qualified names
-        // dodge the user class's (absent) imports. The ANTLR pipeline is leaked
-        // on purpose: the produced AST holds token pointers into it that the
-        // later clinit codegen dereferences.
-        void synthesizeLoggerField(CajetaClassPtr structure) {
-            // Respect a user-declared `log` — don't clobber or double-add.
-            for (auto& prop : structure->getPropertyList()) {
-                if (prop && prop->getName() == "log") return;
+        // Run every registered member synthesizer that claims `structure`
+        // (source-synthesis facility, spec §3). Each returns a `{ ... }` class-
+        // body fragment + the short-name imports it needs; we inject the imports
+        // (only-when-unbound), parse the fragment, and reparent each member onto
+        // the target — the field then flows through the normal pipeline
+        // (FieldDeclaration -> StructureProperty -> generateStaticInitializers).
+        // The parse pipeline is leaked on purpose (the AST holds token pointers
+        // later clinit codegen dereferences). Members compose (several
+        // synthesizers may inject into one class); a name that collides with an
+        // existing or already-synthesized member is a loud error, not
+        // last-writer-wins. A synthesizer that validates-first and rejects throws
+        // through collectMembers as a user-attributed compile error.
+        // `@Logged` is now a registered member synthesizer (see
+        // registerBuiltinSynthesizers); this replaced the hard-wired
+        // synthesizeLoggerField.
+        void runMemberSynthesizers(CajetaClassPtr structure) {
+            if (!structure) return;
+            cajeta::synth::registerBuiltinSynthesizers();
+            cajeta::synth::SynthesisContext ctx;
+            ctx.parent = structure;
+            ctx.module = pModule;
+            auto claimed = cajeta::synth::SynthesizerRegistry::instance()
+                .collectMembers(ctx);
+            if (claimed.empty()) return;
+            // Snapshot every existing member name (fields + methods) so a
+            // synthesized member colliding with a user-declared one — or with a
+            // member injected by an earlier synthesizer — is a loud error, not
+            // last-writer-wins (spec §2 [S2]).
+            std::set<std::string> seen;
+            for (auto& p : structure->getPropertyList()) {
+                if (p) seen.insert(p->getName());
             }
-            std::string canonical = structure->getQName()->toCanonical();
-            // The initializer uses SHORT names (`Logger`/`Log`), so inject the
-            // matching imports into the module — a fully-qualified static call
-            // (`org.cajeta.logging.Log.defaultFor(...)`) silently resolves to
-            // null in expression position. Inject only when the short name is
-            // otherwise unbound, so a user's own `Log`/`Logger` import wins.
-            auto& imports = pModule->getImports();
-            if (imports.find("Logger") == imports.end()) {
-                imports["Logger"]["org.cajeta.logging"] =
-                    QualifiedName::getOrInsert("Logger", "org.cajeta.logging");
+            for (auto& kv : structure->getMethods()) {
+                if (kv.second) seen.insert(kv.second->getName());
             }
-            if (imports.find("Log") == imports.end()) {
-                imports["Log"]["org.cajeta.logging"] =
-                    QualifiedName::getOrInsert("Log", "org.cajeta.logging");
-            }
-            std::string src = "{ static Logger log = "
-                "Log.defaultFor(\"" + canonical + "\"); }";
-            auto* input = new antlr4::ANTLRInputStream(src);
-            auto* lexer = new CajetaLexer(input);
-            auto* tokens = new antlr4::CommonTokenStream(lexer);
-            tokens->fill();
-            auto* parser = new CajetaParser(tokens);
-            auto* body = parser->classBody();
-            for (auto* cbd : body->classBodyDeclaration()) {
-                MemberDeclarationPtr mem;
-                try {
-                    mem = std::any_cast<MemberDeclarationPtr>(
-                        visitClassBodyDeclaration(cbd));
-                } catch (...) { continue; }
-                if (auto fieldDecl =
-                        std::dynamic_pointer_cast<FieldDeclaration>(mem)) {
-                    fieldDecl->updateParent(structure);
+            auto collide = [&](const string& label, const string& memberName) {
+                throw Exception(
+                    "source-synthesis member collision: synthesizer '"
+                        + label + "' injects member '" + memberName
+                        + "' which already exists on "
+                        + structure->getQName()->toCanonical()
+                        + " — no last-writer-wins",
+                    "CAJETA_ERROR_SYNTH_MEMBER_COLLISION");
+            };
+            for (auto& [label, res] : claimed) {
+                for (auto& imp : res.imports) {
+                    cajeta::synth::injectImportIfUnbound(pModule, imp.first, imp.second);
+                }
+                auto* body = cajeta::synth::parseClassBodyFragment(res.classBodyFragment);
+                for (auto* cbd : body->classBodyDeclaration()) {
+                    MemberDeclarationPtr mem;
+                    try {
+                        mem = std::any_cast<MemberDeclarationPtr>(
+                            visitClassBodyDeclaration(cbd));
+                    } catch (ReuseHazardAbort&) {
+                        throw;  // reuse rollback must reach the compile driver
+                    } catch (...) { continue; }
+                    // A synthesized member is either a FIELD (@Logged's static
+                    // Logger) or a METHOD (Table<T>'s column accessors, Unit 5).
+                    // Both reparent onto the target and flow through the normal
+                    // pipeline; collision is checked on the member's name.
+                    if (auto fieldDecl =
+                            std::dynamic_pointer_cast<FieldDeclaration>(mem)) {
+                        std::size_t before = structure->getPropertyList().size();
+                        fieldDecl->updateParent(structure);
+                        auto& plist = structure->getPropertyList();
+                        auto it = plist.begin();
+                        std::advance(it, before);
+                        for (; it != plist.end(); ++it) {
+                            if (*it && !seen.insert((*it)->getName()).second) {
+                                collide(label, (*it)->getName());
+                            }
+                        }
+                        continue;
+                    }
+                    if (auto methodDecl =
+                            std::dynamic_pointer_cast<MethodDeclaration>(mem)) {
+                        const string memberName = methodDecl->getMethod()
+                            ? methodDecl->getMethod()->getName() : string();
+                        if (!memberName.empty()
+                                && !seen.insert(memberName).second) {
+                            collide(label, memberName);
+                        }
+                        methodDecl->updateParent(structure);
+                        continue;
+                    }
                 }
             }
         }
@@ -177,12 +218,7 @@ namespace cajeta {
             if (expr.empty()) return;
             string src = "{ public static boolean operator== (" + typeName
                 + " a, " + typeName + " b) { return " + expr + "; } }";
-            auto* input = new antlr4::ANTLRInputStream(src);
-            auto* lexer = new CajetaLexer(input);
-            auto* tokens = new antlr4::CommonTokenStream(lexer);
-            tokens->fill();
-            auto* parser = new CajetaParser(tokens);
-            auto* body = parser->classBody();
+            auto* body = cajeta::synth::parseClassBodyFragment(src);
             for (auto* cbd : body->classBodyDeclaration()) {
                 MemberDeclarationPtr mem;
                 try {
@@ -741,13 +777,13 @@ namespace cajeta {
                     CajetaModule::registerFactory(fdesc);
                 }
             }
-            // @Logged: synthesize the auto-logger static field BEFORE the
-            // prototype is built, so the new `log` is laid out and resolves as a
-            // bare identifier inside the class's method bodies. Templates re-run
-            // visitClassDeclaration per instantiation, so they synthesize then.
-            if (!structure->isTemplate() && structure->findAnnotation("Logged")) {
-                synthesizeLoggerField(structure);
-            }
+            // Member synthesizers (@Logged, and instantiation-time member synth
+            // like Table<T>) fire BEFORE the prototype is built, so injected
+            // members are laid out and resolve as bare identifiers inside the
+            // class's method bodies. Templates re-run visitClassDeclaration per
+            // instantiation, so they synthesize then. Each synthesizer self-
+            // selects (returns nullopt when it doesn't apply).
+            runMemberSynthesizers(structure);
             // Template records synthesize per-instantiation (future work);
             // the template body walk is skipped so there are no fields here.
             if (isRecord && !structure->isTemplate()) {
@@ -1350,6 +1386,65 @@ namespace cajeta {
             }
             for (auto& modifierContext: ctx->modifier()) {
                 memberDeclaration->onModifier(any_cast<Modifier>(visitModifier(modifierContext)));
+            }
+
+            // Declaration-time body synthesis (source-synthesis facility, spec
+            // §4 / §1.5's body × declaration-time cell — @Einsum). A bodyless
+            // (abstract) annotated method offers its resolved declaration to
+            // the body registry. A claiming synthesizer validates against the
+            // signature FIRST (throwing user-attributed errors, spec §6) and
+            // returns a `{ ... }` body block; we splice it over the
+            // declaration's trailing `;` and re-visit, so the synthesized
+            // method re-checks and codegens as ordinary code (spec §5). The
+            // re-visited declaration HAS a body — not abstract — so this hook
+            // cannot recurse. Method templates keep their instantiation-time
+            // dispatch (MethodTemplateInstantiator); interface members never
+            // reach this visitor path.
+            if (auto methodDecl = std::dynamic_pointer_cast<MethodDeclaration>(memberDeclaration)) {
+                auto m = methodDecl->getMethod();
+                if (m && m->isAbstract() && !m->getAnnotationInstances().empty()) {
+                    cajeta::synth::registerBuiltinSynthesizers();
+                    cajeta::synth::SynthesisContext sctx;
+                    sctx.parent = pModule->getStructureStack().empty()
+                        ? nullptr : pModule->getStructureStack().back();
+                    sctx.module = pModule;
+                    sctx.methodName = m->getName();
+                    for (auto& p : m->getParameterList()) {
+                        if (p && p->getName() != "this") {
+                            sctx.paramTypes.push_back(p->getType());
+                        }
+                    }
+                    sctx.method = m;
+                    if (auto body = cajeta::synth::SynthesizerRegistry::instance()
+                            .dispatchBody(sctx)) {
+                        auto* startTok = ctx->getStart();
+                        auto* stopTok = ctx->getStop();
+                        if (startTok && stopTok && startTok->getInputStream()) {
+                            antlr4::misc::Interval interval(
+                                startTok->getStartIndex(), stopTok->getStopIndex());
+                            std::string declText =
+                                startTok->getInputStream()->getText(interval);
+                            auto semi = declText.rfind(';');
+                            if (semi != std::string::npos) {
+                                declText = declText.substr(0, semi) + " " + *body;
+                                // 6.4 debug aid: same CAJETA_DUMP_IR switch the
+                                // template-instantiation dispatch uses.
+                                if (const char* dump = std::getenv("CAJETA_DUMP_IR")) {
+                                    if (dump[0] == '1') {
+                                        std::cerr << "[Synthesizer] body for "
+                                            << m->getName() << ":\n"
+                                            << declText << "\n";
+                                    }
+                                }
+                                auto* frag = cajeta::synth::parseClassBodyFragment(
+                                    "{ " + declText + " }");
+                                for (auto* cbd : frag->classBodyDeclaration()) {
+                                    return visitClassBodyDeclaration(cbd);
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             // Method-level template post-check (docs/specification/
