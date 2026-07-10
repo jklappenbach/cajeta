@@ -76,6 +76,16 @@ escaping via a different door: the **field-store edge** instead of the
 return edge. The design intent is to extend the *existing* escape
 analysis to this edge, not to build a parallel system.
 
+The element-ownership call-site checks (element-ownership spec §3.1.3–5)
+report through this same escape/ownership family — the **call edge**:
+
+```
+CAJETA_ERROR_BORROW_PARAM_ESCAPES   // `#x` forwards a borrowed parameter (#68 3a)
+CAJETA_ERROR_TRANSFER_REQUIRED      // owned local into a `#T` formal without `#` (#68 2)
+CAJETA_ERROR_ELEMENT_TRANSFER_MODE  // `#` into a borrow-mode type-argument position
+CAJETA_ERROR_ELEMENT_EXTRACT_MODE   // `#V`-returning extractor on a borrow-mode instantiation
+```
+
 ## What is statically knowable
 
 At an assignment `target.field = src` we classify two things:

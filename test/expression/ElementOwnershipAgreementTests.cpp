@@ -25,10 +25,17 @@ int32_t runI32(const std::string& src) {
     return fn();
 }
 
-std::string compileExpectError(const std::string& src) {
+// Compile expecting an error; returns the message and (4.1.5) asserts the
+// STABLE diagnostic code. The `--diag-format=json` rendering of any errorId
+// as the `code` field is pinned by the existing DiagFormat tests (main.cpp
+// routes every cajeta::Exception through emitJsonDiagnostic), so asserting
+// the id here pins the full machine-readable surface.
+std::string compileExpectError(const std::string& src,
+                               const std::string& expectCode) {
     try {
         CajetaJit::compile(src, "test.D");
     } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), expectCode);
         return e.getMessage();
     } catch (const std::exception& e) {
         return e.what();
@@ -63,7 +70,7 @@ TEST(ElementOwnershipAgreementTests, hashTransferIntoBorrowModeIsCompileError) {
         "        return 0;\n"
         "    }\n"
         "}\n";
-    std::string msg = compileExpectError(src);
+    std::string msg = compileExpectError(src, "CAJETA_ERROR_ELEMENT_TRANSFER_MODE");
     EXPECT_NE(msg.find("borrow"), std::string::npos) << msg;
     EXPECT_NE(msg.find("#"), std::string::npos) << msg;
     EXPECT_NE(msg.find("Crate"), std::string::npos) << msg;
@@ -112,7 +119,7 @@ TEST(ElementOwnershipAgreementTests, extractorOnBorrowModeIsCompileError) {
         "        return got.tag;\n"
         "    }\n"
         "}\n";
-    std::string msg = compileExpectError(src);
+    std::string msg = compileExpectError(src, "CAJETA_ERROR_ELEMENT_EXTRACT_MODE");
     EXPECT_NE(msg.find("take"), std::string::npos) << msg;
     EXPECT_NE(msg.find("own"), std::string::npos) << msg;
 }
@@ -148,7 +155,7 @@ TEST(ElementOwnershipAgreementTests, plainOwnedLocalIntoOwningPositionIsCompileE
         "        return 0;\n"
         "    }\n"
         "}\n";
-    std::string msg = compileExpectError(src);
+    std::string msg = compileExpectError(src, "CAJETA_ERROR_TRANSFER_REQUIRED");
     EXPECT_NE(msg.find("#e"), std::string::npos) << msg;   // names the fix
     EXPECT_NE(msg.find("ownership"), std::string::npos) << msg;
 }
