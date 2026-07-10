@@ -1075,6 +1075,19 @@ namespace cajeta {
         CajetaModule::buildPendingPrototypes();
         CajetaModule::setActiveModule(prevActive);
 
+        // An EAGER stdlib class (e.g. cajeta.xpu.Qem / CooperativeMatrix) can
+        // reference a LAZY type (Matrix → cajeta.math), which the import hook
+        // only PRESCANS + enqueues (noteStdlibImportImpl). The non-reuse path
+        // drains on the next user-source parse (drainLazyStdlib), but the
+        // stdlib-reuse prime goes straight from here to codegen — so drain
+        // here to fully parse any lazy package the eager prime enqueued,
+        // filling its placeholders. Else runCodegenPasses'
+        // validatePlaceholders throws CAJETA_ERROR_UNRESOLVED_PLACEHOLDER
+        // (e.g. bare "Matrix"). Idempotent / no-op when the queue is empty,
+        // so the non-reuse path is unaffected. (compile-cache 0.1, ported
+        // from feature/compile-cache 03764c17.)
+        drainLazyStdlib();
+
         emitUnrecoverableMarker(stdlib);
         return stdlib;
     }

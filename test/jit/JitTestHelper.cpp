@@ -243,12 +243,17 @@ struct StdlibReuseCache {
 
     void ensurePrimed() {
         if (primed) return;
+        // [compile-cache plan Unit 1] phase-split instrumentation, env-gated.
+        const bool kPrimeTiming = std::getenv("CAJETA_PRIME_TIMING") != nullptr;
+        auto _ptStart = std::chrono::steady_clock::now();
         cajeta::Compiler::setSharedContext(&sharedContext);
         // First Compiler under the shared context primes the global type
         // tables (resetGlobals + init) in that context.
         primeCompiler = std::make_unique<cajeta::Compiler>();
-        primeCompiler->ensureStdlibModule();            // parse stdlib once
-        runCodegenPasses(primeCompiler->getModules());   // codegen stdlib bodies + static inits
+        primeCompiler->ensureStdlibModule();            // (a) front-end: parse + typecheck stdlib
+        auto _ptAfterFrontEnd = std::chrono::steady_clock::now();
+        runCodegenPasses(primeCompiler->getModules());   // (b) IR-gen: codegen bodies + static inits
+        auto _ptAfterIrGen = std::chrono::steady_clock::now();
         stdlibModule = cajeta::CajetaModule::getStdlibModule();
         // Snapshot the pristine state AFTER the stdlib is fully built.
         cajeta::CajetaType::captureBaseline();
@@ -271,6 +276,18 @@ struct StdlibReuseCache {
         for (auto& G : stdlibModule->getLlvmModule()->globals())
             if (G.hasName()) baselineGlobalNames.insert(G.getName().str());
         primed = true;
+        if (kPrimeTiming) {
+            auto _ptEnd = std::chrono::steady_clock::now();
+            auto ms = [](auto a, auto b) {
+                return (long long)std::chrono::duration_cast<std::chrono::milliseconds>(b - a).count();
+            };
+            // (c) JIT native-compile is lazy (ORC materializes on first call at test
+            // time) — measure it as (first-test wall-clock − test logic), not here.
+            std::fprintf(stderr,
+                "[CAJETA_PRIME_TIMING] front_end_a=%lldms ir_gen_b=%lldms baseline=%lldms total_prime=%lldms\n",
+                ms(_ptStart, _ptAfterFrontEnd), ms(_ptAfterFrontEnd, _ptAfterIrGen),
+                ms(_ptAfterIrGen, _ptEnd), ms(_ptStart, _ptEnd));
+        }
     }
 
     // Diagnostic (CAJETA_STDLIB_VERIFY=1): after a reusing test's codegen, check
