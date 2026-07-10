@@ -70,10 +70,26 @@ namespace cajeta {
             auto claimed = cajeta::synth::SynthesizerRegistry::instance()
                 .collectMembers(ctx);
             if (claimed.empty()) return;
+            // Snapshot every existing member name (fields + methods) so a
+            // synthesized member colliding with a user-declared one — or with a
+            // member injected by an earlier synthesizer — is a loud error, not
+            // last-writer-wins (spec §2 [S2]).
             std::set<std::string> seen;
             for (auto& p : structure->getPropertyList()) {
                 if (p) seen.insert(p->getName());
             }
+            for (auto& kv : structure->getMethods()) {
+                if (kv.second) seen.insert(kv.second->getName());
+            }
+            auto collide = [&](const string& label, const string& memberName) {
+                throw Exception(
+                    "source-synthesis member collision: synthesizer '"
+                        + label + "' injects member '" + memberName
+                        + "' which already exists on "
+                        + structure->getQName()->toCanonical()
+                        + " — no last-writer-wins",
+                    "CAJETA_ERROR_SYNTH_MEMBER_COLLISION");
+            };
             for (auto& [label, res] : claimed) {
                 for (auto& imp : res.imports) {
                     cajeta::synth::injectImportIfUnbound(pModule, imp.first, imp.second);
@@ -84,25 +100,37 @@ namespace cajeta {
                     try {
                         mem = std::any_cast<MemberDeclarationPtr>(
                             visitClassBodyDeclaration(cbd));
+                    } catch (ReuseHazardAbort&) {
+                        throw;  // reuse rollback must reach the compile driver
                     } catch (...) { continue; }
-                    auto fieldDecl =
-                        std::dynamic_pointer_cast<FieldDeclaration>(mem);
-                    if (!fieldDecl) continue;
-                    std::size_t before = structure->getPropertyList().size();
-                    fieldDecl->updateParent(structure);
-                    auto& plist = structure->getPropertyList();
-                    auto it = plist.begin();
-                    std::advance(it, before);
-                    for (; it != plist.end(); ++it) {
-                        if (*it && !seen.insert((*it)->getName()).second) {
-                            throw Exception(
-                                "source-synthesis member collision: synthesizer '"
-                                    + label + "' injects member '" + (*it)->getName()
-                                    + "' which already exists on "
-                                    + structure->getQName()->toCanonical()
-                                    + " — no last-writer-wins",
-                                "CAJETA_ERROR_SYNTH_MEMBER_COLLISION");
+                    // A synthesized member is either a FIELD (@Logged's static
+                    // Logger) or a METHOD (Table<T>'s column accessors, Unit 5).
+                    // Both reparent onto the target and flow through the normal
+                    // pipeline; collision is checked on the member's name.
+                    if (auto fieldDecl =
+                            std::dynamic_pointer_cast<FieldDeclaration>(mem)) {
+                        std::size_t before = structure->getPropertyList().size();
+                        fieldDecl->updateParent(structure);
+                        auto& plist = structure->getPropertyList();
+                        auto it = plist.begin();
+                        std::advance(it, before);
+                        for (; it != plist.end(); ++it) {
+                            if (*it && !seen.insert((*it)->getName()).second) {
+                                collide(label, (*it)->getName());
+                            }
                         }
+                        continue;
+                    }
+                    if (auto methodDecl =
+                            std::dynamic_pointer_cast<MethodDeclaration>(mem)) {
+                        const string memberName = methodDecl->getMethod()
+                            ? methodDecl->getMethod()->getName() : string();
+                        if (!memberName.empty()
+                                && !seen.insert(memberName).second) {
+                            collide(label, memberName);
+                        }
+                        methodDecl->updateParent(structure);
+                        continue;
                     }
                 }
             }

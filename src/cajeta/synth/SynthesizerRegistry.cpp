@@ -106,6 +106,47 @@ namespace cajeta::synth {
             r.imports = {{"Logger", "org.cajeta.logging"}, {"Log", "org.cajeta.logging"}};
             return r;
         });
+
+        // Table<T>: a member, instantiation-time synthesizer (spec §3.4, the
+        // 2x2's member/instantiation-time cell). On a concrete `Table<Tick>`,
+        // reflect the record type argument's fields and inject one typed column
+        // accessor per field — the direct downstream consumer of the
+        // T.class-in-template fix (records 7.1.2). Self-selects on the
+        // instantiation of a template named `Table` with a single record arg;
+        // the production binding is `dev.cajeta.nucleo.frame.Table`, but the
+        // Unit-5 shell is a test-local stand-in (a reference class holding one
+        // `T sample` row), so the gate is name + record-arg, package-agnostic.
+        // Each accessor projects its field off `sample`; a non-record arg (no
+        // fields to reflect) or a wrong arity declines. Determinism/memoization
+        // rides the instantiation cache — this fires once per monomorphization.
+        reg.registerMember("table",
+                [](const SynthesisContext& c) -> std::optional<MemberSynthesisResult> {
+            auto structure = c.parent;
+            if (!structure || !structure->isInstantiation()) return std::nullopt;
+            auto origin = structure->getTemplateOrigin();
+            if (!origin || !origin->getQName()
+                    || origin->getQName()->getTypeName() != "Table") {
+                return std::nullopt;
+            }
+            const auto& args = structure->getTypeArguments();
+            if (args.size() != 1) return std::nullopt;
+            auto record = std::dynamic_pointer_cast<CajetaClass>(args[0]);
+            if (!record || !record->isRecordType()) return std::nullopt;
+            std::string frag = "{ ";
+            for (auto& prop : record->getPropertyList()) {
+                if (!prop || prop->isStatic()) continue;
+                auto ft = prop->getType();
+                if (!ft || !ft->getQName()) continue;
+                const std::string typeName = ft->getQName()->getTypeName();
+                const std::string fieldName = prop->getName();
+                frag += "public " + typeName + " " + fieldName
+                    + "() { return this.sample." + fieldName + "; } ";
+            }
+            frag += "}";
+            MemberSynthesisResult r;
+            r.classBodyFragment = std::move(frag);
+            return r;
+        });
     }
 
 }

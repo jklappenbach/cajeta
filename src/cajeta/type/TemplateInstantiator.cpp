@@ -883,6 +883,19 @@ namespace cajeta {
             }
         }
 
+        // Instantiation-time member synthesis (source-synthesis facility,
+        // spec §1.5 member/instantiation-time cell). The declaration-time seam
+        // in visitClassDeclaration never ran for this concrete class — the
+        // instantiation body is walked via visitClassBody above — so run the
+        // registered member synthesizers here, with type args now bound. This
+        // is where `Table<Tick>` reflects Tick's fields and injects one typed
+        // column accessor per field (Unit 5). The substitution frame is still
+        // pushed (popped below), and it runs BEFORE generatePrototype so the
+        // injected members are laid out and lowered like any other. The
+        // instantiation cache above makes this fire once per monomorphization,
+        // which is the memoization the accessor set needs (spec §8.3).
+        visitor.runMemberSynthesizers(inst);
+
         // Emit target was set on `inst` before the walk and propagated to each
         // method at construction (Method ctor reads parent->getEmitModule()), so
         // any IR the walk emitted already targets the emit module — no
