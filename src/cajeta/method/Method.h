@@ -100,6 +100,13 @@ namespace cajeta {
         // transfers ownership of the returned value to its caller. See
         // `MemoryModel.md` § Function signatures.
         bool returnsOwnership = false;
+        // element-ownership §4.1.4 (plan 4A): which enclosing-class type
+        // parameter the declared return type came from (`#K take()` → index of
+        // K), or -1. Recorded during the instantiation body walk; the call-site
+        // extractor gate (4B) pairs it with isTypeArgumentOwning — a
+        // `#`-returning element extractor is valid only on an owning
+        // instantiation (a borrow-mode container has no ownership to hand out).
+        int originReturnTypeParamIndex = -1;
         // Cached result of the value-return body scan. -1 = not computed,
         // 0 = false, 1 = true. A method "returns a stack value" iff (it does
         // not transfer ownership and) a return statement hands back a `stack`
@@ -496,6 +503,9 @@ namespace cajeta {
 
         bool isReturnsOwnership() const { return returnsOwnership; }
         void setReturnsOwnership(bool v) { returnsOwnership = v; }
+
+        int getOriginReturnTypeParamIndex() const { return originReturnTypeParamIndex; }
+        void setOriginReturnTypeParamIndex(int idx) { originReturnTypeParamIndex = idx; }
 
         // True iff this method returns a `stack`-constructed value by copy
         // (lowered via the sret + NRVO ABI). Computed lazily by scanning the

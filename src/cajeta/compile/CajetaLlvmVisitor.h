@@ -1861,6 +1861,30 @@ namespace cajeta {
             if (ctx->typeTypeOrVoid() && ctx->typeTypeOrVoid()->REFERENCE() != nullptr) {
                 method->setReturnsOwnership(true);
             }
+            // element-ownership §4.1.4 (plan 4A): return→type-param provenance.
+            // During an instantiation body walk the parse tree still spells the
+            // declared return type as the parameter name (`#K take()`); record
+            // which type parameter it came from so the call-site extractor gate
+            // (4B) can pair it with isTypeArgumentOwning. NOT dissolved under a
+            // borrow instantiation — spec §4.1.4 makes calling the extractor an
+            // ERROR there, not a silent borrow.
+            {
+                auto encl = pModule->getStructureStack().empty()
+                    ? nullptr : pModule->getStructureStack().back();
+                if (encl && encl->isInstantiation()
+                        && ctx->typeTypeOrVoid()
+                        && ctx->typeTypeOrVoid()->typeType()) {
+                    const string declaredRet =
+                        ctx->typeTypeOrVoid()->typeType()->getText();
+                    const auto& tps = encl->getTypeParameters();
+                    for (size_t k = 0; k < tps.size(); ++k) {
+                        if (declaredRet == tps[k].name) {
+                            method->setOriginReturnTypeParamIndex((int) k);
+                            break;
+                        }
+                    }
+                }
+            }
             // `throws T1, T2` — advisory list of RecoverableException
             // subtypes the body may produce. Carried on the Method for the
             // lint pass; no enforcement here. See ErrorModel.md.

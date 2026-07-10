@@ -223,3 +223,91 @@ TEST(ElementOwnershipModeTests, sourceLevelHashOnPrimitiveIsCompileError) {
     Compiler compiler;
     EXPECT_ANY_THROW(compileForInspection(compiler, src, "test.Ut"));
 }
+
+// ---------------------------------------------------------------------------
+// Unit 4A — provenance + `#` dissolution at monomorphization (spec §3.1.1-2,
+// §4.2, §4.1.4). An author `#K` formal is a real transfer position only under
+// an owning type argument; under a plain instantiation it dissolves to a
+// borrow. Both instantiations record which type parameter the formal / return
+// came from, so the call-site agreement check (4B) can pair position with mode.
+// ---------------------------------------------------------------------------
+
+TEST(ElementOwnershipModeTests, authorHashFormalDissolvesUnderBorrowMode) {
+    auto src =
+        "package test;\n"
+        "public class Elem { }\n"
+        "public class Cache<K> {\n"
+        "  public K store;\n"
+        "  public void put(#K k) { }\n"
+        "  public #K take() { return null; }\n"
+        "}\n"
+        "public class Ut {\n"
+        "  public Cache<#Elem> owned;\n"
+        "  public Cache<Elem> scratch;\n"
+        "  public static int32 run() { return 0; }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.Ut");
+
+    CajetaClassPtr owning, borrow;
+    for (auto& [name, klass] : module->getStructures()) {
+        if (name.rfind("test.Cache<", 0) != 0 || !klass) continue;
+        if (klass->isTypeArgumentOwning(0)) owning = klass;
+        else borrow = klass;
+    }
+    ASSERT_NE(owning, nullptr);
+    ASSERT_NE(borrow, nullptr);
+
+    auto findMethod = [](const CajetaClassPtr& cls, const std::string& mname)
+            -> cajeta::MethodPtr {
+        for (auto& kv : cls->getMethods()) {
+            if (kv.second && kv.second->getName() == mname) return kv.second;
+        }
+        return nullptr;
+    };
+    auto formalOf = [](const cajeta::MethodPtr& m, const std::string& pname)
+            -> cajeta::FormalParameterPtr {
+        for (auto& fp : m->getParameterList()) {
+            if (fp && fp->getName() == pname) return fp;
+        }
+        return nullptr;
+    };
+
+    // put(#K k): owning mode keeps the transfer; borrow mode dissolves it.
+    // Both record the K provenance (index 0).
+    auto owningPut = findMethod(owning, "put");
+    auto borrowPut = findMethod(borrow, "put");
+    ASSERT_NE(owningPut, nullptr);
+    ASSERT_NE(borrowPut, nullptr);
+    auto owningK = formalOf(owningPut, "k");
+    auto borrowK = formalOf(borrowPut, "k");
+    ASSERT_NE(owningK, nullptr);
+    ASSERT_NE(borrowK, nullptr);
+    EXPECT_TRUE(owningK->isTransferred());
+    EXPECT_FALSE(borrowK->isTransferred());   // §4.2 dissolved
+    EXPECT_EQ(owningK->getOriginTypeParamIndex(), 0);
+    EXPECT_EQ(borrowK->getOriginTypeParamIndex(), 0);
+
+    // #K take(): return provenance recorded on both; NOT dissolved (the
+    // borrow-mode call is 4B's extractor error, not a silent borrow).
+    auto owningTake = findMethod(owning, "take");
+    auto borrowTake = findMethod(borrow, "take");
+    ASSERT_NE(owningTake, nullptr);
+    ASSERT_NE(borrowTake, nullptr);
+    EXPECT_TRUE(owningTake->isReturnsOwnership());
+    EXPECT_TRUE(borrowTake->isReturnsOwnership());
+    EXPECT_EQ(owningTake->getOriginReturnTypeParamIndex(), 0);
+    EXPECT_EQ(borrowTake->getOriginReturnTypeParamIndex(), 0);
+
+    // The concrete-class control: Elem's methods carry no provenance.
+    auto elem = std::dynamic_pointer_cast<cajeta::CajetaClass>(
+        module->getStructures()["test.Elem"]);
+    ASSERT_NE(elem, nullptr);
+    for (auto& kv : elem->getMethods()) {
+        if (!kv.second) continue;
+        EXPECT_EQ(kv.second->getOriginReturnTypeParamIndex(), -1);
+        for (auto& fp : kv.second->getParameterList()) {
+            if (fp) EXPECT_EQ(fp->getOriginTypeParamIndex(), -1);
+        }
+    }
+}

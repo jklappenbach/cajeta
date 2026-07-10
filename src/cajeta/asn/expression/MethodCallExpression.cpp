@@ -7548,6 +7548,22 @@ namespace cajeta {
                         auto pf = std::dynamic_pointer_cast<ParameterField>(field);
                         if (pf) {
                             auto formal = pf->getFormalParameter();
+                            // element-ownership §4.2 (plan 4A), transitive
+                            // dissolution: the template body spells `#x` once
+                            // for both modes. When x's own formal was an
+                            // authored `#K` that DISSOLVED under this borrow
+                            // instantiation, the body's forward-`#` dissolves
+                            // with it — plain borrow, no transfer, no drop
+                            // deactivation, no moveMask bit — instead of
+                            // tripping the borrowed-param escape below. A
+                            // plain-K formal forwarded with `#` (authored
+                            // borrow) stays a genuine error.
+                            if (formal && !formal->isTransferred()
+                                    && formal->wasAuthoredTransferred()
+                                    && formal->getOriginTypeParamIndex() >= 0) {
+                                parameters[i].callerTransferred = false;
+                                continue;
+                            }
                             if (formal && !formal->isTransferred()) {
                                 auto klass = std::dynamic_pointer_cast<CajetaClass>(
                                     field->getType());
