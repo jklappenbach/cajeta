@@ -9,6 +9,7 @@
 namespace cajeta {
 
     class CajetaFunctionType;
+    class CajetaClass;
 
     struct MethodCallParameter {
         string label;
@@ -81,6 +82,17 @@ namespace cajeta {
         bool resolvedReturnsOwnership = false;
     public:
         bool isResolvedReturnsOwnership() const { return resolvedReturnsOwnership; }
+
+        // element-ownership 3.4.3 / slices 9.4.1 — statement-end temp
+        // classification, shared with the ctor-arg site (ClassCreatorRest).
+        // freshOwnedStringTemp: anonymous owned-String rvalue (inline concat
+        // or #String-returning call). freshSharedValueTempClass: a call
+        // result of a shared-capable VALUE type (Utf8 / Slice / aggregates
+        // embedding them) — every such rvalue carries its stakes with the
+        // bytes; returns the class for the release emit, or null.
+        static bool freshOwnedStringTemp(const AbstractSyntaxNodePtr& e);
+        static shared_ptr<CajetaClass> freshSharedValueTempClass(
+            const AbstractSyntaxNodePtr& e);
         CajetaTypePtr getPreProjectionReturnType() const {
             return preProjectionReturnType;
         }

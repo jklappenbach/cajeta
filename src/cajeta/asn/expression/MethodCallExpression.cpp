@@ -413,7 +413,7 @@ namespace cajeta {
     // classify; borrow-returning calls (plain getters) keep their flag
     // false. Consumers emit the guarded __cajeta_string_drop for temps that
     // no formal took ownership of.
-    static bool freshOwnedStringTemp(const AbstractSyntaxNodePtr& e) {
+    bool MethodCallExpression::freshOwnedStringTemp(const AbstractSyntaxNodePtr& e) {
         auto isLangString = [](CajetaTypePtr t) -> bool {
             auto cls = dynamic_pointer_cast<CajetaClass>(t);
             return cls && cls->getQName()
@@ -430,6 +430,24 @@ namespace cajeta {
                 && isLangString(amce->getResolvedType());
         }
         return false;
+    }
+
+    // slices 9.4.1, value half — a call result of a shared-capable VALUE
+    // type. Unlike String there is no returns-ownership distinction: every
+    // value rvalue carries its stakes with the bytes (the LVD/ASSIGN hooks'
+    // rvalue rule), so any such call-result temp needs a statement-end
+    // release. The runtime release is tag-gated, so Inline/static results
+    // no-op. Named locals / field reads never classify (lvalues; their
+    // owner releases).
+    shared_ptr<CajetaClass> MethodCallExpression::freshSharedValueTempClass(
+            const AbstractSyntaxNodePtr& e) {
+        auto amce = dynamic_pointer_cast<MethodCallExpression>(e);
+        if (!amce) return nullptr;
+        auto cls = dynamic_pointer_cast<CajetaClass>(amce->getResolvedType());
+        if (cls && cls->isValueType() && cls->isSharedCapableValue()) {
+            return cls;
+        }
+        return nullptr;
     }
 
     llvm::Value* MethodCallExpression::generateCode(CajetaModulePtr module) {
@@ -4175,6 +4193,26 @@ namespace cajeta {
                             llvm::PointerType::get(*module->getLlvmContext(), 0),
                             receiver);
                     }
+                } else if (!receiver->getType()->isPointerTy()
+                        && (receiver->getType()->isStructTy()
+                            || receiver->getType()->isVectorTy()
+                            || receiver->getType()->isArrayTy())) {
+                    // Fresh value-expression RECEIVER returned BY VALUE — a
+                    // chained call on a small-aggregate result (e.g.
+                    // `Utf8.of(s).size()`; Utf8 returns as an SSA struct,
+                    // not through sret, so the struct-slot arm above never
+                    // sees it). Instance methods take `this` BY POINTER:
+                    // spill the aggregate to a stack slot and dispatch on
+                    // its address (the argument-side spill in
+                    // CajetaClass::invokeMethod is this arm's mirror).
+                    auto recvVc = dynamic_pointer_cast<CajetaClass>(receiverType);
+                    if (recvVc && recvVc->isValueType()) {
+                        llvm::Value* spill =
+                            builder->CreateAlloca(receiver->getType(),
+                                nullptr, "fresh.value.recv");
+                        builder->CreateStore(receiver, spill);
+                        receiver = spill;
+                    }
                 }
             }
             // Class-name receiver fallback. `Bar.staticMethod()` parses as
@@ -7681,16 +7719,38 @@ namespace cajeta {
                 bool hasThisT = !fpl.empty()
                     && fpl.front()->getName() == "this";
                 int offT = (isStaticT || !hasThisT) ? 0 : 1;
-                // Borrow arguments: drop each fresh String temp.
+                // Borrow arguments: drop each fresh String temp; release
+                // each fresh shared-capable VALUE temp (slices 9.4.1 —
+                // the call result carries its stakes with the bytes and
+                // no drop entry ever sees it). The value release needs an
+                // address: a by-value result is re-spilled here (the
+                // invokeMethod coercion spill is out of reach), a fresh-
+                // value-address result releases in place.
                 for (size_t ai = 0; ai < parameters.size(); ++ai) {
                     size_t fi = ai + (size_t) offT;
                     if (fi >= fpl.size()) break;
                     if (!fpl[fi] || fpl[fi]->isTransferred()) continue;
                     if (parameters[ai].callerTransferred) continue;
-                    if (!freshOwnedStringTemp(parameters[ai].expression)) continue;
                     llvm::Value* tempV = entries[ai].value;
-                    if (tempV && tempV->getType()->isPointerTy()) {
-                        builder->CreateCall(strDropFn, {tempV});
+                    if (!tempV) continue;
+                    if (freshOwnedStringTemp(parameters[ai].expression)) {
+                        if (tempV->getType()->isPointerTy()) {
+                            builder->CreateCall(strDropFn, {tempV});
+                        }
+                        continue;
+                    }
+                    if (auto vCls = freshSharedValueTempClass(
+                            parameters[ai].expression)) {
+                        llvm::Value* slot = tempV;
+                        if (!tempV->getType()->isPointerTy()) {
+                            slot = builder->CreateAlloca(tempV->getType(),
+                                nullptr, "temp.value.rel");
+                            builder->CreateStore(tempV, slot);
+                        }
+                        llvm::Function* relFn = CajetaModule::ensureFunctionInModule(
+                            module->getLlvmModule(),
+                            vCls->getOrCreateValueReleaseFunction());
+                        if (relFn) builder->CreateCall(relFn, {slot});
                     }
                 }
                 // Fresh receiver (`(a + b).substring(...)`): same leak, same
@@ -7702,9 +7762,20 @@ namespace cajeta {
                 if (offT == 1 && !fpl.empty() && fpl.front()
                         && !fpl.front()->isTransferred()
                         && !children.empty() && thisValue
-                        && thisValue->getType()->isPointerTy()
-                        && freshOwnedStringTemp(children[0])) {
-                    builder->CreateCall(strDropFn, {thisValue});
+                        && thisValue->getType()->isPointerTy()) {
+                    if (freshOwnedStringTemp(children[0])) {
+                        builder->CreateCall(strDropFn, {thisValue});
+                    } else if (auto rCls = freshSharedValueTempClass(
+                            children[0])) {
+                        // Fresh VALUE receiver (`Utf8.of(s).size()`): the
+                        // receiver arm spilled it, so thisValue is the
+                        // slot address — release its stakes in place.
+                        llvm::Function* relFn =
+                            CajetaModule::ensureFunctionInModule(
+                                module->getLlvmModule(),
+                                rCls->getOrCreateValueReleaseFunction());
+                        if (relFn) builder->CreateCall(relFn, {thisValue});
+                    }
                 }
             }
         }

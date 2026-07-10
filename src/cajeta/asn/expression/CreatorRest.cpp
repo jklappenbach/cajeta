@@ -9,6 +9,7 @@
 #include "cajeta/util/MemoryManager.h"
 #include "cajeta/asn/expression/Expression.h"
 #include "cajeta/asn/expression/Identifier.h"
+#include "cajeta/asn/expression/MethodCallExpression.h"
 #include "cajeta/asn/expression/NewExpression.h"
 #include "cajeta/error/Exception.h"
 #include "cajeta/field/ParameterField.h"
@@ -314,6 +315,56 @@ namespace cajeta {
             }
             klass->invokeMethod(ctorName, entries, /*isConstructor=*/true, instance,
                                 /*callerModule=*/module);
+            // slices 9.4.1 — fresh temps consumed as CTOR arguments have no
+            // drop entry; reclaim them here, at the only site that sees the
+            // temp (mirrors the post-call block in MethodCallExpression::
+            // generateCode). A fresh owned-String temp gets the guarded
+            // string drop; a shared-capable VALUE call-result gets its
+            // stakes released (the ctor's field store retained its own).
+            // `#T` formals and `#x` call-site transfers took ownership —
+            // skipped, exactly as at method call sites.
+            {
+                MethodPtr ctorTarget = klass->resolveMethod(
+                    ctorName, entries, /*isConstructor=*/true,
+                    /*floatingParams=*/false);
+                llvm::Function* strDropFn = module->getRuntimeFunction(
+                    "__cajeta_string_drop");
+                if (ctorTarget) {
+                    auto fpl = ctorTarget->getParameterList();
+                    int off = !fpl.empty()
+                        && fpl.front()->getName() == "this" ? 1 : 0;
+                    for (size_t ai = 0; ai < parameters.size(); ++ai) {
+                        size_t fi = ai + (size_t) off;
+                        if (fi >= fpl.size()) break;
+                        if (!fpl[fi] || fpl[fi]->isTransferred()) continue;
+                        if (parameters[ai].callerTransferred) continue;
+                        llvm::Value* tempV = entries[ai].value;
+                        if (!tempV) continue;
+                        if (MethodCallExpression::freshOwnedStringTemp(
+                                parameters[ai].expression)) {
+                            if (strDropFn && tempV->getType()->isPointerTy()) {
+                                builder->CreateCall(strDropFn, {tempV});
+                            }
+                            continue;
+                        }
+                        if (auto vCls = MethodCallExpression::
+                                freshSharedValueTempClass(
+                                    parameters[ai].expression)) {
+                            llvm::Value* slot = tempV;
+                            if (!tempV->getType()->isPointerTy()) {
+                                slot = builder->CreateAlloca(tempV->getType(),
+                                    nullptr, "temp.value.rel");
+                                builder->CreateStore(tempV, slot);
+                            }
+                            llvm::Function* relFn =
+                                CajetaModule::ensureFunctionInModule(
+                                    module->getLlvmModule(),
+                                    vCls->getOrCreateValueReleaseFunction());
+                            if (relFn) builder->CreateCall(relFn, {slot});
+                        }
+                    }
+                }
+            }
         }
         return instance;
     }
