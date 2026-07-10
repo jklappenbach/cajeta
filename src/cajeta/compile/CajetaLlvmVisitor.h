@@ -1388,6 +1388,65 @@ namespace cajeta {
                 memberDeclaration->onModifier(any_cast<Modifier>(visitModifier(modifierContext)));
             }
 
+            // Declaration-time body synthesis (source-synthesis facility, spec
+            // §4 / §1.5's body × declaration-time cell — @Einsum). A bodyless
+            // (abstract) annotated method offers its resolved declaration to
+            // the body registry. A claiming synthesizer validates against the
+            // signature FIRST (throwing user-attributed errors, spec §6) and
+            // returns a `{ ... }` body block; we splice it over the
+            // declaration's trailing `;` and re-visit, so the synthesized
+            // method re-checks and codegens as ordinary code (spec §5). The
+            // re-visited declaration HAS a body — not abstract — so this hook
+            // cannot recurse. Method templates keep their instantiation-time
+            // dispatch (MethodTemplateInstantiator); interface members never
+            // reach this visitor path.
+            if (auto methodDecl = std::dynamic_pointer_cast<MethodDeclaration>(memberDeclaration)) {
+                auto m = methodDecl->getMethod();
+                if (m && m->isAbstract() && !m->getAnnotationInstances().empty()) {
+                    cajeta::synth::registerBuiltinSynthesizers();
+                    cajeta::synth::SynthesisContext sctx;
+                    sctx.parent = pModule->getStructureStack().empty()
+                        ? nullptr : pModule->getStructureStack().back();
+                    sctx.module = pModule;
+                    sctx.methodName = m->getName();
+                    for (auto& p : m->getParameterList()) {
+                        if (p && p->getName() != "this") {
+                            sctx.paramTypes.push_back(p->getType());
+                        }
+                    }
+                    sctx.method = m;
+                    if (auto body = cajeta::synth::SynthesizerRegistry::instance()
+                            .dispatchBody(sctx)) {
+                        auto* startTok = ctx->getStart();
+                        auto* stopTok = ctx->getStop();
+                        if (startTok && stopTok && startTok->getInputStream()) {
+                            antlr4::misc::Interval interval(
+                                startTok->getStartIndex(), stopTok->getStopIndex());
+                            std::string declText =
+                                startTok->getInputStream()->getText(interval);
+                            auto semi = declText.rfind(';');
+                            if (semi != std::string::npos) {
+                                declText = declText.substr(0, semi) + " " + *body;
+                                // 6.4 debug aid: same CAJETA_DUMP_IR switch the
+                                // template-instantiation dispatch uses.
+                                if (const char* dump = std::getenv("CAJETA_DUMP_IR")) {
+                                    if (dump[0] == '1') {
+                                        std::cerr << "[Synthesizer] body for "
+                                            << m->getName() << ":\n"
+                                            << declText << "\n";
+                                    }
+                                }
+                                auto* frag = cajeta::synth::parseClassBodyFragment(
+                                    "{ " + declText + " }");
+                                for (auto* cbd : frag->classBodyDeclaration()) {
+                                    return visitClassBodyDeclaration(cbd);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // Method-level template post-check (docs/specification/
             // MethodLevelTemplate.md): a declaration that introduces
             // method-level type parameters MUST be declared `final` or

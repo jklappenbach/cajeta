@@ -18,6 +18,7 @@ namespace cajeta {
     class CajetaClass;  using CajetaClassPtr  = std::shared_ptr<CajetaClass>;
     class CajetaType;   using CajetaTypePtr   = std::shared_ptr<CajetaType>;
     class CajetaModule; using CajetaModulePtr = std::shared_ptr<CajetaModule>;
+    class Method;       using MethodPtr       = std::shared_ptr<Method>;
 }
 
 namespace cajeta::synth {
@@ -30,10 +31,19 @@ namespace cajeta::synth {
         std::vector<CajetaTypePtr> typeArgs;    // monomorphized type arguments
         std::vector<CajetaTypePtr> paramTypes;  // body synthesis: params (no `this`)
         CajetaModulePtr module;
+        // Declaration-time body dispatch only (Unit 6): the resolved bodyless
+        // Method — carries the annotations, named formals, and return type a
+        // signature-validating synthesizer (@Einsum) reads. Null on the
+        // method-template instantiation path.
+        MethodPtr method;
     };
 
     // A body synthesizer provides the body of a declared-but-bodyless method,
     // or declines (nullopt) so the caller keeps the captured/declared source.
+    // Contract by dispatch site: with ctx.method set (declaration-time, the
+    // caller splices into the original declaration) return a `{ ... }` BODY
+    // BLOCK; with ctx.method null (method-template instantiation) return FULL
+    // method source (the codec model). A synthesizer claims only its own site.
     using BodySynthesizer =
         std::function<std::optional<std::string>(const SynthesisContext&)>;
 

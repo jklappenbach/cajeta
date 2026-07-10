@@ -3,9 +3,15 @@
 //
 #include "cajeta/synth/SynthesizerRegistry.h"
 
+#include <map>
+#include <set>
+
 #include "cajeta/error/Exception.h"
 #include "cajeta/type/CajetaClass.h"
+#include "cajeta/type/CajetaMatrix.h"
+#include "cajeta/type/FormalParameter.h"
 #include "cajeta/type/StructureProperty.h"
+#include "cajeta/method/Method.h"
 #include "cajeta/codec/JsonSynthesizer.h"
 #include "cajeta/codec/CsvSynthesizer.h"
 #include "cajeta/codec/ProtobufSynthesizer.h"
@@ -61,16 +67,226 @@ namespace cajeta::synth {
 
     namespace {
         // Wrap a `bool synthesize*MethodSource(parent, name, args, params, out&)`
-        // codec entry point as a BodySynthesizer.
+        // codec entry point as a BodySynthesizer. Codecs are method-template
+        // instantiation synthesizers returning FULL method source — they decline
+        // declaration-time contexts (ctx.method set), whose contract is a body
+        // block (see BodySynthesizer in the header).
         template <typename Fn>
         BodySynthesizer wrapCodec(Fn fn) {
             return [fn](const SynthesisContext& c) -> std::optional<std::string> {
+                if (c.method) return std::nullopt;
                 std::string out;
                 if (fn(c.parent, c.methodName, c.typeArgs, c.paramTypes, out)) {
                     return out;
                 }
                 return std::nullopt;
             };
+        }
+
+        // --- @Einsum (Unit 6) -------------------------------------------------
+
+        // If `t` is a concrete Tensor<E> instantiation, return E; else null.
+        CajetaTypePtr tensorElementOf(const CajetaTypePtr& t) {
+            auto cls = std::dynamic_pointer_cast<CajetaClass>(t);
+            if (!cls || !cls->isInstantiation()) return nullptr;
+            auto origin = cls->getTemplateOrigin();
+            const std::string name = (origin && origin->getQName())
+                ? origin->getQName()->getTypeName()
+                : (cls->getQName() ? cls->getQName()->getTypeName() : std::string());
+            if (name != "Tensor" && name.rfind("Tensor<", 0) != 0) return nullptr;
+            const auto& args = cls->getTypeArguments();
+            return args.size() == 1 ? args[0] : nullptr;
+        }
+
+        // Validate-first (spec §4.2, §6.1): check the contraction spec against
+        // the resolved signature and throw user-phrased diagnostics BEFORE any
+        // body text exists. Errors name the parameter and the declared spec.
+        struct EinsumPlan {
+            std::vector<std::string> groups;   // one label group per parameter
+            std::string outLabels;             // output label group
+            std::string elemName;              // element type as spelled in source
+        };
+        EinsumPlan validateEinsum(const SynthesisContext& c, const std::string& spec) {
+            auto fail = [&](const std::string& what) {
+                throw Exception(
+                    "@Einsum spec '" + spec + "' on method '" + c.methodName
+                        + "': " + what,
+                    "CAJETA_ERROR_SYNTH_EINSUM");
+            };
+            EinsumPlan plan;
+            auto arrow = spec.find("->");
+            if (arrow == std::string::npos || spec.find("->", arrow + 2) != std::string::npos) {
+                fail("expected exactly one '->' separating inputs from output");
+            }
+            std::string inputs = spec.substr(0, arrow);
+            plan.outLabels = spec.substr(arrow + 2);
+            std::size_t pos = 0;
+            while (true) {
+                auto comma = inputs.find(',', pos);
+                plan.groups.push_back(inputs.substr(pos,
+                    comma == std::string::npos ? std::string::npos : comma - pos));
+                if (comma == std::string::npos) break;
+                pos = comma + 1;
+            }
+            std::set<char> inputLabels;
+            for (auto& g : plan.groups) {
+                if (g.empty()) fail("empty input label group");
+                std::set<char> withinGroup;
+                for (char l : g) {
+                    if (l < 'a' || l > 'z') fail(std::string("label '") + l + "' is not a-z");
+                    if (!withinGroup.insert(l).second) {
+                        fail(std::string("repeated label '") + l
+                            + "' within one group (diagonals are not supported in v1)");
+                    }
+                    inputLabels.insert(l);
+                }
+            }
+            if (plan.outLabels.empty()) fail("scalar (empty) output is not supported in v1");
+            std::set<char> outSeen;
+            for (char l : plan.outLabels) {
+                if (!outSeen.insert(l).second) fail(std::string("repeated output label '") + l + "'");
+                if (!inputLabels.count(l)) {
+                    fail(std::string("output label '") + l + "' appears in no input group");
+                }
+            }
+            auto params = c.method->getParameterList();
+            std::vector<FormalParameterPtr> formals;
+            for (auto& p : params) {
+                if (p && p->getName() != "this") formals.push_back(p);
+            }
+            if (formals.size() != plan.groups.size()) {
+                fail("has " + std::to_string(plan.groups.size())
+                    + " input group(s) but the method declares "
+                    + std::to_string(formals.size()) + " parameter(s)");
+            }
+            // Per-parameter rank + type checks. Tensor<E> rank is RUNTIME
+            // (tensor-spec.md — ndim/shape are fields), so it validates at the
+            // dynamic boundary; the STATIC rank check fires where the declared
+            // type carries one (Matrix<E,R,C> is const-generic rank-2).
+            CajetaTypePtr elem;
+            for (std::size_t g = 0; g < formals.size(); ++g) {
+                const std::string& pname = formals[g]->getName();
+                auto ptype = formals[g]->getType();
+                if (std::dynamic_pointer_cast<CajetaMatrix>(ptype)) {
+                    if (plan.groups[g].size() != 2) {
+                        fail("expects rank-" + std::to_string(plan.groups[g].size())
+                            + " input for parameter '" + pname + "'; '" + pname
+                            + "' is rank-2 (" + ptype->toCanonical() + ")");
+                    }
+                    fail("parameter '" + pname + "' is a Matrix — @Einsum v1 "
+                        "synthesizes over Tensor<E> parameters only");
+                }
+                auto e = tensorElementOf(ptype);
+                if (!e) {
+                    fail("parameter '" + pname + "' is not a Tensor<E>");
+                }
+                if (elem && e.get() != elem.get()) {
+                    fail("parameter '" + pname + "' element type "
+                        + e->toCanonical() + " disagrees with " + elem->toCanonical());
+                }
+                if (!elem) elem = e;
+            }
+            auto retElem = tensorElementOf(c.method->getReturnType());
+            if (!retElem) fail("return type must be Tensor<E>");
+            if (elem && retElem.get() != elem.get()) {
+                fail("return element type " + retElem->toCanonical()
+                    + " disagrees with the parameters' " + elem->toCanonical());
+            }
+            plan.elemName = retElem->getQName()
+                ? retElem->getQName()->getTypeName() : std::string("float32");
+            return plan;
+        }
+
+        // Emit the contraction as a source loop nest over Tensor's checked
+        // accessors (Tier A — spec §7: source over primitives, never raw IR):
+        // outer loops over the output labels, an accumulator loop over the
+        // contracted labels, getAt/setAt element access, `return #out` transfer
+        // (the Tensor.matmul / LinAlg idiom). Synth locals carry a `__e_`
+        // prefix so they can't shadow user parameter names.
+        std::string emitEinsumBody(const SynthesisContext& c, const EinsumPlan& plan) {
+            auto params = c.method->getParameterList();
+            std::vector<std::string> names;
+            for (auto& p : params) {
+                if (p && p->getName() != "this") names.push_back(p->getName());
+            }
+            const std::string& E = plan.elemName;
+            // First occurrence of each label -> (param, axis); order of first
+            // appearance drives the contracted-loop order (deterministic).
+            std::vector<char> order;
+            std::map<char, std::pair<std::size_t, std::size_t>> firstAt;
+            for (std::size_t g = 0; g < plan.groups.size(); ++g) {
+                for (std::size_t a = 0; a < plan.groups[g].size(); ++a) {
+                    char l = plan.groups[g][a];
+                    if (!firstAt.count(l)) {
+                        firstAt[l] = {g, a};
+                        order.push_back(l);
+                    }
+                }
+            }
+            std::vector<char> contracted;
+            for (char l : order) {
+                if (plan.outLabels.find(l) == std::string::npos) contracted.push_back(l);
+            }
+            std::string b = "{\n";
+            auto dim = [](char l) { return std::string("__e_d_") + l; };
+            auto idx = [](char l) { return std::string("__e_l_") + l; };
+            for (char l : order) {
+                b += "    int64 " + dim(l) + " = " + names[firstAt[l].first]
+                    + ".shapeAt(" + std::to_string(firstAt[l].second) + ");\n";
+            }
+            b += "    int64[] __e_shp = heap int64[" + std::to_string(plan.outLabels.size()) + "];\n";
+            for (std::size_t i = 0; i < plan.outLabels.size(); ++i) {
+                b += "    __e_shp[" + std::to_string(i) + "] = " + dim(plan.outLabels[i]) + ";\n";
+            }
+            b += "    Tensor<" + E + "> __e_out = Tensor.zeros<" + E + ">(__e_shp);\n";
+            for (std::size_t g = 0; g < plan.groups.size(); ++g) {
+                b += "    int64[] __e_ix" + std::to_string(g) + " = heap int64["
+                    + std::to_string(plan.groups[g].size()) + "];\n";
+            }
+            b += "    int64[] __e_io = heap int64[" + std::to_string(plan.outLabels.size()) + "];\n";
+            std::string pad = "    ";
+            for (char l : plan.outLabels) {
+                b += pad + "int64 " + idx(l) + " = 0;\n";
+                b += pad + "while (" + idx(l) + " < " + dim(l) + ") {\n";
+                pad += "    ";
+            }
+            b += pad + E + " __e_acc = (" + E + ") 0;\n";
+            std::string ipad = pad;
+            for (char l : contracted) {
+                b += ipad + "int64 " + idx(l) + " = 0;\n";
+                b += ipad + "while (" + idx(l) + " < " + dim(l) + ") {\n";
+                ipad += "    ";
+            }
+            for (std::size_t g = 0; g < plan.groups.size(); ++g) {
+                for (std::size_t a = 0; a < plan.groups[g].size(); ++a) {
+                    b += ipad + "__e_ix" + std::to_string(g) + "[" + std::to_string(a)
+                        + "] = " + idx(plan.groups[g][a]) + ";\n";
+                }
+            }
+            b += ipad + "__e_acc = __e_acc";
+            for (std::size_t g = 0; g < plan.groups.size(); ++g) {
+                b += (g == 0 ? " + " : " * ") + names[g] + ".getAt(__e_ix" + std::to_string(g) + ")";
+            }
+            b += ";\n";
+            for (std::size_t i = contracted.size(); i > 0; --i) {
+                char l = contracted[i - 1];
+                b += ipad + idx(l) + " = " + idx(l) + " + 1;\n";
+                ipad = ipad.substr(4);
+                b += ipad + "}\n";
+            }
+            for (std::size_t i = 0; i < plan.outLabels.size(); ++i) {
+                b += pad + "__e_io[" + std::to_string(i) + "] = " + idx(plan.outLabels[i]) + ";\n";
+            }
+            b += pad + "__e_out.setAt(__e_io, __e_acc);\n";
+            for (std::size_t i = plan.outLabels.size(); i > 0; --i) {
+                char l = plan.outLabels[i - 1];
+                b += pad + idx(l) + " = " + idx(l) + " + 1;\n";
+                pad = pad.substr(4);
+                b += pad + "}\n";
+            }
+            b += "    return #__e_out;\n";
+            b += "}";
+            return b;
         }
     }
 
@@ -88,6 +304,30 @@ namespace cajeta::synth {
         reg.registerBody("protobuf", wrapCodec(synthesizeProtobufMethodSource));
         reg.registerBody("ion",      wrapCodec(synthesizeIonMethodSource));
         reg.registerBody("avro",     wrapCodec(synthesizeAvroMethodSource));
+
+        // @Einsum (Unit 6, spec §4.1-4.2): declaration-time body synthesis. A
+        // bodyless method annotated @Einsum("ij,jk->ik") gets a fused loop-nest
+        // body over Tensor's checked primitives. Claims only declaration-time
+        // contexts (ctx.method set); validates the spec against the resolved
+        // signature FIRST — every diagnostic is phrased in the user's terms
+        // (parameter name, declared spec) and raised before any body text
+        // exists (spec §6.1) — then emits the body block the caller splices.
+        reg.registerBody("einsum",
+                [](const SynthesisContext& c) -> std::optional<std::string> {
+            if (!c.method) return std::nullopt;
+            auto ann = c.method->findAnnotation("Einsum");
+            if (!ann) return std::nullopt;
+            std::string spec = ann->getString();
+            if (spec.empty()) {
+                throw Exception(
+                    "@Einsum on method '" + c.methodName
+                        + "' needs a contraction spec string, e.g. "
+                          "@Einsum(\"ij,jk->ik\")",
+                    "CAJETA_ERROR_SYNTH_EINSUM");
+            }
+            EinsumPlan plan = validateEinsum(c, spec);
+            return emitEinsumBody(c, plan);
+        });
 
         // @Logged: inject a `static Logger log = Log.defaultFor("<canonical>")`
         // member. Self-selects on the annotation; respects a user-declared `log`
