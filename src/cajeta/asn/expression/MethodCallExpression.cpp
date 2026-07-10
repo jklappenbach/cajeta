@@ -7610,6 +7610,100 @@ namespace cajeta {
                 bool hasThisP = !formalParams.empty()
                     && formalParams.front()->getName() == "this";
                 int xferParamOffset = (isStaticTgt || !hasThisP) ? 0 : 1;
+                // element-ownership §3.1.3-4 / §4.1.4 (plan 4B): call-site
+                // agreement with the instantiation's ownership mode. Scoped to
+                // formals/returns whose declared type came from a class type
+                // parameter (origin >= 0) on an instantiated NON-INTERFACE
+                // declaring class — concrete classes keep the runtime moveMask
+                // contract (§3.1.4) and never error here, and an interface's
+                // `#T` return is an ownership contract, not element storage
+                // (wire Encoder's `#T decode` factory; container interfaces
+                // carry the requirement via declaration-`#`, Unit 5).
+                auto declaring = xferTarget->getParent();
+                // Pre-Unit-8 transition, caller-side: STDLIB bodies are exempt
+                // from the agreement checks. The stdlib is half-migrated —
+                // Cache.put(#K) is author-marked but DnsCache still instantiates
+                // Cache<String,…> borrow-mode and #-transfers into it, correct
+                // today via the runtime moveMask + owned-bits. Those call sites
+                // are Unit 8's migration cohort; enforcing before the sweep
+                // would reject working runtime-ownership code. User code gets
+                // the full §3.1.3-4 errors now. Unit 8 removes this exemption.
+                bool stdlibCaller = module == CajetaModule::getStdlibModule();
+                if (declaring && declaring->isInstantiation()
+                        && !declaring->isInterface() && !stdlibCaller) {
+                    const auto& declTps = declaring->getTypeParameters();
+                    // Pre-Unit-8 transition: the transfer-mode check is opt-in
+                    // by AUTHORED element markers. A templated class whose
+                    // author wrote no `#` element position (the unmigrated
+                    // stdlib containers — plain `add(T)` + runtime moveMask,
+                    // e.g. HashMap.keys() transferring into a borrow-mode
+                    // ArrayList<String>) keeps the runtime contract;
+                    // enforcement turns on per class as its author marks
+                    // positions. Unit 8 sweeps the stdlib, after which every
+                    // element container is marked and §3.1.4's "a generic
+                    // container cannot be moveMask-based" holds globally.
+                    bool authorMarked = false;
+                    for (auto& mkv : declaring->getMethods()) {
+                        if (!mkv.second) continue;
+                        if (mkv.second->getOriginReturnTypeParamIndex() >= 0
+                                && mkv.second->isReturnsOwnership()) {
+                            authorMarked = true;
+                            break;
+                        }
+                        for (auto& mfp : mkv.second->getParameterList()) {
+                            if (mfp && mfp->getOriginTypeParamIndex() >= 0
+                                    && mfp->wasAuthoredTransferred()) {
+                                authorMarked = true;
+                                break;
+                            }
+                        }
+                        if (authorMarked) break;
+                    }
+                    size_t agIdx = 0;
+                    for (auto& fp : formalParams) {
+                        if (!authorMarked) break;
+                        if ((int) agIdx < xferParamOffset) { ++agIdx; continue; }
+                        size_t argIdx = agIdx - xferParamOffset;
+                        if (argIdx >= parameters.size()) break;
+                        ++agIdx;
+                        int k = fp ? fp->getOriginTypeParamIndex() : -1;
+                        if (k < 0 || !parameters[argIdx].callerTransferred) continue;
+                        if (!declaring->isTypeArgumentOwning(k)) {
+                            const string pn = (size_t) k < declTps.size()
+                                ? declTps[k].name : string("T");
+                            throw Exception(
+                                "cannot `#`-transfer into `" + methodCallName
+                                    + "` on borrow-mode instantiation `"
+                                    + declaring->getQName()->toCanonical()
+                                    + "` — its `" + pn + "` type argument is not "
+                                      "`#`-marked, so the container never frees "
+                                      "stored elements; a transferred value would "
+                                      "leak. Fix: instantiate owning (`<#...>`) to "
+                                      "take ownership, or drop the `#` to store a "
+                                      "borrow. (element-ownership spec §3.1.3)",
+                                "CAJETA_ERROR_ELEMENT_TRANSFER_MODE");
+                        }
+                    }
+                    // §4.1.4 extractor gate: a `#`-returning element extractor
+                    // is valid only on an owning instantiation — a borrow-mode
+                    // container has no owned element to hand out.
+                    int rk = xferTarget->getOriginReturnTypeParamIndex();
+                    if (rk >= 0 && xferTarget->isReturnsOwnership()
+                            && !declaring->isTypeArgumentOwning(rk)) {
+                        const string pn = (size_t) rk < declTps.size()
+                            ? declTps[rk].name : string("V");
+                        throw Exception(
+                            "`" + methodCallName + "` hands out element "
+                                "ownership (`#" + pn + "` return) but `"
+                                + declaring->getQName()->toCanonical()
+                                + "` is a borrow-mode instantiation — it does "
+                                  "not own its elements. Fix: instantiate "
+                                  "owning (`<#...>`), or read the borrow via a "
+                                  "plain accessor and `.clone()` it if needed. "
+                                  "(element-ownership spec §4.1.4)",
+                            "CAJETA_ERROR_ELEMENT_EXTRACT_MODE");
+                    }
+                }
                 size_t fIdx = 0;
                 for (auto& fp : formalParams) {
                     if ((int) fIdx < xferParamOffset) { ++fIdx; continue; }
