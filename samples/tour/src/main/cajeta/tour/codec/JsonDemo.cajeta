@@ -70,10 +70,10 @@ public class JsonDemo extends DemoClass {
 
     // 1. Parse a hand-typed JSON literal directly into a class. The
     // String literal exposes its underlying byte buffer via .bytes
-    // and .byteLength — Json.parse<T> consumes (int8[], int64).
+    // and .byteLength() — Json.parse<T> consumes (int8[], int64).
     public void parseSingleObject() {
         String src = "{\"id\":42,\"score\":1000000,\"active\":true,\"name\":\"alice\"}";
-        JsonMix m = Json.parse<JsonMix>(src.bytes, (int64) src.byteLength);
+        JsonMix m = Json.parse<JsonMix>(src.toBytes(), (int64) src.byteLength());
         System.stdout.println("  parse single object:");
         System.stdout.println("    id     = " + m.id);
         System.stdout.println("    score  = " + m.score);
@@ -88,7 +88,7 @@ public class JsonDemo extends DemoClass {
     // with @JsonStrict on the class.
     public void parseMixedPrimitives() {
         String src = "{\"id\":7,\"score\":99,\"active\":false}";
-        JsonMix m = Json.parse<JsonMix>(src.bytes, (int64) src.byteLength);
+        JsonMix m = Json.parse<JsonMix>(src.toBytes(), (int64) src.byteLength());
         System.stdout.println("  parse with missing-key field:");
         System.stdout.println("    id (set)        = " + m.id);
         System.stdout.println("    score (set)     = " + m.score);
@@ -130,7 +130,7 @@ public class JsonDemo extends DemoClass {
     // the same JsonReader. No tree materialization.
     public void parseNested() {
         String src = "{\"id\":1,\"point\":{\"x\":10,\"y\":20}}";
-        JsonOuter o = Json.parse<JsonOuter>(src.bytes, (int64) src.byteLength);
+        JsonOuter o = Json.parse<JsonOuter>(src.toBytes(), (int64) src.byteLength());
         System.stdout.println("  parse nested object:");
         System.stdout.println("    id      = " + o.id);
         System.stdout.println("    point.x = " + o.point.x);

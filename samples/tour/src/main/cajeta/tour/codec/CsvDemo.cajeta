@@ -44,7 +44,7 @@ public class CsvDemo extends DemoClass {
             + "7,101.5,ACME,true,NYSE\n"
             + "8,99.25,GLOBEX,false,CME\n";
 
-        CsvTrade[] rows = Csv.parse<CsvTrade[]>(src.bytes, (int64) src.byteLength);
+        CsvTrade[] rows = Csv.parse<CsvTrade[]>(src.toBytes(), (int64) src.byteLength());
         System.stdout.println("  parsed rows              = " + rows.count());
         this.check(rows.count() == 2L, "two data rows bind to CsvTrade[2]");
 

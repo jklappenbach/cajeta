@@ -246,7 +246,7 @@ public final class DnsCache {
             tag = 2;
         }
         int8[] hostBytes = host.toBytes();
-        int32 hostLen = host.byteLength;
+        int32 hostLen = host.byteLength();
         int32 total = hostLen + 1;
         int8[] keyBytes = heap int8[total];
         keyBytes[0] = (int8) tag;
@@ -315,7 +315,7 @@ public final class DnsCache {
         prefix[17] = (int8) 32;   // ' '
 
         int8[] hostBytes = host.toBytes();
-        int32 hostLen = host.byteLength;
+        int32 hostLen = host.byteLength();
         int32 total = 18 + hostLen;
         int8[] msg = heap int8[total];
         int32 i = 0;

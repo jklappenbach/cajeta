@@ -129,7 +129,7 @@ public class Guid extends Object {
      * @EntryPoint
      */
     public static #Guid parse(#String s) {
-        if (s == null || s.byteLength != 36) {
+        if (s == null || s.byteLength() != 36) {
             throw heap GuidFormatException(
                 "Guid.parse: expected a 36-character 8-4-4-4-12 hex GUID");
         }

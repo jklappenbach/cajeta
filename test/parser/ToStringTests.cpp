@@ -31,11 +31,20 @@ namespace {
     // and fall back to strlen.
     struct CajetaStringLayout {
         const void* vtable;
-        const void* bytes;
-        int32_t byteLength;
-        int32_t mode;
+        int32_t lenTag;      // len | tag bits (6.2.2 tagged core)
+        int32_t aux;         // Inline text 0..3 / window offset
+        const char* base;    // Inline text 4..11 / root header
         int32_t cachedCpLength;
     };
+    static std::string readTaggedString(const CajetaStringLayout* s) {
+        int32_t len = s->lenTag & 0x1FFFFFFF;
+        if (len <= 0) return std::string("");
+        if (len <= 12) {
+            return std::string((const char*) &s->aux, (size_t) len);
+        }
+        if (!s->base) return std::string("");
+        return std::string(s->base + 8 + s->aux, (size_t) len);
+    }
 
     std::string runToString(const std::string& src) {
         try {
@@ -54,12 +63,8 @@ namespace {
             // was MachO/COFF-flaky while passing on ELF by luck of layout.
             const void* strVtable = jit->lookupRawSymbol("cajeta.lang.String#VTable");
             if (strVtable && s->vtable == strVtable) {
-                // Real cajeta.lang.String — read the bytes field.
-                if (!s->bytes || s->byteLength <= 0) return std::string("");
-                // bytes points to { i64 count, [N x i8] data }. Skip past
-                // the 8-byte count header to get the data.
-                const char* data = (const char*) s->bytes + sizeof(int64_t);
-                return std::string(data, (size_t) s->byteLength);
+                // Real cajeta.lang.String — read the tagged core.
+                return readTaggedString(s);
             }
             // Legacy malloc'd char* path — read as C-string.
             return std::string((const char*) s);

@@ -261,7 +261,7 @@ public final class JsonWriter {
 
     /**
      * Emit a quoted, escaped JSON string from a `String` (delegates
-     * to the byte-buffer form against `.bytes` + `.byteLength`).
+     * to the byte-buffer form against `.bytes` + `.byteLength()`).
      * Preferred for hand-written user code.
      *
      * ```cajeta
@@ -270,11 +270,11 @@ public final class JsonWriter {
      * ```
      */
     public JsonWriter writeString(String s) {
-        if (s.byteOffset() != (int64) 0) {
+        if (s.root() == null || s.byteOffset() != (int64) 0) {
             int8[] w = s.toBytes();
-            return this.writeString(w, s.byteLength);
+            return this.writeString(w, s.byteLength());
         }
-        return this.writeString(s.bytes, s.byteLength);
+        return this.writeString(s.root(), s.byteLength());
     }
 
     /**
@@ -302,11 +302,11 @@ public final class JsonWriter {
      * ```
      */
     public JsonWriter key(String name) {
-        if (name.byteOffset() != (int64) 0) {
+        if (name.root() == null || name.byteOffset() != (int64) 0) {
             int8[] w = name.toBytes();
-            return this.key(w, name.byteLength);
+            return this.key(w, name.byteLength());
         }
-        return this.key(name.bytes, name.byteLength);
+        return this.key(name.root(), name.byteLength());
     }
 
     /**

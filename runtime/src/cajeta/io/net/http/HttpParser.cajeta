@@ -478,8 +478,8 @@ public class HttpParser {
         String method = this.slice(start, sp1);
         String target = this.slice(sp1 + 1, sp2);
         String version = this.slice(sp2 + 1, end);
-        if (method.byteLength == 0 || target.byteLength == 0
-            || version.byteLength == 0) {
+        if (method.byteLength() == 0 || target.byteLength() == 0
+            || version.byteLength() == 0) {
             throw heap MalformedMessageException(
                 "request-line has an empty token", (int64) start);
         }
@@ -512,7 +512,7 @@ public class HttpParser {
         String reason = sp2 < 0
             ? this.emptyString()
             : this.slice(sp2 + 1, end);
-        if (version.byteLength == 0) {
+        if (version.byteLength() == 0) {
             throw heap MalformedMessageException(
                 "status-line has an empty version", (int64) start);
         }
@@ -559,7 +559,7 @@ public class HttpParser {
                 "header line has no ':' separator", (int64) start);
         }
         String name = this.slice(start, colon);
-        if (name.byteLength == 0) {
+        if (name.byteLength() == 0) {
             throw heap MalformedMessageException(
                 "header line has an empty field name", (int64) start);
         }
@@ -657,7 +657,7 @@ public class HttpParser {
      * non-numeric or negative length is a malformed message.
      */
     int64 parseContentLength(String cl) {
-        int32 n = cl.byteLength;
+        int32 n = cl.byteLength();
         if (n == 0) {
             throw heap MalformedMessageException(
                 "empty Content-Length", (int64) -1);
@@ -730,8 +730,8 @@ public class HttpParser {
      * inside a larger word.
      */
     boolean tokenContains(String value, String token) {
-        int32 vlen = value.byteLength;
-        int32 tlen = token.byteLength;
+        int32 vlen = value.byteLength();
+        int32 tlen = token.byteLength();
         if (tlen == 0 || tlen > vlen) {
             return false;
         }

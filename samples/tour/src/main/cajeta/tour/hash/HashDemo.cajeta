@@ -34,8 +34,8 @@ public class HashDemo extends DemoClass {
         System.stdout.println("-- cajeta.hash: choosing the right hash --");
 
         String msg = "the quick brown fox";
-        int8[] bytes = msg.bytes;
-        int64 len = (int64) msg.byteLength;
+        int8[] bytes = msg.toBytes();
+        int64 len = (int64) msg.byteLength();
 
         // 1) Non-crypto fingerprint: XXHash3 — multi-GB/s, the algorithm behind
         //    the compiler-synthesized Object.hash()/String.hash(). hashSeeded()

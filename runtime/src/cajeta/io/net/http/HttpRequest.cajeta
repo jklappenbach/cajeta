@@ -141,8 +141,8 @@ public class HttpRequest {
      */
     public static #HttpRequest of(String method, String target) {
         HttpRequest r = heap HttpRequest();
-        r.method = method.substring(0, method.byteLength);
-        r.target = target.substring(0, target.byteLength);
+        r.method = method.substring(0, method.byteLength());
+        r.target = target.substring(0, target.byteLength());
         return #r;
     }
 
@@ -168,7 +168,7 @@ public class HttpRequest {
      */
     public static #HttpRequest fromUri(String method, Uri uri) {
         HttpRequest r = heap HttpRequest();
-        r.method = method.substring(0, method.byteLength);
+        r.method = method.substring(0, method.byteLength());
         r.target = HttpRequest.originForm(uri);
         if (uri.hasAuthority) {
             String hostValue = HttpRequest.hostHeader(uri);
@@ -184,7 +184,7 @@ public class HttpRequest {
      */
     private static #String originForm(Uri uri) {
         String path = uri.getPath();
-        int32 pathLen = path.byteLength;
+        int32 pathLen = path.byteLength();
         boolean emptyPath = pathLen == 0;
         // path bytes, or a single '/' when the path is empty.
         int32 base = emptyPath ? 1 : pathLen;
@@ -192,7 +192,7 @@ public class HttpRequest {
         String query = uri.getQuery();
         int32 qLen = 0;
         if (uri.hasQuery) {
-            qLen = query.byteLength;
+            qLen = query.byteLength();
             total = total + 1 + qLen;   // '?' + query bytes
         }
         int8[] out = heap int8[total];
@@ -229,13 +229,13 @@ public class HttpRequest {
      */
     private static #String hostHeader(Uri uri) {
         String host = uri.getHost();
-        int32 hLen = host.byteLength;
+        int32 hLen = host.byteLength();
         if (!uri.hasExplicitPort) {
             return host.substring(0, hLen);
         }
         // host ":" decimal-port
         String portStr = HttpRequest.decimal(uri.getPort());
-        int32 pLen = portStr.byteLength;
+        int32 pLen = portStr.byteLength();
         int32 total = hLen + 1 + pLen;
         int8[] out = heap int8[total];
         int32 dst = 0;
@@ -328,7 +328,7 @@ public class HttpRequest {
 
     /** Override the HTTP-version string and return `this`. */
     public HttpRequest version(String v) {
-        this.version = v.substring(0, v.byteLength);
+        this.version = v.substring(0, v.byteLength());
         return this;
     }
 

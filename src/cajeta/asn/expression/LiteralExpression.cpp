@@ -230,43 +230,67 @@ namespace cajeta {
                 auto* ptrTy = llvm::PointerType::get(ctx, 0);
                 int64_t len = (int64_t) decoded.size();
 
-                // 1. CajetaArray header for the bytes payload.
-                auto* dataArrTy = llvm::ArrayType::get(i8Ty, (uint64_t) len + 1);
-                auto* dataInit = llvm::ConstantDataArray::getString(
-                    ctx, decoded, /*addNull=*/true);
-                auto* arrStructTy = llvm::StructType::get(ctx,
-                    llvm::ArrayRef<llvm::Type*>{i64Ty, dataArrTy});
-                auto* arrInit = llvm::ConstantStruct::get(arrStructTy,
-                    llvm::ArrayRef<llvm::Constant*>{
-                        llvm::ConstantInt::get(i64Ty, llvm::APInt(64, (uint64_t) len, false)),
-                        dataInit,
-                    });
-                auto* bytesGv = new llvm::GlobalVariable(
-                    *mod, arrStructTy, /*isConst=*/true,
-                    llvm::GlobalValue::PrivateLinkage, arrInit, ".str.bytes");
-
-                // 2. Vtable global; cross-module fixup via ensureGlobalInModule.
+                // 6.2.2 tagged core: {vtable, lenTag, aux, base, ccp}.
+                //   len <= 12  Inline — the text bytes pack into the aux
+                //              i32 (bytes 0..3, little-endian) and the
+                //              base ptr slot (bytes 4..11 as an inttoptr
+                //              i64 constant); no byte global at all.
+                //   len >  12  Static pointer form — lenTag carries the
+                //              STATIC bit (1<<29), aux = 0 (window
+                //              offset), base = the CajetaArray-shaped
+                //              byte global (count word + text + NUL).
+                // The instance global stays mutable because count()
+                // writes back its cached codepoint count on first call.
                 llvm::Constant* vtableRef =
                     llvm::ConstantPointerNull::get(ptrTy);
                 if (auto* vt = klass->getVirtualTableGlobal()) {
                     vtableRef = CajetaModule::ensureGlobalInModule(mod, vt);
                 }
 
-                // 3. String instance constant. Field order matches
-                //    CajetaClass::generatePrototype's embedSubObject walk:
-                //    self vtable, then inherited fields (Object has none),
-                //    then this class's properties (bytes, byteLength,
-                //    mode, cachedCpLength, ssoCount, ssoData). A literal is
-                //    view-mode (mode 1) pointing at the static byte buffer, so
-                //    the inline SSO region is unused — zero-init the two trailing
-                //    fields via their actual struct element types (i64, [N x i8]).
+                llvm::Constant* lenTagC;
+                llvm::Constant* auxC;
+                llvm::Constant* baseC;
+                if (len <= 12) {
+                    uint8_t ibuf[12] = {0};
+                    memcpy(ibuf, decoded.data(), (size_t) len);
+                    uint32_t auxBits = 0;
+                    uint64_t baseBits = 0;
+                    memcpy(&auxBits, ibuf, 4);
+                    memcpy(&baseBits, ibuf + 4, 8);
+                    lenTagC = llvm::ConstantInt::get(i32Ty,
+                        llvm::APInt(32, (uint64_t) len, true));
+                    auxC = llvm::ConstantInt::get(i32Ty,
+                        llvm::APInt(32, (uint64_t) auxBits, false));
+                    baseC = llvm::ConstantExpr::getIntToPtr(
+                        llvm::ConstantInt::get(i64Ty,
+                            llvm::APInt(64, baseBits, false)),
+                        ptrTy);
+                } else {
+                    auto* dataInit = llvm::ConstantDataArray::getString(
+                        ctx, decoded, /*addNull=*/true);
+                    auto* arrStructTy = llvm::StructType::get(ctx,
+                        llvm::ArrayRef<llvm::Type*>{i64Ty, dataInit->getType()});
+                    auto* arrInit = llvm::ConstantStruct::get(arrStructTy,
+                        llvm::ArrayRef<llvm::Constant*>{
+                            llvm::ConstantInt::get(i64Ty,
+                                llvm::APInt(64, (uint64_t) len, false)),
+                            dataInit,
+                        });
+                    auto* bytesGv = new llvm::GlobalVariable(
+                        *mod, arrStructTy, /*isConst=*/true,
+                        llvm::GlobalValue::PrivateLinkage, arrInit, ".str.bytes");
+                    lenTagC = llvm::ConstantInt::get(i32Ty,
+                        llvm::APInt(32,
+                            (uint64_t) (len | ((int64_t) 1 << 29)), true));
+                    auxC = llvm::ConstantInt::get(i32Ty, 0);
+                    baseC = bytesGv;
+                }
+
                 std::vector<llvm::Constant*> fields = {
                     vtableRef,
-                    bytesGv,
-                    llvm::ConstantInt::get(i32Ty,
-                        llvm::APInt(32, (uint64_t) len, true)),
-                    llvm::ConstantInt::get(i32Ty,
-                        llvm::APInt(32, 1, true)),
+                    lenTagC,
+                    auxC,
+                    baseC,
                     llvm::ConstantInt::get(i32Ty,
                         llvm::APInt(32, (uint64_t) -1, true)),
                 };

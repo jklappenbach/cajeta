@@ -2288,21 +2288,19 @@ namespace cajeta {
                             && cls->getQName()->getTypeName() == "String"
                             && cls->getQName()->getPackageName() == "cajeta.lang";
                     };
-                    // Unwrap class String → char* via the bytes field's data
-                    // region. The bytes field at struct slot 1 points at a
-                    // CajetaArray-shaped header { i64 count, [N x i8] data };
-                    // skip 8 bytes past the count to land on the data pointer.
-                    // Literal codegen guarantees null termination so any
-                    // strlen-based concat helper sees the right end.
+                    // Unwrap class String → char* via the mode-aware runtime
+                    // accessor (6.2.2 tagged core: Inline and windowed forms
+                    // materialize into a per-thread ring scratch; full-window
+                    // owned/static roots hand out their NUL-terminated data
+                    // directly).
                     auto extractCStr = [&](llvm::Value* sptr) -> llvm::Value* {
                         if (!stringStructTy) return sptr;
-                        llvm::Value* bytesSlot = builder->CreateStructGEP(
-                            stringStructTy, sptr, 1, "concat.bytes_slot");
-                        llvm::Value* bytesPtr = builder->CreateLoad(
-                            ptrTy, bytesSlot, "concat.bytes_ptr");
-                        return builder->CreateInBoundsGEP(i8Ty, bytesPtr,
-                            llvm::ConstantInt::get(i64Ty, 8),
-                            "concat.cstr");
+                        llvm::FunctionType* cstrTy = llvm::FunctionType::get(
+                            ptrTy, {ptrTy}, false);
+                        llvm::FunctionCallee cstrFn =
+                            module->getLlvmModule()->getOrInsertFunction(
+                                "__cajeta_string_cstr", cstrTy);
+                        return builder->CreateCall(cstrFn, {sptr}, "concat.cstr");
                     };
 
                     auto stringify = [&](llvm::Value* v, CajetaTypePtr vt) -> llvm::Value* {
@@ -2371,29 +2369,36 @@ namespace cajeta {
                             }
                         }
                         if (isClassStringType(vt) && stringStructTy) {
-                            // Direct (bytes+8+off, byteLength): a mode-2 windowed
-                            // view (slice-spec §7.1) has no NUL at its window end,
-                            // so the strlen path would over-read into the root.
-                            llvm::Value* bytesPtr = builder->CreateLoad(
-                                builder->getPtrTy(),
+                            // 6.2.2 tagged core: Inline text lives at the aux
+                            // slot's address (12 in-struct bytes); pointer
+                            // forms read base + 8 + aux. Selects, no branches
+                            // (the unselected arm's GEP is plain, not
+                            // inbounds, so a garbage base can't poison).
+                            llvm::Value* lt = builder->CreateLoad(i32Ty,
                                 builder->CreateStructGEP(stringStructTy, v, 1,
-                                    "cat.bytes"));
-                            llvm::Value* blen = builder->CreateLoad(i32Ty,
-                                builder->CreateStructGEP(stringStructTy, v, 2,
-                                    "cat.blen"));
-                            llvm::Value* mode = builder->CreateLoad(i32Ty,
+                                    "cat.lentag"));
+                            llvm::Value* blen = builder->CreateAnd(lt,
+                                llvm::ConstantInt::get(i32Ty, 0x1FFFFFFF),
+                                "cat.blen");
+                            llvm::Value* isInl = builder->CreateICmpULE(blen,
+                                llvm::ConstantInt::get(i32Ty, 12), "cat.isinl");
+                            llvm::Value* inlPtr = builder->CreateStructGEP(
+                                stringStructTy, v, 2, "cat.inl");
+                            llvm::Value* off = builder->CreateIntCast(
+                                builder->CreateLoad(i32Ty,
+                                    builder->CreateStructGEP(stringStructTy, v, 2,
+                                        "cat.aux")),
+                                i64Ty, /*isSigned=*/false, "cat.off");
+                            llvm::Value* basePtr = builder->CreateLoad(
+                                builder->getPtrTy(),
                                 builder->CreateStructGEP(stringStructTy, v, 3,
-                                    "cat.mode"));
-                            llvm::Value* sso = builder->CreateLoad(i64Ty,
-                                builder->CreateStructGEP(stringStructTy, v, 5,
-                                    "cat.sso"));
-                            llvm::Value* off = builder->CreateSelect(
-                                builder->CreateICmpEQ(mode,
-                                    llvm::ConstantInt::get(i32Ty, 2)),
-                                sso, llvm::ConstantInt::get(i64Ty, 0), "cat.off");
-                            llvm::Value* data = builder->CreateGEP(i8Ty, bytesPtr,
-                                builder->getInt64(8), "cat.base");
-                            data = builder->CreateGEP(i8Ty, data, off, "cat.data");
+                                    "cat.basep"));
+                            llvm::Value* winPtr = builder->CreateGEP(i8Ty, basePtr,
+                                builder->CreateAdd(builder->getInt64(8), off,
+                                    "cat.winoff"),
+                                "cat.win");
+                            llvm::Value* data = builder->CreateSelect(
+                                isInl, inlPtr, winPtr, "cat.data");
                             llvm::Value* lenI64 = builder->CreateIntCast(
                                 blen, i64Ty, /*isSigned=*/false, "cat.len");
                             return { false, nullptr, data, lenI64 };
@@ -2405,10 +2410,12 @@ namespace cajeta {
                         // and strlen reads past its logical end.
                         llvm::Value* len;
                         if (isClassStringType(vt) && stringStructTy) {
-                            llvm::Value* blSlot = builder->CreateStructGEP(
-                                stringStructTy, v, 2, "concat.bytelen_slot");
-                            llvm::Value* bl32 = builder->CreateLoad(
-                                i32Ty, blSlot, "concat.bytelen");
+                            llvm::Value* lt2 = builder->CreateLoad(i32Ty,
+                                builder->CreateStructGEP(stringStructTy, v, 1,
+                                    "concat.lentag_slot"), "concat.lentag");
+                            llvm::Value* bl32 = builder->CreateAnd(lt2,
+                                llvm::ConstantInt::get(i32Ty, 0x1FFFFFFF),
+                                "concat.bytelen");
                             len = builder->CreateSExt(bl32, i64Ty, "concat.bytelen64");
                         } else {
                             len = builder->CreateCall(strlenFn, {cstr}, "concat.clen");
@@ -2433,16 +2440,14 @@ namespace cajeta {
                     }
 
                     // Direct concat: write both operands straight into the result
-                    // String's byte storage — no intermediate __cajeta_str_concat
-                    // malloc/copy/free. Short results (<= SSO_CAP) live INLINE in
-                    // the wrapper's SSO region with NO separate buffer allocation
-                    // (the small-string fast path that keeps `"key" + i` and other
-                    // short builds off the heap). The String struct embed order is
-                    //   { vtable, bytes, byteLength, mode, cachedCpLength,
-                    //     ssoCount, ssoData }  (indices 0..6); the inline region
-                    //   {ssoCount, ssoData} is shaped like a CajetaArray header so
-                    //   `bytes` can point at it and every reader works unchanged.
-                    const int64_t SSO_CAP = 23;   // sizeof(ssoData) - 1 (NUL room)
+                    // String's storage — no intermediate __cajeta_str_concat
+                    // malloc/copy/free. Results <= 12 B build the INLINE form
+                    // (6.2.2 tagged core: the text bytes live in the aux+base
+                    // slots, no buffer at all — the small-string fast path that
+                    // keeps `"key" + i` off the heap; the old 23-byte SSO region
+                    // is gone). Longer results build an OWNED root
+                    // {count word, text, NUL} with lenTag = total (no tag bits).
+                    const int64_t SSO_CAP = 12;   // Inline capacity
                     // Arena routing (frame-arena-plan U2): when the escape pre-pass
                     // proved this concat's result is a non-escaping local, allocate
                     // the wrapper (and any heap byte buffer) from the frame arena —
@@ -2486,29 +2491,27 @@ namespace cajeta {
                         builder->CreateStructGEP(stringStructTy, sPtr, 0,
                             "concat.s_vtable"));
 
-                    // SSO vs heap branch.
+                    // Inline vs heap branch.
                     llvm::Function* curFn = builder->GetInsertBlock()->getParent();
                     llvm::BasicBlock* ssoBB =
-                        llvm::BasicBlock::Create(llvmCtx, "concat.sso", curFn);
+                        llvm::BasicBlock::Create(llvmCtx, "concat.inl", curFn);
                     llvm::BasicBlock* heapBB =
                         llvm::BasicBlock::Create(llvmCtx, "concat.heap", curFn);
                     llvm::BasicBlock* copyBB =
                         llvm::BasicBlock::Create(llvmCtx, "concat.copy", curFn);
                     llvm::Value* isSso = builder->CreateICmpULE(
-                        total, llvm::ConstantInt::get(i64Ty, SSO_CAP), "concat.is_sso");
+                        total, llvm::ConstantInt::get(i64Ty, SSO_CAP), "concat.is_inl");
                     builder->CreateCondBr(isSso, ssoBB, heapBB);
 
-                    // Inline: bytes -> &ssoCount (struct index 5); count = total;
-                    // data = ssoCount + 8 (= &ssoData). No buffer allocation.
+                    // Inline: the text destination IS the aux slot's address
+                    // (12 in-struct bytes spanning aux + base); no buffer.
                     builder->SetInsertPoint(ssoBB);
-                    llvm::Value* ssoHdr = builder->CreateStructGEP(
-                        stringStructTy, sPtr, 5, "concat.sso_hdr");
-                    builder->CreateStore(total, ssoHdr);
-                    llvm::Value* ssoData = builder->CreateInBoundsGEP(
-                        i8Ty, ssoHdr, llvm::ConstantInt::get(i64Ty, 8), "concat.sso_data");
+                    llvm::Value* inlDst = builder->CreateStructGEP(
+                        stringStructTy, sPtr, 2, "concat.inl_dst");
                     builder->CreateBr(copyBB);
 
-                    // Heap: alloc { i64 count; data; NUL }; count = total; data = +8.
+                    // Heap: alloc { i64 count; data; NUL }; count = total; the
+                    // wrapper adopts it as its OWNED root (aux = 0, base = hdr).
                     builder->SetInsertPoint(heapBB);
                     llvm::Value* arrSize = builder->CreateAdd(
                         total, llvm::ConstantInt::get(i64Ty, 9), "concat.arr_size");
@@ -2522,19 +2525,29 @@ namespace cajeta {
                     builder->CreateStore(total, arrPtr);
                     llvm::Value* heapData = builder->CreateInBoundsGEP(
                         i8Ty, arrPtr, llvm::ConstantInt::get(i64Ty, 8), "concat.heap_data");
+                    builder->CreateStore(llvm::ConstantInt::get(i32Ty, 0),
+                        builder->CreateStructGEP(stringStructTy, sPtr, 2,
+                            "concat.s_aux"));
+                    builder->CreateStore(arrPtr,
+                        builder->CreateStructGEP(stringStructTy, sPtr, 3,
+                            "concat.s_base"));
                     builder->CreateBr(copyBB);
 
-                    // Merge: pick the bytes-field value + data destination.
+                    // Merge on the text destination.
                     builder->SetInsertPoint(copyBB);
-                    llvm::PHINode* bytesVal = builder->CreatePHI(ptrTy, 2, "concat.bytes");
-                    bytesVal->addIncoming(ssoHdr, ssoBB);
-                    bytesVal->addIncoming(arrPtr, heapBB);
                     llvm::PHINode* dataPtr = builder->CreatePHI(ptrTy, 2, "concat.data");
-                    dataPtr->addIncoming(ssoData, ssoBB);
+                    dataPtr->addIncoming(inlDst, ssoBB);
                     dataPtr->addIncoming(heapData, heapBB);
+                    llvm::PHINode* isInlPhi = builder->CreatePHI(
+                        llvm::Type::getInt1Ty(llvmCtx), 2, "concat.was_inl");
+                    isInlPhi->addIncoming(llvm::ConstantInt::getTrue(llvmCtx), ssoBB);
+                    isInlPhi->addIncoming(llvm::ConstantInt::getFalse(llvmCtx), heapBB);
 
                     // Copy both operands (already reduced to (ptr,len), ints
-                    // pre-formatted into stack scratch) + NUL-terminate.
+                    // pre-formatted into stack scratch), then NUL-terminate.
+                    // For the Inline arm total <= 12, so the NUL at data[total]
+                    // can land at most on cachedCpLength's first byte — which
+                    // the unconditional ccp store below rewrites.
                     builder->CreateMemCpy(dataPtr, llvm::MaybeAlign(1),
                         opL.ptr, llvm::MaybeAlign(1), lenL);
                     llvm::Value* dstR = builder->CreateInBoundsGEP(
@@ -2544,17 +2557,13 @@ namespace cajeta {
                     llvm::Value* nulSlot = builder->CreateInBoundsGEP(
                         i8Ty, dataPtr, total, "concat.nul");
                     builder->CreateStore(llvm::ConstantInt::get(i8Ty, 0), nulSlot);
+                    (void) isInlPhi;
 
-                    // Remaining String fields.
-                    builder->CreateStore(bytesVal,
-                        builder->CreateStructGEP(stringStructTy, sPtr, 1,
-                            "concat.s_bytes"));
+                    // lenTag = total (Inline <= 12 and OWNED roots both carry
+                    // no tag bits); cachedCpLength = -1.
                     builder->CreateStore(totalI32,
-                        builder->CreateStructGEP(stringStructTy, sPtr, 2,
-                            "concat.s_byteLength"));
-                    builder->CreateStore(llvm::ConstantInt::get(i32Ty, 0),
-                        builder->CreateStructGEP(stringStructTy, sPtr, 3,
-                            "concat.s_mode"));
+                        builder->CreateStructGEP(stringStructTy, sPtr, 1,
+                            "concat.s_lentag"));
                     builder->CreateStore(llvm::ConstantInt::get(i32Ty, -1),
                         builder->CreateStructGEP(stringStructTy, sPtr, 4,
                             "concat.s_cachedCpLength"));

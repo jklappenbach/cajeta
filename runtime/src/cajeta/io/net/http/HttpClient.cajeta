@@ -134,7 +134,7 @@ public class HttpClient {
 
         if (https) {
             int8[] hostBytes = host.toBytes();
-            int32 hostLen = host.byteLength;
+            int32 hostLen = host.byteLength();
             TlsStream tls = HttpClient.wrapTls(#sock, hostBytes, hostLen,
                                                this.trustPem, this.trustLen,
                                                this.hasTrustAnchor);
@@ -164,7 +164,7 @@ public class HttpClient {
      * @EntryPoint
      */
     public #HttpResponse get(String url) {
-        String current = url.substring(0, url.byteLength);
+        String current = url.substring(0, url.byteLength());
         int32 hops = 0;
         while (true) {
             Uri uri = Uri.parse(current);
@@ -200,7 +200,7 @@ public class HttpClient {
      */
     static #String resolveRedirect(String base, String loc) {
         if (loc.startsWith("https://") || loc.startsWith("http://")) {
-            return loc.substring(0, loc.byteLength);
+            return loc.substring(0, loc.byteLength());
         }
         Uri b = Uri.parse(base);
         String origin = b.getScheme() + "://" + b.getHost();
@@ -357,7 +357,7 @@ public class HttpClient {
 
     /** True iff `scheme` is `"https"` (case already lowered by `Uri`). */
     static boolean isHttps(String scheme) {
-        if (scheme.byteLength != 5) {
+        if (scheme.byteLength() != 5) {
             return false;
         }
         int8[] b = scheme.toBytes();

@@ -197,7 +197,7 @@ public final class KeepAlive {
 
     /** Copy a literal into a fresh owned `String` (the emitted token). */
     static #String lit(String s) {
-        return s.substring(0, s.byteLength);
+        return s.substring(0, s.byteLength());
     }
 
     /**
@@ -208,8 +208,8 @@ public final class KeepAlive {
      * parser's `tokenContains` (RFC 7230 §6.1 connection-option list).
      */
     static boolean tokenContains(String value, String token) {
-        int32 vlen = value.byteLength;
-        int32 tlen = token.byteLength;
+        int32 vlen = value.byteLength();
+        int32 tlen = token.byteLength();
         if (tlen == 0 || tlen > vlen) {
             return false;
         }

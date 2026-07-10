@@ -161,7 +161,7 @@ public class SocketAddress {
             throw heap MalformedAddressException(
                 "null socket address input", (int64) -1);
         }
-        int32 n = input.byteLength;
+        int32 n = input.byteLength();
         if (n == 0) {
             throw heap MalformedAddressException(
                 "empty socket address", (int64) -1);
@@ -274,7 +274,7 @@ public class SocketAddress {
      */
     public #String toString() {
         String ipStr = this.ip.toString();
-        int32 ipLen = ipStr.byteLength;
+        int32 ipLen = ipStr.byteLength();
         int8[] ipBytes = ipStr.toBytes();
         boolean v6 = this.ip.isV6();
 

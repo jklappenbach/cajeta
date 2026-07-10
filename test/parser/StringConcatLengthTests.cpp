@@ -43,7 +43,7 @@ TEST(StringConcatLengthTests, literalPlusBytesBackedString) {
         "    public static int32 run() {\n")
         + kMakeS +
         "        String j = \"x\" + s;\n"
-        "        return j.byteLength;\n"
+        "        return j.byteLength();\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 5);
@@ -58,7 +58,7 @@ TEST(StringConcatLengthTests, bytesBackedStringPlusLiteral) {
         "    public static int32 run() {\n")
         + kMakeS +
         "        String j = s + \"!\";\n"
-        "        return j.byteLength;\n"
+        "        return j.byteLength();\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 5);
@@ -73,7 +73,7 @@ TEST(StringConcatLengthTests, bytesBackedBothSides) {
         "    public static int32 run() {\n")
         + kMakeS +
         "        String j = s + s;\n"
-        "        return j.byteLength;\n"
+        "        return j.byteLength();\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 8);
@@ -89,7 +89,7 @@ TEST(StringConcatLengthTests, primitiveStringifyUnaffected) {
         "    public static int32 run() {\n")
         + kMakeS +
         "        String j = s + 42;\n"
-        "        return j.byteLength;\n"
+        "        return j.byteLength();\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 6);

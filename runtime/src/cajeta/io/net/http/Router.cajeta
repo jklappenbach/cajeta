@@ -186,7 +186,7 @@ public class Router {
                                           String[] pathSegs, int32 segCount) {
         HttpResponse resp = HttpResponse.of(405);
         String allow = Router.allowHeader(routes, routeCount, pathSegs, segCount);
-        if (allow.byteLength > 0) {
+        if (allow.byteLength() > 0) {
             resp.setHeader("Allow", allow);
         }
         return #resp;
@@ -235,7 +235,7 @@ public class Router {
      * conventional behavior; patterns are written in raw form).
      */
     static #String[] splitPath(String target) {
-        int32 n = target.byteLength;
+        int32 n = target.byteLength();
         // Trim the path portion: stop at the first '?' or '#'.
         int32 pathEnd = n;
         int32 k = 0;
@@ -303,8 +303,8 @@ public class Router {
      * becomes `token`, otherwise `acc + ", " + token`.
      */
     static #String csvAppend(String acc, String token) {
-        int32 aLen = acc.byteLength;
-        int32 tLen = token.byteLength;
+        int32 aLen = acc.byteLength();
+        int32 tLen = token.byteLength();
         if (aLen == 0) {
             return token.substring(0, tLen);
         }
@@ -336,7 +336,7 @@ public class Router {
      * scan is on `", "`-delimited tokens, byte-exact.
      */
     static boolean csvContains(String csv, String token) {
-        int32 n = csv.byteLength;
+        int32 n = csv.byteLength();
         int32 segStart = 0;
         int32 i = 0;
         while (i <= n) {

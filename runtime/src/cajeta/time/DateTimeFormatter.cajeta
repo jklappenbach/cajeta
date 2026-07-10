@@ -109,22 +109,21 @@ public final class DateTimeFormatter {
      * ```
      */
     public #String format(DateTimeFields f) {
-        int32 n = this.pattern.byteLength;
+        int32 n = this.pattern.byteLength();
         // Generous upper bound: each '%X' can expand to a name/year (<=16),
         // each literal byte is itself. Oversized; the String length is exact.
         int32 cap = n * 16 + 16;
         int8[] buf = heap int8[cap];
-        int64 po = this.pattern.byteOffset();
         int32 p = 0;
         int32 i = 0;
         while (i < n) {
-            int32 c = ((int32) this.pattern.bytes[po + i]) & 0xff;
+            int32 c = ((int32) this.pattern.byteAt(i)) & 0xff;
             if (c == 37 && i + 1 < n) { // '%'
-                int32 code = ((int32) this.pattern.bytes[po + i + 1]) & 0xff;
+                int32 code = ((int32) this.pattern.byteAt(i + 1)) & 0xff;
                 p = DateTimeFormatter.emit(buf, p, code, f);
                 i = i + 2;
             } else {
-                buf[p] = this.pattern.bytes[po + i];
+                buf[p] = this.pattern.byteAt(i);
                 p = p + 1;
                 i = i + 1;
             }
@@ -234,22 +233,26 @@ public final class DateTimeFormatter {
             return Fmt.writeUint(buf, p, (int64) doy, 3);
         }
         if (code == 98 || code == 104) { // b / h short month
-            // month/dow names are internal literals (never windowed views),
-            // so the raw .bytes reads below are window-exact (10.3.1 audit).
+            // 6.2.2: short names are Inline literals (no root array) —
+            // materialize the window for the bulk write.
             String mn = DateTimeFormatter.monthShort(f.month);
-            return Fmt.writeBytes(buf, p, mn.bytes, mn.byteLength);
+            int8[] mb = mn.toBytes();
+            return Fmt.writeBytes(buf, p, mb, mn.byteLength());
         }
         if (code == 66) { // B full month
             String mn = DateTimeFormatter.monthLong(f.month);
-            return Fmt.writeBytes(buf, p, mn.bytes, mn.byteLength);
+            int8[] mb = mn.toBytes();
+            return Fmt.writeBytes(buf, p, mb, mn.byteLength());
         }
         if (code == 97) { // a short weekday
             String dn = DateTimeFormatter.dowShort(f.dayOfWeek);
-            return Fmt.writeBytes(buf, p, dn.bytes, dn.byteLength);
+            int8[] db = dn.toBytes();
+            return Fmt.writeBytes(buf, p, db, dn.byteLength());
         }
         if (code == 65) { // A full weekday
             String dn = DateTimeFormatter.dowLong(f.dayOfWeek);
-            return Fmt.writeBytes(buf, p, dn.bytes, dn.byteLength);
+            int8[] db = dn.toBytes();
+            return Fmt.writeBytes(buf, p, db, dn.byteLength());
         }
         if (code == 122) { // z  +HHMM
             return DateTimeFormatter.writeOffset(buf, p, f.offsetSeconds, false);

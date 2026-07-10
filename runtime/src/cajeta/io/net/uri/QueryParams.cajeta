@@ -125,7 +125,7 @@ public class QueryParams {
         // fall-through path too, so the whole walk is guarded under one
         // conditional instead (same workaround as BPlusTree.keysInOrder).
         if (query != null) {
-            int32 n = query.byteLength;
+            int32 n = query.byteLength();
 
             int32 segStart = 0;
             int32 i = 0;
@@ -199,13 +199,13 @@ public class QueryParams {
     /** Decoded key at slot `i`, in parse/insertion order. */
     public #String keyAt(int32 i) {
         String k = this.keys[i];
-        return k.substring(0, k.byteLength);
+        return k.substring(0, k.byteLength());
     }
 
     /** Decoded value at slot `i`, in parse/insertion order. */
     public #String valueAt(int32 i) {
         String v = this.values[i];
-        return v.substring(0, v.byteLength);
+        return v.substring(0, v.byteLength());
     }
 
     /** True iff at least one slot carries `key`. */
@@ -246,7 +246,7 @@ public class QueryParams {
         while (i < this.sizeCount) {
             if (this.keys[i].equals(key)) {
                 String v = this.values[i];
-                return v.substring(0, v.byteLength);
+                return v.substring(0, v.byteLength());
             }
             i = i + 1;
         }
@@ -269,7 +269,7 @@ public class QueryParams {
         while (i < this.sizeCount) {
             if (this.keys[i].equals(key)) {
                 String v = this.values[i];
-                out[w] = v.substring(0, v.byteLength);
+                out[w] = v.substring(0, v.byteLength());
                 w = w + 1;
             }
             i = i + 1;
@@ -286,8 +286,8 @@ public class QueryParams {
      * only on [`toString`](#toString).
      */
     public void add(String key, String value) {
-        this.append(key.substring(0, key.byteLength),
-                    value.substring(0, value.byteLength));
+        this.append(key.substring(0, key.byteLength()),
+                    value.substring(0, value.byteLength()));
     }
 
     /**
@@ -379,7 +379,7 @@ public class QueryParams {
             String ek = this.encodeComponent(rk);
             String ev = this.encodeComponent(rv);
             // "key" + "=" + "val"; plus a '&' before every pair but the first.
-            total = total + ek.byteLength + ev.byteLength + 1;
+            total = total + ek.byteLength() + ev.byteLength() + 1;
             if (i > 0) {
                 total = total + 1;                              // '&'
             }
@@ -436,7 +436,7 @@ public class QueryParams {
      * next write offset.
      */
     private static int32 copyBytes(int8[] out, int32 at, String s) {
-        int32 n = s.byteLength;
+        int32 n = s.byteLength();
         int32 j = 0;
         while (j < n) {
             out[at] = s.byteAt(j);
@@ -453,7 +453,7 @@ public class QueryParams {
      * raw byte scan is correct).
      */
     private static #String plusToSpace(String s) {
-        int32 n = s.byteLength;
+        int32 n = s.byteLength();
         int8[] out = heap int8[n];
         int32 i = 0;
         while (i < n) {
@@ -479,7 +479,7 @@ public class QueryParams {
      * (`%20`/`%2 0` n/a — only exact `2`,`0`).
      */
     private static #String percent20ToPlus(String s) {
-        int32 n = s.byteLength;
+        int32 n = s.byteLength();
         int8[] out = heap int8[n];
         int32 w = 0;
         int32 i = 0;

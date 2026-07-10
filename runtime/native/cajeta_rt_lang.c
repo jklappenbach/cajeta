@@ -60,27 +60,19 @@ void* __cajeta_object_clone(void* self) {
     if (!r || r->allocationSize <= 0) return NULL;
     if (r->typeName && strcmp(r->typeName, "cajeta.lang.String") == 0) {
         cajeta_string_layout* s = (cajeta_string_layout*) self;
-        int32_t len = s->byteLength;
+        int32_t len = caj_str_len(s);
         cajeta_string_layout* out =
             (cajeta_string_layout*) __cajeta_alloc(sizeof(cajeta_string_layout));
         out->vtable = s->vtable;
         out->cachedCpLength = s->cachedCpLength;
-        out->ssoCount = 0;
-        memset(out->ssoData, 0, sizeof out->ssoData);
-        if (len <= 0 || s->bytes == NULL) {
-            out->bytes = NULL;
-            out->byteLength = 0;
-            out->mode = 0;
-            return out;
+        // Detach (spec Â§4.4 amplification valve): materialize the window
+        // into a fresh Inline-or-owned core; the clone holds no stake.
+        if (len <= CAJ_STR_INLINE_CAP) {
+            caj_str_set_inline(out, caj_str_ptr(s), len);
+        } else {
+            void* buf = caj_str_new_root(caj_str_ptr(s), len);
+            caj_str_set_window(out, len, 0, buf);
         }
-        int32_t off = (s->mode == 2) ? (int32_t) s->ssoCount : 0;
-        void* buf = __cajeta_new_array_header(8, 1, (uint64_t) len + 1);
-        *((int64_t*) buf) = len;
-        memcpy((char*) buf + 8, (const char*) s->bytes + 8 + off, (size_t) len);
-        ((char*) buf)[8 + len] = 0;
-        out->bytes = buf;
-        out->byteLength = len;
-        out->mode = 0;
         return out;
     }
     void* out = __cajeta_alloc((uint64_t) r->allocationSize);
@@ -93,7 +85,7 @@ void* __cajeta_object_clone(void* self) {
             void* src = *slot;
             if (src) {
                 cajeta_string_layout* fs = (cajeta_string_layout*) src;
-                *slot = __cajeta_string_slice(src, 0, fs->byteLength);
+                *slot = __cajeta_string_slice(src, 0, caj_str_len(fs));
             }
         } else if (strcmp(f->type, "cajeta.lang.Utf8") == 0) {
             // Inline value field: the memcpy duplicated the 16 bytes —
@@ -172,29 +164,20 @@ char* __cajeta_str_fromChar(int8_t c) {
 // input: the legacy __cajeta_str_concat chain hands over its final buffer,
 // and downstream code receives a REAL String object — so String methods,
 // println, and field stores all work on a toString() result.
-void* __cajeta_string_wrap_cstr(char* cstr, void* vtable) {
+void* __cajeta_string_wrap_cstr(char* cstr, void* vtable, int32_t freeIt) {
     size_t len = cstr ? strlen(cstr) : 0;
     cajeta_string_layout* out =
         (cajeta_string_layout*) __cajeta_alloc(sizeof(cajeta_string_layout));
     out->vtable = vtable;
     out->cachedCpLength = -1;
-    out->ssoCount = 0;
-    memset(out->ssoData, 0, sizeof out->ssoData);
-    if (len == 0) {
-        out->bytes = NULL;
-        out->byteLength = 0;
-        out->mode = 0;
-        if (cstr) free(cstr);
-        return out;
+    if (len <= (size_t) CAJ_STR_INLINE_CAP) {
+        caj_str_set_inline(out, cstr, (int32_t) len);
+    } else {
+        void* buf = caj_str_new_root(cstr, (int32_t) len);
+        caj_str_set_window(out, (int32_t) len, 0, buf);
     }
-    void* buf = __cajeta_new_array_header(8, 1, (uint64_t) len + 1);
-    *((int64_t*) buf) = (int64_t) len;
-    memcpy((char*) buf + 8, cstr, len);
-    ((char*) buf)[8 + len] = 0;
-    out->bytes = buf;
-    out->byteLength = (int32_t) len;
-    out->mode = 0;
-    free(cstr);
+    // freeIt=0 marks a `.rodata` cstr (bool literals etc.) — never free those.
+    if (cstr && freeIt) free(cstr);
     return out;
 }
 

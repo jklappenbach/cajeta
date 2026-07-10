@@ -174,7 +174,7 @@ public class HttpResponse {
      * of the type.
      */
     private static #String lit(String s) {
-        return s.substring(0, s.byteLength);
+        return s.substring(0, s.byteLength());
     }
 
     // -- chainable mutators -------------------------------------------------
@@ -214,13 +214,13 @@ public class HttpResponse {
 
     /** Override the reason phrase and return `this`. */
     public HttpResponse reason(String phrase) {
-        this.reason = phrase.substring(0, phrase.byteLength);
+        this.reason = phrase.substring(0, phrase.byteLength());
         return this;
     }
 
     /** Override the HTTP-version string and return `this`. */
     public HttpResponse version(String v) {
-        this.version = v.substring(0, v.byteLength);
+        this.version = v.substring(0, v.byteLength());
         return this;
     }
 

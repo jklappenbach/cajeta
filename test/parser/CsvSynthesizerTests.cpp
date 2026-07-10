@@ -101,7 +101,7 @@ TEST(CsvSynthesizerTests, parseStringColumn) {
         "public class Box { public cajeta.lang.String s; }\n",
         "s\nhi\nyo",
         "Box[] rows = Csv.parse<Box[]>(buf, n);"
-        " return (int32) rows[0].s.bytes[0] * 100 + (int32) rows[1].s.bytes[0];"),
+        " return (int32) rows[0].s.byteAt(0) * 100 + (int32) rows[1].s.byteAt(0);"),
         'h' * 100 + 'y');   // 10421
 }
 

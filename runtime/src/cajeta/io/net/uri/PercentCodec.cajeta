@@ -168,7 +168,7 @@ public class PercentCodec {
             int8[] e = heap int8[0];
             return heap String(#e, 0);
         }
-        int32 n = input.byteLength;
+        int32 n = input.byteLength();
 
         // Worst case every byte expands to 3 ('%XX'); size for that and
         // track the real length separately.
@@ -218,7 +218,7 @@ public class PercentCodec {
             int8[] e = heap int8[0];
             return heap String(#e, 0);
         }
-        int32 n = input.byteLength;
+        int32 n = input.byteLength();
 
         // Decoding only ever shrinks (or keeps) length; size for n.
         int8[] out = heap int8[n];
