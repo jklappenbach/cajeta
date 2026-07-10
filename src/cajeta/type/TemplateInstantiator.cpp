@@ -24,6 +24,7 @@
 //  - No constraint enforcement — TPL-6.
 //
 
+#include "CajetaArray.h"
 #include "CajetaClass.h"
 #include "QualifiedName.h"
 #include "../asn/ClassBodyDeclaration.h"
@@ -358,6 +359,44 @@ namespace cajeta {
         // Keep argOwning parallel to args after any default-fill above (filled
         // positions are borrow). element-ownership §2.
         if (argOwning.size() < args.size()) argOwning.resize(args.size(), false);
+
+        // element-ownership §8.1 (plan 2.1.4) — the value-semantics gate. `#`
+        // demands a separable ownership story from the argument: a primitive
+        // carries none (§8.1.1); a value type owns heap payload only when
+        // shared-capable — Utf8/Slice or a transitive embedder (§8.1.2).
+        // Checked after default-fill normalization and before the cache key so
+        // both source-level threading (`Box<#int32>` via fromContext /
+        // NewExpression) and direct instantiate() callers hit it. Wildcards
+        // and still-unfilled forward-ref placeholders skip — their shape isn't
+        // known yet; arrays own their elements and pass.
+        for (size_t i = 0; i < args.size(); ++i) {
+            if (!argOwning[i] || !args[i]) continue;
+            if (args[i]->isWildcard()) continue;
+            if (dynamic_pointer_cast<CajetaArray>(args[i])) continue;
+            if (auto argClass = dynamic_pointer_cast<CajetaClass>(args[i])) {
+                if (argClass->isPlaceholder()) continue;
+                if (argClass->isValueType()
+                        && !argClass->isSharedCapableValue()) {
+                    throw Exception(
+                        "template " + qName->toCanonical()
+                            + ": '#' on type argument " + std::to_string(i + 1)
+                            + " (" + args[i]->toCanonical()
+                            + ") — this value type owns no heap payload, so "
+                              "there is no ownership to transfer; drop the '#' "
+                              "(element-ownership spec §8.1)",
+                        "CAJETA_ERROR_TYPE_PARAMETER_OWNERSHIP");
+                }
+                continue;
+            }
+            // Non-class, non-array: a primitive. (An integer-constant arg in a
+            // type-parameter slot is already rejected by the param-kind check.)
+            throw Exception(
+                "template " + qName->toCanonical() + ": '#' on type argument "
+                    + std::to_string(i + 1) + " (" + args[i]->toCanonical()
+                    + ") — primitives carry no separable ownership; drop the "
+                      "'#' (element-ownership spec §8.1)",
+                "CAJETA_ERROR_TYPE_PARAMETER_OWNERSHIP");
+        }
         string suffix = buildArgSuffix(args, argOwning);
         string instCanonical = qName->toCanonical() + suffix;
 

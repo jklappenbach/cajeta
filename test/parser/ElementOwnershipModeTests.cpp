@@ -13,6 +13,7 @@
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/type/CajetaClass.h"
+#include "cajeta/error/Exception.h"
 
 #include <filesystem>
 #include <fstream>
@@ -128,4 +129,97 @@ TEST(ElementOwnershipModeTests, sourceLevelHashProducesOwningInstantiation) {
     }
     EXPECT_TRUE(sawOwning);   // Box<#Elem> resolved owning
     EXPECT_TRUE(sawBorrow);   // Box<Elem> resolved borrow
+}
+
+// ---------------------------------------------------------------------------
+// 2.1.4 — the §8.1 value-semantics gate. `#` demands a separable ownership
+// story from the argument: a primitive carries none (§8.1.1); a value type
+// owns heap payload only when shared-capable (§8.1.2 — Utf8/Slice or a
+// transitive embedder). Borrow instantiations of the same arguments stay fine.
+// ---------------------------------------------------------------------------
+
+// §8.1.1 — `#` on a primitive type argument is a compile error; the plain
+// (borrow) instantiation of the same argument is untouched.
+TEST(ElementOwnershipModeTests, hashOnPrimitiveArgIsRejected) {
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kSrc, "test.Ut");
+    auto box = module->getStructures()["test.Box"];
+    ASSERT_NE(box, nullptr);
+    auto& cmap = cajeta::CajetaType::getCanonicalMap();
+    CajetaTypePtr i32 = cmap["int32"];
+    ASSERT_NE(i32, nullptr);
+
+    try {
+        box->instantiate({i32}, {true});
+        FAIL() << "expected '#' on int32 to be rejected (spec 8.1.1)";
+    } catch (cajeta::Exception& e) {
+        std::string msg = e.getMessage();
+        EXPECT_NE(msg.find("int32"), std::string::npos) << msg;
+        EXPECT_NE(msg.find("ownership"), std::string::npos) << msg;
+    }
+    auto borrow = box->instantiate({i32}, {false});
+    ASSERT_NE(borrow, nullptr);
+    EXPECT_FALSE(borrow->isTypeArgumentOwning(0));
+}
+
+// §8.1.2 — `#` on a POD value type (no heap-owning fields) is a compile
+// error; the borrow instantiation stays fine.
+TEST(ElementOwnershipModeTests, hashOnPodValueTypeIsRejected) {
+    auto src =
+        "package test;\n"
+        "public record Pod { float64 x; }\n"
+        "public class Box<T> { public T value; }\n"
+        "public class Ut { public static int32 run() { return 0; } }\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.Ut");
+    auto box = module->getStructures()["test.Box"];
+    ASSERT_NE(box, nullptr);
+    CajetaTypePtr pod = module->getStructures()["test.Pod"];
+    ASSERT_NE(pod, nullptr);
+
+    try {
+        box->instantiate({pod}, {true});
+        FAIL() << "expected '#' on a POD value type to be rejected (spec 8.1.2)";
+    } catch (cajeta::Exception& e) {
+        std::string msg = e.getMessage();
+        EXPECT_NE(msg.find("test.Pod"), std::string::npos) << msg;
+    }
+    auto borrow = box->instantiate({pod}, {false});
+    ASSERT_NE(borrow, nullptr);
+    EXPECT_FALSE(borrow->isTypeArgumentOwning(0));
+}
+
+// §8.1.2 (accept half — the 2.1.4 headline) — `#` on a SHARED-CAPABLE value
+// type (a record transitively owning heap payload via a Utf8 field) is
+// accepted and instantiates owning.
+TEST(ElementOwnershipModeTests, hashOnSharedCapableValueIsAccepted) {
+    auto src =
+        "package test;\n"
+        "public record Quote { Utf8 sym; float64 px; }\n"
+        "public class Box<T> { public T value; }\n"
+        "public class Ut { public static int32 run() { return 0; } }\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.Ut");
+    auto box = module->getStructures()["test.Box"];
+    ASSERT_NE(box, nullptr);
+    CajetaTypePtr quote = module->getStructures()["test.Quote"];
+    ASSERT_NE(quote, nullptr);
+
+    auto owning = box->instantiate({quote}, {true});
+    ASSERT_NE(owning, nullptr);
+    EXPECT_TRUE(owning->isTypeArgumentOwning(0));
+}
+
+// §8.1.1 at the SOURCE level — a `Box<#int32>` field is a compile error
+// through the normal parse→instantiate threading (not just direct calls).
+TEST(ElementOwnershipModeTests, sourceLevelHashOnPrimitiveIsCompileError) {
+    auto src =
+        "package test;\n"
+        "public class Box<T> { public T value; }\n"
+        "public class Ut {\n"
+        "  public Box<#int32> bad;\n"
+        "  public static int32 run() { return 0; }\n"
+        "}\n";
+    Compiler compiler;
+    EXPECT_ANY_THROW(compileForInspection(compiler, src, "test.Ut"));
 }
