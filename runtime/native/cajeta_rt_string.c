@@ -89,14 +89,22 @@ int64_t __cajeta_string_index_of(void* s_v, void* n_v, int64_t start) {
     if (nlen > hlen - start) return -1;
     const char* h = caj_str_ptr(s);
     const char* nd = caj_str_ptr(n);
+    // memchr drives the first-byte skip (libc's is SIMD-dispatched; this
+    // bitcode compiles for a generic target, so the vector width lives in
+    // libc, not here); the last-byte probe filters candidates before the
+    // full memcmp. Replaces the pre-re-core cajeta-side AVX2 vload scan.
     char first = nd[0];
     char last = nd[nlen - 1];
-    int64_t lim = hlen - nlen;
-    for (int64_t i = start; i <= lim; i++) {
-        if (h[i] == first && h[i + nlen - 1] == last
-                && memcmp(h + i, nd, (size_t) nlen) == 0) {
-            return i;
+    const char* p = h + start;
+    const char* lim = h + hlen - nlen;             // last valid start
+    while (p <= lim) {
+        const char* c = (const char*) memchr(p, first, (size_t) (lim - p + 1));
+        if (!c) return -1;
+        if (c[nlen - 1] == last
+                && (nlen <= 2 || memcmp(c + 1, nd + 1, (size_t) nlen - 2) == 0)) {
+            return (int64_t) (c - h);
         }
+        p = c + 1;
     }
     return -1;
 }
@@ -227,6 +235,19 @@ void* __cajeta_string_replace(void* s_v, void* f_v, void* r_v) {
         caj_str_set_window(out, (int32_t) outLen, 0, buf);
     }
     return out;
+}
+
+// Copy the window into `dst`'s data at byte offset `dstOff`; returns the
+// byte count. ONE native call per bulk consume (StringBuilder.append's
+// spilled path) instead of a per-byte byteAt walk — works for every form.
+// The caller guarantees capacity.
+int32_t __cajeta_string_copy_to(void* s_v, void* dstArr, int32_t dstOff) {
+    cajeta_string_layout* s = (cajeta_string_layout*) s_v;
+    int32_t n = caj_str_len(s);
+    if (n > 0 && dstArr) {
+        memcpy((char*) dstArr + 8 + dstOff, caj_str_ptr(s), (size_t) n);
+    }
+    return n;
 }
 
 // The effective window as a fresh caller-owned int8[] (the view-safe raw-
