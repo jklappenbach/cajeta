@@ -9,7 +9,7 @@
 //
 // Wire bytes are written as Cajeta string literals with \r\n escapes
 // (the Cajeta lexer decodes \r -> CR, \n -> LF, see
-// LiteralExpression.cpp), then fed via `wire.bytes` / `wire.byteLength`.
+// LiteralExpression.cpp), then fed via `wire.bytes` / `wire.byteLength()`.
 // The vectors mirror test/net/golden/http/*.http byte-for-byte so this
 // suite pins the same corpus the NET-13.2 golden meta-test validates.
 //
@@ -66,7 +66,7 @@ TEST(HttpParserTests, simpleGetRequestParses) {
         "String wire = \"GET /hello.txt HTTP/1.1\\r\\nHost: www.example.test\\r\\n"
         "User-Agent: cajeta-net/1.0\\r\\nAccept: */*\\r\\n\\r\\n\";\n"
         "HttpParser p = HttpParser.forRequest();\n"
-        "boolean done = p.feed(wire.bytes, wire.byteLength);\n"
+        "boolean done = p.feed(wire.toBytes(), wire.byteLength());\n"
         "if (!done) return -1;\n"
         "if (!p.isComplete()) return -2;\n"
         "HttpRequest r = p.getRequest();\n"
@@ -92,7 +92,7 @@ TEST(HttpParserTests, postContentLengthFramingAndLeftover) {
         "Content-Type: application/json\\r\\nContent-Length: 17\\r\\n\\r\\n"
         "{\\\"name\\\":\\\"cajeta\\\"}\";\n"
         "HttpParser p = HttpParser.forRequest();\n"
-        "p.feed(wire.bytes, wire.byteLength);\n"
+        "p.feed(wire.toBytes(), wire.byteLength());\n"
         "if (!p.isComplete()) return -1;\n"
         "HttpRequest r = p.getRequest();\n"
         "if (!r.getMethod().equals(\"POST\")) return -2;\n"
@@ -114,7 +114,7 @@ TEST(HttpParserTests, response200ContentLength) {
         "String wire = \"HTTP/1.1 200 OK\\r\\nContent-Type: text/plain\\r\\n"
         "Content-Length: 13\\r\\nConnection: keep-alive\\r\\n\\r\\nHello, world!\";\n"
         "HttpParser p = HttpParser.forResponse();\n"
-        "p.feed(wire.bytes, wire.byteLength);\n"
+        "p.feed(wire.toBytes(), wire.byteLength());\n"
         "if (!p.isComplete()) return -1;\n"
         "HttpResponse r = p.getResponse();\n"
         "if (r == null) return -2;\n"
@@ -135,7 +135,7 @@ TEST(HttpParserTests, chunkedResponseFraming) {
         "String wire = \"HTTP/1.1 200 OK\\r\\nContent-Type: text/plain\\r\\n"
         "Transfer-Encoding: chunked\\r\\n\\r\\n4\\r\\nWiki\\r\\n0\\r\\n\\r\\n\";\n"
         "HttpParser p = HttpParser.forResponse();\n"
-        "p.feed(wire.bytes, wire.byteLength);\n"
+        "p.feed(wire.toBytes(), wire.byteLength());\n"
         "BodyFraming f = p.getFraming();\n"
         "if (!f.isChunked()) return -1;\n"
         "if (f.length != (int64) -1) return -2;\n"
@@ -148,7 +148,7 @@ TEST(HttpParserTests, response204CloseIsBodylessNotKeepAlive) {
     EXPECT_EQ(runI32(
         "String wire = \"HTTP/1.1 204 No Content\\r\\nConnection: close\\r\\n\\r\\n\";\n"
         "HttpParser p = HttpParser.forResponse();\n"
-        "p.feed(wire.bytes, wire.byteLength);\n"
+        "p.feed(wire.toBytes(), wire.byteLength());\n"
         "HttpResponse r = p.getResponse();\n"
         "if (r.statusCode() != 204) return -1;\n"
         "BodyFraming f = p.getFraming();\n"
@@ -163,7 +163,7 @@ TEST(HttpParserTests, responseNoFramingIsCloseDelimited) {
     EXPECT_EQ(runI32(
         "String wire = \"HTTP/1.1 200 OK\\r\\nContent-Type: text/plain\\r\\n\\r\\nbody\";\n"
         "HttpParser p = HttpParser.forResponse();\n"
-        "p.feed(wire.bytes, wire.byteLength);\n"
+        "p.feed(wire.toBytes(), wire.byteLength());\n"
         "BodyFraming f = p.getFraming();\n"
         "if (!f.isClose()) return -1;\n"
         "if (f.keepAlive) return -2;\n"
@@ -175,7 +175,7 @@ TEST(HttpParserTests, statusLineEmptyReasonPhrase) {
     EXPECT_EQ(runI32(
         "String wire = \"HTTP/1.1 200 \\r\\nContent-Length: 0\\r\\n\\r\\n\";\n"
         "HttpParser p = HttpParser.forResponse();\n"
-        "p.feed(wire.bytes, wire.byteLength);\n"
+        "p.feed(wire.toBytes(), wire.byteLength());\n"
         "HttpResponse r = p.getResponse();\n"
         "if (r.statusCode() != 200) return -1;\n"
         "if (!r.getReason().equals(\"\")) return -2;\n"
@@ -191,8 +191,8 @@ TEST(HttpParserTests, splitFeedMatchesOneShot) {
     EXPECT_EQ(runI32(
         "String w = \"POST /submit HTTP/1.1\\r\\nHost: api.example.test\\r\\n"
         "Content-Length: 5\\r\\n\\r\\nhello\";\n"
-        "int8[] b = w.bytes;\n"
-        "int32 n = w.byteLength;\n"
+        "int8[] b = w.toBytes();\n"
+        "int32 n = w.byteLength();\n"
         // Feed byte-by-byte: the hardest split (every boundary exercised).
         "HttpParser p = HttpParser.forRequest();\n"
         "int32 i = 0;\n"
@@ -224,9 +224,9 @@ TEST(HttpParserTests, headerSplitAcrossFeeds) {
         "String a = \"GET / HTTP/1.1\\r\\nHost: exa\";\n"
         "String b = \"mple.test\\r\\n\\r\\n\";\n"
         "HttpParser p = HttpParser.forRequest();\n"
-        "boolean d1 = p.feed(a.bytes, a.byteLength);\n"
+        "boolean d1 = p.feed(a.toBytes(), a.byteLength());\n"
         "if (d1) return -1;\n"             // not complete after the first chunk
-        "boolean d2 = p.feed(b.bytes, b.byteLength);\n"
+        "boolean d2 = p.feed(b.toBytes(), b.byteLength());\n"
         "if (!d2) return -2;\n"
         "if (!p.getRequest().getHeaders().get(\"host\").equals(\"example.test\")) return -3;\n"
         "return 1;"), 1);
@@ -243,7 +243,7 @@ TEST(HttpParserTests, oversizeHeadersRejected) {
         "String wire = \"GET / HTTP/1.1\\r\\nHost: a-really-long-header-value.example.test\\r\\n\\r\\n\";\n"
         "HttpParser p = HttpParser.forRequestWithLimits(lim);\n"
         "try {\n"
-        "    p.feed(wire.bytes, wire.byteLength);\n"
+        "    p.feed(wire.toBytes(), wire.byteLength());\n"
         "    return -1;\n"           // should have thrown
         "} catch (HeadersTooLargeException e) {\n"
         "    if (e.limit != (int64) 32) return -2;\n"
@@ -258,7 +258,7 @@ TEST(HttpParserTests, overlongLineRejected) {
         "String wire = \"GET / HTTP/1.1\\r\\nX-Long: aaaaaaaaaaaaaaaaaaaaaaaaaaaa\\r\\n\\r\\n\";\n"
         "HttpParser p = HttpParser.forRequestWithLimits(lim);\n"
         "try {\n"
-        "    p.feed(wire.bytes, wire.byteLength);\n"
+        "    p.feed(wire.toBytes(), wire.byteLength());\n"
         "    return -1;\n"
         "} catch (HeadersTooLargeException e) {\n"
         "    if (e.limit != (int64) 16) return -2;\n"
@@ -273,7 +273,7 @@ TEST(HttpParserTests, tooManyHeadersRejected) {
         "String wire = \"GET / HTTP/1.1\\r\\nA: 1\\r\\nB: 2\\r\\nC: 3\\r\\nD: 4\\r\\n\\r\\n\";\n"
         "HttpParser p = HttpParser.forRequestWithLimits(lim);\n"
         "try {\n"
-        "    p.feed(wire.bytes, wire.byteLength);\n"
+        "    p.feed(wire.toBytes(), wire.byteLength());\n"
         "    return -1;\n"
         "} catch (HeadersTooLargeException e) {\n"
         "    return 1;\n"
@@ -288,7 +288,7 @@ TEST(HttpParserTests, unterminatedHeadEndInputRaisesEof) {
     EXPECT_EQ(runI32(
         "String wire = \"GET / HTTP/1.1\\r\\nHost: h.test\\r\\nX-A: b\\r\\n\";\n"
         "HttpParser p = HttpParser.forRequest();\n"
-        "boolean done = p.feed(wire.bytes, wire.byteLength);\n"
+        "boolean done = p.feed(wire.toBytes(), wire.byteLength());\n"
         "if (done) return -1;\n"           // head not terminated -> not done
         "try {\n"
         "    p.endInput();\n"
@@ -304,7 +304,7 @@ TEST(HttpParserTests, headerLineWithoutColonIsMalformed) {
         "String wire = \"GET / HTTP/1.1\\r\\nNotAHeaderLine\\r\\n\\r\\n\";\n"
         "HttpParser p = HttpParser.forRequest();\n"
         "try {\n"
-        "    p.feed(wire.bytes, wire.byteLength);\n"
+        "    p.feed(wire.toBytes(), wire.byteLength());\n"
         "    return -1;\n"
         "} catch (MalformedMessageException e) {\n"
         "    return 1;\n"
@@ -317,7 +317,7 @@ TEST(HttpParserTests, nonNumericStatusCodeIsMalformed) {
         "String wire = \"HTTP/1.1 2X0 OK\\r\\n\\r\\n\";\n"
         "HttpParser p = HttpParser.forResponse();\n"
         "try {\n"
-        "    p.feed(wire.bytes, wire.byteLength);\n"
+        "    p.feed(wire.toBytes(), wire.byteLength());\n"
         "    return -1;\n"
         "} catch (MalformedMessageException e) {\n"
         "    return 1;\n"
@@ -330,7 +330,7 @@ TEST(HttpParserTests, badContentLengthIsMalformed) {
         "String wire = \"HTTP/1.1 200 OK\\r\\nContent-Length: abc\\r\\n\\r\\n\";\n"
         "HttpParser p = HttpParser.forResponse();\n"
         "try {\n"
-        "    p.feed(wire.bytes, wire.byteLength);\n"
+        "    p.feed(wire.toBytes(), wire.byteLength());\n"
         "    return -1;\n"
         "} catch (MalformedMessageException e) {\n"
         "    return 1;\n"
@@ -342,7 +342,7 @@ TEST(HttpParserTests, http10DefaultsToClose) {
     EXPECT_EQ(runI32(
         "String wire = \"HTTP/1.0 200 OK\\r\\nContent-Length: 0\\r\\n\\r\\n\";\n"
         "HttpParser p = HttpParser.forResponse();\n"
-        "p.feed(wire.bytes, wire.byteLength);\n"
+        "p.feed(wire.toBytes(), wire.byteLength());\n"
         "BodyFraming f = p.getFraming();\n"
         "if (f.keepAlive) return -1;\n"
         "return 1;"), 1);
@@ -354,7 +354,7 @@ TEST(HttpParserTests, http10KeepAliveHonored) {
         "String wire = \"HTTP/1.0 200 OK\\r\\nConnection: keep-alive\\r\\n"
         "Content-Length: 0\\r\\n\\r\\n\";\n"
         "HttpParser p = HttpParser.forResponse();\n"
-        "p.feed(wire.bytes, wire.byteLength);\n"
+        "p.feed(wire.toBytes(), wire.byteLength());\n"
         "BodyFraming f = p.getFraming();\n"
         "if (!f.keepAlive) return -1;\n"
         "return 1;"), 1);

@@ -2707,12 +2707,13 @@ namespace cajeta {
             auto i64c = [&](uint64_t v) {
                 return llvm::ConstantInt::get(i64Ty, v);
             };
-            // Field order matches the literal materialization: 0 vtable,
-            // 1 bytes, 2 byteLength, 3 mode, 4 cachedCpLength.
+            // Field order matches the literal materialization (6.2.2
+            // tagged core): 0 vtable, 1 lenTag, 2 aux, 3 base,
+            // 4 cachedCpLength.
             llvm::Value* strSize    = i64c(dl.getTypeAllocSize(strStructTy));
-            llvm::Value* offBytes   = i64c(sl->getElementOffset(1));
-            llvm::Value* offByteLen = i64c(sl->getElementOffset(2));
-            llvm::Value* offMode    = i64c(sl->getElementOffset(3));
+            llvm::Value* offBytes   = i64c(sl->getElementOffset(1));   // lenTag
+            llvm::Value* offByteLen = i64c(sl->getElementOffset(2));   // aux
+            llvm::Value* offMode    = i64c(sl->getElementOffset(3));   // base
             llvm::Value* offCpLen   = i64c(sl->getElementOffset(4));
 
             llvm::Constant* vtableRef =

@@ -820,32 +820,37 @@ void* __cajeta_alloc(uint64_t size);  // defined below; used by __cajeta_args_ma
 // of owned (mode=0) String instances, each holding a heap copy of an argv slot.
 void* __cajeta_args_make(int64_t argc, char** argv,
                          void* string_vtable, int64_t str_size,
-                         int64_t off_bytes, int64_t off_byte_len,
-                         int64_t off_mode, int64_t off_cplen) {
+                         int64_t off_lentag, int64_t off_aux,
+                         int64_t off_base, int64_t off_cplen) {
     if (argc < 0) argc = 0;
     // cajeta `String[]` has array LLVM type `{ i64, [0 x %String] }`, so the
     // element STRIDE is the full String struct size — but each slot holds a
     // `String*` POINTER in its first 8 bytes (the codegen stores/loads a
     // pointer per element; see the aggregate-init lowering). So: allocate the
     // backing with `str_size` stride, then store one heap String* per slot.
+    // 6.2.2 tagged core: the offsets are (lenTag, aux, base, cachedCpLength);
+    // aux+base are contiguous, so Inline text writes span both.
     void* arr = __cajeta_new_array_header(8, (uint64_t) str_size, (uint64_t) argc);
     char* base = (char*) arr + 8;
     for (int64_t i = 0; i < argc; i++) {
         const char* s = (argv && argv[i]) ? argv[i] : "";
         int64_t len = (int64_t) strlen(s);
-        // bytes payload: CajetaArray { i64 count=len, [len+1 x i8] } — the
-        // trailing NUL keeps any legacy strlen reader happy (matches the
-        // string-literal materialization in LiteralExpression.cpp).
-        void* bytes = __cajeta_new_array_header(8, 1, (uint64_t) (len + 1));
-        *((int64_t*) bytes) = len;                       // count excludes the NUL
-        memcpy((char*) bytes + 8, s, (size_t) len + 1);  // copy incl. the NUL
-        // Heap String instance (vtable is field 0, offset 0 by construction).
         void* str = __cajeta_alloc((uint64_t) str_size);
-        *(void**)   ((char*) str)                = string_vtable;
-        *(void**)   ((char*) str + off_bytes)    = bytes;
-        *(int32_t*) ((char*) str + off_byte_len) = (int32_t) len;
-        *(int32_t*) ((char*) str + off_mode)     = 0;    // owned: drop reclaims bytes
-        *(int32_t*) ((char*) str + off_cplen)    = -1;   // codepoint length uncomputed
+        *(void**)   ((char*) str)             = string_vtable;
+        *(int32_t*) ((char*) str + off_cplen) = -1;
+        if (len <= 12) {
+            *(int32_t*) ((char*) str + off_lentag) = (int32_t) len;
+            memset((char*) str + off_aux, 0, 12);
+            memcpy((char*) str + off_aux, s, (size_t) len);
+        } else {
+            // Owned root: CajetaArray { i64 count=len, text, NUL }.
+            void* bytes = __cajeta_new_array_header(8, 1, (uint64_t) (len + 1));
+            *((int64_t*) bytes) = len;
+            memcpy((char*) bytes + 8, s, (size_t) len + 1);
+            *(int32_t*) ((char*) str + off_lentag) = (int32_t) len;
+            *(int32_t*) ((char*) str + off_aux)    = 0;
+            *(void**)   ((char*) str + off_base)   = bytes;
+        }
         // Store the pointer at the (str_size-strided) element slot.
         *(void**) (base + (size_t) i * (size_t) str_size) = str;
     }
@@ -1202,19 +1207,77 @@ void __cajeta_arena_reset(uint64_t mark) {
 int64_t __cajeta_arena_bytes(void)    { return (int64_t) __cajeta_arena.bump; }
 int64_t __cajeta_arena_retained(void) { return (int64_t) __cajeta_arena.retained; }
 
-// cajeta.lang.String wrapper layout (generatePrototype embed order, mirrored by
-// the concat lowering in BinaryOpExpression). mode: 0 = owned (bytes is a heap
-// array header this String owns), 1 = view (bytes borrowed from static/shared
-// storage — string literals, slices).
+// cajeta.lang.String wrapper layout (generatePrototype embed order, mirrored
+// by the literal/concat lowerings) — slices plan 6.2.2: the storage is the
+// 16-byte tagged Utf8 core (slice-spec §8), `mode` collapsed into the tag.
+//   len <= 12            Inline — text lives in `data`; self-contained.
+//   len >  12            pointer form: data overlays {i32 off, char* base};
+//                        base is always a ROOT CajetaArray header, text at
+//                        base + 8 + off. Tag bits:
+//     CAJ_STR_SHARED_BIT  wrapper holds one rc stake on base (drop releases,
+//                         copies retain — the count-word sign convention).
+//     CAJ_STR_BORROW_BIT  stakeless view of a heap root (slices plan 4.2.2;
+//                         drop must not touch the root).
+//     CAJ_STR_STATIC_BIT  static root (literals + views of them); no rc ever.
+//     no bits             OWNED sole root — drop frees via the owner-drop
+//                         seam; never enters the shared table unless a slice
+//                         escapes (zero rc traffic for never-shared strings).
+// Pointer forms always carry len > 12 (the §8 normalization rule: every
+// <= 12 B result is built Inline), so the discrimination is total.
+#define CAJ_STR_LEN_MASK   0x1FFFFFFF
+#define CAJ_STR_SHARED_BIT ((int32_t) 1 << 31)
+#define CAJ_STR_BORROW_BIT ((int32_t) 1 << 30)
+#define CAJ_STR_STATIC_BIT ((int32_t) 1 << 29)
+#define CAJ_STR_INLINE_CAP 12
+
 typedef struct {
     void*   vtable;
-    void*   bytes;        // CajetaArray header: 8-byte count word + data
-    int32_t byteLength;
-    int32_t mode;
+    int32_t lenTag;
+    char    data[12];     // Inline text, or the {off, base} pointer overlay
     int32_t cachedCpLength;
-    int64_t ssoCount;     // inline SSO region: count word (CajetaArray header)
-    int8_t  ssoData[24];  // inline SSO data — bytes points here for short owned strings
 } cajeta_string_layout;
+
+static inline int32_t caj_str_len(const cajeta_string_layout* s) {
+    return s->lenTag & CAJ_STR_LEN_MASK;
+}
+static inline int caj_str_is_pointer(const cajeta_string_layout* s) {
+    return caj_str_len(s) > CAJ_STR_INLINE_CAP;
+}
+static inline int32_t caj_str_off(const cajeta_string_layout* s) {
+    int32_t o;
+    memcpy(&o, s->data, 4);
+    return o;
+}
+static inline char* caj_str_base(const cajeta_string_layout* s) {
+    char* b;
+    memcpy(&b, s->data + 4, 8);
+    return b;
+}
+static inline const char* caj_str_ptr(const cajeta_string_layout* s) {
+    if (!caj_str_is_pointer(s)) return s->data;
+    return caj_str_base(s) + 8 + caj_str_off(s);
+}
+static inline void caj_str_set_inline(cajeta_string_layout* s,
+        const char* src, int32_t len) {
+    s->lenTag = len;
+    memset(s->data, 0, sizeof s->data);
+    if (len > 0) memcpy(s->data, src, (size_t) len);
+}
+static inline void caj_str_set_window(cajeta_string_layout* s,
+        int32_t lenTag, int32_t off, void* base) {
+    s->lenTag = lenTag;
+    memcpy(s->data, &off, 4);
+    memcpy(s->data + 4, &base, 8);
+}
+// Build a fresh owned root (count word + text + NUL) holding src[0..len);
+// returns the header. Callers wrap it as {len, 0, buf} with no tag bits.
+static inline void* caj_str_new_root(const char* src, int32_t len) {
+    void* buf = __cajeta_new_array_header(8, 1, (uint64_t) len + 1);
+    *((int64_t*) buf) = len;
+    if (len > 0) memcpy((char*) buf + 8, src, (size_t) len);
+    ((char*) buf)[8 + len] = 0;
+    return buf;
+}
 
 // Mode-aware drop for cajeta.lang.String locals/owned values
 // (docs/specification/lang/String.md § Memory model — the owned/view distinction
@@ -1222,34 +1285,38 @@ typedef struct {
 // strings (mode 0); view strings borrow their bytes and must never free them.
 // The live-set claim makes this idempotent and a no-op on static literal
 // wrappers (which aren't tracked). Drop-fn shape: void(*)(void*).
-void __cajeta_string_drop(void* s) {
-    if (!s) return;
+// Claim-assumed variant: the CALLER already won this wrapper's live-set
+// claim (__cajeta_class_virtual_drop claims before dispatching the vtable
+// drop_fn — FieldOwnership.md § Solution B). Runs the tag-dispatched root
+// work and frees the wrapper. Never call without holding the claim.
+void __cajeta_string_drop_claimed(void* s) {
     cajeta_string_layout* str = (cajeta_string_layout*) s;
-    int32_t mode = str->mode;
-    void* bytes = str->bytes;
-    if (!__cajeta_live_set_claim(s)) return;   // static literal / already freed
-    // Free the byte buffer only for owned strings whose bytes live in a separate
-    // heap block. SSO strings point bytes at the wrapper's own inline region
-    // (freed with the wrapper); view strings (mode 1) borrow their bytes.
-    if (mode == 0 && bytes != NULL && bytes != (void*) &str->ssoCount) {
-        __cajeta_free_array(bytes);
-    } else if (mode == 2 && bytes != NULL) {
-        // Windowed view (slice-spec §7.1): this wrapper holds one stake on the
-        // root buffer; free it only as the last stake (static roots no-op).
-        // BORROW-flagged views (ssoData[0], slices plan 4.2.2) hold no stake
-        // and must not release one. STATIC-rooted views (ssoData[1]) have no
-        // table entry at all — releasing would steal a stake another view's
-        // promote created on the same static root.
-        if (!str->ssoData[0] && !str->ssoData[1]) {
-            int __cajeta_shared_release(void* base);
-            if (__cajeta_shared_release(bytes)) {
-                __cajeta_poison_buffer(bytes);
-                free(bytes);
+    int32_t tag = str->lenTag;
+    char* base = caj_str_is_pointer(str) ? caj_str_base(str) : NULL;
+    // Tag dispatch (slice-spec §8.2). Inline is self-contained; BORROW views
+    // hold no stake; STATIC roots are never freed. SHARED releases this
+    // wrapper's stake (the last stake frees the root). OWNED (no bits)
+    // routes through the array owner-drop seam: claim-and-free the sole
+    // root, or release the owner's stake if a slice escape promoted it.
+    if (base != NULL && !(tag & (CAJ_STR_BORROW_BIT | CAJ_STR_STATIC_BIT))) {
+        if (tag & CAJ_STR_SHARED_BIT) {
+            int __cajeta_shared_release(void* b);
+            if (__cajeta_shared_release(base)) {
+                __cajeta_poison_buffer(base);
+                free(base);
             }
+        } else {
+            __cajeta_free_array(base);
         }
     }
     __cajeta_poison_buffer(s);
     free(s);
+}
+
+void __cajeta_string_drop(void* s) {
+    if (!s) return;
+    if (!__cajeta_live_set_claim(s)) return;   // static wrapper / already freed
+    __cajeta_string_drop_claimed(s);
 }
 
 // Drop dispatcher for function-typed locals. The drop chain registers

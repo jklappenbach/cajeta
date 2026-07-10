@@ -70,81 +70,31 @@ namespace cajeta {
                 || !llvm::isa<llvm::StructType>(stringKlass->getLlvmType())) {
             return cstr;  // bootstrap fallback
         }
-        auto* stringStructTy =
-            llvm::cast<llvm::StructType>(stringKlass->getLlvmType());
-
         std::string pfx = namePrefix ? namePrefix : "str";
-        llvm::Function* strlenFn = module->getRuntimeFunction("__cajeta_str_len");
-        llvm::Value* lenI64 = builder->CreateCall(
-            strlenFn, {cstr}, pfx + ".len");
-        llvm::Value* lenI32 = builder->CreateIntCast(
-            lenI64, i32Ty, /*isSigned=*/true, pfx + ".len32");
+        (void) i8Ty;
+        (void) i64Ty;
+        (void) i32Ty;
 
-        // CajetaArray header sized 8 + len + 1 (count word + bytes +
-        // null terminator).
-        llvm::Value* arrSize = builder->CreateAdd(lenI64,
-            llvm::ConstantInt::get(i64Ty, 9), pfx + ".arr_size");
-        llvm::FunctionType* allocTy = llvm::FunctionType::get(
-            ptrTy, {i64Ty}, false);
-        llvm::FunctionCallee allocFn =
-            module->getLlvmModule()->getOrInsertFunction(
-                "__cajeta_alloc", allocTy);
-        llvm::Value* arrPtr = builder->CreateCall(
-            allocFn, {arrSize}, pfx + ".arr_alloc");
-        builder->CreateMemSet(arrPtr,
-            llvm::ConstantInt::get(i8Ty, 0),
-            arrSize, llvm::MaybeAlign(8));
-        builder->CreateStore(lenI64, arrPtr);
-        llvm::Value* dataPtr = builder->CreateInBoundsGEP(
-            i8Ty, arrPtr,
-            llvm::ConstantInt::get(i64Ty, 8),
-            pfx + ".arr_data");
-        builder->CreateMemCpy(dataPtr, llvm::MaybeAlign(1),
-            cstr, llvm::MaybeAlign(1), lenI64);
-
-        const llvm::DataLayout& dl =
-            module->getLlvmModule()->getDataLayout();
-        llvm::Constant* sSize = llvm::ConstantInt::get(
-            i64Ty, dl.getTypeAllocSize(stringStructTy));
-        llvm::Value* sPtr = MemoryManager::createMallocInstruction(
-            module, sSize, builder->GetInsertBlock());
-
+        // 6.2.2 re-core: the runtime builds the tagged-core wrapper
+        // (Inline <= 12 B, owned root otherwise). `freeAfterWrap=false`
+        // marks a `.rodata` cstr (e.g. __cajeta_bool_to_str's literal)
+        // that must not be freed.
         llvm::Constant* vtableRef = llvm::ConstantPointerNull::get(
             llvm::cast<llvm::PointerType>(ptrTy));
         if (auto* vt = stringKlass->getVirtualTableGlobal()) {
             vtableRef = CajetaModule::ensureGlobalInModule(
                 module->getLlvmModule(), vt);
         }
-        builder->CreateStore(vtableRef,
-            builder->CreateStructGEP(stringStructTy, sPtr, 0,
-                pfx + ".s_vtable"));
-        builder->CreateStore(arrPtr,
-            builder->CreateStructGEP(stringStructTy, sPtr, 1,
-                pfx + ".s_bytes"));
-        builder->CreateStore(lenI32,
-            builder->CreateStructGEP(stringStructTy, sPtr, 2,
-                pfx + ".s_byteLength"));
-        builder->CreateStore(llvm::ConstantInt::get(i32Ty, 0),
-            builder->CreateStructGEP(stringStructTy, sPtr, 3,
-                pfx + ".s_mode"));
-        builder->CreateStore(llvm::ConstantInt::get(i32Ty, -1),
-            builder->CreateStructGEP(stringStructTy, sPtr, 4,
-                pfx + ".s_cachedCpLength"));
-
-        // Free the intermediate cstr — we copied its bytes into the
-        // CajetaArray header, so the class String owns its own
-        // buffer. Caller passes `freeAfterWrap=false` when the cstr
-        // is a `.rodata` static (e.g. `__cajeta_bool_to_str` returns
-        // a const char* to a string literal — calling free() on it
-        // would crash). The malloc'd-cstr helpers (i64_to_str,
-        // f64_to_str, str_concat, …) all want the free.
-        if (freeAfterWrap) {
-            if (llvm::Function* freeFn =
-                    module->getRuntimeFunction("__cajeta_free")) {
-                builder->CreateCall(freeFn, {cstr});
-            }
-        }
-        return sPtr;
+        llvm::FunctionType* wrapTy = llvm::FunctionType::get(
+            ptrTy, {ptrTy, ptrTy, llvm::Type::getInt32Ty(llvmCtx)}, false);
+        llvm::FunctionCallee wrapFn =
+            module->getLlvmModule()->getOrInsertFunction(
+                "__cajeta_string_wrap_cstr", wrapTy);
+        return builder->CreateCall(wrapFn,
+            {cstr, vtableRef,
+             llvm::ConstantInt::get(llvm::Type::getInt32Ty(llvmCtx),
+                 freeAfterWrap ? 1 : 0)},
+            pfx + ".wrap");
     }
 
     // Pass-by-pointer ABI bridge for closure-call arguments. Class / interface /
@@ -1312,17 +1262,18 @@ namespace cajeta {
                         llvm::Value* cstrResult = builder->CreateCall(getFn, {nameArg},
                             std::string("system.") + sysNs + ".get.cstr");
 
-                        // Wrap the returned char* into a class String pointer.
-                        // Layout: { ptr vtable, ptr bytes, i32 byteLength, i32 mode,
-                        // i32 cachedCpLength }. Returns null when the runtime gave
-                        // a null pointer (env var not set, property absent) — the
-                        // cajeta-side caller compares against null normally.
+                        // Wrap the returned char* into a class String
+                        // (6.2.2 tagged core — the shared wrap helper
+                        // handles Inline-or-owned). Returns null when the
+                        // runtime gave a null pointer (env var not set,
+                        // property absent) — the cajeta-side caller
+                        // compares against null normally. The cstr is the
+                        // runtime's own storage: copy, don't free.
                         auto stringType = CajetaType::of("String");
                         auto stringClass = dynamic_pointer_cast<CajetaClass>(stringType);
                         if (!stringClass || !stringClass->getLlvmType()) {
                             return cstrResult;
                         }
-                        llvm::Type* stringStructTy = stringClass->getLlvmType();
 
                         llvm::Function* curFn = builder->GetInsertBlock()->getParent();
                         llvm::BasicBlock* nullBB = llvm::BasicBlock::Create(
@@ -1343,55 +1294,12 @@ namespace cajeta {
                             llvm::cast<llvm::PointerType>(ptrTy));
                         builder->CreateBr(joinBB);
 
-                        // Non-null arm — wrap into a class String via the same
-                        // shape BinaryOpExpression's `+` concat uses for its
-                        // char* result. Header: { i64 count, char[count + 1] }.
                         builder->SetInsertPoint(wrapBB);
-                        llvm::Function* strlenFn = module->getRuntimeFunction("__cajeta_str_len");
-                        llvm::Value* lenI64 = builder->CreateCall(strlenFn, {cstrResult},
-                            "system.len");
-                        llvm::Value* lenI32 = builder->CreateIntCast(lenI64, i32Ty,
-                            /*isSigned=*/true);
-                        llvm::Value* arrSize = builder->CreateAdd(lenI64,
-                            llvm::ConstantInt::get(i64Ty, 9));
-                        llvm::FunctionType* allocTy = llvm::FunctionType::get(
-                            ptrTy, {i64Ty}, false);
-                        llvm::FunctionCallee allocFn =
-                            module->getLlvmModule()->getOrInsertFunction(
-                                "__cajeta_alloc", allocTy);
-                        llvm::Value* arrPtr = builder->CreateCall(allocFn, {arrSize});
-                        builder->CreateMemSet(arrPtr,
-                            llvm::ConstantInt::get(i8Ty, 0),
-                            arrSize, llvm::MaybeAlign(8));
-                        builder->CreateStore(lenI64, arrPtr);
-                        llvm::Value* dataPtr = builder->CreateInBoundsGEP(i8Ty,
-                            arrPtr, llvm::ConstantInt::get(i64Ty, 8));
-                        builder->CreateMemCpy(dataPtr, llvm::MaybeAlign(1),
-                            cstrResult, llvm::MaybeAlign(1), lenI64);
-
-                        const llvm::DataLayout& dl =
-                            module->getLlvmModule()->getDataLayout();
-                        llvm::Constant* sSize = llvm::ConstantInt::get(i64Ty,
-                            dl.getTypeAllocSize(stringStructTy));
-                        llvm::Value* sPtr = MemoryManager::createMallocInstruction(
-                            module, sSize, builder->GetInsertBlock());
-
-                        llvm::Constant* vtableRef = llvm::ConstantPointerNull::get(
-                            llvm::cast<llvm::PointerType>(ptrTy));
-                        if (auto* vt = stringClass->getVirtualTableGlobal()) {
-                            vtableRef = CajetaModule::ensureGlobalInModule(
-                                module->getLlvmModule(), vt);
-                        }
-                        builder->CreateStore(vtableRef,
-                            builder->CreateStructGEP(stringStructTy, sPtr, 0));
-                        builder->CreateStore(arrPtr,
-                            builder->CreateStructGEP(stringStructTy, sPtr, 1));
-                        builder->CreateStore(lenI32,
-                            builder->CreateStructGEP(stringStructTy, sPtr, 2));
-                        builder->CreateStore(llvm::ConstantInt::get(i32Ty, 0),
-                            builder->CreateStructGEP(stringStructTy, sPtr, 3));
-                        builder->CreateStore(llvm::ConstantInt::get(i32Ty, -1),
-                            builder->CreateStructGEP(stringStructTy, sPtr, 4));
+                        llvm::Value* sPtr = wrapCStringIntoClassString(
+                            module, cstrResult,
+                            (std::string("system.") + sysNs).c_str(),
+                            /*freeAfterWrap=*/false);
+                        llvm::BasicBlock* wrapEndBB = builder->GetInsertBlock();
                         builder->CreateBr(joinBB);
 
                         // Join the two arms into one ptr-typed phi.
@@ -1399,7 +1307,7 @@ namespace cajeta {
                         llvm::PHINode* phi = builder->CreatePHI(ptrTy, 2,
                             "system." + sysNs + ".get");
                         phi->addIncoming(nullStr, nullBB);
-                        phi->addIncoming(sPtr, wrapBB);
+                        phi->addIncoming(sPtr, wrapEndBB);
                         return phi;
                     }
                     if (methodCallName == "set" && parameters.size() == 2) {
@@ -1703,14 +1611,16 @@ namespace cajeta {
                             llvmCtx, "printf.after", parentFn);
                         builder->CreateCondBr(isNull, storeNullBB, extractBB);
                         builder->SetInsertPoint(extractBB);
-                        llvm::Value* bytesSlot = builder->CreateStructGEP(
-                            stringStructTy, strPtr, 1, "printf.bytesSlot");
-                        llvm::Value* bytesPtr = builder->CreateLoad(
-                            ptrTy, bytesSlot, "printf.bytesPtr");
-                        llvm::Value* cstr = builder->CreateInBoundsGEP(
-                            i8Ty, bytesPtr,
-                            llvm::ConstantInt::get(i64Ty, 8),
-                            "printf.cstr");
+                        // 6.2.2 tagged core: the mode-aware cstr helper
+                        // materializes windowed/Inline forms into a scratch
+                        // (printf consumes each arg before the next call).
+                        llvm::FunctionType* cstrTy = llvm::FunctionType::get(
+                            ptrTy, {ptrTy}, false);
+                        llvm::FunctionCallee cstrFn =
+                            module->getLlvmModule()->getOrInsertFunction(
+                                "__cajeta_string_cstr", cstrTy);
+                        llvm::Value* cstr = builder->CreateCall(
+                            cstrFn, {strPtr}, "printf.cstr");
                         builder->CreateBr(afterBB);
                         builder->SetInsertPoint(storeNullBB);
                         builder->CreateBr(afterBB);
@@ -6041,7 +5951,9 @@ namespace cajeta {
                         llvm::Value* newPos = builder->CreateAdd(
                             curPos, nReadI64, "fr.str.pos_new");
                         builder->CreateStore(newPos, posSlot);
-                        // Wrap into a class String shell.
+                        // Wrap into a class String (6.2.2 tagged core): the
+                        // wrapper adopts the read buffer as its owned root
+                        // (or copies <= 12 B Inline and frees it).
                         CajetaTypePtr stringTy = CajetaType::of("String");
                         auto stringKlass = std::dynamic_pointer_cast<CajetaClass>(stringTy);
                         if (stringKlass && stringKlass->getLlvmType()
@@ -6067,25 +5979,15 @@ namespace cajeta {
                             builder->CreateStore(vtableRef,
                                 builder->CreateStructGEP(sStructTy, sInst, 0,
                                     "fr.str.s_vtable"));
-                            builder->CreateStore(arr,
-                                builder->CreateStructGEP(sStructTy, sInst, 1,
-                                    "fr.str.s_bytes"));
-                            // byteLength as i32.
                             llvm::Value* lenI32 = builder->CreateIntCast(
                                 nRead, i32Ty, true);
-                            builder->CreateStore(lenI32,
-                                builder->CreateStructGEP(sStructTy, sInst, 2,
-                                    "fr.str.s_byteLength"));
-                            // mode = 0 (owned).
-                            builder->CreateStore(
-                                llvm::ConstantInt::get(i32Ty, 0),
-                                builder->CreateStructGEP(sStructTy, sInst, 3,
-                                    "fr.str.s_mode"));
-                            // cachedCpLength = -1 (not computed).
-                            builder->CreateStore(
-                                llvm::ConstantInt::get(i32Ty, -1),
-                                builder->CreateStructGEP(sStructTy, sInst, 4,
-                                    "fr.str.s_cachedCp"));
+                            llvm::FunctionType* adoptTy = llvm::FunctionType::get(
+                                llvm::Type::getVoidTy(llvmCtx),
+                                {ptrTy, ptrTy, i32Ty}, false);
+                            llvm::FunctionCallee adoptFn =
+                                module->getLlvmModule()->getOrInsertFunction(
+                                    "__cajeta_string_adopt", adoptTy);
+                            builder->CreateCall(adoptFn, {sInst, arr, lenI32});
                             resolvedType = stringKlass;
                             return sInst;
                         }
@@ -6163,70 +6065,36 @@ namespace cajeta {
                         return nullptr;
                     }
                 }
-                // FileWriter.writeString(String s) — unwrap the
-                // class String to its underlying bytes + byteLength
-                // and call __cajeta_file_write.
+                // FileWriter.writeString(String s) — the runtime helper
+                // reads the tagged core (6.2.2: Inline or windowed forms)
+                // and writes the window; returns the byte count for the
+                // pos bookkeeping.
                 if (isWriter && methodCallName == "writeString"
                         && parameters.size() == 1) {
-                    llvm::Function* fn = module->getRuntimeFunction(
-                        "__cajeta_file_write");
-                    if (fn) {
-                        llvm::Value* fd = loadFd();
-                        llvm::Value* sPtr = parameters[0].expression->generateCode(module);
-                        if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(sPtr)) {
-                            sPtr = builder->CreateLoad(a->getAllocatedType(), a);
-                        }
-                        // The class String layout: { vtable@0, bytes@1,
-                        // byteLength@2, mode@3, cachedCp@4 }.
-                        CajetaTypePtr stringTy = CajetaType::of("String");
-                        auto stringKlass = std::dynamic_pointer_cast<CajetaClass>(stringTy);
-                        if (stringKlass && stringKlass->getLlvmType()
-                                && llvm::isa<llvm::StructType>(stringKlass->getLlvmType())) {
-                            auto* sStructTy = llvm::cast<llvm::StructType>(
-                                stringKlass->getLlvmType());
-                            llvm::Value* bytesSlot = builder->CreateStructGEP(
-                                sStructTy, sPtr, 1, "fw.str.bytes_slot");
-                            llvm::Value* arr = builder->CreateLoad(
-                                ptrTy, bytesSlot, "fw.str.arr");
-                            // A mode-2 windowed view keeps bytes = ROOT with
-                            // the window offset in ssoCount — add it, or a
-                            // substring writes the root's prefix bytes.
-                            llvm::Value* modeV = builder->CreateLoad(i32Ty,
-                                builder->CreateStructGEP(sStructTy, sPtr, 3,
-                                    "fw.str.mode_slot"), "fw.str.mode");
-                            llvm::Value* ssoV = builder->CreateLoad(i64Ty,
-                                builder->CreateStructGEP(sStructTy, sPtr, 5,
-                                    "fw.str.ssoCount_slot"), "fw.str.sso");
-                            llvm::Value* offV = builder->CreateSelect(
-                                builder->CreateICmpEQ(modeV,
-                                    llvm::ConstantInt::get(i32Ty, 2)),
-                                ssoV, llvm::ConstantInt::get(i64Ty, 0),
-                                "fw.str.off");
-                            llvm::Value* dataPtr = builder->CreateInBoundsGEP(
-                                i8Ty, arr,
-                                builder->CreateAdd(
-                                    llvm::ConstantInt::get(i64Ty, 8), offV,
-                                    "fw.str.dataoff"),
-                                "fw.str.data");
-                            llvm::Value* byteLenSlot = builder->CreateStructGEP(
-                                sStructTy, sPtr, 2, "fw.str.byteLength_slot");
-                            llvm::Value* len = builder->CreateLoad(
-                                i32Ty, byteLenSlot, "fw.str.len");
-                            builder->CreateCall(fn, {fd, dataPtr, len});
-                            // Update this.pos += len.
-                            llvm::Value* posSlot = builder->CreateStructGEP(
-                                structTy, thisValue, 2, "fw.str.pos_slot");
-                            llvm::Value* curPos = builder->CreateLoad(
-                                i64Ty, posSlot, "fw.str.pos_cur");
-                            llvm::Value* len64 = builder->CreateIntCast(
-                                len, i64Ty, true);
-                            llvm::Value* newPos = builder->CreateAdd(
-                                curPos, len64, "fw.str.pos_new");
-                            builder->CreateStore(newPos, posSlot);
-                            resolvedType = CajetaType::of("void");
-                            return nullptr;
-                        }
+                    llvm::Value* fd = loadFd();
+                    llvm::Value* sPtr = parameters[0].expression->generateCode(module);
+                    if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(sPtr)) {
+                        sPtr = builder->CreateLoad(a->getAllocatedType(), a);
                     }
+                    llvm::FunctionType* fwsTy = llvm::FunctionType::get(
+                        i32Ty, {i32Ty, ptrTy}, false);
+                    llvm::FunctionCallee fwsFn =
+                        module->getLlvmModule()->getOrInsertFunction(
+                            "__cajeta_file_write_string", fwsTy);
+                    llvm::Value* len = builder->CreateCall(
+                        fwsFn, {fd, sPtr}, "fw.str.len");
+                    // Update this.pos += len.
+                    llvm::Value* posSlot = builder->CreateStructGEP(
+                        structTy, thisValue, 2, "fw.str.pos_slot");
+                    llvm::Value* curPos = builder->CreateLoad(
+                        i64Ty, posSlot, "fw.str.pos_cur");
+                    llvm::Value* len64 = builder->CreateIntCast(
+                        len, i64Ty, true);
+                    llvm::Value* newPos = builder->CreateAdd(
+                        curPos, len64, "fw.str.pos_new");
+                    builder->CreateStore(newPos, posSlot);
+                    resolvedType = CajetaType::of("void");
+                    return nullptr;
                 }
                 if (isWriter && methodCallName == "flush"
                         && parameters.empty()) {

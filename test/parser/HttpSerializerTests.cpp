@@ -47,7 +47,7 @@ int32_t runI32(const std::string& body) {
         "    // 1-based index of the first divergence (length mismatch maps\n"
         "    // to -(min+1)).\n"
         "    static int32 eq(int8[] produced, int32 n, String expect) {\n"
-        "        int32 e = expect.byteLength;\n"
+        "        int32 e = expect.byteLength();\n"
         "        int32 m = n < e ? n : e;\n"
         "        int32 i = 0;\n"
         "        while (i < m) {\n"

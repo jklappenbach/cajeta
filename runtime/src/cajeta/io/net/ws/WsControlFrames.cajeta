@@ -134,7 +134,7 @@ public class WsControlFrames {
         }
         int32 rLen = 0;
         if (reason != null) {
-            rLen = reason.byteLength;
+            rLen = reason.byteLength();
         }
         if (rLen > WsControlFrames.MAX_CLOSE_REASON) {
             throw heap ProtocolViolationException(

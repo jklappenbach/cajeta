@@ -31,7 +31,7 @@ int64_t runI64(const std::string& src) {
 }
 } // namespace
 
-// Default-constructed String has bytes = null and byteLength = 0;
+// Default-constructed String is the empty Inline form;
 // count() returns 0 and the cache is populated.
 TEST(StringClassMethodTests, countOnDefaultConstructedIsZero) {
     auto src =
@@ -53,15 +53,12 @@ TEST(StringClassMethodTests, countAsciiThreeBytes) {
         "import cajeta.lang.String;\n"
         "public final class D {\n"
         "    public static int64 run() {\n"
-        "        String s = heap String();\n"
         "        int8[] b = heap int8[3];\n"
         "        b[0] = (int8) 'a';\n"
         "        b[1] = (int8) 'b';\n"
         "        b[2] = (int8) 'c';\n"
-        "        s.bytes = b;\n"
-        "        s.byteLength = 3;\n"
-        "        s.cachedCpLength = -1;\n"
-        "        return s.count();\n"
+        "        String t = heap String(#b, 3);\n"
+        "        return t.count();\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI64(src), 3);
@@ -75,14 +72,11 @@ TEST(StringClassMethodTests, countUtf8TwoByteIsOneCodepoint) {
         "import cajeta.lang.String;\n"
         "public final class D {\n"
         "    public static int64 run() {\n"
-        "        String s = heap String();\n"
         "        int8[] b = heap int8[2];\n"
         "        b[0] = (int8) 0xC3;\n"  // leader (110xxxxx)
         "        b[1] = (int8) 0xA9;\n"  // continuation (10xxxxxx)
-        "        s.bytes = b;\n"
-        "        s.byteLength = 2;\n"
-        "        s.cachedCpLength = -1;\n"
-        "        return s.count();\n"
+        "        String t = heap String(#b, 2);\n"
+        "        return t.count();\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI64(src), 1);
@@ -96,16 +90,13 @@ TEST(StringClassMethodTests, countUtf8FourByteIsOneCodepoint) {
         "import cajeta.lang.String;\n"
         "public final class D {\n"
         "    public static int64 run() {\n"
-        "        String s = heap String();\n"
         "        int8[] b = heap int8[4];\n"
         "        b[0] = (int8) 0xF0;\n"  // leader (11110xxx)
         "        b[1] = (int8) 0x9F;\n"  // continuation
         "        b[2] = (int8) 0x98;\n"  // continuation
         "        b[3] = (int8) 0x80;\n"  // continuation
-        "        s.bytes = b;\n"
-        "        s.byteLength = 4;\n"
-        "        s.cachedCpLength = -1;\n"
-        "        return s.count();\n"
+        "        String t = heap String(#b, 4);\n"
+        "        return t.count();\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI64(src), 1);
@@ -119,7 +110,6 @@ TEST(StringClassMethodTests, countMixedAsciiAndMultibyte) {
         "import cajeta.lang.String;\n"
         "public final class D {\n"
         "    public static int64 run() {\n"
-        "        String s = heap String();\n"
         "        int8[] b = heap int8[7];\n"
         "        b[0] = (int8) 0x61;\n"  // 'a' (ASCII, 1 byte)
         "        b[1] = (int8) 0xC3;\n"  // 'é' leader
@@ -128,10 +118,8 @@ TEST(StringClassMethodTests, countMixedAsciiAndMultibyte) {
         "        b[4] = (int8) 0x9F;\n"  // '😀' cont
         "        b[5] = (int8) 0x98;\n"  // '😀' cont
         "        b[6] = (int8) 0x80;\n"  // '😀' cont
-        "        s.bytes = b;\n"
-        "        s.byteLength = 7;\n"
-        "        s.cachedCpLength = -1;\n"
-        "        return s.count();\n"
+        "        String t = heap String(#b, 7);\n"
+        "        return t.count();\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI64(src), 3);
@@ -146,15 +134,13 @@ TEST(StringClassMethodTests, countReturnsCachedWhenPopulated) {
         "import cajeta.lang.String;\n"
         "public final class D {\n"
         "    public static int64 run() {\n"
-        "        String s = heap String();\n"
         "        int8[] b = heap int8[3];\n"
         "        b[0] = (int8) 'x';\n"
         "        b[1] = (int8) 'y';\n"
         "        b[2] = (int8) 'z';\n"
-        "        s.bytes = b;\n"
-        "        s.byteLength = 3;\n"
-        "        s.cachedCpLength = 999;\n"   // bypass walk
-        "        return s.count();\n"
+        "        String t = heap String(#b, 3);\n"
+        "        t.cachedCpLength = 999;\n"   // bypass walk
+        "        return t.count();\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI64(src), 999);

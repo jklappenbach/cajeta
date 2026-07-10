@@ -63,23 +63,36 @@ public final class StringBuilder {
      */
     @Inline
     public void append(String s) {
-        int32 add = s.byteLength;
+        int32 add = s.byteLength();
         if (add == 0) {
             return;
         }
         if (this.len + add > this.cap) {
             this.grow(this.len + add);
         }
-        int64 o = s.byteOffset();
         if (this.spilled) {
-            StringBuilder.blit(this.large, (int64) this.len, s.bytes, o, (int64) add);
+            // ONE native memcpy per append (all forms) — a per-byte byteAt
+            // walk here measured 1.7x slower on the 4000-byte build bench.
+            StringBuilder.copyIn(s, this.large, this.len);
         } else {
-            int8[] src = s.bytes;
+            // Inline (< 64 B) builds only ever pay this before the spill:
+            // the fixed int8[64] field can't decay to an int8[] argument,
+            // so it stays a scalar loop (rooted forms read the root
+            // directly; Inline forms go through byteAt).
+            int8[] src = s.root();
             int32 base = this.len;
             int32 i = 0;
-            while (i < add) {
-                this.small[base + i] = src[o + i];
-                i = i + 1;
+            if (src != null) {
+                int64 o = s.byteOffset();
+                while (i < add) {
+                    this.small[base + i] = src[o + i];
+                    i = i + 1;
+                }
+            } else {
+                while (i < add) {
+                    this.small[base + i] = s.byteAt(i);
+                    i = i + 1;
+                }
             }
         }
         this.len = this.len + add;
@@ -110,6 +123,11 @@ public final class StringBuilder {
         }
         this.len = this.len + len;
     }
+
+    // One-call window copy into a heap buffer's data at byte offset `dstOff`
+    // (the spilled-path append primitive; the runtime memcpys any form).
+    @Native("__cajeta_string_copy_to")
+    private static int32 copyIn(String s, int8[] dst, int32 dstOff);
 
     // Copy `len` bytes src[s..] -> dst[d..], 8 bytes per store (the 8-byte chunk
     // window never exceeds `len`, so neither buffer is overrun) + scalar tail.

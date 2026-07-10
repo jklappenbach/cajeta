@@ -85,11 +85,11 @@ public final class JsonObject {
      */
     @Inline
     public JsonValue get(String key) {
-        if (key.byteOffset() != (int64) 0) {
+        if (key.root() == null || key.byteOffset() != (int64) 0) {
             int8[] w = key.toBytes();
-            return this.get(w, key.byteLength);
+            return this.get(w, key.byteLength());
         }
-        return this.get(key.bytes, key.byteLength);
+        return this.get(key.root(), key.byteLength());
     }
 
     /**

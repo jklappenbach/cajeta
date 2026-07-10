@@ -70,8 +70,8 @@ public class FileWriter {
      * (slices plan 10.3.1 / 6.1.4 intrinsic audit).
      *
      * Intrinsic-lowered to
-     * `__cajeta_file_write(this.fd, &s.bytes[8 + s.byteOffset()], s.byteLength)`.
-     * `this.pos` advances by `s.byteLength`.
+     * `__cajeta_file_write(this.fd, &s.bytes[8 + s.byteOffset()], s.byteLength())`.
+     * `this.pos` advances by `s.byteLength()`.
      *
      * ```cajeta
      * w.writeString("line one\n");

@@ -50,10 +50,10 @@ public final class Csv {
      * @EntryPoint
      */
     public static T parse<T>(String s) {
-        if (s.byteOffset() != (int64) 0) {
+        if (s.root() == null || s.byteOffset() != (int64) 0) {
             int8[] w = s.toBytes();
-            return Csv.parse<T>(w, (int64) s.byteLength);
+            return Csv.parse<T>(w, (int64) s.byteLength());
         }
-        return Csv.parse<T>(s.bytes, (int64) s.byteLength);
+        return Csv.parse<T>(s.root(), (int64) s.byteLength());
     }
 }

@@ -1056,7 +1056,7 @@ TEST(JsonSynthesizerTests, mixedAnnotatedFields) {
 // ---- Phase 4b commit 11: String-typed user-API overloads ----
 
 // `JsonObject.get(String)` — convenience overload that delegates to
-// the byte-buffer form against the String's `.bytes` + `.byteLength`.
+// the byte-buffer form against the String's `.bytes` + `.byteLength()`.
 TEST(JsonSynthesizerTests, jsonObjectGetByString) {
     auto src =
         "package test;\n"
@@ -1085,7 +1085,8 @@ TEST(JsonSynthesizerTests, jsonReaderCurrentString) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        String s = \"\\\"hi\\\"\";\n"
-        "        JsonReader r = heap JsonReader(s.bytes, (int64) s.byteLength);\n"
+        "        int8[] sb = s.toBytes();\n"
+        "        JsonReader r = heap JsonReader(sb, (int64) s.byteLength());\n"
         "        int32 t = r.next();\n"
         "        if (t != JsonToken.STRING) return 0;\n"
         "        String got = r.currentString();\n"

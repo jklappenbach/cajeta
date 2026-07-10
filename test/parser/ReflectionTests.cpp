@@ -1391,7 +1391,7 @@ TEST(ReflectionTests, annotationArgByIndex) {
         "        Annotation a = Class.of(heap Widget()).getAnnotation(0);\n"
         "        if (a.getArgKind(0) != 0) { return 10; }\n"          // 0 = int64
         "        if (a.getArgInt(0) != (int64) 7) { return 11; }\n"
-        "        if (a.getArgName(0).byteLength != 0) { return 12; }\n" // unnamed
+        "        if (a.getArgName(0).byteLength() != 0) { return 12; }\n" // unnamed
         "        return 0;\n"
         "    }\n"
         "}\n"), 0);

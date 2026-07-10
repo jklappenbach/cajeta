@@ -64,45 +64,37 @@ void __cajeta_utf8_of_string(void* out_v, void* s_v) {
     out->lenTag = 0;
     out->off = 0;
     out->base = NULL;
-    if (!s || s->bytes == NULL || s->byteLength <= 0) return;
-    int32_t len = s->byteLength;
-    int32_t srcOff = (s->mode == 2) ? (int32_t) s->ssoCount : 0;
-    const char* src = (const char*) s->bytes + 8 + srcOff;
-    if (len <= CAJ_UTF8_INLINE_CAP) {
+    if (!s || caj_str_len(s) <= 0) return;
+    int32_t len = caj_str_len(s);
+    if (len <= CAJ_UTF8_INLINE_CAP) {          // covers every Inline source
         out->lenTag = len;
-        memcpy((char*) &out->off, src, (size_t) len);
+        memcpy((char*) &out->off, caj_str_ptr(s), (size_t) len);
         return;
     }
+    char* base = caj_str_base(s);
+    int32_t srcOff = caj_str_off(s);
     int __cajeta_arena_owns(const void* p);
-    if (s->bytes == (void*) &s->ssoCount
-            || (s->mode != 1 && __cajeta_arena_owns(s->bytes))) {
-        void* buf = __cajeta_new_array_header(8, 1, (uint64_t) len + 1);
-        *((int64_t*) buf) = len;
-        memcpy((char*) buf + 8, src, (size_t) len);
-        ((char*) buf)[8 + len] = 0;
+    if (!(s->lenTag & CAJ_STR_STATIC_BIT) && __cajeta_arena_owns(base)) {
+        // Arena root (spec Â§4 arena row): materialize an rc=1 shared root.
+        void* buf = caj_str_new_root(base + 8 + srcOff, len);
         __cajeta_shared_promote(buf, 1);
         out->lenTag = len | CAJ_UTF8_SHARED_BIT;
         out->off = 0;
         out->base = (char*) buf;
         return;
     }
-    void* root = s->bytes;
-    if (s->mode == 0) {
-        __cajeta_shared_promote(root, 2);
-        out->lenTag = len | CAJ_UTF8_SHARED_BIT;
-    } else if (s->mode == 2 && !s->ssoData[1]) {
-        if (s->ssoData[0]) {
-            __cajeta_shared_promote(root, 2);   // borrow source holds no stake
-        } else {
-            __cajeta_shared_retain(root);
-        }
+    if (s->lenTag & CAJ_STR_STATIC_BIT) {
+        out->lenTag = len;                     // Static root: no rc
+    } else if (s->lenTag & CAJ_STR_SHARED_BIT) {
+        __cajeta_shared_retain(base);
         out->lenTag = len | CAJ_UTF8_SHARED_BIT;
     } else {
-        out->lenTag = len;                 // Static root: no rc (mode 1, or a
-                                           // mode-2 view marked ssoData[1])
+        // OWNED or BORROW source: add-or-create (owner + this stake).
+        __cajeta_shared_promote(base, 2);
+        out->lenTag = len | CAJ_UTF8_SHARED_BIT;
     }
     out->off = srcOff;
-    out->base = (char*) root;
+    out->base = base;
 }
 
 // Copy hook arm: one more stake on the same root. No-op for Inline/Static.
@@ -140,12 +132,10 @@ int32_t __cajeta_utf8_equals_string(void* u_v, void* s_v) {
     caj_utf8_layout* u = (caj_utf8_layout*) u_v;
     cajeta_string_layout* s = (cajeta_string_layout*) s_v;
     int32_t n = caj_utf8_len(u);
-    if (!s || s->bytes == NULL) return n == 0;
-    if (n != s->byteLength) return 0;
+    if (!s) return n == 0;
+    if (n != caj_str_len(s)) return 0;
     if (n == 0) return 1;
-    int32_t srcOff = (s->mode == 2) ? (int32_t) s->ssoCount : 0;
-    return memcmp(caj_utf8_ptr(u), (const char*) s->bytes + 8 + srcOff,
-                  (size_t) n) == 0;
+    return memcmp(caj_utf8_ptr(u), caj_str_ptr(s), (size_t) n) == 0;
 }
 
 // XXH3 over the window bytes — String.hash parity (same core, same seed).

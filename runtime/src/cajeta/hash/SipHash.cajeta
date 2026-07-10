@@ -154,11 +154,11 @@ public final class SipHash implements Hasher {
      */
     @Inline
     public static int64 hashStringKeyed(String s, int64 keyLow, int64 keyHigh) {
-        if (s.byteOffset() != (int64) 0) {
+        if (s.root() == null || s.byteOffset() != (int64) 0) {
             int8[] w = s.toBytes();
-            return SipHash.oneshot(w, (int64) s.byteLength, keyLow, keyHigh);
+            return SipHash.oneshot(w, (int64) s.byteLength(), keyLow, keyHigh);
         }
-        return SipHash.oneshot(s.bytes, (int64) s.byteLength, keyLow, keyHigh);
+        return SipHash.oneshot(s.root(), (int64) s.byteLength(), keyLow, keyHigh);
     }
 
     // --- Streaming surface ------------------------------------------
@@ -204,12 +204,12 @@ public final class SipHash implements Hasher {
     }
 
     public void writeString(String s) {
-        if (s.byteOffset() != (int64) 0) {
+        if (s.root() == null || s.byteOffset() != (int64) 0) {
             int8[] w = s.toBytes();
-            SipHash.updateNative(this.state, w, (int64) s.byteLength);
+            SipHash.updateNative(this.state, w, (int64) s.byteLength());
             return;
         }
-        SipHash.updateNative(this.state, s.bytes, (int64) s.byteLength);
+        SipHash.updateNative(this.state, s.root(), (int64) s.byteLength());
     }
 
     /** Absorbs an `Object` by feeding its `hash()` value as 8 bytes. */
