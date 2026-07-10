@@ -118,7 +118,11 @@ namespace cajeta {
         // long gone by the time resolveTypes runs.
         CajetaTypePtr type = boundElementType;
         if (!type) type = CajetaType::of(typeName, package);
-        if (!type) type = CajetaType::of(typeName);
+        // Bare name: resolve scoped (own package → imports → global) —
+        // the raw global short-name key is last-writer-wins across
+        // packages, so `heap Foo()` would build a same-named class from
+        // another package whenever one registered later.
+        if (!type) type = CajetaType::ofScoped(typeName, module);
         if (!type) return;
         if (!typeArguments.empty()) {
             auto klass = dynamic_pointer_cast<CajetaClass>(type);
@@ -294,8 +298,9 @@ namespace cajeta {
         CajetaTypePtr type = boundElementType;
         if (!type) type = CajetaType::of(typeName, package);
         if (!type) {
-            // Fallback to canonical lookup by bare typeName for primitives.
-            type = CajetaType::of(typeName);
+            // Bare-name fallback (primitives and classes): scoped, not the
+            // raw global short-name key — see resolveTypes above.
+            type = CajetaType::ofScoped(typeName, module);
         }
         // Templated `new Box<int32>(...)`: typeArguments were resolved at
         // parse time (in our constructor). Route through the template's

@@ -4186,17 +4186,17 @@ namespace cajeta {
             // Class-name receiver fallback. `Bar.staticMethod()` parses as
             // expression-DOT-methodCall; the LHS IdentifierExpression
             // doesn't resolve to a local or field, so generateCode returns
-            // null and resolveTypes leaves resolvedType null. Look up the
-            // bare identifier in canonicalMap (which is keyed by both
-            // short typeName and full canonical) — a match means the
-            // receiver named a class and we can route through static
-            // dispatch.
+            // null and resolveTypes leaves resolvedType null. Resolve the
+            // bare identifier through ofScoped (own package → imports →
+            // global) — the raw canonicalMap short key is last-writer-wins
+            // across packages, so a same-named class elsewhere would
+            // hijack this static dispatch.
             if (!receiver && !receiverType) {
                 if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(exprChild)) {
-                    auto& cmap = CajetaType::getCanonicalMap();
-                    auto it = cmap.find(idExpr->getTextValue());
-                    if (it != cmap.end()) {
-                        if (auto cls = dynamic_pointer_cast<CajetaClass>(it->second)) {
+                    auto scoped = CajetaType::ofScoped(
+                        idExpr->getTextValue(), module);
+                    if (scoped) {
+                        if (auto cls = dynamic_pointer_cast<CajetaClass>(scoped)) {
                             // REFL-1.7: a static call on a bare TEMPLATE name
                             // (e.g. `Class.of(...)`, `Class.forName(...)`). The
                             // template itself is never built, so static dispatch
@@ -4213,9 +4213,9 @@ namespace cajeta {
                                 }
                                 auto inst = cls->instantiate(wildArgs);
                                 receiverType = inst ? std::static_pointer_cast<
-                                    CajetaType>(inst) : it->second;
+                                    CajetaType>(inst) : scoped;
                             } else {
-                                receiverType = it->second;
+                                receiverType = scoped;
                             }
                         }
                     }
