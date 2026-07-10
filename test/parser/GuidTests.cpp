@@ -87,7 +87,7 @@ TEST(GuidTests, parseRejectsMalformed) {
 TEST(GuidTests, randomIsVersion4) {
     EXPECT_EQ(runI32(
         "String s = Guid.random().toString();\n"
-        "if (s.byteLength != 36) { return 1; }\n"
+        "if (s.byteLength() != 36) { return 1; }\n"
         "if (s.byteAt(14) != 52) { return 2; }\n"               // '4'
         "int32 var = (int32) s.byteAt(19);\n"
         "if (var != 56 && var != 57 && var != 97 && var != 98) { return 3; }\n"  // 8 9 a b

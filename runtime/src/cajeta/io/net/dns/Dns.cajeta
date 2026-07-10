@@ -175,7 +175,7 @@ public final class Dns {
                 NetException.KIND_INVALID);
         }
         int8[] hostBytes = host.toBytes();
-        int32 hostLen = host.byteLength;
+        int32 hostLen = host.byteLength();
         int32 filter = Dns.nativeFilter(family);
 
         pointer handle = Dns.getaddrinfoNative(hostBytes, hostLen, port, filter);
@@ -278,7 +278,7 @@ public final class Dns {
         prefix[17] = (int8) 32;   // ' '
 
         int8[] hostBytes = host.toBytes();
-        int32 hostLen = host.byteLength;
+        int32 hostLen = host.byteLength();
         int32 total = 18 + hostLen;
         int8[] msg = heap int8[total];
         int32 i = 0;

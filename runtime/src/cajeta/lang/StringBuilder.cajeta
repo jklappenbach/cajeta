@@ -63,23 +63,40 @@ public final class StringBuilder {
      */
     @Inline
     public void append(String s) {
-        int32 add = s.byteLength;
+        int32 add = s.byteLength();
         if (add == 0) {
             return;
         }
         if (this.len + add > this.cap) {
             this.grow(this.len + add);
         }
-        int64 o = s.byteOffset();
-        if (this.spilled) {
-            StringBuilder.blit(this.large, (int64) this.len, s.bytes, o, (int64) add);
+        int8[] src = s.root();
+        if (src != null) {
+            int64 o = s.byteOffset();
+            if (this.spilled) {
+                StringBuilder.blit(this.large, (int64) this.len, src, o, (int64) add);
+            } else {
+                int32 base = this.len;
+                int32 i = 0;
+                while (i < add) {
+                    this.small[base + i] = src[o + i];
+                    i = i + 1;
+                }
+            }
         } else {
-            int8[] src = s.bytes;
+            // Inline form (<= 12 B): no root array — copy via byteAt.
             int32 base = this.len;
             int32 i = 0;
-            while (i < add) {
-                this.small[base + i] = src[o + i];
-                i = i + 1;
+            if (this.spilled) {
+                while (i < add) {
+                    this.large[base + i] = s.byteAt(i);
+                    i = i + 1;
+                }
+            } else {
+                while (i < add) {
+                    this.small[base + i] = s.byteAt(i);
+                    i = i + 1;
+                }
             }
         }
         this.len = this.len + add;

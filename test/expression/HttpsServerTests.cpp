@@ -117,7 +117,7 @@ TEST(HttpsServerTests, httpsRequestEndToEnd) {
         "public final class M {\n"
         "    public static #HttpResponse handle(HttpRequest req) {\n"
         "        String s = \"hello\";\n"
-        "        return HttpResponse.ok().body(s.bytes, s.byteLength);\n"
+        "        return HttpResponse.ok().body(s.toBytes(), s.byteLength());\n"
         "    }\n"
         "    public static async int32 httpsServer(#TlsListener listener) {\n"
         "        TlsStream s = listener.acceptAsync();\n"

@@ -35,7 +35,7 @@ int32_t runI32(const std::string& body) {
         "    // when value is empty).\n"
         "    static #Headers conn(String value) {\n"
         "        Headers h = heap Headers();\n"
-        "        if (value.byteLength > 0) { h.add(\"Connection\", value); }\n"
+        "        if (value.byteLength() > 0) { h.add(\"Connection\", value); }\n"
         "        return #h;\n"
         "    }\n"
         "    public static int32 run() {\n"

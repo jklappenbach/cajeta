@@ -181,7 +181,7 @@ public class AsyncWriter {
      */
     public void writeString(String s) {
         int8[] b = s.toBytes();
-        this.writeAll(b, 0, s.byteLength);
+        this.writeAll(b, 0, s.byteLength());
     }
 
     /**

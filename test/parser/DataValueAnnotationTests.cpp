@@ -20,17 +20,19 @@ namespace {
 // the object layout instead of treating the pointer as a C string.
 struct DvStringLayout {
     const void* vtable;
-    const void* bytes;
-    int32_t byteLength;
-    int32_t mode;
+    int32_t lenTag;      // len | tag bits (6.2.2 tagged core)
+    int32_t aux;         // Inline text 0..3 / window offset
+    const char* base;    // Inline text 4..11 / root header
     int32_t cachedCpLength;
 };
 std::string readToString(const void* raw) {
     if (!raw) return "<null>";
     const auto* s = static_cast<const DvStringLayout*>(raw);
-    if (!s->bytes || s->byteLength <= 0) return "";
-    const char* data = (const char*) s->bytes + sizeof(int64_t);
-    return std::string(data, (size_t) s->byteLength);
+    int32_t len = s->lenTag & 0x1FFFFFFF;
+    if (len <= 0) return "";
+    if (len <= 12) return std::string((const char*) &s->aux, (size_t) len);
+    if (!s->base) return "";
+    return std::string(s->base + 8 + s->aux, (size_t) len);
 }
 }  // namespace
 

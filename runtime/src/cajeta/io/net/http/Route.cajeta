@@ -62,8 +62,8 @@ public class Route {
      */
     public Route(String method, String pattern,
                  (HttpRequest) -> #HttpResponse handler) {
-        this.method = method.substring(0, method.byteLength);
-        this.pattern = pattern.substring(0, pattern.byteLength);
+        this.method = method.substring(0, method.byteLength());
+        this.pattern = pattern.substring(0, pattern.byteLength());
         this.handler = handler;
         this.splitPattern(pattern);
     }
@@ -77,7 +77,7 @@ public class Route {
     void splitPattern(String pattern) {
         this.segments = heap String[8];
         this.segmentCount = 0;
-        int32 n = pattern.byteLength;
+        int32 n = pattern.byteLength();
         int32 segStart = 0;
         int32 i = 0;
         while (i <= n) {
@@ -126,7 +126,7 @@ public class Route {
      */
     public boolean isParam(int32 i) {
         String seg = this.segments[i];
-        int32 len = seg.byteLength;
+        int32 len = seg.byteLength();
         if (len < 2) {
             return false;
         }
@@ -138,7 +138,7 @@ public class Route {
     /** The parameter name of segment `i` — the text inside the braces. */
     public #String paramName(int32 i) {
         String seg = this.segments[i];
-        return seg.substring(1, seg.byteLength - 1);
+        return seg.substring(1, seg.byteLength() - 1);
     }
 
     /** The literal text of segment `i` (only meaningful when not a param). */
@@ -171,7 +171,7 @@ public class Route {
             String reqSeg = pathSegs[i];
             if (this.isParam(i)) {
                 // A parameter binds any non-empty segment.
-                if (reqSeg.byteLength == 0) {
+                if (reqSeg.byteLength() == 0) {
                     return false;
                 }
                 String name = this.paramName(i);

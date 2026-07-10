@@ -1027,12 +1027,12 @@ public class HttpServer {
      */
     static #HttpResponse statusResponse(int32 status) {
         HttpResponse r = HttpResponse.of(status);
-        if (status == 431 && r.getReason().byteLength == 0) {
+        if (status == 431 && r.getReason().byteLength() == 0) {
             r.reason("Request Header Fields Too Large");
         }
         // 417 (NET-9.6 expect-continue rejection) is outside HttpResponse's
         // reason table — fill its standard phrase explicitly.
-        if (status == 417 && r.getReason().byteLength == 0) {
+        if (status == 417 && r.getReason().byteLength() == 0) {
             r.reason("Expectation Failed");
         }
         return #r;
@@ -1108,7 +1108,7 @@ public class HttpServerBuilder {
         // caller's argument (bare assignment is a borrow in this model — the
         // UriBuilder discipline), so a builder outliving the call site stays
         // valid.
-        this.addr = addr.substring(0, addr.byteLength);
+        this.addr = addr.substring(0, addr.byteLength());
         return this;
     }
 

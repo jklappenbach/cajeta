@@ -419,100 +419,16 @@ namespace cajeta {
                     ptrTy, fieldPtr,
                     std::string("ts.s.") + prop->getName());
                 if (isJson) {
-                    // JSON path: a String field actually holds a
-                    // pointer to a `cajeta.lang.String` struct
-                    // `{ vtable*, int8[] bytes, int32 byteLength, int32 mode,
-                    // int32 cachedCpLength }`. Pull out `bytes` (slot 1) and
-                    // `byteLength` (slot 2), skip past the CajetaArray
-                    // header `{ i64 count, [N x i8] data }` (8 bytes) to get
-                    // the raw UTF-8 payload, and hand both to
-                    // `__cajeta_json_quote_buf(data, length)`.
-                    //
-                    // Branches on a null receiver (the slot itself may be
-                    // null for default-constructed strings) — the helper's
-                    // `(null, 0)` path returns the literal `null` token,
-                    // matching the rest of the synthesizer's null
-                    // convention.
-                    auto stringType = CajetaType::of("String");
-                    auto stringClass = dynamic_pointer_cast<CajetaClass>(stringType);
-                    if (!stringClass || !stringClass->getLlvmType()) {
-                        throw Exception(
-                            "@ToString(JSON) on `"
-                            + parent->getQName()->toCanonical()
-                            + "`: cajeta.lang.String type not registered "
-                            "at synthesis time",
-                            "CAJETA_ERROR_TOSTRING_JSON_STRING_MISSING");
-                    }
-                    llvm::Type* stringStructTy = stringClass->getLlvmType();
-
-                    llvm::Function* curFn = b.GetInsertBlock()->getParent();
-                    llvm::BasicBlock* nullBB = llvm::BasicBlock::Create(ctx,
-                        std::string("ts.jnull.") + prop->getName(), curFn);
-                    llvm::BasicBlock* okBB = llvm::BasicBlock::Create(ctx,
-                        std::string("ts.jok.") + prop->getName(), curFn);
-                    llvm::BasicBlock* mergeBB = llvm::BasicBlock::Create(ctx,
-                        std::string("ts.jmrg.") + prop->getName(), curFn);
-
-                    llvm::Value* isNull = b.CreateICmpEQ(sPtr,
-                        llvm::ConstantPointerNull::get(
-                            llvm::cast<llvm::PointerType>(ptrTy)),
-                        std::string("ts.jin.") + prop->getName());
-                    b.CreateCondBr(isNull, nullBB, okBB);
-
-                    // null arm: pass (null, 0) — helper renders `null`.
-                    b.SetInsertPoint(nullBB);
-                    llvm::Value* nullRes = b.CreateCall(jsonQuoteBuf, {
-                        llvm::ConstantPointerNull::get(
-                            llvm::cast<llvm::PointerType>(ptrTy)),
-                        llvm::ConstantInt::get(i64Ty, 0)
-                    }, std::string("ts.jnr.") + prop->getName());
-                    b.CreateBr(mergeBB);
-
-                    // non-null arm: GEP bytes / byteLength, skip array hdr.
-                    b.SetInsertPoint(okBB);
-                    llvm::Value* bytesPP = b.CreateStructGEP(
-                        stringStructTy, sPtr, 1,
-                        std::string("ts.bpp.") + prop->getName());
-                    llvm::Value* bytesPtr = b.CreateLoad(
-                        ptrTy, bytesPP,
-                        std::string("ts.bp.") + prop->getName());
-                    llvm::Value* lenP = b.CreateStructGEP(
-                        stringStructTy, sPtr, 2,
-                        std::string("ts.lp.") + prop->getName());
-                    llvm::Value* len32 = b.CreateLoad(
-                        i32Ty, lenP,
-                        std::string("ts.l32.") + prop->getName());
-                    llvm::Value* len64 = b.CreateSExt(len32, i64Ty,
-                        std::string("ts.l64.") + prop->getName());
-                    // Skip the 8-byte CajetaArray count header, plus the
-                    // window offset for a mode-2 sliced String (slice-spec §7.1).
-                    llvm::Value* modeV = b.CreateLoad(i32Ty,
-                        b.CreateStructGEP(stringStructTy, sPtr, 3,
-                            std::string("ts.md.") + prop->getName()));
-                    llvm::Value* ssoV = b.CreateLoad(i64Ty,
-                        b.CreateStructGEP(stringStructTy, sPtr, 5,
-                            std::string("ts.so.") + prop->getName()));
-                    llvm::Value* offV = b.CreateSelect(
-                        b.CreateICmpEQ(modeV, llvm::ConstantInt::get(i32Ty, 2)),
-                        ssoV, llvm::ConstantInt::get(i64Ty, 0),
-                        std::string("ts.off.") + prop->getName());
-                    llvm::Value* dataPtr = b.CreateInBoundsGEP(
-                        i8Ty, bytesPtr,
-                        llvm::ConstantInt::get(i64Ty, 8),
-                        std::string("ts.dp.") + prop->getName());
-                    dataPtr = b.CreateInBoundsGEP(i8Ty, dataPtr, offV,
-                        std::string("ts.dpw.") + prop->getName());
-                    llvm::Value* okRes = b.CreateCall(jsonQuoteBuf,
-                        {dataPtr, len64},
-                        std::string("ts.jor.") + prop->getName());
-                    b.CreateBr(mergeBB);
-
-                    b.SetInsertPoint(mergeBB);
-                    llvm::PHINode* phi = b.CreatePHI(ptrTy, 2,
-                        std::string("ts.jph.") + prop->getName());
-                    phi->addIncoming(nullRes, nullBB);
-                    phi->addIncoming(okRes, okBB);
-                    fieldStr = phi;
+                    // JSON path — the runtime helper reads the tagged core
+                    // (6.2.2) and quote-escapes the window; a null String
+                    // object renders as the `null` token, matching the
+                    // synthesizer's null convention.
+                    auto* quoteStrTy = llvm::FunctionType::get(
+                        ptrTy, {ptrTy}, false);
+                    llvm::Function* quoteStr = getOrDeclareTSFn(
+                        module, "__cajeta_json_quote_string", quoteStrTy);
+                    fieldStr = b.CreateCall(quoteStr, {sPtr},
+                        std::string("ts.jq.") + prop->getName());
                 } else {
                     // PROPERTIES path: null-check; render "null" for
                     // null strings (consistent with class-ref handling).
@@ -608,7 +524,8 @@ namespace cajeta {
         // The concat chain built a malloc'd C string; callers expect a real
         // cajeta.lang.String (String methods / println on toString() results
         // read the object layout). Wrap-and-free at the boundary.
-        auto* wrapTy = llvm::FunctionType::get(ptrTy, {ptrTy, ptrTy}, false);
+        auto* wrapTy = llvm::FunctionType::get(
+            ptrTy, {ptrTy, ptrTy, i32Ty}, false);
         llvm::Function* strWrap = getOrDeclareTSFn(
             module, "__cajeta_string_wrap_cstr", wrapTy);
         llvm::Value* vtableRef = llvm::ConstantPointerNull::get(
@@ -620,7 +537,8 @@ namespace cajeta {
                     module->getLlvmModule(), vt);
             }
         }
-        acc = b.CreateCall(strWrap, {acc, vtableRef}, "ts.wrapstr");
+        acc = b.CreateCall(strWrap,
+            {acc, vtableRef, llvm::ConstantInt::get(i32Ty, 1)}, "ts.wrapstr");
         b.CreateRet(acc);
     }
 

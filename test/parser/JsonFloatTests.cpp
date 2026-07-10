@@ -30,7 +30,8 @@ int32_t runI32(const std::string& body) {
 std::string parseTo(const char* lit) {
     return std::string(
         "        String s = \"") + lit + "\";\n"
-        "        JsonReader r = heap JsonReader(s.bytes, (int64) s.byteLength);\n"
+        "        int8[] sb = s.toBytes();\n"
+        "        JsonReader r = heap JsonReader(sb, (int64) s.byteLength());\n"
         "        JsonValue v = r.readValue();\n";
 }
 } // namespace

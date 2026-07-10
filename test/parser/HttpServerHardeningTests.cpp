@@ -59,7 +59,7 @@ int32_t runI32(const std::string& body) {
         "import cajeta.io.net.NetException;\n"
         "public final class M {\n"
         "    static #int8[] bytes(String s) {\n"
-        "        int32 n = s.byteLength;\n"
+        "        int32 n = s.byteLength();\n"
         "        int8[] out = heap int8[n];\n"
         "        int32 i = 0;\n"
         "        while (i < n) { out[i] = s.byteAt(i); i = i + 1; }\n"

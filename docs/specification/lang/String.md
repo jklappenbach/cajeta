@@ -1,17 +1,21 @@
 # `cajeta.lang.String` — immutable UTF-8 text
 
-> **AMENDED (2026-07-03, [`slice-spec.md`](slice-spec.md) §7–§8):** `substring` (and `trim`)
-> are now **zero-copy**: they return a **mode-2 windowed view** — `bytes` stays the ROOT array
-> header (bounds checks stay valid), the window's byte offset rides the otherwise-unused
-> `ssoCount` field, and every reader computes `off = (mode==2) ? (int32) ssoCount : 0`. The
-> root buffer is co-owned via the `shared` state (one stake per wrapper), freed exactly once
-> at the last stake; literal roots are static (no counting); SSO sources materialize (never a
-> view into a wrapper's inline region). The legacy `const char*` runtime ABI sees the window
-> via `__cajeta_string_cstr` (mode-2 materializes into a per-thread scratch). `mode` is now
-> 0 = owned, 1 = static view, **2 = windowed shared view**. `clone()` on a windowed String
-> **detaches** (materializes the window — the retention valve). The 16-byte `Utf8` value type
-> (`Utf8.cajeta`, Inline form shipped) is the record-field text carrier; the full String
-> re-core over the tagged union is staged as slices-plan Unit 6c.
+> **RE-CORED (slices plan 6.2.2, [`slice-spec.md`](slice-spec.md) §8.2):** String's storage
+> is now the **16-byte tagged Utf8 core** — the legacy `mode` field, the `bytes`/`byteLength`
+> fields, and the 24-byte SSO region are gone. `lenTag` carries the byte length (mask
+> `0x1FFFFFFF`) plus the tag bits; text `<= 12 B` lives **Inline** in the wrapper (aux+base's
+> 12 bytes, no buffer at all — the SSO successor, cap 24→12); longer text is a **pointer
+> form** `{off = aux, root header = base}` whose bits say how the root is held: **bit31** =
+> one rc stake (drop releases, copies retain), **bit30** = stakeless borrow, **bit29** =
+> static root (literals), **no bits** = owned sole root (drop frees through the owner-drop
+> seam — zero rc traffic unless a slice escapes). `substring`/`trim` stay zero-copy for
+> `> 12 B` windows and normalize `<= 12 B` results to Inline (spec §8's normalization rule).
+> Byte-level operations live in C natives (`cajeta_rt_string.c`); the facade exposes
+> `byteLength()` (a METHOD now), `byteOffset()`, `root()` (null for Inline), `toBytes()`,
+> `byteAt()`. The `const char*` ABI (`__cajeta_string_cstr`) hands out full-window roots
+> directly and materializes Inline/windowed forms into a per-thread ring scratch. `clone()`
+> on a windowed String still **detaches**. `Utf8` and String now share one representation —
+> `Utf8.of(String)` is a 16-byte copy plus tag fixup.
 
 Single source of truth for the String surface in Cajeta. Captures
 the 2026-05-18 design pass with the user (15 questions + tidy-up),
@@ -25,9 +29,10 @@ encoding interchange, locale-aware case folding, graphemes) is still
 **planned**. Each subsection notes its status.
 
 > **What ships today** (verified against the source + tests):
-> - Storage layout `{ int8[] bytes; int32 byteLength; int32 mode;
->   int32 cachedCpLength; }`; constructors `String()` and the
->   view-mode `String(#int8[] bytes, int32 byteLength)`.
+> - Storage layout `{ int32 lenTag; int32 aux; int8[] base;
+>   int32 cachedCpLength; }` (the tagged core — see the banner);
+>   constructors `String()` and the adopting
+>   `String(#int8[] bytes, int32 byteLength)`.
 > - `count()` (codepoints, cached), `size()` (bytes), `isEmpty()`,
 >   `hash()` (FNV-1a), `equals(String)`.
 > - `charAt(int32)`→`int8` (byte-indexed), `byteAt(int32)`,
@@ -39,8 +44,9 @@ encoding interchange, locale-aware case folding, graphemes) is still
 > - `toUpperCase()`, `toLowerCase()`, `trim()`, `replace(String,
 >   String)` — ASCII-only, no `Locale` argument.
 > - `+` concatenation (lowered to `__cajeta_str_concat`).
-> - String literals materialize as **view-mode** (`mode = 1`) class
->   `String` instances over `.rodata`.
+> - String literals materialize as constant class-String instances:
+>   `<= 12 B` Inline (text packed into the aux/base constants),
+>   longer as Static pointer forms (bit29) over a `.rodata` root.
 >
 > Names/semantics in the design below that DIFFER from what shipped
 > are flagged inline. Notably the shipped sizing methods are
@@ -70,24 +76,30 @@ encoding interchange, locale-aware case folding, graphemes) is still
   Strings (substring slices, literal views, JSON token spans)
   unconditionally safe — the parent's bytes are guaranteed live for
   as long as any code can reach the view.
-- **Tagged owned/view mode.** A String carries an internal mode bit
-  that records the bytes' origin, not its drop-eligibility:
-  - **Owned** (`mode = 0`) — bytes were heap-allocated for this
-    String. The String holds the canonical reference to them.
-  - **View** (`mode = 1`) — bytes are borrowed from somewhere else:
-    static storage (string literals), another String's payload
-    (substring slices), or a buffer the codec layer owns (JSON
-    token spans). Neither mode triggers a drop.
-- **One type, not two.** Owned and view share the same `String`
-  surface; the mode is implementation-detail. `#`-transfer of a
-  String moves the reference but doesn't change the
-  never-drop policy.
+- **The tagged core (6.2.2).** The length word IS the discriminator:
+  - **Inline** (`len <= 12`, no tag bits) — the text lives in the
+    wrapper itself; self-contained, no buffer, no rc. Every
+    `<= 12 B` result is built Inline (normalization), so pointer
+    forms are unambiguous.
+  - **Pointer forms** (`len > 12`): `aux` is the window byte offset,
+    `base` the ROOT CajetaArray header; text at `base[8 + aux ..]`.
+    - **bit31** — the wrapper holds one rc stake on the root
+      (windowed shared views); drop releases, copies retain.
+    - **bit30** — stakeless BORROW of a heap root (the compiler's
+      scope-proven substring downgrade).
+    - **bit29** — STATIC root (literals and views of them); no rc.
+    - **no bits** — OWNED sole root; drop frees it through the
+      owner-drop seam (claim-or-release — zero shared-table traffic
+      for never-shared strings).
+- **One type, not two.** All forms share the same `String` surface;
+  the tag is implementation detail behind `byteLength()`,
+  `byteOffset()`, `root()`, `toBytes()`, and `byteAt()`.
 
 ```cajeta
 class String {
-    int8[] bytes;          // UTF-8 payload
-    int32  byteLength;
-    int32  mode;           // 0 = owned, 1 = view
+    int32  lenTag;         // len | tag bits (mask 0x1FFFFFFF)
+    int32  aux;            // Inline text bytes 0..3 / window offset
+    int8[] base;           // Inline text bytes 4..11 / root header
     int32  cachedCpLength; // -1 = not yet computed; codepoint count
 }
 ```

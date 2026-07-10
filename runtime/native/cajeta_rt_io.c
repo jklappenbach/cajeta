@@ -197,14 +197,22 @@ void __cajeta_print_trace_one(void* throwable, int32_t fd, int32_t caused_by) {
     if (throwable && (uintptr_t) throwable >= 4096) {
         void* strObj = ((void**) throwable)[1];
         if (strObj && (uintptr_t) strObj >= 4096) {
-            void* bytesArr = ((void**) strObj)[1];
-            int32_t blen = *(int32_t*) ((char*) strObj + 16);
-            /* mode-2 windowed view: bytes = ROOT, offset rides ssoCount@32 */
-            int32_t smode = *(int32_t*) ((char*) strObj + 20);
-            int64_t soff = (smode == 2) ? *(int64_t*) ((char*) strObj + 32) : 0;
-            if (bytesArr && (uintptr_t) bytesArr >= 4096 && blen > 0) {
-                mbytes = (const char*) bytesArr + 8 + soff;
-                mlen = blen;
+            /* tagged core (6.2.2): lenTag@8, Inline text@12, or {off@12,
+               base@16} for pointer forms; text at base + 8 + off. */
+            int32_t lt = *(int32_t*) ((char*) strObj + 8);
+            int32_t blen = lt & 0x1FFFFFFF;
+            if (blen > 0) {
+                if (blen <= 12) {
+                    mbytes = (const char*) strObj + 12;
+                    mlen = blen;
+                } else {
+                    int32_t soff = *(int32_t*) ((char*) strObj + 12);
+                    char* sbase = *(char**) ((char*) strObj + 16);
+                    if (sbase && (uintptr_t) sbase >= 4096) {
+                        mbytes = sbase + 8 + soff;
+                        mlen = blen;
+                    }
+                }
             }
         }
     }
@@ -253,13 +261,21 @@ static void __cajeta_emit_uncaught(void* value, int is_unrec) {
     if (value && (uintptr_t) value >= 4096) {
         void* strObj = ((void**) value)[1];                 // Throwable.message
         if (strObj && (uintptr_t) strObj >= 4096) {
-            void* bytesArr = ((void**) strObj)[1];           // String.bytes (int8[])
-            int32_t blen = *(int32_t*) ((char*) strObj + 16);  // String.byteLength
-            int32_t smode = *(int32_t*) ((char*) strObj + 20);
-            int64_t soff = (smode == 2) ? *(int64_t*) ((char*) strObj + 32) : 0;
-            if (bytesArr && (uintptr_t) bytesArr >= 4096 && blen > 0) {
-                mbytes = (const char*) bytesArr + 8 + soff;  // skip count header + window
-                mlen = blen;
+            /* tagged core (6.2.2): see __cajeta_print_trace_one. */
+            int32_t lt = *(int32_t*) ((char*) strObj + 8);
+            int32_t blen = lt & 0x1FFFFFFF;
+            if (blen > 0) {
+                if (blen <= 12) {
+                    mbytes = (const char*) strObj + 12;
+                    mlen = blen;
+                } else {
+                    int32_t soff = *(int32_t*) ((char*) strObj + 12);
+                    char* sbase = *(char**) ((char*) strObj + 16);
+                    if (sbase && (uintptr_t) sbase >= 4096) {
+                        mbytes = sbase + 8 + soff;
+                        mlen = blen;
+                    }
+                }
             }
         }
     }
@@ -600,13 +616,21 @@ static int cajeta_json_escape(void* strObj, char* out, int outcap) {
     const char* src = NULL;
     int n = 0;
     if (strObj && (uintptr_t) strObj >= 4096) {
-        void* bytesArr = ((void**) strObj)[1];
-        int32_t blen = *(int32_t*) ((char*) strObj + 16);
-        int32_t smode = *(int32_t*) ((char*) strObj + 20);
-        int64_t soff = (smode == 2) ? *(int64_t*) ((char*) strObj + 32) : 0;
-        if (bytesArr && (uintptr_t) bytesArr >= 4096 && blen > 0) {
-            src = (const char*) bytesArr + 8 + soff;
-            n = blen;
+        /* tagged core (6.2.2): see __cajeta_print_trace_one. */
+        int32_t lt = *(int32_t*) ((char*) strObj + 8);
+        int32_t blen = lt & 0x1FFFFFFF;
+        if (blen > 0) {
+            if (blen <= 12) {
+                src = (const char*) strObj + 12;
+                n = blen;
+            } else {
+                int32_t soff = *(int32_t*) ((char*) strObj + 12);
+                char* sbase = *(char**) ((char*) strObj + 16);
+                if (sbase && (uintptr_t) sbase >= 4096) {
+                    src = sbase + 8 + soff;
+                    n = blen;
+                }
+            }
         }
     }
     int w = 0;

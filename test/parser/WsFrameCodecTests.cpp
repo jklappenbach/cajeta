@@ -202,12 +202,12 @@ TEST(WsFrameCodecTests, encodeGoldenVectors) {
 TEST(WsFrameCodecTests, encodeDecodeRoundTripUnmasked) {
     EXPECT_EQ(runI32(
         "String s = \"round-trip payload\";\n"
-        "int32 n = s.byteLength;\n"
+        "int32 n = s.byteLength();\n"
         // Copy the string's bytes into a fresh array we can hand off (the
         // frame takes ownership of its payload; never steal s.bytes).
         "int8[] p = heap int8[n];\n"
         "int32 j = 0;\n"
-        "while (j < n) { p[j] = s.bytes[j]; j = j + 1; }\n"
+        "while (j < n) { p[j] = s.byteAt(j); j = j + 1; }\n"
         "WsFrame f = WsFrame.of(true, WsOpcode.BINARY, false, #p);\n"
         "int8[] wire = WsFrameEncoder.encode(f, null);\n"
         "WsFrameDecoder dec = WsFrameDecoder.forClient();\n"
@@ -221,7 +221,7 @@ TEST(WsFrameCodecTests, encodeDecodeRoundTripUnmasked) {
         "if (back.count() != n) return -5;\n"
         "int32 i = 0;\n"
         "while (i < n) {\n"
-        "    if (back[i] != s.bytes[i]) return -6;\n"
+        "    if (back[i] != s.byteAt(i)) return -6;\n"
         "    i = i + 1;\n"
         "}\n"
         "return 1;"), 1);

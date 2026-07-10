@@ -214,7 +214,7 @@ TEST(WsControlFrameTests, parseCloseExtractsCodeAndReason) {
         "if (!r.hasCode()) return -1;\n"
         "if (r.getCode() != 1000) return -2;\n"
         "String back = r.getReason();\n"
-        "if (back.byteLength != 4) return -3;\n"
+        "if (back.byteLength() != 4) return -3;\n"
         "if (back.bytes[0] != (int8) 100) return -4;\n"   // 'd'
         "if (back.bytes[3] != (int8) 101) return -5;\n"   // 'e'
         "return 1;"), 1);
@@ -227,7 +227,7 @@ TEST(WsControlFrameTests, parseCloseEmptyIsNoStatus) {
         "WsCloseReason r = WsControlFrames.parseClose(f);\n"
         "if (r.hasCode()) return -1;\n"
         "if (r.getCode() != WsCloseCode.NO_STATUS) return -2;\n"   // 1005
-        "if (r.getReason().byteLength != 0) return -3;\n"
+        "if (r.getReason().byteLength() != 0) return -3;\n"
         "return 1;"), 1);
 }
 

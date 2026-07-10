@@ -64,13 +64,11 @@ public class Path {
      * @EntryPoint
      */
     public static #Path of(String s) {
-        int32 n = s.byteLength;
+        int32 n = s.byteLength();
         int8[] copy = heap int8[n];
-        int8[] src = s.bytes;
-        int64 o = s.byteOffset();
         int32 i = 0;
         while (i < n) {
-            copy[i] = src[o + i];
+            copy[i] = s.byteAt(i);
             i = i + 1;
         }
         // `#copy` transfers ownership of the freshly allocated
@@ -138,13 +136,11 @@ public class Path {
      */
     public #String stem() {
         String fullName = this.name();
-        int32 nameLen = fullName.byteLength;
-        int8[] src = fullName.bytes;
-        int64 o = fullName.byteOffset();
+        int32 nameLen = fullName.byteLength();
         int32 lastDot = -1;
         int32 i = 0;
         while (i < nameLen) {
-            if (src[o + i] == (int8) 46) {  // '.' = 0x2E = 46
+            if (fullName.byteAt(i) == (int8) 46) {  // '.' = 0x2E = 46
                 lastDot = i;
             }
             i = i + 1;
@@ -153,7 +149,7 @@ public class Path {
         int8[] out = heap int8[outLen];
         int32 j = 0;
         while (j < outLen) {
-            out[j] = src[o + j];
+            out[j] = fullName.byteAt(j);
             j = j + 1;
         }
         return heap String(#out, outLen);
@@ -168,13 +164,11 @@ public class Path {
      */
     public #String extension() {
         String fullName = this.name();
-        int32 nameLen = fullName.byteLength;
-        int8[] src = fullName.bytes;
-        int64 o = fullName.byteOffset();
+        int32 nameLen = fullName.byteLength();
         int32 lastDot = -1;
         int32 i = 0;
         while (i < nameLen) {
-            if (src[o + i] == (int8) 46 && i > 0) {
+            if (fullName.byteAt(i) == (int8) 46 && i > 0) {
                 lastDot = i;
             }
             i = i + 1;
@@ -187,7 +181,7 @@ public class Path {
         int8[] out = heap int8[outLen];
         int32 j = 0;
         while (j < outLen) {
-            out[j] = src[o + lastDot + 1 + j];
+            out[j] = fullName.byteAt(lastDot + 1 + j);
             j = j + 1;
         }
         return heap String(#out, outLen);
@@ -379,7 +373,7 @@ public class Path {
      */
     public #Path resolve(String segment) {
         int32 pLen = (int32) this.bytes.count();
-        int32 sLen = segment.byteLength;
+        int32 sLen = segment.byteLength();
         boolean needsSep = pLen > 0
             && this.bytes[pLen - 1] != (int8) 47
             && sLen > 0;
@@ -396,11 +390,9 @@ public class Path {
             out[j] = (int8) 47;
             j = j + 1;
         }
-        int8[] segBytes = segment.bytes;
-        int64 so = segment.byteOffset();
         k = 0;
         while (k < sLen) {
-            out[j] = segBytes[so + k];
+            out[j] = segment.byteAt(k);
             j = j + 1;
             k = k + 1;
         }

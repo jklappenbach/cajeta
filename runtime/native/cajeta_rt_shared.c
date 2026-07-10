@@ -182,20 +182,39 @@ int __cajeta_shared_owner_drop(void* base) {
 // so materialize into a per-thread growable scratch — valid until the next
 // call on the same thread, which the immediate-consumption ABI satisfies.
 const char* __cajeta_string_cstr(void* s_v) {
-    static __thread char* scratch = NULL;
-    static __thread int64_t cap = 0;
+    // Ring of per-thread scratch slots: a call site may collect several
+    // cstr results before consuming them (printf with multiple %s args),
+    // so one slot would clobber earlier extractions. Eight slots cover
+    // realistic arities; beyond that the oldest recycles.
+    enum { CAJ_CSTR_RING = 8 };
+    static __thread char* scratch[CAJ_CSTR_RING];
+    static __thread int64_t cap[CAJ_CSTR_RING];
+    static __thread int slot = 0;
     if (!s_v) return NULL;
     cajeta_string_layout* s = (cajeta_string_layout*) s_v;
-    if (s->bytes == NULL) return "";
-    if (s->mode != 2) return (const char*) s->bytes + 8;
-    int64_t len = (int64_t) s->byteLength;
-    if (len + 1 > cap) {
-        cap = len + 1 < 64 ? 64 : len + 1;
-        scratch = (char*) realloc(scratch, (size_t) cap);
+    int64_t len = (int64_t) caj_str_len(s);
+    if (len == 0) return "";
+    if (caj_str_is_pointer(s)) {
+        char* base = caj_str_base(s);
+        // Full-window root (offset 0, window == the whole root): builders
+        // guarantee a trailing NUL — hand the data out directly.
+        if (base && caj_str_off(s) == 0
+                && len == __cajeta_shared_masked_count(base)) {
+            return base + 8;
+        }
     }
-    memcpy(scratch, (const char*) s->bytes + 8 + s->ssoCount, (size_t) len);
-    scratch[len] = 0;
-    return scratch;
+    // Inline text and windowed views have no NUL at the window's end —
+    // materialize into the next ring slot (valid until the ring wraps on
+    // this thread; the immediate-consumption ABI satisfies that).
+    int k = slot;
+    slot = (slot + 1) % CAJ_CSTR_RING;
+    if (len + 1 > cap[k]) {
+        cap[k] = len + 1 < 64 ? 64 : len + 1;
+        scratch[k] = (char*) realloc(scratch[k], (size_t) cap[k]);
+    }
+    memcpy(scratch[k], caj_str_ptr(s), (size_t) len);
+    scratch[k][len] = 0;
+    return scratch[k];
 }
 
 // Zero-copy String.substring (slice-spec §7.1; slices plan 2.2.1). Builds a
@@ -226,48 +245,25 @@ void* __cajeta_string_resolve(void* src_v) {
         (cajeta_string_layout*) __cajeta_alloc(sizeof(cajeta_string_layout));
     out->vtable = src->vtable;
     out->cachedCpLength = src->cachedCpLength;
-    out->ssoCount = 0;
-    memset(out->ssoData, 0, sizeof out->ssoData);
-    int32_t len = src->byteLength;
-    if (len <= 0 || src->bytes == NULL) {
-        out->bytes = NULL;
-        out->byteLength = 0;
-        out->mode = 0;
+    int32_t len = caj_str_len(src);
+    if (!caj_str_is_pointer(src)) {               // Inline: self-contained
+        caj_str_set_inline(out, src->data, len);
         return out;
     }
-    int32_t srcOff = (src->mode == 2) ? (int32_t) src->ssoCount : 0;
-    if (src->mode == 1) {                         // static root: alias freely
-        out->bytes = src->bytes;
-        out->byteLength = len;
-        out->mode = 1;
-        return out;
-    }
-    if (src->mode == 2 && src->ssoData[1]) {      // static-rooted view: alias
-        out->bytes = src->bytes;
-        out->byteLength = len;
-        out->mode = 2;
-        out->ssoCount = (int64_t) srcOff;
-        out->ssoData[1] = 1;
+    char* base = caj_str_base(src);
+    int32_t srcOff = caj_str_off(src);
+    if (src->lenTag & CAJ_STR_STATIC_BIT) {       // static root: alias freely
+        caj_str_set_window(out, len | CAJ_STR_STATIC_BIT, srcOff, base);
         return out;
     }
     int __cajeta_arena_owns(const void* p);
-    if (src->bytes == (void*) &src->ssoCount
-            || __cajeta_arena_owns(src->bytes)
-            || len <= 256) {                      // copy-small + arena + SSO rows
-        void* buf = __cajeta_new_array_header(8, 1, (uint64_t) len + 1);
-        *((int64_t*) buf) = len;
-        memcpy((char*) buf + 8, (char*) src->bytes + 8 + srcOff, (size_t) len);
-        ((char*) buf)[8 + len] = 0;
-        out->bytes = buf;
-        out->byteLength = len;
-        out->mode = 0;
+    if (__cajeta_arena_owns(base) || len <= 256) {  // copy-small + arena rows
+        void* buf = caj_str_new_root(base + 8 + srcOff, len);
+        caj_str_set_window(out, len, 0, buf);       // fresh OWNED root
         return out;
     }
-    __cajeta_shared_promote(src->bytes, 2);       // share-large: add-or-create
-    out->bytes = src->bytes;
-    out->byteLength = len;
-    out->mode = 2;
-    out->ssoCount = (int64_t) srcOff;
+    __cajeta_shared_promote(base, 2);             // share-large: add-or-create
+    caj_str_set_window(out, len | CAJ_STR_SHARED_BIT, srcOff, base);
     return out;
 }
 
@@ -351,40 +347,23 @@ void* __cajeta_string_slice_borrow(void* src_v, int32_t begin, int32_t len) {
         (cajeta_string_layout*) __cajeta_alloc(sizeof(cajeta_string_layout));
     out->vtable = src->vtable;
     out->cachedCpLength = -1;
-    out->ssoCount = 0;
-    memset(out->ssoData, 0, sizeof out->ssoData);
-    if (len <= 0 || src->bytes == NULL) {
-        out->bytes = NULL;
-        out->byteLength = 0;
-        out->mode = 0;
+    if (len <= 0 || caj_str_len(src) == 0) {
+        caj_str_set_inline(out, NULL, 0);
         return out;
     }
-    int32_t srcOff = (src->mode == 2) ? (int32_t) src->ssoCount : 0;
-    if (src->bytes == (void*) &src->ssoCount) {
-        void* buf = __cajeta_new_array_header(8, 1, (uint64_t) len + 1);
-        *((int64_t*) buf) = len;
-        memcpy((char*) buf + 8, (char*) src->bytes + 8 + srcOff + begin, (size_t) len);
-        ((char*) buf)[8 + len] = 0;
-        out->bytes = buf;
-        out->byteLength = len;
-        out->mode = 0;
+    // Normalization (spec Â§8): every <= 12 B result is Inline — a copy is
+    // cheaper than the pointer chase and needs no lifetime at all.
+    if (len <= CAJ_STR_INLINE_CAP) {
+        caj_str_set_inline(out, caj_str_ptr(src) + begin, len);
         return out;
     }
-    out->bytes = src->bytes;
-    out->byteLength = len;
-    out->mode = 2;
-    out->ssoCount = (int64_t) (srcOff + begin);
-    // The borrow flag: ssoData[0] (unused when bytes != &ssoCount). A
-    // stakeless mode-2 wrapper must NOT release at drop — once an escape
-    // registers the root, an unflagged borrow's drop would steal a stake
-    // it never took.
-    out->ssoData[0] = 1;
-    // Static-root marker (ssoData[1]): stake-taking consumers of this
-    // borrow (string_slice, utf8_of, resolve) must not promote a static
-    // root into the shared table.
-    if (src->mode == 1 || src->ssoData[1]) {
-        out->ssoData[1] = 1;
-    }
+    // > 12 B window of a pointer-form source (an Inline source can't produce
+    // one): stakeless BORROW window — zero rc, zero side-table touch. The
+    // STATIC bit rides along so stake-taking consumers of this borrow
+    // (string_slice, utf8_of, resolve) never promote a static root.
+    int32_t tag = len | CAJ_STR_BORROW_BIT
+        | (src->lenTag & CAJ_STR_STATIC_BIT);
+    caj_str_set_window(out, tag, caj_str_off(src) + begin, caj_str_base(src));
     return out;
 }
 
@@ -394,54 +373,41 @@ void* __cajeta_string_slice(void* src_v, int32_t begin, int32_t len) {
         (cajeta_string_layout*) __cajeta_alloc(sizeof(cajeta_string_layout));
     out->vtable = src->vtable;
     out->cachedCpLength = -1;
-    out->ssoCount = 0;
-    memset(out->ssoData, 0, sizeof out->ssoData);
-    if (len <= 0 || src->bytes == NULL) {
-        out->bytes = NULL;
-        out->byteLength = 0;
-        out->mode = 0;
+    if (len <= 0 || caj_str_len(src) == 0) {
+        caj_str_set_inline(out, NULL, 0);
         return out;
     }
-    int32_t srcOff = (src->mode == 2) ? (int32_t) src->ssoCount : 0;
-    // Materialize (owned copy) when the root can't back a stake: SSO (the
-    // window lives in the wrapper's inline region — §8.3 invariant) or an
-    // ARENA-backed root (spec §4 arena row: the frame arena recycles at the
-    // scope-exit reset so a stake on it would dangle, and its reclaim never
-    // routes owner_drop so the rc entry could never retire). Zero-copy
-    // stands for heap-backed roots.
+    // Normalization (spec Â§8): <= 12 B results are Inline — no buffer, no
+    // stake, no rc traffic (this also subsumes the old SSO materialize row).
+    if (len <= CAJ_STR_INLINE_CAP) {
+        caj_str_set_inline(out, caj_str_ptr(src) + begin, len);
+        return out;
+    }
+    char* base = caj_str_base(src);
+    int32_t srcOff = caj_str_off(src);
+    // ARENA-backed root (spec Â§4 arena row): the frame arena recycles at
+    // the scope-exit reset so a stake on it would dangle — materialize a
+    // fresh OWNED root. Static roots are exempt (never arena).
     int __cajeta_arena_owns(const void* p);
-    if (src->bytes == (void*) &src->ssoCount
-            || (src->mode != 1 && __cajeta_arena_owns(src->bytes))) {
-        void* buf = __cajeta_new_array_header(8, 1, (uint64_t) len + 1);
-        *((int64_t*) buf) = len;
-        memcpy((char*) buf + 8, (char*) src->bytes + 8 + srcOff + begin, (size_t) len);
-        ((char*) buf)[8 + len] = 0;
-        out->bytes = buf;
-        out->byteLength = len;
-        out->mode = 0;
+    if (!(src->lenTag & CAJ_STR_STATIC_BIT) && __cajeta_arena_owns(base)) {
+        void* buf = caj_str_new_root(base + 8 + srcOff + begin, len);
+        caj_str_set_window(out, len, 0, buf);
         return out;
     }
-    void* root = src->bytes;
-    // Static roots (mode-1 source, or a view already marked static via
-    // ssoData[1]) never enter the shared table: no stake, no free. Without
-    // the marker a borrow-flagged view over a literal would promote its
-    // STATIC root here and the last release would free static memory.
-    if (src->mode == 1 || src->ssoData[1]) {
-        out->ssoData[1] = 1;
-    } else if (src->mode == 0) {
-        __cajeta_shared_promote(root, 2);
-    } else if (src->mode == 2) {
-        // A borrow-flagged source holds NO stake: add-or-create (owner +
-        // this view) instead of retaining a possibly-absent entry.
-        if (src->ssoData[0]) {
-            __cajeta_shared_promote(root, 2);
-        } else {
-            __cajeta_shared_retain(root);
-        }
+    // Static roots never enter the shared table: no stake, no free. A
+    // borrow-flagged source holds NO stake: add-or-create (owner + this
+    // view). An OWNED source promotes (owner + this view = 2 stakes); a
+    // SHARED source retains one more.
+    int32_t tag = len;
+    if (src->lenTag & CAJ_STR_STATIC_BIT) {
+        tag |= CAJ_STR_STATIC_BIT;
+    } else if (src->lenTag & CAJ_STR_SHARED_BIT) {
+        __cajeta_shared_retain(base);
+        tag |= CAJ_STR_SHARED_BIT;
+    } else {
+        __cajeta_shared_promote(base, 2);   // owned or borrow: add-or-create
+        tag |= CAJ_STR_SHARED_BIT;
     }
-    out->bytes = root;
-    out->byteLength = len;
-    out->mode = 2;
-    out->ssoCount = (int64_t) (srcOff + begin);
+    caj_str_set_window(out, tag, srcOff + begin, base);
     return out;
 }

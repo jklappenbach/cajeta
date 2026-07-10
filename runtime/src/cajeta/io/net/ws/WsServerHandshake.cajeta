@@ -89,7 +89,7 @@ public class WsServerHandshake {
      */
     public static #String guid() {
         String g = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-        return g.substring(0, g.byteLength);
+        return g.substring(0, g.byteLength());
     }
 
     /**
@@ -107,8 +107,8 @@ public class WsServerHandshake {
         Sha1 h = heap Sha1();
         int8[] kb = key.toBytes();
         int8[] gb = g.toBytes();
-        h.update(kb, (int64) key.byteLength);
-        h.update(gb, (int64) g.byteLength);
+        h.update(kb, (int64) key.byteLength());
+        h.update(gb, (int64) g.byteLength());
         int8[] digest = h.digest();                 // 20 bytes
         return Base64.encode(digest, (int64) digest.count());
     }
@@ -253,7 +253,7 @@ public class WsServerHandshake {
         if (v == null) {
             return false;
         }
-        return v.byteLength > 0;
+        return v.byteLength() > 0;
     }
 
     /**

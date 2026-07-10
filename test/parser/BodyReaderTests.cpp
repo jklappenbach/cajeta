@@ -62,7 +62,7 @@ TEST(BodyReaderTests, contentLengthConsumesExactBytes) {
     EXPECT_EQ(runI32(
         "String body = \"hello\";\n"
         "BodyReader br = BodyReader.forContentLength((int64) 5);\n"
-        "boolean done = br.feed(body.bytes, body.byteLength);\n"
+        "boolean done = br.feed(body.toBytes(), body.byteLength());\n"
         "if (!done) return -1;\n"
         "if (!br.isComplete()) return -2;\n"
         "if (br.decodedLength() != 5) return -3;\n"
@@ -90,7 +90,7 @@ TEST(BodyReaderTests, contentLengthOvershootGoesToLeftover) {
         // 5 body bytes "hello" + the start of a next request.
         "String wire = \"helloGET /next\";\n"
         "BodyReader br = BodyReader.forContentLength((int64) 5);\n"
-        "br.feed(wire.bytes, wire.byteLength);\n"
+        "br.feed(wire.toBytes(), wire.byteLength());\n"
         "if (!br.isComplete()) return -1;\n"
         "int8[] out = br.drain();\n"
         "if (out.count() != 5) return -2;\n"
@@ -105,8 +105,8 @@ TEST(BodyReaderTests, contentLengthOvershootGoesToLeftover) {
 TEST(BodyReaderTests, contentLengthStreamsAcrossFeeds) {
     EXPECT_EQ(runI32(
         "String w = \"streaming-body-here\";\n"   // 19 bytes
-        "int8[] b = w.bytes;\n"
-        "int32 n = w.byteLength;\n"
+        "int8[] b = w.toBytes();\n"
+        "int32 n = w.byteLength();\n"
         "BodyReader br = BodyReader.forContentLength((int64) n);\n"
         "int32 total = 0;\n"
         "int32 i = 0;\n"
@@ -128,7 +128,7 @@ TEST(BodyReaderTests, contentLengthTruncatedRaisesEof) {
     EXPECT_EQ(runI32(
         "String body = \"hel\";\n"                  // only 3 of 5 bytes
         "BodyReader br = BodyReader.forContentLength((int64) 5);\n"
-        "br.feed(body.bytes, body.byteLength);\n"
+        "br.feed(body.toBytes(), body.byteLength());\n"
         "if (br.isComplete()) return -1;\n"
         "try {\n"
         "    br.endInput();\n"
@@ -145,7 +145,7 @@ TEST(BodyReaderTests, chunkedSingleVector) {
     EXPECT_EQ(runI32(
         "String wire = \"5\\r\\nhello\\r\\n0\\r\\n\\r\\n\";\n"
         "BodyReader br = BodyReader.forChunked();\n"
-        "boolean done = br.feed(wire.bytes, wire.byteLength);\n"
+        "boolean done = br.feed(wire.toBytes(), wire.byteLength());\n"
         "if (!done) return -1;\n"
         "if (!br.isComplete()) return -2;\n"
         "int8[] out = br.drain();\n"
@@ -160,7 +160,7 @@ TEST(BodyReaderTests, chunkedEmptyVector) {
     EXPECT_EQ(runI32(
         "String wire = \"0\\r\\n\\r\\n\";\n"
         "BodyReader br = BodyReader.forChunked();\n"
-        "boolean done = br.feed(wire.bytes, wire.byteLength);\n"
+        "boolean done = br.feed(wire.toBytes(), wire.byteLength());\n"
         "if (!done) return -1;\n"
         "if (br.decodedLength() != 0) return -2;\n"
         "return 1;"), 1);
@@ -172,7 +172,7 @@ TEST(BodyReaderTests, chunkedExtensionIgnoredVector) {
     EXPECT_EQ(runI32(
         "String wire = \"5;foo=bar\\r\\nhello\\r\\n0\\r\\n\\r\\n\";\n"
         "BodyReader br = BodyReader.forChunked();\n"
-        "br.feed(wire.bytes, wire.byteLength);\n"
+        "br.feed(wire.toBytes(), wire.byteLength());\n"
         "if (!br.isComplete()) return -1;\n"
         "int8[] out = br.drain();\n"
         "if (out.count() != 5) return -2;\n"
@@ -186,7 +186,7 @@ TEST(BodyReaderTests, chunkedTrailersConsumedNotBodyVector) {
     EXPECT_EQ(runI32(
         "String wire = \"4\\r\\ndata\\r\\n0\\r\\nX-Checksum: abc\\r\\n\\r\\n\";\n"
         "BodyReader br = BodyReader.forChunked();\n"
-        "boolean done = br.feed(wire.bytes, wire.byteLength);\n"
+        "boolean done = br.feed(wire.toBytes(), wire.byteLength());\n"
         "if (!done) return -1;\n"
         "int8[] out = br.drain();\n"
         "if (out.count() != 4) return -2;\n"
@@ -202,7 +202,7 @@ TEST(BodyReaderTests, chunkedWikipediaMultiChunkVector) {
         "String wire = \"4\\r\\nWiki\\r\\n5\\r\\npedia\\r\\n"
         "e\\r\\n in\\r\\n\\r\\nchunks.\\r\\n0\\r\\n\\r\\n\";\n"
         "BodyReader br = BodyReader.forChunked();\n"
-        "br.feed(wire.bytes, wire.byteLength);\n"
+        "br.feed(wire.toBytes(), wire.byteLength());\n"
         "if (!br.isComplete()) return -1;\n"
         "int8[] out = br.drain();\n"
         // "Wikipedia in\r\n\r\nchunks." = 23 bytes.
@@ -223,8 +223,8 @@ TEST(BodyReaderTests, chunkedByteAtATimeMatchesOneShot) {
     EXPECT_EQ(runI32(
         "String wire = \"4\\r\\nWiki\\r\\n5\\r\\npedia\\r\\n"
         "e\\r\\n in\\r\\n\\r\\nchunks.\\r\\n0\\r\\n\\r\\n\";\n"
-        "int8[] b = wire.bytes;\n"
-        "int32 n = wire.byteLength;\n"
+        "int8[] b = wire.toBytes();\n"
+        "int32 n = wire.byteLength();\n"
         "BodyReader br = BodyReader.forChunked();\n"
         "int32 i = 0;\n"
         "int8[] one = heap int8[1];\n"
@@ -247,7 +247,7 @@ TEST(BodyReaderTests, chunkedLeftoverAfterTerminator) {
     EXPECT_EQ(runI32(
         "String wire = \"5\\r\\nhello\\r\\n0\\r\\n\\r\\nGET /next\";\n"
         "BodyReader br = BodyReader.forChunked();\n"
-        "br.feed(wire.bytes, wire.byteLength);\n"
+        "br.feed(wire.toBytes(), wire.byteLength());\n"
         "if (!br.isComplete()) return -1;\n"
         "int8[] out = br.drain();\n"
         "if (out.count() != 5) return -2;\n"
@@ -265,7 +265,7 @@ TEST(BodyReaderTests, chunkedNonHexSizeRejected) {
         "String wire = \"XYZ\\r\\nhello\\r\\n0\\r\\n\\r\\n\";\n"
         "BodyReader br = BodyReader.forChunked();\n"
         "try {\n"
-        "    br.feed(wire.bytes, wire.byteLength);\n"
+        "    br.feed(wire.toBytes(), wire.byteLength());\n"
         "    return -1;\n"
         "} catch (InvalidChunkEncodingException e) {\n"
         "    return 1;\n"
@@ -279,7 +279,7 @@ TEST(BodyReaderTests, chunkedMissingDataCrlfRejected) {
         "String wire = \"5\\r\\nhelloXX0\\r\\n\\r\\n\";\n"
         "BodyReader br = BodyReader.forChunked();\n"
         "try {\n"
-        "    br.feed(wire.bytes, wire.byteLength);\n"
+        "    br.feed(wire.toBytes(), wire.byteLength());\n"
         "    return -1;\n"
         "} catch (InvalidChunkEncodingException e) {\n"
         "    return 1;\n"
@@ -292,7 +292,7 @@ TEST(BodyReaderTests, chunkedTruncatedRaisesEof) {
     EXPECT_EQ(runI32(
         "String wire = \"5\\r\\nhello\\r\\n\";\n"   // no 0-chunk terminator
         "BodyReader br = BodyReader.forChunked();\n"
-        "boolean done = br.feed(wire.bytes, wire.byteLength);\n"
+        "boolean done = br.feed(wire.toBytes(), wire.byteLength());\n"
         "if (done) return -1;\n"                    // not complete
         "try {\n"
         "    br.endInput();\n"
@@ -311,9 +311,9 @@ TEST(BodyReaderTests, closeDelimitedCompletesOnEndInput) {
         "String a = \"chunk-one \";\n"
         "String b = \"chunk-two\";\n"
         "BodyReader br = BodyReader.forClose();\n"
-        "boolean d1 = br.feed(a.bytes, a.byteLength);\n"
+        "boolean d1 = br.feed(a.toBytes(), a.byteLength());\n"
         "if (d1) return -1;\n"                       // never completes from feed
-        "boolean d2 = br.feed(b.bytes, b.byteLength);\n"
+        "boolean d2 = br.feed(b.toBytes(), b.byteLength());\n"
         "if (d2) return -2;\n"
         "br.endInput();\n"
         "if (!br.isComplete()) return -3;\n"
@@ -333,7 +333,7 @@ TEST(BodyReaderTests, parserFramingDrivesReaderEndToEnd) {
         "String wire = \"HTTP/1.1 200 OK\\r\\nTransfer-Encoding: chunked\\r\\n"
         "\\r\\n5\\r\\nhello\\r\\n0\\r\\n\\r\\n\";\n"
         "HttpParser p = HttpParser.forResponse();\n"
-        "p.feed(wire.bytes, wire.byteLength);\n"
+        "p.feed(wire.toBytes(), wire.byteLength());\n"
         "if (!p.isComplete()) return -1;\n"
         "BodyFraming f = p.getFraming();\n"
         "if (!f.isChunked()) return -2;\n"
@@ -351,7 +351,7 @@ TEST(BodyReaderTests, parserContentLengthFramingDrivesReader) {
     EXPECT_EQ(runI32(
         "String wire = \"HTTP/1.1 200 OK\\r\\nContent-Length: 5\\r\\n\\r\\nhello\";\n"
         "HttpParser p = HttpParser.forResponse();\n"
-        "p.feed(wire.bytes, wire.byteLength);\n"
+        "p.feed(wire.toBytes(), wire.byteLength());\n"
         "BodyFraming f = p.getFraming();\n"
         "if (!f.isContentLength()) return -1;\n"
         "BodyReader br = BodyReader.forFraming(f);\n"
@@ -367,7 +367,7 @@ TEST(BodyReaderTests, parserNoneFramingIsComplete) {
     EXPECT_EQ(runI32(
         "String wire = \"GET /hello.txt HTTP/1.1\\r\\nHost: h.test\\r\\n\\r\\n\";\n"
         "HttpParser p = HttpParser.forRequest();\n"
-        "p.feed(wire.bytes, wire.byteLength);\n"
+        "p.feed(wire.toBytes(), wire.byteLength());\n"
         "BodyFraming f = p.getFraming();\n"
         "if (!f.isNone()) return -1;\n"
         "BodyReader br = BodyReader.forFraming(f);\n"

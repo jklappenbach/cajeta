@@ -369,7 +369,7 @@ public final class HttpSerializer {
     /** Append a String's bytes verbatim. */
     void appendString(String s) {
         int8[] b = s.toBytes();
-        this.appendBytes(b, s.byteLength);
+        this.appendBytes(b, s.byteLength());
     }
 
     /** Append `bytes[0..n)`. */
@@ -506,6 +506,6 @@ public final class HttpSerializer {
 
     /** Copy a literal into a fresh owned `String` (header default values). */
     static #String lit(String s) {
-        return s.substring(0, s.byteLength);
+        return s.substring(0, s.byteLength());
     }
 }

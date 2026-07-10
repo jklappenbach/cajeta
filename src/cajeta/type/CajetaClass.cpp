@@ -3173,6 +3173,15 @@ namespace cajeta {
         if (isWildcardInstantiation()) {
             return module->getRuntimeFunction("__cajeta_class_virtual_drop");
         }
+        // cajeta.lang.String owns a custom mode-aware runtime drop (6.2.2
+        // tagged core): its `base` field is NOT a walkable owned array —
+        // Inline forms keep raw text bits there, static roots must never
+        // free, rc'd roots release a stake. A synthesized field-walk drop
+        // would free_array(text-bits) and crash. Same do-not-cache rule as
+        // the wildcard branch (per-emit-module resolution).
+        if (qName && qName->toCanonical() == "cajeta.lang.String") {
+            return module->getRuntimeFunction("__cajeta_string_drop");
+        }
         auto& llvmDropFunction = dropFnRef();  // U6.3: frozen-aware
         if (llvmDropFunction) return llvmDropFunction;
         auto& ctx = *module->getLlvmContext();

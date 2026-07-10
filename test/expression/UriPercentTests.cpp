@@ -121,9 +121,9 @@ TEST(UriPercentTests, utf8DecodeReconstructsBytes) {
     // "%C3%A9" decodes back to the 2-byte sequence 0xC3 0xA9.
     EXPECT_EQ(runI32(makeSource(
         "String s = Uri.percentDecode(\"%C3%A9\");\n"
-        "if (s.byteLength != 2) { return 0; }\n"
-        "int32 b0 = ((int32) s.bytes[0]) & 0xff;\n"
-        "int32 b1 = ((int32) s.bytes[1]) & 0xff;\n"
+        "if (s.byteLength() != 2) { return 0; }\n"
+        "int32 b0 = ((int32) s.byteAt(0)) & 0xff;\n"
+        "int32 b1 = ((int32) s.byteAt(1)) & 0xff;\n"
         "return (b0 == 0xC3 && b1 == 0xA9) ? 1 : 0;")), 1);
 }
 

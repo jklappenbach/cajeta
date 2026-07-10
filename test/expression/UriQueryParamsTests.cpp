@@ -152,9 +152,9 @@ TEST(UriQueryParamsTests, parseDecodesUtf8) {
     EXPECT_EQ(runI32(makeSource(
         "QueryParams q = QueryParams.parse(\"name=%C3%A9\");\n"
         "String v = q.valueAt(0);\n"
-        "if (v.byteLength != 2) { return 0; }\n"
-        "int32 b0 = ((int32) v.bytes[0]) & 0xff;\n"
-        "int32 b1 = ((int32) v.bytes[1]) & 0xff;\n"
+        "if (v.byteLength() != 2) { return 0; }\n"
+        "int32 b0 = ((int32) v.byteAt(0)) & 0xff;\n"
+        "int32 b1 = ((int32) v.byteAt(1)) & 0xff;\n"
         "return (b0 == 0xC3 && b1 == 0xA9) ? 1 : 0;")), 1);
 }
 

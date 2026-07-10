@@ -142,7 +142,11 @@ TEST(PathTests, parentStripsLastSegment) {
         "Path p = Path.of(\"/foo/bar/baz.txt\");\n"
         "Path par = p.parent();\n"
         "// Re-format par's bytes through String to compare.\n"
-        "String s = heap String(par.bytes, (int32) par.bytes.count());\n"
+        "int32 n = (int32) par.bytes.count();\n"
+        "int8[] cp = heap int8[n];\n"
+        "int32 i = 0;\n"
+        "while (i < n) { cp[i] = par.bytes[i]; i = i + 1; }\n"
+        "String s = heap String(#cp, n);\n"
         "return s.equals(\"/foo/bar\") ? 1 : 0;")), 1);
 }
 
@@ -150,7 +154,11 @@ TEST(PathTests, parentOfRootIsRoot) {
     EXPECT_EQ(runI32(makeSource(
         "Path p = Path.of(\"/\");\n"
         "Path par = p.parent();\n"
-        "String s = heap String(par.bytes, (int32) par.bytes.count());\n"
+        "int32 n = (int32) par.bytes.count();\n"
+        "int8[] cp = heap int8[n];\n"
+        "int32 i = 0;\n"
+        "while (i < n) { cp[i] = par.bytes[i]; i = i + 1; }\n"
+        "String s = heap String(#cp, n);\n"
         "return s.equals(\"/\") ? 1 : 0;")), 1);
 }
 
@@ -163,7 +171,11 @@ TEST(PathTests, resolveAppendsSegmentWithSeparator) {
     EXPECT_EQ(runI32(makeSource(
         "Path p = Path.of(\"/etc\");\n"
         "Path q = p.resolve(\"passwd\");\n"
-        "String s = heap String(q.bytes, (int32) q.bytes.count());\n"
+        "int32 n = (int32) q.bytes.count();\n"
+        "int8[] cp = heap int8[n];\n"
+        "int32 i = 0;\n"
+        "while (i < n) { cp[i] = q.bytes[i]; i = i + 1; }\n"
+        "String s = heap String(#cp, n);\n"
         "return s.equals(\"/etc/passwd\") ? 1 : 0;")), 1);
 }
 
@@ -171,7 +183,11 @@ TEST(PathTests, resolveOntoRelativePath) {
     EXPECT_EQ(runI32(makeSource(
         "Path p = Path.of(\"src\");\n"
         "Path q = p.resolve(\"main.cajeta\");\n"
-        "String s = heap String(q.bytes, (int32) q.bytes.count());\n"
+        "int32 n = (int32) q.bytes.count();\n"
+        "int8[] cp = heap int8[n];\n"
+        "int32 i = 0;\n"
+        "while (i < n) { cp[i] = q.bytes[i]; i = i + 1; }\n"
+        "String s = heap String(#cp, n);\n"
         "return s.equals(\"src/main.cajeta\") ? 1 : 0;")), 1);
 }
 
@@ -269,7 +285,11 @@ TEST(PathTests, canonicalResolvesSymlinkFreePathToItself) {
     EXPECT_EQ(runI32(makeSource(
         "Path p = Path.of(\"/etc/passwd\");\n"
         "Path c = p.canonical();\n"
-        "String s = heap String(c.bytes, (int32) c.bytes.count());\n"
+        "int32 n = (int32) c.bytes.count();\n"
+        "int8[] cp = heap int8[n];\n"
+        "int32 i = 0;\n"
+        "while (i < n) { cp[i] = c.bytes[i]; i = i + 1; }\n"
+        "String s = heap String(#cp, n);\n"
         "return s.equals(\"/etc/passwd\") ? 1 : 0;")), 1);
 #endif
 }
