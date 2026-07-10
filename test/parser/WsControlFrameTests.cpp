@@ -215,8 +215,8 @@ TEST(WsControlFrameTests, parseCloseExtractsCodeAndReason) {
         "if (r.getCode() != 1000) return -2;\n"
         "String back = r.getReason();\n"
         "if (back.byteLength() != 4) return -3;\n"
-        "if (back.bytes[0] != (int8) 100) return -4;\n"   // 'd'
-        "if (back.bytes[3] != (int8) 101) return -5;\n"   // 'e'
+        "if (back.byteAt(0) != (int8) 100) return -4;\n"   // 'd'
+        "if (back.byteAt(3) != (int8) 101) return -5;\n"   // 'e'
         "return 1;"), 1);
 }
 

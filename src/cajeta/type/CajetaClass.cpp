@@ -3177,10 +3177,16 @@ namespace cajeta {
         // tagged core): its `base` field is NOT a walkable owned array —
         // Inline forms keep raw text bits there, static roots must never
         // free, rc'd roots release a stake. A synthesized field-walk drop
-        // would free_array(text-bits) and crash. Same do-not-cache rule as
-        // the wildcard branch (per-emit-module resolution).
+        // would free_array(text-bits) and crash. The CLAIM-ASSUMED variant:
+        // this function lands in the vtable drop_fn slot, and
+        // __cajeta_class_virtual_drop claims the instance BEFORE dispatching
+        // — the claim-gated __cajeta_string_drop would see its own claim
+        // miss and bail before the root release (leaking window roots).
+        // Direct callers (drop-chain entries, element walks) keep the
+        // claim-gated __cajeta_string_drop. Same do-not-cache rule as the
+        // wildcard branch (per-emit-module resolution).
         if (qName && qName->toCanonical() == "cajeta.lang.String") {
-            return module->getRuntimeFunction("__cajeta_string_drop");
+            return module->getRuntimeFunction("__cajeta_string_drop_claimed");
         }
         auto& llvmDropFunction = dropFnRef();  // U6.3: frozen-aware
         if (llvmDropFunction) return llvmDropFunction;

@@ -1285,12 +1285,14 @@ static inline void* caj_str_new_root(const char* src, int32_t len) {
 // strings (mode 0); view strings borrow their bytes and must never free them.
 // The live-set claim makes this idempotent and a no-op on static literal
 // wrappers (which aren't tracked). Drop-fn shape: void(*)(void*).
-void __cajeta_string_drop(void* s) {
-    if (!s) return;
+// Claim-assumed variant: the CALLER already won this wrapper's live-set
+// claim (__cajeta_class_virtual_drop claims before dispatching the vtable
+// drop_fn — FieldOwnership.md § Solution B). Runs the tag-dispatched root
+// work and frees the wrapper. Never call without holding the claim.
+void __cajeta_string_drop_claimed(void* s) {
     cajeta_string_layout* str = (cajeta_string_layout*) s;
     int32_t tag = str->lenTag;
     char* base = caj_str_is_pointer(str) ? caj_str_base(str) : NULL;
-    if (!__cajeta_live_set_claim(s)) return;   // static wrapper / already freed
     // Tag dispatch (slice-spec §8.2). Inline is self-contained; BORROW views
     // hold no stake; STATIC roots are never freed. SHARED releases this
     // wrapper's stake (the last stake frees the root). OWNED (no bits)
@@ -1309,6 +1311,12 @@ void __cajeta_string_drop(void* s) {
     }
     __cajeta_poison_buffer(s);
     free(s);
+}
+
+void __cajeta_string_drop(void* s) {
+    if (!s) return;
+    if (!__cajeta_live_set_claim(s)) return;   // static wrapper / already freed
+    __cajeta_string_drop_claimed(s);
 }
 
 // Drop dispatcher for function-typed locals. The drop chain registers

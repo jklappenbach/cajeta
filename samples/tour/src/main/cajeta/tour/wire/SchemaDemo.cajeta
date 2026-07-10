@@ -140,7 +140,7 @@ public class SchemaDemo extends DemoClass {
         //    Compressor, reader a Decompressor; virtual dispatch lands
         //    TourRle's implementations.
         String text = "aaaaaaaabbbbcc";
-        int8[] plain = text.bytes;
+        int8[] plain = text.toBytes();
         Compressor c = heap TourRle();
         Decompressor d = heap TourRle();
 
@@ -166,16 +166,16 @@ public class SchemaDemo extends DemoClass {
         //    descriptor bytes (# transfers ownership in) and lends
         //    them back out (definition() is a borrow).
         String defText = "record WirePoint { x: int32, y: int32 }";
-        int8[] defBytes = heap int8[(int32) defText.byteLength];
+        int8[] defBytes = heap int8[(int32) defText.byteLength()];
         int32 k = 0;
-        while (k < (int32) defText.byteLength) {
-            defBytes[k] = defText.bytes[k];
+        while (k < (int32) defText.byteLength()) {
+            defBytes[k] = defText.byteAt(k);
             k = k + 1;
         }
         Schema schema = heap Schema(#defBytes);
         System.stdout.println("  schema.definition().count() = "
             + schema.definition().count());
-        this.check(schema.definition().count() == (int64) defText.byteLength,
+        this.check(schema.definition().count() == (int64) defText.byteLength(),
             "Schema carries the raw descriptor bytes it was given");
 
         // 3. SchemaEncoder<T> — encode and decode are inverses, and

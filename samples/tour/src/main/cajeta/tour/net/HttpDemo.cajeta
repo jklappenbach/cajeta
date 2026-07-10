@@ -49,7 +49,7 @@ public class HttpDemo extends DemoClass {
             return HttpResponse.ok().body(req.body, req.bodyLength());
         }
         String hello = "hello";
-        return HttpResponse.ok().body(hello.bytes, hello.byteLength);
+        return HttpResponse.ok().body(hello.toBytes(), hello.byteLength());
     }
 
     // Client fiber: GET /hello, expect 200 + "hello". Runs on its own
