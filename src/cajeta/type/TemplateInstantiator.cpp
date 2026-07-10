@@ -369,6 +369,26 @@ namespace cajeta {
         // NewExpression) and direct instantiate() callers hit it. Wildcards
         // and still-unfilled forward-ref placeholders skip — their shape isn't
         // known yet; arrays own their elements and pass.
+        // element-ownership §4.1.5 / §8.6 (plan 5.2.1) — declaration-`#`:
+        // an owning-REQUIRED type parameter (`class Vault<#K, V>`) demands `#`
+        // from every instantiation. Checked here so field/local/extends
+        // threading and direct instantiate() callers all hit it; the
+        // declaration-time extends-edge contagion check (buildClassLike)
+        // catches laundering earlier with the satisfy/reproject phrasing.
+        // Wildcard args skip (reflection's `Vault<?>` names no element type).
+        for (size_t i = 0; i < args.size() && i < typeParameters.size(); ++i) {
+            if (!typeParameters[i].owningRequired || argOwning[i]) continue;
+            if (args[i] && args[i]->isWildcard()) continue;
+            throw Exception(
+                "template " + qName->toCanonical() + ": type parameter '#"
+                    + typeParameters[i].name + "' is owning-required "
+                    "(declaration-`#`) — every instantiation must mark this "
+                    "argument `#`. Fix: instantiate with `<#"
+                    + (args[i] && args[i]->getQName()
+                        ? args[i]->getQName()->getTypeName() : string("..."))
+                    + ", ...>` (element-ownership spec §4.1.5)",
+                "CAJETA_ERROR_TYPE_PARAMETER_OWNING_REQUIRED");
+        }
         for (size_t i = 0; i < args.size(); ++i) {
             if (!argOwning[i] || !args[i]) continue;
             if (args[i]->isWildcard()) continue;

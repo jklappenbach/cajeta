@@ -311,3 +311,110 @@ TEST(ElementOwnershipModeTests, authorHashFormalDissolvesUnderBorrowMode) {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Unit 5 — declaration-`#` (owning-required) + inheritance contagion
+// (spec §4.1.5, §8.6). `class Vault<#K,V>` requires every instantiation to
+// supply `#` for K; an extends edge must satisfy the requirement with a
+// spelled `#` (concrete or reprojected) — passing a plain arg through is
+// laundering, an error at the declaration.
+// ---------------------------------------------------------------------------
+
+// 5.1.1 — `Vault<#Elem,V>` compiles; `Vault<Elem,V>` is a compile error.
+TEST(ElementOwnershipModeTests, owningRequiredParamRejectsPlainInstantiation) {
+    auto src =
+        "package test;\n"
+        "public class Elem { }\n"
+        "public class Vault<#K, V> { public K key; public V val; }\n"
+        "public class Ut {\n"
+        "  public Vault<#Elem, Elem> ok;\n"
+        "  public static int32 run() { return 0; }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.Ut");
+    auto vault = module->getStructures()["test.Vault"];
+    ASSERT_NE(vault, nullptr);
+    CajetaTypePtr elem = module->getStructures()["test.Elem"];
+    ASSERT_NE(elem, nullptr);
+    // The declared owning field resolved (satisfies the requirement)...
+    bool sawOwning = false;
+    for (auto& [name, klass] : module->getStructures()) {
+        if (name.rfind("test.Vault<", 0) == 0 && klass
+                && klass->isTypeArgumentOwning(0)) sawOwning = true;
+    }
+    EXPECT_TRUE(sawOwning);
+    // ...and a plain instantiation of K is rejected.
+    try {
+        vault->instantiate({elem, elem}, {false, false});
+        FAIL() << "expected owning-required rejection (spec 4.1.5)";
+    } catch (cajeta::Exception& e) {
+        std::string msg = e.getMessage();
+        EXPECT_NE(msg.find("owning-required"), std::string::npos) << msg;
+        EXPECT_NE(msg.find("K"), std::string::npos) << msg;
+    }
+}
+
+// 5.1.2 — laundering: `class Leaky<K,V> extends Vault<K,V>` is a declaration
+// error naming the satisfy / reproject fixes.
+TEST(ElementOwnershipModeTests, launderingExtendsEdgeIsRejected) {
+    auto src =
+        "package test;\n"
+        "public class Elem { }\n"
+        "public class Vault<#K, V> { public K key; }\n"
+        "public class Leaky<K, V> extends Vault<K, V> { }\n"
+        "public class Ut { public static int32 run() { return 0; } }\n";
+    Compiler compiler;
+    try {
+        compileForInspection(compiler, src, "test.Ut");
+        FAIL() << "expected laundering rejection (spec 8.6)";
+    } catch (cajeta::Exception& e) {
+        std::string msg = e.getMessage();
+        EXPECT_NE(msg.find("Leaky"), std::string::npos) << msg;
+        EXPECT_NE(msg.find("#K"), std::string::npos) << msg;      // reproject fix
+        EXPECT_NE(msg.find("owning-required"), std::string::npos) << msg;
+    }
+}
+
+// 5.1.3 — satisfy (spelled concrete `#Elem`) and reproject (spelled `#K` on a
+// `#`-declared own parameter) both compile.
+TEST(ElementOwnershipModeTests, satisfyAndReprojectExtendsEdgesCompile) {
+    auto src =
+        "package test;\n"
+        "public class Elem { }\n"
+        "public class Vault<#K, V> { public K key; }\n"
+        "public class SVault<V> extends Vault<#Elem, V> { }\n"
+        "public class MVault<#K, V> extends Vault<#K, V> { }\n"
+        "public class Ut { public static int32 run() { return 0; } }\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.Ut");
+    EXPECT_NE(module->getStructures()["test.SVault"], nullptr);
+    EXPECT_NE(module->getStructures()["test.MVault"], nullptr);
+}
+
+// 5.1.4 — a dual-mode base (no declaration-`#`) is unaffected: a plain
+// pass-through subclass compiles and stays dual-mode.
+TEST(ElementOwnershipModeTests, dualModeBaseSubclassUnaffected) {
+    auto src =
+        "package test;\n"
+        "public class Elem { }\n"
+        "public class Duo<K, V> { public K key; }\n"
+        "public class Sub<K, V> extends Duo<K, V> { }\n"
+        "public class Ut { public static int32 run() { return 0; } }\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.Ut");
+    EXPECT_NE(module->getStructures()["test.Sub"], nullptr);
+}
+
+// 5.1.5 — a REPROJECTED requirement binds the next edge too: extending
+// `MVault<#K,V>` with plain K launders and errors.
+TEST(ElementOwnershipModeTests, reprojectedRequirementPropagates) {
+    auto src =
+        "package test;\n"
+        "public class Elem { }\n"
+        "public class Vault<#K, V> { public K key; }\n"
+        "public class MVault<#K, V> extends Vault<#K, V> { }\n"
+        "public class Deep<K, V> extends MVault<K, V> { }\n"
+        "public class Ut { public static int32 run() { return 0; } }\n";
+    Compiler compiler;
+    EXPECT_ANY_THROW(compileForInspection(compiler, src, "test.Ut"));
+}

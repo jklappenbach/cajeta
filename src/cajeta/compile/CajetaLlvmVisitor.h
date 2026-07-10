@@ -334,6 +334,62 @@ namespace cajeta {
                 for (auto& tt : tl->typeType()) {
                     auto* coi = tt->classOrInterfaceType();
                     bucket->push_back(QualifiedName::fromContext(coi));
+                    // element-ownership §8.6 (plan 5.2.2) — inheritance
+                    // contagion at the EXTENDS edge, checked at declaration.
+                    // When the base is a template with an owning-REQUIRED
+                    // (declaration-`#`) parameter, the edge must spell `#`
+                    // at that position: satisfy with a concrete `#Elem`, or
+                    // reproject with the sub's own `#K`. A plain arg passed
+                    // through LAUNDERS the requirement — error here, at the
+                    // subclass declaration, not buried at some later
+                    // instantiation. Keyed on declaration-`#` only; a base
+                    // whose params are all dual-mode is untouched. An
+                    // unresolvable base (forward ref) defers to the
+                    // instantiation-time owning-required gate.
+                    if (which == 0 && coi) {
+                        auto& cmapEo = CajetaType::getCanonicalMap();
+                        auto baseIt = cmapEo.find(
+                            QualifiedName::fromContext(coi)->getTypeName());
+                        auto baseCls = baseIt != cmapEo.end()
+                            ? std::dynamic_pointer_cast<CajetaClass>(baseIt->second)
+                            : nullptr;
+                        if (baseCls && baseCls->isTemplate()) {
+                            const auto& baseTps = baseCls->getTypeParameters();
+                            auto targsListEo = coi->typeArguments();
+                            CajetaParser::TypeArgumentsContext* leafEo = nullptr;
+                            for (auto* ta : targsListEo) {
+                                if (ta) leafEo = ta;
+                            }
+                            if (leafEo && leafEo->typeArgument().size()
+                                    == baseTps.size()) {
+                                auto targsEo = leafEo->typeArgument();
+                                for (size_t p = 0; p < baseTps.size(); ++p) {
+                                    if (!baseTps[p].owningRequired) continue;
+                                    if (targsEo[p] && targsEo[p]->REFERENCE()) {
+                                        continue;  // satisfied / reprojected
+                                    }
+                                    throw Exception(
+                                        "class '" + name + "' extends '"
+                                            + baseCls->getQName()->toCanonical()
+                                            + "' but passes a plain argument to "
+                                              "its owning-required parameter '#"
+                                            + baseTps[p].name + "' — this "
+                                              "launders the ownership "
+                                              "requirement. Fix: satisfy it "
+                                              "with a `#`-marked argument "
+                                              "(`extends "
+                                            + baseCls->getQName()->getTypeName()
+                                            + "<#...>`), or reproject it by "
+                                              "declaring your own parameter "
+                                              "`<#" + baseTps[p].name
+                                            + ", ...>` and passing `#"
+                                            + baseTps[p].name + "` through. "
+                                              "(element-ownership spec §8.6)",
+                                        "CAJETA_ERROR_OWNING_REQUIRED_LAUNDERED");
+                                }
+                            }
+                        }
+                    }
                     // Pull type args off the leaf identifier; multi-level
                     // qualified templates like `Outer<A>.Inner<B>` aren't
                     // supported in v1 (would need per-level capture and
