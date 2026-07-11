@@ -280,10 +280,15 @@ in-repo precedent.
 
 ### 8.1 Retired
 Type-argument `#` (parse may remain temporarily with a deprecation error);
-dissolution/provenance gating (4A), call-agreement instantiation checks
-(4B), declaration-`#`/contagion (Unit 5), borrow-mode confinement gates
-(Unit 7), all four stdlib transitional exemptions, `moveMask` thread-local
-and its runtime plumbing.
+`#Type` on a **local declaration** (`#MyClass x = ...` — a local's role
+comes from its initializer shape, §3.1.1, so a type-position sigil on
+locals is meaningless-at-best and can contradict the initializer; same
+deprecation error; signature positions `#V`/`#?V` on formals and returns
+are the transfer ABI and stay, §4); dissolution/provenance gating (4A),
+call-agreement instantiation checks (4B), declaration-`#`/contagion
+(Unit 5), borrow-mode confinement gates (Unit 7), all four stdlib
+transitional exemptions, `moveMask` thread-local and its runtime plumbing.
+*(Local-declaration-`#` retirement approved 2026-07-11, this session.)*
 
 ### 8.2 Retained
 Drop chain + entries; owned-element teardown walks (re-keyed from
