@@ -76,6 +76,25 @@ public final class HashMap<K, V> {
     private int64 usedSlots;
 
     /**
+     * Construct a HashMap with the default capacity (64 — holds 48 entries
+     * before the first resize at 0.75 load; sized for cache/index workloads
+     * rather than the empty-map-heavy general case. Lazy table allocation,
+     * which would make this free for never-populated maps, is tracked as a
+     * follow-up).
+     *
+     * @EntryPoint
+     */
+    public HashMap() {
+        this.cap = 64;
+        this.slots = heap MapEntry<K, V>[64];
+        this.ctrl = heap int8[80];
+        this.owned = heap int8[64];
+        this.sizeCount = 0;
+        this.usedSlots = 0;
+        this.fillCtrlEmpty();
+    }
+
+    /**
      * Construct a HashMap. `initialCapacity` is rounded up to a power of two
      * `>= 16`; the table grows from there at 0.75 load.
      *

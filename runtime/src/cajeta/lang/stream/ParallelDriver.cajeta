@@ -985,7 +985,7 @@ public class ParallelDriver {
                 }
                 oY = head.next();
             }
-            return stack Optional<T>(false, null);
+            return stack Optional<T>(false);
         }
         Stream<T>[] shares = heap Stream<T>[nSplits - 1];
         int32 shareCount = 0;
@@ -1035,7 +1035,7 @@ public class ParallelDriver {
             }
             ot = head.next();
         }
-        return stack Optional<T>(false, null);
+        return stack Optional<T>(false);
     }
 
     /**

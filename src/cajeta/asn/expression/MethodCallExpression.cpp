@@ -992,7 +992,13 @@ namespace cajeta {
                         off),
                     "super_ctor_subobj");
             }
-            std::string ctorName = parentCls->getQName()->getTypeName();
+            // Ctors resolve by the simple source name; an instantiation's
+            // typeName carries the arg suffix (`MyBase<cajeta.int32>`), which
+            // only ever matched the equally mis-named synthesized default
+            // (fixed alongside DefaultConstructorMethod).
+            std::string ctorName = parentCls->getTemplateOrigin()
+                ? parentCls->getTemplateOrigin()->getQName()->getTypeName()
+                : parentCls->getQName()->getTypeName();
             return parentCls->invokeMethod(ctorName, entries,
                 /*isConstructor=*/true, thisValue, /*callerModule=*/module,
                 /*forceDirectCall=*/true);

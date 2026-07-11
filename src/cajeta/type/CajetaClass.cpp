@@ -5248,12 +5248,31 @@ namespace cajeta {
         MethodPtr method = resolveMethod(methodName, parameters, isConstructor,
             floatingParams, explicitMethodTypeArgs, callerModule);
         if (!method) {
-            // NOTE: a hard "no matching constructor" error here (to catch the
-            // silent-uninitialized-object footgun) is too aggressive — the
-            // stdlib legitimately builds `Optional<int32>(false, null)` for the
-            // empty case, where `null` (pointer) doesn't match the `int32` value
-            // param and the call relies on memset-zero. A proper safety net must
-            // first make null→primitive ctor args resolve; tracked separately.
+            // title-tracking Unit 1 (plan 1.2.1): an unresolved CONSTRUCTOR is
+            // a hard error. The old silent `return nullptr` left the object
+            // malloc+memset'd with its vtable installed but NO ctor run — the
+            // exact footgun behind the "HashMap<K,V>() then put() SIGSEGVs on
+            // null ctrl" crash (2026-07-10). The former blocker — the stdlib's
+            // `Optional<T>(false, null)` empty-case idiom, which could never
+            // resolve for primitive T — was retired in favor of the one-arg
+            // `Optional(boolean present)` ctor, so nothing legitimate relies
+            // on the silent skip anymore. Non-ctor resolution keeps the null
+            // return: those call sites have their own diagnostics.
+            if (isConstructor) {
+                string args;
+                for (auto& p : parameters) {
+                    if (!args.empty()) args += ", ";
+                    args += p.type ? p.type->toCanonical() : string("<?>");
+                }
+                throw Exception(
+                    "no matching constructor `" + methodName + "(" + args
+                        + ")` on `" + toCanonical() + "`. Without a matching "
+                        "constructor the instance would be left zero-initialized "
+                        "(vtable installed, no ctor run) and fail at first use. "
+                        "Fix: match an existing constructor's signature, or add "
+                        "the overload.",
+                    "CAJETA_ERROR_NO_MATCHING_CONSTRUCTOR");
+            }
             return nullptr;
         }
         // Visibility enforcement. Caller's class is the top of the

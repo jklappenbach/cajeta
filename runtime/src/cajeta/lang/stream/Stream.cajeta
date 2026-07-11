@@ -70,7 +70,7 @@ public class Stream<T> {
      * @EntryPoint
      */
     public Optional<T> next() {
-        return stack Optional<T>(false, null);
+        return stack Optional<T>(false);
     }
 
     /**
@@ -305,7 +305,7 @@ public class Stream<T> {
             }
             o = this.next();
         }
-        return stack Optional<T>(false, null);
+        return stack Optional<T>(false);
     }
 
     /**

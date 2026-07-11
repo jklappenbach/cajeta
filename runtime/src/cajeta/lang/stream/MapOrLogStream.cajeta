@@ -64,7 +64,7 @@ public class MapOrLogStream<T, R> extends Stream<R> {
         while (true) {
             Optional<T> o = this.source.next();
             if (o.isEmpty()) {
-                return stack Optional<R>(false, null);
+                return stack Optional<R>(false);
             }
             T elem = o.get();
             try {
@@ -75,7 +75,7 @@ public class MapOrLogStream<T, R> extends Stream<R> {
                 // drop, pull next
             }
         }
-        return stack Optional<R>(false, null);
+        return stack Optional<R>(false);
     }
 
     /** Type-changing wrapper unwind — see `MapStream`. (Step 5b.) */

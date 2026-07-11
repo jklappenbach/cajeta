@@ -420,7 +420,7 @@ public class AsyncReader implements AsyncIterator<int8[]> {
             // as ArrayStream/Channel do — a `heap` allocation here would need a
             // `#`-marked return the interface doesn't have
             // (CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER).
-            return stack Optional<int8[]>(false, null);   // terminal: stream exhausted
+            return stack Optional<int8[]>(false);   // terminal: stream exhausted
         }
         int8[] piece = AsyncReader.copyExact(chunk, n);
         return stack Optional<int8[]>(true, #piece);

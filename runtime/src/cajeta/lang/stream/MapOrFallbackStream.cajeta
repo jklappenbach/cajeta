@@ -57,7 +57,7 @@ public class MapOrFallbackStream<T, R> extends Stream<R> {
     public Optional<R> next() {
         Optional<T> o = this.source.next();
         if (o.isEmpty()) {
-            return stack Optional<R>(false, null);
+            return stack Optional<R>(false);
         }
         try {
             R mapped = this.fn(o.get());

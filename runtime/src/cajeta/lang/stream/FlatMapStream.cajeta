@@ -75,12 +75,12 @@ public class FlatMapStream<T, R> extends Stream<R> {
             }
             Optional<T> o = this.source.next();
             if (o.isEmpty()) {
-                return stack Optional<R>(false, null);
+                return stack Optional<R>(false);
             }
             this.current = this.fn(o.get());
             this.primed = true;
         }
-        return stack Optional<R>(false, null);
+        return stack Optional<R>(false);
     }
 
     /**

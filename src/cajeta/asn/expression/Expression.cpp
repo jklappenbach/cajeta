@@ -727,9 +727,18 @@ namespace cajeta {
         // assumes a native-array LHS; supporting operator[]-typed
         // assignment targets is a separate cut.
         auto lhsExprForOp = dynamic_pointer_cast<Expression>(children[0]);
+        // Receiver value generated EARLY when the pre-pass couldn't type the
+        // receiver (method-call and dot receivers resolve their type during
+        // codegen — `holder.getMap()[k]`). Both the operator path and the
+        // native-array path below consume this instead of re-generating,
+        // so the receiver's side effects happen exactly once.
+        llvm::Value* lhsPregen = nullptr;
         if (lhsExprForOp) {
             if (!lhsExprForOp->getResolvedType()) {
                 lhsExprForOp->resolveTypes(module);
+                if (!lhsExprForOp->getResolvedType()) {
+                    lhsPregen = children[0]->generateCode(module);
+                }
             }
             auto lhsClass = dynamic_pointer_cast<CajetaClass>(
                 lhsExprForOp->getResolvedType());
@@ -744,7 +753,8 @@ namespace cajeta {
                 }
                 CajetaTypePtr idxType = idxExprForOp
                     ? idxExprForOp->getResolvedType() : nullptr;
-                llvm::Value* lhsForOp = children[0]->generateCode(module);
+                llvm::Value* lhsForOp = lhsPregen
+                    ? lhsPregen : children[0]->generateCode(module);
                 llvm::Value* idxForOp = children[1]->generateCode(module);
                 if (idxForOp && !idxType) {
                     idxType = CajetaType::of(idxForOp);
@@ -754,24 +764,26 @@ namespace cajeta {
                     // crashes; fall through to native-array path.
                     goto fall_through_to_native_array;
                 }
-                // l-value coercion mirrors BinaryOpExpression: identifier
-                // expressions evaluate to allocas holding the heap
-                // pointer; we want the loaded value as `this`. EXCEPT a
-                // @ValueType receiver, whose slot holds the aggregate INLINE
-                // (alloca %ValueType, not alloca ptr) — its `this` is the alloca
-                // ADDRESS (instance methods take the receiver by reference even
-                // for value types), so loading would pass the aggregate VALUE.
-                // Mirrors the DotExpression value-type guard (S2).
-                if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(lhsForOp)) {
-                    bool valueTypeReceiver = lhsClass->isValueType()
-                        && !a->getAllocatedType()->isPointerTy();
-                    if (!valueTypeReceiver) {
-                        lhsForOp = builder->CreateLoad(a->getAllocatedType(), a);
+                // l-value → r-value coercion for `this`. loadIfLValue handles
+                // every receiver shape: identifier allocas load the heap
+                // pointer, field-access GEPs (holder.map[k]) load the field
+                // slot — passing the raw GEP was the field-receiver SIGSEGV —
+                // and call results pass through as values. EXCEPT a @ValueType
+                // receiver, whose storage address IS `this` (instance methods
+                // take value-type receivers by reference): pass the alloca/GEP
+                // through, only loading an alloca that holds a `ptr` to the
+                // aggregate. Mirrors the DotExpression value-type guard (S2).
+                if (lhsClass->isValueType()) {
+                    if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(lhsForOp)) {
+                        if (a->getAllocatedType()->isPointerTy()) {
+                            lhsForOp = builder->CreateLoad(
+                                a->getAllocatedType(), a);
+                        }
                     }
+                } else {
+                    lhsForOp = loadIfLValue(module, lhsForOp, lhsExprForOp);
                 }
-                if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(idxForOp)) {
-                    idxForOp = builder->CreateLoad(a->getAllocatedType(), a);
-                }
+                idxForOp = loadIfLValue(module, idxForOp, idxExprForOp);
                 vector<ParameterEntry> entries;
                 entries.push_back(ParameterEntry(idxType, "", idxForOp));
                 std::string opName = "operator[]";
@@ -799,6 +811,15 @@ namespace cajeta {
                     builder->CreateStore(callResult, slot);
                     return slot;
                 }
+                // A class receiver with no matching operator[] can never be
+                // served by the native-array path — falling through used to
+                // return nullptr and let the consumer emit malformed IR
+                // (a null-operand load). Fail with a real diagnostic.
+                throw Exception(
+                    "no matching `operator[](" + idxType->toCanonical()
+                        + ")` on `" + lhsClass->toCanonical()
+                        + "` for index read",
+                    "CAJETA_ERROR_NO_INDEX_OPERATOR");
             }
         }
         fall_through_to_native_array:;
@@ -815,7 +836,8 @@ namespace cajeta {
         //     pointer, same way the local-variable path does for an alloca.
         //   - Anything else (e.g. method-call returning an array): the value already IS
         //     the header pointer.
-        llvm::Value* arrayVal = children[0]->generateCode(module);
+        llvm::Value* arrayVal = lhsPregen
+            ? lhsPregen : children[0]->generateCode(module);
         auto lhsExpr = dynamic_pointer_cast<Expression>(children[0]);
 
         // Fixed-size inline array field (`obj.f[i]` where f is `T[N]`): the
