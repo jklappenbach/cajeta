@@ -1256,6 +1256,24 @@ namespace cajeta {
                     field->getOrCreateAllocation());
                 emitDropEntryFor(module, field, "__cajeta_string_drop", getSourceLine());
             }
+            // title-tracking 2.2.4 — the same null-obj entry for a BARE
+            // class-typed declaration (`Cell keep;`), so an inner-block
+            // move-assign can retarget it in the declaring frame. Virtual
+            // drop of null no-ops (generalizes the String-only 9.3.1 fix).
+            if (klass && !isCajetaString && !isArray && !isStructType
+                    && !initializer && !klass->isInterface()
+                    && !klass->isValueType()
+                    && klass->hasVtablePointerAtSlotZero()) {
+                auto* b = module->getBuilder();
+                auto& lctx2 = *module->getLlvmContext();
+                b->CreateStore(
+                    llvm::ConstantPointerNull::get(
+                        llvm::PointerType::get(lctx2, 0)),
+                    field->getOrCreateAllocation());
+                klass->patchVirtualTableDropFn();
+                emitDropEntryFor(module, field,
+                    "__cajeta_class_virtual_drop", getSourceLine());
+            }
             // @ValueType locals are Copy PODs living inline in their slot —
             // never heap-backed, no owned fields, no destructor. They must NOT
             // enter the drop chain: a drop-push here would load the slot's

@@ -7454,6 +7454,50 @@ namespace cajeta {
                                         "CAJETA_ERROR_BORROW_PARAM_ESCAPES");
                                 }
                             }
+                        } else if (field) {
+                            // title-tracking §3.1.2-3 (plan 2.2.1-2.2.2) —
+                            // linearity for LOCAL sources of a call-arg `#x`:
+                            // the source must be a statically-active owner,
+                            // and the transfer marks it moved (previously only
+                            // `= #x` did; double transfers compiled and read
+                            // poison). Shared-capable values transfer by
+                            // share-bump, not title move (§5.1.6) — excluded.
+                            const string& nm = idExpr->getTextValue();
+                            auto klass = std::dynamic_pointer_cast<CajetaClass>(
+                                field->getType());
+                            if (klass && !klass->isValueType()
+                                    && !klass->isSharedCapableValue()
+                                    && !klass->isInterface()) {
+                                if (scope->isMoved(nm)) {
+                                    string note = scope->movedNoteOf(nm);
+                                    throw Exception(
+                                        "use of moved value: `#" + nm + "` — the "
+                                            "value was already transferred"
+                                            + (note.empty() ? "" : " (" + note + ")")
+                                            + ". Fix: reassign a fresh value before "
+                                              "transferring again.",
+                                        "CAJETA_ERROR_USE_AFTER_MOVE");
+                                }
+                                // Recorded-source borrows only (see the
+                                // MoveExpression check): call-result locals
+                                // stay unchecked until the `#?` ABI (Unit 5).
+                                if (!field->getDropEntry()) {
+                                    string owner = scope->borrowSourceOf(nm);
+                                    if (!owner.empty()) {
+                                        throw Exception(
+                                            "cannot move out of a borrow: `" + nm
+                                                + "` does not own its value; "
+                                                  "ownership belongs to `" + owner
+                                                + "`. Fix: move from the owner, or "
+                                                  "store an owned value first.",
+                                            "CAJETA_ERROR_MOVE_OF_BORROW");
+                                    }
+                                }
+                                scope->markMoved(nm,
+                                    "transferred to `" + methodCallName
+                                        + "` at line "
+                                        + std::to_string(getSourceLine()));
+                            }
                         }
                     }
                 }

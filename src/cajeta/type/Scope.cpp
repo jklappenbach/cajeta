@@ -39,17 +39,63 @@ namespace cajeta {
     }
 
     void Scope::markMoved(const string& name) {
+        markMoved(name, "");
+    }
+
+    void Scope::markMoved(const string& name, const string& note) {
         // Find the scope where the name was declared and record the move there;
         // otherwise record it locally so later checks still see it.
         Scope* target = this;
         while (target) {
-            if (target->fields.find(name) != target->fields.end()) {
-                target->movedNames.insert(name);
+            if (target->fields.find(name) != target->fields.end()) break;
+            target = target->parent ? target->parent.get() : nullptr;
+        }
+        if (!target) target = this;
+        if (target->movedNames.insert(name).second) {
+            moveLog.emplace_back(target, name);
+        }
+        if (!note.empty()) target->movedNotes[name] = note;
+    }
+
+    void Scope::retractMovesSince(size_t mark) {
+        while (moveLog.size() > mark) {
+            auto& entry = moveLog.back();
+            entry.first->movedNames.erase(entry.second);
+            entry.first->movedNotes.erase(entry.second);
+            moveLog.pop_back();
+        }
+    }
+
+    void Scope::clearMoved(const string& name) {
+        Scope* target = this;
+        while (target) {
+            if (target->movedNames.erase(name)) {
+                target->movedNotes.erase(name);
                 return;
             }
             target = target->parent ? target->parent.get() : nullptr;
         }
-        movedNames.insert(name);
+    }
+
+    string Scope::movedNoteOf(const string& name) {
+        Scope* target = this;
+        while (target) {
+            auto it = target->movedNotes.find(name);
+            if (it != target->movedNotes.end()) return it->second;
+            target = target->parent ? target->parent.get() : nullptr;
+        }
+        return "";
+    }
+
+    string Scope::borrowSourceOf(const string& name) {
+        Scope* target = this;
+        while (target) {
+            for (auto& entry : target->liveBorrows) {
+                if (entry.second.count(name)) return entry.first;
+            }
+            target = target->parent ? target->parent.get() : nullptr;
+        }
+        return "";
     }
 
     bool Scope::isMoved(const string& name) {

@@ -831,10 +831,17 @@ namespace cajeta {
         // of an assignment is a write target, not a read. Marking
         // pre-eval lets the LHS slot fetch succeed; the assignment that
         // follows then writes the value into the slot.
+        bool lhsWasMoved = false;
         if (binaryOp == BINARY_OP_ASSIGN && !children.empty()) {
             if (auto lhsId = dynamic_pointer_cast<IdentifierExpression>(children[0])) {
                 if (auto sc = module->getScopeStack().peek()) {
                     sc->markAssigned(lhsId->getTextValue());
+                    // title-tracking §3.1.4 — reassignment re-arms a moved-out
+                    // binding. Clear before the LHS slot fetch (a write target,
+                    // same rationale as markAssigned above); the fresh-owner
+                    // entry retarget below keys on lhsWasMoved.
+                    lhsWasMoved = sc->isMoved(lhsId->getTextValue());
+                    if (lhsWasMoved) sc->clearMoved(lhsId->getTextValue());
                 }
             }
         }
@@ -2204,14 +2211,34 @@ namespace cajeta {
                 // move-assign orphans the prior value (the documented
                 // reassign-leak family); borrow-initialized locals have no
                 // entry and keep today's behavior.
-                if (dynamic_pointer_cast<MoveExpression>(rhsAst)) {
+                // Retarget fires for: a move-assign RHS (`d = #t`, String per
+                // 9.3.1 and class refs per title-tracking 2.2.4), or a FRESH-
+                // owner RHS re-arming a moved-out binding (title-tracking
+                // §3.1.4 — `piece = heap Cell(...)` after `take(#piece)`;
+                // keyed on lhsWasMoved so a never-moved binding keeps its
+                // entry on the displaced value, today's behavior).
+                {
+                    bool rhsIsMove =
+                        (bool) dynamic_pointer_cast<MoveExpression>(rhsAst);
+                    bool rhsIsFreshOwner = false;
+                    if (auto rhsNew = dynamic_pointer_cast<NewExpression>(rhsAst)) {
+                        rhsIsFreshOwner = !rhsNew->getStackAlloc();
+                    } else if (auto rhsCall =
+                            dynamic_pointer_cast<MethodCallExpression>(rhsAst)) {
+                        rhsIsFreshOwner = rhsCall->isResolvedReturnsOwnership();
+                    }
+                    if (rhsIsMove || (lhsWasMoved && rhsIsFreshOwner)) {
                     if (auto lhsId = dynamic_pointer_cast<IdentifierExpression>(lhsAst)) {
                         auto lhsClass = dynamic_pointer_cast<CajetaClass>(
                             lhsAst->getResolvedType());
                         bool lhsIsString = lhsClass && lhsClass->getQName()
                             && lhsClass->getQName()->getTypeName() == "String"
                             && lhsClass->getQName()->getPackageName() == "cajeta.lang";
-                        if (lhsIsString) {
+                        bool lhsIsClassRef = lhsClass && !lhsIsString
+                            && !lhsClass->isValueType()
+                            && !lhsClass->isSharedCapableValue()
+                            && !lhsClass->isInterface();
+                        if (lhsIsString || lhsIsClassRef) {
                             if (auto sc = module->getScopeStack().peek()) {
                                 FieldPtr dstField = sc->getField(lhsId->getTextValue());
                                 if (dstField && dstField->getDropEntry()
@@ -2232,6 +2259,7 @@ namespace cajeta {
                                 }
                             }
                         }
+                    }
                     }
                 }
                 // The expression's value is the assigned r-value (C/Java convention),

@@ -1915,7 +1915,39 @@ namespace cajeta {
         if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(inner)) {
             auto scope = module->getScopeStack().peek();
             if (scope) {
-                scope->markMoved(idExpr->getTextValue());
+                // title-tracking §3.1.2 — `#x` demands a statically-active
+                // owner. A borrow-shaped class local (no drop entry) owns no
+                // title; moving out of it would mint a second active owner.
+                // Formals keep their own path (BORROW_PARAM_ESCAPES); shared-
+                // capable values (String/Slice) transfer by share-bump, not
+                // title move (§5.1.6).
+                const string& mvName = idExpr->getTextValue();
+                if (FieldPtr mvField = scope->getField(mvName)) {
+                    bool isFormal = (bool) dynamic_pointer_cast<ParameterField>(mvField);
+                    auto mvKlass = dynamic_pointer_cast<CajetaClass>(mvField->getType());
+                    if (!isFormal && mvKlass && !mvKlass->isValueType()
+                            && !mvKlass->isSharedCapableValue()
+                            && !mvField->getDropEntry()) {
+                        // Only borrows with a RECORDED source (alias /
+                        // field-read shapes, Gap-4 liveBorrows) reject —
+                        // a call-result local (`conn = next.get()`) stays
+                        // unchecked until the `#?` runtime-owner ABI
+                        // (spec §3.1.6, plan Unit 5) can carry its role.
+                        string owner = scope->borrowSourceOf(mvName);
+                        if (!owner.empty()) {
+                            throw Exception(
+                                "cannot move out of a borrow: `" + mvName
+                                    + "` does not own its value; ownership "
+                                      "belongs to `" + owner + "`. Fix: move "
+                                      "from the owner, or store an owned value "
+                                      "(fresh construction / clone()) first.",
+                                "CAJETA_ERROR_MOVE_OF_BORROW");
+                        }
+                    }
+                }
+                scope->markMoved(mvName,
+                    "moved by `#" + mvName + "` at line "
+                        + std::to_string(getSourceLine()));
                 // If the moved-out identifier has a drop entry, flag it inactive
                 // so scope-exit doesn't re-free the value the new owner holds.
                 if (FieldPtr field = scope->getField(idExpr->getTextValue())) {

@@ -242,6 +242,45 @@ namespace cajeta {
                                             "CAJETA_ERROR_BORROW_PARAM_ESCAPES");
                                     }
                                 }
+                            } else if (field) {
+                                // title-tracking §3.1.2-3 (plan 2.2.1-2.2.2) —
+                                // ctor-arg linearity, mirroring the
+                                // MethodCallExpression call-arg checks: a
+                                // local ctor-arg `#x` needs a statically-
+                                // active owner and marks the source moved.
+                                const string& nm = idExpr->getTextValue();
+                                auto argKlass = std::dynamic_pointer_cast<CajetaClass>(
+                                    field->getType());
+                                if (argKlass && !argKlass->isValueType()
+                                        && !argKlass->isSharedCapableValue()
+                                        && !argKlass->isInterface()) {
+                                    if (scope->isMoved(nm)) {
+                                        string note = scope->movedNoteOf(nm);
+                                        throw Exception(
+                                            "use of moved value: `#" + nm + "` — "
+                                                "the value was already transferred"
+                                                + (note.empty() ? "" : " (" + note + ")")
+                                                + ". Fix: reassign a fresh value "
+                                                  "before transferring again.",
+                                            "CAJETA_ERROR_USE_AFTER_MOVE");
+                                    }
+                                    if (!field->getDropEntry()) {
+                                        string owner = scope->borrowSourceOf(nm);
+                                        if (!owner.empty()) {
+                                            throw Exception(
+                                                "cannot move out of a borrow: `"
+                                                    + nm + "` does not own its "
+                                                      "value; ownership belongs to `"
+                                                    + owner + "`. Fix: move from the "
+                                                      "owner, or store an owned value "
+                                                      "first.",
+                                                "CAJETA_ERROR_MOVE_OF_BORROW");
+                                        }
+                                    }
+                                    scope->markMoved(nm,
+                                        "transferred to a constructor at line "
+                                            + std::to_string(getSourceLine()));
+                                }
                             }
                         }
                     }
