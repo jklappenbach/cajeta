@@ -6,6 +6,7 @@
 #include "CajetaArchive.h"
 #include "cajeta/buildtool/IrCache.h"
 #include "cajeta/buildtool/Lockfile.h"   // sha256Hex
+#include "cajeta/buildtool/PrimeCache.h"
 #include "cajeta/buildtool/skill/SkillPackager.h"
 #include "ObligationReplay.h"
 
@@ -639,6 +640,62 @@ namespace cajeta {
         // consumer of cajeta.math; making it lazy keeps cajeta.math out of the
         // eager prelude (MathLazyParse — guarded by CompilerTests).
         return pkg == "cajeta.xpu.mesh" || pkg.rfind("cajeta.xpu.mesh.", 0) == 0;
+    }
+
+    // compile-cache Unit 2 — the persistent stdlib-prime cache key (spec §2).
+    // Digest folds every embedded stdlib file (path + bytes; the table IS the
+    // transitive closure) plus the eager/lazy prelude split derived from the
+    // predicate above — so editing a stdlib source, adding a file, or moving
+    // a package between eager and lazy all re-key. The discriminator folds
+    // the compiler version AND git hash (a dev rebuild with unchanged VERSION
+    // still re-keys; a dirty same-hash tree is the accepted exposure, same as
+    // the build-tool IrCache) plus the stdlib-codegen-affecting flag set.
+    Compiler::PrimeCacheKey Compiler::stdlibPrimeCacheKey(
+            const CompilerFlags& flags) {
+        std::vector<std::pair<std::string, std::string>> files;
+        files.reserve(cajeta::stdlib::g_fileCount);
+        std::vector<std::string> lazyPkgs;
+        for (size_t i = 0; i < cajeta::stdlib::g_fileCount; ++i) {
+            const auto& f = cajeta::stdlib::g_files[i];
+            files.emplace_back(f.relativePath,
+                               std::string(f.content, f.contentBytes));
+            std::string rel = f.relativePath;
+            auto slash = rel.find_last_of('/');
+            std::string pkg = (slash == std::string::npos)
+                ? std::string() : rel.substr(0, slash);
+            std::replace(pkg.begin(), pkg.end(), '/', '.');
+            if (isLazyStdlibPackage(pkg)) lazyPkgs.push_back(pkg);
+        }
+        std::sort(lazyPkgs.begin(), lazyPkgs.end());
+        lazyPkgs.erase(std::unique(lazyPkgs.begin(), lazyPkgs.end()),
+                       lazyPkgs.end());
+        std::string preludeTag = "lazy:";
+        for (auto& p : lazyPkgs) { preludeTag += p; preludeTag += ','; }
+
+        // The flag subset that changes the stdlib module's IR. Runtime-only
+        // toggles (poisonFree / dropChainValidate / stackTraceCapture) are
+        // deliberately excluded — same set stdlibReusable() ignores.
+        std::vector<std::pair<std::string, std::string>> flagSet = {
+            {"bounds", std::to_string((int) flags.bounds)},
+            {"nullChecks", std::to_string((int) flags.nullChecks)},
+            {"overflowChecks", std::to_string((int) flags.overflowChecks)},
+            {"sourceTags", flags.sourceTags ? "1" : "0"},
+            {"liveSet", std::to_string((int) flags.liveSet)},
+            {"ubTraps", flags.ubTraps ? "1" : "0"},
+            {"useAfterMoveRt", flags.useAfterMoveRt ? "1" : "0"},
+            {"opt", std::to_string((int) flags.opt)},
+            {"debugInfo", flags.debugInfo ? "1" : "0"},
+            {"lineInfo", flags.lineInfo ? "1" : "0"},
+            {"lazyScope", flags.lazyScope ? "1" : "0"},
+            {"profileCounters", flags.profileCounters ? "1" : "0"},
+        };
+        PrimeCacheKey key;
+        key.discriminator = std::string("jitprime-")
+            + buildtool::computeCacheDiscriminator(
+                  std::string(CAJETA_VERSION) + "+" + CAJETA_GIT_HASH,
+                  std::move(flagSet));
+        key.digest = buildtool::primeDigestOver(std::move(files), preludeTag);
+        return key;
     }
 
     // Instrumentation + lazy bookkeeping. thread_local (threadsafe U4): each

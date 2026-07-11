@@ -15,6 +15,8 @@
 #include <stdexcept>
 #include <thread>
 
+#include "cajeta/buildtool/IrCache.h"
+#include "cajeta/buildtool/PrimeCache.h"
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/type/CajetaType.h"
@@ -234,6 +236,11 @@ struct StdlibReuseCache {
     // New functions (template instantiations) are accumulation, not corruption.
     std::map<std::string, size_t> baselineFnSig;
     std::set<std::string> baselineGlobalNames;   // stdlib llvm GlobalVariable names
+    // [compile-cache Unit 2] the computed prime key + any validated hit from
+    // the lookup seam. The hit path is recorded but not consumed until the
+    // Unit 3 loader lands; Unit 3's store-on-miss also hangs off these.
+    cajeta::Compiler::PrimeCacheKey primeCacheKey;
+    std::optional<std::string> primeCacheHitPath;
     bool primed = false;
 
     static StdlibReuseCache& instance() {
@@ -247,6 +254,40 @@ struct StdlibReuseCache {
         const bool kPrimeTiming = std::getenv("CAJETA_PRIME_TIMING") != nullptr;
         auto _ptStart = std::chrono::steady_clock::now();
         cajeta::Compiler::setSharedContext(&sharedContext);
+        // [compile-cache plan Unit 2] persistent-prime lookup seam (spec §3).
+        // Key computed + lookup issued here; nothing is STORED yet (the
+        // artifact writer is Unit 3), so today every lookup is a miss and
+        // the compile below runs exactly as before — zero behaviour change.
+        // Disable outright with CAJETA_PRIME_CACHE=0; relocate with
+        // CAJETA_PRIME_CACHE_DIR.
+        primeCacheHitPath.reset();
+        {
+            const char* toggle = std::getenv("CAJETA_PRIME_CACHE");
+            bool enabled = !(toggle && std::string(toggle) == "0");
+            std::string root;
+            if (const char* dir = std::getenv("CAJETA_PRIME_CACHE_DIR")) {
+                root = dir;
+            } else if (const char* src = std::getenv("CAJETA_SOURCE_ROOT")) {
+                root = std::string(src) + "/.cajeta/cache/prime";
+            }
+            if (enabled && !root.empty()) {
+                primeCacheKey = cajeta::Compiler::stdlibPrimeCacheKey();
+                cajeta::buildtool::IrCache cache(root);
+                if (auto hit = cajeta::buildtool::primeValidatedLookup(
+                        cache, primeCacheKey.discriminator,
+                        primeCacheKey.digest)) {
+                    primeCacheHitPath = *hit;
+                }
+                if (kPrimeTiming) {
+                    std::fprintf(stderr,
+                        "[CAJETA_PRIME_CACHE] %s  disc=%s digest=%.12s...\n",
+                        primeCacheHitPath ? "HIT (unused: loader lands in Unit 3)"
+                                          : "MISS",
+                        primeCacheKey.discriminator.c_str(),
+                        primeCacheKey.digest.c_str());
+                }
+            }
+        }
         // First Compiler under the shared context primes the global type
         // tables (resetGlobals + init) in that context.
         primeCompiler = std::make_unique<cajeta::Compiler>();
