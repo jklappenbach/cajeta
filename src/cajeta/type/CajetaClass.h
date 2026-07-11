@@ -523,6 +523,50 @@ namespace cajeta {
             return it->second;
         }
 
+        // title-tracking §5 — per-instance field ownership bits. A class-
+        // reference or heap-array own field gets one bit in a hidden i64
+        // appended after the class's own fields (before its vbase slots);
+        // the store's spelling sets it, teardown consults it. Shared-
+        // capable classes (String/Utf8/Slice) are excluded — their fields
+        // transfer by share/COW and stay always-owned (§5.1.6). Views,
+        // interfaces, value types, and inline arrays store inline and
+        // carry no separable title.
+        static bool fieldHasOwnershipBit(const StructurePropertyPtr& p);
+
+        // Dense bit index of `p` among this class's OWN bit-carrying
+        // fields (declaration order), or -1.
+        int ownershipBitIndexOf(const StructurePropertyPtr& p) const {
+            if (!p || p->isStatic()) return -1;
+            int idx = 0;
+            for (const auto& q : propertyList) {
+                if (q->isStatic() || !fieldHasOwnershipBit(q)) continue;
+                if (q.get() == p.get()) return idx;
+                idx++;
+            }
+            return -1;
+        }
+
+        bool needsOwnershipWord() const {
+            for (const auto& q : propertyList) {
+                if (!q->isStatic() && fieldHasOwnershipBit(q)) return true;
+            }
+            return false;
+        }
+
+        // LLVM struct slot of this class's hidden ownership word within its
+        // own layout (also valid inside a descendant's embedding, relative
+        // to this class's sub-object). -1 when the class has none.
+        int getOwnershipWordLlvmIndex() const {
+            if (!needsOwnershipWord()) return -1;
+            StructurePropertyPtr last;
+            for (const auto& q : propertyList) {
+                if (!q->isStatic()) last = q;
+            }
+            if (!last) return -1;
+            int lastIdx = getFieldLlvmIndex(last);
+            return lastIdx < 0 ? -1 : lastIdx + 1;
+        }
+
         virtual int getFieldLlvmIndex(const StructurePropertyPtr& prop) const {
             // Static properties have no slot in the instance struct —
             // they live in dedicated globals. Return -1 so a caller
@@ -545,6 +589,12 @@ namespace cajeta {
                         if (result >= 0) return;
                         if (p->isStatic()) continue;
                         if (p.get() == prop.get()) { result = slot; return; }
+                        slot++;
+                    }
+                    // title-tracking §5: skip cls's hidden ownership word
+                    // (inserted after own properties, before vbases — must
+                    // mirror embedSubObject exactly).
+                    if (result < 0 && cls->needsOwnershipWord()) {
                         slot++;
                     }
                     // MultiClassing Phase 3 v4: skip cls's vbase pointer

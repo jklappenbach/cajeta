@@ -2060,6 +2060,136 @@ namespace cajeta {
                             module, rhsVal, srcClass, dstClass);
                     }
                 }
+                // title-tracking §5 (Unit 3) — field ownership bits. A store
+                // into a bit-carrying field (class-ref / heap-array slot)
+                // resolves its declaring class, locates the hidden ownership
+                // word at a FIXED byte delta from the field slot (both live
+                // in the declaring class's sub-object region, so the delta
+                // from the standalone layout holds inside any descendant),
+                // classifies the store's spelling, and — BEFORE the store —
+                // releases a displaced owned value (§5.1.3: the overwrite is
+                // its scope exit). The bit itself is written after the store.
+                llvm::Value* fobWordPtr = nullptr;
+                int fobBitIdx = -1;
+                bool fobOwnedSpelling = false;
+                bool fobFieldIsArray = false;
+                if (auto fobDot = dynamic_pointer_cast<DotExpression>(lhsAst)) {
+                    auto& fch = fobDot->getChildren();
+                    auto fobRecv = fch.empty() ? nullptr
+                        : dynamic_pointer_cast<Expression>(fch[0]);
+                    if (fobRecv && !fobRecv->getResolvedType()) {
+                        fobRecv->resolveTypes(module);
+                    }
+                    auto fobRecvClass = fobRecv
+                        ? dynamic_pointer_cast<CajetaClass>(
+                              fobRecv->getResolvedType())
+                        : nullptr;
+                    StructurePropertyPtr fobProp;
+                    CajetaClassPtr fobDecl;
+                    if (fobRecvClass) {
+                        std::function<bool(const CajetaClassPtr&)> fobFind =
+                            [&](const CajetaClassPtr& cls) -> bool {
+                                if (!cls) return false;
+                                auto pit = cls->getProperties().find(
+                                    fobDot->getIdentifier());
+                                if (pit != cls->getProperties().end()) {
+                                    fobProp = pit->second;
+                                    fobDecl = cls;
+                                    return true;
+                                }
+                                for (auto& sup : cls->getSuperClasses()) {
+                                    if (fobFind(sup)) return true;
+                                }
+                                return false;
+                            };
+                        fobFind(fobRecvClass);
+                    }
+                    if (fobProp && fobDecl
+                            && CajetaClass::fieldHasOwnershipBit(fobProp)
+                            && lhs && lhs->getType()->isPointerTy()) {
+                        int fieldIdx = fobDecl->getFieldLlvmIndex(fobProp);
+                        int wordIdx = fobDecl->getOwnershipWordLlvmIndex();
+                        auto* declTy = llvm::dyn_cast_or_null<llvm::StructType>(
+                            fobDecl->getLlvmType());
+                        if (fieldIdx >= 0 && wordIdx >= 0 && declTy
+                                && !declTy->isOpaque()) {
+                            const llvm::DataLayout& fobDl =
+                                module->getLlvmModule()->getDataLayout();
+                            const llvm::StructLayout* sl =
+                                fobDl.getStructLayout(declTy);
+                            int64_t delta =
+                                (int64_t) sl->getElementOffset((unsigned) wordIdx)
+                                - (int64_t) sl->getElementOffset((unsigned) fieldIdx);
+                            auto& fobCtx = *module->getLlvmContext();
+                            llvm::Type* i8Ty = llvm::Type::getInt8Ty(fobCtx);
+                            llvm::Type* i64Ty = llvm::Type::getInt64Ty(fobCtx);
+                            fobWordPtr = builder->CreateInBoundsGEP(
+                                i8Ty, lhs,
+                                llvm::ConstantInt::get(i64Ty, delta),
+                                "own_bits_addr");
+                            fobBitIdx = fobDecl->ownershipBitIndexOf(fobProp);
+                            fobFieldIsArray = (bool) dynamic_pointer_cast<
+                                CajetaArray>(fobProp->getType());
+                            // Spelling → title in: `= #x`, a fresh heap
+                            // construction, a `#`-returning call, or a
+                            // `#`-formal source (the Exception-ctor idiom —
+                            // statically owned, 7.1.3's move gate).
+                            if (dynamic_pointer_cast<MoveExpression>(rhsAst)) {
+                                fobOwnedSpelling = true;
+                            } else if (auto rn = dynamic_pointer_cast<
+                                           NewExpression>(rhsAst)) {
+                                fobOwnedSpelling = !rn->getStackAlloc();
+                            } else if (auto rc = dynamic_pointer_cast<
+                                           MethodCallExpression>(rhsAst)) {
+                                fobOwnedSpelling =
+                                    rc->isResolvedReturnsOwnership();
+                            } else if (auto ri = dynamic_pointer_cast<
+                                           IdentifierExpression>(rhsAst)) {
+                                if (auto sc = module->getScopeStack().peek()) {
+                                    auto pf = std::dynamic_pointer_cast<
+                                        ParameterField>(
+                                            sc->getField(ri->getTextValue()));
+                                    if (pf && pf->getFormalParameter()
+                                            && pf->getFormalParameter()
+                                                   ->isTransferred()) {
+                                        fobOwnedSpelling = true;
+                                    }
+                                }
+                            }
+                            // Displaced-value release (pre-store).
+                            llvm::PointerType* ptrTy =
+                                llvm::PointerType::get(fobCtx, 0);
+                            llvm::Value* oldWord = builder->CreateLoad(
+                                i64Ty, fobWordPtr, "own_bits_old");
+                            llvm::Value* oldBit = builder->CreateAnd(
+                                builder->CreateLShr(oldWord,
+                                    llvm::ConstantInt::get(i64Ty, fobBitIdx)),
+                                llvm::ConstantInt::get(i64Ty, 1));
+                            llvm::Value* oldVal = builder->CreateLoad(
+                                ptrTy, lhs, "own_old_val");
+                            llvm::Value* wasOwned = builder->CreateICmpNE(
+                                oldBit, llvm::ConstantInt::get(i64Ty, 0));
+                            llvm::Function* relFn = module->getRuntimeFunction(
+                                fobFieldIsArray ? "__cajeta_free_array"
+                                                : "__cajeta_class_virtual_drop");
+                            if (relFn) {
+                                llvm::Function* fobFn =
+                                    builder->GetInsertBlock()->getParent();
+                                llvm::BasicBlock* relBB =
+                                    llvm::BasicBlock::Create(fobCtx,
+                                        "own_displace", fobFn);
+                                llvm::BasicBlock* contBB =
+                                    llvm::BasicBlock::Create(fobCtx,
+                                        "own_displace_cont", fobFn);
+                                builder->CreateCondBr(wasOwned, relBB, contBB);
+                                builder->SetInsertPoint(relBB);
+                                builder->CreateCall(relFn, {oldVal});
+                                builder->CreateBr(contBB);
+                                builder->SetInsertPoint(contBB);
+                            }
+                        }
+                    }
+                }
                 // Interface-typed array element: the slot is an INLINE 24-byte
                 // fat-pointer body, so a plain store would write only the data
                 // word and leave the vtable garbage. Build/copy the body in place
@@ -2139,53 +2269,34 @@ namespace cajeta {
                         }
                     }
                 }
-                // Ownership transfer into a class-typed FIELD slot.
-                // `this.field = local` (or `recv.field = local`) storing a
-                // heap-owned class/array pointer hands the reference to the
-                // field; the source local's drop must NOT fire at end-of-scope
-                // (which would free the instance the field still points at,
-                // leaving it dangling). This is the field-store twin of the
-                // array-slot transfer above and AggregateInitializer's
-                // ownership-into-field move — without it a `LinkedListNode`
-                // linked in via `this.tailNode = node` is freed when the
-                // enclosing method returns, and the list reads freed memory.
-                // Like the array case, we deactivate the dropEntry but do NOT
-                // markMoved (the local may be reassigned on the next loop
-                // iteration or read again on an unrelated path); deactivation
-                // is the necessary half. Fields stored INLINE (primitives,
-                // views, interface fat pointers) aren't owned pointers and
-                // are skipped.
-                if (lhsAst && dynamic_pointer_cast<DotExpression>(lhsAst)
-                        && rhsAst) {
-                    if (!lhsAst->getResolvedType()) lhsAst->resolveTypes(module);
-                    CajetaTypePtr fieldType = lhsAst->getResolvedType();
-                    auto fieldClass = dynamic_pointer_cast<CajetaClass>(fieldType);
-                    bool fieldIsArr =
-                        dynamic_pointer_cast<CajetaArray>(fieldType) != nullptr;
-                    bool fieldIsIface = fieldClass && fieldClass->isInterface();
-                    bool fieldIsView =
-                        dynamic_pointer_cast<CajetaView>(fieldType) != nullptr;
-                    bool fieldStoresAsPointer =
-                        fieldIsArr || (fieldClass && !fieldIsView && !fieldIsIface);
-                    if (fieldStoresAsPointer) {
-                        if (auto idExpr =
-                                dynamic_pointer_cast<IdentifierExpression>(rhsAst)) {
-                            if (auto sc = module->getScopeStack().peek()) {
-                                FieldPtr srcField = sc->getField(
-                                    idExpr->getTextValue());
-                                if (srcField) {
-                                    if (llvm::Value* entry =
-                                            srcField->getDropEntry()) {
-                                        if (llvm::Function* mark =
-                                                module->getRuntimeFunction(
-                                                    "__cajeta_drop_mark_inactive")) {
-                                            builder->CreateCall(mark, {entry});
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                // title-tracking §5.1.2 (Unit 3) — the field bit records the
+                // store's spelling. The pre-store block above computed the
+                // word address, bit index, spelling, and released a displaced
+                // owned value; here the new bit lands. The IMPLICIT transfer
+                // on plain field stores (the old deactivate-the-source-entry
+                // block) is REMOVED: a plain store is a borrow store — the
+                // source keeps its books (spec §1.2 problem 2). Owned
+                // spellings carry their own bookkeeping (`#x` deactivates via
+                // MoveExpression; fresh rvalues have no local entry).
+                if (fobWordPtr && fobBitIdx >= 0) {
+                    auto& fobCtx2 = *module->getLlvmContext();
+                    llvm::Type* i64Ty2 = llvm::Type::getInt64Ty(fobCtx2);
+                    llvm::Value* w = builder->CreateLoad(
+                        i64Ty2, fobWordPtr, "own_bits");
+                    uint64_t mask = 1ULL << fobBitIdx;
+                    if (fobOwnedSpelling) {
+                        w = builder->CreateOr(w,
+                            llvm::ConstantInt::get(i64Ty2, mask));
+                    } else {
+                        w = builder->CreateAnd(w,
+                            llvm::ConstantInt::get(i64Ty2, ~mask));
                     }
+                    builder->CreateStore(w, fobWordPtr);
+                    // An owned spelling from a `#`-formal source is the
+                    // Exception-ctor idiom: the formal's title moves into
+                    // the field. The formal has no local drop entry, so no
+                    // deactivation is needed; a `#x` local source already
+                    // deactivated in MoveExpression.
                 }
                 // P3 — definite-assignment: if the LHS is a bare identifier,
                 // mark it assigned. Subsequent reads no longer trip the

@@ -813,6 +813,21 @@ namespace cajeta {
     // walk is deterministic given the same fields + ancestry, so re-running it
     // in any context yields a byte-identical struct body. `rawLlvmType()` must
     // already be the (opaque) struct to fill.
+    bool CajetaClass::fieldHasOwnershipBit(const StructurePropertyPtr& p) {
+        if (!p || p->isStatic()) return false;
+        auto t = p->getType();
+        if (!t) return false;
+        if (auto arr = dynamic_pointer_cast<CajetaArray>(t)) {
+            return !arr->isInlineArray();
+        }
+        auto cls = dynamic_pointer_cast<CajetaClass>(t);
+        if (!cls) return false;
+        if (dynamic_pointer_cast<CajetaView>(t)) return false;
+        if (cls->isInterface() || cls->isValueType()) return false;
+        if (cls->isSharedCapableValue()) return false;
+        return true;
+    }
+
     void CajetaClass::buildInstanceStructBody(llvm::LLVMContext* lctx) {
         string canonical = qName->toCanonical();
         auto fieldLayoutType = [&](const StructurePropertyPtr& p) -> llvm::Type* {
@@ -960,6 +975,22 @@ namespace cajeta {
             for (auto& p : cls->propertyList) {
                 if (p->isStatic()) continue;
                 llvmMembers.push_back(fieldLayoutType(p));
+            }
+            // title-tracking §5 — hidden per-instance ownership word for
+            // cls's bit-carrying fields, after own properties and before
+            // vbase slots. Mirrored by getFieldLlvmIndex. Zero-init (via
+            // the instance memset) = all borrowed.
+            {
+                bool wantsWord = false;
+                for (auto& p : cls->propertyList) {
+                    if (!p->isStatic() && fieldHasOwnershipBit(p)) {
+                        wantsWord = true;
+                        break;
+                    }
+                }
+                if (wantsWord) {
+                    llvmMembers.push_back(llvm::Type::getInt64Ty(*lctx));
+                }
             }
             // MultiClassing Phase 3 v4 vbase pointers — one per cls's
             // transitive non-self ancestor. Placed after cls's own
@@ -2929,6 +2960,31 @@ namespace cajeta {
                     freeArrayFn = cajModule->getRuntimeFunction("__cajeta_free_array", bodyModule);
                 }
                 if (!freeArrayFn) continue;
+                // title-tracking §5.1.4 — teardown frees exactly the places
+                // whose bit is owned; a borrowed (0) bit skips this field.
+                llvm::BasicBlock* ownCont = nullptr;
+                {
+                    int bitIdx = ownershipBitIndexOf(property);
+                    int wordIdx = getOwnershipWordLlvmIndex();
+                    if (bitIdx >= 0 && wordIdx >= 0 && b.GetInsertBlock()) {
+                        llvm::Type* gi64 = llvm::Type::getInt64Ty(ctx);
+                        llvm::Function* fn = b.GetInsertBlock()->getParent();
+                        llvm::Value* wordSlot = b.CreateStructGEP(
+                            rawLlvmType(), instance, (unsigned) wordIdx,
+                            "own_bits_slot");
+                        llvm::Value* w = b.CreateLoad(gi64, wordSlot);
+                        llvm::Value* bit = b.CreateAnd(
+                            b.CreateLShr(w, llvm::ConstantInt::get(gi64, bitIdx)),
+                            llvm::ConstantInt::get(gi64, 1));
+                        llvm::Value* owned = b.CreateICmpNE(
+                            bit, llvm::ConstantInt::get(gi64, 0));
+                        llvm::BasicBlock* dropBB =
+                            llvm::BasicBlock::Create(ctx, "own_drop", fn);
+                        ownCont = llvm::BasicBlock::Create(ctx, "own_cont", fn);
+                        b.CreateCondBr(owned, dropBB, ownCont);
+                        b.SetInsertPoint(dropBB);
+                    }
+                }
                 llvm::Value* slot = b.CreateStructGEP(
                     rawLlvmType(), instance, fieldIdx,
                     std::string("drop_arr_slot_") + property->getName());
@@ -3016,6 +3072,10 @@ namespace cajeta {
                     }
                 }
                 b.CreateCall(freeArrayFn, {arrPtr});
+                if (ownCont) {
+                    b.CreateBr(ownCont);
+                    b.SetInsertPoint(ownCont);
+                }
                 continue;
             }
 
@@ -3051,12 +3111,40 @@ namespace cajeta {
                 }
                 if (!virtualDropFn) continue;
                 fieldClass->patchVirtualTableDropFn();
+                // title-tracking §5.1.4 — bit-guarded (see the array twin).
+                llvm::BasicBlock* ownCont = nullptr;
+                {
+                    int bitIdx = ownershipBitIndexOf(property);
+                    int wordIdx = getOwnershipWordLlvmIndex();
+                    if (bitIdx >= 0 && wordIdx >= 0 && b.GetInsertBlock()) {
+                        llvm::Type* gi64 = llvm::Type::getInt64Ty(ctx);
+                        llvm::Function* fn = b.GetInsertBlock()->getParent();
+                        llvm::Value* wordSlot = b.CreateStructGEP(
+                            rawLlvmType(), instance, (unsigned) wordIdx,
+                            "own_bits_slot");
+                        llvm::Value* w = b.CreateLoad(gi64, wordSlot);
+                        llvm::Value* bit = b.CreateAnd(
+                            b.CreateLShr(w, llvm::ConstantInt::get(gi64, bitIdx)),
+                            llvm::ConstantInt::get(gi64, 1));
+                        llvm::Value* owned = b.CreateICmpNE(
+                            bit, llvm::ConstantInt::get(gi64, 0));
+                        llvm::BasicBlock* dropBB =
+                            llvm::BasicBlock::Create(ctx, "own_drop", fn);
+                        ownCont = llvm::BasicBlock::Create(ctx, "own_cont", fn);
+                        b.CreateCondBr(owned, dropBB, ownCont);
+                        b.SetInsertPoint(dropBB);
+                    }
+                }
                 llvm::Value* slot = b.CreateStructGEP(
                     rawLlvmType(), instance, fieldIdx,
                     std::string("drop_ref_slot_") + property->getName());
                 llvm::Value* refPtr = b.CreateLoad(ptrTy, slot,
                     std::string("drop_ref_ptr_") + property->getName());
                 b.CreateCall(virtualDropFn, {refPtr});
+                if (ownCont) {
+                    b.CreateBr(ownCont);
+                    b.SetInsertPoint(ownCont);
+                }
                 continue;
             }
         }
