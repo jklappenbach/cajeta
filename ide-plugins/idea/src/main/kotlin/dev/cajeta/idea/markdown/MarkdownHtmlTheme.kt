@@ -24,7 +24,12 @@ object MarkdownHtmlTheme {
         val codeBackground: String,
         val border: String,
         val fontName: String,
-        val fontSizePt: Int,
+        /** Editor font size in points. **Float**, not Int: IntelliJ's zoom
+         *  (Ctrl+wheel, presentation mode, fractional IDE scaling) sets a
+         *  fractional size, and rounding it to an Int makes sub-point zoom steps
+         *  invisible to the render. Swing's `HTMLEditorKit` CSS parser accepts a
+         *  fractional `pt` length, so this is emitted as-is. */
+        val fontSizePt: Float,
         /** Body background. Null = transparent (Swing, painted over the fold tint);
          *  a color = opaque (JCEF, which has no transparent editor behind it). */
         val background: String? = null,
@@ -35,11 +40,11 @@ object MarkdownHtmlTheme {
         val s = p.fontSizePt
         val bgRule = p.background?.let { " background: $it;" } ?: ""
         val css = """
-            body { color: ${p.foreground}; font-family: sans-serif; font-size: ${s}pt;
+            body { color: ${p.foreground}; font-family: sans-serif; font-size: ${pt(s)};
                    margin: 0 6px; padding: 4px 0;$bgRule }
             h1, h2, h3, h4, h5, h6 { color: ${p.foreground}; margin: 8px 0 4px 0; font-weight: bold; }
-            h1 { font-size: ${s + 5}pt; } h2 { font-size: ${s + 3}pt; } h3 { font-size: ${s + 1}pt; }
-            h4, h5, h6 { font-size: ${s}pt; }
+            h1 { font-size: ${pt(s + 5)}; } h2 { font-size: ${pt(s + 3)}; } h3 { font-size: ${pt(s + 1)}; }
+            h4, h5, h6 { font-size: ${pt(s)}; }
             p { margin: 4px 0; }
             a { color: ${p.accent}; text-decoration: underline; }
             ul, ol { margin: 4px 0 4px 20px; padding: 0; }
@@ -57,5 +62,17 @@ object MarkdownHtmlTheme {
             hr { border: 0; border-top: 1px solid ${p.border}; margin: 8px 0; }
         """.trimIndent()
         return "<html><head><style>$css</style></head><body>$bodyHtml</body></html>"
+    }
+
+    /**
+     * A CSS point length, rounded to a tenth and rendered without a trailing
+     * `.0` — `13f` → `"13pt"`, `13.5f` → `"13.5pt"`. Uses `Float.toString`, which
+     * is locale-independent, so a comma-decimal locale can't emit `13,5pt` (which
+     * every CSS parser would drop).
+     */
+    internal fun pt(value: Float): String {
+        val tenths = Math.round(value * 10f) / 10f
+        val whole = tenths.toInt()
+        return if (tenths == whole.toFloat()) "${whole}pt" else "${tenths}pt"
     }
 }

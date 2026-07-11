@@ -203,6 +203,7 @@ internal object MarkdownFoldEditorListener : EditorFactoryListener {
         val runs = findCommentRuns(text)
         val trailing = findTrailingComments(text)
         val sideTable = foldDataFor(editor)
+        val tabSize = editor.settings.getTabSize(editor.project)
         log.debug("installFoldRegions: ${runs.size} whole-line runs, ${trailing.size} trailing")
 
         val blockStates = mutableListOf<WholeLineBlockState>()
@@ -226,6 +227,7 @@ internal object MarkdownFoldEditorListener : EditorFactoryListener {
                     startLine = startLine,
                     endLine = endLine - 1,
                     markdown = markdown,
+                    indentColumns = indentColumnsAt(text, run.startOffset, tabSize),
                 )
                 collapseBlock(foldingModel, state)
                 blockStates += state
@@ -278,9 +280,26 @@ internal object MarkdownFoldEditorListener : EditorFactoryListener {
         val startLine: Int,
         val endLine: Int,
         val markdown: String,
+        /** Column the source comment starts at, so the rendered block can be
+         *  indented to the scope of the code it documents. */
+        val indentColumns: Int = 0,
         var customRegion: CustomFoldRegion? = null,
     ) {
         val isCollapsed: Boolean get() = customRegion?.isValid == true
+    }
+
+    /**
+     * Visual column of [offset] within its line, expanding tabs to [tabSize].
+     * Only ever called for whole-line comments, so everything between the line
+     * start and [offset] is whitespace.
+     */
+    internal fun indentColumnsAt(text: CharSequence, offset: Int, tabSize: Int): Int {
+        val lineStart = findLineStart(text, offset)
+        var col = 0
+        for (i in lineStart until offset) {
+            col = if (text[i] == '\t') ((col / tabSize) + 1) * tabSize else col + 1
+        }
+        return col
     }
 
     private val WHOLE_LINE_BLOCKS_KEY: Key<MutableList<WholeLineBlockState>> =
@@ -301,6 +320,21 @@ internal object MarkdownFoldEditorListener : EditorFactoryListener {
             offset >= it.startOffset && offset <= it.endOffset
         }
     }
+
+    /**
+     * Find the block that owns a painted [region] — the identity lookup behind
+     * geometric hit-testing.
+     *
+     * Clicks on a rendered block must NOT be resolved through
+     * [findBlockAt]`(event.offset)`: a `CustomFoldRegion` paints a block far
+     * taller than the collapsed text it stands in for, so a click inside it can
+     * resolve to an offset outside the folded range and silently match nothing.
+     * That is what made every indented block unclickable while the column-0 one
+     * still worked. Hit-test on the region's painted bounds instead, then come
+     * here for the state.
+     */
+    internal fun blockForRegion(editor: Editor, region: CustomFoldRegion): WholeLineBlockState? =
+        wholeLineBlocksFor(editor).firstOrNull { it.customRegion === region }
 
     /** Expand by removing the CustomFoldRegion entirely; source text appears. */
     internal fun expandBlock(editor: Editor, state: WholeLineBlockState) {
@@ -324,7 +358,7 @@ internal object MarkdownFoldEditorListener : EditorFactoryListener {
     }
 
     private fun collapseBlock(foldingModel: FoldingModelEx, state: WholeLineBlockState) {
-        val renderer = MarkdownFoldRenderer(state.markdown)
+        val renderer = MarkdownFoldRenderer(state.markdown, state.indentColumns)
         state.customRegion = foldingModel.addCustomLinesFolding(
             state.startLine, state.endLine, renderer,
         )

@@ -22,8 +22,9 @@ class JcefMarkdownBlockView(private val html: String) : MarkdownBlockView {
 
     @Volatile private var image: BufferedImage? = null
     /** The (width, fontSize) the current image/in-flight render is for; a change
-     *  (e.g. zoom) invalidates it and triggers a re-render. */
-    private var renderKey: Pair<Int, Int>? = null
+     *  (e.g. zoom) invalidates it and triggers a re-render. The font size is the
+     *  fractional `editorFontSize2D`, so sub-point zoom steps invalidate too. */
+    private var renderKey: Pair<Int, Float>? = null
     private var repaint: (() -> Unit)? = null
 
     override fun bindRepaint(repaint: () -> Unit) { this.repaint = repaint }
@@ -54,7 +55,7 @@ class JcefMarkdownBlockView(private val html: String) : MarkdownBlockView {
      *  JCEF has no editor behind it, so theme with an opaque background. */
     private fun ensureRenderStarted(editor: Editor, width: Int) {
         if (width <= 0) return
-        val key = width to editor.colorsScheme.editorFontSize
+        val key = width to editor.colorsScheme.editorFontSize2D
         if (key == renderKey) return
         renderKey = key
         image = null   // fall back to Swing until the new image arrives
