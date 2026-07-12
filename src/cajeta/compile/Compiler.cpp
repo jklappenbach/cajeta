@@ -22,6 +22,7 @@
 #include "Optimizer.h"
 #include "StdlibEmbedded.h"
 #include "cajeta/dbg/DebugCodegen.h"
+#include "cajeta/xref/XrefIndex.h"
 #include "cajeta/runtime/EmbeddedTls.h"
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
@@ -1749,6 +1750,25 @@ namespace cajeta {
                 || emitMode == EmitMode::Uber)
                 && !entryMethod.empty()) {
             emitCMainShim(entryMethod);
+        }
+
+        // ide-symbol-index §2: export the compiler's RESOLVED view — declarations
+        // and inheritance edges carrying canonical parent FQNs — so the IDE can
+        // navigate, build hierarchies, and refactor without reimplementing Cajeta's
+        // name resolution in Kotlin (which would drift, with no oracle to catch it:
+        // cajetadoc parses but does not resolve).
+        //
+        // BEFORE tree-shaking, deliberately. Reachability is a property of THIS
+        // entry point; a developer still navigates to, and renames, code that this
+        // build happens not to call. An index that dropped unreachable declarations
+        // would make Ctrl-click fail on live source.
+        if (!flags.emitXref.empty()) {
+            xref::XrefIndex index;
+            xref::collectDeclarationsAndInheritance(index, sourceRootPath);
+            if (!index.writeToFile(flags.emitXref)) {
+                std::cerr << "cajeta: warning — could not write xref index to "
+                          << flags.emitXref << std::endl;
+            }
         }
 
         // external-debug §3: every safepoint has claimed its loc_id by now, so

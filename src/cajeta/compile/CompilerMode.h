@@ -147,6 +147,13 @@ namespace cajeta {
         // --keepset-json=<path>: write the generated keep-set + provenance to this
         // JSON file (empty = off; lean builds only).
         std::string     keepsetJson         = "";
+        // --emit-xref=<path>: write the compiler's RESOLVED cross-reference index
+        // (declarations, inheritance, references, overrides, calls) to this JSON
+        // file (empty = off). Opt-in: a build that does not ask for it pays nothing.
+        // The IDE consumes this instead of reimplementing Cajeta's resolution in
+        // Kotlin — see specs/ide-symbol-index-spec.md §2 and
+        // specs/schemas/cajeta-xref-v1.schema.json.
+        std::string     emitXref            = "";
 
         // ----- tree-shaking (Tier-1 RTA; plans/compiler/stdlib-tree-shaking.md) -----
         // --tree-shake=off|report|on. On (Phase B/C + Tier-1.5) prunes unreachable

@@ -118,6 +118,9 @@ void printUsage(const char* progname) {
               << "                                       named (canonical) class in the keep-set.\n"
               << "  --keepset-json=<path>                Lean DCE: write the generated keep-set + provenance\n"
               << "                                       to <path> as JSON.\n"
+              << "  --emit-xref=<path>                   Write the resolved cross-reference index\n"
+              << "                                       (declarations, inheritance, references, overrides,\n"
+              << "                                       calls) to <path> as JSON, for IDE symbol lookup.\n"
               << "  --tree-shake=off|report|on           Tier-1 RTA (--emit=exe). on (DEFAULT): prune\n"
               << "                                       unreachable method bodies + dead clinits (drops e.g.\n"
               << "                                       OpenSSL). report: print the strip analysis. off: opt out.\n"
@@ -523,6 +526,11 @@ int main(int argc, const char* argv[]) {
             // Lean DCE diagnostic: write the generated keep-set + provenance to
             // this path as JSON (lean builds only).
             compiler.getMutableFlags().keepsetJson = value;
+        } else if (match(arg, "emit-xref", value)) {
+            // Write the RESOLVED cross-reference index to this path as JSON, for
+            // an IDE to consume rather than reimplementing Cajeta's name
+            // resolution (specs/ide-symbol-index-spec.md §2).
+            compiler.getMutableFlags().emitXref = value;
         } else if (match(arg, "tree-shake", value)) {
             // Tier-1 RTA (plans/compiler/stdlib-tree-shaking.md). `report`
             // (Phase A) computes IR reachability from the entry + roots and

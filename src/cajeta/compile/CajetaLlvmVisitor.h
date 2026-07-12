@@ -278,16 +278,32 @@ namespace cajeta {
             return visitChildren(ctx);
         }
 
+        // Record a declaration's NAME-token position on the built type, so the xref
+        // export can map it back to an editor offset (ide-symbol-index §2). The
+        // name token, not the declaration start: `public class Foo` should point at
+        // `Foo`, which is what an IDE navigates to and renames.
+        static void captureDeclPosition(const CajetaClassPtr& built,
+                                        antlr4::ParserRuleContext* nameCtx) {
+            if (!built || !nameCtx || !nameCtx->getStart()) return;
+            built->setDeclPosition(
+                (int) nameCtx->getStart()->getLine(),
+                (int) nameCtx->getStart()->getCharPositionInLine());
+        }
+
         virtual std::any visitClassDeclaration(CajetaParser::ClassDeclarationContext* ctx) override {
-            return std::any(buildClassLike(ctx, ctx->identifier()->getText(),
+            auto built = buildClassLike(ctx, ctx->identifier()->getText(),
                 ctx->typeParameters(), ctx->EXTENDS(), ctx->IMPLEMENTS(),
-                ctx->PERMITS(), ctx->typeList(), /*isRecord=*/false));
+                ctx->PERMITS(), ctx->typeList(), /*isRecord=*/false);
+            captureDeclPosition(built, ctx->identifier());
+            return std::any(built);
         }
 
         virtual std::any visitRecordDeclaration(CajetaParser::RecordDeclarationContext* ctx) override {
-            return std::any(buildClassLike(ctx, ctx->identifier()->getText(),
+            auto built = buildClassLike(ctx, ctx->identifier()->getText(),
                 ctx->typeParameters(), ctx->EXTENDS(), ctx->IMPLEMENTS(),
-                nullptr, ctx->typeList(), /*isRecord=*/true));
+                nullptr, ctx->typeList(), /*isRecord=*/true);
+            captureDeclPosition(built, ctx->identifier());
+            return std::any(built);
         }
 
         // Shared builder for class-like declarations (class / record).
@@ -1027,6 +1043,7 @@ namespace cajeta {
                 name, pModule->getQName()->getPackageName() + packageAdj);
             auto viewStructure = make_shared<CajetaView>(pModule, qName);
             CajetaClassPtr structure = static_pointer_cast<CajetaClass>(viewStructure);
+            captureDeclPosition(structure, ctx->identifier());
 
             if (auto* typeDecl = dynamic_cast<CajetaParser::TypeDeclarationContext*>(ctx->parent)) {
                 for (auto* mod : typeDecl->classOrInterfaceModifier()) {
@@ -1194,6 +1211,7 @@ namespace cajeta {
                     pModule, qName, qExtended, qImplemented);
             }
             interface->setIsInterface(true);
+            captureDeclPosition(interface, ctx->identifier());
             // @ValueType is meaningless on an interface (value types are by-value
             // POD). The interface path never attaches annotations to the structure,
             // so check the enclosing typeDeclaration's modifiers directly and reject.
@@ -1321,6 +1339,13 @@ namespace cajeta {
                         pModule, methodName, returnType, formals,
                         /*block=*/nullptr, interface);
                     method->setAbstract(true);
+                    // xref (ide-symbol-index §2): interface methods are the TARGET
+                    // of every override edge, so they must be locatable.
+                    if (common->getStart()) {
+                        method->setDeclPosition(
+                            (int) common->getStart()->getLine(),
+                            (int) common->getStart()->getCharPositionInLine());
+                    }
                     classBody->getDeclarations().push_back(
                         make_shared<MethodDeclaration>(method, common->getStart()));
                 }
@@ -1773,6 +1798,15 @@ namespace cajeta {
                 // nested classBody) .back() is the immediately
                 // enclosing class, which is the correct parent.
                 pModule->getStructureStack().back());
+            // xref (ide-symbol-index §2): the `operator` keyword is this
+            // declaration's name token. Operators MUST appear in the export —
+            // cajetadoc's model omits them entirely (cajetadoc-model-fidelity §2.1),
+            // so this is the only place an IDE can learn they exist.
+            if (ctx->OPERATOR() && ctx->OPERATOR()->getSymbol()) {
+                method->setDeclPosition(
+                    (int) ctx->OPERATOR()->getSymbol()->getLine(),
+                    (int) ctx->OPERATOR()->getSymbol()->getCharPositionInLine());
+            }
             // `#T operator+ (...)` — return transfers ownership. With
             // the unified typeTypeOrVoid grammar, REFERENCE lives
             // inside the typeTypeOrVoid subtree for every alternative.
@@ -1906,6 +1940,13 @@ namespace cajeta {
                 // classes the stack has one entry and .back() ==
                 // .front().
                 pModule->getStructureStack().back());
+            // xref (ide-symbol-index §2): point at the method's NAME token — what an
+            // IDE navigates to and renames — not at its modifiers.
+            if (ctx->identifier() && ctx->identifier()->getStart()) {
+                method->setDeclPosition(
+                    (int) ctx->identifier()->getStart()->getLine(),
+                    (int) ctx->identifier()->getStart()->getCharPositionInLine());
+            }
             if (isMethodTemplate) {
                 method->setMethodTypeParameters(std::move(methodTypeParameters));
                 // Source-text capture happens in visitClassBodyDeclaration
@@ -2002,6 +2043,12 @@ namespace cajeta {
                 formalParameters,
                 block,
                 pModule->getStructureStack().back());
+            // xref (ide-symbol-index §2) — the constructor's name token.
+            if (ctx->identifier() && ctx->identifier()->getStart()) {
+                method->setDeclPosition(
+                    (int) ctx->identifier()->getStart()->getLine(),
+                    (int) ctx->identifier()->getStart()->getCharPositionInLine());
+            }
             // Constructors can also declare `throws T1, T2` per the grammar.
             if (auto* qnList = ctx->qualifiedNameList()) {
                 vector<QualifiedNamePtr> throws;

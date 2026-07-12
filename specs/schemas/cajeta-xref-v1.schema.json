@@ -1,0 +1,193 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cajeta.dev/schemas/cajeta-xref-v1.schema.json",
+  "title": "Cajeta cross-reference index, v1",
+  "description": "The compiler's resolved view of a source root, source-mapped so an IDE can tie it back to editor offsets. Produced by `cajeta --emit-xref=<path>`, and (in lint mode) per-buffer on the diagnostic channel. Consumers MUST reject an unknown `version.major`: a wrong resolution is worse than a missing one, so a reader that cannot understand the document must disable xref-backed features rather than guess.",
+  "type": "object",
+  "required": ["version", "declarations", "inheritance", "references", "overrides", "calls"],
+  "additionalProperties": false,
+
+  "properties": {
+    "version": {
+      "type": "object",
+      "required": ["major", "minor"],
+      "additionalProperties": false,
+      "properties": {
+        "major": {
+          "type": "integer",
+          "description": "Breaking-change gate. A reader that does not know this value must refuse the document.",
+          "const": 1
+        },
+        "minor": {
+          "type": "integer",
+          "description": "Additive changes only. A reader may ignore fields it does not know."
+        }
+      }
+    },
+
+    "sourceRoot": {
+      "type": "string",
+      "description": "The root all `file` paths are relative to."
+    },
+
+    "declarations": {
+      "type": "array",
+      "description": "Every declaring form in the source root.",
+      "items": { "$ref": "#/$defs/declaration" }
+    },
+
+    "inheritance": {
+      "type": "array",
+      "description": "extends/implements edges, with the parent as a RESOLVED FQN. This is the relation cajetadoc's model cannot supply -- there, extends/implements are raw declared names as parsed.",
+      "items": { "$ref": "#/$defs/inheritanceEdge" }
+    },
+
+    "references": {
+      "type": "array",
+      "description": "Each use site and the declaration it binds to. Populated from Unit 2.",
+      "items": { "$ref": "#/$defs/reference" }
+    },
+
+    "overrides": {
+      "type": "array",
+      "description": "Each overriding method and the method it overrides, matched on signature. Populated from Unit 2.",
+      "items": { "$ref": "#/$defs/overrideEdge" }
+    },
+
+    "calls": {
+      "type": "array",
+      "description": "Each call site and the callee the compiler resolved it to. Populated from Unit 2.",
+      "items": { "$ref": "#/$defs/call" }
+    }
+  },
+
+  "$defs": {
+    "sourceRef": {
+      "type": "object",
+      "description": "A half-open source span. Line is 1-based; col is 0-based (the ANTLR convention the compiler already carries on every AST node).",
+      "required": ["file", "line", "col"],
+      "properties": {
+        "file": { "type": "string", "description": "Relative to sourceRoot." },
+        "line": { "type": "integer", "minimum": 1 },
+        "col": { "type": "integer", "minimum": 0 },
+        "endLine": { "type": "integer", "minimum": 1 },
+        "endCol": { "type": "integer", "minimum": 0 }
+      }
+    },
+
+    "declaration": {
+      "type": "object",
+      "required": ["fqn", "kind", "file", "line", "col"],
+      "properties": {
+        "fqn": {
+          "type": "string",
+          "description": "Canonical fully-qualified name. For members: <ownerFqn>.<name>."
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["class", "interface", "enum", "record", "view", "annotation",
+                   "method", "constructor", "field", "parameter", "typeParameter",
+                   "enumConstant", "local"]
+        },
+        "file": { "type": "string" },
+        "line": { "type": "integer", "minimum": 1 },
+        "col": { "type": "integer", "minimum": 0 },
+        "endLine": { "type": "integer", "minimum": 1 },
+        "endCol": { "type": "integer", "minimum": 0 },
+        "owner": {
+          "type": "string",
+          "description": "FQN of the declaring type, for members."
+        },
+        "modifiers": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "signature": {
+          "type": "string",
+          "description": "Human-readable signature, for methods and constructors."
+        },
+        "overloadKey": {
+          "type": "string",
+          "description": "Identifies ONE overload. This is the compiler's own canonical unlabeled signature (Method::toCanonical(false)) -- the same string whose FNV-1a hash the RTTI uses for dispatch. Two same-name, same-arity overloads MUST get different keys: if they collide, 'who calls f(int32)' returns f(String)'s callers and renaming one overload rewrites the other's call sites."
+        }
+      }
+    },
+
+    "inheritanceEdge": {
+      "type": "object",
+      "required": ["child", "parent", "kind"],
+      "properties": {
+        "child": { "type": "string", "description": "FQN of the declaring type." },
+        "parent": {
+          "type": "string",
+          "description": "RESOLVED FQN of the parent -- never the raw name as written in the source."
+        },
+        "kind": { "type": "string", "enum": ["extends", "implements"] },
+        "file": { "type": "string" },
+        "line": { "type": "integer", "minimum": 1 },
+        "col": { "type": "integer", "minimum": 0 }
+      }
+    },
+
+    "reference": {
+      "type": "object",
+      "required": ["target", "kind", "file", "line", "col"],
+      "properties": {
+        "target": {
+          "type": "string",
+          "description": "FQN of the declaration this use site binds to. For a method, the overloadKey."
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["type", "call", "fieldRead", "fieldWrite", "variableRead",
+                   "variableWrite", "import", "inherit"]
+        },
+        "file": { "type": "string" },
+        "line": { "type": "integer", "minimum": 1 },
+        "col": { "type": "integer", "minimum": 0 },
+        "endLine": { "type": "integer", "minimum": 1 },
+        "endCol": { "type": "integer", "minimum": 0 },
+        "from": {
+          "type": "string",
+          "description": "FQN of the enclosing declaration the use site sits in."
+        }
+      }
+    },
+
+    "overrideEdge": {
+      "type": "object",
+      "required": ["method", "overrides"],
+      "properties": {
+        "method": { "type": "string", "description": "overloadKey of the overriding method." },
+        "overrides": { "type": "string", "description": "overloadKey of the overridden method." },
+        "file": { "type": "string" },
+        "line": { "type": "integer", "minimum": 1 },
+        "col": { "type": "integer", "minimum": 0 }
+      }
+    },
+
+    "call": {
+      "type": "object",
+      "required": ["callee", "file", "line", "col"],
+      "properties": {
+        "callee": {
+          "type": "string",
+          "description": "overloadKey of the STATICALLY resolved callee. Possible dynamic targets are derivable from the inheritance + overrides relations and are deliberately NOT guessed here."
+        },
+        "caller": {
+          "type": "string",
+          "description": "overloadKey of the enclosing method."
+        },
+        "virtual": {
+          "type": "boolean",
+          "description": "True when dispatch is dynamic, so a consumer knows to widen `callee` by the override set."
+        },
+        "file": { "type": "string" },
+        "line": { "type": "integer", "minimum": 1 },
+        "col": { "type": "integer", "minimum": 0 },
+        "endLine": { "type": "integer", "minimum": 1 },
+        "endCol": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}
