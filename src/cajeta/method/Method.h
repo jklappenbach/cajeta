@@ -529,6 +529,9 @@ namespace cajeta {
         bool returnsClassPointer();
         llvm::Value* getTransferWordArg() const { return transferWordArg; }
         void setTransferWordArg(llvm::Value* v) { transferWordArg = v; }
+        // 5.2.2 — seed a drop entry per droppable class-typed formal, armed
+        // from its transfer-word bit; prologue-only, no-op without the word.
+        void emitFormalDropEntries(CajetaModulePtr module);
 
         int getOriginReturnTypeParamIndex() const { return originReturnTypeParamIndex; }
         void setOriginReturnTypeParamIndex(int idx) { originReturnTypeParamIndex = idx; }

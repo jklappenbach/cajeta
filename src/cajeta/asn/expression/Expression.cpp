@@ -2129,8 +2129,18 @@ namespace cajeta {
                         + std::to_string(getSourceLine()));
                 // If the moved-out identifier has a drop entry, flag it inactive
                 // so scope-exit doesn't re-free the value the new owner holds.
+                // 5.2.2: a formal's entry is runtime truth (armed from the
+                // transfer word) — capture the flag first so the consuming
+                // store/return can seed its own bit from it.
                 if (FieldPtr field = scope->getField(idExpr->getTextValue())) {
                     if (llvm::Value* entry = field->getDropEntry()) {
+                        if (dynamic_pointer_cast<ParameterField>(field)) {
+                            if (llvm::Function* flagFn = module->getRuntimeFunction(
+                                    "__cajeta_drop_entry_flag")) {
+                                runtimeTitleFlag = module->getBuilder()
+                                    ->CreateCall(flagFn, {entry}, "title_flag");
+                            }
+                        }
                         if (llvm::Function* mark = module->getRuntimeFunction(
                                 "__cajeta_drop_mark_inactive")) {
                             module->getBuilder()->CreateCall(mark, {entry});

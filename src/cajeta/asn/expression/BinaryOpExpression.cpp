@@ -2075,6 +2075,9 @@ namespace cajeta {
                 int fobBitIdx = -1;
                 bool fobOwnedSpelling = false;
                 bool fobFieldIsArray = false;
+                // 5.2.2 — non-null when the `#x` source is a runtime owner
+                // (formal): the bit written below is this flag, not const 1.
+                llvm::Value* fobRuntimeFlag = nullptr;
                 if (auto fobDot = dynamic_pointer_cast<DotExpression>(lhsAst)) {
                     auto& fch = fobDot->getChildren();
                     auto fobRecv = fch.empty() ? nullptr
@@ -2136,8 +2139,12 @@ namespace cajeta {
                             // construction, a `#`-returning call, or a
                             // `#`-formal source (the Exception-ctor idiom —
                             // statically owned, 7.1.3's move gate).
-                            if (dynamic_pointer_cast<MoveExpression>(rhsAst)) {
+                            if (auto mv = dynamic_pointer_cast<
+                                    MoveExpression>(rhsAst)) {
                                 fobOwnedSpelling = true;
+                                // RHS codegen already ran; a formal source
+                                // stashed its pre-deactivation flag there.
+                                fobRuntimeFlag = mv->getRuntimeTitleFlag();
                             } else if (auto rn = dynamic_pointer_cast<
                                            NewExpression>(rhsAst)) {
                                 fobOwnedSpelling = !rn->getStackAlloc();
@@ -2456,7 +2463,17 @@ namespace cajeta {
                     llvm::Value* w = builder->CreateLoad(
                         i64Ty2, fobWordPtr, "own_bits");
                     uint64_t mask = 1ULL << fobBitIdx;
-                    if (fobOwnedSpelling) {
+                    if (fobOwnedSpelling && fobRuntimeFlag) {
+                        // 5.2.2 — `#formal` source: the field's bit is the
+                        // formal's flag (surrendered → owned, lent → borrow).
+                        w = builder->CreateAnd(w,
+                            llvm::ConstantInt::get(i64Ty2, ~mask));
+                        llvm::Value* fb = builder->CreateShl(
+                            builder->CreateAnd(fobRuntimeFlag,
+                                llvm::ConstantInt::get(i64Ty2, 1)),
+                            llvm::ConstantInt::get(i64Ty2, fobBitIdx));
+                        w = builder->CreateOr(w, fb);
+                    } else if (fobOwnedSpelling) {
                         w = builder->CreateOr(w,
                             llvm::ConstantInt::get(i64Ty2, mask));
                     } else {

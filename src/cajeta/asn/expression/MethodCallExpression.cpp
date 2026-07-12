@@ -2816,6 +2816,27 @@ namespace cajeta {
                         }
                         // primitives / pointers / unresolved -> no-op
                     }
+                    // 5.2.2 — the value is explicitly dropped here; if the
+                    // arg is a named owner (a runtime-owner formal, or a
+                    // local with an entry), disarm its drop entry so scope
+                    // exit doesn't free it a second time. Retires the
+                    // formal-leak the stdlib ~HashMap idiom compensated for.
+                    if (auto dvId = dynamic_pointer_cast<IdentifierExpression>(
+                            parameters[0].expression)) {
+                        if (auto dvScope = module->getScopeStack().peek()) {
+                            if (FieldPtr dvField = dvScope->getField(
+                                    dvId->getTextValue())) {
+                                if (llvm::Value* dvEntry =
+                                        dvField->getDropEntry()) {
+                                    if (llvm::Function* mark =
+                                            module->getRuntimeFunction(
+                                                "__cajeta_drop_mark_inactive")) {
+                                        builder->CreateCall(mark, {dvEntry});
+                                    }
+                                }
+                            }
+                        }
+                    }
                     return nullptr;
                 }
                 // f32ToBits(float32 x) -> int32: reinterpret a float's IEEE-754

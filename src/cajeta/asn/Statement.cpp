@@ -1407,7 +1407,8 @@ namespace cajeta {
     // clobber the thread-local between this store and the caller's read.
     // Slice 1 stores the method's static mode (`#`-return → 1, plain → 0);
     // 5.2.3 upgrades `return #x` of a runtime owner to forward its bit.
-    static void emitReturnFlag(CajetaModulePtr& module) {
+    static void emitReturnFlag(CajetaModulePtr& module,
+                               llvm::Value* flagOverride = nullptr) {
         auto m = module->getCurrentMethod();
         if (!m || !m->returnsClassPointer()) {
             return;
@@ -1416,12 +1417,19 @@ namespace cajeta {
         if (!fn) {
             return;
         }
-        module->getBuilder()->CreateCall(fn,
-            {module->getBuilder()->getInt64(m->isReturnsOwnership() ? 1 : 0)});
+        // 5.2.2 — a `return #x` / returned formal threads its title's runtime
+        // flag; otherwise the method's static mode stands (5.2.3 arms callers).
+        llvm::Value* flag = flagOverride ? flagOverride
+            : (llvm::Value*) module->getBuilder()->getInt64(
+                  m->isReturnsOwnership() ? 1 : 0);
+        module->getBuilder()->CreateCall(fn, {flag});
     }
 
     llvm::Value* ReturnStatement::generateCode(CajetaModulePtr module) {
         auto* builder = module->getBuilder();
+        // 5.2.2 — runtime title flag riding out with this return (formal
+        // pass-through or `#x`); null -> emitReturnFlag uses the static mode.
+        llvm::Value* returnTitleFlag = nullptr;
         if (!expression) {
             // A4: fire @After advice before scope-exit + drops, on
             // the same ordering rule the fall-through return uses in
@@ -1630,6 +1638,13 @@ namespace cajeta {
                 if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(expression)) {
                     if (auto scope = module->getScopeStack().peek()) {
                         FieldPtr f = scope->getField(idExpr->getTextValue());
+                        // 5.2.2 — formals are RUNTIME owners: their entry is
+                        // armed per call, and a plain return is the legal
+                        // pass-through (flag rides the return-flag TLS).
+                        // Only statically-owned LOCALS demand the `#` return.
+                        if (dynamic_pointer_cast<ParameterField>(f)) {
+                            f = nullptr;
+                        }
                         if (f && f->getDropEntry()) {
                             auto klass = dynamic_pointer_cast<CajetaClass>(f->getType());
                             auto view = dynamic_pointer_cast<CajetaView>(f->getType());
@@ -1794,6 +1809,17 @@ namespace cajeta {
                     (klass && !view && !klass->isInterface()) || (bool) view;
                 if (transferShape) {
                     if (llvm::Value* entry = f->getDropEntry()) {
+                        // 5.2.2 — a returned formal is a pass-through: its
+                        // runtime flag rides out on the return-flag TLS
+                        // (captured before deactivation).
+                        if (dynamic_pointer_cast<ParameterField>(f)) {
+                            if (llvm::Function* flagFn =
+                                    module->getRuntimeFunction(
+                                        "__cajeta_drop_entry_flag")) {
+                                returnTitleFlag = builder->CreateCall(
+                                    flagFn, {entry}, "ret_title_flag");
+                            }
+                        }
                         if (llvm::Function* mark = module->getRuntimeFunction(
                                 "__cajeta_drop_mark_inactive")) {
                             builder->CreateCall(mark, {entry});
@@ -2121,7 +2147,14 @@ namespace cajeta {
         emitScopeExitToWatermark(module);
         // Fire drops before the typed return so all owned locals are released.
         if (auto m = module->getCurrentMethod()) m->emitOwnerDrops(module);
-        emitReturnFlag(module);
+        // 5.2.2 — `return #x`: a runtime-owner source forwards its captured
+        // flag; a static owner moved out is an unconditional surrender.
+        if (auto mvRet = dynamic_pointer_cast<MoveExpression>(expression)) {
+            returnTitleFlag = mvRet->getRuntimeTitleFlag()
+                ? mvRet->getRuntimeTitleFlag()
+                : (llvm::Value*) builder->getInt64(1);
+        }
+        emitReturnFlag(module, returnTitleFlag);
         return builder->CreateRet(val);
     }
 

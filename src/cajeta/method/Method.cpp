@@ -436,6 +436,84 @@ namespace cajeta {
             && !isValueTypeR && !returnsStackValue();
     }
 
+    // title-tracking 5.2.2 — runtime-owner formals. Each droppable class-typed
+    // formal gets a drop entry whose armed state is its transfer-word bit
+    // (bit i = i-th non-`this` formal, the moveMask contract): surrendered →
+    // the callee owns and drops on any exit unless a `#v` store/forward or
+    // Cajeta.dropValue deactivates it; lent → disarmed, teardown skips.
+    // Skipped shapes keep today's behavior: shared-capable values (String —
+    // share-bump transfer, not title move), interfaces/views/value types
+    // (no virtual-drop shape), inline arrays. Runs at prologue, so entries
+    // sit below every body frame (LIFO) and before any try-frame watermark.
+    void Method::emitFormalDropEntries(CajetaModulePtr module) {
+        llvm::Value* word = getTransferWordArg();
+        if (!word) return;
+        auto* builder = module->getBuilder();
+        auto& ctx = *module->getLlvmContext();
+        llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+        llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
+        bool debug = module->getFlags().sourceTags;
+        llvm::Function* pushFn = module->getRuntimeFunction(
+            debug ? "__cajeta_drop_push_debug" : "__cajeta_drop_push");
+        llvm::Function* setFlagFn = module->getRuntimeFunction(
+            "__cajeta_drop_set_flag");
+        if (!pushFn || !setFlagFn) return;
+        unsigned entryBytes = debug ? 40 : 32;
+        auto scope = module->getScopeStack().peek();
+        if (!scope) return;
+        int bit = -1;
+        for (auto& formalParameter : parameterList) {
+            if (!formalParameter || formalParameter->getName() == "this") {
+                continue;
+            }
+            if (++bit >= 64) break;
+            CajetaTypePtr pt = formalParameter->getType();
+            auto arr = dynamic_pointer_cast<CajetaArray>(pt);
+            auto klass = dynamic_pointer_cast<CajetaClass>(pt);
+            const char* dropFnName = nullptr;
+            if (arr) {
+                if (!arr->isInlineArray()) dropFnName = "__cajeta_free_array";
+            } else if (klass && !dynamic_pointer_cast<CajetaView>(pt)
+                    && !klass->isInterface() && !pt->isValueType()
+                    && !klass->isSharedCapableValue()
+                    && klass->hasVtablePointerAtSlotZero()) {
+                klass->patchVirtualTableDropFn();
+                dropFnName = "__cajeta_class_virtual_drop";
+            }
+            if (!dropFnName) continue;
+            llvm::Function* dropFn = module->getRuntimeFunction(dropFnName);
+            if (!dropFn) continue;
+            FieldPtr pf = scope->getField(formalParameter->getName());
+            if (!pf || pf->getDropEntry()) continue;
+            llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+            llvm::IRBuilder<> entryBuilder(&parentFn->getEntryBlock(),
+                parentFn->getEntryBlock().begin());
+            llvm::Value* entryPtr = entryBuilder.CreateAlloca(
+                llvm::ArrayType::get(i8Ty, entryBytes));
+            llvm::Value* obj = builder->CreateLoad(
+                ptrTy, pf->getOrCreateAllocation());
+            if (debug) {
+                llvm::Constant* fileConst =
+                    module->getOrCreateSourceFileConstant(
+                        module->getSourcePath());
+                llvm::Constant* lineConst = llvm::ConstantInt::get(i32Ty, 0);
+                builder->CreateCall(pushFn,
+                    {entryPtr, obj, dropFn, fileConst, lineConst});
+            } else {
+                builder->CreateCall(pushFn, {entryPtr, obj, dropFn});
+            }
+            llvm::Value* flag = builder->CreateAnd(
+                builder->CreateLShr(word,
+                    llvm::ConstantInt::get(i64Ty, bit)),
+                llvm::ConstantInt::get(i64Ty, 1), "formal_title");
+            builder->CreateCall(setFlagFn, {entryPtr, flag});
+            pf->setDropEntry(entryPtr);
+            registerDropEntry(entryPtr);
+        }
+    }
+
     bool Method::returnsStackValue() {
         if (returnsStackValueCache != -1) {
             return returnsStackValueCache == 1;
@@ -1860,6 +1938,7 @@ namespace cajeta {
         } else {
             setTransferWordArg(nullptr);
         }
+        emitFormalDropEntries(module);
 
         // cajeta-ir Unit 4 (closure specialization): a specialized instance had
         // its function-typed parameter(s) dropped from the signature above and

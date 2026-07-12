@@ -500,11 +500,18 @@ namespace cajeta {
      * `dynamic_pointer_cast` and act accordingly.
      */
     class MoveExpression : public Expression {
+    private:
+        // 5.2.2 — when the moved-out source is a runtime owner (a formal
+        // whose title is a transfer-word bit), its entry flag is captured
+        // here BEFORE deactivation; store/return sites seed their bit from
+        // it. Null for static owners (compile-time truth stands).
+        llvm::Value* runtimeTitleFlag = nullptr;
     public:
         MoveExpression(antlr4::Token* token) : Expression(token) { }
 
         void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
+        llvm::Value* getRuntimeTitleFlag() const { return runtimeTitleFlag; }
     };
 
     // Structured-concurrency expressions (docs/specification/concurrent/Concurrency.md). All three wrap a
