@@ -32,8 +32,9 @@ object CajetaBuildWindowLauncher {
         // Consumes both record types the NDJSON stream carries: compile-phase
         // progress (shown as child nodes of the build, so the window reports
         // what the compiler is doing) and diagnostics (the problem tree).
-        val parser = BuildOutputParser()
-        val lineParser = LineParser { line, pid -> parser.parse(line, pid) }
+        // Also the LineParser itself: it holds the "Compile" grouping node open
+        // across lines and closes it when the process exits.
+        val lineParser = BuildOutputParser()
 
         val tracker = BuildRunTracker.getInstance(project)
         val cancelable = BuildRunTracker.Cancelable { process.cancel() }

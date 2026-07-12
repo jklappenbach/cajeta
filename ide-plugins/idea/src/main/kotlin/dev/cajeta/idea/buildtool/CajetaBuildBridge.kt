@@ -28,10 +28,19 @@ interface BuildTaskProcess {
     fun cancel()
 }
 
-/** Parses one complete output line into a problem event for the build tree
- *  (spec §4); wired in U4 from `BuildProblemParser` (U3). Default: no problems. */
+/**
+ * Parses one complete output line into build-tree events (spec §4); wired in U4
+ * from `BuildProblemParser` (U3). An empty list means "not structured" — the
+ * bridge then echoes the line as plain console output.
+ *
+ * A line may yield SEVERAL events: the first compile phase both opens the
+ * "Compile" grouping node and opens itself under it. [close] is called once the
+ * process has exited, so a parser can shut any node it left open (the grouping
+ * node) before the build finishes — an unclosed node renders as still-running.
+ */
 fun interface LineParser {
-    fun parse(line: String, parentId: Any): ParsedProblem?
+    fun parse(line: String, parentId: Any): List<ParsedProblem>
+    fun close(parentId: Any): List<ParsedProblem> = emptyList()
 }
 
 data class ParsedProblem(val event: BuildEvent, val isError: Boolean)
@@ -56,7 +65,7 @@ object CajetaBuildBridge {
         startTime: Long,
         preflight: () -> String?,
         process: BuildTaskProcess,
-        lineParser: LineParser = LineParser { _, _ -> null },
+        lineParser: LineParser = LineParser { _, _ -> emptyList() },
         decorate: (DefaultBuildDescriptor) -> com.intellij.build.BuildDescriptor = { it },
     ): Result {
         val descriptor = decorate(DefaultBuildDescriptor(buildId, title, workDir, startTime))
@@ -80,11 +89,13 @@ object CajetaBuildBridge {
         // cannot know whether a partial line is structured.
         fun emitLine(line: String, stdout: Boolean) {
             val parsed = lineParser.parse(line, buildId)
-            if (parsed != null) {
-                listener.onEvent(buildId, parsed.event)
-                if (parsed.isError) errorCount++
-            } else {
+            if (parsed.isEmpty()) {
                 listener.onEvent(buildId, OutputBuildEventImpl(buildId, line + "\n", stdout))
+                return
+            }
+            for (p in parsed) {
+                listener.onEvent(buildId, p.event)
+                if (p.isError) errorCount++
             }
         }
 
@@ -120,6 +131,9 @@ object CajetaBuildBridge {
             if (errBuf.isNotEmpty()) emitLine(errBuf.toString(), stdout = false)
             outBuf.clear()
             errBuf.clear()
+            // Close nodes the parser still holds open (the "Compile" group) BEFORE
+            // the build's own finish event, or they render as forever-running.
+            for (p in lineParser.close(buildId)) listener.onEvent(buildId, p.event)
         }
 
         val result = when {

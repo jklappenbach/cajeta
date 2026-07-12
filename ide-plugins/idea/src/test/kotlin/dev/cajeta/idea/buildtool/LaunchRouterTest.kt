@@ -52,7 +52,9 @@ class LaunchRouterTest {
         val recorded = mutableListOf<BuildEvent>()
         val listener = BuildProgressListener { _, e -> recorded.add(e) }
         val parser = BuildProblemParser()
-        val lineParser = LineParser { line, pid -> parser.feed(line)?.toParsed(pid) }
+        val lineParser = LineParser { line, pid ->
+            parser.feed(line)?.toParsed(pid)?.let { listOf(it) } ?: emptyList()
+        }
         val process = object : BuildTaskProcess {
             override fun run(sink: OutputSink): ProcessOutcome {
                 sink.append(

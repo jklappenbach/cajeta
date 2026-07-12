@@ -115,6 +115,13 @@ namespace cajeta {
                           const std::string& label,
                           long long elapsedMs = -1);
 
+    // Emit one cache-hit record as an NDJSON line to stderr, on the same stream
+    // as the diagnostics and phase records. A cached build runs no compiler at
+    // all, so it emits no phases — without this the IDE shows an instant green
+    // check and an empty tree, which reads as "the build did nothing". Fields:
+    // kind ("cache"), state ("hit"), artifact (the re-published output path).
+    void emitJsonCacheHit(const std::string& artifact);
+
     // RAII phase marker: emits `start` on construction and `finish` (with the
     // measured duration) on destruction, so an early return or a thrown
     // diagnostic still closes the phase it was raised in. A no-op unless the

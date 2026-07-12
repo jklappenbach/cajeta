@@ -102,7 +102,6 @@ class CajetaBuildBridgeTest {
     fun structuredLinesDoNotLeakRawJsonIntoTheConsole() {
         val l = Recording()
         val phase = """{"kind":"progress","phase":"codegen","state":"start","label":"Generating code"}"""
-        val parser = BuildOutputParser()
         CajetaBuildBridge.execute(
             l, BID, "cajeta build", "/p", 0L, { null },
             FakeProcess { s ->
@@ -110,7 +109,7 @@ class CajetaBuildBridgeTest {
                 s.append("[cache] hit\n", stdout = true)
                 ProcessOutcome(0, false)
             },
-            lineParser = { line, pid -> parser.parse(line, pid) },
+            lineParser = BuildOutputParser(),
         )
         val console = l.events.map { it.second }.filterIsInstance<OutputBuildEvent>()
         assertTrue("no raw JSON in the console", console.none { it.message.contains("\"kind\"") })
@@ -119,6 +118,30 @@ class CajetaBuildBridgeTest {
             "the phase surfaces as a build node",
             l.events.map { it.second }.any { it is com.intellij.build.events.StartEvent },
         )
+    }
+
+    /**
+     * The parser's grouping node ("Compile") is closed when the process exits, and
+     * BEFORE the build's own finish event — an open node renders as still-running
+     * under a finished build.
+     */
+    @Test
+    fun parserNodesAreClosedBeforeTheBuildFinishes() {
+        val l = Recording()
+        CajetaBuildBridge.execute(
+            l, BID, "cajeta build", "/p", 0L, { null },
+            FakeProcess { s ->
+                s.append("""{"kind":"progress","phase":"parse","state":"start","label":"Parsing"}""" + "\n", false)
+                s.append("""{"kind":"progress","phase":"parse","state":"finish","label":"Parsing","elapsedMs":12}""" + "\n", false)
+                ProcessOutcome(0, false)
+            },
+            lineParser = BuildOutputParser(),
+        )
+        val kinds = l.events.map { it.second }
+        val lastFinishNode = kinds.indexOfLast { it is com.intellij.build.events.FinishEvent && it !is FinishBuildEvent }
+        val buildFinish = kinds.indexOfFirst { it is FinishBuildEvent }
+        assertTrue("a group/phase node was closed", lastFinishNode >= 0)
+        assertTrue("nodes close before the build does", lastFinishNode < buildFinish)
     }
 
     /** Output not terminated by a newline must still reach the console at exit. */

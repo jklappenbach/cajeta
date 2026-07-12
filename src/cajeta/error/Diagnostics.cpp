@@ -132,6 +132,14 @@ namespace cajeta {
         std::cerr << o << std::flush;
     }
 
+    void emitJsonCacheHit(const std::string& artifact) {
+        std::string o = "{\"kind\":\"cache\",";
+        strOrNull(o, "state", "hit");     o += ",";
+        strOrNull(o, "artifact", artifact);
+        o += "}\n";
+        std::cerr << o << std::flush;
+    }
+
     ProgressPhase::ProgressPhase(std::string phase, std::string label)
         : phase(std::move(phase)),
           label(std::move(label)),
