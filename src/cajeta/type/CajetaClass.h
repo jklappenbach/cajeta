@@ -139,6 +139,12 @@ namespace cajeta {
         bool prototypeBuilt = false;
         bool recordType = false;
         CajetaModulePtr module;
+        // Declaring source file, remapped. See getDeclaringFile().
+        string declaringFile;
+
+        // Read the module's current parse file into declaringFile. Out-of-line:
+        // CajetaModule is only forward-declared here.
+        void captureDeclaringFile();
         // Emit target for this class's own IR (vtable / RTTI / clinit / static
         // fields). Null → getEmitModule() falls back to `module` (production /
         // non-reuse: resolution and emission coincide). Set only in the stdlib
@@ -323,10 +329,22 @@ namespace cajeta {
         CajetaClass(CajetaModulePtr module) {
             this->module = module;
             scope = nullptr;
+            captureDeclaringFile();
         }
         CajetaClass(CajetaModulePtr module, QualifiedNamePtr qName, list<QualifiedNamePtr> qImplemented);
 
         CajetaClass(CajetaModulePtr module, QualifiedNamePtr qName, list<QualifiedNamePtr> qExtended, list<QualifiedNamePtr> qImplemented);
+
+        // The source file this class was DECLARED in, remapped (build-root
+        // independent). Recorded at construction from the module's current parse
+        // file, because the module cannot answer it later: the stdlib parses
+        // every file into one module (external-debug §6). A template
+        // instantiation inherits it from its template — the instantiation
+        // happens wherever the use site is, but the code still lives in the
+        // template's file.
+        const string& getDeclaringFile() const { return declaringFile; }
+
+        void setDeclaringFile(const string& file) { declaringFile = file; }
 
         /**
          * Create a structure that provides for a boolean type for whether the reference owns the instance and should delete at scope-end,
@@ -389,6 +407,11 @@ namespace cajeta {
             this->qExtended = std::move(ext);
             this->qImplemented = std::move(impl);
             this->placeholderFlag = false;
+            // A placeholder was constructed at its first REFERENCE, so it
+            // captured whatever file that reference sat in (String, referenced
+            // from BFloat16.cajeta, reported BFloat16.cajeta). This is the
+            // declaration — recapture.
+            captureDeclaringFile();
         }
         list<CajetaClassPtr>& getImplementedInterfaces() { return implementedInterfaces; }
         const list<QualifiedNamePtr>& getQImplemented() const { return qImplemented; }

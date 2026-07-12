@@ -715,6 +715,7 @@ namespace cajeta {
                 auto dot = fileName.find_last_of('.');
                 if (dot != std::string::npos) fileName = fileName.substr(0, dot);
                 stdlib->setQName(QualifiedName::getOrInsert(fileName, pkg));
+                stdlib->setCurrentSourceFile(rel);   // see parseStdlibInto
                 antlr4::ANTLRInputStream in(
                     std::string(f.content, f.contentBytes));
                 parseSource(stdlib, in, /*label=*/"");
@@ -722,6 +723,7 @@ namespace cajeta {
             g_stdlibParsedPackages.insert(pkg);
             parsedAny = true;
         }
+        stdlib->setCurrentSourceFile("");
         stdlib->setQName(originalQName);
         if (parsedAny) {
             CajetaModule::buildPendingPrototypes();
@@ -786,11 +788,17 @@ namespace cajeta {
                 fileName = fileName.substr(0, dotIdx);
             }
             module->setQName(QualifiedName::getOrInsert(fileName, pkg));
+            // Each class records the file it is declared in (external-debug §6).
+            // The module's source path is empty here — the whole stdlib is one
+            // module — so without this every stdlib frame renders as `(:268)`.
+            // relativePath is already build-root independent.
+            module->setCurrentSourceFile(relPath);
             antlr4::ANTLRInputStream stdlibInput(
                 std::string(f.content, f.contentBytes));
             parseSource(module, stdlibInput, /*label=*/"");
             g_stdlibParsedPackages.insert(pkg);
         }
+        module->setCurrentSourceFile("");
         module->setQName(originalQName);
 
         // Snapshot the eager set: these packages stay parsed-and-available in the
@@ -1008,6 +1016,11 @@ namespace cajeta {
                 auto extMod = std::make_shared<CajetaModule>(
                     activeContext, qName, targetTriple, targetMachine);
                 extMod->setFlags(flags);
+                // Synthetic module: no source path, so its classes would record
+                // no declaring file and every dependency frame would render as
+                // `Type.method(:NN)`. entry.name is already the archive-relative
+                // path (`<pkg>/<Class>.cajeta`) — exactly the remapped form.
+                extMod->setCurrentSourceFile(entryName);
                 externalModules.push_back(extMod);
 
                 auto prevActive = CajetaModule::getActiveModule();

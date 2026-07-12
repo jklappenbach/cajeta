@@ -1845,10 +1845,16 @@ namespace cajeta {
         {
             std::string typeName = (parent && parent->getQName())
                 ? parent->getQName()->toCanonical() : std::string();
-            // Remapped form — frame descriptors are IR-embedded and must be
-            // byte-identical across build roots (docs-refactor 15.12.2).
-            dbg::emitLineEnter(module, typeName, getName(),
-                               module->remappedSourcePath());
+            // The DECLARING class's file, not the module's: the stdlib parses
+            // every file into one module whose source path is empty, so the
+            // module answer rendered every stdlib frame as `(:268)`
+            // (external-debug §6). Both forms are remapped — frame descriptors
+            // are IR-embedded and must be byte-identical across build roots
+            // (docs-refactor 15.12.2).
+            std::string fileName = parent ? parent->getDeclaringFile()
+                                          : std::string();
+            if (fileName.empty()) fileName = module->remappedSourcePath();
+            dbg::emitLineEnter(module, typeName, getName(), fileName);
         }
 
         // Register the parameters as locals in the debug frame. Materializing

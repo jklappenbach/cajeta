@@ -605,6 +605,9 @@ namespace cajeta {
             auto ifInst = make_shared<CajetaClass>(
                 module, ifInstQName, ifExtended, ifImplemented);
             ifInst->setIsInterface(true);
+            // The instantiation happens at the use site, but the code lives in
+            // the template's file — that is what its frames must name.
+            ifInst->setDeclaringFile(getDeclaringFile());
             if (emitOwner != module) ifInst->setEmitModule(emitOwner);
             ifInst->setTypeParameters(typeParameters);
             ifInst->setTypeArguments(args);
@@ -836,6 +839,9 @@ namespace cajeta {
         // body walk emits method IR (prototype-on-reference), so the emit target
         // must already be in place.
         auto inst = make_shared<CajetaClass>(module, instQName, instExtended, instImplemented);
+        // The instantiation happens at the use site, but the code lives in the
+        // template's file — that is what its frames must name.
+        inst->setDeclaringFile(getDeclaringFile());
         if (recordDecl) inst->setRecordType(true);
         if (emitOwner != module) inst->setEmitModule(emitOwner);
         // Carry the template's class-level annotations onto the instantiation —

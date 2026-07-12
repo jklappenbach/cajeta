@@ -74,15 +74,21 @@ namespace cajeta {
     // generateStaticInitializers, which lives above the definition.
     static llvm::Constant* foldStaticInitializer(
         AbstractSyntaxNodePtr init, llvm::Type* storedType);
+    void CajetaClass::captureDeclaringFile() {
+        if (module) declaringFile = module->currentSourceFile();
+    }
+
     CajetaClass::CajetaClass(CajetaModulePtr module, QualifiedNamePtr qName, list<QualifiedNamePtr> qImplemented) : CajetaType(qName) {
         this->qImplemented = qImplemented;
         this->module = module;
+        captureDeclaringFile();
     }
     CajetaClass::CajetaClass(CajetaModulePtr module, QualifiedNamePtr qName, list<QualifiedNamePtr> qExtended, list<QualifiedNamePtr> qImplemented)
             : CajetaType(qName) {
         this->qExtended = qExtended;
         this->qImplemented = qImplemented;
         this->module = module;
+        captureDeclaringFile();
     }
 
     llvm::Type* CajetaClass::getLlvmType() {

@@ -245,6 +245,7 @@ namespace cajeta {
         map<string, map<string, QualifiedNamePtr>> imports;
         QualifiedNamePtr qName;
         string sourcePath;
+        string currentSourceFile_;   // see currentSourceFile()
         string sourceRoot;
         string archiveRoot;
         string archivePath;
@@ -472,6 +473,21 @@ namespace cajeta {
 
         void setSourcePath(const string& sourcePath) {
             this->sourcePath = sourcePath;
+        }
+
+        // The file currently being parsed INTO this module, in remapped
+        // (build-root-independent) form. A user module is one file, so this is
+        // just remappedSourcePath(). The stdlib is many files parsed into one
+        // synthetic module with an empty source path — parseStdlibInto sets this
+        // per file so each class can record where it was actually declared.
+        // Without it every stdlib frame renders as `Type.method(:268)`.
+        string currentSourceFile() const {
+            return currentSourceFile_.empty() ? remappedSourcePath()
+                                              : currentSourceFile_;
+        }
+
+        void setCurrentSourceFile(const string& file) {
+            currentSourceFile_ = file;
         }
 
         const string& getArchiveRoot() const {
