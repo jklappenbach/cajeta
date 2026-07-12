@@ -307,6 +307,11 @@ namespace cajeta {
             type = CajetaType::ofScoped(typeName, module);
         }
         if (!type) type = CajetaType::of(typeName, package);
+        // Qualified-miss rescue (pre-existing): the qualified-creator parse
+        // can mangle the package (`cajeta.lang.String` arrives as package
+        // "cajetalang"), which the legacy global short-name fallback silently
+        // absorbed. Keep that rescue as the last tier.
+        if (!type) type = CajetaType::ofScoped(typeName, module);
         // Templated `new Box<int32>(...)`: typeArguments were resolved at
         // parse time (in our constructor). Route through the template's
         // instantiation cache so the concrete `Box<int32>` is what we
