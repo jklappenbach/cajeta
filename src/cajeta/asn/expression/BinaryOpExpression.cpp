@@ -2361,18 +2361,20 @@ namespace cajeta {
                         }
                     }
                 }
-                // title-tracking Unit 4 close-out discovery — fields OUTSIDE
-                // the bit system keep the LEGACY implicit transfer. Statics
-                // foremost: fieldHasOwnershipBit excludes them, so a plain
-                // store into `Reg.shared` records no spelling; without this
-                // block the source local's drop fires at scope exit and the
-                // singleton `instance()` shape returns a freed object (the
-                // IfxRegistry/Ws/Https SIGSEGVs — poisoned reads through the
-                // static). Deactivate the identifier source's entry, exactly
-                // the pre-3A block, but ONLY when the fob machinery did not
-                // engage (fobWordPtr null); bit-carrying fields already
-                // recorded the spelling and a plain store there is a borrow.
-                // Statics get a real owner story with the Unit 5 `#?` ABI.
+                // title-tracking Unit 4 close-out discovery — STATIC fields
+                // sit outside the bit system (fieldHasOwnershipBit excludes
+                // them: there is no per-instance word for a global), so a
+                // plain store into `Reg.shared` records no spelling; without
+                // this block the source local's drop fires at scope exit and
+                // the singleton `instance()` shape returns a freed object
+                // (the IfxRegistry/Ws/Https SIGSEGVs — poisoned reads
+                // through the static). Restore the pre-3A implicit transfer
+                // for exactly the STATIC-field shape. Non-static bit-less /
+                // fob-disengaged stores keep 3A borrow semantics — a broader
+                // !fobWordPtr gate deactivated borrow sources inside stream
+                // template monomorphs (opaque layouts disengage the fob
+                // machinery) and crashed ParallelStreamP1. Statics get a
+                // real owner story with the Unit 5 `#?` ABI.
                 if (!fobWordPtr && lhsAst && rhsAst
                         && dynamic_pointer_cast<DotExpression>(lhsAst)) {
                     if (!lhsAst->getResolvedType()) lhsAst->resolveTypes(module);
@@ -2385,7 +2387,37 @@ namespace cajeta {
                         dynamic_pointer_cast<CajetaView>(fieldType) != nullptr;
                     bool fieldStoresAsPointer =
                         fieldIsArr || (fieldClass && !fieldIsView && !fieldIsIface);
+                    bool fieldIsStatic = false;
                     if (fieldStoresAsPointer) {
+                        auto legDot = dynamic_pointer_cast<DotExpression>(lhsAst);
+                        auto& lch = legDot->getChildren();
+                        auto legRecv = lch.empty() ? nullptr
+                            : dynamic_pointer_cast<Expression>(lch[0]);
+                        if (legRecv && !legRecv->getResolvedType()) {
+                            legRecv->resolveTypes(module);
+                        }
+                        auto legRecvClass = legRecv
+                            ? dynamic_pointer_cast<CajetaClass>(
+                                  legRecv->getResolvedType())
+                            : nullptr;
+                        std::function<bool(const CajetaClassPtr&)> legFind =
+                            [&](const CajetaClassPtr& cls) -> bool {
+                                if (!cls) return false;
+                                auto pit = cls->getProperties().find(
+                                    legDot->getIdentifier());
+                                if (pit != cls->getProperties().end()) {
+                                    fieldIsStatic = pit->second
+                                        && pit->second->isStatic();
+                                    return true;
+                                }
+                                for (auto& sup : cls->getSuperClasses()) {
+                                    if (legFind(sup)) return true;
+                                }
+                                return false;
+                            };
+                        legFind(legRecvClass);
+                    }
+                    if (fieldStoresAsPointer && fieldIsStatic) {
                         if (auto idExpr =
                                 dynamic_pointer_cast<IdentifierExpression>(rhsAst)) {
                             if (auto sc = module->getScopeStack().peek()) {
