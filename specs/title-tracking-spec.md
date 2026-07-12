@@ -156,8 +156,7 @@ default and deletes the `#?` spelling.)*
    requires ownership (e.g. hand-off to another thread). A plain argument
    is rejected at compile time (`TRANSFER_REQUIRED`). ABI-identical to a
    plain formal with the flag pinned true, so dispatch stays mode-erased.
-   *(Sub-fork A, pending developer decision: keep this spelling, or
-   retire it and rely on runtime discipline. Recommendation: keep.)*
+   *(Sub-fork A decided 2026-07-12: KEPT.)*
 4. Consequence: the *static borrow formal* is retired for class types.
    `BORROW_PARAM_ESCAPES` no longer applies to class-typed formals — a
    store of a formal is legal and the flag decides the place's bit.
@@ -175,7 +174,7 @@ default and deletes the `#?` spelling.)*
    fix is `return #x`.
 3. `#V f()` — opt-in statically-owned return (flag pinned true);
    `operator#[]` (§6.3), which panics rather than return borrowed, is the
-   canonical user. *(Rides sub-fork A.)*
+   canonical user. *(Sub-fork A: kept.)*
 
 ### 4.3 Requirements
 1. Same-name declarations differing only in transfer mode are impossible
@@ -213,7 +212,7 @@ default and deletes the `#?` spelling.)*
    the `#v` at the put.
 3. As an API author of a sink that must own its input
    (`register(#Session s)`), when a caller passes a plain borrow, then the
-   call is rejected at compile time. *(Rides sub-fork A.)*
+   call is rejected at compile time. *(Sub-fork A: kept.)*
 
 ### 4.6 Rejected shapes (recorded 2026-07-12)
 1. **Signature-declared `#?V`** (rev 1): demands author foresight;
@@ -266,7 +265,7 @@ default and deletes the `#?` spelling.)*
 ### 6.1 Store
 `operator[]=` / `put` take the value at a plain formal — dual-capable by
 default (§4.1.1), no signature spelling. The entry bit records the
-outcome per §5. An own-only container may spell `#V` (rides sub-fork A).
+outcome per §5. An own-only container may spell `#V` (sub-fork A: kept).
 
 ### 6.2 Read
 `operator[]` / `get` return borrows. Unchanged, both bits.
@@ -305,9 +304,10 @@ contract; the signature needs no spelling.
 
 ### 7.1 Compile-time (extends the existing escape/ownership family)
 - move-out-of-borrow; use-after-move (incl. call-arg moves); plain into a
-  `#V` formal (rides sub-fork A); mode-only overload/override collision;
+  `#V` formal (sub-fork A: kept); mode-only overload/override collision;
   `#` on a value type; plain return of a statically-owned local
-  (`FRESH_RETURN_NEEDS_TRANSFER`, §4.2.2).
+  (`FRESH_RETURN_NEEDS_TRANSFER`, §4.2.2); single-hop dangling lend
+  (`CAJETA_ERROR_DANGLING_LEND`, §7.4 — sub-fork B: in scope).
 
 ### 7.2 Runtime
 - Title-miss panic on `#place` extraction (Recoverable).
@@ -328,11 +328,12 @@ in-repo precedent.
 
 Rev 2 widens exposure: lending into any retaining callee is spellable
 everywhere (`m.put(k, s)` then `return #m` dangles the entry when `s`
-drops). *(Sub-fork B, pending developer decision: add the single-hop
-static check — returning/`#`-storing a container that provably holds a
-borrow of a dying local — now in Unit 5's scope, or defer with the rest
-of this hazard. Recommendation: defer; revisit as a Unit 8 lint once the
-stdlib sweep shows the pattern's real frequency.)*
+drops). *(Sub-fork B decided 2026-07-12: the **single-hop static check**
+is in Unit 5's scope — returning or `#`-storing outward a local object
+that provably holds a lend of a dying local is a compile error
+(`CAJETA_ERROR_DANGLING_LEND`), conservative and intra-procedural,
+built on Unit 2's liveBorrows tracking. The general cross-procedure case
+stays deferred per §1.5.1.)*
 
 ## 8. Migration
 
@@ -355,7 +356,7 @@ discretion approved 2026-07-12.)*
 Drop chain + entries; owned-element teardown walks (re-keyed from
 instantiation mode to entry bits); typed value `clone()`; mode-erased
 dispatch; the fresh-return check (`FRESH_RETURN_NEEDS_TRANSFER`, §4.2.2);
-`#V`/`TRANSFER_REQUIRED` as the opt-in must-own edge (rides sub-fork A);
+`#V`/`TRANSFER_REQUIRED` as the opt-in must-own edge (sub-fork A: kept);
 String/slice share machinery.
 
 ### 8.3 Known fallout to schedule
@@ -367,8 +368,7 @@ String/slice share machinery.
    container validation.
 3. Signature updates shrink to near-zero under rev 2: container mutators
    and `remove` keep plain signatures; `operator#[]` additions remain;
-   existing stdlib `#V` formals either stay (sub-fork A: keep) or respell
-   plain — call sites are unchanged either way, since `#x` args are legal
-   against both.
+   existing stdlib `#V` formals stay (sub-fork A: kept) — call sites are
+   unchanged, since `#x` args are legal against plain formals too.
 4. Element-ownership spec/plan disposition: supersession note added, Unit 8
    replaced by this spec's plan.
