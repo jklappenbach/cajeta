@@ -390,8 +390,11 @@ namespace cajeta {
     // across overrides and interface dispatch.
     bool Method::needsTransferWord() {
         // Keep the plain C ABI for boundaries the cajeta compiler doesn't own
-        // both sides of: device code and the exe entry stub.
-        if (findAnnotation("Kernel") || findAnnotation("Device")) {
+        // both sides of: device code, the exe entry stub, and @Native methods
+        // (their forwarding wrapper derives the C extern's type from the
+        // wrapper's own signature — a word here mis-declares the C symbol).
+        if (findAnnotation("Kernel") || findAnnotation("Device")
+                || findAnnotation("Native")) {
             return false;
         }
         bool staticMethod = modifiers.find(STATIC) != modifiers.end();
@@ -416,7 +419,11 @@ namespace cajeta {
     }
 
     bool Method::returnsClassPointer() {
-        if (findAnnotation("Kernel") || findAnnotation("Device")) {
+        // @Native bodies are C — they never store the return flag, so callers
+        // must not expect one (a class-pointer result from a native method is
+        // always a borrow at the flag layer until wrapped in cajeta code).
+        if (findAnnotation("Kernel") || findAnnotation("Device")
+                || findAnnotation("Native")) {
             return false;
         }
         CajetaTypePtr rt = returnType;
