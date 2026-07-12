@@ -1569,6 +1569,15 @@ namespace cajeta {
             if (after == methodCount && after == prevMethodCount) break;
             prevMethodCount = after;
         }
+        // external-debug §4.1.1: a debugger must decode ANY local's dynamic type
+        // from its field metadata, including types the program never reflects on.
+        // RTTI emission is demand-driven (ReflectionKeep), so without this a
+        // --debug-info=full build could carry no field metadata at all and
+        // `cjlocals` would have nothing to read.
+        if (flags.debugInfo) {
+            CajetaModule::noteForceAll("--debug-info=full");
+        }
+
         // DCE Tier-0b-2a — keep-set (see lean-linker-dce.md §3.2). Codegen has
         // quiesced (reflectionKeep() is final) and finalizeClassObject below
         // reads keepsClass(). No non-reflect reflection ⇒ keep only @Retained;
@@ -1577,8 +1586,10 @@ namespace cajeta {
             auto& rk = CajetaModule::reflectionKeep();
             // 0c classifier: warn on every forces-ALL site. The build still
             // succeeds and is sound (conservative keep-all); the warning just
-            // points at the selector to tighten.
+            // points at the selector to tighten. --debug-info=full is exempt:
+            // there, keeping everything IS the point, not a selector to tighten.
             for (auto& reason : rk.forceAllReasons) {
+                if (reason == "--debug-info=full") continue;
                 std::cerr << "warning: [reflection-forces-keep-all] " << reason
                           << " — the lean linker retains the whole class registry"
                              " for this build.\n";

@@ -638,35 +638,59 @@ void __cajeta_dbg_local(const char* name, const char* type, void* addr,
 // reads it through the NATIVE copy. Pure pointer arithmetic on a passed-in
 // void* means both copies resolve a chain node identically, so the host can
 // dereference a pointer the JIT side produced. Used by DebugVars::walkFrames.
+//
+// external-debug §4: `used, retain` on all of them. In-process (the DAP) they are
+// called from C++ and survive; in an AOT binary NOTHING calls them, so DCE and
+// --gc-sections drop them — leaving an external debugger unable to read the very
+// locals the program is busy recording.
+
+// The chain head, for a debugger that has no frame pointer to start from. The DAP
+// is HANDED frame_top by the safepoint handler; gdb is not, so it needs its own
+// way in. Sound for an AOT binary, where the runtime is a single copy and there is
+// no JIT/native TLS split.
+__attribute__((used, retain))
+void* __cajeta_dbg_frame_top(void) {
+    struct cajeta_dbg_frame** top = __cajeta_dbg_top_ptr();
+    return top ? *top : NULL;
+}
+
+__attribute__((used, retain))
 int __cajeta_dbg_frame_depth(void* top) {
     int n = 0;
     for (struct cajeta_dbg_frame* f = top; f; f = f->prev) n++;
     return n;
 }
+__attribute__((used, retain))
 void* __cajeta_dbg_frame_prev(void* frame) {
     return frame ? ((struct cajeta_dbg_frame*) frame)->prev : NULL;
 }
+__attribute__((used, retain))
 const char* __cajeta_dbg_frame_func(void* frame) {
     return frame ? ((struct cajeta_dbg_frame*) frame)->func : NULL;
 }
+__attribute__((used, retain))
 int32_t __cajeta_dbg_frame_loc(void* frame) {
     return frame ? ((struct cajeta_dbg_frame*) frame)->current_loc : -1;
 }
+__attribute__((used, retain))
 int __cajeta_dbg_frame_nlocals(void* frame) {
     return frame ? ((struct cajeta_dbg_frame*) frame)->nlocals : 0;
 }
+__attribute__((used, retain))
 const char* __cajeta_dbg_local_name(void* frame, int i) {
     if (!frame) return NULL;
     struct cajeta_dbg_frame* f = frame;
     if (i < 0 || i >= f->nlocals) return NULL;
     return f->locals[i].name;
 }
+__attribute__((used, retain))
 const char* __cajeta_dbg_local_type(void* frame, int i) {
     if (!frame) return NULL;
     struct cajeta_dbg_frame* f = frame;
     if (i < 0 || i >= f->nlocals) return NULL;
     return f->locals[i].type;
 }
+__attribute__((used, retain))
 void* __cajeta_dbg_local_addr(void* frame, int i) {
     if (!frame) return NULL;
     struct cajeta_dbg_frame* f = frame;
@@ -675,12 +699,14 @@ void* __cajeta_dbg_local_addr(void* frame, int i) {
 }
 // CP7-1b: the two memory facets. Out-of-range reads back 0 (== Unknown), the
 // same neutral fallback codegen uses when a facet isn't statically known.
+__attribute__((used, retain))
 uint8_t __cajeta_dbg_local_alloc(void* frame, int i) {
     if (!frame) return 0;
     struct cajeta_dbg_frame* f = frame;
     if (i < 0 || i >= f->nlocals) return 0;
     return f->locals[i].alloc;
 }
+__attribute__((used, retain))
 uint8_t __cajeta_dbg_local_ownership(void* frame, int i) {
     if (!frame) return 0;
     struct cajeta_dbg_frame* f = frame;
