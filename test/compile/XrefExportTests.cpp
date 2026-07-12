@@ -253,6 +253,30 @@ TEST(XrefExport, DeclarationsCarryFqnKindAndSourceRef) {
     EXPECT_TRUE(has(doc, "\"demo.base.Base.v\""));
 }
 
+// ---- 1.1.2b — a `view` is a view, not a class -------------------------------
+//
+// CajetaView DERIVES from CajetaClass, so a naive isInterface/isRecord check
+// reports every view as a class. That is a WRONG value, not a missing one — the
+// exact failure mode this export exists to prevent (spec §1.3: a resolver that
+// disagrees with the compiler sends you somewhere with total confidence).
+
+TEST(XrefExport, ViewsAreNotReportedAsClasses) {
+    auto proj = makeTmpProject("views");
+    writeUnit(proj.sourceRoot, "demo/Header.cajeta",
+        "package demo;\n"
+        "public view Header {\n"
+        "    int32 magic;\n"
+        "}\n");
+
+    auto doc = emitXref(proj);
+    ASSERT_FALSE(doc.empty());
+
+    auto rec = recordContaining(doc, "\"demo.Header\"");
+    ASSERT_FALSE(rec.empty()) << "the view is missing from the export entirely";
+    EXPECT_TRUE(has(rec, "\"kind\": \"view\""))
+        << "a `view` must not be reported as a `class`; got: " << rec;
+}
+
 // ---- 1.1.3 — overload keys distinguish same-name, same-arity methods ---------
 
 TEST(XrefExport, OverloadsGetDistinctKeys) {
@@ -322,9 +346,22 @@ TEST(XrefExport, InheritanceEdgesAreResolvedFqns) {
     EXPECT_TRUE(has(edge, "\"child\": \"demo.Derived\"")) << edge;
     EXPECT_TRUE(has(edge, "\"kind\": \"extends\"")) << edge;
 
-    // No edge may carry an unresolved bare name.
+    // No edge may carry an unresolved bare name. This is the failure mode that
+    // shipped in the first cut: getCanonicalMap() is keyed by BOTH the FQN and the
+    // short name, so using the map key as the FQN emitted every class twice — once
+    // under a bare name that is not a valid FQN at all.
     EXPECT_FALSE(has(doc, "\"parent\": \"Base\""))
         << "an unresolved raw parent name leaked into the export";
+    EXPECT_FALSE(has(doc, "\"child\": \"Derived\""))
+        << "a bare (non-FQN) child name leaked into the export";
+
+    // A TEMPLATE-INSTANTIATED parent resolves too, with its type arguments — the
+    // stdlib is compiled into every export, and it is full of these. `Comparable<T>`
+    // must come out as e.g. `cajeta.lang.Comparable<cajeta.time.Duration>`, not as
+    // the raw `Comparable`.
+    EXPECT_TRUE(has(doc, "\"parent\": \"cajeta.lang.Comparable<"))
+        << "a template-instantiated parent must be a resolved FQN carrying its "
+           "type arguments";
 }
 
 // ---- 1.1.6 — multiple interfaces, one edge each ------------------------------

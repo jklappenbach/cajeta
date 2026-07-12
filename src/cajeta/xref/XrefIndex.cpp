@@ -2,6 +2,7 @@
 
 #include "cajeta/type/CajetaClass.h"
 #include "cajeta/type/CajetaType.h"
+#include "cajeta/type/CajetaView.h"
 #include "cajeta/type/StructureProperty.h"
 #include "cajeta/method/Method.h"
 
@@ -267,6 +268,11 @@ namespace cajeta::xref {
         }
 
         std::string classKind(const CajetaClassPtr& c) {
+            // CajetaView derives from CajetaClass, so a plain isInterface/isRecord
+            // check silently reports every `view` as a `class`. That is a WRONG
+            // value, not a missing one — the failure mode this whole export exists
+            // to avoid — so discriminate on the concrete type.
+            if (std::dynamic_pointer_cast<CajetaView>(c)) return "view";
             if (c->isInterface()) return "interface";
             if (c->isRecordType()) return "record";
             return "class";
@@ -278,9 +284,17 @@ namespace cajeta::xref {
                                            const std::string& sourceRoot) {
         index.setSourceRoot(sourceRoot);
 
-        for (auto& [canonical, type] : CajetaType::getCanonicalMap()) {
+        for (auto& [mapKey, type] : CajetaType::getCanonicalMap()) {
             auto klass = std::dynamic_pointer_cast<CajetaClass>(type);
             if (!klass) continue;
+
+            // NOT the map key. getCanonicalMap() is keyed by BOTH the canonical
+            // FQN and the short name (so `ArrayList` and `cajeta.collection.
+            // ArrayList` both resolve), which means every class is visited twice —
+            // once under a bare name that is not a valid FQN. Ask the type for its
+            // own canonical name instead; the writer's de-duplication then collapses
+            // the second visit.
+            const std::string canonical = klass->getQName()->toCanonical();
 
             const std::string file = relativize(klass->getDeclaringFile(), sourceRoot);
             // A type with no declaring position was synthesized (mock, template
