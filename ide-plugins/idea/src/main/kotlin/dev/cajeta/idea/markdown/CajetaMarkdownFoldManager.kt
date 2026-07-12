@@ -8,6 +8,7 @@ import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.FoldRegion
 import com.intellij.openapi.editor.Inlay
+import com.intellij.openapi.editor.LogicalPosition
 import com.intellij.openapi.editor.event.DocumentEvent
 import com.intellij.openapi.editor.event.DocumentListener
 import com.intellij.openapi.editor.event.EditorFactoryEvent
@@ -138,6 +139,16 @@ internal object MarkdownFoldEditorListener : EditorFactoryListener {
                 }
                 block.customRegion = null
             }
+            // Sweep orphans too: markdown regions whose owning state was lost
+            // (dropped by an older install pass). The state loop above can't
+            // see them, and they'd block every re-add on their range forever.
+            for (region in foldingModel.allFoldRegions) {
+                if (region is CustomFoldRegion &&
+                    region.renderer is MarkdownFoldRenderer && region.isValid
+                ) {
+                    foldingModel.removeFoldRegion(region)
+                }
+            }
         }
         blocks.clear()
 
@@ -208,15 +219,27 @@ internal object MarkdownFoldEditorListener : EditorFactoryListener {
 
         val blockStates = mutableListOf<WholeLineBlockState>()
         foldingModel.runBatchFoldingOperation {
+            // Remove EVERY markdown region up front — install rebuilds the
+            // world, so anything painted before this point is stale. Install
+            // runs twice for editors open at startup (editorCreated + the
+            // project activity), and regions surviving a rebuild without an
+            // owning state kept painting while being invisible to hit-testing
+            // (unselectable, un-toggleable) and permanently blocked re-adds
+            // ("addCustomLinesFolding refused"). A global sweep — rather than
+            // a per-run overlap check — also catches regions whose offsets no
+            // longer line up with any current comment run (document edits).
+            // Recreating keeps region ↔ state strictly 1:1.
+            for (existing in foldingModel.allFoldRegions) {
+                if (existing is CustomFoldRegion &&
+                    existing.renderer is MarkdownFoldRenderer
+                ) {
+                    foldingModel.removeFoldRegion(existing)
+                }
+            }
             for (run in runs) {
                 val startLine = document.getLineNumber(run.startOffset)
                 val endLine = document.getLineNumber(run.endOffset - 1) + 1
                 if (endLine <= startLine) continue
-
-                val existing = foldingModel.allFoldRegions.firstOrNull {
-                    it.startOffset == run.startOffset && it.endOffset == run.endOffset
-                }
-                if (existing != null) continue
 
                 val markdown = stripCommentMarkers(text.substring(run.startOffset, run.endOffset))
                 if (markdown.isBlank()) continue
@@ -353,15 +376,117 @@ internal object MarkdownFoldEditorListener : EditorFactoryListener {
         val foldingModel = editor.foldingModel as? FoldingModelEx ?: return
         foldingModel.runBatchFoldingOperation {
             collapseBlock(foldingModel, state)
+            if (state.customRegion == null) {
+                // Self-heal: an OWNERLESS markdown region squatting on the
+                // range blocks the re-add forever (regions owned by a live
+                // state are left alone — stealing theirs would just move the
+                // fight). Remove the squatter(s) and retry once.
+                val owned = wholeLineBlocksFor(editor).mapNotNull { it.customRegion }.toSet()
+                var removed = false
+                for (r in foldingModel.allFoldRegions) {
+                    if (r is CustomFoldRegion && r.renderer is MarkdownFoldRenderer &&
+                        r !in owned &&
+                        r.startOffset < state.endOffset && r.endOffset > state.startOffset
+                    ) {
+                        foldingModel.removeFoldRegion(r)
+                        removed = true
+                    }
+                }
+                if (removed) {
+                    log.warn("collapseBlock: removed ownerless markdown region(s) blocking lines ${state.startLine}-${state.endLine}; retrying")
+                    collapseBlock(foldingModel, state)
+                }
+            }
         }
         log.debug("collapseBlock: re-added CustomFoldRegion for lines ${state.startLine}-${state.endLine}")
     }
+
+    /**
+     * Re-render every block except [keep]. The caret listener runs this sweep on
+     * caret movement — but a press on a rendered block is consumed (selection
+     * anchor) and never moves the caret, so the mouse path calls this directly.
+     * Also the recovery for a block whose region couldn't be created earlier
+     * (e.g. the caret sat inside it at install): it re-tries here.
+     */
+    internal fun collapseAllExcept(editor: Editor, keep: WholeLineBlockState?) {
+        for (block in wholeLineBlocksFor(editor)) {
+            if (block !== keep && !block.isCollapsed) {
+                collapseBlock(editor, block)
+            }
+        }
+    }
+
+    /**
+     * [collapseAllExcept], restricted to blocks that start below [y] (editor
+     * content coordinates). The mouse press path uses this: re-rendering an
+     * open block ABOVE the pressed point changes its height and shifts the
+     * pressed block away from the pointer mid-double-click, so only blocks
+     * below — whose re-render can't move anything above them — are swept.
+     */
+    internal fun collapseBelow(editor: Editor, keep: WholeLineBlockState?, y: Int) {
+        for (block in wholeLineBlocksFor(editor)) {
+            if (block === keep || block.isCollapsed) continue
+            val blockTop = editor.logicalPositionToXY(LogicalPosition(block.startLine, 0)).y
+            if (blockTop > y) {
+                collapseBlock(editor, block)
+            }
+        }
+    }
+
+    /**
+     * Deferred complement to [collapseBelow]: a full [collapseAllExcept] once
+     * the double-click window has passed. A press on a block never moves the
+     * caret (it is consumed), so a block left open ABOVE the click would
+     * otherwise only re-render when the user next clicks plain code — this is
+     * what made "click elsewhere returns the comment to md" feel unreliable.
+     * Scheduled from mouseReleased; a second press cancels it, so the layout
+     * cannot shift between the two presses of a double-click.
+     */
+    internal fun scheduleSweepAfterClickWindow(editor: Editor, keep: WholeLineBlockState?) {
+        val alarm = editor.getUserData(SWEEP_ALARM_KEY)
+            ?: Alarm(Alarm.ThreadToUse.SWING_THREAD, editor.project ?: return).also {
+                editor.putUserData(SWEEP_ALARM_KEY, it)
+            }
+        alarm.cancelAllRequests()
+        alarm.addRequest({
+            if (!editor.isDisposed) collapseAllExcept(editor, keep)
+        }, CLICK_WINDOW_MS)
+    }
+
+    /** Cancel a pending deferred sweep (a new press arrived). */
+    internal fun cancelScheduledSweep(editor: Editor) {
+        editor.getUserData(SWEEP_ALARM_KEY)?.cancelAllRequests()
+    }
+
+    private val SWEEP_ALARM_KEY: Key<Alarm> =
+        Key.create("dev.cajeta.idea.markdown.sweepAlarm")
+
+    /** Just past the system double-click interval, so a pending sweep can never
+     *  fire between the two presses of a double-click. */
+    private val CLICK_WINDOW_MS: Int =
+        ((java.awt.Toolkit.getDefaultToolkit()
+            .getDesktopProperty("awt.multiClickInterval") as? Int) ?: 500) + 100
 
     private fun collapseBlock(foldingModel: FoldingModelEx, state: WholeLineBlockState) {
         val renderer = MarkdownFoldRenderer(state.markdown, state.indentColumns)
         state.customRegion = foldingModel.addCustomLinesFolding(
             state.startLine, state.endLine, renderer,
         )
+        if (state.customRegion == null) {
+            // The folding model refused the region (an overlapping fold region,
+            // or the caret inside the range). The state stays registered, so
+            // the caret listener / mouse-path sweeps retry later — but say WHY
+            // in the log instead of silently showing source text.
+            log.warn(
+                "addCustomLinesFolding refused lines ${state.startLine}-${state.endLine}" +
+                    " (indent ${state.indentColumns});" +
+                    " overlapping regions: " +
+                    (foldingModel.allFoldRegions
+                        .filter { it.startOffset < state.endOffset && it.endOffset > state.startOffset }
+                        .joinToString { "${it.javaClass.simpleName}@${it.startOffset}-${it.endOffset}" }
+                        .ifEmpty { "none" }),
+            )
+        }
     }
 
     private val FOLD_DATA_KEY: Key<MutableMap<FoldRegion, TrailingFoldData>> =
