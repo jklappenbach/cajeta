@@ -2209,7 +2209,49 @@ namespace cajeta {
                         storedInterfaceInline = true;
                     }
                 }
-                if (!storedInterfaceInline) {
+                // slices 9.2.1 — String-element store into an OWNING local
+                // array routes through the sidecar helpers so the slot's
+                // per-element ownership tracks the store shape: sources the
+                // array TAKES (identifier lvalue — the deactivation block
+                // below strips its entry; `#`-move; fresh owned temp) mark
+                // the slot; alias sources (field/element reads, literals,
+                // borrow-returning calls) leave it unmarked so the walk
+                // never steals a value owned elsewhere. Both helpers
+                // release a previously-owned occupant (the overwrite leak).
+                bool storedViaElemOwn = false;
+                if (!storedInterfaceInline && lhsAst && rhsAst
+                        && lhs && lhs->getType()->isPointerTy()
+                        && rhsVal && rhsVal->getType()->isPointerTy()) {
+                    if (auto aixLhs = dynamic_pointer_cast<ArrayIndexExpression>(lhsAst)) {
+                        llvm::Value* sidecar = nullptr;
+                        if (!aixLhs->getChildren().empty()) {
+                            if (auto idBase = dynamic_pointer_cast<IdentifierExpression>(
+                                    aixLhs->getChildren()[0])) {
+                                if (auto sc = module->getScopeStack().peek()) {
+                                    if (FieldPtr baseField = sc->getField(
+                                            idBase->getTextValue())) {
+                                        sidecar = baseField->getElemOwnSidecar();
+                                    }
+                                }
+                            }
+                        }
+                        if (sidecar) {
+                            bool takesOwnership =
+                                dynamic_pointer_cast<IdentifierExpression>(rhsAst)
+                                || dynamic_pointer_cast<MoveExpression>(rhsAst)
+                                || MethodCallExpression::freshOwnedStringTemp(rhsAst);
+                            llvm::Function* setFn = module->getRuntimeFunction(
+                                takesOwnership
+                                    ? "__cajeta_string_array_elem_set_owned"
+                                    : "__cajeta_string_array_elem_set_alias");
+                            if (setFn) {
+                                builder->CreateCall(setFn, {sidecar, lhs, rhsVal});
+                                storedViaElemOwn = true;
+                            }
+                        }
+                    }
+                }
+                if (!storedInterfaceInline && !storedViaElemOwn) {
                     builder->CreateStore(rhsVal, lhs);
                 }
                 // Ownership transfer into a class-typed array slot.
