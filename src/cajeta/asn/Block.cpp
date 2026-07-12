@@ -118,10 +118,15 @@ namespace cajeta {
             llvm::BasicBlock* insertBB = builder
                 ? builder->GetInsertBlock() : nullptr;
             if (insertBB && insertBB->hasTerminator()) break;
+            // U3: mark the current shadow frame's line at each statement
+            // boundary. BEFORE the safepoint, not after: a debugger stopped AT a
+            // safepoint reads the shadow stack to render the frame, and if the
+            // mark had not run yet the frame would still carry the PREVIOUS
+            // statement's line — `cjbreak F.cajeta:14` would stop and `cjstack`
+            // would report :13 (external-debug §5.1).
+            if (lineInfo) dbg::emitLineMark(module, child->getSourceLine());
             // CP2: statement-boundary safepoint before each statement.
             if (debugInfo) emitDebugSafepoint(module, child);
-            // U3: mark the current shadow frame's line at each statement boundary.
-            if (lineInfo) dbg::emitLineMark(module, child->getSourceLine());
             child->generateCode(module);
         }
 

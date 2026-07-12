@@ -422,6 +422,13 @@ void __cajeta_drop_mark_inactive(struct cajeta_drop_entry* e) {
 // The `active` flag sits at the same offset in the base and debug entry
 // shapes, so the base cast is valid for both. Pure read — safe to call from
 // the debugger thread while parked (FR-2.3).
+//
+// `used, retain` (external-debug §4.1.7): this is the ONLY runtime signal that a
+// local was moved out of. The ownership ROLE is static, so an owner that has had
+// `#` applied to it still reports Owner — only this flag says the drop entry was
+// deactivated. Nothing in generated code calls it, so an AOT link dropped it, and
+// gdb would have rendered a moved-from local as a live value.
+__attribute__((used, retain))
 int8_t __cajeta_dbg_local_drop_active(void* frame, int i) {
     if (!frame) return -1;
     struct cajeta_dbg_frame* f = frame;

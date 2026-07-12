@@ -31,6 +31,24 @@ void __cajeta_string_adopt(void* s_v, void* buf, int32_t n) {
     caj_str_set_window(s, n, 0, buf);
 }
 
+// external-debug §4.1.6: a debugger must render a String's CONTENTS, not its
+// address. The tagged layout (inline for <= 12 bytes, windowed root beyond) is
+// not something gdb can decode on its own with no DWARF, so hand it the two
+// facts it needs: the byte length, and a pointer to the bytes. Both `used,
+// retain` — nothing in generated code calls them.
+__attribute__((used, retain))
+int32_t __cajeta_string_byte_len(void* s_v) {
+    if (!s_v) return 0;
+    return caj_str_len((const cajeta_string_layout*) s_v);
+}
+
+__attribute__((used, retain))
+const char* __cajeta_string_bytes(void* s_v) {
+    if (!s_v) return "";
+    const char* p = caj_str_ptr((const cajeta_string_layout*) s_v);
+    return p ? p : "";
+}
+
 // Build a fresh String wrapper from raw bytes (FileReader.readString, the
 // compiler's cstr-wrap sites). Copies; the caller keeps `data`.
 void* __cajeta_string_from_buf(const char* data, int64_t len, void* vtable) {
