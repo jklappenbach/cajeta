@@ -825,6 +825,14 @@ namespace cajeta {
         if (dynamic_pointer_cast<CajetaView>(t)) return false;
         if (cls->isInterface() || cls->isValueType()) return false;
         if (cls->isSharedCapableValue()) return false;
+        // String-the-class transfers by the store-site share/resolve
+        // machinery and its fields stay always-owned (§5.1.6) — it is not
+        // a value type, so it needs its own exclusion.
+        if (cls->getQName()
+                && cls->getQName()->getTypeName() == "String"
+                && cls->getQName()->getPackageName() == "cajeta.lang") {
+            return false;
+        }
         return true;
     }
 

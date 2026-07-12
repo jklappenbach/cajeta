@@ -1901,6 +1901,108 @@ namespace cajeta {
         // (`#person.name`) require path-based borrow tracking, which lands in
         // a later step of Session 3.
         auto inner = dynamic_pointer_cast<Expression>(children[0]);
+        // title-tracking §6.3 / §5 (Unit 3 slice 3C) — `#place` EXTRACTION on
+        // a bit-carrying field (`#h.f`): if the field's ownership bit is set,
+        // the title moves to the assignee and the bit decays to borrowed (the
+        // field stays resident and readable); if the bit is clear, panic —
+        // extraction from a place that holds no title (integer-coded throw,
+        // first-clause catchable like the NonNull check). This shape returns
+        // the loaded r-value directly and deliberately does NOT markMovedPath
+        // (post-extraction reads are legal borrows).
+        if (auto dotInner = dynamic_pointer_cast<DotExpression>(inner)) {
+            if (!dotInner->getResolvedType()) dotInner->resolveTypes(module);
+            auto& xch = dotInner->getChildren();
+            auto xRecv = xch.empty() ? nullptr
+                : dynamic_pointer_cast<Expression>(xch[0]);
+            if (xRecv && !xRecv->getResolvedType()) xRecv->resolveTypes(module);
+            auto xRecvClass = xRecv
+                ? dynamic_pointer_cast<CajetaClass>(xRecv->getResolvedType())
+                : nullptr;
+            StructurePropertyPtr xProp;
+            CajetaClassPtr xDecl;
+            if (xRecvClass) {
+                std::function<bool(const CajetaClassPtr&)> xFind =
+                    [&](const CajetaClassPtr& cls) -> bool {
+                        if (!cls) return false;
+                        auto pit = cls->getProperties().find(
+                            dotInner->getIdentifier());
+                        if (pit != cls->getProperties().end()) {
+                            xProp = pit->second;
+                            xDecl = cls;
+                            return true;
+                        }
+                        for (auto& sup : cls->getSuperClasses()) {
+                            if (xFind(sup)) return true;
+                        }
+                        return false;
+                    };
+                xFind(xRecvClass);
+            }
+            if (xProp && xDecl && CajetaClass::fieldHasOwnershipBit(xProp)) {
+                llvm::Value* slot = dotInner->generateCode(module);
+                if (slot && slot->getType()->isPointerTy()) {
+                    int fieldIdx = xDecl->getFieldLlvmIndex(xProp);
+                    int wordIdx = xDecl->getOwnershipWordLlvmIndex();
+                    auto* declTy = llvm::dyn_cast_or_null<llvm::StructType>(
+                        xDecl->getLlvmType());
+                    if (fieldIdx >= 0 && wordIdx >= 0 && declTy
+                            && !declTy->isOpaque()) {
+                        auto* b = module->getBuilder();
+                        auto& xctx = *module->getLlvmContext();
+                        llvm::Type* i8Ty = llvm::Type::getInt8Ty(xctx);
+                        llvm::Type* i64Ty = llvm::Type::getInt64Ty(xctx);
+                        llvm::PointerType* ptrTy =
+                            llvm::PointerType::get(xctx, 0);
+                        const llvm::DataLayout& dl =
+                            module->getLlvmModule()->getDataLayout();
+                        const llvm::StructLayout* sl =
+                            dl.getStructLayout(declTy);
+                        int64_t delta =
+                            (int64_t) sl->getElementOffset((unsigned) wordIdx)
+                            - (int64_t) sl->getElementOffset(
+                                  (unsigned) fieldIdx);
+                        llvm::Value* wordPtr = b->CreateInBoundsGEP(
+                            i8Ty, slot,
+                            llvm::ConstantInt::get(i64Ty, delta),
+                            "xtract_bits_addr");
+                        uint64_t bitIdx =
+                            (uint64_t) xDecl->ownershipBitIndexOf(xProp);
+                        llvm::Value* w = b->CreateLoad(
+                            i64Ty, wordPtr, "xtract_bits");
+                        llvm::Value* bit = b->CreateAnd(
+                            b->CreateLShr(w,
+                                llvm::ConstantInt::get(i64Ty, bitIdx)),
+                            llvm::ConstantInt::get(i64Ty, 1));
+                        llvm::Value* owned = b->CreateICmpNE(
+                            bit, llvm::ConstantInt::get(i64Ty, 0));
+                        llvm::Function* fn =
+                            b->GetInsertBlock()->getParent();
+                        llvm::BasicBlock* panicBB =
+                            llvm::BasicBlock::Create(xctx, "xtract_panic", fn);
+                        llvm::BasicBlock* okBB =
+                            llvm::BasicBlock::Create(xctx, "xtract_ok", fn);
+                        b->CreateCondBr(owned, okBB, panicBB);
+                        b->SetInsertPoint(panicBB);
+                        // CAJETA_PANIC_TITLE_MISS = 3, integer-throw shape
+                        // (< 4096 ⇒ first catch clause binds it).
+                        if (llvm::Function* throwFn =
+                                module->getRuntimeFunction("__cajeta_throw")) {
+                            llvm::Value* code = b->CreateIntToPtr(
+                                llvm::ConstantInt::get(i64Ty, 3), ptrTy);
+                            b->CreateCall(throwFn, {code});
+                        }
+                        b->CreateUnreachable();
+                        b->SetInsertPoint(okBB);
+                        llvm::Value* newW = b->CreateAnd(w,
+                            llvm::ConstantInt::get(i64Ty, ~(1ULL << bitIdx)));
+                        b->CreateStore(newW, wordPtr);
+                        return b->CreateLoad(ptrTy, slot, "xtract_title");
+                    }
+                }
+                // Fall through to the legacy path when layout info is
+                // unavailable (opaque type during bootstrap).
+            }
+        }
         llvm::Value* value = inner ? inner->generateCode(module) : nullptr;
         // The wrapped expression typically yields an l-value (an alloca). The
         // consumer of a moved value wants the r-value — the pointer to the

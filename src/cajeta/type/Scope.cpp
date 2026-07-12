@@ -66,6 +66,26 @@ namespace cajeta {
         }
     }
 
+    vector<Scope::MoveMark> Scope::snapshotMovesSince(size_t mark) const {
+        vector<MoveMark> out;
+        for (size_t i = mark; i < moveLog.size(); ++i) {
+            auto& e = moveLog[i];
+            auto nit = e.first->movedNotes.find(e.second);
+            out.push_back({e.first, e.second,
+                nit == e.first->movedNotes.end() ? string() : nit->second});
+        }
+        return out;
+    }
+
+    void Scope::reapplyMoves(const vector<MoveMark>& moves) {
+        for (auto& m : moves) {
+            if (m.target->movedNames.insert(m.name).second) {
+                moveLog.emplace_back(m.target, m.name);
+            }
+            if (!m.note.empty()) m.target->movedNotes[m.name] = m.note;
+        }
+    }
+
     void Scope::clearMoved(const string& name) {
         Scope* target = this;
         while (target) {

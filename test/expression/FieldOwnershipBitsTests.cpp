@@ -144,8 +144,7 @@ TEST(FieldOwnershipBitsTests, plainStoreLeavesSourceBooksUntouched) {
 
 // 3.1.3a — `#h.f` extraction: title moves to the assignee, the field bit
 // decays to borrowed (field stays readable), holder teardown skips it.
-// DISABLED until Unit 3 slice 3C (extraction codegen + panic).
-TEST(FieldOwnershipBitsTests, DISABLED_fieldExtractionMovesTitle) {
+TEST(FieldOwnershipBitsTests, fieldExtractionMovesTitle) {
     std::string src = std::string(kHolderSrc) +
         "public final class D {\n"
         "    public static int32 work() {\n"
@@ -167,8 +166,7 @@ TEST(FieldOwnershipBitsTests, DISABLED_fieldExtractionMovesTitle) {
 
 // 3.1.3b — extraction from a field holding no title (borrowed) panics
 // (Recoverable throw), rather than minting a forged title.
-// DISABLED until Unit 3 slice 3C (extraction codegen + panic).
-TEST(FieldOwnershipBitsTests, DISABLED_extractionFromBorrowedFieldPanics) {
+TEST(FieldOwnershipBitsTests, extractionFromBorrowedFieldPanics) {
     std::string src = std::string(kHolderSrc) +
         "public final class D {\n"
         "    public static int32 run() {\n"

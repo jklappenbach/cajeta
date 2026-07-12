@@ -545,6 +545,12 @@ namespace cajeta {
         auto scope = module->getScopeStack().peek();
         std::set<std::string> preIfNYA;
         if (scope) preIfNYA = scope->snapshotNotYetAssigned();
+        // title-tracking §3.1.5 — arm-isolated move state. Codegen is
+        // sequential but the arms are exclusive: the else arm must see the
+        // PRE-IF moved state, and the join takes the union (a Block-level
+        // return/throw retraction already emptied a terminating arm's
+        // slice, so terminated arms contribute nothing).
+        size_t preIfMoves = scope ? scope->moveLogSize() : 0;
 
         builder->SetInsertPoint(thenBB);
         if (thenBranch) thenBranch->generateCode(module);
@@ -556,6 +562,11 @@ namespace cajeta {
 
         std::set<std::string> postElseNYA = preIfNYA;
         if (elseBB) {
+            std::vector<Scope::MoveMark> thenMoves;
+            if (scope) {
+                thenMoves = scope->snapshotMovesSince(preIfMoves);
+                scope->retractMovesSince(preIfMoves);
+            }
             if (scope) scope->restoreNotYetAssigned(preIfNYA);
             builder->SetInsertPoint(elseBB);
             if (elseBranch) elseBranch->generateCode(module);
@@ -563,6 +574,7 @@ namespace cajeta {
             if (!builder->GetInsertBlock()->hasTerminator()) {
                 builder->CreateBr(mergeBB);
             }
+            if (scope) scope->reapplyMoves(thenMoves);
         }
 
         // Reset to post-then, then union in post-else.

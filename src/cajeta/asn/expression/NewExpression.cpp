@@ -296,12 +296,17 @@ namespace cajeta {
         // boundElementType was captured at parse-walk time when the
         // substitution stack was live; prefer it. See NewExpression.h.
         CajetaTypePtr type = boundElementType;
-        if (!type) type = CajetaType::of(typeName, package);
-        if (!type) {
-            // Bare-name fallback (primitives and classes): scoped, not the
-            // raw global short-name key — see resolveTypes above.
+        // Bare names resolve SCOPED FIRST (own package → imports → global):
+        // `of(name, "")` hits the raw global short-name key, which is
+        // last-writer-wins across packages — a user class named `Event`
+        // would hijack `heap Event(...)` inside cajeta.xpu.Event.create()
+        // during lazy stdlib codegen. ofScoped's tier 3 is that same global
+        // key, so this is strictly more precise. Qualified names keep the
+        // direct canonical lookup.
+        if (!type && package.empty()) {
             type = CajetaType::ofScoped(typeName, module);
         }
+        if (!type) type = CajetaType::of(typeName, package);
         // Templated `new Box<int32>(...)`: typeArguments were resolved at
         // parse time (in our constructor). Route through the template's
         // instantiation cache so the concrete `Box<int32>` is what we

@@ -149,6 +149,14 @@ namespace cajeta {
         size_t moveLogSize() const { return moveLog.size(); }
         void retractMovesSince(size_t mark);
 
+        // Branch-arm move state (if/else): snapshot the marks an arm
+        // introduced (with their notes), restore the pre-branch state for
+        // the sibling arm, and reapply at the join for the conservative
+        // union — mirrors the definite-assignment snapshot/merge.
+        struct MoveMark { Scope* target; string name; string note; };
+        vector<MoveMark> snapshotMovesSince(size_t mark) const;
+        void reapplyMoves(const vector<MoveMark>& moves);
+
         // The source path `name` borrows from (liveBorrows inverted, walked
         // across ancestors), or "" when `name` is not a recorded borrower.
         string borrowSourceOf(const string& name);
