@@ -11,9 +11,12 @@ refactoring, an inheritance hierarchy view, a static call graph, and gutter
 navigation between parents and children.
 
 ### 1.2 Scope
-This spec assumes `ide-symbol-index` is delivered: named PSI elements,
-`PsiReference`s, a stub index, a subclass index, and a call-site index, covering
-project, dependency, and stdlib source. Nothing here re-derives symbol data.
+This spec assumes `ide-symbol-index` is delivered: a compiler-authoritative
+cross-reference export, named PSI elements, reference adapters over that export,
+and a persistent index of its five relations — covering project, dependency, and
+stdlib source. Nothing here re-derives symbol data, and nothing here resolves
+Cajeta semantics in Kotlin. Each feature below is a *presentation* of relations the
+compiler already computed.
 
 ### 1.3 Why these four are one spec
 They are four presentations of the same three relations:
@@ -21,9 +24,9 @@ They are four presentations of the same three relations:
 | Feature | Relation it presents |
 |---|---|
 | Refactoring | references (find + rewrite) |
-| Inheritance hierarchy | subclass index (both directions) |
-| Call graph | call-site index (both directions) |
-| Gutter navigation | subclass index (both directions), in the gutter |
+| Inheritance hierarchy | inheritance edges, both directions |
+| Call graph | call edges, both directions |
+| Gutter navigation | inheritance + override edges, in the gutter |
 
 Sequenced together they share one foundation. Sequenced apart, each would grow its
 own half-index.
@@ -45,9 +48,13 @@ own half-index.
 ## 2. Refactoring
 
 IntelliJ's refactoring machinery binds to `PsiNamedElement` (for the target) and
-`PsiReference` (for the usages). With §2 and §3 of the symbol spec in place, the
-built-in refactorings become available by registering extension points rather than
-by writing dialogs and text edits.
+`PsiReference` (for the usages). The symbol spec supplies both — named elements at
+§3, reference adapters over the compiler's export at §4 — so the built-in
+refactorings become available by registering extension points rather than by
+writing dialogs and text edits.
+
+The usages a rename rewrites are the ones the *compiler* resolved, not ones the IDE
+guessed at. That is what makes rename safe across overloads and inherited members.
 
 **Requirements**
 
@@ -63,7 +70,13 @@ by writing dialogs and text edits.
   or stdlib source are **reported but not rewritten** (1.4.2), and the operation
   says so plainly rather than appearing to succeed.
 - 2.0.6 Every refactoring is undoable as one action.
-- 2.0.7 A custom Cajeta refactoring menu item is added **only** for operations the
+- 2.0.7 **Refactoring refuses to run on an incomplete index.** A rename driven by a
+  partial reference set silently corrupts code — it rewrites the declaration and the
+  usages it knows about, leaving the rest dangling. If the xref index is stale, mid-
+  refresh, or unavailable (symbol spec §7), rename and safe-delete are disabled with
+  a stated reason. This is the one place where degrading gracefully is not an option:
+  the operation must be correct or refused.
+- 2.0.8 A custom Cajeta refactoring menu item is added **only** for operations the
   platform has no EP for. Extract Method and Change Signature are candidates for a
   later pass; neither is in this spec.
 
@@ -79,6 +92,8 @@ by writing dialogs and text edits.
 - 2.5 As a developer, when I rename something a dependency also uses, I am told the
   library usages exist and cannot be rewritten — not left to discover a broken build.
 - 2.6 As a developer, when a rename goes wrong, one undo puts it all back.
+- 2.7 As a developer, when the index is not current, Rename is greyed out with a
+  reason — rather than half-renaming my code.
 
 ## 3. Inheritance hierarchy
 
@@ -115,11 +130,14 @@ by writing dialogs and text edits.
   surface Java gets. *Open question: whether a whole-program rendered graph is also
   wanted. It needs a different UI (a graph surface, not a tree) and degrades past a
   few hundred nodes. Recommendation: ship the tree, then decide.*
-- 4.0.2 Callers-of and callees-of both read the call-site index (symbol spec §4.0.3).
-- 4.0.3 Overloads are distinguished, not merged (symbol spec §4.0.4).
-- 4.0.4 A call through a virtual method shows the declared target, and — where the
-  subclass index can enumerate them — the possible overriding targets, marked as
-  possible rather than certain.
+- 4.0.2 Callers-of and callees-of both read the compiler's resolved call edges
+  (symbol spec §2.0.1, indexed at §5.0.1). The callee of a call site is whatever the
+  compiler bound it to — the IDE does not perform overload resolution.
+- 4.0.3 Overloads are distinguished, not merged, via the overload key carried end to
+  end (symbol spec §5.0.3).
+- 4.0.4 A call through a virtual method shows the declared target, and — from the
+  inverted inheritance edges — the possible overriding targets, marked as possible
+  rather than certain.
 - 4.0.5 Calls originating in library or stdlib source appear, since that source is
   indexed.
 - 4.0.6 The tree is computed lazily per expansion; opening the view does not build a

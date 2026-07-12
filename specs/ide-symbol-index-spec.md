@@ -1,22 +1,23 @@
-# ide-symbol-index — a semantic symbol layer for the IntelliJ plugin
+# ide-symbol-index — a compiler-authoritative symbol layer for the IDE
 
-Status: draft (2026-07-12)
+Status: draft (2026-07-12, revised)
 Consumed by: `ide-features-spec.md`
 
 ## 1. Definition
 
 ### 1.1 Purpose
-Give the Cajeta IntelliJ/CLion plugin a semantic model of the code it already
-parses: named declarations, resolvable references, and an index that answers
-"where is X declared", "who references X", "who extends X", and "who calls X" —
-across the open project, its dependencies, and the stdlib.
+Make the compiler export what it already knows — which name binds to which
+declaration, who extends whom, who overrides what, who calls what — and have the
+IntelliJ plugin present it. This gives the plugin go-to-definition, find-usages,
+hierarchy, call graph, and refactoring without a second implementation of Cajeta's
+semantics.
 
 ### 1.2 The problem
-The plugin has a real, full-fidelity PSI tree. `CajetaParserDefinition` bridges
-the canonical compiler grammar (`antlr4/CajetaParser.g4`, staged in at build time)
-through `antlr4-intellij-adaptor`, with correct offsets and error recovery.
-
-It has no semantics on top of it. `CajetaParserDefinition.kt:86` reads:
+The plugin parses but does not understand. `CajetaParserDefinition` bridges the
+canonical compiler grammar (`antlr4/CajetaParser.g4`, staged in at build time)
+through `antlr4-intellij-adaptor` into a real, full-fidelity PSI tree with correct
+offsets and error recovery. Then `CajetaParserDefinition.kt:86` throws the
+semantics away:
 
 ```kotlin
 override fun createElement(node: ASTNode): PsiElement = ANTLRPsiNode(node)
@@ -24,257 +25,308 @@ override fun createElement(node: ASTNode): PsiElement = ANTLRPsiNode(node)
 
 Every node is an untyped `ANTLRPsiNode`. There is no `PsiNamedElement`, no
 `PsiReference`, no stub index, no `FileBasedIndex`, no `LineMarkerProvider`, no
-go-to-definition and no find-usages. Consumers resort to string-matching ANTLR
-rule names and BFS-ing for the first `IDENTIFIER` leaf — which is exactly what
-`CajetaStructureViewFactory` does today, and it only works within one file.
+go-to-definition, no find-usages. Today's structure view string-matches ANTLR rule
+names and BFS-es for the first `IDENTIFIER` leaf, and works only within one file.
 
-Every feature in `ide-features-spec.md` — refactoring, call graph, inheritance
-hierarchy, gutter navigation — is blocked on this gap. None of them can be built
-on an untyped tree. This spec closes it once, so the four features become
-consumers rather than four separate re-inventions.
+Every feature in `ide-features-spec.md` is blocked on this.
 
-### 1.3 Where symbol truth lives
-A hybrid, decided 2026-07-12:
+### 1.3 Where semantic truth lives — the compiler
+**The compiler resolves. The IDE presents.** Decided 2026-07-12 after rejecting a
+hybrid in which the plugin would reimplement resolution in Kotlin and be pinned
+against the compiler in tests.
 
-- **The IDE resolves.** Named PSI elements, `PsiReference`s, and the index are
-  built in Kotlin. This is not a preference — IntelliJ's refactoring, find-usages,
-  hierarchy, and gutter extension points bind to `PsiReference` and
-  `PsiNamedElement`. They cannot be driven from a JSON blob. Feature 2 forces this.
-- **The compiler is the reference.** The compiler is the only authority on Cajeta
-  semantics, and a second resolver written in Kotlin will drift from it. Rather
-  than call the compiler per-keystroke (too slow for an editor), we pin the Kotlin
-  resolver against the compiler's own exports **in tests** (§7). Drift becomes a
-  failing test, not a silent wrong answer in the editor.
-- **The compiler supplies what the IDE cannot see.** Stdlib source lives inside
-  the compiler binary and must be extracted (§6.3).
+Two things killed the hybrid:
 
-### 1.4 Constraints
-- 1.4.1 The grammar is not forked. The plugin keeps staging `antlr4/*.g4` from the
+- **There is no oracle to pin it against.** The obvious candidate,
+  `cajeta doc --emit-model-json`, *parses but does not resolve* — its own contract
+  says `extends`/`implements` are "raw declared names as parsed; link resolution
+  and the inheritance graph happen later"
+  (`tools/cajetadoc/skills/cajetadoc-emit-model-json.md:117`). It could validate
+  declarations and nothing else, leaving overload selection, override detection,
+  and callee binding — exactly what features 3, 4 and 5 rest on — unguarded. A
+  Kotlin resolver that disagrees with the compiler is worse than no resolver: it
+  sends you to the wrong declaration with total confidence.
+- **`PsiReference` does not force resolution into Kotlin.** `resolve()` must
+  *return* a `PsiElement`; it does not have to *compute* one. Given the compiler's
+  answer as `(useSite → declaration FQN + SourceRef)`, `resolve()` is an adapter:
+  find the target file, `findElementAt(offset)`, done. The reference object lives
+  in Kotlin; the semantics do not have to.
+
+If the compiler must export its resolved view anyway to serve as an oracle, use it
+directly rather than to grade a second resolver you also maintain. This is the
+clangd/Kythe model rather than the rust-analyzer model, and the precedent is the
+argument: a reimplemented resolver drifts, a reused frontend cannot.
+
+### 1.4 Why this is cheap
+- Every AST node already carries its position — `AbstractSyntaxNode.h:48` holds
+  `sourceLine` and `sourceColumn`, populated from the ANTLR token.
+- The compiler already resolves each call site's callee to a `MethodPtr` and each
+  class's parents to `CajetaClass::superClasses` / `interfaces`. It records none of
+  it. Emitting the export is a walk over data already computed, not a new analysis.
+- The RTTI metadata already defines a signature hash (`CajetaMethodDesc::sigHash`,
+  FNV-1a) — the overload key exists.
+- **The plugin already runs the compiler on every edit.** `CajetaLintAnnotator` is
+  an `ExternalAnnotator` (off-EDT, debounced) that shells out to
+  `cajeta --lint <buffer> --diag-format=json --source-root <root> --shadow <orig>`
+  per buffer. The usual objection — "you cannot put the compiler on the typing
+  path" — is already disproven in this codebase. The xref export rides that same
+  invocation.
+
+### 1.5 Constraints
+- 1.5.1 The grammar is not forked. The plugin keeps staging `antlr4/*.g4` from the
   repo root, so the PSI stays in lockstep with the compiler by construction.
-- 1.4.2 No new runtime dependency on the compiler binary for editing. Typing must
-  not block on a subprocess. Indexing dependency source may.
-- 1.4.3 Indexing must be incremental. A keystroke reindexes one file.
-- 1.4.4 Resolution must degrade, not throw. Unresolved references are normal in a
-  buffer mid-edit; they annotate, they do not except.
+- 1.5.2 One subprocess per edit, not two. The xref export extends the existing lint
+  invocation rather than adding a second compiler round-trip.
+- 1.5.3 The editor never blocks on the compiler. Export is off-EDT; a slow or
+  missing compiler degrades navigation, it does not freeze typing.
+- 1.5.4 Resolution must degrade, not throw. Unresolved references are normal in a
+  buffer mid-edit.
 
-### 1.5 Non-goals
-- 1.5.1 Reimplementing type inference, overload resolution, or the borrow checker
-  in Kotlin. The index resolves *names to declarations*. Where a precise answer
-  needs full type analysis (overload selection among same-arity candidates), the
-  index may return a candidate set, and the consumer presents it.
-- 1.5.2 A language server. This is in-process IntelliJ PSI.
-- 1.5.3 Semantic highlighting, completion, or inspections. They become possible;
-  they are not in this spec.
+### 1.6 Non-goals
+- 1.6.1 Reimplementing type inference, overload resolution, or the borrow checker in
+  Kotlin. The **only** semantics the IDE computes for itself are locals and
+  parameters within a single method body (§4.3) — syntactic, unambiguous, and
+  incapable of disagreeing with the compiler.
+- 1.6.2 A language server. This is in-process IntelliJ PSI over a compiler export.
+- 1.6.3 Semantic completion and inspections. They become possible; not in scope.
 
-## 2. Named PSI elements
+## 2. The compiler cross-reference export
 
-Replace the blanket `ANTLRPsiNode` with typed elements for declarations, so they
-carry a name and can be targeted.
+The core of this spec. A new machine-readable export of the compiler's resolved
+view of a source root, source-mapped so the IDE can tie it back to PSI offsets.
 
 **Requirements**
 
-- 2.0.1 `createElement()` returns a typed element for each declaring rule; all
-  other rules keep returning `ANTLRPsiNode`.
-- 2.0.2 Declaring rules: `classDeclaration`, `interfaceDeclaration`,
+- 2.0.1 A new mode emitting a cross-reference index as JSON. It carries five
+  relations, all with `SourceRef` (file, line, col) on both ends:
+  - **declarations** — FQN, kind, name range, signature, modifiers, and for methods
+    an overload key (name + arity + `sigHash`).
+  - **references** — each use site → the declaration it binds to. Covers type refs,
+    method calls, field/property access, and variable reads.
+  - **inheritance** — `extends` / `implements` edges as **resolved FQNs**, not raw
+    declared names. (This is the gap cajetadoc cannot fill.)
+  - **overrides** — method → the method it overrides.
+  - **calls** — call site → resolved callee, keyed by overload.
+- 2.0.2 The export is available in **lint mode**, for one file against a source
+  root, so it rides the existing per-edit invocation (1.5.2, 1.4). It emits on the
+  same channel as diagnostics, distinguished by kind.
+- 2.0.3 The export is also available for a **whole source root**, for cold indexing
+  of a project, a dependency, or the stdlib.
+- 2.0.4 Emission is opt-in via a flag; a build that does not ask for it pays nothing.
+- 2.0.5 A partially-broken buffer still exports what resolved. Syntax errors
+  suppress the affected region, not the file.
+- 2.0.6 The JSON contract is versioned and lives in `specs/schemas/`. The plugin
+  refuses an unknown major version rather than misreading it.
+- 2.0.7 Determinism: the same input yields byte-identical output (the project
+  already holds this line — see `verify-reproducible`).
+
+**Use cases**
+
+- 2.1 As the plugin, when I lint a buffer, I receive the diagnostics *and* the
+  resolved references for that buffer from one subprocess.
+- 2.2 As the plugin, when I index a dependency's extracted source, I get its
+  declarations, inheritance, and call edges in one pass.
+- 2.3 As the plugin, when I meet an export whose schema major version I do not know,
+  I disable xref-backed features and say so, rather than resolving wrongly.
+- 2.4 As a maintainer, when I add a language construct, the export covers it or the
+  compiler's own tests fail — there is no second resolver to also update.
+
+## 3. Named PSI elements (syntax only)
+
+The IDE owns *naming*, which is syntax, and nothing beyond it. This is what rename
+targets and what the gutter decorates.
+
+**Requirements**
+
+- 3.0.1 `createElement()` returns a typed element for each declaring rule; every
+  other rule keeps returning `ANTLRPsiNode`.
+- 3.0.2 Declaring rules: `classDeclaration`, `interfaceDeclaration`,
   `enumDeclaration`, `recordDeclaration`, `viewDeclaration`,
   `annotationTypeDeclaration`, `methodDeclaration`, `constructorDeclaration`,
   `fieldDeclaration`, `localVariableDeclaration`, `formalParameter`,
   `typeParameter`, `enumConstant`.
-- 2.0.3 Each implements `PsiNameIdentifierOwner`: `getName()`, `getNameIdentifier()`,
-  `setName()` (rename depends on `setName`).
-- 2.0.4 Each exposes a canonical FQN (`package.Outer.Inner`) and its `SourceRef`
-  (file, line, col) so it can be matched against compiler output.
-- 2.0.5 Operator declarations are named elements too. (The cajetadoc model omits
-  operator overloads — `cajetadoc-model-fidelity-spec.md` §2.1 — so they cannot be
-  recovered from that export and must come from PSI.)
+- 3.0.3 Each implements `PsiNameIdentifierOwner` — `getName()`,
+  `getNameIdentifier()`, `setName()`. Rename depends on `setName`.
+- 3.0.4 Each exposes the FQN and offset the export keys on, so a declaration in the
+  export maps to exactly one PSI element.
+- 3.0.5 Operator declarations are named elements. (Independently necessary: the
+  cajetadoc model omits operator overloads entirely —
+  `cajetadoc-model-fidelity-spec.md` §2.1 — which is one more reason it could never
+  have been the oracle.)
 
 **Use cases**
 
-- 2.1 As a developer, when I open a `.cajeta` file, the structure view lists its
-  types and members — built from named elements, not identifier BFS.
-- 2.2 As a developer, when I invoke Rename on a class name, IntelliJ offers its
-  standard rename dialog, because the element is a `PsiNameIdentifierOwner`.
-- 2.3 As a plugin developer, when I ask a PSI element for its FQN, I get one
-  without walking the tree by rule-name string.
+- 3.1 As a developer, when I open a file, the structure view lists its types and
+  members from named elements, not identifier BFS.
+- 3.2 As a developer, when I invoke Rename, IntelliJ offers its standard dialog
+  because the target is a `PsiNameIdentifierOwner`.
 
-## 3. Reference resolution
+## 4. Reference resolution
 
 **Requirements**
 
-- 3.0.1 `PsiReference` implementations for: type references (in `typeType`,
-  `extends`, `implements`, parameter and field types, type arguments), method call
-  targets, field/property access, and variable reads.
-- 3.0.2 Resolution order mirrors the language: local scope → enclosing method →
-  enclosing class (incl. inherited members) → imports → same package → stdlib.
-- 3.0.3 A reference that cannot be resolved returns `null` (or an empty
-  multi-resolve), never throws.
-- 3.0.4 Ambiguous method references (same name, same arity, distinct types) resolve
-  to a candidate set via `PsiPolyVariantReference`, rather than guessing.
-- 3.0.5 References resolve into dependency and stdlib source once mounted (§5).
+- 4.0.1 `PsiReference` implementations for type references, method calls,
+  field/property access, and variable reads. Each is an **adapter**: it looks its
+  own offset up in the index, takes the target `(file, offset)`, and returns the
+  PSI element there.
+- 4.0.2 No scope-walking, import-resolution, or inheritance-lookup logic in Kotlin.
+  Those answers come from the export (§2.0.1).
+- 4.0.3 Ambiguity is reported, not guessed. Where the compiler resolves to a
+  candidate set, the reference is a `PsiPolyVariantReference` and the consumer
+  presents a chooser.
+- 4.0.4 References resolve into dependency and stdlib source once mounted (§6).
+- 4.0.5 An offset with no export entry resolves to `null` — never throws.
+
+- 4.3 **The one local fallback.** Locals and parameters inside a single method body
+  resolve from PSI alone, without the compiler. They are syntactic and unambiguous,
+  so they cannot drift; and they are what keeps navigation responsive in a buffer
+  the compiler has not re-seen yet. Nothing else is resolved IDE-side.
 
 **Use cases**
 
-- 3.1 As a developer, when I Ctrl-click a type name, I land on its declaration —
-  whether it is in my project, in a dependency, or in the stdlib.
-- 3.2 As a developer, when I Ctrl-click a method call, I land on the method; if the
-  call is ambiguous, I get a chooser rather than a wrong jump.
-- 3.3 As a developer, when I Find Usages on a field, I get its reads and writes
-  across the project.
-- 3.4 As a developer, when I reference a type that does not exist, the reference is
-  simply unresolved; the editor does not error out or hang.
+- 4.1 As a developer, when I Ctrl-click a type, method, or field, I land on its
+  declaration — in my project, a dependency, or the stdlib.
+- 4.2 As a developer, when a call is genuinely ambiguous, I get a chooser rather
+  than a confident wrong jump.
+- 4.4 As a developer, when I Ctrl-click a local I declared two lines ago in a buffer
+  the compiler has not re-linted, it still resolves instantly.
+- 4.5 As a developer, when I reference a type that does not exist, the reference is
+  unresolved and the editor carries on.
 
-## 4. The index
+## 5. The index (storage)
 
-Three indexed relations. Names and forward declarations come from a **stub index**
-(so cross-file resolution never parses whole files); the two reverse relations come
-from a `FileBasedIndex`.
+The index is **cache, not authority** — a queryable local store of what the export
+said, so the plugin answers navigation without re-running the compiler.
 
 **Requirements**
 
-- 4.0.1 **Stub index** over declarations: FQN → declaration, simple name → FQN(s).
-  Stubs are built without a full PSI tree, so resolution does not force-parse.
-- 4.0.2 **Subclass index** (reverse hierarchy): parent FQN → direct subtypes.
-  The compiler holds parent links only (`CajetaClass::superClasses`) and has no
-  reverse edge anywhere; the index owns this.
-- 4.0.3 **Call-site index** (reverse calls): callee key → call sites. The compiler
-  resolves a callee `MethodPtr` during codegen but records nothing, so this is new.
-  Needed by *both* callers-of and callees-of, so it is foundation, not a feature.
-- 4.0.4 A callee key survives overloads: FQN + method name + arity (+ signature
-  hash where derivable), not a bare name.
-- 4.0.5 Indexes cover project source, mounted dependency source, and stdlib source
-  alike, and are versioned so a grammar change invalidates them.
-- 4.0.6 Incremental: editing one file reindexes that file.
+- 5.0.1 Store the five relations (§2.0.1), keyed for the queries the features make:
+  FQN → declaration; simple name → FQN(s); use site → declaration; declaration →
+  use sites; parent → **direct subtypes**; callee → **call sites**.
+- 5.0.2 The two reverse relations — subtypes and call sites — are computed by
+  inverting the export on ingest. The compiler holds parent links only
+  (`CajetaClass::superClasses`) and there is no reverse edge anywhere in the
+  codebase.
+- 5.0.3 Overload keys (name + arity + `sigHash`) are preserved end to end, so
+  callers of one overload are never conflated with another's.
+- 5.0.4 Backed by IntelliJ's `FileBasedIndex` so it is incremental and persistent
+  across restarts.
+- 5.0.5 Covers project, mounted dependency, and stdlib source alike.
+- 5.0.6 Versioned by the export schema version *and* the grammar, so either changing
+  invalidates it.
 
 **Use cases**
 
-- 4.1 As a developer, when I ask for a type by name from anywhere, the index answers
-  without parsing the files it did not need.
-- 4.2 As a developer, when I ask "who extends `Shape`", I get every direct subtype
-  in project, deps, and stdlib.
-- 4.3 As a developer, when I ask "who calls `Shape.area`", I get the call sites, and
-  the overload I asked about is not conflated with its siblings.
-- 4.4 As a developer, when I edit a file, the index reflects it without a project
-  rescan.
+- 5.1 As a developer, when I ask who extends `Shape`, I get every direct subtype
+  across project, deps, and stdlib.
+- 5.2 As a developer, when I ask who calls `Shape.area(int32)`, I do not get callers
+  of `Shape.area()`.
+- 5.3 As a developer, when I restart the IDE, navigation works without a full
+  reindex.
+- 5.4 As a developer, when I edit one file, only that file is reindexed.
 
-## 5. Library and stdlib source
+## 6. Library and stdlib source
 
 The premise that library source must be fetched from GitHub is largely false, and
 this section records why.
 
 **Every dependency `.cja` already embeds its full `.cajeta` source.**
 `Compiler.cpp:3320-3345` writes the original source bytes for every user module as
-a `ClassSource` entry (`CajetaArchive.h:56`). Verified against a real cached
-archive (`dev.cajeta.codec`): 48 classes, each with both a `class_bitcode` and a
-`class_source` entry. `cajeta archive extract` already gets them out.
+a `ClassSource` entry (`CajetaArchive.h:56`). Verified against a real cached archive
+(`dev.cajeta.codec`): 48 classes, each carrying both `class_bitcode` and
+`class_source`. `cajeta archive extract` already gets them out.
 
-**The stdlib source is embedded in the compiler binary** (`src/CMakeLists.txt:595`
-globs `runtime/src/**/*.cajeta` into the binary). It is the one thing with no way
-out — there is no `cajeta` subcommand that will emit it (§6.3).
+**The stdlib source is embedded in the compiler binary** — `src/CMakeLists.txt:595`
+globs `runtime/src/**/*.cajeta` into it. It is the one thing with no way out: no
+subcommand emits it.
 
-So the local path is complete, offline, and — unlike a GitHub tag — guaranteed to
-be the exact source the artifact was built from. GitHub is a fallback, not the
-mechanism.
+The local path is therefore complete, offline, and — unlike a GitHub tag —
+guaranteed to be the exact source the artifact was built from. GitHub is a fallback,
+not the mechanism.
 
 **Requirements**
 
-- 5.0.1 On dependency resolution, extract each `.cja`'s `ClassSource` entries into a
-  cached source root and attach it to the IntelliJ project model as **library
-  sources** for that dependency.
-- 5.0.2 Extraction is lazy and cached: done on first need (index, navigation, or a
-  debug stop in that library), keyed by the archive's content hash, and not redone.
-- 5.0.3 Attach the stdlib source root the same way, sourced via §6.3.
-- 5.0.4 Mounted library sources are indexed (§4) and resolvable (§3), but read-only.
-- 5.0.5 **GitHub fallback**: for a dependency whose archive carries no
-  `ClassSource` entries, offer to fetch source from its origin repository. Applies
-  to a `git`-type repository entry (`GitRepository.h` already models clone URL +
-  ref) and to an explicit repo coordinate. Fetch is opt-in, cached, and never
-  blocks the editor.
-- 5.0.6 A GitHub-fetched source tree is marked as *unverified* against the built
-  artifact — the tag may not match the bitcode — and the IDE says so, rather than
-  presenting it as authoritative.
+- 6.0.1 On dependency resolution, extract each `.cja`'s `ClassSource` entries into a
+  cached source root and attach it to the project model as **library sources**.
+- 6.0.2 Extraction and indexing are lazy and cached, keyed by the archive's content
+  hash, done on first need (index, navigation, or a debug stop in that library).
+  Dependencies are immutable, so this is a once-per-version cost.
+- 6.0.3 **New compiler capability — stdlib source extraction.** A subcommand
+  emitting the embedded stdlib sources to a directory, so the plugin can mount and
+  index them. With §2, this is the second and last compiler change this spec needs.
+- 6.0.4 Mounted library and stdlib sources are indexed (§5) and resolvable (§4), but
+  read-only.
+- 6.0.5 **GitHub fallback**: for a dependency whose archive carries no `ClassSource`
+  entries, offer to fetch source from its origin repository. `GitRepository.h`
+  already models clone URL + ref. Opt-in, cached, never blocks the editor.
+- 6.0.6 GitHub-fetched source is marked **unverified** against the built artifact —
+  the tag may not match the bitcode — and the IDE says so rather than presenting it
+  as authoritative.
 
 **Use cases**
 
-- 5.1 As a developer, when I Ctrl-click into a dependency's class, I see its real
+- 6.1 As a developer, when I Ctrl-click into a dependency's class, I see its real
   source, offline, with no download.
-- 5.2 As a developer, when the debugger stops in a stdlib frame
-  (e.g. `ArrayList.cajeta:183`), the editor opens that source at that line.
-- 5.3 As a developer, when the debugger stops in a dependency frame, the editor
-  opens the dependency's embedded source at that line.
-- 5.4 As a developer, when a dependency ships no source, I am offered a fetch from
-  its repository, and told the result is unverified against the built artifact.
-- 5.5 As a developer, when I am offline and every dependency ships source, nothing
-  in this feature touches the network.
-- 5.6 As a developer, when I edit a mounted library source file, the IDE refuses —
-  it is a read-only view of a built artifact.
+- 6.2 As a developer, when the debugger stops in a stdlib frame (e.g.
+  `ArrayList.cajeta:183`), the editor opens that source at that line.
+- 6.3 As a developer, when the debugger stops in a dependency frame, the editor opens
+  the dependency's embedded source at that line.
+- 6.4 As a developer, when a dependency ships no source, I am offered a fetch from
+  its repository and told the result is unverified.
+- 6.5 As a developer, when I am offline and every dependency ships source, nothing
+  here touches the network.
+- 6.6 As a developer, when I try to edit mounted library source, the IDE refuses.
 
-## 6. Compiler interop
+## 7. Freshness and degradation
 
-**Requirements**
-
-- 6.0.1 No compiler subprocess on the typing path (1.4.2).
-- 6.0.2 The plugin may invoke the compiler during indexing/attachment:
-  `cajeta archive list --json` and `cajeta archive extract` (both exist).
-- 6.0.3 **New compiler capability — stdlib source extraction.** A subcommand that
-  emits the embedded stdlib `.cajeta` sources to a directory (and lists them), so
-  the plugin can mount them. This is the only compiler change this spec requires.
-- 6.0.4 The plugin degrades if the compiler binary is missing or too old: project
-  source still indexes and resolves; library/stdlib sources simply do not mount.
-
-**Use cases**
-
-- 6.1 As a developer, when I have no `cajeta` binary configured, the plugin still
-  gives me navigation within my own project.
-- 6.2 As a developer, when I run the new stdlib-source command, I get the stdlib
-  sources on disk, and the version matches the binary that emitted them.
-
-## 7. Anti-drift: the compiler as reference
-
-A Kotlin resolver that silently disagrees with the compiler is worse than none —
-it sends you to the wrong declaration with full confidence. This is the primary
-risk of the hybrid, and it gets a mechanism rather than a hope.
+The cost of compiler-authoritative resolution is that the answer can be stale or
+absent. That is a design problem to solve, not a footnote.
 
 **Requirements**
 
-- 7.0.1 A differential test: for a corpus of Cajeta source (the stdlib and
-  `samples/tour` are the obvious bodies), extract the declaration set the plugin's
-  index produces, and compare it against the compiler's own structural export
-  (`cajeta doc <root> --emit-model-json`). Every declaration the compiler reports
-  must be present in the index.
-- 7.0.2 Known and accepted divergences are enumerated, not hidden: the doc model
-  omits operator overloads and leaves `extends`/`implements` as raw unresolved
-  names (`cajetadoc-model-fidelity-spec.md` §2.1, §2.2). The test asserts around
-  these explicitly, so a *new* divergence fails rather than blending in.
-- 7.0.3 The grammar is staged, not copied (1.4.1), so a grammar change that the PSI
-  layer does not handle surfaces as a build or test failure.
+- 7.0.1 Xref for the **edited buffer** is refreshed by the same debounced lint pass
+  that already runs, against the in-memory buffer (`--shadow`), so the file you are
+  typing in is the freshest thing in the index.
+- 7.0.2 While a refresh is in flight, the previous export remains queryable.
+  Navigation gives a slightly stale answer rather than none.
+- 7.0.3 A stale-but-plausible answer must not become a *wrong* one: a resolution
+  whose target offset no longer holds a matching declaration is discarded rather
+  than followed to whatever moved into that offset.
+- 7.0.4 With no compiler configured, or one too old for the schema, xref-backed
+  features (go-to-definition across files, hierarchy, call graph, gutter nav) are
+  **disabled and visibly so**. Locals still resolve (§4.3); syntax highlighting,
+  structure view, and folding are unaffected. The plugin never silently guesses.
+- 7.0.5 Cold indexing runs in the background with visible progress and never blocks
+  the editor.
 
 **Use cases**
 
-- 7.1 As a maintainer, when I change the language grammar, a stale PSI layer fails a
-  test rather than silently mis-resolving in users' editors.
-- 7.2 As a maintainer, when the plugin's index misses a declaration the compiler
-  sees, CI tells me which one.
+- 7.1 As a developer, when I type, my buffer's references stay current without a
+  second compiler run beyond the lint I already pay for.
+- 7.2 As a developer, when I Ctrl-click while indexing is in flight, I get the last
+  known answer or an honest "not indexed yet" — never a jump to the wrong place.
+- 7.3 As a developer, when I have no compiler configured, the editor still opens,
+  highlights, folds, and navigates locals, and tells me why the rest is off.
+- 7.4 As a developer, when I open a large project cold, I can type immediately and
+  navigation lights up as indexing completes.
 
-## 8. Performance and correctness
+## 8. Performance
 
-- 8.0.1 Resolution on a warm index is fast enough to run on the EDT-adjacent paths
-  IntelliJ expects (Ctrl-click, gutter render). Concretely: no subprocess, no full
-  reparse of unrelated files.
-- 8.0.2 A cold index of a project plus its dependencies completes in the background
-  without blocking the editor, with progress visible.
-- 8.0.3 Indexing a mid-edit buffer with syntax errors does not corrupt the index or
-  throw; the error-recovery strategy already in `CajetaErrorStrategy` applies.
+- 8.0.1 Navigation on a warm index does not spawn a subprocess and does not reparse
+  unrelated files.
+- 8.0.2 The per-edit xref export must not measurably slow the lint pass the plugin
+  already runs. It is a walk over resolved data, not a new analysis (1.4).
+- 8.0.3 Cold-indexing a dependency happens once per version, keyed by content hash.
 
 **Use cases**
 
-- 8.1 As a developer, when I open a project cold, I can type immediately; navigation
-  lights up as indexing completes.
-- 8.2 As a developer, when my file has a syntax error, navigation elsewhere in the
-  project still works.
+- 8.1 As a developer, when I Ctrl-click, it is instant.
+- 8.2 As a developer, when I type, linting is no slower than it is today.
 
 ## 9. Deliverable
 
-Named PSI elements, references, a three-relation index, mounted library and stdlib
-sources, one new compiler subcommand, and a differential test pinning the plugin's
-view of the language to the compiler's. On completion, `ide-features-spec.md` is
-unblocked.
+Two compiler changes — a versioned cross-reference export (§2) and stdlib source
+extraction (§6.0.3) — plus, in the plugin: named PSI elements, reference adapters, a
+persistent five-relation index, mounted library and stdlib sources, and honest
+degradation when the compiler is absent. No Cajeta semantics are reimplemented in
+Kotlin. On completion, `ide-features-spec.md` is unblocked.

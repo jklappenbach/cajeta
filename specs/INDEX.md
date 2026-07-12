@@ -8,7 +8,7 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | Spec | Plan | Status |
 |------|------|--------|
 | [external-debug](external-debug-spec.md) | [plan](../agents/external-debug-plan.md) | active — Units 1–6 delivered and green; one item (5.1.7 cycle-render test) is untestable, awaiting a call on whether to close |
-| [ide-symbol-index](ide-symbol-index-spec.md) | — | draft — semantic PSI + symbol index for the IDE plugin; foundation for ide-features |
+| [ide-symbol-index](ide-symbol-index-spec.md) | — | draft — compiler-authoritative xref export + PSI presentation layer; foundation for ide-features |
 | [ide-features](ide-features-spec.md) | — | draft — refactoring, hierarchy, call graph, gutter nav; blocked on ide-symbol-index |
 | [optional-borrow-ownership](optional-borrow-ownership-spec.md) | [plan](../agents/cajeta/optional-borrow-ownership-plan.md) | active |
 | [docs-refactor](docs-refactor-spec.md) | [plan](../agents/docs-refactor-plan.md) | active |
