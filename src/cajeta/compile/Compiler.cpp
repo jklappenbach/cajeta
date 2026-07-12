@@ -1347,14 +1347,20 @@ namespace cajeta {
         // anywhere under sourceRootPath into the archive registry.
         // Lets fromContext's miss path vouch for forward references
         // before deciding placeholder vs unknown-type error.
-        prescanSourceRoot(sourceRootPath, getFlags().diagFormat == DiagFormat::Json);
+        {
+            ProgressPhase phase("prescan", "Scanning sources");
+            prescanSourceRoot(sourceRootPath, getFlags().diagFormat == DiagFormat::Json);
+        }
 
         list<string>* modulePaths = listModulePaths(sourceRootPath);
 
-        for (string sourcePath: *modulePaths) {
-            CajetaModulePtr module = createModule(sourcePath, sourceRootPath, archiveRootPath);
-            compile(module);
-            cout << "\n";
+        {
+            ProgressPhase phase("parse", "Parsing");
+            for (string sourcePath: *modulePaths) {
+                CajetaModulePtr module = createModule(sourcePath, sourceRootPath, archiveRootPath);
+                compile(module);
+                cout << "\n";
+            }
         }
 
         // Incremental compilation: bind manifest entries to their parsed
@@ -1387,6 +1393,12 @@ namespace cajeta {
 //        if (method == nullptr) {
 //            return;
 //        }
+
+        // Type/aspect/DI resolution: everything between "all sources parsed"
+        // and "codegen may begin". Scoped so the phase closes before the
+        // Phase 1/2 loop opens its own.
+        std::unique_ptr<ProgressPhase> resolvePhase =
+            std::make_unique<ProgressPhase>("resolve", "Resolving types");
 
         // Forward-reference validation. Catches any placeholder
         // CajetaClass created during the parse passes that no
@@ -1478,6 +1490,12 @@ namespace cajeta {
                      << "\n";
             }
         }
+
+        // Resolution (incl. the incremental obligation replay above) is done;
+        // close its phase before codegen opens the next one.
+        resolvePhase.reset();
+        std::unique_ptr<ProgressPhase> codegenPhase =
+            std::make_unique<ProgressPhase>("codegen", "Generating code");
 
         // Phase 1 (signatures) + Phase 2 (bodies), looped until quiescent.
         // A user method body can trigger a stdlib template instantiation
@@ -1720,6 +1738,13 @@ namespace cajeta {
             }
         }
 
+        // Codegen (incl. clinits, XPU kernels, the main shim, tree-shaking) is
+        // done; from here on it is IR settling, optimization/lowering and
+        // writing artifacts out.
+        codegenPhase.reset();
+        std::unique_ptr<ProgressPhase> emitPhase =
+            std::make_unique<ProgressPhase>("emit", "Emitting objects");
+
         // Incremental: settle every module's IR before the emit branch.
         // Clean modules swap in their cached .bc wholesale (the parse-module
         // holds only declarations; codegen never ran, so a load failure is
@@ -1872,7 +1897,9 @@ namespace cajeta {
             }
         }
 
+        emitPhase.reset();
         if (emitMode == EmitMode::Exe) {
+            ProgressPhase phase("link", "Linking");
             linkExecutable(archiveRootPath);
         }
 

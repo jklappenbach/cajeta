@@ -72,25 +72,37 @@ object CajetaBuildBridge {
         val outBuf = StringBuilder()
         val errBuf = StringBuilder()
 
-        fun drainLines(buf: StringBuilder) {
+        // A line the parser claims (an NDJSON diagnostic or compile-phase record)
+        // is surfaced as its structured event ONLY — echoing it too would spill
+        // raw JSON into the console the user reads. Everything else is echoed
+        // verbatim. Echo is therefore line-buffered: a chunk without a newline
+        // is held until its line completes (and flushed at exit below), since we
+        // cannot know whether a partial line is structured.
+        fun emitLine(line: String, stdout: Boolean) {
+            val parsed = lineParser.parse(line, buildId)
+            if (parsed != null) {
+                listener.onEvent(buildId, parsed.event)
+                if (parsed.isError) errorCount++
+            } else {
+                listener.onEvent(buildId, OutputBuildEventImpl(buildId, line + "\n", stdout))
+            }
+        }
+
+        fun drainLines(buf: StringBuilder, stdout: Boolean) {
             var nl = buf.indexOf("\n")
             while (nl >= 0) {
                 val line = buf.substring(0, nl)
                 buf.delete(0, nl + 1)
-                lineParser.parse(line, buildId)?.let {
-                    listener.onEvent(buildId, it.event)
-                    if (it.isError) errorCount++
-                }
+                emitLine(line, stdout)
                 nl = buf.indexOf("\n")
             }
         }
 
         val sink = object : OutputSink {
             override fun append(text: String, stdout: Boolean) = synchronized(lock) {
-                listener.onEvent(buildId, OutputBuildEventImpl(buildId, text, stdout))
                 val buf = if (stdout) outBuf else errBuf
                 buf.append(text)
-                drainLines(buf)
+                drainLines(buf, stdout)
             }
         }
 
@@ -101,14 +113,13 @@ object CajetaBuildBridge {
             return Result.FAILURE
         }
 
-        // Flush any trailing partial lines through the parser.
+        // Flush trailing partial lines (output not terminated by a newline):
+        // parse them like any other line, echo them when they aren't structured.
         synchronized(lock) {
-            for (buf in listOf(outBuf, errBuf)) if (buf.isNotEmpty()) {
-                lineParser.parse(buf.toString(), buildId)?.let {
-                    listener.onEvent(buildId, it.event)
-                    if (it.isError) errorCount++
-                }
-            }
+            if (outBuf.isNotEmpty()) emitLine(outBuf.toString(), stdout = true)
+            if (errBuf.isNotEmpty()) emitLine(errBuf.toString(), stdout = false)
+            outBuf.clear()
+            errBuf.clear()
         }
 
         val result = when {

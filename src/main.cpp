@@ -393,6 +393,11 @@ int main(int argc, const char* argv[]) {
                     compiler.getMutableFlags().diagFormat)) {
                 printUsage(argv[0]); return 1;
             }
+            // Phase-progress records ride the same NDJSON stream as the
+            // diagnostics, so they turn on with it (and only with it — text
+            // mode stays byte-for-byte as it was).
+            cajeta::setJsonProgressEnabled(
+                compiler.getFlags().diagFormat == DiagFormat::Json);
         } else if (match(arg, "source-tags",         value)) { if (!setBoolFlag("source-tags",         value, compiler.getMutableFlags().sourceTags))         { printUsage(argv[0]); return 1; } }
           else if (match(arg, "poison-free",         value)) { if (!setBoolFlag("poison-free",         value, compiler.getMutableFlags().poisonFree))         { printUsage(argv[0]); return 1; } }
           else if (match(arg, "drop-chain-validate", value)) { if (!setBoolFlag("drop-chain-validate", value, compiler.getMutableFlags().dropChainValidate))  { printUsage(argv[0]); return 1; } }

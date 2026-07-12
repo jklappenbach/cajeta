@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -91,5 +92,45 @@ namespace cajeta {
                             const std::string& file = "",
                             int line = -1,
                             int column = -1);
+
+    // Process-wide gate for the phase-progress records below. Set once from the
+    // flag parse (`--diag-format=json`). Mirrors the build tool's
+    // buildtool::setDiagnosticFormat toggle: the phase markers live deep inside
+    // Compiler::compile, and threading a bool through every phase would buy
+    // nothing over a single process-scoped switch.
+    void setJsonProgressEnabled(bool enabled);
+    bool jsonProgressEnabled();
+
+    // Emit one compile-phase progress record as an NDJSON line to stderr, on the
+    // SAME stream as the diagnostics above and only under `--diag-format=json`.
+    // Fields: kind ("progress" — the discriminator; a diagnostic record has no
+    // `kind` and always has `severity`, so the two never collide and an older
+    // consumer that keys on `severity` simply ignores these), phase (stable id:
+    // "prescan" | "parse" | "resolve" | "codegen" | "emit" | "link"), state
+    // ("start" | "finish"), label (human-readable phase name), and, on finish,
+    // elapsedMs. One line per call, flushed, so the IDE sees each phase as it
+    // begins rather than after the build ends.
+    void emitJsonProgress(const std::string& phase,
+                          const std::string& state,
+                          const std::string& label,
+                          long long elapsedMs = -1);
+
+    // RAII phase marker: emits `start` on construction and `finish` (with the
+    // measured duration) on destruction, so an early return or a thrown
+    // diagnostic still closes the phase it was raised in. A no-op unless the
+    // compiler is running under `--diag-format=json`.
+    class ProgressPhase {
+    public:
+        ProgressPhase(std::string phase, std::string label);
+        ~ProgressPhase();
+        ProgressPhase(const ProgressPhase&) = delete;
+        ProgressPhase& operator=(const ProgressPhase&) = delete;
+
+    private:
+        std::string phase;
+        std::string label;
+        bool active;
+        std::chrono::steady_clock::time_point startedAt;
+    };
 
 } // namespace cajeta
