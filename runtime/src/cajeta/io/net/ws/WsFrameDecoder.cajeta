@@ -363,7 +363,10 @@ public class WsFrameDecoder {
             // it with a fresh empty buffer) so the decoder no longer
             // aliases the bytes it is about to hand to the frame — the
             // BufferPool.acquire hand-off discipline.
-            int8[] pay = this.payBuf;
+            // `#place` extraction (title out, bit decays) — a plain alias
+            // read followed by the owned re-init store would displaced-
+            // release the very bytes `pay` hands to the frame (spec 5.1.3).
+            int8[] pay = #this.payBuf;
             this.payBuf = heap int8[0];
             // Bind the boolean/int header fields to named locals before the
             // call — a boolean field loaded directly into a call argument can

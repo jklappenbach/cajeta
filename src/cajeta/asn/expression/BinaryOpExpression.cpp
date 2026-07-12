@@ -2361,15 +2361,61 @@ namespace cajeta {
                         }
                     }
                 }
+                // title-tracking Unit 4 close-out discovery — fields OUTSIDE
+                // the bit system keep the LEGACY implicit transfer. Statics
+                // foremost: fieldHasOwnershipBit excludes them, so a plain
+                // store into `Reg.shared` records no spelling; without this
+                // block the source local's drop fires at scope exit and the
+                // singleton `instance()` shape returns a freed object (the
+                // IfxRegistry/Ws/Https SIGSEGVs — poisoned reads through the
+                // static). Deactivate the identifier source's entry, exactly
+                // the pre-3A block, but ONLY when the fob machinery did not
+                // engage (fobWordPtr null); bit-carrying fields already
+                // recorded the spelling and a plain store there is a borrow.
+                // Statics get a real owner story with the Unit 5 `#?` ABI.
+                if (!fobWordPtr && lhsAst && rhsAst
+                        && dynamic_pointer_cast<DotExpression>(lhsAst)) {
+                    if (!lhsAst->getResolvedType()) lhsAst->resolveTypes(module);
+                    CajetaTypePtr fieldType = lhsAst->getResolvedType();
+                    auto fieldClass = dynamic_pointer_cast<CajetaClass>(fieldType);
+                    bool fieldIsArr =
+                        dynamic_pointer_cast<CajetaArray>(fieldType) != nullptr;
+                    bool fieldIsIface = fieldClass && fieldClass->isInterface();
+                    bool fieldIsView =
+                        dynamic_pointer_cast<CajetaView>(fieldType) != nullptr;
+                    bool fieldStoresAsPointer =
+                        fieldIsArr || (fieldClass && !fieldIsView && !fieldIsIface);
+                    if (fieldStoresAsPointer) {
+                        if (auto idExpr =
+                                dynamic_pointer_cast<IdentifierExpression>(rhsAst)) {
+                            if (auto sc = module->getScopeStack().peek()) {
+                                FieldPtr srcField = sc->getField(
+                                    idExpr->getTextValue());
+                                if (srcField) {
+                                    if (llvm::Value* entry =
+                                            srcField->getDropEntry()) {
+                                        if (llvm::Function* mark =
+                                                module->getRuntimeFunction(
+                                                    "__cajeta_drop_mark_inactive")) {
+                                            builder->CreateCall(mark, {entry});
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 // title-tracking §5.1.2 (Unit 3) — the field bit records the
                 // store's spelling. The pre-store block above computed the
                 // word address, bit index, spelling, and released a displaced
                 // owned value; here the new bit lands. The IMPLICIT transfer
                 // on plain field stores (the old deactivate-the-source-entry
-                // block) is REMOVED: a plain store is a borrow store — the
-                // source keeps its books (spec §1.2 problem 2). Owned
-                // spellings carry their own bookkeeping (`#x` deactivates via
-                // MoveExpression; fresh rvalues have no local entry).
+                // block) is REMOVED for BIT-CARRYING fields: a plain store
+                // there is a borrow store — the source keeps its books (spec
+                // §1.2 problem 2). Owned spellings carry their own bookkeeping
+                // (`#x` deactivates via MoveExpression; fresh rvalues have no
+                // local entry). Bit-less fields keep legacy transfer (block
+                // above).
                 if (fobWordPtr && fobBitIdx >= 0) {
                     auto& fobCtx2 = *module->getLlvmContext();
                     llvm::Type* i64Ty2 = llvm::Type::getInt64Ty(fobCtx2);

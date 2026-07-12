@@ -126,7 +126,7 @@ public class Router {
                 grown[j] = this.routes[j];
                 j = j + 1;
             }
-            this.routes = grown;
+            this.routes = #grown;
         }
         this.routes[this.routeCount] = r;
         this.routeCount = this.routeCount + 1;

@@ -154,9 +154,9 @@ public final class JsonObject {
             dstV[i] = this.values[i];
             i = i + 1;
         }
-        this.keys = dstK;
-        this.keyLens = dstL;
-        this.values = dstV;
+        this.keys = #dstK;
+        this.keyLens = #dstL;
+        this.values = #dstV;
         this.cap = newCap;
     }
 

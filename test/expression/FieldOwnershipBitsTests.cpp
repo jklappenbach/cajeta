@@ -183,3 +183,37 @@ TEST(FieldOwnershipBitsTests, extractionFromBorrowedFieldPanics) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// Unit 4 close-out discovery — STATIC fields carry no ownership bit, so a
+// plain store into one keeps the LEGACY implicit transfer: `Reg.shared = r`
+// hands the object to the static; the source local's drop entry deactivates
+// and the singleton survives its constructing frame (the `instance()` shape
+// the pre-3A block covered; regression seen as IfxRegistry/Ws/Https SIGSEGVs
+// reading a poisoned singleton). Statics get a real owner story in Unit 5.
+TEST(FieldOwnershipBitsTests, staticFieldStoreTransfersSingleton) {
+    std::string src =
+        "package test;\n"
+        "public final class Reg {\n"
+        "    private static Reg shared;\n"
+        "    public int32 tag;\n"
+        "    public Reg() { this.tag = 42; }\n"
+        "    public static Reg instance() {\n"
+        "        if (Reg.shared == null) {\n"
+        "            Reg r = heap Reg();\n"
+        "            Reg.shared = r;\n"
+        "        }\n"
+        "        return Reg.shared;\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Reg a = Reg.instance();\n"
+        "        Reg b = Reg.instance();\n"
+        "        if (a != null && b != null && a.tag == 42 && b.tag == 42) {\n"
+        "            return 1;\n"
+        "        }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
