@@ -27,11 +27,20 @@ namespace cajeta {
         if (!fn) return;
 
         std::string function;
+        std::string file;
         if (auto method = module->getCurrentMethod()) {
             function = method->getLlvmSymbolName();
+            // The declaring class's file, remapped — same source as #FrameDesc
+            // (external-debug §6). getSourcePath() was the raw ABSOLUTE path,
+            // which is not reproducible across build roots (§3.1.3) and is
+            // EMPTY for every stdlib statement (one module, no source path).
+            if (auto parent = method->getParent()) {
+                file = parent->getDeclaringFile();
+            }
         }
+        if (file.empty()) file = module->remappedSourcePath();
         int32_t locId = dbg::globalDbgLocTable().add(
-            module->getSourcePath(),
+            file,
             statement->getSourceLine(),
             statement->getSourceColumn(),
             function);

@@ -66,6 +66,10 @@ public:
         // compiler default), so getStackTrace() yields semantic frames. Tests
         // exercising the address-only fallback set this false.
         bool lineInfoEnabled = true;
+        // --debug-info=full: statement safepoints, local records, and the
+        // embedded location table (external-debug §2/§3). Off by default — it
+        // changes codegen and only matters under a debugger.
+        bool debugInfoEnabled = false;
         // XPU device backend(s) to register @Kernels for and bundle in the
         // runtime manifest. Empty defaults to {Nvptx} (the legacy NVIDIA
         // host-launch path). The CPU dispatcher tests set {Cpu} to exercise

@@ -515,6 +515,110 @@ int32_t __cajeta_stack_line(int32_t i) {
     return __cajeta_shadow[n - 1 - i].line;
 }
 
+// ============================================================================
+// The embedded location table (external-debug §3).
+//
+// The compiler's DbgLocTable maps loc_id -> {file, line, col, function}. It is
+// a compiler-PROCESS global: `cajeta dap` can read it only because the DAP
+// compiles and runs in one process. An external debugger attached to a built
+// binary has no compiler, so under --debug-info=full codegen serializes the
+// table into the binary as a constant array and emits a global ctor that
+// registers it here. These accessors are then the debugger's whole view:
+// loc_id -> source position, and (file, line) -> the ids to arm.
+//
+// Registration rather than a weak extern: the table's definition is emitted at
+// end of codegen, but the runtime bitcode is linked into each module long
+// before that, so a weak default here and a strong definition there would
+// collide in one module (LLVM renames the second, silently). A ctor call is
+// the same shape the XPU kernel registry already uses, and it behaves
+// identically under LLJIT and a native link.
+//
+// A `line` or `off` build registers nothing: the table stays empty and every
+// accessor answers benignly (§3.1.4). `used, retain` because nothing in
+// generated code calls these — DCE and --gc-sections would otherwise drop
+// them, which is exactly how __cajeta_print_stack was lost on its first cut.
+// ============================================================================
+typedef struct {
+    const char* file;
+    int32_t     line;
+    int32_t     col;
+    const char* func;
+} CajetaDbgLocEntry;
+
+static const CajetaDbgLocEntry* __cajeta_dbg_loc_entries = 0;
+static int32_t __cajeta_dbg_loc_n = 0;
+
+// Called from the ctor codegen emits under --debug-info=full. A null/empty
+// registration CLEARS the table (an `off`/`line` binary registers nothing at
+// all, and this keeps "no table" reachable for tests).
+__attribute__((used, retain))
+void __cajeta_dbg_register_loc_table(const CajetaDbgLocEntry* entries,
+                                     int32_t count) {
+    if (!entries || count <= 0) {
+        __cajeta_dbg_loc_entries = 0;
+        __cajeta_dbg_loc_n = 0;
+        return;
+    }
+    __cajeta_dbg_loc_entries = entries;
+    __cajeta_dbg_loc_n = count;
+}
+
+__attribute__((used, retain))
+int32_t __cajeta_dbg_loc_count(void) {
+    return __cajeta_dbg_loc_entries ? __cajeta_dbg_loc_n : 0;
+}
+
+__attribute__((used, retain))
+const char* __cajeta_dbg_loc_file(int32_t id) {
+    if (!__cajeta_dbg_loc_entries || id < 0 || id >= __cajeta_dbg_loc_n) return "";
+    const char* f = __cajeta_dbg_loc_entries[id].file;
+    return f ? f : "";
+}
+
+__attribute__((used, retain))
+int32_t __cajeta_dbg_loc_line(int32_t id) {
+    if (!__cajeta_dbg_loc_entries || id < 0 || id >= __cajeta_dbg_loc_n) return 0;
+    return __cajeta_dbg_loc_entries[id].line;
+}
+
+__attribute__((used, retain))
+int32_t __cajeta_dbg_loc_col(int32_t id) {
+    if (!__cajeta_dbg_loc_entries || id < 0 || id >= __cajeta_dbg_loc_n) return 0;
+    return __cajeta_dbg_loc_entries[id].col;
+}
+
+__attribute__((used, retain))
+const char* __cajeta_dbg_loc_func(int32_t id) {
+    if (!__cajeta_dbg_loc_entries || id < 0 || id >= __cajeta_dbg_loc_n) return "";
+    const char* f = __cajeta_dbg_loc_entries[id].func;
+    return f ? f : "";
+}
+
+// The ids a line breakpoint on (file, line) must arm. `file` matches by suffix
+// on a path boundary, so a debugger may pass either the table's stored path
+// ("cajeta/lang/Guid.cajeta") or just the basename ("Guid.cajeta"). Writes up
+// to `max` ids into `out` and returns the number written; pass out=0 to count.
+__attribute__((used, retain))
+int32_t __cajeta_dbg_ids_for_line(const char* file, int32_t line,
+                                  int32_t* out, int32_t max) {
+    if (!__cajeta_dbg_loc_entries || !file) return 0;
+    size_t flen = strlen(file);
+    int32_t found = 0;
+    for (int32_t i = 0; i < __cajeta_dbg_loc_n; ++i) {
+        const CajetaDbgLocEntry* e = &__cajeta_dbg_loc_entries[i];
+        if (e->line != line || !e->file) continue;
+        size_t elen = strlen(e->file);
+        if (elen < flen) continue;
+        if (strcmp(e->file + (elen - flen), file) != 0) continue;
+        // Suffix must start at a path boundary: "Guid.cajeta" must not match
+        // "MyGuid.cajeta".
+        if (elen > flen && e->file[elen - flen - 1] != '/') continue;
+        if (out && found < max) out[found] = i;
+        found++;
+    }
+    return found;
+}
+
 void __cajeta_dbg_local(const char* name, const char* type, void* addr,
                         uint8_t alloc, uint8_t ownership, void* drop_entry) {
     struct cajeta_dbg_frame** top = __cajeta_dbg_top_ptr();

@@ -16,6 +16,7 @@
 #include <thread>
 
 #include "cajeta/compile/Compiler.h"
+#include "cajeta/dbg/DebugLocTable.h"
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/type/CajetaType.h"
 #include "cajeta/type/CajetaClass.h"
@@ -715,6 +716,13 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         }
         compiler->getMutableFlags().lineInfo = opts.lineInfoEnabled;
         compiler->getMutableFlags().stackTraceCapture = opts.stackTraceCaptureEnabled;
+        if (opts.debugInfoEnabled) {
+            compiler->getMutableFlags().debugInfo = true;
+            compiler->getMutableFlags().debugInfoLevel = cajeta::DebugInfo::Full;
+            // Ids are dense and sequential from 0 per compile; a previous test's
+            // entries would shift this one's.
+            cajeta::dbg::globalDbgLocTable().clear();
+        }
         // CAJETA_LAZY_SCOPE=1 runs the whole suite under --lazy-scope so the
         // safe lazy-frame path (ensure_at at spawn sites) gets full coverage.
         if (const char* lz = std::getenv("CAJETA_LAZY_SCOPE")) {

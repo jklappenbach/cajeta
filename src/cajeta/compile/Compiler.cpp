@@ -21,6 +21,7 @@
 #include "CajetaLlvmVisitor.h"
 #include "Optimizer.h"
 #include "StdlibEmbedded.h"
+#include "cajeta/dbg/DebugCodegen.h"
 #include "cajeta/runtime/EmbeddedTls.h"
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
@@ -1737,6 +1738,17 @@ namespace cajeta {
                 || emitMode == EmitMode::Uber)
                 && !entryMethod.empty()) {
             emitCMainShim(entryMethod);
+        }
+
+        // external-debug §3: every safepoint has claimed its loc_id by now, so
+        // the table is final. Serialize it into the stdlib module (always linked,
+        // same module the main shim goes into) with a ctor that registers it with
+        // the runtime — that is the ONLY way an external debugger, which has no
+        // compiler process, can map a loc_id to a source line. No-op unless
+        // --debug-info=full. Before tree-shaking, so the table + its ctor are
+        // present when reachability runs.
+        if (auto stdlibMod = CajetaModule::getStdlibModule()) {
+            dbg::emitDbgLocTable(stdlibMod);
         }
 
         // Tier-1 RTA — after the main shim + all ctors exist, before per-module
