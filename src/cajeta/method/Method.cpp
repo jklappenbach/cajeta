@@ -383,6 +383,52 @@ namespace cajeta {
             << std::endl;
     }
 
+    // title-tracking Unit 5 (spec §4.4) — hidden-ABI participation. Both
+    // predicates must be derivable purely from the declaration so every
+    // consumer (concrete prototype, abstract mirror, call sites) computes the
+    // same answer; that is what keeps the trailing hidden param consistent
+    // across overrides and interface dispatch.
+    bool Method::needsTransferWord() {
+        // Keep the plain C ABI for boundaries the cajeta compiler doesn't own
+        // both sides of: device code and the exe entry stub.
+        if (findAnnotation("Kernel") || findAnnotation("Device")) {
+            return false;
+        }
+        bool staticMethod = modifiers.find(STATIC) != modifiers.end();
+        if (staticMethod && name == "main") {
+            return false;
+        }
+        for (auto& formalParameter : parameterList) {
+            if (!formalParameter || formalParameter->getName() == "this") {
+                continue;
+            }
+            CajetaTypePtr pt = formalParameter->getType();
+            bool isArr = dynamic_pointer_cast<CajetaArray>(pt) != nullptr;
+            bool isClassLike = dynamic_pointer_cast<CajetaClass>(pt) != nullptr;
+            bool isPrim = pt && (pt->getTypeFlags() & PRIMITIVE_FLAG);
+            // Same pass-by-pointer shape generatePrototype uses for the
+            // formal's LLVM type.
+            if (isClassLike && (isArr || !isPrim) && !pt->isValueType()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool Method::returnsClassPointer() {
+        if (findAnnotation("Kernel") || findAnnotation("Device")) {
+            return false;
+        }
+        CajetaTypePtr rt = returnType;
+        bool isArrR = rt && dynamic_pointer_cast<CajetaArray>(rt) != nullptr;
+        auto rtClass = dynamic_pointer_cast<CajetaClass>(rt);
+        bool isPrimR = rt && (rt->getTypeFlags() & PRIMITIVE_FLAG);
+        bool isInterfaceR = rtClass && rtClass->isInterface();
+        bool isValueTypeR = rt && rt->isValueType();
+        return rtClass != nullptr && (isArrR || !isPrimR) && !isInterfaceR
+            && !isValueTypeR && !returnsStackValue();
+    }
+
     bool Method::returnsStackValue() {
         if (returnsStackValueCache != -1) {
             return returnsStackValueCache == 1;
@@ -992,6 +1038,13 @@ namespace cajeta {
                 }
                 llvmTypes.push_back(ptLlvm);
             }
+            // title-tracking Unit 5: mirror the concrete path's trailing
+            // hidden transfer word so indirect calls through an interface
+            // vtable carry the same signature as every implementer.
+            if (needsTransferWord()) {
+                llvmTypes.push_back(
+                    llvm::Type::getInt64Ty(*module->getLlvmContext()));
+            }
             // Mirror the non-abstract path's return-by-pointer rule so
             // the indirect call type through the iface vtable matches
             // the implementer's signature. Without this, a method like
@@ -1143,6 +1196,14 @@ namespace cajeta {
                 ptLlvm = llvm::PointerType::get(*module->getLlvmContext(), 0);
             }
             llvmTypes.push_back(ptLlvm);
+        }
+        // title-tracking Unit 5 (spec §4.4): trailing hidden i64 transfer
+        // word — bit i set iff user-arg i surrendered a title. Trailing so
+        // every existing index (sret 0, `this`, user args) is undisturbed;
+        // never part of parameterList, so toCanonical/signatureHash and
+        // vtable dispatch are untouched.
+        if (needsTransferWord()) {
+            llvmTypes.push_back(llvm::Type::getInt64Ty(*module->getLlvmContext()));
         }
         // Apply the same pass-by-pointer rule to the return type so
         // class instances, arrays, AND views all travel as `ptr`. The
@@ -1783,6 +1844,14 @@ namespace cajeta {
         for (auto& parameter: parameterList) {
             FieldPtr parameterField = make_shared<ParameterField>(module, parameter, bodyFn, i++);
             module->getScopeStack().peek()->putField(parameterField);
+        }
+        // title-tracking Unit 5: the hidden transfer word rides as the LAST
+        // llvm arg (after all formals); stash it for callee-side consumers
+        // (runtime-owner formal entries, 5.2.2).
+        if (needsTransferWord() && bodyFn->arg_size() > 0) {
+            setTransferWordArg(bodyFn->getArg(bodyFn->arg_size() - 1));
+        } else {
+            setTransferWordArg(nullptr);
         }
 
         // cajeta-ir Unit 4 (closure specialization): a specialized instance had

@@ -1389,6 +1389,25 @@ namespace cajeta {
         builder->CreateCall(exitToFn, {watermark});
     }
 
+    // title-tracking Unit 5 (spec §4.2): a class-pointer-returning method
+    // stores its paired return flag immediately before `ret` — AFTER owner
+    // drops, so no drop_fn (which may itself return class pointers) can
+    // clobber the thread-local between this store and the caller's read.
+    // Slice 1 stores the method's static mode (`#`-return → 1, plain → 0);
+    // 5.2.3 upgrades `return #x` of a runtime owner to forward its bit.
+    static void emitReturnFlag(CajetaModulePtr& module) {
+        auto m = module->getCurrentMethod();
+        if (!m || !m->returnsClassPointer()) {
+            return;
+        }
+        llvm::Function* fn = module->getRuntimeFunction("__cajeta_return_flag_set");
+        if (!fn) {
+            return;
+        }
+        module->getBuilder()->CreateCall(fn,
+            {module->getBuilder()->getInt64(m->isReturnsOwnership() ? 1 : 0)});
+    }
+
     llvm::Value* ReturnStatement::generateCode(CajetaModulePtr module) {
         auto* builder = module->getBuilder();
         if (!expression) {
@@ -1882,6 +1901,7 @@ namespace cajeta {
                             emitScopeExitToWatermark(module);
                             if (auto curM = module->getCurrentMethod())
                                 curM->emitOwnerDrops(module);
+                            emitReturnFlag(module);
                             return builder->CreateRet(val);
                         }
                     }
@@ -2033,6 +2053,7 @@ namespace cajeta {
         if (!val) {
             std::cerr << "[cajeta] return value lowered to null"
                 << " — method " << fn->getName().str() << std::endl;
+            emitReturnFlag(module);
             return builder->CreateRet(llvm::Constant::getNullValue(retTy));
         }
         llvm::Type* valTy = val->getType();
@@ -2081,6 +2102,7 @@ namespace cajeta {
         emitScopeExitToWatermark(module);
         // Fire drops before the typed return so all owned locals are released.
         if (auto m = module->getCurrentMethod()) m->emitOwnerDrops(module);
+        emitReturnFlag(module);
         return builder->CreateRet(val);
     }
 

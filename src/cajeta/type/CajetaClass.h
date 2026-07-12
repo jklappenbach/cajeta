@@ -1104,7 +1104,8 @@ namespace cajeta {
                                    CajetaModulePtr callerModule = nullptr,
                                    bool forceDirectCall = false,
                                    const vector<CajetaTypePtr>& explicitMethodTypeArgs = {},
-                                   llvm::Value* sretTarget = nullptr);
+                                   llvm::Value* sretTarget = nullptr,
+                                   llvm::Value* transferWord = nullptr);
 
         // Construction helpers, factored out of ClassCreatorRest::generateCode
         // so synthesized codegen sites (a throwing capture cast, tryAs, ...)

@@ -5341,7 +5341,8 @@ namespace cajeta {
     llvm::Value* CajetaClass::invokeMethod(string& methodName, vector<ParameterEntry> parameters, bool isConstructor, llvm::Value* thisValue,
                                             CajetaModulePtr callerModule, bool forceDirectCall,
                                             const vector<CajetaTypePtr>& explicitMethodTypeArgs,
-                                            llvm::Value* sretTarget) {
+                                            llvm::Value* sretTarget,
+                                            llvm::Value* transferWord) {
         // Partial (positional + named) calls reorder to positional here; this also
         // turns a mixed call into one with no labels, so `floatingParams` below is
         // false for it and the positional resolution applies.
@@ -5684,6 +5685,21 @@ namespace cajeta {
                 method = spec;   // downstream callee lookup + sig use the instance
                 break;
             }
+        }
+
+        // title-tracking Unit 5 (spec §4.4): the trailing hidden transfer
+        // word. Appended after any closure-specialization retarget so the
+        // FINAL method's signature decides; every dispatch shape below
+        // (direct, vtable, iface) shares this arg list. A caller that did
+        // not compute a word (ctor paths, synthesized sites) passes the
+        // all-borrow constant 0.
+        if (method->needsTransferWord()) {
+            llvm::Value* twv = transferWord;
+            if (!twv) {
+                twv = llvm::ConstantInt::get(
+                    llvm::Type::getInt64Ty(*emitMod->getLlvmContext()), 0);
+            }
+            methodArgs.push_back(twv);
         }
 
         // Cross-module dispatch: when the receiver class lives in a

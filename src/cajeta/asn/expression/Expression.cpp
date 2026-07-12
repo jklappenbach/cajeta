@@ -3771,6 +3771,12 @@ namespace cajeta {
                 for (unsigned i = 1; i < thunkArgCount; ++i) {
                     ctorArgs.push_back(thunk->getArg(i));
                 }
+                // title-tracking Unit 5: ctor-reference thunks lend
+                // (all-borrow 0), same as method-reference thunks above.
+                if (ctor->needsTransferWord()) {
+                    ctorArgs.push_back(llvm::ConstantInt::get(
+                        llvm::Type::getInt64Ty(llvmCtx), 0));
+                }
                 llvm::Function* ctorFn = CajetaModule::ensureFunctionInModule(
                     lmod, ctor->getLlvmFunction());
                 tb.CreateCall(ctor->getLlvmFunctionType(), ctorFn, ctorArgs);
@@ -3895,6 +3901,13 @@ namespace cajeta {
                 for (unsigned i = sretOffset + 1; i < thunkArgCount; ++i) {
                     callArgs.push_back(thunk->getArg(i));
                 }
+            }
+            // title-tracking Unit 5: the target's trailing hidden transfer
+            // word. A method reference has no `#` spelling — every call
+            // through the thunk lends (all-borrow 0).
+            if (target->needsTransferWord()) {
+                callArgs.push_back(llvm::ConstantInt::get(
+                    llvm::Type::getInt64Ty(llvmCtx), 0));
             }
             llvm::Function* targetFn = CajetaModule::ensureFunctionInModule(
                 lmod, target->getLlvmFunction());

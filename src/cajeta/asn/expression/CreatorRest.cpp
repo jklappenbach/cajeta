@@ -352,8 +352,22 @@ namespace cajeta {
                     }
                 }
             }
+            // title-tracking Unit 5: constructors ride the same trailing
+            // transfer word as ordinary calls (ctors never emitted the
+            // moveMask TLS, so the ABI word is their first per-call channel).
+            int64_t ctorTransferWord = 0;
+            for (size_t twi = 0; twi < parameters.size(); ++twi) {
+                if (parameters[twi].callerTransferred) {
+                    ctorTransferWord |= ((int64_t) 1) << twi;
+                }
+            }
             klass->invokeMethod(ctorName, entries, /*isConstructor=*/true, instance,
-                                /*callerModule=*/module);
+                                /*callerModule=*/module,
+                                /*forceDirectCall=*/false,
+                                /*explicitMethodTypeArgs=*/{},
+                                /*sretTarget=*/nullptr,
+                                /*transferWord=*/module->getBuilder()->getInt64(
+                                    (uint64_t) ctorTransferWord));
             // slices 9.4.1 — fresh temps consumed as CTOR arguments have no
             // drop entry; reclaim them here, at the only site that sees the
             // temp (mirrors the post-call block in MethodCallExpression::

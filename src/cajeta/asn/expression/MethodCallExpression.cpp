@@ -7798,7 +7798,12 @@ namespace cajeta {
         llvm::Value* callResult = targetClass->invokeMethod(methodCallName, entries,
             /*isConstructor=*/false, thisValue, /*callerModule=*/module,
             /*forceDirectCall=*/(isSuperCall || targetIsFinalClass),
-            /*explicitMethodTypeArgs=*/explicitMethodTypeArgs);
+            /*explicitMethodTypeArgs=*/explicitMethodTypeArgs,
+            /*sretTarget=*/nullptr,
+            // title-tracking Unit 5: the same per-call word the moveMask TLS
+            // carries, threaded through the ABI (dual-carry until the TLS
+            // consumers migrate; TLS removal is plan 7.2.2).
+            /*transferWord=*/builder->getInt64((uint64_t) moveMask));
         if (moveSetFn) {
             builder->CreateCall(moveSetFn, {builder->getInt64(0)});
         }

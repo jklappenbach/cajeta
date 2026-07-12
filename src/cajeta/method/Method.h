@@ -124,6 +124,11 @@ namespace cajeta {
         // scan is the single source of truth — there is no `stack T` return
         // type. See docs/specification/lang/ValueReturns.md.
         int returnsStackValueCache = -1;
+        // title-tracking Unit 5: the incoming hidden transfer-word argument
+        // (trailing i64), stashed at prologue binding so callee-side codegen
+        // (runtime-owner formals, 5.2.2) can read per-formal bits. Null when
+        // needsTransferWord() is false or before body codegen.
+        llvm::Value* transferWordArg = nullptr;
         BlockPtr block;
         bool constructor;
         // Abstract method — has no body, no LLVM function declaration.
@@ -511,6 +516,19 @@ namespace cajeta {
 
         bool isReturnsOwnership() const { return returnsOwnership; }
         void setReturnsOwnership(bool v) { returnsOwnership = v; }
+
+        // title-tracking Unit 5 (spec §4.4) — the per-call transfer ABI.
+        // needsTransferWord(): this method's LLVM signature carries a hidden
+        // TRAILING i64 whose bit i mirrors the moveMask contract (user-arg i
+        // surrendered a title). True iff any user formal passes by pointer;
+        // @Kernel/@Device methods and static `main` keep the plain C ABI.
+        // returnsClassPointer(): the method returns a raw class pointer
+        // (`ret ptr`, not sret/interface/value-type) and so participates in
+        // the paired return-flag protocol (__cajeta_return_flag_set).
+        bool needsTransferWord();
+        bool returnsClassPointer();
+        llvm::Value* getTransferWordArg() const { return transferWordArg; }
+        void setTransferWordArg(llvm::Value* v) { transferWordArg = v; }
 
         int getOriginReturnTypeParamIndex() const { return originReturnTypeParamIndex; }
         void setOriginReturnTypeParamIndex(int idx) { originReturnTypeParamIndex = idx; }
