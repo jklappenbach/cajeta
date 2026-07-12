@@ -430,6 +430,91 @@ int32_t __cajeta_shadow_snapshot(CajetaShadowFrame* out, int32_t max) {
     return w;
 }
 
+// Print the LIVE shadow stack — the frames on this thread right now, innermost
+// first — as `at Type.method(File.cajeta:NN)` lines to `fd` (1 stdout, 2 stderr).
+//
+// The shadow stack already resolves a *captured* trace (a throwable's, via
+// __cajeta_print_trace), which is the semantic alternative to DWARF across the
+// whole product matrix: it works identically in the JIT, in an AOT binary, and
+// on device targets, none of which carry debug sections. What was missing is the
+// live view a DEBUGGER needs. An external debugger stopped at a breakpoint has a
+// native backtrace of mangled symbols and nothing else; from gdb,
+//
+//     (gdb) call (void) __cajeta_print_stack(2)
+//
+// renders the Cajeta call stack with source files and line numbers, with no
+// debug info in the binary. Also the natural source for a `cajeta dap`
+// stackTrace request and for a panic handler.
+//
+// Reads only thread-local state written by __cajeta_line_enter/mark/leave, so it
+// is safe to call from a stopped thread. No allocation, no locks.
+//
+// `used, retain` on this and the accessors below: NOTHING in generated code calls
+// them — a debugger does, from outside — so the IR-level DCE (lean link) and the
+// linker's --gc-sections would both drop them, and the symbol would simply not be
+// in the binary when you need it. `used` pins the definition through GlobalDCE
+// (@llvm.used); `retain` marks the section SHF_GNU_RETAIN so the linker keeps it
+// too. Cost is a few hundred bytes.
+__attribute__((used, retain))
+void __cajeta_print_stack(int32_t fd) {
+    FILE* out = (fd == 1) ? stdout : stderr;
+    int32_t n = __cajeta_shadow_top;
+    if (n > CAJETA_SHADOW_MAX) n = CAJETA_SHADOW_MAX;
+    if (n <= 0) {
+        fprintf(out, "  <no cajeta frames: line-info off, or not in cajeta code>\n");
+        fflush(out);
+        return;
+    }
+    for (int32_t i = n - 1; i >= 0; i--) {
+        const CajetaFrameDesc* d = __cajeta_shadow[i].desc;
+        const char* t = (d && d->typeName)   ? d->typeName   : "?";
+        const char* m = (d && d->methodName) ? d->methodName : "?";
+        const char* f = (d && d->fileName)   ? d->fileName   : "?";
+        // Basename only, matching the captured-trace format.
+        const char* base = f;
+        for (const char* q = f; *q; q++) if (*q == '/' || *q == '\\') base = q + 1;
+        fprintf(out, "  at %s.%s(%s:%d)\n", t, m, base, __cajeta_shadow[i].line);
+    }
+    fflush(out);
+}
+
+// Depth of the live shadow stack, and one frame by index (0 = innermost).
+// Field accessors rather than a struct return, so a debugger — or any consumer
+// that cannot see this file's types without debug info — can walk frames
+// through plain calls.
+__attribute__((used, retain))
+int32_t __cajeta_stack_depth(void) {
+    int32_t n = __cajeta_shadow_top;
+    return n > CAJETA_SHADOW_MAX ? CAJETA_SHADOW_MAX : (n < 0 ? 0 : n);
+}
+__attribute__((used, retain))
+const char* __cajeta_stack_type(int32_t i) {
+    int32_t n = __cajeta_stack_depth();
+    if (i < 0 || i >= n) return "";
+    const CajetaFrameDesc* d = __cajeta_shadow[n - 1 - i].desc;
+    return (d && d->typeName) ? d->typeName : "?";
+}
+__attribute__((used, retain))
+const char* __cajeta_stack_method(int32_t i) {
+    int32_t n = __cajeta_stack_depth();
+    if (i < 0 || i >= n) return "";
+    const CajetaFrameDesc* d = __cajeta_shadow[n - 1 - i].desc;
+    return (d && d->methodName) ? d->methodName : "?";
+}
+__attribute__((used, retain))
+const char* __cajeta_stack_file(int32_t i) {
+    int32_t n = __cajeta_stack_depth();
+    if (i < 0 || i >= n) return "";
+    const CajetaFrameDesc* d = __cajeta_shadow[n - 1 - i].desc;
+    return (d && d->fileName) ? d->fileName : "?";
+}
+__attribute__((used, retain))
+int32_t __cajeta_stack_line(int32_t i) {
+    int32_t n = __cajeta_stack_depth();
+    if (i < 0 || i >= n) return 0;
+    return __cajeta_shadow[n - 1 - i].line;
+}
+
 void __cajeta_dbg_local(const char* name, const char* type, void* addr,
                         uint8_t alloc, uint8_t ownership, void* drop_entry) {
     struct cajeta_dbg_frame** top = __cajeta_dbg_top_ptr();
