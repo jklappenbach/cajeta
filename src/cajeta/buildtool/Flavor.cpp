@@ -103,7 +103,7 @@ namespace cajeta::buildtool {
             {"xpu-backend",     K::EnumStringCsv, {"none", "cpu", "vulkan", "nvptx", "amdgpu"}, "xpu-backend"},
             {"xpu-arch",        K::FreeString, {},                            "xpu-arch"},
             {"lto",             K::EnumString, {"off", "thin", "full"},        "lto"},
-            {"debug-info",      K::EnumString, {"off", "line", "full"},        ""},
+            {"debug-info",      K::EnumString, {"off", "line", "full"},        "debug-info"},
             {"strip-symbols",   K::Boolean,    {},                            ""},
             {"bounds-check",    K::EnumString, {"on", "off", "trap"},          "bounds"},
             {"null-checks",     K::EnumString, {"on", "off", "trap"},          "null-checks"},
@@ -350,9 +350,9 @@ namespace cajeta::buildtool {
         std::vector<std::string> out;
         for (const auto& spec : flavorPropertyVocab()) {
             // Only properties that map to a compiler frontend flag are
-            // lowered to argv; the rest (lto, debug-info, strip-symbols,
-            // sanitizers, analytics) are build-flavor intent honored at the
-            // emit/link stage, not understood by the frontend.
+            // lowered to argv; the rest (strip-symbols, sanitizers,
+            // analytics) are build-flavor intent honored at the emit/link
+            // stage, not understood by the frontend.
             if (spec.compilerFlag.empty()) continue;
             const auto* v = props.get(spec.key);
             if (!v) continue;

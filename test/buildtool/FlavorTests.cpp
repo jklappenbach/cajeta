@@ -198,6 +198,10 @@ TEST(FlavorTests, builtinReleasePropertiesMatchSpec) {
     EXPECT_EQ(r->getString("opt")->str(), "O2");
     EXPECT_EQ(r->getString("lto")->str(), "thin");
     EXPECT_EQ(*r->getBoolean("strip-symbols"), true);
+    // external-debug 1.1.5: `line`, not `off`. Now that the property actually
+    // lowers, `off` would strip the shadow stack from release builds and change
+    // their output — and semantic exception traces are the ergonomic default
+    // (spec §2.2.2/§2.2.3). `line` is exactly today's release codegen.
     EXPECT_EQ(r->getString("debug-info")->str(), "line");
     EXPECT_EQ(r->getString("bounds-check")->str(), "off");
 }
@@ -250,12 +254,31 @@ TEST(FlavorTests, toCompilerFlagsRendersDeterministically) {
     auto flags = toCompilerFlags(props);
     // Only properties that map to a compiler frontend flag are lowered, in
     // vocabulary order, using the MAPPED flag name (bounds-check -> bounds).
-    // lto / debug-info / strip-symbols / sanitizers / analytics have no
-    // frontend flag and are honored at the emit/link stage instead.
+    // strip-symbols / sanitizers / analytics have no frontend flag and are
+    // honored at the emit/link stage instead.
     ASSERT_EQ(flags.size(), 3u);
     EXPECT_EQ(flags[0], "--opt=O2");
     EXPECT_EQ(flags[1], "--bounds=off");
     EXPECT_EQ(flags[2], "--source-tags=on");
+}
+
+// external-debug 1.1.4 — `debug-info` used to map to an EMPTY compiler flag, so
+// a flavor asking for `full` was silently dropped and the binary carried no
+// debug records at all (spec §1.2, §2.1.2). It lowers now.
+TEST(FlavorTests, debugInfoLowersToCompilerFlag) {
+    using cajeta::buildtool::findFlavorPropertySpec;
+    using cajeta::buildtool::toCompilerFlags;
+
+    const auto* spec = findFlavorPropertySpec("debug-info");
+    ASSERT_TRUE(spec);
+    EXPECT_EQ(spec->compilerFlag, "debug-info");
+
+    for (const char* level : {"off", "line", "full"}) {
+        llvm::json::Object props{{"debug-info", level}};
+        auto flags = toCompilerFlags(props);
+        ASSERT_EQ(flags.size(), 1u) << level;
+        EXPECT_EQ(flags[0], std::string("--debug-info=") + level);
+    }
 }
 
 // benchmark-fidelity Unit 3 (3.b.3): xpu-backend lowers to --xpu-backend=<v> so

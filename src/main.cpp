@@ -104,6 +104,10 @@ void printUsage(const char* progname) {
               << "  --diag-format=text|json              Diagnostic output format. json = one NDJSON\n"
               << "                                       object per line on stderr for tools/IDEs (default text).\n"
               << "  --profile-counters=on|off            Per-method PGO-collection instrumentation.\n"
+              << "  --debug-info=off|line|full           Debug records in the binary (default line).\n"
+              << "                                       line = shadow stack, so traces resolve to\n"
+              << "                                       Type.method(File.cajeta:NN). full = adds\n"
+              << "                                       safepoints + locals for an external debugger.\n"
               << "\n"
               << "Output:\n"
               << "  --emit=ir|obj|cja|uber|exe           Output mode. Default ir.\n"
@@ -385,6 +389,12 @@ int main(int argc, const char* argv[]) {
             if (!setEnumFlag<DiagVerbosity>("diag-verbosity", value,
                     { {"terse", DiagVerbosity::Terse}, {"normal", DiagVerbosity::Normal}, {"verbose", DiagVerbosity::Verbose} },
                     compiler.getMutableFlags().diagVerbosity)) {
+                printUsage(argv[0]); return 1;
+            }
+        } else if (match(arg, "debug-info", value)) {
+            std::string diErr;
+            if (!cajeta::applyDebugInfo(value, compiler.getMutableFlags(), &diErr)) {
+                std::cerr << "cajeta: " << diErr << "\n";
                 printUsage(argv[0]); return 1;
             }
         } else if (match(arg, "diag-format", value)) {

@@ -78,7 +78,13 @@ The single switch controlling what a build carries.
         embedded location table (§3), and forces RTTI retention (§4).
 2.1.2 The build flavor's existing `debug-info: off|line|full` property lowers to
       that flag. It currently maps to an empty compiler flag and is dropped.
-2.1.3 Flavor defaults: `debug` → `full`, `release` → `off`.
+2.1.3 Flavor defaults: `debug` → `full`, `release` → `line`.
+      Revised 2026-07-12 (was `release` → `off`): the built-in release flavor
+      has always carried `debug-info: line`, and today's release codegen — with
+      the property silently dropped — is exactly `line` (shadow stack on,
+      no safepoints). Lowering `off` instead would strip the shadow stack and
+      change release output, contradicting 2.2.2 and 7.2. A release build that
+      wants nothing still asks for it: `--debug-info=off`.
 2.1.4 The level is recorded in the build's flag set so an incremental cache
       never serves a `full` artifact to an `off` build or vice versa.
 
@@ -86,7 +92,8 @@ The single switch controlling what a build carries.
 2.2.1 As a developer, when I run `cajeta build` with the default debug flavor,
       then the binary carries safepoints, local records, and a location table.
 2.2.2 As a release engineer, when I build `--flavor=release`, then the binary
-      carries no debug records and is byte-identical to today's release output.
+      carries no safepoints or local records and is byte-identical to today's
+      release output (i.e. `line`, per 2.1.3).
 2.2.3 As a developer wanting cheap semantic traces without debugger overhead,
       when I build `--debug-info=line`, then exception traces still resolve to
       `Type.method(File.cajeta:NN)` and no safepoints are emitted.

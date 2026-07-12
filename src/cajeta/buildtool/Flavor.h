@@ -59,9 +59,9 @@ namespace cajeta::buildtool {
         // The compiler CLI flag this property lowers to (without the
         // leading `--`), e.g. "bounds" for the "bounds-check" property.
         // Empty when the property is build-flavor intent with no compiler
-        // frontend flag — sanitizers, lto, strip-symbols, debug-info — which
-        // are honored (or reserved) at the emit/link stage, not passed to the
-        // frontend. `toCompilerFlags` emits only the mapped ones.
+        // frontend flag — sanitizers, strip-symbols — which are honored (or
+        // reserved) at the emit/link stage, not passed to the frontend.
+        // `toCompilerFlags` emits only the mapped ones.
         std::string compilerFlag;
     };
 
