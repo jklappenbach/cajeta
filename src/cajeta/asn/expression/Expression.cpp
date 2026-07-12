@@ -2017,8 +2017,13 @@ namespace cajeta {
         // slices 9.2.1 — `#arr[i]`: move an element OUT of an owning local
         // String[]. The runtime take hands back the wrapper, NULLS the slot
         // (the element walk skips it) and unmarks its owned bit; ownership
-        // rides to the receiving site. Arrays without a sidecar (params,
-        // fields, non-String elements) keep the prior behavior.
+        // rides to the receiving site.
+        // title-tracking §6.3.3 (Unit 4) — for a slot-bit class element the
+        // take moves the TITLE only: the slot stays resident and readable
+        // (§6.3.2), its bit decays, and a take from a borrowed or empty slot
+        // panics (CAJETA_PANIC_TITLE_MISS, the integer-coded throw the field
+        // extraction above uses). Arrays without a sidecar (params, fields)
+        // keep the prior behavior.
         if (auto aixInner = dynamic_pointer_cast<ArrayIndexExpression>(inner)) {
             if (value && value->getType()->isPointerTy()
                     && !aixInner->getChildren().empty()) {
@@ -2029,7 +2034,52 @@ namespace cajeta {
                                 idBase->getTextValue())) {
                             if (llvm::Value* sidecar =
                                     baseField->getElemOwnSidecar()) {
-                                if (llvm::Function* takeFn =
+                                if (!aixInner->getResolvedType()) {
+                                    aixInner->resolveTypes(module);
+                                }
+                                if (CajetaClass::arrayElementCarriesSlotBits(
+                                        aixInner->getResolvedType())) {
+                                    llvm::Function* takeFn =
+                                        module->getRuntimeFunction(
+                                            "__cajeta_class_array_elem_take");
+                                    if (takeFn) {
+                                        auto* b = module->getBuilder();
+                                        auto& tctx = *module->getLlvmContext();
+                                        llvm::Type* ti64 =
+                                            llvm::Type::getInt64Ty(tctx);
+                                        llvm::PointerType* tptr =
+                                            llvm::PointerType::get(tctx, 0);
+                                        llvm::Value* taken = b->CreateCall(
+                                            takeFn, {sidecar, value},
+                                            "slot.take");
+                                        llvm::Value* miss = b->CreateICmpEQ(
+                                            taken,
+                                            llvm::ConstantPointerNull::get(tptr),
+                                            "slot.take.miss");
+                                        llvm::Function* fn =
+                                            b->GetInsertBlock()->getParent();
+                                        llvm::BasicBlock* panicBB =
+                                            llvm::BasicBlock::Create(
+                                                tctx, "slot_take_panic", fn);
+                                        llvm::BasicBlock* okBB =
+                                            llvm::BasicBlock::Create(
+                                                tctx, "slot_take_ok", fn);
+                                        b->CreateCondBr(miss, panicBB, okBB);
+                                        b->SetInsertPoint(panicBB);
+                                        // CAJETA_PANIC_TITLE_MISS = 3
+                                        if (llvm::Function* throwFn =
+                                                module->getRuntimeFunction(
+                                                    "__cajeta_throw")) {
+                                            llvm::Value* code = b->CreateIntToPtr(
+                                                llvm::ConstantInt::get(ti64, 3),
+                                                tptr);
+                                            b->CreateCall(throwFn, {code});
+                                        }
+                                        b->CreateUnreachable();
+                                        b->SetInsertPoint(okBB);
+                                        value = taken;
+                                    }
+                                } else if (llvm::Function* takeFn =
                                         module->getRuntimeFunction(
                                             "__cajeta_string_array_elem_take")) {
                                     value = module->getBuilder()->CreateCall(

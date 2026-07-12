@@ -2219,6 +2219,7 @@ namespace cajeta {
                 // never steals a value owned elsewhere. Both helpers
                 // release a previously-owned occupant (the overwrite leak).
                 bool storedViaElemOwn = false;
+                bool storedViaClassElem = false;
                 if (!storedInterfaceInline && lhsAst && rhsAst
                         && lhs && lhs->getType()->isPointerTy()
                         && rhsVal && rhsVal->getType()->isPointerTy()) {
@@ -2235,7 +2236,49 @@ namespace cajeta {
                                 }
                             }
                         }
-                        if (sidecar) {
+                        // title-tracking §5 (Unit 4) — class elements record
+                        // the store's SPELLING in the slot bit, mirroring the
+                        // Unit 3 field-store classification: `#x`, a fresh
+                        // heap construction, a `#`-returning call, or a
+                        // `#`-formal source → owned; every other store is a
+                        // BORROW (the source keeps its books — no implicit
+                        // deactivation below).
+                        bool elemTitled = sidecar
+                            && CajetaClass::arrayElementCarriesSlotBits(
+                                   lhsAst->getResolvedType());
+                        if (sidecar && elemTitled) {
+                            bool ownedSpelling = false;
+                            if (dynamic_pointer_cast<MoveExpression>(rhsAst)) {
+                                ownedSpelling = true;
+                            } else if (auto rn = dynamic_pointer_cast<
+                                           NewExpression>(rhsAst)) {
+                                ownedSpelling = !rn->getStackAlloc();
+                            } else if (auto rc = dynamic_pointer_cast<
+                                           MethodCallExpression>(rhsAst)) {
+                                ownedSpelling = rc->isResolvedReturnsOwnership();
+                            } else if (auto ri = dynamic_pointer_cast<
+                                           IdentifierExpression>(rhsAst)) {
+                                if (auto sc = module->getScopeStack().peek()) {
+                                    auto pf = std::dynamic_pointer_cast<
+                                        ParameterField>(
+                                            sc->getField(ri->getTextValue()));
+                                    if (pf && pf->getFormalParameter()
+                                            && pf->getFormalParameter()
+                                                   ->isTransferred()) {
+                                        ownedSpelling = true;
+                                    }
+                                }
+                            }
+                            llvm::Function* setFn = module->getRuntimeFunction(
+                                ownedSpelling
+                                    ? "__cajeta_class_array_elem_set_owned"
+                                    : "__cajeta_class_array_elem_set_alias");
+                            if (setFn) {
+                                builder->CreateCall(setFn, {sidecar, lhs, rhsVal});
+                                storedViaElemOwn = true;
+                                storedViaClassElem = true;
+                            }
+                        } else if (sidecar) {
                             bool takesOwnership =
                                 dynamic_pointer_cast<IdentifierExpression>(rhsAst)
                                 || dynamic_pointer_cast<MoveExpression>(rhsAst)
@@ -2263,7 +2306,14 @@ namespace cajeta {
                 // dangling). Mirrors AggregateInitializer's
                 // ownership-into-field move and the lambda
                 // #-capture transfer paths.
-                if (lhsAst && dynamic_pointer_cast<ArrayIndexExpression>(lhsAst)
+                // title-tracking §5.1.2 (Unit 4): a slot-bit store already
+                // recorded the spelling — a plain store there is a BORROW
+                // and the source keeps its books, so this implicit
+                // deactivation is skipped. Field-held / param arrays (no
+                // sidecar) keep the legacy transfer until Unit 6 sweeps
+                // the containers.
+                if (!storedViaClassElem && lhsAst
+                        && dynamic_pointer_cast<ArrayIndexExpression>(lhsAst)
                         && rhsAst) {
                     if (!rhsAst->getResolvedType()) rhsAst->resolveTypes(module);
                     CajetaTypePtr elemType = lhsAst->getResolvedType();

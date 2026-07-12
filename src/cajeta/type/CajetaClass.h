@@ -533,6 +533,15 @@ namespace cajeta {
         // carry no separable title.
         static bool fieldHasOwnershipBit(const StructurePropertyPtr& p);
 
+        // title-tracking §5 (Unit 4) — per-slot ownership bits for a
+        // reference array's ELEMENTS. True when `elem` is a plain vtable
+        // class: the slot's store spelling marks a bit in the array local's
+        // sidecar bitmap and the element walk releases marked slots via
+        // __cajeta_class_virtual_drop. String keeps its own family (§5.1.6
+        // share path); nested arrays, views, interfaces, and value types
+        // carry no per-slot title.
+        static bool arrayElementCarriesSlotBits(const CajetaTypePtr& elem);
+
         // Dense bit index of `p` among this class's OWN bit-carrying
         // fields (declaration order), or -1.
         int ownershipBitIndexOf(const StructurePropertyPtr& p) const {

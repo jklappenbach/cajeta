@@ -110,20 +110,22 @@ namespace cajeta {
         emitDropEntryFor(module, field, dropFnName, allocLine);
     }
 
-    // slices 9.2.1 — one extra chain entry per OWNING String-element array
-    // local, pushed right after the storage (free_array) entry so LIFO runs
-    // the element walk BEFORE the buffer frees. obj = a stack sidecar
-    // {arr_slot, storage_entry, owned_bits, owned_cap, stride, header} the
+    // slices 9.2.1 / title-tracking Unit 4 — one extra chain entry per
+    // OWNING element-tracked array local (String[] via the 9.2.1 family,
+    // plain class elements via the Unit 4 slot-bit family), pushed right
+    // after the storage (free_array) entry so LIFO runs the element walk
+    // BEFORE the buffer frees. obj = a stack sidecar {arr_slot,
+    // storage_entry, owned_bits, owned_cap, stride, header} the
     // element-store helpers and the walk share; store sites reach it via
     // field->getElemOwnSidecar(). Pushed in the DECLARING frame (the 9.3.1
     // placement rule) so loop-body / inner-block stores can't be freed at
-    // the wrong scope exit.
-    static void emitStringArrayElemDropEntry(CajetaModulePtr module,
+    // the wrong scope exit. `walkDropFn` picks the element family:
+    // __cajeta_string_array_owned_drop or __cajeta_class_array_owned_drop.
+    static void emitArrayElemDropEntry(CajetaModulePtr module,
             FieldPtr field, const shared_ptr<CajetaArray>& arrType,
-            int allocLine = 0) {
+            const char* walkDropFn, int allocLine = 0) {
         DropPushChoice push = pickDropPush(module);
-        llvm::Function* dropFn = module->getRuntimeFunction(
-            "__cajeta_string_array_owned_drop");
+        llvm::Function* dropFn = module->getRuntimeFunction(walkDropFn);
         if (!push.pushFn || !dropFn) return;
         auto* builder = module->getBuilder();
         auto& ctx = *module->getLlvmContext();
@@ -1094,8 +1096,11 @@ namespace cajeta {
                 // slices 9.2.1 — a local String[] owns what its stores TOOK
                 // (the array-slot store already deactivates an identifier
                 // source's drop entry); register the element walk that
-                // finally reclaims them. String-scoped like 9.3.1; general
-                // owned-class elements are the noted follow-up.
+                // finally reclaims them.
+                // title-tracking Unit 4 — plain class elements get the same
+                // sidecar with title semantics: the store's SPELLING marks
+                // the slot bit (`a[i] = #x` owned, plain store borrowed),
+                // the walk releases marked slots via the vtable drop.
                 if (auto arrT = dynamic_pointer_cast<CajetaArray>(type)) {
                     auto elemCls = dynamic_pointer_cast<CajetaClass>(
                         arrT->getElementType());
@@ -1104,8 +1109,14 @@ namespace cajeta {
                         && elemCls->getQName()
                         && elemCls->getQName()->getTypeName() == "String"
                         && elemCls->getQName()->getPackageName() == "cajeta.lang";
-                    if (elemIsString && !arrT->isInlineArray()) {
-                        emitStringArrayElemDropEntry(module, field, arrT,
+                    bool elemTitled = !elemIsString
+                        && CajetaClass::arrayElementCarriesSlotBits(
+                               arrT->getElementType());
+                    if ((elemIsString || elemTitled) && !arrT->isInlineArray()) {
+                        if (elemTitled) elemCls->patchVirtualTableDropFn();
+                        emitArrayElemDropEntry(module, field, arrT,
+                            elemTitled ? "__cajeta_class_array_owned_drop"
+                                       : "__cajeta_string_array_owned_drop",
                             getSourceLine());
                     }
                 }

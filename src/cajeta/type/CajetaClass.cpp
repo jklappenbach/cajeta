@@ -836,6 +836,23 @@ namespace cajeta {
         return true;
     }
 
+    bool CajetaClass::arrayElementCarriesSlotBits(const CajetaTypePtr& elem) {
+        if (!elem) return false;
+        if (dynamic_pointer_cast<CajetaArray>(elem)) return false;
+        if (dynamic_pointer_cast<CajetaView>(elem)) return false;
+        auto cls = dynamic_pointer_cast<CajetaClass>(elem);
+        if (!cls) return false;
+        if (cls->isInterface() || cls->isValueType()) return false;
+        if (cls->isSharedCapableValue()) return false;
+        if (cls->getQName()
+                && cls->getQName()->getTypeName() == "String"
+                && cls->getQName()->getPackageName() == "cajeta.lang") {
+            return false;
+        }
+        // The element walk releases via the vtable drop slot.
+        return cls->hasVtablePointerAtSlotZero();
+    }
+
     void CajetaClass::buildInstanceStructBody(llvm::LLVMContext* lctx) {
         string canonical = qName->toCanonical();
         auto fieldLayoutType = [&](const StructurePropertyPtr& p) -> llvm::Type* {

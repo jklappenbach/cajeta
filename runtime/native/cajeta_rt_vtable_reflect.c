@@ -1413,3 +1413,76 @@ void __cajeta_string_array_owned_drop(void* sidecar) {
     }
     free(bits);
 }
+
+// ---- title-tracking Unit 4 — class-element array slot bits ------------------
+// Same sidecar shape and lazily-allocated bitmap as the String family above,
+// but with TITLE semantics (title-tracking-spec §5, §6.3.3):
+//   - a plain store is a BORROW store — the slot is unmarked and the source's
+//     books are untouched (no implicit deactivation);
+//   - `a[i] = #x` (owned spelling) marks the slot; a previously-owned occupant
+//     is released at the store (§5.1.3 — the overwrite is its scope exit);
+//   - `#a[i]` take succeeds only on a marked slot; it unmarks the bit, leaves
+//     the slot RESIDENT and readable (§6.3.2), and returns the value. An
+//     unmarked or empty slot returns NULL — the compiler's call site panics
+//     (CAJETA_PANIC_TITLE_MISS, integer-coded throw), so the runtime never
+//     forges a title.
+// Element release is __cajeta_class_virtual_drop (defined above): virtual, so
+// one walk fn covers every monomorphized element class; claim-gated, so slot
+// aliasing frees exactly once.
+
+void __cajeta_class_array_elem_set_owned(void* sidecar, void** slot,
+                                         void* obj) {
+    cajeta_string_array_sidecar* sc = (cajeta_string_array_sidecar*) sidecar;
+    if (!sc || !slot) return;
+    int64_t idx = caj_arr_slot_index(sc, slot);
+    void* old = *slot;
+    if (old && old != obj && caj_arr_bit_get(sc, idx)) {
+        __cajeta_class_virtual_drop(old);
+    }
+    caj_arr_bit_put(sc, idx, 1);
+    *slot = obj;
+}
+
+void __cajeta_class_array_elem_set_alias(void* sidecar, void** slot,
+                                         void* obj) {
+    cajeta_string_array_sidecar* sc = (cajeta_string_array_sidecar*) sidecar;
+    if (!sc || !slot) return;
+    int64_t idx = caj_arr_slot_index(sc, slot);
+    void* old = *slot;
+    if (old && old != obj && caj_arr_bit_get(sc, idx)) {
+        __cajeta_class_virtual_drop(old);
+    }
+    caj_arr_bit_put(sc, idx, 0);
+    *slot = obj;
+}
+
+void* __cajeta_class_array_elem_take(void* sidecar, void** slot) {
+    cajeta_string_array_sidecar* sc = (cajeta_string_array_sidecar*) sidecar;
+    if (!sc || !slot) return NULL;
+    int64_t idx = caj_arr_slot_index(sc, slot);
+    if (!caj_arr_bit_get(sc, idx)) return NULL;   // borrowed/empty: no title
+    void* v = *slot;
+    if (!v) return NULL;
+    caj_arr_bit_put(sc, idx, 0);                  // title out; slot stays
+    return v;
+}
+
+void __cajeta_class_array_owned_drop(void* sidecar) {
+    cajeta_string_array_sidecar* sc = (cajeta_string_array_sidecar*) sidecar;
+    if (!sc) return;
+    uint8_t* bits = sc->owned_bits;
+    sc->owned_bits = NULL;
+    if (!bits) return;
+    void* arr = sc->arr_slot ? *sc->arr_slot : NULL;
+    if (arr && sc->storage_entry && sc->storage_entry->active) {
+        int64_t count = caj_arr_count_masked(arr);
+        if (count > sc->owned_cap) count = sc->owned_cap;
+        char* data = (char*) arr + sc->header;
+        for (int64_t i = 0; i < count; i++) {
+            if (!((bits[i >> 3] >> (i & 7)) & 1)) continue;
+            void* elem = *(void**) (data + i * sc->stride);
+            if (elem) __cajeta_class_virtual_drop(elem);
+        }
+    }
+    free(bits);
+}
