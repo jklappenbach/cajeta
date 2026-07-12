@@ -5174,10 +5174,57 @@ namespace cajeta {
         return fn;
     }
 
+    // Build the diagnostic for a call that named a member which did not resolve.
+    // Two DIFFERENT mistakes, and conflating them misleads: if `scale` exists but
+    // takes an int32, telling the user there is "no member scale" sends them
+    // looking for a typo that isn't there. So the presence of same-named
+    // candidates (here or on any ancestor) picks the error.
+    Exception CajetaClass::memberNotFoundException(const string& methodName,
+            const vector<ParameterEntry>& parameters, int line, int column) {
+        vector<string> candidates;
+        std::function<void(CajetaClass*)> collect = [&](CajetaClass* cls) {
+            if (!cls) return;
+            for (auto& mEntry : cls->getMethods()) {
+                auto& m = mEntry.second;
+                if (!m || m->getName() != methodName) continue;
+                string sig = methodName + "(";
+                auto pl = m->getParameterList();
+                bool isStatic = m->getModifiers().find(STATIC)
+                    != m->getModifiers().end();
+                size_t first = isStatic ? 0 : 1;   // skip the implicit `this`
+                for (size_t i = first; i < pl.size(); ++i) {
+                    if (i > first) sig += ", ";
+                    auto pt = pl[i] ? pl[i]->getType() : nullptr;
+                    sig += (pt && pt->getQName())
+                        ? pt->getQName()->toCanonical() : "?";
+                }
+                sig += ")";
+                candidates.push_back(sig);
+            }
+            for (auto& sup : cls->getSuperClasses()) collect(sup.get());
+        };
+        collect(this);
+
+        string recv = getQName() ? getQName()->toCanonical() : "<unknown>";
+        if (candidates.empty()) {
+            return locatedException(line, column,
+                "no member '" + methodName + "' on '" + recv + "'",
+                "CAJETA_ERROR_MEMBER_NOT_FOUND");
+        }
+        string msg = "no overload of '" + methodName + "' on '" + recv
+            + "' accepts " + std::to_string(parameters.size())
+            + " argument(s). Candidates:";
+        for (auto& c : candidates) msg += "\n    " + c;
+        return locatedException(line, column, msg,
+            "CAJETA_ERROR_NO_MATCHING_OVERLOAD");
+    }
+
     llvm::Value* CajetaClass::invokeMethod(string& methodName, vector<ParameterEntry> parameters, bool isConstructor, llvm::Value* thisValue,
                                             CajetaModulePtr callerModule, bool forceDirectCall,
                                             const vector<CajetaTypePtr>& explicitMethodTypeArgs,
-                                            llvm::Value* sretTarget) {
+                                            llvm::Value* sretTarget,
+                                            bool errorIfUnresolved,
+                                            int callLine, int callColumn) {
         // Partial (positional + named) calls reorder to positional here; this also
         // turns a mixed call into one with no labels, so `floatingParams` below is
         // false for it and the positional resolution applies.
@@ -5203,6 +5250,11 @@ namespace cajeta {
             // empty case, where `null` (pointer) doesn't match the `int32` value
             // param and the call relies on memset-zero. A proper safety net must
             // first make null→primitive ctor args resolve; tracked separately.
+            // So constructors stay silent even when the caller asked to be strict.
+            if (errorIfUnresolved && !isConstructor) {
+                throw memberNotFoundException(methodName, parameters,
+                    callLine, callColumn);
+            }
             return nullptr;
         }
         // Visibility enforcement. Caller's class is the top of the

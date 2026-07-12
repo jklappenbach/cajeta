@@ -47,12 +47,19 @@ int32_t runI32(const std::string& src) {
 
 // A read through an unprojected wildcard cannot resolve, so the compile must
 // FAIL rather than lower the call to null and return 0.
+//
+// KNOWN WART (filed, silent-resolution-diagnostics 2.2.4): the message names the
+// receiver as the ENCLOSING class (`no member 'tag' on 'test.D'`) rather than the
+// wildcard receiver. `b.get()` yields the unprojected sentinel, and the chained
+// `.tag()` falls back to the enclosing class as its target. The rejection is
+// right; the receiver name in the text is not. Asserted on the id, not the
+// receiver, so this test pins the SEMANTICS and does not cement the wart.
 void expectUnresolved(const std::string& src) {
     try {
         runI32(src);
         FAIL() << "expected the unresolvable wildcard read to fail the compile";
     } catch (cajeta::Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_UNRESOLVED_EXPRESSION")
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_MEMBER_NOT_FOUND")
             << "got: " << e.getErrorId() << " — " << e.getMessage();
     }
 }

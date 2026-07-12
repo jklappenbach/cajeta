@@ -1988,6 +1988,12 @@ namespace cajeta {
                                  && parameters.size() == 1;
                 bool isBind    = wantListener && methodCallName == "bind"
                                  && parameters.size() == 1;
+                // NET-4.4: same lowering as `bind`, but the caller supplies the
+                // listen backlog instead of taking the default 128.
+                bool isBindBacklog = wantListener
+                                 && methodCallName == "bindWithBacklog"
+                                 && parameters.size() == 2;
+                if (isBindBacklog) isBind = true;
                 bool isUdpBind = wantUdp && methodCallName == "bind"
                                  && parameters.size() == 1;
                 if (isOurNet && (isConnect || isConnectAsync || isBind || isUdpBind)) {
@@ -2217,8 +2223,21 @@ namespace cajeta {
                                 {fd, scratch, addrlen}, "na.bind_rc");
                             throwIf(builder->CreateICmpNE(brc,
                                 llvm::ConstantInt::get(i32Ty, 0)), 0x103, fd);
+                            // Default backlog 128; bindWithBacklog supplies its own.
+                            llvm::Value* backlog =
+                                llvm::ConstantInt::get(i32Ty, 128);
+                            if (isBindBacklog) {
+                                llvm::Value* b = loadIfLValue(module,
+                                    parameters[1].expression->generateCode(module),
+                                    dynamic_pointer_cast<Expression>(
+                                        parameters[1].expression));
+                                if (b && b->getType()->isIntegerTy()) {
+                                    backlog = builder->CreateIntCast(
+                                        b, i32Ty, /*isSigned=*/true);
+                                }
+                            }
                             llvm::Value* lrc = builder->CreateCall(listenFn,
-                                {fd, llvm::ConstantInt::get(i32Ty, 128)}, "na.listen_rc");
+                                {fd, backlog}, "na.listen_rc");
                             throwIf(builder->CreateICmpNE(lrc,
                                 llvm::ConstantInt::get(i32Ty, 0)), 0x104, fd);
                         }
@@ -7635,10 +7654,17 @@ namespace cajeta {
                     {builder->getInt64((uint64_t) moveMask)});
             }
         }
+        // errorIfUnresolved: this is an explicit `recv.name(args)` — the user
+        // named a member that must exist, so a miss is a compile error here
+        // rather than a null that surfaces later (or never). Speculative callers
+        // (BinaryOpExpression probing for `operator+`) leave the flag false.
         llvm::Value* callResult = targetClass->invokeMethod(methodCallName, entries,
             /*isConstructor=*/false, thisValue, /*callerModule=*/module,
             /*forceDirectCall=*/(isSuperCall || targetIsFinalClass),
-            /*explicitMethodTypeArgs=*/explicitMethodTypeArgs);
+            /*explicitMethodTypeArgs=*/explicitMethodTypeArgs,
+            /*sretTarget=*/nullptr,
+            /*errorIfUnresolved=*/true,
+            getSourceLine(), getSourceColumn() + 1);
         if (moveSetFn) {
             builder->CreateCall(moveSetFn, {builder->getInt64(0)});
         }
