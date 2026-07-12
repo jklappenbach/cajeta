@@ -2463,7 +2463,24 @@ namespace cajeta {
                     val = builder->CreateFPToSI(val, storedType);
                 }
             }
-            if (val->getType() != storedType) continue;  // skip on mismatch
+            if (val->getType() != storedType) {
+                // The initializer's type is not the declared type and none of the
+                // numeric coercions above bridged it (`static int32 x = "hello"`).
+                // Skipping the store left the field silently ZERO — the
+                // initializer-type-check hole (silent-resolution diagnostics 3.1.2).
+                auto declTy = prop->getType();
+                auto initTy = expr->getResolvedType();
+                std::string declName = (declTy && declTy->getQName())
+                    ? declTy->getQName()->toCanonical() : "<unknown>";
+                std::string initName = (initTy && initTy->getQName())
+                    ? initTy->getQName()->toCanonical() : "<unresolved>";
+                throw locatedException(
+                    expr->getSourceLine(), expr->getSourceColumn() + 1,
+                    "initializer for static field '" + prop->getName()
+                        + "' has type '" + initName
+                        + "', which is not assignable to '" + declName + "'",
+                    "CAJETA_ERROR_INITIALIZER_TYPE_MISMATCH");
+            }
             builder->CreateStore(val, g);
         }
         builder->CreateRetVoid();

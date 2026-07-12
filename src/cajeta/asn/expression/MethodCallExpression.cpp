@@ -4951,6 +4951,23 @@ namespace cajeta {
         if (auto klass = dynamic_pointer_cast<CajetaClass>(receiverType)) {
             targetClass = klass;
         }
+        if (!targetClass && !children.empty() && !receiver && !receiverType) {
+            // A receiver WAS written (children is non-empty only for the
+            // DOT-methodCall form) but named nothing: no value, no type, and the
+            // class-name fallback above found no such class. Falling through to
+            // the enclosing-class fallback below would blame the WRONG receiver —
+            // `NoSuchType.nope()` reported "no member 'nope' on 'test.D'". Narrow
+            // to a bare identifier: a qualified receiver (`a.b.Foo.bar()`) arrives
+            // as a DotExpression and may legitimately be unresolved here.
+            if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(
+                    children[0])) {
+                throw locatedException(
+                    getSourceLine(), getSourceColumn() + 1,
+                    "unknown type '" + idExpr->getTextValue()
+                        + "' (no class, and no local of that name, is in scope)",
+                    "CAJETA_ERROR_UNRESOLVED_TYPE");
+            }
+        }
         if (!targetClass) {
             if (module->getStructureStack().empty()) {
                 return nullptr;
