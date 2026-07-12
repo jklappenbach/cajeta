@@ -7,7 +7,7 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 
 | Spec | Plan | Status |
 |------|------|--------|
-| [external-debug](external-debug-spec.md) | [plan](../agents/external-debug-plan.md) | active |
+| [external-debug](external-debug-spec.md) | [plan](../agents/external-debug-plan.md) | active — Units 1–6 delivered and green; one item (5.1.7 cycle-render test) is untestable, awaiting a call on whether to close |
 | [optional-borrow-ownership](optional-borrow-ownership-spec.md) | [plan](../agents/cajeta/optional-borrow-ownership-plan.md) | active |
 | [docs-refactor](docs-refactor-spec.md) | [plan](../agents/docs-refactor-plan.md) | active |
 | [cja-source-view](cja-source-view-spec.md) | [plan](../agents/cja-source-view-plan.md) | active |
