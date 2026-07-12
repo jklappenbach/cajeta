@@ -275,6 +275,45 @@ TEST_F(GdbBridge, movedFromLocalReportsItsOwnershipState) {
     fs::remove_all(f.base);
 }
 
+// 5.1.10 — a static field has byteOffset -1: it lives in a global, not in the
+// instance. It must be REPORTED as unsupported, never decoded at a bogus offset
+// (spec §4.1.8).
+//
+// (5.1.7, cycle termination, has no test here: an OWNED cycle turns out to be
+// unconstructible in safe Cajeta. `a.peer = a` MOVES `a` into the field —
+// ownership is linear — so the local is consumed and renders as moved-from,
+// never as a cyclic graph. The visited set in the renderer stays as defense
+// against walking corrupted memory, but nothing in the language can exercise it.)
+TEST_F(GdbBridge, staticFieldIsReportedNotMisdecoded) {
+    auto f = makeFixture("static");
+    {
+        std::ofstream out(f.src / "demo" / "Hello.cajeta");
+        out << "package demo;\n"                                // 1
+            << "public final class Node {\n"                    // 2
+            << "    public static int32 count;\n"               // 3  byteOffset -1
+            << "    public int32 id;\n"                         // 4
+            << "    public Node() { this.id = 1; }\n"           // 5
+            << "}\n"                                            // 6
+            << "public final class Hello {\n"                   // 7
+            << "    public static int32 run() {\n"              // 8
+            << "        Node a = heap Node();\n"                // 9
+            << "        int32 z = a.id;\n"                      // 10
+            << "        return z;\n"                            // 11
+            << "    }\n"
+            << "}\n";
+    }
+    ASSERT_TRUE(build(f, "full"));
+
+    auto out = gdb(f, "break main\nrun\ncjbreak Hello.cajeta:11\ncontinue\n"
+                      "cjlocals\nkill\nquit\n");
+
+    EXPECT_TRUE(has(out, ".count = <static — not supported>")) << out;
+    // ...while the instance field beside it decodes normally.
+    EXPECT_TRUE(has(out, ".id @+8 = 1")) << out;
+
+    fs::remove_all(f.base);
+}
+
 // cjbreak on a line that emits no code fails with a real explanation, not a
 // silent no-op that leaves the user waiting at a breakpoint that never fires.
 TEST_F(GdbBridge, cjbreakOnANonStatementLineExplainsItself) {
