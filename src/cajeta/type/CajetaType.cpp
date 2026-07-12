@@ -74,6 +74,8 @@ namespace cajeta {
     // thread-safe-compiler Unit 2: per-thread so concurrent compiles don't share.
     thread_local map<string, CajetaTypePtr> CajetaType::canonicalMap;
     thread_local map<string, map<string, int32_t>> CajetaType::enumConstants;
+    thread_local map<string, map<string, EnumConstantPos>>
+        CajetaType::enumConstantPositions;
     thread_local map<TypeKey, CajetaTypePtr> CajetaType::typeMap;
     thread_local map<llvm::Type::TypeID, CajetaTypePtr> CajetaType::llvmTypeIdMap;
 
@@ -196,6 +198,10 @@ namespace cajeta {
         typeMap.clear();
         llvmTypeIdMap.clear();
         enumConstants.clear();
+        // Cleared with enumConstants, never apart from it: a stale position that
+        // outlived its enum would point Ctrl-click at whatever now occupies that
+        // offset — a wrong answer, which is worse than none.
+        enumConstantPositions.clear();
         g_archive.clear();
         g_enumArchive.clear();
         g_valueTypeArchive.clear();

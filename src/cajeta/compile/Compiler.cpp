@@ -1304,6 +1304,13 @@ namespace cajeta {
         // see what the user passed without threading it through Phase 1/2.
         this->entryMethod = entryMethod;
 
+        // ide-symbol-index 1.5: a template's body walk is skipped, so it holds no
+        // Method objects — the visitor must capture its members declaratively as it
+        // parses, before that skip. Arm it here and clear last compile's capture.
+        // Off unless --emit-xref, so a normal build captures nothing.
+        xref::resetCapture();
+        xref::setCaptureEnabled(!flags.emitXref.empty());
+
         // DCE Tier-0b: clear the compile-scoped reflection-usage accumulator.
         // The compiler process is reused across compiles (the stdlib-prime
         // cache), so a flag left set by a prior reflection-using build would

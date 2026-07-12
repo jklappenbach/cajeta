@@ -11,6 +11,7 @@
 #include "cajeta/synth/SourceSynthesisParse.h"
 #include "cajeta/synth/SynthesizerRegistry.h"
 #include "cajeta/type/CajetaClass.h"
+#include "cajeta/xref/XrefIndex.h"
 #include "cajeta/type/CajetaArray.h"
 #include "cajeta/type/CajetaView.h"
 #include "cajeta/type/CajetaView.h"
@@ -288,6 +289,101 @@ namespace cajeta {
             built->setDeclPosition(
                 (int) nameCtx->getStart()->getLine(),
                 (int) nameCtx->getStart()->getCharPositionInLine());
+        }
+
+        // xref plan 1.5 — a template's body walk is skipped, so it holds no Method
+        // objects and its members are invisible to the declaration export. Scan the
+        // parse tree directly for what an IDE needs to NAVIGATE to a member: its
+        // name, its position, and its parameter types as written. Deliberately does
+        // no type resolution — `T` stays `T`. That is not a limitation: the template
+        // IS the source the developer edits, and `Box::get(T)` is what is written
+        // there.
+        void captureTemplateMembers(antlr4::ParserRuleContext* ctx,
+                                    const CajetaClassPtr& structure) {
+            if (!ctx || !structure) return;
+            const string ownerFqn = structure->getQName()->toCanonical();
+            const string file     = pModule->currentSourceFile();
+
+            CajetaParser::ClassBodyContext* body = nullptr;
+            for (auto* child : ctx->children) {
+                if ((body = dynamic_cast<CajetaParser::ClassBodyContext*>(child))) break;
+            }
+            if (!body) return;
+
+            // Parameter types AS WRITTEN — `(T)`, `(int32, T)`, `()`.
+            auto paramText = [](CajetaParser::FormalParametersContext* fp) -> string {
+                string out = "(";
+                if (fp && fp->formalParameterList()) {
+                    bool first = true;
+                    for (auto* p : fp->formalParameterList()->formalParameter()) {
+                        if (!p->typeType()) continue;
+                        if (!first) out += ",";
+                        out += p->typeType()->getText();
+                        first = false;
+                    }
+                }
+                return out + ")";
+            };
+
+            auto note = [&](const string& name, const string& kind,
+                            const string& key, antlr4::Token* tok) {
+                if (!tok) return;
+                xref::TemplateMember m;
+                m.ownerFqn    = ownerFqn;
+                m.name        = name;
+                m.kind        = kind;
+                m.overloadKey = key;
+                m.at          = xref::SourceRef{file, (int) tok->getLine(),
+                                                (int) tok->getCharPositionInLine()};
+                xref::registerTemplateMember(std::move(m));
+            };
+
+            for (auto* decl : body->classBodyDeclaration()) {
+                auto* member = decl->memberDeclaration();
+                if (!member) continue;
+
+                if (auto* md = member->methodDeclaration()) {
+                    const string name = md->identifier()->getText();
+                    note(name, "method",
+                         ownerFqn + "::" + name + paramText(md->formalParameters()),
+                         md->identifier()->getStart());
+                } else if (auto* cd = member->constructorDeclaration()) {
+                    const string name = cd->identifier()->getText();
+                    note(name, "constructor",
+                         ownerFqn + "::" + name + paramText(cd->formalParameters()),
+                         cd->identifier()->getStart());
+                } else if (auto* od = member->operatorOverloadDeclaration()) {
+                    // Operators must survive here too — cajetadoc omits them
+                    // entirely, so this export is their only source.
+                    //
+                    // Recover the actual symbol (`operator+`, `operator[]=`) from the
+                    // tokens between OPERATOR and the parameter list. Emitting a bare
+                    // "operator" would name every operator identically — a WRONG
+                    // name, which is worse than a missing one.
+                    string sym;
+                    bool afterKw = false;
+                    for (auto* child : od->children) {
+                        if (dynamic_cast<CajetaParser::FormalParametersContext*>(child)) break;
+                        if (!afterKw) {
+                            auto* term = dynamic_cast<antlr4::tree::TerminalNode*>(child);
+                            if (term && term == od->OPERATOR()) afterKw = true;
+                            continue;
+                        }
+                        sym += child->getText();
+                    }
+                    const string name = "operator" + sym;
+                    note(name, "method",
+                         ownerFqn + "::" + name + paramText(od->formalParameters()),
+                         od->OPERATOR() ? od->OPERATOR()->getSymbol() : nullptr);
+                } else if (auto* fd = member->fieldDeclaration()) {
+                    if (!fd->variableDeclarators()) continue;
+                    for (auto* vd : fd->variableDeclarators()->variableDeclarator()) {
+                        if (!vd->variableDeclaratorId()) continue;
+                        const string name = vd->variableDeclaratorId()->getText();
+                        note(name, "field", "", vd->variableDeclaratorId()->getStart());
+                    }
+                }
+            }
         }
 
         virtual std::any visitClassDeclaration(CajetaParser::ClassDeclarationContext* ctx) override {
@@ -732,6 +828,16 @@ namespace cajeta {
             // map by `instantiate(...)`, where T is bound to a concrete type.
             // Skipping here also keeps the template out of getAllMethods'
             // codegen worklist by way of having no methods at all.
+            //
+            // xref (ide-symbol-index plan 1.5): "no methods at all" is exactly why
+            // no generic type used to export a single member — `ArrayList.add`, the
+            // most-called method in the stdlib, was absent from the index. Capture
+            // the template's members DECLARATIVELY here, before the skip: name,
+            // position, and parameter types as written. No resolution — that is what
+            // the skipped walk cannot do, and navigation does not need it.
+            if (structure->isTemplate() && xref::captureEnabled()) {
+                captureTemplateMembers(ctx, structure);
+            }
             if (!structure->isTemplate()) {
                 structure->setClassBody(std::any_cast<ClassBodyDeclarationPtr>(visitChildren(ctx)));
 
@@ -1108,12 +1214,32 @@ namespace cajeta {
             // both forms for class names).
             CajetaType::getCanonicalMap()[qName->getTypeName()] = enumType;
 
+            // xref (ide-symbol-index plan 1.4): an enum is a CajetaType, not a
+            // CajetaClass, so it needs its declaring file + position recorded here
+            // or the export cannot locate it at all.
+            enumType->setDeclaringFile(pModule->currentSourceFile());
+            if (ctx->identifier() && ctx->identifier()->getStart()) {
+                enumType->setDeclPosition(
+                    (int) ctx->identifier()->getStart()->getLine(),
+                    (int) ctx->identifier()->getStart()->getCharPositionInLine());
+            }
+
             // Walk constants in declared order and assign sequential ordinals.
             int32_t ordinal = 0;
             if (auto* constants = ctx->enumConstants()) {
                 for (auto* ec : constants->enumConstant()) {
                     string constName = ec->identifier()->getText();
                     CajetaType::registerEnumConstant(name, constName, ordinal++);
+                    // The ordinal registry carries no position, so record each
+                    // constant's own — otherwise Ctrl-click on `GREEN` would land
+                    // on `Color`, or on nothing.
+                    if (ec->identifier()->getStart()) {
+                        CajetaType::registerEnumConstantPosition(
+                            name, constName,
+                            pModule->currentSourceFile(),
+                            (int) ec->identifier()->getStart()->getLine(),
+                            (int) ec->identifier()->getStart()->getCharPositionInLine());
+                    }
                 }
             }
             return std::any(nullptr);

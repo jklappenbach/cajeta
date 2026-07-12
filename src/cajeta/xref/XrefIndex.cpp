@@ -280,10 +280,78 @@ namespace cajeta::xref {
 
     } // namespace
 
+    // ---- template-member capture (plan 1.5) --------------------------------
+    namespace {
+        thread_local bool gCaptureEnabled = false;
+        thread_local std::vector<TemplateMember> gTemplateMembers;
+    }
+
+    void setCaptureEnabled(bool enabled) { gCaptureEnabled = enabled; }
+    bool captureEnabled() { return gCaptureEnabled; }
+
+    void resetCapture() { gTemplateMembers.clear(); }
+
+    void registerTemplateMember(TemplateMember member) {
+        gTemplateMembers.push_back(std::move(member));
+    }
+
     void collectDeclarationsAndInheritance(XrefIndex& index,
                                            const std::string& sourceRoot) {
         index.setSourceRoot(sourceRoot);
 
+        // Template members first — captured at parse time because the template's
+        // body walk is skipped and it therefore holds no Method objects (1.5).
+        for (const auto& tm : gTemplateMembers) {
+            if (tm.at.line <= 0) continue;
+            Declaration d;
+            d.fqn         = tm.ownerFqn + "." + tm.name;
+            d.kind        = tm.kind;
+            d.owner       = tm.ownerFqn;
+            d.overloadKey = tm.overloadKey;
+            d.signature   = tm.overloadKey;
+            d.at          = SourceRef{relativize(tm.at.file, sourceRoot),
+                                      tm.at.line, tm.at.col};
+            if (d.at.file.empty()) continue;
+            index.addDeclaration(std::move(d));
+        }
+
+        // --- enums --------------------------------------------------------------
+        // An enum is an i32-backed CajetaType carrying ENUM_FLAG, NOT a
+        // CajetaClass, so the class walk below cannot see it. Handled first, and
+        // separately, for exactly that reason (plan 1.4).
+        for (auto& [mapKey, type] : CajetaType::getCanonicalMap()) {
+            if (!type || !(type->getTypeFlags() & ENUM_FLAG)) continue;
+            if (std::dynamic_pointer_cast<CajetaClass>(type)) continue;  // defensive
+
+            const std::string canonical = type->getQName()->toCanonical();
+            const std::string shortName = type->getQName()->getTypeName();
+            const std::string file = relativize(type->getDeclaringFile(), sourceRoot);
+            if (type->getDeclLine() <= 0 || file.empty()) continue;
+
+            Declaration d;
+            d.fqn  = canonical;
+            d.kind = "enum";
+            d.at   = SourceRef{file, type->getDeclLine(), type->getDeclColumn()};
+            index.addDeclaration(std::move(d));
+
+            // Constants. The ordinal registry is keyed by the enum's SHORT name;
+            // the position registry is keyed the same way so the two stay in step.
+            auto& positions = CajetaType::getEnumConstantPositions();
+            auto pit = positions.find(shortName);
+            if (pit == positions.end()) continue;
+            for (auto& [constName, pos] : pit->second) {
+                if (pos.line <= 0) continue;
+                Declaration c;
+                c.fqn   = canonical + "." + constName;
+                c.kind  = "enumConstant";
+                c.owner = canonical;
+                c.at    = SourceRef{relativize(pos.file, sourceRoot), pos.line, pos.col};
+                if (c.at.file.empty()) continue;
+                index.addDeclaration(std::move(c));
+            }
+        }
+
+        // --- classes, interfaces, records, views --------------------------------
         for (auto& [mapKey, type] : CajetaType::getCanonicalMap()) {
             auto klass = std::dynamic_pointer_cast<CajetaClass>(type);
             if (!klass) continue;
@@ -295,6 +363,14 @@ namespace cajeta::xref {
             // own canonical name instead; the writer's de-duplication then collapses
             // the second visit.
             const std::string canonical = klass->getQName()->toCanonical();
+
+            // Skip INSTANTIATIONS (`demo.Box<int32>`). An instantiation is
+            // monomorphized from its template and has no source of its own — its
+            // declaration is the template's. Exporting one record per instantiation
+            // would list the same source method once per element type, fragment
+            // "who calls add" across instantiations, and name FQNs that appear in no
+            // file. The template's members are captured separately (1.5).
+            if (canonical.find('<') != std::string::npos) continue;
 
             const std::string file = relativize(klass->getDeclaringFile(), sourceRoot);
             // A type with no declaring position was synthesized (mock, template

@@ -177,10 +177,18 @@ targets and what the gutter decorates.
 - 4.0.4 References resolve into dependency and stdlib source once mounted (§6).
 - 4.0.5 An offset with no export entry resolves to `null` — never throws.
 
-- 4.3 **The one local fallback.** Locals and parameters inside a single method body
-  resolve from PSI alone, without the compiler. They are syntactic and unambiguous,
-  so they cannot drift; and they are what keeps navigation responsive in a buffer
-  the compiler has not re-seen yet. Nothing else is resolved IDE-side.
+- 4.3 **The one local fallback.** Locals, parameters, and **type parameters**
+  resolve from PSI alone, without the compiler. Each is scoped to a single
+  declaration — a local and a parameter to one method body, a type parameter to the
+  class or method that declares it — so each is visible in its own PSI subtree.
+  They are syntactic and unambiguous, so they cannot drift from the compiler; and
+  they are what keeps navigation responsive in a buffer the compiler has not
+  re-seen yet. Nothing else is resolved IDE-side.
+
+  The test of whether something belongs here is not "is it small" but **"can the
+  IDE be wrong about it?"** A name whose binding depends on imports, inheritance,
+  overload selection, or another file can be got wrong, and must come from the
+  compiler. A name bound within the subtree it is written in cannot.
 
 **Use cases**
 

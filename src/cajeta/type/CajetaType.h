@@ -164,6 +164,16 @@ namespace cajeta {
 
     bool operator<(const TypeKey& a, const TypeKey& b);
 
+    // Source position of an enum CONSTANT. The enum-constant registry stores only
+    // the ordinal, so without this an IDE could find `Color` but not `Color.GREEN`
+    // — Ctrl-click on a constant would land on the enum, or on nothing.
+    // See specs/ide-symbol-index-spec.md §2.
+    struct EnumConstantPos {
+        string file;
+        int line = 0;
+        int col = 0;
+    };
+
 class CajetaType : public Modifiable, public Annotatable,
         public std::enable_shared_from_this<CajetaType> {
     protected:
@@ -175,6 +185,21 @@ class CajetaType : public Modifiable, public Annotatable,
         static thread_local map<string, CajetaTypePtr> canonicalMap;
         static thread_local map<TypeKey, CajetaTypePtr> typeMap;
         static thread_local map<llvm::Type::TypeID, CajetaTypePtr> llvmTypeIdMap;
+
+        // Where this type is DECLARED (remapped path; 1-based line, 0-based col —
+        // the ANTLR convention). Lives on CajetaType rather than CajetaClass because
+        // an ENUM is a CajetaType (i32-backed, ENUM_FLAG) and not a CajetaClass, so
+        // a class-only field left every enum unlocatable. 0/"" = synthesized (mock,
+        // template placeholder, primitive) — such a type has no source an IDE could
+        // open, and the xref export skips it rather than emit a record pointing
+        // nowhere. See specs/ide-symbol-index-spec.md §2.
+        string declaringFile;
+        int declLine = 0;
+        int declColumn = 0;
+        // Enum-constant positions, parallel to `enumConstants`. See
+        // registerEnumConstantPosition().
+        static thread_local map<string, map<string, EnumConstantPos>>
+            enumConstantPositions;
         // Enum constant registry. Keyed by the enum's short typeName
         // ("Direction") and then by constant name ("NORTH" / "SOUTH" / ...).
         // The value is the constant's int32 ordinal. DotExpression consults
@@ -574,6 +599,28 @@ class CajetaType : public Modifiable, public Annotatable,
         static void registerEnumConstant(const string& enumName,
             const string& constName, int32_t ordinal) {
             enumConstants[enumName][constName] = ordinal;
+        }
+
+        // Where this type is declared. Only meaningful for types that came from a
+        // parsed declaration; see the field comments.
+        const string& getDeclaringFile() const { return declaringFile; }
+        void setDeclaringFile(const string& file) { declaringFile = file; }
+        int getDeclLine() const { return declLine; }
+        int getDeclColumn() const { return declColumn; }
+        void setDeclPosition(int line, int column) {
+            declLine = line;
+            declColumn = column;
+        }
+
+        static void registerEnumConstantPosition(const string& enumName,
+                const string& constName, const string& file, int line, int col) {
+            enumConstantPositions[enumName][constName] = EnumConstantPos{file, line, col};
+        }
+        static map<string, map<string, EnumConstantPos>>& getEnumConstantPositions() {
+            return enumConstantPositions;
+        }
+        static map<string, map<string, int32_t>>& getEnumConstants() {
+            return enumConstants;
         }
         static bool isEnumName(const string& enumName) {
             return enumConstants.find(enumName) != enumConstants.end();

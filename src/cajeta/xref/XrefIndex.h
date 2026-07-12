@@ -112,9 +112,40 @@ namespace cajeta::xref {
         std::vector<Call> calls_;
     };
 
+    // ---- template members (plan 1.5) ---------------------------------------
+    //
+    // A template's body walk is SKIPPED (CajetaLlvmVisitor.h:726 — it "keeps the
+    // template out of getAllMethods' codegen worklist by way of having no methods
+    // at all"), so a generic class holds no Method objects and its members are
+    // invisible to the declaration walk. Without this, `ArrayList.add` — the
+    // most-called method in the stdlib — is simply not in the index.
+    //
+    // So the visitor captures a template's members declaratively at parse time:
+    // name, position, and parameter types AS WRITTEN. No type resolution — that is
+    // precisely what the skipped body walk cannot do, and navigation does not need
+    // it. We record the TEMPLATE's member, never an instantiation's: an
+    // instantiation is monomorphized from the template and has no source of its
+    // own, so per-instantiation records would list one source method N times and
+    // fragment "who calls add" across instantiations.
+    struct TemplateMember {
+        std::string ownerFqn;      // the template's canonical name, no type args
+        std::string name;
+        std::string kind;          // method | constructor | field
+        std::string overloadKey;   // e.g. demo.Box::get(T) — params as written
+        SourceRef at;
+    };
+
+    // Off by default: a build that does not ask for xref captures nothing.
+    void setCaptureEnabled(bool enabled);
+    bool captureEnabled();
+    // Clear per-compile state. Call at the start of a compile.
+    void resetCapture();
+    void registerTemplateMember(TemplateMember member);
+
     // Build the index for everything the compiler currently holds resolved:
     // walks the canonical type registry, emitting declarations and inheritance
-    // edges (Unit 1). `sourceRoot` is stripped from recorded paths.
+    // edges (Unit 1), enums (1.4), and captured template members (1.5).
+    // `sourceRoot` is stripped from recorded paths.
     void collectDeclarationsAndInheritance(XrefIndex& index,
                                            const std::string& sourceRoot);
 

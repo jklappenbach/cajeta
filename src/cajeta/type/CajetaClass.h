@@ -139,20 +139,15 @@ namespace cajeta {
         bool prototypeBuilt = false;
         bool recordType = false;
         CajetaModulePtr module;
-        // Declaring source file, remapped. See getDeclaringFile().
-        string declaringFile;
+
+        // `declaringFile` / `declLine` / `declColumn` now live on CajetaType — an
+        // ENUM is a CajetaType and not a CajetaClass, so a class-only field left
+        // every enum unlocatable (ide-symbol-index plan 1.4). Accessors are
+        // inherited; only the capture helper stays here.
 
         // Read the module's current parse file into declaringFile. Out-of-line:
         // CajetaModule is only forward-declared here.
         void captureDeclaringFile();
-        // Position of the declaration's NAME token (1-based line, 0-based col —
-        // the ANTLR convention every AbstractSyntaxNode already carries). Set by
-        // the visitor at each class-like declaration site; 0 means "not from a
-        // parsed declaration" (synthesized, mock, or template placeholder).
-        // Consumed by the xref export (ide-symbol-index §2) so an IDE can map a
-        // declaration back to an editor offset.
-        int declLine = 0;
-        int declColumn = 0;
         // Emit target for this class's own IR (vtable / RTTI / clinit / static
         // fields). Null → getEmitModule() falls back to `module` (production /
         // non-reuse: resolution and emission coincide). Set only in the stdlib
@@ -350,17 +345,8 @@ namespace cajeta {
         // instantiation inherits it from its template — the instantiation
         // happens wherever the use site is, but the code still lives in the
         // template's file.
-        const string& getDeclaringFile() const { return declaringFile; }
-
-        void setDeclaringFile(const string& file) { declaringFile = file; }
-
-        int getDeclLine() const { return declLine; }
-        int getDeclColumn() const { return declColumn; }
-
-        void setDeclPosition(int line, int column) {
-            declLine = line;
-            declColumn = column;
-        }
+        // getDeclaringFile / setDeclaringFile / getDeclLine / getDeclColumn /
+        // setDeclPosition are inherited from CajetaType.
 
         /**
          * Create a structure that provides for a boolean type for whether the reference owns the instance and should delete at scope-end,

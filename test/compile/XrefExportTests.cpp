@@ -277,6 +277,110 @@ TEST(XrefExport, ViewsAreNotReportedAsClasses) {
         << "a `view` must not be reported as a `class`; got: " << rec;
 }
 
+// ---- 1.4.1 / 1.4.2 — enums and their constants -------------------------------
+//
+// An enum registers as an i32-backed CajetaType carrying ENUM_FLAG, NOT a
+// CajetaClass, so the declaration walk (which casts to CajetaClass) never saw one.
+// Its constants live in a registry keyed by the SHORT name that stores only an
+// ordinal — no source position at all. Until this landed, Ctrl-click on an enum,
+// or on one of its constants, resolved to nothing.
+
+TEST(XrefExport, EnumsAndTheirConstantsAreDeclared) {
+    auto proj = makeTmpProject("enums");
+    writeUnit(proj.sourceRoot, "demo/Color.cajeta",
+        "package demo;\n"          // 1
+        "public enum Color {\n"    // 2  <- the enum
+        "    RED,\n"               // 3  <- constants, each on its own line
+        "    GREEN,\n"             // 4
+        "    BLUE\n"               // 5
+        "}\n");                    // 6
+
+    auto doc = emitXref(proj);
+    ASSERT_FALSE(doc.empty());
+
+    // The enum type itself.
+    auto e = recordContaining(doc, "\"demo.Color\"");
+    ASSERT_FALSE(e.empty()) << "the enum is missing from the export entirely";
+    EXPECT_TRUE(has(e, "\"kind\": \"enum\"")) << e;
+    EXPECT_TRUE(has(e, "Color.cajeta")) << e;
+    EXPECT_TRUE(has(e, "\"line\": 2")) << e;
+
+    // Each constant is its own declaration, owned by the enum, at its OWN line —
+    // so Ctrl-click on `GREEN` lands on `GREEN`, not on `Color`.
+    for (const auto& [name, line] : std::vector<std::pair<std::string, int>>{
+            {"RED", 3}, {"GREEN", 4}, {"BLUE", 5}}) {
+        auto c = recordContaining(doc, "\"demo.Color." + name + "\"");
+        ASSERT_FALSE(c.empty()) << "missing enum constant: " << name;
+        EXPECT_TRUE(has(c, "\"kind\": \"enumConstant\"")) << c;
+        EXPECT_TRUE(has(c, "\"owner\": \"demo.Color\"")) << c;
+        EXPECT_TRUE(has(c, "\"line\": " + std::to_string(line)))
+            << name << " must point at its own line, not the enum's; got: " << c;
+    }
+}
+
+// ---- 1.5 — methods of GENERIC types ------------------------------------------
+//
+// A template's body walk is skipped entirely (CajetaLlvmVisitor.h:726 — it "keeps
+// the template out of getAllMethods' codegen worklist by way of having no methods
+// at all"), so before this landed NO generic type exported a single method:
+// ArrayList, HashMap, Comparable, the lot. `ArrayList.add` — the most-called method
+// in the stdlib — was absent from the index, and Ctrl-click on `demos.add(...)`
+// resolved to nothing.
+//
+// We export the TEMPLATE's method, not the instantiation's: an instantiation is
+// monomorphized from the template and has no source of its own, so one record per
+// instantiation would list the same source method N times, fragment "who calls add"
+// across instantiations, and name FQNs that exist in no file.
+
+TEST(XrefExport, GenericTypesExportTheirMethods) {
+    auto proj = makeTmpProject("generics");
+    writeUnit(proj.sourceRoot, "demo/Box.cajeta",
+        "package demo;\n"                    // 1
+        "public class Box<T> {\n"            // 2
+        "    T value;\n"                     // 3
+        "    public Box(T v) {\n"            // 4
+        "        this.value = v;\n"          // 5
+        "    }\n"                            // 6
+        "    public T get() {\n"             // 7  <- the method under test
+        "        return this.value;\n"       // 8
+        "    }\n"                            // 9
+        "}\n");                              // 10
+
+    // Instantiate it TWICE, with different arguments.
+    writeUnit(proj.sourceRoot, "demo/Main.cajeta",
+        "package demo;\n"
+        "public final class Main {\n"
+        "    public static int32 run() {\n"
+        "        Box<int32> a = heap Box<int32>(1);\n"
+        "        Box<boolean> b = heap Box<boolean>(true);\n"
+        "        return a.get();\n"
+        "    }\n"
+        "}\n");
+
+    auto doc = emitXref(proj);
+    ASSERT_FALSE(doc.empty());
+
+    // 1.5.1 — the method exists, positioned in the TEMPLATE's source.
+    auto m = recordContaining(doc, "\"demo.Box.get\"");
+    ASSERT_FALSE(m.empty())
+        << "a generic type's methods must be exported — otherwise Ctrl-click on a "
+           "call through the template resolves to nothing";
+    EXPECT_TRUE(has(m, "\"kind\": \"method\"")) << m;
+    EXPECT_TRUE(has(m, "Box.cajeta")) << m;
+    EXPECT_TRUE(has(m, "\"line\": 7")) << m;
+
+    // 1.5.2 — TWO instantiations, but still exactly ONE declaration per source
+    // method. The template is the navigation target; instantiations are not
+    // separate declarations.
+    EXPECT_EQ(count(doc, "\"demo.Box.get\""), 1)
+        << "one source method must yield one declaration, not one per instantiation";
+
+    // No declaration may name an instantiated type — `demo.Box<int32>.get` is not a
+    // thing that exists in any source file.
+    EXPECT_FALSE(has(doc, "\"demo.Box<"))
+        << "instantiations must not appear as declarations";
+}
+
 // ---- 1.1.3 — overload keys distinguish same-name, same-arity methods ---------
 
 TEST(XrefExport, OverloadsGetDistinctKeys) {
