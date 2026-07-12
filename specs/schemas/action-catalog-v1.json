@@ -138,10 +138,9 @@
         "clean": {
           "capabilities": ["filesystem"],
           "params": {
-            "deep": { "type": "boolean", "default": false, "description": "Also wipes .cajeta/cache/ — prompts unless `yes`." },
-            "yes":  { "type": "boolean", "default": false }
+            "keep-cache": { "type": "boolean", "default": false, "description": "Preserve .cajeta/cache/ (IR + artifact caches). By default clean wipes them too, so the next build recompiles instead of re-publishing a cached artifact." }
           },
-          "outputs": { "deleted-count": "string" }
+          "outputs": { "removed-entries": "string", "removed-bytes": "string", "cache-cleaned": "string" }
         },
         "package": {
           "description": "Universal format-conversion verb. Format vocabulary mixes shipped (uber-archive, tarball, zip, container) + deferred slices (obj-tree, uber-ir, static-lib, shared-lib, deb, rpm, msi, app-bundle, pkg, dmg, appimage/flatpak/snap).",

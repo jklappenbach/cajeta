@@ -1,13 +1,17 @@
-// Regression tests for the Phase 5b clean action.
+// Regression tests for the clean action.
 //
 // Pins:
-//   - Default: removes build/, reports the count + bytes reclaimed.
-//   - deep=true with yes=true: also removes .cajeta/cache/.
+//   - Default: removes build/ AND .cajeta/cache/, unprompted, reporting the
+//     count + bytes reclaimed. Clean means clean.
+//   - keep-cache=true: removes build/ only, preserving the caches for a fast
+//     incremental rebuild.
 //   - Action result outputs surface the totals.
+//   - ~/.olla (the machine-global store) is never touched.
 //
-// Confirmation-prompt behavior on TTY is covered by the manual CLI
-// flow rather than these tests — gtest doesn't run on a TTY so the
-// `yes=true` path is the relevant code path.
+// The cache wipe used to be opt-in (`deep`) behind a [y/N] TTY prompt, which any
+// non-interactive caller answered "no" by hitting EOF — so the IDE's Clean left
+// the artifact cache intact and the next build re-published it in ~100ms without
+// compiling. The prompt is gone; the param is inverted (2026-07-11).
 
 #include "cajeta/buildtool/Action.h"
 #include "cajeta/buildtool/Manifest.h"
@@ -81,19 +85,56 @@ TEST(CleanActionTests, defaultRemovesBuildDir) {
     ASSERT_TRUE((bool)props);
     TaskContext ctx(*props, &m);
 
+    // Clean means clean: the caches go too, with no param and no prompt. The old
+    // default kept .cajeta/cache, so the next build re-published the cached
+    // artifact without compiling — an instant green check on a "clean" build.
     llvm::json::Object params;
     auto r = clean->run(params, ctx);
     ASSERT_TRUE((bool)r) << errorText(r.takeError());
     EXPECT_FALSE(std::filesystem::exists(root / "build"));
-    EXPECT_TRUE(std::filesystem::exists(root / ".cajeta" / "cache"));
-    EXPECT_EQ(r->outputs["deep"], "false");
-    EXPECT_EQ(r->outputs["removed-entries"], "2");
-    EXPECT_EQ(r->outputs["removed-bytes"], "8");
+    EXPECT_FALSE(std::filesystem::exists(root / ".cajeta" / "cache"));
+    EXPECT_EQ(r->outputs["cache-cleaned"], "true");
+    // 2 build files (5 + 3 bytes) + 1 cache file (11 bytes) = 3 entries / 19 bytes
+    EXPECT_EQ(r->outputs["removed-entries"], "3");
+    EXPECT_EQ(r->outputs["removed-bytes"], "19");
 
     std::filesystem::current_path(savedCwd);
 }
 
-TEST(CleanActionTests, deepWithYesAlsoRemovesCache) {
+// The opt-OUT: `keep-cache` preserves .cajeta/cache for a fast incremental
+// rebuild. Reachable from the CLI as `cajeta clean -p keep-cache=true` (CLI
+// params are overlaid onto action params — see TaskRunnerTests).
+TEST(CleanActionTests, keepCachePreservesTheCache) {
+    auto root = tempProject("keep-cache");
+    auto savedCwd = std::filesystem::current_path();
+    std::filesystem::current_path(root);
+
+    writeFile(root / "build" / "a.bc", "12345");
+    writeFile(root / ".cajeta" / "cache" / "ir" / "x.bc", "should-stay");
+
+    ActionRegistry reg;
+    const auto* clean = reg.get("clean");
+    ASSERT_NE(clean, nullptr);
+
+    auto m = makeManifest();
+    auto props = resolveProperties(m);
+    ASSERT_TRUE((bool)props);
+    TaskContext ctx(*props, &m);
+
+    llvm::json::Object params;
+    params["keep-cache"] = true;
+    auto r = clean->run(params, ctx);
+    ASSERT_TRUE((bool)r) << errorText(r.takeError());
+    EXPECT_FALSE(std::filesystem::exists(root / "build"));
+    EXPECT_TRUE(std::filesystem::exists(root / ".cajeta" / "cache"));
+    EXPECT_EQ(r->outputs["cache-cleaned"], "false");
+    EXPECT_EQ(r->outputs["removed-entries"], "1");
+    EXPECT_EQ(r->outputs["removed-bytes"], "5");
+
+    std::filesystem::current_path(savedCwd);
+}
+
+TEST(CleanActionTests, cacheIsRemovedWithoutAnyParamOrPrompt) {
     auto root = tempProject("deep");
     auto savedCwd = std::filesystem::current_path();
     std::filesystem::current_path(root);
@@ -111,14 +152,15 @@ TEST(CleanActionTests, deepWithYesAlsoRemovesCache) {
     ASSERT_TRUE((bool)props);
     TaskContext ctx(*props, &m);
 
+    // The cache wipe needs no param and no prompt now (this used to require
+    // `deep` + `yes`, and the [y/N] prompt silently answered "no" for any
+    // non-interactive caller — which is how the IDE's Clean never cleaned).
     llvm::json::Object params;
-    params["deep"] = true;
-    params["yes"]  = true;
     auto r = clean->run(params, ctx);
     ASSERT_TRUE((bool)r) << errorText(r.takeError());
     EXPECT_FALSE(std::filesystem::exists(root / "build"));
     EXPECT_FALSE(std::filesystem::exists(root / ".cajeta" / "cache"));
-    EXPECT_EQ(r->outputs["deep"], "true");
+    EXPECT_EQ(r->outputs["cache-cleaned"], "true");
     // 1 build file (2 bytes) + 2 cache files (3 + 2 bytes) = 3 entries / 7 bytes
     EXPECT_EQ(r->outputs["removed-entries"], "3");
     EXPECT_EQ(r->outputs["removed-bytes"], "7");
@@ -126,9 +168,9 @@ TEST(CleanActionTests, deepWithYesAlsoRemovesCache) {
     std::filesystem::current_path(savedCwd);
 }
 
-// 3b.1.1 — a deep clean wipes the per-project .cajeta/cache but never the
+// 3b.1.1 — clean wipes the per-project .cajeta/cache but never the
 // machine-global ~/.olla store (a separate root; clean has no path into it).
-TEST(CleanActionTests, deepCleanLeavesOllaUntouched) {
+TEST(CleanActionTests, cleanLeavesOllaUntouched) {
     auto root = tempProject("olla-safe");
     auto olla = tempProject("olla-store");
     auto savedCwd = std::filesystem::current_path();
@@ -148,8 +190,6 @@ TEST(CleanActionTests, deepCleanLeavesOllaUntouched) {
     TaskContext ctx(*props, &m);
 
     llvm::json::Object params;
-    params["deep"] = true;
-    params["yes"]  = true;
     auto r = clean->run(params, ctx);
     ASSERT_TRUE((bool)r) << errorText(r.takeError());
     EXPECT_FALSE(std::filesystem::exists(root / ".cajeta" / "cache"));

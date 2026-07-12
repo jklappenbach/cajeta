@@ -48,6 +48,23 @@ namespace cajeta::buildtool {
         // Bind a task parameter. Available as ${params.<name>}.
         void setParam(const std::string& name, const std::string& value);
 
+        // CLI `-p name=value` overrides for THIS task's action params.
+        //
+        // A task's params block only declares what the task itself takes, so a
+        // `-p` naming something a task never declared used to be dropped on the
+        // floor — including every param of a builtin action (`cajeta clean
+        // -p keep-cache=true` silently did nothing, because the builtin clean
+        // task is just `{"action": "clean"}` with no params block to bind into).
+        // These are overlaid onto each action invocation's params, so an action's
+        // documented params are reachable from the command line without every
+        // project having to re-declare them in cajeta.json.
+        //
+        // Set on the invoked task's context only — a called task (run-task) gets
+        // its own context and its own explicitly-passed params, so overrides
+        // don't leak sideways into a dependency's actions.
+        void setCliParams(const std::map<std::string, std::string>& values);
+        const std::map<std::string, std::string>& cliParams() const { return cliParams_; }
+
         // Publish an action's outputs under its `id`. Available as
         // ${id.<field>}.
         void publishOutputs(const std::string& id,
@@ -80,6 +97,7 @@ namespace cajeta::buildtool {
         const ResolvedProperties& props_;
         const Manifest* manifest_;
         std::map<std::string, std::string> params_;
+        std::map<std::string, std::string> cliParams_;
         // id → outputs map; outputs is field-name → value
         std::map<std::string, std::map<std::string, std::string>> actionOutputs_;
     };
