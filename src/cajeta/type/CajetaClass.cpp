@@ -419,6 +419,42 @@ namespace cajeta {
     }
 
     void CajetaClass::addMethod(MethodPtr method) {
+        // title-tracking 5.2.4 (spec §4.3) — mode-only overloads are rejected
+        // AT DECLARATION. `f(Cell)` and `f(#Cell)` differ only in transfer
+        // mode, which is not part of a signature: dispatch erases `#` (see
+        // signatureHash), so both would hash to the same vtable slot and the
+        // second silently shadow the first. Previously this crashed the
+        // compiler; now it names the offending method.
+        {
+            // The canonical key ALREADY erases `#` (that is the whole point —
+            // dispatch is mode-blind), so the collision is invisible in the key
+            // itself. Compare a mode-INCLUSIVE fingerprint alongside it: same
+            // key + different transfer modes = a mode-only overload. Same key +
+            // same modes is an ordinary duplicate, handled (or tolerated) as
+            // before.
+            const std::string erased = method->getMapKey();
+            std::string rawKey;
+            for (auto& fp : method->getParameterList()) {
+                rawKey.push_back(fp && fp->isTransferred() ? '#' : '.');
+            }
+            auto prior = modeErasedMethodKeys.find(erased);
+            if (prior != modeErasedMethodKeys.end() && prior->second != rawKey) {
+                throw Exception(
+                    "method `" + method->getName() + "` is declared twice in `"
+                        + (getQName() ? getQName()->toCanonical() : std::string("<anonymous>"))
+                        + "` with signatures that differ only in transfer mode "
+                          "(`#`). Transfer mode is a per-call decision made by "
+                          "the CALLER, not part of the signature — dispatch "
+                          "erases `#`, so these two declarations collide. Fix: "
+                          "keep ONE declaration (a plain formal already accepts "
+                          "both a lend and a `#`-transfer at the call site); "
+                          "spell `#T` only when the method MUST own its "
+                          "argument. See docs/specification/MemoryModel.md "
+                          "§ Function signatures.",
+                    "CAJETA_ERROR_TRANSFER_MODE_OVERLOAD");
+            }
+            modeErasedMethodKeys[erased] = rawKey;
+        }
         // Two-layer naming: instantiations of a same-canonical template
         // (T-vars not in value params) get distinct keys via the
         // method-arg suffix in getMapKey(). Ordinary methods key on

@@ -1891,6 +1891,9 @@ namespace cajeta {
     }
 
     llvm::Value* MoveExpression::generateCode(CajetaModulePtr module) {
+        // Stale-Value guard: this node re-generates per instantiation, and a
+        // flag captured in a previous function must never leak into this one.
+        runtimeTitleFlag = nullptr;
         if (children.empty()) return nullptr;
         // Evaluate the wrapped expression FIRST (while the source is still
         // readable), then mark the source as moved. Marking before evaluating
@@ -2134,12 +2137,17 @@ namespace cajeta {
                 // store/return can seed its own bit from it.
                 if (FieldPtr field = scope->getField(idExpr->getTextValue())) {
                     if (llvm::Value* entry = field->getDropEntry()) {
-                        if (dynamic_pointer_cast<ParameterField>(field)) {
-                            if (llvm::Function* flagFn = module->getRuntimeFunction(
-                                    "__cajeta_drop_entry_flag")) {
-                                runtimeTitleFlag = module->getBuilder()
-                                    ->CreateCall(flagFn, {entry}, "title_flag");
-                            }
+                        // 5.2.4 — the entry's flag IS the title's truth at this
+                        // point: 1 for a static owner (armed at push), the
+                        // call/caller-supplied bit for a runtime owner (formal
+                        // per 5.2.2, call-result local per 5.2.3). Capture it
+                        // BEFORE deactivating so consuming sites (field store,
+                        // return, call-arg word) forward what we actually held
+                        // rather than an assumed 1.
+                        if (llvm::Function* flagFn = module->getRuntimeFunction(
+                                "__cajeta_drop_entry_flag")) {
+                            runtimeTitleFlag = module->getBuilder()
+                                ->CreateCall(flagFn, {entry}, "title_flag");
                         }
                         if (llvm::Function* mark = module->getRuntimeFunction(
                                 "__cajeta_drop_mark_inactive")) {

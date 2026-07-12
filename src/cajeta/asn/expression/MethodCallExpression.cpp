@@ -453,6 +453,9 @@ namespace cajeta {
     llvm::Value* MethodCallExpression::generateCode(CajetaModulePtr module) {
         auto* builder = module->getBuilder();
         llvm::LLVMContext& llvmCtx = *module->getLlvmContext();
+        // 5.2.4 — per-`#`-arg title flags, read from the source's drop entry
+        // before any deactivation and OR'd into the transfer word below.
+        std::vector<llvm::Value*> argTitleFlags(parameters.size(), nullptr);
 
         // ----- tryAs<T>() intrinsic (reified capture -> Optional<T>) -----
         // `recv.tryAs<Foo<int32>>()` checks recv's runtime reified instantiation
@@ -7458,6 +7461,33 @@ namespace cajeta {
         // either don't have a drop entry or have it managed by their
         // own emission path. See MemoryModel.md § Borrow / transfer.
         {
+            // 5.2.4 — capture each `#`-arg's TITLE FLAG before anything
+            // deactivates it. Note the `#` on a call argument is a parse-level
+            // token (callerTransferred), NOT a MoveExpression node — so the
+            // flag must be read here, from the source field's drop entry, and
+            // not via MoveExpression's stash (which only exists for `= #x`
+            // stores and `return #x`). A static owner's entry reads 1; a
+            // runtime owner (formal per 5.2.2, call-result local per 5.2.3)
+            // reads the bit it was actually handed. Composing this as a
+            // constant 1 is what made a forwarding chain pass a LENT value
+            // onward as owned — the callee then freed the caller's object.
+            for (size_t i = 0; i < parameters.size(); ++i) {
+                if (!parameters[i].callerTransferred) continue;
+                auto idExpr = std::dynamic_pointer_cast<IdentifierExpression>(
+                    parameters[i].expression);
+                if (!idExpr) continue;
+                auto scope = module->getScopeStack().peek();
+                if (!scope) continue;
+                FieldPtr field = scope->getField(idExpr->getTextValue());
+                if (!field) continue;
+                if (llvm::Value* entry = field->getDropEntry()) {
+                    if (llvm::Function* flagFn = module->getRuntimeFunction(
+                            "__cajeta_drop_entry_flag")) {
+                        argTitleFlags[i] = builder->CreateCall(
+                            flagFn, {entry}, "arg_title_flag");
+                    }
+                }
+            }
             // Helper: deactivate the named local's drop entry at the
             // current insertion point. Used by both the caller-side and
             // callee-side transfer passes below.
@@ -7516,10 +7546,22 @@ namespace cajeta {
                                 parameters[i].callerTransferred = false;
                                 continue;
                             }
+                            // 5.2.4 — BORROW_PARAM_ESCAPES RETIRED for
+                            // class-typed formals (spec §4 rev 2). A plain
+                            // formal is no longer statically a borrow: it is a
+                            // RUNTIME owner whose title is the caller's flag,
+                            // so `#formal` is legal and forwards that flag
+                            // (composed into this call's word above). If the
+                            // caller only lent, the forwarded bit is 0 and the
+                            // callee takes a lend — no double free. Interfaces
+                            // and non-class formals keep the old rule below.
                             if (formal && !formal->isTransferred()) {
                                 auto klass = std::dynamic_pointer_cast<CajetaClass>(
                                     field->getType());
-                                if (klass && !klass->isInterface()) {
+                                bool runtimeOwner = klass && !klass->isInterface()
+                                    && field->getDropEntry() != nullptr;
+                                if (klass && !klass->isInterface()
+                                        && !runtimeOwner) {
                                     throw Exception(
                                         "cannot transfer borrowed parameter `"
                                             + idExpr->getTextValue() + "` via "
@@ -7823,16 +7865,43 @@ namespace cajeta {
         // can take ownership of exactly those via Cajeta.moveMask(). Compile-time
         // constant; set the thread-local before the call and clear after, so a
         // later call with no `#` reads 0. Only emitted when a transfer is present.
+        // 5.2.4 — the word is RUNTIME-COMPOSED. A `#x` whose source is itself a
+        // runtime owner (a formal per 5.2.2, a call-result local per 5.2.3)
+        // forwards the flag it actually held; only sources with no entry (fresh
+        // rvalues, `#heap X()`) contribute a static 1. Composing this as a
+        // constant is what let a two-deep forwarding chain hand a LENT value
+        // onward as owned. The args were generated above, so each MoveExpression
+        // has already stashed its pre-deactivation flag.
         int64_t moveMask = 0;
+        llvm::Value* transferWordVal = nullptr;
+        bool anyTransfer = false;
         for (size_t mmi = 0; mmi < parameters.size(); ++mmi) {
-            if (parameters[mmi].callerTransferred) moveMask |= ((int64_t) 1) << mmi;
+            if (!parameters[mmi].callerTransferred) continue;
+            anyTransfer = true;
+            llvm::Value* rf = argTitleFlags[mmi];
+            if (!rf) {
+                moveMask |= ((int64_t) 1) << mmi;
+                continue;
+            }
+            llvm::Value* bit = builder->CreateShl(
+                builder->CreateAnd(rf, builder->getInt64(1)),
+                builder->getInt64((uint64_t) mmi));
+            transferWordVal = transferWordVal
+                ? builder->CreateOr(transferWordVal, bit) : bit;
+        }
+        if (transferWordVal) {
+            if (moveMask != 0) {
+                transferWordVal = builder->CreateOr(transferWordVal,
+                    builder->getInt64((uint64_t) moveMask));
+            }
+        } else {
+            transferWordVal = builder->getInt64((uint64_t) moveMask);
         }
         llvm::Function* moveSetFn = nullptr;
-        if (moveMask != 0) {
+        if (anyTransfer) {
             moveSetFn = module->getRuntimeFunction("__cajeta_move_mask_set");
             if (moveSetFn) {
-                builder->CreateCall(moveSetFn,
-                    {builder->getInt64((uint64_t) moveMask)});
+                builder->CreateCall(moveSetFn, {transferWordVal});
             }
         }
         // errorIfUnresolved: this is an explicit `recv.name(args)` — the user
@@ -7847,7 +7916,7 @@ namespace cajeta {
 // title-tracking Unit 5: the same per-call word the moveMask TLS
             // carries, threaded through the ABI (dual-carry until the TLS
             // consumers migrate; TLS removal is plan 7.2.2).
-            /*transferWord=*/builder->getInt64((uint64_t) moveMask),
+            /*transferWord=*/transferWordVal,
             /*errorIfUnresolved=*/true,
             getSourceLine(), getSourceColumn() + 1);
         if (moveSetFn) {

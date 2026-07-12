@@ -1694,7 +1694,13 @@ namespace cajeta {
                         auto pf = dynamic_pointer_cast<ParameterField>(fld);
                         if (pf) {
                             auto formal = pf->getFormalParameter();
-                            if (formal && !formal->isTransferred()) {
+                            // 5.2.4 — RETIRED for class-typed formals: a plain
+                            // formal is a RUNTIME owner (5.2.2), so returning it
+                            // through a `#T` signature forwards its actual flag
+                            // (captured above) rather than forging ownership.
+                            bool runtimeOwner = fld && fld->getDropEntry();
+                            if (formal && !formal->isTransferred()
+                                    && !runtimeOwner) {
                                 auto klass = dynamic_pointer_cast<CajetaClass>(
                                     fld->getType());
                                 if (klass && !klass->isInterface()) {

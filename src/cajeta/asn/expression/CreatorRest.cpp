@@ -227,7 +227,13 @@ namespace cajeta {
                             auto pf = std::dynamic_pointer_cast<ParameterField>(field);
                             if (pf) {
                                 auto formal = pf->getFormalParameter();
-                                if (formal && !formal->isTransferred()) {
+                                // 5.2.4 — RETIRED for class-typed formals: a
+                                // plain formal is a RUNTIME owner (5.2.2), so
+                                // `#formal` as a ctor arg forwards its actual
+                                // flag (the ctor word, composed below).
+                                bool runtimeOwner = field && field->getDropEntry();
+                                if (formal && !formal->isTransferred()
+                                        && !runtimeOwner) {
                                     auto klassParam = std::dynamic_pointer_cast<CajetaClass>(
                                         field->getType());
                                     if (klassParam && !klassParam->isInterface()) {
@@ -355,19 +361,42 @@ namespace cajeta {
             // title-tracking Unit 5: constructors ride the same trailing
             // transfer word as ordinary calls (ctors never emitted the
             // moveMask TLS, so the ABI word is their first per-call channel).
+            // 5.2.4 — runtime-composed, same rule as MethodCallExpression: a
+            // `#x` sourced from a runtime owner forwards the flag it held.
+            auto* twBuilder = module->getBuilder();
             int64_t ctorTransferWord = 0;
+            llvm::Value* ctorWordVal = nullptr;
             for (size_t twi = 0; twi < parameters.size(); ++twi) {
-                if (parameters[twi].callerTransferred) {
-                    ctorTransferWord |= ((int64_t) 1) << twi;
+                if (!parameters[twi].callerTransferred) continue;
+                llvm::Value* rf = nullptr;
+                if (auto mv = std::dynamic_pointer_cast<MoveExpression>(
+                        parameters[twi].expression)) {
+                    rf = mv->getRuntimeTitleFlag();
                 }
+                if (!rf) {
+                    ctorTransferWord |= ((int64_t) 1) << twi;
+                    continue;
+                }
+                llvm::Value* bit = twBuilder->CreateShl(
+                    twBuilder->CreateAnd(rf, twBuilder->getInt64(1)),
+                    twBuilder->getInt64((uint64_t) twi));
+                ctorWordVal = ctorWordVal
+                    ? twBuilder->CreateOr(ctorWordVal, bit) : bit;
+            }
+            if (ctorWordVal) {
+                if (ctorTransferWord != 0) {
+                    ctorWordVal = twBuilder->CreateOr(ctorWordVal,
+                        twBuilder->getInt64((uint64_t) ctorTransferWord));
+                }
+            } else {
+                ctorWordVal = twBuilder->getInt64((uint64_t) ctorTransferWord);
             }
             klass->invokeMethod(ctorName, entries, /*isConstructor=*/true, instance,
                                 /*callerModule=*/module,
                                 /*forceDirectCall=*/false,
                                 /*explicitMethodTypeArgs=*/{},
                                 /*sretTarget=*/nullptr,
-                                /*transferWord=*/module->getBuilder()->getInt64(
-                                    (uint64_t) ctorTransferWord));
+                                /*transferWord=*/ctorWordVal);
             // slices 9.4.1 — fresh temps consumed as CTOR arguments have no
             // drop entry; reclaim them here, at the only site that sees the
             // temp (mirrors the post-call block in MethodCallExpression::

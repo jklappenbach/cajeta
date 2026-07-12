@@ -73,6 +73,10 @@ namespace cajeta {
     protected:
         // Methods maintains the methods declared / overridden in this particular method
         map<string, MethodPtr> methods;
+        // 5.2.4 — mode-erased signature -> the raw key that claimed it. A
+        // second declaration whose erased key matches but whose raw key
+        // differs is a mode-only overload (CAJETA_ERROR_TRANSFER_MODE_OVERLOAD).
+        map<string, string> modeErasedMethodKeys;
         map<string, MethodPtr> staticMethods;
 
         // Constructors
