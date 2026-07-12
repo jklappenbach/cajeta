@@ -22,6 +22,7 @@
 #include "Block.h"
 #include "LocalVariableDeclaration.h"
 #include "../error/Exception.h"
+#include "../error/Diagnostics.h"
 
 /**
  * statement
@@ -486,9 +487,20 @@ namespace cajeta {
         auto* builder = module->getBuilder();
         llvm::Type* i1Ty = llvm::Type::getInt1Ty(*module->getLlvmContext());
         if (!cond) {
+            // A genuinely absent condition — `for (;;)` — is an infinite loop.
             return llvm::ConstantInt::getTrue(*module->getLlvmContext());
         }
         llvm::Value* v = cond->generateCode(module);
+        if (!v) {
+            // Written but unresolvable. Falling through would branch on a null
+            // and crash the compiler, or (worse) fold to a constant-false test.
+            throw locatedException(
+                cond->getSourceLine(), cond->getSourceColumn() + 1,
+                "condition did not resolve to a value (a sub-expression produced"
+                " nothing — e.g. a method or member that does not exist on the"
+                " receiver's type)",
+                "CAJETA_ERROR_UNRESOLVED_EXPRESSION");
+        }
         if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
             v = builder->CreateLoad(a->getAllocatedType(), a);
         }
@@ -2019,9 +2031,16 @@ namespace cajeta {
         llvm::Function* fn = builder->GetInsertBlock()->getParent();
         llvm::Type* retTy = fn->getReturnType();
         if (!val) {
-            std::cerr << "[cajeta] return value lowered to null"
-                << " — method " << fn->getName().str() << std::endl;
-            return builder->CreateRet(llvm::Constant::getNullValue(retTy));
+            // A value-less `return;` already took the CreateRetVoid path above,
+            // so reaching here means the source DID name an expression and that
+            // expression lowered to nothing. That is an unresolved expression,
+            // not a null value — emitting `ret null` here silently miscompiles it.
+            throw locatedException(
+                expression->getSourceLine(), expression->getSourceColumn() + 1,
+                "returned expression did not resolve to a value (a sub-expression"
+                " produced nothing — e.g. a method or member that does not exist"
+                " on the receiver's type)",
+                "CAJETA_ERROR_UNRESOLVED_EXPRESSION");
         }
         llvm::Type* valTy = val->getType();
         if (valTy != retTy) {
