@@ -225,6 +225,19 @@ default and deletes the `#?` spelling.)*
 3. **Per-call-mode dual lowering** (borrow body + transfer body, call site
    picks statically): 2^n bodies and mode-erased vtable dispatch cannot
    pick — the instantiation-mode/moveMask failure, already retired once.
+4. **Full ownership inference** (compiler-decided flags; "last use =
+   move" liveness computes each call-site flag, no sigil). Rejected
+   2026-07-12: edits at a distance flip teardown *timing* (adding a later
+   read of `v` silently converts an owned entry to a borrow — observable
+   behavior in a language where drops close resources); conservative
+   joins/loops/unwind paths force lends; and intent that is not in the
+   data flow is unrecoverable — recorded counterexample: ParallelDriver
+   `shares[si] = #piece` (fixed 2026-07-12), where spawned workers read
+   the array after the iteration local dies, liveness cannot see the
+   hand-off, and inference picks lend → use-after-free. It also re-blinds
+   the reader this spec exists to serve (§1.2 problem 2, §2.2.2). The
+   same analysis is retained as an **advisory lint** instead (§7.1) —
+   the compiler suggests the `#`, the developer's spelling decides.
 
 ## 5. Dynamic places — fields, slots, entries
 
@@ -308,6 +321,11 @@ contract; the signature needs no spelling.
   `#` on a value type; plain return of a statically-owned local
   (`FRESH_RETURN_NEEDS_TRANSFER`, §4.2.2); single-hop dangling lend
   (`CAJETA_ERROR_DANGLING_LEND`, §7.4 — sub-fork B: in scope).
+- Advisory (warning, never an error): **last-use lend** — a plain arg or
+  plain store of a local at its final use suggests `#` with a fixit
+  (*"last use of `v` — the entry borrows and `v` drops here; did you mean
+  `#v`?"*). Same liveness walk as the dangle check; the developer's
+  spelling always decides (§4.6.4).
 
 ### 7.2 Runtime
 - Title-miss panic on `#place` extraction (Recoverable).
