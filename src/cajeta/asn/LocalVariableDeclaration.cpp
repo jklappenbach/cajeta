@@ -180,6 +180,51 @@ namespace cajeta {
         field->setElemOwnSidecar(sidecar);
     }
 
+    // title-tracking 5.2.3 — runtime-owner LOCALS. A class-typed call result
+    // carries its title in the return-flag TLS, so the receiving local's drop
+    // entry is ARMED FROM THAT FLAG rather than from a compile-time fact: a
+    // `#`-forwarded value drops here, a lent one leaves the entry disarmed and
+    // the original owner keeps its single drop. `flag` must be read at the
+    // earliest point after the call (see generateCode) — any intervening cajeta
+    // call would overwrite the thread-local.
+    static void emitFlaggedDropEntryFor(CajetaModulePtr module, FieldPtr field,
+                                         const std::string& dropFnName,
+                                         llvm::Value* flag,
+                                         int allocLine = 0) {
+        DropPushChoice push = pickDropPush(module);
+        llvm::Function* dropFn = module->getRuntimeFunction(dropFnName);
+        llvm::Function* setFlagFn = module->getRuntimeFunction(
+            "__cajeta_drop_set_flag");
+        if (!push.pushFn || !dropFn || !setFlagFn || !flag) return;
+        auto* builder = module->getBuilder();
+        auto& ctx = *module->getLlvmContext();
+        llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
+
+        llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+        llvm::IRBuilder<> entryBuilder(&parentFn->getEntryBlock(),
+            parentFn->getEntryBlock().begin());
+        llvm::Value* entryPtr = entryBuilder.CreateAlloca(
+            llvm::ArrayType::get(i8Ty, push.entryBytes));
+
+        llvm::Value* ownerPtr = builder->CreateLoad(
+            ptrTy, field->getOrCreateAllocation());
+        if (push.debug) {
+            llvm::Constant* fileConst = module->getOrCreateSourceFileConstant(
+                module->getSourcePath());
+            llvm::Constant* lineConst = llvm::ConstantInt::get(i32Ty, allocLine);
+            builder->CreateCall(push.pushFn,
+                {entryPtr, ownerPtr, dropFn, fileConst, lineConst});
+        } else {
+            builder->CreateCall(push.pushFn, {entryPtr, ownerPtr, dropFn});
+        }
+        builder->CreateCall(setFlagFn, {entryPtr, flag});
+
+        field->setDropEntry(entryPtr);
+        if (auto m = module->getCurrentMethod()) m->registerDropEntry(entryPtr);
+    }
+
     // Variant for shared-capable VALUE locals (slice-spec §6.1 drop hook):
     // the drop entry's obj is the value's stack slot ITSELF (the alloca is
     // the storage, not a pointer to be loaded), and the drop fn is the
@@ -488,6 +533,25 @@ namespace cajeta {
             }
             module->getScopeStack().peek()->putField(field);
             field->getOrCreateAllocation();
+
+            // 5.2.3 — the initializer's IR (including the call) was emitted by
+            // getOrCreateAllocation just above, so THIS is the only point where
+            // the return-flag TLS still holds this call's title bit. Capture it
+            // now; the drop-wiring section below decides whether to arm an entry
+            // with it. Only class-typed call initializers can carry a title.
+            llvm::Value* callResultFlag = nullptr;
+            if (auto varInit = dynamic_pointer_cast<VariableInitializer>(
+                    initializer)) {
+                auto& kids = varInit->getChildren();
+                if (!kids.empty()
+                        && dynamic_pointer_cast<MethodCallExpression>(kids[0])) {
+                    if (llvm::Function* getFlagFn = module->getRuntimeFunction(
+                            "__cajeta_return_flag_get")) {
+                        callResultFlag = module->getBuilder()->CreateCall(
+                            getFlagFn, {}, "ret_flag");
+                    }
+                }
+            }
 
             // slice-spec §6.1 copy/drop hooks for shared-capable VALUE locals
             // (Utf8 / value aggregates embedding it). The init copy already
@@ -841,6 +905,9 @@ namespace cajeta {
             // (fresh malloc) and most other initializers retain
             // their ownership-transfer semantics.
             bool initIsBorrow = false;
+            // 5.2.3 — the initializer is a call whose class-pointer result
+            // carries a runtime title flag (armed below, not statically).
+            bool initIsFlaggedCall = false;
             // P2a — `stack MyClass(args)` produces an instance owned by
             // the current frame (alloca-backed body); the class's heap
             // destructor would free a stack pointer if we registered the
@@ -964,6 +1031,14 @@ namespace cajeta {
                                         mcName, mcEntries,
                                         /*isConstructor=*/false, floatingAll);
                                 if (resolved && !resolved->isReturnsOwnership()) {
+                                    // 5.2.3 — a plain class-pointer return is
+                                    // NOT statically a borrow any more: the
+                                    // callee's flag decides. Keep initIsBorrow
+                                    // so the static owner paths stay off, and
+                                    // arm a flag-fed entry in the drop wiring.
+                                    if (resolved->returnsClassPointer()) {
+                                        initIsFlaggedCall = true;
+                                    }
                                     if (resolved->returnsStackValue()) {
                                         // Value-return (sret + NRVO): the callee
                                         // constructed a stack instance into the
@@ -1438,6 +1513,22 @@ namespace cajeta {
             // Stack-resident class instances flow through the regular
             // stack-drop path via klass->getOrCreateStackDropFunction()
             // wired earlier in this method.
+
+            // 5.2.3 — runtime-owner local from a call result. Drops iff the
+            // callee surrendered the title (return-flag TLS, captured at the
+            // call site above). Same skip list as the formal entries (5.2.2):
+            // shared-capable values, interfaces, views, value types.
+            if (initIsFlaggedCall && callResultFlag && klass && !isArray
+                    && !isStructType && !isCajetaString
+                    && !klass->isInterface() && !klass->isValueType()
+                    && !klass->isSharedCapableValue()
+                    && klass->hasVtablePointerAtSlotZero()
+                    && !field->getDropEntry()) {
+                klass->patchVirtualTableDropFn();
+                emitFlaggedDropEntryFor(module, field,
+                    "__cajeta_class_virtual_drop", callResultFlag,
+                    getSourceLine());
+            }
 
             // Interface local drop entry. Pushes a drop entry
             // pointing at __cajeta_iface_drop, the kind-tag dispatcher.
