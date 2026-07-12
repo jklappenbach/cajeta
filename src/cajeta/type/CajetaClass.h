@@ -7,6 +7,7 @@
 #include "CajetaType.h"
 #include "StructureProperty.h"
 #include "../method/Method.h"
+#include "../error/Exception.h"
 #include "Scope.h"
 #include "Templates.h"
 
@@ -1100,12 +1101,28 @@ namespace cajeta {
         // method returns a stack value, invokeMethod materializes a temp slot
         // in the caller's frame and returns a pointer to it — so the result
         // behaves like any class-instance pointer. See ValueReturns.md.
+        // `errorIfUnresolved` (default false) makes an unresolvable method a
+        // located compile error rather than a silent null. It is OPT-IN because
+        // several callers probe speculatively and rely on the null:
+        // BinaryOpExpression asks for `operator+` and falls back to the built-in
+        // when the class has none. Only an explicit `recv.name(args)` call site
+        // — where the user named a member that must exist — passes true.
+        // Constructors stay exempt even then (see the note at the throw site).
         llvm::Value* invokeMethod(string& methodName, vector<ParameterEntry> parameters, bool isConstructor, llvm::Value* thisInstance = nullptr,
                                    CajetaModulePtr callerModule = nullptr,
                                    bool forceDirectCall = false,
                                    const vector<CajetaTypePtr>& explicitMethodTypeArgs = {},
                                    llvm::Value* sretTarget = nullptr,
-                                   llvm::Value* transferWord = nullptr);
+                                   llvm::Value* transferWord = nullptr,
+                                   bool errorIfUnresolved = false,
+                                   int callLine = -1, int callColumn = -1);
+
+        // Diagnostic for a named member that did not resolve. Distinguishes
+        // "no member of that name" (CAJETA_ERROR_MEMBER_NOT_FOUND) from
+        // "name exists, no matching overload" (CAJETA_ERROR_NO_MATCHING_OVERLOAD,
+        // which lists the candidate signatures).
+        Exception memberNotFoundException(const string& methodName,
+            const vector<ParameterEntry>& parameters, int line, int column);
 
         // Construction helpers, factored out of ClassCreatorRest::generateCode
         // so synthesized codegen sites (a throwing capture cast, tryAs, ...)

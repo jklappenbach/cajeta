@@ -2,6 +2,7 @@
 // Created by James Klappenbach on 4/8/23.
 //
 
+#include "../../error/Diagnostics.h"
 #include "BinaryOpExpression.h"
 #include "OperatorDispatch.h"
 #include "../LocalVariableDeclaration.h"
@@ -880,7 +881,8 @@ namespace cajeta {
             std::string side = (lhs == nullptr && rhs == nullptr) ? "both operands"
                              : (lhs == nullptr ? "the left operand"
                                                : "the right operand");
-            throw Exception(
+            throw locatedException(
+                getSourceLine(), getSourceColumn() + 1,
                 std::string("binary operator '") + (opSym ? opSym : "?")
                 + "' has no value for " + side
                 + " (a sub-expression did not resolve to a value — e.g. a member"

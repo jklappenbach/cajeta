@@ -60,6 +60,17 @@ public class TcpListener {
         return heap TcpListener(-1);
     }
 
+    /**
+     * Bind and listen as [`bind`](#bind), but with an explicit accept-queue
+     * `backlog` instead of the default 128 (NET-4.4). Same intrinsic lowering,
+     * passing `backlog` to `__cajeta_net_listen`.
+     *
+     * @EntryPoint
+     */
+    public static #TcpListener bindWithBacklog(SocketAddress addr, int32 backlog) {
+        return heap TcpListener(-1);
+    }
+
     // ----- accept ----------------------------------------------------------
 
     /**

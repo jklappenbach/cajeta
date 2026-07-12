@@ -2,6 +2,7 @@
 // Created by James Klappenbach on 4/14/23.
 //
 
+#include "../../error/Diagnostics.h"
 #include "DotExpression.h"
 #include "../../compile/CajetaModule.h"
 #include "../../type/CajetaClass.h"
@@ -359,7 +360,17 @@ namespace cajeta {
                         + "' has no field '" + identifier + "'",
                     "CAJETA_ERROR_UNKNOWN_FIELD");
             }
-            return nullptr;
+            // Reference class (2.2.3). We reach here only with a real instance
+            // (`base` is non-null, guarded above), so the receiver is not a bare
+            // type name — statics / enum constants / qualified names bail out
+            // earlier and keep their fall-through. An unmatched name on an
+            // INSTANCE is a field typo, and returning null here is what let
+            // `p.vee` compile to nothing.
+            throw locatedException(
+                getSourceLine(), getSourceColumn() + 1,
+                "no member '" + identifier + "' on '"
+                    + klass->getQName()->toCanonical() + "'",
+                "CAJETA_ERROR_MEMBER_NOT_FOUND");
         }
         // Self-shadow resolves ambiguity. Take the receiver class's
         // own property if it declared one.
