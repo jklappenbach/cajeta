@@ -630,6 +630,59 @@ namespace cajeta {
         return CajetaType::canonicalMap[qName->toCanonical()];
     }
 
+    // The package that scopes a bare name written in the code currently
+    // being processed. During codegen the declaring class of the current
+    // method is authoritative — the stdlib parses many packages into ONE
+    // module whose qName is per-file only while parsing (restored to
+    // cajeta.runtime.__stdlib__ afterwards), so the module qName is stale
+    // by codegen time. Fall back to the module's qName package (correct
+    // during the parse walk, and for single-package user modules always).
+    static string scopePackageOf(CajetaModulePtr module) {
+        if (!module) return {};
+        if (auto m = module->getCurrentMethod()) {
+            if (m->getParent() && m->getParent()->getQName()) {
+                const string& p =
+                    m->getParent()->getQName()->getPackageName();
+                if (!p.empty()) return p;
+            }
+        }
+        if (module->getQName()) return module->getQName()->getPackageName();
+        return {};
+    }
+
+    CajetaTypePtr CajetaType::ofScoped(const string& shortName,
+                                       CajetaModulePtr module) {
+        // Tier 1: the surrounding code's own package.
+        {
+            string ownPkg = scopePackageOf(module);
+            if (!ownPkg.empty()) {
+                auto ownIt = canonicalMap.find(ownPkg + "." + shortName);
+                if (ownIt != canonicalMap.end() && ownIt->second) {
+                    return ownIt->second;
+                }
+            }
+        }
+        // Tier 2: explicit imports. An import that names the class binds
+        // it even when the canonical isn't materialized yet — in that
+        // case answer nullptr so the caller's miss-path runs instead of
+        // the global key landing a same-named class from elsewhere.
+        if (module) {
+            auto& imports = module->getImports();
+            auto importIt = imports.find(shortName);
+            if (importIt != imports.end() && !importIt->second.empty()) {
+                auto canonIt = canonicalMap.find(
+                    importIt->second.begin()->second->toCanonical());
+                if (canonIt != canonicalMap.end() && canonIt->second) {
+                    return canonIt->second;
+                }
+                return nullptr;
+            }
+        }
+        // Tier 3: the global canonical/short-name key.
+        auto it = canonicalMap.find(shortName);
+        return it != canonicalMap.end() ? it->second : nullptr;
+    }
+
     CajetaTypePtr CajetaType::of(string typeName, string package) {
         QualifiedNamePtr qName = QualifiedName::getOrInsert(typeName, package);
         return CajetaType::canonicalMap[qName->toCanonical()];
@@ -802,47 +855,83 @@ namespace cajeta {
                     auto kc = std::dynamic_pointer_cast<CajetaClass>(it->second);
                     annHit = kc && kc->isAnnotation();
                 }
-                if (it != canonicalMap.end() && !annHit) {
-                    type = it->second;
-                } else if (module && qName->getPackageName().empty()) {
-                    // Import-aware short-name resolution. The user
-                    // wrote a bare type name (no package qualifier);
-                    // check the active module's imports map. The map
-                    // shape is imports[shortName][packageName] = qn,
-                    // populated by onImportDeclaration. A hit gives
-                    // us the fully-qualified canonical to look up,
-                    // disambiguating between same-short-name classes
-                    // in different packages. Doing this BEFORE the
-                    // short-name fallback below is what makes
-                    // `import a.b.Foo;` actually steer resolution.
+                // Bare-name scoping. toCanonical() of a package-less name
+                // IS the short name, so the `it` lookup above consulted the
+                // GLOBAL short-name key — last-writer-wins across packages.
+                // When two classes share a short name (a user class
+                // shadowing an embedded-stdlib class is the canonical
+                // case), that key binds one package's references to the
+                // other package's class. Resolve bare names scoped-first:
+                //   1. the module's OWN package (self/sibling references),
+                //   2. the module's explicit imports — including forward
+                //      refs: an imported-but-not-yet-visited canonical is
+                //      remembered so placeholder synthesis below targets
+                //      the IMPORT, never the global short-name key,
+                //   3. only then the global canonical/short-name tiers.
+                // A bare identifier reaches here under the "code" pseudo-
+                // package (QualifiedName::fromContext defaults single
+                // identifiers to it), or occasionally with an empty package
+                // — both mean "unqualified in source".
+                const bool bareName = qName->getPackageName().empty()
+                                      || qName->getPackageName() == "code";
+                std::string ownPkgCanonical;
+                std::string importedCanonical;
+                std::string scopePkg =
+                    bareName ? scopePackageOf(module) : std::string();
+                if (bareName && !scopePkg.empty()) {
+                    ownPkgCanonical = scopePkg + "." + qName->getTypeName();
+                    auto ownIt = canonicalMap.find(ownPkgCanonical);
+                    if (ownIt != canonicalMap.end() && ownIt->second) {
+                        auto oc = std::dynamic_pointer_cast<CajetaClass>(
+                            ownIt->second);
+                        if (!(oc && oc->isAnnotation())) {
+                            type = ownIt->second;
+                        }
+                    }
+                }
+                if (!type && bareName && module) {
+                    // Import-aware short-name resolution. The map shape is
+                    // imports[shortName][packageName] = qn, populated by
+                    // onImportDeclaration. First entry wins — multiple
+                    // imports of the same short name from different
+                    // packages is a future ambiguity-error condition, not
+                    // a quiet pick. v1 just takes one deterministically.
                     auto& imports = module->getImports();
                     auto importIt = imports.find(qName->getTypeName());
                     if (importIt != imports.end() && !importIt->second.empty()) {
-                        // First entry wins — multiple imports of
-                        // the same short name from different packages
-                        // is a future ambiguity-error condition, not
-                        // a quiet pick. v1 just takes one
-                        // deterministically.
                         auto& imported = importIt->second.begin()->second;
-                        auto canonIt = canonicalMap.find(imported->toCanonical());
+                        importedCanonical = imported->toCanonical();
+                        auto canonIt = canonicalMap.find(importedCanonical);
                         if (canonIt != canonicalMap.end()) {
                             type = canonIt->second;
                         }
                     }
-                    if (!type) {
-                        // Fall back to the native ("") package —
-                        // covers built-in aliases like
-                        // String/Exception that fromContext defaults
-                        // to package "code".
+                }
+                // Global tiers — skipped when an explicit import names the
+                // class but it hasn't been visited yet: binding the global
+                // short-name key there would land the WRONG same-named
+                // class; the placeholder path below honors the import.
+                // Likewise skipped for a same-package forward reference the
+                // archive pre-scan can vouch for (a bare name declared in
+                // this module's own package but not yet visited) — the
+                // placeholder path below targets the own-package canonical.
+                bool ownPkgArchived = false;
+                if (!type && importedCanonical.empty()
+                    && !ownPkgCanonical.empty()) {
+                    ownPkgArchived =
+                        getArchive().count(ownPkgCanonical) > 0;
+                }
+                if (!type && importedCanonical.empty() && !ownPkgArchived) {
+                    if (it != canonicalMap.end() && !annHit) {
+                        type = it->second;
+                    } else {
+                        // Fall back to the native ("") package — covers
+                        // built-in aliases like String/Exception that
+                        // fromContext defaults to package "code".
                         auto nativeIt = canonicalMap.find(qName->getTypeName());
                         if (nativeIt != canonicalMap.end()) {
                             type = nativeIt->second;
                         }
-                    }
-                } else {
-                    auto nativeIt = canonicalMap.find(qName->getTypeName());
-                    if (nativeIt != canonicalMap.end()) {
-                        type = nativeIt->second;
                     }
                 }
                 // Annotation fallback. The branches above try a
@@ -868,7 +957,22 @@ namespace cajeta {
                 if (!type) {
                     auto& archive = getArchive();
                     std::string lookup = qName->toCanonical();
-                    auto archIt = archive.find(lookup);
+                    // Scoped-first, mirroring the lookup tiers above: an
+                    // explicitly imported canonical, then the module's own
+                    // package, vouch before the global keys — the archive's
+                    // short-name key is first-write-wins across packages,
+                    // so a same-named class elsewhere must not supply the
+                    // placeholder for a reference these scopes can resolve.
+                    auto archIt = archive.end();
+                    if (!importedCanonical.empty()) {
+                        archIt = archive.find(importedCanonical);
+                    }
+                    if (archIt == archive.end() && !ownPkgCanonical.empty()) {
+                        archIt = archive.find(ownPkgCanonical);
+                    }
+                    if (archIt == archive.end()) {
+                        archIt = archive.find(lookup);
+                    }
                     if (archIt == archive.end()) {
                         // Try short name — archive carries both keys
                         // so bare-name references can still vouch.
