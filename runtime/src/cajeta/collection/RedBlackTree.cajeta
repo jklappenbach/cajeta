@@ -55,6 +55,14 @@ package cajeta.collection;
 public final class RedBlackTree<K, V> {
 
     private RedBlackNode<K, V> root;
+    // Node REGISTRY (title-tracking 6.2.4): the tree owns its nodes through
+    // this owning list; every link field (root, left, right, parent) is a
+    // BORROW. Rotations therefore never move titles — the alternative
+    // (owned child links) makes every rotation an extraction-ordered
+    // rewiring that displaced-releases live nodes when misordered. Same
+    // flat-sidecar pattern as HashMap.owned / ArrayList.owned, at node
+    // scope. When delete lands, a node leaves the registry by swap-remove.
+    private ArrayList<RedBlackNode<K, V>> nodes;
     private int64 sizeCount;
 
     /**
@@ -69,6 +77,7 @@ public final class RedBlackTree<K, V> {
      */
     public RedBlackTree() {
         this.root = null;
+        this.nodes = heap ArrayList<RedBlackNode<K, V>>();
         this.sizeCount = 0;
     }
 
@@ -93,9 +102,14 @@ public final class RedBlackTree<K, V> {
      */
     public void put(K key, V value) {
         if (this.root == null) {
-            RedBlackNode<K, V> r = heap RedBlackNode<K, V>(key, value);
+            // `#key`/`#value` forward the CALLER's transfer word bits into
+            // the node ctor's consuming stores (title-tracking §6.1).
+            RedBlackNode<K, V> r = heap RedBlackNode<K, V>(#key, #value);
             r.red = false;
+            // Borrow link first; the registry add is the node's LAST use
+            // (the `#r` move) — same ordering rule as LinkedList.add.
             this.root = r;
+            this.nodes.add(#r);
             this.sizeCount = 1;
             return;
         }
@@ -119,11 +133,15 @@ public final class RedBlackTree<K, V> {
                     parent = parent.right;
                 }
             } else {
-                parent.value = value;
+                // Replace: the consuming fob store records the caller's
+                // value bit and displaced-releases an owned old value. An
+                // OWNED duplicate key reclaims at exit (the armed formal's
+                // drop entry — nothing here consumes it).
+                parent.value = #value;
                 return;
             }
         }
-        RedBlackNode<K, V> z = heap RedBlackNode<K, V>(key, value);
+        RedBlackNode<K, V> z = heap RedBlackNode<K, V>(#key, #value);
         z.parent = parent;
         if (goLeft) {
             parent.left = z;
@@ -132,6 +150,8 @@ public final class RedBlackTree<K, V> {
         }
         this.sizeCount = this.sizeCount + 1;
         this.insertFixup(z);
+        // Registry takes the node's title — z's last use.
+        this.nodes.add(#z);
     }
 
     /**

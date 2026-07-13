@@ -36,8 +36,13 @@ public final class RedBlackNode<K, V> {
      * ```
      */
     public RedBlackNode(K key, V value) {
-        this.key = key;
-        this.value = value;
+        // Consuming stores (title-tracking 6.2.4, the CacheNode treatment):
+        // the field bits record what the tree's caller actually forwarded,
+        // and the formals' entries deactivate so owned values aren't freed
+        // at ctor exit. The node's drop walk reclaims owned key/value when
+        // the tree's registry releases the node.
+        this.key = #key;
+        this.value = #value;
         this.left = null;
         this.right = null;
         this.parent = null;

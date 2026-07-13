@@ -35,6 +35,8 @@ const char* kCellSrc =
     "import cajeta.collection.LinkedList;\n"
     "import cajeta.collection.Collectors;\n"
     "import cajeta.lang.stream.ArrayStream;\n"
+    "import cajeta.collection.RedBlackTree;\n"
+    "import cajeta.collection.BPlusTree;\n"
     "@AutoHash\n"
     "public class Cell {\n"
     "    public int32 n;\n"
@@ -377,6 +379,31 @@ TEST(ContainerSweepTests, linkedListOwnedAddDropsAtTeardown) {
     EXPECT_EQ(runI32(src), 7);
 }
 
+// `list.add(v)` — the node borrows (the ctor forward carries the caller's
+// REAL flag; a static-1 word here once stamped borrowed adds owned and the
+// teardown freed the caller's element — the CreatorRest composition bug).
+TEST(ContainerSweepTests, linkedListBorrowAddLeavesOwnerAlive) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static int32 work() {\n"
+        "        Cell mine = heap Cell(9);\n"
+        "        {\n"
+        "            LinkedList<Cell> list = heap LinkedList<Cell>();\n"
+        "            list.add(mine);\n"
+        "            if (list.get(0).n != 9) { return -98; }\n"
+        "        }\n"
+        "        return mine.n;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int32 t = work();\n"
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return (int32) (leaked * 100) + t;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 9);
+}
+
 // popHead is remove-shaped: membership ends, the value returns in the mode
 // the entry held (flagged) — an owned element's title rides out to the
 // receiving local, which reclaims it; the node itself is freed either way.
@@ -420,4 +447,188 @@ TEST(ContainerSweepTests, collectToListSumsCorrectly) {
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 6);
+}
+
+// ===================== Trees (6.2.4) =====================
+// Node-graph ownership is the flat REGISTRY (the tree owns its nodes via an
+// owning ArrayList; every link field stays a borrow, so rotations and splits
+// never fight displaced-release). Values ride the node ctor's consuming
+// stores (RedBlack) / the per-slot leaf sidecar (BPlus).
+
+// Owned puts through rotation territory: 1,2,3 ascending forces a left
+// rotation at the root. Values owned by the tree; teardown reclaims them;
+// reads stay correct through the rotation.
+TEST(ContainerSweepTests, redBlackOwnedPutReclaimsAtTeardown) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static int32 work() {\n"
+        "        int32 t = 0;\n"
+        "        {\n"
+        "            RedBlackTree<int32, Cell> m = heap RedBlackTree<int32, Cell>();\n"
+        "            m.put(1, #heap Cell(10));\n"
+        "            m.put(2, #heap Cell(20));\n"
+        "            m.put(3, #heap Cell(30));\n" +
+        std::string(kChurn) +
+        "            t = m.get(1).n + m.get(3).n;\n"
+        "        }\n"
+        "        return t;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int32 t = work();\n"
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return (int32) (leaked * 100) + t;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 40);
+}
+
+// Borrowed put: the local keeps the title through fixup and teardown.
+TEST(ContainerSweepTests, redBlackBorrowPutLeavesOwnerAlive) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static int32 work() {\n"
+        "        Cell mine = heap Cell(9);\n"
+        "        {\n"
+        "            RedBlackTree<int32, Cell> m = heap RedBlackTree<int32, Cell>();\n"
+        "            m.put(1, mine);\n"
+        "            if (m.get(1).n != 9) { return -98; }\n"
+        "        }\n"
+        "        return mine.n;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int32 t = work();\n"
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return (int32) (leaked * 100) + t;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 9);
+}
+
+// Same-key put over an owned value displaced-releases the old one.
+TEST(ContainerSweepTests, redBlackReplaceDropsDisplacedOwnedValue) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static int32 work() {\n"
+        "        int32 t = 0;\n"
+        "        {\n"
+        "            RedBlackTree<int32, Cell> m = heap RedBlackTree<int32, Cell>();\n"
+        "            m.put(1, #heap Cell(3));\n"
+        "            m.put(1, #heap Cell(5));\n" +
+        std::string(kChurn) +
+        "            t = m.get(1).n;\n"
+        "        }\n"
+        "        return t;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int32 t = work();\n"
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return (int32) (leaked * 100) + t;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 5);
+}
+
+// The graph pin with ownership: 64 owned inserts drive the full fixup
+// (recolours + rotations both directions); everything reads back and the
+// teardown reclaims all 64.
+TEST(ContainerSweepTests, redBlackManyOwnedInsertsBalance) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static int32 work() {\n"
+        "        int32 t = 0;\n"
+        "        {\n"
+        "            RedBlackTree<int32, Cell> m = heap RedBlackTree<int32, Cell>();\n"
+        "            int32 i = 0;\n"
+        "            while (i < 64) { m.put(i, #heap Cell(i * 2)); i = i + 1; }\n"
+        "            t = m.get(50).n + (int32) m.count();\n"
+        "        }\n"
+        "        return t;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int32 t = work();\n"
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return (int32) (leaked * 100) + t;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 164);
+}
+
+// BPlus: owned values survive the leaf shifts and the split cascade (40 >
+// order 32 forces a split), and the teardown reclaims all of them.
+TEST(ContainerSweepTests, bplusOwnedPutSurvivesSplitReclaimsAtTeardown) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static int32 work() {\n"
+        "        int32 t = 0;\n"
+        "        {\n"
+        "            BPlusTree<int32, Cell> m = heap BPlusTree<int32, Cell>();\n"
+        "            int32 i = 0;\n"
+        "            while (i < 40) { m.put(i, #heap Cell(i * 3)); i = i + 1; }\n" +
+        std::string(kChurn) +
+        "            t = m.get(35).n + (int32) m.count();\n"
+        "        }\n"
+        "        return t;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int32 t = work();\n"
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return (int32) (leaked * 100) + t;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 145);
+}
+
+// BPlus borrowed put: the owner keeps the title through shift/split/teardown.
+TEST(ContainerSweepTests, bplusBorrowPutLeavesOwnerAlive) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static int32 work() {\n"
+        "        Cell mine = heap Cell(9);\n"
+        "        {\n"
+        "            BPlusTree<int32, Cell> m = heap BPlusTree<int32, Cell>();\n"
+        "            m.put(1, mine);\n"
+        "            int32 i = 10;\n"
+        "            while (i < 50) { m.put(i, #heap Cell(i)); i = i + 1; }\n"
+        "            if (m.get(1).n != 9) { return -98; }\n"
+        "        }\n"
+        "        return mine.n;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int32 t = work();\n"
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return (int32) (leaked * 100) + t;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 9);
+}
+
+// BPlus same-key put over an owned value displaced-releases the old one.
+TEST(ContainerSweepTests, bplusReplaceDropsDisplacedOwnedValue) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static int32 work() {\n"
+        "        int32 t = 0;\n"
+        "        {\n"
+        "            BPlusTree<int32, Cell> m = heap BPlusTree<int32, Cell>();\n"
+        "            m.put(1, #heap Cell(3));\n"
+        "            m.put(1, #heap Cell(5));\n" +
+        std::string(kChurn) +
+        "            t = m.get(1).n;\n"
+        "        }\n"
+        "        return t;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int32 t = work();\n"
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return (int32) (leaked * 100) + t;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 5);
 }

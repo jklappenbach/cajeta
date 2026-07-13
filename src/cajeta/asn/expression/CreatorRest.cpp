@@ -197,7 +197,58 @@ namespace cajeta {
             // Primitives, literals, and locals without drop entries
             // naturally degrade to no-op (the inner gate fires only on
             // an IdentifierExpression arg whose Field has a drop entry).
+            // 5.2.4 / 6.2.4 — capture each `#`-arg's TITLE FLAG before Pass 1
+            // deactivates it (MethodCallExpression's rule; a ctor arg's `#`
+            // is the parse-level token, NOT a MoveExpression, so the old
+            // MoveExpression-stash-only composition read null and degraded
+            // EVERY `#formal` ctor arg to a STATIC 1 — a borrow put through
+            // `heap RedBlackNode(#key, #value)` stamped the node's bits
+            // owned and the teardown freed the caller's value). A runtime
+            // owner forwards the flag its entry holds; an entry-less formal
+            // (String/primitive) forwards its own incoming word bit.
+            std::vector<llvm::Value*> ctorArgTitleFlags(parameters.size(), nullptr);
             {
+                for (size_t i = 0; i < parameters.size(); ++i) {
+                    if (!parameters[i].callerTransferred) continue;
+                    auto idExpr = std::dynamic_pointer_cast<IdentifierExpression>(
+                        parameters[i].expression);
+                    if (!idExpr) continue;
+                    auto scope = module->getScopeStack().peek();
+                    if (!scope) continue;
+                    FieldPtr field = scope->getField(idExpr->getTextValue());
+                    if (!field) continue;
+                    if (llvm::Value* entry = field->getDropEntry()) {
+                        if (llvm::Function* flagFn = module->getRuntimeFunction(
+                                "__cajeta_drop_entry_flag")) {
+                            ctorArgTitleFlags[i] = builder->CreateCall(
+                                flagFn, {entry}, "ctor_arg_title_flag");
+                        }
+                        continue;
+                    }
+                    auto pfArg = std::dynamic_pointer_cast<ParameterField>(field);
+                    if (pfArg) {
+                        auto cm = module->getCurrentMethod();
+                        llvm::Value* inWord = cm ? cm->getTransferWordArg()
+                                                 : nullptr;
+                        if (inWord) {
+                            int fpos = -1, seen = -1;
+                            for (auto& fp : cm->getParameterList()) {
+                                if (!fp || fp->getName() == "this") continue;
+                                ++seen;
+                                if (fp->getName() == idExpr->getTextValue()) {
+                                    fpos = seen;
+                                    break;
+                                }
+                            }
+                            if (fpos >= 0 && fpos < 64) {
+                                ctorArgTitleFlags[i] = builder->CreateAnd(
+                                    builder->CreateLShr(inWord,
+                                        builder->getInt64((uint64_t) fpos)),
+                                    builder->getInt64(1), "ctor_fwd_word_bit");
+                            }
+                        }
+                    }
+                }
                 auto deactivateIfClassLocal = [&](size_t argIdx) {
                     if (argIdx >= parameters.size()) return;
                     auto argExprBase = parameters[argIdx].expression;
@@ -374,10 +425,14 @@ namespace cajeta {
             llvm::Value* ctorWordVal = nullptr;
             for (size_t twi = 0; twi < parameters.size(); ++twi) {
                 if (!parameters[twi].callerTransferred) continue;
-                llvm::Value* rf = nullptr;
-                if (auto mv = std::dynamic_pointer_cast<MoveExpression>(
-                        parameters[twi].expression)) {
-                    rf = mv->getRuntimeTitleFlag();
+                // Pre-deactivation captures first (parse-level `#x` args);
+                // the MoveExpression stash covers `= #x`-shaped arg exprs.
+                llvm::Value* rf = ctorArgTitleFlags[twi];
+                if (!rf) {
+                    if (auto mv = std::dynamic_pointer_cast<MoveExpression>(
+                            parameters[twi].expression)) {
+                        rf = mv->getRuntimeTitleFlag();
+                    }
                 }
                 if (!rf) {
                     ctorTransferWord |= ((int64_t) 1) << twi;

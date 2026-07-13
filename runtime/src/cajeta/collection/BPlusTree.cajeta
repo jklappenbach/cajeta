@@ -43,6 +43,11 @@ package cajeta.collection;
 public final class BPlusTree<K, V> {
 
     private BPlusTreeNode<K, V> root;
+    // Node REGISTRY (title-tracking 6.2.4): the tree owns its nodes through
+    // this owning list; every link field (root, children[], next, parent)
+    // is a BORROW, so split/route rewiring never moves titles. Same flat
+    // sidecar pattern as RedBlackTree.nodes — see that field's note.
+    private ArrayList<BPlusTreeNode<K, V>> nodes;
     private int64 sizeCount;
     /** Max keys per node; a node splits once it would hold order+1. */
     private int32 order;
@@ -58,6 +63,7 @@ public final class BPlusTree<K, V> {
      */
     public BPlusTree() {
         this.root = null;
+        this.nodes = heap ArrayList<BPlusTreeNode<K, V>>();
         this.sizeCount = 0;
         this.order = 32;
     }
@@ -87,12 +93,31 @@ public final class BPlusTree<K, V> {
      * ```
      */
     public void put(K key, V value) {
+        // Caller's transfer word, read FIRST (any later call clobbers the
+        // TLS carry): bit0 = key, bit1 = value. The slot spelling must
+        // MATCH what the caller did (HashMap.put rule), and the leaf's
+        // owned[] sidecar records the outcome per slot.
+        int64 mvm = Cajeta.moveMask();
+        boolean keyOwned = (mvm & 1) != 0;
+        boolean valOwned = (mvm & 2) != 0;
+        int8 ownBits = (int8) (mvm & 3);
         if (this.root == null) {
             BPlusTreeNode<K, V> r = heap BPlusTreeNode<K, V>(true, this.order);
-            r.keys[0] = key;
-            r.values[0] = value;
+            if (keyOwned) {
+                r.keys[0] = #key;
+            } else {
+                r.keys[0] = key;
+            }
+            if (valOwned) {
+                r.values[0] = #value;
+            } else {
+                r.values[0] = value;
+            }
+            r.owned[0] = ownBits;
             r.numKeys = 1;
+            // Borrow link first; the registry add is the node's LAST use.
             this.root = r;
+            this.nodes.add(#r);
             this.sizeCount = 1;
             return;
         }
@@ -105,19 +130,41 @@ public final class BPlusTree<K, V> {
         if (pos < leaf.numKeys) {
             // keys[pos] >= key; equal iff not (key < keys[pos]).
             if ((key < leaf.keys[pos]) == false) {
-                leaf.values[pos] = value;
+                // Replace: displaced-release an owned old value, store in
+                // the caller's mode. An OWNED duplicate key reclaims at
+                // exit via its still-armed formal entry.
+                if ((leaf.owned[pos] & 2) != 0) {
+                    Cajeta.dropValue(leaf.values[pos]);
+                }
+                if (valOwned) {
+                    leaf.values[pos] = #value;
+                    leaf.owned[pos] = (int8) (leaf.owned[pos] | 2);
+                } else {
+                    leaf.values[pos] = value;
+                    leaf.owned[pos] = (int8) (leaf.owned[pos] & 1);
+                }
                 return;
             }
         }
-        // Shift right and insert.
+        // Shift right and insert; ownership bits travel with their slots.
         int32 j = leaf.numKeys;
         while (j > pos) {
             leaf.keys[j] = leaf.keys[j - 1];
             leaf.values[j] = leaf.values[j - 1];
+            leaf.owned[j] = leaf.owned[j - 1];
             j = j - 1;
         }
-        leaf.keys[pos] = key;
-        leaf.values[pos] = value;
+        if (keyOwned) {
+            leaf.keys[pos] = #key;
+        } else {
+            leaf.keys[pos] = key;
+        }
+        if (valOwned) {
+            leaf.values[pos] = #value;
+        } else {
+            leaf.values[pos] = value;
+        }
+        leaf.owned[pos] = ownBits;
         leaf.numKeys = leaf.numKeys + 1;
         this.sizeCount = this.sizeCount + 1;
 
@@ -237,15 +284,23 @@ public final class BPlusTree<K, V> {
         while (k < right.numKeys) {
             right.keys[k] = leaf.keys[mid + k];
             right.values[k] = leaf.values[mid + k];
+            // The TITLE moves with the slot: clear the source bit so only
+            // one slot owns (the copies alias until the source count drops).
+            right.owned[k] = leaf.owned[mid + k];
+            leaf.owned[mid + k] = (int8) 0;
             k = k + 1;
         }
         leaf.numKeys = mid;
         right.next = leaf.next;
         leaf.next = right;
         right.parent = leaf.parent;
-        // Copy-up: the separator equals the first key of the right leaf.
+        // Copy-up: the separator equals the first key of the right leaf —
+        // a routing BORROW (internal nodes never own; the leaf keeps the
+        // key's title).
         K sep = right.keys[0];
         this.insertIntoParent(leaf, sep, right);
+        // Registry takes the new node's title — right's last use.
+        this.nodes.add(#right);
     }
 
     /**
@@ -265,6 +320,8 @@ public final class BPlusTree<K, V> {
             left.parent = newRoot;
             right.parent = newRoot;
             this.root = newRoot;
+            // Registry takes the new root's title — its last use.
+            this.nodes.add(#newRoot);
             return;
         }
         // Index of `left` among the parent's children.
@@ -317,5 +374,7 @@ public final class BPlusTree<K, V> {
         node.numKeys = mid;
         right.parent = node.parent;
         this.insertIntoParent(node, promote, right);
+        // Registry takes the new node's title — right's last use.
+        this.nodes.add(#right);
     }
 }
