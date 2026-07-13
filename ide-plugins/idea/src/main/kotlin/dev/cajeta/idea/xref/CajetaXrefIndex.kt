@@ -37,7 +37,8 @@ class CajetaXrefIndex : FileBasedIndexExtension<String, String>() {
     override fun getName(): ID<String, String> = NAME
 
     override fun getVersion(): Int =
-        versionFor(XrefStreamParser.SUPPORTED_MAJOR, CajetaParser._serializedATN)
+        versionFor(XrefStreamParser.SUPPORTED_MAJOR, CajetaParser._serializedATN) +
+            LAYOUT_VERSION
 
     override fun dependsOnFileContent(): Boolean = true
 
@@ -70,6 +71,10 @@ class CajetaXrefIndex : FileBasedIndexExtension<String, String>() {
                         val fqn = str(rec, "fqn") ?: continue
                         put("fqn:$fqn", rec.toCompactString())
                         put("name:${fqn.substringAfterLast('.')}", fqn)
+                        // Calls name their callee by overloadKey (Unit 7).
+                        str(rec, "overloadKey")?.let {
+                            put("key:$it", rec.toCompactString())
+                        }
                     }
                     "inheritance" -> {
                         val parent = str(rec, "parent") ?: continue
@@ -105,6 +110,10 @@ class CajetaXrefIndex : FileBasedIndexExtension<String, String>() {
 
     companion object {
         val NAME: ID<String, String> = ID.create("dev.cajeta.xref")
+
+        /** Bumped when the KEY LAYOUT changes (new prefixes, changed values)
+         *  without any schema/grammar change. 2: added key:<overloadKey>. */
+        private const val LAYOUT_VERSION = 2
 
         /**
          * Index version from the schema major AND a grammar fingerprint

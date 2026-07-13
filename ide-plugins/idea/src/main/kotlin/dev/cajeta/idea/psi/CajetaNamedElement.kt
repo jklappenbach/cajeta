@@ -297,6 +297,10 @@ object CajetaPsiElementFactory {
         CajetaParser.RULE_enumConstant,
         -> CajetaEnumConstantDeclaration(node)
 
+        // Unit 7: identifiers carry the xref reference adapter.
+        CajetaParser.RULE_identifier,
+        -> CajetaIdentifier(node)
+
         else -> ANTLRPsiNode(node)
     }
 }

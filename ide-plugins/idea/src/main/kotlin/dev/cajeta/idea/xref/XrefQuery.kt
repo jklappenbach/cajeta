@@ -20,6 +20,10 @@ object XrefQuery {
     fun fqnsForSimpleName(project: Project, simpleName: String): List<String> =
         rawValues(project, "name:$simpleName").distinct()
 
+    /** Declaration records for an exact overloadKey (call targets, Unit 7). */
+    fun declarationsForOverloadKey(project: Project, overloadKey: String): List<Json.Obj> =
+        records(project, "key:$overloadKey")
+
     /** Inheritance records naming `parentFqn` as parent (child = subtype). */
     fun subtypesOf(project: Project, parentFqn: String): List<Json.Obj> =
         records(project, "sub:$parentFqn")
