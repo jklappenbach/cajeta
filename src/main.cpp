@@ -121,6 +121,11 @@ void printUsage(const char* progname) {
               << "  --emit-xref=<path>                   Write the resolved cross-reference index\n"
               << "                                       (declarations, inheritance, references, overrides,\n"
               << "                                       calls) to <path> as JSON, for IDE symbol lookup.\n"
+              << "                                       With --lint <root>: whole-root export, one document.\n"
+              << "  --emit-xref                          (bare, with --lint <file>) Emit the linted file's\n"
+              << "                                       xref records as NDJSON on the diagnostic channel,\n"
+              << "                                       kind:\"xref\" — one subprocess returns diagnostics\n"
+              << "                                       and xref per edit.\n"
               << "  --tree-shake=off|report|on           Tier-1 RTA (--emit=exe). on (DEFAULT): prune\n"
               << "                                       unreachable method bodies + dead clinits (drops e.g.\n"
               << "                                       OpenSSL). report: print the strip analysis. off: opt out.\n"
@@ -531,6 +536,11 @@ int main(int argc, const char* argv[]) {
             // an IDE to consume rather than reimplementing Cajeta's name
             // resolution (specs/ide-symbol-index-spec.md §2).
             compiler.getMutableFlags().emitXref = value;
+        } else if (arg == "--emit-xref") {
+            // Bare form, lint mode only: emit xref records as NDJSON on the
+            // diagnostic channel — one subprocess per edit returns diagnostics
+            // AND xref (ide-symbol-index §1.5.2). "-" is the stream sentinel.
+            compiler.getMutableFlags().emitXref = "-";
         } else if (match(arg, "tree-shake", value)) {
             // Tier-1 RTA (plans/compiler/stdlib-tree-shaking.md). `report`
             // (Phase A) computes IR reachability from the entry + roots and
@@ -620,6 +630,44 @@ int main(int argc, const char* argv[]) {
             return 1;
         }
         const std::string& lintFile = positional[0];
+
+        // --lint <directory> is the whole-root xref export (ide-symbol-index
+        // §2.0.3): parse every file under the root, write one document. It
+        // REQUIRES --emit-xref=<path> — "lint a directory, diagnostics only" is
+        // not a mode, and guessing one file to lint would be a wrong answer
+        // dressed as a right one.
+        if (std::filesystem::is_directory(lintFile)) {
+            const std::string& xrefOut = compiler.getFlags().emitXref;
+            if (xrefOut.empty() || xrefOut == "-") {
+                if (jsonDiag)
+                    cajeta::emitJsonDiagnostic("error", "xref-root",
+                        "linting a directory is the whole-root xref export; "
+                        "it requires --emit-xref=<path>", lintFile);
+                else
+                    std::cerr << "cajeta: --lint <directory> requires "
+                                 "--emit-xref=<path> (whole-root xref export)\n";
+                return 1;
+            }
+            return compiler.lintRoot(lintFile) > 0 ? 1 : 0;
+        }
+
+        // Single-file lint emits xref on the DIAGNOSTIC channel (bare
+        // --emit-xref). A path here would silently write a document scoped to
+        // one file — refusing beats an expectation silently half-met.
+        if (!compiler.getFlags().emitXref.empty()
+                && compiler.getFlags().emitXref != "-") {
+            if (jsonDiag)
+                cajeta::emitJsonDiagnostic("error", "xref-lint",
+                    "single-file lint emits xref on the diagnostic channel; "
+                    "use bare --emit-xref, or --lint <root> --emit-xref=<path>",
+                    lintFile);
+            else
+                std::cerr << "cajeta: with --lint <file>, use bare --emit-xref "
+                             "(records ride the diagnostic stream); "
+                             "--emit-xref=<path> is for --lint <root>\n";
+            return 1;
+        }
+
         if (!std::filesystem::exists(lintFile)) {
             if (jsonDiag)
                 cajeta::emitJsonDiagnostic("error", "file-not-found",
@@ -646,6 +694,11 @@ int main(int argc, const char* argv[]) {
             compiler.lint(lintFile, lintSourceRoot, lintShadow);
         } catch (cajeta::SyntaxErrorException&) {
             cajeta::DiagnosticEngine::setActive(nullptr);
+            // The buffer did not parse, so nothing was captured for it — the
+            // stream is a version line and records for nothing, which is the
+            // signal for the plugin to KEEP its previous index for this file
+            // (a stale answer beats a wrong one; ide-symbol-index §7).
+            compiler.emitLintXrefStream(lintFile, lintSourceRoot, lintShadow);
             return 1;  // syntax diagnostics already emitted during parsing
         } catch (cajeta::Exception& e) {
             engine.report("error", e.getErrorId(), e.getMessage(),
@@ -655,6 +708,7 @@ int main(int argc, const char* argv[]) {
         }
         cajeta::DiagnosticEngine::setActive(nullptr);
         engine.emit(jsonDiag);
+        compiler.emitLintXrefStream(lintFile, lintSourceRoot, lintShadow);
         return engine.hasErrors() ? 1 : 0;
     }
 
@@ -666,6 +720,13 @@ int main(int argc, const char* argv[]) {
         compiler.getMutableFlags().linkMode = LinkMode::Full;
         std::cout << compiler.computeOwnCacheDiscriminator() << "\n";
         return 0;
+    }
+
+    if (compiler.getFlags().emitXref == "-") {
+        std::cerr << "cajeta: bare --emit-xref is lint-mode only "
+                     "(records ride the diagnostic stream); a compile takes "
+                     "--emit-xref=<path>\n";
+        return 1;
     }
 
     if (positional.size() < 3) {

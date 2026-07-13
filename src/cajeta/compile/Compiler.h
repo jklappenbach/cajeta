@@ -374,6 +374,22 @@ namespace cajeta {
         void lint(const string& file, const string& sourceRoot = "",
                   const string& shadow = "");
 
+        // Whole-root xref export (ide-symbol-index §2.0.3): parse every .cajeta
+        // under `root` — continuing past broken files — run the resolution
+        // passes lint runs, and write ONE xref document to flags.emitXref. For
+        // cold indexing of a project, a dependency's sources, or the stdlib; no
+        // entry method, no codegen. Returns how many files failed to parse.
+        int lintRoot(const string& root);
+
+        // Lint-mode xref stream (ide-symbol-index §2.0.2): emit the records
+        // captured for the linted file as NDJSON on stderr — the diagnostic
+        // channel — so the plugin's per-edit invocation gets diagnostics AND
+        // xref from one subprocess (§1.5.2). `shadow`, when set, is the
+        // ORIGINAL path the staged buffer stands in for; records are reported
+        // against it. No-op unless flags.emitXref asked for the stream ("-").
+        void emitLintXrefStream(const string& file, const string& sourceRoot,
+                                const string& shadow);
+
         // Ensure the Compiler's dedicated stdlib module exists and is
         // parsed + prototype-built. Idempotent — created lazily on
         // first call, returned thereafter. Driven by every entry

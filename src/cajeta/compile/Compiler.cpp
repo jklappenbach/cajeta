@@ -1153,6 +1153,18 @@ namespace cajeta {
         // emit, not in the validated `modules` set) so cross-file references
         // resolve while diagnostics stay scoped to the target
         // (lint-source-root-spec §3/§4).
+
+        // xref (ide-symbol-index §2.0.2): armed BEFORE the stdlib parse so every
+        // AST node interns its source and template members are captured. What
+        // lint-mode capture yields, honestly: declarations, inheritance, enums,
+        // template members, and parse-time type references. NOT calls or field
+        // accesses — body resolveTypes runs only inside Method::generateCode,
+        // the codegen phase lint deliberately stops before. Per-edit, the
+        // buffer's own declarations are what must stay fresh; edges refresh on
+        // build or whole-root export.
+        xref::resetCapture();
+        xref::setCaptureEnabled(!flags.emitXref.empty());
+
         ensureStdlibModule();
         const bool json = getFlags().diagFormat == DiagFormat::Json;
 
@@ -1176,6 +1188,31 @@ namespace cajeta {
         }
 
         CajetaModulePtr module = createModule(file, dir, dir);
+
+        // FQNs derive from the module's PATH-derived package — the `package`
+        // declaration is validated against it, never adopted (onPackageDeclaration,
+        // and under lint even the check is skipped). Rooted at its own directory,
+        // this module would declare `Target`, while the whole-root export and a
+        // real compile declare `demo.Target` — and an index ingesting both would
+        // fracture a file's symbols on every edit. Re-derive the identity from the
+        // ORIGINAL path (--shadow for a staged buffer, else the file) relative to
+        // --source-root, exactly as a compile rooted there would.
+        if (!sourceRoot.empty()) {
+            string rootSlash = sourceRoot;
+            if (rootSlash.back() != '/') rootSlash.append("/");
+            string original = !shadow.empty() ? shadow : file;
+            if (original.rfind(rootSlash, 0) == 0) {
+                string rel = original.substr(rootSlash.size());
+                auto dot = rel.rfind(CAJETA_EXTENSION);
+                if (dot != string::npos) rel = rel.substr(0, dot);
+                auto slash = rel.find_last_of('/');
+                string cls = slash == string::npos ? rel : rel.substr(slash + 1);
+                string pkg = slash == string::npos ? "" : rel.substr(0, slash);
+                std::replace(pkg.begin(), pkg.end(), '/', '.');
+                module->setQName(QualifiedName::getOrInsert(cls, pkg));
+            }
+        }
+
         compile(module);  // parse (target diagnostics) + buildPendingPrototypes
 
         // The remaining diagnostic passes the multi-file compile() runs after
@@ -1331,6 +1368,128 @@ namespace cajeta {
             std::cerr << "cajeta: warning — could not write xref index to "
                       << path << std::endl;
         }
+    }
+
+    int Compiler::lintRoot(const string& root) {
+        // Whole-root export (§2.0.3): cold indexing. No entry method exists for
+        // a library or the stdlib, so this parses everything and stops where
+        // lint stops — declarations, inheritance, enums, template members, and
+        // parse-time type references, for EVERY file under the root. Call and
+        // field-access edges need body resolution (codegen) and come from a
+        // real build's --emit-xref instead.
+        xref::resetCapture();
+        xref::setCaptureEnabled(!flags.emitXref.empty());
+
+        ensureStdlibModule();
+        const bool json = getFlags().diagFormat == DiagFormat::Json;
+        prescanSourceRoot(root, json);
+
+        string rootSlash = root;
+        if (rootSlash.empty() || rootSlash.back() != '/') rootSlash.append("/");
+
+        // Sorted, for determinism (§2.0.7): directory enumeration order is
+        // filesystem-dependent, and the parse order decides synthesized-name
+        // tie-breaks. The writer sorts records, but same input must mean same
+        // PARSE, not just same sort.
+        namespace fs = std::filesystem;
+        std::vector<std::string> files;
+        std::error_code ec;
+        for (fs::recursive_directory_iterator it(root, ec), end; it != end;
+             it.increment(ec)) {
+            if (ec) break;
+            if (!it->is_regular_file()) continue;
+            if (it->path().extension() != CAJETA_EXTENSION) continue;
+            files.push_back(it->path().string());
+        }
+        std::sort(files.begin(), files.end());
+
+        // One broken file must not sink the other N-1 (the same guarantee the
+        // compile path holds — ide-symbol-index 2.1.8). Errors still surface on
+        // the diagnostic channel; the export just is not hostage to them.
+        int failed = 0;
+        for (const auto& path : files) {
+            try {
+                CajetaModulePtr module = createModule(path, rootSlash, rootSlash);
+                compile(module);
+            } catch (SyntaxErrorException&) {
+                ++failed;              // diagnostics already emitted by the parse
+            } catch (cajeta::Exception& e) {
+                ++failed;
+                if (json) emitJsonDiagnostic("error", e.getErrorId(),
+                                             e.getMessage(), path);
+                else std::cerr << "cajeta: " << path << ": " << e.getMessage()
+                               << "\n";
+            } catch (const std::exception& e) {
+                ++failed;
+                if (json) emitJsonDiagnostic("error", "", e.what(), path);
+                else std::cerr << "cajeta: " << path << ": " << e.what() << "\n";
+            }
+        }
+
+        // The resolution passes lint runs. Best-effort each: a failure here is
+        // one project's semantic problem, not a reason to withhold the index of
+        // everything that DID resolve — but it is reported, never swallowed.
+        auto guarded = [&](const char* pass, auto fn) {
+            try {
+                fn();
+            } catch (cajeta::Exception& e) {
+                ++failed;
+                if (json) emitJsonDiagnostic("error", e.getErrorId(), e.getMessage());
+                else std::cerr << "cajeta: " << pass << ": " << e.getMessage() << "\n";
+            } catch (const std::exception& e) {
+                ++failed;
+                if (json) emitJsonDiagnostic("error", "", e.what());
+                else std::cerr << "cajeta: " << pass << ": " << e.what() << "\n";
+            }
+        };
+        guarded("validate", [] { CajetaModule::validatePlaceholders(); });
+        guarded("prototypes", [] { CajetaModule::buildPendingPrototypes(); });
+        guarded("advice", [] { CajetaModule::resolveAdviceMatches(); });
+        guarded("dependencies", [] { CajetaModule::resolveDependencyGraph(); });
+
+        writeXrefIndex(flags.emitXref, rootSlash);
+        return failed;
+    }
+
+    void Compiler::emitLintXrefStream(const string& file, const string& sourceRoot,
+                                      const string& shadow) {
+        if (flags.emitXref != "-") return;   // stream not requested
+
+        // The linted file's records carry the name its MODULE gave them —
+        // computed here exactly as lint()'s createModule did, so the filter can
+        // never drift from the capture. For a staged buffer that is the temp
+        // file's basename; for an in-root file, its name relative to its own
+        // directory.
+        std::filesystem::path targetPath(file);
+        string dir = targetPath.has_parent_path()
+            ? targetPath.parent_path().string() : ".";
+        if (dir.empty() || dir.back() != '/') dir.append("/");
+        const string targetKey = CajetaModule::remapSourcePath(
+            file, dir, flags.debugPrefixMap);
+
+        // Report against the ORIGINAL path (--shadow), root-relative when it is
+        // under the source root — the form the whole-root document uses, so the
+        // consumer's index keys agree across both feeds. A record reported
+        // against the staged temp path would be ingested under a key no editor
+        // buffer will ever ask about.
+        string reportAs = shadow.empty() ? file : shadow;
+        if (!sourceRoot.empty()) {
+            string rootSlash = sourceRoot;
+            if (rootSlash.back() != '/') rootSlash.append("/");
+            if (reportAs.rfind(rootSlash, 0) == 0) {
+                reportAs = reportAs.substr(rootSlash.size());
+            }
+        }
+
+        xref::XrefIndex index;
+        xref::collectDeclarationsAndInheritance(index, sourceRoot);
+        xref::drainCalls(index, sourceRoot);
+        xref::drainReferences(index, sourceRoot);
+        // The prune runs against the FULL index — a target-file reference to a
+        // sibling or stdlib declaration survives because that declaration is in
+        // the index, even though only the target's records are streamed.
+        index.pruneDanglingEdges();
+        std::cerr << index.toNdjson(targetKey, reportAs) << std::flush;
     }
 
     void Compiler::compile(string entryMethod, string sourceRootPath, string archiveRootPath) {

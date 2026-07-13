@@ -102,6 +102,16 @@ namespace cajeta::xref {
         // construction: the same input yields byte-identical output.
         std::string toJson() const;
 
+        // The lint-mode stream (spec §2.0.2): one NDJSON line per record, each
+        // wrapped as {"kind":"xref","rel":"<relation>","record":{...}} so it can
+        // ride the diagnostic channel and be demultiplexed by `kind`. Restricted
+        // to records positioned in `onlyFile` — the linted buffer; siblings and
+        // stdlib are the whole-root export's job — and reported against
+        // `reportAs`, the ORIGINAL path when the buffer was staged via --shadow.
+        // Opens with a version record; prune before calling.
+        std::string toNdjson(const std::string& onlyFile,
+                             const std::string& reportAs) const;
+
         // Render and write to `path`. Returns false (and leaves no partial file)
         // if the file cannot be opened.
         bool writeToFile(const std::string& path) const;

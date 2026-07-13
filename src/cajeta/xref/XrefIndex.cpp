@@ -132,6 +132,75 @@ namespace cajeta::xref {
             return v;
         }
 
+        // One record as one JSON object. Shared by the whole-document writer
+        // (toJson) and the lint-mode NDJSON stream (toNdjson) so the two can
+        // never drift: a record renders identically wherever it travels.
+        void writeRecord(std::ostringstream& out, const Declaration& d) {
+            out << "{";
+            bool first = true;
+            field(out, "fqn", d.fqn, first);
+            field(out, "kind", d.kind, first);
+            writeSourceRef(out, d.at, first);
+            field(out, "owner", d.owner, first);
+            field(out, "signature", d.signature, first);
+            field(out, "overloadKey", d.overloadKey, first);
+            if (!d.modifiers.empty()) {
+                if (!first) out << ", ";
+                out << "\"modifiers\": [";
+                for (size_t m = 0; m < d.modifiers.size(); ++m) {
+                    if (m) out << ", ";
+                    out << "\"";
+                    escapeInto(out, d.modifiers[m]);
+                    out << "\"";
+                }
+                out << "]";
+            }
+            out << "}";
+        }
+
+        void writeRecord(std::ostringstream& out, const InheritanceEdge& e) {
+            out << "{";
+            bool first = true;
+            field(out, "child", e.child, first);
+            field(out, "parent", e.parent, first);
+            field(out, "kind", e.kind, first);
+            writeSourceRef(out, e.at, first);
+            out << "}";
+        }
+
+        void writeRecord(std::ostringstream& out, const Reference& r) {
+            out << "{";
+            bool first = true;
+            field(out, "target", r.target, first);
+            field(out, "kind", r.kind, first);
+            writeSourceRef(out, r.at, first);
+            field(out, "from", r.from, first);
+            out << "}";
+        }
+
+        void writeRecord(std::ostringstream& out, const OverrideEdge& o) {
+            out << "{";
+            bool first = true;
+            field(out, "method", o.method, first);
+            field(out, "overrides", o.overrides, first);
+            writeSourceRef(out, o.at, first);
+            out << "}";
+        }
+
+        void writeRecord(std::ostringstream& out, const Call& c) {
+            out << "{";
+            bool first = true;
+            field(out, "callee", c.callee, first);
+            field(out, "caller", c.caller, first);
+            if (c.isVirtual) {
+                if (!first) out << ", ";
+                out << "\"virtual\": true";
+                first = false;
+            }
+            writeSourceRef(out, c.at, first);
+            out << "}";
+        }
+
     } // namespace
 
     int XrefIndex::pruneDanglingEdges() {
@@ -178,86 +247,70 @@ namespace cajeta::xref {
 
         out << "  \"declarations\": [";
         for (size_t i = 0; i < decls.size(); ++i) {
-            const auto& d = decls[i];
-            out << (i ? ",\n    " : "\n    ") << "{";
-            bool first = true;
-            field(out, "fqn", d.fqn, first);
-            field(out, "kind", d.kind, first);
-            writeSourceRef(out, d.at, first);
-            field(out, "owner", d.owner, first);
-            field(out, "signature", d.signature, first);
-            field(out, "overloadKey", d.overloadKey, first);
-            if (!d.modifiers.empty()) {
-                if (!first) out << ", ";
-                out << "\"modifiers\": [";
-                for (size_t m = 0; m < d.modifiers.size(); ++m) {
-                    if (m) out << ", ";
-                    out << "\"";
-                    escapeInto(out, d.modifiers[m]);
-                    out << "\"";
-                }
-                out << "]";
-            }
-            out << "}";
+            out << (i ? ",\n    " : "\n    ");
+            writeRecord(out, decls[i]);
         }
         out << (decls.empty() ? "" : "\n  ") << "],\n";
 
         out << "  \"inheritance\": [";
         for (size_t i = 0; i < inh.size(); ++i) {
-            const auto& e = inh[i];
-            out << (i ? ",\n    " : "\n    ") << "{";
-            bool first = true;
-            field(out, "child", e.child, first);
-            field(out, "parent", e.parent, first);
-            field(out, "kind", e.kind, first);
-            writeSourceRef(out, e.at, first);
-            out << "}";
+            out << (i ? ",\n    " : "\n    ");
+            writeRecord(out, inh[i]);
         }
         out << (inh.empty() ? "" : "\n  ") << "],\n";
 
         out << "  \"references\": [";
         for (size_t i = 0; i < refs.size(); ++i) {
-            const auto& r = refs[i];
-            out << (i ? ",\n    " : "\n    ") << "{";
-            bool first = true;
-            field(out, "target", r.target, first);
-            field(out, "kind", r.kind, first);
-            writeSourceRef(out, r.at, first);
-            field(out, "from", r.from, first);
-            out << "}";
+            out << (i ? ",\n    " : "\n    ");
+            writeRecord(out, refs[i]);
         }
         out << (refs.empty() ? "" : "\n  ") << "],\n";
 
         out << "  \"overrides\": [";
         for (size_t i = 0; i < ovs.size(); ++i) {
-            const auto& o = ovs[i];
-            out << (i ? ",\n    " : "\n    ") << "{";
-            bool first = true;
-            field(out, "method", o.method, first);
-            field(out, "overrides", o.overrides, first);
-            writeSourceRef(out, o.at, first);
-            out << "}";
+            out << (i ? ",\n    " : "\n    ");
+            writeRecord(out, ovs[i]);
         }
         out << (ovs.empty() ? "" : "\n  ") << "],\n";
 
         out << "  \"calls\": [";
         for (size_t i = 0; i < calls.size(); ++i) {
-            const auto& c = calls[i];
-            out << (i ? ",\n    " : "\n    ") << "{";
-            bool first = true;
-            field(out, "callee", c.callee, first);
-            field(out, "caller", c.caller, first);
-            if (c.isVirtual) {
-                if (!first) out << ", ";
-                out << "\"virtual\": true";
-                first = false;
-            }
-            writeSourceRef(out, c.at, first);
-            out << "}";
+            out << (i ? ",\n    " : "\n    ");
+            writeRecord(out, calls[i]);
         }
         out << (calls.empty() ? "" : "\n  ") << "]\n";
 
         out << "}\n";
+        return out.str();
+    }
+
+    std::string XrefIndex::toNdjson(const std::string& onlyFile,
+                                    const std::string& reportAs) const {
+        // The stream opens by declaring its schema version — the reader's
+        // handshake (spec §2.0.6). Emitted even when nothing else is: a broken
+        // buffer's near-empty stream is still a well-formed, versioned one, so
+        // the consumer can tell "nothing resolved" from "garbled output".
+        std::ostringstream out;
+        out << "{\"kind\":\"xref\",\"rel\":\"version\",\"record\":{\"major\": "
+            << kSchemaMajor << ", \"minor\": " << kSchemaMinor << "}}\n";
+
+        // Same sort + de-dup as the document, so the per-edit stream and a
+        // whole-root export agree on what a record looks like AND in what order.
+        auto emitAll = [&](const char* rel, auto records) {
+            for (auto& r : records) {
+                if (r.at.file != onlyFile) continue;
+                r.at.file = reportAs;
+                out << "{\"kind\":\"xref\",\"rel\":\"" << rel << "\",\"record\":";
+                std::ostringstream rec;
+                writeRecord(rec, r);
+                out << rec.str() << "}\n";
+            }
+        };
+        emitAll("declarations", sortedUnique(declarations_, declLess, declEq));
+        emitAll("inheritance",  sortedUnique(inheritance_, edgeLess, edgeEq));
+        emitAll("references",   sortedUnique(references_, refLess2, refEq2));
+        emitAll("overrides",    sortedUnique(overrides_, ovLess, ovEq));
+        emitAll("calls",        sortedUnique(calls_, callLess, callEq));
         return out.str();
     }
 
