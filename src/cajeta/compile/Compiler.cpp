@@ -533,6 +533,18 @@ namespace cajeta {
                             antlr4::ANTLRInputStream& input,
                             const char* label,
                             bool quiet = false) {
+        // Stamp the stream with the file these tokens come from, so every AST node
+        // built from them records its TRUE origin rather than "whatever module was
+        // active when codegen reached it" (ide-symbol-index 2.2.8).
+        //
+        // Every real-source parse — user, stdlib, dependency archive, lint sibling —
+        // arrives here. The SYNTHETIC re-parses (template instantiation, mock
+        // synthesis, source synthesis) build their own streams and never pass
+        // through, so their tokens carry no source name at all. That is the point:
+        // a snippet's line numbers are relative to the snippet, and a node that
+        // cannot name its file is a node whose position must never be exported.
+        input.name = module->currentSourceFile();
+
         CajetaLexer lexer(&input);
         CommonTokenStream tokens(&lexer);
         tokens.fill();
@@ -1299,6 +1311,28 @@ namespace cajeta {
         return true;
     }
 
+    // Collect everything the compiler currently holds resolved and write it out.
+    //
+    // Emitted BEFORE tree-shaking, deliberately: reachability is a property of one
+    // entry point, and a developer still navigates to — and renames — code that this
+    // build happens not to call. An index that dropped unreachable declarations
+    // would make Ctrl-click fail on live source.
+    static void writeXrefIndex(const std::string& path, const std::string& sourceRootPath) {
+        xref::XrefIndex index;
+        xref::collectDeclarationsAndInheritance(index, sourceRootPath);
+        // Call edges were recorded as each callee was resolved; type and field
+        // references as each name was resolved.
+        xref::drainCalls(index, sourceRootPath);
+        xref::drainReferences(index, sourceRootPath);
+        // Invariant: every edge endpoint names a declaration this index carries.
+        // Anything else is a Ctrl-click into the void.
+        index.pruneDanglingEdges();
+        if (!index.writeToFile(path)) {
+            std::cerr << "cajeta: warning — could not write xref index to "
+                      << path << std::endl;
+        }
+    }
+
     void Compiler::compile(string entryMethod, string sourceRootPath, string archiveRootPath) {
         // Stash on the instance so the post-Phase-2 emitCMainShim call can
         // see what the user passed without threading it through Phase 1/2.
@@ -1310,6 +1344,30 @@ namespace cajeta {
         // Off unless --emit-xref, so a normal build captures nothing.
         xref::resetCapture();
         xref::setCaptureEnabled(!flags.emitXref.empty());
+
+        // Emit the index on the way OUT — normal return or exception unwind alike
+        // (ide-symbol-index 2.1.8). A syntax error throws SyntaxErrorException from
+        // deep inside the walk, so an export written at the end of this function
+        // never ran for a broken file. That is the case that matters most: the
+        // plugin re-runs the compiler on the user's buffer as they type, and a
+        // buffer mid-edit is broken most of the time. Failing to export there
+        // freezes navigation exactly while the developer is working.
+        //
+        // Partial, never wrong: the file that failed to parse contributes fewer
+        // records (or none), and the ones that did resolve are as correct as ever.
+        struct XrefEmitGuard {
+            const std::string& path;
+            const std::string& root;
+            ~XrefEmitGuard() {
+                if (path.empty()) return;
+                // A throwing destructor during unwind is std::terminate. The index
+                // is a convenience; it must never take the compile down with it.
+                try {
+                    writeXrefIndex(path, root);
+                } catch (...) {
+                }
+            }
+        } xrefGuard{flags.emitXref, sourceRootPath};
 
         // DCE Tier-0b: clear the compile-scoped reflection-usage accumulator.
         // The compiler process is reused across compiles (the stdlib-prime
@@ -1378,10 +1436,43 @@ namespace cajeta {
 
         {
             ProgressPhase phase("parse", "Parsing");
+
+            // One file's syntax error must not stop the files after it
+            // (ide-symbol-index 2.1.8). It used to: the exception propagated
+            // straight out of this loop, so every source enumerated after the
+            // broken one went unparsed — and since `listModulePaths` walks the
+            // directory, WHICH files those were depended on filesystem ordering.
+            // The same project indexed all of its declarations or none of them
+            // depending on where the broken file happened to land in readdir.
+            //
+            // That matters because the IDE plugin re-runs the compiler on the
+            // user's buffer as they type, and a buffer mid-edit is broken most of
+            // the time. Navigation across the REST of the project should not
+            // blink out because the file under the cursor is momentarily invalid.
+            //
+            // Parse everything we can, then rethrow the first error once the sweep
+            // is done. The build still fails, and fails with the same diagnostic it
+            // always did — no later phase ever runs on a partial parse. Safe to
+            // continue because parseSource throws BEFORE visiting (a syntactically
+            // broken tree segfaults the semantic visitor), so a file that fails
+            // leaves nothing half-registered behind it.
+            std::exception_ptr firstSyntaxError;
             for (string sourcePath: *modulePaths) {
-                CajetaModulePtr module = createModule(sourcePath, sourceRootPath, archiveRootPath);
-                compile(module);
+                try {
+                    CajetaModulePtr module =
+                        createModule(sourcePath, sourceRootPath, archiveRootPath);
+                    compile(module);
+                } catch (SyntaxErrorException&) {
+                    // Diagnostics for this file are already on the error listener's
+                    // channel; all we keep is the failure itself.
+                    if (!firstSyntaxError) {
+                        firstSyntaxError = std::current_exception();
+                    }
+                }
                 cout << "\n";
+            }
+            if (firstSyntaxError) {
+                std::rethrow_exception(firstSyntaxError);
             }
         }
 
@@ -1769,14 +1860,8 @@ namespace cajeta {
         // entry point; a developer still navigates to, and renames, code that this
         // build happens not to call. An index that dropped unreachable declarations
         // would make Ctrl-click fail on live source.
-        if (!flags.emitXref.empty()) {
-            xref::XrefIndex index;
-            xref::collectDeclarationsAndInheritance(index, sourceRootPath);
-            if (!index.writeToFile(flags.emitXref)) {
-                std::cerr << "cajeta: warning — could not write xref index to "
-                          << flags.emitXref << std::endl;
-            }
-        }
+        // (Emitted by the scope guard armed at the top of this function, so a
+        // compile that FAILS still exports what did resolve — see writeXrefIndex.)
 
         // external-debug §3: every safepoint has claimed its loc_id by now, so
         // the table is final. Serialize it into the stdlib module (always linked,

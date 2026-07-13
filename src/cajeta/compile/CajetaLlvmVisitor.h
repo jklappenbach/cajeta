@@ -95,6 +95,10 @@ namespace cajeta {
                 for (auto& imp : res.imports) {
                     cajeta::synth::injectImportIfUnbound(pModule, imp.first, imp.second);
                 }
+                // Synthesized members have no source file; mask the parse and the
+                // walk so their callees are not attributed to a real call site
+                // (ide-symbol-index 2.2.8).
+                xref::SyntheticSourceScope xrefMask;
                 auto* body = cajeta::synth::parseClassBodyFragment(res.classBodyFragment);
                 for (auto* cbd : body->classBodyDeclaration()) {
                     MemberDeclarationPtr mem;
@@ -225,6 +229,7 @@ namespace cajeta {
             if (expr.empty()) return;
             string src = "{ public static boolean operator== (" + typeName
                 + " a, " + typeName + " b) { return " + expr + "; } }";
+            xref::SyntheticSourceScope xrefMask;   // see 2.2.8
             auto* body = cajeta::synth::parseClassBodyFragment(src);
             for (auto* cbd : body->classBodyDeclaration()) {
                 MemberDeclarationPtr mem;
@@ -325,16 +330,54 @@ namespace cajeta {
                 return out + ")";
             };
 
+            // Declared parameter count — excludes the receiver, which the compiler's
+            // own canonical form includes. Both are needed to map a resolved
+            // instantiation method back to this template member (Unit 2).
+            auto paramCount = [](CajetaParser::FormalParametersContext* fp) -> int {
+                if (!fp || !fp->formalParameterList()) return 0;
+                return (int) fp->formalParameterList()->formalParameter().size();
+            };
+
+            // The DISPLAY label (2.2.6) — `T get(int32 index)`, as written, names
+            // included. Distinct from the overload key, which is the identity.
+            auto displayText = [](const string& ret, const string& name,
+                                  CajetaParser::FormalParametersContext* fp) -> string {
+                string out;
+                if (!ret.empty()) out += ret + " ";
+                out += name + "(";
+                if (fp && fp->formalParameterList()) {
+                    bool first = true;
+                    for (auto* p : fp->formalParameterList()->formalParameter()) {
+                        if (!p->typeType()) continue;
+                        if (!first) out += ", ";
+                        first = false;
+                        if (p->REFERENCE()) out += "#";
+                        out += p->typeType()->getText();
+                        if (p->variableDeclaratorId()) {
+                            out += " " + p->variableDeclaratorId()->getText();
+                        }
+                    }
+                }
+                return out + ")";
+            };
+
+            bool memberIsStatic = false;   // set per classBodyDeclaration below
+
             auto note = [&](const string& name, const string& kind,
-                            const string& key, antlr4::Token* tok) {
+                            const string& key, antlr4::Token* tok,
+                            int declaredParams = 0,
+                            const string& signature = "") {
                 if (!tok) return;
                 xref::TemplateMember m;
-                m.ownerFqn    = ownerFqn;
-                m.name        = name;
-                m.kind        = kind;
-                m.overloadKey = key;
-                m.at          = xref::SourceRef{file, (int) tok->getLine(),
-                                                (int) tok->getCharPositionInLine()};
+                m.ownerFqn       = ownerFqn;
+                m.name           = name;
+                m.kind           = kind;
+                m.overloadKey    = key;
+                m.signature      = signature;
+                m.declaredParams = declaredParams;
+                m.isStatic       = memberIsStatic;
+                m.at             = xref::SourceRef{file, (int) tok->getLine(),
+                                                   (int) tok->getCharPositionInLine()};
                 xref::registerTemplateMember(std::move(m));
             };
 
@@ -342,16 +385,30 @@ namespace cajeta {
                 auto* member = decl->memberDeclaration();
                 if (!member) continue;
 
+                // `classBodyDeclaration : modifier* memberDeclaration` — a static
+                // member has no receiver, so its expected instantiation arity is its
+                // declared arity, not declared+1.
+                memberIsStatic = false;
+                for (auto* mod : decl->modifier()) {
+                    if (mod->getText() == "static") { memberIsStatic = true; break; }
+                }
+
                 if (auto* md = member->methodDeclaration()) {
                     const string name = md->identifier()->getText();
+                    const string ret  = md->typeTypeOrVoid()
+                                      ? md->typeTypeOrVoid()->getText() : string("void");
                     note(name, "method",
                          ownerFqn + "::" + name + paramText(md->formalParameters()),
-                         md->identifier()->getStart());
+                         md->identifier()->getStart(),
+                         paramCount(md->formalParameters()),
+                         displayText(ret, name, md->formalParameters()));
                 } else if (auto* cd = member->constructorDeclaration()) {
                     const string name = cd->identifier()->getText();
                     note(name, "constructor",
                          ownerFqn + "::" + name + paramText(cd->formalParameters()),
-                         cd->identifier()->getStart());
+                         cd->identifier()->getStart(),
+                         paramCount(cd->formalParameters()),
+                         displayText("", name, cd->formalParameters()));
                 } else if (auto* od = member->operatorOverloadDeclaration()) {
                     // Operators must survive here too — cajetadoc omits them
                     // entirely, so this export is their only source.
@@ -372,15 +429,21 @@ namespace cajeta {
                         sym += child->getText();
                     }
                     const string name = "operator" + sym;
+                    const string ret  = od->typeTypeOrVoid()
+                                      ? od->typeTypeOrVoid()->getText() : string("void");
                     note(name, "method",
                          ownerFqn + "::" + name + paramText(od->formalParameters()),
-                         od->OPERATOR() ? od->OPERATOR()->getSymbol() : nullptr);
+                         od->OPERATOR() ? od->OPERATOR()->getSymbol() : nullptr,
+                         paramCount(od->formalParameters()),
+                         displayText(ret, name, od->formalParameters()));
                 } else if (auto* fd = member->fieldDeclaration()) {
                     if (!fd->variableDeclarators()) continue;
+                    const string ftype = fd->typeType() ? fd->typeType()->getText() : string();
                     for (auto* vd : fd->variableDeclarators()->variableDeclarator()) {
                         if (!vd->variableDeclaratorId()) continue;
                         const string name = vd->variableDeclaratorId()->getText();
-                        note(name, "field", "", vd->variableDeclaratorId()->getStart());
+                        note(name, "field", "", vd->variableDeclaratorId()->getStart(),
+                             0, ftype.empty() ? name : ftype + " " + name);
                     }
                 }
             }
@@ -1657,6 +1720,7 @@ namespace cajeta {
                                             << declText << "\n";
                                     }
                                 }
+                                xref::SyntheticSourceScope xrefMask;   // see 2.2.8
                                 auto* frag = cajeta::synth::parseClassBodyFragment(
                                     "{ " + declText + " }");
                                 for (auto* cbd : frag->classBodyDeclaration()) {

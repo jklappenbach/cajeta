@@ -3,6 +3,7 @@
 //
 
 #include "CajetaClass.h"
+#include "cajeta/xref/XrefIndex.h"
 #include "CajetaFunctionType.h"
 #include "CajetaView.h"
 #include "StructureMetadata.h"
@@ -4902,6 +4903,19 @@ namespace cajeta {
     static void bringMethodTemplateInstantiationToLife(
             CajetaClass* host, MethodPtr inst,
             CajetaModulePtr activeModule = nullptr) {
+        // xref (ide-symbol-index 2.2.8): everything below runs the instantiated
+        // body's resolveTypes AND its codegen — and it runs from inside
+        // resolveMethod, i.e. NESTED under the call site that triggered the
+        // instantiation. The body came from a synthesized snippet, so its nodes
+        // have no source file; without a mask here, its resolutions were attributed
+        // to the user's line. `Stream<T>::fold`'s internal `next()`/`Optional.get()`
+        // calls were landing on the `.fold(...)` line of whichever demo called it.
+        //
+        // The mask covers the resolveTypes pass in particular, which resolves
+        // callees WITHOUT going through MethodCallExpression::generateCode — so it
+        // opens no site of its own and would otherwise inherit the caller's.
+        xref::SyntheticSourceScope xrefMask;
+
         // Probe with the two-layer key so distinct instantiations of a
         // same-canonical template (T-vars not in value params) each
         // get their own registration. See Method::getMapKey.
@@ -4975,7 +4989,61 @@ namespace cajeta {
         addMethod(std::move(inst));
     }
 
+    // xref (ide-symbol-index §2): the recording wrapper. Every callee resolution in
+    // the compiler funnels through resolveMethod, so recording here catches them all
+    // — method calls, constructors, operator dispatch — without instrumenting a
+    // dozen scattered call sites.
+    //
+    // The CALL SITE comes from the innermost open CallSiteScope (pushed by the AST
+    // node, which has the position); the CALLEE comes from what was just resolved.
+    // If no site is open, nothing is recorded — a missing edge costs a navigation, a
+    // misattributed one sends "who calls this" to the wrong line.
     MethodPtr CajetaClass::resolveMethod(string& methodName, vector<ParameterEntry>& parameters,
+            bool isConstructor, bool floatingParams,
+            const vector<CajetaTypePtr>& explicitMethodTypeArgs,
+            CajetaModulePtr activeModule) {
+        MethodPtr resolved = resolveMethodImpl(methodName, parameters, isConstructor,
+                                               floatingParams, explicitMethodTypeArgs,
+                                               activeModule);
+        if (!xref::captureEnabled() || !resolved) return resolved;
+
+        CajetaClassPtr owner = resolved->getParent();
+        if (!owner) return resolved;
+
+        std::string calleeKey = resolved->toCanonical(/*labeled=*/false);
+        const std::string ownerCanon = owner->getQName()->toCanonical();
+
+        // A call through a generic resolves to a MONOMORPHIZED instantiation
+        // (`ArrayList<int32>::add(pointer,int32)`), which exists in no source file.
+        // Map it back to the template member the developer actually wrote
+        // (`ArrayList::add(T)`) — see plan 1.5. If the mapping is ambiguous,
+        // templateKeyFor returns "" and the edge is omitted rather than guessed.
+        auto lt = ownerCanon.find('<');
+        if (lt != std::string::npos) {
+            calleeKey = xref::templateKeyFor(ownerCanon.substr(0, lt),
+                                             resolved->getName(),
+                                             (int) resolved->getParameters().size());
+        }
+
+        std::string callerKey;
+        if (activeModule) {
+            if (auto caller = activeModule->getCurrentMethod()) {
+                callerKey = caller->toCanonical(/*labeled=*/false);
+            }
+        }
+
+        // Non-static, non-constructor calls may dispatch dynamically; the consumer
+        // widens `callee` by the override set. Marking a never-overridden method
+        // virtual costs nothing (its override set is empty); missing a genuinely
+        // virtual one would hide real targets.
+        const bool isVirtual = !isConstructor
+                            && !resolved->getModifiers().count(Modifier::STATIC);
+
+        xref::noteResolvedCall(calleeKey, callerKey, isVirtual);
+        return resolved;
+    }
+
+    MethodPtr CajetaClass::resolveMethodImpl(string& methodName, vector<ParameterEntry>& parameters,
             bool isConstructor, bool floatingParams,
             const vector<CajetaTypePtr>& explicitMethodTypeArgs,
             CajetaModulePtr activeModule) {
@@ -5056,7 +5124,10 @@ namespace cajeta {
         // would never be found on AudioBackend.
         if (!isConstructor) {
             for (auto& parent : getSuperClasses()) {
-                MethodPtr m = parent->resolveMethod(methodName, parameters,
+                // …Impl, not the wrapper: the wrapper records an xref call edge, and
+                // a parent walk would then record one per level of the chain. Only
+                // the OUTERMOST call is the real call site.
+                MethodPtr m = parent->resolveMethodImpl(methodName, parameters,
                     isConstructor, floatingParams, {}, activeModule);
                 if (m) return m;
             }

@@ -1107,10 +1107,23 @@ namespace cajeta {
         // the ACTIVE module's builder, not the instantiation's emit module (which
         // can differ — and yield a freed insert block — when the template lives in
         // a classpath .cja). resolveTypes-phase callers leave it null.
+        //
+        // This is the ONE choke point every callee resolution passes through, so it
+        // is where the xref export records call edges (ide-symbol-index §2). It is a
+        // thin wrapper: `resolveMethodImpl` does the work (and has many return
+        // paths), the wrapper notes the result exactly once. No-op unless
+        // --emit-xref.
         MethodPtr resolveMethod(string& methodName, vector<ParameterEntry>& parameters,
             bool isConstructor, bool floatingParams,
             const vector<CajetaTypePtr>& explicitMethodTypeArgs = {},
             CajetaModulePtr activeModule = nullptr);
+
+    private:
+        MethodPtr resolveMethodImpl(string& methodName, vector<ParameterEntry>& parameters,
+            bool isConstructor, bool floatingParams,
+            const vector<CajetaTypePtr>& explicitMethodTypeArgs,
+            CajetaModulePtr activeModule);
+    public:
 
         // Register + prototype + generate a method-template instantiation
         // exactly as a call site would (bringMethodTemplateInstantiationToLife).

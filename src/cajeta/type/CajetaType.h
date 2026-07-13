@@ -355,6 +355,17 @@ class CajetaType : public Modifiable, public Annotatable,
 
         static CajetaTypePtr fromContext(CajetaParser::TypeTypeContext* ctx, CajetaModulePtr module);
 
+        // The resolution itself. `fromContext` above is a thin wrapper that also
+        // records the resolved type as an xref reference edge (ide-symbol-index
+        // 2.1.5), so every type name in the language is indexed at one point rather
+        // than at each of its dozens of syntactic homes.
+        //
+        // The resolver's own recursive calls (a type argument, a function type's
+        // parameter and return slots) go back through the WRAPPER, which is what we
+        // want: in `ArrayList<Point>` both `ArrayList` and `Point` are names a
+        // developer Ctrl-clicks, and each records at its own token.
+        static CajetaTypePtr fromContextImpl(CajetaParser::TypeTypeContext* ctx, CajetaModulePtr module);
+
         static map<string, CajetaTypePtr>& getCanonicalMap();
 
         // Archive of class/interface/struct declarations available in

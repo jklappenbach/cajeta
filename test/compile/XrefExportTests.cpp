@@ -490,6 +490,161 @@ TEST(XrefExport, MultipleInterfacesEmitOneEdgeEach) {
     EXPECT_EQ(count(doc, "\"parent\": \"demo.Named\""), 1);
 }
 
+// ---- 2.1.7 — override edges, matched on SIGNATURE not name --------------------
+//
+// The relation behind Method Hierarchy and the up/down gutter icons. Derivable
+// from what the compiler already holds (each class's methods + its resolved
+// ancestors), so it needs no instrumentation of the resolution path.
+//
+// Matching on NAME alone would be wrong: an overload that merely shares a name
+// with an ancestor's method does not override it, and claiming so would send
+// "rename the override chain" through an unrelated method.
+
+TEST(XrefExport, OverrideEdgesMatchOnSignature) {
+    auto proj = makeTmpProject("overrides");
+    writeUnit(proj.sourceRoot, "demo/Animal.cajeta",
+        "package demo;\n"
+        "public class Animal {\n"
+        "    public int32 speak() {\n"
+        "        return 0;\n"
+        "    }\n"
+        "    public int32 feed(int32 n) {\n"
+        "        return n;\n"
+        "    }\n"
+        "}\n");
+    writeUnit(proj.sourceRoot, "demo/Dog.cajeta",
+        "package demo;\n"
+        "public class Dog extends Animal {\n"
+        "    public int32 speak() {\n"          // overrides Animal.speak()
+        "        return 1;\n"
+        "    }\n"
+        "    public int32 feed(boolean b) {\n"  // SAME NAME, different signature —
+        "        return 2;\n"                   // an overload, NOT an override
+        "    }\n"
+        "}\n");
+
+    auto doc = emitXref(proj);
+    ASSERT_FALSE(doc.empty());
+
+    // The genuine override.
+    auto o = recordContaining(doc, "\"overrides\": \"demo.Animal::speak(pointer)\"");
+    ASSERT_FALSE(o.empty())
+        << "Dog.speak must record an override edge to Animal.speak; doc:\n" << doc;
+    EXPECT_TRUE(has(o, "\"method\": \"demo.Dog::speak(pointer)\"")) << o;
+
+    // `Dog.feed(boolean)` shares a name with `Animal.feed(int32)` but overrides
+    // nothing. A name-only match would claim it does — and then "rename the
+    // override chain" would rewrite an unrelated method.
+    EXPECT_FALSE(has(doc, "\"overrides\": \"demo.Animal::feed(pointer,int32)\""))
+        << "an overload must not be reported as an override";
+}
+
+// An interface method is the TARGET of an override edge — the Method Hierarchy's
+// root for any interface-declared method.
+TEST(XrefExport, ImplementingAnInterfaceMethodIsAnOverride) {
+    auto proj = makeTmpProject("ifaceoverride");
+    auto doc = emitXref(proj);
+    ASSERT_FALSE(doc.empty());
+
+    // The base fixture: Derived implements Greeter { int32 greet(); }
+    auto o = recordContaining(doc, "\"overrides\": \"demo.Greeter::greet(pointer)\"");
+    ASSERT_FALSE(o.empty())
+        << "implementing an interface method must record an override edge; doc:\n"
+        << doc;
+    EXPECT_TRUE(has(o, "\"method\": \"demo.Derived::greet(pointer)\"")) << o;
+}
+
+// ---- 2.1.1 - 2.1.4 — call edges ----------------------------------------------
+//
+// The compiler resolves every call site's callee and then throws it away. These
+// pin that it now records it instead — which is what makes a Kotlin resolver
+// unnecessary: overload selection and inherited-method lookup are exactly the
+// things a second resolver gets subtly wrong.
+
+TEST(XrefExport, CallEdgesRecordTheResolvedCallee) {
+    auto proj = makeTmpProject("calls");
+    writeUnit(proj.sourceRoot, "demo/Calls.cajeta",
+        "package demo;\n"                             // 1
+        "import demo.base.Base;\n"                    // 2
+        "public final class Calls {\n"                // 3
+        "    public static int32 run() {\n"           // 4
+        "        Derived d = heap Derived(7);\n"      // 5
+        "        int32 a = Derived.f(1);\n"           // 6  -> f(int32)
+        "        int32 b = Derived.f(true);\n"        // 7  -> f(boolean)
+        "        int32 c = d.greet();\n"              // 8  -> Derived.greet
+        "        int32 e = d.ping();\n"               // 9  -> INHERITED from Base
+        "        return a + b + c + e;\n"             // 10
+        "    }\n"
+        "}\n");
+
+    auto doc = emitXref(proj);
+    ASSERT_FALSE(doc.empty());
+
+    // 2.1.1 — a call edge from the call site to the resolved callee.
+    EXPECT_TRUE(has(doc, "\"callee\": \"demo.Derived::greet(pointer)\""))
+        << "no call edge for d.greet()";
+
+    // 2.1.2 — OVERLOADS ARE NOT CONFLATED. If these collapse, "who calls f(int32)"
+    // returns f(boolean)'s callers, and renaming one overload rewrites the other's
+    // call sites.
+    EXPECT_TRUE(has(doc, "\"callee\": \"demo.Derived::f(int32)\""))
+        << "no call edge for Derived.f(1)";
+    EXPECT_TRUE(has(doc, "\"callee\": \"demo.Derived::f(boolean)\""))
+        << "no call edge for Derived.f(true)";
+
+    // 2.1.3 — an INHERITED method resolves to the DECLARING ancestor (Base.ping),
+    // not to the receiver's type (Derived). Getting this wrong sends Ctrl-click to
+    // a method that does not exist.
+    EXPECT_TRUE(has(doc, "\"callee\": \"demo.base.Base::ping(pointer)\""))
+        << "d.ping() must resolve to the declaring ancestor demo.base.Base";
+    EXPECT_FALSE(has(doc, "\"callee\": \"demo.Derived::ping(pointer)\""))
+        << "an inherited call must not name the receiver's type as the declarer";
+
+    // The caller is recorded, so the edge is walkable in both directions
+    // (callers-of and callees-of both read this one relation).
+    EXPECT_TRUE(has(doc, "\"caller\": \"demo.Calls::run()\""))
+        << "call edges must name their enclosing method";
+}
+
+// A call THROUGH a generic type must land on the TEMPLATE's method — the thing
+// that exists in source — not on a monomorphized instantiation (1.5).
+TEST(XrefExport, CallsThroughGenericsTargetTheTemplate) {
+    auto proj = makeTmpProject("genericcalls");
+    writeUnit(proj.sourceRoot, "demo/Main.cajeta",
+        "package demo;\n"
+        "import cajeta.collection.ArrayList;\n"
+        "public final class Main {\n"
+        "    public static int32 run() {\n"
+        "        ArrayList<int32> xs = heap ArrayList<int32>();\n"
+        "        xs.add(1);\n"
+        "        return xs.count();\n"
+        "    }\n"
+        "}\n");
+
+    auto doc = emitXref(proj);
+    ASSERT_FALSE(doc.empty());
+
+    EXPECT_TRUE(has(doc, "\"callee\": \"cajeta.collection.ArrayList::add(T)\""))
+        << "a call through ArrayList<int32> must target the TEMPLATE's add(T) — the "
+           "method that actually exists in ArrayList.cajeta";
+    // No callee may name an instantiation: `ArrayList<int32>::add` is in no file.
+    EXPECT_FALSE(has(doc, "\"callee\": \"cajeta.collection.ArrayList<"))
+        << "a callee must never name a monomorphized instantiation";
+}
+
+// 2.1.9 — a call the compiler cannot resolve is OMITTED, never guessed.
+TEST(XrefExport, UnresolvedCallsAreOmittedNotGuessed) {
+    auto proj = makeTmpProject("unresolved");
+    auto doc = emitXref(proj);
+    ASSERT_FALSE(doc.empty());
+
+    // Every callee must be a key we also declared. A callee naming nothing we
+    // exported is a dangling target — Ctrl-click into the void.
+    // (Structural check; the detailed assertion lives in the acceptance script.)
+    EXPECT_FALSE(has(doc, "\"callee\": \"\""))
+        << "an empty callee key means a guessed/unresolved edge leaked out";
+}
+
 // ---- 1.1.7 — determinism ------------------------------------------------------
 //
 // The project already holds this line for IR (verify-reproducible); the xref
@@ -514,4 +669,317 @@ TEST(XrefExport, AbsentFlagEmitsNothing) {
     ASSERT_TRUE(compileWithoutXref(proj)) << "baseline compile failed";
     EXPECT_FALSE(fs::exists(proj.xrefPath))
         << "xref was written without --emit-xref";
+}
+
+// =============================================================================
+// Unit 2 (continued) — display signatures, references, provenance, partial export
+// =============================================================================
+
+namespace {
+
+    // Every JSON object inside the named top-level array. Crude but adequate: the
+    // writer emits one flat object per line-group and never nests inside a record.
+    std::vector<std::string> recordsIn(const std::string& doc, const std::string& rel) {
+        std::vector<std::string> out;
+        auto at = doc.find("\"" + rel + "\": [");
+        if (at == std::string::npos) return out;
+        auto end = doc.find("\n  ]", at);
+        if (end == std::string::npos) end = doc.size();
+        for (size_t i = doc.find('{', at); i != std::string::npos && i < end;
+             i = doc.find('{', i + 1)) {
+            auto close = doc.find('}', i);
+            if (close == std::string::npos || close > end) break;
+            out.push_back(doc.substr(i, close - i + 1));
+        }
+        return out;
+    }
+
+    std::string fieldOf(const std::string& rec, const std::string& key) {
+        auto at = rec.find("\"" + key + "\": \"");
+        if (at == std::string::npos) return "";
+        auto start = at + key.size() + 5;
+        auto end = rec.find('"', start);
+        return end == std::string::npos ? "" : rec.substr(start, end - start);
+    }
+
+    int intFieldOf(const std::string& rec, const std::string& key) {
+        auto at = rec.find("\"" + key + "\": ");
+        if (at == std::string::npos) return -1;
+        return std::atoi(rec.c_str() + at + key.size() + 4);
+    }
+
+    int lineCount(const fs::path& p) {
+        std::ifstream f(p);
+        if (!f) return -1;
+        int n = 0;
+        for (std::string l; std::getline(f, l); ) ++n;
+        return n;
+    }
+
+} // namespace
+
+// ---- 2.2.6 — the display signature is a LABEL, not the overload key -----------
+//
+// Unit 1 set signature = overloadKey = the compiler's canonical form, which renders
+// as `demo.Derived::greet(pointer)`: the receiver leaks in as `pointer` and there is
+// no return type. Exact as an identity, useless as the text a Type or Call Hierarchy
+// node shows a developer. The two are now distinct.
+
+TEST(XrefExport, SignatureIsHumanReadableAndDistinctFromTheOverloadKey) {
+    auto proj = makeTmpProject("displaysig");
+    auto doc = emitXref(proj);
+    ASSERT_FALSE(doc.empty());
+
+    std::string greet;
+    for (const auto& rec : recordsIn(doc, "declarations")) {
+        if (fieldOf(rec, "fqn") == "demo.Derived.greet") { greet = rec; break; }
+    }
+    ASSERT_FALSE(greet.empty()) << "demo.Derived.greet is not declared";
+
+    // The key stays exactly what the compiler dispatches on.
+    EXPECT_EQ(fieldOf(greet, "overloadKey"), "demo.Derived::greet(pointer)");
+
+    // The label is what a human reads: return type, no receiver.
+    const std::string sig = fieldOf(greet, "signature");
+    EXPECT_EQ(sig, "int32 greet()") << "display signature was: " << sig;
+    EXPECT_EQ(sig.find("pointer"), std::string::npos)
+        << "the receiver leaked into the display signature: " << sig;
+    EXPECT_NE(sig, fieldOf(greet, "overloadKey"))
+        << "signature must not simply duplicate the overload key";
+}
+
+// ---- 2.1.5 / 2.2.2 — type references ------------------------------------------
+
+TEST(XrefExport, TypeReferencesResolveToTheDeclaration) {
+    auto proj = makeTmpProject("typerefs");
+    auto doc = emitXref(proj);
+    ASSERT_FALSE(doc.empty());
+
+    bool derivedInMain = false;   // `Derived d = heap Derived(7);` in Main.cajeta
+    bool baseInDerived = false;   // `extends Base` in Derived.cajeta -> RESOLVED fqn
+    for (const auto& r : recordsIn(doc, "references")) {
+        if (fieldOf(r, "kind") != "type") continue;
+        const std::string target = fieldOf(r, "target");
+        const std::string file = fieldOf(r, "file");
+        if (target == "demo.Derived" && has(file, "Main.cajeta")) derivedInMain = true;
+        // The base is named `Base` in the source and reached through an import; the
+        // edge must carry the resolved FQN, which is the whole point of the export.
+        if (target == "demo.base.Base" && has(file, "Derived.cajeta")) baseInDerived = true;
+    }
+    EXPECT_TRUE(derivedInMain) << "no type reference to demo.Derived from Main";
+    EXPECT_TRUE(baseInDerived)
+        << "no RESOLVED type reference to demo.base.Base from Derived's extends clause";
+}
+
+// ---- 2.1.6 — a field access targets the class that DECLARES the field ----------
+//
+// The sharp case is the INHERITED one: `this.v` inside Derived reads a field that
+// demo.base.Base declares. Naming the receiver's class (demo.Derived.v) would send
+// Ctrl-click to a type that declares nothing of the sort — a confident wrong answer.
+
+TEST(XrefExport, FieldAccessTargetsTheDeclaringClassNotTheReceiver) {
+    auto proj = makeTmpProject("fieldrefs");
+    writeUnit(proj.sourceRoot, "demo/Reader.cajeta",
+        "package demo;\n"                     // 1
+        "import demo.base.Base;\n"            // 2
+        "public class Reader extends Base {\n"// 3
+        "    public Reader(int32 x) {\n"      // 4
+        "        super(x);\n"                 // 5
+        "    }\n"                             // 6
+        "    public int32 peek() {\n"         // 7
+        "        return this.v;\n"            // 8  <- inherited field
+        "    }\n"                             // 9
+        "}\n");
+
+    writeUnit(proj.sourceRoot, "demo/Main.cajeta",
+        "package demo;\n"
+        "public final class Main {\n"
+        "    public static int32 run() {\n"
+        "        Reader r = heap Reader(7);\n"
+        "        return r.peek();\n"
+        "    }\n"
+        "}\n");
+
+    auto doc = emitXref(proj);
+    ASSERT_FALSE(doc.empty());
+
+    bool declaringOwner = false;
+    for (const auto& r : recordsIn(doc, "references")) {
+        if (fieldOf(r, "kind") != "field") continue;
+        if (!has(fieldOf(r, "file"), "Reader.cajeta")) continue;
+        const std::string target = fieldOf(r, "target");
+        EXPECT_NE(target, "demo.Reader.v")
+            << "`this.v` was attributed to the RECEIVER's class, which does not "
+               "declare it — Ctrl-click would land nowhere";
+        if (target == "demo.base.Base.v" && intFieldOf(r, "line") == 8) {
+            declaringOwner = true;
+        }
+    }
+    EXPECT_TRUE(declaringOwner)
+        << "the inherited read `this.v` did not resolve to demo.base.Base.v";
+}
+
+// ---- 2.2.8 — a position must be a position IN THE FILE IT NAMES ---------------
+//
+// Regression. Every call edge used to take its file from the module being compiled
+// rather than from the file its AST node was parsed from. Stdlib and template bodies
+// are generated while a USER module is active, so their internal calls were recorded
+// against whichever user file triggered them: on samples/tour, 426 of 2589 call edges
+// named the wrong file, and 181 of those cited a line past the end of it.
+//
+// This is the failure this whole export exists to prevent — not a missing answer but
+// a confident wrong one.
+
+TEST(XrefExport, NoRecordPointsPastTheEndOfTheFileItNames) {
+    auto proj = makeTmpProject("provenance");
+    auto doc = emitXref(proj);
+    ASSERT_FALSE(doc.empty());
+
+    int checked = 0;
+    for (const char* rel : {"declarations", "references", "overrides", "calls"}) {
+        for (const auto& rec : recordsIn(doc, rel)) {
+            const std::string file = fieldOf(rec, "file");
+            const int line = intFieldOf(rec, "line");
+            if (file.empty() || line <= 0) continue;
+
+            // Stdlib records name paths relative to the EXTRACTED stdlib root, which
+            // is not on disk under the project. Only the project's own files can be
+            // checked here — which is exactly where the bug put its wrong positions.
+            auto path = proj.sourceRoot / file;
+            if (!fs::exists(path)) continue;
+
+            const int lines = lineCount(path);
+            ++checked;
+            EXPECT_LE(line, lines)
+                << rel << " record cites " << file << ":" << line
+                << " but that file has only " << lines << " lines: " << rec;
+        }
+    }
+    EXPECT_GT(checked, 0) << "no on-disk records were checked; the test is vacuous";
+}
+
+// ---- 2.2.8 — a generic body's internal calls are not attributed to the call site --
+//
+// A template is monomorphized from a re-parsed snippet whose line numbers refer to
+// the snippet, not to any file. `Box.twice()` calls `Box.get()` — that call happens
+// inside Box, and must never be reported as happening at the line in Main where the
+// instantiation was triggered.
+
+TEST(XrefExport, AGenericBodysInternalCallsAreNotAttributedToTheCallSite) {
+    auto proj = makeTmpProject("genericcalls");
+    writeUnit(proj.sourceRoot, "demo/Box.cajeta",
+        "package demo;\n"
+        "public class Box<T> {\n"
+        "    T value;\n"
+        "    public Box(T v) {\n"
+        "        this.value = v;\n"
+        "    }\n"
+        "    public T get() {\n"
+        "        return this.value;\n"
+        "    }\n"
+        "    public T twice() {\n"
+        "        return this.get();\n"       // <- internal call, lives in Box.cajeta
+        "    }\n"
+        "}\n");
+
+    writeUnit(proj.sourceRoot, "demo/Main.cajeta",
+        "package demo;\n"
+        "public final class Main {\n"
+        "    public static int32 run() {\n"
+        "        Box<int32> b = heap Box<int32>(3);\n"
+        "        return b.twice();\n"        // line 5
+        "    }\n"
+        "}\n");
+
+    auto doc = emitXref(proj);
+    ASSERT_FALSE(doc.empty());
+
+    bool sawTwiceFromMain = false;
+    for (const auto& c : recordsIn(doc, "calls")) {
+        const std::string callee = fieldOf(c, "callee");
+        const std::string file = fieldOf(c, "file");
+        if (!has(file, "Main.cajeta")) continue;
+
+        if (has(callee, "demo.Box::twice")) sawTwiceFromMain = true;
+
+        // The one that must never appear: Box.get() is called from inside Box, not
+        // from Main. Attributing it here is the misattribution bug.
+        EXPECT_FALSE(has(callee, "demo.Box::get"))
+            << "a call made INSIDE the template body was attributed to the "
+               "instantiation site in Main: " << c;
+    }
+    EXPECT_TRUE(sawTwiceFromMain)
+        << "the call Main makes to Box.twice() is missing entirely";
+}
+
+// ---- 2.1.8 — a broken file must not sink the rest of the index ---------------
+//
+// The plugin re-runs the compiler on the user's buffer as they type, and a buffer
+// mid-edit is broken most of the time. Two things used to go wrong, and both did:
+//
+//   1. The export ran at the END of Compiler::compile, which a SyntaxErrorException
+//      skips entirely — so a broken file wrote NO index at all. It is now emitted
+//      from a scope guard, on the unwind path too.
+//   2. The parse aborted at the FIRST file with a syntax error, so every source
+//      enumerated after it went unparsed — and since the walk is a directory walk,
+//      WHICH files those were depended on readdir order. This very fixture indexed
+//      all 17 of its declarations or none of them depending on where the broken file
+//      landed. The parse loop now continues past a broken file and rethrows the
+//      first error after the sweep: the build still fails, with the same diagnostic,
+//      but everything parseable is parsed.
+//
+// So the guarantee is: every healthy file is indexed no matter where the broken one
+// sits, nothing is invented for the file that did not parse, and the compile still
+// fails.
+
+TEST(XrefExport, ABrokenFileDoesNotSinkTheRestOfTheIndex) {
+    auto proj = makeTmpProject("syntaxerror");
+    writeUnit(proj.sourceRoot, "demo/Broken.cajeta",
+        "package demo;\n"
+        "public class Broken {\n"
+        "    public int32 oops( {\n"        // <- unbalanced; the parse cannot recover
+        "        return ;;;\n"
+        "    }\n"
+        "}\n");
+
+    // The compile FAILS (correctly — the file really is broken), so emitXref()'s
+    // exit-status check would report nothing. Read the document directly.
+    std::string cmd = compilerPath()
+        + " --emit-xref=" + proj.xrefPath.string()
+        + " --emit=ir demo.Main.run "
+        + proj.sourceRoot.string() + " " + proj.buildRoot.string()
+        + " > " CAJETA_DEVNULL " 2>&1";
+    const int rc = std::system(cmd.c_str());
+    EXPECT_NE(rc, 0) << "the fixture is broken on purpose; the compile must fail";
+
+    ASSERT_TRUE(fs::exists(proj.xrefPath))
+        << "no xref was written at all — a failed compile sank the whole index";
+    std::ifstream f(proj.xrefPath);
+    std::string doc((std::istreambuf_iterator<char>(f)),
+                     std::istreambuf_iterator<char>());
+
+    // Well-formed and versioned, not a truncated fragment.
+    ASSERT_FALSE(doc.empty()) << "the index was written but empty";
+    EXPECT_TRUE(has(doc, "\"major\": 1"));
+    for (const char* rel : {"declarations", "inheritance", "references",
+                            "overrides", "calls"}) {
+        EXPECT_TRUE(has(doc, std::string("\"") + rel + "\""))
+            << "missing relation: " << rel;
+    }
+
+    // EVERY healthy file is still indexed — including the ones a directory walk may
+    // well enumerate AFTER the broken one, which is precisely what used to be lost.
+    for (const char* fqn : {"\"demo.Derived\"", "\"demo.Derived.greet\"",
+                            "\"demo.Greeter\"", "\"demo.Named\"",
+                            "\"demo.Main.run\"", "\"demo.base.Base\"",
+                            "\"demo.base.Base.ping\"", "\"demo.base.Base.v\""}) {
+        EXPECT_TRUE(has(doc, fqn))
+            << "a healthy declaration is missing because another file failed to "
+               "parse: " << fqn;
+    }
+
+    // And nothing was invented for the file that did not parse. A partial index is
+    // fine; a fabricated one is not.
+    EXPECT_FALSE(has(doc, "\"demo.Broken\""));
+    EXPECT_FALSE(has(doc, "\"demo.Broken.oops\""));
 }

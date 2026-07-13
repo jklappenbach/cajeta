@@ -4,6 +4,7 @@
 
 #include "MethodCallExpression.h"
 #include "cajeta/compile/CajetaModule.h"
+#include "cajeta/xref/XrefIndex.h"
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/type/CajetaArray.h"
 #include "cajeta/type/CajetaVector.h"
@@ -433,6 +434,18 @@ namespace cajeta {
     }
 
     llvm::Value* MethodCallExpression::generateCode(CajetaModulePtr module) {
+        // xref (ide-symbol-index §2): open this call site for the duration of its
+        // codegen. CajetaClass::resolveMethod — the choke point every callee
+        // resolution passes through — attributes whatever it resolves to the
+        // innermost open site. Nested argument calls open their own site first, so
+        // the innermost one always wins. No-op unless --emit-xref.
+        //
+        // The file comes from THIS NODE, not from `module`. A stdlib or instantiated
+        // body is generated while a *user* module is active, so the module's file
+        // would attribute the stdlib's own calls to whichever demo triggered them.
+        xref::CallSiteScope xrefSite(getSourceFile(),
+                                     getSourceLine(), getSourceColumn());
+
         auto* builder = module->getBuilder();
         llvm::LLVMContext& llvmCtx = *module->getLlvmContext();
 

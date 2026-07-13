@@ -21,6 +21,7 @@
 #include "../compile/CompilationContext.h"
 #include "../error/InvalidOperandException.h"
 #include "../error/Exception.h"
+#include "cajeta/xref/XrefIndex.h"
 
 namespace cajeta {
 
@@ -696,7 +697,7 @@ namespace cajeta {
         }
     }
 
-    cajeta::CajetaTypePtr cajeta::CajetaType::fromContext(CajetaParser::TypeTypeContext* ctx, CajetaModulePtr module) {
+    cajeta::CajetaTypePtr cajeta::CajetaType::fromContextImpl(CajetaParser::TypeTypeContext* ctx, CajetaModulePtr module) {
         // Fall back to the active module set during the walk — many parse-time
         // call sites don't have a `module` to pass. See CajetaModule::activeModule.
         if (!module) {
@@ -1288,6 +1289,43 @@ namespace cajeta {
         }
 
         return type;
+    }
+
+    // Recording wrapper (ide-symbol-index 2.1.5 / 2.2.2). fromContext is the one
+    // choke point every type name in the language passes through — field types,
+    // parameter and return types, type arguments, locals, extends/implements — so
+    // hooking it here gives the IDE every type reference with no per-site
+    // instrumentation, exactly as resolveMethod does for calls.
+    //
+    // The ctx knows its own file (Compiler::parseSource names each real-source
+    // stream), so a name in a SYNTHESIZED snippet resolves to no file and is
+    // skipped: its line numbers refer to the snippet, not to anywhere.
+    cajeta::CajetaTypePtr cajeta::CajetaType::fromContext(CajetaParser::TypeTypeContext* ctx, CajetaModulePtr module) {
+        CajetaTypePtr resolved = fromContextImpl(ctx, module);
+        if (!xref::captureEnabled() || !resolved || !ctx) return resolved;
+
+        auto* tok = ctx->getStart();
+        if (!tok || !tok->getInputStream()) return resolved;
+        const std::string* file =
+            xref::internSourceFile(tok->getInputStream()->getSourceName());
+        if (!file) return resolved;                 // synthesized source: no position
+
+        // Only NAMED types are navigable. A primitive (`int32`) declares nowhere,
+        // and an array/function type is structural — its ELEMENT type is what a
+        // developer Ctrl-clicks, and that resolved through its own fromContext call
+        // (this function recurses), so it is already recorded at its own position.
+        auto klass = std::dynamic_pointer_cast<CajetaClass>(resolved);
+        if (!klass) return resolved;
+
+        // An instantiation (`ArrayList<int32>`) has no source of its own — the
+        // declaration is the TEMPLATE's, which is what the index carries.
+        std::string target = klass->getQName()->toCanonical();
+        auto lt = target.find('<');
+        if (lt != std::string::npos) target = target.substr(0, lt);
+
+        xref::noteTypeReference(target, *file, (int) tok->getLine(),
+                                (int) tok->getCharPositionInLine());
+        return resolved;
     }
 
     CajetaTypePtr CajetaType::toPointerType() {
