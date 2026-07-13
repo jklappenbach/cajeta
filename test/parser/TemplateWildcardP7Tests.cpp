@@ -344,7 +344,11 @@ TEST(TemplateWildcardP7Tests, pecsForeignWriteToExtendsRejected) {
 // rejects it, which is what "does not project" should always have meant:
 // a compile error, not a zero. The scope guard is unchanged — only its
 // observable form is (silent 0 -> located diagnostic).
-TEST(TemplateWildcardP7Tests, unboundedDoesNotProject) {
+// PARKED (2026-07-13): member-not-found is held back on main so tools/mcp
+// compiles (it reads String's `byteLength`/`bytes` as FIELDS; the 36779177
+// re-core made them methods). Re-enable with that repair. Work lives on
+// feature/silent-resolution-diagnostics @ f086c73e; see the plan's 1.3.3.
+TEST(TemplateWildcardP7Tests, DISABLED_unboundedDoesNotProject) {
     auto src =
         "package test;\n"
         "public class Animal {\n"
@@ -375,7 +379,11 @@ TEST(TemplateWildcardP7Tests, unboundedDoesNotProject) {
 // position keeps the wildcard sentinel and `.tag()` fails to resolve.
 // As with unboundedDoesNotProject, "fails to resolve" is now a compile
 // error rather than a silent 0.
-TEST(TemplateWildcardP7Tests, superDoesNotProject) {
+// PARKED (2026-07-13): member-not-found is held back on main so tools/mcp
+// compiles (it reads String's `byteLength`/`bytes` as FIELDS; the 36779177
+// re-core made them methods). Re-enable with that repair. Work lives on
+// feature/silent-resolution-diagnostics @ f086c73e; see the plan's 1.3.3.
+TEST(TemplateWildcardP7Tests, DISABLED_superDoesNotProject) {
     auto src =
         "package test;\n"
         "public class Animal {\n"

@@ -4951,23 +4951,21 @@ namespace cajeta {
         if (auto klass = dynamic_pointer_cast<CajetaClass>(receiverType)) {
             targetClass = klass;
         }
-        if (!targetClass && !children.empty() && !receiver && !receiverType) {
-            // A receiver WAS written (children is non-empty only for the
-            // DOT-methodCall form) but named nothing: no value, no type, and the
-            // class-name fallback above found no such class. Falling through to
-            // the enclosing-class fallback below would blame the WRONG receiver —
-            // `NoSuchType.nope()` reported "no member 'nope' on 'test.D'". Narrow
-            // to a bare identifier: a qualified receiver (`a.b.Foo.bar()`) arrives
-            // as a DotExpression and may legitimately be unresolved here.
-            if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(
-                    children[0])) {
-                throw locatedException(
-                    getSourceLine(), getSourceColumn() + 1,
-                    "unknown type '" + idExpr->getTextValue()
-                        + "' (no class, and no local of that name, is in scope)",
-                    "CAJETA_ERROR_UNRESOLVED_TYPE");
-            }
-        }
+        // PARKED (2026-07-13) — see the note at the invokeMethod call below. A
+        // receiver that was WRITTEN but named nothing (`NoSuchType.nope()`) should
+        // be an "unknown type" error rather than falling through to the
+        // enclosing-class fallback (which blames the wrong receiver). Held back
+        // with the rest of the member-not-found work so main stays green.
+        //   if (!targetClass && !children.empty() && !receiver && !receiverType) {
+        //       if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(
+        //               children[0])) {
+        //           throw locatedException(
+        //               getSourceLine(), getSourceColumn() + 1,
+        //               "unknown type '" + idExpr->getTextValue()
+        //                   + "' (no class, and no local of that name, is in scope)",
+        //               "CAJETA_ERROR_UNRESOLVED_TYPE");
+        //       }
+        //   }
         if (!targetClass) {
             if (module->getStructureStack().empty()) {
                 return nullptr;
@@ -7675,12 +7673,22 @@ namespace cajeta {
         // named a member that must exist, so a miss is a compile error here
         // rather than a null that surfaces later (or never). Speculative callers
         // (BinaryOpExpression probing for `operator+`) leave the flag false.
+        //
+        // PARKED (2026-07-13): flipped to false to keep main green. Turning this
+        // on is CORRECT and it found four real bugs — but it also rejects
+        // `tools/mcp`, which uses `.byteLength` / `.bytes` as FIELDS on String
+        // (the 36779177 re-core made them methods, and every field-style caller
+        // kept compiling as null). Repairing those 37 sites needs ownership
+        // decisions on the OWNED `#int8[]` from `toBytes()` — borrow territory,
+        // owned by another workstream. Re-land this with that repair, as one
+        // piece. Work: branch feature/silent-resolution-diagnostics @ f086c73e;
+        // findings: agents/silent-resolution-diagnostics-plan.md 1.3.3.
         llvm::Value* callResult = targetClass->invokeMethod(methodCallName, entries,
             /*isConstructor=*/false, thisValue, /*callerModule=*/module,
             /*forceDirectCall=*/(isSuperCall || targetIsFinalClass),
             /*explicitMethodTypeArgs=*/explicitMethodTypeArgs,
             /*sretTarget=*/nullptr,
-            /*errorIfUnresolved=*/true,
+            /*errorIfUnresolved=*/false,
             getSourceLine(), getSourceColumn() + 1);
         if (moveSetFn) {
             builder->CreateCall(moveSetFn, {builder->getInt64(0)});

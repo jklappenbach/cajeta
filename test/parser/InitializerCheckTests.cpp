@@ -43,7 +43,11 @@ cajeta::Exception expectThrows(const std::string& src) {
 } // namespace
 
 // 3.1.1: a STATIC field initializer calling a type that does not exist.
-TEST(InitializerCheckTests, staticFieldUnresolvableCallIsAnError) {
+// PARKED (2026-07-13): member-not-found is held back on main so tools/mcp
+// compiles (it reads String's `byteLength`/`bytes` as FIELDS; the 36779177
+// re-core made them methods). Re-enable with that repair. Work lives on
+// feature/silent-resolution-diagnostics @ f086c73e; see the plan's 1.3.3.
+TEST(InitializerCheckTests, DISABLED_staticFieldUnresolvableCallIsAnError) {
     auto e = expectThrows(
         "package test;\n"
         "public final class D {\n"
@@ -67,7 +71,11 @@ TEST(InitializerCheckTests, staticFieldTypeMismatchIsAnError) {
 }
 
 // 3.1.3a: the same, on an INSTANCE field.
-TEST(InitializerCheckTests, instanceFieldUnresolvableCallIsAnError) {
+// PARKED (2026-07-13): member-not-found is held back on main so tools/mcp
+// compiles (it reads String's `byteLength`/`bytes` as FIELDS; the 36779177
+// re-core made them methods). Re-enable with that repair. Work lives on
+// feature/silent-resolution-diagnostics @ f086c73e; see the plan's 1.3.3.
+TEST(InitializerCheckTests, DISABLED_instanceFieldUnresolvableCallIsAnError) {
     auto e = expectThrows(
         "package test;\n"
         "public class Holder {\n"
@@ -84,7 +92,11 @@ TEST(InitializerCheckTests, instanceFieldUnresolvableCallIsAnError) {
 }
 
 // 3.1.3b: the same, on a LOCAL initializer.
-TEST(InitializerCheckTests, localUnresolvableCallIsAnError) {
+// PARKED (2026-07-13): member-not-found is held back on main so tools/mcp
+// compiles (it reads String's `byteLength`/`bytes` as FIELDS; the 36779177
+// re-core made them methods). Re-enable with that repair. Work lives on
+// feature/silent-resolution-diagnostics @ f086c73e; see the plan's 1.3.3.
+TEST(InitializerCheckTests, DISABLED_localUnresolvableCallIsAnError) {
     auto e = expectThrows(
         "package test;\n"
         "public final class D {\n"
