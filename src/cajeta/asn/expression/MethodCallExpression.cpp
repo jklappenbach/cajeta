@@ -451,6 +451,35 @@ namespace cajeta {
         return nullptr;
     }
 
+    // title-tracking 6.2.5 — the class of temps whose title can ride the
+    // transfer word / be reclaimed caller-side: concrete vtable classes
+    // only. Strings keep the 3.4.3 dual-role protocol, values the 9.4.1
+    // release, interfaces have no formal entry to receive a title.
+    shared_ptr<CajetaClass> MethodCallExpression::droppableTempClass(
+            const CajetaTypePtr& t) {
+        auto cls = dynamic_pointer_cast<CajetaClass>(t);
+        if (!cls) return nullptr;
+        if (dynamic_pointer_cast<CajetaView>(t)) return nullptr;
+        if (cls->isInterface() || cls->isValueType()) return nullptr;
+        if (cls->isSharedCapableValue()) return nullptr;
+        auto qn = cls->getQName();
+        if (qn && qn->getTypeName() == "String"
+                && qn->getPackageName() == "cajeta.lang") {
+            return nullptr;
+        }
+        return cls;
+    }
+
+    // 6.2.5 — a plain `heap X(...)` creator whose result is an anonymous
+    // owned rvalue (spec §4.1.1: fresh constructions surrender). stack/
+    // shared placements never surrender (freeing them would corrupt).
+    shared_ptr<CajetaClass> MethodCallExpression::freshHeapCreatorTempClass(
+            const AbstractSyntaxNodePtr& e) {
+        auto ne = dynamic_pointer_cast<NewExpression>(e);
+        if (!ne || ne->getStackAlloc() || ne->getSharedAlloc()) return nullptr;
+        return droppableTempClass(ne->getResolvedType());
+    }
+
     llvm::Value* MethodCallExpression::generateCode(CajetaModulePtr module) {
         auto* builder = module->getBuilder();
         llvm::LLVMContext& llvmCtx = *module->getLlvmContext();
@@ -3629,6 +3658,15 @@ namespace cajeta {
         // was constructed via the DOT-methodCall branch.
         llvm::Value* receiver = nullptr;
         CajetaTypePtr receiverType;
+        // 6.2.5 — temp RECEIVER classification. `this` has no transfer-word
+        // bit (methods borrow it), so an anonymous owned receiver — a fresh
+        // `heap X()` creator or a flag-true call result — is reclaimed
+        // CALLER-side after the call (see the reclaim block by 3.4.3's).
+        // The flagged case must read the return-flag TLS here, immediately
+        // after the receiver's own call, before any later call clobbers it.
+        bool recvTempStatic = false;
+        llvm::Value* recvTempFlag = nullptr;
+        shared_ptr<CajetaClass> recvTempClass;
         if (!children.empty()) {
             receiver = children[0]->generateCode(module);
             auto exprChild = dynamic_pointer_cast<Expression>(children[0]);
@@ -3637,6 +3675,21 @@ namespace cajeta {
                     exprChild->resolveTypes(module);
                 }
                 receiverType = exprChild->getResolvedType();
+            }
+            if ((recvTempClass = freshHeapCreatorTempClass(children[0]))) {
+                recvTempStatic = true;
+            } else if (auto rmce = dynamic_pointer_cast<MethodCallExpression>(
+                    children[0])) {
+                MethodPtr rm = rmce->getResolvedMethod();
+                if (rm && rm->returnsClassPointer()
+                        && (recvTempClass =
+                                droppableTempClass(rmce->getResolvedType()))) {
+                    if (llvm::Function* fg = module->getRuntimeFunction(
+                            "__cajeta_return_flag_get")) {
+                        recvTempFlag = builder->CreateCall(fg, {},
+                            "recv_temp_flag");
+                    }
+                }
             }
             // REFL-1.6: `obj.getClass()` — the object's dynamic Class. Synthesized
             // as a call to __cajeta_object_get_class(obj) (the same native that
@@ -5286,11 +5339,35 @@ namespace cajeta {
         // expression's resolved type when known (fall back to of(value) for
         // primitive values that have a clean LLVM type).
         vector<ParameterEntry> entries;
+        size_t argIndex = (size_t) -1;
         for (auto& param : parameters) {
+            ++argIndex;
             if (!param.expression->getResolvedType()) {
                 param.expression->resolveTypes(module);
             }
             llvm::Value* value = param.expression->generateCode(module);
+            // 6.2.5 — a PLAIN argument that is a class-pointer call result
+            // is an anonymous rvalue: its runtime title flag forwards into
+            // this call's transfer word (spec §4.4.2), so a flag-true temp
+            // (`sink(make())`, `.collect(Collectors.toList())`) surrenders
+            // to the callee's formal instead of leaking. Read the TLS now —
+            // the next arg's call would clobber it.
+            if (!param.callerTransferred
+                    && argIndex < argTitleFlags.size()
+                    && !argTitleFlags[argIndex]) {
+                if (auto amce = dynamic_pointer_cast<MethodCallExpression>(
+                        param.expression)) {
+                    MethodPtr am = amce->getResolvedMethod();
+                    if (am && am->returnsClassPointer()
+                            && droppableTempClass(amce->getResolvedType())) {
+                        if (llvm::Function* fg = module->getRuntimeFunction(
+                                "__cajeta_return_flag_get")) {
+                            argTitleFlags[argIndex] = builder->CreateCall(
+                                fg, {}, "arg_temp_flag");
+                        }
+                    }
+                }
+            }
             if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(value)) {
                 value = builder->CreateLoad(a->getAllocatedType(), a);
             } else if (llvm::isa_and_nonnull<llvm::GlobalVariable>(value)
@@ -8060,8 +8137,25 @@ namespace cajeta {
         llvm::Value* transferWordVal = nullptr;
         bool anyTransfer = false;
         for (size_t mmi = 0; mmi < parameters.size(); ++mmi) {
-            if (!parameters[mmi].callerTransferred) continue;
-            anyTransfer = true;
+            // 6.2.5 — owned rvalues surrender WITHOUT `#` (spec §4.1.1): a
+            // plain fresh `heap X()` creator contributes a static 1; a plain
+            // class-pointer call result forwards the flag stashed at its
+            // generation (arg_temp_flag above). Everything else still needs
+            // callerTransferred.
+            if (!parameters[mmi].callerTransferred) {
+                if (argTitleFlags[mmi]) {
+                    anyTransfer = true;
+                } else if (freshHeapCreatorTempClass(
+                        parameters[mmi].expression)) {
+                    moveMask |= ((int64_t) 1) << mmi;
+                    anyTransfer = true;
+                    continue;
+                } else {
+                    continue;
+                }
+            } else {
+                anyTransfer = true;
+            }
             llvm::Value* rf = argTitleFlags[mmi];
             if (!rf) {
                 moveMask |= ((int64_t) 1) << mmi;
@@ -8240,6 +8334,58 @@ namespace cajeta {
                                 module->getLlvmModule(),
                                 rCls->getOrCreateValueReleaseFunction());
                         if (relFn) builder->CreateCall(relFn, {thisValue});
+                    } else if (recvTempClass
+                            && (recvTempStatic || recvTempFlag)) {
+                        // 6.2.5 — anonymous owned class receiver (fresh
+                        // creator, or a call result whose flag was stashed
+                        // at generation). Reclaim it ONLY when the return
+                        // is void/primitive — nothing the call hands back
+                        // can carry the receiver onward. Any class-pointer
+                        // return keeps the temp alive: even a flag-TRUE
+                        // fresh result may be a WRAPPER that borrowed the
+                        // receiver as its inner source (FluentStream's
+                        // filter/take chains — reclaiming mid-chain freed
+                        // the stage the next wrapper wraps, SIGSEGV), so
+                        // chain roots/intermediates stay a bounded leak.
+                        // The dtor calls inside virtual_drop clobber the
+                        // return-flag TLS; save/restore it around the drop
+                        // for the LVD / discard readers that follow.
+                        CajetaTypePtr rrt = tempTarget->getReturnType();
+                        auto rrtClass = dynamic_pointer_cast<CajetaClass>(rrt);
+                        bool retIsSafeScalar = !rrt
+                            || (!tempTarget->returnsClassPointer()
+                                && !dynamic_pointer_cast<CajetaArray>(rrt)
+                                && !(rrtClass && rrtClass->isInterface())
+                                && !dynamic_pointer_cast<CajetaFunctionType>(rrt)
+                                && !dynamic_pointer_cast<CajetaView>(rrt));
+                        llvm::Function* vdropFn = module->getRuntimeFunction(
+                            "__cajeta_class_virtual_drop");
+                        llvm::Function* fgFn = module->getRuntimeFunction(
+                            "__cajeta_return_flag_get");
+                        llvm::Function* fsFn = module->getRuntimeFunction(
+                            "__cajeta_return_flag_set");
+                        if (vdropFn && fgFn && fsFn && retIsSafeScalar) {
+                            llvm::Value* savedFl = builder->CreateCall(
+                                fgFn, {}, "recv_reclaim_savefl");
+                            llvm::Value* ownedRecv = recvTempStatic
+                                ? (llvm::Value*) builder->getInt1(true)
+                                : builder->CreateICmpNE(recvTempFlag,
+                                      builder->getInt64(0), "recv_owned");
+                            llvm::Function* fn =
+                                builder->GetInsertBlock()->getParent();
+                            llvm::BasicBlock* dropBB =
+                                llvm::BasicBlock::Create(llvmCtx,
+                                    "recv_reclaim_drop", fn);
+                            llvm::BasicBlock* contBB =
+                                llvm::BasicBlock::Create(llvmCtx,
+                                    "recv_reclaim_cont", fn);
+                            builder->CreateCondBr(ownedRecv, dropBB, contBB);
+                            builder->SetInsertPoint(dropBB);
+                            builder->CreateCall(vdropFn, {thisValue});
+                            builder->CreateBr(contBB);
+                            builder->SetInsertPoint(contBB);
+                            builder->CreateCall(fsFn, {savedFl});
+                        }
                     }
                 }
             }

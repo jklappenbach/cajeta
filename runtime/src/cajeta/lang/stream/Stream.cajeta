@@ -424,9 +424,16 @@ public class Stream<T> {
      */
     public final R collect<R>(Collector<T, R> c) {
         if (this.isParallel) {
+            // collectParallelChain is a `#R` return — already flag-true.
             return ParallelDriver.collectParallelChain<T, R>(this, c.supplier, c.accumulator, c.combiner);
         }
-        return this.fold(c.supplier(), c.accumulator);
+        // The accumulator is fresh by construction (the supplier's own R;
+        // the fold only threads it through the closures), but the closure
+        // call path doesn't ride the return-flag protocol yet, so the fold
+        // result comes back flag-0 and the caller's entry would disarm —
+        // the collected R leaked. Flag it explicitly: the caller owns it.
+        R out = this.fold(c.supplier(), c.accumulator);
+        return Cajeta.flagged(out, true);
     }
 
     /**

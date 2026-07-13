@@ -147,11 +147,35 @@ namespace cajeta {
         // passing a class instance as a constructor arg would null-deref
         // when `Method::buildCanonical` walks parameter types.
         vector<ParameterEntry> entries;
+        // 6.2.5 — flags for PLAIN ctor args that are class-pointer call
+        // results (anonymous rvalues): read each one's return-flag TLS
+        // immediately after its generation (the next arg's call clobbers
+        // it) and forward it into the ctor word below, exactly as
+        // MethodCallExpression's arg loop does.
+        std::vector<llvm::Value*> plainArgTempFlags(parameters.size(), nullptr);
+        size_t ctorArgIndex = (size_t) -1;
         for (auto& param : parameters) {
+            ++ctorArgIndex;
             if (!param.expression->getResolvedType()) {
                 param.expression->resolveTypes(module);
             }
             llvm::Value* value = param.expression->generateCode(module);
+            if (!param.callerTransferred) {
+                if (auto amce = dynamic_pointer_cast<MethodCallExpression>(
+                        param.expression)) {
+                    MethodPtr am = amce->getResolvedMethod();
+                    if (am && am->returnsClassPointer()
+                            && MethodCallExpression::droppableTempClass(
+                                   amce->getResolvedType())) {
+                        if (llvm::Function* fg = module->getRuntimeFunction(
+                                "__cajeta_return_flag_get")) {
+                            plainArgTempFlags[ctorArgIndex] =
+                                module->getBuilder()->CreateCall(
+                                    fg, {}, "ctor_arg_temp_flag");
+                        }
+                    }
+                }
+            }
             // L-value-to-r-value coercion. Argument expressions can be
             // local allocas (IdentifierExpression), field GEPs
             // (DotExpression — covers `this.handle` etc.), or array
@@ -424,7 +448,23 @@ namespace cajeta {
             int64_t ctorTransferWord = 0;
             llvm::Value* ctorWordVal = nullptr;
             for (size_t twi = 0; twi < parameters.size(); ++twi) {
-                if (!parameters[twi].callerTransferred) continue;
+                // 6.2.5 — owned rvalues surrender WITHOUT `#` (spec §4.1.1):
+                // a plain fresh `heap X()` ctor arg contributes a static 1;
+                // a plain class-pointer call result forwards the flag
+                // stashed at its generation (ctor_arg_temp_flag).
+                if (!parameters[twi].callerTransferred) {
+                    if (llvm::Value* tf = plainArgTempFlags[twi]) {
+                        llvm::Value* tbit = twBuilder->CreateShl(
+                            twBuilder->CreateAnd(tf, twBuilder->getInt64(1)),
+                            twBuilder->getInt64((uint64_t) twi));
+                        ctorWordVal = ctorWordVal
+                            ? twBuilder->CreateOr(ctorWordVal, tbit) : tbit;
+                    } else if (MethodCallExpression::freshHeapCreatorTempClass(
+                            parameters[twi].expression)) {
+                        ctorTransferWord |= ((int64_t) 1) << twi;
+                    }
+                    continue;
+                }
                 // Pre-deactivation captures first (parse-level `#x` args);
                 // the MoveExpression stash covers `= #x`-shaped arg exprs.
                 llvm::Value* rf = ctorArgTitleFlags[twi];

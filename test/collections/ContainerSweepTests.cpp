@@ -431,19 +431,28 @@ TEST(ContainerSweepTests, linkedListPopHeadReturnsFlagged) {
 
 // ===================== Collectors / stream sinks =====================
 
-// Collect stays CORRECT as ArrayList gains entry bits (values pin). The
-// leak-free oracle is deliberately absent: the collect pipeline leaks its
-// closure objects (Collector's function-typed fields aren't walked) plus
-// arg/receiver temps — a pre-existing sink gap recorded in the plan
-// (title-tracking 6.2.3 follow-up; blocks the 6.3.1 oracle acceptance).
+// Collect is leak-free end to end (6.2.5) with a NAMED stream root: the
+// Collector temp arg surrenders via its forwarded flag (the collector is
+// reclaimed by collect's formal at exit), and collect flags the
+// accumulated list out via Cajeta.flagged so the receiving local's entry
+// arms (the closure-call path doesn't ride the flag protocol yet). A
+// TEMP stream root (`(heap ArrayStream(...)).collect(...)`) still leaks
+// its header — class-returning calls never reclaim their receiver (the
+// wrapper-composite hazard; see SinkTempOwnershipTests).
 TEST(ContainerSweepTests, collectToListSumsCorrectly) {
     std::string src = std::string(kCellSrc) +
         "public final class D {\n"
-        "    public static int32 run() {\n"
+        "    public static int32 work() {\n"
         "        int32[] data = { 3, 1, 2 };\n"
-        "        #ArrayList<int32> xs = (heap ArrayStream<int32>(data, 3))\n"
-        "            .collect(Collectors.toList<int32>());\n"
+        "        ArrayStream<int32> src = heap ArrayStream<int32>(data, 3);\n"
+        "        #ArrayList<int32> xs = src.collect(Collectors.toList<int32>());\n"
         "        return xs.get(0) + xs.get(1) + xs.get(2);\n"   // 6
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int32 t = work();\n"
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return (int32) (leaked * 100) + t;\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 6);

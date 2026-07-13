@@ -106,6 +106,15 @@ namespace cajeta {
         static bool freshOwnedStringTemp(const AbstractSyntaxNodePtr& e);
         static shared_ptr<CajetaClass> freshSharedValueTempClass(
             const AbstractSyntaxNodePtr& e);
+        // title-tracking 6.2.5 — temps whose title rides the transfer word /
+        // caller-side reclaim: concrete vtable classes only (Strings keep
+        // 3.4.3, values 9.4.1, interfaces have no entry to take a title).
+        static shared_ptr<CajetaClass> droppableTempClass(
+            const CajetaTypePtr& t);
+        // A plain `heap X(...)` creator — an anonymous owned rvalue that
+        // surrenders per spec §4.1.1. stack/shared placements never do.
+        static shared_ptr<CajetaClass> freshHeapCreatorTempClass(
+            const AbstractSyntaxNodePtr& e);
         CajetaTypePtr getPreProjectionReturnType() const {
             return preProjectionReturnType;
         }
