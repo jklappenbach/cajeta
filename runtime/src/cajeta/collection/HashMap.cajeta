@@ -374,7 +374,17 @@ public final class HashMap<K, V> {
      *
      * @returns true iff `key` was present.
      */
-    public boolean remove(K key) {
+    /**
+     * Structural removal (title-tracking §6.4): membership ends and the value
+     * comes back in whatever mode the entry held it — the FLAGGED return. An
+     * owned entry hands its title to the caller (whose receiving local drops
+     * it); a borrowed entry hands back a borrow and the original owner keeps
+     * the single drop. A discarded `m.remove(k);` statement is safe either
+     * way: the compiler conditionally drops a discarded flagged temp. An
+     * owned KEY is still reclaimed here (keys are not returned). Miss → the
+     * zero default (null for class V), flag borrowed.
+     */
+    public V remove(K key) {
         int64 h = key.hash();
         int64 mask = this.cap - 1;
         int8 h2 = (int8) ((h >> 57) & 0x7F);
@@ -390,13 +400,12 @@ public final class HashMap<K, V> {
                     if ((this.owned[i] & 1) != 0) {
                         Cajeta.dropValue(this.slots[i].key);
                     }
-                    if ((this.owned[i] & 2) != 0) {
-                        Cajeta.dropValue(this.slots[i].val);
-                    }
+                    boolean valOwned = (this.owned[i] & 2) != 0;
+                    V out = this.slots[i].val;
                     this.owned[i] = (int8) 0;
                     this.setCtrl(i, (int8) 0xFE);
                     this.sizeCount = this.sizeCount - 1;
-                    return true;
+                    return Cajeta.flagged(out, valOwned);
                 }
                 mm = mm & (mm - 1);
             }
@@ -407,7 +416,8 @@ public final class HashMap<K, V> {
                 pos = (pos + stride) & mask;
             }
         }
-        return false;
+        V[] missDefault = heap V[1];
+        return Cajeta.flagged(missDefault[0], false);
     }
 
     @Inline

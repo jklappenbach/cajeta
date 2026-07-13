@@ -45,6 +45,13 @@ namespace cajeta {
     class MethodCallExpression : public Expression {
         string methodCallName;
         vector<MethodCallParameter> parameters;
+        // title-tracking 6.2.2 — set by the Cajeta.flagged(v, owned)
+        // intrinsic: the runtime i64 title flag paired with this call's
+        // value. ReturnStatement reads it to thread a container's MANUAL
+        // ownership bookkeeping (HashMap's owned[] bits) onto the return
+        // flag — cajeta code cannot otherwise mint "owned iff my bit says
+        // so". Null for every ordinary call.
+        llvm::Value* flaggedTitleValue = nullptr;
         // True for the `super(args)` methodCall alternative (CajetaParser.g4:630).
         // The ordinary identifier path doesn't set this; the SUPER form does so
         // generateCode can route through the parent class's constructor instead
@@ -80,8 +87,14 @@ namespace cajeta {
         // Stays false on intrinsic paths that never resolve a user
         // method — conservative (no reclamation).
         bool resolvedReturnsOwnership = false;
+        // 6.2.2 — the method this call resolved to (set beside
+        // resolvedReturnsOwnership); lets statement-position consumers ask
+        // shape questions (returnsClassPointer) without re-resolving.
+        MethodPtr resolvedMethod;
     public:
         bool isResolvedReturnsOwnership() const { return resolvedReturnsOwnership; }
+        llvm::Value* getFlaggedTitleValue() const { return flaggedTitleValue; }
+        MethodPtr getResolvedMethod() const { return resolvedMethod; }
 
         // element-ownership 3.4.3 / slices 9.4.1 — statement-end temp
         // classification, shared with the ctor-arg site (ClassCreatorRest).

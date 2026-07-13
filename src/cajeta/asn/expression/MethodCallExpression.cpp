@@ -457,6 +457,8 @@ namespace cajeta {
         // 5.2.4 — per-`#`-arg title flags, read from the source's drop entry
         // before any deactivation and OR'd into the transfer word below.
         std::vector<llvm::Value*> argTitleFlags(parameters.size(), nullptr);
+        // Stale-value guard (mirrors MoveExpression::runtimeTitleFlag).
+        flaggedTitleValue = nullptr;
 
         // ----- tryAs<T>() intrinsic (reified capture -> Optional<T>) -----
         // `recv.tryAs<Foo<int32>>()` checks recv's runtime reified instantiation
@@ -2842,6 +2844,30 @@ namespace cajeta {
                         }
                     }
                     return nullptr;
+                }
+                // flagged(v, owned): title-tracking 6.2.2 — pair a value with a
+                // RUNTIME title flag for the flagged-return protocol. Identity
+                // on the value; the flag is stashed on this node and consumed
+                // by ReturnStatement (`return Cajeta.flagged(out, ownedBit)`),
+                // which stores it on the return-flag TLS in place of the
+                // method's static mode. The bridge for containers whose
+                // ownership bookkeeping is their own (HashMap's owned[] bits):
+                // the language has no spelling to mint "owned iff my bit says
+                // so", and inferring it is rejected (spec §4.6.4).
+                if (ns == "Cajeta" && methodCallName == "flagged"
+                        && parameters.size() == 2) {
+                    llvm::Value* v = loadValue(0);
+                    llvm::Value* ownedV = loadValue(1);
+                    if (ownedV && !ownedV->getType()->isIntegerTy(64)) {
+                        ownedV = builder->CreateZExt(ownedV, i64Ty, "flag_i64");
+                    }
+                    flaggedTitleValue = ownedV;
+                    auto argAst = dynamic_pointer_cast<Expression>(
+                        parameters[0].expression);
+                    if (argAst && argAst->getResolvedType()) {
+                        resolvedType = argAst->getResolvedType();
+                    }
+                    return v;
                 }
                 // f32ToBits(float32 x) -> int32: reinterpret a float's IEEE-754
                 // bits as a 32-bit integer (LLVM bitcast — NOT a value
@@ -8141,6 +8167,7 @@ namespace cajeta {
             if (tempTarget && strDropFn
                     && entries.size() == parameters.size()) {
                 resolvedReturnsOwnership = tempTarget->isReturnsOwnership();
+                resolvedMethod = tempTarget;
                 auto fpl = tempTarget->getParameterList();
                 bool isStaticT = tempTarget->getModifiers().find(STATIC)
                     != tempTarget->getModifiers().end();
@@ -8239,6 +8266,7 @@ namespace cajeta {
                 /*explicitMethodTypeArgs=*/explicitMethodTypeArgs);
             if (resolved) {
                 resolvedReturnsOwnership = resolved->isReturnsOwnership();
+                resolvedMethod = resolved;
             }
             if (resolved && resolved->getReturnType()) {
                 // Capture conversion (P2-2 item 1): when the receiver

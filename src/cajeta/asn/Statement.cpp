@@ -410,7 +410,50 @@ namespace cajeta {
                 }
             }
         }
-        return expression ? expression->generateCode(module) : nullptr;
+        llvm::Value* stmtVal = expression
+            ? expression->generateCode(module) : nullptr;
+        // title-tracking 6.2.2 — DISCARDED flagged return. A class-pointer
+        // call result in statement position is a temp whose title (if the
+        // callee surrendered one — a flagged `remove`, a `#T` return) has
+        // nowhere to land: before this it silently LEAKED, and container
+        // discard sites (`cache.entries.remove(k);`) relied on the callee
+        // dropping internally. Read the paired flag and conditionally drop.
+        // Legacy plain returns store flag 0 — those discards stay no-ops —
+        // and `return this`-style chaining APIs are flag-0 by construction.
+        if (stmtVal && stmtVal->getType()->isPointerTy()) {
+            if (auto mceD = dynamic_pointer_cast<MethodCallExpression>(
+                    expression)) {
+                MethodPtr rm = mceD->getResolvedMethod();
+                if (rm && rm->returnsClassPointer()) {
+                    auto* b = module->getBuilder();
+                    llvm::Function* getFlag = module->getRuntimeFunction(
+                        "__cajeta_return_flag_get");
+                    llvm::Function* dropFn = module->getRuntimeFunction(
+                        "__cajeta_class_virtual_drop");
+                    if (getFlag && dropFn) {
+                        llvm::Value* fl = b->CreateCall(getFlag, {},
+                            "discard_flag");
+                        llvm::Value* owned = b->CreateICmpNE(fl,
+                            b->getInt64(0), "discard_owned");
+                        auto& dctx = *module->getLlvmContext();
+                        llvm::Function* fn =
+                            b->GetInsertBlock()->getParent();
+                        llvm::BasicBlock* dropBB =
+                            llvm::BasicBlock::Create(dctx,
+                                "discard_drop", fn);
+                        llvm::BasicBlock* contBB =
+                            llvm::BasicBlock::Create(dctx,
+                                "discard_cont", fn);
+                        b->CreateCondBr(owned, dropBB, contBB);
+                        b->SetInsertPoint(dropBB);
+                        b->CreateCall(dropFn, {stmtVal});
+                        b->CreateBr(contBB);
+                        b->SetInsertPoint(contBB);
+                    }
+                }
+            }
+        }
+        return stmtVal;
     }
 
     void ExpressionStatement::resolveTypes(CajetaModulePtr module) {
@@ -2200,6 +2243,13 @@ namespace cajeta {
             returnTitleFlag = mvRet->getRuntimeTitleFlag()
                 ? mvRet->getRuntimeTitleFlag()
                 : (llvm::Value*) builder->getInt64(1);
+        }
+        // 6.2.2 — `return Cajeta.flagged(v, owned)`: the container's own
+        // bookkeeping decides the flag.
+        if (auto mcRet = dynamic_pointer_cast<MethodCallExpression>(expression)) {
+            if (llvm::Value* f = mcRet->getFlaggedTitleValue()) {
+                returnTitleFlag = f;
+            }
         }
         emitReturnFlag(module, returnTitleFlag);
         return builder->CreateRet(val);

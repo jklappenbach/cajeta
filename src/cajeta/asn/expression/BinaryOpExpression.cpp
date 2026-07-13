@@ -795,15 +795,16 @@ namespace cajeta {
                             llvm::Value* recvVal = recvAst->generateCode(module);
                             llvm::Value* idxVal  = idxAst->generateCode(module);
                             llvm::Value* valVal  = valAst->generateCode(module);
-                            if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(recvVal)) {
-                                recvVal = builder->CreateLoad(a->getAllocatedType(), a);
-                            }
-                            if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(idxVal)) {
-                                idxVal = builder->CreateLoad(a->getAllocatedType(), a);
-                            }
-                            if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(valVal)) {
-                                valVal = builder->CreateLoad(a->getAllocatedType(), a);
-                            }
+                            // loadIfLValue, not a bare AllocaInst unwrap: a
+                            // FIELD receiver (`this.sessions[id] = v`)
+                            // generates a GEP address, which the alloca cast
+                            // missed — the field's ADDRESS went out as `this`
+                            // and the callee's vtable load found garbage
+                            // (null fn-pointer call at dispatch). Mirrors the
+                            // read-side ArrayIndexExpression lowering.
+                            recvVal = loadIfLValue(module, recvVal, recvAst);
+                            idxVal = loadIfLValue(module, idxVal, idxAst);
+                            valVal = loadIfLValue(module, valVal, valAst);
                             std::vector<ParameterEntry> entries;
                             entries.push_back(ParameterEntry(idxType, "", idxVal));
                             entries.push_back(ParameterEntry(valType, "", valVal));
