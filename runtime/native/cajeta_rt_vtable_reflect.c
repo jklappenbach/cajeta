@@ -506,11 +506,21 @@ struct cajeta_vtable_entry {
 int64_t __cajeta_signature_hash(const char* s) {
     if (!s) return 0;
     uint64_t h = 0xcbf29ce484222325ULL;     // FNV offset basis
-    while (*s) {
-        uint8_t c = (uint8_t) *s++;
-        if (c == '#') continue;
+    const char* p = s;
+    while (*p) {
+        uint8_t c = (uint8_t) *p;
+        if (c == '#') {
+            // title-tracking 6.2.1 — a `#` inside an operator NAME
+            // (`operator#[]`) is identity, not mode: keep it. All other
+            // `#` (formal modes, dissolved spellings) stay erased.
+            // Mirrors the compiler's signatureHash exactly.
+            int after_operator = (p - s) >= 8
+                && strncmp(p - 8, "operator", 8) == 0;
+            if (!after_operator) { p++; continue; }
+        }
         h ^= c;
         h *= 0x100000001b3ULL;              // FNV prime
+        p++;
     }
     return (int64_t) h;
 }

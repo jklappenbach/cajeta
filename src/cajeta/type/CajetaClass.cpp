@@ -49,10 +49,23 @@ namespace {
     // dispatch identity ignores it. `#`-only overloads within one class
     // cannot exist (borrow-mode dissolution would collide them), so the
     // erasure cannot alias two distinct methods in one vtable.
+    // EXCEPTION to the erasure (title-tracking 6.2.1): a `#` that is part of
+    // an OPERATOR NAME (`operator#[]`) is identity, not mode — erasing it
+    // aliased operator#[](K) with operator[](K) in the vtable, and which one
+    // a virtual call landed on depended on vtable construction order. Keep a
+    // `#` immediately preceded by the literal "operator"; skip all others
+    // (formal modes, dissolved template spellings). Mirrored EXACTLY in the
+    // runtime's __cajeta_signature_hash.
     int64_t signatureHash(const std::string& s) {
         uint64_t h = 0xcbf29ce484222325ULL;
-        for (unsigned char c : s) {
-            if (c == '#') continue;
+        static const char* kOp = "operator";
+        for (size_t i = 0; i < s.size(); ++i) {
+            unsigned char c = (unsigned char) s[i];
+            if (c == '#') {
+                bool afterOperator = i >= 8
+                    && s.compare(i - 8, 8, kOp) == 0;
+                if (!afterOperator) continue;
+            }
             h ^= c;
             h *= 0x100000001b3ULL;
         }

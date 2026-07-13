@@ -1904,6 +1904,65 @@ namespace cajeta {
         // (`#person.name`) require path-based borrow tracking, which lands in
         // a later step of Session 3.
         auto inner = dynamic_pointer_cast<Expression>(children[0]);
+        // title-tracking §6.3 (Unit 6, plan 6.2.1) — `#map[k]` on a CLASS
+        // receiver binds to the author-provided `operator#[]` (the
+        // title-extracting index; distinct canonical name because dispatch is
+        // mode-erased). The operator is TOTAL: title out with the entry
+        // staying resident, or a panic (Recoverable) when the entry holds no
+        // title. The receiver itself is NOT marked moved — extracting one
+        // entry does not consume the container. Declared `#V`, so the
+        // assignee's static-owner claim (the LVD `= #x` path) is correct.
+        // Without this branch the move silently degraded to a plain
+        // operator[] READ while the assignee claimed the title anyway —
+        // half a double-free waiting for the store side to work.
+        if (auto idxInner = dynamic_pointer_cast<ArrayIndexExpression>(inner)) {
+            auto& ich = idxInner->getChildren();
+            auto idxRecv = ich.size() >= 1
+                ? dynamic_pointer_cast<Expression>(ich[0]) : nullptr;
+            auto idxArg = ich.size() >= 2
+                ? dynamic_pointer_cast<Expression>(ich[1]) : nullptr;
+            if (idxRecv && !idxRecv->getResolvedType()) {
+                idxRecv->resolveTypes(module);
+            }
+            auto recvClass = idxRecv
+                ? dynamic_pointer_cast<CajetaClass>(idxRecv->getResolvedType())
+                : nullptr;
+            bool recvIsArray = recvClass
+                && dynamic_pointer_cast<CajetaArray>(idxRecv->getResolvedType());
+            if (recvClass && !recvIsArray && !recvClass->isInterface()
+                    && idxArg) {
+                auto* builder = module->getBuilder();
+                llvm::Value* recvVal = idxRecv->generateCode(module);
+                recvVal = loadIfLValue(module, recvVal, idxRecv);
+                llvm::Value* idxVal = idxArg->generateCode(module);
+                idxVal = loadIfLValue(module, idxVal, idxArg);
+                if (!idxArg->getResolvedType()) idxArg->resolveTypes(module);
+                std::vector<ParameterEntry> entries;
+                entries.push_back(ParameterEntry(
+                    idxArg->getResolvedType(), "", idxVal));
+                std::string opName = "operator#[]";
+                MethodPtr op;
+                try {
+                    op = recvClass->resolveMethod(opName, entries,
+                        /*isConstructor=*/false, /*floatingParams=*/false);
+                } catch (...) {
+                    op = nullptr;
+                }
+                if (!op) {
+                    throw Exception(
+                        "type `" + recvClass->toCanonical() + "` has no "
+                        "`operator#[]` — `#" "container[key]` extraction "
+                        "needs the title-extracting index operator. Plain "
+                        "reads use `container[key]`; declare `#V operator#[]"
+                        "(K key)` on the container to support extraction.",
+                        "CAJETA_ERROR_NO_TITLE_INDEX_OPERATOR");
+                }
+                llvm::Value* out = recvClass->invokeMethod(opName, entries,
+                    /*isConstructor=*/false, recvVal, /*callerModule=*/module);
+                resolvedType = op->getReturnType();
+                return out;
+            }
+        }
         // title-tracking §6.3 / §5 (Unit 3 slice 3C) — `#place` EXTRACTION on
         // a bit-carrying field (`#h.f`): if the field's ownership bit is set,
         // the title moves to the assignee and the bit decays to borrowed (the

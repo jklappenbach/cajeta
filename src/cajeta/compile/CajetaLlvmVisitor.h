@@ -1565,6 +1565,7 @@ namespace cajeta {
                         kInstanceOps = {
                             {"operator++",  0}, {"operator--",  0},
                             {"operator[]",  1}, {"operator[]=", 2},
+                            {"operator#[]", 1},
                             {"operator+=", 1}, {"operator-=", 1}, {"operator*=", 1},
                             {"operator/=", 1}, {"operator%=", 1},
                             {"operator&=", 1}, {"operator|=", 1}, {"operator^=", 1},
@@ -1705,7 +1706,8 @@ namespace cajeta {
             // (ASSIGN)?` overlaps with the bare ASSIGN check below
             // (the indexed-assignment form has both LBRACK and ASSIGN
             // tokens present), so the more specific match wins.
-            if (ctx->LBRACK() && ctx->RBRACK() && ctx->ASSIGN()) sym = "[]=";
+            if (ctx->REFERENCE() && ctx->LBRACK() && ctx->RBRACK()) sym = "#[]";
+            else if (ctx->LBRACK() && ctx->RBRACK() && ctx->ASSIGN()) sym = "[]=";
             else if (ctx->LBRACK() && ctx->RBRACK()) sym = "[]";
             else if (ctx->ADD()) sym = "+";
             else if (ctx->SUB()) sym = "-";

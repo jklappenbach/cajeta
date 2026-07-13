@@ -808,12 +808,58 @@ namespace cajeta {
                             entries.push_back(ParameterEntry(idxType, "", idxVal));
                             entries.push_back(ParameterEntry(valType, "", valVal));
                             std::string opName = "operator[]=";
+                            // title-tracking 6.2.1 — the transfer word for the
+                            // lowered call. `m[k] = #v` previously passed NO
+                            // word: the MoveExpression deactivated the source
+                            // while the callee read all-borrow 0 and recorded
+                            // the entry BORROWED — a silent leak. Bit 0 = the
+                            // index arg, bit 1 = the value arg (the operator's
+                            // two user params); a runtime-owner source (`#s`
+                            // where s is a formal) forwards its captured flag,
+                            // per the MCE word-composition rule.
+                            llvm::Value* opxWord = builder->getInt64(0);
+                            {
+                                int64_t constBits = 0;
+                                llvm::Value* dynWord = nullptr;
+                                auto wordBit = [&](ExpressionPtr ast, int bit) {
+                                    auto mv = dynamic_pointer_cast<
+                                        MoveExpression>(ast);
+                                    if (!mv) return;
+                                    if (llvm::Value* rf =
+                                            mv->getRuntimeTitleFlag()) {
+                                        llvm::Value* b = builder->CreateShl(
+                                            builder->CreateAnd(rf,
+                                                builder->getInt64(1)),
+                                            builder->getInt64((uint64_t) bit));
+                                        dynWord = dynWord
+                                            ? builder->CreateOr(dynWord, b) : b;
+                                    } else {
+                                        constBits |= ((int64_t) 1) << bit;
+                                    }
+                                };
+                                wordBit(idxAst, 0);
+                                wordBit(valAst, 1);
+                                if (dynWord) {
+                                    opxWord = constBits
+                                        ? builder->CreateOr(dynWord,
+                                              builder->getInt64(
+                                                  (uint64_t) constBits))
+                                        : dynWord;
+                                } else if (constBits) {
+                                    opxWord = builder->getInt64(
+                                        (uint64_t) constBits);
+                                }
+                            }
                             if (auto m = recvClass->resolveMethod(opName,
                                     entries, /*isConstructor=*/false,
                                     /*floatingParams=*/false)) {
                                 recvClass->invokeMethod(opName, entries,
                                     /*isConstructor=*/false, recvVal,
-                                    /*callerModule=*/module);
+                                    /*callerModule=*/module,
+                                    /*forceDirectCall=*/false,
+                                    /*explicitMethodTypeArgs=*/{},
+                                    /*sretTarget=*/nullptr,
+                                    /*transferWord=*/opxWord);
                                 // The expression's value is the assigned r-value
                                 // (C/Java convention) so `if ((x = m[k]) ...)`
                                 // and `m[k] = n[k] = v` chain correctly.

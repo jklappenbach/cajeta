@@ -7504,6 +7504,38 @@ namespace cajeta {
                         argTitleFlags[i] = builder->CreateCall(
                             flagFn, {entry}, "arg_title_flag");
                     }
+                    continue;
+                }
+                // 6.2.1 — ENTRY-LESS formal forwarded with `#`: thread the
+                // formal's own incoming word bit. Formals only get drop
+                // entries when droppable (String and primitives don't), but
+                // the word bit still says what the caller did — this is what
+                // lets a generic delegating body (`operator[]= { put(#key,
+                // #value); }`) forward the caller's decision for EVERY K/V
+                // instantiation instead of claiming a constant 1 and freeing
+                // a lent String key at teardown.
+                auto pfArg = std::dynamic_pointer_cast<ParameterField>(field);
+                if (pfArg) {
+                    auto cm = module->getCurrentMethod();
+                    llvm::Value* inWord = cm ? cm->getTransferWordArg()
+                                             : nullptr;
+                    if (inWord) {
+                        int fpos = -1, seen = -1;
+                        for (auto& fp : cm->getParameterList()) {
+                            if (!fp || fp->getName() == "this") continue;
+                            ++seen;
+                            if (fp->getName() == idExpr->getTextValue()) {
+                                fpos = seen;
+                                break;
+                            }
+                        }
+                        if (fpos >= 0 && fpos < 64) {
+                            argTitleFlags[i] = builder->CreateAnd(
+                                builder->CreateLShr(inWord,
+                                    builder->getInt64((uint64_t) fpos)),
+                                builder->getInt64(1), "fwd_word_bit");
+                        }
+                    }
                 }
             }
             // 5.2.8 (spec §7.1) — LAST-USE ADVISORY. A plain (lending) argument
@@ -7672,8 +7704,10 @@ namespace cajeta {
                             if (formal && !formal->isTransferred()) {
                                 auto klass = std::dynamic_pointer_cast<CajetaClass>(
                                     field->getType());
+                                auto cmw = module->getCurrentMethod();
                                 bool runtimeOwner = klass && !klass->isInterface()
-                                    && field->getDropEntry() != nullptr;
+                                    && (field->getDropEntry() != nullptr
+                                        || (cmw && cmw->getTransferWordArg()));
                                 if (klass && !klass->isInterface()
                                         && !runtimeOwner) {
                                     throw Exception(

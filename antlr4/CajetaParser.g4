@@ -249,6 +249,12 @@ operatorOverloadDeclaration
     // grammar permits it; the type-check enforces the semantic
     // shape elsewhere.
     | typeTypeOrVoid OPERATOR LBRACK RBRACK ASSIGN? formalParameters methodBody
+    // title-tracking §6.3 — `operator#[]`, the title-extracting index.
+    // Distinct canonical name because dispatch is mode-erased: a `#`-only
+    // overload of operator[] would collide (TRANSFER_MODE_OVERLOAD). The
+    // REFERENCE here is a direct child (the one between OPERATOR and
+    // LBRACK); a `#V` return's REFERENCE lives inside typeTypeOrVoid.
+    | typeTypeOrVoid OPERATOR REFERENCE LBRACK RBRACK formalParameters methodBody
     ;
 
 /* We use rule this even for void methods which cannot have [] after parameters.
