@@ -3036,9 +3036,26 @@ namespace cajeta {
             // view: the caller still owns it, so this teardown must not drop it.
             // Monomorphization erased the came-from-a-type-parameter fact;
             // TemplateInstantiator restores it as originTypeParamIndex.
+            // title-tracking §5 (rev 2) EXCEPTION: a vtable-class T-origin
+            // field carries a runtime ownership BIT and the guarded drop
+            // below decides per instance (`node.value = #v` → owned → drop;
+            // plain → borrowed → skip, the borrow-era outcome). The blanket
+            // skip stays only for the bit-LESS paths (shared-capable value
+            // fields release unconditionally; interfaces have no bit) —
+            // without it LinkedListNode/CacheNode owned values leaked at
+            // node teardown.
             int scalarOrigin = property->getOriginTypeParamIndex();
-            if (scalarOrigin >= 0 && !isTypeArgumentOwning((size_t) scalarOrigin))
-                continue;
+            if (scalarOrigin >= 0 && !isTypeArgumentOwning((size_t) scalarOrigin)) {
+                auto fc = dynamic_pointer_cast<CajetaClass>(fieldType);
+                bool bitGuarded = fc
+                    && !dynamic_pointer_cast<CajetaView>(fieldType)
+                    && !(fc->isValueType() && fc->isSharedCapableValue())
+                    && !fc->isInterface()
+                    && fc->hasVtablePointerAtSlotZero()
+                    && ownershipBitIndexOf(property) >= 0
+                    && getOwnershipWordLlvmIndex() >= 0;
+                if (!bitGuarded) continue;
+            }
             unsigned fieldIdx = (unsigned) getFieldLlvmIndex(property);
 
             if (auto arrField = dynamic_pointer_cast<CajetaArray>(fieldType)) {
