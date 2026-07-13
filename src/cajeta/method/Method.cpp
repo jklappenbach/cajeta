@@ -2,6 +2,7 @@
 // Created by James Klappenbach on 2/19/22.
 //
 
+#include "../error/Diagnostics.h"
 #include "Method.h"
 #include <functional>
 #include <unordered_set>
@@ -2491,7 +2492,17 @@ namespace cajeta {
                     int idx = parent->getFieldLlvmIndex(prop);
                     if (idx < 0) continue;
                     llvm::Value* initVal = init->generateCode(module);
-                    if (!initVal) continue;
+                    if (!initVal) {
+                        // The field HAS an initializer and it lowered to nothing.
+                        // `continue` here silently left the field zero — the
+                        // initializer-not-checked hole (silent-resolution
+                        // diagnostics 3.1.3).
+                        throw locatedException(
+                            init->getSourceLine(), init->getSourceColumn() + 1,
+                            "initializer for field '" + prop->getName()
+                                + "' did not resolve to a value",
+                            "CAJETA_ERROR_UNRESOLVED_EXPRESSION");
+                    }
                     llvm::Value* fp = builder->CreateStructGEP(
                         parent->getLlvmType(), thisPtr, (unsigned) idx,
                         std::string("user_ctor.init.") + prop->getName());
