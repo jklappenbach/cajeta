@@ -7715,6 +7715,16 @@ namespace cajeta {
                             if (formal && !formal->isTransferred()
                                     && formal->wasAuthoredTransferred()
                                     && formal->getOriginTypeParamIndex() >= 0) {
+                                // 6.2.3 — the dissolved forward still CONSUMES:
+                                // under rev 2 the forwarding formal may hold a
+                                // seeded drop entry (armed by the caller's
+                                // bit), and this `continue` used to jump over
+                                // the deactivation — the entry then fired at
+                                // exit and freed a value the container had
+                                // just stored. Disarm before dissolving; the
+                                // borrow-mode store keeps pre-rev-2 semantics
+                                // (leak-parity, never a free).
+                                deactivateIfClassLocal(i);
                                 parameters[i].callerTransferred = false;
                                 continue;
                             }

@@ -482,8 +482,22 @@ namespace cajeta {
                     && !klass->isInterface() && !pt->isValueType()
                     && !klass->isSharedCapableValue()
                     && klass->hasVtablePointerAtSlotZero()) {
-                klass->patchVirtualTableDropFn();
-                dropFnName = "__cajeta_class_virtual_drop";
+                // String needs its OWN exclusion: isSharedCapableValue is a
+                // value-type predicate and MISSES String-the-class (the Unit-3
+                // §5 discovery, re-learned here the hard way). In a template
+                // instantiation (Cache<String,V>.put's #K key) the String
+                // formal seeded a __cajeta_class_virtual_drop entry, the
+                // caller's word bit armed it, nothing consumed it, and the
+                // exit pop VIRTUAL-dropped a live String — the map's canonical
+                // key and the node's alias both dangled (the DnsCache LRU
+                // crash). Strings transfer by share/resolve, never by entry.
+                bool isLangString = klass->getQName()
+                    && klass->getQName()->getTypeName() == "String"
+                    && klass->getQName()->getPackageName() == "cajeta.lang";
+                if (!isLangString) {
+                    klass->patchVirtualTableDropFn();
+                    dropFnName = "__cajeta_class_virtual_drop";
+                }
             }
             if (!dropFnName) continue;
             llvm::Function* dropFn = module->getRuntimeFunction(dropFnName);
