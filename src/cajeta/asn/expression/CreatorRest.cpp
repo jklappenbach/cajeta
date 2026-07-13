@@ -230,8 +230,14 @@ namespace cajeta {
                                 // 5.2.4 — RETIRED for class-typed formals: a
                                 // plain formal is a RUNTIME owner (5.2.2), so
                                 // `#formal` as a ctor arg forwards its actual
-                                // flag (the ctor word, composed below).
-                                bool runtimeOwner = field && field->getDropEntry();
+                                // flag (the ctor word, composed below). Entry-
+                                // less formals of a WORDED method count too
+                                // (String/primitive get no entry; their word
+                                // bit is still the truth) — same rule as MCE.
+                                auto crCm = module->getCurrentMethod();
+                                bool runtimeOwner = field
+                                    && (field->getDropEntry()
+                                        || (crCm && crCm->getTransferWordArg()));
                                 if (formal && !formal->isTransferred()
                                         && !runtimeOwner) {
                                     auto klassParam = std::dynamic_pointer_cast<CajetaClass>(

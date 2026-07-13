@@ -128,7 +128,7 @@ public class Router {
             }
             this.routes = #grown;
         }
-        this.routes[this.routeCount] = r;
+        this.routes[this.routeCount] = #r;
         this.routeCount = this.routeCount + 1;
     }
 

@@ -71,7 +71,7 @@ public final class JsonArray {
         if (this.sizeCount >= this.cap) {
             this.grow();
         }
-        this.data[this.sizeCount] = v;
+        this.data[this.sizeCount] = #v;
         this.sizeCount = this.sizeCount + 1;
     }
 

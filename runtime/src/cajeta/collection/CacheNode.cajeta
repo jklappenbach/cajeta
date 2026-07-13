@@ -37,7 +37,14 @@ public final class CacheNode<K, V> {
      */
     public CacheNode(K key, V value, int64 accessedAt) {
         this.key = key;
-        this.value = value;
+        // title-tracking 6.2.3 — the CONSUMING spelling: the node's value bit
+        // records what this ctor's caller actually forwarded (owned when the
+        // cache user transferred, borrowed when they lent), and the formal's
+        // entry deactivates so an owned value isn't freed at ctor exit while
+        // the node still points at it. A plain store here was the DnsCache
+        // UAF: Cache.put's armed value formal dropped the entry the node had
+        // just stored.
+        this.value = #value;
         this.accessedAt = accessedAt;
         this.prev = null;
         this.next = null;

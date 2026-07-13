@@ -22,7 +22,7 @@ public final class Schema {
      * @EntryPoint
      */
     public Schema(#int8[] definition) {
-        this.definition = definition;
+        this.definition = #definition;
     }
 
     /** The raw schema descriptor bytes (borrowed; owned by this `Schema`). */

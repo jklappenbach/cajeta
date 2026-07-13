@@ -372,7 +372,7 @@ public class HttpRequest {
      * so the handler can read [`pathParam`](#pathParam).
      */
     public void bindPathParams(#PathParams params) {
-        this.pathParams = params;
+        this.pathParams = #params;
     }
 
     /**

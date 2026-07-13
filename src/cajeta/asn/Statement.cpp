@@ -428,8 +428,23 @@ namespace cajeta {
                     auto* b = module->getBuilder();
                     llvm::Function* getFlag = module->getRuntimeFunction(
                         "__cajeta_return_flag_get");
+                    // Drop fn by the STATIC return type (dropValue's
+                    // dispatch): virtual_drop on an ARRAY header reads its
+                    // first word as a vtable — a discarded '#T[]' return
+                    // was dropped through garbage. Shared-capable values
+                    // (String) take the mode-aware string drop.
+                    CajetaTypePtr drt = rm->getReturnType();
+                    const char* dropName = "__cajeta_class_virtual_drop";
+                    if (dynamic_pointer_cast<CajetaArray>(drt)) {
+                        dropName = "__cajeta_free_array";
+                    } else if (auto drc =
+                                   dynamic_pointer_cast<CajetaClass>(drt)) {
+                        if (drc->isSharedCapableValue()) {
+                            dropName = "__cajeta_string_drop";
+                        }
+                    }
                     llvm::Function* dropFn = module->getRuntimeFunction(
-                        "__cajeta_class_virtual_drop");
+                        dropName);
                     if (getFlag && dropFn) {
                         llvm::Value* fl = b->CreateCall(getFlag, {},
                             "discard_flag");

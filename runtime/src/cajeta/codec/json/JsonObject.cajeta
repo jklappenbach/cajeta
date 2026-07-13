@@ -135,9 +135,9 @@ public final class JsonObject {
         if (this.sizeCount >= this.cap) {
             this.grow();
         }
-        this.keys[this.sizeCount] = key;
+        this.keys[this.sizeCount] = #key;
         this.keyLens[this.sizeCount] = keyLen;
-        this.values[this.sizeCount] = v;
+        this.values[this.sizeCount] = #v;
         this.sizeCount = this.sizeCount + 1;
     }
 

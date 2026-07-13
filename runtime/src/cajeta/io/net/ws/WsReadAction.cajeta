@@ -97,7 +97,7 @@ public class WsReadAction {
     public static #WsReadAction message(#WsMessage message) {
         WsReadAction a = heap WsReadAction();
         a.kind = WsReadAction.MESSAGE;
-        a.message = message;
+        a.message = #message;
         return #a;
     }
 
@@ -105,7 +105,7 @@ public class WsReadAction {
     public static #WsReadAction sendFrame(#WsFrame frame) {
         WsReadAction a = heap WsReadAction();
         a.kind = WsReadAction.SEND_FRAME;
-        a.frame = frame;
+        a.frame = #frame;
         return #a;
     }
 
@@ -113,7 +113,7 @@ public class WsReadAction {
     public static #WsReadAction ping(#WsFrame ping) {
         WsReadAction a = heap WsReadAction();
         a.kind = WsReadAction.PING;
-        a.frame = ping;
+        a.frame = #ping;
         return #a;
     }
 
@@ -125,8 +125,8 @@ public class WsReadAction {
     public static #WsReadAction closed(#WsCloseReason reason, #WsFrame reply) {
         WsReadAction a = heap WsReadAction();
         a.kind = WsReadAction.CLOSED;
-        a.closeReason = reason;
-        a.frame = reply;
+        a.closeReason = #reason;
+        a.frame = #reply;
         return #a;
     }
 
