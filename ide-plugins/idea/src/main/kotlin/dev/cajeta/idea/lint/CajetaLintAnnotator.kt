@@ -34,6 +34,15 @@ class CajetaLintAnnotator : ExternalAnnotator<LintInput, LintOutput>() {
                 .create()
         }
 
+        // Freshness (Unit 9): degradation is visible and reasoned — no
+        // compiler / unknown schema major report themselves UNAVAILABLE
+        // instead of failing silently.
+        val compilerPath = dev.cajeta.idea.settings.CajetaSettings.instance.compilerPath
+        val configured = compilerPath.isNotBlank() &&
+            java.io.File(compilerPath).canExecute()
+        dev.cajeta.idea.xref.CajetaXrefFreshness.getInstance(file.project)
+            .updateFromLint(configured, output.xref)
+
         // Feed the index off the EDT. A version-only stream (broken buffer)
         // has no records, so the previous shard is KEPT (spec 2.0.5); an
         // unsupported major was already refused wholesale at demux.

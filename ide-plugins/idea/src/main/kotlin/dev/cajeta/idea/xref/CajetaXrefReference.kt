@@ -98,7 +98,14 @@ class CajetaXrefReference(element: CajetaIdentifier) :
             return pkg.replace('.', '/') + '/' + file.name
         }
 
-        /** A declaration record's (file, line, col) → the named element there. */
+        /**
+         * A declaration record's (file, line, col) → the named element there —
+         * VALIDATED (Unit 9, 9.2.1): the export's offset is followed only if
+         * what sits there still matches the recorded declaration's name. A
+         * moved declaration makes the offset point at whatever occupies it
+         * now; following it blindly would be a confident wrong jump — the
+         * failure mode this design exists to prevent. Stale → DISCARDED.
+         */
         private fun locate(project: com.intellij.openapi.project.Project,
                            decl: Json.Obj): PsiElement? {
             val rel = strOf(decl, "file") ?: return null
@@ -116,8 +123,11 @@ class CajetaXrefReference(element: CajetaIdentifier) :
             val offset = doc.getLineStartOffset(line - 1) + col
             if (offset > doc.textLength) return null
             val at = psi.findElementAt(offset) ?: return null
-            return PsiTreeUtil.getParentOfType(
-                at, CajetaNamedElement::class.java, false) ?: at
+            val named = PsiTreeUtil.getParentOfType(
+                at, CajetaNamedElement::class.java, false) ?: return null
+            val expected = strOf(decl, "fqn")?.substringAfterLast('.')
+            if (expected != null && named.name != expected) return null
+            return named
         }
 
         /** §4.3 — nothing here can be got wrong: each name binds inside the

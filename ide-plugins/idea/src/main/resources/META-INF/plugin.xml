@@ -89,6 +89,10 @@
             extensions="cjxref"/>
         <fileBasedIndex
             implementation="dev.cajeta.idea.xref.CajetaXrefIndex"/>
+        <!-- Unit 9: visible degradation — freshness state + reason. -->
+        <statusBarWidgetFactory
+            id="CajetaXrefStatus"
+            implementation="dev.cajeta.idea.xref.CajetaXrefStatusWidgetFactory"/>
 
         <lang.parserDefinition
             language="Cajeta"
@@ -159,6 +163,11 @@
     <actions>
         <group id="dev.cajeta.idea.toolsGroup" text="Cajeta" popup="true">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <action
+                id="dev.cajeta.idea.xref.RebuildIndex"
+                class="dev.cajeta.idea.xref.CajetaXrefRebuildAction"
+                text="Rebuild Cajeta Xref Index"
+                description="Whole-root compiler export, ingested into the xref index in the background."/>
             <action
                 id="dev.cajeta.idea.TypeFixtureAction"
                 class="dev.cajeta.idea.harness.TypeFixtureAction"
