@@ -79,6 +79,17 @@
         <fileEditorProvider
             implementation="dev.cajeta.idea.jsonl.JsonlFileEditorProvider"/>
 
+        <!-- ide-symbol-index Unit 6: compiler-authoritative xref cache. Shards
+             (.cjxref, one per source file, written under .cajeta/xref/) feed a
+             FileBasedIndex; the index is cache, not authority. -->
+        <fileType
+            name="Cajeta Xref Shard"
+            implementationClass="dev.cajeta.idea.xref.CajetaXrefFileType"
+            fieldName="INSTANCE"
+            extensions="cjxref"/>
+        <fileBasedIndex
+            implementation="dev.cajeta.idea.xref.CajetaXrefIndex"/>
+
         <lang.parserDefinition
             language="Cajeta"
             implementationClass="dev.cajeta.idea.parser.CajetaParserDefinition"/>
