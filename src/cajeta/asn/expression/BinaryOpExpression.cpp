@@ -2481,6 +2481,36 @@ namespace cajeta {
                             llvm::ConstantInt::get(i64Ty2, ~mask));
                     }
                     builder->CreateStore(w, fobWordPtr);
+                    // 5.2.7 — a PLAIN store LENDS: the field borrows, the
+                    // source local keeps the title and dies at scope exit. If
+                    // the receiver later escapes, it carries a dangling
+                    // pointer. Record the edge (receiver -> lent local); the
+                    // escape sites check it. `#x` spellings own -> no edge.
+                    if (!fobOwnedSpelling) {
+                        if (auto lendDot = dynamic_pointer_cast<DotExpression>(
+                                lhsAst)) {
+                            auto& lch = lendDot->getChildren();
+                            auto recvId = lch.empty() ? nullptr
+                                : dynamic_pointer_cast<IdentifierExpression>(
+                                      lch[0]);
+                            auto srcId = dynamic_pointer_cast<
+                                IdentifierExpression>(rhsAst);
+                            if (recvId && srcId) {
+                                if (auto sc = module->getScopeStack().peek()) {
+                                    FieldPtr srcF = sc->getField(
+                                        srcId->getTextValue());
+                                    bool srcIsLocalOwner = srcF
+                                        && srcF->getDropEntry()
+                                        && !dynamic_pointer_cast<ParameterField>(
+                                               srcF);
+                                    if (srcIsLocalOwner) {
+                                        sc->recordLend(recvId->getTextValue(),
+                                                       srcId->getTextValue());
+                                    }
+                                }
+                            }
+                        }
+                    }
                     // An owned spelling from a `#`-formal source is the
                     // Exception-ctor idiom: the formal's title moves into
                     // the field. The formal has no local drop entry, so no

@@ -21,6 +21,7 @@
 #include "../asn/expression/AggregateInitializerExpression.h"
 #include "../asn/expression/BinaryOpExpression.h"
 #include "../asn/expression/Identifier.h"
+#include "../asn/expression/DotExpression.h"
 #include "../asn/LocalVariableDeclaration.h"
 #include "../type/FormalParameter.h"
 #include "../field/ParameterField.h"
@@ -1634,6 +1635,56 @@ namespace cajeta {
             }
             for (auto& c : node->getChildren()) arenaWalk(c, escaping, candidates, arrayCandidates);
         }
+    }
+
+    // 5.2.7 — retention walk. True when the body assigns `formalName` (plain or
+    // `#`-spelled) into a field (`this.c = v`) or an element (`a[i] = v`), or
+    // hands it to a constructor (which stores it by definition). Deliberately
+    // NOT transitive through further calls: the spec scopes this check to a
+    // single hop, and a transitive walk would re-introduce the false-positive
+    // blast radius (every read-only helper poisoning its receiver).
+    bool Method::retainsFormal(const std::string& formalName) {
+        auto cached = retainsFormalCache.find(formalName);
+        if (cached != retainsFormalCache.end()) return cached->second;
+        bool retained = false;
+        std::function<void(const AbstractSyntaxNodePtr&)> walk =
+            [&](const AbstractSyntaxNodePtr& node) {
+                if (!node || retained) return;
+                if (auto bin = std::dynamic_pointer_cast<BinaryOpExpression>(node)) {
+                    auto& kids = bin->getChildren();
+                    if (kids.size() >= 2) {
+                        auto lhs = kids[0];
+                        auto rhs = kids[1];
+                        bool lhsIsPlace =
+                            std::dynamic_pointer_cast<DotExpression>(lhs)
+                            || std::dynamic_pointer_cast<ArrayIndexExpression>(lhs);
+                        // `= v` or `= #v`
+                        auto rhsInner = rhs;
+                        if (auto mv = std::dynamic_pointer_cast<MoveExpression>(rhs)) {
+                            auto& mk = mv->getChildren();
+                            if (!mk.empty()) rhsInner = mk[0];
+                        }
+                        auto rhsId =
+                            std::dynamic_pointer_cast<IdentifierExpression>(rhsInner);
+                        if (lhsIsPlace && rhsId
+                                && rhsId->getTextValue() == formalName) {
+                            retained = true;
+                            return;
+                        }
+                    }
+                }
+                // ExpressionStatement holds its expression in a PRIVATE field,
+                // not in getChildren() — a generic child walk never reaches the
+                // assignment inside `void keep(Cell v) { this.c = #v; }`. Same
+                // reason arenaWalk special-cases statements.
+                if (auto es = std::dynamic_pointer_cast<ExpressionStatement>(node)) {
+                    walk(es->getExpression());
+                }
+                for (auto& child : node->getChildren()) walk(child);
+            };
+        walk(block);
+        retainsFormalCache[formalName] = retained;
+        return retained;
     }
 
     void Method::computeArenaEligibility() {

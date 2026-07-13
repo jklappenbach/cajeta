@@ -93,6 +93,17 @@ namespace cajeta {
         // still references).
         set<string> launchBorrows;
 
+        // title-tracking 5.2.7 (spec §7.4, sub-fork B) — single-hop dangling
+        // lend. Maps a holder local to the LOCAL owners it holds a LEND of
+        // (a plain, non-`#` store/arg: `h.c = s`, `h.keep(s)`). If the holder
+        // later escapes the method, those sources die at scope exit and the
+        // escapee carries dangling pointers — rejected with
+        // CAJETA_ERROR_DANGLING_LEND. Recorded at the holder's declaring
+        // scope, like markMoved. Conservative: an extraction does NOT clear
+        // the edge (no intra-procedural entry-level tracking); the `#s`
+        // spelling at the lend is the suppression.
+        map<string, set<string>> lendEdges;
+
         void putField(FieldPtr field, string propertyPath);
 
     public:
@@ -156,6 +167,11 @@ namespace cajeta {
         struct MoveMark { Scope* target; string name; string note; };
         vector<MoveMark> snapshotMovesSince(size_t mark) const;
         void reapplyMoves(const vector<MoveMark>& moves);
+
+        // 5.2.7 — record `holder` now holds a lend of the local owner `src`.
+        void recordLend(const string& holder, const string& src);
+        // The local owners `holder` holds lends of (empty when none).
+        set<string> lendsOf(const string& holder);
 
         // The source path `name` borrows from (liveBorrows inverted, walked
         // across ancestors), or "" when `name` is not a recorded borrower.

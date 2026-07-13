@@ -169,7 +169,19 @@ public final class HashMap<K, V> {
                     if ((this.owned[i] & 2) != 0) {
                         Cajeta.dropValue(this.slots[i].val);
                     }
-                    this.slots[i].val = value;
+                    // title-tracking 5.2.6 — the spelling must MATCH what the
+                    // caller did. `#value` moves the title into the slot (needed
+                    // for a class V: a plain store would lend, leaving the
+                    // formal's drop entry armed to free the value the map just
+                    // stored). The plain store is equally required when the
+                    // caller LENT: for a shared-capable V (String) it runs the
+                    // dual-role resolve that COPIES the borrowed bytes, and `#`
+                    // there would store a pointer to the caller's dying temp.
+                    if (valOwned) {
+                        this.slots[i].val = #value;
+                    } else {
+                        this.slots[i].val = value;
+                    }
                     // The new key duplicates the stored one; drop it if we took it.
                     if (keyOwned) {
                         Cajeta.dropValue(key);
@@ -202,8 +214,17 @@ public final class HashMap<K, V> {
             }
         }
         boolean wasEmpty = (this.ctrl[insertAt] == (int8) 0x80);
-        this.slots[insertAt].key = key;
-        this.slots[insertAt].val = value;
+        // Spelling matches the caller's transfer (see the replace branch above).
+        if (keyOwned) {
+            this.slots[insertAt].key = #key;
+        } else {
+            this.slots[insertAt].key = key;
+        }
+        if (valOwned) {
+            this.slots[insertAt].val = #value;
+        } else {
+            this.slots[insertAt].val = value;
+        }
         this.owned[insertAt] = ownBits;
         this.setCtrl(insertAt, h2);
         this.sizeCount = this.sizeCount + 1;

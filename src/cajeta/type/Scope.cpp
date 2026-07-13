@@ -42,6 +42,29 @@ namespace cajeta {
         markMoved(name, "");
     }
 
+    // 5.2.7 — lend edges live on the HOLDER's declaring scope (same placement
+    // rule markMoved uses), so a lend recorded inside a nested block is still
+    // visible at the outer return that escapes the holder.
+    void Scope::recordLend(const string& holder, const string& src) {
+        Scope* target = this;
+        while (target) {
+            if (target->fields.find(holder) != target->fields.end()) break;
+            target = target->parent ? target->parent.get() : nullptr;
+        }
+        if (!target) target = this;
+        target->lendEdges[holder].insert(src);
+    }
+
+    set<string> Scope::lendsOf(const string& holder) {
+        Scope* target = this;
+        while (target) {
+            auto it = target->lendEdges.find(holder);
+            if (it != target->lendEdges.end()) return it->second;
+            target = target->parent ? target->parent.get() : nullptr;
+        }
+        return {};
+    }
+
     void Scope::markMoved(const string& name, const string& note) {
         // Find the scope where the name was declared and record the move there;
         // otherwise record it locally so later checks still see it.

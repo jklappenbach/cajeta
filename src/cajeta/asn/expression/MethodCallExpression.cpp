@@ -7488,6 +7488,65 @@ namespace cajeta {
                     }
                 }
             }
+            // 5.2.7 — one-hop lend into a local holder (`h.keep(s)`). A PLAIN
+            // arg lends: the callee may store it, but the title stays with `s`,
+            // which dies at this scope's exit. Record receiver -> lent local;
+            // the escape sites (return of the holder) reject. Conservative:
+            // we don't know whether the callee retains it, so any plain
+            // class-local arg on a local receiver records an edge. `#s` owns,
+            // so it records nothing and suppresses the lint.
+            if (!children.empty()) {
+                if (auto recvId = std::dynamic_pointer_cast<IdentifierExpression>(
+                        children[0])) {
+                    if (auto sc = module->getScopeStack().peek()) {
+                        FieldPtr recvF = sc->getField(recvId->getTextValue());
+                        MethodPtr lendCallee;
+                        if (recvF) {
+                            auto recvCls = std::dynamic_pointer_cast<CajetaClass>(
+                                recvF->getType());
+                            if (recvCls) {
+                                try {
+                                    lendCallee = recvCls->resolveMethod(
+                                        methodCallName, entries,
+                                        /*isConstructor=*/false,
+                                        /*floatingParams=*/false);
+                                } catch (...) {
+                                    lendCallee = nullptr;   // unresolved: no edge
+                                }
+                            }
+                        }
+                        if (recvF) {
+                            for (size_t i = 0; i < parameters.size(); ++i) {
+                                if (parameters[i].callerTransferred) continue;
+                                auto argId = std::dynamic_pointer_cast<
+                                    IdentifierExpression>(
+                                        parameters[i].expression);
+                                if (!argId) continue;
+                                FieldPtr argF = sc->getField(argId->getTextValue());
+                                bool argIsLocalOwner = argF && argF->getDropEntry()
+                                    && !std::dynamic_pointer_cast<ParameterField>(
+                                           argF);
+                                if (!argIsLocalOwner) continue;
+                                // Only a RETAINING callee can leave the receiver
+                                // holding the lend. A read-only callee
+                                // (`sb.append(s)`, `list.contains(x)`) stores
+                                // nothing, so its receiver is not endangered —
+                                // recording an edge for those poisoned every
+                                // receiver in the stdlib.
+                                if (!lendCallee) continue;
+                                auto lfps = lendCallee->getParameterList();
+                                size_t lfi = i + (lendCallee->isStatic() ? 0 : 1);
+                                if (lfi >= lfps.size() || !lfps[lfi]) continue;
+                                if (lendCallee->retainsFormal(
+                                        lfps[lfi]->getName())) {
+                                    sc->recordLend(recvId->getTextValue(),
+                                                   argId->getTextValue());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             // Helper: deactivate the named local's drop entry at the
             // current insertion point. Used by both the caller-side and
             // callee-side transfer passes below.

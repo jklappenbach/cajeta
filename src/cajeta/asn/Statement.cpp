@@ -1729,6 +1729,47 @@ namespace cajeta {
             }
         }
 
+        // 5.2.7 (spec §7.4, sub-fork B) — single-hop DANGLING LEND. The
+        // returned holder escapes this method, but any local it merely LENT
+        // (a plain, non-`#` store or arg) dies at this scope's exit — the
+        // caller would receive an object pointing at freed memory. Covers
+        // both `return h` and `return #h`. Conservative and intra-procedural:
+        // the fix is to spell the lend `#s` (surrender the title to the
+        // holder), which records no edge.
+        {
+            ExpressionPtr escapee = expression;
+            if (auto mvEsc = dynamic_pointer_cast<MoveExpression>(escapee)) {
+                auto& mch = mvEsc->getChildren();
+                if (!mch.empty()) {
+                    escapee = dynamic_pointer_cast<Expression>(mch[0]);
+                }
+            }
+            if (auto escId = dynamic_pointer_cast<IdentifierExpression>(escapee)) {
+                if (auto sc = module->getScopeStack().peek()) {
+                    set<string> lends = sc->lendsOf(escId->getTextValue());
+                    if (!lends.empty()) {
+                        std::string names;
+                        for (auto& n : lends) {
+                            if (!names.empty()) names += "`, `";
+                            names += n;
+                        }
+                        throw Exception(
+                            "cannot return `" + escId->getTextValue()
+                                + "` — it holds a LEND of the local `" + names
+                                + "`, which drops when this method returns, so "
+                                  "the caller would receive an object pointing "
+                                  "at freed memory. A plain store/argument lends "
+                                  "(the title stays with the local); only `#` "
+                                  "surrenders it. Fix: spell the lend `#" + names
+                                + "` so the holder takes the title, or don't let "
+                                  "the holder escape. See docs/specification/"
+                                  "MemoryModel.md § Function signatures.",
+                            "CAJETA_ERROR_DANGLING_LEND");
+                    }
+                }
+            }
+        }
+
         // L3-2 escape check: a function-typed local that holds a closure
         // with borrow captures is bounded by its declaring scope — its
         // captured borrows refer to outer locals that would be dead by

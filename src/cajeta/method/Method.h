@@ -533,6 +533,16 @@ namespace cajeta {
         // from its transfer-word bit; prologue-only, no-op without the word.
         void emitFormalDropEntries(CajetaModulePtr module);
 
+        // 5.2.7 — does this method RETAIN the named formal, i.e. store it into
+        // a field or an element? Only a retaining callee can leave its receiver
+        // holding a lend of the caller's local (the dangling-lend hazard); a
+        // read-only callee (`sb.append(s)`, `list.contains(x)`) cannot, and
+        // must not poison its receiver. Cached; false for bodyless methods.
+        bool retainsFormal(const std::string& formalName);
+    private:
+        map<std::string, bool> retainsFormalCache;
+    public:
+
         int getOriginReturnTypeParamIndex() const { return originReturnTypeParamIndex; }
         void setOriginReturnTypeParamIndex(int idx) { originReturnTypeParamIndex = idx; }
 
