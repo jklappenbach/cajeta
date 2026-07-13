@@ -413,6 +413,10 @@ namespace cajeta::xref {
             // value, not a missing one — the failure mode this whole export exists
             // to avoid — so discriminate on the concrete type.
             if (std::dynamic_pointer_cast<CajetaView>(c)) return "view";
+            // Before isInterface: an annotation is a name-only CajetaClass
+            // (visitAnnotationTypeDeclaration) whose flags would otherwise read
+            // as a bare "class" — a wrong kind, not a missing one.
+            if (c->isAnnotation()) return "annotation";
             if (c->isInterface()) return "interface";
             if (c->isRecordType()) return "record";
             return "class";

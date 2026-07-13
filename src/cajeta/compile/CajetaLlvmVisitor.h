@@ -2554,6 +2554,18 @@ namespace cajeta {
             // position resolve to the layout-less annotation → SIGSEGV at
             // allocation (task #65).
             canon[qName->toCanonical()] = static_pointer_cast<CajetaType>(ann);
+
+            // xref (ide-symbol-index plan 4.4): never in structures, so the
+            // export's class walk only sees this canonicalMap entry — without a
+            // declaring position stamped here it is unplaceable and silently
+            // absent (every annotation-only stdlib file was). Mirrors the enum
+            // stamping in visitEnumDeclaration.
+            ann->setDeclaringFile(pModule->currentSourceFile());
+            if (ctx->identifier() && ctx->identifier()->getStart()) {
+                ann->setDeclPosition(
+                    (int) ctx->identifier()->getStart()->getLine(),
+                    (int) ctx->identifier()->getStart()->getCharPositionInLine());
+            }
             return std::any(nullptr);
         }
 

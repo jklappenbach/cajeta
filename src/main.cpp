@@ -14,6 +14,7 @@
 #include "cajeta/cli/DocCommand.h"
 #include "cajeta/cli/IdeCommands.h"
 #include "cajeta/cli/NativeCommands.h"
+#include "cajeta/cli/StdlibCommands.h"
 #include "cajeta/cli/XpuProfileCommand.h"
 #include "cajeta/jit/CajetaJitHost.h"
 #include "cajeta/dap/DapServer.h"
@@ -78,6 +79,9 @@ void printUsage(const char* progname) {
               << "                     (ide install | uninstall | list).\n"
               << "  jit-run <root> <package.Class.method>   Compile + run an entry point via the JIT.\n"
               << "  dap                Debug Adapter Protocol server over stdio (for IDE debugging).\n"
+              << "  stdlib <cmd>       Embedded stdlib source access (stdlib list |\n"
+              << "                     stdlib extract <dir>) — extraction preserves package\n"
+              << "                     paths and writes a .cajeta-stdlib.json identity marker.\n"
               << "\n"
               << "Mode (docs/specification/buildtool/CompilerModes.md):\n"
               << "  --mode=debug|debug-release|release|fast|minimal\n"
@@ -286,6 +290,13 @@ int main(int argc, const char* argv[]) {
     // plugin embedded in this binary (cross-platform install path, D8).
     if (argc >= 2 && std::string(argv[1]) == "ide") {
         return cajeta::dispatchIde(argc, argv);
+    }
+
+    // `cajeta stdlib <list|extract <dir>>` — embedded stdlib source access
+    // (ide-symbol-index §6.0.3): the IDE plugin extracts + mounts the stdlib
+    // source so navigation and debug stops land in real files.
+    if (argc >= 2 && std::string(argv[1]) == "stdlib") {
+        return cajeta::dispatchStdlib(argc, argv);
     }
 
     // --version / -V short-circuit. Handled before Compiler construction

@@ -379,3 +379,38 @@ TEST(XrefLint, ADirectoryTargetRequiresAnExportPath) {
         "--lint " + root.string() + " --diag-format=json", err);
     EXPECT_NE(rc, 0);
 }
+
+// ---- 4.4 — annotation declarations (found by Unit 4 acceptance) -----------------
+//
+// Linting the extracted stdlib showed every `annotation`-only file (cajeta/aot/*)
+// silent in the export: annotations register as name-only types in canonicalMap
+// (never in structures) and carried no declaring position, so the collector had
+// nothing to place. The exported FQN is the COMPILER'S canonical identity —
+// `code.<Name>` regardless of the file's package (visitAnnotationTypeDeclaration
+// unifies `@Foo` usage and declaration under the synthetic "code" package) —
+// because an FQN the resolver doesn't use would be a wrong answer.
+
+TEST(XrefLint, AnAnnotationDeclarationIsExportedAtItsOwnToken) {
+    auto root = freshTempDir("annot");
+    writeUnit(root, "demo/Retry.cajeta",
+        "package demo;\n"                  // 1
+        "\n"                               // 2
+        "annotation Retry {\n"             // 3, identifier at col 11
+        "    int32 attempts() default 3;\n"
+        "}\n");
+
+    std::string err;
+    int rc = runCapturingStderr(
+        "--lint " + (root / "demo/Retry.cajeta").string()
+        + " --source-root " + root.string()
+        + " --diag-format=json --emit-xref", err);
+    ASSERT_NE(rc, -1) << "compiler binary missing";
+    EXPECT_EQ(rc, 0) << err;
+
+    std::string all;
+    for (auto& l : xrefLines(err)) all += l + "\n";
+    EXPECT_TRUE(has(all, "\"fqn\": \"code.Retry\""))
+        << "annotation declaration missing from the stream:\n" << all;
+    EXPECT_TRUE(has(all, "\"kind\": \"annotation\"")) << all;
+    EXPECT_TRUE(has(all, "\"file\": \"demo/Retry.cajeta\", \"line\": 3")) << all;
+}
