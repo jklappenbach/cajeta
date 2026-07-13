@@ -485,3 +485,54 @@ TEST(SignatureAbiTests, mixedFlagFormalsDropIndependently) {
         "}\n";
     EXPECT_EQ(runI32(src), 23);
 }
+
+// 5.1.11 (spec §7.1) — LAST-USE ADVISORY. A plain arg at a local's final use
+// emits a WARNING with a `#` fixit (never an error — the build stays green;
+// inference is rejected, spec §4.6.4). A later read of the local suppresses it,
+// and so does spelling `#v`. Warning capture is the harness support added with
+// 5.2.8: the JIT installs a DiagnosticEngine and parks what it collected.
+namespace {
+
+// Did the last compile warn about this specific variable? Filtering by name
+// keeps the assertion immune to any advisory the stdlib itself trips.
+bool warnedAbout(const char* varName) {
+    for (auto& d : CajetaJit::lastDiagnostics()) {
+        if (d.code == "CAJETA_WARN_LAST_USE_TRANSFER"
+                && d.severity == "warning"
+                && d.message.find(std::string("`") + varName + "`")
+                       != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+const char* kAdvisorySrc =
+    "public class Sink {\n"
+    "    public Cell held;\n"
+    "    public void keep(Cell v) { this.held = #v; }\n"
+    "    public int32 peek(Cell v) { return v.n; }\n"
+    "}\n";
+
+}  // namespace
+
+TEST(SignatureAbiTests, lastUseOfLentLocalWarnsWithTransferFixit) {
+    std::string src = std::string(kCellSrc) + kAdvisorySrc +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Sink s = heap Sink();\n"
+        "        Cell doomed = heap Cell(1);\n"
+        "        s.keep(doomed);\n"      // final use, lent -> ADVISE
+        "        Cell reread = heap Cell(2);\n"
+        "        s.peek(reread);\n"      // lent, but read again below -> quiet
+        "        Cell moved = heap Cell(3);\n"
+        "        s.keep(#moved);\n"      // spelled -> quiet
+        "        return reread.n;\n"     // the later read that suppresses
+        "    }\n"
+        "}\n";
+    // The advisory is a WARNING: the compile must still succeed and run.
+    EXPECT_EQ(runI32(src), 2);
+    EXPECT_TRUE(warnedAbout("doomed"));
+    EXPECT_FALSE(warnedAbout("reread"));
+    EXPECT_FALSE(warnedAbout("moved"));
+}

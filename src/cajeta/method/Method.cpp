@@ -17,6 +17,7 @@
 #include "../asn/Statement.h"
 #include "../asn/expression/Expression.h"
 #include "../asn/expression/MethodCallExpression.h"
+#include "../asn/expression/CreatorRest.h"
 #include "../asn/expression/NewExpression.h"
 #include "../asn/expression/AggregateInitializerExpression.h"
 #include "../asn/expression/BinaryOpExpression.h"
@@ -1685,6 +1686,64 @@ namespace cajeta {
         walk(block);
         retainsFormalCache[formalName] = retained;
         return retained;
+    }
+
+    // 5.2.8 — last-use pre-pass. Walks the body once, recording the latest
+    // (line, column) each identifier is read at, and parking any name read
+    // inside a loop body (its "last" textual use runs again next iteration, so
+    // it is not a last use in any useful sense).
+    void Method::computeLastUses() {
+        if (lastUsesComputed) return;
+        lastUsesComputed = true;
+        if (!block) return;
+        std::function<void(const AbstractSyntaxNodePtr&, bool)> walk =
+            [&](const AbstractSyntaxNodePtr& node, bool inLoop) {
+                if (!node) return;
+                bool loopHere = inLoop
+                    || std::dynamic_pointer_cast<WhileStatement>(node)
+                    || std::dynamic_pointer_cast<DoStatement>(node)
+                    || std::dynamic_pointer_cast<ForStatement>(node)
+                    || std::dynamic_pointer_cast<EnhancedForStatement>(node);
+                if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(node)) {
+                    const std::string& n = id->getTextValue();
+                    if (loopHere) {
+                        loopUsedNames.insert(n);
+                    }
+                    pair<int, int> at{id->getSourceLine(), id->getSourceColumn()};
+                    auto it = lastUseAt.find(n);
+                    if (it == lastUseAt.end() || at > it->second) {
+                        lastUseAt[n] = at;
+                    }
+                }
+                // Statements park their payloads in private fields, not in
+                // getChildren() — descend explicitly (same trap retainsFormal
+                // hit with ExpressionStatement).
+                if (auto es = std::dynamic_pointer_cast<ExpressionStatement>(node)) {
+                    walk(es->getExpression(), loopHere);
+                }
+                if (auto rs = std::dynamic_pointer_cast<ReturnStatement>(node)) {
+                    walk(rs->getExpression(), loopHere);
+                }
+                // Call/ctor ARGUMENTS are likewise private (a `parameters`
+                // vector), so `f(x)` hides x from getChildren() — the very site
+                // this advisory is about.
+                if (auto mc = std::dynamic_pointer_cast<MethodCallExpression>(node)) {
+                    for (auto& prm : mc->getParameters()) walk(prm.expression, loopHere);
+                }
+                if (auto cr = std::dynamic_pointer_cast<ClassCreatorRest>(node)) {
+                    for (auto& prm : cr->getParameters()) walk(prm.expression, loopHere);
+                }
+                for (auto& child : node->getChildren()) walk(child, loopHere);
+            };
+        walk(block, false);
+    }
+
+    bool Method::isFinalUseOfLocal(const std::string& name, int line, int column) {
+        computeLastUses();
+        if (loopUsedNames.find(name) != loopUsedNames.end()) return false;
+        auto it = lastUseAt.find(name);
+        if (it == lastUseAt.end()) return false;
+        return it->second == pair<int, int>{line, column};
     }
 
     void Method::computeArenaEligibility() {

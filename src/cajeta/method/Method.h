@@ -539,8 +539,23 @@ namespace cajeta {
         // read-only callee (`sb.append(s)`, `list.contains(x)`) cannot, and
         // must not poison its receiver. Cached; false for bodyless methods.
         bool retainsFormal(const std::string& formalName);
+
+        // 5.2.8 (spec §7.1) — last-use advisory. True when the identifier `name`
+        // has no later read in this body than (line, column), i.e. the site is
+        // its FINAL use and lending there is probably meant as a transfer. Uses
+        // inside a loop body never qualify: a textual last use still runs again
+        // on the next iteration, so advising `#` there would be wrong. Advisory
+        // only — the compiler cannot know intent (spec §4.6.4 rejects inferring
+        // it), so this reports a WARNING with a `#` fixit and never an error.
+        bool isFinalUseOfLocal(const std::string& name, int line, int column);
     private:
         map<std::string, bool> retainsFormalCache;
+        // name -> last (line, column) it is read at; names used inside any loop
+        // are parked in loopUsedNames and never advised.
+        map<std::string, pair<int, int>> lastUseAt;
+        set<std::string> loopUsedNames;
+        bool lastUsesComputed = false;
+        void computeLastUses();
     public:
 
         int getOriginReturnTypeParamIndex() const { return originReturnTypeParamIndex; }

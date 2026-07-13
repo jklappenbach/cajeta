@@ -3,6 +3,7 @@
 //
 
 #include "MethodCallExpression.h"
+#include "../../error/DiagnosticEngine.h"
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/type/CajetaArray.h"
@@ -7486,6 +7487,43 @@ namespace cajeta {
                         argTitleFlags[i] = builder->CreateCall(
                             flagFn, {entry}, "arg_title_flag");
                     }
+                }
+            }
+            // 5.2.8 (spec §7.1) — LAST-USE ADVISORY. A plain (lending) argument
+            // that is the final use of a local owner is very often a transfer
+            // the author forgot to spell: the local dies at scope exit anyway,
+            // so nothing else could have wanted the title. We cannot INFER the
+            // transfer (spec §4.6.4 — the ParallelDriver spawn hand-off is a
+            // real counterexample), so this is a WARNING with a `#` fixit and
+            // never an error. A later read of the local, or a use inside a
+            // loop, suppresses it; so does spelling `#x`.
+            for (size_t i = 0; i < parameters.size(); ++i) {
+                if (parameters[i].callerTransferred) continue;
+                auto advId = std::dynamic_pointer_cast<IdentifierExpression>(
+                    parameters[i].expression);
+                if (!advId) continue;
+                auto advScope = module->getScopeStack().peek();
+                if (!advScope) continue;
+                FieldPtr advF = advScope->getField(advId->getTextValue());
+                bool advIsLocalOwner = advF && advF->getDropEntry()
+                    && !std::dynamic_pointer_cast<ParameterField>(advF);
+                if (!advIsLocalOwner) continue;
+                auto advM = module->getCurrentMethod();
+                if (!advM) continue;
+                if (!advM->isFinalUseOfLocal(advId->getTextValue(),
+                        advId->getSourceLine(), advId->getSourceColumn())) {
+                    continue;
+                }
+                if (auto* eng = DiagnosticEngine::active()) {
+                    eng->report("warning", "CAJETA_WARN_LAST_USE_TRANSFER",
+                        "`" + advId->getTextValue() + "` is lent here at its "
+                        "final use, so nothing in this scope reads it again — "
+                        "if the callee is meant to KEEP it, spell `#"
+                            + advId->getTextValue() + "` to transfer the title. "
+                        "As written the title stays with the local and is "
+                        "released at scope exit (a plain argument lends).",
+                        module->getSourcePath(),
+                        advId->getSourceLine(), advId->getSourceColumn() + 1);
                 }
             }
             // 5.2.7 — one-hop lend into a local holder (`h.keep(s)`). A PLAIN

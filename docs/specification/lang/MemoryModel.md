@@ -40,15 +40,37 @@
 
 ## Operator: `#`
 
-Single token. Appears in three positions:
+Single token, and — with one opt-in exception — it appears only where a transfer
+actually happens: at a **use site**, never in a signature.
 
 | Position | Meaning |
 |----------|---------|
-| `#expr` (value position) | Transfer ownership *from* expr. After this, expr is moved; static error to use it again. |
-| `#T` (parameter type) | Parameter accepts ownership. Caller must pass `#x` (or an auto-promoted fresh `heap T(...)`). |
-| `#T` (return type) | Function transfers ownership to caller. |
+| `#expr` (value position) | Transfer the title *from* expr. After this, expr is moved; a later read is a static error. |
+| `#T` (parameter type) | **Opt-in must-own.** The method refuses a lend: the caller has to surrender. Rarely needed — see below. |
+| `#T` (return type) | The method always transfers. Also rarely needed; a plain return already carries whatever title it holds. |
 
-**Redundant `#` is a static error.** If a function's return type is `#T`, the callsite assignment `x = f()` already transfers; writing `x = #f()` is rejected. One transfer point per expression.
+**Transfer is the caller's decision, not the signature's.** A plain class-typed
+parameter accepts *both* a lend and a transfer — which one happened is decided at
+each call site by whether the argument was spelled `#x`:
+
+```cajeta
+void keep(Cell c) { this.held = #c; }   // no ownership spelling in the signature
+
+sink.keep(cell);        // lends — `cell` still owns it, and drops it at scope exit
+sink.keep(#cell);       // surrenders — the title moves; `cell` is moved-from
+```
+
+This is deliberate. An earlier design put the ownership mode in the signature and
+required the author to predict, at declaration time, how every future caller would
+use the method. That prediction is not available — most acutely for containers,
+where the same `put` is legitimately used both ways — and the honest endpoint was
+to mark *everything* "either", which is what the language now does by default.
+Rationale and the rejected alternatives are recorded in the title-tracking spec §4.6.
+
+`#T` on a parameter survives only as an **opt-in must-own** edge, for a method
+that cannot function with a borrow (it stores the value somewhere that outlives
+the call, and has no way to cope with the caller keeping the title). A plain
+argument at such an edge is `CAJETA_ERROR_TRANSFER_REQUIRED`.
 
 ---
 
@@ -56,9 +78,15 @@ Single token. Appears in three positions:
 
 | Operation | No `#` | With `#` |
 |-----------|--------|----------|
-| `a = b` | a borrows b | a takes ownership; b is moved |
-| `f(x)` | f borrows x | f takes ownership; x moved |
-| `return x` | caller borrows x (signature: `T f(...)`) | caller takes ownership (signature: `#T f(...)`) |
+| `a = b` | a borrows b | a takes the title; b is moved |
+| `this.f = x` | the field borrows x — the title stays with x and x still drops it | the field takes the title |
+| `f(x)` | f borrows x for the call | f takes the title; x is moved |
+| `return x` | hands back whatever title x held (a lent value stays lent; an owned one transfers) | hands back the title |
+
+Note the second row: **a plain field store lends.** It does not quietly take
+ownership. If a method stores a borrowed value into a field that outlives the
+call, the field is left pointing at something the caller will free — which is what
+the dangling-lend check below catches.
 
 **Auto-promotion for fresh heap allocations.** An anonymous `heap T(...)` expression in transfer position promotes implicitly. `p.field = heap T()` and `return heap T()` (in a `#T` function) work without explicit `#`. The temporary is an unnamed owner with no prior identity, so promotion has no use-after-move risk.
 
@@ -74,15 +102,85 @@ The compiler tracks each owner's declaration site and scope-end. For each borrow
 
 Borrows track their *path* from the named root, not just the variable. `String n = person.address.city` records `n`'s root as `person` with path `address.city`. Reassigning any link along the path (`person.address = #x`) drops everything derived from that link; subsequent use of `n` is a static error.
 
-### Function signatures and elision
+### Function signatures: the transfer ABI
 
-Signature shape determines the rule. No annotations beyond the `#` marker.
+Because the caller decides, the callee has to be *told* what it got. Every
+class-typed parameter and return therefore carries a hidden per-call flag.
 
-- **Method:** `T foo()` returns a borrow tied to `this`. `#T foo()` returns ownership.
-- **Free function, single parameter:** `T foo(P p)` returns a borrow tied to `p`. `#T foo(P p)` returns ownership.
-- **Free function, multiple parameters:** borrow-returns are **forbidden**. Multi-parameter functions must return `#T` (or a primitive value type). The caller cannot disambiguate which parameter a borrow inherits from without annotations, so we forbid the case rather than re-introduce lifetime syntax.
+- **Arguments.** A method with at least one pass-by-pointer class parameter takes
+  a hidden trailing word; bit *i* is set iff user-argument *i* was surrendered.
+  `@Kernel`, `@Device`, `@Native` methods and `static main` keep the plain C ABI —
+  the compiler does not own both sides of those boundaries.
+- **Returns.** A method returning a class pointer stores a paired flag beside the
+  return value. (This one is a thread-local: nothing runs between the callee's
+  `ret` and the caller reading it, so there is no window to corrupt.)
 
-The compiler verifies each function body conforms to its signature: a `T foo(P p)` whose body returns a borrow rooted in something other than `p` is rejected at the definition site.
+**Formals and call results are *runtime* owners.** A class-typed parameter is not
+statically a borrow and not statically an owner — it is whichever the caller made
+it, so its drop entry is *armed from its flag bit* on entry. The same is true of a
+local initialized from a call: it arms from the return flag.
+
+The consequences follow from that one rule:
+
+- A surrendered argument the callee never consumes **drops in the callee**, on
+  whatever exit it takes — including a `throw`, where the runtime unwinder walks
+  the drop chain.
+- A lent argument leaves the entry disarmed, so the callee's scope exit does not
+  touch it. The caller still owns it.
+- `#v` inside the callee (a store, a forward, a return) **consumes** the formal:
+  it reads the flag, deactivates the entry, and passes that same flag on. A
+  forwarding chain therefore threads the *caller's* decision all the way down —
+  a value lent into `outer` and forwarded with `#` to `inner` arrives at `inner`
+  still lent, and nobody frees it.
+
+Ownership is never *inferred* from the body. The compiler could often guess (a
+lend at a local's last use is usually a transfer the author forgot to spell), but
+guessing is wrong in exactly the cases that matter — a value handed to a spawned
+task outlives the frame that appears to be done with it. So the compiler advises
+instead of acting: see the last-use advisory below.
+
+### Dangling lends
+
+A plain store or a plain argument **lends**. If the thing that received the lend
+then escapes the method, it escapes holding a pointer to a local that is about to
+drop:
+
+```cajeta
+Holder build() {
+    Holder h = heap Holder();
+    Cell s = heap Cell(5);
+    h.c = s;          // lend: the title stays with `s`
+    return #h;        // ERROR — CAJETA_ERROR_DANGLING_LEND
+}                     // `s` drops here; the caller's Holder points at freed memory
+```
+
+The fix is to say what was meant: `h.c = #s` gives the holder the title.
+
+The check is intra-procedural and deliberately conservative. It fires only when
+the receiving callee actually **retains** the argument (stores it into a field);
+a method that merely reads its argument — `sb.append(s)`, `list.contains(x)` —
+cannot strand anything and does not poison its receiver.
+
+### Last-use advisory (warning)
+
+Lending a local at its **final use** is suspicious: nothing in the scope reads it
+again, so the lend usually should have been a transfer. The compiler says so and
+moves on — `CAJETA_WARN_LAST_USE_TRANSFER`, with a `#` fixit. It is a warning, not
+an error: the build stays green, because (per above) the compiler cannot know
+intent. A later read of the local suppresses it, as does a use inside a loop
+(where the "last" textual use runs again next iteration), as does spelling `#x`.
+
+### Mode-only overloads are rejected
+
+Transfer mode is not part of a signature — dispatch erases `#` — so two
+declarations that differ only in mode collide:
+
+```cajeta
+void f(Cell c) { }
+void f(#Cell c) { }   // ERROR — CAJETA_ERROR_TRANSFER_MODE_OVERLOAD
+```
+
+Keep one. A plain formal already accepts both a lend and a transfer.
 
 ### Anonymous-owner error
 
@@ -202,14 +300,20 @@ try {
 
 ## Containers (stdlib convention)
 
-All stdlib containers follow:
+Containers carry **no ownership spelling in their signatures** — they are the
+clearest case for caller discretion, since the same container is legitimately used
+both to own its elements and to index values owned elsewhere:
 
-- `void add(#T element)` — transfer in.
-- `T get(int32 i)` — returns borrow, lifetime tied to receiver.
-- `#T remove(int32 i)` — transfer out.
+- `void add(T element)` — the *call site* decides: `add(x)` lends, `add(#x)` gives
+  the container the title. The entry records which, per element.
+- `T get(int32 i)` — hands back whatever the entry holds: a borrow if the entry is
+  borrowed, the title if it is owned.
+- `T remove(int32 i)` — membership ends; the return carries the entry's title if it
+  had one.
 - `for (T x : container)` — `x` is a borrow per iteration, bounded by the loop body.
 
-A borrowing-container type may exist separately, but the default `List<T>` etc. own their contents.
+There is no separate "borrowing container" type. One `HashMap<K, V>` holds owned and
+borrowed entries side by side, and drops exactly the ones it owns.
 
 ---
 
@@ -342,6 +446,10 @@ debug) by the global live-set claim described under § Runtime.
 | Anonymous-owner chained borrow | Expression-level lifetime check |
 | Double-free of aliased field | Runtime live-set claim (see `FieldOwnership.md`) |
 | Use-after-free of aliased field whose source dropped first | Programmer responsibility at v1 (Phase 6+ lifetime tracker) |
+| Escaping holder retaining a lend of a dying local | Single-hop dangling-lend check (`CAJETA_ERROR_DANGLING_LEND`) |
+| Plain argument at a must-own (`#T`) edge | `CAJETA_ERROR_TRANSFER_REQUIRED` |
+| Two declarations differing only in transfer mode | `CAJETA_ERROR_TRANSFER_MODE_OVERLOAD` |
+| Lend at a local's last use (**warning**, not an error) | `CAJETA_WARN_LAST_USE_TRANSFER` — suggests `#`; never fails the build |
 
 ---
 

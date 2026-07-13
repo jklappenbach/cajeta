@@ -583,6 +583,22 @@ CajetaJit::~CajetaJit() {
     }
 }
 
+// 5.1.11 / 5.2.8 — diagnostics collected by the last compile (see the header).
+namespace {
+    std::vector<cajeta::CollectedDiagnostic> g_lastDiagnostics;
+}
+
+const std::vector<cajeta::CollectedDiagnostic>& CajetaJit::lastDiagnostics() {
+    return g_lastDiagnostics;
+}
+
+bool CajetaJit::sawDiagnostic(const std::string& code) {
+    for (auto& d : g_lastDiagnostics) {
+        if (d.code == code) return true;
+    }
+    return false;
+}
+
 std::unique_ptr<CajetaJit> CajetaJit::compile(const std::string& source,
                                               const std::string& fqClassName) {
     return compile(source, fqClassName, Options{});
@@ -613,6 +629,24 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     // delegate to the single-source path's same parse/codegen/JIT
     // pipeline by parsing each module into the same Compiler.
     ensureJitInitialized();
+
+    // 5.1.11 / 5.2.8 — install a DiagnosticEngine for this compile so WARNINGS
+    // (which are reported, not thrown) are captured instead of dropped on the
+    // floor. Parked in g_lastDiagnostics for the test to assert on. The guard
+    // restores the previous active engine even if the compile throws, so an
+    // error-path test doesn't leave a dangling cursor into a dead stack frame.
+    cajeta::DiagnosticEngine diagEngine;
+    cajeta::DiagnosticEngine* prevEngine = cajeta::DiagnosticEngine::active();
+    cajeta::DiagnosticEngine::setActive(&diagEngine);
+    g_lastDiagnostics.clear();
+    struct DiagGuard {
+        cajeta::DiagnosticEngine& engine;
+        cajeta::DiagnosticEngine* prev;
+        ~DiagGuard() {
+            g_lastDiagnostics = engine.finalize();
+            cajeta::DiagnosticEngine::setActive(prev);
+        }
+    } diagGuard{diagEngine, prevEngine};
 
     // Coarse per-phase wall-clock timing, gated on CAJETA_JIT_TIMING, to locate
     // the per-test fixed cost (parse vs cajeta codegen vs LLJIT backend compile).
