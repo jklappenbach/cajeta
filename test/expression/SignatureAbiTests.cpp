@@ -394,3 +394,94 @@ TEST(SignatureAbiTests, lendNegativeProbesCompileAndRun) {
         "}\n";
     EXPECT_EQ(runI32(src), 11);
 }
+
+// ---------------------------------------------------------------------------
+// 5.2.5 — the callee-side drop of an unconsumed flag-true formal must fire on
+// EVERY exit, not just the fall-through one 5.1.7 covers. The drop entries are
+// registered on the method's drop frames, so returns run them via
+// emitOwnerDrops; a THROW does not — it longjmps and the runtime unwinder walks
+// the chain instead. That path is what these probe.
+// ---------------------------------------------------------------------------
+
+// 5.2.5a — early return: a consumed formal drops exactly once, on the path
+// actually taken (and the lent arg on the other path still doesn't drop).
+TEST(SignatureAbiTests, consumedFormalDropsOnEarlyReturn) {
+    std::string src = std::string(kCellSrc) +
+        "public class Sink {\n"
+        "    public int32 take(Cell v, boolean early) {\n"
+        "        if (early) { return v.n; }\n"   // consumed, early exit
+        "        return v.n + 100;\n"            // consumed, late exit
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 work() {\n"
+        "        Sink s = heap Sink();\n"
+        "        int32 a = s.take(#heap Cell(1), true);\n"   // drops at early ret
+        "        int32 b = s.take(#heap Cell(2), false);\n"  // drops at late ret
+        "        return a + b;\n"                            // 1 + 102 = 103
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int32 t = work();\n"
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return (int32) (leaked * 100) + t;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 103);
+}
+
+// 5.2.5b — THROW path: the callee takes the title, then throws before consuming
+// it. The value must still be reclaimed — a throw does NOT run emitOwnerDrops;
+// it longjmps and the runtime unwinder walks the drop chain, which the formal's
+// entry is on. The oracle is DIFFERENTIAL: a thrown-and-caught Exception object
+// itself leaks today (pre-existing, unrelated to titles — see plan 5.2.5), so an
+// absolute leak count would measure that bug instead of this one. Comparing the
+// owned-arg call against a throw-only control cancels it out.
+TEST(SignatureAbiTests, consumedFormalDropsWhenCalleeThrows) {
+    std::string src = std::string(kCellSrc) +
+        "public class Sink {\n"
+        "    public int32 take(Cell v) { throw heap Exception(\"boom\"); }\n"
+        "    public int32 plain() { throw heap Exception(\"boom\"); }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Sink s = heap Sink();\n"
+        "        int64 b1 = Cajeta.liveCount();\n"
+        "        try { s.plain(); } catch (Exception e) { }\n"
+        "        int64 ctrl = Cajeta.liveCount() - b1;\n"      // the Exception leak
+        "        int64 b2 = Cajeta.liveCount();\n"
+        "        try { s.take(#heap Cell(4)); } catch (Exception e) { }\n"
+        "        int64 owned = Cajeta.liveCount() - b2;\n"     // must equal ctrl
+        "        if (owned != ctrl) { return -1; }\n"          // Cell NOT reclaimed
+        "        Cell mine = heap Cell(5);\n"
+        "        try { s.take(mine); } catch (Exception e) { }\n"
+        "        return mine.n;\n"                             // lent: must survive
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 5);
+}
+
+// 5.2.5c — mixed flags in one call: bit i of the transfer word must select
+// per-formal, so an owned arg drops in the callee while a lent one beside it
+// survives.
+TEST(SignatureAbiTests, mixedFlagFormalsDropIndependently) {
+    std::string src = std::string(kCellSrc) +
+        "public class Pair {\n"
+        "    public int32 both(Cell a, Cell b) { return a.n + b.n; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 work() {\n"
+        "        Pair p = heap Pair();\n"
+        "        Cell keep = heap Cell(10);\n"
+        "        int32 t = p.both(#heap Cell(3), keep);\n"  // a owned, b lent
+        "        return t + keep.n;\n"                      // 13 + 10 = 23
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int32 t = work();\n"
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return (int32) (leaked * 100) + t;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 23);
+}
