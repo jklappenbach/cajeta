@@ -27,7 +27,8 @@ namespace cajeta {
 
     void reportOrThrow(int line, int column,
                        const std::string& errorId, const std::string& message) {
-        if (DiagnosticEngine* eng = DiagnosticEngine::active()) {
+        DiagnosticEngine* eng = DiagnosticEngine::active();
+        if (eng && eng->collectsErrors()) {
             eng->report("error", errorId, message, diagnosticFile(), line, column);
         } else {
             throw locatedException(line, column, message, errorId);

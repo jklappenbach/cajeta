@@ -636,6 +636,9 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     // restores the previous active engine even if the compile throws, so an
     // error-path test doesn't leave a dangling cursor into a dead stack frame.
     cajeta::DiagnosticEngine diagEngine;
+    // Warnings-capture ONLY: errors keep throwing (fail-loud tests depend on
+    // it; a collected error would let codegen run into a null type and crash).
+    diagEngine.setCollectErrors(false);
     cajeta::DiagnosticEngine* prevEngine = cajeta::DiagnosticEngine::active();
     cajeta::DiagnosticEngine::setActive(&diagEngine);
     g_lastDiagnostics.clear();

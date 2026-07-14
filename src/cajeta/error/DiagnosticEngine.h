@@ -25,6 +25,13 @@ namespace cajeta {
         DiagnosticEngine() = default;
         explicit DiagnosticEngine(bool suppressed) : suppressed_(suppressed) {}
 
+        // Unit-7 sweep fix: the JIT test harness installs an engine ONLY to
+        // capture warnings — errors must keep THROWING (fail-loud tests rely
+        // on it; a collected error lets codegen run into null types and
+        // SIGSEGV). The CLI lint path keeps full collect-and-continue.
+        bool collectsErrors() const { return collectErrors_; }
+        void setCollectErrors(bool v) { collectErrors_ = v; }
+
         // Report a recoverable diagnostic. No-op when suppressed (context files).
         void report(const std::string& severity, const std::string& code,
                     const std::string& message, const std::string& file = "",
@@ -47,6 +54,7 @@ namespace cajeta {
 
     private:
         bool suppressed_ = false;
+        bool collectErrors_ = true;
         bool errorSeen_ = false;
         std::vector<CollectedDiagnostic> diags_;
     };
