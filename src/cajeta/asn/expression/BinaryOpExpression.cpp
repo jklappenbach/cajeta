@@ -1709,10 +1709,14 @@ namespace cajeta {
                             llvm::Function* resolveFn = rhsIsLvalue
                                 ? module->getRuntimeFunction("__cajeta_string_resolve")
                                 : nullptr;
-                            llvm::Function* maskGetFn =
-                                (rhsIsLvalue && resolveFn && maskBit >= 0)
-                                ? module->getRuntimeFunction("__cajeta_move_mask_get")
-                                : nullptr;
+                            // 7.2.2 — the mask is the enclosing
+                            // function's ABI transfer word (TLS retired).
+                            llvm::Value* maskWord = nullptr;
+                            if (rhsIsLvalue && resolveFn && maskBit >= 0) {
+                                if (auto cmw = module->getCurrentMethod()) {
+                                    maskWord = cmw->getTransferWordArg();
+                                }
+                            }
                             llvm::Value* srcWrapper = loadR(rhs);
                             // Lvalue RHS: the source keeps its wrapper — the
                             // field takes a FRESH resolved one (copy ≤
@@ -1723,12 +1727,10 @@ namespace cajeta {
                             // move when the caller transferred, resolve
                             // otherwise.
                             llvm::Value* fresh = nullptr;
-                            if (maskGetFn) {
+                            if (maskWord) {
                                 auto& lctx = *module->getLlvmContext();
-                                llvm::Value* mask = builder->CreateCall(
-                                    maskGetFn, {}, "fld_mvm");
                                 llvm::Value* bit = builder->CreateAnd(
-                                    builder->CreateLShr(mask, maskBit),
+                                    builder->CreateLShr(maskWord, maskBit),
                                     llvm::ConstantInt::get(
                                         llvm::Type::getInt64Ty(lctx), 1));
                                 llvm::Value* isMove = builder->CreateICmpNE(

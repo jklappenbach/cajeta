@@ -2769,15 +2769,21 @@ namespace cajeta {
                     resolvedType = CajetaType::of("int64");
                     return builder->CreateCall(fn, {});
                 }
-                // moveMask() -> int64: the caller-side ownership-transfer mask for
-                // THIS call (bit i set iff user-arg i was passed `#x`). Read once at
-                // method entry; the compiler sets the TLS before a `#`-bearing call
-                // and clears it after (see the call-site emission). Lets a plain-`T`
-                // param method (e.g. HashMap.put) learn which args it owns.
+                // moveMask() -> int64: the ownership-transfer mask for THIS
+                // call (bit i set iff user-arg i arrived owned). 7.2.2: it IS
+                // the enclosing function's trailing ABI transfer word — the
+                // TLS carrier is retired, so the value is stable SSA (an
+                // intervening call can't clobber it) and constructors read
+                // their own call's word. Methods without a word (C-ABI
+                // natives, static entries) read 0.
                 if (ns == "Cajeta" && methodCallName == "moveMask" && parameters.empty()) {
-                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_move_mask_get");
                     resolvedType = CajetaType::of("int64");
-                    return builder->CreateCall(fn, {});
+                    if (auto cmw = module->getCurrentMethod()) {
+                        if (llvm::Value* w = cmw->getTransferWordArg()) {
+                            return w;
+                        }
+                    }
+                    return (llvm::Value*) builder->getInt64(0);
                 }
                 // liveCount() -> int64: current live-object population (test-only
                 // introspection). Lets a test assert an owning container reclaimed
@@ -8023,7 +8029,6 @@ namespace cajeta {
         // has already stashed its pre-deactivation flag.
         int64_t moveMask = 0;
         llvm::Value* transferWordVal = nullptr;
-        bool anyTransfer = false;
         for (size_t mmi = 0; mmi < parameters.size(); ++mmi) {
             // 6.2.5 — owned rvalues surrender WITHOUT `#` (spec §4.1.1): a
             // plain fresh `heap X()` creator contributes a static 1; a plain
@@ -8032,17 +8037,14 @@ namespace cajeta {
             // callerTransferred.
             if (!parameters[mmi].callerTransferred) {
                 if (argTitleFlags[mmi]) {
-                    anyTransfer = true;
+                    // runtime-owned plain arg: forwards its flag below
                 } else if (freshHeapCreatorTempClass(
                         parameters[mmi].expression)) {
                     moveMask |= ((int64_t) 1) << mmi;
-                    anyTransfer = true;
                     continue;
                 } else {
                     continue;
                 }
-            } else {
-                anyTransfer = true;
             }
             llvm::Value* rf = argTitleFlags[mmi];
             if (!rf) {
@@ -8063,13 +8065,6 @@ namespace cajeta {
         } else {
             transferWordVal = builder->getInt64((uint64_t) moveMask);
         }
-        llvm::Function* moveSetFn = nullptr;
-        if (anyTransfer) {
-            moveSetFn = module->getRuntimeFunction("__cajeta_move_mask_set");
-            if (moveSetFn) {
-                builder->CreateCall(moveSetFn, {transferWordVal});
-            }
-        }
         // errorIfUnresolved: this is an explicit `recv.name(args)` — the user
         // named a member that must exist, so a miss is a compile error here
         // rather than a null that surfaces later (or never). Speculative callers
@@ -8079,15 +8074,11 @@ namespace cajeta {
             /*forceDirectCall=*/(isSuperCall || targetIsFinalClass),
             /*explicitMethodTypeArgs=*/explicitMethodTypeArgs,
             /*sretTarget=*/nullptr,
-// title-tracking Unit 5: the same per-call word the moveMask TLS
-            // carries, threaded through the ABI (dual-carry until the TLS
-            // consumers migrate; TLS removal is plan 7.2.2).
+            // title-tracking Unit 5 / 7.2.2: the per-call transfer word
+            // rides the ABI only (the moveMask TLS is retired).
             /*transferWord=*/transferWordVal,
             /*errorIfUnresolved=*/true,
             getSourceLine(), getSourceColumn() + 1);
-        if (moveSetFn) {
-            builder->CreateCall(moveSetFn, {builder->getInt64(0)});
-        }
 
         if (nullSafeStringMethod) {
             // Close all three null-safety blocks unconditionally so the
