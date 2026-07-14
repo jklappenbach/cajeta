@@ -445,7 +445,7 @@ TEST(ContainerSweepTests, collectToListSumsCorrectly) {
         "    public static int32 work() {\n"
         "        int32[] data = { 3, 1, 2 };\n"
         "        ArrayStream<int32> src = heap ArrayStream<int32>(data, 3);\n"
-        "        #ArrayList<int32> xs = src.collect(Collectors.toList<int32>());\n"
+        "        ArrayList<int32> xs = src.collect(Collectors.toList<int32>());\n"
         "        return xs.get(0) + xs.get(1) + xs.get(2);\n"   // 6
         "    }\n"
         "    public static int32 run() {\n"
