@@ -73,7 +73,8 @@ token so the store spelling is atomic and cannot be half-written.
   bit; existing machinery).
 - 2.2.2 Element slot: `this.data[i] #= v` (→ per-slot bit, §3).
 - 2.2.3 Local: `T x #= v` — declaration-initializer form; equivalent to
-  `T x = #v` today (arms/forwards the local's entry).
+  `T x = #v` today (arms/forwards the local's entry). IN v1 (decided
+  2026-07-14, §5.3).
 - 2.2.4 Indexed user class: `m[k] #= v` lowers through `operator[]=` with
   the transfer word composed (existing 6.2.2 lowering; the sugar surface
   changes only in spelling).
@@ -118,12 +119,17 @@ becomes a compile-time diagnostic:
 Class-typed element arrays get per-slot title bits, exactly parallel to the
 per-field ownership word:
 
-- 3.1.1 Lazy: the bitmap materializes on the FIRST title store into the
-  array (`data[i] #= v`). Arrays that only ever see plain stores allocate
-  nothing and behave exactly as today (borrow-era status quo).
-- 3.1.2 The bitmap belongs to the ARRAY (sidecar reachable from the array
-  allocation, capacity/8 bytes), not to any referencing local or field —
-  aliases (`T[] a = this.data`) see the same titles.
+- 3.1.1 Eager tail bitmap (decided 2026-07-14, §5.2): every array whose
+  element type is droppable gets its bits at creation, laid out in the SAME
+  allocation — `header | data[capacity] | bits`. The bitmap address is
+  COMPUTED (`data + capacity * stride`; capacity is already a header word):
+  no pointer chase, no side table, no null test, no materialization branch
+  on any hot path. Cost: capacity/8 bytes + a memset already covered by
+  zero-init. Grow reallocates and the tail moves with it. Primitive-element
+  arrays get no bits. (Laziness was rejected with the rest of the
+  ease-into-it options — done right the first time.)
+- 3.1.2 The bitmap belongs to the ARRAY allocation, not to any referencing
+  local or field — aliases (`T[] a = this.data`) see the same titles.
 - 3.1.3 Declaration-free: no type or field marker exists (§1.3). The store
   is the only syntax.
 
@@ -147,9 +153,14 @@ Once slots carry bits, the compiler emits what containers hand-roll today:
   dual-role resolve (borrowed bytes copy). A `#=` store forwards title
   without the copy — matching field-store behavior. Slot bits and the
   wrapper's internal share machinery are independent layers.
-- 3.3.2 Inline-struct elements (MapEntry-style `E[]` where E is a value
-  aggregate with class-typed members): OPEN — per-slot bit per struct
-  member vs per slot vs excluded-in-v1. See §5.1.
+- 3.3.2 Inline-struct elements (decided 2026-07-14, §5.1): PER-MEMBER
+  bits, replicated per slot — an inline value-struct element is an object
+  without a header, so each slot carries exactly the ownership word its
+  heap counterpart would (one bit per droppable member, same indices).
+  A single per-slot bit is insufficient: HashMap's reality is key-owned /
+  val-borrowed in the same slot. `slots[i].val #= v` sets slot i's
+  val-bit; teardown walks members like the field walk. HashMap converts
+  in v1 — no bespoke-destructor carve-out.
 - 3.3.3 Primitive/value element types without heap payload: no bits, `#=`
   on such slots is a no-op store (same rule as formals).
 - 3.3.4 Views/interfaces: excluded from bit-guarded drop (no uniform drop
@@ -213,16 +224,19 @@ title-tracking 7.2.2, `d4a2a67b`.)
 
 ## 5. Open questions (resolve before the plan)
 
-- 5.1 Inline-struct element arrays (§3.3.2): bits per struct member, one
-  bit per slot with a synthesized member walk, or v1 exclusion (HashMap
-  keeps its bespoke destructor)?
-- 5.2 Bitmap placement: array-header extension (layout change, ABI-visible)
-  vs live-set-keyed side table (no layout change, hash cost on drop paths)
-  vs fat pointer? Interacts with --emit=exe and the JIT/AOT split.
-- 5.3 `#=` on locals (§2.2.3): include in v1, or scope v1 to field + slot
-  destinations where the pain is?
-- 5.4 Phase-3 timing: flip `= #v`→error in this spec's plan, or park until
-  after the title-tracking plan's Unit 8 sweep lands on main?
-- 5.5 Does `#=` participate in operator overloading (`operator#=`) for
-  user classes, or is `m[k] #= v` → `operator[]=`+word (§2.2.4) the only
-  user-class surface in v1?
+- 5.1 RESOLVED 2026-07-14: per-member bits replicated per slot (§3.3.2).
+- 5.2 RESOLVED 2026-07-14: eager single-allocation tail bitmap, address
+  computed from the capacity header word (§3.1.1). Side table rejected
+  (hash per store/drop); fat pointer rejected (taxes every array ref).
+- 5.3 RESOLVED 2026-07-14: locals in v1 (§2.2.3).
+- 5.4 OPEN — end-state spelling: does `= #v` at assignment sites retire
+  after the migration window (one spelling, recommended), or coexist with
+  `#=` permanently? (`#v` in non-assignment positions — call args,
+  returns, extraction reads — is untouched either way.) Timing of any
+  error flip parks until after title-tracking Unit 8 lands on main.
+- 5.5 RESOLVED 2026-07-14: `#=` is NOT overloadable — title motion stays
+  compiler-emitted end to end, in the heap/stack class of non-user-surface
+  operations, NOT the operator+ class. A user overload could swallow or
+  duplicate a title, un-guaranteeing the model. `m[k] #= v` lowers through
+  the existing `operator[]=`+transfer-word path; the author spells `#=`
+  on their own storage inside.
