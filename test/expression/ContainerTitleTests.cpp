@@ -296,3 +296,174 @@ TEST(ContainerTitleTests, registryDriverRoundTripLeakFree) {
         "}\n";
     EXPECT_EQ(runI32(src), 204);
 }
+
+// ===================== 6.3.1 acceptance — mixed-ownership cache =====================
+
+namespace {
+
+// Cache<K,V> fixture: needs the import; Cell reused from kCellMapSrc.
+const char* kCellCacheSrc =
+    "package test;\n"
+    "import cajeta.collection.Cache;\n"
+    "import cajeta.lang.Optional;\n"
+    "public class Cell {\n"
+    "    public int32 n;\n"
+    "    public Cell(int32 nn) { this.n = nn; }\n"
+    "}\n";
+
+const char* kCellChurn =
+    "        int32 cc = 0;\n"
+    "        int32 churn = 0;\n"
+    "        while (cc < 64) { Cell j = heap Cell(1000 + cc); churn = churn + j.n; cc = cc + 1; }\n"
+    "        if (churn < 0) { return churn; }\n";
+
+}  // namespace
+
+// 6.3.1 / spec §6.5 — a cache holding OWNED and BORROWED values at once.
+// LRU eviction of an owned entry reclaims it; teardown reclaims the
+// remaining owned entry; the borrowed value stays with its caller
+// throughout. Net liveCount delta 0.
+// DISABLED until 7.2.1 retires the 4B ELEMENT_TRANSFER_MODE gate: Cache.put
+// is author-marked (#K), so user-code `#`-puts into Cache<String,Cell> are
+// rejected by the pre-rev-2 agreement check. Re-enable with the Unit 7
+// gate-suite rewrite (7.1.2).
+TEST(ContainerTitleTests, DISABLED_cacheMixedOwnershipEvictionAndTeardownLeakFree) {
+    std::string src = std::string(kCellCacheSrc) +
+        "public final class D {\n"
+        "    public static int32 work() {\n"
+        "        Cell lent = heap Cell(50);\n"
+        "        int32 t = 0;\n"
+        "        {\n"
+        "            Cache<String, Cell> c = heap Cache<String, Cell>(2);\n"
+        "            String k0 = \"own-\" + 0;\n"
+        "            c.put(#k0, #heap Cell(1));\n"      // owned value
+        "            String k1 = \"lend-\" + 1;\n"
+        "            c.put(#k1, lent);\n"               // borrowed value
+        "            Optional<Cell> a = c.get(\"own-0\");\n"
+        "            Optional<Cell> b = c.get(\"lend-1\");\n"  // lend-1 now MRU
+        "            if (a.isPresent()) { t = t + a.get().n; }\n"   // +1
+        "            if (b.isPresent()) { t = t + b.get().n; }\n"   // +50
+        "            String k2 = \"own-\" + 2;\n"
+        "            c.put(#k2, #heap Cell(2));\n"      // evicts own-0 (owned -> freed)
+        + std::string(kCellChurn) +
+        "            Optional<Cell> b2 = c.get(\"lend-1\");\n"
+        "            if (b2.isPresent()) { t = t + b2.get().n; }\n"  // +50 still resident
+        "        }\n"                                   // teardown frees own-2, skips lent
+        "        return t + lent.n;\n"                  // +50 -> 151
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int32 t = work();\n"
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return (int32) (leaked * 100) + t;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 151);
+}
+
+// 6.3.1 / spec §6.5 — evicting a BORROWED entry ends membership only: the
+// caller's value survives the eviction (readable after, with churn between)
+// and drops with the caller's scope, not the cache's. Net delta 0.
+// DISABLED until 7.2.1 — same gate as above.
+TEST(ContainerTitleTests, DISABLED_cacheEvictedBorrowedValueSurvivesWithCaller) {
+    std::string src = std::string(kCellCacheSrc) +
+        "public final class D {\n"
+        "    public static int32 work() {\n"
+        "        Cell lent = heap Cell(60);\n"
+        "        int32 t = 0;\n"
+        "        {\n"
+        "            Cache<String, Cell> c = heap Cache<String, Cell>(2);\n"
+        "            String k0 = \"lend-\" + 0;\n"
+        "            c.put(#k0, lent);\n"               // borrowed
+        "            String k1 = \"own-\" + 1;\n"
+        "            c.put(#k1, #heap Cell(2));\n"      // owned
+        "            Optional<Cell> a = c.get(\"own-1\");\n"   // lend-0 now LRU
+        "            if (a.isPresent()) { t = t + a.get().n; }\n"    // +2
+        "            String k2 = \"own-\" + 2;\n"
+        "            c.put(#k2, #heap Cell(3));\n"      // evicts lend-0 (borrowed -> NOT freed)
+        + std::string(kCellChurn) +
+        "            t = t + lent.n;\n"                 // +60 alive after eviction
+        "        }\n"                                   // teardown frees own-1 + own-2
+        "        return t + lent.n;\n"                  // +60 -> 122
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int32 t = work();\n"
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return (int32) (leaked * 100) + t;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 122);
+}
+
+// 6.3.1 / spec §6.5 — the mixed-ownership cache SCENARIO in user code: a
+// hand-rolled capacity-2 LRU over HashMap (the Cache<K,V> pattern without
+// the pre-rev-2 4B gate that still rejects user `#`-puts into Cache — see
+// the DISABLED_ pair above). One eviction reclaims an OWNED value, one
+// eviction releases a BORROWED value back to its caller intact, teardown
+// reclaims the remaining owned entries only. Net liveCount delta 0.
+TEST(ContainerTitleTests, cacheScenarioMiniLruMixedOwnershipLeakFree) {
+    std::string src = std::string(kCellMapSrc) +
+        "public class MiniLru {\n"
+        "    public HashMap<int32, Cell> map;\n"
+        "    public int32 a;\n"        // LRU key   (-1 = empty)
+        "    public int32 b;\n"        // MRU key   (-1 = empty)
+        "    public MiniLru() {\n"
+        "        this.map = heap HashMap<int32, Cell>();\n"
+        "        this.a = 0 - 1;\n"
+        "        this.b = 0 - 1;\n"
+        "    }\n"
+        "    public void put(int32 k, #Cell v) {\n"
+        "        if (this.a >= 0 && this.b >= 0) {\n"
+        "            int32 victim = this.a;\n"
+        "            Cell evicted = this.map.remove(victim);\n"  // flagged return:
+        "            this.a = this.b;\n"                          // drops if owned,
+        "            this.b = 0 - 1;\n"                           // survives if borrowed
+        "        }\n"
+        "        this.map[k] = #v;\n"
+        "        if (this.a < 0) { this.a = k; } else { this.b = k; }\n"
+        "    }\n"
+        "    public void putBorrow(int32 k, Cell v) {\n"
+        "        if (this.a >= 0 && this.b >= 0) {\n"
+        "            int32 victim = this.a;\n"
+        "            Cell evicted = this.map.remove(victim);\n"
+        "            this.a = this.b;\n"
+        "            this.b = 0 - 1;\n"
+        "        }\n"
+        "        this.map[k] = v;\n"
+        "        if (this.a < 0) { this.a = k; } else { this.b = k; }\n"
+        "    }\n"
+        "    public int32 read(int32 k) { return this.map[k].n; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 work() {\n"
+        "        Cell lent = heap Cell(50);\n"
+        "        int32 t = 0;\n"
+        "        {\n"
+        "            MiniLru c = heap MiniLru();\n"
+        "            c.put(1, #heap Cell(1));\n"       // owned
+        "            c.putBorrow(2, lent);\n"          // borrowed
+        "            t = c.read(1) + c.read(2);\n"     // 1 + 50 = 51
+        "            c.put(3, #heap Cell(2));\n"       // evicts key 1: OWNED -> freed
+        "            int32 cc = 0;\n"
+        "            int32 churn = 0;\n"
+        "            while (cc < 64) { Cell j = heap Cell(1000 + cc); churn = churn + j.n; cc = cc + 1; }\n"
+        "            if (churn < 0) { return churn; }\n"
+        "            t = t + c.read(2);\n"             // +50 borrowed still resident
+        "            c.put(4, #heap Cell(3));\n"       // evicts key 2: BORROWED -> survives
+        "            cc = 0;\n"
+        "            while (cc < 64) { Cell j = heap Cell(2000 + cc); churn = churn + j.n; cc = cc + 1; }\n"
+        "            if (churn < 0) { return churn; }\n"
+        "            t = t + lent.n;\n"                // +50 alive after ITS eviction
+        "        }\n"                                  // teardown frees owned 3,4 + map
+        "        return t + lent.n;\n"                 // +50 -> 201
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int32 t = work();\n"
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return (int32) (leaked * 100) + t;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 201);
+}
