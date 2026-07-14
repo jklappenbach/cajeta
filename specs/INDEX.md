@@ -16,6 +16,7 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [diagnostic-engine](diagnostic-engine-spec.md) | — (engine + lint collect-and-continue landed; remaining scope unverified) | active |
 | [element-ownership](element-ownership-spec.md) | [plan](../agents/element-ownership-plan.md) | blocked — type-argument layer superseded by title-tracking (Units 1–7 shipped; Unit 8 will not proceed as written) |
 | [title-tracking](title-tracking-spec.md) | [plan](../agents/title-tracking-plan.md) | active |
+| [title-stores](title-stores-spec.md) | — | draft |
 | [compile-cache](compile-cache-spec.md) | [plan](../agents/cajeta/compile-cache-plan.md) | blocked (parked after Unit 2, 2026-07-10 — prime now ~8% of sweep CPU; re-open triggers in plan) |
 | [cajetadoc-model-fidelity](cajetadoc-model-fidelity-spec.md) | — (docs-refactor 15.1) | draft |
 | [stack-return-transfer-error](stack-return-transfer-error-spec.md) | — (docs-refactor 15.4) | draft |
