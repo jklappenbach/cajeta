@@ -355,13 +355,17 @@ public class Stream<T> {
         if (this.isParallel) {
             throw heap Exception("CAJETA_ERROR_STREAM_PARALLEL_FOLD_NO_COMBINER: 2-arg fold(seed, fn) cannot be applied to a parallel stream because there is no way to merge per-worker partials; use the 3-arg fold(seed, fn, combiner) overload, or call .sequential() first");
         }
-        R acc = seed;
+        // title-tracking 7.2.5 — the accumulator threads the seed's TITLE:
+        // `#seed` forwards the caller's flag onto acc's entry, and `#acc`
+        // rides it back out on the return flag. The closure only ever
+        // borrows acc (plain args) and identity-returns it flag-0.
+        R acc = #seed;
         Optional<T> o = this.next();
         while (o.isPresent()) {
             acc = fn(acc, o.get());
             o = this.next();
         }
-        return acc;
+        return #acc;
     }
 
     /**
@@ -395,13 +399,14 @@ public class Stream<T> {
         if (this.isParallel) {
             return ParallelDriver.foldParallelChain<T, R>(this, seed, fn, combiner);
         }
-        R acc = seed;
+        // title-tracking 7.2.5 — same title threading as the 2-arg fold.
+        R acc = #seed;
         Optional<T> o = this.next();
         while (o.isPresent()) {
             acc = fn(acc, o.get());
             o = this.next();
         }
-        return acc;
+        return #acc;
     }
 
     /**
@@ -427,13 +432,11 @@ public class Stream<T> {
             // collectParallelChain is a `#R` return — already flag-true.
             return ParallelDriver.collectParallelChain<T, R>(this, c.supplier, c.accumulator, c.combiner);
         }
-        // The accumulator is fresh by construction (the supplier's own R;
-        // the fold only threads it through the closures), but the closure
-        // call path doesn't ride the return-flag protocol yet, so the fold
-        // result comes back flag-0 and the caller's entry would disarm —
-        // the collected R leaked. Flag it explicitly: the caller owns it.
+        // title-tracking 7.2.5 — the closure-call path rides the return
+        // flag now: the supplier's fresh R arrives owned, fold threads the
+        // title through the accumulator, and `#out` hands it to the caller.
         R out = this.fold(c.supplier(), c.accumulator);
-        return Cajeta.flagged(out, true);
+        return #out;
     }
 
     /**

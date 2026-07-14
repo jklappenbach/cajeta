@@ -3,6 +3,7 @@
 //
 
 #include "MethodCallExpression.h"
+#include "CallExpression.h"
 #include "../../error/DiagnosticEngine.h"
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/compile/Compiler.h"
@@ -5361,16 +5362,28 @@ namespace cajeta {
             if (!param.callerTransferred
                     && argIndex < argTitleFlags.size()
                     && !argTitleFlags[argIndex]) {
+                bool flagCarrier = false;
                 if (auto amce = dynamic_pointer_cast<MethodCallExpression>(
                         param.expression)) {
                     MethodPtr am = amce->getResolvedMethod();
-                    if (am && am->returnsClassPointer()
-                            && droppableTempClass(amce->getResolvedType())) {
-                        if (llvm::Function* fg = module->getRuntimeFunction(
-                                "__cajeta_return_flag_get")) {
-                            argTitleFlags[argIndex] = builder->CreateCall(
-                                fg, {}, "arg_temp_flag");
-                        }
+                    flagCarrier = (am && am->returnsClassPointer()
+                            && droppableTempClass(amce->getResolvedType()))
+                        // 7.2.5 — a closure invocation through a receiver
+                        // (`c.supplier()`) has no resolved Method; its
+                        // synthesized callee sets the same flag.
+                        || (!am && droppableTempClass(amce->getResolvedType())
+                                != nullptr);
+                } else if (auto ace = dynamic_pointer_cast<CallExpression>(
+                        param.expression)) {
+                    // 7.2.5 — bare-name closure invocation.
+                    flagCarrier = droppableTempClass(ace->getResolvedType())
+                        != nullptr;
+                }
+                if (flagCarrier) {
+                    if (llvm::Function* fg = module->getRuntimeFunction(
+                            "__cajeta_return_flag_get")) {
+                        argTitleFlags[argIndex] = builder->CreateCall(
+                            fg, {}, "arg_temp_flag");
                     }
                 }
             }

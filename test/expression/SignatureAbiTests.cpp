@@ -759,3 +759,131 @@ TEST(SignatureAbiTests, concatSharpReturnedInsideTryRoundTrips) {
         "}\n";
     EXPECT_EQ(runI32(src), 4);
 }
+
+// 7.2.5 — closure-call return-flag protocol. Lambda epilogues now set the
+// paired return flag by return shape (fresh/move → 1; param/identifier →
+// 0; tail call → inner call's flag rides through), and closure-call
+// results arm caller locals exactly like method-call results.
+
+// Fresh-returning supplier closure: the caller's local takes the title
+// and drops it — no leak.
+TEST(SignatureAbiTests, closureFreshReturnArmsCallerLocal) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static int32 work() {\n"
+        "        () -> #Cell sup = () -> heap Cell(5);\n"
+        "        Cell c = sup();\n"
+        "        return c.n;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int32 t = work();\n"
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return (int32) (leaked * 100) + t;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 5);
+}
+
+// Identity closure returns its borrowed param: the receiving local must
+// NOT take a title — single drop, source survives.
+TEST(SignatureAbiTests, closureBorrowReturnLeavesCallerInactive) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static int32 work() {\n"
+        "        (Cell) -> #Cell id = (x) -> x;\n"
+        "        Cell mine = heap Cell(7);\n"
+        "        {\n"
+        "            Cell r = id(mine);\n"
+        "            if (r.n != 7) { return -96; }\n"
+        "        }\n"
+        "        return mine.n;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int32 t = work();\n"
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return (int32) (leaked * 100) + t;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 7);
+}
+
+// fold with a class accumulator: the seed's title threads through the
+// accumulator local and rides out on the return — owned once, dropped
+// once, readable throughout.
+TEST(SignatureAbiTests, foldClassAccumulatorThreadsTitle) {
+    std::string src = std::string(
+        "package test;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
+        "public class Cell {\n"
+        "    public int32 n;\n"
+        "    public Cell(int32 nn) { this.n = nn; }\n"
+        "}\n") +
+        "public final class D {\n"
+        "    public static int32 work() {\n"
+        "        int32[] xs = heap int32[3];\n"
+        "        xs[0] = 1; xs[1] = 2; xs[2] = 3;\n"
+        "        ArrayStream<int32> s = heap ArrayStream<int32>(xs, 3);\n"
+        "        (Cell, int32) -> #Cell step = (acc, e) -> {\n"
+        "            acc.n = acc.n + e;\n"
+        "            return acc;\n"
+        "        };\n"
+        "        Cell total = s.fold(heap Cell(0), step);\n"
+        "        int32 junk = 0;\n"
+        "        int32 i = 0;\n"
+        "        while (i < 8) {\n"
+        "            Cell t = heap Cell(9);\n"
+        "            junk = junk + t.n;\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return total.n;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int32 t = work();\n"
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return (int32) (leaked * 100) + t;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 6);
+}
+
+// The lent-seed side of the same protocol: fold(mine, step) with a PLAIN
+// seed must hand the accumulator back as a BORROW — the caller keeps the
+// single title, no double free. Requires `= #x` move-inits to forward the
+// SOURCE's runtime flag onto the destination's entry instead of arming
+// statically.
+TEST(SignatureAbiTests, foldLentSeedComesBackBorrowed) {
+    std::string src = std::string(
+        "package test;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
+        "public class Cell {\n"
+        "    public int32 n;\n"
+        "    public Cell(int32 nn) { this.n = nn; }\n"
+        "}\n") +
+        "public final class D {\n"
+        "    public static int32 work() {\n"
+        "        int32[] xs = heap int32[3];\n"
+        "        xs[0] = 1; xs[1] = 2; xs[2] = 3;\n"
+        "        Cell mine = heap Cell(0);\n"
+        "        ArrayStream<int32> s = heap ArrayStream<int32>(xs, 3);\n"
+        "        (Cell, int32) -> #Cell step = (acc, e) -> {\n"
+        "            acc.n = acc.n + e;\n"
+        "            return acc;\n"
+        "        };\n"
+        "        {\n"
+        "            Cell total = s.fold(mine, step);\n"
+        "            if (total.n != 6) { return -95; }\n"
+        "        }\n"
+        "        return mine.n;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int32 t = work();\n"
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return (int32) (leaked * 100) + t;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 6);
+}

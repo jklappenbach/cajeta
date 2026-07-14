@@ -1,5 +1,16 @@
 # element-ownership — `#` type arguments: ownership at instantiation
 
+> **SUPERSEDED (2026-07-14) by [title-tracking](title-tracking-spec.md).**
+> The type-argument ownership layer specified here shipped through Unit 7
+> of its plan and was then replaced by title-tracking rev 2 (caller
+> discretion): per-call runtime titles on the hidden transfer word, `#`
+> only at call/store/return sites, and `CAJETA_ERROR_TYPE_TRANSFER_RETIRED`
+> on every type-position `#` this spec introduced. What survives: the `#`
+> sigil itself, `TRANSFER_REQUIRED` on authored `#T` formals, clone()
+> semantics (§6), and the slice/share machinery. Unit 8 as written never
+> ran. Archived per title-tracking plan 7.3.1; the element-slot store
+> story continues in [title-stores](title-stores-spec.md).
+
 ## 1. Definition
 
 ### 1.1 Purpose

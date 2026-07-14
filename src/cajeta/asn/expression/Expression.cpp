@@ -3214,6 +3214,15 @@ namespace cajeta {
         // because some helpers (e.g. drop-chain bookkeeping) read it, even
         // though a lambda body in L1 has no drop chain of its own.
         module->setCurrentMethod(nullptr);
+        // 7.2.5 — closure returns ride the same paired return flag as
+        // ordinary methods. Mark class-POINTER-returning lambdas (non-sret)
+        // so ReturnStatement / the epilogue below emit the flag.
+        bool savedLambdaRet = module->isLambdaClassPtrReturn();
+        bool lambdaClassPtrRet = sretOffset == 0
+            && fn->getReturnType()->isPointerTy()
+            && std::dynamic_pointer_cast<CajetaClass>(fnType->getReturnType())
+            != nullptr;
+        module->setLambdaClassPtrReturn(lambdaClassPtrRet);
 
         for (size_t i = 0; i < paramNames.size(); ++i) {
             // Bind each LLVM arg into an alloca-backed ParameterField so
@@ -3385,6 +3394,30 @@ namespace cajeta {
                     if (retTy->isVoidTy()) {
                         lambdaBuilder->CreateRetVoid();
                     } else {
+                        // 7.2.5 — expression-body return flag, by shape:
+                        // fresh construction/`#x` → owned; a tail CALL's
+                        // own flag rides through untouched; else borrow.
+                        if (lambdaClassPtrRet) {
+                            AbstractSyntaxNodePtr shape = body;
+                            while (auto cx = std::dynamic_pointer_cast<
+                                       CastExpression>(shape)) {
+                                if (cx->getChildren().empty()) break;
+                                shape = cx->getChildren()[0];
+                            }
+                            bool rides =
+                                std::dynamic_pointer_cast<MethodCallExpression>(shape)
+                                || std::dynamic_pointer_cast<CallExpression>(shape);
+                            if (!rides) {
+                                bool owned =
+                                    std::dynamic_pointer_cast<NewExpression>(shape)
+                                    || std::dynamic_pointer_cast<MoveExpression>(shape);
+                                if (llvm::Function* fsFn = module->getRuntimeFunction(
+                                        "__cajeta_return_flag_set")) {
+                                    lambdaBuilder->CreateCall(fsFn,
+                                        {lambdaBuilder->getInt64(owned ? 1 : 0)});
+                                }
+                            }
+                        }
                         lambdaBuilder->CreateRet(bodyVal);
                     }
                 }
@@ -3399,6 +3432,7 @@ namespace cajeta {
         }
 
         // Restore outer state.
+        module->setLambdaClassPtrReturn(savedLambdaRet);
         module->restoreTryFinally(std::move(savedTryFrames));
         module->getScopeStack().pop();
         delete lambdaBuilder;

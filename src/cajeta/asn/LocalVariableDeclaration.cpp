@@ -18,6 +18,7 @@
 #include "expression/DotExpression.h"
 #include "expression/Identifier.h"
 #include "expression/MethodCallExpression.h"
+#include "expression/CallExpression.h"
 #include "../method/Method.h"
 #include "expression/BinaryOpExpression.h"
 #include "expression/NewExpression.h"
@@ -543,8 +544,11 @@ namespace cajeta {
             if (auto varInit = dynamic_pointer_cast<VariableInitializer>(
                     initializer)) {
                 auto& kids = varInit->getChildren();
+                // 7.2.5 — closure invocations (CallExpression) ride the same
+                // paired return flag as method calls.
                 if (!kids.empty()
-                        && dynamic_pointer_cast<MethodCallExpression>(kids[0])) {
+                        && (dynamic_pointer_cast<MethodCallExpression>(kids[0])
+                            || dynamic_pointer_cast<CallExpression>(kids[0]))) {
                     if (llvm::Function* getFlagFn = module->getRuntimeFunction(
                             "__cajeta_return_flag_get")) {
                         callResultFlag = module->getBuilder()->CreateCall(
@@ -947,6 +951,21 @@ namespace cajeta {
                             initIsStackAlloc = true;
                         }
                     }
+                    // 7.2.5 — bare-name closure invocation: no Method to
+                    // resolve, but the synthesized callee sets the paired
+                    // return flag; arm a flag-fed entry for class-ptr
+                    // returns.
+                    if (auto ce = dynamic_pointer_cast<CallExpression>(children[0])) {
+                        if (!ce->getResolvedType()) ce->resolveTypes(module);
+                        auto ceCls = dynamic_pointer_cast<CajetaClass>(
+                            ce->getResolvedType());
+                        if (ceCls && !dynamic_pointer_cast<CajetaView>(
+                                ce->getResolvedType())
+                                && !ceCls->isValueType()) {
+                            initIsBorrow = true;       // static owner path off
+                            initIsFlaggedCall = true;  // the flag decides
+                        }
+                    }
                     if (auto mc = dynamic_pointer_cast<MethodCallExpression>(children[0])) {
                         if (mc->getMethodCallName() == "__cajeta_inject") {
                             initIsBorrow = true;
@@ -1087,6 +1106,18 @@ namespace cajeta {
                                     }
                                     if (fnTy && fnTy->usesSret()) {
                                         initIsStackAlloc = true;
+                                    } else if (fnTy) {
+                                        // 7.2.5 — non-sret closure member
+                                        // call (`c.supplier()`): the
+                                        // synthesized callee sets the
+                                        // paired return flag; arm a
+                                        // flag-fed entry for class-ptr
+                                        // returns.
+                                        if (dynamic_pointer_cast<CajetaClass>(
+                                                fnTy->getReturnType())) {
+                                            initIsBorrow = true;
+                                            initIsFlaggedCall = true;
+                                        }
                                     }
                                 }
                             }
@@ -1528,6 +1559,30 @@ namespace cajeta {
                 emitFlaggedDropEntryFor(module, field,
                     "__cajeta_class_virtual_drop", callResultFlag,
                     getSourceLine());
+            }
+
+            // 7.2.5 — `T x = #src` where src is a RUNTIME owner (formal /
+            // flagged local): forward src's stashed flag onto x's entry.
+            // The unconditional owner push above armed it statically, which
+            // hands a LENT source back as owned (double free at the next
+            // hop). MoveExpression stashed the flag before deactivation.
+            if (field->getDropEntry()) {
+                if (auto varInit = dynamic_pointer_cast<VariableInitializer>(
+                        initializer)) {
+                    auto& mvKids = varInit->getChildren();
+                    if (!mvKids.empty()) {
+                        if (auto mvInit = dynamic_pointer_cast<MoveExpression>(
+                                mvKids[0])) {
+                            if (llvm::Value* rtf = mvInit->getRuntimeTitleFlag()) {
+                                if (llvm::Function* sf = module->getRuntimeFunction(
+                                        "__cajeta_drop_set_flag")) {
+                                    module->getBuilder()->CreateCall(
+                                        sf, {field->getDropEntry(), rtf});
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             // Interface local drop entry. Pushes a drop entry

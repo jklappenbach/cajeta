@@ -110,10 +110,21 @@ class-typed parameter and return therefore carries a hidden per-call flag.
 - **Arguments.** A method with at least one pass-by-pointer class parameter takes
   a hidden trailing word; bit *i* is set iff user-argument *i* was surrendered.
   `@Kernel`, `@Device`, `@Native` methods and `static main` keep the plain C ABI —
-  the compiler does not own both sides of those boundaries.
+  the compiler does not own both sides of those boundaries. The word is the ONLY
+  argument-side carrier: the old `moveMask` thread-local is retired
+  (title-tracking 7.2.2), `Cajeta.moveMask()` reads the enclosing function's own
+  word argument (stable across intervening calls; constructors read their own
+  call's word), and constructors ride the same trailing word.
 - **Returns.** A method returning a class pointer stores a paired flag beside the
   return value. (This one is a thread-local: nothing runs between the callee's
   `ret` and the caller reading it, so there is no window to corrupt.)
+- **Closures** (title-tracking 7.2.5). A class-pointer-returning function value
+  (`(T) -> #R`) rides the same return flag: the synthesized lambda sets it by
+  return shape — a fresh construction or `#x` hands out a title, a returned
+  parameter/identifier is a borrow, and a tail call lets the inner call's own
+  flag ride through. Closure-call results arm the receiving local exactly like
+  method-call results, and `T x = #src` forwards a runtime owner's flag onto
+  `x`'s entry (a lent source stays lent through the hop).
 
 **Formals and call results are *runtime* owners.** A class-typed parameter is not
 statically a borrow and not statically an owner — it is whichever the caller made

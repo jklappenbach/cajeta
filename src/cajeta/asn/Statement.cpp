@@ -5,6 +5,7 @@
 #include "Statement.h"
 #include "expression/Expression.h"
 #include "expression/MethodCallExpression.h"
+#include "expression/CallExpression.h"
 #include "expression/Identifier.h"
 #include "expression/DotExpression.h"
 #include "expression/NewExpression.h"
@@ -1478,7 +1479,13 @@ namespace cajeta {
     static void emitReturnFlag(CajetaModulePtr& module,
                                llvm::Value* flagOverride = nullptr) {
         auto m = module->getCurrentMethod();
-        if (!m || !m->returnsClassPointer()) {
+        // 7.2.5 — lambda bodies have no Method context; the module flag says
+        // the synthesized function returns a class pointer. Static mode for
+        // a lambda return is BORROW (the caller-visible ownership cases —
+        // fresh construction, `#x`, tail call — arrive via flagOverride or
+        // ride the inner call's own flag).
+        bool lambdaMode = !m && module->isLambdaClassPtrReturn();
+        if (!lambdaMode && (!m || !m->returnsClassPointer())) {
             return;
         }
         llvm::Function* fn = module->getRuntimeFunction("__cajeta_return_flag_set");
@@ -1489,7 +1496,7 @@ namespace cajeta {
         // flag; otherwise the method's static mode stands (5.2.3 arms callers).
         llvm::Value* flag = flagOverride ? flagOverride
             : (llvm::Value*) module->getBuilder()->getInt64(
-                  m->isReturnsOwnership() ? 1 : 0);
+                  (!lambdaMode && m->isReturnsOwnership()) ? 1 : 0);
         module->getBuilder()->CreateCall(fn, {flag});
     }
 
@@ -2291,6 +2298,19 @@ namespace cajeta {
         if (auto mcRet = dynamic_pointer_cast<MethodCallExpression>(expression)) {
             if (llvm::Value* f = mcRet->getFlaggedTitleValue()) {
                 returnTitleFlag = f;
+            }
+        }
+        // 7.2.5 — lambda-body returns: classify by shape. A fresh
+        // construction hands out a title; a returned CALL result lets the
+        // inner call's flag ride through untouched; anything else is the
+        // borrow default emitReturnFlag emits in lambda mode.
+        if (!module->getCurrentMethod() && module->isLambdaClassPtrReturn()
+                && !returnTitleFlag) {
+            if (dynamic_pointer_cast<NewExpression>(expression)) {
+                returnTitleFlag = builder->getInt64(1);
+            } else if (dynamic_pointer_cast<MethodCallExpression>(expression)
+                    || dynamic_pointer_cast<CallExpression>(expression)) {
+                return builder->CreateRet(val);
             }
         }
         emitReturnFlag(module, returnTitleFlag);
