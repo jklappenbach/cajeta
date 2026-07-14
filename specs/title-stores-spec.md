@@ -232,11 +232,11 @@ title-tracking 7.2.2, `d4a2a67b`.)
   computed from the capacity header word (§3.1.1). Side table rejected
   (hash per store/drop); fat pointer rejected (taxes every array ref).
 - 5.3 RESOLVED 2026-07-14: locals in v1 (§2.2.3).
-- 5.4 OPEN — end-state spelling: does `= #v` at assignment sites retire
-  after the migration window (one spelling, recommended), or coexist with
-  `#=` permanently? (`#v` in non-assignment positions — call args,
-  returns, extraction reads — is untouched either way.) Timing of any
-  error flip parks until after title-tracking Unit 8 lands on main.
+- 5.4 RESOLVED 2026-07-14: `= #v` at assignment sites RETIRES in favor of
+  `#=` after the migration window (§2.3) — one store spelling survives.
+  `#v` in non-assignment positions (call args, returns, extraction reads,
+  including as `#=`'s RHS for move-out) is untouched. The Phase-3 error
+  flip parks until title-tracking Unit 8 lands on main.
 - 5.5 RESOLVED 2026-07-14: `#=` is NOT overloadable — title motion stays
   compiler-emitted end to end, in the heap/stack class of non-user-surface
   operations, NOT the operator+ class. A user overload could swallow or
