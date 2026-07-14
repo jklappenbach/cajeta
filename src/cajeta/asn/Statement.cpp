@@ -1842,7 +1842,24 @@ namespace cajeta {
         //                            lambda RHS was generated.
         //   - `return () -> ...;` — direct LambdaExpression; we'll see
         //                            its flag after generateCode below.
-        if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(expression)) {
+        // 6.2.6c — a reference cast is identity on the pointer:
+        // `return (Stream<T>) newRoot;` is the same pass-through as
+        // `return newRoot;`, so the disarm/escape checks below must see
+        // the underlying local. Value casts (`(int64) obj`) don't move
+        // the object out — the scope keeps its drop — so only casts to
+        // a concrete class or view type are peeled.
+        AbstractSyntaxNodePtr returnee = expression;
+        while (auto castExpr = dynamic_pointer_cast<CastExpression>(returnee)) {
+            CajetaTypePtr dt = castExpr->getDestType();
+            auto destClass = dynamic_pointer_cast<CajetaClass>(dt);
+            auto destView = dynamic_pointer_cast<CajetaView>(dt);
+            bool refCast = (bool) destView
+                || (destClass && !destClass->isInterface()
+                    && !destClass->isValueType());
+            if (!refCast || castExpr->getChildren().empty()) break;
+            returnee = castExpr->getChildren()[0];
+        }
+        if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(returnee)) {
             auto scope = module->getScopeStack().peek();
             FieldPtr f = scope ? scope->getField(idExpr->getTextValue()) : nullptr;
             if (f && f->hasBorrowCaptures()) {

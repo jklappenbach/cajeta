@@ -536,3 +536,58 @@ TEST(SignatureAbiTests, lastUseOfLentLocalWarnsWithTransferFixit) {
     EXPECT_FALSE(warnedAbout("reread"));
     EXPECT_FALSE(warnedAbout("moved"));
 }
+
+// 6.2.6c — a consumed formal returned THROUGH A CAST is the same
+// pass-through as `return formal;`: the title rides out on the return
+// flag and the callee epilogue must NOT drop it. The disarm used to
+// match only a bare IdentifierExpression, so Stream.cloneChainOver's
+// `return (Stream<T>) newRoot;` freed every parallel share and the
+// spawned workers dispatched next() on dead streams (the whole
+// ParallelStreamP1 crash family).
+TEST(SignatureAbiTests, castReturnOfConsumedFormalPassesTitleThrough) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static Cell pass(#Object o) {\n"
+        "        return (Cell) o;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Cell c = heap Cell(7);\n"
+        "        Cell d = pass(#c);\n"
+        "        // churn so a freed `d` gets recycled and misreads\n"
+        "        int32 junk = 0;\n"
+        "        int32 i = 0;\n"
+        "        while (i < 8) {\n"
+        "            Cell t = heap Cell(9);\n"
+        "            junk = junk + t.n;\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return d.n;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 7);
+}
+
+// Same shape with a caller-discretion plain formal: `#c` at the call
+// site arms the formal's entry; the cast return must still disarm it
+// and thread the flag out.
+TEST(SignatureAbiTests, castReturnOfArmedPlainFormalPassesTitleThrough) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static Cell pass(Object o) {\n"
+        "        return (Cell) o;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Cell c = heap Cell(5);\n"
+        "        Cell d = pass(#c);\n"
+        "        int32 junk = 0;\n"
+        "        int32 i = 0;\n"
+        "        while (i < 8) {\n"
+        "            Cell t = heap Cell(9);\n"
+        "            junk = junk + t.n;\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return d.n;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 5);
+}

@@ -43,9 +43,9 @@ public class MapOrFallbackStream<T, R> extends Stream<R> {
      * ```
      */
     public MapOrFallbackStream(#Stream<T> source, (T) -> #R fn, #R fallback) {
-        this.source = source;
+        this.source = #source;
         this.fn = fn;
-        this.fallback = fallback;
+        this.fallback = #fallback;
     }
 
     /**

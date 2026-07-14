@@ -32,7 +32,7 @@ public final class MapStream<T, R> extends Stream<R> {
      * ```
      */
     public MapStream(#Stream<T> source, (T) -> #R fn) {
-        this.source = source;
+        this.source = #source;
         this.fn = fn;
     }
 
