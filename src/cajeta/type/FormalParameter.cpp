@@ -67,40 +67,11 @@ namespace cajeta {
             // ctx->REFERENCE() here is enough.
             if (ctx->REFERENCE() != nullptr) {
                 parameter->setTransferred(true);
-                parameter->setAuthoredTransferred(true);
             }
-            // element-ownership §3.1.1-2 / §4.2 (plan 4A): formal→type-param
-            // provenance + `#` dissolution at monomorphization. During an
-            // instantiation body walk the parse tree still spells the declared
-            // type as the parameter name (`#K k`); record which type parameter
-            // it came from so the call-site agreement check (4B) can pair the
-            // formal with isTypeArgumentOwning. An author `#K` marker
-            // materializes as a real transfer position only under an owning
-            // type argument — under a plain instantiation it DISSOLVES to a
-            // borrow here, so the whole downstream transfer pipeline
-            // (TRANSFER_REQUIRED, drop deactivation, temp-drop) sees an
-            // ordinary borrow formal. Concrete classes and method-template
-            // wrapper walks have no instantiation parent and skip.
-            if (module && !module->getStructureStack().empty() && ctxType) {
-                auto encl = module->getStructureStack().back();
-                if (encl && encl->isInstantiation()) {
-                    const string declared = ctxType->getText();
-                    const auto& tps = encl->getTypeParameters();
-                    for (size_t k = 0; k < tps.size(); ++k) {
-                        if (declared != tps[k].name) continue;
-                        parameter->setOriginTypeParamIndex((int) k);
-                        if (parameter->isTransferred()
-                                && !encl->isTypeArgumentOwning(k)) {
-                            parameter->setTransferred(false);  // §4.2 dissolve
-                        }
-                        break;
-                    }
-                }
-            }
-            // title-tracking §8.1 (plan 7.2.1) — the borrow-mode-container
-            // ownership gate (BORROW_MODE_OWNED) was retired: borrow-mode
-            // instantiations no longer exist (type-argument `#` errors at
-            // parse), and ownership is per-call.
+            // title-tracking §8.1 (plan 7.2.1) — the §4.2 dissolve and the
+            // borrow-mode gates were retired with owning instantiations: an
+            // authored `#T` formal is a hard must-own edge in every
+            // instantiation (spec §8.2).
             // Optional default value: `int32 x = 42`. Captured at parse time
             // so the call-site fill-in path can clone the expression's AST
             // node and emit it for each missing argument.

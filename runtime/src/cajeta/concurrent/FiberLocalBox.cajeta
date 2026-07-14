@@ -15,7 +15,7 @@ package cajeta.concurrent;
 public class FiberLocalBox<T> {
     public T value;
 
-    public FiberLocalBox(#T value) {
+    public FiberLocalBox(T value) {
         this.value = #value;
     }
 }

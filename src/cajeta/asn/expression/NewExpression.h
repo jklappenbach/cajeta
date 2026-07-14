@@ -19,9 +19,6 @@ namespace cajeta {
         // non-templated `new Foo(...)` and for diamond-form `new Box<>(...)`
         // (TPL-7 fills these in by inference at codegen time).
         vector<CajetaTypePtr> typeArguments;
-        // element-ownership §2 (plan 2.4) — parallel to typeArguments:
-        // true where the use-site argument was written `#T`.
-        vector<bool> typeArgumentOwning;
         bool isDiamond = false;
         CreatorRestPtr creatorRest;
         // Captured at construction-time (parse walk) when `typeName` matches
@@ -106,7 +103,6 @@ namespace cajeta {
                                     typeArguments.push_back(CajetaConstantType::of(
                                         CajetaConstantType::parseLiteral(
                                             targ->integerLiteral())));
-                                    typeArgumentOwning.push_back(false);
                                     continue;
                                 }
                                 // Wildcard arg — `?`, `? extends T`, `? super T`
@@ -138,7 +134,6 @@ namespace cajeta {
                                         throw "wildcard sentinel construction failed";
                                     }
                                     typeArguments.push_back(wild);
-                                    typeArgumentOwning.push_back(false);
                                     continue;
                                 }
                                 if (!targ->typeType()) {
@@ -167,7 +162,6 @@ namespace cajeta {
                                         + argType->toCanonical() + "`",
                                         "CAJETA_ERROR_TYPE_TRANSFER_RETIRED");
                                 }
-                                typeArgumentOwning.push_back(false);
                             }
                         } else {
                             // Diamond form: typeArgumentsOrDiamond has '<' '>'

@@ -7779,32 +7779,6 @@ namespace cajeta {
                         auto pf = std::dynamic_pointer_cast<ParameterField>(field);
                         if (pf) {
                             auto formal = pf->getFormalParameter();
-                            // element-ownership §4.2 (plan 4A), transitive
-                            // dissolution: the template body spells `#x` once
-                            // for both modes. When x's own formal was an
-                            // authored `#K` that DISSOLVED under this borrow
-                            // instantiation, the body's forward-`#` dissolves
-                            // with it — plain borrow, no transfer, no drop
-                            // deactivation, no moveMask bit — instead of
-                            // tripping the borrowed-param escape below. A
-                            // plain-K formal forwarded with `#` (authored
-                            // borrow) stays a genuine error.
-                            if (formal && !formal->isTransferred()
-                                    && formal->wasAuthoredTransferred()
-                                    && formal->getOriginTypeParamIndex() >= 0) {
-                                // 6.2.3 — the dissolved forward still CONSUMES:
-                                // under rev 2 the forwarding formal may hold a
-                                // seeded drop entry (armed by the caller's
-                                // bit), and this `continue` used to jump over
-                                // the deactivation — the entry then fired at
-                                // exit and freed a value the container had
-                                // just stored. Disarm before dissolving; the
-                                // borrow-mode store keeps pre-rev-2 semantics
-                                // (leak-parity, never a free).
-                                deactivateIfClassLocal(i);
-                                parameters[i].callerTransferred = false;
-                                continue;
-                            }
                             // 5.2.4 — BORROW_PARAM_ESCAPES RETIRED for
                             // class-typed formals (spec §4 rev 2). A plain
                             // formal is no longer statically a borrow: it is a

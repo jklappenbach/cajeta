@@ -396,27 +396,6 @@ namespace cajeta {
                         if (argIdx >= parameters.size()) break;
                         ++fIdx;
                         if (!fp->isTransferred()) continue;
-                        // optional-borrow-ownership 2.2.3.a — a `#T` formal in a
-                        // BORROW-mode instantiation (`Optional<T>`, not
-                        // `Optional<#T>`) is not a transfer: the callee's drop body
-                        // skips that field (see CajetaClass drop walk's
-                        // originTypeParamIndex gate), so there is no double-free to
-                        // guard against. Relax exactly when that walk will skip.
-                        if (klass->isInstantiation() && fp->getType()) {
-                            bool borrowModeFormal = false;
-                            const auto& targs = klass->getTypeArguments();
-                            auto fpQName = fp->getType()->getQName();
-                            for (size_t k = 0; k < targs.size() && fpQName; ++k) {
-                                if (klass->isTypeArgumentOwning(k)) continue;
-                                if (!targs[k] || !targs[k]->getQName()) continue;
-                                if (targs[k]->getQName()->toCanonical()
-                                        == fpQName->toCanonical()) {
-                                    borrowModeFormal = true;
-                                    break;
-                                }
-                            }
-                            if (borrowModeFormal) continue;
-                        }
                         if (parameters[argIdx].callerTransferred) continue;
                         auto argExpr = parameters[argIdx].expression;
                         if (dynamic_pointer_cast<MoveExpression>(argExpr)) continue;

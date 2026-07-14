@@ -39,7 +39,7 @@ public class RwLock<T> {
      *
      * @EntryPoint
      */
-    public RwLock(#T initial) {
+    public RwLock(T initial) {
         this.handle = Cajeta.rwlockNew();
         this.value = #initial;
     }

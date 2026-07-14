@@ -1747,8 +1747,6 @@ namespace cajeta {
             if (ctx->typeTypeOrVoid()
                     && ctx->typeTypeOrVoid()->REFERENCE() != nullptr) {
                 method->setReturnsOwnership(true);
-                rejectBorrowModeEscape(returnType, "`#` return of operator",
-                    methodName);
             }
             return static_pointer_cast<MemberDeclaration>(
                 make_shared<MethodDeclaration>(method, ctx->getStart()));
@@ -1909,31 +1907,6 @@ namespace cajeta {
             // on typeTypeOrVoid (`REFERENCE? typeType`); see MemoryModel.md.
             if (ctx->typeTypeOrVoid() && ctx->typeTypeOrVoid()->REFERENCE() != nullptr) {
                 method->setReturnsOwnership(true);
-                rejectBorrowModeEscape(returnType, "`#` return of method", name);
-            }
-            // element-ownership §4.1.4 (plan 4A): return→type-param provenance.
-            // During an instantiation body walk the parse tree still spells the
-            // declared return type as the parameter name (`#K take()`); record
-            // which type parameter it came from so the call-site extractor gate
-            // (4B) can pair it with isTypeArgumentOwning. NOT dissolved under a
-            // borrow instantiation — spec §4.1.4 makes calling the extractor an
-            // ERROR there, not a silent borrow.
-            {
-                auto encl = pModule->getStructureStack().empty()
-                    ? nullptr : pModule->getStructureStack().back();
-                if (encl && encl->isInstantiation()
-                        && ctx->typeTypeOrVoid()
-                        && ctx->typeTypeOrVoid()->typeType()) {
-                    const string declaredRet =
-                        ctx->typeTypeOrVoid()->typeType()->getText();
-                    const auto& tps = encl->getTypeParameters();
-                    for (size_t k = 0; k < tps.size(); ++k) {
-                        if (declaredRet == tps[k].name) {
-                            method->setOriginReturnTypeParamIndex((int) k);
-                            break;
-                        }
-                    }
-                }
             }
             // `throws T1, T2` — advisory list of RecoverableException
             // subtypes the body may produce. Carried on the Method for the
@@ -2033,13 +2006,6 @@ namespace cajeta {
             return static_pointer_cast<MemberDeclaration>(make_shared<MethodDeclaration>(method, ctx->getStart()));
         }
 
-        // title-tracking §8.1 (plan 7.2.1) — borrow-mode confinement retired:
-        // borrow-mode instantiations no longer exist. Kept as a no-op shim
-        // until call sites are pruned.
-        void rejectBorrowModeEscape(CajetaTypePtr, const string&,
-                                    const string&) { }
-
-
         virtual std::any visitFieldDeclaration(CajetaParser::FieldDeclarationContext* ctx) override {
             CajetaTypePtr type = any_cast<CajetaTypePtr>(visitTypeType(ctx->typeType()));
             // Forward-reference tolerance: fromContext synthesizes a
@@ -2063,10 +2029,6 @@ namespace cajeta {
                         + "'; not a primitive, native, or user-defined type",
                     "CAJETA_ERROR_UNKNOWN_TYPE");
             }
-            // element-ownership §5.1.1 (plan 7.2.1): a field store is one of
-            // the escapes confinement forbids for a borrow-mode container.
-            rejectBorrowModeEscape(type, "field",
-                ctx->variableDeclarators()->getText());
             return static_pointer_cast<MemberDeclaration>(
                 make_shared<FieldDeclaration>(
                 type,

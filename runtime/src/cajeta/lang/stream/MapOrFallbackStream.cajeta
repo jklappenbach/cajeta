@@ -42,7 +42,7 @@ public class MapOrFallbackStream<T, R> extends Stream<R> {
      *     #words, (w) -> Integer.parse(w), 0);
      * ```
      */
-    public MapOrFallbackStream(#Stream<T> source, (T) -> #R fn, #R fallback) {
+    public MapOrFallbackStream(#Stream<T> source, (T) -> #R fn, R fallback) {
         this.source = #source;
         this.fn = fn;
         this.fallback = #fallback;

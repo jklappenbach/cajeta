@@ -591,3 +591,70 @@ TEST(SignatureAbiTests, castReturnOfArmedPlainFormalPassesTitleThrough) {
         "}\n";
     EXPECT_EQ(runI32(src), 5);
 }
+
+// 7.2.1 slice 2 — §4.2 dissolution retired. With type-argument `#` gone
+// (7.1.1), every instantiation is plain, so the dissolve had turned every
+// authored `#T` formal in a class template into a de-facto borrow. Now the
+// authored `#` is what it says: a hard must-own edge (TRANSFER_REQUIRED),
+// on methods and constructors alike.
+TEST(SignatureAbiTests, templateSharpFormalIsHardMustOwn) {
+    std::string src = std::string(kCellSrc) +
+        "public final class Box<T> {\n"
+        "    public T v;\n"
+        "    public Box() {}\n"
+        "    public void put(#T t) { this.v = #t; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box<Cell> b = heap Box<Cell>();\n"
+        "        Cell c = heap Cell(3);\n"
+        "        b.put(c);\n"
+        "        return c.n;\n"
+        "    }\n"
+        "}\n";
+    std::string msg = compileExpectError(src, "CAJETA_ERROR_TRANSFER_REQUIRED");
+    EXPECT_NE(msg.find("#c"), std::string::npos) << msg;
+}
+
+TEST(SignatureAbiTests, templateSharpCtorFormalIsHardMustOwn) {
+    std::string src = std::string(kCellSrc) +
+        "public final class Crate<T> {\n"
+        "    public T v;\n"
+        "    public Crate(#T t) { this.v = #t; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Cell c = heap Cell(1);\n"
+        "        Crate<Cell> k = heap Crate<Cell>(c);\n"
+        "        return k.v.n;\n"
+        "    }\n"
+        "}\n";
+    compileExpectError(src, "CAJETA_ERROR_TRANSFER_REQUIRED");
+}
+
+// Surrendering at the call site satisfies the edge, and the title flows
+// all the way into the container: formal entry armed → `= #t` moves it to
+// the field bit → teardown drops. Under dissolution this LEAKED (the
+// dissolved forward disarmed the caller but stored a borrow).
+TEST(SignatureAbiTests, templateSharpFormalSurrenderFlowsTitleLeakFree) {
+    std::string src = std::string(kCellSrc) +
+        "public final class Box<T> {\n"
+        "    public T v;\n"
+        "    public Box() {}\n"
+        "    public void put(#T t) { this.v = #t; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static void work() {\n"
+        "        Box<Cell> b = heap Box<Cell>();\n"
+        "        Cell c = heap Cell(3);\n"
+        "        b.put(#c);\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        work();\n"
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return (int32) ((leaked * 100) + 1);\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}

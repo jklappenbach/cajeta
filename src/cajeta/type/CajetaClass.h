@@ -169,13 +169,6 @@ namespace cajeta {
         // cached after first instantiation (see CajetaClass::instantiate).
         vector<TypeParameter> typeParameters;
         vector<CajetaTypePtr> typeArguments;
-        // element-ownership §2 — per-type-argument ownership mode of THIS
-        // instantiation: typeArgumentOwning[i] == true means position i was
-        // instantiated `#` (owning). Parallel to typeArguments; empty on a
-        // template or when every position is borrow (the default). Folded into
-        // the instantiation's cache key/name so `HashMap<#String,V>` and
-        // `HashMap<String,V>` are distinct monomorphizations (§8.3.1).
-        vector<bool> typeArgumentOwning;
         string templateSource;
         // Back-pointer from a concrete instantiation to the template class it
         // came from. Null for templates and for plain (non-templated) classes.
@@ -1051,17 +1044,11 @@ namespace cajeta {
         // dependencies. See MEMORY model: the template's source snippet is
         // re-parsed on each unique instantiation; the result is cached in
         // `module->getStructures()` keyed by canonical-with-args name.
-        // `argOwning` (element-ownership §2) carries the per-position `#` mode;
-        // empty = all borrow (the default, so existing callers are unchanged).
-        // It is folded into the cache key so owning/borrow instantiations are
-        // distinct, and stored on the result for later query.
-        CajetaClassPtr instantiate(vector<CajetaTypePtr> args,
-                                   vector<bool> argOwning = {});
+        CajetaClassPtr instantiate(vector<CajetaTypePtr> args);
         // The actual instantiation logic; `instantiate` is a thin wrapper that
         // also records cross-module instantiation obligations (incremental
         // compilation, Phase 2/3 — docs/IncrementalCompilation.md).
-        CajetaClassPtr instantiateInternal(vector<CajetaTypePtr> args,
-                                           vector<bool> argOwning = {});
+        CajetaClassPtr instantiateInternal(vector<CajetaTypePtr> args);
 
         // Diamond-operator inference (TPL-7). Given the argument types of a
         // `new Box<>(args)` call site, examine this template's constructor
@@ -1072,27 +1059,6 @@ namespace cajeta {
         vector<CajetaTypePtr> inferDiamondArgs(const vector<CajetaTypePtr>& argTypes);
         const vector<TypeParameter>& getTypeParameters() const { return typeParameters; }
         const vector<CajetaTypePtr>& getTypeArguments() const { return typeArguments; }
-        // element-ownership §2 — is type-argument position i owning (`#`)?
-        bool isTypeArgumentOwning(size_t i) const {
-            return i < typeArgumentOwning.size() && typeArgumentOwning[i];
-        }
-        const vector<bool>& getTypeArgumentOwning() const { return typeArgumentOwning; }
-        // element-ownership §5.1.1 — true when this instantiation left a type
-        // argument plain at a position the template author marked `#` (a
-        // dissolved `#K` formal, or a `#K` extractor return), and that
-        // argument has reference semantics (a borrowed value type is
-        // share/copy-managed — nothing to outlive). Such a container borrows
-        // elements it does not own, so its VALUE is scope-confined: no field
-        // store, no `#` return, no owning containment (§8.2.2). Queried by
-        // the Unit 7 confinement gates. Defined in CajetaClass.cpp.
-        bool isBorrowModeContainer();
-        // Transitional (element-ownership Unit 7, removed by Unit 8): the
-        // confinement gates skip instantiations of STDLIB templates —
-        // stdlib calling conventions (plain `Optional<T>` returns,
-        // `Cache<String,..>` fields) predate the static model and are swept
-        // to owning instantiations in Unit 8, alongside the 4B exemptions.
-        bool isStdlibTemplateInstantiation();
-        void setTypeArgumentOwning(vector<bool> v) { typeArgumentOwning = std::move(v); }
         void setTypeParameters(vector<TypeParameter> params) { typeParameters = std::move(params); }
         void setTypeArguments(vector<CajetaTypePtr> args) { typeArguments = std::move(args); }
         const string& getTemplateSource() const { return templateSource; }

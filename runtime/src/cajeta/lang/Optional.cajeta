@@ -68,7 +68,7 @@ public final class Optional<T> {
      *
      * @EntryPoint
      */
-    public Optional(boolean present, #T value) {
+    public Optional(boolean present, T value) {
         this.present = present;
         this.value = #value;
     }

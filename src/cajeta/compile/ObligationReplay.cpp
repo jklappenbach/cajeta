@@ -38,21 +38,18 @@ namespace cajeta {
             return out;
         }
 
-        // Parse a `<...>` argument list into types + owning flags (leading
-        // `#` per element-ownership mangling). False + err on any
-        // unresolvable argument.
+        // Parse a `<...>` argument list into types. A leading `#` (stale
+        // element-ownership mangles in old obligation files) is stripped
+        // and ignored. False + err on any unresolvable argument.
         bool resolveArgList(const std::string& inner,
                             std::vector<CajetaTypePtr>& args,
-                            std::vector<bool>& owning,
                             std::string& err) {
             for (auto& piece : splitTopLevel(inner)) {
                 std::string arg = trim(piece);
-                bool own = !arg.empty() && arg[0] == '#';
-                if (own) arg = trim(arg.substr(1));
+                if (!arg.empty() && arg[0] == '#') arg = trim(arg.substr(1));
                 CajetaTypePtr t = resolveCanonicalType(arg, err);
                 if (!t) return false;
                 args.push_back(std::move(t));
-                owning.push_back(own);
             }
             return true;
         }
@@ -109,12 +106,10 @@ namespace cajeta {
             return nullptr;
         }
         std::vector<CajetaTypePtr> args;
-        std::vector<bool> owning;
         if (!resolveArgList(s.substr(lt + 1, s.size() - lt - 2),
-                            args, owning, err))
+                            args, err))
             return nullptr;
-        CajetaClassPtr inst = klass->instantiate(std::move(args),
-                                                 std::move(owning));
+        CajetaClassPtr inst = klass->instantiate(std::move(args));
         if (!inst) err = "instantiation failed for `" + s + "`";
         return inst;
     }
@@ -162,9 +157,8 @@ namespace cajeta {
             paramsInner.empty() ? 0 : splitTopLevel(paramsInner).size();
         std::vector<CajetaTypePtr> targs;
         if (i < rest.size() && rest[i] == '<' && rest.back() == '>') {
-            std::vector<bool> ignoredOwning;
             if (!resolveArgList(rest.substr(i + 1, rest.size() - i - 2),
-                                targs, ignoredOwning, err))
+                                targs, err))
                 return false;
         }
         if (targs.empty()) {

@@ -42,7 +42,7 @@ public class SelectResult<T> {
      * SelectResult<int32> hit = heap SelectResult<int32>(2, 42);  // chans[2] -> 42
      * ```
      */
-    public SelectResult(int32 index, #T value) {
+    public SelectResult(int32 index, T value) {
         this.index = index;
         this.value = #value;
     }

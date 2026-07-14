@@ -100,13 +100,6 @@ namespace cajeta {
         // transfers ownership of the returned value to its caller. See
         // `MemoryModel.md` § Function signatures.
         bool returnsOwnership = false;
-        // element-ownership §4.1.4 (plan 4A): which enclosing-class type
-        // parameter the declared return type came from (`#K take()` → index of
-        // K), or -1. Recorded during the instantiation body walk; the call-site
-        // extractor gate (4B) pairs it with isTypeArgumentOwning — a
-        // `#`-returning element extractor is valid only on an owning
-        // instantiation (a borrow-mode container has no ownership to hand out).
-        int originReturnTypeParamIndex = -1;
         // True when this method was injected by a registered member
         // synthesizer (source-synthesis facility). Consulted by checks that
         // distinguish compiler-generated members from user-authored ones —
@@ -557,9 +550,6 @@ namespace cajeta {
         bool lastUsesComputed = false;
         void computeLastUses();
     public:
-
-        int getOriginReturnTypeParamIndex() const { return originReturnTypeParamIndex; }
-        void setOriginReturnTypeParamIndex(int idx) { originReturnTypeParamIndex = idx; }
 
         bool isSynthesizedMember() const { return synthesizedMember; }
         void setSynthesizedMember(bool v) { synthesizedMember = v; }

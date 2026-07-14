@@ -25,15 +25,6 @@ namespace cajeta {
         // into the LLVM global's initializer. For instance fields, kept
         // for future <init> emission. nullptr when no initializer.
         AbstractSyntaxNodePtr initializer;
-        // element-ownership §7.1.4 — when this field's DECLARED type in the
-        // template was `P[]` (array of type parameter P), the index of P in
-        // the template's parameter list; -1 otherwise. Monomorphization
-        // resolves the field type to the concrete element type, losing the
-        // came-from-a-type-parameter fact; this preserves it so the drop
-        // walk can pair the field with isTypeArgumentOwning(index) and
-        // decide owned-element teardown. Set by TemplateInstantiator's
-        // post-walk linkage pass.
-        int originElementTypeParamIndex = -1;
     public:
         StructureProperty(string name, int order) {
             this->name = name;
@@ -80,13 +71,10 @@ namespace cajeta {
         AbstractSyntaxNodePtr getInitializer() const { return initializer; }
         void setInitializer(AbstractSyntaxNodePtr init) { initializer = init; }
 
-        int getOriginElementTypeParamIndex() const { return originElementTypeParamIndex; }
-        void setOriginElementTypeParamIndex(int idx) { originElementTypeParamIndex = idx; }
-
-        // optional-borrow-ownership 2.2.3.b — same idea for a SCALAR `P`-typed
-        // field (`T value` on Optional). Unit 3B covered `P[]` only and left these
-        // on the mode-unaware class-ref drop branch, so a borrow-mode
-        // instantiation freed a payload it never owned.
+        // Which type parameter a scalar `P`-typed field came from (`T value`
+        // on Optional), or -1. Monomorphization loses the fact; the drop walk
+        // needs it to pick the bit-guarded T-origin branch. Set by
+        // TemplateInstantiator's post-walk linkage pass.
         int originTypeParamIndex = -1;
 
         int getOriginTypeParamIndex() const { return originTypeParamIndex; }
