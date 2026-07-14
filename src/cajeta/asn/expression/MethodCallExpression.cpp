@@ -8048,8 +8048,12 @@ namespace cajeta {
             // class-pointer call result forwards the flag stashed at its
             // generation (arg_temp_flag above). Everything else still needs
             // callerTransferred.
+            // Default-arg fill-in can grow `parameters` past the stash
+            // window; a filled-in arg has no stashed flag.
+            llvm::Value* stashed = mmi < argTitleFlags.size()
+                ? argTitleFlags[mmi] : nullptr;
             if (!parameters[mmi].callerTransferred) {
-                if (argTitleFlags[mmi]) {
+                if (stashed) {
                     // runtime-owned plain arg: forwards its flag below
                 } else if (freshHeapCreatorTempClass(
                         parameters[mmi].expression)) {
@@ -8059,7 +8063,7 @@ namespace cajeta {
                     continue;
                 }
             }
-            llvm::Value* rf = argTitleFlags[mmi];
+            llvm::Value* rf = stashed;
             if (!rf) {
                 moveMask |= ((int64_t) 1) << mmi;
                 continue;

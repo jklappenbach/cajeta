@@ -640,14 +640,21 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     // it; a collected error would let codegen run into a null type and crash).
     diagEngine.setCollectErrors(false);
     cajeta::DiagnosticEngine* prevEngine = cajeta::DiagnosticEngine::active();
-    cajeta::DiagnosticEngine::setActive(&diagEngine);
+    // A test that installed its OWN engine (EngineScope) keeps it — the
+    // harness engine must not shadow it, or the test's asserted diagnostics
+    // land in the wrong collector (SliceLint et al.).
+    if (!prevEngine) {
+        cajeta::DiagnosticEngine::setActive(&diagEngine);
+    }
     g_lastDiagnostics.clear();
     struct DiagGuard {
         cajeta::DiagnosticEngine& engine;
         cajeta::DiagnosticEngine* prev;
         ~DiagGuard() {
-            g_lastDiagnostics = engine.finalize();
-            cajeta::DiagnosticEngine::setActive(prev);
+            if (!prev) {
+                g_lastDiagnostics = engine.finalize();
+                cajeta::DiagnosticEngine::setActive(prev);
+            }
         }
     } diagGuard{diagEngine, prevEngine};
 
