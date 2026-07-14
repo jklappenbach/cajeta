@@ -37,8 +37,10 @@ a single operator, `#=`, so the language keeps exactly one ownership sigil.
   `#T[]`, `own T[]`, and any declaration-site marker.
 - Field symmetry governs: whatever a store means for `this.f`, it means for
   `this.data[i]`. One mental model.
-- Arrays that never receive a title store must pay nothing (no bitmap
-  allocation, no layout change) and behave exactly as today.
+- Arrays that never receive a title store behave exactly as today
+  (all-zero bits = borrow-era semantics). Their cost is capacity/8 tail
+  bytes only (§3.1.1) — droppable-element arrays carry bits eagerly, by
+  decision; performance beats allocation thrift here.
 - The shared-capable dual-role store (String/Utf8: plain store copies
   borrowed bytes at runtime) must compose — a title store must not bypass it
   (the 5.2.6 lesson).
@@ -47,9 +49,10 @@ a single operator, `#=`, so the language keeps exactly one ownership sigil.
 - No change to call-site or return spelling (`f(#v)`, `return #v`,
   `#data[i]` move-out reads stay as-is).
 - No static ownership inference (spec §4.6.4 stands).
-- Collections whose element storage is non-contiguous or inline-struct
-  (HashMap's MapEntry) may keep bespoke destructors where per-slot bits
-  don't fit — see §3.4 for what they gain anyway.
+- Non-contiguous storage strategies remain the author's business; the
+  spec covers title recording and synthesized drops for array-backed
+  storage, including inline-struct elements (§3.3.2 — HashMap converts,
+  no bespoke-destructor carve-out).
 
 ## 2. The `#=` title-assign operator
 
