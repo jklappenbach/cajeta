@@ -125,6 +125,15 @@ namespace cajeta {
         // recurse into the args when scanning a lambda body for captures.
         const vector<MethodCallParameter>& getParameters() const { return parameters; }
 
+        // 7.2.4 — args are private; children[0] is only the receiver.
+        void forEachSubNode(
+                const std::function<void(const AbstractSyntaxNodePtr&)>& fn) override {
+            for (auto& p : parameters) {
+                if (p.expression) fn(p.expression);
+            }
+            AbstractSyntaxNode::forEachSubNode(fn);
+        }
+
         const string& getMethodCallName() const { return methodCallName; }
         void setMethodCallName(const string& name) { methodCallName = name; }
         bool isSuperCtorCall() const { return superCtorCall; }

@@ -645,6 +645,13 @@ namespace cajeta {
         const std::vector<CajetaTypePtr>& getParamTypes() const { return paramTypes; }
         AbstractSyntaxNodePtr getBody() const { return body; }
 
+        // 7.2.4 — the body lives in a private slot, not `children`.
+        void forEachSubNode(
+                const std::function<void(const AbstractSyntaxNodePtr&)>& fn) override {
+            if (body) fn(body);
+            AbstractSyntaxNode::forEachSubNode(fn);
+        }
+
         // Target-type hint from the surrounding context (e.g. a LHS
         // function-typed declaration). When set, codegen uses this as the
         // lambda's CajetaFunctionType — its return type is what the lambda's

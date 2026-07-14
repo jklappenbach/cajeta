@@ -66,6 +66,15 @@ namespace cajeta {
         // expressions.
         const vector<MethodCallParameter>& getParameters() const { return parameters; }
 
+        // 7.2.4 — ctor args are private, same split as MethodCallExpression.
+        void forEachSubNode(
+                const std::function<void(const AbstractSyntaxNodePtr&)>& fn) override {
+            for (auto& p : parameters) {
+                if (p.expression) fn(p.expression);
+            }
+            AbstractSyntaxNode::forEachSubNode(fn);
+        }
+
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 

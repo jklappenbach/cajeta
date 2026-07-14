@@ -2405,4 +2405,84 @@ namespace cajeta {
     llvm::Value* SemiStatement::generateCode(CajetaModulePtr module) {
         return nullptr;
     }
+
+    // 7.2.4 — analysis-walk descent overrides. Statements park their
+    // payloads in private fields, not `children` (the codegen list); these
+    // hand each payload to the visitor so analysis passes see every
+    // subtree. Each also forwards to the base for any `children` content.
+    using SubNodeFn = std::function<void(const AbstractSyntaxNodePtr&)>;
+
+    void ExpressionStatement::forEachSubNode(const SubNodeFn& fn) {
+        if (expression) fn(expression);
+        AbstractSyntaxNode::forEachSubNode(fn);
+    }
+
+    void LabelStatement::forEachSubNode(const SubNodeFn& fn) {
+        if (block) fn(block);
+        AbstractSyntaxNode::forEachSubNode(fn);
+    }
+
+    void ScopeStatement::forEachSubNode(const SubNodeFn& fn) {
+        if (block) fn(block);
+        AbstractSyntaxNode::forEachSubNode(fn);
+    }
+
+    void IfStatement::forEachSubNode(const SubNodeFn& fn) {
+        if (condition) fn(condition);
+        if (thenBranch) fn(thenBranch);
+        if (elseBranch) fn(elseBranch);
+        AbstractSyntaxNode::forEachSubNode(fn);
+    }
+
+    void ForStatement::forEachSubNode(const SubNodeFn& fn) {
+        if (init) fn(init);
+        if (condition) fn(condition);
+        for (auto& u : update) { if (u) fn(u); }
+        if (body) fn(body);
+        AbstractSyntaxNode::forEachSubNode(fn);
+    }
+
+    void EnhancedForStatement::forEachSubNode(const SubNodeFn& fn) {
+        if (iterableExpr) fn(iterableExpr);
+        if (body) fn(body);
+        AbstractSyntaxNode::forEachSubNode(fn);
+    }
+
+    void WhileStatement::forEachSubNode(const SubNodeFn& fn) {
+        if (condition) fn(condition);
+        if (body) fn(body);
+        AbstractSyntaxNode::forEachSubNode(fn);
+    }
+
+    void DoStatement::forEachSubNode(const SubNodeFn& fn) {
+        if (body) fn(body);
+        if (condition) fn(condition);
+        AbstractSyntaxNode::forEachSubNode(fn);
+    }
+
+    void TryStatement::forEachSubNode(const SubNodeFn& fn) {
+        if (tryBlock) fn(tryBlock);
+        for (auto& cc : catchClauses) { if (cc.body) fn(cc.body); }
+        if (finallyBlock) fn(finallyBlock);
+        AbstractSyntaxNode::forEachSubNode(fn);
+    }
+
+    void SwitchStatement::forEachSubNode(const SubNodeFn& fn) {
+        if (subject) fn(subject);
+        for (auto& g : groups) {
+            for (auto& cv : g.caseValues) { if (cv) fn(cv); }
+            for (auto& st : g.statements) { if (st) fn(st); }
+        }
+        AbstractSyntaxNode::forEachSubNode(fn);
+    }
+
+    void ReturnStatement::forEachSubNode(const SubNodeFn& fn) {
+        if (expression) fn(expression);
+        AbstractSyntaxNode::forEachSubNode(fn);
+    }
+
+    void ThrowStatement::forEachSubNode(const SubNodeFn& fn) {
+        if (expression) fn(expression);
+        AbstractSyntaxNode::forEachSubNode(fn);
+    }
 }

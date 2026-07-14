@@ -64,6 +64,14 @@ namespace cajeta {
         const CreatorRestPtr& getCreatorRest() const { return creatorRest; }
         const string& getTypeName() const { return typeName; }
 
+        // 7.2.4 — the creator-rest (and with it the ctor args / dims) is a
+        // private slot, not a child.
+        void forEachSubNode(
+                const std::function<void(const AbstractSyntaxNodePtr&)>& fn) override {
+            if (creatorRest) fn(creatorRest);
+            AbstractSyntaxNode::forEachSubNode(fn);
+        }
+
         NewExpression(antlr4::Token* token) : Expression(token) { }
 
         NewExpression(CajetaParser::CreatorContext* creatorContext, antlr4::Token* token) : Expression(token) {

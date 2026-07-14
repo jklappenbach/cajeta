@@ -1544,6 +1544,11 @@ namespace cajeta {
                 arenaWalk(ret->getExpression(), escaping, candidates, arrayCandidates);
                 return;
             }
+            // #name inside a THROWN expression escapes to the handler frame.
+            if (auto th = std::dynamic_pointer_cast<ThrowStatement>(node)) {
+                arenaWalk(th->getExpression(), escaping, candidates, arrayCandidates);
+                return;
+            }
             // x = name / this.f = name / arr[i] = name → name is stored.
             if (auto bo = std::dynamic_pointer_cast<BinaryOpExpression>(node)) {
                 if (bo->getBinaryOp() == BINARY_OP_ASSIGN
@@ -1578,17 +1583,18 @@ namespace cajeta {
                 return;
             }
             if (auto mc = std::dynamic_pointer_cast<MethodCallExpression>(node)) {
-                for (auto& c : mc->getChildren()) arenaWalk(c, escaping, candidates, arrayCandidates);
+                // A `#arg` call argument is recorded as callerTransferred on the
+                // parameter (the callee takes ownership) — the named value
+                // escapes the frame. This is the bench's `m.put(#k, i)` shape.
                 for (auto& p : mc->getParameters()) {
-                    // A `#arg` call argument is recorded as callerTransferred on the
-                    // parameter (the callee takes ownership) — the named value
-                    // escapes the frame. This is the bench's `m.put(#k, i)` shape.
                     if (p.callerTransferred) {
                         std::string n = arenaLeftmostId(p.expression);
                         if (!n.empty()) escaping.insert(n);
                     }
-                    arenaWalk(p.expression, escaping, candidates, arrayCandidates);
                 }
+                node->forEachSubNode([&](const AbstractSyntaxNodePtr& sub) {
+                    arenaWalk(sub, escaping, candidates, arrayCandidates);
+                });
                 return;
             }
             if (auto ne = std::dynamic_pointer_cast<NewExpression>(node)) {
@@ -1608,48 +1614,19 @@ namespace cajeta {
                             std::string n = arenaLeftmostId(p.expression);
                             if (!n.empty()) escaping.insert(n);
                         }
-                        arenaWalk(p.expression, escaping, candidates, arrayCandidates);
                     }
                 }
-                for (auto& c : ne->getChildren())
-                    arenaWalk(c, escaping, candidates, arrayCandidates);
+                node->forEachSubNode([&](const AbstractSyntaxNodePtr& sub) {
+                    arenaWalk(sub, escaping, candidates, arrayCandidates);
+                });
                 return;
             }
-            if (auto es = std::dynamic_pointer_cast<ExpressionStatement>(node)) {
-                arenaWalk(es->getExpression(), escaping, candidates, arrayCandidates);
-                return;
-            }
-            if (auto ifs = std::dynamic_pointer_cast<IfStatement>(node)) {
-                arenaWalk(ifs->getCondition(), escaping, candidates, arrayCandidates);
-                arenaWalk(ifs->getThenBranch(), escaping, candidates, arrayCandidates);
-                arenaWalk(ifs->getElseBranch(), escaping, candidates, arrayCandidates);
-                return;
-            }
-            if (auto ls = std::dynamic_pointer_cast<LabelStatement>(node)) {
-                arenaWalk(ls->getBlock(), escaping, candidates, arrayCandidates); return;
-            }
-            if (auto ss = std::dynamic_pointer_cast<ScopeStatement>(node)) {
-                arenaWalk(ss->getBlock(), escaping, candidates, arrayCandidates); return;
-            }
-            if (auto ws = std::dynamic_pointer_cast<WhileStatement>(node)) {
-                arenaWalk(ws->getCondition(), escaping, candidates, arrayCandidates);
-                arenaWalk(ws->getBody(), escaping, candidates, arrayCandidates); return;
-            }
-            if (auto dos = std::dynamic_pointer_cast<DoStatement>(node)) {
-                arenaWalk(dos->getBody(), escaping, candidates, arrayCandidates);
-                arenaWalk(dos->getCondition(), escaping, candidates, arrayCandidates); return;
-            }
-            if (auto fs = std::dynamic_pointer_cast<ForStatement>(node)) {
-                arenaWalk(fs->getInit(), escaping, candidates, arrayCandidates);
-                arenaWalk(fs->getCondition(), escaping, candidates, arrayCandidates);
-                for (auto& u : fs->getUpdate()) arenaWalk(u, escaping, candidates, arrayCandidates);
-                arenaWalk(fs->getBody(), escaping, candidates, arrayCandidates); return;
-            }
-            if (auto efs = std::dynamic_pointer_cast<EnhancedForStatement>(node)) {
-                arenaWalk(efs->getIterableExpr(), escaping, candidates, arrayCandidates);
-                arenaWalk(efs->getBody(), escaping, candidates, arrayCandidates); return;
-            }
-            for (auto& c : node->getChildren()) arenaWalk(c, escaping, candidates, arrayCandidates);
+            // 7.2.4 — everything else (control statements, try/switch —
+            // which the old hand-list MISSED — and plain expressions)
+            // descends through forEachSubNode.
+            node->forEachSubNode([&](const AbstractSyntaxNodePtr& sub) {
+                arenaWalk(sub, escaping, candidates, arrayCandidates);
+            });
         }
     }
 
@@ -1689,14 +1666,11 @@ namespace cajeta {
                         }
                     }
                 }
-                // ExpressionStatement holds its expression in a PRIVATE field,
-                // not in getChildren() — a generic child walk never reaches the
-                // assignment inside `void keep(Cell v) { this.c = #v; }`. Same
-                // reason arenaWalk special-cases statements.
-                if (auto es = std::dynamic_pointer_cast<ExpressionStatement>(node)) {
-                    walk(es->getExpression());
-                }
-                for (auto& child : node->getChildren()) walk(child);
+                // 7.2.4 — descend through forEachSubNode: statements and
+                // calls keep payloads in private fields, and getChildren()
+                // alone silently misses them (this walker missed retention
+                // inside `if` branches until it was routed through here).
+                node->forEachSubNode(walk);
             };
         walk(block);
         retainsFormalCache[formalName] = retained;
@@ -1730,25 +1704,13 @@ namespace cajeta {
                         lastUseAt[n] = at;
                     }
                 }
-                // Statements park their payloads in private fields, not in
-                // getChildren() — descend explicitly (same trap retainsFormal
-                // hit with ExpressionStatement).
-                if (auto es = std::dynamic_pointer_cast<ExpressionStatement>(node)) {
-                    walk(es->getExpression(), loopHere);
-                }
-                if (auto rs = std::dynamic_pointer_cast<ReturnStatement>(node)) {
-                    walk(rs->getExpression(), loopHere);
-                }
-                // Call/ctor ARGUMENTS are likewise private (a `parameters`
-                // vector), so `f(x)` hides x from getChildren() — the very site
-                // this advisory is about.
-                if (auto mc = std::dynamic_pointer_cast<MethodCallExpression>(node)) {
-                    for (auto& prm : mc->getParameters()) walk(prm.expression, loopHere);
-                }
-                if (auto cr = std::dynamic_pointer_cast<ClassCreatorRest>(node)) {
-                    for (auto& prm : cr->getParameters()) walk(prm.expression, loopHere);
-                }
-                for (auto& child : node->getChildren()) walk(child, loopHere);
+                // 7.2.4 — descend through forEachSubNode so private
+                // payloads (if/loop bodies, return exprs, call/ctor args) are
+                // all seen; this walker missed every read inside control flow
+                // until it was routed through here.
+                node->forEachSubNode([&](const AbstractSyntaxNodePtr& sub) {
+                    walk(sub, loopHere);
+                });
             };
         walk(block, false);
     }

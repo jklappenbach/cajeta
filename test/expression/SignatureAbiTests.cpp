@@ -658,3 +658,104 @@ TEST(SignatureAbiTests, templateSharpFormalSurrenderFlowsTitleLeakFree) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 7.2.4 — the shared-walk pins. Every statement class parks its payloads
+// in PRIVATE fields (if/while/for/try bodies, conditions, return exprs),
+// so any analysis pass that walks getChildren() plus a few hand-listed
+// cases misses whole subtrees SILENTLY. Three holes, one per walker.
+
+// retainsFormal saw only ExpressionStatement payloads: a retention inside
+// an `if` branch was invisible, so the dangle lint recorded no lend edge
+// and the escaping holder compiled clean.
+TEST(SignatureAbiTests, danglingLendOnConditionalSetterRejected) {
+    std::string src = std::string(kCellSrc) +
+        "public class Holder {\n"
+        "    public Cell c;\n"
+        "    public void keep(Cell v) {\n"
+        "        if (v.n > 0) { this.c = #v; }\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static Holder build() {\n"
+        "        Holder h = heap Holder();\n"
+        "        Cell s = heap Cell(5);\n"
+        "        h.keep(s);\n"
+        "        return #h;\n"
+        "    }\n"
+        "    public static int32 run() { return build().c.n; }\n"
+        "}\n";
+    compileExpectError(src, "CAJETA_ERROR_DANGLING_LEND");
+}
+
+// computeLastUses never descended into if/loop bodies (private payloads),
+// so a later read inside control flow didn't cancel the advisory: the
+// lend looked final and warned wrongly.
+TEST(SignatureAbiTests, lastUseAdvisorySeesReadInsideIfBranch) {
+    std::string src = std::string(kCellSrc) + kAdvisorySrc +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Sink s = heap Sink();\n"
+        "        Cell reread = heap Cell(2);\n"
+        "        s.peek(reread);\n"
+        "        int32 r = 0;\n"
+        "        if (r == 0) { r = reread.n; }\n"
+        "        return r;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 2);
+    EXPECT_FALSE(warnedAbout("reread"));
+}
+
+// arenaWalk hand-listed the control statements but missed TryStatement:
+// a concat local RETURNED from inside a try was judged non-escaping and
+// arena-routed. That stripped its drop entry, which MASKED the
+// fresh-return gate — the plain `return s` compiled and handed out arena
+// memory. With the escape seen, the local keeps its entry and the gate
+// fires as it does outside a try.
+TEST(SignatureAbiTests, concatReturnedInsideTryKeepsFreshReturnGate) {
+    std::string src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static String make() {\n"
+        "        String s = \"ab\" + \"cd\";\n"
+        "        try {\n"
+        "            return s;\n"
+        "        } catch (Exception e) {\n"
+        "            return \"x\";\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        return (int32) make().count();\n"
+        "    }\n"
+        "}\n";
+    compileExpectError(src, "CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER");
+}
+
+// ...and the well-spelled variant round-trips: `#`-return inside the try
+// escapes the arena AND satisfies the gate.
+TEST(SignatureAbiTests, concatSharpReturnedInsideTryRoundTrips) {
+    std::string src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static #String make() {\n"
+        "        String s = \"ab\" + \"cd\";\n"
+        "        try {\n"
+        "            return #s;\n"
+        "        } catch (Exception e) {\n"
+        "            return \"x\";\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        String got = make();\n"
+        "        int32 junk = 0;\n"
+        "        int32 i = 0;\n"
+        "        while (i < 8) {\n"
+        "            String t = \"zz\" + \"qq\";\n"
+        "            junk = junk + (int32) t.count();\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return (int32) got.count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 4);
+}
