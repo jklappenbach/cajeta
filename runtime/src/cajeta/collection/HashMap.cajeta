@@ -397,9 +397,24 @@ public final class HashMap<K, V> {
             while (mm != 0) {
                 int64 i = (pos + Cajeta.ctz64((int64) (mm & 65535))) & mask;
                 if (this.slots[i].key == key) {
+                    // Clear the key slot so the tombstone holds NO stale
+                    // pointer: the String field-store emitter old-drops the
+                    // previous field value unconditionally, so a stale freed
+                    // key left here was re-dropped when a later put reused
+                    // this slot — and when malloc had recycled the address
+                    // for the incoming key, that old-drop freed the key
+                    // being stored (the 6.2.6b DnsCache eviction SIGSEGV).
+                    // The zero source is allocated BEFORE the drop so its
+                    // allocation cannot land on the just-freed key. For a
+                    // String K the clear-store's own old-drop also frees a
+                    // borrow-resolved copy the manual drop never covered;
+                    // for class K the manual drop below remains the owner
+                    // release; primitives just store zero.
+                    K[] kz = heap K[1];
                     if ((this.owned[i] & 1) != 0) {
                         Cajeta.dropValue(this.slots[i].key);
                     }
+                    this.slots[i].key = kz[0];
                     boolean valOwned = (this.owned[i] & 2) != 0;
                     V out = this.slots[i].val;
                     this.owned[i] = (int8) 0;

@@ -2129,6 +2129,20 @@ namespace cajeta {
                     auto& fch = fobDot->getChildren();
                     auto fobRecv = fch.empty() ? nullptr
                         : dynamic_pointer_cast<Expression>(fch[0]);
+                    // 6.2.6b — ARRAY-ELEMENT receivers are exempt: fields of
+                    // an inline element struct (`slots[i].val = #v`) keep NO
+                    // compiler ownership bits (6.2.2: containers with element
+                    // structs do their own bookkeeping — HashMap's owned[]).
+                    // The machinery fired here anyway and fought remove(),
+                    // which hands the occupant out via its flagged return and
+                    // can never clear the hidden word — a tombstone-reuse put
+                    // then displaced-released the STALE val pointer (address
+                    // recycled → virtual_drop walked a live object as a
+                    // corpse; the DnsCache third-eviction SIGSEGV).
+                    if (dynamic_pointer_cast<ArrayIndexExpression>(fch.empty()
+                            ? nullptr : fch[0])) {
+                        fobRecv = nullptr;
+                    }
                     if (fobRecv && !fobRecv->getResolvedType()) {
                         fobRecv->resolveTypes(module);
                     }
