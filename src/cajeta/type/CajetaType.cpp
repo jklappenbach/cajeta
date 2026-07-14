@@ -1334,7 +1334,21 @@ namespace cajeta {
                                 throw "unresolved template argument";
                             }
                             args.push_back(argType);
-                            argOwning.push_back(targ->REFERENCE() != nullptr);  // element-ownership §2
+                            // title-tracking §8.1 (plan 7.1.1) — type-argument
+                            // `#` is retired: ownership is per-call, the store
+                            // site decides and the entry bit records.
+                            if (targ->REFERENCE() != nullptr) {
+                                throw Exception(
+                                    "`#` on a type argument is retired: "
+                                    "ownership is per-call under "
+                                    "title-tracking (specs/title-tracking-"
+                                    "spec.md §8.1) — spell it at the store "
+                                    "site (`m.put(#k, #v)`, `xs.add(#x)`) and "
+                                    "drop the `#` from `"
+                                    + argType->toCanonical() + "`",
+                                    "CAJETA_ERROR_TYPE_TRANSFER_RETIRED");
+                            }
+                            argOwning.push_back(false);
                         }
                         type = templateClass->instantiate(args, argOwning);
                     }

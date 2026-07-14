@@ -369,76 +369,11 @@ namespace cajeta {
         // NewExpression) and direct instantiate() callers hit it. Wildcards
         // and still-unfilled forward-ref placeholders skip — their shape isn't
         // known yet; arrays own their elements and pass.
-        // element-ownership §4.1.5 / §8.6 (plan 5.2.1) — declaration-`#`:
-        // an owning-REQUIRED type parameter (`class Vault<#K, V>`) demands `#`
-        // from every instantiation. Checked here so field/local/extends
-        // threading and direct instantiate() callers all hit it; the
-        // declaration-time extends-edge contagion check (buildClassLike)
-        // catches laundering earlier with the satisfy/reproject phrasing.
-        // Wildcard args skip (reflection's `Vault<?>` names no element type).
-        for (size_t i = 0; i < args.size() && i < typeParameters.size(); ++i) {
-            if (!typeParameters[i].owningRequired || argOwning[i]) continue;
-            if (args[i] && args[i]->isWildcard()) continue;
-            throw Exception(
-                "template " + qName->toCanonical() + ": type parameter '#"
-                    + typeParameters[i].name + "' is owning-required "
-                    "(declaration-`#`) — every instantiation must mark this "
-                    "argument `#`. Fix: instantiate with `<#"
-                    + (args[i] && args[i]->getQName()
-                        ? args[i]->getQName()->getTypeName() : string("..."))
-                    + ", ...>` (element-ownership spec §4.1.5)",
-                "CAJETA_ERROR_TYPE_PARAMETER_OWNING_REQUIRED");
-        }
-        for (size_t i = 0; i < args.size(); ++i) {
-            if (!argOwning[i] || !args[i]) continue;
-            if (args[i]->isWildcard()) continue;
-            if (dynamic_pointer_cast<CajetaArray>(args[i])) continue;
-            if (auto argClass = dynamic_pointer_cast<CajetaClass>(args[i])) {
-                if (argClass->isPlaceholder()) continue;
-                if (argClass->isValueType()
-                        && !argClass->isSharedCapableValue()) {
-                    throw Exception(
-                        "template " + qName->toCanonical()
-                            + ": '#' on type argument " + std::to_string(i + 1)
-                            + " (" + args[i]->toCanonical()
-                            + ") — this value type owns no heap payload, so "
-                              "there is no ownership to transfer; drop the '#' "
-                              "(element-ownership spec §8.1)",
-                        "CAJETA_ERROR_TYPE_PARAMETER_OWNERSHIP");
-                }
-                // element-ownership §8.2.2 (plan 7.2.2): you cannot `#`-own a
-                // borrow-mode container. It borrows its elements and owns
-                // nothing, so an owning position would carry those borrows
-                // past their scope through a longer-lived owner. Stdlib
-                // template instantiations are transitionally exempt (Unit 8
-                // sweeps them owning and removes this, with the 4B set).
-                if (argClass->isBorrowModeContainer()
-                        && !argClass->isStdlibTemplateInstantiation()) {
-                    throw Exception(
-                        "template " + qName->toCanonical()
-                            + ": '#' on type argument " + std::to_string(i + 1)
-                            + " (" + args[i]->toCanonical()
-                            + ") — cannot own a borrow-mode container: its "
-                              "author-marked '#' element positions were "
-                              "instantiated plain, so it borrows elements it "
-                              "does not own. Fix: make the inner container "
-                              "owning (mark its element arguments '#') so the "
-                              "owner holds a self-contained subtree, or drop "
-                              "this '#' and accept the container's scope "
-                              "confinement (element-ownership spec §8.2.2)",
-                        "CAJETA_ERROR_BORROW_MODE_OWNED");
-                }
-                continue;
-            }
-            // Non-class, non-array: a primitive. (An integer-constant arg in a
-            // type-parameter slot is already rejected by the param-kind check.)
-            throw Exception(
-                "template " + qName->toCanonical() + ": '#' on type argument "
-                    + std::to_string(i + 1) + " (" + args[i]->toCanonical()
-                    + ") — primitives carry no separable ownership; drop the "
-                      "'#' (element-ownership spec §8.1)",
-                "CAJETA_ERROR_TYPE_PARAMETER_OWNERSHIP");
-        }
+        // title-tracking §8.1 (plan 7.2.1) — the declaration-`#`
+        // owning-required gate and the `#`-type-argument agreement/confinement
+        // gates (value-type/primitive `#`, BORROW_MODE_OWNED) were retired:
+        // type-position `#` now errors at parse (TYPE_TRANSFER_RETIRED), so
+        // argOwning is always all-false here.
         string suffix = buildArgSuffix(args, argOwning);
         string instCanonical = qName->toCanonical() + suffix;
 

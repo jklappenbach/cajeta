@@ -83,6 +83,16 @@ namespace cajeta {
     static shared_ptr<LocalVariableDeclaration>
     buildLocalVariableDeclaration(CajetaParser::LocalVariableDeclarationContext* lvdCtx) {
         if (!lvdCtx) return nullptr;
+        // title-tracking §8.1 (plan 7.1.3) — `#Type` local declarations are
+        // retired; mirrors visitLocalVariableDeclaration.
+        if (lvdCtx->REFERENCE() != nullptr) {
+            throw Exception(
+                "`#` on a local declaration's type is retired: a local's role "
+                "comes from its initializer under title-tracking "
+                "(specs/title-tracking-spec.md §8.1) — drop the `#` from the "
+                "declaration",
+                "CAJETA_ERROR_TYPE_TRANSFER_RETIRED");
+        }
         set<Modifier> modifiers;
         for (auto* mod : lvdCtx->variableModifier()) {
             modifiers.insert(Modifiable::toModifier(mod->getText()));

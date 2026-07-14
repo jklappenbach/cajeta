@@ -340,62 +340,10 @@ namespace cajeta {
                 for (auto& tt : tl->typeType()) {
                     auto* coi = tt->classOrInterfaceType();
                     bucket->push_back(QualifiedName::fromContext(coi));
-                    // element-ownership §8.6 (plan 5.2.2) — inheritance
-                    // contagion at the EXTENDS edge, checked at declaration.
-                    // When the base is a template with an owning-REQUIRED
-                    // (declaration-`#`) parameter, the edge must spell `#`
-                    // at that position: satisfy with a concrete `#Elem`, or
-                    // reproject with the sub's own `#K`. A plain arg passed
-                    // through LAUNDERS the requirement — error here, at the
-                    // subclass declaration, not buried at some later
-                    // instantiation. Keyed on declaration-`#` only; a base
-                    // whose params are all dual-mode is untouched. An
-                    // unresolvable base (forward ref) defers to the
-                    // instantiation-time owning-required gate.
-                    if (which == 0 && coi) {
-                        auto& cmapEo = CajetaType::getCanonicalMap();
-                        auto baseIt = cmapEo.find(
-                            QualifiedName::fromContext(coi)->getTypeName());
-                        auto baseCls = baseIt != cmapEo.end()
-                            ? std::dynamic_pointer_cast<CajetaClass>(baseIt->second)
-                            : nullptr;
-                        if (baseCls && baseCls->isTemplate()) {
-                            const auto& baseTps = baseCls->getTypeParameters();
-                            auto targsListEo = coi->typeArguments();
-                            CajetaParser::TypeArgumentsContext* leafEo = nullptr;
-                            for (auto* ta : targsListEo) {
-                                if (ta) leafEo = ta;
-                            }
-                            if (leafEo && leafEo->typeArgument().size()
-                                    == baseTps.size()) {
-                                auto targsEo = leafEo->typeArgument();
-                                for (size_t p = 0; p < baseTps.size(); ++p) {
-                                    if (!baseTps[p].owningRequired) continue;
-                                    if (targsEo[p] && targsEo[p]->REFERENCE()) {
-                                        continue;  // satisfied / reprojected
-                                    }
-                                    throw Exception(
-                                        "class '" + name + "' extends '"
-                                            + baseCls->getQName()->toCanonical()
-                                            + "' but passes a plain argument to "
-                                              "its owning-required parameter '#"
-                                            + baseTps[p].name + "' — this "
-                                              "launders the ownership "
-                                              "requirement. Fix: satisfy it "
-                                              "with a `#`-marked argument "
-                                              "(`extends "
-                                            + baseCls->getQName()->getTypeName()
-                                            + "<#...>`), or reproject it by "
-                                              "declaring your own parameter "
-                                              "`<#" + baseTps[p].name
-                                            + ", ...>` and passing `#"
-                                            + baseTps[p].name + "` through. "
-                                              "(element-ownership spec §8.6)",
-                                        "CAJETA_ERROR_OWNING_REQUIRED_LAUNDERED");
-                                }
-                            }
-                        }
-                    }
+                    // title-tracking §8.1 (plan 7.2.1) — the extends-edge
+                    // owning-required contagion check was retired with
+                    // declaration-`#` (type-parameter `#` now errors at parse).
+                    
                     // Pull type args off the leaf identifier; multi-level
                     // qualified templates like `Outer<A>.Inner<B>` aren't
                     // supported in v1 (would need per-level capture and
@@ -524,7 +472,16 @@ namespace cajeta {
                 vector<TypeParameter> params;
                 for (auto* tp : tps->typeParameter()) {
                     TypeParameter param(tp->identifier()->getText());
-                    param.owningRequired = (tp->REFERENCE() != nullptr);  // element-ownership §4.1.5
+                    // title-tracking §8.1 (plan 7.2.1) — declaration-`#` retired.
+                    if (tp->REFERENCE() != nullptr) {
+                        throw Exception(
+                            "`#` on a type parameter declaration is retired: "
+                            "ownership is per-call under title-tracking "
+                            "(specs/title-tracking-spec.md §8.1) — drop the "
+                            "`#` (a must-own edge is spelled on the FORMAL)",
+                            "CAJETA_ERROR_TYPE_TRANSFER_RETIRED");
+                    }
+                    param.owningRequired = false;
                     if (auto* pt = tp->primitiveType()) {
                         // Non-type (integer-constant) parameter: `primitiveType identifier`.
                         param.isNonType = true;
@@ -1229,7 +1186,16 @@ namespace cajeta {
                 vector<TypeParameter> params;
                 for (auto* tp : tps->typeParameter()) {
                     TypeParameter param(tp->identifier()->getText());
-                    param.owningRequired = (tp->REFERENCE() != nullptr);  // element-ownership §4.1.5
+                    // title-tracking §8.1 (plan 7.2.1) — declaration-`#` retired.
+                    if (tp->REFERENCE() != nullptr) {
+                        throw Exception(
+                            "`#` on a type parameter declaration is retired: "
+                            "ownership is per-call under title-tracking "
+                            "(specs/title-tracking-spec.md §8.1) — drop the "
+                            "`#` (a must-own edge is spelled on the FORMAL)",
+                            "CAJETA_ERROR_TYPE_TRANSFER_RETIRED");
+                    }
+                    param.owningRequired = false;
                     if (auto* bound = tp->typeBound()) {
                         for (auto* tt : bound->typeType()) {
                             if (auto* coi = tt->classOrInterfaceType()) {
@@ -1806,7 +1772,16 @@ namespace cajeta {
                 isMethodTemplate = true;
                 for (auto* tp : tps->typeParameter()) {
                     TypeParameter param(tp->identifier()->getText());
-                    param.owningRequired = (tp->REFERENCE() != nullptr);  // element-ownership §4.1.5
+                    // title-tracking §8.1 (plan 7.2.1) — declaration-`#` retired.
+                    if (tp->REFERENCE() != nullptr) {
+                        throw Exception(
+                            "`#` on a type parameter declaration is retired: "
+                            "ownership is per-call under title-tracking "
+                            "(specs/title-tracking-spec.md §8.1) — drop the "
+                            "`#` (a must-own edge is spelled on the FORMAL)",
+                            "CAJETA_ERROR_TYPE_TRANSFER_RETIRED");
+                    }
+                    param.owningRequired = false;
                     if (auto* pt = tp->primitiveType()) {
                         // Non-type (integer-constant) method parameter:
                         // `primitiveType identifier` (e.g. `<uint32 N>`).
@@ -2058,31 +2033,12 @@ namespace cajeta {
             return static_pointer_cast<MemberDeclaration>(make_shared<MethodDeclaration>(method, ctx->getStart()));
         }
 
-        // element-ownership §5.1.1 (plan 7.2.1) — borrow-mode confinement at
-        // the two declaration-side escape hatches: a `#` return transfers the
-        // container past the scope of the elements it borrows; a field lets
-        // it outlive that scope outright. Stdlib template instantiations are
-        // transitionally exempt (Unit 8 sweeps stdlib owning and removes
-        // this with the 4B exemptions).
-        void rejectBorrowModeEscape(CajetaTypePtr type, const string& what,
-                                    const string& name) {
-            auto klass = dynamic_pointer_cast<CajetaClass>(type);
-            if (!klass || !klass->isBorrowModeContainer()
-                    || klass->isStdlibTemplateInstantiation()) {
-                return;
-            }
-            throw Exception(
-                what + " `" + name + "` would let borrow-mode container `"
-                    + type->toCanonical() + "` escape its scope: the "
-                    "container's author-marked `#` element positions were "
-                    "instantiated plain, so it borrows elements it does not "
-                    "own and must not outlive them. Fix: instantiate owning "
-                    "(mark the element type arguments `#`) so the container "
-                    "owns what it holds, or keep the scratch container local "
-                    "and materialize an owning copy at the boundary "
-                    "(element-ownership spec §5.1.1)",
-                "CAJETA_ERROR_BORROW_MODE_CONFINED");
-        }
+        // title-tracking §8.1 (plan 7.2.1) — borrow-mode confinement retired:
+        // borrow-mode instantiations no longer exist. Kept as a no-op shim
+        // until call sites are pruned.
+        void rejectBorrowModeEscape(CajetaTypePtr, const string&,
+                                    const string&) { }
+
 
         virtual std::any visitFieldDeclaration(CajetaParser::FieldDeclarationContext* ctx) override {
             CajetaTypePtr type = any_cast<CajetaTypePtr>(visitTypeType(ctx->typeType()));
@@ -2388,6 +2344,18 @@ namespace cajeta {
             // this, a null type flows into generateCode and SIGSEGVs at the first
             // deref (e.g. type->hasValueSemantics()). A stale name (a renamed
             // class still spelled the old way) should be a clean diagnostic.
+            // title-tracking §8.1 (plan 7.1.3) — `#Type` on a local
+            // declaration is retired: a local's role comes from its
+            // initializer shape and a type-position sigil can contradict it.
+            if (ctx->REFERENCE() != nullptr) {
+                throw Exception(
+                    "`#` on a local declaration's type is retired: a local's "
+                    "role comes from its initializer under title-tracking "
+                    "(specs/title-tracking-spec.md §8.1) — drop the `#` from "
+                    "the declaration (the initializer's `#x` / owned rvalue "
+                    "already carries the title)",
+                    "CAJETA_ERROR_TYPE_TRANSFER_RETIRED");
+            }
             auto* typeCtx = ctx->typeType();
             CajetaTypePtr declType = CajetaType::fromContext(typeCtx, pModule);
             if (typeCtx != nullptr && !declType) {

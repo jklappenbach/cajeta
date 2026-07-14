@@ -154,8 +154,20 @@ namespace cajeta {
                                     throw "unresolved template argument in `new`";
                                 }
                                 typeArguments.push_back(argType);
-                                typeArgumentOwning.push_back(
-                                    targ->REFERENCE() != nullptr);
+                                // title-tracking §8.1 (plan 7.1.1) — creator
+                                // type-argument `#` is retired with the
+                                // declared-type form.
+                                if (targ->REFERENCE() != nullptr) {
+                                    throw Exception(
+                                        "`#` on a type argument is retired: "
+                                        "ownership is per-call under "
+                                        "title-tracking (specs/title-tracking-"
+                                        "spec.md §8.1) — spell it at the store "
+                                        "site and drop the `#` from `"
+                                        + argType->toCanonical() + "`",
+                                        "CAJETA_ERROR_TYPE_TRANSFER_RETIRED");
+                                }
+                                typeArgumentOwning.push_back(false);
                             }
                         } else {
                             // Diamond form: typeArgumentsOrDiamond has '<' '>'

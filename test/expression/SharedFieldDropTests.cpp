@@ -62,7 +62,7 @@ TEST(SharedFieldDropTests, fieldHeldStakeReleasesOnObjectDrop) {
 // cleanly (no double free, no dangle), and the liveCount balance holds.
 // The balance assert was BLOCKED on the container element-drop gap (slices
 // 9.2.1); element-ownership Unit 3 closed it — an OWNING instantiation
-// (`ArrayList<#String>`) drops its elements at teardown, so `#`-transferred
+// (`ArrayList<String>`) drops its elements at teardown, so `#`-transferred
 // slices belong in one. (The borrow instantiation deliberately does not
 // drop — see OwnershipLeakProbe.arrayListBorrowElementsUntouched.)
 TEST(SharedFieldDropTests, containerHeldStakesRelease) {
@@ -70,7 +70,7 @@ TEST(SharedFieldDropTests, containerHeldStakesRelease) {
         "int64 base = Cajeta.liveCount();\n"
         "{\n" +
         std::string(kDyn) +
-        "    ArrayList<#String> parts = heap ArrayList<#String>();\n"
+        "    ArrayList<String> parts = heap ArrayList<String>();\n"
         "    String p0 = s.substring(0, 10);\n"
         "    String p1 = s.substring(10, 20);\n"
         "    String p2 = s.substring(20, 36);\n"

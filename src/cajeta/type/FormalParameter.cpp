@@ -97,30 +97,10 @@ namespace cajeta {
                     }
                 }
             }
-            // element-ownership §8.2.2 (plan 7.2.2): a `#` formal takes
-            // ownership of its argument, and a borrow-mode container cannot
-            // be owned — it borrows elements it does not own, so owning it
-            // would carry those borrows past their scope. Checked on the
-            // FINAL transferred state (after the §4.2 dissolution above).
-            // Stdlib template instantiations are transitionally exempt
-            // (removed by the Unit 8 sweep, with the 4B exemptions).
-            if (parameter->isTransferred()) {
-                if (auto pc = dynamic_pointer_cast<CajetaClass>(type)) {
-                    if (pc->isBorrowModeContainer()
-                            && !pc->isStdlibTemplateInstantiation()) {
-                        throw Exception(
-                            "parameter `#" + name + "` takes ownership of "
-                                "borrow-mode container `" + type->toCanonical()
-                                + "` — its author-marked `#` element positions "
-                                "were instantiated plain, so it borrows "
-                                "elements it does not own and cannot be owned. "
-                                "Fix: make the container owning (mark its "
-                                "element type arguments `#`), or drop the `#` "
-                                "and borrow it (element-ownership spec §8.2.2)",
-                            "CAJETA_ERROR_BORROW_MODE_OWNED");
-                    }
-                }
-            }
+            // title-tracking §8.1 (plan 7.2.1) — the borrow-mode-container
+            // ownership gate (BORROW_MODE_OWNED) was retired: borrow-mode
+            // instantiations no longer exist (type-argument `#` errors at
+            // parse), and ownership is per-call.
             // Optional default value: `int32 x = 42`. Captured at parse time
             // so the call-site fill-in path can clone the expression's AST
             // node and emit it for each missing argument.

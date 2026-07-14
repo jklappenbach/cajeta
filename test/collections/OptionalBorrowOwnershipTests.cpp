@@ -73,7 +73,7 @@ TEST(OptionalBorrowOwnership, ownedOptionalStillDropsPayload) {
         "    public static void spin(int32 n) {\n"
         "        int32 j = 0;\n"
         "        while (j < n) {\n"
-        "            Optional<#Throwable> o = stack Optional<#Throwable>(true, heap Exception(\"x\"));\n"
+        "            Optional<Throwable> o = stack Optional<Throwable>(true, #heap Exception(\"x\"));\n"
         "            j = j + 1;\n"
         "        }\n"
         "    }\n"

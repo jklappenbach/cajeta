@@ -323,11 +323,8 @@ const char* kCellChurn =
 // LRU eviction of an owned entry reclaims it; teardown reclaims the
 // remaining owned entry; the borrowed value stays with its caller
 // throughout. Net liveCount delta 0.
-// DISABLED until 7.2.1 retires the 4B ELEMENT_TRANSFER_MODE gate: Cache.put
-// is author-marked (#K), so user-code `#`-puts into Cache<String,Cell> are
-// rejected by the pre-rev-2 agreement check. Re-enable with the Unit 7
-// gate-suite rewrite (7.1.2).
-TEST(ContainerTitleTests, DISABLED_cacheMixedOwnershipEvictionAndTeardownLeakFree) {
+// Re-enabled by 7.2.1 (the 4B gate is retired).
+TEST(ContainerTitleTests, cacheMixedOwnershipEvictionAndTeardownLeakFree) {
     std::string src = std::string(kCellCacheSrc) +
         "public final class D {\n"
         "    public static int32 work() {\n"
@@ -364,8 +361,7 @@ TEST(ContainerTitleTests, DISABLED_cacheMixedOwnershipEvictionAndTeardownLeakFre
 // 6.3.1 / spec §6.5 — evicting a BORROWED entry ends membership only: the
 // caller's value survives the eviction (readable after, with churn between)
 // and drops with the caller's scope, not the cache's. Net delta 0.
-// DISABLED until 7.2.1 — same gate as above.
-TEST(ContainerTitleTests, DISABLED_cacheEvictedBorrowedValueSurvivesWithCaller) {
+TEST(ContainerTitleTests, cacheEvictedBorrowedValueSurvivesWithCaller) {
     std::string src = std::string(kCellCacheSrc) +
         "public final class D {\n"
         "    public static int32 work() {\n"
