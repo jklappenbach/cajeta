@@ -2907,6 +2907,11 @@ namespace cajeta {
                 if (!sc->containsField(name) || sc->isMoved(name)) continue;
                 FieldPtr f = sc->getField(name);
                 if (!f || !f->getDropEntry()) continue;
+                // title-tracking Unit 8: formals are RUNTIME owners now and
+                // carry flag-armed entries — but the documented K02 rule
+                // ("borrowed params are skipped") predates that; keep params
+                // out of the static gate (a lent buffer never drops here).
+                if (dynamic_pointer_cast<ParameterField>(f)) continue;
                 CajetaTypePtr t = f->getType();
                 if (!t) continue;
                 // Every borrowed device resource — Buffer, Texture2D, and
