@@ -148,7 +148,9 @@ public final class ArrayList<T> {
         int8[] grownOwned = heap int8[newCap];
         int32 i = 0;
         while (i < this.sizeCount) {
-            grown[i] = this.data[i];
+            // title-stores §2.1 — forwarding move: the tail bit rides so
+            // post-grow extraction/teardown stay honest.
+            grown[i] #= #this.data[i];
             grownOwned[i] = this.owned[i];   // carry ownership across the grow
             i = i + 1;
         }
@@ -230,8 +232,11 @@ public final class ArrayList<T> {
             throw heap Exception("#[] extraction: the slot holds no title (borrowed, or already extracted) — the list cannot mint a second owner");
         }
         this.owned[i] = (int8) 0;
-        T out = this.data[i];
-        return out;
+        // title-stores §2.1 — fused claim: the slot's TAIL bit rides into
+        // `out` (and clears), so the data-field teardown walk cannot drop
+        // an element the caller now owns; `return #out` hands it onward.
+        T out #= #this.data[i];
+        return #out;
     }
 
     /**

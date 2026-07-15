@@ -112,7 +112,8 @@ public final class Heap<T> {
             int8[] grownOwned = heap int8[newCap];
             int32 i = 0;
             while (i < this.sizeCount) {
-                grown[i] = this.data[i];
+                // title-stores §2.1 — forwarding move keeps tail bits honest.
+                grown[i] #= #this.data[i];
                 grownOwned[i] = this.owned[i];   // carry ownership across
                 i = i + 1;
             }
