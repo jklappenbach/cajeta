@@ -2118,32 +2118,16 @@ namespace cajeta {
                                         "own_displace_cont", fobFn);
                                 builder->CreateCondBr(wasOwned, relBB, contBB);
                                 builder->SetInsertPoint(relBB);
-                                // title-stores §3.2 — a displaced OWNED array
-                                // with bit-capable elements walks its tail
-                                // bitmap before the buffer frees.
-                                if (fobFieldIsArray) {
-                                    auto fobArr = dynamic_pointer_cast<
-                                        CajetaArray>(lhsAst->getResolvedType());
-                                    if (fobArr && CajetaClass::
-                                            arrayElementCarriesSlotBits(
-                                                fobArr->getElementType())) {
-                                        if (llvm::Function* wkFn =
-                                                module->getRuntimeFunction(
-                                                    "__cajeta_tail_elem_drop_walk")) {
-                                            const llvm::DataLayout& wdl =
-                                                module->getLlvmModule()
-                                                    ->getDataLayout();
-                                            builder->CreateCall(wkFn, {oldVal,
-                                                llvm::ConstantInt::get(i64Ty,
-                                                    wdl.getTypeAllocSize(
-                                                        fobArr->getLlvmType())),
-                                                llvm::ConstantInt::get(i64Ty,
-                                                    wdl.getTypeAllocSize(
-                                                        fobArr->getElementLlvmType(
-                                                            &fobCtx)))});
-                                        }
-                                    }
-                                }
+                                // title-stores §3.2 — NO element walk on a
+                                // displaced array (buffer free only). The
+                                // 3.2.5 audit found mixed manual-owned[]/
+                                // tail containers (ArrayList.grow et al.)
+                                // displace the old array while the new one
+                                // still borrows its elements — walking here
+                                // is a mass UAF. Correct user grow idiom =
+                                // move slots out (`new[i] #= #old[i]`) then
+                                // displace (the moveOut pin). Re-enable with
+                                // Unit 5's pure-tail stdlib conversion.
                                 builder->CreateCall(relFn, {oldVal});
                                 builder->CreateBr(contBB);
                                 builder->SetInsertPoint(contBB);
