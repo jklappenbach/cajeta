@@ -2190,14 +2190,18 @@ namespace cajeta {
                     if (!aixInner->getResolvedType()) {
                         aixInner->resolveTypes(module);
                     }
-                    // Titles don't exist for primitive/value elements — a
-                    // `#slot` move is identity. Load the element so the
-                    // enclosing store writes the VALUE; handing back the
-                    // slot GEP stored the slot's ADDRESS through a stride-4
-                    // int32[] (the BPlus split heap-corruption, 3.3.1).
+                    // Elements without slot bits (primitives, Strings,
+                    // value types) have no tail take — the Move must still
+                    // hand the enclosing store a LOADED element, exactly
+                    // what the plain-read RHS would. Handing back the slot
+                    // GEP stored the slot's ADDRESS: through a stride-4
+                    // int32[] (the BPlus split heap-corruption) and into
+                    // string_array_elem_set_owned, whose src is a wrapper
+                    // ptr (the ArrayList<String> grow +512 leak), both
+                    // 3.3.1. loadIfLValue knows the per-family element
+                    // shapes (interface GEPs stay GEPs).
                     auto mvElemT = aixInner->getResolvedType();
                     if (mvElemT
-                            && !dynamic_pointer_cast<CajetaClass>(mvElemT)
                             && !CajetaClass::arrayElementCarriesSlotBits(
                                    mvElemT)) {
                         value = loadIfLValue(module, value, aixInner);
