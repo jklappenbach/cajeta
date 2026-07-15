@@ -69,14 +69,19 @@ public final class LinkedList<T> {
      * Append `value` to the tail of the list. O(1).
      */
     public void add(T value) {
-        LinkedListNode<T> node = heap LinkedListNode<T>(value);
+        LinkedListNode<T> node = heap LinkedListNode<T>(#value);
+        // Title spelling (title-tracking §5): the FORWARD chain owns —
+        // headNode / each node's `next` take titles (`#`); tailNode and
+        // `prev` are borrows. Borrow-stores precede the owning store,
+        // which is the node's last use.
         if (this.tailNode == null) {
-            this.headNode = node;
             this.tailNode = node;
+            this.headNode = #node;
         } else {
             node.prev = this.tailNode;
-            this.tailNode.next = node;
+            LinkedListNode<T> oldTail = this.tailNode;
             this.tailNode = node;
+            oldTail.next = #node;
         }
         this.sizeCount = this.sizeCount + 1;
     }
@@ -85,14 +90,18 @@ public final class LinkedList<T> {
      * Prepend `value` to the head of the list. O(1).
      */
     public void addFirst(T value) {
-        LinkedListNode<T> node = heap LinkedListNode<T>(value);
+        LinkedListNode<T> node = heap LinkedListNode<T>(#value);
         if (this.headNode == null) {
-            this.headNode = node;
             this.tailNode = node;
+            this.headNode = #node;
         } else {
-            node.next = this.headNode;
+            // Extract the old head's title into node.next (its bit decays
+            // but the reference stays readable), backlink, then store the
+            // new head's title — no displaced release fires on the now-
+            // borrowed headNode slot.
+            node.next = #this.headNode;
             this.headNode.prev = node;
-            this.headNode = node;
+            this.headNode = #node;
         }
         this.sizeCount = this.sizeCount + 1;
     }
@@ -106,14 +115,19 @@ public final class LinkedList<T> {
      * ```
      */
     public void addTail(T value) {
-        LinkedListNode<T> node = heap LinkedListNode<T>(value);
+        LinkedListNode<T> node = heap LinkedListNode<T>(#value);
+        // Title spelling (title-tracking §5): the FORWARD chain owns —
+        // headNode / each node's `next` take titles (`#`); tailNode and
+        // `prev` are borrows. Borrow-stores precede the owning store,
+        // which is the node's last use.
         if (this.tailNode == null) {
-            this.headNode = node;
             this.tailNode = node;
+            this.headNode = #node;
         } else {
             node.prev = this.tailNode;
-            this.tailNode.next = node;
+            LinkedListNode<T> oldTail = this.tailNode;
             this.tailNode = node;
+            oldTail.next = #node;
         }
         this.sizeCount = this.sizeCount + 1;
     }
@@ -127,14 +141,18 @@ public final class LinkedList<T> {
      * ```
      */
     public void addHead(T value) {
-        LinkedListNode<T> node = heap LinkedListNode<T>(value);
+        LinkedListNode<T> node = heap LinkedListNode<T>(#value);
         if (this.headNode == null) {
-            this.headNode = node;
             this.tailNode = node;
+            this.headNode = #node;
         } else {
-            node.next = this.headNode;
+            // Extract the old head's title into node.next (its bit decays
+            // but the reference stays readable), backlink, then store the
+            // new head's title — no displaced release fires on the now-
+            // borrowed headNode slot.
+            node.next = #this.headNode;
             this.headNode.prev = node;
-            this.headNode = node;
+            this.headNode = #node;
         }
         this.sizeCount = this.sizeCount + 1;
     }
@@ -186,16 +204,30 @@ public final class LinkedList<T> {
             T[] missDefault = heap T[1];
             return missDefault[0];
         }
-        LinkedListNode<T> node = this.headNode;
-        T value = node.value;
-        this.headNode = node.next;
-        if (this.headNode != null) {
+        // Take the head's title; relink by moving the successor's title
+        // up. The popped node's `next` bit decays with the extraction, so
+        // its scope-exit drop frees just the node — no chain cascade.
+        LinkedListNode<T> node = #this.headNode;
+        if (node.next != null) {
+            this.headNode = #node.next;
             this.headNode.prev = null;
         } else {
+            this.headNode = null;
             this.tailNode = null;
         }
         this.sizeCount = this.sizeCount - 1;
-        return value;
+        // Remove-shaped return (title-tracking §6.4): the value comes back
+        // in the mode the node held it. Owned → extract the title (the
+        // node's bit decays, so its drop frees just the node) and transfer
+        // out; borrowed → plain pass-through, flag rides back 0. The borrow
+        // is read BEFORE the extraction branch: a read after `#node.value`
+        // trips the conservative use-after-move join.
+        T borrowed = node.value;
+        if ((node.owned & 1) != 0) {
+            T title = #node.value;
+            return #title;
+        }
+        return borrowed;
     }
 
     /**
@@ -211,16 +243,27 @@ public final class LinkedList<T> {
             T[] missDefault = heap T[1];
             return missDefault[0];
         }
-        LinkedListNode<T> node = this.tailNode;
-        T value = node.value;
-        this.tailNode = node.prev;
-        if (this.tailNode != null) {
-            this.tailNode.next = null;
+        // The tail's title lives in its predecessor's `next` (or in
+        // headNode for a single-element list) — extract it there.
+        LinkedListNode<T> prevNode = this.tailNode.prev;
+        LinkedListNode<T> node;
+        if (prevNode != null) {
+            node = #prevNode.next;
+            prevNode.next = null;
+            this.tailNode = prevNode;
         } else {
+            node = #this.headNode;
             this.headNode = null;
+            this.tailNode = null;
         }
         this.sizeCount = this.sizeCount - 1;
-        return value;
+        // Remove-shaped return (title-tracking §6.4) — see popHead.
+        T borrowed = node.value;
+        if ((node.owned & 1) != 0) {
+            T title = #node.value;
+            return #title;
+        }
+        return borrowed;
     }
 
     /**
@@ -262,10 +305,24 @@ public final class LinkedList<T> {
         LinkedListNode<T> cur = this.headNode;
         while (cur != null) {
             if (cur.value == value) {
+                // Take cur's title out of whichever place holds it, then
+                // move its successor's title into that place. `owned`
+                // frees just cur at block exit (next bit decayed).
+                LinkedListNode<T> owned;
                 if (cur.prev != null) {
-                    cur.prev.next = cur.next;
+                    owned = #cur.prev.next;
+                    if (cur.next != null) {
+                        cur.prev.next = #cur.next;
+                    } else {
+                        cur.prev.next = null;
+                    }
                 } else {
-                    this.headNode = cur.next;
+                    owned = #this.headNode;
+                    if (cur.next != null) {
+                        this.headNode = #cur.next;
+                    } else {
+                        this.headNode = null;
+                    }
                 }
                 if (cur.next != null) {
                     cur.next.prev = cur.prev;

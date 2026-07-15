@@ -413,6 +413,18 @@ void __cajeta_drop_mark_inactive(struct cajeta_drop_entry* e) {
     e->active = 0;
 }
 
+// title-tracking 5.2.2 — runtime-owner formals. A formal's entry is pushed
+// armed and then set from its transfer-word bit (lent → disarmed); `#v`
+// consumers read the flag back before deactivation because it is the
+// title's runtime truth, not a compile-time fact.
+void __cajeta_drop_set_flag(struct cajeta_drop_entry* e, int64_t flag) {
+    e->active = flag ? 1 : 0;
+}
+
+int64_t __cajeta_drop_entry_flag(struct cajeta_drop_entry* e) {
+    return e ? (int64_t) e->active : 0;
+}
+
 // CP7-1c host accessor for the debug frame chain. Companion to the
 // __cajeta_dbg_local_* accessors defined up near the frame-chain helpers, but
 // placed here because it dereferences a cajeta_drop_entry (defined above; the
@@ -485,12 +497,30 @@ struct cajeta_vtable_entry {
 // FNV-1a 64-bit hash. Stable across runs and platforms — both the compiler
 // (at vtable build time) and the runtime (at dispatch time) compute the
 // same hash for the same canonical signature.
+//
+// '#' bytes are skipped (mode-erased dispatch, element-ownership spec
+// §5.1.4): owning and borrowing instantiations of one template share slot
+// layout and must dispatch interchangeably from mode-agnostic template
+// bodies. Must stay in lockstep with the two compiler-side copies
+// (CajetaClass.cpp, StructureMetadata.cpp).
 int64_t __cajeta_signature_hash(const char* s) {
     if (!s) return 0;
     uint64_t h = 0xcbf29ce484222325ULL;     // FNV offset basis
-    while (*s) {
-        h ^= (uint8_t) *s++;
+    const char* p = s;
+    while (*p) {
+        uint8_t c = (uint8_t) *p;
+        if (c == '#') {
+            // title-tracking 6.2.1 — a `#` inside an operator NAME
+            // (`operator#[]`) is identity, not mode: keep it. All other
+            // `#` (formal modes, dissolved spellings) stay erased.
+            // Mirrors the compiler's signatureHash exactly.
+            int after_operator = (p - s) >= 8
+                && strncmp(p - 8, "operator", 8) == 0;
+            if (!after_operator) { p++; continue; }
+        }
+        h ^= c;
         h *= 0x100000001b3ULL;              // FNV prime
+        p++;
     }
     return (int64_t) h;
 }
@@ -1401,6 +1431,79 @@ void __cajeta_string_array_owned_drop(void* sidecar) {
             if (!((bits[i >> 3] >> (i & 7)) & 1)) continue;
             void* elem = *(void**) (data + i * sc->stride);
             if (elem) __cajeta_string_drop(elem);
+        }
+    }
+    free(bits);
+}
+
+// ---- title-tracking Unit 4 — class-element array slot bits ------------------
+// Same sidecar shape and lazily-allocated bitmap as the String family above,
+// but with TITLE semantics (title-tracking-spec §5, §6.3.3):
+//   - a plain store is a BORROW store — the slot is unmarked and the source's
+//     books are untouched (no implicit deactivation);
+//   - `a[i] = #x` (owned spelling) marks the slot; a previously-owned occupant
+//     is released at the store (§5.1.3 — the overwrite is its scope exit);
+//   - `#a[i]` take succeeds only on a marked slot; it unmarks the bit, leaves
+//     the slot RESIDENT and readable (§6.3.2), and returns the value. An
+//     unmarked or empty slot returns NULL — the compiler's call site panics
+//     (CAJETA_PANIC_TITLE_MISS, integer-coded throw), so the runtime never
+//     forges a title.
+// Element release is __cajeta_class_virtual_drop (defined above): virtual, so
+// one walk fn covers every monomorphized element class; claim-gated, so slot
+// aliasing frees exactly once.
+
+void __cajeta_class_array_elem_set_owned(void* sidecar, void** slot,
+                                         void* obj) {
+    cajeta_string_array_sidecar* sc = (cajeta_string_array_sidecar*) sidecar;
+    if (!sc || !slot) return;
+    int64_t idx = caj_arr_slot_index(sc, slot);
+    void* old = *slot;
+    if (old && old != obj && caj_arr_bit_get(sc, idx)) {
+        __cajeta_class_virtual_drop(old);
+    }
+    caj_arr_bit_put(sc, idx, 1);
+    *slot = obj;
+}
+
+void __cajeta_class_array_elem_set_alias(void* sidecar, void** slot,
+                                         void* obj) {
+    cajeta_string_array_sidecar* sc = (cajeta_string_array_sidecar*) sidecar;
+    if (!sc || !slot) return;
+    int64_t idx = caj_arr_slot_index(sc, slot);
+    void* old = *slot;
+    if (old && old != obj && caj_arr_bit_get(sc, idx)) {
+        __cajeta_class_virtual_drop(old);
+    }
+    caj_arr_bit_put(sc, idx, 0);
+    *slot = obj;
+}
+
+void* __cajeta_class_array_elem_take(void* sidecar, void** slot) {
+    cajeta_string_array_sidecar* sc = (cajeta_string_array_sidecar*) sidecar;
+    if (!sc || !slot) return NULL;
+    int64_t idx = caj_arr_slot_index(sc, slot);
+    if (!caj_arr_bit_get(sc, idx)) return NULL;   // borrowed/empty: no title
+    void* v = *slot;
+    if (!v) return NULL;
+    caj_arr_bit_put(sc, idx, 0);                  // title out; slot stays
+    return v;
+}
+
+void __cajeta_class_array_owned_drop(void* sidecar) {
+    cajeta_string_array_sidecar* sc = (cajeta_string_array_sidecar*) sidecar;
+    if (!sc) return;
+    uint8_t* bits = sc->owned_bits;
+    sc->owned_bits = NULL;
+    if (!bits) return;
+    void* arr = sc->arr_slot ? *sc->arr_slot : NULL;
+    if (arr && sc->storage_entry && sc->storage_entry->active) {
+        int64_t count = caj_arr_count_masked(arr);
+        if (count > sc->owned_cap) count = sc->owned_cap;
+        char* data = (char*) arr + sc->header;
+        for (int64_t i = 0; i < count; i++) {
+            if (!((bits[i >> 3] >> (i & 7)) & 1)) continue;
+            void* elem = *(void**) (data + i * sc->stride);
+            if (elem) __cajeta_class_virtual_drop(elem);
         }
     }
     free(bits);

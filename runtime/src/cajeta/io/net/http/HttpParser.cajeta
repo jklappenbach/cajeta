@@ -279,8 +279,13 @@ public class HttpParser {
      * after the short-lived parser drops. Returns `null` if parsing a
      * response / not yet complete.
      */
-    public HttpRequest takeRequest() {
-        HttpRequest r = this.request;
+    public #HttpRequest takeRequest() {
+        if (this.request == null) { return null; }
+        // Title-tracking detach: extract the title (`#place`, bit decays)
+        // BEFORE nulling the handle — a plain `= null` overwrite of an
+        // owned field is the displaced value's scope exit (spec 5.1.3) and
+        // would free the request the caller is about to use.
+        HttpRequest r = #this.request;
         this.request = null;
         return r;
     }
@@ -299,8 +304,10 @@ public class HttpParser {
      * response after the short-lived parser drops, so it takes ownership here.
      * Returns `null` if parsing a request / not yet complete.
      */
-    public HttpResponse takeResponse() {
-        HttpResponse r = this.response;
+    public #HttpResponse takeResponse() {
+        if (this.response == null) { return null; }
+        // Same title-tracking detach as takeRequest above.
+        HttpResponse r = #this.response;
         this.response = null;
         return r;
     }

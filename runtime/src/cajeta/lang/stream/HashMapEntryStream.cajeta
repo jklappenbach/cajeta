@@ -78,7 +78,7 @@ public class HashMapEntryStream<K, V> extends Stream<Pair<K, V>> implements Spli
             }
             this.idx = this.idx + 1;
         }
-        return stack Optional<Pair<K, V>>(false, null);
+        return stack Optional<Pair<K, V>>(false);
     }
 
     /**

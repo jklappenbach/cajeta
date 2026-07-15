@@ -40,7 +40,9 @@ TEST(WithTimeoutTests, probeOptionalPrimitiveNull) {
         "import cajeta.lang.Optional;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Optional<int32> o = heap Optional<int32>(false, null);\n"
+        // title-tracking Unit 1 retired the `(false, null)` idiom (null can't
+        // match a primitive slot; the empty-case ctor replaced it).
+        "        Optional<int32> o = heap Optional<int32>(false);\n"
         "        return o.orElse(99);\n"
         "    }\n"
         "}\n";

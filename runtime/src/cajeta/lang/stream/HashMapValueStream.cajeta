@@ -58,7 +58,7 @@ public class HashMapValueStream<K, V> extends Stream<V> implements Splittable<V>
             }
             this.idx = this.idx + 1;
         }
-        return stack Optional<V>(false, null);
+        return stack Optional<V>(false);
     }
 
     /**

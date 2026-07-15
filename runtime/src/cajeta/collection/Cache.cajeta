@@ -192,7 +192,10 @@ public final class Cache<K, V> {
         // class V), NOT an Optional — null-check rather than isPresent().
         CacheNode<K, V> node = this.entries.get(key);
         if (node != null) {
-            node.value = value;
+            // Consuming spelling (title-tracking 6.2.3): forwards the caller's
+            // flag onto the node's value bit and releases the displaced old
+            // value if the node owned it.
+            node.value = #value;
             node.accessedAt = now;
             this.moveToHead(node);
             // Existing entry keeps its stored key; the incoming duplicate `key`
@@ -201,9 +204,11 @@ public final class Cache<K, V> {
         }
         // The node borrows the key for reverse lookup on eviction; the map
         // takes ownership of the canonical key via the `#key` transfer below.
-        CacheNode<K, V> fresh = heap CacheNode<K, V>(key, value, now);
-        this.entries.put(#key, #fresh);
+        CacheNode<K, V> fresh = heap CacheNode<K, V>(key, #value, now);
+        // Link while `fresh` is still ours — after the `#fresh` transfer the
+        // map owns the node and the local is moved-out (title-tracking §3.1.3).
         this.linkAtHead(fresh);
+        this.entries.put(#key, #fresh);
         if (this.entries.count() > this.maxEntries) {
             this.evictLru();
         }

@@ -1,8 +1,8 @@
 package dev.cajeta.idea.markdown
 
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.editor.EditorCustomElementRenderer
 import com.intellij.openapi.editor.Inlay
-import com.intellij.openapi.editor.colors.EditorColorsManager
 import com.intellij.openapi.editor.markup.TextAttributes
 import com.intellij.util.ui.UIUtil
 import java.awt.Color
@@ -26,6 +26,7 @@ import java.awt.geom.Rectangle2D
 class InlineMarkdownRenderer(markdown: String) : EditorCustomElementRenderer {
 
     private val segments: List<Segment> = parseInline(markdown)
+    private var lastFontSize = -1f
 
     private data class Segment(val text: String, val style: Style)
     private enum class Style { NORMAL, BOLD, ITALIC, CODE }
@@ -51,6 +52,18 @@ class InlineMarkdownRenderer(markdown: String) : EditorCustomElementRenderer {
         targetRegion: Rectangle2D,
         textAttributes: TextAttributes,
     ) {
+        // The inlay's width is measured once, at install; nothing re-measures it
+        // on zoom. Without this, the text is drawn at the new font size into a
+        // width computed for the old one, and the overflow guard below truncates
+        // it. Ask the inlay to re-measure once per font-size change.
+        val fontSize = inlay.editor.colorsScheme.editorFontSize2D
+        if (lastFontSize != -1f && lastFontSize != fontSize) {
+            ApplicationManager.getApplication().invokeLater {
+                if (inlay.isValid) inlay.update()
+            }
+        }
+        lastFontSize = fontSize
+
         val width = targetRegion.width.toInt()
         val height = targetRegion.height.toInt()
         val gCopy = g.create() as Graphics2D
@@ -99,15 +112,17 @@ class InlineMarkdownRenderer(markdown: String) : EditorCustomElementRenderer {
         }
     }
 
+    /** Zoom-aware, and *fractional* — `deriveFont(Float)` keeps the sub-point
+     *  sizes that `Font(name, style, Int)` would truncate away. */
     private fun baseFont(inlay: Inlay<*>): Font {
         val scheme = inlay.editor.colorsScheme
-        return Font(scheme.editorFontName, Font.PLAIN, scheme.editorFontSize)
+        return Font(scheme.editorFontName, Font.PLAIN, 1).deriveFont(scheme.editorFontSize2D)
     }
 
     private fun codeFont(inlay: Inlay<*>): Font {
         val scheme = inlay.editor.colorsScheme
         // Use the editor's mono font, same as the surrounding code.
-        return Font(scheme.editorFontName, Font.PLAIN, scheme.editorFontSize)
+        return Font(scheme.editorFontName, Font.PLAIN, 1).deriveFont(scheme.editorFontSize2D)
     }
 
     private fun fontFor(style: Style, base: Font, code: Font): Font = when (style) {

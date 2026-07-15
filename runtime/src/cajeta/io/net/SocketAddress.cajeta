@@ -59,7 +59,7 @@ public class SocketAddress {
                 "port out of range (0..65535)", (int64) -1);
         }
         SocketAddress s = heap SocketAddress();
-        s.ip = addr;
+        s.ip = #addr;
         s.port = port;
         return #s;
     }

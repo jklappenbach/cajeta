@@ -6,6 +6,7 @@
 #include "../compile/CajetaModule.h"
 #include "../asn/expression/Expression.h"
 #include "../asn/AnnotationParser.h"
+#include "../error/Exception.h"
 #include "CajetaArray.h"
 
 namespace cajeta {
@@ -67,6 +68,10 @@ namespace cajeta {
             if (ctx->REFERENCE() != nullptr) {
                 parameter->setTransferred(true);
             }
+            // title-tracking §8.1 (plan 7.2.1) — the §4.2 dissolve and the
+            // borrow-mode gates were retired with owning instantiations: an
+            // authored `#T` formal is a hard must-own edge in every
+            // instantiation (spec §8.2).
             // Optional default value: `int32 x = 42`. Captured at parse time
             // so the call-site fill-in path can clone the expression's AST
             // node and emit it for each missing argument.

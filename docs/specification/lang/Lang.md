@@ -89,8 +89,12 @@ not yet implemented** — the type system collapses the two, so
 helper-produced Strings currently leak at scope exit
 (`test/parser/OwnedStringDropTests.cpp`). The named view API
 (`viewOf` / `toOwned` / `cString`) from earlier drafts does **not**
-exist; the only view entry point today is the `String(#int8[],
-int32)` constructor. See [`lang/String.md` § Memory model](String.md#memory-model).
+exist and is disavowed — explicit duplication is the reserved `clone()`
+method (clone semantics — spec lineage: element-ownership §6, whose
+type-argument layer is superseded by title-tracking while clone's
+contract is unchanged: reference types shallow-copy via the
+RTTI walk; value types copy through the COW value hooks). The only view
+entry point today is the `String(#int8[], int32)` constructor. See [`lang/String.md` § Memory model](String.md#memory-model).
 
 ### Examples
 

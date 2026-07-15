@@ -30,6 +30,7 @@ namespace cajeta {
                               CajetaModule::ComponentDescriptorPtr descriptor);
 
         void generateCode() override;
+        bool emitsReturnFlag() override { return false; }  // raw-IR body: never stores the return flag
 
     private:
         CajetaModule::ComponentDescriptorPtr descriptor;

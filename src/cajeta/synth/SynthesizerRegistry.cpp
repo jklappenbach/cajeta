@@ -347,6 +347,35 @@ namespace cajeta::synth {
             return r;
         });
 
+        // Value-type clone (element-ownership plan 6.2.2, spec §6.1.3-5):
+        // synthesize a TYPED `clone()` on records / @ValueType classes so
+        // `Pt b = a.clone()` types as Pt (Object.clone returns Object — a
+        // record upcast slice) and copies BY VALUE through the normal
+        // aggregate-copy path, whose value-copy hook (emitValueSharedOp)
+        // retains shared-capable payload (Utf8/Slice) instead of byte-copying
+        // — COW by provenance. `return this;` lowers through the by-value
+        // aggregate return (sret/NRVO) coercion. Respect-user: a declared
+        // clone() wins. Fires at declaration for concrete value types and at
+        // instantiation for templated ones (the member seam runs both).
+        reg.registerMember("valueClone",
+                [](const SynthesisContext& c) -> std::optional<MemberSynthesisResult> {
+            auto structure = c.parent;
+            if (!structure || structure->isTemplate()) return std::nullopt;
+            bool valueLike = structure->isRecordType()
+                || structure->findAnnotation("ValueType") != nullptr;
+            if (!valueLike) return std::nullopt;
+            for (auto& kv : structure->getMethods()) {
+                if (kv.second && kv.second->getName() == "clone") {
+                    return std::nullopt;  // respect-user
+                }
+            }
+            const std::string typeName = structure->getQName()->getTypeName();
+            MemberSynthesisResult r;
+            r.classBodyFragment =
+                "{ public " + typeName + " clone() { return this; } }";
+            return r;
+        });
+
         // Table<T>: a member, instantiation-time synthesizer (spec §3.4, the
         // 2x2's member/instantiation-time cell). On a concrete `Table<Tick>`,
         // reflect the record type argument's fields and inject one typed column

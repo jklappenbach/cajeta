@@ -100,6 +100,14 @@ namespace cajeta {
         // transfers ownership of the returned value to its caller. See
         // `MemoryModel.md` § Function signatures.
         bool returnsOwnership = false;
+        // True when this method was injected by a registered member
+        // synthesizer (source-synthesis facility). Consulted by checks that
+        // distinguish compiler-generated members from user-authored ones —
+        // e.g. the record add-but-not-redefine shadow ban exempts a shadow of
+        // a SYNTHESIZED parent method (each record level gets its own typed
+        // `clone()`; static dispatch picks by declared type, so the shadow is
+        // benign).
+        bool synthesizedMember = false;
         // Cached result of the value-return body scan. -1 = not computed,
         // 0 = false, 1 = true. A method "returns a stack value" iff (it does
         // not transfer ownership and) a return statement hands back a `stack`
@@ -109,6 +117,11 @@ namespace cajeta {
         // scan is the single source of truth — there is no `stack T` return
         // type. See docs/specification/lang/ValueReturns.md.
         int returnsStackValueCache = -1;
+        // title-tracking Unit 5: the incoming hidden transfer-word argument
+        // (trailing i64), stashed at prologue binding so callee-side codegen
+        // (runtime-owner formals, 5.2.2) can read per-formal bits. Null when
+        // needsTransferWord() is false or before body codegen.
+        llvm::Value* transferWordArg = nullptr;
         BlockPtr block;
         bool constructor;
         // Abstract method — has no body, no LLVM function declaration.
@@ -496,6 +509,56 @@ namespace cajeta {
 
         bool isReturnsOwnership() const { return returnsOwnership; }
         void setReturnsOwnership(bool v) { returnsOwnership = v; }
+
+        // title-tracking Unit 5 (spec §4.4) — the per-call transfer ABI.
+        // needsTransferWord(): this method's LLVM signature carries a hidden
+        // TRAILING i64 whose bit i mirrors the moveMask contract (user-arg i
+        // surrendered a title). True iff any user formal passes by pointer;
+        // @Kernel/@Device methods and static `main` keep the plain C ABI.
+        // returnsClassPointer(): the method returns a raw class pointer
+        // (`ret ptr`, not sret/interface/value-type) and so participates in
+        // the paired return-flag protocol (__cajeta_return_flag_set).
+        bool needsTransferWord();
+        bool returnsClassPointer();
+        // Callers may trust the return-flag TLS right after calling this
+        // method: its body runs through the statement pipeline, which pairs
+        // every class-pointer return with __cajeta_return_flag_set. Raw-IR
+        // synthesized bodies (generateCode overrides) never store the flag
+        // and override this to false — callers fall back to static mode.
+        virtual bool emitsReturnFlag() { return returnsClassPointer(); }
+        llvm::Value* getTransferWordArg() const { return transferWordArg; }
+        void setTransferWordArg(llvm::Value* v) { transferWordArg = v; }
+        // 5.2.2 — seed a drop entry per droppable class-typed formal, armed
+        // from its transfer-word bit; prologue-only, no-op without the word.
+        void emitFormalDropEntries(CajetaModulePtr module);
+
+        // 5.2.7 — does this method RETAIN the named formal, i.e. store it into
+        // a field or an element? Only a retaining callee can leave its receiver
+        // holding a lend of the caller's local (the dangling-lend hazard); a
+        // read-only callee (`sb.append(s)`, `list.contains(x)`) cannot, and
+        // must not poison its receiver. Cached; false for bodyless methods.
+        bool retainsFormal(const std::string& formalName);
+
+        // 5.2.8 (spec §7.1) — last-use advisory. True when the identifier `name`
+        // has no later read in this body than (line, column), i.e. the site is
+        // its FINAL use and lending there is probably meant as a transfer. Uses
+        // inside a loop body never qualify: a textual last use still runs again
+        // on the next iteration, so advising `#` there would be wrong. Advisory
+        // only — the compiler cannot know intent (spec §4.6.4 rejects inferring
+        // it), so this reports a WARNING with a `#` fixit and never an error.
+        bool isFinalUseOfLocal(const std::string& name, int line, int column);
+    private:
+        map<std::string, bool> retainsFormalCache;
+        // name -> last (line, column) it is read at; names used inside any loop
+        // are parked in loopUsedNames and never advised.
+        map<std::string, pair<int, int>> lastUseAt;
+        set<std::string> loopUsedNames;
+        bool lastUsesComputed = false;
+        void computeLastUses();
+    public:
+
+        bool isSynthesizedMember() const { return synthesizedMember; }
+        void setSynthesizedMember(bool v) { synthesizedMember = v; }
 
         // True iff this method returns a `stack`-constructed value by copy
         // (lowered via the sret + NRVO ABI). Computed lazily by scanning the

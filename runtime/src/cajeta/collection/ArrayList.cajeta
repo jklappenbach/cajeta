@@ -40,6 +40,12 @@ import cajeta.lang.stream.Stream;
  */
 public final class ArrayList<T> {
     T[] data;
+    // Per-element ownership bits (title-tracking §6): 1 = the list TOOK the
+    // element via `#` and its teardown drops it; 0 = borrowed, the caller
+    // keeps the title. Parallel to data; length = capacity. Same pattern as
+    // HashMap.owned — a field array can't ride the compiler's local-array
+    // slot sidecars, so the bits are explicit.
+    int8[] owned;
     // Field name aligned with HashMap/HashSet/LinkedList — `count` as a
     // bare field name conflicts with the public `count()` accessor at
     // method resolution sites (templated-class dispatch ambiguity).
@@ -64,6 +70,7 @@ public final class ArrayList<T> {
     public ArrayList() {
         this.capacity = 16;
         this.data = heap T[16];
+        this.owned = heap int8[16];   // calloc 0 = nothing owned yet
         this.sizeCount = 0;
     }
 
@@ -81,7 +88,24 @@ public final class ArrayList<T> {
     }
 
     public void set(int32 i, T v) {
-        this.data[i] = v;
+        // Dual-capable store (title-tracking §6.1): the CALL SITE decides.
+        // `v` is the second user arg → word bit 1. The spelling must MATCH
+        // what the caller did (see HashMap.put): `#v` moves the title in;
+        // the plain store keeps the shared-capable dual-role resolve.
+        int64 mvm = Cajeta.moveMask();
+        boolean vOwned = (mvm & 2) != 0;
+        // Displaced release (§5.1.3): overwriting an owned slot drops the
+        // value the slot held.
+        if ((this.owned[i] & 1) != 0) {
+            Cajeta.dropValue(this.data[i]);
+        }
+        if (vOwned) {
+            this.data[i] = #v;
+            this.owned[i] = (int8) 1;
+        } else {
+            this.data[i] = v;
+            this.owned[i] = (int8) 0;
+        }
     }
 
     /**
@@ -101,10 +125,20 @@ public final class ArrayList<T> {
         // inlines it straight into the caller's append loop — matching the
         // inlined `push`/`push_back` of Rust `Vec` / C++ `std::vector`. The cold
         // doubling lives out-of-line in `grow()`, so it never bloats this body.
+        // Word read FIRST — a later call (grow) would clobber the TLS carry.
+        int64 mvm = Cajeta.moveMask();
+        boolean vOwned = (mvm & 1) != 0;
         if (this.sizeCount >= this.capacity) {
             this.grow();
         }
-        this.data[this.sizeCount] = v;
+        // Dual-capable store (title-tracking §6.1) — spelling matches the
+        // caller's transfer, same as HashMap.put.
+        if (vOwned) {
+            this.data[this.sizeCount] = #v;
+        } else {
+            this.data[this.sizeCount] = v;
+        }
+        this.owned[this.sizeCount] = (int8) (mvm & 1);
         this.sizeCount = this.sizeCount + 1;
     }
 
@@ -115,9 +149,11 @@ public final class ArrayList<T> {
     private void grow() {
         int32 newCap = this.capacity * 2;
         T[] grown = heap T[newCap];
+        int8[] grownOwned = heap int8[newCap];
         int32 i = 0;
         while (i < this.sizeCount) {
             grown[i] = this.data[i];
+            grownOwned[i] = this.owned[i];   // carry ownership across the grow
             i = i + 1;
         }
         // `#grown` transfers ownership of the fresh array storage
@@ -128,6 +164,7 @@ public final class ArrayList<T> {
         // write into reclaimed memory. Same pattern HashMap.rehash
         // uses for `this.keys = #newKeys` et al.
         this.data = #grown;
+        this.owned = #grownOwned;
         this.capacity = newCap;
     }
 
@@ -150,6 +187,59 @@ public final class ArrayList<T> {
             this.add(v);
             i = i + 1;
         }
+    }
+
+    // Drop the elements the list OWNS (took via `#`) — runs before the auto
+    // field-drops free the data/owned buffers. Borrowed elements are left
+    // alone; their lifetime belongs to the caller. (The legacy `#`-type-arg
+    // teardown — `ArrayList<#String>` + @ElementCount — still walks ALL live
+    // elements; both drops are live-set-claim idempotent, so an element seen
+    // by both frees exactly once. The legacy walk retires with the type-arg
+    // layer.)
+    ~ArrayList() {
+        int32 k = 0;
+        while (k < this.sizeCount) {
+            if ((this.owned[k] & 1) != 0) {
+                Cajeta.dropValue(this.data[k]);
+            }
+            k = k + 1;
+        }
+    }
+
+    // ----- Subscript-syntax sugar over get/set -------------------------
+
+    /** Subscript read: `v = xs[i]` → `get(i)` (a borrow, §6.2). */
+    public T operator[] (int32 i) {
+        return this.get(i);
+    }
+
+    /** Subscript write: `xs[i] = v` → `set(i, v)`. The `#v` forward is what
+     *  threads the CALLER's transfer word through to set (a droppable class
+     *  formal forwards its entry flag; an entry-less String/primitive formal
+     *  forwards its incoming word bit) — a plain forward would record every
+     *  indexed store as borrowed regardless of the caller's spelling. */
+    public void operator[]= (int32 i, T v) {
+        this.set(i, #v);
+    }
+
+    /**
+     * Title-extracting subscript — `T t = #xs[i]` (title-tracking §6.3).
+     * TOTAL: either the slot holds a title and it moves to the caller — the
+     * slot stays RESIDENT and readable, its bit decayed to borrowed
+     * (membership is not ownership) — or this throws: extraction from an
+     * out-of-range index or a slot holding no title (borrowed, or already
+     * extracted) is a Recoverable panic, never a silent second title.
+     */
+    public #T operator#[] (int32 i) {
+        if (i < 0 || i >= this.sizeCount) {
+            throw heap Exception("#[] extraction: index out of range — extraction requires a resident owned element");
+        }
+        if ((this.owned[i] & 1) == 0) {
+            throw heap Exception("#[] extraction: the slot holds no title (borrowed, or already extracted) — the list cannot mint a second owner");
+        }
+        this.owned[i] = (int8) 0;
+        T out = this.data[i];
+        return out;
     }
 
     /**
@@ -184,6 +274,11 @@ public final class ArrayList<T> {
      * xs.add(2);
      * xs.sort();                    // [1, 2, 3]
      * ```
+     *
+     * OWNERSHIP CAVEAT: sorting permutes elements WITHOUT their ownership
+     * bits, so a list holding any `#`-taken (owned) elements must not be
+     * sorted — the bits would attach to the wrong slots (leak + double
+     * free). Borrow-only lists (and primitives) are unaffected.
      */
     public void sort() {
         Sort.sort<T>(this.data, this.sizeCount);

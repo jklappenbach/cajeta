@@ -121,6 +121,14 @@
         <postStartupActivity
             implementation="dev.cajeta.idea.markdown.InstallMarkdownFoldManager"/>
 
+        <!-- Copy takes the highlighted text of a rendered markdown block when one
+             is selected; delegates to the platform handler otherwise. A folded
+             block is invisible to the editor's selection model, so without this
+             Ctrl+C would copy the caret's line instead. -->
+        <editorActionHandler
+            action="EditorCopy"
+            implementationClass="dev.cajeta.idea.markdown.MarkdownCopyHandler"/>
+
         <newProjectWizard.languageGenerator
             implementation="dev.cajeta.idea.wizard.CajetaNewProjectWizard"/>
 

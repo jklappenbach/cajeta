@@ -13,9 +13,14 @@ namespace cajeta {
     // FNV-1a 64-bit; matches the runtime's __cajeta_signature_hash so the
     // compile-time hash of a method's canonical signature equals the runtime
     // lookup hash at dispatch time.
+    //
+    // `#` is skipped (mode-erased dispatch, element-ownership §5.1.4) — see
+    // the note on CajetaClass.cpp's signatureHash; the three copies (here,
+    // there, and the runtime C function) must stay in lockstep.
     static int64_t signatureHash(const std::string& s) {
         uint64_t h = 0xcbf29ce484222325ULL;
         for (unsigned char c : s) {
+            if (c == '#') continue;
             h ^= c;
             h *= 0x100000001b3ULL;
         }

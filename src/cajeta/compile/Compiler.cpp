@@ -401,7 +401,19 @@ namespace cajeta {
             std::vector<cajeta::TypeParameter> params;
             for (auto* tp : tps->typeParameter()) {
                 cajeta::TypeParameter param(tp->identifier()->getText());
-                param.owningRequired = (tp->REFERENCE() != nullptr);  // element-ownership §4.1.5
+                // title-tracking §8.1 (plan 7.2.1) — declaration-`#` on a type
+                // parameter (`class Vault<#K>`) is retired with the
+                // type-argument sigil; ownership is per-call.
+                if (tp->REFERENCE() != nullptr) {
+                    throw Exception(
+                        "`#` on a type parameter declaration is retired: "
+                        "ownership is per-call under title-tracking "
+                        "(specs/title-tracking-spec.md §8.1) — drop the `#` "
+                        "from `<#" + param.name + ">` (a must-own edge is "
+                        "spelled on the FORMAL, `f(#" + param.name + " x)`)",
+                        "CAJETA_ERROR_TYPE_TRANSFER_RETIRED");
+                }
+                param.owningRequired = false;
                 if (auto* pt = tp->primitiveType()) {
                     // Non-type (integer-constant) parameter: `primitiveType identifier`.
                     param.isNonType = true;

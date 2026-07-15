@@ -141,8 +141,15 @@ namespace cajeta {
         llvm::Value* thisPtr = llvmFunction->getArg(0);
         llvm::Value* bytes   = llvmFunction->getArg(1);
 
-        // Call decode(bytes) — returns ptr to fresh T.
-        llvm::Value* tmp = b.CreateCall(decodeFn, {bytes}, "enc.decoded");
+        // Call decode(bytes) — returns ptr to fresh T. Title-tracking
+        // Unit 8: the target's ABI may carry the trailing transfer word
+        // (needsTransferWord) — pass 0 (borrowed arg) when it does, or the
+        // JIT verifier rejects the arg count.
+        std::vector<llvm::Value*> decodeArgs{bytes};
+        if (decodeMethod->needsTransferWord()) {
+            decodeArgs.push_back(llvm::ConstantInt::get(i64Ty, 0));
+        }
+        llvm::Value* tmp = b.CreateCall(decodeFn, decodeArgs, "enc.decoded");
 
         // memcpy(this, tmp, sizeof(parent)).
         llvm::Type* parentTy = parent->getLlvmType();
@@ -244,7 +251,13 @@ namespace cajeta {
         encodeFn = CajetaModule::ensureFunctionInModule(lmod, encodeFn);
 
         llvm::Value* thisPtr = llvmFunction->getArg(0);
-        llvm::Value* result = b.CreateCall(encodeFn, {thisPtr}, "enc.bytes");
+        // Title-tracking Unit 8: same trailing-word rule as decode above.
+        std::vector<llvm::Value*> encodeArgs{thisPtr};
+        if (encodeMethod->needsTransferWord()) {
+            encodeArgs.push_back(llvm::ConstantInt::get(
+                llvm::Type::getInt64Ty(ctx), 0));
+        }
+        llvm::Value* result = b.CreateCall(encodeFn, encodeArgs, "enc.bytes");
         b.CreateRet(result);
     }
 }

@@ -465,9 +465,19 @@ namespace cajeta {
         os << "            int32 ii_" << fieldName << " = 0;\n";
         os << "            while (ii_" << fieldName << " < sz_"
            << fieldName << ") {\n";
-        os << "                out." << fieldName << "[ii_"
-           << fieldName << "] = tmp_" << fieldName
-           << ".get(ii_" << fieldName << ");\n";
+        // Class elements were add(#elem)'d — the list slots OWN them, so a
+        // plain get would leave the list dtor freeing what out.<field> now
+        // points at. Extract the title with `#tmp[i]`; primitives/Strings
+        // copy by value / dual-role resolve and keep the plain get.
+        if (elementIsClass) {
+            os << "                out." << fieldName << "[ii_"
+               << fieldName << "] = #tmp_" << fieldName
+               << "[ii_" << fieldName << "];\n";
+        } else {
+            os << "                out." << fieldName << "[ii_"
+               << fieldName << "] = tmp_" << fieldName
+               << ".get(ii_" << fieldName << ");\n";
+        }
         os << "                ii_" << fieldName << " = ii_"
            << fieldName << " + 1;\n";
         os << "            }\n";
@@ -791,7 +801,13 @@ namespace cajeta {
         os << "            out." << f << " = heap " << et << "[sz_" << f << "];\n";
         os << "            int32 ii_" << f << " = 0;\n";
         os << "            while (ii_" << f << " < sz_" << f << ") {\n";
-        os << "                out." << f << "[ii_" << f << "] = " << list << ".get(ii_" << f << ");\n";
+        // Same ownership rule as the reader path above: class elements are
+        // owned by the list slots (add(#e)) — extract the title out.
+        if (elementIsClass) {
+            os << "                out." << f << "[ii_" << f << "] = #" << list << "[ii_" << f << "];\n";
+        } else {
+            os << "                out." << f << "[ii_" << f << "] = " << list << ".get(ii_" << f << ");\n";
+        }
         os << "                ii_" << f << " = ii_" << f << " + 1;\n";
         os << "            }\n";
         return os.str();

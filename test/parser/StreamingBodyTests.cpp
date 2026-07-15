@@ -108,11 +108,15 @@ TEST(StreamingBodyTests, encodeChunkSizeIsLowercaseHexNoLeadingZero) {
     EXPECT_EQ(runI32(
         "int8[] data = M.bytes(\"abcdefghijklmnopqrstuvwxyz\");\n"   // 26 bytes
         "int8[] c = ChunkedEncoder.encodeChunk(data, 26);\n"
-        "String s = heap String(#c, c.count());\n"
+        // Count captured BEFORE the `#c` transfer — reading `c` after the
+        // move is use-after-move (title-tracking Unit 2; previously this
+        // compiled and read the documented post-consume garbage).
+        "int32 n = c.count();\n"
+        "String s = heap String(#c, n);\n"
         "if (!s.startsWith(\"1a\\r\\n\")) return -1;\n"
         "if (!s.endsWith(\"\\r\\n\")) return -2;\n"
         // Total = 2 (size) + 2 (CRLF) + 26 (data) + 2 (CRLF) = 32.
-        "if (c.count() != 32) return -3;\n"
+        "if (n != 32) return -3;\n"
         "return 1;"), 1);
 }
 

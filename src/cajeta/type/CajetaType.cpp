@@ -1269,7 +1269,6 @@ namespace cajeta {
                         // element-ownership §2 — parallel to args: a `#`-prefixed
                         // class-typed argument (`HashMap<#String,V>`) marks that
                         // position owning. Only the typeType branch can carry it.
-                        vector<bool> argOwning;
                         for (auto* targ : targs->typeArgument()) {
                             // Wildcard branch — `?`, `? extends T`, or
                             // `? super T`. Grammar
@@ -1306,7 +1305,6 @@ namespace cajeta {
                                     throw "wildcard sentinel construction failed — CajetaType::init not run?";
                                 }
                                 args.push_back(wild);
-                                argOwning.push_back(false);  // §8.5.2: `#?` out of scope
                                 continue;
                             }
                             if (targ->integerLiteral() != nullptr) {
@@ -1320,7 +1318,6 @@ namespace cajeta {
                                 args.push_back(CajetaConstantType::of(
                                     CajetaConstantType::parseLiteral(
                                         targ->integerLiteral())));
-                                argOwning.push_back(false);  // non-type arg: no ownership
                                 continue;
                             }
                             if (!targ->typeType()) {
@@ -1334,9 +1331,22 @@ namespace cajeta {
                                 throw "unresolved template argument";
                             }
                             args.push_back(argType);
-                            argOwning.push_back(targ->REFERENCE() != nullptr);  // element-ownership §2
+                            // title-tracking §8.1 (plan 7.1.1) — type-argument
+                            // `#` is retired: ownership is per-call, the store
+                            // site decides and the entry bit records.
+                            if (targ->REFERENCE() != nullptr) {
+                                throw Exception(
+                                    "`#` on a type argument is retired: "
+                                    "ownership is per-call under "
+                                    "title-tracking (specs/title-tracking-"
+                                    "spec.md §8.1) — spell it at the store "
+                                    "site (`m.put(#k, #v)`, `xs.add(#x)`) and "
+                                    "drop the `#` from `"
+                                    + argType->toCanonical() + "`",
+                                    "CAJETA_ERROR_TYPE_TRANSFER_RETIRED");
+                            }
                         }
-                        type = templateClass->instantiate(args, argOwning);
+                        type = templateClass->instantiate(args);
                     }
                 }
             } else {

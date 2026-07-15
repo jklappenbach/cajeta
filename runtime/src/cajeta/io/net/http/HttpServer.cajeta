@@ -1119,7 +1119,11 @@ public class HttpServerBuilder {
      * Returns `this` to chain.
      */
     public HttpServerBuilder model(ServerModel model) {
-        this.model = model;
+        // title-tracking (Unit 8 sweep): a fresh `ServerModel.sharedPool(n)`
+        // arg arrives flag-true — the consuming spelling records the title
+        // on the field; a plain store left the armed formal to free it at
+        // setter exit (selectedModel() then read freed memory).
+        this.model = #model;
         return this;
     }
 

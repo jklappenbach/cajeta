@@ -8,6 +8,7 @@ import com.intellij.openapi.editor.event.CaretEvent
 import com.intellij.openapi.editor.event.CaretListener
 import com.intellij.openapi.editor.event.EditorMouseEvent
 import com.intellij.openapi.editor.event.EditorMouseListener
+import com.intellij.openapi.editor.event.EditorMouseMotionListener
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.startup.ProjectActivity
@@ -33,33 +34,73 @@ class InstallCommentCaretListener : ProjectActivity {
         // custom-painted area without moving the caret). The mouse
         // listener catches that path explicitly.
         multicaster.addEditorMouseListener(CommentMouseListener, project)
+        // Drag over a rendered block selects its text (MarkdownSelectionController).
+        multicaster.addEditorMouseMotionListener(CommentMouseMotionListener, project)
     }
 }
 
+/**
+ * Mouse behavior over a rendered markdown block:
+ *
+ *  - **press + drag** → highlight the rendered text (copyable — see
+ *    [MarkdownCopyHandler]). The block stays rendered.
+ *  - **double-click** → replace the block with its raw source for editing.
+ *
+ * A single click without a drag does nothing but clear any highlight, so reading
+ * a comment no longer flips it to source the moment you click near it. Trailing
+ * comments have no rendered text model to select against (they are painted with
+ * `drawString`), so a single click still opens those.
+ */
 private object CommentMouseListener : EditorMouseListener {
 
     private val log = Logger.getInstance(CommentMouseListener::class.java)
 
+    override fun mousePressed(event: EditorMouseEvent) {
+        val editor = event.editor
+        if (!isRenderingCajetaEditor(editor)) return
+
+        val point = event.mouseEvent.point
+        val region = MarkdownSelectionController.blockRegionAt(editor, point)
+        if (region == null) {
+            // Clicked away from every block — drop any highlight.
+            MarkdownSelectionController.clearSelection(editor)
+            return
+        }
+        // Anchor a selection here. Consume so the editor doesn't also start its
+        // own (meaningless) drag-selection across the folded region.
+        if (MarkdownSelectionController.beginSelection(editor, region, point)) {
+            event.consume()
+        }
+    }
+
     override fun mouseClicked(event: EditorMouseEvent) {
         val editor = event.editor
-        val file = FileDocumentManager.getInstance().getFile(editor.document) ?: return
-        if (file.fileType != CajetaFileType) return
-        if (!CajetaSettings.instance.renderMarkdownInComments) return
+        if (!isRenderingCajetaEditor(editor)) return
 
         val offset = event.offset
+        val doubleClick = event.mouseEvent.clickCount >= 2
 
-        // Whole-line markdown block clicked? CustomFoldRegion can't be
-        // toggled via isExpanded, so we remove the region to reveal
-        // the source. The caret listener will re-collapse when the
+        // Whole-line markdown block. Resolved by the region's painted bounds, NOT
+        // by event.offset — a click inside a CustomFoldRegion does not reliably
+        // map back into the folded range (the painted block is much taller than
+        // the text it replaces), which left every indented block unclickable.
+        // CustomFoldRegion can't be toggled via isExpanded, so we remove the
+        // region to reveal the source; the caret listener re-collapses when the
         // caret leaves the block.
-        val block = MarkdownFoldEditorListener.findBlockAt(editor, offset)
-        if (block != null && block.isCollapsed) {
-            log.debug("mouseClicked: expand whole-line block at offset=$offset range=${block.startOffset}-${block.endOffset}")
+        val blockRegion = MarkdownSelectionController.blockRegionAt(editor, event.mouseEvent.point)
+        if (blockRegion != null) {
+            if (!doubleClick) return   // single click selects, it does not open
+            val block = MarkdownFoldEditorListener.blockForRegion(editor, blockRegion) ?: return
+            log.debug("mouseClicked x2: expand whole-line block lines ${block.startLine}-${block.endLine}")
+            MarkdownSelectionController.clearSelection(editor)
             MarkdownFoldEditorListener.expandBlock(editor, block)
+            event.consume()
             return
         }
 
-        // Trailing comment? Standard fold + isExpanded works for those.
+        // Trailing comment? Standard fold + isExpanded works for those. These are
+        // drawn glyph-by-glyph with no selectable text model, so a single click
+        // still opens them — there's nothing to select instead.
         val region = editor.foldingModel.allFoldRegions
             .firstOrNull { it.startOffset <= offset && offset <= it.endOffset }
             ?: return
@@ -74,6 +115,23 @@ private object CommentMouseListener : EditorMouseListener {
         }
         CommentCaretListener.noteExpandedExternally(editor, region)
     }
+}
+
+private object CommentMouseMotionListener : EditorMouseMotionListener {
+
+    override fun mouseDragged(event: EditorMouseEvent) {
+        val editor = event.editor
+        if (!isRenderingCajetaEditor(editor)) return
+        if (MarkdownSelectionController.dragTo(editor, event.mouseEvent.point)) {
+            event.consume()
+        }
+    }
+}
+
+private fun isRenderingCajetaEditor(editor: Editor): Boolean {
+    val file = FileDocumentManager.getInstance().getFile(editor.document) ?: return false
+    if (file.fileType != CajetaFileType) return false
+    return CajetaSettings.instance.renderMarkdownInComments
 }
 
 internal object CommentCaretListener : CaretListener {
@@ -101,6 +159,10 @@ internal object CommentCaretListener : CaretListener {
 
         val caret = event.caret ?: return
         val offset = caret.offset
+
+        // Moving the caret (arrow keys, a click elsewhere) abandons any
+        // rendered-block highlight, the same way it would drop a text selection.
+        MarkdownSelectionController.clearSelection(editor)
 
         // Whole-line blocks: re-collapse any block the caret has just
         // left. (CustomFoldRegion can't be toggled, so we have to

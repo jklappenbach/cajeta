@@ -97,3 +97,7 @@ build-tsan/
 
 # Test-duration metrics for weighted scheduling (cajeta_tests.sh)
 .test-durations.tsv
+
+# Skill-discovery cache written by `cajeta search-skill` / `get-skills`
+# when run inside a project dir (tools/mcp is one such workdir).
+.cajeta/

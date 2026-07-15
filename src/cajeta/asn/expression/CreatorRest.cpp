@@ -147,11 +147,35 @@ namespace cajeta {
         // passing a class instance as a constructor arg would null-deref
         // when `Method::buildCanonical` walks parameter types.
         vector<ParameterEntry> entries;
+        // 6.2.5 — flags for PLAIN ctor args that are class-pointer call
+        // results (anonymous rvalues): read each one's return-flag TLS
+        // immediately after its generation (the next arg's call clobbers
+        // it) and forward it into the ctor word below, exactly as
+        // MethodCallExpression's arg loop does.
+        std::vector<llvm::Value*> plainArgTempFlags(parameters.size(), nullptr);
+        size_t ctorArgIndex = (size_t) -1;
         for (auto& param : parameters) {
+            ++ctorArgIndex;
             if (!param.expression->getResolvedType()) {
                 param.expression->resolveTypes(module);
             }
             llvm::Value* value = param.expression->generateCode(module);
+            if (!param.callerTransferred) {
+                if (auto amce = dynamic_pointer_cast<MethodCallExpression>(
+                        param.expression)) {
+                    MethodPtr am = amce->getResolvedMethod();
+                    if (am && am->returnsClassPointer()
+                            && MethodCallExpression::droppableTempClass(
+                                   amce->getResolvedType())) {
+                        if (llvm::Function* fg = module->getRuntimeFunction(
+                                "__cajeta_return_flag_get")) {
+                            plainArgTempFlags[ctorArgIndex] =
+                                module->getBuilder()->CreateCall(
+                                    fg, {}, "ctor_arg_temp_flag");
+                        }
+                    }
+                }
+            }
             // L-value-to-r-value coercion. Argument expressions can be
             // local allocas (IdentifierExpression), field GEPs
             // (DotExpression — covers `this.handle` etc.), or array
@@ -197,7 +221,58 @@ namespace cajeta {
             // Primitives, literals, and locals without drop entries
             // naturally degrade to no-op (the inner gate fires only on
             // an IdentifierExpression arg whose Field has a drop entry).
+            // 5.2.4 / 6.2.4 — capture each `#`-arg's TITLE FLAG before Pass 1
+            // deactivates it (MethodCallExpression's rule; a ctor arg's `#`
+            // is the parse-level token, NOT a MoveExpression, so the old
+            // MoveExpression-stash-only composition read null and degraded
+            // EVERY `#formal` ctor arg to a STATIC 1 — a borrow put through
+            // `heap RedBlackNode(#key, #value)` stamped the node's bits
+            // owned and the teardown freed the caller's value). A runtime
+            // owner forwards the flag its entry holds; an entry-less formal
+            // (String/primitive) forwards its own incoming word bit.
+            std::vector<llvm::Value*> ctorArgTitleFlags(parameters.size(), nullptr);
             {
+                for (size_t i = 0; i < parameters.size(); ++i) {
+                    if (!parameters[i].callerTransferred) continue;
+                    auto idExpr = std::dynamic_pointer_cast<IdentifierExpression>(
+                        parameters[i].expression);
+                    if (!idExpr) continue;
+                    auto scope = module->getScopeStack().peek();
+                    if (!scope) continue;
+                    FieldPtr field = scope->getField(idExpr->getTextValue());
+                    if (!field) continue;
+                    if (llvm::Value* entry = field->getDropEntry()) {
+                        if (llvm::Function* flagFn = module->getRuntimeFunction(
+                                "__cajeta_drop_entry_flag")) {
+                            ctorArgTitleFlags[i] = builder->CreateCall(
+                                flagFn, {entry}, "ctor_arg_title_flag");
+                        }
+                        continue;
+                    }
+                    auto pfArg = std::dynamic_pointer_cast<ParameterField>(field);
+                    if (pfArg) {
+                        auto cm = module->getCurrentMethod();
+                        llvm::Value* inWord = cm ? cm->getTransferWordArg()
+                                                 : nullptr;
+                        if (inWord) {
+                            int fpos = -1, seen = -1;
+                            for (auto& fp : cm->getParameterList()) {
+                                if (!fp || fp->getName() == "this") continue;
+                                ++seen;
+                                if (fp->getName() == idExpr->getTextValue()) {
+                                    fpos = seen;
+                                    break;
+                                }
+                            }
+                            if (fpos >= 0 && fpos < 64) {
+                                ctorArgTitleFlags[i] = builder->CreateAnd(
+                                    builder->CreateLShr(inWord,
+                                        builder->getInt64((uint64_t) fpos)),
+                                    builder->getInt64(1), "ctor_fwd_word_bit");
+                            }
+                        }
+                    }
+                }
                 auto deactivateIfClassLocal = [&](size_t argIdx) {
                     if (argIdx >= parameters.size()) return;
                     auto argExprBase = parameters[argIdx].expression;
@@ -227,7 +302,19 @@ namespace cajeta {
                             auto pf = std::dynamic_pointer_cast<ParameterField>(field);
                             if (pf) {
                                 auto formal = pf->getFormalParameter();
-                                if (formal && !formal->isTransferred()) {
+                                // 5.2.4 — RETIRED for class-typed formals: a
+                                // plain formal is a RUNTIME owner (5.2.2), so
+                                // `#formal` as a ctor arg forwards its actual
+                                // flag (the ctor word, composed below). Entry-
+                                // less formals of a WORDED method count too
+                                // (String/primitive get no entry; their word
+                                // bit is still the truth) — same rule as MCE.
+                                auto crCm = module->getCurrentMethod();
+                                bool runtimeOwner = field
+                                    && (field->getDropEntry()
+                                        || (crCm && crCm->getTransferWordArg()));
+                                if (formal && !formal->isTransferred()
+                                        && !runtimeOwner) {
                                     auto klassParam = std::dynamic_pointer_cast<CajetaClass>(
                                         field->getType());
                                     if (klassParam && !klassParam->isInterface()) {
@@ -242,6 +329,45 @@ namespace cajeta {
                                                 "restructure to not retain the borrow.",
                                             "CAJETA_ERROR_BORROW_PARAM_ESCAPES");
                                     }
+                                }
+                            } else if (field) {
+                                // title-tracking §3.1.2-3 (plan 2.2.1-2.2.2) —
+                                // ctor-arg linearity, mirroring the
+                                // MethodCallExpression call-arg checks: a
+                                // local ctor-arg `#x` needs a statically-
+                                // active owner and marks the source moved.
+                                const string& nm = idExpr->getTextValue();
+                                auto argKlass = std::dynamic_pointer_cast<CajetaClass>(
+                                    field->getType());
+                                if (argKlass && !argKlass->isValueType()
+                                        && !argKlass->isSharedCapableValue()
+                                        && !argKlass->isInterface()) {
+                                    if (scope->isMoved(nm)) {
+                                        string note = scope->movedNoteOf(nm);
+                                        throw Exception(
+                                            "use of moved value: `#" + nm + "` — "
+                                                "the value was already transferred"
+                                                + (note.empty() ? "" : " (" + note + ")")
+                                                + ". Fix: reassign a fresh value "
+                                                  "before transferring again.",
+                                            "CAJETA_ERROR_USE_AFTER_MOVE");
+                                    }
+                                    if (!field->getDropEntry()) {
+                                        string owner = scope->borrowSourceOf(nm);
+                                        if (!owner.empty()) {
+                                            throw Exception(
+                                                "cannot move out of a borrow: `"
+                                                    + nm + "` does not own its "
+                                                      "value; ownership belongs to `"
+                                                    + owner + "`. Fix: move from the "
+                                                      "owner, or store an owned value "
+                                                      "first.",
+                                                "CAJETA_ERROR_MOVE_OF_BORROW");
+                                        }
+                                    }
+                                    scope->markMoved(nm,
+                                        "transferred to a constructor at line "
+                                            + std::to_string(getSourceLine()));
                                 }
                             }
                         }
@@ -270,27 +396,6 @@ namespace cajeta {
                         if (argIdx >= parameters.size()) break;
                         ++fIdx;
                         if (!fp->isTransferred()) continue;
-                        // optional-borrow-ownership 2.2.3.a — a `#T` formal in a
-                        // BORROW-mode instantiation (`Optional<T>`, not
-                        // `Optional<#T>`) is not a transfer: the callee's drop body
-                        // skips that field (see CajetaClass drop walk's
-                        // originTypeParamIndex gate), so there is no double-free to
-                        // guard against. Relax exactly when that walk will skip.
-                        if (klass->isInstantiation() && fp->getType()) {
-                            bool borrowModeFormal = false;
-                            const auto& targs = klass->getTypeArguments();
-                            auto fpQName = fp->getType()->getQName();
-                            for (size_t k = 0; k < targs.size() && fpQName; ++k) {
-                                if (klass->isTypeArgumentOwning(k)) continue;
-                                if (!targs[k] || !targs[k]->getQName()) continue;
-                                if (targs[k]->getQName()->toCanonical()
-                                        == fpQName->toCanonical()) {
-                                    borrowModeFormal = true;
-                                    break;
-                                }
-                            }
-                            if (borrowModeFormal) continue;
-                        }
                         if (parameters[argIdx].callerTransferred) continue;
                         auto argExpr = parameters[argIdx].expression;
                         if (dynamic_pointer_cast<MoveExpression>(argExpr)) continue;
@@ -313,8 +418,65 @@ namespace cajeta {
                     }
                 }
             }
+            // title-tracking Unit 5: constructors ride the same trailing
+            // transfer word as ordinary calls (ctors never emitted the
+            // moveMask TLS, so the ABI word is their first per-call channel).
+            // 5.2.4 — runtime-composed, same rule as MethodCallExpression: a
+            // `#x` sourced from a runtime owner forwards the flag it held.
+            auto* twBuilder = module->getBuilder();
+            int64_t ctorTransferWord = 0;
+            llvm::Value* ctorWordVal = nullptr;
+            for (size_t twi = 0; twi < parameters.size(); ++twi) {
+                // 6.2.5 — owned rvalues surrender WITHOUT `#` (spec §4.1.1):
+                // a plain fresh `heap X()` ctor arg contributes a static 1;
+                // a plain class-pointer call result forwards the flag
+                // stashed at its generation (ctor_arg_temp_flag).
+                if (!parameters[twi].callerTransferred) {
+                    if (llvm::Value* tf = plainArgTempFlags[twi]) {
+                        llvm::Value* tbit = twBuilder->CreateShl(
+                            twBuilder->CreateAnd(tf, twBuilder->getInt64(1)),
+                            twBuilder->getInt64((uint64_t) twi));
+                        ctorWordVal = ctorWordVal
+                            ? twBuilder->CreateOr(ctorWordVal, tbit) : tbit;
+                    } else if (MethodCallExpression::freshHeapCreatorTempClass(
+                            parameters[twi].expression)) {
+                        ctorTransferWord |= ((int64_t) 1) << twi;
+                    }
+                    continue;
+                }
+                // Pre-deactivation captures first (parse-level `#x` args);
+                // the MoveExpression stash covers `= #x`-shaped arg exprs.
+                llvm::Value* rf = ctorArgTitleFlags[twi];
+                if (!rf) {
+                    if (auto mv = std::dynamic_pointer_cast<MoveExpression>(
+                            parameters[twi].expression)) {
+                        rf = mv->getRuntimeTitleFlag();
+                    }
+                }
+                if (!rf) {
+                    ctorTransferWord |= ((int64_t) 1) << twi;
+                    continue;
+                }
+                llvm::Value* bit = twBuilder->CreateShl(
+                    twBuilder->CreateAnd(rf, twBuilder->getInt64(1)),
+                    twBuilder->getInt64((uint64_t) twi));
+                ctorWordVal = ctorWordVal
+                    ? twBuilder->CreateOr(ctorWordVal, bit) : bit;
+            }
+            if (ctorWordVal) {
+                if (ctorTransferWord != 0) {
+                    ctorWordVal = twBuilder->CreateOr(ctorWordVal,
+                        twBuilder->getInt64((uint64_t) ctorTransferWord));
+                }
+            } else {
+                ctorWordVal = twBuilder->getInt64((uint64_t) ctorTransferWord);
+            }
             klass->invokeMethod(ctorName, entries, /*isConstructor=*/true, instance,
-                                /*callerModule=*/module);
+                                /*callerModule=*/module,
+                                /*forceDirectCall=*/false,
+                                /*explicitMethodTypeArgs=*/{},
+                                /*sretTarget=*/nullptr,
+                                /*transferWord=*/ctorWordVal);
             // slices 9.4.1 — fresh temps consumed as CTOR arguments have no
             // drop entry; reclaim them here, at the only site that sees the
             // temp (mirrors the post-call block in MethodCallExpression::

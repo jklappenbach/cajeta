@@ -129,6 +129,12 @@ namespace cajeta {
                                 && !seen.insert(memberName).second) {
                             collide(label, memberName);
                         }
+                        if (methodDecl->getMethod()) {
+                            // Mark compiler-generated so member-shape checks
+                            // (record shadow ban) can distinguish it from a
+                            // user-authored method.
+                            methodDecl->getMethod()->setSynthesizedMember(true);
+                        }
                         methodDecl->updateParent(structure);
                         continue;
                     }
@@ -334,6 +340,10 @@ namespace cajeta {
                 for (auto& tt : tl->typeType()) {
                     auto* coi = tt->classOrInterfaceType();
                     bucket->push_back(QualifiedName::fromContext(coi));
+                    // title-tracking §8.1 (plan 7.2.1) — the extends-edge
+                    // owning-required contagion check was retired with
+                    // declaration-`#` (type-parameter `#` now errors at parse).
+                    
                     // Pull type args off the leaf identifier; multi-level
                     // qualified templates like `Outer<A>.Inner<B>` aren't
                     // supported in v1 (would need per-level capture and
@@ -462,7 +472,16 @@ namespace cajeta {
                 vector<TypeParameter> params;
                 for (auto* tp : tps->typeParameter()) {
                     TypeParameter param(tp->identifier()->getText());
-                    param.owningRequired = (tp->REFERENCE() != nullptr);  // element-ownership §4.1.5
+                    // title-tracking §8.1 (plan 7.2.1) — declaration-`#` retired.
+                    if (tp->REFERENCE() != nullptr) {
+                        throw Exception(
+                            "`#` on a type parameter declaration is retired: "
+                            "ownership is per-call under title-tracking "
+                            "(specs/title-tracking-spec.md §8.1) — drop the "
+                            "`#` (a must-own edge is spelled on the FORMAL)",
+                            "CAJETA_ERROR_TYPE_TRANSFER_RETIRED");
+                    }
+                    param.owningRequired = false;
                     if (auto* pt = tp->primitiveType()) {
                         // Non-type (integer-constant) parameter: `primitiveType identifier`.
                         param.isNonType = true;
@@ -863,6 +882,14 @@ namespace cajeta {
                                             auto& sm = skv.second;
                                             if (!sm || sm->isConstructor()) continue;
                                             if (sm->getModifiers().count(STATIC)) continue;
+                                            // A SYNTHESIZED parent member (e.g.
+                                            // the auto value-clone each record
+                                            // level gets) may be shadowed —
+                                            // static dispatch picks by declared
+                                            // type, so each level's typed copy
+                                            // is benign. The ban protects
+                                            // user-authored behavior only.
+                                            if (sm->isSynthesizedMember()) continue;
                                             if (sm->getName() == m->getName()) {
                                                 return sup;
                                             }
@@ -1159,7 +1186,16 @@ namespace cajeta {
                 vector<TypeParameter> params;
                 for (auto* tp : tps->typeParameter()) {
                     TypeParameter param(tp->identifier()->getText());
-                    param.owningRequired = (tp->REFERENCE() != nullptr);  // element-ownership §4.1.5
+                    // title-tracking §8.1 (plan 7.2.1) — declaration-`#` retired.
+                    if (tp->REFERENCE() != nullptr) {
+                        throw Exception(
+                            "`#` on a type parameter declaration is retired: "
+                            "ownership is per-call under title-tracking "
+                            "(specs/title-tracking-spec.md §8.1) — drop the "
+                            "`#` (a must-own edge is spelled on the FORMAL)",
+                            "CAJETA_ERROR_TYPE_TRANSFER_RETIRED");
+                    }
+                    param.owningRequired = false;
                     if (auto* bound = tp->typeBound()) {
                         for (auto* tt : bound->typeType()) {
                             if (auto* coi = tt->classOrInterfaceType()) {
@@ -1495,6 +1531,7 @@ namespace cajeta {
                         kInstanceOps = {
                             {"operator++",  0}, {"operator--",  0},
                             {"operator[]",  1}, {"operator[]=", 2},
+                            {"operator#[]", 1},
                             {"operator+=", 1}, {"operator-=", 1}, {"operator*=", 1},
                             {"operator/=", 1}, {"operator%=", 1},
                             {"operator&=", 1}, {"operator|=", 1}, {"operator^=", 1},
@@ -1635,7 +1672,8 @@ namespace cajeta {
             // (ASSIGN)?` overlaps with the bare ASSIGN check below
             // (the indexed-assignment form has both LBRACK and ASSIGN
             // tokens present), so the more specific match wins.
-            if (ctx->LBRACK() && ctx->RBRACK() && ctx->ASSIGN()) sym = "[]=";
+            if (ctx->REFERENCE() && ctx->LBRACK() && ctx->RBRACK()) sym = "#[]";
+            else if (ctx->LBRACK() && ctx->RBRACK() && ctx->ASSIGN()) sym = "[]=";
             else if (ctx->LBRACK() && ctx->RBRACK()) sym = "[]";
             else if (ctx->ADD()) sym = "+";
             else if (ctx->SUB()) sym = "-";
@@ -1732,7 +1770,16 @@ namespace cajeta {
                 isMethodTemplate = true;
                 for (auto* tp : tps->typeParameter()) {
                     TypeParameter param(tp->identifier()->getText());
-                    param.owningRequired = (tp->REFERENCE() != nullptr);  // element-ownership §4.1.5
+                    // title-tracking §8.1 (plan 7.2.1) — declaration-`#` retired.
+                    if (tp->REFERENCE() != nullptr) {
+                        throw Exception(
+                            "`#` on a type parameter declaration is retired: "
+                            "ownership is per-call under title-tracking "
+                            "(specs/title-tracking-spec.md §8.1) — drop the "
+                            "`#` (a must-own edge is spelled on the FORMAL)",
+                            "CAJETA_ERROR_TYPE_TRANSFER_RETIRED");
+                    }
+                    param.owningRequired = false;
                     if (auto* pt = tp->primitiveType()) {
                         // Non-type (integer-constant) method parameter:
                         // `primitiveType identifier` (e.g. `<uint32 N>`).
@@ -2259,6 +2306,18 @@ namespace cajeta {
             // this, a null type flows into generateCode and SIGSEGVs at the first
             // deref (e.g. type->hasValueSemantics()). A stale name (a renamed
             // class still spelled the old way) should be a clean diagnostic.
+            // title-tracking §8.1 (plan 7.1.3) — `#Type` on a local
+            // declaration is retired: a local's role comes from its
+            // initializer shape and a type-position sigil can contradict it.
+            if (ctx->REFERENCE() != nullptr) {
+                throw Exception(
+                    "`#` on a local declaration's type is retired: a local's "
+                    "role comes from its initializer under title-tracking "
+                    "(specs/title-tracking-spec.md §8.1) — drop the `#` from "
+                    "the declaration (the initializer's `#x` / owned rvalue "
+                    "already carries the title)",
+                    "CAJETA_ERROR_TYPE_TRANSFER_RETIRED");
+            }
             auto* typeCtx = ctx->typeType();
             CajetaTypePtr declType = CajetaType::fromContext(typeCtx, pModule);
             if (typeCtx != nullptr && !declType) {

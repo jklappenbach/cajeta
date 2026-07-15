@@ -76,6 +76,26 @@ escaping via a different door: the **field-store edge** instead of the
 return edge. The design intent is to extend the *existing* escape
 analysis to this edge, not to build a parallel system.
 
+The call-edge checks report through this same escape/ownership family:
+
+```
+CAJETA_ERROR_TRANSFER_REQUIRED      // owned local into a `#T` formal without `#`
+CAJETA_ERROR_TYPE_TRANSFER_RETIRED  // `#` in a TYPE position (type argument, `#Type` local,
+                                    // `#V` type parameter) — ownership is per-call; spell it
+                                    // at the call/store site (title-tracking spec §8.1)
+```
+
+> **Retired with title-tracking rev 2 (Unit 7).** The element-ownership
+> type-argument layer — owning/borrow-mode instantiations, the 4B
+> call-agreement and extractor gates (`ELEMENT_TRANSFER_MODE` /
+> `ELEMENT_EXTRACT_MODE`), borrow-mode confinement
+> (`BORROW_MODE_CONFINED` / `BORROW_MODE_OWNED`), and the §4.2 formal
+> dissolution — no longer exists. Every instantiation is plain; an
+> authored `#T` formal is a hard must-own edge in every instantiation;
+> per-value titles ride the hidden per-call transfer word.
+> `BORROW_PARAM_ESCAPES` is likewise retired for class-typed formals
+> (they are runtime owners; `#x` forwards the flag they actually hold).
+
 ## What is statically knowable
 
 At an assignment `target.field = src` we classify two things:

@@ -134,9 +134,7 @@ namespace cajeta {
                 if (auto t = CajetaType::findTemplateByShortName(typeName)) klass = dynamic_pointer_cast<CajetaClass>(t);
             }
             if (klass && klass->isTemplate()) {
-                // element-ownership §2 (plan 2.4): thread the use-site `#`
-                // bits so the owning monomorph is built, not the borrow one.
-                type = klass->instantiate(typeArguments, typeArgumentOwning);
+                type = klass->instantiate(typeArguments);
             }
         } else if (!isDiamond) {
             // Bare `heap Box(args)` of a default-bearing template → Box<defaults>.
@@ -296,12 +294,23 @@ namespace cajeta {
         // boundElementType was captured at parse-walk time when the
         // substitution stack was live; prefer it. See NewExpression.h.
         CajetaTypePtr type = boundElementType;
-        if (!type) type = CajetaType::of(typeName, package);
-        if (!type) {
-            // Bare-name fallback (primitives and classes): scoped, not the
-            // raw global short-name key — see resolveTypes above.
+        // Bare names resolve SCOPED FIRST (own package → imports → global):
+        // `of(name, "")` hits the raw global short-name key, which is
+        // last-writer-wins across packages — a user class named `Event`
+        // would hijack `heap Event(...)` inside cajeta.xpu.Event.create()
+        // during lazy stdlib codegen. ofScoped's tier 3 is that same global
+        // key, so this is strictly more precise. Qualified names keep the
+        // direct canonical lookup. (Subsumes main f086c73e's scoped
+        // fallback — same shadowing fix, stronger ordering.)
+        if (!type && package.empty()) {
             type = CajetaType::ofScoped(typeName, module);
         }
+        if (!type) type = CajetaType::of(typeName, package);
+        // Qualified-miss rescue (pre-existing): the qualified-creator parse
+        // can mangle the package (`cajeta.lang.String` arrives as package
+        // "cajetalang"), which the legacy global short-name fallback silently
+        // absorbed. Keep that rescue as the last tier.
+        if (!type) type = CajetaType::ofScoped(typeName, module);
         // Templated `new Box<int32>(...)`: typeArguments were resolved at
         // parse time (in our constructor). Route through the template's
         // instantiation cache so the concrete `Box<int32>` is what we
@@ -313,9 +322,7 @@ namespace cajeta {
                 if (auto t = CajetaType::findTemplateByShortName(typeName)) klass = dynamic_pointer_cast<CajetaClass>(t);
             }
             if (klass && klass->isTemplate()) {
-                // element-ownership §2 (plan 2.4): same threading as
-                // resolveTypes — both paths must land the same monomorph.
-                type = klass->instantiate(typeArguments, typeArgumentOwning);
+                type = klass->instantiate(typeArguments);
             }
         }
         // Diamond form (`new Box<>(args)`): infer type arguments from the

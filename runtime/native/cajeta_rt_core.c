@@ -704,9 +704,16 @@ int __cajeta_live_set_claim(void* p) {
 // of its parameters it OWNS (and must drop) vs merely borrows. Thread-local so
 // concurrent callers don't clobber each other; 0 between calls, so a call with
 // no `#` args correctly reads 0.
-static __thread int64_t __cajeta_move_mask_tls = 0;
-int64_t __cajeta_move_mask_get(void) { return __cajeta_move_mask_tls; }
-void __cajeta_move_mask_set(int64_t m) { __cajeta_move_mask_tls = m; }
+
+// Per-thread paired RETURN flag (title-tracking spec §4.2/§4.4): a
+// class-pointer-returning method stores 1 (title travels to the caller) or 0
+// (borrow) immediately before its `ret` — after all scope-exit drops — and
+// the caller reads it immediately after the call instruction. Nothing can
+// execute between those two points (no call, no fiber suspension), so unlike
+// the deprecated arg-side mask there is no forwarding chain to lose it.
+static __thread int64_t __cajeta_return_flag_tls = 0;
+int64_t __cajeta_return_flag_get(void) { return __cajeta_return_flag_tls; }
+void __cajeta_return_flag_set(int64_t f) { __cajeta_return_flag_tls = f; }
 
 // Allocate and zero-fill a buffer holding total_count elements of elem_size bytes.
 // Used for primitive-element arrays.

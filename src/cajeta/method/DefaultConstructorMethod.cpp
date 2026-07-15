@@ -18,11 +18,18 @@ namespace cajeta {
      * @param parent
      */
     DefaultConstructorMethod::DefaultConstructorMethod(CajetaModulePtr module, CajetaClassPtr parent)
-        : Method(module, parent->getQName()->getTypeName(), CajetaType::of("void"), parent) {
+        // A template instantiation's typeName carries the arg suffix
+        // (`Stream<cajeta.int32>`), but constructor calls resolve by the
+        // simple name (`Stream`) — the same name declared ctors get from the
+        // re-parsed template source. Name the synthesized default the same
+        // way or it is unresolvable on ctor-less instantiations.
+        : Method(module,
+              parent->getTemplateOrigin()
+                  ? parent->getTemplateOrigin()->getQName()->getTypeName()
+                  : parent->getQName()->getTypeName(),
+              CajetaType::of("void"), parent) {
         this->parent = parent;
-        this->name = name;
-        this->returnType = returnType;
-        constructor = parent->getQName()->getTypeName() == name;
+        constructor = true;
         block = make_shared<DefaultBlock>();
     }
 

@@ -25,6 +25,7 @@ namespace cajeta {
                                  StructurePropertyPtr field);
 
         void generateCode() override;
+        bool emitsReturnFlag() override { return false; }  // raw-IR body: never stores the return flag
 
     private:
         StructurePropertyPtr field;

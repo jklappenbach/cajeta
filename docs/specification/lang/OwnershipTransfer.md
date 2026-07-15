@@ -57,54 +57,64 @@ etc., because those serve both stories.
 
 ## The model
 
-Two annotations, applied independently:
+> **Superseded in part (rev 2).** The two-sided model below was the original
+> design: the callee declared the contract, the caller acknowledged it. It was
+> revised once the consequence became clear — a signature that fixes the transfer
+> mode asks the author to predict how every future caller will use the method,
+> and for containers (where the same `put` is legitimately used both ways) the
+> honest endpoint was to mark every parameter "either." **Transfer is now the
+> caller's decision at every call site**, and signatures carry no ownership
+> spelling by default. `#T` on a parameter survives as an *opt-in* must-own edge.
+> Current semantics live in `MemoryModel.md` § Function signatures: the transfer
+> ABI; the rejected shapes and their rationale are in the title-tracking spec
+> §4.6. The rest of this document is retained for the design history and for the
+> caller-side `#expr` story, which is unchanged.
 
-- **Callee-side `#T param`** — *required transfer contract*. The callee
-  is telling the world: "I will retain this beyond the call (store it,
-  return it, capture it in a closure); the caller must surrender
-  ownership to call me at all." The borrow checker can lean on this:
-  inside the body, `#T param` is freely storable; outside, every call
-  site is verified.
+- **Caller-side `#expr`** — *transfer at the use site*. The caller is saying: "I
+  am surrendering this here; deactivate my drop entry." It's the symmetric partner
+  of the storage-class annotations on construction (`heap` / `stack`): storage
+  class on the *construction* expression, transfer class on the *use* expression.
+  Both are expression-level decisions, both visible at the source line. **This is
+  the whole model now** — the caller's spelling is what decides.
 
-- **Caller-side `#expr`** — *transfer offered at the use site*. The
-  caller is saying: "I am surrendering ownership of this expression
-  here; deactivate my drop entry." It's the symmetric partner of the
-  storage class annotations on construction (`heap` / `stack`): storage
-  class on the *construction* expression; transfer class on the *use*
-  expression. Both are expression-level decisions, both visible at the
-  source line.
+- **Callee-side `#T param`** — *opt-in must-own*. Retained only for a method that
+  cannot function with a borrow: it stores the value somewhere that outlives the
+  call and has no way to cope with the caller keeping the title. It refuses a lend
+  (`CAJETA_ERROR_TRANSFER_REQUIRED`). It is no longer the way to *permit* a
+  transfer — a plain formal already accepts one.
 
-### Interaction matrix
+### Interaction matrix (rev 2)
 
 | Callee formal | Caller writes | Behavior |
 |---------------|---------------|----------|
-| `T param`     | `x`           | **Borrow** — caller retains ownership; callee may only use the value within the call (no field-store, no return, no escaping closure capture). Borrow checker enforces. |
-| `T param`     | `#x`          | **Transfer offered** — caller's drop deactivates; callee receives an owned value. Callee may store/return/capture freely; if it doesn't, the value drops at the parameter's scope (the callee's frame). |
-| `#T param`    | `x`           | **Compile error** `CAJETA_ERROR_TRANSFER_REQUIRED` — callee demands transfer, caller didn't acknowledge. |
-| `#T param`    | `#x`          | **Transfer (both sides agree)** — caller's drop deactivates; callee owns. The most common shape in stdlib calls (`Optional`, `Mutex`, exception ctors). |
+| `T param`     | `x`           | **Lend** — the caller keeps the title and drops the value at its own scope exit. The callee may still store it (the store is a borrow store); if the receiving object escapes, the dangling-lend check fires. |
+| `T param`     | `#x`          | **Transfer** — the caller's drop deactivates; the callee is a runtime owner. If it consumes the value (`#param` into a field / a forward / a return) the title moves on; if it doesn't, the value drops in the callee. |
+| `#T param`    | `x`           | **Compile error** `CAJETA_ERROR_TRANSFER_REQUIRED` — the must-own edge refuses a lend. |
+| `#T param`    | `#x`          | **Transfer** — same as row 2; the signature simply made it mandatory. |
 
-### Why both?
+Note what changed: row 1 no longer forbids the callee from storing the value, and
+row 2 is reachable without any signature change. The callee learns which row it is
+in at runtime, from a hidden per-call flag (`MemoryModel.md` § the transfer ABI).
 
-Each annotation pulls weight the other can't:
+### Why keep `#T` at all?
 
-- Callee-side `#T` makes the contract **discoverable**. A reader of
-  `public Optional(boolean present, #T value)` knows on the signature
-  line that calling this transfers; they don't have to scan the body to
-  see if `value` flows into a field.
-
-- Caller-side `#x` makes the contract **enforceable at the use site**.
-  Without it, a callee that takes plain `T` and stores it gets to silently
-  break the caller's expectations. The caller writing plain `x` is a
-  promise that x stays caller-owned; the body must honor it.
-
-The interaction matrix's `(#T, x)` error is the load-bearing case: the
-callee says "I need ownership," the caller didn't acknowledge — and
-language enforcement catches it at the call site, with a fix-it suggestion
-right where the issue is (add `#` to the argument). Without callee-side
-`#T`, the same mistake surfaces later as a double-free at scope exit, far
-from the cause.
+Discoverability, in the narrow case where it is genuinely load-bearing. A reader of
+`public Optional(boolean present, #T value)` knows on the signature line that
+calling this surrenders. But that is a *documentation* win, not an enforcement one,
+and it is only worth the rigidity where a borrow is truly unusable — so it is opt-in
+rather than the default.
 
 ## Borrow-checker rules
+
+> **Title-tracking Unit 7 amendments.** (a) `#` is retired from every TYPE
+> position — type arguments (`ArrayList<#T>`), local declarations
+> (`#Type x`), and type parameters (`class C<#V>`) all error with
+> `CAJETA_ERROR_TYPE_TRANSFER_RETIRED`; ownership is per-call, spelled at
+> call/store sites. (b) An authored `#T` formal is a hard must-own edge in
+> EVERY instantiation — the old borrow-mode dissolution is gone. (c) Rule 2
+> below is retired for class-typed formals (see the rev-2 note further
+> down): a plain formal is a RUNTIME owner, so `#param` forwards whatever
+> flag it actually holds.
 
 The new rule is paired:
 
@@ -187,6 +197,16 @@ This is the breaking change. Land it as a single commit per region
 
 ### Phase 3a — body-side borrow-param escape check (return + transfer)
 
+> **Retired in rev 2.** `CAJETA_ERROR_BORROW_PARAM_ESCAPES` no longer fires for
+> class-typed formals. The check rested on "a plain formal is a borrow, so it has
+> no title to give away" — and under caller discretion that premise is false: a
+> plain formal is a *runtime* owner whose title is whatever the caller handed it.
+> `#param` is now legal and forwards the flag it actually holds, so a lent value
+> forwarded onward arrives lent, and nothing double-frees. The hazard the check
+> was aimed at (a borrow escaping past its owner's scope) is now caught where it
+> actually occurs — at the escape, by the dangling-lend check — rather than by
+> banning the forward. Non-class formals keep the old rule.
+
 - Extend the existing `BORROW_RETURN_*` checks to fire when a plain-`T`
   parameter flows into:
   - A return statement against a `#T`-return signature (callee promises
@@ -207,6 +227,14 @@ the language reason about whether the storing object's lifetime is
 bounded by the borrow's lifetime.
 
 ### Field-store of borrow: deliberately unchecked (deferred)
+
+> **Partly addressed in rev 2.** The field store itself is still allowed — and the
+> reasoning below (index / cache collections legitimately hold values owned
+> elsewhere) is exactly why containers now carry no ownership spelling at all. What
+> changed is that the *store* is now explicitly a borrow store (it does not silently
+> take ownership), and the escape it enables is caught: if the storing object then
+> leaves the method holding a lend of a dying local, that is
+> `CAJETA_ERROR_DANGLING_LEND`. The general cross-procedure case remains deferred.
 
 Field-store of a plain-`T` parameter — `this.f = param;` inside a
 ctor or setter — is **not** rejected. The pattern is the load-bearing

@@ -5,8 +5,8 @@ import cajeta.collection.HashMap;
 /**
  * Hash-based set of unique class-typed values.
  *
- * Thin wrapper around `HashMap<T, T>` — each member is stored as
- * both the map's key and value. `add` writes; `contains` reads via
+ * Thin wrapper around `HashMap<T, int8>` — each member is the map's
+ * key; the value side is a presence sentinel. `add` writes; `contains` reads via
  * `containsKey`; `remove` deletes; `count` reports the live entry
  * count. Inherits HashMap's open-addressing storage, linear probing,
  * power-of-2 capacity, 0.75 load factor auto-grow, and tombstone
@@ -78,7 +78,12 @@ public final class HashSet<T> {
      * @Param value the member to add.
      */
     public void add(T value) {
-        this.map.put(value, 1);
+        // `#value` forwards the CALLER's transfer (title-tracking 6.2.3): a
+        // droppable class formal forwards its entry flag, an entry-less
+        // String/primitive formal its incoming word bit. A plain forward
+        // read all-borrow in put while THIS formal's armed entry dropped
+        // the member at exit — the set held a dangling pointer.
+        this.map.put(#value, 1);
     }
 
     /**
@@ -100,7 +105,13 @@ public final class HashSet<T> {
      *          it wasn't a member.
      */
     public boolean remove(T value) {
-        return this.map.remove(value);
+        // HashMap.remove returns the VALUE flagged (title-tracking §6.4),
+        // not a boolean — probe membership first, then discard the flagged
+        // sentinel. An owned member (the map's key) is reclaimed inside
+        // remove either way.
+        boolean had = this.map.containsKey(value);
+        this.map.remove(value);
+        return had;
     }
 
     /**

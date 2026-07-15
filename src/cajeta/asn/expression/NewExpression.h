@@ -19,9 +19,6 @@ namespace cajeta {
         // non-templated `new Foo(...)` and for diamond-form `new Box<>(...)`
         // (TPL-7 fills these in by inference at codegen time).
         vector<CajetaTypePtr> typeArguments;
-        // element-ownership §2 (plan 2.4) — parallel to typeArguments:
-        // true where the use-site argument was written `#T`.
-        vector<bool> typeArgumentOwning;
         bool isDiamond = false;
         CreatorRestPtr creatorRest;
         // Captured at construction-time (parse walk) when `typeName` matches
@@ -67,6 +64,14 @@ namespace cajeta {
         const CreatorRestPtr& getCreatorRest() const { return creatorRest; }
         const string& getTypeName() const { return typeName; }
 
+        // 7.2.4 — the creator-rest (and with it the ctor args / dims) is a
+        // private slot, not a child.
+        void forEachSubNode(
+                const std::function<void(const AbstractSyntaxNodePtr&)>& fn) override {
+            if (creatorRest) fn(creatorRest);
+            AbstractSyntaxNode::forEachSubNode(fn);
+        }
+
         NewExpression(antlr4::Token* token) : Expression(token) { }
 
         NewExpression(CajetaParser::CreatorContext* creatorContext, antlr4::Token* token) : Expression(token) {
@@ -106,7 +111,6 @@ namespace cajeta {
                                     typeArguments.push_back(CajetaConstantType::of(
                                         CajetaConstantType::parseLiteral(
                                             targ->integerLiteral())));
-                                    typeArgumentOwning.push_back(false);
                                     continue;
                                 }
                                 // Wildcard arg — `?`, `? extends T`, `? super T`
@@ -138,7 +142,6 @@ namespace cajeta {
                                         throw "wildcard sentinel construction failed";
                                     }
                                     typeArguments.push_back(wild);
-                                    typeArgumentOwning.push_back(false);
                                     continue;
                                 }
                                 if (!targ->typeType()) {
@@ -154,8 +157,19 @@ namespace cajeta {
                                     throw "unresolved template argument in `new`";
                                 }
                                 typeArguments.push_back(argType);
-                                typeArgumentOwning.push_back(
-                                    targ->REFERENCE() != nullptr);
+                                // title-tracking §8.1 (plan 7.1.1) — creator
+                                // type-argument `#` is retired with the
+                                // declared-type form.
+                                if (targ->REFERENCE() != nullptr) {
+                                    throw Exception(
+                                        "`#` on a type argument is retired: "
+                                        "ownership is per-call under "
+                                        "title-tracking (specs/title-tracking-"
+                                        "spec.md §8.1) — spell it at the store "
+                                        "site and drop the `#` from `"
+                                        + argType->toCanonical() + "`",
+                                        "CAJETA_ERROR_TYPE_TRANSFER_RETIRED");
+                                }
                             }
                         } else {
                             // Diamond form: typeArgumentsOrDiamond has '<' '>'

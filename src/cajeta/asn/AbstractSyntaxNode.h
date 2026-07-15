@@ -27,6 +27,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -75,6 +76,21 @@ namespace cajeta {
         }
 
         vector<AbstractSyntaxNodePtr>& getChildren() { return children; }
+
+        // Analysis-walk descent (title-tracking 7.2.4). `children` is the
+        // CODEGEN child list; statements and calls keep their payloads in
+        // private fields (if/loop/try bodies, return expressions, call and
+        // ctor arguments), so a getChildren() walk misses whole subtrees
+        // silently. Overrides visit those payloads AND the children — this
+        // is the single descent primitive for analysis passes (retainsFormal,
+        // computeLastUses, arenaWalk). Codegen must never use it: generating
+        // "every sub-node" would emit call arguments twice.
+        virtual void forEachSubNode(
+                const std::function<void(const AbstractSyntaxNodePtr&)>& fn) {
+            for (auto& child : children) {
+                if (child) fn(child);
+            }
+        }
 
         // Pre-codegen pass: registers class/method signatures. See Compiler.cpp.
         virtual void generateSignature(CajetaModulePtr module) { }

@@ -103,7 +103,7 @@ public class Route {
                 grown[j] = this.segments[j];
                 j = j + 1;
             }
-            this.segments = grown;
+            this.segments = #grown;
         }
         this.segments[this.segmentCount] = seg;
         this.segmentCount = this.segmentCount + 1;

@@ -73,6 +73,10 @@ namespace cajeta {
     protected:
         // Methods maintains the methods declared / overridden in this particular method
         map<string, MethodPtr> methods;
+        // 5.2.4 — mode-erased signature -> the raw key that claimed it. A
+        // second declaration whose erased key matches but whose raw key
+        // differs is a mode-only overload (CAJETA_ERROR_TRANSFER_MODE_OVERLOAD).
+        map<string, string> modeErasedMethodKeys;
         map<string, MethodPtr> staticMethods;
 
         // Constructors
@@ -165,13 +169,6 @@ namespace cajeta {
         // cached after first instantiation (see CajetaClass::instantiate).
         vector<TypeParameter> typeParameters;
         vector<CajetaTypePtr> typeArguments;
-        // element-ownership §2 — per-type-argument ownership mode of THIS
-        // instantiation: typeArgumentOwning[i] == true means position i was
-        // instantiated `#` (owning). Parallel to typeArguments; empty on a
-        // template or when every position is borrow (the default). Folded into
-        // the instantiation's cache key/name so `HashMap<#String,V>` and
-        // `HashMap<String,V>` are distinct monomorphizations (§8.3.1).
-        vector<bool> typeArgumentOwning;
         string templateSource;
         // Back-pointer from a concrete instantiation to the template class it
         // came from. Null for templates and for plain (non-templated) classes.
@@ -524,6 +521,59 @@ namespace cajeta {
             return it->second;
         }
 
+        // title-tracking §5 — per-instance field ownership bits. A class-
+        // reference or heap-array own field gets one bit in a hidden i64
+        // appended after the class's own fields (before its vbase slots);
+        // the store's spelling sets it, teardown consults it. Shared-
+        // capable classes (String/Utf8/Slice) are excluded — their fields
+        // transfer by share/COW and stay always-owned (§5.1.6). Views,
+        // interfaces, value types, and inline arrays store inline and
+        // carry no separable title.
+        static bool fieldHasOwnershipBit(const StructurePropertyPtr& p);
+
+        // title-tracking §5 (Unit 4) — per-slot ownership bits for a
+        // reference array's ELEMENTS. True when `elem` is a plain vtable
+        // class: the slot's store spelling marks a bit in the array local's
+        // sidecar bitmap and the element walk releases marked slots via
+        // __cajeta_class_virtual_drop. String keeps its own family (§5.1.6
+        // share path); nested arrays, views, interfaces, and value types
+        // carry no per-slot title.
+        static bool arrayElementCarriesSlotBits(const CajetaTypePtr& elem);
+
+        // Dense bit index of `p` among this class's OWN bit-carrying
+        // fields (declaration order), or -1.
+        int ownershipBitIndexOf(const StructurePropertyPtr& p) const {
+            if (!p || p->isStatic()) return -1;
+            int idx = 0;
+            for (const auto& q : propertyList) {
+                if (q->isStatic() || !fieldHasOwnershipBit(q)) continue;
+                if (q.get() == p.get()) return idx;
+                idx++;
+            }
+            return -1;
+        }
+
+        bool needsOwnershipWord() const {
+            for (const auto& q : propertyList) {
+                if (!q->isStatic() && fieldHasOwnershipBit(q)) return true;
+            }
+            return false;
+        }
+
+        // LLVM struct slot of this class's hidden ownership word within its
+        // own layout (also valid inside a descendant's embedding, relative
+        // to this class's sub-object). -1 when the class has none.
+        int getOwnershipWordLlvmIndex() const {
+            if (!needsOwnershipWord()) return -1;
+            StructurePropertyPtr last;
+            for (const auto& q : propertyList) {
+                if (!q->isStatic()) last = q;
+            }
+            if (!last) return -1;
+            int lastIdx = getFieldLlvmIndex(last);
+            return lastIdx < 0 ? -1 : lastIdx + 1;
+        }
+
         virtual int getFieldLlvmIndex(const StructurePropertyPtr& prop) const {
             // Static properties have no slot in the instance struct —
             // they live in dedicated globals. Return -1 so a caller
@@ -546,6 +596,12 @@ namespace cajeta {
                         if (result >= 0) return;
                         if (p->isStatic()) continue;
                         if (p.get() == prop.get()) { result = slot; return; }
+                        slot++;
+                    }
+                    // title-tracking §5: skip cls's hidden ownership word
+                    // (inserted after own properties, before vbases — must
+                    // mirror embedSubObject exactly).
+                    if (result < 0 && cls->needsOwnershipWord()) {
                         slot++;
                     }
                     // MultiClassing Phase 3 v4: skip cls's vbase pointer
@@ -988,17 +1044,11 @@ namespace cajeta {
         // dependencies. See MEMORY model: the template's source snippet is
         // re-parsed on each unique instantiation; the result is cached in
         // `module->getStructures()` keyed by canonical-with-args name.
-        // `argOwning` (element-ownership §2) carries the per-position `#` mode;
-        // empty = all borrow (the default, so existing callers are unchanged).
-        // It is folded into the cache key so owning/borrow instantiations are
-        // distinct, and stored on the result for later query.
-        CajetaClassPtr instantiate(vector<CajetaTypePtr> args,
-                                   vector<bool> argOwning = {});
+        CajetaClassPtr instantiate(vector<CajetaTypePtr> args);
         // The actual instantiation logic; `instantiate` is a thin wrapper that
         // also records cross-module instantiation obligations (incremental
         // compilation, Phase 2/3 — docs/IncrementalCompilation.md).
-        CajetaClassPtr instantiateInternal(vector<CajetaTypePtr> args,
-                                           vector<bool> argOwning = {});
+        CajetaClassPtr instantiateInternal(vector<CajetaTypePtr> args);
 
         // Diamond-operator inference (TPL-7). Given the argument types of a
         // `new Box<>(args)` call site, examine this template's constructor
@@ -1009,12 +1059,6 @@ namespace cajeta {
         vector<CajetaTypePtr> inferDiamondArgs(const vector<CajetaTypePtr>& argTypes);
         const vector<TypeParameter>& getTypeParameters() const { return typeParameters; }
         const vector<CajetaTypePtr>& getTypeArguments() const { return typeArguments; }
-        // element-ownership §2 — is type-argument position i owning (`#`)?
-        bool isTypeArgumentOwning(size_t i) const {
-            return i < typeArgumentOwning.size() && typeArgumentOwning[i];
-        }
-        const vector<bool>& getTypeArgumentOwning() const { return typeArgumentOwning; }
-        void setTypeArgumentOwning(vector<bool> v) { typeArgumentOwning = std::move(v); }
         void setTypeParameters(vector<TypeParameter> params) { typeParameters = std::move(params); }
         void setTypeArguments(vector<CajetaTypePtr> args) { typeArguments = std::move(args); }
         const string& getTemplateSource() const { return templateSource; }
@@ -1039,6 +1083,7 @@ namespace cajeta {
                                    bool forceDirectCall = false,
                                    const vector<CajetaTypePtr>& explicitMethodTypeArgs = {},
                                    llvm::Value* sretTarget = nullptr,
+                                   llvm::Value* transferWord = nullptr,
                                    bool errorIfUnresolved = false,
                                    int callLine = -1, int callColumn = -1);
 

@@ -24,6 +24,27 @@ interface MarkdownBlockView {
      *  becomes available, so the fold region re-measures + repaints. Default
      *  no-op (synchronous surfaces never need it). */
     fun bindRepaint(repaint: () -> Unit) {}
+
+    // ---- Text selection over the rendered block -------------------------------
+    // Only a surface that lays out real text can map a pixel back to a character
+    // and highlight a range. The Swing surface can; the JCEF surface renders to a
+    // BufferedImage and has no text model to select against, so it declines here
+    // and the selection controller leaves its blocks alone.
+
+    /** Whether this surface can map points to offsets and highlight a range. */
+    val supportsSelection: Boolean get() = false
+
+    /** Offset in the rendered document at block-local pixel ([px], [py]); -1 if unsupported. */
+    fun offsetAt(editor: Editor, width: Int, px: Int, py: Int): Int = -1
+
+    /** Highlight [from]..[to] (either order) in the rendered document. */
+    fun setSelection(from: Int, to: Int) {}
+
+    /** Drop any highlight. */
+    fun clearSelection() {}
+
+    /** Plain text under the current selection, or null when nothing is selected. */
+    fun selectedText(): String? = null
 }
 
 /**

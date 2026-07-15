@@ -6,11 +6,15 @@ import java.awt.Color
 /**
  * Derives a [MarkdownHtmlTheme.Palette] from a specific editor's color scheme so
  * the rendered block tracks that editor's look — including **per-editor zoom**.
- * The font size is read from `editor.colorsScheme.editorFontSize`, which
+ * The font size is read from `editor.colorsScheme.editorFontSize2D`, which
  * reflects Ctrl+wheel / Ctrl+= zoom, rather than the global scheme's configured
  * base size (which does not). Shared by both rendering surfaces — Swing
  * (transparent body, painted over the fold tint) and JCEF (opaque body, since
  * Chromium has no editor showing through behind it).
+ *
+ * `editorFontSize2D` (Float) rather than the deprecated `editorFontSize` (Int):
+ * zoom sets a fractional size, so reading the Int truncates every sub-point step
+ * to the same value and the block visibly lags the surrounding code.
  */
 object EditorMarkdownPalette {
 
@@ -26,7 +30,7 @@ object EditorMarkdownPalette {
             codeBackground = blend(bg, fg, 0.08).toHex(),
             border = blend(bg, fg, 0.28).toHex(),
             fontName = scheme.editorFontName,
-            fontSizePt = scheme.editorFontSize,
+            fontSizePt = scheme.editorFontSize2D,
             background = if (withBackground) bg.toHex() else null,
         )
     }
