@@ -584,8 +584,12 @@ CajetaJit::~CajetaJit() {
 }
 
 // 5.1.11 / 5.2.8 — diagnostics collected by the last compile (see the header).
+// thread_local: concurrent-compile tests run CajetaJit::compile from several
+// threads at once, and a shared vector's clear/assign races are a double
+// free. Assertions read from the thread that compiled, so per-thread
+// storage preserves the API.
 namespace {
-    std::vector<cajeta::CollectedDiagnostic> g_lastDiagnostics;
+    thread_local std::vector<cajeta::CollectedDiagnostic> g_lastDiagnostics;
 }
 
 const std::vector<cajeta::CollectedDiagnostic>& CajetaJit::lastDiagnostics() {
