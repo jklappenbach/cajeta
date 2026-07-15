@@ -14,7 +14,7 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [embedded-targets](embedded-targets-spec.md) | [plan](../agents/embedded-targets-plan.md) | active |
 | [memory-viewer](memory-viewer-spec.md) | [plan](../agents/memory-viewer-plan.md) | active |
 | [diagnostic-engine](diagnostic-engine-spec.md) | — (engine + lint collect-and-continue landed; remaining scope unverified) | active |
-| [title-stores](title-stores-spec.md) | [plan](../agents/title-stores-plan.md) | draft (spec decision-complete; plan awaiting approval; starts after title-tracking Unit 8) |
+| [title-stores](title-stores-spec.md) | [plan](../agents/title-stores-plan.md) | active (approved 2026-07-15) |
 | [compile-cache](compile-cache-spec.md) | [plan](../agents/cajeta/compile-cache-plan.md) | blocked (parked after Unit 2, 2026-07-10 — prime now ~8% of sweep CPU; re-open triggers in plan) |
 | [cajetadoc-model-fidelity](cajetadoc-model-fidelity-spec.md) | — (docs-refactor 15.1) | draft |
 | [stack-return-transfer-error](stack-return-transfer-error-spec.md) | — (docs-refactor 15.4) | draft |
