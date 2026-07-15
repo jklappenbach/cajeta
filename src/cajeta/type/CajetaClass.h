@@ -540,6 +540,32 @@ namespace cajeta {
         // carry no per-slot title.
         static bool arrayElementCarriesSlotBits(const CajetaTypePtr& elem);
 
+        // title-stores §3.3.2 (Unit 4) — per-MEMBER ownership bits for an
+        // inline value-struct element (the MapEntry shape). True when
+        // `elem` is a value-type class whose layout already appends the
+        // hidden ownership word (needsOwnershipWord): each inline slot
+        // replicates that word, so member stores/detaches address it at
+        // the same fixed delta a heap instance would, and teardown walks
+        // slots × members. Distinct from arrayElementCarriesSlotBits —
+        // these elements have NO tail bitmap.
+        static bool arrayElementCarriesMemberBits(const CajetaTypePtr& elem);
+
+        // title-stores §3.3.2 (Unit 4) — synthesize (or fetch) the
+        // per-element-class member walk for value-struct-element array
+        // teardown: `void <fn>(ptr hdr)` loops slots (count from the
+        // header word), and for each bit set in a slot's inline ownership
+        // word releases that member (heap arrays via __cajeta_free_array,
+        // class refs via __cajeta_class_virtual_drop), then zeroes the
+        // word. `withFree` appends __cajeta_free_array(hdr) — the fused
+        // walk+free shape local drop entries need (a split pair
+        // desynchronizes on move-out; the Unit-3 lesson). Member offsets
+        // and bit indices are compile-time facts of `elemCls`, so the fn
+        // is per-instantiation, interned by name in `targetModule`.
+        static llvm::Function* getOrCreateMemberWalk(
+            const CajetaModulePtr& module, llvm::Module* targetModule,
+            const shared_ptr<CajetaClass>& elemCls, uint64_t headerBytes,
+            uint64_t elemStride, bool withFree);
+
         // Dense bit index of `p` among this class's OWN bit-carrying
         // fields (declaration order), or -1.
         int ownershipBitIndexOf(const StructurePropertyPtr& p) const {

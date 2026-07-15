@@ -918,13 +918,16 @@ namespace cajeta {
         if (binaryOp == BINARY_OP_ASSIGN && children.size() >= 2) {
             auto fwdLhs = dynamic_pointer_cast<ArrayIndexExpression>(children[0]);
             auto fwdMv = dynamic_pointer_cast<MoveExpression>(children[1]);
+            bool fwdDouble = false;
             // The `#=` desugar wraps the parsed `#expr` Move again — walk
-            // to the INNERMOST Move (its codegen does the take).
+            // to the INNERMOST Move (its codegen does the take). The double
+            // wrap IS the fused signature.
             while (fwdMv && !fwdMv->getChildren().empty()) {
                 auto deeper = dynamic_pointer_cast<MoveExpression>(
                     fwdMv->getChildren()[0]);
                 if (!deeper) break;
                 fwdMv = deeper;
+                fwdDouble = true;
             }
             if (fwdLhs && fwdMv && !fwdMv->getChildren().empty()) {
                 if (auto fwdSrc = dynamic_pointer_cast<ArrayIndexExpression>(
@@ -942,6 +945,17 @@ namespace cajeta {
                         fwdMv->setForwardingSlotMove(true);
                     }
                 }
+            }
+            // title-stores §3.3.2 — member-to-member forwarding
+            // (`dst[i].m #= #src[j].m`, the HashMap rehash shape): a
+            // DOUBLE-Move over a Dot source forwards that member's bit
+            // verbatim through the field-detach path. The mark is inert
+            // for String/primitive members (their Moves don't consult
+            // it), so gating on the shape alone is safe.
+            if (fwdDouble && fwdMv && !fwdMv->getChildren().empty()
+                    && dynamic_pointer_cast<DotExpression>(
+                           fwdMv->getChildren()[0])) {
+                fwdMv->setForwardingSlotMove(true);
             }
         }
         llvm::Value* lhs = children[0]->generateCode(module);
@@ -2026,19 +2040,28 @@ namespace cajeta {
                     auto& fch = fobDot->getChildren();
                     auto fobRecv = fch.empty() ? nullptr
                         : dynamic_pointer_cast<Expression>(fch[0]);
-                    // 6.2.6b — ARRAY-ELEMENT receivers are exempt: fields of
-                    // an inline element struct (`slots[i].val = #v`) keep NO
-                    // compiler ownership bits (6.2.2: containers with element
-                    // structs do their own bookkeeping — HashMap's owned[]).
-                    // The machinery fired here anyway and fought remove(),
-                    // which hands the occupant out via its flagged return and
-                    // can never clear the hidden word — a tombstone-reuse put
-                    // then displaced-released the STALE val pointer (address
-                    // recycled → virtual_drop walked a live object as a
-                    // corpse; the DnsCache third-eviction SIGSEGV).
-                    if (dynamic_pointer_cast<ArrayIndexExpression>(fch.empty()
-                            ? nullptr : fch[0])) {
-                        fobRecv = nullptr;
+                    // title-stores §3.3.2 (Unit 4) — ARRAY-ELEMENT receivers
+                    // participate when the element struct carries per-member
+                    // bits (`slots[i].val #= v` writes the slot's inline
+                    // ownership word). The 6.2.6b blanket exemption is
+                    // lifted for exactly that family: it existed because
+                    // HashMap's manual owned[] fought the hidden word
+                    // (remove() handed the occupant out flagged but could
+                    // never clear the word — a tombstone-reuse put then
+                    // displaced-released the STALE val pointer; the DnsCache
+                    // third-eviction SIGSEGV). Under Unit 4 the honest
+                    // spelling exists (`#slots[i].val` extraction CLEARS the
+                    // word) and HashMap converts in the same unit. Elements
+                    // WITHOUT member bits keep the exemption.
+                    if (auto fobAix = dynamic_pointer_cast<ArrayIndexExpression>(
+                            fch.empty() ? nullptr : fch[0])) {
+                        if (!fobAix->getResolvedType()) {
+                            fobAix->resolveTypes(module);
+                        }
+                        if (!CajetaClass::arrayElementCarriesMemberBits(
+                                fobAix->getResolvedType())) {
+                            fobRecv = nullptr;
+                        }
                     }
                     if (fobRecv && !fobRecv->getResolvedType()) {
                         fobRecv->resolveTypes(module);

@@ -902,6 +902,207 @@ namespace cajeta {
         return cls->hasVtablePointerAtSlotZero();
     }
 
+    // A member's release family inside a value-struct slot. Mirrors the
+    // class drop body: bit-carrying members release under their word bit;
+    // String members are always-owned (§5.1.6 — both put spellings leave
+    // the slot owning its wrapper: `#` forwards, plain dual-role-resolves
+    // a copy); shared-capable VALUE members release per Shared stake.
+    namespace {
+        enum class SlotMemberKind { BitGuarded, StringDrop, ValueShared };
+        struct SlotMemberRel {
+            uint64_t off;
+            int bit;                 // BitGuarded only
+            bool isArray;            // BitGuarded only
+            SlotMemberKind kind;
+            shared_ptr<CajetaClass> cls;   // ValueShared only
+        };
+        bool slotMemberIsString(const shared_ptr<CajetaClass>& c) {
+            return c && c->getQName()
+                && c->getQName()->getTypeName() == "String"
+                && c->getQName()->getPackageName() == "cajeta.lang";
+        }
+        std::vector<SlotMemberRel> collectSlotMembers(
+                const shared_ptr<CajetaClass>& elemCls,
+                const llvm::StructLayout* sl) {
+            std::vector<SlotMemberRel> out;
+            for (const auto& p : elemCls->getPropertyList()) {
+                if (p->isStatic()) continue;
+                int fi = elemCls->getFieldLlvmIndex(p);
+                if (fi < 0) continue;
+                uint64_t off = sl->getElementOffset((unsigned) fi);
+                if (CajetaClass::fieldHasOwnershipBit(p)) {
+                    out.push_back({off, elemCls->ownershipBitIndexOf(p),
+                        (bool) dynamic_pointer_cast<CajetaArray>(p->getType()),
+                        SlotMemberKind::BitGuarded, nullptr});
+                    continue;
+                }
+                auto mc = dynamic_pointer_cast<CajetaClass>(p->getType());
+                if (!mc || dynamic_pointer_cast<CajetaView>(p->getType())) {
+                    continue;
+                }
+                if (slotMemberIsString(mc)) {
+                    out.push_back({off, -1, false,
+                        SlotMemberKind::StringDrop, nullptr});
+                } else if (mc->isValueType() && mc->isSharedCapableValue()) {
+                    out.push_back({off, -1, false,
+                        SlotMemberKind::ValueShared, mc});
+                }
+            }
+            return out;
+        }
+    }
+
+    bool CajetaClass::arrayElementCarriesMemberBits(const CajetaTypePtr& elem) {
+        if (!elem) return false;
+        if (dynamic_pointer_cast<CajetaArray>(elem)) return false;
+        if (dynamic_pointer_cast<CajetaView>(elem)) return false;
+        auto cls = dynamic_pointer_cast<CajetaClass>(elem);
+        if (!cls) return false;
+        if (cls->isInterface() || !cls->isValueType()) return false;
+        if (cls->isSharedCapableValue()) return false;
+        if (cls->needsOwnershipWord()) return true;
+        // No word, but String / shared-value members still need the
+        // teardown walk (their release is unconditional per slot).
+        for (const auto& p : cls->getPropertyList()) {
+            if (p->isStatic()) continue;
+            auto mc = dynamic_pointer_cast<CajetaClass>(p->getType());
+            if (!mc || dynamic_pointer_cast<CajetaView>(p->getType())) {
+                continue;
+            }
+            if (slotMemberIsString(mc)
+                    || (mc->isValueType() && mc->isSharedCapableValue())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    llvm::Function* CajetaClass::getOrCreateMemberWalk(
+            const CajetaModulePtr& module, llvm::Module* m,
+            const shared_ptr<CajetaClass>& elemCls, uint64_t headerBytes,
+            uint64_t elemStride, bool withFree) {
+        if (!m || !elemCls) return nullptr;
+        auto* declTy = llvm::dyn_cast_or_null<llvm::StructType>(
+            elemCls->getLlvmType());
+        int wordIdx = elemCls->getOwnershipWordLlvmIndex();
+        if (!declTy || declTy->isOpaque()) return nullptr;
+        std::string name = std::string(withFree ? "cajeta_member_dropfree$"
+                                                : "cajeta_member_walk$")
+            + elemCls->toCanonical();
+        if (llvm::Function* f = m->getFunction(name)) return f;
+
+        const llvm::DataLayout& dl = m->getDataLayout();
+        const llvm::StructLayout* sl = dl.getStructLayout(declTy);
+        std::vector<SlotMemberRel> members = collectSlotMembers(elemCls, sl);
+        if (members.empty()) return nullptr;
+        bool anyBitGuarded = false;
+        for (const auto& mr : members) {
+            if (mr.kind == SlotMemberKind::BitGuarded) anyBitGuarded = true;
+        }
+        if (anyBitGuarded && wordIdx < 0) return nullptr;
+        uint64_t wordOff = wordIdx >= 0
+            ? sl->getElementOffset((unsigned) wordIdx) : 0;
+
+        auto& ctx = m->getContext();
+        auto* i64 = llvm::Type::getInt64Ty(ctx);
+        auto* i8 = llvm::Type::getInt8Ty(ctx);
+        auto* ptrTy = llvm::PointerType::get(ctx, 0);
+        auto* fnTy = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(ctx), {ptrTy}, false);
+        auto* f = llvm::Function::Create(
+            fnTy, llvm::Function::InternalLinkage, name, m);
+        llvm::Function* dropFn = module->getRuntimeFunction(
+            "__cajeta_class_virtual_drop", m);
+        llvm::Function* freeFn = module->getRuntimeFunction(
+            "__cajeta_free_array", m);
+
+        auto* entry = llvm::BasicBlock::Create(ctx, "entry", f);
+        auto* head = llvm::BasicBlock::Create(ctx, "slot_head", f);
+        auto* body = llvm::BasicBlock::Create(ctx, "slot_body", f);
+        auto* next = llvm::BasicBlock::Create(ctx, "slot_next", f);
+        auto* done = llvm::BasicBlock::Create(ctx, "done", f);
+        llvm::IRBuilder<> b(entry);
+        llvm::Value* hdr = f->getArg(0);
+        llvm::Value* isNull = b.CreateICmpEQ(
+            hdr, llvm::ConstantPointerNull::get(ptrTy));
+        auto* haveHdr = llvm::BasicBlock::Create(ctx, "have_hdr", f);
+        b.CreateCondBr(isNull, done, haveHdr);
+        b.SetInsertPoint(haveHdr);
+        llvm::Value* count = b.CreateAnd(
+            b.CreateLoad(i64, hdr, "count"),
+            llvm::ConstantInt::get(i64, 0x7fffffffffffffffULL));
+        llvm::Value* idxSlot = b.CreateAlloca(i64, nullptr, "i");
+        b.CreateStore(llvm::ConstantInt::get(i64, 0), idxSlot);
+        b.CreateBr(head);
+
+        b.SetInsertPoint(head);
+        llvm::Value* i = b.CreateLoad(i64, idxSlot);
+        b.CreateCondBr(b.CreateICmpSLT(i, count), body, done);
+
+        b.SetInsertPoint(body);
+        llvm::Value* slotBase = b.CreateInBoundsGEP(i8, hdr,
+            b.CreateAdd(llvm::ConstantInt::get(i64, headerBytes),
+                        b.CreateMul(i, llvm::ConstantInt::get(
+                            i64, elemStride))), "slot_base");
+        llvm::Value* wordPtr = nullptr;
+        llvm::Value* word = nullptr;
+        if (anyBitGuarded) {
+            wordPtr = b.CreateInBoundsGEP(i8, slotBase,
+                llvm::ConstantInt::get(i64, wordOff), "word_ptr");
+            word = b.CreateLoad(i64, wordPtr, "word");
+        }
+        for (const auto& mr : members) {
+            llvm::Value* mp = b.CreateInBoundsGEP(i8, slotBase,
+                llvm::ConstantInt::get(i64, mr.off), "member_ptr");
+            if (mr.kind == SlotMemberKind::ValueShared) {
+                // Inline shared-capable value member: release per stake,
+                // unconditional (mirrors drop_vshared_).
+                mr.cls->emitValueSharedOp(b, mp, module, m,
+                                          /*retain=*/false);
+                continue;
+            }
+            if (mr.kind == SlotMemberKind::StringDrop) {
+                // Always-owned String member (§5.1.6): virtual_drop the
+                // wrapper unconditionally; vacant slots hold null and the
+                // drop no-ops.
+                llvm::Value* sv = b.CreateLoad(ptrTy, mp, "member_str");
+                if (dropFn) b.CreateCall(dropFn, {sv});
+                b.CreateStore(llvm::ConstantPointerNull::get(ptrTy), mp);
+                continue;
+            }
+            llvm::Value* bit = b.CreateAnd(
+                b.CreateLShr(word, llvm::ConstantInt::get(i64, mr.bit)),
+                llvm::ConstantInt::get(i64, 1));
+            llvm::Function* fn = b.GetInsertBlock()->getParent();
+            auto* relBB = llvm::BasicBlock::Create(ctx, "member_rel", fn);
+            auto* contBB = llvm::BasicBlock::Create(ctx, "member_cont", fn);
+            b.CreateCondBr(b.CreateICmpNE(bit,
+                llvm::ConstantInt::get(i64, 0)), relBB, contBB);
+            b.SetInsertPoint(relBB);
+            llvm::Value* mv = b.CreateLoad(ptrTy, mp, "member_val");
+            llvm::Function* rel = mr.isArray ? freeFn : dropFn;
+            if (rel) b.CreateCall(rel, {mv});
+            b.CreateBr(contBB);
+            b.SetInsertPoint(contBB);
+        }
+        // Claim: the word zeroes so a second pass (dtor + auto field
+        // drop) can't re-release.
+        if (wordPtr) {
+            b.CreateStore(llvm::ConstantInt::get(i64, 0), wordPtr);
+        }
+        b.CreateBr(next);
+
+        b.SetInsertPoint(next);
+        b.CreateStore(b.CreateAdd(i, llvm::ConstantInt::get(i64, 1)),
+                      idxSlot);
+        b.CreateBr(head);
+
+        b.SetInsertPoint(done);
+        if (withFree && freeFn) b.CreateCall(freeFn, {hdr});
+        b.CreateRetVoid();
+        return f;
+    }
+
     void CajetaClass::buildInstanceStructBody(llvm::LLVMContext* lctx) {
         string canonical = qName->toCanonical();
         auto fieldLayoutType = [&](const StructurePropertyPtr& p) -> llvm::Type* {
@@ -3112,6 +3313,22 @@ namespace cajeta {
                                 wdl.getTypeAllocSize(arrField->getLlvmType())),
                             llvm::ConstantInt::get(wi64,
                                 arrField->elementStrideBytes(wdl, &ctx))});
+                    }
+                }
+                // title-stores §3.3.2 (Unit 4) — value-struct elements:
+                // walk slots × member bits (each slot's inline ownership
+                // word) before the buffer frees.
+                if (CajetaClass::arrayElementCarriesMemberBits(
+                        arrField->getElementType())) {
+                    const llvm::DataLayout& wdl = bodyModule->getDataLayout();
+                    if (llvm::Function* mwFn = getOrCreateMemberWalk(
+                            cajModule, bodyModule,
+                            dynamic_pointer_cast<CajetaClass>(
+                                arrField->getElementType()),
+                            wdl.getTypeAllocSize(arrField->getLlvmType()),
+                            arrField->elementStrideBytes(wdl, &ctx),
+                            /*withFree=*/false)) {
+                        b.CreateCall(mwFn, {arrPtr});
                     }
                 }
                 b.CreateCall(freeArrayFn, {arrPtr});

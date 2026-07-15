@@ -579,9 +579,16 @@ namespace cajeta {
                             if (auto innerMv = dynamic_pointer_cast<
                                     MoveExpression>(outerMv->getChildren()[0])) {
                                 if (!innerMv->getChildren().empty()
-                                        && dynamic_pointer_cast<
-                                               ArrayIndexExpression>(
-                                               innerMv->getChildren()[0])) {
+                                        && (dynamic_pointer_cast<
+                                                ArrayIndexExpression>(
+                                                innerMv->getChildren()[0])
+                                            // §3.3.2 — member claims
+                                            // (`V out #= #slots[i].val`)
+                                            // forward the member bit the
+                                            // same way.
+                                            || dynamic_pointer_cast<
+                                                   DotExpression>(
+                                                   innerMv->getChildren()[0]))) {
                                     innerMv->setForwardingSlotMove(true);
                                 }
                             }
@@ -1262,6 +1269,9 @@ namespace cajeta {
                 bool lvdElemTitled = arrT0 && !arrT0->isInlineArray()
                     && CajetaClass::arrayElementCarriesSlotBits(
                            arrT0->getElementType());
+                bool lvdMemberBits = arrT0 && !arrT0->isInlineArray()
+                    && CajetaClass::arrayElementCarriesMemberBits(
+                           arrT0->getElementType());
                 if (lvdElemTitled) {
                     const llvm::DataLayout& ldl =
                         module->getLlvmModule()->getDataLayout();
@@ -1270,6 +1280,28 @@ namespace cajeta {
                         arrT0->elementStrideBytes(ldl,
                             module->getLlvmContext()));
                     emitDropEntryForFn(module, field, wf, getSourceLine());
+                } else if (lvdMemberBits) {
+                    // title-stores §3.3.2 — value-struct elements: ONE
+                    // member-walk+free entry (same fused shape as the
+                    // tail family, same move-out disarm reason).
+                    const llvm::DataLayout& ldl =
+                        module->getLlvmModule()->getDataLayout();
+                    llvm::Module* lm = module->getBuilder()
+                        ->GetInsertBlock()->getParent()->getParent();
+                    llvm::Function* wf = CajetaClass::getOrCreateMemberWalk(
+                        module, lm,
+                        dynamic_pointer_cast<CajetaClass>(
+                            arrT0->getElementType()),
+                        ldl.getTypeAllocSize(arrT0->getLlvmType()),
+                        arrT0->elementStrideBytes(ldl,
+                            module->getLlvmContext()),
+                        /*withFree=*/true);
+                    if (wf) {
+                        emitDropEntryForFn(module, field, wf, getSourceLine());
+                    } else {
+                        emitDropEntryFor(module, field,
+                            "__cajeta_free_array", getSourceLine());
+                    }
                 } else {
                     emitDropEntryFor(module, field, "__cajeta_free_array",
                         getSourceLine());

@@ -2025,6 +2025,20 @@ namespace cajeta {
                     };
                 xFind(xRecvClass);
             }
+            // A `#x.f` Move of a PRIMITIVE member is identity — load the
+            // value so the enclosing store writes bytes, not the member
+            // slot's address (the ArrayIndex twin of this guard caught the
+            // BPlus int32 corruption; this shape appears in `#=` member
+            // forwarding with a primitive instantiation, e.g. HashMap
+            // rehash with K=int32).
+            if (xProp && xDecl && !CajetaClass::fieldHasOwnershipBit(xProp)
+                    && xProp->getType()
+                    && !dynamic_pointer_cast<CajetaClass>(xProp->getType())) {
+                llvm::Value* pv = dotInner->generateCode(module);
+                pv = loadIfLValue(module, pv, dotInner);
+                resolvedType = xProp->getType();
+                return pv;
+            }
             if (xProp && xDecl && CajetaClass::fieldHasOwnershipBit(xProp)) {
                 llvm::Value* slot = dotInner->generateCode(module);
                 if (slot && slot->getType()->isPointerTy()) {
@@ -2060,6 +2074,18 @@ namespace cajeta {
                             b->CreateLShr(w,
                                 llvm::ConstantInt::get(i64Ty, bitIdx)),
                             llvm::ConstantInt::get(i64Ty, 1));
+                        // title-stores §2.1/§3.3.2 — the FUSED claim
+                        // (`V out #= #slots[i].val`, double-Move shape)
+                        // forwards the bit VERBATIM: borrow forwards as
+                        // borrow, no panic. Bare `= #x.f` keeps the guard.
+                        if (isForwardingSlotMove()) {
+                            runtimeTitleFlag = bit;
+                            llvm::Value* fwdW = b->CreateAnd(w,
+                                llvm::ConstantInt::get(
+                                    i64Ty, ~(1ULL << bitIdx)));
+                            b->CreateStore(fwdW, wordPtr);
+                            return b->CreateLoad(ptrTy, slot, "xtract_fwd");
+                        }
                         llvm::Value* owned = b->CreateICmpNE(
                             bit, llvm::ConstantInt::get(i64Ty, 0));
                         llvm::Function* fn =
