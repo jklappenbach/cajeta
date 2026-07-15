@@ -2118,6 +2118,32 @@ namespace cajeta {
                                         "own_displace_cont", fobFn);
                                 builder->CreateCondBr(wasOwned, relBB, contBB);
                                 builder->SetInsertPoint(relBB);
+                                // title-stores §3.2 — a displaced OWNED array
+                                // with bit-capable elements walks its tail
+                                // bitmap before the buffer frees.
+                                if (fobFieldIsArray) {
+                                    auto fobArr = dynamic_pointer_cast<
+                                        CajetaArray>(lhsAst->getResolvedType());
+                                    if (fobArr && CajetaClass::
+                                            arrayElementCarriesSlotBits(
+                                                fobArr->getElementType())) {
+                                        if (llvm::Function* wkFn =
+                                                module->getRuntimeFunction(
+                                                    "__cajeta_tail_elem_drop_walk")) {
+                                            const llvm::DataLayout& wdl =
+                                                module->getLlvmModule()
+                                                    ->getDataLayout();
+                                            builder->CreateCall(wkFn, {oldVal,
+                                                llvm::ConstantInt::get(i64Ty,
+                                                    wdl.getTypeAllocSize(
+                                                        fobArr->getLlvmType())),
+                                                llvm::ConstantInt::get(i64Ty,
+                                                    wdl.getTypeAllocSize(
+                                                        fobArr->getElementLlvmType(
+                                                            &fobCtx)))});
+                                        }
+                                    }
+                                }
                                 builder->CreateCall(relFn, {oldVal});
                                 builder->CreateBr(contBB);
                                 builder->SetInsertPoint(contBB);
@@ -2171,45 +2197,89 @@ namespace cajeta {
                                 }
                             }
                         }
-                        // title-tracking §5 (Unit 4) — class elements record
-                        // the store's SPELLING in the slot bit, mirroring the
-                        // Unit 3 field-store classification: `#x`, a fresh
-                        // heap construction, a `#`-returning call, or a
-                        // `#`-formal source → owned; every other store is a
-                        // BORROW (the source keeps its books — no implicit
-                        // deactivation below).
-                        bool elemTitled = sidecar
-                            && CajetaClass::arrayElementCarriesSlotBits(
-                                   lhsAst->getResolvedType());
-                        if (sidecar && elemTitled) {
-                            bool ownedSpelling = false;
-                            if (dynamic_pointer_cast<MoveExpression>(rhsAst)) {
-                                ownedSpelling = true;
+                        // title-stores §3.2 — bit-capable class elements
+                        // route through the TAIL BITMAP (header-addressed:
+                        // one mechanism for field arrays and locals; the
+                        // local sidecar retires for class elements). The
+                        // slot bit records the store's actual title: a
+                        // MoveExpression's captured runtime flag forwards
+                        // verbatim (`#=` of a formal stores what the caller
+                        // did); static spellings classify as before.
+                        bool elemTitled =
+                            CajetaClass::arrayElementCarriesSlotBits(
+                                lhsAst->getResolvedType());
+                        // The tail helper needs the array HEADER. Regenerate
+                        // the receiver only for side-effect-free shapes
+                        // (identifier / field path) — the container-author
+                        // shapes; anything else conservatively keeps the
+                        // plain store.
+                        llvm::Value* tailHdr = nullptr;
+                        if (elemTitled) {
+                            auto recvAst2 = aixLhs->getChildren().empty()
+                                ? nullptr
+                                : dynamic_pointer_cast<Expression>(
+                                      aixLhs->getChildren()[0]);
+                            if (recvAst2
+                                    && (dynamic_pointer_cast<
+                                            IdentifierExpression>(recvAst2)
+                                        || dynamic_pointer_cast<DotExpression>(
+                                               recvAst2))) {
+                                llvm::Value* rv = recvAst2->generateCode(module);
+                                tailHdr = loadIfLValue(module, rv, recvAst2);
+                            }
+                        }
+                        if (elemTitled && tailHdr) {
+                            llvm::LLVMContext& tsCtx = *module->getLlvmContext();
+                            llvm::Type* tsI64 = llvm::Type::getInt64Ty(tsCtx);
+                            llvm::Value* ownedVal = nullptr;
+                            if (auto mv = dynamic_pointer_cast<MoveExpression>(
+                                    rhsAst)) {
+                                ownedVal = mv->getRuntimeTitleFlag()
+                                    ? mv->getRuntimeTitleFlag()
+                                    : (llvm::Value*) llvm::ConstantInt::get(
+                                          tsI64, 1);
                             } else if (auto rn = dynamic_pointer_cast<
                                            NewExpression>(rhsAst)) {
-                                ownedSpelling = !rn->getStackAlloc();
+                                ownedVal = llvm::ConstantInt::get(tsI64,
+                                    rn->getStackAlloc() ? 0 : 1);
                             } else if (auto rc = dynamic_pointer_cast<
                                            MethodCallExpression>(rhsAst)) {
-                                ownedSpelling = rc->isResolvedReturnsOwnership();
-                            } else if (auto ri = dynamic_pointer_cast<
-                                           IdentifierExpression>(rhsAst)) {
-                                if (auto sc = module->getScopeStack().peek()) {
-                                    auto pf = std::dynamic_pointer_cast<
-                                        ParameterField>(
-                                            sc->getField(ri->getTextValue()));
-                                    if (pf && pf->getFormalParameter()
-                                            && pf->getFormalParameter()
-                                                   ->isTransferred()) {
-                                        ownedSpelling = true;
-                                    }
-                                }
+                                ownedVal = llvm::ConstantInt::get(tsI64,
+                                    rc->isResolvedReturnsOwnership() ? 1 : 0);
+                            } else {
+                                ownedVal = llvm::ConstantInt::get(tsI64, 0);
                             }
-                            llvm::Function* setFn = module->getRuntimeFunction(
-                                ownedSpelling
-                                    ? "__cajeta_class_array_elem_set_owned"
-                                    : "__cajeta_class_array_elem_set_alias");
-                            if (setFn) {
-                                builder->CreateCall(setFn, {sidecar, lhs, rhsVal});
+                            const llvm::DataLayout& tsDl =
+                                module->getLlvmModule()->getDataLayout();
+                            auto recvArr = dynamic_pointer_cast<CajetaArray>(
+                                dynamic_pointer_cast<Expression>(
+                                    aixLhs->getChildren()[0])->getResolvedType());
+                            uint64_t tsHs = 8, tsEs = 8;
+                            if (recvArr) {
+                                tsHs = tsDl.getTypeAllocSize(
+                                    recvArr->getLlvmType());
+                                tsEs = tsDl.getTypeAllocSize(
+                                    recvArr->getElementLlvmType(&tsCtx));
+                            }
+                            // idx = (slot - hdr - hs) / es, from the already-
+                            // emitted slot address (no index re-generation).
+                            llvm::Value* slotInt = builder->CreatePtrToInt(
+                                lhs, tsI64);
+                            llvm::Value* hdrInt = builder->CreatePtrToInt(
+                                tailHdr, tsI64);
+                            llvm::Value* tsIdx = builder->CreateSDiv(
+                                builder->CreateSub(
+                                    builder->CreateSub(slotInt, hdrInt),
+                                    llvm::ConstantInt::get(tsI64, tsHs)),
+                                llvm::ConstantInt::get(tsI64, tsEs));
+                            if (llvm::Function* storeFn =
+                                    module->getRuntimeFunction(
+                                        "__cajeta_tail_elem_store")) {
+                                builder->CreateCall(storeFn,
+                                    {tailHdr,
+                                     llvm::ConstantInt::get(tsI64, tsHs),
+                                     llvm::ConstantInt::get(tsI64, tsEs),
+                                     tsIdx, rhsVal, ownedVal});
                                 storedViaElemOwn = true;
                                 storedViaClassElem = true;
                             }

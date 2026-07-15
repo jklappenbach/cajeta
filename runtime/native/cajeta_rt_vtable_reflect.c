@@ -1489,6 +1489,83 @@ void* __cajeta_class_array_elem_take(void* sidecar, void** slot) {
     return v;
 }
 
+// ===== title-stores §3 — tail-bitmap element titles ========================
+// Droppable-element arrays allocated by __cajeta_new_array_header_bits carry
+// a per-slot ownership bitmap at hdr + header_size + count*elem_size (count
+// masked of the shared bit). Header-addressed, so FIELD arrays and locals
+// ride one mechanism — the successor of the local-only sidecar above.
+
+static uint8_t* caj_tail_bits(void* hdr, uint64_t header_size, uint64_t elem_size) {
+    int64_t count = *(int64_t*) hdr & ~((int64_t) 1 << 63);
+    return (uint8_t*) hdr + header_size + (uint64_t) count * elem_size;
+}
+
+// Store with displaced release: an OWNED occupant is dropped before the
+// overwrite; the slot's bit records the low bit of `owned` (a forwarded
+// runtime flag composes directly).
+void __cajeta_tail_elem_store(void* hdr, uint64_t header_size, uint64_t elem_size,
+                              int64_t idx, void* obj, int64_t owned) {
+    if (!hdr) return;
+    int64_t count = *(int64_t*) hdr & ~((int64_t) 1 << 63);
+    if (idx < 0 || idx >= count) return;    // bounds guarded upstream; stay safe
+    uint8_t* bits = caj_tail_bits(hdr, header_size, elem_size);
+    void** slot = (void**) ((uint8_t*) hdr + header_size + (uint64_t) idx * elem_size);
+    void* old = *slot;
+    if (old && old != obj && ((bits[idx >> 3] >> (idx & 7)) & 1)) {
+        __cajeta_class_virtual_drop(old);
+    }
+    if (owned & 1) bits[idx >> 3] |= (uint8_t) (1 << (idx & 7));
+    else           bits[idx >> 3] &= (uint8_t) ~(1 << (idx & 7));
+    *slot = obj;
+}
+
+// Move-out: clears the slot's bit and returns its previous value (1 = the
+// caller now holds the title). The slot pointer itself stays readable as a
+// lend, mirroring the guarded field detach.
+int64_t __cajeta_tail_elem_take_flag(void* hdr, uint64_t header_size,
+                                     uint64_t elem_size, int64_t idx) {
+    if (!hdr) return 0;
+    int64_t count = *(int64_t*) hdr & ~((int64_t) 1 << 63);
+    if (idx < 0 || idx >= count) return 0;
+    uint8_t* bits = caj_tail_bits(hdr, header_size, elem_size);
+    int64_t was = (bits[idx >> 3] >> (idx & 7)) & 1;
+    bits[idx >> 3] &= (uint8_t) ~(1 << (idx & 7));
+    return was;
+}
+
+// Bit-guarded single drop (Cajeta.dropValue(#arr[i])): owned -> vdrop +
+// clear + null the slot; borrowed/vacant -> no-op.
+void __cajeta_tail_elem_drop_one(void* hdr, uint64_t header_size,
+                                 uint64_t elem_size, int64_t idx) {
+    if (!hdr) return;
+    int64_t count = *(int64_t*) hdr & ~((int64_t) 1 << 63);
+    if (idx < 0 || idx >= count) return;
+    uint8_t* bits = caj_tail_bits(hdr, header_size, elem_size);
+    if (!((bits[idx >> 3] >> (idx & 7)) & 1)) return;
+    void** slot = (void**) ((uint8_t*) hdr + header_size + (uint64_t) idx * elem_size);
+    void* v = *slot;
+    bits[idx >> 3] &= (uint8_t) ~(1 << (idx & 7));
+    *slot = NULL;
+    if (v) __cajeta_class_virtual_drop(v);
+}
+
+// Teardown walk: drop every OWNED slot, clearing as it goes. Vacant and
+// borrowed slots (bit 0) are untouched — no @ElementCount needed.
+void __cajeta_tail_elem_drop_walk(void* hdr, uint64_t header_size,
+                                  uint64_t elem_size) {
+    if (!hdr) return;
+    int64_t count = *(int64_t*) hdr & ~((int64_t) 1 << 63);
+    uint8_t* bits = caj_tail_bits(hdr, header_size, elem_size);
+    for (int64_t i = 0; i < count; i++) {
+        if (!((bits[i >> 3] >> (i & 7)) & 1)) continue;
+        void** slot = (void**) ((uint8_t*) hdr + header_size + (uint64_t) i * elem_size);
+        void* v = *slot;
+        bits[i >> 3] &= (uint8_t) ~(1 << (i & 7));
+        *slot = NULL;
+        if (v) __cajeta_class_virtual_drop(v);
+    }
+}
+
 void __cajeta_class_array_owned_drop(void* sidecar) {
     cajeta_string_array_sidecar* sc = (cajeta_string_array_sidecar*) sidecar;
     if (!sc) return;

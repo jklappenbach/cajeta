@@ -73,10 +73,16 @@ TEST(ElementSlotSemanticsTests, storeForwardsFlagTeardownDropsOwnedOnly) {
 }
 
 // 3.1.2 — displaced release: overwriting an OWNED slot drops the occupant;
-// overwriting a BORROWED slot leaves the caller's object live.
+// overwriting a BORROWED slot leaves the caller's object live. The borrow
+// arrives as a runtime-owner formal with flag 0 (`#=` of a statically-owned
+// LOCAL is a hard move per spec §2.1 — the lint rightly rejects reading it
+// after; caller discretion is the borrow spelling).
 TEST(ElementSlotSemanticsTests, displacedReleaseOnOwnedSlotOnly) {
     std::string src = std::string(kFixtureSrc) +
         "public final class D {\n"
+        "    public static void putAt(MiniVec v, int32 i, Cell c) {\n"
+        "        v.data[i] #= c;\n"                      // forwards the caller's flag
+        "    }\n"
         "    public static int32 run() {\n"
         "        int64 base = Cajeta.liveCount();\n"
         "        Cell keep = heap Cell(5);\n"
@@ -87,7 +93,7 @@ TEST(ElementSlotSemanticsTests, displacedReleaseOnOwnedSlotOnly) {
         "            v.data[0] #= heap Cell(2);\n"      // displaces + frees Cell(1)
         "            int64 mid = Cajeta.liveCount() - base;\n"
         "            if (mid != 4L) { return (int32) (mid * -1); }\n"  // keep+vec+data+Cell(2)
-        "            v.data[1] #= keep;\n"               // borrow recorded
+        "            putAt(v, 1, keep);\n"               // plain arg: flag 0 -> borrow bit
         "            v.data[1] #= heap Cell(3);\n"       // displaces borrow: NO free
         "            if (keep.n != 5) { return -3; }\n"
         "            t = v.data[0].n + v.data[1].n;\n"

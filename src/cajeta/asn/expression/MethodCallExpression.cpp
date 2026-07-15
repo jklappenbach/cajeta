@@ -2819,6 +2819,68 @@ namespace cajeta {
                 // (HashMap teardown/remove). Idempotent at runtime via the live-set
                 // claim, so a no-op on a non-owned value is harmless.
                 if (ns == "Cajeta" && methodCallName == "dropValue" && parameters.size() == 1) {
+                    // title-stores §3.2 (plan 3.1.4) — dropValue(#arr[i]) on a
+                    // tail-bitmap slot is BIT-GUARDED: owned -> vdrop + clear +
+                    // null; borrowed/vacant -> no-op. Handled BEFORE the arg
+                    // evaluates so the extraction's borrowed-take panic never
+                    // fires for the explicit-drop idiom.
+                    // NOTE: `#` on a call ARG is the parse-level
+                    // callerTransferred marker, not a MoveExpression node
+                    // (the 5.2.4 gotcha) — match either spelling.
+                    {
+                        ExpressionPtr dvArg = dynamic_pointer_cast<Expression>(
+                            parameters[0].expression);
+                        bool dvSharp = parameters[0].callerTransferred;
+                        if (auto dvMv = dynamic_pointer_cast<MoveExpression>(dvArg)) {
+                            auto& dvKids = dvMv->getChildren();
+                            dvArg = dvKids.empty() ? nullptr
+                                : dynamic_pointer_cast<Expression>(dvKids[0]);
+                            dvSharp = true;
+                        }
+                        auto dvAix = dvSharp
+                            ? dynamic_pointer_cast<ArrayIndexExpression>(dvArg)
+                            : nullptr;
+                        if (dvAix && !dvAix->getChildren().empty()) {
+                            if (!dvAix->getResolvedType()) dvAix->resolveTypes(module);
+                            auto dvRecv = dynamic_pointer_cast<Expression>(
+                                dvAix->getChildren()[0]);
+                            bool dvSimple = dvRecv
+                                && (dynamic_pointer_cast<IdentifierExpression>(dvRecv)
+                                    || dynamic_pointer_cast<DotExpression>(dvRecv));
+                            if (dvSimple && CajetaClass::arrayElementCarriesSlotBits(
+                                    dvAix->getResolvedType())) {
+                                llvm::Type* dvI64 =
+                                    llvm::Type::getInt64Ty(*module->getLlvmContext());
+                                llvm::Value* dvSlot = dvAix->generateCode(module);
+                                llvm::Value* dvRv = dvRecv->generateCode(module);
+                                llvm::Value* dvHdr = loadIfLValue(module, dvRv, dvRecv);
+                                auto dvArr = dynamic_pointer_cast<CajetaArray>(
+                                    dvRecv->getResolvedType());
+                                const llvm::DataLayout& dvDl =
+                                    module->getLlvmModule()->getDataLayout();
+                                uint64_t dvHs = 8, dvEs = 8;
+                                if (dvArr) {
+                                    dvHs = dvDl.getTypeAllocSize(dvArr->getLlvmType());
+                                    dvEs = dvDl.getTypeAllocSize(
+                                        dvArr->getElementLlvmType(module->getLlvmContext()));
+                                }
+                                llvm::Value* dvIdx = builder->CreateSDiv(
+                                    builder->CreateSub(
+                                        builder->CreateSub(
+                                            builder->CreatePtrToInt(dvSlot, dvI64),
+                                            builder->CreatePtrToInt(dvHdr, dvI64)),
+                                        llvm::ConstantInt::get(dvI64, dvHs)),
+                                    llvm::ConstantInt::get(dvI64, dvEs));
+                                if (llvm::Function* dvFn = module->getRuntimeFunction(
+                                        "__cajeta_tail_elem_drop_one")) {
+                                    builder->CreateCall(dvFn, {dvHdr,
+                                        llvm::ConstantInt::get(dvI64, dvHs),
+                                        llvm::ConstantInt::get(dvI64, dvEs), dvIdx});
+                                    return nullptr;
+                                }
+                            }
+                        }
+                    }
                     llvm::Value* v = loadValue(0);
                     auto argAst = dynamic_pointer_cast<Expression>(parameters[0].expression);
                     CajetaTypePtr at = argAst ? argAst->getResolvedType() : nullptr;

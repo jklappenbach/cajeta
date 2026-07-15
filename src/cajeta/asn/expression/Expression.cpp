@@ -2102,6 +2102,7 @@ namespace cajeta {
         // panics (CAJETA_PANIC_TITLE_MISS, the integer-coded throw the field
         // extraction above uses). Arrays without a sidecar (params, fields)
         // keep the prior behavior.
+        bool slotTaken = false;
         if (auto aixInner = dynamic_pointer_cast<ArrayIndexExpression>(inner)) {
             if (value && value->getType()->isPointerTy()
                     && !aixInner->getChildren().empty()) {
@@ -2156,14 +2157,95 @@ namespace cajeta {
                                         b->CreateUnreachable();
                                         b->SetInsertPoint(okBB);
                                         value = taken;
+                                        slotTaken = true;
                                     }
                                 } else if (llvm::Function* takeFn =
                                         module->getRuntimeFunction(
                                             "__cajeta_string_array_elem_take")) {
                                     value = module->getBuilder()->CreateCall(
                                         takeFn, {sidecar, value}, "elem.take");
+                                    slotTaken = true;
                                 }
                             }
+                        }
+                    }
+                }
+                // title-stores §3.2 (plan 3.2.2) — the TAIL-BITMAP take:
+                // sidecar-less arrays (fields, params, and locals under the
+                // one-mechanism reconcile). The slot stays resident and
+                // readable (§6.3.2 lend); the bit decays; a take from a
+                // borrowed/vacant slot panics TITLE_MISS, mirroring the
+                // guarded field detach. Receiver regenerates only for
+                // side-effect-free shapes (identifier / field path).
+                if (!slotTaken) {
+                    if (!aixInner->getResolvedType()) {
+                        aixInner->resolveTypes(module);
+                    }
+                    auto recvT = dynamic_pointer_cast<Expression>(
+                        aixInner->getChildren()[0]);
+                    bool recvSimple = recvT
+                        && (dynamic_pointer_cast<IdentifierExpression>(recvT)
+                            || dynamic_pointer_cast<DotExpression>(recvT));
+                    if (recvSimple
+                            && CajetaClass::arrayElementCarriesSlotBits(
+                                   aixInner->getResolvedType())) {
+                        auto* b = module->getBuilder();
+                        auto& tctx = *module->getLlvmContext();
+                        llvm::Type* ti64 = llvm::Type::getInt64Ty(tctx);
+                        llvm::PointerType* tptr =
+                            llvm::PointerType::get(tctx, 0);
+                        llvm::Value* rv = recvT->generateCode(module);
+                        llvm::Value* hdr = loadIfLValue(module, rv, recvT);
+                        auto recvArr = dynamic_pointer_cast<CajetaArray>(
+                            recvT->getResolvedType());
+                        const llvm::DataLayout& tdl =
+                            module->getLlvmModule()->getDataLayout();
+                        uint64_t ths = 8, tes = 8;
+                        if (recvArr) {
+                            ths = tdl.getTypeAllocSize(recvArr->getLlvmType());
+                            tes = tdl.getTypeAllocSize(
+                                recvArr->getElementLlvmType(&tctx));
+                        }
+                        llvm::Value* slotInt = b->CreatePtrToInt(value, ti64);
+                        llvm::Value* hdrInt = b->CreatePtrToInt(hdr, ti64);
+                        llvm::Value* tIdx = b->CreateSDiv(
+                            b->CreateSub(b->CreateSub(slotInt, hdrInt),
+                                llvm::ConstantInt::get(ti64, ths)),
+                            llvm::ConstantInt::get(ti64, tes));
+                        // Load the element BEFORE the bit decays: the slot
+                        // stays resident as a lend.
+                        llvm::Value* elem = b->CreateLoad(tptr, value,
+                            "slot.take.val");
+                        llvm::Function* takeFn = module->getRuntimeFunction(
+                            "__cajeta_tail_elem_take_flag");
+                        if (takeFn) {
+                            llvm::Value* was = b->CreateCall(takeFn,
+                                {hdr, llvm::ConstantInt::get(ti64, ths),
+                                 llvm::ConstantInt::get(ti64, tes), tIdx},
+                                "slot.take.flag");
+                            llvm::Value* miss = b->CreateICmpEQ(was,
+                                llvm::ConstantInt::get(ti64, 0),
+                                "slot.take.miss");
+                            llvm::Function* fn =
+                                b->GetInsertBlock()->getParent();
+                            llvm::BasicBlock* panicBB =
+                                llvm::BasicBlock::Create(
+                                    tctx, "tail_take_panic", fn);
+                            llvm::BasicBlock* okBB = llvm::BasicBlock::Create(
+                                tctx, "tail_take_ok", fn);
+                            b->CreateCondBr(miss, panicBB, okBB);
+                            b->SetInsertPoint(panicBB);
+                            // CAJETA_PANIC_TITLE_MISS = 3
+                            if (llvm::Function* throwFn =
+                                    module->getRuntimeFunction(
+                                        "__cajeta_throw")) {
+                                llvm::Value* code = b->CreateIntToPtr(
+                                    llvm::ConstantInt::get(ti64, 3), tptr);
+                                b->CreateCall(throwFn, {code});
+                            }
+                            b->CreateUnreachable();
+                            b->SetInsertPoint(okBB);
+                            value = elem;
                         }
                     }
                 }

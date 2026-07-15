@@ -3098,11 +3098,23 @@ namespace cajeta {
                     std::string("drop_arr_slot_") + property->getName());
                 llvm::Value* arrPtr = b.CreateLoad(ptrTy, slot,
                     std::string("drop_arr_ptr_") + property->getName());
-                // title-tracking §8.1 (plan 7.2.1) — the owning-instantiation
-                // element-drop walk (element-ownership §7.1.4) was retired
-                // with owning instantiations; element ownership is per-slot
-                // via the entry bit (local arrays) or bespoke destructors
-                // (HashMap et al.).
+                // title-stores §3.2 — bit-capable elements: drop every
+                // OWNED slot via the tail bitmap before freeing the buffer
+                // (vacant/borrowed slots skip; no @ElementCount).
+                if (CajetaClass::arrayElementCarriesSlotBits(
+                        arrField->getElementType())) {
+                    if (llvm::Function* walkFn = cajModule->getRuntimeFunction(
+                            "__cajeta_tail_elem_drop_walk", bodyModule)) {
+                        const llvm::DataLayout& wdl = bodyModule->getDataLayout();
+                        llvm::Type* wi64 = llvm::Type::getInt64Ty(ctx);
+                        b.CreateCall(walkFn, {arrPtr,
+                            llvm::ConstantInt::get(wi64,
+                                wdl.getTypeAllocSize(arrField->getLlvmType())),
+                            llvm::ConstantInt::get(wi64,
+                                wdl.getTypeAllocSize(
+                                    arrField->getElementLlvmType(&ctx)))});
+                    }
+                }
                 b.CreateCall(freeArrayFn, {arrPtr});
                 if (ownCont) {
                     b.CreateBr(ownCont);
