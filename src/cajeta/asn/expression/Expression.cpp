@@ -40,8 +40,15 @@ namespace cajeta {
     ExpressionPtr Expression::fromContext(CajetaParser::ExpressionContext* ctx) {
         antlr4::Token* token = ctx->getStart();
         ExpressionPtr result = nullptr;
+        bool sharpAssign = false;
         if (ctx->ASSIGN()) {
             result = make_shared<BinaryOpExpression>(BINARY_OP_ASSIGN, token);
+        } else if (ctx->SHARP_ASSIGN()) {
+            // title-stores §2.1 — `dst #= v` is the fused spelling of
+            // `dst = #v`: one assignment node, RHS wrapped in a
+            // MoveExpression at the attach loop below.
+            result = make_shared<BinaryOpExpression>(BINARY_OP_ASSIGN, token);
+            sharpAssign = true;
         } else if (ctx->COLONCOLON()) {
             // Method reference: `expr::id`, `Type::id`, or `Type::heap`
             // (constructor reference). Check before the identifier form so we
@@ -383,8 +390,17 @@ namespace cajeta {
 
         if (result) {
             if (!ctx->expression().empty()) {
+                size_t childIndex = 0;
                 for (auto childContext: ctx->expression()) {
-                    result->addChild(Expression::fromContext(childContext));
+                    ExpressionPtr child = Expression::fromContext(childContext);
+                    if (sharpAssign && childIndex == 1) {
+                        auto mv = make_shared<MoveExpression>(
+                            childContext->getStart());
+                        mv->addChild(child);
+                        child = mv;
+                    }
+                    result->addChild(child);
+                    ++childIndex;
                 }
             }
         }

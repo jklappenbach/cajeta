@@ -2080,7 +2080,20 @@ namespace cajeta {
             InitializerPtr initializer = nullptr;
 
             if (ctx->variableInitializer() != nullptr) {
-                initializer = any_cast<InitializerPtr>(visitVariableInitializer(ctx->variableInitializer()));
+                // title-stores §2.2.3 — `T x #= v` is `T x = #v`: wrap the
+                // initializer expression in a MoveExpression.
+                if (ctx->SHARP_ASSIGN() != nullptr
+                        && ctx->variableInitializer()->expression() != nullptr) {
+                    auto inner = any_cast<ExpressionPtr>(
+                        visitExpression(ctx->variableInitializer()->expression()));
+                    auto mv = make_shared<MoveExpression>(
+                        ctx->variableInitializer()->getStart());
+                    mv->addChild(inner);
+                    initializer = make_shared<VariableInitializer>(
+                        mv, ctx->variableInitializer()->getStart());
+                } else {
+                    initializer = any_cast<InitializerPtr>(visitVariableInitializer(ctx->variableInitializer()));
+                }
             }
 
             return make_shared<VariableDeclarator>(

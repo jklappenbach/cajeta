@@ -106,6 +106,22 @@ namespace cajeta {
             for (auto* vdCtx : vdsCtx->variableDeclarator()) {
                 InitializerPtr initializer =
                     buildVariableInitializer(vdCtx->variableInitializer());
+                // title-stores §2.2.3 — `T x #= v`: wrap the initializer
+                // expression (mirrors visitVariableDeclarator).
+                if (vdCtx->SHARP_ASSIGN() != nullptr && initializer != nullptr) {
+                    if (auto vi = dynamic_pointer_cast<VariableInitializer>(initializer)) {
+                        auto& kids = vi->getChildren();
+                        if (!kids.empty()) {
+                            if (auto inner = dynamic_pointer_cast<Expression>(kids[0])) {
+                                auto mv = make_shared<MoveExpression>(
+                                    vdCtx->variableInitializer()->getStart());
+                                mv->addChild(inner);
+                                initializer = make_shared<VariableInitializer>(
+                                    mv, vdCtx->variableInitializer()->getStart());
+                            }
+                        }
+                    }
+                }
                 string identName = vdCtx->variableDeclaratorId()->identifier()->getText();
                 int arrayDim = static_cast<int>(vdCtx->variableDeclaratorId()->LBRACK().size());
                 // The legacy `REFERENCE? variableInitializer` form was removed

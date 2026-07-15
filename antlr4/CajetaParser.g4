@@ -371,7 +371,7 @@ variableDeclarators
     ;
 
 variableDeclarator
-    : variableDeclaratorId ('=' variableInitializer)?
+    : variableDeclaratorId (('=' | '#=') variableInitializer)?
     ;
 
 variableDeclaratorId
@@ -816,7 +816,7 @@ expression
     | expression bop='||' expression
     | <assoc=right> expression bop='?' expression ':' expression
     | <assoc=right> expression
-      bop=('=' | '+=' | '-=' | '*=' | '/=' | '&=' | '|=' | '^=' | '>>=' | '>>>=' | '<<=' | '%=')
+      bop=('=' | '#=' | '+=' | '-=' | '*=' | '/=' | '&=' | '|=' | '^=' | '>>=' | '>>>=' | '<<=' | '%=')
       expression
     | lambdaExpression // Java8
     | switchExpression // Java17
