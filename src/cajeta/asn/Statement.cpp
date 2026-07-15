@@ -1968,6 +1968,23 @@ namespace cajeta {
             }
         }
         llvm::Value* val = expression->generateCode(module);
+        // A returned CALL result rides the inner call's title flag out —
+        // for plain returns the static borrow default would clobber a
+        // flag-true result (the WsReadAction TITLE_MISS regression); for
+        // `#` returns it would forge ownership over a forwarded borrow.
+        // Capture the TLS here, before advice/finally/drop calls can
+        // overwrite it; emitReturnFlag re-sets it at the ret.
+        if (auto m = module->getCurrentMethod()) {
+            if (m->returnsClassPointer()
+                    && (dynamic_pointer_cast<MethodCallExpression>(expression)
+                        || dynamic_pointer_cast<CallExpression>(expression))) {
+                if (llvm::Function* getFlagFn = module->getRuntimeFunction(
+                        "__cajeta_return_flag_get")) {
+                    returnTitleFlag = builder->CreateCall(
+                        getFlagFn, {}, "ret_flag_ride");
+                }
+            }
+        }
         // slice-spec §6.1 copy hook, return-of-lvalue form: returning a
         // shared-capable VALUE from a field / element (`return this.tag;`)
         // COPIES it out while the owner keeps its stake — retain the source's

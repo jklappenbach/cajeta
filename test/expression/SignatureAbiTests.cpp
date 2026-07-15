@@ -887,3 +887,72 @@ TEST(SignatureAbiTests, foldLentSeedComesBackBorrowed) {
         "}\n";
     EXPECT_EQ(runI32(src), 6);
 }
+
+// 8.2.1 sweep-3 fallout (WsEntryPoint regression) — a fresh flag-true value
+// returned through a PLAIN-return tail call keeps its title: the wrapper's
+// static borrow default must not clobber the inner call's return flag. The
+// WsReadAction.takeMessage TITLE_MISS panic (value=0x3) was exactly this:
+// WsMessageAssembler.accept (plain return) tail-calls WsMessage.of (#).
+TEST(SignatureAbiTests, tailCallThroughPlainReturnKeepsTitle) {
+    std::string src = std::string(kCellSrc) +
+        "public class Holder {\n"
+        "    public Cell c;\n"
+        "    public Holder() { this.c = null; }\n"
+        "    public void put(#Cell v) { this.c = #v; }\n"
+        "    public #Cell take() {\n"
+        "        if (this.c == null) { return null; }\n"
+        "        Cell m = #this.c;\n"
+        "        this.c = null;\n"
+        "        return #m;\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static #Cell fresh() { return heap Cell(7); }\n"
+        "    public static Cell viaPlain() { return D.fresh(); }\n"
+        "    public static int32 run() {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int32 t = 0;\n"
+        "        {\n"
+        "            Cell m = viaPlain();\n"
+        "            Holder h = heap Holder();\n"
+        "            h.put(#m);\n"
+        "            Cell got = h.take();\n"
+        "            if (got == null) { return -1; }\n"
+        "            t = got.n;\n"
+        "        }\n"
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return (int32) (leaked * 100) + t;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 7);
+}
+
+// Companion pin: the ride-through must forward BORROWS too — a plain-return
+// tail call of a getter (flag 0) stays a lend; the owner keeps the single
+// drop and no double-free fires at scope exit.
+TEST(SignatureAbiTests, tailCallThroughPlainReturnForwardsBorrow) {
+    std::string src = std::string(kCellSrc) +
+        "public class Bank {\n"
+        "    public Cell c;\n"
+        "    public Bank(#Cell v) { this.c = #v; }\n"
+        "    public Cell get() { return this.c; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static Cell viaPlain(Bank b) { return b.get(); }\n"
+        "    public static int32 run() {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int32 t = 0;\n"
+        "        {\n"
+        "            Bank b = heap Bank(#heap Cell(5));\n"
+        "            {\n"
+        "                Cell lent = viaPlain(b);\n"
+        "                t = lent.n;\n"
+        "            }\n"
+        "            if (b.get().n != 5) { return -2; }\n"
+        "        }\n"
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return (int32) (leaked * 100) + t;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 5);
+}
