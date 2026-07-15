@@ -2220,10 +2220,35 @@ namespace cajeta {
             // and record it on the scope so future reads through that path —
             // or any prefix — are rejected. See MemoryModel.md § Path-based
             // borrow tracking.
+            //
+            // title-tracking rev 2 (Unit 8): a BIT-CAPABLE class field is the
+            // guarded-detach shape — the field's ownership bit governs at
+            // runtime and the slot stays readable as a lend (LinkedList/Cache
+            // pop idioms), so it must NOT be statically marked. Deciding by
+            // the field's TYPE (not fieldHasOwnershipBit) keeps this
+            // deterministic across codegen passes — the bit index isn't
+            // computed until layout, and marking on a pass-1 miss made the
+            // lint fire nondeterministically. Strings and value types keep
+            // the static rule (no runtime bit to govern them).
             auto scope = module->getScopeStack().peek();
             if (scope) {
-                string path = DotExpression::buildPath(inner);
-                if (!path.empty()) scope->markMovedPath(path);
+                bool bitCapableClassField = false;
+                if (auto dotInner2 = dynamic_pointer_cast<DotExpression>(inner)) {
+                    if (!dotInner2->getResolvedType()) {
+                        dotInner2->resolveTypes(module);
+                    }
+                    auto fc = dynamic_pointer_cast<CajetaClass>(
+                        dotInner2->getResolvedType());
+                    bool isStr = fc && fc->getQName()
+                        && fc->getQName()->getTypeName() == "String"
+                        && fc->getQName()->getPackageName() == "cajeta.lang";
+                    bitCapableClassField = fc && !isStr
+                        && !fc->isInterface() && !fc->isValueType();
+                }
+                if (!bitCapableClassField) {
+                    string path = DotExpression::buildPath(inner);
+                    if (!path.empty()) scope->markMovedPath(path);
+                }
             }
         }
         return value;

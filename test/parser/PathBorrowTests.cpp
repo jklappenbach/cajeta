@@ -54,6 +54,25 @@ void expectUseAfterMove(const std::string& source, const std::string& expectedFr
 // The path shapes under test are UNCHANGED — s.foo, s.foo.bar, s.bar. Only the
 // receiver is now a type that really has them, so the suite tests the path
 // tracker rather than the absence of a member check.
+std::string sourceNamed(const std::string& cls, const std::string& body) {
+    return "package test;\n"
+           "public class Inner {\n"
+           "    public String bar = \"b\";\n"
+           "}\n"
+           "public class Outer {\n"
+           "    public Inner foo;\n"
+           "    public String bar = \"sib\";\n"
+           "}\n"
+           "public final class " + cls + " {\n"
+           "    public static int32 run() {\n"
+           "        Outer s = heap Outer();\n"
+           "        s.foo = heap Inner();\n"
+           "        " + body + "\n"
+           "        return 0;\n"
+           "    }\n"
+           "}\n";
+}
+
 std::string source(const std::string& body) {
     return "package test;\n"
            "public class Inner {\n"
@@ -75,11 +94,22 @@ std::string source(const std::string& body) {
 
 } // namespace
 
-TEST(PathBorrowTests, readSamePathAfterMoveErrors) {
-    auto src = source(
-        "Inner moved = #s.foo;\n"      // marks path "s.foo" as moved
-        "Inner n = s.foo;");           // reads it again — error
-    expectUseAfterMove(src, "s.foo");
+// title-tracking rev 2 (Unit 8 respell): a BIT-CAPABLE class field
+// extraction (`#s.foo`) is the guarded detach — the ownership bit governs
+// at runtime and the slot stays readable as a lend (the LinkedList/Cache
+// pop idioms depend on it), so the static path invalidation no longer
+// applies to class fields. Root moves (`#s`) and String-path moves keep
+// the static rule — pinned unchanged elsewhere in this suite. These three
+// pin the runtime behavior: extraction + re-read is defined and titles
+// balance (one drop, no UAF).
+TEST(PathBorrowTests, readSamePathAfterClassExtractionIsLend) {
+    auto src = sourceNamed("PLend1", 
+        "Inner moved = #s.foo;\n"
+        "Inner n = s.foo;\n"
+        "if (n.bar.byteLength() != 1) { return -1; }");
+    auto jit = CajetaJit::compile(src, "test.PLend1");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 0);
 }
 
 TEST(PathBorrowTests, readDeeperPathAfterRootMoveErrors) {
@@ -90,11 +120,21 @@ TEST(PathBorrowTests, readDeeperPathAfterRootMoveErrors) {
     expectUseAfterMove(src, "s.foo");
 }
 
-TEST(PathBorrowTests, doubleMoveOnSamePathErrors) {
-    auto src = source(
+TEST(PathBorrowTests, doubleClassExtractionPanicsCatchably) {
+    // First extraction takes the field's bit; a SECOND `#` extraction
+    // finds the bit clear and PANICS at runtime (extracting a title the
+    // field no longer holds) — catchable like the NonNull check.
+    auto src = sourceNamed("PLend2",
         "Inner a = #s.foo;\n"
-        "Inner b = #s.foo;");          // path already moved
-    expectUseAfterMove(src, "s.foo");
+        "try {\n"
+        "    Inner b = #s.foo;\n"
+        "    if (b.bar.byteLength() == 0) { return -2; }\n"
+        "} catch (Exception e) {\n"
+        "    return 42;\n"
+        "}");
+    auto jit = CajetaJit::compile(src, "test.PLend2");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 42);
 }
 
 TEST(PathBorrowTests, deeperPathMoveBlocksTransitiveRead) {
@@ -106,13 +146,16 @@ TEST(PathBorrowTests, deeperPathMoveBlocksTransitiveRead) {
     expectUseAfterMove(src, "s.foo.bar");
 }
 
-TEST(PathBorrowTests, deeperPathMoveBlocksDeeperRead) {
-    // Mark `s.foo`, then try to read `s.foo.bar`. The deeper path passes
-    // through a moved prefix and is rejected.
-    auto src = source(
+TEST(PathBorrowTests, deeperReadAfterClassExtractionIsLend) {
+    // Reading THROUGH an extracted class field is a lend of live memory
+    // (the extractor local owns it) — defined under rev 2.
+    auto src = sourceNamed("PLend3", 
         "Inner moved = #s.foo;\n"
-        "String n = s.foo.bar;");       // s.foo is moved → s.foo.bar invalid
-    expectUseAfterMove(src, "s.foo.bar");
+        "String n = s.foo.bar;\n"
+        "if (n.byteLength() != 1) { return -3; }");
+    auto jit = CajetaJit::compile(src, "test.PLend3");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 0);
 }
 
 // --- Valid: different sub-paths are independent ----------------------------
