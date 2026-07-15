@@ -103,6 +103,39 @@ namespace cajeta {
         if (auto m = module->getCurrentMethod()) m->registerDropEntry(entryPtr);
     }
 
+    // title-stores §3.2 — per-stride walk+free wrapper for local
+    // bit-array drop entries. Element slots stride by the element
+    // STRUCT's alloc size (a pre-existing class-element array layout
+    // convention), so the stride is a per-type constant the one-arg
+    // drop-entry ABI can't carry — synthesize a tiny fn per (hs, es).
+    static llvm::Function* getOrCreateTailDropFree(CajetaModulePtr module,
+            uint64_t hs, uint64_t es) {
+        llvm::Module* m =
+            module->getBuilder()->GetInsertBlock()->getParent()->getParent();
+        std::string name = "cajeta_tail_dropfree_hs" + std::to_string(hs)
+            + "_es" + std::to_string(es);
+        if (llvm::Function* f = m->getFunction(name)) return f;
+        auto& fctx = m->getContext();
+        auto* fptrTy = llvm::PointerType::get(fctx, 0);
+        auto* fnTy = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(fctx), {fptrTy}, false);
+        auto* f = llvm::Function::Create(fnTy,
+            llvm::Function::InternalLinkage, name, m);
+        auto* bb = llvm::BasicBlock::Create(fctx, "entry", f);
+        llvm::IRBuilder<> fb(bb);
+        llvm::Function* walk = module->getRuntimeFunction(
+            "__cajeta_tail_elem_drop_walk");
+        llvm::Function* freeA = module->getRuntimeFunction(
+            "__cajeta_free_array");
+        auto* fi64 = llvm::Type::getInt64Ty(fctx);
+        if (walk) fb.CreateCall(walk, {f->getArg(0),
+            llvm::ConstantInt::get(fi64, hs),
+            llvm::ConstantInt::get(fi64, es)});
+        if (freeA) fb.CreateCall(freeA, {f->getArg(0)});
+        fb.CreateRetVoid();
+        return f;
+    }
+
     // Public bridge for post-declaration ownership creation (9.3.1
     // move-assign into a bare-declared local). Same wiring; binds the
     // slot's CURRENT value, so callers invoke it after their store.
@@ -1198,7 +1231,25 @@ namespace cajeta {
             // `T[] xs = obj.field`) already has an owner upstream;
             // duplicating the drop here double-frees at scope exit.
             if (isArray && !initIsBorrow && !arenaEligible) {
-                emitDropEntryFor(module, field, "__cajeta_free_array", getSourceLine());
+                // title-stores §3.2 — bit-capable-element arrays use ONE
+                // walk+free entry so a move-out disarms both behaviors.
+                shared_ptr<CajetaArray> arrT0 =
+                    dynamic_pointer_cast<CajetaArray>(type);
+                bool lvdElemTitled = arrT0 && !arrT0->isInlineArray()
+                    && CajetaClass::arrayElementCarriesSlotBits(
+                           arrT0->getElementType());
+                if (lvdElemTitled) {
+                    const llvm::DataLayout& ldl =
+                        module->getLlvmModule()->getDataLayout();
+                    llvm::Function* wf = getOrCreateTailDropFree(module,
+                        ldl.getTypeAllocSize(arrT0->getLlvmType()),
+                        ldl.getTypeAllocSize(arrT0->getElementLlvmType(
+                            module->getLlvmContext())));
+                    emitDropEntryForFn(module, field, wf, getSourceLine());
+                } else {
+                    emitDropEntryFor(module, field, "__cajeta_free_array",
+                        getSourceLine());
+                }
                 // slices 9.2.1 — a local String[] owns what its stores TOOK
                 // (the array-slot store already deactivates an identifier
                 // source's drop entry); register the element walk that
@@ -1218,11 +1269,15 @@ namespace cajeta {
                     bool elemTitled = !elemIsString
                         && CajetaClass::arrayElementCarriesSlotBits(
                                arrT->getElementType());
-                    if ((elemIsString || elemTitled) && !arrT->isInlineArray()) {
-                        if (elemTitled) elemCls->patchVirtualTableDropFn();
+                    if (elemTitled && !arrT->isInlineArray()) {
+                        // title-stores §3.2 — the walk rides the single
+                        // walk+free entry registered above; just make sure
+                        // the element class's vtable drop is patched. The
+                        // class-element sidecar retires; Strings keep it.
+                        elemCls->patchVirtualTableDropFn();
+                    } else if (elemIsString && !arrT->isInlineArray()) {
                         emitArrayElemDropEntry(module, field, arrT,
-                            elemTitled ? "__cajeta_class_array_owned_drop"
-                                       : "__cajeta_string_array_owned_drop",
+                            "__cajeta_string_array_owned_drop",
                             getSourceLine());
                     }
                 }

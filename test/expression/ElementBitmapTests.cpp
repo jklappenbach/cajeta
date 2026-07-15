@@ -31,10 +31,11 @@ int32_t runI32(const std::string& src, const char* entryClass = "test.D") {
 
 }  // namespace
 
-// 2.1.1a — class-pointer elements: heap Cell[64] = 8 + 64*8 + ceil(64/8)
-// = 528 for the array block, PLUS the 9.2.1 move-sidecar (64*8 = 512) that
-// survives until Unit 3.2.3 reconciles it away — Unit-2 total 1040. The
-// sidecar-free 528 re-pins in Unit 3.
+// 2.1.1a — class elements: slots stride by the element STRUCT's alloc
+// size (a pre-existing layout convention — Cell = vtable ptr + i32 padded
+// = 16), so heap Cell[64] = 8 + 64*16 + ceil(64/8) tail = 1040 in ONE
+// block. (An earlier read attributed the 1032 baseline to the 9.2.1
+// sidecar; the trace in 3.2.3 proved it is the struct stride.)
 TEST(ElementBitmapTests, classElementArrayCarriesTailBitmap) {
     std::string src = std::string(kCellSrc) +
         "public final class D {\n"
@@ -51,7 +52,7 @@ TEST(ElementBitmapTests, classElementArrayCarriesTailBitmap) {
 }
 
 // 2.1.1b — non-multiple-of-8 count rounds the tail up: heap Cell[3] =
-// 8 + 24 + 1 = 33 array block + 24 sidecar (Unit-2 total 57; 33 after 3.2.3).
+// 8 + 3*16 + 1 = 57.
 TEST(ElementBitmapTests, tailRoundsUpToWholeBytes) {
     std::string src = std::string(kCellSrc) +
         "public final class D {\n"

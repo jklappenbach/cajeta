@@ -205,3 +205,47 @@ TEST(ElementSlotSemanticsTests, stringSlotPlainStoreStillResolves) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// 3.2.3 — a LOCAL bit-array's scope-exit drop walks the tail before the
+// buffer frees (the sidecar's class-element role retires; one mechanism).
+TEST(ElementSlotSemanticsTests, localArrayTeardownWalksBits) {
+    std::string src = std::string(kFixtureSrc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int32 t = 0;\n"
+        "        {\n"
+        "            Cell[] a = heap Cell[4];\n"
+        "            a[0] #= heap Cell(1);\n"
+        "            a[1] #= heap Cell(2);\n"
+        "            t = a[0].n + a[1].n;\n"
+        "        }\n"                                    // walk drops 2, buffer frees
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return (int32) (leaked * 100) + t;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 3);
+}
+
+// 3.1.5 (alias half) — bits live in the array HEADER, so an alias sees the
+// same titles: a take through the alias decays the one true bit and the
+// owner's teardown does not double-free.
+TEST(ElementSlotSemanticsTests, aliasSeesSameBits) {
+    std::string src = std::string(kFixtureSrc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int32 t = 0;\n"
+        "        {\n"
+        "            MiniVec v = heap MiniVec(4);\n"
+        "            v.add(#heap Cell(6));\n"
+        "            Cell[] alias = v.data;\n"           // lend of the array
+        "            Cell got #= #alias[0];\n"           // take via the alias
+        "            t = got.n;\n"
+        "        }\n"                                     // v drops nothing owned; got drops
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return (int32) (leaked * 100) + t;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 6);
+}

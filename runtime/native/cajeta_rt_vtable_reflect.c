@@ -1490,6 +1490,12 @@ void* __cajeta_class_array_elem_take(void* sidecar, void** slot) {
 }
 
 // ===== title-stores §3 — tail-bitmap element titles ========================
+// Drop-entry shape (one arg): walk a class-pointer element array's tail
+// bitmap. Class-pointer arrays are always {i64 count | ptr data[] | bits},
+// so header and stride are fixed at 8. Registered as its own entry ABOVE
+// the buffer's free_array entry — LIFO runs the walk first.
+void __cajeta_tail_array_drop(void* hdr);
+
 // Droppable-element arrays allocated by __cajeta_new_array_header_bits carry
 // a per-slot ownership bitmap at hdr + header_size + count*elem_size (count
 // masked of the shared bit). Header-addressed, so FIELD arrays and locals
@@ -1551,6 +1557,22 @@ void __cajeta_tail_elem_drop_one(void* hdr, uint64_t header_size,
 
 // Teardown walk: drop every OWNED slot, clearing as it goes. Vacant and
 // borrowed slots (bit 0) are untouched — no @ElementCount needed.
+void __cajeta_tail_elem_drop_walk(void* hdr, uint64_t header_size,
+                                  uint64_t elem_size);
+
+void __cajeta_tail_array_drop(void* hdr) {
+    __cajeta_tail_elem_drop_walk(hdr, 8, 8);
+}
+
+// Single-entry local-array drop: walk owned slots, then free the buffer.
+// One entry means a move-out (`this.data = #bigger`) deactivates BOTH
+// behaviors atomically — a split walk/free pair desynchronizes on moves.
+void __cajeta_free_array(void* array);
+void __cajeta_tail_array_drop_free(void* hdr) {
+    __cajeta_tail_elem_drop_walk(hdr, 8, 8);
+    __cajeta_free_array(hdr);
+}
+
 void __cajeta_tail_elem_drop_walk(void* hdr, uint64_t header_size,
                                   uint64_t elem_size) {
     if (!hdr) return;
