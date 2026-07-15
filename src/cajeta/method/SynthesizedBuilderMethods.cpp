@@ -212,6 +212,20 @@ namespace cajeta {
                 std::string("build.v.") + prop->getName());
             ctorArgs.push_back(v);
         }
+        // Title-tracking Unit 8: the ctor's ABI may carry the trailing
+        // transfer word (needsTransferWord) — pass the builder's field
+        // titles as SURRENDERED (all-ones over the user args): build()
+        // hands its collected values to the outer instance for keeps.
+        // Omitting the word entirely serializes an arg-count-mismatched
+        // call the bitcode READER rejects ("Invalid call record") on the
+        // incremental-cache reload path (JIT verify catches it earlier
+        // in-process, but the .bc writer does not verify).
+        if (ctor->needsTransferWord()) {
+            uint64_t allOwned = ctorArgs.size() > 1
+                ? ((1ull << (ctorArgs.size() - 1)) - 1) : 0;
+            ctorArgs.push_back(llvm::ConstantInt::get(
+                llvm::Type::getInt64Ty(ctx), allOwned));
+        }
 
         b.CreateCall(ctorFn, ctorArgs);
         b.CreateRet(newOuter);
