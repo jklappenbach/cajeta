@@ -912,6 +912,38 @@ namespace cajeta {
         // Genuine use-after-`#`-move reads are still caught in
         // Identifier.cpp / DotExpression.cpp via movedNames / movedPaths.
 
+        // title-stores §2.1 — fuse `dst[i] #= #src[j]` into a FORWARDING
+        // slot move before the RHS extraction codegen runs: the source bit
+        // transfers verbatim and the borrowed-take panic is suppressed.
+        if (binaryOp == BINARY_OP_ASSIGN && children.size() >= 2) {
+            auto fwdLhs = dynamic_pointer_cast<ArrayIndexExpression>(children[0]);
+            auto fwdMv = dynamic_pointer_cast<MoveExpression>(children[1]);
+            // The `#=` desugar wraps the parsed `#expr` Move again — walk
+            // to the INNERMOST Move (its codegen does the take).
+            while (fwdMv && !fwdMv->getChildren().empty()) {
+                auto deeper = dynamic_pointer_cast<MoveExpression>(
+                    fwdMv->getChildren()[0]);
+                if (!deeper) break;
+                fwdMv = deeper;
+            }
+            if (fwdLhs && fwdMv && !fwdMv->getChildren().empty()) {
+                if (auto fwdSrc = dynamic_pointer_cast<ArrayIndexExpression>(
+                        fwdMv->getChildren()[0])) {
+                    auto fwdL = dynamic_pointer_cast<Expression>(children[0]);
+                    auto fwdS = dynamic_pointer_cast<Expression>(
+                        fwdMv->getChildren()[0]);
+                    if (fwdL && !fwdL->getResolvedType()) fwdL->resolveTypes(module);
+                    if (fwdS && !fwdS->getResolvedType()) fwdS->resolveTypes(module);
+                    if (fwdL && fwdS
+                            && CajetaClass::arrayElementCarriesSlotBits(
+                                   fwdL->getResolvedType())
+                            && CajetaClass::arrayElementCarriesSlotBits(
+                                   fwdS->getResolvedType())) {
+                        fwdMv->setForwardingSlotMove(true);
+                    }
+                }
+            }
+        }
         llvm::Value* lhs = children[0]->generateCode(module);
         llvm::Value* rhs = children[1]->generateCode(module);
         ExpressionPtr lhsAst = dynamic_pointer_cast<Expression>(children[0]);

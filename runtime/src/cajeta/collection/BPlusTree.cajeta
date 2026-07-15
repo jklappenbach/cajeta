@@ -149,8 +149,9 @@ public final class BPlusTree<K, V> {
         // Shift right and insert; ownership bits travel with their slots.
         int32 j = leaf.numKeys;
         while (j > pos) {
-            leaf.keys[j] = leaf.keys[j - 1];
-            leaf.values[j] = leaf.values[j - 1];
+            // title-stores §2.1 — forwarding slot moves: the bit rides.
+            leaf.keys[j] #= #leaf.keys[j - 1];
+            leaf.values[j] #= #leaf.values[j - 1];
             leaf.owned[j] = leaf.owned[j - 1];
             j = j - 1;
         }
@@ -282,8 +283,9 @@ public final class BPlusTree<K, V> {
         right.numKeys = total - mid;
         int32 k = 0;
         while (k < right.numKeys) {
-            right.keys[k] = leaf.keys[mid + k];
-            right.values[k] = leaf.values[mid + k];
+            // title-stores §2.1 — split forwards titles; source bits clear.
+            right.keys[k] #= #leaf.keys[mid + k];
+            right.values[k] #= #leaf.values[mid + k];
             // The TITLE moves with the slot: clear the source bit so only
             // one slot owns (the copies alias until the source count drops).
             right.owned[k] = leaf.owned[mid + k];
@@ -332,7 +334,7 @@ public final class BPlusTree<K, V> {
         // Shift keys right of `i`, then children right of `i+1`.
         int32 j = parent.numKeys;
         while (j > i) {
-            parent.keys[j] = parent.keys[j - 1];
+            parent.keys[j] #= #parent.keys[j - 1];
             j = j - 1;
         }
         parent.keys[i] = sep;
@@ -360,7 +362,7 @@ public final class BPlusTree<K, V> {
         // Right keys: node.keys[mid+1 ..].
         int32 k = 0;
         while (k < right.numKeys) {
-            right.keys[k] = node.keys[mid + 1 + k];
+            right.keys[k] #= #node.keys[mid + 1 + k];
             k = k + 1;
         }
         // Right children: node.children[mid+1 ..] (numKeys+1 of them).

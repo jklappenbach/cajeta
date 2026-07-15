@@ -1920,6 +1920,15 @@ namespace cajeta {
         // (`#person.name`) require path-based borrow tracking, which lands in
         // a later step of Session 3.
         auto inner = dynamic_pointer_cast<Expression>(children[0]);
+        // title-stores §2.1 — a nested Move (the `#=` desugar wrapping a
+        // parsed `#expr`) delegates entirely: generate the inner Move and
+        // propagate its captured/forwarded flag outward so the enclosing
+        // store classification sees the truth.
+        if (auto nestedMv = dynamic_pointer_cast<MoveExpression>(children[0])) {
+            llvm::Value* nv = nestedMv->generateCode(module);
+            runtimeTitleFlag = nestedMv->getRuntimeTitleFlag();
+            return nv;
+        }
         // title-tracking §6.3 (Unit 6, plan 6.2.1) — `#map[k]` on a CLASS
         // receiver binds to the author-provided `operator#[]` (the
         // title-extracting index; distinct canonical name because dispatch is
@@ -2218,7 +2227,17 @@ namespace cajeta {
                             "slot.take.val");
                         llvm::Function* takeFn = module->getRuntimeFunction(
                             "__cajeta_tail_elem_take_flag");
-                        if (takeFn) {
+                        if (takeFn && isForwardingSlotMove()) {
+                            // §2.1 fused forwarding: the bit rides out
+                            // verbatim (borrow forwards as borrow); the
+                            // enclosing slot store consumes it via
+                            // getRuntimeTitleFlag(). No panic.
+                            runtimeTitleFlag = b->CreateCall(takeFn,
+                                {hdr, llvm::ConstantInt::get(ti64, ths),
+                                 llvm::ConstantInt::get(ti64, tes), tIdx},
+                                "slot.fwd.flag");
+                            value = elem;
+                        } else if (takeFn) {
                             llvm::Value* was = b->CreateCall(takeFn,
                                 {hdr, llvm::ConstantInt::get(ti64, ths),
                                  llvm::ConstantInt::get(ti64, tes), tIdx},

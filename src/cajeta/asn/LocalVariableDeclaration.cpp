@@ -565,6 +565,30 @@ namespace cajeta {
                 field = make_shared<HeapField>(module, declarator->getIdentifier(), type,
                     declarator->isReference(), modifiers, annotations, initializer);
             }
+            // title-stores §2.1 — `T x #= #src[i]` (the DOUBLE-Move shape
+            // the #= desugar produces over a parsed slot extraction) is a
+            // FORWARDING CLAIM: the local arms from the slot's actual bit,
+            // no panic. Single-Move `T x = #src[i]` keeps the guarded panic.
+            if (auto fwdVi = dynamic_pointer_cast<VariableInitializer>(
+                    declarator->getInitializer())) {
+                auto& fwdKids = fwdVi->getChildren();
+                if (!fwdKids.empty()) {
+                    if (auto outerMv = dynamic_pointer_cast<MoveExpression>(
+                            fwdKids[0])) {
+                        if (!outerMv->getChildren().empty()) {
+                            if (auto innerMv = dynamic_pointer_cast<
+                                    MoveExpression>(outerMv->getChildren()[0])) {
+                                if (!innerMv->getChildren().empty()
+                                        && dynamic_pointer_cast<
+                                               ArrayIndexExpression>(
+                                               innerMv->getChildren()[0])) {
+                                    innerMv->setForwardingSlotMove(true);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             module->getScopeStack().peek()->putField(field);
             field->getOrCreateAllocation();
 

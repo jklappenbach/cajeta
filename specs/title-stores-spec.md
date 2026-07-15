@@ -71,6 +71,16 @@ onto the destination:
 `#=` is exactly today's `= #v` at assignment sites, promoted to a fused
 token so the store spelling is atomic and cannot be half-written.
 
+**Fused slot-to-slot forwarding (resolved 2026-07-15, Unit 3 fork):** when
+`#=`'s RHS is itself a slot extraction — `dst[i] #= #src[j]` — the pair
+fuses into a FORWARDING move: the source slot's bit transfers verbatim
+(owned moves, borrow forwards as borrow), the source slot stays resident
+as a lend, and NO panic fires. This is the container author's primitive
+for shift/sift/split loops ("move whatever title this slot holds"). Bare
+extractions that CLAIM ownership (`T x = #src[i]`, `f(#src[i])`,
+`return #src[i]`) keep the guarded TITLE_MISS panic on borrowed/vacant
+slots — only the slot-destination store forwards.
+
 ### 2.2 Valid destinations
 - 2.2.1 Field: `this.f #= v` (scalar class-typed field → field ownership
   bit; existing machinery).

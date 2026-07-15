@@ -512,6 +512,14 @@ namespace cajeta {
         void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
         llvm::Value* getRuntimeTitleFlag() const { return runtimeTitleFlag; }
+        // title-stores §2.1 (fused slot-to-slot forwarding) — set by the
+        // enclosing `dst[i] #= #src[j]` store BEFORE codegen: the slot
+        // extraction forwards the source bit verbatim (borrow stays
+        // borrow, NO panic) instead of claiming ownership.
+        void setForwardingSlotMove(bool v) { forwardingSlotMove = v; }
+        bool isForwardingSlotMove() const { return forwardingSlotMove; }
+    private:
+        bool forwardingSlotMove = false;
     };
 
     // Structured-concurrency expressions (docs/specification/concurrent/Concurrency.md). All three wrap a

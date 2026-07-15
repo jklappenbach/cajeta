@@ -140,9 +140,11 @@ public final class Heap<T> {
             } else {
                 int32 parent = (child - 1) / 2;
                 if (this.data[child] < this.data[parent]) {
-                    T tmp = this.data[child];
-                    this.data[child] = this.data[parent];
-                    this.data[parent] = tmp;
+                    // title-stores §2.1 — forwarding swap: claim, forward,
+                    // restore; every bit rides, no displaced drop fires.
+                    T tmp #= #this.data[child];
+                    this.data[child] #= #this.data[parent];
+                    this.data[parent] #= tmp;
                     int8 tmpO = this.owned[child];
                     this.owned[child] = this.owned[parent];
                     this.owned[parent] = tmpO;
@@ -183,11 +185,11 @@ public final class Heap<T> {
             T[] missDefault = heap T[1];
             return Cajeta.flagged(missDefault[0], false);
         }
-        T top = this.data[0];
         boolean topOwned = (this.owned[0] & 1) != 0;
+        T top #= #this.data[0];
         this.sizeCount = this.sizeCount - 1;
         // Move the last element (and its bit) to the root and sift down.
-        this.data[0] = this.data[this.sizeCount];
+        this.data[0] #= #this.data[this.sizeCount];
         this.owned[0] = this.owned[this.sizeCount];
         this.owned[this.sizeCount] = (int8) 0;
         int32 i = 0;
@@ -209,9 +211,9 @@ public final class Heap<T> {
             if (smallest == i) {
                 sifting = false;
             } else {
-                T tmp = this.data[i];
-                this.data[i] = this.data[smallest];
-                this.data[smallest] = tmp;
+                T tmp #= #this.data[i];
+                this.data[i] #= #this.data[smallest];
+                this.data[smallest] #= tmp;
                 int8 tmpO = this.owned[i];
                 this.owned[i] = this.owned[smallest];
                 this.owned[smallest] = tmpO;

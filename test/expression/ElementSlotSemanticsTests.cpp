@@ -249,3 +249,33 @@ TEST(ElementSlotSemanticsTests, aliasSeesSameBits) {
         "}\n";
     EXPECT_EQ(runI32(src), 6);
 }
+
+// §2.1 fused forwarding — `dst[i] #= #src[j]` moves WHATEVER title the
+// source slot holds: owned transfers (dst drops it), borrow forwards as
+// borrow (no panic, the true owner keeps its single drop). The container
+// author's shift/sift primitive.
+TEST(ElementSlotSemanticsTests, fusedForwardingMovesBorrowsWithoutPanic) {
+    std::string src = std::string(kFixtureSrc) +
+        "public final class D {\n"
+        "    public static void putAt(MiniVec v, int32 i, Cell c) {\n"
+        "        v.data[i] #= c;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        Cell keep = heap Cell(4);\n"
+        "        int32 t = 0;\n"
+        "        {\n"
+        "            MiniVec v = heap MiniVec(4);\n"
+        "            v.add(#heap Cell(1));\n"           // slot 0 owned
+        "            putAt(v, 1, keep);\n"               // slot 1 borrowed
+        "            v.data[2] #= #v.data[0];\n"         // forward owned 0 -> 2
+        "            v.data[3] #= #v.data[1];\n"         // forward BORROW 1 -> 3 (no panic)
+        "            t = v.data[2].n + v.data[3].n;\n"
+        "        }\n"                                     // teardown drops slot 2 only
+        "        if (keep.n != 4) { return -2; }\n"
+        "        int64 leaked = Cajeta.liveCount() - base - 1;\n"
+        "        return (int32) (leaked * 100) + t;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 5);
+}
