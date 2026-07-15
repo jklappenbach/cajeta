@@ -2861,8 +2861,8 @@ namespace cajeta {
                                 uint64_t dvHs = 8, dvEs = 8;
                                 if (dvArr) {
                                     dvHs = dvDl.getTypeAllocSize(dvArr->getLlvmType());
-                                    dvEs = dvDl.getTypeAllocSize(
-                                        dvArr->getElementLlvmType(module->getLlvmContext()));
+                                    dvEs = dvArr->elementStrideBytes(
+                                        dvDl, module->getLlvmContext());
                                 }
                                 llvm::Value* dvIdx = builder->CreateSDiv(
                                     builder->CreateSub(
@@ -2960,6 +2960,26 @@ namespace cajeta {
                         ownedV = builder->CreateZExt(ownedV, i64Ty, "flag_i64");
                     }
                     flaggedTitleValue = ownedV;
+                    // `flagged(#x, b)`: the caller hands x's title to the
+                    // flagged return. This intrinsic returns before the
+                    // general transfer block, so the local's disarm must
+                    // happen here — otherwise an armed local (e.g. a fused
+                    // `T top #= #slot` claim) drops the value being returned.
+                    if (parameters[0].callerTransferred) {
+                        if (auto idExpr = std::dynamic_pointer_cast<IdentifierExpression>(
+                                parameters[0].expression)) {
+                            if (auto scope = module->getScopeStack().peek()) {
+                                if (FieldPtr fld = scope->getField(idExpr->getTextValue())) {
+                                    if (llvm::Value* entry = fld->getDropEntry()) {
+                                        if (llvm::Function* mark = module->getRuntimeFunction(
+                                                "__cajeta_drop_mark_inactive")) {
+                                            builder->CreateCall(mark, {entry});
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     auto argAst = dynamic_pointer_cast<Expression>(
                         parameters[0].expression);
                     if (argAst && argAst->getResolvedType()) {

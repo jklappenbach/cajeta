@@ -55,7 +55,7 @@ namespace cajeta {
         llvm::Type* headerTy = arrayType->getLlvmType();
         llvm::Type* elemTy = arrayType->getElementLlvmType(&ctx);
         uint64_t headerBytes = dl.getTypeAllocSize(headerTy);
-        uint64_t elemBytes = dl.getTypeAllocSize(elemTy);
+        uint64_t elemBytes = arrayType->elementStrideBytes(dl, &ctx);
 
         int64_t count = (int64_t) children.size();
         llvm::Value* hdrPtr = builder->CreateCall(allocFn, {

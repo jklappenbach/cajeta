@@ -57,6 +57,20 @@ namespace cajeta {
         return elementType->getLlvmType();
     }
 
+    uint64_t CajetaArray::elementStrideBytes(const llvm::DataLayout& dl,
+                                             llvm::LLVMContext* ctx) {
+        llvm::Type* t = getLlvmType();
+        if (auto* st = llvm::dyn_cast_or_null<llvm::StructType>(t)) {
+            if (st->getNumElements() >= 2 && !st->isOpaque()) {
+                if (auto* at = llvm::dyn_cast<llvm::ArrayType>(
+                        st->getElementType(1))) {
+                    return dl.getTypeAllocSize(at->getElementType());
+                }
+            }
+        }
+        return dl.getTypeAllocSize(getElementLlvmType(ctx));
+    }
+
     llvm::Type* CajetaArray::getInlineLlvmType(llvm::LLVMContext* ctx) const {
         return llvm::ArrayType::get(getElementLlvmType(ctx),
                                     fixedLength >= 0 ? (uint64_t) fixedLength : 0);

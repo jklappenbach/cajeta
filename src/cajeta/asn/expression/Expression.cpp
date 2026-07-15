@@ -2190,6 +2190,20 @@ namespace cajeta {
                     if (!aixInner->getResolvedType()) {
                         aixInner->resolveTypes(module);
                     }
+                    // Titles don't exist for primitive/value elements — a
+                    // `#slot` move is identity. Load the element so the
+                    // enclosing store writes the VALUE; handing back the
+                    // slot GEP stored the slot's ADDRESS through a stride-4
+                    // int32[] (the BPlus split heap-corruption, 3.3.1).
+                    auto mvElemT = aixInner->getResolvedType();
+                    if (mvElemT
+                            && !dynamic_pointer_cast<CajetaClass>(mvElemT)
+                            && !CajetaClass::arrayElementCarriesSlotBits(
+                                   mvElemT)) {
+                        value = loadIfLValue(module, value, aixInner);
+                        resolvedType = mvElemT;
+                        return value;
+                    }
                     auto recvT = dynamic_pointer_cast<Expression>(
                         aixInner->getChildren()[0]);
                     bool recvSimple = recvT
@@ -2212,8 +2226,7 @@ namespace cajeta {
                         uint64_t ths = 8, tes = 8;
                         if (recvArr) {
                             ths = tdl.getTypeAllocSize(recvArr->getLlvmType());
-                            tes = tdl.getTypeAllocSize(
-                                recvArr->getElementLlvmType(&tctx));
+                            tes = recvArr->elementStrideBytes(tdl, &tctx);
                         }
                         llvm::Value* slotInt = b->CreatePtrToInt(value, ti64);
                         llvm::Value* hdrInt = b->CreatePtrToInt(hdr, ti64);

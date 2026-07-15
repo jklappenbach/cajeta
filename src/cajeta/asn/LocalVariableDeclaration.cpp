@@ -1267,8 +1267,8 @@ namespace cajeta {
                         module->getLlvmModule()->getDataLayout();
                     llvm::Function* wf = getOrCreateTailDropFree(module,
                         ldl.getTypeAllocSize(arrT0->getLlvmType()),
-                        ldl.getTypeAllocSize(arrT0->getElementLlvmType(
-                            module->getLlvmContext())));
+                        arrT0->elementStrideBytes(ldl,
+                            module->getLlvmContext()));
                     emitDropEntryForFn(module, field, wf, getSourceLine());
                 } else {
                     emitDropEntryFor(module, field, "__cajeta_free_array",

@@ -220,7 +220,7 @@ public final class Heap<T> {
                 i = smallest;
             }
         }
-        return Cajeta.flagged(top, topOwned);
+        return Cajeta.flagged(#top, topOwned);
     }
 
     // Drop the elements the heap OWNS (took via `#`). Borrowed elements are

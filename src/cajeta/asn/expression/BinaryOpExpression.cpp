@@ -2274,8 +2274,8 @@ namespace cajeta {
                             if (recvArr) {
                                 tsHs = tsDl.getTypeAllocSize(
                                     recvArr->getLlvmType());
-                                tsEs = tsDl.getTypeAllocSize(
-                                    recvArr->getElementLlvmType(&tsCtx));
+                                tsEs = recvArr->elementStrideBytes(
+                                    tsDl, &tsCtx);
                             }
                             // idx = (slot - hdr - hs) / es, from the already-
                             // emitted slot address (no index re-generation).

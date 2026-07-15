@@ -614,7 +614,7 @@ namespace cajeta {
             llvm::Value* headerSize = llvm::ConstantInt::get(i64Ty,
                 dl.getTypeAllocSize(headerTy));
             llvm::Value* elemSize = llvm::ConstantInt::get(i64Ty,
-                dl.getTypeAllocSize(elemTy));
+                arr->elementStrideBytes(dl, &ctx));
             bool levelHasBits = bitsAllocFn
                 && CajetaClass::arrayElementCarriesSlotBits(arr->getElementType());
             llvm::Value* hdrPtr = builder->CreateCall(

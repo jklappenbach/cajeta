@@ -3111,8 +3111,7 @@ namespace cajeta {
                             llvm::ConstantInt::get(wi64,
                                 wdl.getTypeAllocSize(arrField->getLlvmType())),
                             llvm::ConstantInt::get(wi64,
-                                wdl.getTypeAllocSize(
-                                    arrField->getElementLlvmType(&ctx)))});
+                                arrField->elementStrideBytes(wdl, &ctx))});
                     }
                 }
                 b.CreateCall(freeArrayFn, {arrPtr});
