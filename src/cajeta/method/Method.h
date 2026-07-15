@@ -520,6 +520,12 @@ namespace cajeta {
         // the paired return-flag protocol (__cajeta_return_flag_set).
         bool needsTransferWord();
         bool returnsClassPointer();
+        // Callers may trust the return-flag TLS right after calling this
+        // method: its body runs through the statement pipeline, which pairs
+        // every class-pointer return with __cajeta_return_flag_set. Raw-IR
+        // synthesized bodies (generateCode overrides) never store the flag
+        // and override this to false — callers fall back to static mode.
+        virtual bool emitsReturnFlag() { return returnsClassPointer(); }
         llvm::Value* getTransferWordArg() const { return transferWordArg; }
         void setTransferWordArg(llvm::Value* v) { transferWordArg = v; }
         // 5.2.2 — seed a drop entry per droppable class-typed formal, armed

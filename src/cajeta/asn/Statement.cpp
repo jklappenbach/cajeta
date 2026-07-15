@@ -1975,13 +1975,25 @@ namespace cajeta {
         // Capture the TLS here, before advice/finally/drop calls can
         // overwrite it; emitReturnFlag re-sets it at the ret.
         if (auto m = module->getCurrentMethod()) {
-            if (m->returnsClassPointer()
-                    && (dynamic_pointer_cast<MethodCallExpression>(expression)
-                        || dynamic_pointer_cast<CallExpression>(expression))) {
-                if (llvm::Function* getFlagFn = module->getRuntimeFunction(
-                        "__cajeta_return_flag_get")) {
-                    returnTitleFlag = builder->CreateCall(
-                        getFlagFn, {}, "ret_flag_ride");
+            if (m->returnsClassPointer()) {
+                // MCE: only when the resolved callee actually stores the
+                // flag — a raw-IR synthesized body leaves a STALE value in
+                // the TLS (the sweep-4 JsonSynthesizer garbage reads).
+                // Closures (CallExpression) always participate post-7.2.5.
+                bool calleeParticipates = false;
+                if (auto mceRet =
+                        dynamic_pointer_cast<MethodCallExpression>(expression)) {
+                    MethodPtr callee = mceRet->getResolvedMethod();
+                    calleeParticipates = callee && callee->emitsReturnFlag();
+                } else if (dynamic_pointer_cast<CallExpression>(expression)) {
+                    calleeParticipates = true;
+                }
+                if (calleeParticipates) {
+                    if (llvm::Function* getFlagFn = module->getRuntimeFunction(
+                            "__cajeta_return_flag_get")) {
+                        returnTitleFlag = builder->CreateCall(
+                            getFlagFn, {}, "ret_flag_ride");
+                    }
                 }
             }
         }
