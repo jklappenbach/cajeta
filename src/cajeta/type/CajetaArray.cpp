@@ -102,4 +102,17 @@ namespace cajeta {
         };
         return CajetaType::getOrCreateLlvmType(ctx, string("#array.") + canonical, fields);
     }
+
+    llvm::Value* CajetaArray::emitElementBitsBase(llvm::IRBuilder<>& builder,
+            llvm::Value* hdrPtr, uint64_t headerBytes, uint64_t elemBytes) {
+        llvm::LLVMContext& ctx = builder.getContext();
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+        llvm::Value* count = builder.CreateLoad(i64Ty, hdrPtr, "arr_count");
+        llvm::Value* dataBytes = builder.CreateMul(count,
+            llvm::ConstantInt::get(i64Ty, elemBytes));
+        llvm::Value* offset = builder.CreateAdd(
+            llvm::ConstantInt::get(i64Ty, headerBytes), dataBytes);
+        return builder.CreateGEP(llvm::Type::getInt8Ty(ctx), hdrPtr, offset,
+            "elem_bits");
+    }
 }

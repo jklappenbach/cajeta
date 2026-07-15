@@ -785,6 +785,45 @@ void* __cajeta_new_array_header(uint64_t header_size, uint64_t elem_size, uint64
     return hdr;
 }
 
+// title-stores §3.1 — droppable-element arrays carry a per-slot ownership
+// bitmap in a TAIL after the data region: { i64 count | data[count*elem] |
+// bits[ceil(count/8)] }, one contiguous zeroed block. The tail address is
+// computed from the count word (header layout unchanged, no extra pointer).
+// Unit 2: allocation + accounting only; the bits are written by the Unit-3
+// store/teardown codegen.
+void* __cajeta_new_array_header_bits(uint64_t header_size, uint64_t elem_size, uint64_t count) {
+    // Bits math is safe well below this; the elem guard below does the rest.
+    if (count > (UINT64_MAX / 8) - 8) {
+        fprintf(stderr, "cajeta: __cajeta_new_array_header_bits overflow (count=%llu)\n",
+                (unsigned long long) count);
+        abort();
+    }
+    uint64_t bits = (count + 7) / 8;
+    if (elem_size != 0 && count > (UINT64_MAX - header_size - bits) / elem_size) {
+        fprintf(stderr, "cajeta: __cajeta_new_array_header_bits overflow (header=%llu elem=%llu count=%llu)\n",
+                (unsigned long long) header_size,
+                (unsigned long long) elem_size,
+                (unsigned long long) count);
+        abort();
+    }
+    uint64_t total = header_size + count * elem_size + bits;
+    if (total == 0) {
+        return NULL;
+    }
+    void* hdr = calloc(1, (size_t) total);
+    if (hdr == NULL) {
+        fprintf(stderr, "cajeta: __cajeta_new_array_header_bits failed (header=%llu elem=%llu count=%llu)\n",
+                (unsigned long long) header_size,
+                (unsigned long long) elem_size,
+                (unsigned long long) count);
+        abort();
+    }
+    *((int64_t*) hdr) = (int64_t) count;
+    __cajeta_note_alloc(total);
+    __cajeta_live_set_add(hdr);
+    return hdr;
+}
+
 // Same as __cajeta_new_array_header but the data region is left UNINITIALIZED
 // (malloc, not calloc). For buffers the caller fully overwrites before reading
 // — e.g. StringBuilder grow/toString, String concat payloads — the calloc

@@ -569,6 +569,15 @@ namespace cajeta {
         if (!allocFn) {
             return nullptr;
         }
+        // title-stores §3.1 — bit-capable elements (the archived Unit-4
+        // predicate) get the tail-bitmap allocator. Only the innermost
+        // level can qualify: outer levels' elements are arrays, which the
+        // predicate rejects. Arena arrays are primitive-only, so the two
+        // never collide.
+        llvm::Function* bitsAllocFn = nullptr;
+        if (!useArena && CajetaClass::arrayElementCarriesSlotBits(targetType)) {
+            bitsAllocFn = module->getRuntimeFunction("__cajeta_new_array_header_bits");
+        }
         llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
 
         // Recursive emitter: level 0 = outermost. Allocates that level's header and,
@@ -606,7 +615,10 @@ namespace cajeta {
                 dl.getTypeAllocSize(headerTy));
             llvm::Value* elemSize = llvm::ConstantInt::get(i64Ty,
                 dl.getTypeAllocSize(elemTy));
-            llvm::Value* hdrPtr = builder->CreateCall(allocFn,
+            bool levelHasBits = bitsAllocFn
+                && CajetaClass::arrayElementCarriesSlotBits(arr->getElementType());
+            llvm::Value* hdrPtr = builder->CreateCall(
+                levelHasBits ? bitsAllocFn : allocFn,
                 {headerSize, elemSize, count});
 
             // If there's a deeper level to populate, loop over `count` slots and assign.

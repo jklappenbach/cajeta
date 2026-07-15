@@ -46,7 +46,10 @@ namespace cajeta {
         module->getStructures()[arrayType->toCanonical()] =
             static_pointer_cast<CajetaClass>(arrayType);
 
-        llvm::Function* allocFn = module->getRuntimeFunction("__cajeta_new_array_header");
+        llvm::Function* allocFn = module->getRuntimeFunction(
+            CajetaClass::arrayElementCarriesSlotBits(elementType)
+                ? "__cajeta_new_array_header_bits"
+                : "__cajeta_new_array_header");
         if (!allocFn) return nullptr;
 
         llvm::Type* headerTy = arrayType->getLlvmType();
