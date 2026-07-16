@@ -33,11 +33,14 @@ public class TlsListener {
     private TlsListener(#TcpListener listener, int8[] cert, int32 certLen,
                         int8[] key, int32 keyLen) {
         this.listener = #listener;
-        this.cert = cert;
+        // Dual-role stores: the fields record what the caller did — lent
+        // buffers stay the caller's (the documented borrow contract),
+        // `#`-passed ones become the listener's.
+        this.cert #= cert;
         this.certLen = certLen;
-        this.key = key;
+        this.key #= key;
         this.keyLen = keyLen;
-        this.alpn = cert;        // placeholder until supportAlpn; never read
+        this.alpn = this.cert;   // placeholder alias until supportAlpn; never read
         this.alpnLen = 0;
         this.hasAlpn = false;
     }
@@ -61,7 +64,7 @@ public class TlsListener {
      * offered (server preference). Optional — without it no ALPN is negotiated.
      */
     public void supportAlpn(int8[] protos, int32 len) {
-        this.alpn = protos;
+        this.alpn #= protos;
         this.alpnLen = len;
         this.hasAlpn = true;
     }

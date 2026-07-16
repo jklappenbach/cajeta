@@ -1670,6 +1670,7 @@ namespace cajeta {
                 emitFlaggedDropEntryFor(module, field,
                     "__cajeta_class_virtual_drop", callResultFlag,
                     getSourceLine());
+                field->setRuntimeConditionalOwner(true);
             }
 
             // 7.2.5 — `T x = #src` where src is a RUNTIME owner (formal /
@@ -1689,6 +1690,7 @@ namespace cajeta {
                                         "__cajeta_drop_set_flag")) {
                                     module->getBuilder()->CreateCall(
                                         sf, {field->getDropEntry(), rtf});
+                                    field->setRuntimeConditionalOwner(true);
                                 }
                             }
                         }

@@ -39,8 +39,8 @@ public final class Pair<K, V> {
      * @EntryPoint
      */
     public Pair(K first, V second) {
-        this.first = first;
-        this.second = second;
+        this.first #= first;
+        this.second #= second;
     }
 
     @Inline

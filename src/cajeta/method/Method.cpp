@@ -527,6 +527,7 @@ namespace cajeta {
                 llvm::ConstantInt::get(i64Ty, 1), "formal_title");
             builder->CreateCall(setFlagFn, {entryPtr, flag});
             pf->setDropEntry(entryPtr);
+            pf->setRuntimeConditionalOwner(true);
             registerDropEntry(entryPtr);
         }
     }

@@ -103,7 +103,7 @@ public class Server {
      * a zero in-flight count.
      */
     public Server(TcpListener listener, (TcpStream) -> void handler) {
-        this.listener = listener;
+        this.listener #= listener;
         this.handler = handler;
         this.state = heap AtomicInt32(ServerState.NEW);
         this.inflight = heap AtomicInt32(0);

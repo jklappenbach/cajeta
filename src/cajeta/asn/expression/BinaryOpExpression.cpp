@@ -872,6 +872,51 @@ namespace cajeta {
             }
         }
 
+        // title-stores 6.2.1 — the loud-plain-store diagnostic (spec §2.4).
+        // A plain `=` retaining store (field or slot destination) whose RHS
+        // names a runtime-conditional owner (armed-capable formal, flagged
+        // local) borrows a value whose armed entry frees it at scope exit.
+        // WARNING at introduction; Phase 3 promotes to error. Sigil
+        // spellings are quiet by construction: their RHS is a
+        // MoveExpression, not a bare identifier.
+        if (binaryOp == BINARY_OP_ASSIGN && children.size() >= 2
+                && (dynamic_pointer_cast<DotExpression>(children[0])
+                    || dynamic_pointer_cast<ArrayIndexExpression>(children[0]))) {
+            if (auto rhsId = dynamic_pointer_cast<IdentifierExpression>(
+                    children[1])) {
+                auto psScope = module->getScopeStack().peek();
+                FieldPtr psSrc = psScope
+                    ? psScope->getField(rhsId->getTextValue()) : nullptr;
+                if (std::getenv("CAJETA_TRACE_PLAINSTORE")
+                        && psSrc && psSrc->isRuntimeConditionalOwner()) {
+                    auto psM = module->getCurrentMethod();
+                    std::string psCls;
+                    if (!module->getStructureStack().empty()
+                            && module->getStructureStack().back()) {
+                        psCls = module->getStructureStack().back()
+                            ->getQName()->toCanonical();
+                    }
+                    llvm::errs() << "[plainstore] " << psCls
+                        << ":" << getSourceLine()
+                        << " m=" << (psM ? psM->getName() : std::string("?"))
+                        << " rhs=" << rhsId->getTextValue()
+                        << " f=" << (const void*) psSrc.get() << "\n";
+                }
+                if (psSrc && psSrc->isRuntimeConditionalOwner()
+                        && !psSrc->isOwnershipAudited()) {
+                    if (DiagnosticEngine* eng = DiagnosticEngine::active()) {
+                        const std::string& n = rhsId->getTextValue();
+                        eng->report("warning", "CAJETA_WARN_PLAIN_RETAIN_STORE",
+                            "`" + n + "` may arrive owned on some calls; a "
+                            "plain store borrows it and the armed entry frees "
+                            "it at exit. Spell `dst #= " + n + "` to move its "
+                            "title, or store a copy (`dst = " + n + ".clone()`)",
+                            module->getSourcePath(), (int) getSourceLine(), -1);
+                    }
+                }
+            }
+        }
+
         // P3 — definite-assignment: for a bare-identifier LHS of an
         // assignment, mark the name assigned BEFORE evaluating the LHS.
         // The identifier's generateCode would otherwise trip the NYA

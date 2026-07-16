@@ -2804,6 +2804,16 @@ namespace cajeta {
                             "track ownership with `#=` / slot bits instead.",
                             "CAJETA_ERROR_OWNED_NON_FORMAL");
                     }
+                    // 6.2.1 — reading the bit is the author engaging with the
+                    // formal's runtime ownership: plain stores of it are the
+                    // guarded dual-store idiom (§3.3.1), not an oversight.
+                    // The loud-plain-store diagnostic stays quiet for it.
+                    if (auto ownedScope = module->getScopeStack().peek()) {
+                        if (FieldPtr ownedF = ownedScope->getField(
+                                ownedId->getTextValue())) {
+                            ownedF->setOwnershipAudited(true);
+                        }
+                    }
                     llvm::Value* ownedW = ownedCm->getTransferWordArg();
                     if (!ownedW) {
                         return (llvm::Value*) builder->getInt1(false);

@@ -57,6 +57,8 @@ namespace cajeta {
         cajeta::CajetaTypePtr type;
         llvm::AllocaInst* alloca;
         llvm::Value* dropEntry = nullptr;
+        bool runtimeConditionalOwner = false;
+        bool ownershipAudited = false;
         // slices 9.2.1 — for OWNING String-element array locals: the stack
         // sidecar shared by the element-store helpers and the element-walk
         // drop entry (LocalVariableDeclaration registers both). nullptr for
@@ -176,6 +178,16 @@ namespace cajeta {
         // when the owner pushes onto the chain.
         llvm::Value* getDropEntry() const { return dropEntry; }
         void setDropEntry(llvm::Value* e) { dropEntry = e; }
+        // title-stores 6.2.1 — this local/formal's drop entry is armed from a
+        // RUNTIME bit (transfer word, return flag, or forwarded slot bit), so
+        // a plain retaining store of it is the loud-plain-store hazard.
+        bool isRuntimeConditionalOwner() const { return runtimeConditionalOwner; }
+        void setRuntimeConditionalOwner(bool v) { runtimeConditionalOwner = v; }
+        // 6.2.1 exclusion — the body read `Cajeta.owned(<this formal>)`, so
+        // its plain stores are branch-guarded by the author (the container
+        // dual-store idiom, spec §3.3.1); the loud-plain-store stays quiet.
+        bool isOwnershipAudited() const { return ownershipAudited; }
+        void setOwnershipAudited(bool v) { ownershipAudited = v; }
         llvm::Value* getElemOwnSidecar() const { return elemOwnSidecar; }
         void setElemOwnSidecar(llvm::Value* s) { elemOwnSidecar = s; }
 

@@ -292,7 +292,6 @@ public class HttpServer {
                                                    ServerModel model,
                                                    (HttpRequest) -> #HttpResponse handler) {
         HttpServer srv = heap HttpServer(handler);
-        srv.model = model;
         (HttpRequest) -> #HttpResponse h = srv.handler;
         HttpParserLimits lim = srv.limits;
         // NET-9.6: the per-connection seam runs the hardened loop, threading
@@ -302,6 +301,7 @@ public class HttpServer {
         ServerLimits slim = srv.serverLimits;
         Server core = model.bindServer(#addr,
             (conn) -> HttpServer.serveConnectionWithLimits(h, lim, slim, conn));
+        srv.model #= model;
         srv.server = #core;
         return #srv;
     }

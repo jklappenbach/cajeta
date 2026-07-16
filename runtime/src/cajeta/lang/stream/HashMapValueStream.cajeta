@@ -38,8 +38,8 @@ public class HashMapValueStream<K, V> extends Stream<V> implements Splittable<V>
      * ```
      */
     public HashMapValueStream(MapEntry<K, V>[] slots, int8[] ctrl, int64 cap) {
-        this.slots = slots;
-        this.ctrl = ctrl;
+        this.slots #= slots;
+        this.ctrl #= ctrl;
         this.cap = cap;
         this.idx = 0;
     }

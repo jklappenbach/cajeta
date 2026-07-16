@@ -69,7 +69,7 @@ public final class ResponseBodyWriter {
 
     /** Private ctor; construct through [`begin`](#begin). */
     ResponseBodyWriter(AsyncWriter writer) {
-        this.writer = writer;
+        this.writer #= writer;
         this.finished = false;
     }
 

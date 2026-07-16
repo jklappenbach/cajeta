@@ -270,14 +270,17 @@ public final class Cache<K, V> {
     /** Splice `node` in as the new MRU head, seeding the tail if empty. */
     @Inline
     void linkAtHead(CacheNode<K, V> node) {
-        node.prev = null;
-        node.next = this.mruHead;
+        // borrow-alias: the entries map owns every node; head/tail/prev are
+        // link aliases into it — one borrowed local feeds all three stores.
+        CacheNode<K, V> n = node;
+        n.prev = null;
+        n.next = this.mruHead;
         if (this.mruHead != null) {
-            this.mruHead.prev = node;
+            this.mruHead.prev = n;
         }
-        this.mruHead = node;
+        this.mruHead = n;
         if (this.lruTail == null) {
-            this.lruTail = node;
+            this.lruTail = n;
         }
     }
 

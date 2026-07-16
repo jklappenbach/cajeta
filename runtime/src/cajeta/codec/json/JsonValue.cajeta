@@ -196,7 +196,7 @@ public final class JsonValue {
 
     public JsonValue setString(int8[] bytes, int32 len) {
         this.kind = 3;
-        this.strBytes = bytes;
+        this.strBytes #= bytes;
         this.strLen = len;
         return this;
     }

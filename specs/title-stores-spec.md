@@ -114,6 +114,16 @@ becomes a compile-time diagnostic:
 - 2.4.2 Out of scope for the diagnostic: primitives, value types without
   heap payload, statically-borrowed sources (no entry to leak), and
   non-retaining uses (call args, reads).
+- 2.4.3 (added Unit 6) Audited formals are quiet: once a body reads
+  `Cajeta.owned(v)`, `v`'s plain stores are the author's guarded
+  dual-store idiom (§3.3.1 — the borrowed branch MUST store plain for
+  shared-capable types), not an oversight. Reading the bit is the
+  opt-out.
+- 2.4.4 (added Unit 6) The wanted-borrow spelling: a store that must
+  stay a borrow no matter what the caller did (multi-alias splices —
+  LRU links, seed fan-out; borrow-only indexes — PageCache) routes
+  through a statically-borrowed local (`T n = v; dst = n;` with a
+  `borrow-alias` comment). The local is 2.4.2-excluded by construction.
 
 ### 2.5 Use cases
 - 2.5.1 As a container author, when I write `this.data[n] #= v` in

@@ -27,7 +27,7 @@ public final class JsonCursor {
     // template-instantiation barrier and corrupts the caller's IR. As a
     // class field, idx is reclaimed by JsonCursor's own drop chain instead.
     public JsonCursor(int8[] b, int64 length) {
-        this.b = b;
+        this.b #= b;
         this.idx = heap int32[length + 16];
         this.ci = 0;
     }

@@ -27,11 +27,11 @@ public final class CsvReader {
     int32 fc;          // current row: field count
 
     public CsvReader(int8[] buf, int64 n) {
-        this.buf = buf;
         this.n = n;
         int64 cap = n + 16;
         this.idx = heap int32[cap];
         this.cnt = CsvIndex.build(buf, n, this.idx);
+        this.buf #= buf;
         this.di = 0;
         this.pos = 0;
         this.fStart = heap int64[cap];
