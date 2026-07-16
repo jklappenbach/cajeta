@@ -281,6 +281,16 @@ namespace cajeta {
         }
         delete llvmModule;
         llvmModule = parsed->release();
+        // Every cached llvm handle below pointed INTO the module just deleted.
+        // The swap runs POST-codegen (Compiler.cpp, "Dirty modules snapshot
+        // post-codegen"), so they are populated by now, and codegen does still
+        // reach a swapped module afterwards (a dirty module's replay/lowering
+        // can instantiate into it). Drop them so the next use rebuilds against
+        // the NEW module instead of handing out a freed pointer.
+        // NOT cleared: the tbaa MDNode* members — metadata is owned by the
+        // LLVMContext, which outlives the swap.
+        sourceFileConstants.clear();
+        tbaaProvenance.clear();
         return true;
     }
 
