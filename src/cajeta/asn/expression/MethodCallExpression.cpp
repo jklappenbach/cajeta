@@ -5484,6 +5484,19 @@ namespace cajeta {
                 param.expression->resolveTypes(module);
             }
             llvm::Value* value = param.expression->generateCode(module);
+            // Fail loud: an argument that didn't lower (e.g. a property that
+            // no longer exists — `s.bytes` against the post-slice String)
+            // used to null-cascade into an LLVM dyn_cast assert with no
+            // source location (the tools/mcp build crash, second site).
+            if (!value) {
+                throw Exception(
+                    "argument " + std::to_string(argIndex + 1) + " to `"
+                    + methodCallName + "` did not lower to a value — it "
+                    "names an unknown or non-addressable property ("
+                    + module->getSourcePath() + ":"
+                    + std::to_string(getSourceLine()) + ")",
+                    "CAJETA_ERROR_ARG_INVALID");
+            }
             // 6.2.5 — a PLAIN argument that is a class-pointer call result
             // is an anonymous rvalue: its runtime title flag forwards into
             // this call's transfer word (spec §4.4.2), so a flag-true temp

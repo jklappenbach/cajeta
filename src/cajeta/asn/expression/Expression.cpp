@@ -855,6 +855,18 @@ namespace cajeta {
         llvm::Value* arrayVal = lhsPregen
             ? lhsPregen : children[0]->generateCode(module);
         auto lhsExpr = dynamic_pointer_cast<Expression>(children[0]);
+        // Fail loud: a receiver that didn't lower (e.g. a property that no
+        // longer exists — `s.bytes[i]` against the post-slice String) used
+        // to null-cascade into an LLVM dyn_cast assert with no source
+        // location (the tools/mcp build crash).
+        if (!arrayVal) {
+            throw Exception(
+                "indexed expression's receiver did not lower to a value — "
+                "the receiver names an unknown or non-addressable property ("
+                + module->getSourcePath() + ":"
+                + std::to_string(getSourceLine()) + ")",
+                "CAJETA_ERROR_INDEX_RECEIVER_INVALID");
+        }
 
         // Fixed-size inline array field (`obj.f[i]` where f is `T[N]`): the
         // field slot GEP from DotExpression ALREADY points at the inline

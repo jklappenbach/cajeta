@@ -147,7 +147,7 @@ public class HttpTransport {
 
     /** Case-insensitive match of `lit` against `b` at `pos` (within `end`). */
     public static boolean ciEq(int8[] b, int32 pos, int32 end, String lit) {
-        int32 n = lit.byteLength;
+        int32 n = lit.byteLength();
         if (pos + n > end) {
             return false;
         }
@@ -155,7 +155,7 @@ public class HttpTransport {
         while (i < n) {
             int32 p = pos + i;
             int32 c = ((int32) b[p]) & 0xFF;
-            int32 l = ((int32) lit.bytes[i]) & 0xFF;
+            int32 l = ((int32) lit.byteAt(i)) & 0xFF;
             if (c >= 65 && c <= 90) {
                 c = c + 32;
             }
@@ -172,13 +172,13 @@ public class HttpTransport {
         if (v == null) {
             return false;
         }
-        int32 n = v.byteLength;
+        int32 n = v.byteLength();
         int32 i = 0;
         while (i + 4 <= n) {
-            int32 c0 = ((int32) v.bytes[i]) & 0xFF;
-            int32 c1 = ((int32) v.bytes[i + 1]) & 0xFF;
-            int32 c2 = ((int32) v.bytes[i + 2]) & 0xFF;
-            int32 c3 = ((int32) v.bytes[i + 3]) & 0xFF;
+            int32 c0 = ((int32) v.byteAt(i)) & 0xFF;
+            int32 c1 = ((int32) v.byteAt(i + 1)) & 0xFF;
+            int32 c2 = ((int32) v.byteAt(i + 2)) & 0xFF;
+            int32 c3 = ((int32) v.byteAt(i + 3)) & 0xFF;
             if (c0 >= 65 && c0 <= 90) { c0 = c0 + 32; }
             if (c1 >= 65 && c1 <= 90) { c1 = c1 + 32; }
             if (c2 >= 65 && c2 <= 90) { c2 = c2 + 32; }
