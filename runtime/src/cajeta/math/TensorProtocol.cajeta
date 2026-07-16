@@ -63,7 +63,7 @@ public class TensorProtocol {
         // consuming spelling keeps the DType alive on the field bit; a plain
         // store left the armed formal to free it at ctor exit (dtype() then
         // read freed memory). baseStore stays a plain BORROW by design.
-        this.dt = #dtype;
+        this.dt #= dtype;
         this.deviceCode = device;
         this.readOnly = readOnlyFlag;
     }

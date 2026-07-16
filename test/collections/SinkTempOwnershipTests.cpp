@@ -128,13 +128,13 @@ TEST(SinkTempOwnershipTests, flaggedResultTempArgForwardsTitle) {
 }
 
 // `heap Wrapper(heap Cell(5))` — the plain creator CTOR argument
-// surrenders the same way: the ctor's consuming store (`this.c = #c`)
+// surrenders the same way: the ctor's consuming store (`this.c #= c`)
 // sees bit 1, the wrapper owns the cell, teardown reclaims both.
 TEST(SinkTempOwnershipTests, creatorTempCtorArgSurrenders) {
     std::string src = std::string(kCellSrc) +
         "public class Wrapper {\n"
         "    public Cell c;\n"
-        "    public Wrapper(Cell cc) { this.c = #cc; }\n"
+        "    public Wrapper(Cell cc) { this.c #= cc; }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 work() {\n"
@@ -212,7 +212,7 @@ TEST(SinkTempOwnershipTests, borrowReturnLeavesTempReceiverAlive) {
     std::string src = std::string(kCellSrc) +
         "public class Holder {\n"
         "    public Cell c;\n"
-        "    public Holder(Cell cc) { this.c = #cc; }\n"
+        "    public Holder(Cell cc) { this.c #= cc; }\n"
         "    public Cell peek() { return this.c; }\n"
         "}\n"
         "public final class D {\n"

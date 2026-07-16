@@ -125,7 +125,7 @@ TEST(ElementSlotSemanticsTests, moveOutClearsAndForwards) {
         "                bigger[i] #= #v.data[i];\n"
         "                i = i + 1;\n"
         "            }\n"
-        "            v.data = #bigger;\n"                // old array drops EMPTY
+        "            v.data #= bigger;\n"                // old array drops EMPTY
         "            t = v.data[0].n + v.data[1].n;\n"
         "        }\n"                                     // new array drops 2 cells
         "        int64 leaked = Cajeta.liveCount() - base;\n"

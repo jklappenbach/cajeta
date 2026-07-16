@@ -46,7 +46,7 @@ public final class LinkedListNode<T> {
         // isn't freed at ctor exit while the node still points at it (the
         // CacheNode treatment). A borrowed value stores plain-equivalent:
         // the bit records 0 and the node's drop walk skips it.
-        this.value = #value;
+        this.value #= value;
         this.prev = null;
         this.next = null;
     }

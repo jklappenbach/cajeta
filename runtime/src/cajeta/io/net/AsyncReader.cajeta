@@ -368,7 +368,7 @@ public class AsyncReader implements AsyncIterator<int8[]> {
                     grown[i] = acc[i];
                     i = i + 1;
                 }
-                acc = #grown;
+                acc #= grown;
                 accCap = newCap;
             }
             acc[accLen] = one[0];

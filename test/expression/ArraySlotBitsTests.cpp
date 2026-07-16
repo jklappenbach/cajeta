@@ -1,7 +1,7 @@
 //
 // title-tracking Unit 4 (plan 4.1) — array slot ownership bits (spec §5
 // slots, §6.3.3). Class-reference array slots carry a per-slot ownership
-// bit set by the store's spelling: `a[i] = #x` → owned (array teardown
+// bit set by the store's spelling: `a[i] #= x` → owned (array teardown
 // drops the slot), plain store → borrowed (source books untouched,
 // teardown skips). `#a[i]` extracts the title and decays the slot bit;
 // extraction from a borrowed or null slot panics. The compiler owns the
@@ -34,15 +34,15 @@ int32_t runI32(const std::string& src, const char* entryClass = "test.D") {
 
 } // namespace
 
-// 4.1.1a — owned slot store: `a[i] = #x` sets the slot bit; the array's
+// 4.1.1a — owned slot store: `a[i] #= x` sets the slot bit; the array's
 // teardown drops the element. Net liveCount delta 0.
 TEST(ArraySlotBitsTests, ownedSlotStoreDropsAtTeardown) {
     std::string src = std::string(kCellSrc) +
         "public final class D {\n"
         "    public static int32 work() {\n"
         "        Cell[] a = heap Cell[3];\n"
-        "        a[0] = #heap Cell(1);\n"
-        "        a[1] = #heap Cell(2);\n"
+        "        a[0] #= heap Cell(1);\n"
+        "        a[1] #= heap Cell(2);\n"
         "        return a[0].n + a[1].n;\n"
         "    }\n"
         "    public static int32 run() {\n"
@@ -87,9 +87,9 @@ TEST(ArraySlotBitsTests, overwriteOwnedSlotDropsDisplaced) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        Cell[] a = heap Cell[1];\n"
-        "        a[0] = #heap Cell(1);\n"
+        "        a[0] #= heap Cell(1);\n"
         "        int64 mid = Cajeta.liveCount();\n"
-        "        a[0] = #heap Cell(2);\n"     // displaces Cell(1) → dropped
+        "        a[0] #= heap Cell(2);\n"     // displaces Cell(1) → dropped
         "        int64 after = Cajeta.liveCount();\n"
         "        if (after != mid) { return -97; }\n"
         "        return a[0].n;\n"
@@ -105,8 +105,8 @@ TEST(ArraySlotBitsTests, slotExtractionMovesTitle) {
         "public final class D {\n"
         "    public static int32 work() {\n"
         "        Cell[] a = heap Cell[1];\n"
-        "        a[0] = #heap Cell(6);\n"
-        "        Cell taken = #a[0];\n"       // title out; bit decays
+        "        a[0] #= heap Cell(6);\n"
+        "        Cell taken #= a[0];\n"       // title out; bit decays
         "        if (a[0].n != 6) { return -96; }\n"  // resident, readable
         "        return taken.n;\n"           // taken owns; drops at exit
         "    }\n"
@@ -129,7 +129,7 @@ TEST(ArraySlotBitsTests, extractionFromBorrowedSlotPanics) {
         "        Cell[] a = heap Cell[1];\n"
         "        a[0] = mine;\n"
         "        try {\n"
-        "            Cell taken = #a[0];\n"   // borrowed slot → panic
+        "            Cell taken #= a[0];\n"   // borrowed slot → panic
         "            return -95;\n"
         "        } catch (Exception e) {\n"
         "            return 1;\n"
@@ -146,7 +146,7 @@ TEST(ArraySlotBitsTests, extractionFromNullSlotPanics) {
         "    public static int32 run() {\n"
         "        Cell[] a = heap Cell[1];\n"
         "        try {\n"
-        "            Cell taken = #a[0];\n"   // never stored → panic
+        "            Cell taken #= a[0];\n"   // never stored → panic
         "            return -94;\n"
         "        } catch (Exception e) {\n"
         "            return 1;\n"

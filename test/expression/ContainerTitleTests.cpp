@@ -5,7 +5,7 @@
 // operator#[] (title out, entry stays RESIDENT, panic when there is no title
 // to give); `remove(k)` ends membership and returns the value in whatever
 // mode the entry held (the flagged return). Red-first: at authoring time
-// `map[k] = #v` silently DROPS the transfer (the operator[]= lowering passes
+// `map[k] #= v` silently DROPS the transfer (the operator[]= lowering passes
 // no transfer word) and `#map[k]` silently degrades to a plain read.
 //
 #include "gtest/gtest.h"
@@ -36,7 +36,7 @@ int32_t runI32(const std::string& src, const char* entryClass = "test.D") {
 
 }  // namespace
 
-// 6.1.1a — `map[k] = #v`: the entry takes the title, and the MAP's teardown
+// 6.1.1a — `map[k] #= v`: the entry takes the title, and the MAP's teardown
 // (not the caller's scope) reclaims the value. Leak oracle 0 and the value
 // readable until the map dies.
 TEST(ContainerTitleTests, indexedOwnedStoreDropsAtMapTeardown) {
@@ -46,7 +46,7 @@ TEST(ContainerTitleTests, indexedOwnedStoreDropsAtMapTeardown) {
         "        int32 t = 0;\n"
         "        {\n"
         "            HashMap<int32, Cell> m = heap HashMap<int32, Cell>();\n"
-        "            m[1] = #heap Cell(7);\n"     // owned entry
+        "            m[1] #= heap Cell(7);\n"     // owned entry
         "            t = m[1].n;\n"
         "        }\n"                             // map teardown drops the Cell
         "        return t;\n"
@@ -95,7 +95,7 @@ TEST(ContainerTitleTests, mixedOwnershipMapDropsOnlyOwnedEntries) {
         "        int32 t = 0;\n"
         "        {\n"
         "            HashMap<int32, Cell> m = heap HashMap<int32, Cell>();\n"
-        "            m[1] = #heap Cell(3);\n"     // owned
+        "            m[1] #= heap Cell(3);\n"     // owned
         "            m[2] = lent;\n"              // borrowed
         "            t = m[1].n + m[2].n;\n"      // 23
         "        }\n"
@@ -120,9 +120,9 @@ TEST(ContainerTitleTests, extractionTransfersTitleEntryStaysResident) {
         "    public static int32 work() {\n"
         "        int32 t = 0;\n"
         "        HashMap<int32, Cell> m = heap HashMap<int32, Cell>();\n"
-        "        m[1] = #heap Cell(5);\n"
+        "        m[1] #= heap Cell(5);\n"
         "        {\n"
-        "            Cell got = #m[1];\n"         // title out; got owns
+        "            Cell got #= m[1];\n"         // title out; got owns
         "            t = got.n;\n"
         "        }\n"                             // got drops the Cell HERE
         "        return t;\n"
@@ -145,8 +145,8 @@ TEST(ContainerTitleTests, extractedEntryStillReadable) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        HashMap<int32, Cell> m = heap HashMap<int32, Cell>();\n"
-        "        m[1] = #heap Cell(6);\n"
-        "        Cell got = #m[1];\n"
+        "        m[1] #= heap Cell(6);\n"
+        "        Cell got #= m[1];\n"
         "        return m[1].n;\n"                // resident read-back
         "    }\n"
         "}\n";
@@ -161,10 +161,10 @@ TEST(ContainerTitleTests, secondExtractionPanics) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        HashMap<int32, Cell> m = heap HashMap<int32, Cell>();\n"
-        "        m[1] = #heap Cell(4);\n"
-        "        Cell first = #m[1];\n"
+        "        m[1] #= heap Cell(4);\n"
+        "        Cell first #= m[1];\n"
         "        try {\n"
-        "            Cell second = #m[1];\n"      // no title left → panic
+        "            Cell second #= m[1];\n"      // no title left → panic
         "            return -99;\n"
         "        } catch (Exception e) {\n"
         "            return first.n;\n"
@@ -181,9 +181,9 @@ TEST(ContainerTitleTests, absentKeyExtractionPanics) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        HashMap<int32, Cell> m = heap HashMap<int32, Cell>();\n"
-        "        m[1] = #heap Cell(4);\n"
+        "        m[1] #= heap Cell(4);\n"
         "        try {\n"
-        "            Cell ghost = #m[2];\n"       // absent → panic
+        "            Cell ghost #= m[2];\n"       // absent → panic
         "            return -99;\n"
         "        } catch (Exception e) {\n"
         "            return 1;\n"
@@ -201,7 +201,7 @@ TEST(ContainerTitleTests, removeReturnsOwnedValueCallerDrops) {
         "    public static int32 work() {\n"
         "        int32 t = 0;\n"
         "        HashMap<int32, Cell> m = heap HashMap<int32, Cell>();\n"
-        "        m[1] = #heap Cell(8);\n"
+        "        m[1] #= heap Cell(8);\n"
         "        {\n"
         "            Cell v = m.remove(1);\n"     // flagged return: owned
         "            t = v.n;\n"
@@ -259,10 +259,10 @@ TEST(ContainerTitleTests, registryDriverRoundTripLeakFree) {
         "public class Registry {\n"
         "    public HashMap<int32, Cell> sessions;\n"
         "    public Registry() {\n"
-        "        this.sessions = #heap HashMap<int32, Cell>();\n"
+        "        this.sessions #= heap HashMap<int32, Cell>();\n"
         "    }\n"
         "    public void enroll(int32 id, Cell s) {\n"
-        "        this.sessions[id] = #s;\n"       // forwards the caller's flag
+        "        this.sessions[id] #= s;\n"       // forwards the caller's flag
         "    }\n"
         "    public int32 peek(int32 id) { return this.sessions[id].n; }\n"
         "}\n"
@@ -276,7 +276,7 @@ TEST(ContainerTitleTests, registryDriverRoundTripLeakFree) {
         "            r.enroll(2, #heap Cell(2));\n"   // owned by registry
         "            r.enroll(3, lent);\n"            // indexed, not owned
         "            {\n"
-        "                Cell handoff = #r.sessions[1];\n"  // title to driver
+        "                Cell handoff #= r.sessions[1];\n"  // title to driver
         "                t = t + handoff.n + r.peek(1);\n"  // still readable
         "            }\n"                                    // driver drops #1
         "            {\n"
@@ -416,7 +416,7 @@ TEST(ContainerTitleTests, cacheScenarioMiniLruMixedOwnershipLeakFree) {
         "            this.a = this.b;\n"                          // drops if owned,
         "            this.b = 0 - 1;\n"                           // survives if borrowed
         "        }\n"
-        "        this.map[k] = #v;\n"
+        "        this.map[k] #= v;\n"
         "        if (this.a < 0) { this.a = k; } else { this.b = k; }\n"
         "    }\n"
         "    public void putBorrow(int32 k, Cell v) {\n"

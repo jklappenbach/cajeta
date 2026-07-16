@@ -35,6 +35,7 @@
 #include "../LocalVariableDeclaration.h"
 #include "../VariableDeclarator.h"
 #include "../../error/Exception.h"
+#include "../../error/DiagnosticEngine.h"
 
 namespace cajeta {
     ExpressionPtr Expression::fromContext(CajetaParser::ExpressionContext* ctx) {
@@ -398,6 +399,16 @@ namespace cajeta {
                             childContext->getStart());
                         mv->addChild(child);
                         child = mv;
+                    }
+                    // title-stores §2.3 Phase 2 (plan 7.2.2) — the legacy
+                    // `dst = #v`: a plain ASSIGN whose RHS is itself a parsed
+                    // `#expr`. Only reachable when !sharpAssign, so `dst #= #v`
+                    // (whose inner move hangs off the wrapper above, not off
+                    // the assignment) is correctly left alone.
+                    if (!sharpAssign && childIndex == 1 && ctx->ASSIGN()) {
+                        if (auto rhsMove = dynamic_pointer_cast<MoveExpression>(child)) {
+                            rhsMove->setLegacyTransferAssign(true);
+                        }
                     }
                     result->addChild(child);
                     ++childIndex;
@@ -1923,6 +1934,29 @@ namespace cajeta {
         // flag captured in a previous function must never leak into this one.
         runtimeTitleFlag = nullptr;
         if (children.empty()) return nullptr;
+        // title-stores §2.3 Phase 2 (plan 7.2.2) — deprecate the legacy
+        // `dst = #v` assignment spelling. WARNING only: the store still
+        // transfers and the program still runs; Phase 3 turns this into an
+        // error once the trigger in the plan is met.
+        //
+        // Reported here rather than at the store because this is the one node
+        // that both spellings do NOT share: `dst #= v` synthesises its own
+        // wrapper and never sets the flag. Deliberately silent at call args,
+        // returns, and extraction reads (spec §2.3) — nothing marks those.
+        if (legacyTransferAssign) {
+            if (DiagnosticEngine* eng = DiagnosticEngine::active()) {
+                std::string rhs;
+                if (auto srcId = dynamic_pointer_cast<IdentifierExpression>(children[0])) {
+                    rhs = srcId->getTextValue();
+                }
+                eng->report("warning", "CAJETA_WARN_DEPRECATED_TRANSFER_ASSIGN",
+                    "`= #" + rhs + "` is the deprecated spelling of an "
+                    "ownership store; write `dst #= " + rhs + "` instead. "
+                    "`#` stays required at call arguments, returns, and "
+                    "extraction reads — those are not assignments",
+                    module->getSourcePath(), (int) getSourceLine(), -1);
+            }
+        }
         // Evaluate the wrapped expression FIRST (while the source is still
         // readable), then mark the source as moved. Marking before evaluating
         // would trip the use-after-move check on the very read that performs

@@ -101,7 +101,7 @@ TEST(TypeSigilRetirementTests, signatureSharpFormalStillLegal) {
     std::string src = std::string(kCellSrc) +
         "public class Sink {\n"
         "    public Cell held;\n"
-        "    public void keep(#Cell v) { this.held = #v; }\n"
+        "    public void keep(#Cell v) { this.held #= v; }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"

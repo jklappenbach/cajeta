@@ -135,9 +135,9 @@ public final class JsonObject {
         if (this.sizeCount >= this.cap) {
             this.grow();
         }
-        this.keys[this.sizeCount] = #key;
+        this.keys[this.sizeCount] #= key;
         this.keyLens[this.sizeCount] = keyLen;
-        this.values[this.sizeCount] = #v;
+        this.values[this.sizeCount] #= v;
         this.sizeCount = this.sizeCount + 1;
     }
 
@@ -154,9 +154,9 @@ public final class JsonObject {
             dstV[i] = this.values[i];
             i = i + 1;
         }
-        this.keys = #dstK;
-        this.keyLens = #dstL;
-        this.values = #dstV;
+        this.keys #= dstK;
+        this.keyLens #= dstL;
+        this.values #= dstV;
         this.cap = newCap;
     }
 
@@ -189,7 +189,7 @@ public final class JsonObject {
      * objects; the hot-path tokenizer should keep using `keyAt`.
      */
     public #ArrayList<String> keys() {
-        ArrayList<String> out = #heap ArrayList<String>();
+        ArrayList<String> out #= heap ArrayList<String>();
         int32 i = 0;
         while (i < this.sizeCount) {
             out.add(#heap String(this.keys[i], this.keyLens[i]));
@@ -270,7 +270,7 @@ public final class JsonObject {
      * stricter behavior is needed).
      */
     public #ArrayList<String> getStringArray(String key) {
-        ArrayList<String> out = #heap ArrayList<String>();
+        ArrayList<String> out #= heap ArrayList<String>();
         Optional<JsonArray> arr = this.getArray(key);
         if (arr.isEmpty()) { return out; }
         JsonArray a = arr.get();

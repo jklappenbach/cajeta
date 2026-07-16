@@ -41,7 +41,7 @@ TEST(StringElemStoreTests, fieldGrowCopyLoopKeepsElements) {
         "            dst[i] = this.keys[i];\n"
         "            i = i + 1;\n"
         "        }\n"
-        "        this.keys = #dst;\n"
+        "        this.keys #= dst;\n"
         "        this.cap = nc;\n"
         "    }\n"
         "    public int32 countEq(String name) {\n"

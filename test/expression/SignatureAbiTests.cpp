@@ -102,7 +102,7 @@ TEST(SignatureAbiTests, ownedSpellingStoreFieldOwns) {
     std::string src = std::string(kCellSrc) +
         "public class Box {\n"
         "    public Cell c;\n"
-        "    public void put(Cell v) { this.c = #v; }\n"
+        "    public void put(Cell v) { this.c #= v; }\n"
         "    public int32 peek() { return this.c.n; }\n"
         "}\n"
         "public final class D {\n"
@@ -127,7 +127,7 @@ TEST(SignatureAbiTests, plainSpellingStoreFieldBorrows) {
     std::string src = std::string(kCellSrc) +
         "public class Box {\n"
         "    public Cell c;\n"
-        "    public void put(Cell v) { this.c = #v; }\n"
+        "    public void put(Cell v) { this.c #= v; }\n"
         "    public int32 peek() { return this.c.n; }\n"
         "}\n"
         "public final class D {\n"
@@ -230,7 +230,7 @@ TEST(SignatureAbiTests, forwardChainThreadsFlag) {
     std::string src = std::string(kCellSrc) +
         "public class Box {\n"
         "    public Cell c;\n"
-        "    public void inner(Cell v) { this.c = #v; }\n"
+        "    public void inner(Cell v) { this.c #= v; }\n"
         "    public void outer(Cell v) { this.inner(#v); }\n"
         "    public int32 peek() { return this.c.n; }\n"
         "}\n"
@@ -346,7 +346,7 @@ TEST(SignatureAbiTests, danglingLendOnSetterLendRejected) {
     std::string src = std::string(kCellSrc) +
         "public class Holder {\n"
         "    public Cell c;\n"
-        "    public void keep(Cell v) { this.c = #v; }\n"
+        "    public void keep(Cell v) { this.c #= v; }\n"
         "}\n"
         "public final class D {\n"
         "    public static Holder build() {\n"
@@ -366,7 +366,7 @@ TEST(SignatureAbiTests, lendNegativeProbesCompileAndRun) {
     std::string src = std::string(kCellSrc) +
         "public class Holder {\n"
         "    public Cell c;\n"
-        "    public void keep(Cell v) { this.c = #v; }\n"
+        "    public void keep(Cell v) { this.c #= v; }\n"
         "}\n"
         "public final class D {\n"
         "    public static Holder build() {\n"
@@ -510,7 +510,7 @@ bool warnedAbout(const char* varName) {
 const char* kAdvisorySrc =
     "public class Sink {\n"
     "    public Cell held;\n"
-    "    public void keep(Cell v) { this.held = #v; }\n"
+    "    public void keep(Cell v) { this.held #= v; }\n"
     "    public int32 peek(Cell v) { return v.n; }\n"
     "}\n";
 
@@ -602,7 +602,7 @@ TEST(SignatureAbiTests, templateSharpFormalIsHardMustOwn) {
         "public final class Box<T> {\n"
         "    public T v;\n"
         "    public Box() {}\n"
-        "    public void put(#T t) { this.v = #t; }\n"
+        "    public void put(#T t) { this.v #= t; }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
@@ -620,7 +620,7 @@ TEST(SignatureAbiTests, templateSharpCtorFormalIsHardMustOwn) {
     std::string src = std::string(kCellSrc) +
         "public final class Crate<T> {\n"
         "    public T v;\n"
-        "    public Crate(#T t) { this.v = #t; }\n"
+        "    public Crate(#T t) { this.v #= t; }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
@@ -633,7 +633,7 @@ TEST(SignatureAbiTests, templateSharpCtorFormalIsHardMustOwn) {
 }
 
 // Surrendering at the call site satisfies the edge, and the title flows
-// all the way into the container: formal entry armed → `= #t` moves it to
+// all the way into the container: formal entry armed → `#= t` moves it to
 // the field bit → teardown drops. Under dissolution this LEAKED (the
 // dissolved forward disarmed the caller but stored a borrow).
 TEST(SignatureAbiTests, templateSharpFormalSurrenderFlowsTitleLeakFree) {
@@ -641,7 +641,7 @@ TEST(SignatureAbiTests, templateSharpFormalSurrenderFlowsTitleLeakFree) {
         "public final class Box<T> {\n"
         "    public T v;\n"
         "    public Box() {}\n"
-        "    public void put(#T t) { this.v = #t; }\n"
+        "    public void put(#T t) { this.v #= t; }\n"
         "}\n"
         "public final class D {\n"
         "    public static void work() {\n"
@@ -672,7 +672,7 @@ TEST(SignatureAbiTests, danglingLendOnConditionalSetterRejected) {
         "public class Holder {\n"
         "    public Cell c;\n"
         "    public void keep(Cell v) {\n"
-        "        if (v.n > 0) { this.c = #v; }\n"
+        "        if (v.n > 0) { this.c #= v; }\n"
         "    }\n"
         "}\n"
         "public final class D {\n"
@@ -851,7 +851,7 @@ TEST(SignatureAbiTests, foldClassAccumulatorThreadsTitle) {
 
 // The lent-seed side of the same protocol: fold(mine, step) with a PLAIN
 // seed must hand the accumulator back as a BORROW — the caller keeps the
-// single title, no double free. Requires `= #x` move-inits to forward the
+// single title, no double free. Requires `#= x` move-inits to forward the
 // SOURCE's runtime flag onto the destination's entry instead of arming
 // statically.
 TEST(SignatureAbiTests, foldLentSeedComesBackBorrowed) {
@@ -898,10 +898,10 @@ TEST(SignatureAbiTests, tailCallThroughPlainReturnKeepsTitle) {
         "public class Holder {\n"
         "    public Cell c;\n"
         "    public Holder() { this.c = null; }\n"
-        "    public void put(#Cell v) { this.c = #v; }\n"
+        "    public void put(#Cell v) { this.c #= v; }\n"
         "    public #Cell take() {\n"
         "        if (this.c == null) { return null; }\n"
-        "        Cell m = #this.c;\n"
+        "        Cell m #= this.c;\n"
         "        this.c = null;\n"
         "        return #m;\n"
         "    }\n"
@@ -934,7 +934,7 @@ TEST(SignatureAbiTests, tailCallThroughPlainReturnForwardsBorrow) {
     std::string src = std::string(kCellSrc) +
         "public class Bank {\n"
         "    public Cell c;\n"
-        "    public Bank(#Cell v) { this.c = #v; }\n"
+        "    public Bank(#Cell v) { this.c #= v; }\n"
         "    public Cell get() { return this.c; }\n"
         "}\n"
         "public final class D {\n"

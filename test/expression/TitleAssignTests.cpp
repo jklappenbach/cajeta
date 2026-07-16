@@ -1,7 +1,7 @@
 // title-stores Unit 1 (spec §2.1, §2.2, §2.5.2): the `#=` title-assign
 // operator. RED until 1.2.x lands the token + lowering.
 //
-// Parity contract: `dst #= v` is byte-for-byte today's `dst = #v` at each
+// Parity contract: `dst #= v` is byte-for-byte today's `dst #= v` at each
 // valid destination (field, local decl-init, array slot, indexed user
 // class). Oracles are the SignatureAbi liveCount pattern: an owned RHS
 // moves (destination drops it, source entry consumed), a borrowed RHS
@@ -33,7 +33,7 @@ int32_t runI32(const std::string& src, const char* entryClass = "test.D") {
 }  // namespace
 
 // 1.1.1a — field destination: `this.c #= v` forwards the caller's actual
-// title exactly like `this.c = #v` (owned put → holder drops it at
+// title exactly like `this.c #= v` (owned put → holder drops it at
 // teardown; lent put → source survives the holder).
 TEST(TitleAssignTests, fieldStoreParity) {
     std::string src = std::string(kCellSrc) +
@@ -70,7 +70,7 @@ TEST(TitleAssignTests, fieldStoreParity) {
 }
 
 // 1.1.1b — local declaration-initializer: `Cell x #= mk()` arms/forwards
-// exactly like `Cell x = #mk()` (spec 2.2.3): fresh result owned and
+// exactly like `Cell x #= mk()` (spec 2.2.3): fresh result owned and
 // dropped at scope exit, zero leak.
 TEST(TitleAssignTests, localDeclParity) {
     std::string src = std::string(kCellSrc) +
@@ -90,7 +90,7 @@ TEST(TitleAssignTests, localDeclParity) {
     EXPECT_EQ(runI32(src), 9);
 }
 
-// 1.1.1c — raw array slot: `data[i] #= v` matches `data[i] = #v` (today's
+// 1.1.1c — raw array slot: `data[i] #= v` matches `data[i] #= v` (today's
 // local-owning-array move semantics; per-slot bits arrive in Unit 3).
 TEST(TitleAssignTests, arraySlotParity) {
     std::string src = std::string(kCellSrc) +
@@ -112,7 +112,7 @@ TEST(TitleAssignTests, arraySlotParity) {
 }
 
 // 1.1.1d — indexed user class: `m[k] #= v` lowers through operator[]=
-// with the transfer word composed, same as `m[k] = #v` (spec 2.2.4).
+// with the transfer word composed, same as `m[k] #= v` (spec 2.2.4).
 TEST(TitleAssignTests, indexedStoreParity) {
     std::string src = std::string(kCellSrc) +
         "public final class D {\n"
@@ -138,7 +138,7 @@ TEST(TitleAssignTests, operatorSharpAssignNotDeclarable) {
         "public class Box {\n"
         "    public Cell c;\n"
         "    public Box() { this.c = null; }\n"
-        "    public void operator#=(Cell v) { this.c = #v; }\n"
+        "    public void operator#=(Cell v) { this.c #= v; }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() { return 1; }\n"
@@ -162,7 +162,7 @@ TEST(TitleAssignTests, sharpElsewhereUnaffected) {
         "    public void put(#Cell v) { this.c #= v; }\n"
         "    public #Cell take() {\n"
         "        if (this.c == null) { return null; }\n"
-        "        Cell m = #this.c;\n"
+        "        Cell m #= this.c;\n"
         "        this.c = null;\n"
         "        return #m;\n"
         "    }\n"

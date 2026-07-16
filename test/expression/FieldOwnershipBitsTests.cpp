@@ -1,7 +1,7 @@
 //
 // title-tracking Unit 3 (plan 3.1) — field ownership bits (spec §5).
 // Class-reference fields carry a runtime ownership bit set by the store's
-// spelling: `this.f = #x` → owned (teardown drops), `this.f = x` → borrowed
+// spelling: `this.f #= x` → owned (teardown drops), `this.f = x` → borrowed
 // (source books untouched, teardown skips). Overwriting an owned field
 // drops the displaced value; `#this.f` extracts the title and decays the
 // bit; extraction from a titleless field panics.
@@ -26,7 +26,7 @@ const char* kHolderSrc =
     "}\n"
     "public class Holder {\n"
     "    public Cell f;\n"
-    "    public void setOwned(#Cell c) { this.f = #c; }\n"
+    "    public void setOwned(#Cell c) { this.f #= c; }\n"
     "    public void setBorrow(Cell c) { this.f = c; }\n"
     "}\n";
 
@@ -38,7 +38,7 @@ int32_t runI32(const std::string& src, const char* entryClass = "test.D") {
 
 } // namespace
 
-// 3.1.1a — owned store: `this.f = #c` sets the owned bit; the holder's
+// 3.1.1a — owned store: `this.f #= c` sets the owned bit; the holder's
 // teardown drops the payload. Net liveCount delta 0.
 TEST(FieldOwnershipBitsTests, ownedStoreDropsAtTeardown) {
     std::string src = std::string(kHolderSrc) +
@@ -150,7 +150,7 @@ TEST(FieldOwnershipBitsTests, fieldExtractionMovesTitle) {
         "    public static int32 work() {\n"
         "        Holder h = heap Holder();\n"
         "        h.setOwned(#heap Cell(6));\n"
-        "        Cell taken = #h.f;\n"       // title out; bit decays
+        "        Cell taken #= h.f;\n"       // title out; bit decays
         "        if (h.f.n != 6) { return -96; }\n"  // resident, readable
         "        return taken.n;\n"          // taken owns; drops at exit
         "    }\n"
@@ -174,7 +174,7 @@ TEST(FieldOwnershipBitsTests, extractionFromBorrowedFieldPanics) {
         "        Holder h = heap Holder();\n"
         "        h.setBorrow(mine);\n"
         "        try {\n"
-        "            Cell taken = #h.f;\n"   // no title here → panic
+        "            Cell taken #= h.f;\n"   // no title here → panic
         "            return -95;\n"
         "        } catch (Exception e) {\n"
         "            return 1;\n"

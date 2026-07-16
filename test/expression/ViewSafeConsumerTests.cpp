@@ -175,7 +175,7 @@ const std::string MODULE_SRC =
     "        String s = a + b;\n"
     "        String v = s.substring(10, 16);\n"
     "        Held h = heap Held();\n"
-    "        h.name = #v;\n"
+    "        h.name #= v;\n"
     "        String out = h.toString();\n"
     "        if (!out.contains(\"klmnop\")) { return 1; }\n"
     "        return 0;\n"

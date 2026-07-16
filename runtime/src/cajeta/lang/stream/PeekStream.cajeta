@@ -32,7 +32,7 @@ public final class PeekStream<T> extends Stream<T> {
      * ```
      */
     public PeekStream(#Stream<T> source, (T) -> void fn) {
-        this.source = #source;
+        this.source #= source;
         this.fn = fn;
     }
 

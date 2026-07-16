@@ -302,7 +302,7 @@ public class HttpServer {
         Server core = model.bindServer(#addr,
             (conn) -> HttpServer.serveConnectionWithLimits(h, lim, slim, conn));
         srv.model #= model;
-        srv.server = #core;
+        srv.server #= core;
         return #srv;
     }
 
@@ -1123,7 +1123,7 @@ public class HttpServerBuilder {
         // arg arrives flag-true — the consuming spelling records the title
         // on the field; a plain store left the armed formal to free it at
         // setter exit (selectedModel() then read freed memory).
-        this.model = #model;
+        this.model #= model;
         return this;
     }
 

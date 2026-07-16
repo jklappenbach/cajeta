@@ -1,7 +1,7 @@
 // Slices plan Unit 9 backlog — pre-existing drop gaps surfaced by the plan's
 // balance asserts (not slices regressions; owned-string controls fail
 // identically):
-//   9.3.1 `String d; d = #t;` — a move-assign into an UNINITIALIZED local
+//   9.3.1 `String d; d #= t;` — a move-assign into an UNINITIALIZED local
 //         registers no drop for `d`; the wrapper + buffer leak.
 //   9.4.1 Unnamed temporaries — a droppable call-result consumed directly as
 //         an argument has no drop entry; wrapper + stake leak.
@@ -37,7 +37,7 @@ const std::string MODULE_SRC =
     "            String b = \"0123456789\";\n"
     "            String t = a + b;\n"
     "            String d;\n"
-    "            d = #t;\n"
+    "            d #= t;\n"
     "            if (d.size() != 36) { return -99; }\n"
     "        }\n"
     "        return Cajeta.liveCount() - base;\n"
@@ -50,7 +50,7 @@ const std::string MODULE_SRC =
     "            String a = \"abcdefghijklmnopqrstuvwxyz\";\n"
     "            String b = \"0123456789\";\n"
     "            String t = a + b;\n"
-    "            String d = #t;\n"
+    "            String d #= t;\n"
     "            if (d.size() != 36) { return -99; }\n"
     "        }\n"
     "        return Cajeta.liveCount() - base;\n"
@@ -70,7 +70,7 @@ const std::string MODULE_SRC =
     "            String keep;\n"
     "            {\n"
     "                String t = s.substring(23, 29);\n"
-    "                keep = #t;\n"
+    "                keep #= t;\n"
     "            }\n"
     "            if (keep.size() != 6) { return -99; }\n"
     "            if (keep.charAt(0) != (int8) 120) { return -98; }\n"  // 'x'
@@ -187,8 +187,8 @@ const std::string MODULE_SRC =
     "            String[] arr = heap String[2];\n"
     "            String p0 = s.substring(0, 20);\n"
     "            String p1 = s.substring(16, 36);\n"
-    "            arr[0] = #p0;\n"
-    "            arr[1] = #p1;\n"
+    "            arr[0] #= p0;\n"
+    "            arr[1] #= p1;\n"
     "            if (arr[0].size() != 20) { return -99; }\n"
     "            if (arr[1].byteAt(0) != (int8) 113) { return -98; }\n"  // 'q'
     "        }\n"
@@ -207,7 +207,7 @@ const std::string MODULE_SRC =
     "            String[] arr = heap String[4];\n"
     "            for (int32 i = 0; i < 4; i++) {\n"
     "                String t = s.substring(0, 13);\n"
-    "                arr[i] = #t;\n"
+    "                arr[i] #= t;\n"
     "            }\n"
     "            if (arr[3].size() != 13) { return -99; }\n"
     "            if (arr[0].byteAt(12) != (int8) 109) { return -98; }\n"  // 'm'
@@ -225,9 +225,9 @@ const std::string MODULE_SRC =
     "            String s = a + b;\n"
     "            String[] arr = heap String[1];\n"
     "            String p0 = s.substring(0, 20);\n"
-    "            arr[0] = #p0;\n"
+    "            arr[0] #= p0;\n"
     "            String p1 = s.substring(5, 30);\n"
-    "            arr[0] = #p1;\n"
+    "            arr[0] #= p1;\n"
     "            if (arr[0].size() != 25) { return -99; }\n"
     "        }\n"
     "        return Cajeta.liveCount() - base;\n"
@@ -262,9 +262,9 @@ const std::string MODULE_SRC =
     "            String[] arr = heap String[2];\n"
     "            String p0 = s.substring(0, 20);\n"
     "            String p1 = s.substring(16, 36);\n"
-    "            arr[0] = #p0;\n"
-    "            arr[1] = #p1;\n"
-    "            String back = #arr[0];\n"
+    "            arr[0] #= p0;\n"
+    "            arr[1] #= p1;\n"
+    "            String back #= arr[0];\n"
     "            if (back.size() != 20) { return -99; }\n"
     "            if (arr[1].size() != 20) { return -98; }\n"
     "        }\n"

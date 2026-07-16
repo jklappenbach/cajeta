@@ -191,7 +191,7 @@ TEST(ContainerSweepTests, arrayListGrowCarriesOwnedBits) {
     EXPECT_EQ(runI32(src), 23);
 }
 
-// Subscript sugar + extraction: `xs[i] = #v` stores owned through
+// Subscript sugar + extraction: `xs[i] #= v` stores owned through
 // operator[]=, `#xs[i]` binds operator#[] — title to the assignee, slot
 // RESIDENT and readable, bit decayed so teardown skips it.
 TEST(ContainerSweepTests, arrayListSubscriptStoreAndExtract) {
@@ -202,8 +202,8 @@ TEST(ContainerSweepTests, arrayListSubscriptStoreAndExtract) {
         "        {\n"
         "            ArrayList<Cell> xs = heap ArrayList<Cell>();\n"
         "            xs.add(#heap Cell(1));\n"
-        "            xs[0] = #heap Cell(7);\n"       // displaced-release the 1
-        "            Cell got = #xs[0];\n"           // title out, slot resident
+        "            xs[0] #= heap Cell(7);\n"       // displaced-release the 1
+        "            Cell got #= xs[0];\n"           // title out, slot resident
         "            if (xs[0].n != 7) { return -97; }\n"
         "            t = got.n;\n"
         "        }\n"                                // got drops; teardown skips slot
@@ -226,9 +226,9 @@ TEST(ContainerSweepTests, arrayListSecondExtractionPanics) {
         "    public static int32 run() {\n"
         "        ArrayList<Cell> xs = heap ArrayList<Cell>();\n"
         "        xs.add(#heap Cell(4));\n"
-        "        Cell first = #xs[0];\n"
+        "        Cell first #= xs[0];\n"
         "        try {\n"
-        "            Cell second = #xs[0];\n"
+        "            Cell second #= xs[0];\n"
         "            return -99;\n"
         "        } catch (Exception e) {\n"
         "            return first.n;\n"

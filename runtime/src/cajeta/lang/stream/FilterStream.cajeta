@@ -32,7 +32,7 @@ public final class FilterStream<T> extends Stream<T> {
      * ```
      */
     public FilterStream(#Stream<T> source, (T) -> boolean pred) {
-        this.source = #source;
+        this.source #= source;
         this.pred = pred;
     }
 

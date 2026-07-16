@@ -518,8 +518,16 @@ namespace cajeta {
         // borrow, NO panic) instead of claiming ownership.
         void setForwardingSlotMove(bool v) { forwardingSlotMove = v; }
         bool isForwardingSlotMove() const { return forwardingSlotMove; }
+        // title-stores §2.3 Phase 2 (plan 7.2.2) — set by the enclosing site
+        // when this move was spelled the legacy way, `dst = #v`. It cannot be
+        // recovered later: `dst = #v` and `dst #= v` build the SAME node (the
+        // `#=` desugar wraps the RHS in a Move of its own), so the spelling is
+        // only visible while the parse context is in hand.
+        void setLegacyTransferAssign(bool v) { legacyTransferAssign = v; }
+        bool isLegacyTransferAssign() const { return legacyTransferAssign; }
     private:
         bool forwardingSlotMove = false;
+        bool legacyTransferAssign = false;
     };
 
     // Structured-concurrency expressions (docs/specification/concurrent/Concurrency.md). All three wrap a

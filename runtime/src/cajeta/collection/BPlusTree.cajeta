@@ -100,12 +100,12 @@ public final class BPlusTree<K, V> {
         if (this.root == null) {
             BPlusTreeNode<K, V> r = heap BPlusTreeNode<K, V>(true, this.order);
             if (keyOwned) {
-                r.keys[0] = #key;
+                r.keys[0] #= key;
             } else {
                 r.keys[0] = key;
             }
             if (valOwned) {
-                r.values[0] = #value;
+                r.values[0] #= value;
             } else {
                 r.values[0] = value;
             }
@@ -131,7 +131,7 @@ public final class BPlusTree<K, V> {
                 // The slot store's displaced release drops an owned
                 // old value; the bit records the spelling.
                 if (valOwned) {
-                    leaf.values[pos] = #value;
+                    leaf.values[pos] #= value;
                 } else {
                     leaf.values[pos] = value;
                 }
@@ -147,12 +147,12 @@ public final class BPlusTree<K, V> {
             j = j - 1;
         }
         if (keyOwned) {
-            leaf.keys[pos] = #key;
+            leaf.keys[pos] #= key;
         } else {
             leaf.keys[pos] = key;
         }
         if (valOwned) {
-            leaf.values[pos] = #value;
+            leaf.values[pos] #= value;
         } else {
             leaf.values[pos] = value;
         }

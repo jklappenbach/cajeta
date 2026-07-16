@@ -171,7 +171,7 @@ public final class HashMap<K, V> {
                     // dual-role resolve that COPIES the borrowed bytes, and `#`
                     // there would store a pointer to the caller's dying temp.
                     if (valOwned) {
-                        this.slots[i].val = #value;
+                        this.slots[i].val #= value;
                     } else {
                         this.slots[i].val = value;
                     }
@@ -204,12 +204,12 @@ public final class HashMap<K, V> {
         boolean wasEmpty = (this.ctrl[insertAt] == (int8) 0x80);
         // Spelling matches the caller's transfer (see the replace branch above).
         if (keyOwned) {
-            this.slots[insertAt].key = #key;
+            this.slots[insertAt].key #= key;
         } else {
             this.slots[insertAt].key = key;
         }
         if (valOwned) {
-            this.slots[insertAt].val = #value;
+            this.slots[insertAt].val #= value;
         } else {
             this.slots[insertAt].val = value;
         }
@@ -283,8 +283,8 @@ public final class HashMap<K, V> {
             }
             s = s + 1;
         }
-        this.slots = #newSlots;
-        this.ctrl = #newCtrl;
+        this.slots #= newSlots;
+        this.ctrl #= newCtrl;
         this.cap = newCap;
         this.sizeCount = newSize;
         this.usedSlots = newSize;
@@ -451,7 +451,7 @@ public final class HashMap<K, V> {
     }
 
     /**
-     * Title-extracting subscript — `V v = #m[key]` (title-tracking §6.3).
+     * Title-extracting subscript — `V v #= m[key]` (title-tracking §6.3).
      * TOTAL: either the entry holds a title and it moves to the caller —
      * the entry stays RESIDENT and readable, its bit decayed to borrowed
      * (membership is not ownership) — or this throws: extraction from an
@@ -474,7 +474,7 @@ public final class HashMap<K, V> {
                     // Guarded member detach (title-stores §3.3.2): the
                     // title moves out and the bit decays; a borrowed or
                     // already-extracted entry panics TITLE_MISS.
-                    V out = #this.slots[i].val;
+                    V out #= this.slots[i].val;
                     return #out;
                 }
                 mm = mm & (mm - 1);

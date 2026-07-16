@@ -18,7 +18,7 @@ std::string makeSource(const std::string& body) {
            "import cajeta.collection.ArrayList;\n"
            "public final class Holder {\n"
            "    public String s;\n"
-           "    public Holder(#String s) { this.s = #s; }\n"
+           "    public Holder(#String s) { this.s #= s; }\n"
            "}\n"
            "public final class Sfd {\n"
            "    public static int32 run() {\n"
@@ -96,7 +96,7 @@ TEST(SharedFieldDropTests, moveIsRcNeutral) {
         "{\n" +
         std::string(kDyn) +
         "    String w = s.substring(3, 23);\n"
-        "    String w2 = #w;\n"                       // move: no retain
+        "    String w2 #= w;\n"                       // move: no retain
         "    Holder h = heap Holder(#w2);\n"          // move into field
         "    if (h.s.size() != 20) { return -1; }\n"
         "    if (!h.s.startsWith(\"def\")) { return -2; }\n"

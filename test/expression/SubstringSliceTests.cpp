@@ -62,7 +62,7 @@ TEST(SubstringSliceTests, substringOutlivesSource) {
         "String keep;\n"
         "{\n" +
         "    String t = s.substring(23, 29);\n"  // "xyz012"
-        "    keep = #t;\n"
+        "    keep #= t;\n"
         "}\n"
         "s = \"\";\n"  // rebind: source wrapper drops; root must survive via keep
         "if (keep.size() != 6) { return -1; }\n"
@@ -107,7 +107,7 @@ TEST(SubstringSliceTests, substringChainRoot) {
         "{\n"
         "    String mid = s.substring(5, 30);\n"    // "fghij...xyz012" window
         "    String t = mid.substring(5, 10);\n"    // "klmno" (root offsets 10..15)
-        "    leaf = #t;\n"
+        "    leaf #= t;\n"
         "}\n"
         "if (leaf.size() != 5) { return -1; }\n"
         "if (!leaf.equals(\"klmno\")) { return -2; }\n"

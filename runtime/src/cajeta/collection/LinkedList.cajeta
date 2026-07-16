@@ -76,12 +76,12 @@ public final class LinkedList<T> {
         // which is the node's last use.
         if (this.tailNode == null) {
             this.tailNode = node;
-            this.headNode = #node;
+            this.headNode #= node;
         } else {
             node.prev = this.tailNode;
             LinkedListNode<T> oldTail = this.tailNode;
             this.tailNode = node;
-            oldTail.next = #node;
+            oldTail.next #= node;
         }
         this.sizeCount = this.sizeCount + 1;
     }
@@ -93,15 +93,15 @@ public final class LinkedList<T> {
         LinkedListNode<T> node = heap LinkedListNode<T>(#value);
         if (this.headNode == null) {
             this.tailNode = node;
-            this.headNode = #node;
+            this.headNode #= node;
         } else {
             // Extract the old head's title into node.next (its bit decays
             // but the reference stays readable), backlink, then store the
             // new head's title — no displaced release fires on the now-
             // borrowed headNode slot.
-            node.next = #this.headNode;
+            node.next #= this.headNode;
             this.headNode.prev = node;
-            this.headNode = #node;
+            this.headNode #= node;
         }
         this.sizeCount = this.sizeCount + 1;
     }
@@ -122,12 +122,12 @@ public final class LinkedList<T> {
         // which is the node's last use.
         if (this.tailNode == null) {
             this.tailNode = node;
-            this.headNode = #node;
+            this.headNode #= node;
         } else {
             node.prev = this.tailNode;
             LinkedListNode<T> oldTail = this.tailNode;
             this.tailNode = node;
-            oldTail.next = #node;
+            oldTail.next #= node;
         }
         this.sizeCount = this.sizeCount + 1;
     }
@@ -144,15 +144,15 @@ public final class LinkedList<T> {
         LinkedListNode<T> node = heap LinkedListNode<T>(#value);
         if (this.headNode == null) {
             this.tailNode = node;
-            this.headNode = #node;
+            this.headNode #= node;
         } else {
             // Extract the old head's title into node.next (its bit decays
             // but the reference stays readable), backlink, then store the
             // new head's title — no displaced release fires on the now-
             // borrowed headNode slot.
-            node.next = #this.headNode;
+            node.next #= this.headNode;
             this.headNode.prev = node;
-            this.headNode = #node;
+            this.headNode #= node;
         }
         this.sizeCount = this.sizeCount + 1;
     }
@@ -207,9 +207,9 @@ public final class LinkedList<T> {
         // Take the head's title; relink by moving the successor's title
         // up. The popped node's `next` bit decays with the extraction, so
         // its scope-exit drop frees just the node — no chain cascade.
-        LinkedListNode<T> node = #this.headNode;
+        LinkedListNode<T> node #= this.headNode;
         if (node.next != null) {
-            this.headNode = #node.next;
+            this.headNode #= node.next;
             this.headNode.prev = null;
         } else {
             this.headNode = null;
@@ -247,11 +247,11 @@ public final class LinkedList<T> {
         LinkedListNode<T> prevNode = this.tailNode.prev;
         LinkedListNode<T> node;
         if (prevNode != null) {
-            node = #prevNode.next;
+            node #= prevNode.next;
             prevNode.next = null;
             this.tailNode = prevNode;
         } else {
-            node = #this.headNode;
+            node #= this.headNode;
             this.headNode = null;
             this.tailNode = null;
         }
@@ -308,16 +308,16 @@ public final class LinkedList<T> {
                 // frees just cur at block exit (next bit decayed).
                 LinkedListNode<T> owned;
                 if (cur.prev != null) {
-                    owned = #cur.prev.next;
+                    owned #= cur.prev.next;
                     if (cur.next != null) {
-                        cur.prev.next = #cur.next;
+                        cur.prev.next #= cur.next;
                     } else {
                         cur.prev.next = null;
                     }
                 } else {
-                    owned = #this.headNode;
+                    owned #= this.headNode;
                     if (cur.next != null) {
-                        this.headNode = #cur.next;
+                        this.headNode #= cur.next;
                     } else {
                         this.headNode = null;
                     }

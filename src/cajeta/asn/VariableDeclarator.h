@@ -31,6 +31,24 @@ namespace cajeta {
 
     typedef shared_ptr<VariableInitializer> VariableInitializerPtr;
 
+    // title-stores §2.3 Phase 2 (plan 7.2.2) — flag a declaration initializer
+    // that was spelled the legacy way, `T x = #v`, so MoveExpression::generateCode
+    // can deprecate it. Shared by the two declaration builders (Statement.cpp's
+    // nested-decl path and the visitor's) — they must agree, or the same
+    // declaration would warn in one nesting context and stay silent in the other.
+    //
+    // A no-op unless the initializer is exactly `#v`: `T x = f(#v)` keeps the
+    // move nested inside the call, where it is an argument, not an assignment.
+    inline void markLegacyTransferAssign(const InitializerPtr& initializer) {
+        auto vi = dynamic_pointer_cast<VariableInitializer>(initializer);
+        if (!vi || vi->getChildren().empty()) {
+            return;
+        }
+        if (auto mv = dynamic_pointer_cast<MoveExpression>(vi->getChildren()[0])) {
+            mv->setLegacyTransferAssign(true);
+        }
+    }
+
     class ArrayInitializer : public Initializer {
     private:
         list<VariableInitializerPtr> initializers;

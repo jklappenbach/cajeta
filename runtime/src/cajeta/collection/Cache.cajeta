@@ -195,7 +195,7 @@ public final class Cache<K, V> {
             // Consuming spelling (title-tracking 6.2.3): forwards the caller's
             // flag onto the node's value bit and releases the displaced old
             // value if the node owned it.
-            node.value = #value;
+            node.value #= value;
             node.accessedAt = now;
             this.moveToHead(node);
             // Existing entry keeps its stored key; the incoming duplicate `key`

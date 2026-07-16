@@ -87,12 +87,12 @@ TEST(DropChainTests, multipleArrayUseDoesntChangeDropCount) {
 TEST(DropChainTests, moveOutSuppressesOriginalDrop) {
     EXPECT_EQ(observe(
         "int32[] xs = heap int32[5];\n"
-        "int32[] ys = #xs;"), 1);
+        "int32[] ys #= xs;"), 1);
 }
 
 TEST(DropChainTests, moveOutOfOneOfTwo) {
     EXPECT_EQ(observe(
         "int32[] a = heap int32[3];\n"
         "int32[] b = heap int32[3];\n"
-        "int32[] c = #a;"), 2);
+        "int32[] c #= a;"), 2);
 }

@@ -70,7 +70,7 @@ public final class Optional<T> {
      */
     public Optional(boolean present, T value) {
         this.present = present;
-        this.value = #value;
+        this.value #= value;
     }
 
     /**

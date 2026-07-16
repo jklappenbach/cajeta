@@ -507,7 +507,7 @@ public class BodyReader {
             dst[i] = this.out[i];
             i = i + 1;
         }
-        this.out = #dst;
+        this.out #= dst;
         this.outCap = newCap;
     }
 
@@ -527,7 +527,7 @@ public class BodyReader {
             dst[i] = this.tail[i];
             i = i + 1;
         }
-        this.tail = #dst;
+        this.tail #= dst;
         this.tailCap = newCap;
     }
 }

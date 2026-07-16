@@ -121,6 +121,9 @@ namespace cajeta {
                             }
                         }
                     }
+                } else if (initializer != nullptr) {
+                    // title-stores §2.3 Phase 2 (plan 7.2.2) — legacy `T x = #v`.
+                    markLegacyTransferAssign(initializer);
                 }
                 string identName = vdCtx->variableDeclaratorId()->identifier()->getText();
                 int arrayDim = static_cast<int>(vdCtx->variableDeclaratorId()->LBRACK().size());

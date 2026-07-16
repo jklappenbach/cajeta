@@ -112,13 +112,13 @@ public final class Heap<T> {
             }
             // Ownership transfer of the fresh storage into the field
             // (see ArrayList.add for why `#` is required here).
-            this.data = #grown;
+            this.data #= grown;
             this.capacity = newCap;
         }
         // Dual-capable store (title-tracking §6.1) — spelling matches the
         // caller's transfer, same as HashMap.put / ArrayList.add.
         if (vOwned) {
-            this.data[this.sizeCount] = #v;
+            this.data[this.sizeCount] #= v;
         } else {
             this.data[this.sizeCount] = v;
         }

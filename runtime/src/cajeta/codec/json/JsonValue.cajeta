@@ -224,13 +224,13 @@ public final class JsonValue {
     // exit and leave this.arrVal dangling.
     public JsonValue setArray(#JsonArray a) {
         this.kind = 4;
-        this.arrVal = #a;
+        this.arrVal #= a;
         return this;
     }
 
     public JsonValue setObject(#JsonObject o) {
         this.kind = 5;
-        this.objVal = #o;
+        this.objVal #= o;
         return this;
     }
 
@@ -242,7 +242,7 @@ public final class JsonValue {
      */
     public JsonValue setStringOwned(#int8[] bytes, int32 len) {
         this.kind = 3;
-        this.strBytes = #bytes;
+        this.strBytes #= bytes;
         this.strLen = len;
         return this;
     }

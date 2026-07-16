@@ -87,7 +87,7 @@ public final class ArrayList<T> {
         // The slot store's displaced release (title-stores §3.2) drops an
         // owned old occupant; the bit records the spelling.
         if (vOwned) {
-            this.data[i] = #v;
+            this.data[i] #= v;
         } else {
             this.data[i] = v;
         }
@@ -117,7 +117,7 @@ public final class ArrayList<T> {
         // Dual-capable store (title-tracking §6.1) — spelling matches the
         // caller's transfer, same as HashMap.put.
         if (vOwned) {
-            this.data[this.sizeCount] = #v;
+            this.data[this.sizeCount] #= v;
         } else {
             this.data[this.sizeCount] = v;
         }
@@ -144,8 +144,8 @@ public final class ArrayList<T> {
         // array we just installed in the field, leaving `this.data`
         // pointing at freed storage. Subsequent `add`s would then
         // write into reclaimed memory. Same pattern HashMap.rehash
-        // uses for `this.keys = #newKeys` et al.
-        this.data = #grown;
+        // uses for `this.keys #= newKeys` et al.
+        this.data #= grown;
         this.capacity = newCap;
     }
 
@@ -192,7 +192,7 @@ public final class ArrayList<T> {
     }
 
     /**
-     * Title-extracting subscript — `T t = #xs[i]` (title-tracking §6.3).
+     * Title-extracting subscript — `T t #= xs[i]` (title-tracking §6.3).
      * TOTAL: either the slot holds a title and it moves to the caller — the
      * slot stays RESIDENT and readable, its bit decayed to borrowed
      * (membership is not ownership) — or this throws: extraction from an
@@ -206,7 +206,7 @@ public final class ArrayList<T> {
         // Guarded take (title-stores §3.2): the title moves out and the
         // bit clears; a borrowed or already-extracted slot panics
         // TITLE_MISS.
-        T out = #this.data[i];
+        T out #= this.data[i];
         return #out;
     }
 

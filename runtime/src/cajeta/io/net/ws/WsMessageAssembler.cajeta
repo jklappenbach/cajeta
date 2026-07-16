@@ -269,7 +269,7 @@ public class WsMessageAssembler {
         // field so the local's scope-exit drop doesn't reclaim the array we
         // just installed — the Headers.grow / WsFrameDecoder.growQueue
         // ownership-marker discipline.
-        this.buf = #grown;
+        this.buf #= grown;
     }
 
     /**

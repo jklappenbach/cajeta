@@ -41,7 +41,7 @@ public class RwLock<T> {
      */
     public RwLock(T initial) {
         this.handle = Cajeta.rwlockNew();
-        this.value = #initial;
+        this.value #= initial;
     }
 
     public ~RwLock() {

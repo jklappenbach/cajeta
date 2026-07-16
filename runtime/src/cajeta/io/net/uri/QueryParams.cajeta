@@ -523,8 +523,8 @@ public class QueryParams {
             dstV[i] = this.values[i];
             i = i + 1;
         }
-        this.keys = #dstK;
-        this.values = #dstV;
+        this.keys #= dstK;
+        this.values #= dstV;
         this.cap = newCap;
     }
 }

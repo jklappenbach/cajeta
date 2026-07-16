@@ -2,7 +2,7 @@
 // Alias-mutation: reassigning a field that a local still aliases.
 //
 // HISTORY: this file once asserted that reassigning a borrowed slot
-// (`String n = p.name; p.name = #"Charlie";`) was a use-after-move
+// (`String n = p.name; p.name #= "Charlie";`) was a use-after-move
 // error ("Gap 4" live-borrow guard). That guard has been REMOVED.
 //
 // Rationale: a field reassignment emits no eager drop. A node is freed
@@ -53,7 +53,7 @@ TEST(AliasMutationBorrowTests, writeThroughAliasIsAllowed) {
         "    public static int32 run() {\n"
         "        Person p = heap Person(\"Bob\");\n"
         "        String alias = p.name;\n"
-        "        p.name = #\"Charlie\";\n"
+        "        p.name #= \"Charlie\";\n"
         "        return 0;\n"
         "    }\n"
         "}\n";
@@ -91,7 +91,7 @@ TEST(AliasMutationBorrowTests, writeToBorrowedPathPrefixIsAllowed) {
         "    public static int32 run() {\n"
         "        Person p = heap Person(heap Address(\"NYC\"));\n"
         "        String alias = p.addr.city;\n"
-        "        p.addr = #heap Address(\"LA\");\n"
+        "        p.addr #= heap Address(\"LA\");\n"
         "        return 0;\n"
         "    }\n"
         "}\n";

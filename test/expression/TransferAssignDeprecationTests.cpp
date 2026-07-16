@@ -62,6 +62,20 @@ bool deprecationMessageOffersSharpAssign() {
     return false;
 }
 
+// Unit 6's loud-plain-store diagnostic (spec §2.4) — deprecating a spelling
+// must not reclassify it.
+bool plainStoreWarnedAbout(const char* varName) {
+    for (auto& d : CajetaJit::lastDiagnostics()) {
+        if (d.code == "CAJETA_WARN_PLAIN_RETAIN_STORE"
+                && d.severity == "warning"
+                && d.message.find(std::string("`") + varName + "`")
+                       != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
 }  // namespace
 
 // 7.1.1a — local declaration-initializer: `T x = #v` is an assignment site.
@@ -157,6 +171,32 @@ TEST(TransferAssignDeprecationTests, sharpAssignStaysQuiet) {
         "}\n";
     EXPECT_EQ(runI32(src), 8);
     EXPECT_FALSE(deprecationWarned());
+}
+
+// 7.1.1h — `= #v` is DEPRECATED, not demoted. It still moves the title, so it
+// must not trip Unit 6's loud-plain-store warning (spec §2.4): the two
+// diagnostics have to stay orthogonal, or the fix-it would tell the developer
+// to write `#=` on a store that already transfers.
+//
+// Inherited from PlainStoreDiagnosticTests.sharpSpellingsQuiet (6.1.1c), whose
+// `keepOld` half was the legacy spelling until 7.2.1 respelled it away. This is
+// the last place the exclusion is exercised; it retires with the Phase 3 flip.
+TEST(TransferAssignDeprecationTests, legacyTransferAssignIsNotAPlainStore) {
+    std::string src = std::string(kCellSrc) +
+        "public class Holder {\n"
+        "    public Cell b;\n"
+        "    public void keepOld(Cell u) { this.b = #u; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Holder h = heap Holder();\n"
+        "        h.keepOld(#heap Cell(4));\n"
+        "        return h.b.n;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 4);
+    EXPECT_FALSE(plainStoreWarnedAbout("u"));  // it transfers — not a plain store
+    EXPECT_TRUE(deprecationWarned());          // ...but it is on the way out
 }
 
 // 7.1.1g — a plain (non-transfer) assignment is untouched by this diagnostic.

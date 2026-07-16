@@ -54,7 +54,7 @@ public class Tensor<T> {
         // title-tracking (Unit 8 sweep): every factory surrenders `#st` — the
         // consuming spelling records the title on the field bit; a plain
         // store left the armed formal to free the Storage at ctor exit.
-        this.store = #store;
+        this.store #= store;
         this.offsetVal = offset;
         int32 nd = (int32) shape.count();
         this.shapeDims = heap int64[nd];

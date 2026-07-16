@@ -199,7 +199,7 @@ TEST(WsMessageAssemblerTests, interleavedControlFrameDoesNotCorruptMessage) {
         // take the title — a plain `done = m` lend dangles when m drops at
         // the iteration's scope exit.
         "    WsMessage m = asm.accept(f);\n"
-        "    if (m != null) { done = #m; }\n"
+        "    if (m != null) { done #= m; }\n"
         "}\n"
         "if (pings != 1) return -1;\n"
         "if (done == null) return -2;\n"

@@ -112,7 +112,7 @@ public class LtmPager<K, V> {
         // leaves `f` owned by this ctor scope, so its drop fires at ctor
         // exit and closes the fd the pager still needs (use-after-free).
         File f = File.open(path, OpenMode.READ_WRITE);
-        this.file = #f;
+        this.file #= f;
         int64 sz = this.file.size();
         if (sz == 0) {
             this.order = order;

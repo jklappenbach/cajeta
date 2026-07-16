@@ -33,7 +33,7 @@ public final class TakeStream<T> extends Stream<T> {
      * ```
      */
     public TakeStream(#Stream<T> source, int32 n) {
-        this.source = #source;
+        this.source #= source;
         this.remaining = n;
     }
 

@@ -137,7 +137,7 @@ public final class RedBlackTree<K, V> {
                 // value bit and displaced-releases an owned old value. An
                 // OWNED duplicate key reclaims at exit (the armed formal's
                 // drop entry — nothing here consumes it).
-                parent.value = #value;
+                parent.value #= value;
                 return;
             }
         }

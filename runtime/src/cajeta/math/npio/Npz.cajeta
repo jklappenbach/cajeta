@@ -192,7 +192,7 @@ public final class NpzWriter {
             int8[] nb = heap int8[nc];
             int64 i = 0;
             while (i < this.len) { nb[i] = this.buf[i]; i = i + 1; }
-            this.buf = #nb;
+            this.buf #= nb;
             this.cap = nc;
         }
     }

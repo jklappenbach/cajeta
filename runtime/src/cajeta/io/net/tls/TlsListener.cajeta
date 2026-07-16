@@ -32,7 +32,7 @@ public class TlsListener {
 
     private TlsListener(#TcpListener listener, int8[] cert, int32 certLen,
                         int8[] key, int32 keyLen) {
-        this.listener = #listener;
+        this.listener #= listener;
         // Dual-role stores: the fields record what the caller did — lent
         // buffers stay the caller's (the documented borrow contract),
         // `#`-passed ones become the listener's.

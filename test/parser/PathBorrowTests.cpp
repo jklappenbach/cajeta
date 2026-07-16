@@ -1,7 +1,7 @@
 //
 // Session 3.5 / Step 3.4 — path-based borrow tracking.
 //
-// `String n = #person.name` records the dotted path `person.name` on the
+// `String n #= person.name` records the dotted path `person.name` on the
 // active scope's moved-paths set. Subsequent reads of the same path — or any
 // path passing through a moved prefix — are rejected at codegen time with
 // CAJETA_ERROR_USE_AFTER_MOVE.
@@ -104,7 +104,7 @@ std::string source(const std::string& body) {
 // balance (one drop, no UAF).
 TEST(PathBorrowTests, readSamePathAfterClassExtractionIsLend) {
     auto src = sourceNamed("PLend1", 
-        "Inner moved = #s.foo;\n"
+        "Inner moved #= s.foo;\n"
         "Inner n = s.foo;\n"
         "if (n.bar.byteLength() != 1) { return -1; }");
     auto jit = CajetaJit::compile(src, "test.PLend1");
@@ -115,7 +115,7 @@ TEST(PathBorrowTests, readSamePathAfterClassExtractionIsLend) {
 TEST(PathBorrowTests, readDeeperPathAfterRootMoveErrors) {
     // Move the root identifier `s` itself, then try to read through it.
     auto src = source(
-        "Outer moved = #s;\n"          // root moved
+        "Outer moved #= s;\n"          // root moved
         "Inner n = s.foo;");           // any path through s is invalid
     expectUseAfterMove(src, "s.foo");
 }
@@ -125,9 +125,9 @@ TEST(PathBorrowTests, doubleClassExtractionPanicsCatchably) {
     // finds the bit clear and PANICS at runtime (extracting a title the
     // field no longer holds) — catchable like the NonNull check.
     auto src = sourceNamed("PLend2",
-        "Inner a = #s.foo;\n"
+        "Inner a #= s.foo;\n"
         "try {\n"
-        "    Inner b = #s.foo;\n"
+        "    Inner b #= s.foo;\n"
         "    if (b.bar.byteLength() == 0) { return -2; }\n"
         "} catch (Exception e) {\n"
         "    return 42;\n"
@@ -141,7 +141,7 @@ TEST(PathBorrowTests, deeperPathMoveBlocksTransitiveRead) {
     // Three-level path; mark `s.foo.bar`, then read it. The check walks
     // prefixes; the exact-match case fires here.
     auto src = source(
-        "String moved = #s.foo.bar;\n"
+        "String moved #= s.foo.bar;\n"
         "String n = s.foo.bar;");
     expectUseAfterMove(src, "s.foo.bar");
 }
@@ -150,7 +150,7 @@ TEST(PathBorrowTests, deeperReadAfterClassExtractionIsLend) {
     // Reading THROUGH an extracted class field is a lend of live memory
     // (the extractor local owns it) — defined under rev 2.
     auto src = sourceNamed("PLend3", 
-        "Inner moved = #s.foo;\n"
+        "Inner moved #= s.foo;\n"
         "String n = s.foo.bar;\n"
         "if (n.byteLength() != 1) { return -3; }");
     auto jit = CajetaJit::compile(src, "test.PLend3");
@@ -163,7 +163,7 @@ TEST(PathBorrowTests, deeperReadAfterClassExtractionIsLend) {
 TEST(PathBorrowTests, siblingPathStillReadable) {
     // Moving `s.foo` shouldn't touch `s.bar` — a different sub-path.
     auto src = source(
-        "Inner moved = #s.foo;\n"
+        "Inner moved #= s.foo;\n"
         "String n = s.bar;");           // different sub-path; OK
     EXPECT_NO_THROW(CajetaJit::compile(src, "test.P"));
 }

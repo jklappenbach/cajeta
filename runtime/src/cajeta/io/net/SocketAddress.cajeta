@@ -59,7 +59,7 @@ public class SocketAddress {
                 "port out of range (0..65535)", (int64) -1);
         }
         SocketAddress s = heap SocketAddress();
-        s.ip = #addr;
+        s.ip #= addr;
         s.port = port;
         return #s;
     }
@@ -200,7 +200,7 @@ public class SocketAddress {
             int32 port = SocketAddress.parsePort(b, afterBracket + 1, n);
 
             SocketAddress s = heap SocketAddress();
-            s.ip = #addr;
+            s.ip #= addr;
             s.port = port;
             return #s;
         }
@@ -236,7 +236,7 @@ public class SocketAddress {
         int32 port2 = SocketAddress.parsePort(b, colonIdx + 1, n);
 
         SocketAddress s2 = heap SocketAddress();
-        s2.ip = #addr2;
+        s2.ip #= addr2;
         s2.port = port2;
         return #s2;
     }

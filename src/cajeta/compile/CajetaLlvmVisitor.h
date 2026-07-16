@@ -2093,6 +2093,11 @@ namespace cajeta {
                         mv, ctx->variableInitializer()->getStart());
                 } else {
                     initializer = any_cast<InitializerPtr>(visitVariableInitializer(ctx->variableInitializer()));
+                    // title-stores §2.3 Phase 2 (plan 7.2.2) — the legacy
+                    // `T x = #v` declaration form. Mirrors the expression-site
+                    // marking in Expression::fromContext; the SHARP_ASSIGN
+                    // branch above is the new spelling and stays quiet.
+                    markLegacyTransferAssign(initializer);
                 }
             }
 

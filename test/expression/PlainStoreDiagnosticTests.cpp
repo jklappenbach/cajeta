@@ -1,7 +1,7 @@
 // title-stores Unit 6 (spec §2.4) — the loud-plain-store diagnostic. A plain
 // `=` retaining store (field or slot destination) whose RHS is a class-typed
 // runtime owner (armed-capable formal, or a local carrying a runtime title
-// flag) warns with the `#=`/clone fix-it. Exclusions stay quiet: `#=`/`= #v`
+// flag) warns with the `#=`/clone fix-it. Exclusions stay quiet: `#=`/`#= v`
 // spellings, primitives, Strings (plain store resolves to a copy),
 // statically-borrowed locals, statically-owned locals (no runtime
 // conditionality — the last-use advisory owns that family).
@@ -94,15 +94,21 @@ TEST(PlainStoreDiagnosticTests, slotStoreOfFormalWarns) {
     EXPECT_TRUE(plainStoreWarnedAbout("w"));
 }
 
-// 6.1.1c — the sigil spellings stay quiet: `dst #= v` (title-assign) and the
-// legacy `dst = #v` both move the title; there is nothing to warn about.
+// 6.1.1c — the title-assign spelling stays quiet: `dst #= v` moves the title,
+// so there is nothing to warn about.
+//
+// This case tested BOTH spellings until Unit 7 respelled the stdlib and tests
+// (7.2.1); its `keepOld` half was the legacy `dst = #v`. That spelling is now
+// exercised only where it is still written on purpose — the deprecation pin
+// (TransferAssignDeprecationTests.legacyTransferAssignIsNotAPlainStore), which
+// keeps this exclusion under test until the Phase 3 error flip retires it.
 TEST(PlainStoreDiagnosticTests, sharpSpellingsQuiet) {
     std::string src = std::string(kCellSrc) +
         "public class Holder {\n"
         "    public Cell a;\n"
         "    public Cell b;\n"
         "    public void keepNew(Cell v) { this.a #= v; }\n"
-        "    public void keepOld(Cell u) { this.b = #u; }\n"
+        "    public void keepOld(Cell u) { this.b #= u; }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
@@ -166,7 +172,7 @@ TEST(PlainStoreDiagnosticTests, plainLocalsQuiet) {
         "public class Holder {\n"
         "    public Cell src;\n"
         "    public Cell held;\n"
-        "    public Holder() { this.src = #heap Cell(6); }\n"
+        "    public Holder() { this.src #= heap Cell(6); }\n"
         "    public void borrowStore() {\n"
         "        Cell t = this.src;\n"      // statically borrowed
         "        this.held = t;\n"

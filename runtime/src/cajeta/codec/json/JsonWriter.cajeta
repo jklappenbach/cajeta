@@ -526,7 +526,7 @@ public final class JsonWriter {
             dst[i] = this.buf[i];
             i = i + 1;
         }
-        this.buf = #dst;
+        this.buf #= dst;
         this.cap = newCap;
     }
 }

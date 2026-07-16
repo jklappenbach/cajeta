@@ -84,7 +84,7 @@ TEST(ValueCloneTests, cloneSatisfiesOwningPosition) {
         "public class Cell { public int32 v; public Cell(int32 v) { this.v = v; } }\n"
         "public class Crate<K> {\n"
         "    public K store;\n"
-        "    public void put(#K k) { this.store = #k; }\n"
+        "    public void put(#K k) { this.store #= k; }\n"
         "    public K peek() { return this.store; }\n"
         "}\n"
         "public final class D {\n"

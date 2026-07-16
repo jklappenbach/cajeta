@@ -41,7 +41,7 @@ public class Command {
      * @EntryPoint
      */
     public Command(#String[] argv) {
-        this.argv = #argv;
+        this.argv #= argv;
         this.cwd = null;
         this.env = null;
         this.stdinData = null;
@@ -60,12 +60,12 @@ public class Command {
      * strings). Without this call the child inherits the parent's env.
      */
     public void environment(#String[] entries) {
-        this.env = #entries;
+        this.env #= entries;
     }
 
     /** Feed `data[0..len)` to the child's stdin (read to completion). */
     public void stdinBytes(#int8[] data, int32 len) {
-        this.stdinData = #data;
+        this.stdinData #= data;
         this.stdinLen = len;
     }
 

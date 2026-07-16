@@ -359,7 +359,7 @@ public class Stream<T> {
         // `#seed` forwards the caller's flag onto acc's entry, and `#acc`
         // rides it back out on the return flag. The closure only ever
         // borrows acc (plain args) and identity-returns it flag-0.
-        R acc = #seed;
+        R acc #= seed;
         Optional<T> o = this.next();
         while (o.isPresent()) {
             acc = fn(acc, o.get());
@@ -400,7 +400,7 @@ public class Stream<T> {
             return ParallelDriver.foldParallelChain<T, R>(this, seed, fn, combiner);
         }
         // title-tracking 7.2.5 — same title threading as the 2-arg fold.
-        R acc = #seed;
+        R acc #= seed;
         Optional<T> o = this.next();
         while (o.isPresent()) {
             acc = fn(acc, o.get());

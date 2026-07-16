@@ -1,7 +1,7 @@
 //
 // title-tracking Unit 2 (plan 2.1) — static linearity for locals (spec §3).
 // A local's role is fixed by its initializer shape: owner (fresh
-// construction, #-returning call, `= #x` move) or borrow (bare identifier,
+// construction, #-returning call, `#= x` move) or borrow (bare identifier,
 // field/element read, plain-returning call). `#x` demands a statically-
 // active owner; every transfer (assignment, call arg, ctor arg) marks the
 // source moved; reassignment re-arms; branch merges are conservative.
@@ -67,7 +67,7 @@ TEST(LocalLinearityTests, moveOutOfBorrowIsCompileError) {
         "    public static int32 run() {\n"
         "        Cell obj = heap Cell(7);\n"
         "        Cell obj2 = obj;\n"       // borrow: bare-identifier init
-        "        Cell obj3 = #obj2;\n"     // move out of a borrow — reject
+        "        Cell obj3 #= obj2;\n"     // move out of a borrow — reject
         "        return obj3.n;\n"
         "    }\n"
         "}\n";
@@ -135,8 +135,8 @@ TEST(LocalLinearityTests, legalMoveChainSingleDrop) {
         "public final class D {\n"
         "    public static int32 work() {\n"
         "        Cell obj = heap Cell(42);\n"
-        "        Cell obj3 = #obj;\n"
-        "        Cell obj4 = #obj3;\n"
+        "        Cell obj3 #= obj;\n"
+        "        Cell obj4 #= obj3;\n"
         "        return obj4.n;\n"
         "    }\n"
         "    public static int32 run() {\n"
@@ -155,7 +155,7 @@ TEST(LocalLinearityTests, readOfMovedChainLinkIsCompileError) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        Cell obj = heap Cell(42);\n"
-        "        Cell obj3 = #obj;\n"
+        "        Cell obj3 #= obj;\n"
         "        return obj.n;\n"         // moved at the line above
         "    }\n"
         "}\n";
@@ -170,7 +170,7 @@ TEST(LocalLinearityTests, borrowRemainsReadableAcrossOwnerMove) {
         "    public static int32 work() {\n"
         "        Cell obj = heap Cell(9);\n"
         "        Cell ref = obj;\n"       // borrow
-        "        Cell obj3 = #obj;\n"     // owner moves; borrow untouched
+        "        Cell obj3 #= obj;\n"     // owner moves; borrow untouched
         "        return ref.n + obj3.n;\n"
         "    }\n"
         "    public static int32 run() {\n"
@@ -260,7 +260,7 @@ TEST(LocalLinearityTests, bareDeclMoveAssignAcrossScopes) {
         "        Cell keep;\n"
         "        {\n"
         "            Cell t = heap Cell(33);\n"
-        "            keep = #t;\n"
+        "            keep #= t;\n"
         "        }\n"
         "        return keep.n;\n"
         "    }\n"

@@ -69,7 +69,7 @@ public final class DnsCacheEntry {
         // the must-own formal's entry stayed armed and freed the array at
         // exit while `e.addresses` still pointed at it (the DnsCache hit-path
         // UAF). `#` moves the title onto the field's bit.
-        e.addresses = #addrs;
+        e.addresses #= addrs;
         e.negative = false;
         return #e;
     }

@@ -51,7 +51,7 @@ public class Path {
         // #out) — the consuming spelling keeps the buffer alive on the
         // field; a plain store left the armed formal to free it at ctor
         // exit (parent()/resolve() then read freed bytes).
-        this.bytes = #bytes;
+        this.bytes #= bytes;
     }
 
     /**

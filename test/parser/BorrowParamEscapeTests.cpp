@@ -126,7 +126,7 @@ TEST(BorrowParamEscapeTests, transferBorrowParamViaSharpForwardsFlag) {
         "}\n"
         "public class Sink {\n"
         "    public Foo f;\n"
-        "    public Sink(#Foo f) { this.f = #f; }\n"
+        "    public Sink(#Foo f) { this.f #= f; }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 useBorrow(Foo p) {\n"  // plain formal (lend)
@@ -152,7 +152,7 @@ TEST(BorrowParamEscapeTests, transferTransferredParamViaSharpAccepted) {
         "}\n"
         "public class Sink {\n"
         "    public Foo f;\n"
-        "    public Sink(#Foo f) { this.f = #f; }\n"
+        "    public Sink(#Foo f) { this.f #= f; }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 hand(#Foo p) {\n"  // outer #Foo formal
