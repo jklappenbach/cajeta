@@ -1573,6 +1573,21 @@ void __cajeta_tail_array_drop_free(void* hdr) {
     __cajeta_free_array(hdr);
 }
 
+// title-stores Unit 5 — String-element arrays: every RESIDENT slot owns
+// its wrapper (dual-role: `#` forwards, a plain store copies), so the
+// teardown walk releases unconditionally. Vacant/taken slots hold NULL.
+void __cajeta_string_elem_drop_walk(void* hdr, uint64_t header_size,
+                                    uint64_t elem_size) {
+    if (!hdr) return;
+    int64_t scount = *(int64_t*) hdr & ~((int64_t) 1 << 63);
+    for (int64_t i = 0; i < scount; i++) {
+        void** slot = (void**) ((uint8_t*) hdr + header_size + (uint64_t) i * elem_size);
+        void* v = *slot;
+        *slot = NULL;
+        if (v) __cajeta_class_virtual_drop(v);
+    }
+}
+
 void __cajeta_tail_elem_drop_walk(void* hdr, uint64_t header_size,
                                   uint64_t elem_size) {
     if (!hdr) return;

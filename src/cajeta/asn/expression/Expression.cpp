@@ -2227,6 +2227,30 @@ namespace cajeta {
                     // 3.3.1. loadIfLValue knows the per-family element
                     // shapes (interface GEPs stay GEPs).
                     auto mvElemT = aixInner->getResolvedType();
+                    // String elements (title-stores Unit 5): the move is a
+                    // TAKE — load the wrapper and NULL the slot, so the
+                    // unconditional String teardown walk skips what the
+                    // caller now holds (extraction and grow-forward alike).
+                    {
+                        auto mvElemCls = dynamic_pointer_cast<CajetaClass>(
+                            mvElemT);
+                        if (mvElemCls && mvElemCls->getQName()
+                                && mvElemCls->getQName()->getTypeName()
+                                       == "String"
+                                && mvElemCls->getQName()->getPackageName()
+                                       == "cajeta.lang") {
+                            auto* sb = module->getBuilder();
+                            auto& sctx = *module->getLlvmContext();
+                            llvm::PointerType* sptr =
+                                llvm::PointerType::get(sctx, 0);
+                            llvm::Value* sv = sb->CreateLoad(
+                                sptr, value, "str.take.val");
+                            sb->CreateStore(
+                                llvm::ConstantPointerNull::get(sptr), value);
+                            resolvedType = mvElemT;
+                            return sv;
+                        }
+                    }
                     if (mvElemT
                             && !CajetaClass::arrayElementCarriesSlotBits(
                                    mvElemT)) {

@@ -3315,6 +3315,28 @@ namespace cajeta {
                                 arrField->elementStrideBytes(wdl, &ctx))});
                     }
                 }
+                // title-stores Unit 5 — String elements: every resident
+                // slot owns its wrapper (dual-role stores), release
+                // unconditionally before the buffer frees.
+                {
+                    auto strElem = dynamic_pointer_cast<CajetaClass>(
+                        arrField->getElementType());
+                    if (strElem && slotMemberIsString(strElem)) {
+                        if (llvm::Function* swFn = cajModule->getRuntimeFunction(
+                                "__cajeta_string_elem_drop_walk", bodyModule)) {
+                            const llvm::DataLayout& swDl =
+                                bodyModule->getDataLayout();
+                            llvm::Type* swi64 = llvm::Type::getInt64Ty(ctx);
+                            b.CreateCall(swFn, {arrPtr,
+                                llvm::ConstantInt::get(swi64,
+                                    swDl.getTypeAllocSize(
+                                        arrField->getLlvmType())),
+                                llvm::ConstantInt::get(swi64,
+                                    arrField->elementStrideBytes(
+                                        swDl, &ctx))});
+                        }
+                    }
+                }
                 // title-stores §3.3.2 (Unit 4) — value-struct elements:
                 // walk slots × member bits (each slot's inline ownership
                 // word) before the buffer frees.

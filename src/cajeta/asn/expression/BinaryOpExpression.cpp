@@ -2206,6 +2206,30 @@ namespace cajeta {
                                                              fobADl,
                                                              module->getLlvmContext()))});
                                             }
+                                        } else if ([&]{
+                                            auto sc = dynamic_pointer_cast<
+                                                CajetaClass>(
+                                                    fobArr->getElementType());
+                                            return sc && sc->getQName()
+                                                && sc->getQName()->getTypeName()
+                                                       == "String"
+                                                && sc->getQName()
+                                                       ->getPackageName()
+                                                       == "cajeta.lang";
+                                        }()) {
+                                            if (llvm::Function* fobSw =
+                                                    module->getRuntimeFunction(
+                                                        "__cajeta_string_elem_drop_walk")) {
+                                                builder->CreateCall(fobSw,
+                                                    {oldVal,
+                                                     llvm::ConstantInt::get(
+                                                         i64Ty, fobHs),
+                                                     llvm::ConstantInt::get(
+                                                         i64Ty,
+                                                         fobArr->elementStrideBytes(
+                                                             fobADl,
+                                                             module->getLlvmContext()))});
+                                            }
                                         } else if (CajetaClass::
                                                 arrayElementCarriesMemberBits(
                                                     fobArr->getElementType())) {
