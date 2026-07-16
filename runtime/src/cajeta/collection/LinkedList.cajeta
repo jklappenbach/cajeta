@@ -222,12 +222,11 @@ public final class LinkedList<T> {
         // out; borrowed → plain pass-through, flag rides back 0. The borrow
         // is read BEFORE the extraction branch: a read after `#node.value`
         // trips the conservative use-after-move join.
-        T borrowed = node.value;
-        if ((node.owned & 1) != 0) {
-            T title = #node.value;
-            return #title;
-        }
-        return borrowed;
+        // Fused claim (title-stores §2.1): the field's bit rides into
+        // `title` verbatim — owned hands the title out, a borrow rides
+        // back flag-0 — and `return #title` carries it (flagged return).
+        T title #= #node.value;
+        return #title;
     }
 
     /**
@@ -258,12 +257,11 @@ public final class LinkedList<T> {
         }
         this.sizeCount = this.sizeCount - 1;
         // Remove-shaped return (title-tracking §6.4) — see popHead.
-        T borrowed = node.value;
-        if ((node.owned & 1) != 0) {
-            T title = #node.value;
-            return #title;
-        }
-        return borrowed;
+        // Fused claim (title-stores §2.1): the field's bit rides into
+        // `title` verbatim — owned hands the title out, a borrow rides
+        // back flag-0 — and `return #title` carries it (flagged return).
+        T title #= #node.value;
+        return #title;
     }
 
     /**

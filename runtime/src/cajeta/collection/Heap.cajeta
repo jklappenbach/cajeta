@@ -51,10 +51,8 @@ package cajeta.collection;
 public final class Heap<T> {
 
     private T[] data;
-    // Per-element ownership bits (title-tracking §6): 1 = the heap TOOK the
-    // element via `#`. Bits travel WITH their elements through every sift
-    // swap. Same explicit-sidecar pattern as HashMap.owned / ArrayList.owned.
-    private int8[] owned;
+    // title-stores Unit 5 — ownership lives in data's tail bitmap; bits
+    // ride every sift swap via the forwarding moves. owned[] gone.
     private int32 sizeCount;
     private int32 capacity;
 
@@ -71,7 +69,6 @@ public final class Heap<T> {
     public Heap() {
         this.capacity = 16;
         this.data = heap T[16];
-        this.owned = heap int8[16];   // calloc 0 = nothing owned yet
         this.sizeCount = 0;
     }
 
@@ -103,24 +100,19 @@ public final class Heap<T> {
      * ```
      */
     public void push(T v) {
-        // Word read FIRST — any later call would clobber the TLS carry.
-        int64 mvm = Cajeta.moveMask();
-        boolean vOwned = (mvm & 1) != 0;
+        boolean vOwned = Cajeta.owned(v);
         if (this.sizeCount >= this.capacity) {
             int32 newCap = this.capacity * 2;
             T[] grown = heap T[newCap];
-            int8[] grownOwned = heap int8[newCap];
             int32 i = 0;
             while (i < this.sizeCount) {
                 // title-stores §2.1 — forwarding move keeps tail bits honest.
                 grown[i] #= #this.data[i];
-                grownOwned[i] = this.owned[i];   // carry ownership across
                 i = i + 1;
             }
             // Ownership transfer of the fresh storage into the field
             // (see ArrayList.add for why `#` is required here).
             this.data = #grown;
-            this.owned = #grownOwned;
             this.capacity = newCap;
         }
         // Dual-capable store (title-tracking §6.1) — spelling matches the
@@ -130,7 +122,6 @@ public final class Heap<T> {
         } else {
             this.data[this.sizeCount] = v;
         }
-        this.owned[this.sizeCount] = (int8) (mvm & 1);
         // Sift up from the new leaf toward the root. Ownership bits travel
         // with their elements through every swap.
         int32 child = this.sizeCount;
@@ -146,9 +137,6 @@ public final class Heap<T> {
                     T tmp #= #this.data[child];
                     this.data[child] #= #this.data[parent];
                     this.data[parent] #= tmp;
-                    int8 tmpO = this.owned[child];
-                    this.owned[child] = this.owned[parent];
-                    this.owned[parent] = tmpO;
                     child = parent;
                 } else {
                     sifting = false;
@@ -186,13 +174,12 @@ public final class Heap<T> {
             T[] missDefault = heap T[1];
             return Cajeta.flagged(missDefault[0], false);
         }
-        boolean topOwned = (this.owned[0] & 1) != 0;
+        // Fused claim: the root's bit rides into `top` verbatim; the
+        // `return #top` below carries it to the caller (flagged return).
         T top #= #this.data[0];
         this.sizeCount = this.sizeCount - 1;
         // Move the last element (and its bit) to the root and sift down.
         this.data[0] #= #this.data[this.sizeCount];
-        this.owned[0] = this.owned[this.sizeCount];
-        this.owned[this.sizeCount] = (int8) 0;
         int32 i = 0;
         boolean sifting = true;
         while (sifting) {
@@ -215,24 +202,12 @@ public final class Heap<T> {
                 T tmp #= #this.data[i];
                 this.data[i] #= #this.data[smallest];
                 this.data[smallest] #= tmp;
-                int8 tmpO = this.owned[i];
-                this.owned[i] = this.owned[smallest];
-                this.owned[smallest] = tmpO;
                 i = smallest;
             }
         }
-        return Cajeta.flagged(#top, topOwned);
+        return #top;
     }
 
-    // Drop the elements the heap OWNS (took via `#`). Borrowed elements are
-    // left alone — their lifetime belongs to the caller.
-    ~Heap() {
-        int32 k = 0;
-        while (k < this.sizeCount) {
-            if ((this.owned[k] & 1) != 0) {
-                Cajeta.dropValue(this.data[k]);
-            }
-            k = k + 1;
-        }
-    }
+    // title-stores Unit 5 — no bespoke destructor: data's tail-bit field
+    // walk drops exactly the owned slots.
 }

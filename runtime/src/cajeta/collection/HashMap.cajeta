@@ -143,11 +143,10 @@ public final class HashMap<K, V> {
      * Insert or replace the value at `key`.
      */
     public void put(K key, V value) {
-        // Ownership taken via `#` (read once at entry, before any other call):
-        // bit0 = key, bit1 = val. Plain (borrow) calls read 0.
-        int64 mvm = Cajeta.moveMask();
-        boolean keyOwned = (mvm & 1) != 0;
-        boolean valOwned = (mvm & 2) != 0;
+        // The store spelling must MATCH what the caller did (a borrowed
+        // String must copy via the dual-role resolve; `#` forwards).
+        boolean keyOwned = Cajeta.owned(key);
+        boolean valOwned = Cajeta.owned(value);
         int64 h = key.hash();
         int64 mask = this.cap - 1;
         int8 h2 = (int8) ((h >> 57) & 0x7F);

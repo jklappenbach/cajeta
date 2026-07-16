@@ -2173,16 +2173,60 @@ namespace cajeta {
                                         "own_displace_cont", fobFn);
                                 builder->CreateCondBr(wasOwned, relBB, contBB);
                                 builder->SetInsertPoint(relBB);
-                                // title-stores §3.2 — NO element walk on a
-                                // displaced array (buffer free only). The
-                                // 3.2.5 audit found mixed manual-owned[]/
-                                // tail containers (ArrayList.grow et al.)
-                                // displace the old array while the new one
-                                // still borrows its elements — walking here
-                                // is a mass UAF. Correct user grow idiom =
-                                // move slots out (`new[i] #= #old[i]`) then
-                                // displace (the moveOut pin). Re-enable with
-                                // Unit 5's pure-tail stdlib conversion.
+                                // title-stores Unit 5 — element walk on a
+                                // displaced owned array, RE-ENABLED: the
+                                // stdlib is pure-tail now (the 3.2.5 audit's
+                                // mixed-owned[] grow loops respelled to
+                                // forwarding moves, whose takes clear the
+                                // source bits — the walk then finds only
+                                // slots the old array still genuinely owns).
+                                if (fobFieldIsArray) {
+                                    auto fobArr = dynamic_pointer_cast<
+                                        CajetaArray>(fobProp->getType());
+                                    if (fobArr) {
+                                        const llvm::DataLayout& fobADl =
+                                            module->getLlvmModule()
+                                                ->getDataLayout();
+                                        uint64_t fobHs = fobADl
+                                            .getTypeAllocSize(
+                                                fobArr->getLlvmType());
+                                        if (CajetaClass::
+                                                arrayElementCarriesSlotBits(
+                                                    fobArr->getElementType())) {
+                                            if (llvm::Function* fobWalk =
+                                                    module->getRuntimeFunction(
+                                                        "__cajeta_tail_elem_drop_walk")) {
+                                                builder->CreateCall(fobWalk,
+                                                    {oldVal,
+                                                     llvm::ConstantInt::get(
+                                                         i64Ty, fobHs),
+                                                     llvm::ConstantInt::get(
+                                                         i64Ty,
+                                                         fobArr->elementStrideBytes(
+                                                             fobADl,
+                                                             module->getLlvmContext()))});
+                                            }
+                                        } else if (CajetaClass::
+                                                arrayElementCarriesMemberBits(
+                                                    fobArr->getElementType())) {
+                                            if (llvm::Function* fobMw =
+                                                    CajetaClass::getOrCreateMemberWalk(
+                                                        module,
+                                                        builder->GetInsertBlock()
+                                                            ->getParent()->getParent(),
+                                                        dynamic_pointer_cast<CajetaClass>(
+                                                            fobArr->getElementType()),
+                                                        fobHs,
+                                                        fobArr->elementStrideBytes(
+                                                            fobADl,
+                                                            module->getLlvmContext()),
+                                                        /*withFree=*/false)) {
+                                                builder->CreateCall(fobMw,
+                                                                    {oldVal});
+                                            }
+                                        }
+                                    }
+                                }
                                 builder->CreateCall(relFn, {oldVal});
                                 builder->CreateBr(contBB);
                                 builder->SetInsertPoint(contBB);

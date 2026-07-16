@@ -2770,21 +2770,62 @@ namespace cajeta {
                     resolvedType = CajetaType::of("int64");
                     return builder->CreateCall(fn, {});
                 }
-                // moveMask() -> int64: the ownership-transfer mask for THIS
-                // call (bit i set iff user-arg i arrived owned). 7.2.2: it IS
-                // the enclosing function's trailing ABI transfer word — the
-                // TLS carrier is retired, so the value is stable SSA (an
-                // intervening call can't clobber it) and constructors read
-                // their own call's word. Methods without a word (C-ABI
-                // natives, static entries) read 0.
-                if (ns == "Cajeta" && methodCallName == "moveMask" && parameters.empty()) {
-                    resolvedType = CajetaType::of("int64");
-                    if (auto cmw = module->getCurrentMethod()) {
-                        if (llvm::Value* w = cmw->getTransferWordArg()) {
-                            return w;
+                // owned(formal) -> boolean (title-stores §4): did THIS call
+                // surrender the formal's title? Reads the enclosing
+                // function's ABI transfer word at the formal's
+                // compiler-resolved index — reorder-safe SSA, works for
+                // Strings and primitives (no drop entry needed), works in
+                // ctors. Non-formal arguments are rejected: only formals
+                // have a word bit.
+                if (ns == "Cajeta" && methodCallName == "owned"
+                        && parameters.size() == 1) {
+                    resolvedType = CajetaType::of("boolean");
+                    auto ownedId = dynamic_pointer_cast<IdentifierExpression>(
+                        parameters[0].expression);
+                    auto ownedCm = module->getCurrentMethod();
+                    int ownedPos = -1;
+                    if (ownedId && ownedCm) {
+                        int seen = -1;
+                        for (auto& fp : ownedCm->getParameterList()) {
+                            if (!fp || fp->getName() == "this") continue;
+                            ++seen;
+                            if (fp->getName() == ownedId->getTextValue()) {
+                                ownedPos = seen;
+                                break;
+                            }
                         }
                     }
-                    return (llvm::Value*) builder->getInt64(0);
+                    if (ownedPos < 0 || ownedPos >= 64) {
+                        throw Exception(
+                            "Cajeta.owned(v): `v` must be a formal parameter "
+                            "of the enclosing method — owned() answers \"did "
+                            "THIS call surrender v's title\", and only "
+                            "formals carry a transfer-word bit. For locals, "
+                            "track ownership with `#=` / slot bits instead.",
+                            "CAJETA_ERROR_OWNED_NON_FORMAL");
+                    }
+                    llvm::Value* ownedW = ownedCm->getTransferWordArg();
+                    if (!ownedW) {
+                        return (llvm::Value*) builder->getInt1(false);
+                    }
+                    llvm::Value* ownedBit = builder->CreateAnd(
+                        builder->CreateLShr(ownedW,
+                            builder->getInt64((uint64_t) ownedPos)),
+                        builder->getInt64(1), "owned_bit");
+                    return builder->CreateICmpNE(ownedBit,
+                        builder->getInt64(0), "owned_flag");
+                }
+                // moveMask() — RETIRED (title-stores §4.3). The positional
+                // intrinsic lost its last legitimate caller once `#=`, slot
+                // bits, and Cajeta.owned(formal) landed; the name now
+                // errors with the successors.
+                if (ns == "Cajeta" && methodCallName == "moveMask") {
+                    throw Exception(
+                        "Cajeta.moveMask() is retired. Bookkeeping stores "
+                        "spell `#=` (the slot/member bit records the "
+                        "caller's transfer); code that genuinely BRANCHES "
+                        "on ownership reads `Cajeta.owned(formal)`.",
+                        "CAJETA_ERROR_MOVEMASK_RETIRED");
                 }
                 // liveCount() -> int64: current live-object population (test-only
                 // introspection). Lets a test assert an owning container reclaimed
