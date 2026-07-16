@@ -837,11 +837,26 @@ list(APPEND GENERATED_SOURCES ${CAJETA_INIT_EMBED})
 # Linux/ELF + static-component LLVM only (the Windows dylib path doesn't apply).
 if(NOT WIN32 AND NOT CAJETA_USE_LLVM_DYLIB)
     set(_caj_llvm_excl "")
+    # Glob the archives rather than walk LLVM_LIBS: llvm_map_components_to_libnames
+    # returns only the NAMED components, but the link line also pulls in their
+    # transitive deps (libLLVMipo.a, libLLVMTransformUtils.a, ...), and any archive
+    # left off this list leaks its llvm::* symbols into .dynsym for comgr to bind to.
+    file(GLOB _caj_llvm_archives "${LLVM_LIBRARY_DIR}/libLLVM*.a" "${LLVM_LIBRARY_DIR}/liblld*.a")
+    foreach(_caj_a IN LISTS _caj_llvm_archives)
+        get_filename_component(_caj_n "${_caj_a}" NAME)
+        string(APPEND _caj_llvm_excl "${_caj_n}:")
+    endforeach()
     foreach(_caj_l IN LISTS LLVM_LIBS)
-        string(APPEND _caj_llvm_excl "lib${_caj_l}.a:")
+        if(NOT _caj_llvm_excl MATCHES "(^|:)lib${_caj_l}\\.a:")
+            string(APPEND _caj_llvm_excl "lib${_caj_l}.a:")
+        endif()
     endforeach()
     set(CAJETA_LLVM_EXCLUDE_LIBS "${_caj_llvm_excl}" CACHE INTERNAL
         "LLVM static archives to hide from dynamic export (comgr interposition fix)")
+    # --exclude-libs can't reach the vague-linkage LLVM template instantiations that
+    # land in cajeta's OWN objects; this version script localizes them by mangling.
+    set(CAJETA_LLVM_VERSION_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/../cmake/hide-llvm-symbols.map"
+        CACHE INTERNAL "Version script localizing llvm::* (comgr interposition fix)")
 endif()
 
 add_library(${CMAKE_PROJECT_NAME}_lib STATIC ${SOURCES} ${GENERATED_SOURCES})
@@ -963,6 +978,12 @@ if(NOT WIN32)
     if(CAJETA_LLVM_EXCLUDE_LIBS AND NOT APPLE)
         target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
                 "-Wl,--exclude-libs,${CAJETA_LLVM_EXCLUDE_LIBS}")
+    endif()
+    if(CAJETA_LLVM_VERSION_SCRIPT AND NOT APPLE)
+        target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
+                "-Wl,--version-script=${CAJETA_LLVM_VERSION_SCRIPT}")
+        set_property(TARGET ${CMAKE_PROJECT_NAME} APPEND PROPERTY
+                LINK_DEPENDS "${CAJETA_LLVM_VERSION_SCRIPT}")
     endif()
 endif()
 if(TARGET cajetadoc_core)

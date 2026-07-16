@@ -110,6 +110,14 @@ if(NOT WIN32)
         target_link_options(${BINARY} PRIVATE
                 "-Wl,--exclude-libs,${CAJETA_LLVM_EXCLUDE_LIBS}")
     endif()
+    # --exclude-libs only reaches ARCHIVES; LLVM's headers also emit vague-linkage
+    # template instantiations into cajeta's own objects, which the script localizes.
+    if(CAJETA_LLVM_VERSION_SCRIPT AND NOT APPLE)
+        target_link_options(${BINARY} PRIVATE
+                "-Wl,--version-script=${CAJETA_LLVM_VERSION_SCRIPT}")
+        set_property(TARGET ${BINARY} APPEND PROPERTY
+                LINK_DEPENDS "${CAJETA_LLVM_VERSION_SCRIPT}")
+    endif()
 endif()
 
 # The build-tool HTTP test server (test/buildtool/TestHttpServer.h) speaks
