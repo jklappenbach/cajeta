@@ -824,10 +824,15 @@ done
 # the run's verdict.
 if [ "$WEIGHTED" != "0" ]; then
     _newdur="$tmpdir/durations.new"
-    : > "$_newdur"
+    : > "$_newdur" 2>/dev/null || true
     for ((s=0; s<shards; s++)); do
+        # `|| true` honors the best-effort contract below: GNU sed exits 4
+        # on an I/O error (tmpfs momentarily full), and under `set -e` that
+        # killed the whole driver AFTER the shards finished but BEFORE the
+        # summary printed — a full sweep's verdict lost to a metrics write
+        # (three times, 2026-07-16).
         sed -nE 's/^\[ *OK *\] ([^ ]+) \(([0-9]+) ms\)$/\1\t\2/p; s/^\[  FAILED  \] ([^ ]+) \(([0-9]+) ms\)$/\1\t\2/p' \
-            "$tmpdir/shard_${s}.out" 2>/dev/null >> "$_newdur"
+            "$tmpdir/shard_${s}.out" 2>/dev/null >> "$_newdur" || true
     done
     if [ -s "$_newdur" ]; then
         _merged="$tmpdir/durations.merged"
