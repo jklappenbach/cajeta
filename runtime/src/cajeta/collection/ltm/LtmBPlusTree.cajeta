@@ -97,8 +97,8 @@ public final class LtmBPlusTree<K, V> {
         int64 rootId = this.pager.getRoot();
         if (rootId == -1) {
             LtmBPlusTreeNode<K, V> r = this.pager.allocNode(true);
-            r.keys[0] = key;
-            r.values[0] = value;
+            r.keys[0] #= key;
+            r.values[0] #= value;
             r.numKeys = 1;
             this.pager.markDirty(r.pageId);
             this.pager.setRoot(r.pageId);
@@ -150,8 +150,8 @@ public final class LtmBPlusTree<K, V> {
                 leaf.values[j] = leaf.values[j - 1];
                 j = j - 1;
             }
-            leaf.keys[pos] = key;
-            leaf.values[pos] = value;
+            leaf.keys[pos] #= key;
+            leaf.values[pos] #= value;
             leaf.numKeys = leaf.numKeys + 1;
             this.pager.markDirty(leafId);
             this.pager.incEntryCount();

@@ -200,7 +200,7 @@ public class LtmPager<K, V> {
         this.file.seek(off);
         this.file.read(buf, 0, ps);
         LtmBPlusTreeNode<K, V> node = this.deserializeNode(pageId, buf);
-        this.frameNode[idx] = node;
+        this.frameNode[idx] #= node;
         this.framePageId[idx] = pageId;
         this.frameDirty[idx] = false;
         this.framePins[idx] = 0;
@@ -225,7 +225,7 @@ public class LtmPager<K, V> {
         this.nextPageId = this.nextPageId + 1;
         int32 idx = this.acquireFrame();
         LtmBPlusTreeNode<K, V> node = heap LtmBPlusTreeNode<K, V>(pageId, leaf, this.order);
-        this.frameNode[idx] = node;
+        this.frameNode[idx] #= node;
         this.framePageId[idx] = pageId;
         this.frameDirty[idx] = true;
         this.framePins[idx] = 0;
