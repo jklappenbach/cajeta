@@ -854,6 +854,16 @@ namespace cajeta {
             int64_t hash = (hashIdx < slotHashes.size())
                 ? slotHashes[hashIdx]
                 : signatureHash(method->toCanonical(/*labeled=*/false));
+            // getLlvmFunction() is a RAW accessor — null until the method has
+            // been prototyped. A replayed method-template instantiation reaches
+            // the vtable before Phase 1 prototypes it, so ask for the type
+            // first: getLlvmFunctionType() lazily runs generatePrototype (both
+            // are idempotent — Phase 1 revisits them for free), leaving a
+            // declaration the slot can reference and Phase 2's generateCode
+            // fills in.
+            if (!method->getLlvmFunction() && !method->isMethodTemplate()) {
+                method->getLlvmFunctionType();
+            }
             llvm::Function* fn = method->getLlvmFunction();
             llvm::Function* resolved = CajetaModule::ensureFunctionInModule(
                 hostModule, fn);
