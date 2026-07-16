@@ -1380,20 +1380,39 @@ void __cajeta_string_array_elem_set_owned(void* sidecar, void** slot,
     *slot = wrapper;
 }
 
-// Alias store (field/element read, literal, borrow-returning call): the
-// source keeps ownership. Still releases a previously-owned occupant, then
-// unmarks the slot.
+// Copy store (field/element read, literal, borrow-returning call): the
+// source keeps its wrapper; the slot stores a RESOLVED fresh one it owns
+// (title-stores 6.3.2 — resident String slots always own their wrappers;
+// storing the alias left the slot dangling once the source's owner
+// dropped, the Headers.grow UAF).
 void __cajeta_string_array_elem_set_alias(void* sidecar, void** slot,
                                           void* wrapper) {
     cajeta_string_array_sidecar* sc = (cajeta_string_array_sidecar*) sidecar;
     if (!sc || !slot) return;
+    void* __cajeta_string_resolve(void* src_v);
+    void* fresh = __cajeta_string_resolve(wrapper);
     int64_t idx = caj_arr_slot_index(sc, slot);
     void* old = *slot;
-    if (old && old != wrapper && caj_arr_bit_get(sc, idx)) {
+    if (old && old != fresh && caj_arr_bit_get(sc, idx)) {
         __cajeta_string_drop(old);
     }
-    caj_arr_bit_put(sc, idx, 0);
-    *slot = wrapper;
+    caj_arr_bit_put(sc, idx, fresh ? 1 : 0);
+    *slot = fresh;
+}
+
+// Slot store for String-element arrays WITHOUT a local sidecar (field-held
+// and parameter arrays). Same always-own contract: `takes` sources hand
+// their wrapper over; others store a resolved copy. The displaced occupant
+// drops (claim-gated, so aliased duplicates stay free-once).
+void __cajeta_string_elem_store(void** slot, void* wrapper, int64_t takes) {
+    if (!slot) return;
+    void* __cajeta_string_resolve(void* src_v);
+    void* v = takes ? wrapper : __cajeta_string_resolve(wrapper);
+    void* old = *slot;
+    *slot = v;
+    if (old && old != v) {
+        __cajeta_string_drop(old);
+    }
 }
 
 // `#arr[i]` — move an element OUT: hand the wrapper to the receiver, null

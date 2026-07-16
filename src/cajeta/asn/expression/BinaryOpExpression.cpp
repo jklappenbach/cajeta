@@ -2448,6 +2448,33 @@ namespace cajeta {
                                 builder->CreateCall(setFn, {sidecar, lhs, rhsVal});
                                 storedViaElemOwn = true;
                             }
+                        } else if ([&]{
+                            auto selc = dynamic_pointer_cast<CajetaClass>(
+                                lhsAst->getResolvedType());
+                            return selc && selc->getQName()
+                                && selc->getQName()->getTypeName() == "String"
+                                && selc->getQName()->getPackageName()
+                                       == "cajeta.lang";
+                        }()) {
+                            // 6.3.2 — field-held / parameter String arrays
+                            // (no local sidecar): the raw store aliased the
+                            // wrapper, violating the always-own slot
+                            // contract (teardown + displacement walks free
+                            // every resident wrapper — Headers.grow UAF).
+                            bool seTakes =
+                                dynamic_pointer_cast<IdentifierExpression>(rhsAst)
+                                || dynamic_pointer_cast<MoveExpression>(rhsAst)
+                                || MethodCallExpression::freshOwnedStringTemp(rhsAst);
+                            if (llvm::Function* seFn = module->getRuntimeFunction(
+                                    "__cajeta_string_elem_store")) {
+                                builder->CreateCall(seFn,
+                                    {lhs, rhsVal,
+                                     llvm::ConstantInt::get(
+                                         llvm::Type::getInt64Ty(
+                                             *module->getLlvmContext()),
+                                         seTakes ? 1 : 0)});
+                                storedViaElemOwn = true;
+                            }
                         }
                     }
                 }

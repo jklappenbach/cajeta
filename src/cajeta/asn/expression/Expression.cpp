@@ -2039,6 +2039,39 @@ namespace cajeta {
                 resolvedType = xProp->getType();
                 return pv;
             }
+            // title-stores 6.3.2 — String MEMBER of a value-struct slot
+            // (`#this.slots[s].key`, the rehash forward): the Dot twin of
+            // the ArrayIndex String take. Members carry no ownership bit
+            // (shared-capable exclusion) but the member walk drops resident
+            // wrappers unconditionally — so the move must TAKE: load the
+            // wrapper, NULL the member (the walk skips nulls), hand the
+            // wrapper to the receiving store. Falling through here returned
+            // the member GEP: the new table stored slot ADDRESSES while the
+            // old table's walk freed every wrapper (the thousand-String-key
+            // rehash crash). Scoped to value-type receivers; heap-class
+            // String fields keep the legacy path.
+            if (xProp && xDecl && xRecvClass && xRecvClass->isValueType()
+                    && !CajetaClass::fieldHasOwnershipBit(xProp)) {
+                auto xPropCls = dynamic_pointer_cast<CajetaClass>(
+                    xProp->getType());
+                if (xPropCls && xPropCls->getQName()
+                        && xPropCls->getQName()->getTypeName() == "String"
+                        && xPropCls->getQName()->getPackageName()
+                               == "cajeta.lang") {
+                    llvm::Value* mslot = dotInner->generateCode(module);
+                    if (mslot && mslot->getType()->isPointerTy()) {
+                        auto* sb = module->getBuilder();
+                        llvm::PointerType* sptr = llvm::PointerType::get(
+                            *module->getLlvmContext(), 0);
+                        llvm::Value* sv = sb->CreateLoad(
+                            sptr, mslot, "mstr.take.val");
+                        sb->CreateStore(
+                            llvm::ConstantPointerNull::get(sptr), mslot);
+                        resolvedType = xProp->getType();
+                        return sv;
+                    }
+                }
+            }
             if (xProp && xDecl && CajetaClass::fieldHasOwnershipBit(xProp)) {
                 llvm::Value* slot = dotInner->generateCode(module);
                 if (slot && slot->getType()->isPointerTy()) {
