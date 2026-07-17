@@ -144,6 +144,19 @@ if(WIN32 AND LLVM_DIR)
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
                         ${CAJETA_TEST_LLVM_DLLS} "$<TARGET_FILE_DIR:${BINARY}>"
                 COMMENT "Refreshing libLLVM DLL beside ${BINARY} (prevents stale-DLL shadowing)")
+    else()
+        # STATIC fork LLVM (no libLLVM DLL in the toolchain bin — the release
+        # runner's cajeta-llvm windows-x64 asset ships static archives only).
+        # cajeta_test then embeds ALL of LLVM 23 + lld, and with -g the DWARF
+        # pushes the PE past what the Windows loader accepts (PE section file
+        # offsets are 32-bit; a multi-GB image fails CreateProcess with
+        # ERROR_BAD_EXE_FORMAT — CMake/gtest surface it as "inappropriate file
+        # type or format" and --gtest_list_tests returns nothing). Strip debug
+        # sections at link (keeps the symbol table; gtest and the runtime's own
+        # stack traces don't need host DWARF). The dylib branch above keeps
+        # full -g: with libLLVM as a DLL the exe stays ~1 GB and loads fine.
+        target_link_options(${BINARY} PRIVATE -Wl,--strip-debug)
+        message(STATUS "cajeta_test: static LLVM toolchain on Windows — stripping debug from test exe link (PE size limit)")
     endif()
 endif()
 
