@@ -153,11 +153,11 @@ borrow-overlap check — that is the natural hook point.
 
 Transfer moves *ownership*, not *storage location*. A `stack Widget`'s
 bytes live in the frame and are gone at frame exit no matter who owns
-them. So `this.w = #local` where `local` is stack-allocated is **also
+them. So `this.w #= local` where `local` is stack-allocated is **also
 unsound** — `#` is not the fix here. The honest fixes are:
 
 - **Allocate on the heap to begin with** — `Widget local = heap
-  Widget(...)` then `this.w = #local`, or auto-promote a fresh
+  Widget(...)` then `this.w #= local`, or auto-promote a fresh
   `this.w = heap Widget(...)` straight into the field. Independent
   storage that outlives the frame.
 - **Clone into a fresh instance** — `this.w = local.clone()` (see
@@ -242,7 +242,7 @@ dropped):
 ```cajeta
 this.data = someParam;          // source is caller-owned, outlives `this`
 this.value = heap Widget(9);    // fresh heap, auto-promoted to ownership
-this.w = #heapLocal;            // heap source, ownership transferred
+this.w #= heapLocal;            // heap source, ownership transferred
 this.w = src.clone();           // independent fresh instance  (once clone lands)
 ```
 

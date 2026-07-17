@@ -25,7 +25,7 @@ public class Point {
 ```cajeta
 Point a = heap Point(7, 24);
 Point b = a;                  // borrow — a still owns; b must not outlive a
-Point c = #a;                 // transfer — c owns now; a is moved
+Point c #= a;                 // transfer — c owns now; a is moved
 int32 d = c.distSq();
 ```
 
@@ -35,26 +35,38 @@ runtime surprise:
 <!-- snippet: skip -->
 ```cajeta
 Point p = heap Point(7, 24);
-Point q = #p;
+Point q #= p;
 int32 v = p.x;    // ERROR — CAJETA_ERROR_USE_AFTER_MOVE
 ```
 
 ## Where `#` goes
 
-`#` always marks the **giving** side. It appears in exactly three places:
+`#` marks where a title changes hands. It appears in exactly four places:
 
-- **A move expression** — `this.consume(#a)`, `Point c = #a`. The source is
-  moved; its drop entry is deactivated.
+- **A store** — `Point c #= a`, `this.held #= v`, `this.data[i] #= v`. The
+  destination takes the title; the source is moved. `#=` is one token: an
+  ownership store cannot be half-written.
+- **A move expression** — `this.consume(#a)`, `return #a`, `#this.data[i]`.
+  The source is moved; its drop entry is deactivated. This is the spelling at
+  call arguments, returns, and slot extractions — none of which are
+  assignments.
 - **A parameter type** — `void consume(#Point p)`. The callee demands
   ownership; a caller that passes plain `x` gets
   `CAJETA_ERROR_TRANSFER_REQUIRED`.
 - **A return type** — `#Point make()`. The callee hands ownership to the
   caller.
 
-It **never** goes on the receiving local. The receiver is declared plainly —
-`Point q = this.make();` — because the transfer is already expressed by the
-signature or the move expression. One transfer marker per hand-off, on the
-side that gives the value up.
+The first two split by position, and the split is the whole rule: **a store
+uses `#=`; everything else uses `#v`.**
+
+It **never** goes on the receiving local's *declaration*. The receiver is
+declared plainly — `Point q = this.make();` — because the transfer is already
+expressed by the signature, the move expression, or the `#=` operator itself.
+One transfer marker per hand-off.
+
+> **Deprecated:** stores were once spelled `dst = #v`. That still compiles and
+> still transfers, but warns and becomes an error in a later release. Write
+> `dst #= v`.
 
 ```cajeta
 public class Owners {

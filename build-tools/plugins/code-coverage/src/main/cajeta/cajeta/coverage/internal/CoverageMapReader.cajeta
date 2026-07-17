@@ -28,7 +28,7 @@ public class CoverageMapReader {
         Grain grain = grainFromByte(r.readU8());
         r.readU8();  // reserved
         int32 nFiles = r.readU32BE();
-        CoverageMap out = #heap CoverageMap(grain);
+        CoverageMap out #= heap CoverageMap(grain);
         int32 i = 0;
         while (i < nFiles) {
             int32 pathLen = r.readU32BE();

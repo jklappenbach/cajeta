@@ -3,7 +3,7 @@
 ## Goals
 
 - **Single-owner heap.** Every heap-allocated value has exactly one owning reference at any time.
-- **Implicit borrow, explicit transfer.** `=` borrows by default; the `#` operator transfers ownership.
+- **Implicit borrow, explicit transfer.** `=` borrows by default; `#` transfers ownership — `dst #= v` at a store, `#v` at a call argument, return, or slot extraction.
 - **Static safety, no user-visible annotations.** All borrow/lifetime errors are compile-time. Scope-based inference; no lifetime syntax for users to write.
 - **Zero runtime cost in release.** Heap blocks are plain memory; drops happen at owner scope-end. A debug build flag adds runtime verification for testing the static checker.
 
@@ -45,20 +45,42 @@ actually happens: at a **use site**, never in a signature.
 
 | Position | Meaning |
 |----------|---------|
-| `#expr` (value position) | Transfer the title *from* expr. After this, expr is moved; a later read is a static error. |
+| `dst #= v` (**store**) | Store `v` into `dst` and move `v`'s title onto it. The spelling for *assignments*: fields, element slots, and local declarations. |
+| `#expr` (value position) | Transfer the title *from* expr — at a call argument, a `return`, or a slot extraction. After this, expr is moved; a later read is a static error. |
 | `#T` (parameter type) | **Opt-in must-own.** The method refuses a lend: the caller has to surrender. Rarely needed — see below. |
 | `#T` (return type) | The method always transfers. Also rarely needed; a plain return already carries whatever title it holds. |
+
+**Stores use `#=`; every other transfer position uses `#expr`.** The two are not
+alternatives — they partition by position. An assignment is the one place the
+title lands *in* something, so it gets a fused token that cannot be half-written;
+call arguments, returns, and extraction reads are not assignments and keep `#v`.
+
+```cajeta
+this.held #= c;         // store: `held` takes c's title
+sink.keep(#c);          // argument: not an assignment — `#v` stays
+return #c;              // return: same
+T x #= #this.data[i];   // both: extract the slot's title (`#`), store it (`#=`)
+```
+
+> **Deprecated:** `dst = #v` was the original store spelling. It still compiles
+> and still transfers, but warns (`CAJETA_WARN_DEPRECATED_TRANSFER_ASSIGN`) and
+> becomes an error in a later release. Write `dst #= v`.
 
 **Transfer is the caller's decision, not the signature's.** A plain class-typed
 parameter accepts *both* a lend and a transfer — which one happened is decided at
 each call site by whether the argument was spelled `#x`:
 
 ```cajeta
-void keep(Cell c) { this.held = #c; }   // no ownership spelling in the signature
+void keep(Cell c) { this.held #= c; }   // no ownership spelling in the signature
 
 sink.keep(cell);        // lends — `cell` still owns it, and drops it at scope exit
 sink.keep(#cell);       // surrenders — the title moves; `cell` is moved-from
 ```
+
+`keep` is written once and is correct both ways: `#=` moves *whatever title `c`
+holds*. When the caller lent, the field records a borrow and the field's drop
+stays quiet; when the caller surrendered, the field records ownership and drops
+it. The callee does not branch, and does not need to know which happened.
 
 This is deliberate. An earlier design put the ownership mode in the signature and
 required the author to predict, at declaration time, how every future caller would
@@ -76,12 +98,16 @@ argument at such an edge is `CAJETA_ERROR_TRANSFER_REQUIRED`.
 
 ## Borrow / transfer rules
 
-| Operation | No `#` | With `#` |
-|-----------|--------|----------|
-| `a = b` | a borrows b | a takes the title; b is moved |
-| `this.f = x` | the field borrows x — the title stays with x and x still drops it | the field takes the title |
-| `f(x)` | f borrows x for the call | f takes the title; x is moved |
-| `return x` | hands back whatever title x held (a lent value stays lent; an owned one transfers) | hands back the title |
+| Operation | Plain | Transfer |
+|-----------|-------|----------|
+| `T a = b` / `T a #= b` | a borrows b | a takes the title; b is moved |
+| `this.f = x` / `this.f #= x` | the field borrows x — the title stays with x and x still drops it | the field takes the title |
+| `this.data[i] = x` / `this.data[i] #= x` | the slot borrows x | the slot takes the title, and records it in the slot's own ownership bit |
+| `f(x)` / `f(#x)` | f borrows x for the call | f takes the title; x is moved |
+| `return x` / `return #x` | hands back whatever title x held (a lent value stays lent; an owned one transfers) | hands back the title |
+
+Stores (the first three rows) transfer with `#=`. Arguments and returns (the last
+two) transfer with `#x` — they are not assignments.
 
 Note the second row: **a plain field store lends.** It does not quietly take
 ownership. If a method stores a borrowed value into a field that outlives the
@@ -100,7 +126,7 @@ The compiler tracks each owner's declaration site and scope-end. For each borrow
 
 ### Path-based borrow tracking
 
-Borrows track their *path* from the named root, not just the variable. `String n = person.address.city` records `n`'s root as `person` with path `address.city`. Reassigning any link along the path (`person.address = #x`) drops everything derived from that link; subsequent use of `n` is a static error.
+Borrows track their *path* from the named root, not just the variable. `String n = person.address.city` records `n`'s root as `person` with path `address.city`. Reassigning any link along the path (`person.address #= x`) drops everything derived from that link; subsequent use of `n` is a static error.
 
 ### Function signatures: the transfer ABI
 
@@ -111,10 +137,15 @@ class-typed parameter and return therefore carries a hidden per-call flag.
   a hidden trailing word; bit *i* is set iff user-argument *i* was surrendered.
   `@Kernel`, `@Device`, `@Native` methods and `static main` keep the plain C ABI —
   the compiler does not own both sides of those boundaries. The word is the ONLY
-  argument-side carrier: the old `moveMask` thread-local is retired
-  (title-tracking 7.2.2), `Cajeta.moveMask()` reads the enclosing function's own
-  word argument (stable across intervening calls; constructors read their own
-  call's word), and constructors ride the same trailing word.
+  argument-side carrier (the old `moveMask` thread-local is retired,
+  title-tracking 7.2.2), and constructors ride the same trailing word.
+
+  **The word is ABI, not API.** Nothing in user code reads it positionally:
+  `Cajeta.moveMask()` is retired (`CAJETA_ERROR_MOVEMASK_RETIRED`) because
+  bit-index-coupled-to-formal-order was fragile and leaked the calling convention
+  into user source. Its two successors cover what it was used for: stores spell
+  `#=` and let the field/slot bit record what the caller did, and code that
+  genuinely *branches* on ownership calls `Cajeta.owned(formal)` (below).
 - **Returns.** A method returning a class pointer stores a paired flag beside the
   return value. (This one is a thread-local: nothing runs between the callee's
   `ret` and the caller reading it, so there is no window to corrupt.)
@@ -123,7 +154,7 @@ class-typed parameter and return therefore carries a hidden per-call flag.
   return shape — a fresh construction or `#x` hands out a title, a returned
   parameter/identifier is a borrow, and a tail call lets the inner call's own
   flag ride through. Closure-call results arm the receiving local exactly like
-  method-call results, and `T x = #src` forwards a runtime owner's flag onto
+  method-call results, and `T x #= src` forwards a runtime owner's flag onto
   `x`'s entry (a lent source stays lent through the hop).
 
 **Formals and call results are *runtime* owners.** A class-typed parameter is not
@@ -165,7 +196,7 @@ Holder build() {
 }                     // `s` drops here; the caller's Holder points at freed memory
 ```
 
-The fix is to say what was meant: `h.c = #s` gives the holder the title.
+The fix is to say what was meant: `h.c #= s` gives the holder the title.
 
 The check is intra-procedural and deliberately conservative. It fires only when
 the receiving callee actually **retains** the argument (stores it into a field);
@@ -230,7 +261,8 @@ LIFO within a scope; inner scopes drop before outer. A borrow declared before it
 ## Fields
 
 - **Fields may be owners or borrows.** A field's ownership status is resolved at drop time, not at declaration. The **global live-set** is the registry: every `heap` allocation is recorded in it. At parent drop, the synthesized auto-drop wrapper calls each owned-shape field's drop dispatcher directly; the dispatcher does an atomic *claim* (remove-if-present) on the field's address. The first caller to claim an address frees it (and runs `~Class()`); a later caller for the same address — the owning local's own chain pop, or another field aliasing it — finds it already gone and no-ops. See `docs/specification/lang/FieldOwnership.md`.
-- **Field assignment.** `p.field = #x` and `p.field = heap T(...)` make the field an owner — the fresh `heap` allocation is the live-set registration. `p.field = y` where `y` is a borrow stores the borrow; the field aliases `y`'s source, and the live-set claim at drop ensures whichever path reaches the shared address first frees it while the rest no-op.
+- **Field assignment.** `p.field #= x` and `p.field = heap T(...)` make the field an owner — the fresh `heap` allocation is the live-set registration. `p.field = y` where `y` is a borrow stores the borrow; the field aliases `y`'s source, and the live-set claim at drop ensures whichever path reaches the shared address first frees it while the rest no-op.
+- **A plain store of a value that *might* be owned is a warning.** `this.f = v`, where `v` is a formal that some callers surrender, compiles but warns (`CAJETA_WARN_PLAIN_RETAIN_STORE`): the field borrows, while the armed drop entry frees `v` at callee exit — leaving the field dangling on exactly the calls that surrendered. Spell `this.f #= v` to record the title, or `this.f = v.clone()` to keep a copy. This was the most recurring use-after-free family in the stdlib before the diagnostic existed.
 - **Field reads borrow.** `String n = p.field` makes `n` a borrow rooted at `p`.
 - **Use-after-free of an aliased field whose source has already dropped is the programmer's responsibility at v1.** A lifetime tracker (Phase 6+) will catch this statically.
 
@@ -325,6 +357,58 @@ both to own its elements and to index values owned elsewhere:
 
 There is no separate "borrowing container" type. One `HashMap<K, V>` holds owned and
 borrowed entries side by side, and drops exactly the ones it owns.
+
+### Element slots carry their own ownership bits
+
+"The entry records which" is not container bookkeeping — it is the language's.
+Element slots get the same treatment as fields: `data[i] #= v` records `v`'s title
+in a compiler-managed **per-slot bit**, and the synthesized drop frees exactly the
+slots whose bit is set.
+
+```cajeta
+public void add(T element) {
+    this.data[this.count] #= element;   // slot records what the caller did
+    this.count = this.count + 1;
+}
+```
+
+That is the whole implementation. The array's own drop walks the bits; slots that
+were lent are left alone, slots that were surrendered are freed. Writing a
+container no longer requires a parallel `owned[]` sidecar, an `@ElementCount`
+annotation to avoid dropping garbage past the live prefix, or any read of the
+transfer word — all three existed only because slots could not remember their own
+state. **Field symmetry is the rule:** whatever a store means for `this.f`, it
+means for `this.data[i]`.
+
+Arrays that never receive a title store behave exactly as before and cost only
+`capacity/8` tail bytes. Slot-to-slot moves forward the bit verbatim — a borrow
+stays a borrow — which is what shift, sift, and split loops need:
+
+```cajeta
+this.data[j] #= #this.data[j - 1];   // move whatever title that slot holds
+```
+
+---
+
+## `Cajeta.owned(formal)` — branching on ownership
+
+`Cajeta.owned(v)` returns whether *this* call surrendered `v`'s title. It exists
+for algorithms that genuinely branch on ownership — an interning pool that adopts
+what it is given and copies what it is only lent:
+
+```cajeta
+public String intern(String s) {
+    if (Cajeta.owned(s)) { return this.adopt(#s); }
+    return this.adopt(#s.clone());
+}
+```
+
+**Correctness never requires it.** No container or store pattern should need
+`owned()` to be leak-free and UAF-free — `#=` and slot bits do that bookkeeping
+on their own. Treat it like `instanceof`: occasionally the honest answer, and a
+design smell when it becomes load-bearing. If some pattern seems to *need* it for
+correctness, that is a missing synthesis in the language — report it rather than
+working around it.
 
 ---
 

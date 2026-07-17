@@ -57,13 +57,13 @@ public class Collect {
         // mismatch is a configuration bug — the test runner shouldn't
         // be emitting at multiple grains within one collect dir.
         Optional<Grain> agreedGrain = stack Optional<Grain>(false, Grain.LINE);
-        CoverageMap map = #null;
+        CoverageMap map #= null;
         int32 i = 0;
         while (i < dumps.count()) {
             ProbeData dump = ProbeDataReader.read(dumps.get(i));
             if (agreedGrain.isEmpty()) {
                 agreedGrain = stack Optional<Grain>(true, dump.getGrain());
-                map = #heap CoverageMap(dump.getGrain());
+                map #= heap CoverageMap(dump.getGrain());
             } else if (agreedGrain.get() != dump.getGrain()) {
                 return ActionResult.error(
                     "cajeta.coverage.collect: probe dump " +
@@ -81,7 +81,7 @@ public class Collect {
         CoverageMapWriter.write(outputPath, map);
 
         // ── Result ───────────────────────────────────────────────
-        ActionResult r = #heap ActionResult();
+        ActionResult r #= heap ActionResult();
         r.output("path",  outputPath.toString());
         r.output("files", String.valueOf(map.count()));
         r.output("grain", agreedGrain.get().toName());

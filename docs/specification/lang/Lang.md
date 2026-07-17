@@ -9,6 +9,15 @@ return them.
 level I/O, env-var access, and tunable string properties via compiler
 intrinsics — see **[`lang/System.md`](System.md)**.
 
+`Cajeta` is a second such namespace. Its one surface a program is
+likely to reach for is **`Cajeta.owned(formal)`** — whether *this*
+call surrendered the formal's title — for algorithms that genuinely
+branch on ownership, such as an interning pool that adopts what it is
+given and copies what it is only lent. Correctness never requires it:
+stores spell `#=` and let the field or slot bit record what the caller
+did. See **[`lang/MemoryModel.md`](MemoryModel.md)**. (`Cajeta.moveMask()`,
+the positional transfer-word read this replaced, is retired.)
+
 ## `Object` — universal root
 
 See **[`lang/Object.md`](Object.md)** for the full spec

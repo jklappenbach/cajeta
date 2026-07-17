@@ -17,7 +17,7 @@ owner from alias at runtime by consulting the per-fiber drop chain.
 - When the slot's scope exits, the drop chain runs the slot's destructor
   and frees the body.
 - Old rule, MemoryModel.md ~line 102: "Field assignment transfers.
-  `p.field = x` must transfer: either `p.field = #x` (explicit) or
+  `p.field = x` must transfer: either `p.field #= x` (explicit) or
   `p.field = heap T(...)` (auto-promoted). Plain `p.field = y` where `y`
   is a named borrow is a static error."
 - Old rule, MemoryModel.md ~line 267: "Fields are owners. Borrows in

@@ -59,7 +59,7 @@ public class PositionLookup {
     public SourcePosition lookup(String file, int32 probeId) {
         Optional<HashMap<int32, SourcePosition>> existing =
             this.tables.get(file);
-        HashMap<int32, SourcePosition> table = #null;
+        HashMap<int32, SourcePosition> table #= null;
         if (existing.isPresent()) {
             table = existing.get();
         } else {

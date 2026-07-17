@@ -235,6 +235,21 @@ bounded by the borrow's lifetime.
 > take ownership), and the escape it enables is caught: if the storing object then
 > leaves the method holding a lend of a dying local, that is
 > `CAJETA_ERROR_DANGLING_LEND`. The general cross-procedure case remains deferred.
+>
+> **Further addressed by title-stores.** The store is still not *rejected*, but it
+> is no longer silent: `this.f = param`, where `param` is a formal some callers
+> surrender, warns (`CAJETA_WARN_PLAIN_RETAIN_STORE`). That case is not the
+> legitimate indexing pattern below — it is a store that borrows while the armed
+> drop entry frees `param` at callee exit, leaving the field dangling on exactly
+> the calls that transferred. It was the most recurring use-after-free family in
+> the stdlib. The fix is `this.f #= param`, which records whatever title the caller
+> actually handed over, so one method body is correct for both kinds of call; a
+> deliberate borrow store spells `this.f = param.clone()` or keeps the plain store
+> and stays quiet when the source cannot be owned. Element slots get the same
+> treatment (`this.data[i] #= v`, per-slot bits) — see
+> [`MemoryModel`](MemoryModel.md). The deferred case below is unchanged: a plain
+> store of a *statically borrowed* value whose source outlives nothing in
+> particular is still the caller's burden until reference types land.
 
 Field-store of a plain-`T` parameter — `this.f = param;` inside a
 ctor or setter — is **not** rejected. The pattern is the load-bearing

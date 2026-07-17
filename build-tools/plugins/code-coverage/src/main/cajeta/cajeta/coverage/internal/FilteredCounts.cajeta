@@ -48,7 +48,7 @@ public class FilteredCounts {
     HashMap<String, FileEntry> files;
 
     public FilteredCounts() {
-        this.files = #heap HashMap<String, FileEntry>();
+        this.files #= heap HashMap<String, FileEntry>();
     }
 
     /**
@@ -58,11 +58,11 @@ public class FilteredCounts {
      */
     public void recordProbe(String filePath, boolean hit) {
         Optional<FileEntry> existing = this.files.get(filePath);
-        FileEntry e = #null;
+        FileEntry e #= null;
         if (existing.isPresent()) {
             e = existing.get();
         } else {
-            e = #heap FileEntry(filePath);
+            e #= heap FileEntry(filePath);
             this.files.put(filePath, #e);
         }
         e.totalProbes = e.totalProbes + 1;
@@ -105,7 +105,7 @@ public class FilteredCounts {
      * post-filter percentages.
      */
     public ArrayList<FileEntry> bottomN(int32 n) {
-        ArrayList<FileEntry> bucket = #heap ArrayList<FileEntry>();
+        ArrayList<FileEntry> bucket #= heap ArrayList<FileEntry>();
         ArrayList<String> keys = this.files.keys();
         int32 i = 0;
         while (i < keys.count()) {
@@ -118,7 +118,7 @@ public class FilteredCounts {
 
     /** Every file below `floorPercent`, ascending. */
     public ArrayList<FileEntry> filesBelow(int32 floorPercent) {
-        ArrayList<FileEntry> bucket = #heap ArrayList<FileEntry>();
+        ArrayList<FileEntry> bucket #= heap ArrayList<FileEntry>();
         ArrayList<String> keys = this.files.keys();
         int32 i = 0;
         while (i < keys.count()) {
