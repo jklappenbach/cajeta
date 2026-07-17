@@ -57,7 +57,7 @@ internal fun packageOf(file: PsiFile?): String? {
     return dottedName(qn)
 }
 
-abstract class CajetaNamedElement(node: ASTNode) : ANTLRPsiNode(node),
+abstract class CajetaNamedElement(node: ASTNode) : CajetaPsiNode(node),
     PsiNameIdentifierOwner {
 
     abstract override fun getNameIdentifier(): PsiElement?
@@ -301,6 +301,6 @@ object CajetaPsiElementFactory {
         CajetaParser.RULE_identifier,
         -> CajetaIdentifier(node)
 
-        else -> ANTLRPsiNode(node)
+        else -> CajetaPsiNode(node)
     }
 }

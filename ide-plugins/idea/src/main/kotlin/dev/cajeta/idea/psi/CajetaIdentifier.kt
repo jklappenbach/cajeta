@@ -12,7 +12,7 @@ import org.antlr.intellij.adaptor.psi.ANTLRPsiNode
  * never fire; owning getReference() here is deterministic (documented
  * deviation from plan 7.2.1's mechanism naming, same architecture).
  */
-class CajetaIdentifier(node: ASTNode) : ANTLRPsiNode(node) {
+class CajetaIdentifier(node: ASTNode) : CajetaPsiNode(node) {
 
     /** A declaration's own name is not a reference to itself. */
     private fun isDeclarationName(): Boolean =
