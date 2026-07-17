@@ -549,6 +549,59 @@ namespace cajeta {
             }
         }
 
+        // ----- transform-intrinsics U1: Grad/Jit/Vmap/Pmap combinator recognition -----
+        // Trusted value-level combinators over function values (spec §2, §3): a
+        // bare call `Grad(f)` with one function argument is intercepted here
+        // (name-recognition, the Math.*/tryAs precedent) BEFORE ordinary resolution
+        // and before the bare-closure-call path below. The transform must see f's
+        // monomorphized body via closure specialization: a directly-written
+        // non-capturing lambda yields a constant {fn,null,null} record
+        // (extractClosureTarget != null); a target resolved only at runtime is a
+        // clear compile error (§2.2). U1 installs an identity placeholder (real
+        // transforms: Grad U3, Vmap U5, Jit U6); Pmap is declared-but-deferred (F8).
+        if (children.empty() && parameters.size() == 1
+                && (methodCallName == "Grad" || methodCallName == "Jit"
+                    || methodCallName == "Vmap" || methodCallName == "Pmap")) {
+            if (auto argExpr = dynamic_pointer_cast<Expression>(parameters[0].expression)) {
+                if (!argExpr->getResolvedType()) argExpr->resolveTypes(module);
+                auto fnType = dynamic_pointer_cast<CajetaFunctionType>(
+                    argExpr->getResolvedType());
+                if (!fnType) {
+                    throw Exception(
+                        "transform intrinsic '" + methodCallName
+                        + "' requires a function argument",
+                        "CAJETA_ERROR_TRANSFORM_NOT_FUNCTION",
+                        "", getSourceLine(), getSourceColumn());
+                }
+                llvm::Value* raw = argExpr->generateCode(module);
+                llvm::Value* fnVal = loadIfLValue(module, raw, argExpr);
+                llvm::Constant* record = nullptr;
+                llvm::Function* target =
+                    CajetaClass::extractClosureTarget(fnVal, &record);
+                if (!target) {
+                    throw Exception(
+                        "transform intrinsic '" + methodCallName
+                        + "' requires a specializable target — a statically-known "
+                          "function whose body is visible at the call site; the "
+                          "argument here is resolved only at runtime",
+                        "CAJETA_ERROR_TRANSFORM_NOT_SPECIALIZABLE",
+                        "", getSourceLine(), getSourceColumn());
+                }
+                if (methodCallName == "Pmap") {
+                    throw Exception(
+                        "transform intrinsic 'Pmap' is not yet implemented "
+                        "(deferred in v1; use Vmap/Jit for now)",
+                        "CAJETA_ERROR_TRANSFORM_PMAP_UNIMPLEMENTED",
+                        "", getSourceLine(), getSourceColumn());
+                }
+                // U1 identity placeholder: the transformed function IS f, typed as
+                // its function type, so `(T)->R g = Jit(f); g(x)` dispatches through
+                // the ordinary closure-call path on the same record.
+                resolvedType = fnType;
+                return fnVal;
+            }
+        }
+
         // ----- REFL-12: bounded reflection lowering -----
         // The bounded reflection entry points carry the bound `Shape` as an
         // explicit method type argument: `Class.heapInstance<Shape>(name)` and

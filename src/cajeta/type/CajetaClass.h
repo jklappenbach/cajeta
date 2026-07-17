@@ -566,6 +566,14 @@ namespace cajeta {
             const shared_ptr<CajetaClass>& elemCls, uint64_t headerBytes,
             uint64_t elemStride, bool withFree);
 
+        // transform-intrinsics U1 — pull the target llvm::Function out of a
+        // closure argument IFF it is a directly-supplied (or once-forwarded)
+        // non-capturing lambda; null for a captured / stored / runtime closure.
+        // Public shim over the closure-specialization helper (cajeta-ir Unit 4c)
+        // so the combinator recognizer can gate on specializability.
+        static llvm::Function* extractClosureTarget(
+            llvm::Value* closureArg, llvm::Constant** outRecord = nullptr);
+
         // Dense bit index of `p` among this class's OWN bit-carrying
         // fields (declaration order), or -1.
         int ownershipBitIndexOf(const StructurePropertyPtr& p) const {

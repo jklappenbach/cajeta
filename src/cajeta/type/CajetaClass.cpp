@@ -5554,6 +5554,11 @@ namespace cajeta {
         return fn;
     }
 
+    llvm::Function* CajetaClass::extractClosureTarget(llvm::Value* closureArg,
+                                                      llvm::Constant** outRecord) {
+        return extractClosureTargetFn(closureArg, outRecord, 0);
+    }
+
     // Build the diagnostic for a call that named a member which did not resolve.
     // Two DIFFERENT mistakes, and conflating them misleads: if `scale` exists but
     // takes an int32, telling the user there is "no member scale" sends them
