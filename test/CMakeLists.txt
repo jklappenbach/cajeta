@@ -158,8 +158,26 @@ include(GoogleTest)
 # Per-test timeout: individual tests should finish in well under 10s
 # (JIT compile + run); 120s catches a hang (e.g. async / spawn deadlock
 # under -j$(nproc) contention) without false-positiving on slow tests.
-gtest_discover_tests(${BINARY}
-        PROPERTIES TIMEOUT 120)
+#
+# DISCOVERY_MODE: on Windows the test exe links the monolithic libLLVM DLL
+# plus the mingw-runtime / antlr4 / zstd / glog / openssl / curl / libxml2
+# DLLs, which are only assembled onto PATH by the test runner scripts
+# (cajeta_tests.ps1 / release_tests.cmd) — NOT during the build. The default
+# POST_BUILD discovery launches the exe at link time to enumerate tests; in
+# that bare build environment Windows can't load the dependent DLLs, so the
+# process fails to start (ERROR_BAD_EXE_FORMAT, surfaced by CMake as
+# "inappropriate file type or format" with empty output) and breaks the build.
+# Defer discovery to test time on Windows so enumeration runs under the
+# runner's curated PATH. Linux/macOS resolve their .so deps at build time, so
+# keep the default (build-time) discovery there.
+if(WIN32)
+    gtest_discover_tests(${BINARY}
+            DISCOVERY_MODE PRE_TEST
+            PROPERTIES TIMEOUT 120)
+else()
+    gtest_discover_tests(${BINARY}
+            PROPERTIES TIMEOUT 120)
+endif()
 
 # `release_tests` target — runs the curated cross-compilation subset (see
 # release_filter.txt + release_tests.sh) instead of the full battery. It
