@@ -38,20 +38,6 @@ namespace cajeta {
         // so the evaluation is lazy (Python-like) and respects the
         // caller-side scope rather than a value frozen at declaration time.
         ExpressionPtr defaultValue;
-        // element-ownership §3 (plan 4A): which enclosing-class type parameter
-        // this formal's declared type came from (`put(#K k)` → index of K), or
-        // -1. Recorded during the instantiation body walk — the monomorphized
-        // type (`Elem`) no longer says it CAME FROM `K`, and the call-site
-        // agreement check (4B) pairs the formal with isTypeArgumentOwning(i).
-        // Mirrors StructureProperty's originTypeParamIndex (Unit-3B linkage).
-        int originTypeParamIndex = -1;
-        // The author's `#` as WRITTEN (`#K k`), never cleared. `transferred`
-        // above is the EFFECTIVE mode after §4.2 dissolution — under a borrow
-        // instantiation an authored `#K` dissolves (transferred=false) while
-        // this stays true, so body call sites forwarding `#k` can dissolve
-        // their `#` too instead of tripping BORROW_PARAM_ESCAPES; a plain-K
-        // formal forwarded with `#` (authored=false) stays a genuine error.
-        bool authoredTransferred = false;
     public:
         ExpressionPtr getDefaultValue() const { return defaultValue; }
         void setDefaultValue(ExpressionPtr e) { defaultValue = std::move(e); }
@@ -69,20 +55,10 @@ namespace cajeta {
             name = src.name;
             type = src.type;
             transferred = src.transferred;
-            originTypeParamIndex = src.originTypeParamIndex;
-            authoredTransferred = src.authoredTransferred;
         }
 
         bool isTransferred() const { return transferred; }
         void setTransferred(bool v) { transferred = v; }
-
-        int getOriginTypeParamIndex() const { return originTypeParamIndex; }
-        void setOriginTypeParamIndex(int idx) { originTypeParamIndex = idx; }
-
-        // Authored `#` (as written); survives §4.2 dissolution. True with
-        // transferred=false ⇔ this formal dissolved under a borrow mode.
-        bool wasAuthoredTransferred() const { return authoredTransferred; }
-        void setAuthoredTransferred(bool v) { authoredTransferred = v; }
 
         MethodPtr getParent() const;
 

@@ -38,6 +38,8 @@ public final class BPlusTreeNode<K, V> {
     public K[] keys;
     /** Leaf only: values parallel to `keys`. Null on internal nodes. */
     public V[] values;
+    // title-stores Unit 5 — ownership lives in keys[]/values[] tail
+    // bitmaps; the arrays' field walks drop exactly the owned slots.
     /** Internal only: `numKeys + 1` child links. Null on leaves. */
     public BPlusTreeNode<K, V>[] children;
     /** Leaf only: next leaf in ascending order (range-scan thread). */
@@ -71,4 +73,7 @@ public final class BPlusTreeNode<K, V> {
         this.next = null;
         this.parent = null;
     }
+
+    // title-stores Unit 5 — no bespoke destructor: the keys/values
+    // arrays' tail-bit field walks drop exactly the owned slots.
 }

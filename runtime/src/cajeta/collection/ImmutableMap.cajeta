@@ -131,10 +131,10 @@ public final class ImmutableMap<K, V> {
             }
             i = i + 1;
         }
-        this.keyArr = #keys;
-        this.valArr = #vals;
-        this.ctrl = #ct;
-        this.slotEntry = #se;
+        this.keyArr #= keys;
+        this.valArr #= vals;
+        this.ctrl #= ct;
+        this.slotEntry #= se;
         this.cap = c;
         this.entryCount = count;
     }

@@ -15,6 +15,8 @@
 #include <stdexcept>
 #include <thread>
 
+#include "cajeta/buildtool/IrCache.h"
+#include "cajeta/buildtool/PrimeCache.h"
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/dbg/DebugLocTable.h"
 #include "cajeta/compile/CajetaModule.h"
@@ -235,6 +237,11 @@ struct StdlibReuseCache {
     // New functions (template instantiations) are accumulation, not corruption.
     std::map<std::string, size_t> baselineFnSig;
     std::set<std::string> baselineGlobalNames;   // stdlib llvm GlobalVariable names
+    // [compile-cache Unit 2] the computed prime key + any validated hit from
+    // the lookup seam. The hit path is recorded but not consumed until the
+    // Unit 3 loader lands; Unit 3's store-on-miss also hangs off these.
+    cajeta::Compiler::PrimeCacheKey primeCacheKey;
+    std::optional<std::string> primeCacheHitPath;
     bool primed = false;
 
     static StdlibReuseCache& instance() {
@@ -244,12 +251,51 @@ struct StdlibReuseCache {
 
     void ensurePrimed() {
         if (primed) return;
+        // [compile-cache plan Unit 1] phase-split instrumentation, env-gated.
+        const bool kPrimeTiming = std::getenv("CAJETA_PRIME_TIMING") != nullptr;
+        auto _ptStart = std::chrono::steady_clock::now();
         cajeta::Compiler::setSharedContext(&sharedContext);
+        // [compile-cache plan Unit 2] persistent-prime lookup seam (spec §3).
+        // Key computed + lookup issued here; nothing is STORED yet (the
+        // artifact writer is Unit 3), so today every lookup is a miss and
+        // the compile below runs exactly as before — zero behaviour change.
+        // Disable outright with CAJETA_PRIME_CACHE=0; relocate with
+        // CAJETA_PRIME_CACHE_DIR.
+        primeCacheHitPath.reset();
+        {
+            const char* toggle = std::getenv("CAJETA_PRIME_CACHE");
+            bool enabled = !(toggle && std::string(toggle) == "0");
+            std::string root;
+            if (const char* dir = std::getenv("CAJETA_PRIME_CACHE_DIR")) {
+                root = dir;
+            } else if (const char* src = std::getenv("CAJETA_SOURCE_ROOT")) {
+                root = std::string(src) + "/.cajeta/cache/prime";
+            }
+            if (enabled && !root.empty()) {
+                primeCacheKey = cajeta::Compiler::stdlibPrimeCacheKey();
+                cajeta::buildtool::IrCache cache(root);
+                if (auto hit = cajeta::buildtool::primeValidatedLookup(
+                        cache, primeCacheKey.discriminator,
+                        primeCacheKey.digest)) {
+                    primeCacheHitPath = *hit;
+                }
+                if (kPrimeTiming) {
+                    std::fprintf(stderr,
+                        "[CAJETA_PRIME_CACHE] %s  disc=%s digest=%.12s...\n",
+                        primeCacheHitPath ? "HIT (unused: loader lands in Unit 3)"
+                                          : "MISS",
+                        primeCacheKey.discriminator.c_str(),
+                        primeCacheKey.digest.c_str());
+                }
+            }
+        }
         // First Compiler under the shared context primes the global type
         // tables (resetGlobals + init) in that context.
         primeCompiler = std::make_unique<cajeta::Compiler>();
-        primeCompiler->ensureStdlibModule();            // parse stdlib once
-        runCodegenPasses(primeCompiler->getModules());   // codegen stdlib bodies + static inits
+        primeCompiler->ensureStdlibModule();            // (a) front-end: parse + typecheck stdlib
+        auto _ptAfterFrontEnd = std::chrono::steady_clock::now();
+        runCodegenPasses(primeCompiler->getModules());   // (b) IR-gen: codegen bodies + static inits
+        auto _ptAfterIrGen = std::chrono::steady_clock::now();
         stdlibModule = cajeta::CajetaModule::getStdlibModule();
         // Snapshot the pristine state AFTER the stdlib is fully built.
         cajeta::CajetaType::captureBaseline();
@@ -272,6 +318,18 @@ struct StdlibReuseCache {
         for (auto& G : stdlibModule->getLlvmModule()->globals())
             if (G.hasName()) baselineGlobalNames.insert(G.getName().str());
         primed = true;
+        if (kPrimeTiming) {
+            auto _ptEnd = std::chrono::steady_clock::now();
+            auto ms = [](auto a, auto b) {
+                return (long long)std::chrono::duration_cast<std::chrono::milliseconds>(b - a).count();
+            };
+            // (c) JIT native-compile is lazy (ORC materializes on first call at test
+            // time) — measure it as (first-test wall-clock − test logic), not here.
+            std::fprintf(stderr,
+                "[CAJETA_PRIME_TIMING] front_end_a=%lldms ir_gen_b=%lldms baseline=%lldms total_prime=%lldms\n",
+                ms(_ptStart, _ptAfterFrontEnd), ms(_ptAfterFrontEnd, _ptAfterIrGen),
+                ms(_ptAfterIrGen, _ptEnd), ms(_ptStart, _ptEnd));
+        }
     }
 
     // Diagnostic (CAJETA_STDLIB_VERIFY=1): after a reusing test's codegen, check
@@ -526,6 +584,26 @@ CajetaJit::~CajetaJit() {
     }
 }
 
+// 5.1.11 / 5.2.8 — diagnostics collected by the last compile (see the header).
+// thread_local: concurrent-compile tests run CajetaJit::compile from several
+// threads at once, and a shared vector's clear/assign races are a double
+// free. Assertions read from the thread that compiled, so per-thread
+// storage preserves the API.
+namespace {
+    thread_local std::vector<cajeta::CollectedDiagnostic> g_lastDiagnostics;
+}
+
+const std::vector<cajeta::CollectedDiagnostic>& CajetaJit::lastDiagnostics() {
+    return g_lastDiagnostics;
+}
+
+bool CajetaJit::sawDiagnostic(const std::string& code) {
+    for (auto& d : g_lastDiagnostics) {
+        if (d.code == code) return true;
+    }
+    return false;
+}
+
 std::unique_ptr<CajetaJit> CajetaJit::compile(const std::string& source,
                                               const std::string& fqClassName) {
     return compile(source, fqClassName, Options{});
@@ -556,6 +634,34 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     // delegate to the single-source path's same parse/codegen/JIT
     // pipeline by parsing each module into the same Compiler.
     ensureJitInitialized();
+
+    // 5.1.11 / 5.2.8 — install a DiagnosticEngine for this compile so WARNINGS
+    // (which are reported, not thrown) are captured instead of dropped on the
+    // floor. Parked in g_lastDiagnostics for the test to assert on. The guard
+    // restores the previous active engine even if the compile throws, so an
+    // error-path test doesn't leave a dangling cursor into a dead stack frame.
+    cajeta::DiagnosticEngine diagEngine;
+    // Warnings-capture ONLY: errors keep throwing (fail-loud tests depend on
+    // it; a collected error would let codegen run into a null type and crash).
+    diagEngine.setCollectErrors(false);
+    cajeta::DiagnosticEngine* prevEngine = cajeta::DiagnosticEngine::active();
+    // A test that installed its OWN engine (EngineScope) keeps it — the
+    // harness engine must not shadow it, or the test's asserted diagnostics
+    // land in the wrong collector (SliceLint et al.).
+    if (!prevEngine) {
+        cajeta::DiagnosticEngine::setActive(&diagEngine);
+    }
+    g_lastDiagnostics.clear();
+    struct DiagGuard {
+        cajeta::DiagnosticEngine& engine;
+        cajeta::DiagnosticEngine* prev;
+        ~DiagGuard() {
+            if (!prev) {
+                g_lastDiagnostics = engine.finalize();
+                cajeta::DiagnosticEngine::setActive(prev);
+            }
+        }
+    } diagGuard{diagEngine, prevEngine};
 
     // Coarse per-phase wall-clock timing, gated on CAJETA_JIT_TIMING, to locate
     // the per-test fixed cost (parse vs cajeta codegen vs LLJIT backend compile).

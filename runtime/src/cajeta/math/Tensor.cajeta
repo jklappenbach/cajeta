@@ -51,7 +51,10 @@ public class Tensor<T> {
      * the factories.
      */
     public Tensor(Storage<T> store, int64 offset, int64[] shape, int64[] strides) {
-        this.store = store;
+        // title-tracking (Unit 8 sweep): every factory surrenders `#st` — the
+        // consuming spelling records the title on the field bit; a plain
+        // store left the armed formal to free the Storage at ctor exit.
+        this.store #= store;
         this.offsetVal = offset;
         int32 nd = (int32) shape.count();
         this.shapeDims = heap int64[nd];

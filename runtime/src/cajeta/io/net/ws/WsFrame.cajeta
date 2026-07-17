@@ -65,7 +65,7 @@ public class WsFrame {
         f.fin = fin;
         f.opcode = opcode;
         f.masked = masked;
-        f.payload = payload;
+        f.payload #= payload;
         return #f;
     }
 

@@ -47,7 +47,11 @@ public class Path {
      * ```
      */
     public Path(int8[] bytes) {
-        this.bytes = bytes;
+        // title-tracking (Unit 8 sweep): every call site surrenders (#raw /
+        // #out) — the consuming spelling keeps the buffer alive on the
+        // field; a plain store left the armed formal to free it at ctor
+        // exit (parent()/resolve() then read freed bytes).
+        this.bytes #= bytes;
     }
 
     /**

@@ -50,7 +50,7 @@ public class ImportExtractor {
      * full text). Returns in declaration order.
      */
     public static ArrayList<ImportRef> extract(String source) {
-        ArrayList<ImportRef> out = #heap ArrayList<ImportRef>();
+        ArrayList<ImportRef> out #= heap ArrayList<ImportRef>();
         String[] lines = source.split("\n");
         int32 i = 0;
         while (i < lines.count) {

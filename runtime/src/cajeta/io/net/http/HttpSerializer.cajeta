@@ -469,7 +469,7 @@ public final class HttpSerializer {
             dst[i] = this.buf[i];
             i = i + 1;
         }
-        this.buf = #dst;
+        this.buf #= dst;
         this.cap = newCap;
     }
 

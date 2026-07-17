@@ -334,6 +334,21 @@ class CajetaType : public Modifiable, public Annotatable,
 
         static CajetaTypePtr of(QualifiedNamePtr qName);
 
+        // Scoped short-name lookup for a BARE class name written in source
+        // (class-name receivers of static calls, static-field LHS, bare
+        // allocations). Mirrors fromContext's bare-name tier order:
+        //   1. the module's own package,
+        //   2. the module's explicit imports — when the import names the
+        //      class but its canonical isn't materialized yet, returns
+        //      nullptr rather than letting the global key answer wrongly,
+        //   3. the global canonical/short-name key (legacy behavior).
+        // The global short key is last-writer-wins across packages, so a
+        // same-named class elsewhere (e.g. a user class shadowing a stdlib
+        // name) poisons any call site that consults it directly; resolve
+        // source-written bare names through here instead.
+        static CajetaTypePtr ofScoped(const string& shortName,
+                                      CajetaModulePtr module);
+
         // Find a generic (template) class registered under the bare short
         // name `shortName`, scanning the process-global canonicalMap. Used to
         // recover from same-short-name collisions: a parameterized reference

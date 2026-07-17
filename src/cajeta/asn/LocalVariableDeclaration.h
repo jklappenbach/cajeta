@@ -48,6 +48,16 @@ namespace cajeta {
         // locals in the lambda's resolve-time scope.
         CajetaTypePtr getType() const { return type; }
 
+        // 7.2.4 — declarators are private; each declarator's own children
+        // carry its initializer.
+        void forEachSubNode(
+                const std::function<void(const AbstractSyntaxNodePtr&)>& fn) override {
+            for (auto& d : variableDeclarators) {
+                if (d) fn(d);
+            }
+            AbstractSyntaxNode::forEachSubNode(fn);
+        }
+
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 

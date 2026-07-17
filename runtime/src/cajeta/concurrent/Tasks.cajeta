@@ -136,7 +136,7 @@ public class Tasks {
         // Body raised after cancel — task->value not safely readable.
         // `null` codegens as zero for primitive R, null ptr for class R;
         // the slot is unused on the empty path either way.
-        return stack Optional<R>(false, null);
+        return stack Optional<R>(false);
     }
 
     /**
@@ -168,7 +168,7 @@ public class Tasks {
             return stack Optional<R>(false, drained);
         } catch (Exception e) {
         }
-        return stack Optional<R>(false, null);
+        return stack Optional<R>(false);
     }
 
     /**
@@ -226,7 +226,7 @@ public class Tasks {
      * quirk where `heap T<int32>(literal, null)` mis-positions the
      * primitive arg when T's second constructor parameter is primitive
      * and the user passes `null`. Wrapping in `Optional` means the
-     * "no value" branch is `heap Optional<SelectResult<T>>(false, null)`
+     * "no value" branch is `heap Optional<SelectResult<T>>(false)`
      * — SelectResult<T> is a class so `null` is type-natural here.
      *
      * Operates over `Channel` inputs and reports the winner as a
@@ -256,7 +256,7 @@ public class Tasks {
                 }
             }
             if (!any_open) {
-                return stack Optional<SelectResult<T>>(false, null);
+                return stack Optional<SelectResult<T>>(false);
             }
             Cajeta.fiberSleepNanos(backoff);
             if (backoff < 10000000) {

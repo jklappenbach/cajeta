@@ -34,7 +34,7 @@ public class Exchange {
 
     /** Pin the response (taking ownership) + the reuse decision. */
     public Exchange(#HttpResponse response, boolean keepAlive) {
-        this.response = #response;
+        this.response #= response;
         this.keepAlive = keepAlive;
     }
 

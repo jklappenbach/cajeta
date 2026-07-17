@@ -9,8 +9,9 @@ package cajeta.collection;
  *
  * The list owns the nodes — `LinkedList.add` heap-allocates a node
  * and links it in; `remove` unlinks and lets the dropped node fall
- * off the drop chain (the value itself isn't owned by the node, so
- * removing a node doesn't drop the value).
+ * off the drop chain. The VALUE is owned by the node iff the list's
+ * caller `#`-transferred it (the node's field bit + `owned` mirror);
+ * dropping a node then drops an owned value with it.
  *
  * ## v1 surface
  *
@@ -22,6 +23,10 @@ package cajeta.collection;
  */
 public final class LinkedListNode<T> {
     public T value;
+    // title-stores Unit 5 — the value field's ownership BIT is the single
+    // truth (set by the `#value` ctor store); the mirror byte is gone.
+    // Flagged pops use the fused claim (`T t #= #node.value`), which
+    // forwards the bit verbatim instead of reading a mirror.
     public LinkedListNode<T> prev;
     public LinkedListNode<T> next;
 
@@ -36,7 +41,12 @@ public final class LinkedListNode<T> {
      * ```
      */
     public LinkedListNode(T value) {
-        this.value = value;
+        // Consuming spelling — records the forwarded flag on the node's
+        // field bit and deactivates the formal's entry so an owned value
+        // isn't freed at ctor exit while the node still points at it (the
+        // CacheNode treatment). A borrowed value stores plain-equivalent:
+        // the bit records 0 and the node's drop walk skips it.
+        this.value #= value;
         this.prev = null;
         this.next = null;
     }

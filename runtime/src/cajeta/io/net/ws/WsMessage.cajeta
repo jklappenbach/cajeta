@@ -57,7 +57,7 @@ public class WsMessage {
     public static #WsMessage of(int32 opcode, #int8[] payload) {
         WsMessage m = heap WsMessage();
         m.opcode = opcode;
-        m.payload = payload;
+        m.payload #= payload;
         return #m;
     }
 

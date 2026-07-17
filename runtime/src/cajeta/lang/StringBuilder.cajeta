@@ -178,7 +178,7 @@ public final class StringBuilder {
         // ArrayList.grow / HashMap.rehash; without it the local's scope-exit
         // drop would free the buffer we just installed. One-way: once spilled,
         // the build stays on the heap buffer.
-        this.large = #grown;
+        this.large #= grown;
         this.cap = newCap;
         this.spilled = true;
     }

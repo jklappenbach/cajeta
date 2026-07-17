@@ -150,7 +150,7 @@ public class ServerBuilder {
      * @return `this`, for chaining.
      */
     public ServerBuilder bindAddress(SocketAddress addr) {
-        this.address = addr;
+        this.address #= addr;
         return this;
     }
 
@@ -166,7 +166,7 @@ public class ServerBuilder {
      */
     public ServerBuilder model(ServerModel m) {
         if (m != null) {
-            this.serverModel = m;
+            this.serverModel #= m;
         }
         return this;
     }

@@ -9,6 +9,7 @@
 namespace cajeta {
 
     class CajetaFunctionType;
+    class CajetaClass;
 
     struct MethodCallParameter {
         string label;
@@ -44,6 +45,13 @@ namespace cajeta {
     class MethodCallExpression : public Expression {
         string methodCallName;
         vector<MethodCallParameter> parameters;
+        // title-tracking 6.2.2 — set by the Cajeta.flagged(v, owned)
+        // intrinsic: the runtime i64 title flag paired with this call's
+        // value. ReturnStatement reads it to thread a container's MANUAL
+        // ownership bookkeeping (HashMap's owned[] bits) onto the return
+        // flag — cajeta code cannot otherwise mint "owned iff my bit says
+        // so". Null for every ordinary call.
+        llvm::Value* flaggedTitleValue = nullptr;
         // True for the `super(args)` methodCall alternative (CajetaParser.g4:630).
         // The ordinary identifier path doesn't set this; the SUPER form does so
         // generateCode can route through the parent class's constructor instead
@@ -79,8 +87,34 @@ namespace cajeta {
         // Stays false on intrinsic paths that never resolve a user
         // method — conservative (no reclamation).
         bool resolvedReturnsOwnership = false;
+        // 6.2.2 — the method this call resolved to (set beside
+        // resolvedReturnsOwnership); lets statement-position consumers ask
+        // shape questions (returnsClassPointer) without re-resolving.
+        MethodPtr resolvedMethod;
     public:
         bool isResolvedReturnsOwnership() const { return resolvedReturnsOwnership; }
+        llvm::Value* getFlaggedTitleValue() const { return flaggedTitleValue; }
+        MethodPtr getResolvedMethod() const { return resolvedMethod; }
+
+        // element-ownership 3.4.3 / slices 9.4.1 — statement-end temp
+        // classification, shared with the ctor-arg site (ClassCreatorRest).
+        // freshOwnedStringTemp: anonymous owned-String rvalue (inline concat
+        // or #String-returning call). freshSharedValueTempClass: a call
+        // result of a shared-capable VALUE type (Utf8 / Slice / aggregates
+        // embedding them) — every such rvalue carries its stakes with the
+        // bytes; returns the class for the release emit, or null.
+        static bool freshOwnedStringTemp(const AbstractSyntaxNodePtr& e);
+        static shared_ptr<CajetaClass> freshSharedValueTempClass(
+            const AbstractSyntaxNodePtr& e);
+        // title-tracking 6.2.5 — temps whose title rides the transfer word /
+        // caller-side reclaim: concrete vtable classes only (Strings keep
+        // 3.4.3, values 9.4.1, interfaces have no entry to take a title).
+        static shared_ptr<CajetaClass> droppableTempClass(
+            const CajetaTypePtr& t);
+        // A plain `heap X(...)` creator — an anonymous owned rvalue that
+        // surrenders per spec §4.1.1. stack/shared placements never do.
+        static shared_ptr<CajetaClass> freshHeapCreatorTempClass(
+            const AbstractSyntaxNodePtr& e);
         CajetaTypePtr getPreProjectionReturnType() const {
             return preProjectionReturnType;
         }
@@ -90,6 +124,15 @@ namespace cajeta {
         // if any). The free-variable walk in LambdaExpression uses this to
         // recurse into the args when scanning a lambda body for captures.
         const vector<MethodCallParameter>& getParameters() const { return parameters; }
+
+        // 7.2.4 — args are private; children[0] is only the receiver.
+        void forEachSubNode(
+                const std::function<void(const AbstractSyntaxNodePtr&)>& fn) override {
+            for (auto& p : parameters) {
+                if (p.expression) fn(p.expression);
+            }
+            AbstractSyntaxNode::forEachSubNode(fn);
+        }
 
         const string& getMethodCallName() const { return methodCallName; }
         void setMethodCallName(const string& name) { methodCallName = name; }

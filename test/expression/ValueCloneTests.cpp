@@ -84,14 +84,14 @@ TEST(ValueCloneTests, cloneSatisfiesOwningPosition) {
         "public class Cell { public int32 v; public Cell(int32 v) { this.v = v; } }\n"
         "public class Crate<K> {\n"
         "    public K store;\n"
-        "    public void put(#K k) { this.store = k; }\n"
+        "    public void put(#K k) { this.store #= k; }\n"
         "    public K peek() { return this.store; }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Crate<#Cell> owned = heap Crate<#Cell>();\n"
+        "        Crate<Cell> owned = heap Crate<Cell>();\n"
         "        Cell a = heap Cell(21);\n"
-        "        owned.put((Cell) a.clone());\n"   // duplicate satisfies owning
+        "        owned.put(#((Cell) a.clone()));\n"   // duplicate surrenders (rev 2)
         "        return owned.peek().v + a.v;\n"    // 42 — source untouched
         "    }\n"
         "}\n");

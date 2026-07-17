@@ -251,6 +251,7 @@ namespace cajeta {
         string archivePath;
 
         map<string, CajetaClassPtr> structures;
+        bool lambdaClassPtrReturn = false;
         MethodPtr currentMethod;
         StructureMetadataPtr structureMetadata;
 
@@ -980,6 +981,13 @@ namespace cajeta {
         void setCurrentMethod(MethodPtr method) {
             this->currentMethod = method;
         }
+
+        // 7.2.5 — true while emitting a lambda body whose synthesized
+        // function returns a class POINTER (non-sret). Lambdas have no
+        // Method context, so the return-flag protocol reads this instead
+        // of Method::returnsClassPointer().
+        void setLambdaClassPtrReturn(bool v) { lambdaClassPtrReturn = v; }
+        bool isLambdaClassPtrReturn() const { return lambdaClassPtrReturn; }
 
         MethodPtr getCurrentMethod() {
             return currentMethod;

@@ -103,6 +103,14 @@ fi
 discovered="$(CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" --gtest_list_tests 2>/dev/null || true)"
 if [ -z "$discovered" ]; then
     echo "error: could not enumerate tests via --gtest_list_tests" >&2
+    # Surface WHY: the 2>/dev/null above hides load failures entirely (a
+    # Windows exe the loader rejects — e.g. a multi-GB PE from a static-LLVM
+    # -g link — dies before main with empty stdout AND useful stderr/exit
+    # code). Re-run once without the gag and report size + exit status.
+    ls -l "$TEST_BIN" "$TEST_BIN.exe" 2>/dev/null >&2 || true
+    rc=0
+    CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" --gtest_list_tests >/dev/null || rc=$?
+    echo "       exit status: $rc" >&2
     exit 1
 fi
 missing=()

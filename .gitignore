@@ -98,6 +98,17 @@ build-tsan/
 # Test-duration metrics for weighted scheduling (cajeta_tests.sh)
 .test-durations.tsv
 
-# Skill-discovery cache written by `cajeta search-skill` / `get-skills`
-# when run inside a project dir (tools/mcp is one such workdir).
+# Per-project `.cajeta/` working directory — ALL of it is generated, never
+# authored. Two writers today:
+#   - skill-discovery cache: `cajeta search-skill` / `get-skills`
+#   - build cache: `cajeta build` incremental state (cache/ir/*.obligations,
+#     cache/artifact/<hash>/<binary>, cache-manifest.json)
+# tools/mcp is one such workdir.
+#
+# This rule only helps files that were never committed: gitignore does not
+# apply to anything already tracked. Four cache/ir/*.obligations files and a
+# cache/artifact/ binary predated it and stayed tracked for months — untracked
+# 2026-07-16. If a generated file shows up in `git status` under here again, the
+# rule is not broken; something added it with `-f` or via `git add -A` before
+# the rule existed. Untrack it (`git rm --cached`), don't add another pattern.
 .cajeta/

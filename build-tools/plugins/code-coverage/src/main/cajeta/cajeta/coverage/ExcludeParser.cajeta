@@ -50,7 +50,7 @@ public class ExcludeParser {
      */
     public static ArrayList<Exclude> parse(
         ActionContext ctx, JsonArray excludeArr) {
-        ArrayList<Exclude> out = #heap ArrayList<Exclude>();
+        ArrayList<Exclude> out #= heap ArrayList<Exclude>();
         if (excludeArr == null) {
             return out;
         }

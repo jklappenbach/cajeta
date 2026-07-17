@@ -169,7 +169,7 @@ transfers ownership.**
 public void demo() {
     MyClass a = heap MyClass();
     MyClass b = a;        // borrow — `a` still owns; `b` must not outlive a's scope
-    MyClass c = #a;       // transfer — `c` owns; reading `a` after this is a compile error
+    MyClass c #= a;       // transfer — `c` owns; reading `a` after this is a compile error
 }
 ```
 

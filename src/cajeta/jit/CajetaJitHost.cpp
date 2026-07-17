@@ -729,6 +729,18 @@ std::unique_ptr<JitDebugSession> startDebugSession(
     return std::make_unique<JitDebugSession>(std::move(impl));
 }
 
+// Portable setenv. POSIX `setenv` does not exist in the Windows CRT, which
+// spells it `_putenv_s` — the same split `__cajeta_env_set` already handles in
+// runtime/native/cajeta_rt_lang.c. Both write the CRT environment the
+// in-process JIT runtime later reads back with getenv().
+static void setEnvVar(const char* name, const char* value) {
+#if defined(_WIN32)
+    ::_putenv_s(name, value);
+#else
+    ::setenv(name, value, /*overwrite=*/1);
+#endif
+}
+
 int dispatchJitRun(int argc, const char* argv[]) {
     // argv: cajeta jit-run [-g|--debug-info] <sourceRoot> <entryMethod> [args...]
     JitRunOptions opts;
@@ -743,9 +755,9 @@ int dispatchJitRun(int argc, const char* argv[]) {
             // Route an uncaught throw through the runtime NDJSON emitter. The
             // in-process JIT runtime reads CAJETA_DIAG_FORMAT lazily on the first
             // uncaught throw (diagnostic-exceptions U1, 1.2.3).
-            ::setenv("CAJETA_DIAG_FORMAT", "json", 1);
+            setEnvVar("CAJETA_DIAG_FORMAT", "json");
         } else if (a == "--diag-format=text") {
-            ::setenv("CAJETA_DIAG_FORMAT", "text", 1);
+            setEnvVar("CAJETA_DIAG_FORMAT", "text");
         } else {
             positional.push_back(a);
         }

@@ -179,6 +179,9 @@ RBRACK:             ']';
 SEMI:               ';';
 COMMA:              ',';
 DOT:                '.';
+// title-stores §2 — fused title-assign. Declared BEFORE REFERENCE so the
+// lexer longest-matches '#=' as one token instead of '#' '='.
+SHARP_ASSIGN:       '#=';
 REFERENCE:          '#';
 
 // Operators

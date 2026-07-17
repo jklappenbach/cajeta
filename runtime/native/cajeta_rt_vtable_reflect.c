@@ -413,6 +413,18 @@ void __cajeta_drop_mark_inactive(struct cajeta_drop_entry* e) {
     e->active = 0;
 }
 
+// title-tracking 5.2.2 — runtime-owner formals. A formal's entry is pushed
+// armed and then set from its transfer-word bit (lent → disarmed); `#v`
+// consumers read the flag back before deactivation because it is the
+// title's runtime truth, not a compile-time fact.
+void __cajeta_drop_set_flag(struct cajeta_drop_entry* e, int64_t flag) {
+    e->active = flag ? 1 : 0;
+}
+
+int64_t __cajeta_drop_entry_flag(struct cajeta_drop_entry* e) {
+    return e ? (int64_t) e->active : 0;
+}
+
 // CP7-1c host accessor for the debug frame chain. Companion to the
 // __cajeta_dbg_local_* accessors defined up near the frame-chain helpers, but
 // placed here because it dereferences a cajeta_drop_entry (defined above; the
@@ -501,11 +513,21 @@ struct cajeta_vtable_entry {
 int64_t __cajeta_signature_hash(const char* s) {
     if (!s) return 0;
     uint64_t h = 0xcbf29ce484222325ULL;     // FNV offset basis
-    while (*s) {
-        uint8_t c = (uint8_t) *s++;
-        if (c == '#') continue;
+    const char* p = s;
+    while (*p) {
+        uint8_t c = (uint8_t) *p;
+        if (c == '#') {
+            // title-tracking 6.2.1 — a `#` inside an operator NAME
+            // (`operator#[]`) is identity, not mode: keep it. All other
+            // `#` (formal modes, dissolved spellings) stay erased.
+            // Mirrors the compiler's signatureHash exactly.
+            int after_operator = (p - s) >= 8
+                && strncmp(p - 8, "operator", 8) == 0;
+            if (!after_operator) { p++; continue; }
+        }
         h ^= c;
         h *= 0x100000001b3ULL;              // FNV prime
+        p++;
     }
     return (int64_t) h;
 }
@@ -1338,3 +1360,342 @@ int64_t __cajeta_rtti_invoke_scalar(void* rtti, void* obj, int32_t idx, void* ar
 }
 
 // ---- @Inject runtime override registry (test-only DI substitution) ---------
+
+// ---- slices 9.2.1 — local class-element array element ownership ------------
+// A bare local `String[]` owns its elements BY MOVE already (the array-slot
+// store deactivates an identifier source's drop entry), but nothing ever
+// dropped them: the local's teardown was storage-only __cajeta_free_array.
+// LocalVariableDeclaration now pre-pushes ONE extra chain entry per owning
+// String-element array local, in the DECLARING frame (the 9.3.1 placement
+// rule — store sites can run in inner blocks / loop bodies whose frames pop
+// too early), whose obj is this stack sidecar. Ownership is per-SLOT: only
+// stores whose source the array actually took (identifier / `#`-move /
+// fresh owned temp) mark their slot in a lazily-allocated bitmap; alias
+// stores (field reads, literals) stay unmarked so teardown never steals a
+// value owned elsewhere. All slot mutations route through the helpers
+// below; the walk reuses claim-gated __cajeta_string_drop so slot aliasing
+// (`arr[0] = s; arr[1] = s;`) frees exactly once.
+typedef struct {
+    void** arr_slot;                        // local's alloca (holds header ptr)
+    struct cajeta_drop_entry* storage_entry; // the free_array entry: inactive
+                                             // => array moved away, elements
+                                             // travel with it (leak, not UAF)
+    uint8_t* owned_bits;                    // lazily malloc'd, 1 bit per slot
+    int64_t owned_cap;                      // bitmap capacity in SLOTS
+    int64_t stride;                         // element slot stride (DataLayout)
+    int64_t header;                         // data-region offset (DataLayout)
+} cajeta_string_array_sidecar;
+
+static int64_t caj_arr_count_masked(void* arr) {
+    return *(int64_t*) arr & ~((int64_t) 1 << 63);   // CAJETA_SHARED_BIT
+}
+
+static int caj_arr_bit_get(cajeta_string_array_sidecar* sc, int64_t idx) {
+    if (!sc->owned_bits || idx < 0 || idx >= sc->owned_cap) return 0;
+    return (sc->owned_bits[idx >> 3] >> (idx & 7)) & 1;
+}
+
+static void caj_arr_bit_put(cajeta_string_array_sidecar* sc, int64_t idx,
+                            int set) {
+    if (idx < 0) return;
+    if (!sc->owned_bits) {
+        if (!set) return;                    // nothing marked yet, clear = no-op
+        void* arr = sc->arr_slot ? *sc->arr_slot : NULL;
+        if (!arr) return;
+        int64_t cap = caj_arr_count_masked(arr);
+        if (idx >= cap) cap = idx + 1;       // defensive; slots are bounds-checked upstream
+        sc->owned_bits = (uint8_t*) calloc((size_t) ((cap + 7) >> 3), 1);
+        if (!sc->owned_bits) return;         // OOM: degrade to today's leak
+        sc->owned_cap = cap;
+    }
+    if (idx >= sc->owned_cap) return;
+    if (set) sc->owned_bits[idx >> 3] |= (uint8_t) (1 << (idx & 7));
+    else sc->owned_bits[idx >> 3] &= (uint8_t) ~(1 << (idx & 7));
+}
+
+// Derive the slot's element index from its address (the store sites hold
+// only the element GEP; re-evaluating the index expression could double-run
+// its side effects). Returns -1 when the sidecar has no array yet.
+static int64_t caj_arr_slot_index(cajeta_string_array_sidecar* sc,
+                                  void** slot) {
+    void* arr = sc->arr_slot ? *sc->arr_slot : NULL;
+    if (!arr || sc->stride <= 0) return -1;
+    return ((char*) slot - ((char*) arr + sc->header)) / sc->stride;
+}
+
+// Store whose source ownership the array TAKES (identifier lvalue, `#`-move,
+// fresh owned temp). Releases a previously-owned occupant, marks the slot.
+void __cajeta_string_array_elem_set_owned(void* sidecar, void** slot,
+                                          void* wrapper) {
+    cajeta_string_array_sidecar* sc = (cajeta_string_array_sidecar*) sidecar;
+    if (!sc || !slot) return;
+    int64_t idx = caj_arr_slot_index(sc, slot);
+    void* old = *slot;
+    if (old && old != wrapper && caj_arr_bit_get(sc, idx)) {
+        __cajeta_string_drop(old);
+    }
+    caj_arr_bit_put(sc, idx, 1);
+    *slot = wrapper;
+}
+
+// Copy store (field/element read, literal, borrow-returning call): the
+// source keeps its wrapper; the slot stores a RESOLVED fresh one it owns
+// (title-stores 6.3.2 — resident String slots always own their wrappers;
+// storing the alias left the slot dangling once the source's owner
+// dropped, the Headers.grow UAF).
+void __cajeta_string_array_elem_set_alias(void* sidecar, void** slot,
+                                          void* wrapper) {
+    cajeta_string_array_sidecar* sc = (cajeta_string_array_sidecar*) sidecar;
+    if (!sc || !slot) return;
+    void* __cajeta_string_resolve(void* src_v);
+    void* fresh = __cajeta_string_resolve(wrapper);
+    int64_t idx = caj_arr_slot_index(sc, slot);
+    void* old = *slot;
+    if (old && old != fresh && caj_arr_bit_get(sc, idx)) {
+        __cajeta_string_drop(old);
+    }
+    caj_arr_bit_put(sc, idx, fresh ? 1 : 0);
+    *slot = fresh;
+}
+
+// Slot store for String-element arrays WITHOUT a local sidecar (field-held
+// and parameter arrays). Same always-own contract: `takes` sources hand
+// their wrapper over; others store a resolved copy. The displaced occupant
+// drops (claim-gated, so aliased duplicates stay free-once).
+void __cajeta_string_elem_store(void** slot, void* wrapper, int64_t takes) {
+    if (!slot) return;
+    void* __cajeta_string_resolve(void* src_v);
+    void* v = takes ? wrapper : __cajeta_string_resolve(wrapper);
+    void* old = *slot;
+    *slot = v;
+    if (old && old != v) {
+        __cajeta_string_drop(old);
+    }
+}
+
+// `#arr[i]` — move an element OUT: hand the wrapper to the receiver, null
+// the slot, unmark. A take from an unmarked slot hands out an alias the
+// receiver will drop; claim-gating makes that free-once rather than UAF.
+void* __cajeta_string_array_elem_take(void* sidecar, void** slot) {
+    if (!slot) return NULL;
+    void* v = *slot;
+    *slot = NULL;
+    if (sidecar) {
+        cajeta_string_array_sidecar* sc = (cajeta_string_array_sidecar*) sidecar;
+        caj_arr_bit_put(sc, caj_arr_slot_index(sc, slot), 0);
+    }
+    return v;
+}
+
+// Sidecar drop fn (chain entry pushed right after the local's free_array
+// entry, so LIFO runs this FIRST: elements drop before storage frees).
+void __cajeta_string_array_owned_drop(void* sidecar) {
+    cajeta_string_array_sidecar* sc = (cajeta_string_array_sidecar*) sidecar;
+    if (!sc) return;
+    uint8_t* bits = sc->owned_bits;
+    sc->owned_bits = NULL;
+    if (!bits) return;
+    // Array moved away (`#arr` arg / return / move-assign): its elements
+    // travel with it; freeing here would pull them out from under the new
+    // owner. The storage entry's active flag is the move-out signal every
+    // transfer site already maintains.
+    void* arr = sc->arr_slot ? *sc->arr_slot : NULL;
+    if (arr && sc->storage_entry && sc->storage_entry->active) {
+        int64_t count = caj_arr_count_masked(arr);
+        if (count > sc->owned_cap) count = sc->owned_cap;
+        char* data = (char*) arr + sc->header;
+        for (int64_t i = 0; i < count; i++) {
+            if (!((bits[i >> 3] >> (i & 7)) & 1)) continue;
+            void* elem = *(void**) (data + i * sc->stride);
+            if (elem) __cajeta_string_drop(elem);
+        }
+    }
+    free(bits);
+}
+
+// ---- title-tracking Unit 4 — class-element array slot bits ------------------
+// Same sidecar shape and lazily-allocated bitmap as the String family above,
+// but with TITLE semantics (title-tracking-spec §5, §6.3.3):
+//   - a plain store is a BORROW store — the slot is unmarked and the source's
+//     books are untouched (no implicit deactivation);
+//   - `a[i] = #x` (owned spelling) marks the slot; a previously-owned occupant
+//     is released at the store (§5.1.3 — the overwrite is its scope exit);
+//   - `#a[i]` take succeeds only on a marked slot; it unmarks the bit, leaves
+//     the slot RESIDENT and readable (§6.3.2), and returns the value. An
+//     unmarked or empty slot returns NULL — the compiler's call site panics
+//     (CAJETA_PANIC_TITLE_MISS, integer-coded throw), so the runtime never
+//     forges a title.
+// Element release is __cajeta_class_virtual_drop (defined above): virtual, so
+// one walk fn covers every monomorphized element class; claim-gated, so slot
+// aliasing frees exactly once.
+
+void __cajeta_class_array_elem_set_owned(void* sidecar, void** slot,
+                                         void* obj) {
+    cajeta_string_array_sidecar* sc = (cajeta_string_array_sidecar*) sidecar;
+    if (!sc || !slot) return;
+    int64_t idx = caj_arr_slot_index(sc, slot);
+    void* old = *slot;
+    if (old && old != obj && caj_arr_bit_get(sc, idx)) {
+        __cajeta_class_virtual_drop(old);
+    }
+    caj_arr_bit_put(sc, idx, 1);
+    *slot = obj;
+}
+
+void __cajeta_class_array_elem_set_alias(void* sidecar, void** slot,
+                                         void* obj) {
+    cajeta_string_array_sidecar* sc = (cajeta_string_array_sidecar*) sidecar;
+    if (!sc || !slot) return;
+    int64_t idx = caj_arr_slot_index(sc, slot);
+    void* old = *slot;
+    if (old && old != obj && caj_arr_bit_get(sc, idx)) {
+        __cajeta_class_virtual_drop(old);
+    }
+    caj_arr_bit_put(sc, idx, 0);
+    *slot = obj;
+}
+
+void* __cajeta_class_array_elem_take(void* sidecar, void** slot) {
+    cajeta_string_array_sidecar* sc = (cajeta_string_array_sidecar*) sidecar;
+    if (!sc || !slot) return NULL;
+    int64_t idx = caj_arr_slot_index(sc, slot);
+    if (!caj_arr_bit_get(sc, idx)) return NULL;   // borrowed/empty: no title
+    void* v = *slot;
+    if (!v) return NULL;
+    caj_arr_bit_put(sc, idx, 0);                  // title out; slot stays
+    return v;
+}
+
+// ===== title-stores §3 — tail-bitmap element titles ========================
+// Drop-entry shape (one arg): walk a class-pointer element array's tail
+// bitmap. Class-pointer arrays are always {i64 count | ptr data[] | bits},
+// so header and stride are fixed at 8. Registered as its own entry ABOVE
+// the buffer's free_array entry — LIFO runs the walk first.
+void __cajeta_tail_array_drop(void* hdr);
+
+// Droppable-element arrays allocated by __cajeta_new_array_header_bits carry
+// a per-slot ownership bitmap at hdr + header_size + count*elem_size (count
+// masked of the shared bit). Header-addressed, so FIELD arrays and locals
+// ride one mechanism — the successor of the local-only sidecar above.
+
+static uint8_t* caj_tail_bits(void* hdr, uint64_t header_size, uint64_t elem_size) {
+    int64_t count = *(int64_t*) hdr & ~((int64_t) 1 << 63);
+    return (uint8_t*) hdr + header_size + (uint64_t) count * elem_size;
+}
+
+// Store with displaced release: an OWNED occupant is dropped before the
+// overwrite; the slot's bit records the low bit of `owned` (a forwarded
+// runtime flag composes directly).
+void __cajeta_tail_elem_store(void* hdr, uint64_t header_size, uint64_t elem_size,
+                              int64_t idx, void* obj, int64_t owned) {
+    if (!hdr) return;
+    int64_t count = *(int64_t*) hdr & ~((int64_t) 1 << 63);
+    if (idx < 0 || idx >= count) return;    // bounds guarded upstream; stay safe
+    uint8_t* bits = caj_tail_bits(hdr, header_size, elem_size);
+    void** slot = (void**) ((uint8_t*) hdr + header_size + (uint64_t) idx * elem_size);
+    void* old = *slot;
+    if (old && old != obj && ((bits[idx >> 3] >> (idx & 7)) & 1)) {
+        __cajeta_class_virtual_drop(old);
+    }
+    if (owned & 1) bits[idx >> 3] |= (uint8_t) (1 << (idx & 7));
+    else           bits[idx >> 3] &= (uint8_t) ~(1 << (idx & 7));
+    *slot = obj;
+}
+
+// Move-out: clears the slot's bit and returns its previous value (1 = the
+// caller now holds the title). The slot pointer itself stays readable as a
+// lend, mirroring the guarded field detach.
+int64_t __cajeta_tail_elem_take_flag(void* hdr, uint64_t header_size,
+                                     uint64_t elem_size, int64_t idx) {
+    if (!hdr) return 0;
+    int64_t count = *(int64_t*) hdr & ~((int64_t) 1 << 63);
+    if (idx < 0 || idx >= count) return 0;
+    uint8_t* bits = caj_tail_bits(hdr, header_size, elem_size);
+    int64_t was = (bits[idx >> 3] >> (idx & 7)) & 1;
+    bits[idx >> 3] &= (uint8_t) ~(1 << (idx & 7));
+    return was;
+}
+
+// Bit-guarded single drop (Cajeta.dropValue(#arr[i])): owned -> vdrop +
+// clear + null the slot; borrowed/vacant -> no-op.
+void __cajeta_tail_elem_drop_one(void* hdr, uint64_t header_size,
+                                 uint64_t elem_size, int64_t idx) {
+    if (!hdr) return;
+    int64_t count = *(int64_t*) hdr & ~((int64_t) 1 << 63);
+    if (idx < 0 || idx >= count) return;
+    uint8_t* bits = caj_tail_bits(hdr, header_size, elem_size);
+    if (!((bits[idx >> 3] >> (idx & 7)) & 1)) return;
+    void** slot = (void**) ((uint8_t*) hdr + header_size + (uint64_t) idx * elem_size);
+    void* v = *slot;
+    bits[idx >> 3] &= (uint8_t) ~(1 << (idx & 7));
+    *slot = NULL;
+    if (v) __cajeta_class_virtual_drop(v);
+}
+
+// Teardown walk: drop every OWNED slot, clearing as it goes. Vacant and
+// borrowed slots (bit 0) are untouched — no @ElementCount needed.
+void __cajeta_tail_elem_drop_walk(void* hdr, uint64_t header_size,
+                                  uint64_t elem_size);
+
+void __cajeta_tail_array_drop(void* hdr) {
+    __cajeta_tail_elem_drop_walk(hdr, 8, 8);
+}
+
+// Single-entry local-array drop: walk owned slots, then free the buffer.
+// One entry means a move-out (`this.data = #bigger`) deactivates BOTH
+// behaviors atomically — a split walk/free pair desynchronizes on moves.
+void __cajeta_free_array(void* array);
+void __cajeta_tail_array_drop_free(void* hdr) {
+    __cajeta_tail_elem_drop_walk(hdr, 8, 8);
+    __cajeta_free_array(hdr);
+}
+
+// title-stores Unit 5 — String-element arrays: every RESIDENT slot owns
+// its wrapper (dual-role: `#` forwards, a plain store copies), so the
+// teardown walk releases unconditionally. Vacant/taken slots hold NULL.
+void __cajeta_string_elem_drop_walk(void* hdr, uint64_t header_size,
+                                    uint64_t elem_size) {
+    if (!hdr) return;
+    int64_t scount = *(int64_t*) hdr & ~((int64_t) 1 << 63);
+    for (int64_t i = 0; i < scount; i++) {
+        void** slot = (void**) ((uint8_t*) hdr + header_size + (uint64_t) i * elem_size);
+        void* v = *slot;
+        *slot = NULL;
+        if (v) __cajeta_class_virtual_drop(v);
+    }
+}
+
+void __cajeta_tail_elem_drop_walk(void* hdr, uint64_t header_size,
+                                  uint64_t elem_size) {
+    if (!hdr) return;
+    int64_t count = *(int64_t*) hdr & ~((int64_t) 1 << 63);
+    uint8_t* bits = caj_tail_bits(hdr, header_size, elem_size);
+    for (int64_t i = 0; i < count; i++) {
+        if (!((bits[i >> 3] >> (i & 7)) & 1)) continue;
+        void** slot = (void**) ((uint8_t*) hdr + header_size + (uint64_t) i * elem_size);
+        void* v = *slot;
+        bits[i >> 3] &= (uint8_t) ~(1 << (i & 7));
+        *slot = NULL;
+        if (v) __cajeta_class_virtual_drop(v);
+    }
+}
+
+void __cajeta_class_array_owned_drop(void* sidecar) {
+    cajeta_string_array_sidecar* sc = (cajeta_string_array_sidecar*) sidecar;
+    if (!sc) return;
+    uint8_t* bits = sc->owned_bits;
+    sc->owned_bits = NULL;
+    if (!bits) return;
+    void* arr = sc->arr_slot ? *sc->arr_slot : NULL;
+    if (arr && sc->storage_entry && sc->storage_entry->active) {
+        int64_t count = caj_arr_count_masked(arr);
+        if (count > sc->owned_cap) count = sc->owned_cap;
+        char* data = (char*) arr + sc->header;
+        for (int64_t i = 0; i < count; i++) {
+            if (!((bits[i >> 3] >> (i & 7)) & 1)) continue;
+            void* elem = *(void**) (data + i * sc->stride);
+            if (elem) __cajeta_class_virtual_drop(elem);
+        }
+    }
+    free(bits);
+}

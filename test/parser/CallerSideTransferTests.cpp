@@ -22,6 +22,12 @@
 //   | #T param      | x             | transfer (P1)|
 //   | #T param      | #x            | transfer     |
 //
+// title-tracking rev 2 respell (plan 7.2.1): formals are RUNTIME owners —
+// an armed formal that the body does not consume drops at callee exit, so
+// retaining stores must be spelled `this.p #= p;` (the wrapper-ctor rule).
+// The fixtures below were updated accordingly; the four-cell matrix above
+// still holds at the call site.
+//
 
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
@@ -51,7 +57,7 @@ constexpr const char* kPairAndHolderBorrow =
     "}\n"
     "public class Holder {\n"
     "    public Pair p;\n"
-    "    public Holder(Pair p) { this.p = p; }\n"
+    "    public Holder(Pair p) { this.p #= p; }\n"
     "}\n";
 
 constexpr const char* kPairAndHolderTransfer =
@@ -62,7 +68,7 @@ constexpr const char* kPairAndHolderTransfer =
     "}\n"
     "public class Holder {\n"
     "    public Pair p;\n"
-    "    public Holder(#Pair p) { this.p = p; }\n"
+    "    public Holder(#Pair p) { this.p #= p; }\n"
     "}\n";
 
 } // namespace
@@ -129,7 +135,7 @@ TEST(CallerSideTransferTests, methodCallCallerSideTransferNoDoubleFree) {
         "public class Sink {\n"
         "    public Pair p;\n"
         "    public Sink() { this.p = null; }\n"
-        "    public void take(Pair p) { this.p = p; }\n"
+        "    public void take(Pair p) { this.p #= p; }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"

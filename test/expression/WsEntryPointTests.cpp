@@ -20,7 +20,7 @@
 // read loop a freed frame -> use-after-free on the frame's payload. It passed
 // in isolation (freed memory still readable) and failed under heap churn -- the
 // fiber park only ADDED churn, it was never the cause. Fix: WsFrameDecoder now
-// `#`-transfers frames into the queue (`enqueue(#f)` / `queue[t] = #f`) and out
+// `#`-transfers frames into the queue (`enqueue(#f)` / `queue[t] #= f`) and out
 // of nextFrame (`#WsFrame` / `return #f`), so the frame has exactly one owner.
 // Verified deterministically with --poison-free (which turns the UAF into a
 // hard crash): both the pure decoder path and this live echo are green under

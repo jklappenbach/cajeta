@@ -138,8 +138,11 @@ TEST(SliceEscapeResolutionTests, arenaEscapeCopies) {
         "return 1;"), 1);
 }
 
-// 4.1.5 (GREEN: unchanged discipline) — escaping a borrowed identity object
-// through a `#` return stays a compile error.
+// 4.1.5 — REWRITTEN for title-tracking rev 2 (5.2.4): a plain class formal
+// is a RUNTIME owner, so `return borrowed` through a `#` return FORWARDS
+// the flag the value actually holds (a lend forwards 0 — the caller keeps
+// ownership; no static rejection). The old BORROW_PARAM_ESCAPES error is
+// retired for class formals.
 TEST(SliceEscapeResolutionTests, mutableEscapeStillErrors) {
     std::string src =
         "package test;\n"
@@ -157,7 +160,7 @@ TEST(SliceEscapeResolutionTests, mutableEscapeStillErrors) {
         "        return 1;\n"
         "    }\n"
         "}\n";
-    EXPECT_ANY_THROW({
+    EXPECT_NO_THROW({
         auto jit = CajetaJit::compile(src, "test.Ut");
         (void) jit;
     });

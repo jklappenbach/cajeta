@@ -140,9 +140,15 @@ public final class PageCache<K, V> {
      * {@link #evictedKey}. Returns true exactly when a tile was evicted.
      */
     public boolean admit(K key, V value) {
-        if (this.index.containsKey(key)) {
-            int32 ex = this.index.get(key);
-            this.slotVal[ex] = value;
+        // borrow-alias: the cache is an INDEX over consumer-owned tiles —
+        // slots hold lends only (eviction publishes the key back via
+        // evictedKey, so an owning slot would dangle it). See the
+        // eviction-UAF note in the class doc.
+        K k = key;
+        V v = value;
+        if (this.index.containsKey(k)) {
+            int32 ex = this.index.get(k);
+            this.slotVal[ex] = v;
             this.moveToHead(ex);
             return false;
         }
@@ -161,9 +167,9 @@ public final class PageCache<K, V> {
             slot = victim;
             evict = true;
         }
-        this.slotKey[slot] = key;
-        this.slotVal[slot] = value;
-        this.index.put(key, slot);
+        this.slotKey[slot] = k;
+        this.slotVal[slot] = v;
+        this.index.put(k, slot);
         this.linkAtHead(slot);
         return evict;
     }

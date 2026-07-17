@@ -42,10 +42,10 @@ public class MapOrFallbackStream<T, R> extends Stream<R> {
      *     #words, (w) -> Integer.parse(w), 0);
      * ```
      */
-    public MapOrFallbackStream(#Stream<T> source, (T) -> #R fn, #R fallback) {
-        this.source = source;
+    public MapOrFallbackStream(#Stream<T> source, (T) -> #R fn, R fallback) {
+        this.source #= source;
         this.fn = fn;
-        this.fallback = fallback;
+        this.fallback #= fallback;
     }
 
     /**
@@ -57,7 +57,7 @@ public class MapOrFallbackStream<T, R> extends Stream<R> {
     public Optional<R> next() {
         Optional<T> o = this.source.next();
         if (o.isEmpty()) {
-            return stack Optional<R>(false, null);
+            return stack Optional<R>(false);
         }
         try {
             R mapped = this.fn(o.get());

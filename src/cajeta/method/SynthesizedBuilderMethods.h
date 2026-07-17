@@ -41,6 +41,7 @@ namespace cajeta {
 
         void initParameter();
         void generateCode() override;
+        bool emitsReturnFlag() override { return false; }  // raw-IR body: never stores the return flag
 
     private:
         StructurePropertyPtr field;
@@ -56,6 +57,7 @@ namespace cajeta {
                                 const std::string& methodName = "build");
 
         void generateCode() override;
+        bool emitsReturnFlag() override { return false; }  // raw-IR body: never stores the return flag
 
     private:
         CajetaClassPtr outer;
@@ -87,6 +89,7 @@ namespace cajeta {
                                          std::vector<DefaultEntry> defaults = {});
 
         void generateCode() override;
+        bool emitsReturnFlag() override { return false; }  // raw-IR body: never stores the return flag
 
     private:
         CajetaClassPtr builder;

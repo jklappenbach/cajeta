@@ -17,7 +17,7 @@ std::string makeSource(const std::string& body) {
            "public final class Rec {\n"
            "    public int64 a;\n"
            "    public String s;\n"
-           "    public Rec(int64 a, #String s) { this.a = a; this.s = #s; }\n"
+           "    public Rec(int64 a, #String s) { this.a = a; this.s #= s; }\n"
            "}\n"
            "public final class Oct {\n"
            "    public static int32 run() {\n"

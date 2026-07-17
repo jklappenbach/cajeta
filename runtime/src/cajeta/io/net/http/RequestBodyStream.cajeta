@@ -91,10 +91,10 @@ public final class RequestBodyStream {
 
     /** Private ctor; construct through [`forRequest`](#forRequest). */
     RequestBodyStream(BodyReader body, AsyncReader reader) {
-        this.body = body;
-        this.reader = reader;
-        this.pull = heap int8[RequestBodyStream.PULL];
         this.complete = body.isComplete();
+        this.body #= body;
+        this.reader #= reader;
+        this.pull = heap int8[RequestBodyStream.PULL];
         this.drained = false;
     }
 

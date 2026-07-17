@@ -6,6 +6,7 @@
 #include "LocalVariableDeclaration.h"
 #include "../method/Method.h"
 #include "../compile/CajetaModule.h"
+#include "../type/Scope.h"
 #include "cajeta/dbg/DebugLocTable.h"
 #include "cajeta/dbg/LineInfoCodegen.h"
 
@@ -105,6 +106,15 @@ namespace cajeta {
         }
         bool debugInfo = module->getFlags().debugInfo;
         bool lineInfo = module->getFlags().lineInfo;
+        // title-tracking §3.1.5 — checkpoint the move log: a block whose
+        // codegen ends in a return/throw never reaches the join, so the
+        // moves it introduced retract (`try { put(#key); return r; } ...
+        // put(#key)` — dynamically exclusive paths). A fallthrough block
+        // keeps them: moved on any joining path = moved after the join.
+        // break/continue emit plain branches and deliberately do NOT
+        // retract (their moves can reach post-loop code).
+        auto linScope = module->getScopeStack().peek();
+        size_t moveMark = linScope ? linScope->moveLogSize() : 0;
         for (auto child: children) {
             // Stop emitting once the current BB has a terminator —
             // anything after a return / throw / break / continue is
@@ -128,6 +138,27 @@ namespace cajeta {
             // CP2: statement-boundary safepoint before each statement.
             if (debugInfo) emitDebugSafepoint(module, child);
             child->generateCode(module);
+        }
+
+        if (linScope) {
+            llvm::BasicBlock* bb = builder ? builder->GetInsertBlock() : nullptr;
+            llvm::Instruction* term = (bb && bb->hasTerminator())
+                ? bb->getTerminator() : nullptr;
+            bool exited = term && (llvm::isa<llvm::ReturnInst>(term)
+                                   || llvm::isa<llvm::UnreachableInst>(term));
+            // ThrowStatement ends its BB with `unreachable` then parks the
+            // insert point in a fresh predecessor-less `after_throw` BB (so
+            // trailing dead code still has a home). An empty, unreached,
+            // non-entry insert BB at block end is that same "this path never
+            // joins" signal.
+            if (!exited && bb && term == nullptr && bb->empty()
+                    && bb->hasNPredecessors(0)
+                    && bb != &bb->getParent()->getEntryBlock()) {
+                exited = true;
+            }
+            if (exited) {
+                linScope->retractMovesSince(moveMark);
+            }
         }
 
         if (m) {

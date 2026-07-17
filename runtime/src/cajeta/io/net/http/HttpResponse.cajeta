@@ -98,7 +98,7 @@ public class HttpResponse {
         this.reason = heap String(#r, 2);
         this.headers = heap Headers();
         int8[] e = heap int8[0];
-        this.body = #e;
+        this.body #= e;
         this.hasBody = false;
     }
 
@@ -207,7 +207,7 @@ public class HttpResponse {
             copy[i] = data[i];
             i = i + 1;
         }
-        this.body = #copy;
+        this.body #= copy;
         this.hasBody = true;
         return this;
     }

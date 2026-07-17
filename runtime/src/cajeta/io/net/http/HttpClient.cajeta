@@ -86,7 +86,7 @@ public class HttpClient {
      */
     public HttpClient() {
         int8[] e = heap int8[0];
-        this.trustPem = #e;
+        this.trustPem #= e;
         this.trustLen = 0;
         this.hasTrustAnchor = false;
     }
@@ -103,7 +103,7 @@ public class HttpClient {
             copy[i] = pem[i];
             i = i + 1;
         }
-        this.trustPem = #copy;
+        this.trustPem #= copy;
         this.trustLen = len;
         this.hasTrustAnchor = true;
         return this;
@@ -177,7 +177,7 @@ public class HttpClient {
                 String loc = resp.headers.get("Location");
                 if (loc != null) {
                     String next = HttpClient.resolveRedirect(current, loc);
-                    current = #next;
+                    current #= next;
                     hops = hops + 1;
                     continue;
                 }

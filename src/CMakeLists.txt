@@ -272,13 +272,33 @@ endif()
 # hint at runtime. LLVM_VERSION_MAJOR comes from find_package(LLVM CONFIG)
 # above, so the lld discovery automatically tracks whichever LLVM was found
 # (no separate hardcoded major version).
-find_path(CAJETA_LLD_INCLUDE_DIR
-        NAMES lld/Common/Driver.h
-        PATHS /usr/include /usr/local/include
-              /usr/lib/llvm-${LLVM_VERSION_MAJOR}/include
-              /usr/include/llvm-${LLVM_VERSION_MAJOR})
-find_library(CAJETA_LLD_COMMON_LIB NAMES lldCommon)
-find_library(CAJETA_LLD_ELF_LIB NAMES lldELF)
+# lld MUST come from the SAME toolchain as find_package(LLVM) above. On the
+# self-hosted Windows runner the top-level CMakeLists seeds C:/msys64/mingw64
+# onto CMAKE_PREFIX_PATH (needed so glog/gtest/antlr4/zstd/... resolve there) —
+# but that MSYS2 tree also ships a STOCK mingw lld of a DIFFERENT LLVM major
+# (22) than the cajeta-llvm fork we actually link (23), built against a
+# different libstdc++. A bare find_library there mixes stock-22 lld objects
+# into the fork-23 link: duplicate libstdc++ statics AND a cajeta_test.exe that
+# links but won't run ("inappropriate file type or format"). find_package(LLVM)
+# is already pinned to the fork via LLVM_DIR; pin the Windows lld lookup to the
+# same tree so it can never fall through to C:/msys64. Linux/macOS keep the
+# system search (Ubuntu's lld-${LLVM_VERSION_MAJOR}-dev lives under /usr).
+if(WIN32)
+    find_path(CAJETA_LLD_INCLUDE_DIR NAMES lld/Common/Driver.h
+            HINTS ${LLVM_INCLUDE_DIRS} NO_DEFAULT_PATH)
+    find_library(CAJETA_LLD_COMMON_LIB NAMES lldCommon
+            HINTS ${LLVM_LIBRARY_DIR} NO_DEFAULT_PATH)
+    find_library(CAJETA_LLD_ELF_LIB NAMES lldELF
+            HINTS ${LLVM_LIBRARY_DIR} NO_DEFAULT_PATH)
+else()
+    find_path(CAJETA_LLD_INCLUDE_DIR
+            NAMES lld/Common/Driver.h
+            PATHS /usr/include /usr/local/include
+                  /usr/lib/llvm-${LLVM_VERSION_MAJOR}/include
+                  /usr/include/llvm-${LLVM_VERSION_MAJOR})
+    find_library(CAJETA_LLD_COMMON_LIB NAMES lldCommon)
+    find_library(CAJETA_LLD_ELF_LIB NAMES lldELF)
+endif()
 if(CAJETA_LLD_INCLUDE_DIR AND CAJETA_LLD_COMMON_LIB AND CAJETA_LLD_ELF_LIB)
     # lld's ELF OutputSection compression references zlib (adler32, deflate*)
     # and zstd. zstd is already linked below; zlib is otherwise unused by
@@ -837,11 +857,26 @@ list(APPEND GENERATED_SOURCES ${CAJETA_INIT_EMBED})
 # Linux/ELF + static-component LLVM only (the Windows dylib path doesn't apply).
 if(NOT WIN32 AND NOT CAJETA_USE_LLVM_DYLIB)
     set(_caj_llvm_excl "")
+    # Glob the archives rather than walk LLVM_LIBS: llvm_map_components_to_libnames
+    # returns only the NAMED components, but the link line also pulls in their
+    # transitive deps (libLLVMipo.a, libLLVMTransformUtils.a, ...), and any archive
+    # left off this list leaks its llvm::* symbols into .dynsym for comgr to bind to.
+    file(GLOB _caj_llvm_archives "${LLVM_LIBRARY_DIR}/libLLVM*.a" "${LLVM_LIBRARY_DIR}/liblld*.a")
+    foreach(_caj_a IN LISTS _caj_llvm_archives)
+        get_filename_component(_caj_n "${_caj_a}" NAME)
+        string(APPEND _caj_llvm_excl "${_caj_n}:")
+    endforeach()
     foreach(_caj_l IN LISTS LLVM_LIBS)
-        string(APPEND _caj_llvm_excl "lib${_caj_l}.a:")
+        if(NOT _caj_llvm_excl MATCHES "(^|:)lib${_caj_l}\\.a:")
+            string(APPEND _caj_llvm_excl "lib${_caj_l}.a:")
+        endif()
     endforeach()
     set(CAJETA_LLVM_EXCLUDE_LIBS "${_caj_llvm_excl}" CACHE INTERNAL
         "LLVM static archives to hide from dynamic export (comgr interposition fix)")
+    # --exclude-libs can't reach the vague-linkage LLVM template instantiations that
+    # land in cajeta's OWN objects; this version script localizes them by mangling.
+    set(CAJETA_LLVM_VERSION_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/../cmake/hide-llvm-symbols.map"
+        CACHE INTERNAL "Version script localizing llvm::* (comgr interposition fix)")
 endif()
 
 add_library(${CMAKE_PROJECT_NAME}_lib STATIC ${SOURCES} ${GENERATED_SOURCES})
@@ -963,6 +998,12 @@ if(NOT WIN32)
     if(CAJETA_LLVM_EXCLUDE_LIBS AND NOT APPLE)
         target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
                 "-Wl,--exclude-libs,${CAJETA_LLVM_EXCLUDE_LIBS}")
+    endif()
+    if(CAJETA_LLVM_VERSION_SCRIPT AND NOT APPLE)
+        target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
+                "-Wl,--version-script=${CAJETA_LLVM_VERSION_SCRIPT}")
+        set_property(TARGET ${CMAKE_PROJECT_NAME} APPEND PROPERTY
+                LINK_DEPENDS "${CAJETA_LLVM_VERSION_SCRIPT}")
     endif()
 endif()
 if(TARGET cajetadoc_core)

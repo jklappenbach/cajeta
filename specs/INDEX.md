@@ -11,14 +11,14 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [ide-symbol-index](ide-symbol-index-spec.md) | [plan](../agents/ide-symbol-index-plan.md) | active — Units 1-9 implemented and green; awaiting live-IDE acceptance passes (7.3, 8.3, 9.3) |
 | [ide-features](ide-features-spec.md) | [plan](../agents/ide-features-plan.md) | active — refactoring, hierarchy, call graph, gutter nav; blocked until ide-symbol-index closes |
 | [lint-server](lint-server-spec.md) | [plan](../agents/lint-server-plan.md) | draft — warm per-edit lint via in-process stdlib reuse; queued behind ide-symbol-index (per-edit lint on tour-sized roots exceeds the plugin's 10 s timeout today) |
+| [silent-resolution-diagnostics](silent-resolution-diagnostics-spec.md) | [plan](../agents/silent-resolution-diagnostics-plan.md) | active |
 | [optional-borrow-ownership](optional-borrow-ownership-spec.md) | [plan](../agents/cajeta/optional-borrow-ownership-plan.md) | active |
 | [docs-refactor](docs-refactor-spec.md) | [plan](../agents/docs-refactor-plan.md) | active |
 | [cja-source-view](cja-source-view-spec.md) | [plan](../agents/cja-source-view-plan.md) | active |
 | [embedded-targets](embedded-targets-spec.md) | [plan](../agents/embedded-targets-plan.md) | active |
 | [memory-viewer](memory-viewer-spec.md) | [plan](../agents/memory-viewer-plan.md) | active |
 | [diagnostic-engine](diagnostic-engine-spec.md) | — (engine + lint collect-and-continue landed; remaining scope unverified) | active |
-| [element-ownership](element-ownership-spec.md) | [plan](../agents/element-ownership-plan.md) | blocked — type-argument layer superseded by title-tracking (Units 1–7 shipped; Unit 8 will not proceed as written) |
-| [title-tracking](title-tracking-spec.md) | [plan](../agents/title-tracking-plan.md) | active |
+| [compile-cache](compile-cache-spec.md) | [plan](../agents/cajeta/compile-cache-plan.md) | blocked (parked after Unit 2, 2026-07-10 — prime now ~8% of sweep CPU; re-open triggers in plan) |
 | [cajetadoc-model-fidelity](cajetadoc-model-fidelity-spec.md) | — (docs-refactor 15.1) | draft |
 | [stack-return-transfer-error](stack-return-transfer-error-spec.md) | — (docs-refactor 15.4) | draft |
 | [net-server-shutdown-wake](net-server-shutdown-wake-spec.md) | — (docs-refactor 15.6) | draft |

@@ -142,7 +142,7 @@ public class SharedPoolServer extends Server {
      */
     public SharedPoolServer(TcpListener listener, int32 poolSize,
                             (TcpStream) -> void handler) {
-        this.listener = listener;
+        this.listener #= listener;
         this.handler = handler;
         this.state = heap AtomicInt32(ServerState.NEW);
         this.inflight = heap AtomicInt32(0);

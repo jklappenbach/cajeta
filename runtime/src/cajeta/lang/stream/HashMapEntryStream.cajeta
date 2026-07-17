@@ -48,8 +48,8 @@ public class HashMapEntryStream<K, V> extends Stream<Pair<K, V>> implements Spli
      * ```
      */
     public HashMapEntryStream(MapEntry<K, V>[] slots, int8[] ctrl, int64 cap) {
-        this.slots = slots;
-        this.ctrl = ctrl;
+        this.slots #= slots;
+        this.ctrl #= ctrl;
         this.cap = cap;
         this.idx = 0;
     }
@@ -78,7 +78,7 @@ public class HashMapEntryStream<K, V> extends Stream<Pair<K, V>> implements Spli
             }
             this.idx = this.idx + 1;
         }
-        return stack Optional<Pair<K, V>>(false, null);
+        return stack Optional<Pair<K, V>>(false);
     }
 
     /**

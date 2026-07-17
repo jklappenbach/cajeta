@@ -45,15 +45,10 @@ namespace cajeta {
     // Build `<arg0,arg1,...>` from the type arguments using each arg's
     // canonical name. Used both for the instantiation's class name suffix
     // and for the structure-map cache key.
-    static string buildArgSuffix(const vector<CajetaTypePtr>& args,
-                                 const vector<bool>& argOwning = {}) {
+    static string buildArgSuffix(const vector<CajetaTypePtr>& args) {
         string s = "<";
         for (size_t i = 0; i < args.size(); ++i) {
             if (i > 0) s += ",";
-            // element-ownership §2/§8.3.1 — an owning (`#`) argument mangles
-            // with a leading '#' so `HashMap<#String,V>` and `HashMap<String,V>`
-            // are distinct cache entries / distinct monomorphizations.
-            if (i < argOwning.size() && argOwning[i]) s += "#";
             s += args[i]->getQName()->toCanonical();
         }
         s += ">";
@@ -84,9 +79,8 @@ namespace cajeta {
         return out;
     }
 
-    CajetaClassPtr CajetaClass::instantiate(vector<CajetaTypePtr> args,
-                                            vector<bool> argOwning) {
-        CajetaClassPtr result = instantiateInternal(std::move(args), std::move(argOwning));
+    CajetaClassPtr CajetaClass::instantiate(vector<CajetaTypePtr> args) {
+        CajetaClassPtr result = instantiateInternal(std::move(args));
         // Incremental compilation (Phase 2/3): if this produced a genuine
         // instantiation (a different object than the template `this` — not a
         // non-template passthrough or placeholder short-circuit) and it's
@@ -102,8 +96,7 @@ namespace cajeta {
         return result;
     }
 
-    CajetaClassPtr CajetaClass::instantiateInternal(vector<CajetaTypePtr> args,
-                                                    vector<bool> argOwning) {
+    CajetaClassPtr CajetaClass::instantiateInternal(vector<CajetaTypePtr> args) {
         // Non-templates pass through unchanged. Lets callers do
         // `cls->instantiate(args)` without guarding on isTemplate themselves.
         if (!isTemplate()) {
@@ -357,10 +350,6 @@ namespace cajeta {
         }
 
         // Cache key: full canonical name with args, e.g. `pkg.Box<cajeta.int32>`.
-        // Keep argOwning parallel to args after any default-fill above (filled
-        // positions are borrow). element-ownership §2.
-        if (argOwning.size() < args.size()) argOwning.resize(args.size(), false);
-
         // element-ownership §8.1 (plan 2.1.4) — the value-semantics gate. `#`
         // demands a separable ownership story from the argument: a primitive
         // carries none (§8.1.1); a value type owns heap payload only when
@@ -370,77 +359,11 @@ namespace cajeta {
         // NewExpression) and direct instantiate() callers hit it. Wildcards
         // and still-unfilled forward-ref placeholders skip — their shape isn't
         // known yet; arrays own their elements and pass.
-        // element-ownership §4.1.5 / §8.6 (plan 5.2.1) — declaration-`#`:
-        // an owning-REQUIRED type parameter (`class Vault<#K, V>`) demands `#`
-        // from every instantiation. Checked here so field/local/extends
-        // threading and direct instantiate() callers all hit it; the
-        // declaration-time extends-edge contagion check (buildClassLike)
-        // catches laundering earlier with the satisfy/reproject phrasing.
-        // Wildcard args skip (reflection's `Vault<?>` names no element type).
-        for (size_t i = 0; i < args.size() && i < typeParameters.size(); ++i) {
-            if (!typeParameters[i].owningRequired || argOwning[i]) continue;
-            if (args[i] && args[i]->isWildcard()) continue;
-            throw Exception(
-                "template " + qName->toCanonical() + ": type parameter '#"
-                    + typeParameters[i].name + "' is owning-required "
-                    "(declaration-`#`) — every instantiation must mark this "
-                    "argument `#`. Fix: instantiate with `<#"
-                    + (args[i] && args[i]->getQName()
-                        ? args[i]->getQName()->getTypeName() : string("..."))
-                    + ", ...>` (element-ownership spec §4.1.5)",
-                "CAJETA_ERROR_TYPE_PARAMETER_OWNING_REQUIRED");
-        }
-        for (size_t i = 0; i < args.size(); ++i) {
-            if (!argOwning[i] || !args[i]) continue;
-            if (args[i]->isWildcard()) continue;
-            if (dynamic_pointer_cast<CajetaArray>(args[i])) continue;
-            if (auto argClass = dynamic_pointer_cast<CajetaClass>(args[i])) {
-                if (argClass->isPlaceholder()) continue;
-                if (argClass->isValueType()
-                        && !argClass->isSharedCapableValue()) {
-                    throw Exception(
-                        "template " + qName->toCanonical()
-                            + ": '#' on type argument " + std::to_string(i + 1)
-                            + " (" + args[i]->toCanonical()
-                            + ") — this value type owns no heap payload, so "
-                              "there is no ownership to transfer; drop the '#' "
-                              "(element-ownership spec §8.1)",
-                        "CAJETA_ERROR_TYPE_PARAMETER_OWNERSHIP");
-                }
-                // element-ownership §8.2.2 (plan 7.2.2): you cannot `#`-own a
-                // borrow-mode container. It borrows its elements and owns
-                // nothing, so an owning position would carry those borrows
-                // past their scope through a longer-lived owner. Stdlib
-                // template instantiations are transitionally exempt (Unit 8
-                // sweeps them owning and removes this, with the 4B set).
-                if (argClass->isBorrowModeContainer()
-                        && !argClass->isStdlibTemplateInstantiation()) {
-                    throw Exception(
-                        "template " + qName->toCanonical()
-                            + ": '#' on type argument " + std::to_string(i + 1)
-                            + " (" + args[i]->toCanonical()
-                            + ") — cannot own a borrow-mode container: its "
-                              "author-marked '#' element positions were "
-                              "instantiated plain, so it borrows elements it "
-                              "does not own. Fix: make the inner container "
-                              "owning (mark its element arguments '#') so the "
-                              "owner holds a self-contained subtree, or drop "
-                              "this '#' and accept the container's scope "
-                              "confinement (element-ownership spec §8.2.2)",
-                        "CAJETA_ERROR_BORROW_MODE_OWNED");
-                }
-                continue;
-            }
-            // Non-class, non-array: a primitive. (An integer-constant arg in a
-            // type-parameter slot is already rejected by the param-kind check.)
-            throw Exception(
-                "template " + qName->toCanonical() + ": '#' on type argument "
-                    + std::to_string(i + 1) + " (" + args[i]->toCanonical()
-                    + ") — primitives carry no separable ownership; drop the "
-                      "'#' (element-ownership spec §8.1)",
-                "CAJETA_ERROR_TYPE_PARAMETER_OWNERSHIP");
-        }
-        string suffix = buildArgSuffix(args, argOwning);
+        // title-tracking §8.1 (plan 7.2.1) — the declaration-`#`
+        // owning-required gate and the `#`-type-argument agreement/confinement
+        // gates (value-type/primitive `#`, BORROW_MODE_OWNED) were retired:
+        // type-position `#` errors at parse (TYPE_TRANSFER_RETIRED).
+        string suffix = buildArgSuffix(args);
         string instCanonical = qName->toCanonical() + suffix;
 
         // Emit target (resolution/emit separation, reuse-gated). The
@@ -617,7 +540,6 @@ namespace cajeta {
             if (emitOwner != module) ifInst->setEmitModule(emitOwner);
             ifInst->setTypeParameters(typeParameters);
             ifInst->setTypeArguments(args);
-            ifInst->setTypeArgumentOwning(argOwning);  // element-ownership §2
             ifInst->setTemplateOrigin(
                 static_pointer_cast<CajetaClass>(shared_from_this()));
 
@@ -865,7 +787,6 @@ namespace cajeta {
         inst->setQImplementedTypeArgs(std::move(instImplementedTypeArgs));
         inst->setTypeParameters(typeParameters);   // retained for debugging / introspection
         inst->setTypeArguments(args);
-        inst->setTypeArgumentOwning(argOwning);     // element-ownership §2
         // Remember which template produced this instantiation. Used by
         // inferDiamondArgs (TPL-N3) to recognize that `List<int32>` is "a
         // List" when unifying against a `List<T>` parameter declaration.
@@ -918,15 +839,11 @@ namespace cajeta {
             classDecl ? classDecl->classBody() : recordDecl->classBody());
         inst->setClassBody(std::any_cast<ClassBodyDeclarationPtr>(bodyAny));
 
-        // element-ownership §7.1.4 (plan 3.2.2) — field→type-param linkage.
-        // The walk above resolved every field type through the substitution
-        // stack, so `T[] data` became `String[] data` and the monomorphized
-        // property no longer knows its element type CAME FROM a type
-        // parameter. The parse tree still spells it `T[]`; record the
-        // parameter index on the instantiated property so the drop walk can
-        // pair it with isTypeArgumentOwning(index) and decide owned-element
-        // teardown (emitDropBodyInline). Array-of-param storage only —
-        // scalar `P`-typed fields already ride the class-ref drop branch.
+        // Field→type-param linkage: the walk above resolved every field
+        // type through the substitution stack, so a bare `P` field no longer
+        // knows it CAME FROM a type parameter. Record the index on the
+        // instantiated property so the drop walk can pick the bit-guarded
+        // T-origin branch (emitDropBodyInline).
         if (classDecl && classDecl->classBody()) {
             for (auto* bodyDecl : classDecl->classBody()->classBodyDeclaration()) {
                 auto* member = bodyDecl->memberDeclaration();
@@ -934,29 +851,20 @@ namespace cajeta {
                 auto* fieldDecl = member->fieldDeclaration();
                 if (!fieldDecl->typeType() || !fieldDecl->variableDeclarators()) continue;
                 const string declared = fieldDecl->typeType()->getText();
-                int paramIndex = -1;
                 int scalarParamIndex = -1;
                 for (size_t k = 0; k < typeParameters.size(); k++) {
-                    if (declared == typeParameters[k].name + "[]") {
-                        paramIndex = (int) k;
-                        break;
-                    }
-                    // optional-borrow-ownership 2.2.3.b — a bare `P` field.
                     if (declared == typeParameters[k].name) {
                         scalarParamIndex = (int) k;
                         break;
                     }
                 }
-                if (paramIndex < 0 && scalarParamIndex < 0) continue;
+                if (scalarParamIndex < 0) continue;
                 for (auto* vd : fieldDecl->variableDeclarators()->variableDeclarator()) {
                     if (!vd->variableDeclaratorId()) continue;
                     auto it = inst->getProperties().find(
                         vd->variableDeclaratorId()->getText());
                     if (it != inst->getProperties().end() && it->second) {
-                        if (paramIndex >= 0)
-                            it->second->setOriginElementTypeParamIndex(paramIndex);
-                        else
-                            it->second->setOriginTypeParamIndex(scalarParamIndex);
+                        it->second->setOriginTypeParamIndex(scalarParamIndex);
                     }
                 }
             }

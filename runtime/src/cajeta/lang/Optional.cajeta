@@ -68,9 +68,22 @@ public final class Optional<T> {
      *
      * @EntryPoint
      */
-    public Optional(boolean present, #T value) {
+    public Optional(boolean present, T value) {
         this.present = present;
-        this.value = value;
+        this.value #= value;
+    }
+
+    /**
+     * Empty-case constructor: `present` only; the `value` slot keeps its
+     * zero-init. Replaces the two-arg `(false, null)` idiom, which never
+     * resolved when `T` was a primitive (a `null` arg cannot match a scalar
+     * value formal) and silently relied on the pre-ctor memset — the exact
+     * footgun the no-matching-constructor error now rejects.
+     *
+     * @EntryPoint
+     */
+    public Optional(boolean present) {
+        this.present = present;
     }
 
     @Inline

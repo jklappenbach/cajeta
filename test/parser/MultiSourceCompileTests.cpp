@@ -251,3 +251,46 @@ TEST(MultiSourceCompileTests, arrayListOfUserClassCrossFile) {
         "}\n";
     EXPECT_EQ(runI32(sources, "test.Main"), 3);
 }
+
+// A user class whose SHORT name collides with an embedded-stdlib class
+// (here `HttpRequest`, colliding with `cajeta.io.net.http.HttpRequest`)
+// must not derail resolution in EITHER direction:
+//
+//   - stdlib code compiled alongside (App also imports HttpParser, which
+//     pulls the whole cajeta.io.net.http package in) refers to its own
+//     `HttpRequest` bare — same-package references must not bind the
+//     user's x.HttpRequest;
+//   - App's `import x.HttpRequest;` must steer App's bare `HttpRequest`
+//     to the user class even though the stdlib class owns (or later
+//     overwrites) the global short-name key in canonicalMap.
+//
+// Pre-fix, fromContext's FIRST lookup tier for a bare name was the
+// global short-name key (toCanonical() of a package-less name IS the
+// short name), so whichever same-named class registered last poisoned
+// every other package's bare references — an unlocated
+// CAJETA_ERROR_NULL_OPERAND out of stdlib http internals. The fix
+// resolves bare names own-package-first, then via explicit imports
+// (including forward refs: an imported-but-unvisited canonical
+// synthesizes its placeholder from the IMPORT, never the global
+// short-name key), and only then falls back to the global tiers.
+TEST(MultiSourceCompileTests, userClassShadowingStdlibShortName) {
+    std::map<std::string, std::string> sources;
+    sources["x.HttpRequest"] =
+        "package x;\n"
+        "public class HttpRequest {\n"
+        "    public int32 v;\n"
+        "    public HttpRequest() { this.v = 7; }\n"
+        "}\n";
+    sources["app.App"] =
+        "package app;\n"
+        "import x.HttpRequest;\n"
+        "import cajeta.io.net.http.HttpParser;\n"
+        "public final class App {\n"
+        "    public static int32 run() {\n"
+        "        HttpRequest r = heap HttpRequest();\n"
+        "        HttpParser p = HttpParser.forRequest();\n"
+        "        return r.v;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(sources, "app.App"), 7);
+}

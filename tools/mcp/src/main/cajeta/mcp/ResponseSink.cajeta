@@ -56,7 +56,7 @@ public class ResponseSink {
                 grown[k] = this.buf[k];
                 k = k + 1;
             }
-            this.buf = #grown;
+            this.buf #= grown;
             this.cap = newCap;
         }
         int8[] dst = this.buf;

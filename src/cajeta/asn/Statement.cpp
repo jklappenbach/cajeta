@@ -5,6 +5,7 @@
 #include "Statement.h"
 #include "expression/Expression.h"
 #include "expression/MethodCallExpression.h"
+#include "expression/CallExpression.h"
 #include "expression/Identifier.h"
 #include "expression/DotExpression.h"
 #include "expression/NewExpression.h"
@@ -22,6 +23,7 @@
 #include "Block.h"
 #include "LocalVariableDeclaration.h"
 #include "../error/Exception.h"
+#include "../error/Diagnostics.h"
 
 /**
  * statement
@@ -82,6 +84,16 @@ namespace cajeta {
     static shared_ptr<LocalVariableDeclaration>
     buildLocalVariableDeclaration(CajetaParser::LocalVariableDeclarationContext* lvdCtx) {
         if (!lvdCtx) return nullptr;
+        // title-tracking §8.1 (plan 7.1.3) — `#Type` local declarations are
+        // retired; mirrors visitLocalVariableDeclaration.
+        if (lvdCtx->REFERENCE() != nullptr) {
+            throw Exception(
+                "`#` on a local declaration's type is retired: a local's role "
+                "comes from its initializer under title-tracking "
+                "(specs/title-tracking-spec.md §8.1) — drop the `#` from the "
+                "declaration",
+                "CAJETA_ERROR_TYPE_TRANSFER_RETIRED");
+        }
         set<Modifier> modifiers;
         for (auto* mod : lvdCtx->variableModifier()) {
             modifiers.insert(Modifiable::toModifier(mod->getText()));
@@ -94,6 +106,25 @@ namespace cajeta {
             for (auto* vdCtx : vdsCtx->variableDeclarator()) {
                 InitializerPtr initializer =
                     buildVariableInitializer(vdCtx->variableInitializer());
+                // title-stores §2.2.3 — `T x #= v`: wrap the initializer
+                // expression (mirrors visitVariableDeclarator).
+                if (vdCtx->SHARP_ASSIGN() != nullptr && initializer != nullptr) {
+                    if (auto vi = dynamic_pointer_cast<VariableInitializer>(initializer)) {
+                        auto& kids = vi->getChildren();
+                        if (!kids.empty()) {
+                            if (auto inner = dynamic_pointer_cast<Expression>(kids[0])) {
+                                auto mv = make_shared<MoveExpression>(
+                                    vdCtx->variableInitializer()->getStart());
+                                mv->addChild(inner);
+                                initializer = make_shared<VariableInitializer>(
+                                    mv, vdCtx->variableInitializer()->getStart());
+                            }
+                        }
+                    }
+                } else if (initializer != nullptr) {
+                    // title-stores §2.3 Phase 2 (plan 7.2.2) — legacy `T x = #v`.
+                    markLegacyTransferAssign(initializer);
+                }
                 string identName = vdCtx->variableDeclaratorId()->identifier()->getText();
                 int arrayDim = static_cast<int>(vdCtx->variableDeclaratorId()->LBRACK().size());
                 // The legacy `REFERENCE? variableInitializer` form was removed
@@ -409,7 +440,65 @@ namespace cajeta {
                 }
             }
         }
-        return expression ? expression->generateCode(module) : nullptr;
+        llvm::Value* stmtVal = expression
+            ? expression->generateCode(module) : nullptr;
+        // title-tracking 6.2.2 — DISCARDED flagged return. A class-pointer
+        // call result in statement position is a temp whose title (if the
+        // callee surrendered one — a flagged `remove`, a `#T` return) has
+        // nowhere to land: before this it silently LEAKED, and container
+        // discard sites (`cache.entries.remove(k);`) relied on the callee
+        // dropping internally. Read the paired flag and conditionally drop.
+        // Legacy plain returns store flag 0 — those discards stay no-ops —
+        // and `return this`-style chaining APIs are flag-0 by construction.
+        if (stmtVal && stmtVal->getType()->isPointerTy()) {
+            if (auto mceD = dynamic_pointer_cast<MethodCallExpression>(
+                    expression)) {
+                MethodPtr rm = mceD->getResolvedMethod();
+                if (rm && rm->returnsClassPointer()) {
+                    auto* b = module->getBuilder();
+                    llvm::Function* getFlag = module->getRuntimeFunction(
+                        "__cajeta_return_flag_get");
+                    // Drop fn by the STATIC return type (dropValue's
+                    // dispatch): virtual_drop on an ARRAY header reads its
+                    // first word as a vtable — a discarded '#T[]' return
+                    // was dropped through garbage. Shared-capable values
+                    // (String) take the mode-aware string drop.
+                    CajetaTypePtr drt = rm->getReturnType();
+                    const char* dropName = "__cajeta_class_virtual_drop";
+                    if (dynamic_pointer_cast<CajetaArray>(drt)) {
+                        dropName = "__cajeta_free_array";
+                    } else if (auto drc =
+                                   dynamic_pointer_cast<CajetaClass>(drt)) {
+                        if (drc->isSharedCapableValue()) {
+                            dropName = "__cajeta_string_drop";
+                        }
+                    }
+                    llvm::Function* dropFn = module->getRuntimeFunction(
+                        dropName);
+                    if (getFlag && dropFn) {
+                        llvm::Value* fl = b->CreateCall(getFlag, {},
+                            "discard_flag");
+                        llvm::Value* owned = b->CreateICmpNE(fl,
+                            b->getInt64(0), "discard_owned");
+                        auto& dctx = *module->getLlvmContext();
+                        llvm::Function* fn =
+                            b->GetInsertBlock()->getParent();
+                        llvm::BasicBlock* dropBB =
+                            llvm::BasicBlock::Create(dctx,
+                                "discard_drop", fn);
+                        llvm::BasicBlock* contBB =
+                            llvm::BasicBlock::Create(dctx,
+                                "discard_cont", fn);
+                        b->CreateCondBr(owned, dropBB, contBB);
+                        b->SetInsertPoint(dropBB);
+                        b->CreateCall(dropFn, {stmtVal});
+                        b->CreateBr(contBB);
+                        b->SetInsertPoint(contBB);
+                    }
+                }
+            }
+        }
+        return stmtVal;
     }
 
     void ExpressionStatement::resolveTypes(CajetaModulePtr module) {
@@ -486,9 +575,20 @@ namespace cajeta {
         auto* builder = module->getBuilder();
         llvm::Type* i1Ty = llvm::Type::getInt1Ty(*module->getLlvmContext());
         if (!cond) {
+            // A genuinely absent condition — `for (;;)` — is an infinite loop.
             return llvm::ConstantInt::getTrue(*module->getLlvmContext());
         }
         llvm::Value* v = cond->generateCode(module);
+        if (!v) {
+            // Written but unresolvable. Falling through would branch on a null
+            // and crash the compiler, or (worse) fold to a constant-false test.
+            throw locatedException(
+                cond->getSourceLine(), cond->getSourceColumn() + 1,
+                "condition did not resolve to a value (a sub-expression produced"
+                " nothing — e.g. a method or member that does not exist on the"
+                " receiver's type)",
+                "CAJETA_ERROR_UNRESOLVED_EXPRESSION");
+        }
         if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
             v = builder->CreateLoad(a->getAllocatedType(), a);
         }
@@ -545,6 +645,12 @@ namespace cajeta {
         auto scope = module->getScopeStack().peek();
         std::set<std::string> preIfNYA;
         if (scope) preIfNYA = scope->snapshotNotYetAssigned();
+        // title-tracking §3.1.5 — arm-isolated move state. Codegen is
+        // sequential but the arms are exclusive: the else arm must see the
+        // PRE-IF moved state, and the join takes the union (a Block-level
+        // return/throw retraction already emptied a terminating arm's
+        // slice, so terminated arms contribute nothing).
+        size_t preIfMoves = scope ? scope->moveLogSize() : 0;
 
         builder->SetInsertPoint(thenBB);
         if (thenBranch) thenBranch->generateCode(module);
@@ -556,6 +662,11 @@ namespace cajeta {
 
         std::set<std::string> postElseNYA = preIfNYA;
         if (elseBB) {
+            std::vector<Scope::MoveMark> thenMoves;
+            if (scope) {
+                thenMoves = scope->snapshotMovesSince(preIfMoves);
+                scope->retractMovesSince(preIfMoves);
+            }
             if (scope) scope->restoreNotYetAssigned(preIfNYA);
             builder->SetInsertPoint(elseBB);
             if (elseBranch) elseBranch->generateCode(module);
@@ -563,6 +674,7 @@ namespace cajeta {
             if (!builder->GetInsertBlock()->hasTerminator()) {
                 builder->CreateBr(mergeBB);
             }
+            if (scope) scope->reapplyMoves(thenMoves);
         }
 
         // Reset to post-then, then union in post-else.
@@ -1377,8 +1489,41 @@ namespace cajeta {
         builder->CreateCall(exitToFn, {watermark});
     }
 
+    // title-tracking Unit 5 (spec §4.2): a class-pointer-returning method
+    // stores its paired return flag immediately before `ret` — AFTER owner
+    // drops, so no drop_fn (which may itself return class pointers) can
+    // clobber the thread-local between this store and the caller's read.
+    // Slice 1 stores the method's static mode (`#`-return → 1, plain → 0);
+    // 5.2.3 upgrades `return #x` of a runtime owner to forward its bit.
+    static void emitReturnFlag(CajetaModulePtr& module,
+                               llvm::Value* flagOverride = nullptr) {
+        auto m = module->getCurrentMethod();
+        // 7.2.5 — lambda bodies have no Method context; the module flag says
+        // the synthesized function returns a class pointer. Static mode for
+        // a lambda return is BORROW (the caller-visible ownership cases —
+        // fresh construction, `#x`, tail call — arrive via flagOverride or
+        // ride the inner call's own flag).
+        bool lambdaMode = !m && module->isLambdaClassPtrReturn();
+        if (!lambdaMode && (!m || !m->returnsClassPointer())) {
+            return;
+        }
+        llvm::Function* fn = module->getRuntimeFunction("__cajeta_return_flag_set");
+        if (!fn) {
+            return;
+        }
+        // 5.2.2 — a `return #x` / returned formal threads its title's runtime
+        // flag; otherwise the method's static mode stands (5.2.3 arms callers).
+        llvm::Value* flag = flagOverride ? flagOverride
+            : (llvm::Value*) module->getBuilder()->getInt64(
+                  (!lambdaMode && m->isReturnsOwnership()) ? 1 : 0);
+        module->getBuilder()->CreateCall(fn, {flag});
+    }
+
     llvm::Value* ReturnStatement::generateCode(CajetaModulePtr module) {
         auto* builder = module->getBuilder();
+        // 5.2.2 — runtime title flag riding out with this return (formal
+        // pass-through or `#x`); null -> emitReturnFlag uses the static mode.
+        llvm::Value* returnTitleFlag = nullptr;
         if (!expression) {
             // A4: fire @After advice before scope-exit + drops, on
             // the same ordering rule the fall-through return uses in
@@ -1587,6 +1732,13 @@ namespace cajeta {
                 if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(expression)) {
                     if (auto scope = module->getScopeStack().peek()) {
                         FieldPtr f = scope->getField(idExpr->getTextValue());
+                        // 5.2.2 — formals are RUNTIME owners: their entry is
+                        // armed per call, and a plain return is the legal
+                        // pass-through (flag rides the return-flag TLS).
+                        // Only statically-owned LOCALS demand the `#` return.
+                        if (dynamic_pointer_cast<ParameterField>(f)) {
+                            f = nullptr;
+                        }
                         if (f && f->getDropEntry()) {
                             auto klass = dynamic_pointer_cast<CajetaClass>(f->getType());
                             auto view = dynamic_pointer_cast<CajetaView>(f->getType());
@@ -1636,7 +1788,13 @@ namespace cajeta {
                         auto pf = dynamic_pointer_cast<ParameterField>(fld);
                         if (pf) {
                             auto formal = pf->getFormalParameter();
-                            if (formal && !formal->isTransferred()) {
+                            // 5.2.4 — RETIRED for class-typed formals: a plain
+                            // formal is a RUNTIME owner (5.2.2), so returning it
+                            // through a `#T` signature forwards its actual flag
+                            // (captured above) rather than forging ownership.
+                            bool runtimeOwner = fld && fld->getDropEntry();
+                            if (formal && !formal->isTransferred()
+                                    && !runtimeOwner) {
                                 auto klass = dynamic_pointer_cast<CajetaClass>(
                                     fld->getType());
                                 if (klass && !klass->isInterface()) {
@@ -1665,6 +1823,47 @@ namespace cajeta {
             }
         }
 
+        // 5.2.7 (spec §7.4, sub-fork B) — single-hop DANGLING LEND. The
+        // returned holder escapes this method, but any local it merely LENT
+        // (a plain, non-`#` store or arg) dies at this scope's exit — the
+        // caller would receive an object pointing at freed memory. Covers
+        // both `return h` and `return #h`. Conservative and intra-procedural:
+        // the fix is to spell the lend `#s` (surrender the title to the
+        // holder), which records no edge.
+        {
+            ExpressionPtr escapee = expression;
+            if (auto mvEsc = dynamic_pointer_cast<MoveExpression>(escapee)) {
+                auto& mch = mvEsc->getChildren();
+                if (!mch.empty()) {
+                    escapee = dynamic_pointer_cast<Expression>(mch[0]);
+                }
+            }
+            if (auto escId = dynamic_pointer_cast<IdentifierExpression>(escapee)) {
+                if (auto sc = module->getScopeStack().peek()) {
+                    set<string> lends = sc->lendsOf(escId->getTextValue());
+                    if (!lends.empty()) {
+                        std::string names;
+                        for (auto& n : lends) {
+                            if (!names.empty()) names += "`, `";
+                            names += n;
+                        }
+                        throw Exception(
+                            "cannot return `" + escId->getTextValue()
+                                + "` — it holds a LEND of the local `" + names
+                                + "`, which drops when this method returns, so "
+                                  "the caller would receive an object pointing "
+                                  "at freed memory. A plain store/argument lends "
+                                  "(the title stays with the local); only `#` "
+                                  "surrenders it. Fix: spell the lend `#" + names
+                                + "` so the holder takes the title, or don't let "
+                                  "the holder escape. See docs/specification/"
+                                  "MemoryModel.md § Function signatures.",
+                            "CAJETA_ERROR_DANGLING_LEND");
+                    }
+                }
+            }
+        }
+
         // L3-2 escape check: a function-typed local that holds a closure
         // with borrow captures is bounded by its declaring scope — its
         // captured borrows refer to outer locals that would be dead by
@@ -1679,7 +1878,24 @@ namespace cajeta {
         //                            lambda RHS was generated.
         //   - `return () -> ...;` — direct LambdaExpression; we'll see
         //                            its flag after generateCode below.
-        if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(expression)) {
+        // 6.2.6c — a reference cast is identity on the pointer:
+        // `return (Stream<T>) newRoot;` is the same pass-through as
+        // `return newRoot;`, so the disarm/escape checks below must see
+        // the underlying local. Value casts (`(int64) obj`) don't move
+        // the object out — the scope keeps its drop — so only casts to
+        // a concrete class or view type are peeled.
+        AbstractSyntaxNodePtr returnee = expression;
+        while (auto castExpr = dynamic_pointer_cast<CastExpression>(returnee)) {
+            CajetaTypePtr dt = castExpr->getDestType();
+            auto destClass = dynamic_pointer_cast<CajetaClass>(dt);
+            auto destView = dynamic_pointer_cast<CajetaView>(dt);
+            bool refCast = (bool) destView
+                || (destClass && !destClass->isInterface()
+                    && !destClass->isValueType());
+            if (!refCast || castExpr->getChildren().empty()) break;
+            returnee = castExpr->getChildren()[0];
+        }
+        if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(returnee)) {
             auto scope = module->getScopeStack().peek();
             FieldPtr f = scope ? scope->getField(idExpr->getTextValue()) : nullptr;
             if (f && f->hasBorrowCaptures()) {
@@ -1751,6 +1967,17 @@ namespace cajeta {
                     (klass && !view && !klass->isInterface()) || (bool) view;
                 if (transferShape) {
                     if (llvm::Value* entry = f->getDropEntry()) {
+                        // 5.2.2 — a returned formal is a pass-through: its
+                        // runtime flag rides out on the return-flag TLS
+                        // (captured before deactivation).
+                        if (dynamic_pointer_cast<ParameterField>(f)) {
+                            if (llvm::Function* flagFn =
+                                    module->getRuntimeFunction(
+                                        "__cajeta_drop_entry_flag")) {
+                                returnTitleFlag = builder->CreateCall(
+                                    flagFn, {entry}, "ret_title_flag");
+                            }
+                        }
                         if (llvm::Function* mark = module->getRuntimeFunction(
                                 "__cajeta_drop_mark_inactive")) {
                             builder->CreateCall(mark, {entry});
@@ -1760,6 +1987,35 @@ namespace cajeta {
             }
         }
         llvm::Value* val = expression->generateCode(module);
+        // A returned CALL result rides the inner call's title flag out —
+        // for plain returns the static borrow default would clobber a
+        // flag-true result (the WsReadAction TITLE_MISS regression); for
+        // `#` returns it would forge ownership over a forwarded borrow.
+        // Capture the TLS here, before advice/finally/drop calls can
+        // overwrite it; emitReturnFlag re-sets it at the ret.
+        if (auto m = module->getCurrentMethod()) {
+            if (m->returnsClassPointer()) {
+                // MCE: only when the resolved callee actually stores the
+                // flag — a raw-IR synthesized body leaves a STALE value in
+                // the TLS (the sweep-4 JsonSynthesizer garbage reads).
+                // Closures (CallExpression) always participate post-7.2.5.
+                bool calleeParticipates = false;
+                if (auto mceRet =
+                        dynamic_pointer_cast<MethodCallExpression>(expression)) {
+                    MethodPtr callee = mceRet->getResolvedMethod();
+                    calleeParticipates = callee && callee->emitsReturnFlag();
+                } else if (dynamic_pointer_cast<CallExpression>(expression)) {
+                    calleeParticipates = true;
+                }
+                if (calleeParticipates) {
+                    if (llvm::Function* getFlagFn = module->getRuntimeFunction(
+                            "__cajeta_return_flag_get")) {
+                        returnTitleFlag = builder->CreateCall(
+                            getFlagFn, {}, "ret_flag_ride");
+                    }
+                }
+            }
+        }
         // slice-spec §6.1 copy hook, return-of-lvalue form: returning a
         // shared-capable VALUE from a field / element (`return this.tag;`)
         // COPIES it out while the owner keeps its stake — retain the source's
@@ -1870,6 +2126,7 @@ namespace cajeta {
                             emitScopeExitToWatermark(module);
                             if (auto curM = module->getCurrentMethod())
                                 curM->emitOwnerDrops(module);
+                            emitReturnFlag(module);
                             return builder->CreateRet(val);
                         }
                     }
@@ -2019,9 +2276,17 @@ namespace cajeta {
         llvm::Function* fn = builder->GetInsertBlock()->getParent();
         llvm::Type* retTy = fn->getReturnType();
         if (!val) {
-            std::cerr << "[cajeta] return value lowered to null"
-                << " — method " << fn->getName().str() << std::endl;
-            return builder->CreateRet(llvm::Constant::getNullValue(retTy));
+// A value-less `return;` already took the CreateRetVoid path above,
+            // so reaching here means the source DID name an expression and that
+            // expression lowered to nothing. That is an unresolved expression,
+            // not a null value — emitting `ret null` here silently miscompiles it.
+            // (Throwing also means no ret is emitted, so no return flag either.)
+            throw locatedException(
+                expression->getSourceLine(), expression->getSourceColumn() + 1,
+                "returned expression did not resolve to a value (a sub-expression"
+                " produced nothing — e.g. a method or member that does not exist"
+                " on the receiver's type)",
+                "CAJETA_ERROR_UNRESOLVED_EXPRESSION");
         }
         llvm::Type* valTy = val->getType();
         if (valTy != retTy) {
@@ -2069,6 +2334,34 @@ namespace cajeta {
         emitScopeExitToWatermark(module);
         // Fire drops before the typed return so all owned locals are released.
         if (auto m = module->getCurrentMethod()) m->emitOwnerDrops(module);
+        // 5.2.2 — `return #x`: a runtime-owner source forwards its captured
+        // flag; a static owner moved out is an unconditional surrender.
+        if (auto mvRet = dynamic_pointer_cast<MoveExpression>(expression)) {
+            returnTitleFlag = mvRet->getRuntimeTitleFlag()
+                ? mvRet->getRuntimeTitleFlag()
+                : (llvm::Value*) builder->getInt64(1);
+        }
+        // 6.2.2 — `return Cajeta.flagged(v, owned)`: the container's own
+        // bookkeeping decides the flag.
+        if (auto mcRet = dynamic_pointer_cast<MethodCallExpression>(expression)) {
+            if (llvm::Value* f = mcRet->getFlaggedTitleValue()) {
+                returnTitleFlag = f;
+            }
+        }
+        // 7.2.5 — lambda-body returns: classify by shape. A fresh
+        // construction hands out a title; a returned CALL result lets the
+        // inner call's flag ride through untouched; anything else is the
+        // borrow default emitReturnFlag emits in lambda mode.
+        if (!module->getCurrentMethod() && module->isLambdaClassPtrReturn()
+                && !returnTitleFlag) {
+            if (dynamic_pointer_cast<NewExpression>(expression)) {
+                returnTitleFlag = builder->getInt64(1);
+            } else if (dynamic_pointer_cast<MethodCallExpression>(expression)
+                    || dynamic_pointer_cast<CallExpression>(expression)) {
+                return builder->CreateRet(val);
+            }
+        }
+        emitReturnFlag(module, returnTitleFlag);
         return builder->CreateRet(val);
     }
 
@@ -2179,5 +2472,85 @@ namespace cajeta {
 
     llvm::Value* SemiStatement::generateCode(CajetaModulePtr module) {
         return nullptr;
+    }
+
+    // 7.2.4 — analysis-walk descent overrides. Statements park their
+    // payloads in private fields, not `children` (the codegen list); these
+    // hand each payload to the visitor so analysis passes see every
+    // subtree. Each also forwards to the base for any `children` content.
+    using SubNodeFn = std::function<void(const AbstractSyntaxNodePtr&)>;
+
+    void ExpressionStatement::forEachSubNode(const SubNodeFn& fn) {
+        if (expression) fn(expression);
+        AbstractSyntaxNode::forEachSubNode(fn);
+    }
+
+    void LabelStatement::forEachSubNode(const SubNodeFn& fn) {
+        if (block) fn(block);
+        AbstractSyntaxNode::forEachSubNode(fn);
+    }
+
+    void ScopeStatement::forEachSubNode(const SubNodeFn& fn) {
+        if (block) fn(block);
+        AbstractSyntaxNode::forEachSubNode(fn);
+    }
+
+    void IfStatement::forEachSubNode(const SubNodeFn& fn) {
+        if (condition) fn(condition);
+        if (thenBranch) fn(thenBranch);
+        if (elseBranch) fn(elseBranch);
+        AbstractSyntaxNode::forEachSubNode(fn);
+    }
+
+    void ForStatement::forEachSubNode(const SubNodeFn& fn) {
+        if (init) fn(init);
+        if (condition) fn(condition);
+        for (auto& u : update) { if (u) fn(u); }
+        if (body) fn(body);
+        AbstractSyntaxNode::forEachSubNode(fn);
+    }
+
+    void EnhancedForStatement::forEachSubNode(const SubNodeFn& fn) {
+        if (iterableExpr) fn(iterableExpr);
+        if (body) fn(body);
+        AbstractSyntaxNode::forEachSubNode(fn);
+    }
+
+    void WhileStatement::forEachSubNode(const SubNodeFn& fn) {
+        if (condition) fn(condition);
+        if (body) fn(body);
+        AbstractSyntaxNode::forEachSubNode(fn);
+    }
+
+    void DoStatement::forEachSubNode(const SubNodeFn& fn) {
+        if (body) fn(body);
+        if (condition) fn(condition);
+        AbstractSyntaxNode::forEachSubNode(fn);
+    }
+
+    void TryStatement::forEachSubNode(const SubNodeFn& fn) {
+        if (tryBlock) fn(tryBlock);
+        for (auto& cc : catchClauses) { if (cc.body) fn(cc.body); }
+        if (finallyBlock) fn(finallyBlock);
+        AbstractSyntaxNode::forEachSubNode(fn);
+    }
+
+    void SwitchStatement::forEachSubNode(const SubNodeFn& fn) {
+        if (subject) fn(subject);
+        for (auto& g : groups) {
+            for (auto& cv : g.caseValues) { if (cv) fn(cv); }
+            for (auto& st : g.statements) { if (st) fn(st); }
+        }
+        AbstractSyntaxNode::forEachSubNode(fn);
+    }
+
+    void ReturnStatement::forEachSubNode(const SubNodeFn& fn) {
+        if (expression) fn(expression);
+        AbstractSyntaxNode::forEachSubNode(fn);
+    }
+
+    void ThrowStatement::forEachSubNode(const SubNodeFn& fn) {
+        if (expression) fn(expression);
+        AbstractSyntaxNode::forEachSubNode(fn);
     }
 }

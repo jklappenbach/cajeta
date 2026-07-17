@@ -31,7 +31,7 @@ public final class JsonLinesWriter {
     /** Wrap a sink. Records are emitted to it newline-delimited. */
     public JsonLinesWriter(FileWriter sink) {
         this.w = heap JsonWriter();
-        this.sink = sink;
+        this.sink #= sink;
     }
 
     /** Open an object (`{`) in the current record. */

@@ -36,7 +36,7 @@ public final class Bvh {
         // in (`#block`). Without ownership transfer, the build-site local drops
         // at scope exit and frees the array `this.block` still references — a
         // use-after-free on every later header/node read.
-        this.block = block;
+        this.block #= block;
         this.strat = strat;
         this.widthVal = widthVal;
         this.prims = prims;

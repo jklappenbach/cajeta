@@ -29,9 +29,16 @@
 #   PARALLEL=1   force parallel run even with filters
 #   PARALLEL=N   use N workers (same as shard=N; shard=N takes precedence)
 #   VERBOSE=1    in parallel mode, dump each shard's full gtest output
-#   TEST_TIMEOUT=N  per-test wall-clock timeout in seconds (default 120). A test
+#   TEST_TIMEOUT=N  per-test wall-clock FLOOR in seconds (default 120). A test
 #                that runs longer is killed and reported as a timeout; the rest
-#                of its worker's tests continue.
+#                of its worker's tests continue. This is a HANG bound, not a
+#                speed limit: a test with measured history (the durations TSV)
+#                gets max(TEST_TIMEOUT, measured * BATCH_SLACK), so a slow-but-
+#                healthy test is not reported as a timeout. BATCH_CAP bounds it.
+#   BATCH_SLACK=N  multiplier on a test's/chunk's MEASURED duration when deriving
+#                its timeout (default 3). Covers sweep contention vs a quiet
+#                measurement. WEIGHTED=0 disables the duration-aware path and
+#                restores the flat count-based budgets.
 #   KEEP_LOGS=dir  (parallel mode only) persist each shard's raw output —
 #                the full per-test gtest text including assertion detail and
 #                the synthetic >>> CRASH / >>> TIMEOUT markers — into `dir`
@@ -345,6 +352,13 @@ BATCH="${BATCH:-1}"
 # (n * TEST_TIMEOUT) but never exceeds this, so one stuck test can't strand a
 # worker for the full n*TEST_TIMEOUT.
 BATCH_CAP="${BATCH_CAP:-1800}"
+# Multiplier applied to a test's/chunk's MEASURED duration when deriving its
+# timeout (see run_one_test / run_suite_batch). Covers the gap between a quiet
+# measurement and sweep load: the sweep oversubscribes (32 shards' worth of
+# processes on nproc threads), so a test measured at 150s idle legitimately takes
+# longer under contention. 3x is empirical headroom, not a hang allowance —
+# BATCH_CAP still bounds anything genuinely stuck.
+BATCH_SLACK="${BATCH_SLACK:-3}"
 # Max tests per batched chunk. A suite with more than this many selected tests is
 # split into ceil(n/BATCH_MAX) contiguous chunks that bin-pack across shards and
 # run concurrently — so one oversized suite is no longer a single-shard long pole
@@ -544,11 +558,28 @@ shard_brief="--gtest_brief=0"
 # gtest [ PASSED ]/[ FAILED ] lines and the >>> markers, so counting is
 # unaffected; full gtest output still follows for forensics.
 run_one_test() {
-    local out_file="$1" t="$2" tf trc
+    local out_file="$1" t="$2" tf trc tmo
     tf="${out_file}.t"
+    # Duration-aware per-test budget, same rationale as run_suite_batch's floor:
+    # TEST_TIMEOUT is a HANG bound, not a speed limit, and several real tests
+    # measure past it (npyNumpyInteropDtypes ~240s, stressManyConcurrentCompiles
+    # ~150s). Give a test with measured history max(TEST_TIMEOUT, measured*SLACK)
+    # so a slow-but-healthy test isn't reported as a timeout. One awk per test is
+    # noise next to a multi-second test, and keeps this bash-3.2 safe (no assoc
+    # arrays — see the durations TSV note above).
+    tmo="$TEST_TIMEOUT"
+    if [ "${WEIGHTED:-1}" != "0" ] && [ -s "$DURATIONS_READ" ]; then
+        local _ms
+        _ms=$(awk -F'\t' -v k="$t" '$1==k { print $2; exit }' "$DURATIONS_READ")
+        if [ -n "$_ms" ]; then
+            local _scaled=$(( _ms / 1000 * BATCH_SLACK ))
+            [ "$_scaled" -gt "$tmo" ] && tmo=$_scaled
+        fi
+    fi
+    [ "$tmo" -gt "$BATCH_CAP" ] && tmo=$BATCH_CAP
     printf '>> %s ... ' "$t" >> "$out_file"
     if [ -n "$TIMEOUT_CMD" ]; then
-        "$TIMEOUT_CMD" --kill-after=10 "$TEST_TIMEOUT" \
+        "$TIMEOUT_CMD" --kill-after=10 "$tmo" \
             env CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" \
             "--gtest_filter=$t" "$shard_brief" > "$tf" 2>&1
     else
@@ -558,7 +589,7 @@ run_one_test() {
     trc=$?
     case "$trc" in
         0)       printf 'PASS\n'              >> "$out_file" ;;
-        124|137) printf 'TIMEOUT (%ss)\n' "$TEST_TIMEOUT" >> "$out_file" ;;
+        124|137) printf 'TIMEOUT (%ss)\n' "$tmo" >> "$out_file" ;;
         *) if grep -qE '^\[  FAILED  \]' "$tf"; then
                printf 'FAIL\n'               >> "$out_file"
            else
@@ -568,7 +599,7 @@ run_one_test() {
     cat "$tf" >> "$out_file"
     if [ "$trc" -ne 0 ]; then
         case "$trc" in
-            124|137) printf '>>> TIMEOUT %s (killed after %ss)\n' "$t" "$TEST_TIMEOUT" >> "$out_file" ;;
+            124|137) printf '>>> TIMEOUT %s (killed after %ss)\n' "$t" "$tmo" >> "$out_file" ;;
             *) if ! grep -qE '^\[  FAILED  \]' "$tf"; then
                    printf '>>> CRASH %s (exit %s)\n' "$t" "$trc" >> "$out_file"
                fi ;;
@@ -597,6 +628,18 @@ run_suite_batch() {
     n="${chunk_count[$idx]}"
     list="${chunk_list[$idx]}"
     deadline=$(( n * TEST_TIMEOUT ))
+    # Duration-aware floor. The count-based deadline assumes every test fits in
+    # TEST_TIMEOUT; a chunk holding a genuinely slow test (ConcurrentCompileTests
+    # measures ~150s) blows it, gets treated as HUNG, and drops to the per-test
+    # fallback — where the flat TEST_TIMEOUT kills the slow test outright and
+    # reports a timeout that is really just a too-tight budget. chunk_weight is
+    # the summed MEASURED ms the packer already computed, so spend it here too:
+    # take whichever of count-based / measured*SLACK is larger. BATCH_CAP still
+    # bounds a truly stuck chunk.
+    if [ "${WEIGHTED:-1}" != "0" ]; then
+        local wsec=$(( ${chunk_weight[$idx]:-0} / 1000 * BATCH_SLACK ))
+        [ "$wsec" -gt "$deadline" ] && deadline=$wsec
+    fi
     [ "$deadline" -gt "$BATCH_CAP" ] && deadline=$BATCH_CAP
     [ "$deadline" -lt "$TEST_TIMEOUT" ] && deadline=$TEST_TIMEOUT
     filter="${list//$'\n'/:}"; filter="${filter%:}"
@@ -824,10 +867,15 @@ done
 # the run's verdict.
 if [ "$WEIGHTED" != "0" ]; then
     _newdur="$tmpdir/durations.new"
-    : > "$_newdur"
+    : > "$_newdur" 2>/dev/null || true
     for ((s=0; s<shards; s++)); do
+        # `|| true` honors the best-effort contract below: GNU sed exits 4
+        # on an I/O error (tmpfs momentarily full), and under `set -e` that
+        # killed the whole driver AFTER the shards finished but BEFORE the
+        # summary printed — a full sweep's verdict lost to a metrics write
+        # (three times, 2026-07-16).
         sed -nE 's/^\[ *OK *\] ([^ ]+) \(([0-9]+) ms\)$/\1\t\2/p; s/^\[  FAILED  \] ([^ ]+) \(([0-9]+) ms\)$/\1\t\2/p' \
-            "$tmpdir/shard_${s}.out" 2>/dev/null >> "$_newdur"
+            "$tmpdir/shard_${s}.out" 2>/dev/null >> "$_newdur" || true
     done
     if [ -s "$_newdur" ]; then
         _merged="$tmpdir/durations.merged"

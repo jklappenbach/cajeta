@@ -248,7 +248,7 @@ public class WsProtocol {
         }
         // Retain the parsed reason for getCloseReason() (ownership moves into
         // the field; `reason` is not read after this on any path).
-        this.closeReason = #reason;
+        this.closeReason #= reason;
         return WsReadAction.closed(#reasonCopy, #reply);
     }
 

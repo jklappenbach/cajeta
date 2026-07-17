@@ -166,8 +166,8 @@ public class WebSocket {
      */
     public static #WebSocket forServer(AsyncReader reader, AsyncWriter writer) {
         WebSocket ws = heap WebSocket();
-        ws.reader = reader;
-        ws.writer = writer;
+        ws.reader #= reader;
+        ws.writer #= writer;
         ws.decoder = WsFrameDecoder.forServer();
         ws.protocol = WsProtocol.create();
         ws.writeLock = heap Lock();
@@ -185,8 +185,8 @@ public class WebSocket {
      */
     public static #WebSocket forClient(AsyncReader reader, AsyncWriter writer) {
         WebSocket ws = heap WebSocket();
-        ws.reader = reader;
-        ws.writer = writer;
+        ws.reader #= reader;
+        ws.writer #= writer;
         ws.decoder = WsFrameDecoder.forClient();
         ws.protocol = WsProtocol.create();
         ws.writeLock = heap Lock();

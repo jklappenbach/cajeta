@@ -99,7 +99,7 @@ public final class JsonReader {
      * ```
      */
     public JsonReader(int8[] input, int64 byteCount) {
-        this.input = input;
+        this.input #= input;
         this.byteCount = byteCount;
         this.pos = 0;
         this.tokenStart = 0;

@@ -34,6 +34,8 @@
 #include "../jit/JitTestHelper.h"
 
 #include <cstdint>
+
+#include "cajeta/error/Exception.h"
 #include <string>
 
 using cajeta_test::CajetaJit;
@@ -58,17 +60,18 @@ TEST(HeapCtorPrimitiveNullProbe, primitiveCtorWithRealSecondArg) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        #W<int32> w = heap W<int32>(99, 7);\n"
+        "        W<int32> w = heap W<int32>(99, 7);\n"
         "        return w.a;\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 99);
 }
 
-// Residual #61 quirk: null in a primitive-resolved slot. Silently
-// zero-inits. When the fix is made loud (or the stdlib switches to a
-// typed-zero pattern for empty Optional<primitive>), flip this to
-// EXPECT_THROW.
+// Residual #61 quirk RESOLVED LOUD: null in a primitive-resolved slot no
+// longer silently zero-inits — ctor lookup rejects with
+// NO_MATCHING_CONSTRUCTOR (silent-resolution-diagnostics; surfaced when the
+// retired decl-# spelling came off this probe, title-tracking 7.1.3).
+// Flipped to expect the throw per the original note.
 TEST(HeapCtorPrimitiveNullProbe, primitiveCtorWithNullSecondArgSilentlyZeroInits) {
     auto src =
         "package test;\n"
@@ -79,11 +82,16 @@ TEST(HeapCtorPrimitiveNullProbe, primitiveCtorWithNullSecondArgSilentlyZeroInits
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        #W<int32> w = heap W<int32>(99, null);\n"
+        "        W<int32> w = heap W<int32>(99, null);\n"
         "        return w.a;\n"
         "    }\n"
         "}\n";
-    EXPECT_EQ(runI32(src), 0);  // Pre-fix: ctor doesn't run, a stays 0.
+    try {
+        runI32(src);
+        ADD_FAILURE() << "expected NO_MATCHING_CONSTRUCTOR";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_NO_MATCHING_CONSTRUCTOR");
+    }
 }
 
 // The symmetric class-T-with-null counter-case is exercised end-to-end

@@ -62,7 +62,7 @@ public class StdioTransport {
                         grown[k] = this.buf[k];
                         k = k + 1;
                     }
-                    this.buf = #grown;
+                    this.buf #= grown;
                     this.cap = newCap;
                 }
                 int32 i = 0;

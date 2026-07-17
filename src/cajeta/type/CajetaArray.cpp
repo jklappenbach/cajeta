@@ -57,6 +57,20 @@ namespace cajeta {
         return elementType->getLlvmType();
     }
 
+    uint64_t CajetaArray::elementStrideBytes(const llvm::DataLayout& dl,
+                                             llvm::LLVMContext* ctx) {
+        llvm::Type* t = getLlvmType();
+        if (auto* st = llvm::dyn_cast_or_null<llvm::StructType>(t)) {
+            if (st->getNumElements() >= 2 && !st->isOpaque()) {
+                if (auto* at = llvm::dyn_cast<llvm::ArrayType>(
+                        st->getElementType(1))) {
+                    return dl.getTypeAllocSize(at->getElementType());
+                }
+            }
+        }
+        return dl.getTypeAllocSize(getElementLlvmType(ctx));
+    }
+
     llvm::Type* CajetaArray::getInlineLlvmType(llvm::LLVMContext* ctx) const {
         return llvm::ArrayType::get(getElementLlvmType(ctx),
                                     fixedLength >= 0 ? (uint64_t) fixedLength : 0);
@@ -101,5 +115,18 @@ namespace cajeta {
             llvm::ArrayType::get(elemLlvm, 0),
         };
         return CajetaType::getOrCreateLlvmType(ctx, string("#array.") + canonical, fields);
+    }
+
+    llvm::Value* CajetaArray::emitElementBitsBase(llvm::IRBuilder<>& builder,
+            llvm::Value* hdrPtr, uint64_t headerBytes, uint64_t elemBytes) {
+        llvm::LLVMContext& ctx = builder.getContext();
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+        llvm::Value* count = builder.CreateLoad(i64Ty, hdrPtr, "arr_count");
+        llvm::Value* dataBytes = builder.CreateMul(count,
+            llvm::ConstantInt::get(i64Ty, elemBytes));
+        llvm::Value* offset = builder.CreateAdd(
+            llvm::ConstantInt::get(i64Ty, headerBytes), dataBytes);
+        return builder.CreateGEP(llvm::Type::getInt8Ty(ctx), hdrPtr, offset,
+            "elem_bits");
     }
 }

@@ -13,12 +13,23 @@
 
 namespace cajeta {
 
+    // The file a located diagnostic belongs to. `activeModule` is set only
+    // inside synthesis / template-instantiation re-entry (where it names the
+    // TRIGGER's file, which is what such an error must be attributed to), so
+    // it wins. Ordinary codegen leaves it null and sets currentCodegenModule
+    // instead (Method.cpp's CodegenFrame) — without that fallback every
+    // codegen-time located error reports an empty file.
+    static std::string diagnosticFile() {
+        if (auto m = CajetaModule::getActiveModule()) return m->getSourcePath();
+        if (auto m = CajetaModule::getCurrentCodegenModule()) return m->getSourcePath();
+        return {};
+    }
+
     void reportOrThrow(int line, int column,
                        const std::string& errorId, const std::string& message) {
-        if (DiagnosticEngine* eng = DiagnosticEngine::active()) {
-            std::string file;
-            if (auto m = CajetaModule::getActiveModule()) file = m->getSourcePath();
-            eng->report("error", errorId, message, file, line, column);
+        DiagnosticEngine* eng = DiagnosticEngine::active();
+        if (eng && eng->collectsErrors()) {
+            eng->report("error", errorId, message, diagnosticFile(), line, column);
         } else {
             throw locatedException(line, column, message, errorId);
         }
@@ -34,20 +45,16 @@ namespace cajeta {
     Exception locatedException(antlr4::Token* token,
                                const std::string& message,
                                const std::string& errorId) {
-        std::string file;
-        if (auto m = CajetaModule::getActiveModule()) file = m->getSourcePath();
         // ANTLR lines are 1-based; columns are 0-based — normalize to 1-based.
         int line = token ? static_cast<int>(token->getLine()) : -1;
         int column = token ? static_cast<int>(token->getCharPositionInLine()) + 1 : -1;
-        return Exception(message, errorId, file, line, column);
+        return Exception(message, errorId, diagnosticFile(), line, column);
     }
 
     Exception locatedException(int line, int column,
                                const std::string& message,
                                const std::string& errorId) {
-        std::string file;
-        if (auto m = CajetaModule::getActiveModule()) file = m->getSourcePath();
-        return Exception(message, errorId, file, line, column);
+        return Exception(message, errorId, diagnosticFile(), line, column);
     }
 
     namespace {

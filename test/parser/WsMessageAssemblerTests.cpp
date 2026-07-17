@@ -194,8 +194,12 @@ TEST(WsMessageAssemblerTests, interleavedControlFrameDoesNotCorruptMessage) {
         "while (dec.hasFrame()) {\n"
         "    WsFrame f = dec.nextFrame();\n"
         "    if (f.getOpcode() == WsOpcode.PING) { pings = pings + 1; }\n"
+        // rev-2: accept's honest return flag makes `m` a RUNTIME owner
+        // (finishMessage hands the title out), so the escaping store must
+        // take the title — a plain `done = m` lend dangles when m drops at
+        // the iteration's scope exit.
         "    WsMessage m = asm.accept(f);\n"
-        "    if (m != null) { done = m; }\n"
+        "    if (m != null) { done #= m; }\n"
         "}\n"
         "if (pings != 1) return -1;\n"
         "if (done == null) return -2;\n"

@@ -1854,7 +1854,7 @@ TEST(ReflectionTests, boundedSubtypesClosure) {
         REFL12_HIERARCHY
         "public final class M {\n"
         "    public static int32 run() {\n"
-        "        #Class<?>[] subs = Class.subtypes<Shape>();\n"
+        "        Class<?>[] subs = Class.subtypes<Shape>();\n"
         "        return (int32) subs.count();\n"
         "    }\n"
         "}\n"), 2);
@@ -1866,7 +1866,7 @@ TEST(ReflectionTests, boundedSubtypesLeafIsSelf) {
         REFL12_HIERARCHY
         "public final class M {\n"
         "    public static int32 run() {\n"
-        "        #Class<?>[] subs = Class.subtypes<Animal>();\n"
+        "        Class<?>[] subs = Class.subtypes<Animal>();\n"
         "        return (int32) subs.count();\n"
         "    }\n"
         "}\n"), 1);

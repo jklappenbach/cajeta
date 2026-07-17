@@ -46,13 +46,16 @@ namespace cajeta {
         module->getStructures()[arrayType->toCanonical()] =
             static_pointer_cast<CajetaClass>(arrayType);
 
-        llvm::Function* allocFn = module->getRuntimeFunction("__cajeta_new_array_header");
+        llvm::Function* allocFn = module->getRuntimeFunction(
+            CajetaClass::arrayElementCarriesSlotBits(elementType)
+                ? "__cajeta_new_array_header_bits"
+                : "__cajeta_new_array_header");
         if (!allocFn) return nullptr;
 
         llvm::Type* headerTy = arrayType->getLlvmType();
         llvm::Type* elemTy = arrayType->getElementLlvmType(&ctx);
         uint64_t headerBytes = dl.getTypeAllocSize(headerTy);
-        uint64_t elemBytes = dl.getTypeAllocSize(elemTy);
+        uint64_t elemBytes = arrayType->elementStrideBytes(dl, &ctx);
 
         int64_t count = (int64_t) children.size();
         llvm::Value* hdrPtr = builder->CreateCall(allocFn, {

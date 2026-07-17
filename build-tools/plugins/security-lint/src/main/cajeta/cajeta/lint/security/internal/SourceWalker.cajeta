@@ -22,7 +22,7 @@ public class SourceWalker {
     }
 
     public ArrayList<Path> walk(ArrayList<String> sourceRoots) {
-        ArrayList<Path> out = #heap ArrayList<Path>();
+        ArrayList<Path> out #= heap ArrayList<Path>();
         int32 i = 0;
         while (i < sourceRoots.count()) {
             Path root = Path.of(sourceRoots.get(i));

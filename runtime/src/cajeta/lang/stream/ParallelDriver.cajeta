@@ -133,14 +133,16 @@ public class ParallelDriver {
             if (piece == null) {
                 break;
             }
-            shares[si] = piece;
+            shares[si] #= piece;
             shareCount = shareCount + 1;
             si = si + 1;
         }
         T[] partials = heap T[shareCount + 1];
+        // borrow-alias: every partial starts from the same lent seed
+        T seedRef = seed;
         int32 pi = 0;
         while (pi < shareCount + 1) {
-            partials[pi] = seed;
+            partials[pi] = seedRef;
             pi = pi + 1;
         }
         // Fork each worker as its own fiber inside a scope; the
@@ -226,7 +228,7 @@ public class ParallelDriver {
             if (piece == null) {
                 break;
             }
-            shares[si] = piece;
+            shares[si] #= piece;
             shareCount = shareCount + 1;
             si = si + 1;
         }
@@ -282,7 +284,7 @@ public class ParallelDriver {
             if (piece == null) {
                 break;
             }
-            shares[si] = piece;
+            shares[si] #= piece;
             shareCount = shareCount + 1;
             si = si + 1;
         }
@@ -337,7 +339,7 @@ public class ParallelDriver {
             if (piece == null) {
                 break;
             }
-            shares[si] = piece;
+            shares[si] #= piece;
             shareCount = shareCount + 1;
             si = si + 1;
         }
@@ -508,9 +510,11 @@ public class ParallelDriver {
             si = si + 1;
         }
         T[] partials = heap T[shareCount + 1];
+        // borrow-alias: every partial starts from the same lent seed
+        T seedRef = seed;
         int32 pi = 0;
         while (pi < shareCount + 1) {
-            partials[pi] = seed;
+            partials[pi] = seedRef;
             pi = pi + 1;
         }
         scope {
@@ -601,9 +605,11 @@ public class ParallelDriver {
             si = si + 1;
         }
         R[] partials = heap R[shareCount + 1];
+        // borrow-alias: every partial starts from the same lent seed
+        R seedRef = seed;
         int32 pi = 0;
         while (pi < shareCount + 1) {
-            partials[pi] = seed;
+            partials[pi] = seedRef;
             pi = pi + 1;
         }
         scope {
@@ -985,7 +991,7 @@ public class ParallelDriver {
                 }
                 oY = head.next();
             }
-            return stack Optional<T>(false, null);
+            return stack Optional<T>(false);
         }
         Stream<T>[] shares = heap Stream<T>[nSplits - 1];
         int32 shareCount = 0;
@@ -1035,7 +1041,7 @@ public class ParallelDriver {
             }
             ot = head.next();
         }
-        return stack Optional<T>(false, null);
+        return stack Optional<T>(false);
     }
 
     /**

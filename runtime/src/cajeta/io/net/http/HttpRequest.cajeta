@@ -126,7 +126,7 @@ public class HttpRequest {
         this.version = heap String(#v, 8);
         this.headers = heap Headers();
         int8[] e = heap int8[0];
-        this.body = #e;
+        this.body #= e;
         this.hasBody = false;
         this.pathParams = null;
     }
@@ -321,7 +321,7 @@ public class HttpRequest {
             copy[i] = data[i];
             i = i + 1;
         }
-        this.body = #copy;
+        this.body #= copy;
         this.hasBody = true;
         return this;
     }
@@ -372,7 +372,7 @@ public class HttpRequest {
      * so the handler can read [`pathParam`](#pathParam).
      */
     public void bindPathParams(#PathParams params) {
-        this.pathParams = params;
+        this.pathParams #= params;
     }
 
     /**

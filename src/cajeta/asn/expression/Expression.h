@@ -500,11 +500,34 @@ namespace cajeta {
      * `dynamic_pointer_cast` and act accordingly.
      */
     class MoveExpression : public Expression {
+    private:
+        // 5.2.2 — when the moved-out source is a runtime owner (a formal
+        // whose title is a transfer-word bit), its entry flag is captured
+        // here BEFORE deactivation; store/return sites seed their bit from
+        // it. Null for static owners (compile-time truth stands).
+        llvm::Value* runtimeTitleFlag = nullptr;
     public:
         MoveExpression(antlr4::Token* token) : Expression(token) { }
 
         void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
+        llvm::Value* getRuntimeTitleFlag() const { return runtimeTitleFlag; }
+        // title-stores §2.1 (fused slot-to-slot forwarding) — set by the
+        // enclosing `dst[i] #= #src[j]` store BEFORE codegen: the slot
+        // extraction forwards the source bit verbatim (borrow stays
+        // borrow, NO panic) instead of claiming ownership.
+        void setForwardingSlotMove(bool v) { forwardingSlotMove = v; }
+        bool isForwardingSlotMove() const { return forwardingSlotMove; }
+        // title-stores §2.3 Phase 2 (plan 7.2.2) — set by the enclosing site
+        // when this move was spelled the legacy way, `dst = #v`. It cannot be
+        // recovered later: `dst = #v` and `dst #= v` build the SAME node (the
+        // `#=` desugar wraps the RHS in a Move of its own), so the spelling is
+        // only visible while the parse context is in hand.
+        void setLegacyTransferAssign(bool v) { legacyTransferAssign = v; }
+        bool isLegacyTransferAssign() const { return legacyTransferAssign; }
+    private:
+        bool forwardingSlotMove = false;
+        bool legacyTransferAssign = false;
     };
 
     // Structured-concurrency expressions (docs/specification/concurrent/Concurrency.md). All three wrap a
@@ -637,6 +660,13 @@ namespace cajeta {
         const std::vector<std::string>& getParamNames() const { return paramNames; }
         const std::vector<CajetaTypePtr>& getParamTypes() const { return paramTypes; }
         AbstractSyntaxNodePtr getBody() const { return body; }
+
+        // 7.2.4 — the body lives in a private slot, not `children`.
+        void forEachSubNode(
+                const std::function<void(const AbstractSyntaxNodePtr&)>& fn) override {
+            if (body) fn(body);
+            AbstractSyntaxNode::forEachSubNode(fn);
+        }
 
         // Target-type hint from the surrounding context (e.g. a LHS
         // function-typed declaration). When set, codegen uses this as the

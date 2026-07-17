@@ -35,6 +35,7 @@ namespace cajeta {
                               int providerIdx);
 
         void generateCode() override;
+        bool emitsReturnFlag() override { return false; }  // raw-IR body: never stores the return flag
 
         static std::string accessorName(CajetaClassPtr factoryClass,
                                         CajetaTypePtr providedType);

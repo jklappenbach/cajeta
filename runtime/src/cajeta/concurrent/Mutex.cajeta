@@ -50,10 +50,10 @@ public class Mutex<T> {
      *
      * @EntryPoint
      */
-    public Mutex(#T initial) {
+    public Mutex(T initial) {
         this.handle = Cajeta.lockNew();
         this.cond = Cajeta.condvarNew();
-        this.value = initial;
+        this.value #= initial;
     }
 
     public ~Mutex() {

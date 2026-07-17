@@ -919,9 +919,16 @@ int __cajeta_live_set_claim(void* p) {
 // of its parameters it OWNS (and must drop) vs merely borrows. Thread-local so
 // concurrent callers don't clobber each other; 0 between calls, so a call with
 // no `#` args correctly reads 0.
-static __thread int64_t __cajeta_move_mask_tls = 0;
-int64_t __cajeta_move_mask_get(void) { return __cajeta_move_mask_tls; }
-void __cajeta_move_mask_set(int64_t m) { __cajeta_move_mask_tls = m; }
+
+// Per-thread paired RETURN flag (title-tracking spec §4.2/§4.4): a
+// class-pointer-returning method stores 1 (title travels to the caller) or 0
+// (borrow) immediately before its `ret` — after all scope-exit drops — and
+// the caller reads it immediately after the call instruction. Nothing can
+// execute between those two points (no call, no fiber suspension), so unlike
+// the deprecated arg-side mask there is no forwarding chain to lose it.
+static __thread int64_t __cajeta_return_flag_tls = 0;
+int64_t __cajeta_return_flag_get(void) { return __cajeta_return_flag_tls; }
+void __cajeta_return_flag_set(int64_t f) { __cajeta_return_flag_tls = f; }
 
 // Allocate and zero-fill a buffer holding total_count elements of elem_size bytes.
 // Used for primitive-element arrays.
@@ -987,6 +994,45 @@ void* __cajeta_new_array_header(uint64_t header_size, uint64_t elem_size, uint64
         abort();
     }
     // Store count at the size field (first 8 bytes of the header).
+    *((int64_t*) hdr) = (int64_t) count;
+    __cajeta_note_alloc(total);
+    __cajeta_live_set_add(hdr);
+    return hdr;
+}
+
+// title-stores §3.1 — droppable-element arrays carry a per-slot ownership
+// bitmap in a TAIL after the data region: { i64 count | data[count*elem] |
+// bits[ceil(count/8)] }, one contiguous zeroed block. The tail address is
+// computed from the count word (header layout unchanged, no extra pointer).
+// Unit 2: allocation + accounting only; the bits are written by the Unit-3
+// store/teardown codegen.
+void* __cajeta_new_array_header_bits(uint64_t header_size, uint64_t elem_size, uint64_t count) {
+    // Bits math is safe well below this; the elem guard below does the rest.
+    if (count > (UINT64_MAX / 8) - 8) {
+        fprintf(stderr, "cajeta: __cajeta_new_array_header_bits overflow (count=%llu)\n",
+                (unsigned long long) count);
+        abort();
+    }
+    uint64_t bits = (count + 7) / 8;
+    if (elem_size != 0 && count > (UINT64_MAX - header_size - bits) / elem_size) {
+        fprintf(stderr, "cajeta: __cajeta_new_array_header_bits overflow (header=%llu elem=%llu count=%llu)\n",
+                (unsigned long long) header_size,
+                (unsigned long long) elem_size,
+                (unsigned long long) count);
+        abort();
+    }
+    uint64_t total = header_size + count * elem_size + bits;
+    if (total == 0) {
+        return NULL;
+    }
+    void* hdr = calloc(1, (size_t) total);
+    if (hdr == NULL) {
+        fprintf(stderr, "cajeta: __cajeta_new_array_header_bits failed (header=%llu elem=%llu count=%llu)\n",
+                (unsigned long long) header_size,
+                (unsigned long long) elem_size,
+                (unsigned long long) count);
+        abort();
+    }
     *((int64_t*) hdr) = (int64_t) count;
     __cajeta_note_alloc(total);
     __cajeta_live_set_add(hdr);

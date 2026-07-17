@@ -674,7 +674,7 @@ error[detach-borrow-capture]: cannot detach a parallel stream
   = help: spawn a wrapper that owns the scope:
             spawn { xs.stream().parallel().forEach(...); };
           or transfer ownership:
-            int32[] owned = #xs;
+            int32[] owned #= xs;
             detach owned.stream().parallel().forEach((x) -> ...);
 ```
 

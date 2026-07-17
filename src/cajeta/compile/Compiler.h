@@ -408,6 +408,21 @@ namespace cajeta {
         static const std::set<std::string>& stdlibParsedPackages();
         static void resetLazyStdlibState();
 
+        // compile-cache Unit 2 (spec §2/§4) — the persistent stdlib-PRIME
+        // cache key. discriminator = compiler version + the stdlib-
+        // codegen-affecting flag set (sorted; order-insensitive);
+        // digest = content hash of the EMBEDDED stdlib table + the
+        // eager/lazy prelude split. Any stdlib source edit, version bump,
+        // codegen-flag change, or prelude change re-keys. Pure and cheap
+        // (one pass over the embedded bytes); callers are the prime seam
+        // (test harness) and, later, the prime-once step + `cajeta clean`.
+        struct PrimeCacheKey {
+            std::string discriminator;
+            std::string digest;
+        };
+        static PrimeCacheKey stdlibPrimeCacheKey(
+            const CompilerFlags& flags = CompilerFlags{});
+
         const string& getCpu() const {
             return cpu;
         }

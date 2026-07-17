@@ -17,6 +17,7 @@
 //
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
+#include "cajeta/error/Exception.h"
 
 #include <cstdint>
 #include <string>
@@ -29,16 +30,6 @@ int32_t runI32(const std::string& src) {
     auto jit = CajetaJit::compile(src, "test.D");
     auto fn = jit->lookup<int32_t (*)()>("run");
     return fn();
-}
-
-std::string compileCaptureStderr(const std::string& src) {
-    testing::internal::CaptureStderr();
-    try {
-        CajetaJit::compile(src, "test.D");
-    } catch (...) {
-        // A hard compile failure still leaves its diagnostic on stderr.
-    }
-    return testing::internal::GetCapturedStderr();
 }
 
 // The test-local Table<T> shell + a record to reflect. Kept as a prefix so
@@ -88,35 +79,52 @@ TEST(TableColumnSynthesisTests, injectsFloatColumnAccessor) {
 
 // 5.1.2 — a call-site typo is caught at COMPILE TIME, not by a runtime lookup
 // that silently misses. The accessor set is real typed members: `tbl.volume()`
-// resolves, `tbl.prce()` resolves to no member. Cajeta diagnoses the miss at
-// compile time (it never does a runtime string lookup) — the codegen symptom
-// is the unresolved call lowering to null with a compile-time diagnostic. The
-// correct call produces no such diagnostic; the typo does.
-TEST(TableColumnSynthesisTests, columnTypoIsCaughtAtCompileTime) {
-    const char* good =
+// resolves; `tbl.prce()` names no member and FAILS THE COMPILE.
+//
+// This test used to assert on the `"lowered to null"` stderr warning — i.e. it
+// pinned the silent miscompile (the call lowered to null and the program ran)
+// as its contract, even though its own name says "caught at compile time". Since
+// silent-resolution-diagnostics Units 1-2 the miss is a hard, located
+// CAJETA_ERROR_MEMBER_NOT_FOUND, so it can assert what it always meant.
+//
+// The id is the SAME one a typo on a HAND-WRITTEN member produces
+// (MemberNotFoundTests) — that identity is the composition-only property source
+// synthesis promises: synthesized members are checked exactly like hand-written
+// ones. Asserting the id, not merely "it threw", is what pins that.
+// PARKED (2026-07-13): member-not-found is held back on main so tools/mcp
+// compiles (it reads String's `byteLength`/`bytes` as FIELDS; the 36779177
+// re-core made them methods). Re-enable with that repair. Work lives on
+// feature/silent-resolution-diagnostics @ f086c73e; see the plan's 1.3.3.
+TEST(TableColumnSynthesisTests, DISABLED_columnTypoIsCaughtAtCompileTime) {
+    // The correct accessor resolves and runs.
+    auto good = std::string(kTableSrc) +
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        Tick t = Tick { price: 12.5, volume: 300 };\n"
         "        Table<Tick> tbl = heap Table<Tick>(t);\n"
-        "        return tbl.volume();\n"  // resolves to the synthesized accessor
+        "        return tbl.volume();\n"
         "    }\n"
         "}\n";
-    const char* typo =
+    EXPECT_EQ(runI32(good), 300);
+
+    // The typo names no member of Table<Tick> — it must not compile.
+    auto typo = std::string(kTableSrc) +
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        Tick t = Tick { price: 12.5, volume: 300 };\n"
         "        Table<Tick> tbl = heap Table<Tick>(t);\n"
-        "        return tbl.prce();\n"  // typo -> no such member
+        "        return tbl.prce();\n"
         "    }\n"
         "}\n";
-    std::string goodErr = compileCaptureStderr(std::string(kTableSrc) + good);
-    std::string typoErr = compileCaptureStderr(std::string(kTableSrc) + typo);
-    EXPECT_EQ(goodErr.find("lowered to null"), std::string::npos)
-        << "the correct accessor must resolve cleanly, got: " << goodErr;
-    EXPECT_NE(typoErr.find("lowered to null"), std::string::npos)
-        << "the typo must be diagnosed at compile time, got: " << typoErr;
-    EXPECT_NE(typoErr.find("test.D::run()"), std::string::npos)
-        << "the diagnostic must attribute the unresolved call, got: " << typoErr;
+    try {
+        CajetaJit::compile(typo, "test.D");
+        FAIL() << "expected a typo'd synthesized accessor to fail the compile";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_MEMBER_NOT_FOUND")
+            << "got: " << e.getErrorId() << " — " << e.getMessage();
+        EXPECT_NE(e.getMessage().find("prce"), std::string::npos)
+            << "must name the missing accessor: " << e.getMessage();
+    }
 }
 
 // 5.1.4 — determinism / memoization: Table<Tick> referenced twice resolves to

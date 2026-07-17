@@ -363,7 +363,10 @@ public class WsFrameDecoder {
             // it with a fresh empty buffer) so the decoder no longer
             // aliases the bytes it is about to hand to the frame — the
             // BufferPool.acquire hand-off discipline.
-            int8[] pay = this.payBuf;
+            // `#place` extraction (title out, bit decays) — a plain alias
+            // read followed by the owned re-init store would displaced-
+            // release the very bytes `pay` hands to the frame (spec 5.1.3).
+            int8[] pay #= this.payBuf;
             this.payBuf = heap int8[0];
             // Bind the boolean/int header fields to named locals before the
             // call — a boolean field loaded directly into a call argument can
@@ -407,11 +410,13 @@ public class WsFrameDecoder {
         if (this.qCount == 0) {
             return null;
         }
-        // TRANSFER ownership out of the queue: read the element, null the slot
-        // (so the decoder's queue-drop won't reclaim it), and `#`-return it to
-        // the caller. The signature is `#WsFrame` so the caller becomes the
-        // sole owner — the hand-off discipline the doc above describes.
-        WsFrame f = this.queue[this.qHead];
+        // TRANSFER ownership out of the queue: fused claim (title-stores
+        // §2.1) so the slot's tail bit rides into `f` and clears — a plain
+        // borrow left the bit set, and the null store's displaced release
+        // freed the frame just handed out. Then null the slot and
+        // `#`-return; the signature is `#WsFrame` so the caller becomes
+        // the sole owner.
+        WsFrame f #= #this.queue[this.qHead];
         this.queue[this.qHead] = null;
         this.qHead = (this.qHead + 1) % this.qCap;
         this.qCount = this.qCount - 1;
@@ -425,7 +430,7 @@ public class WsFrameDecoder {
         // `#f` transfers the frame into the queue slot so the caller
         // (finishIfPayloadComplete) no longer owns/drops it — the queue is now
         // the sole owner until nextFrame() hands it back out.
-        this.queue[this.qTail] = #f;
+        this.queue[this.qTail] #= f;
         this.qTail = (this.qTail + 1) % this.qCap;
         this.qCount = this.qCount + 1;
     }
@@ -435,13 +440,14 @@ public class WsFrameDecoder {
         WsFrame[] grown = heap WsFrame[newCap];
         int32 i = 0;
         while (i < this.qCount) {
-            grown[i] = this.queue[(this.qHead + i) % this.qCap];
+            // title-stores §2.1 — forwarding move keeps tail bits honest.
+            grown[i] #= #this.queue[(this.qHead + i) % this.qCap];
             i = i + 1;
         }
         // `#grown` transfers ownership of the fresh backing store into the
         // field so the local's scope-exit drop doesn't reclaim the array
         // we just installed — the Headers.grow ownership-marker discipline.
-        this.queue = #grown;
+        this.queue #= grown;
         this.qCap = newCap;
         this.qHead = 0;
         this.qTail = this.qCount;

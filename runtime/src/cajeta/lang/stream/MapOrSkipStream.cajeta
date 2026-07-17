@@ -42,7 +42,7 @@ public class MapOrSkipStream<T, R> extends Stream<R> {
      * ```
      */
     public MapOrSkipStream(#Stream<T> source, (T) -> #R fn) {
-        this.source = source;
+        this.source #= source;
         this.fn = fn;
     }
 
@@ -55,7 +55,7 @@ public class MapOrSkipStream<T, R> extends Stream<R> {
         while (true) {
             Optional<T> o = this.source.next();
             if (o.isEmpty()) {
-                return stack Optional<R>(false, null);
+                return stack Optional<R>(false);
             }
             try {
                 R mapped = this.fn(o.get());
@@ -65,7 +65,7 @@ public class MapOrSkipStream<T, R> extends Stream<R> {
             }
         }
         // unreachable; while(true) above either returns or continues
-        return stack Optional<R>(false, null);
+        return stack Optional<R>(false);
     }
 
     /** Type-changing wrapper unwind — see `MapStream`. (Step 5b.) */

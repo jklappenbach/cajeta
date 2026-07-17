@@ -50,10 +50,23 @@ namespace {
     // dispatch identity ignores it. `#`-only overloads within one class
     // cannot exist (borrow-mode dissolution would collide them), so the
     // erasure cannot alias two distinct methods in one vtable.
+    // EXCEPTION to the erasure (title-tracking 6.2.1): a `#` that is part of
+    // an OPERATOR NAME (`operator#[]`) is identity, not mode — erasing it
+    // aliased operator#[](K) with operator[](K) in the vtable, and which one
+    // a virtual call landed on depended on vtable construction order. Keep a
+    // `#` immediately preceded by the literal "operator"; skip all others
+    // (formal modes, dissolved template spellings). Mirrored EXACTLY in the
+    // runtime's __cajeta_signature_hash.
     int64_t signatureHash(const std::string& s) {
         uint64_t h = 0xcbf29ce484222325ULL;
-        for (unsigned char c : s) {
-            if (c == '#') continue;
+        static const char* kOp = "operator";
+        for (size_t i = 0; i < s.size(); ++i) {
+            unsigned char c = (unsigned char) s[i];
+            if (c == '#') {
+                bool afterOperator = i >= 8
+                    && s.compare(i - 8, 8, kOp) == 0;
+                if (!afterOperator) continue;
+            }
             h ^= c;
             h *= 0x100000001b3ULL;
         }
@@ -426,6 +439,42 @@ namespace cajeta {
     }
 
     void CajetaClass::addMethod(MethodPtr method) {
+        // title-tracking 5.2.4 (spec §4.3) — mode-only overloads are rejected
+        // AT DECLARATION. `f(Cell)` and `f(#Cell)` differ only in transfer
+        // mode, which is not part of a signature: dispatch erases `#` (see
+        // signatureHash), so both would hash to the same vtable slot and the
+        // second silently shadow the first. Previously this crashed the
+        // compiler; now it names the offending method.
+        {
+            // The canonical key ALREADY erases `#` (that is the whole point —
+            // dispatch is mode-blind), so the collision is invisible in the key
+            // itself. Compare a mode-INCLUSIVE fingerprint alongside it: same
+            // key + different transfer modes = a mode-only overload. Same key +
+            // same modes is an ordinary duplicate, handled (or tolerated) as
+            // before.
+            const std::string erased = method->getMapKey();
+            std::string rawKey;
+            for (auto& fp : method->getParameterList()) {
+                rawKey.push_back(fp && fp->isTransferred() ? '#' : '.');
+            }
+            auto prior = modeErasedMethodKeys.find(erased);
+            if (prior != modeErasedMethodKeys.end() && prior->second != rawKey) {
+                throw Exception(
+                    "method `" + method->getName() + "` is declared twice in `"
+                        + (getQName() ? getQName()->toCanonical() : std::string("<anonymous>"))
+                        + "` with signatures that differ only in transfer mode "
+                          "(`#`). Transfer mode is a per-call decision made by "
+                          "the CALLER, not part of the signature — dispatch "
+                          "erases `#`, so these two declarations collide. Fix: "
+                          "keep ONE declaration (a plain formal already accepts "
+                          "both a lend and a `#`-transfer at the call site); "
+                          "spell `#T` only when the method MUST own its "
+                          "argument. See docs/specification/MemoryModel.md "
+                          "§ Function signatures.",
+                    "CAJETA_ERROR_TRANSFER_MODE_OVERLOAD");
+            }
+            modeErasedMethodKeys[erased] = rawKey;
+        }
         // Two-layer naming: instantiations of a same-canonical template
         // (T-vars not in value params) get distinct keys via the
         // method-arg suffix in getMapKey(). Ordinary methods key on
@@ -820,6 +869,247 @@ namespace cajeta {
     // walk is deterministic given the same fields + ancestry, so re-running it
     // in any context yields a byte-identical struct body. `rawLlvmType()` must
     // already be the (opaque) struct to fill.
+    bool CajetaClass::fieldHasOwnershipBit(const StructurePropertyPtr& p) {
+        if (!p || p->isStatic()) return false;
+        auto t = p->getType();
+        if (!t) return false;
+        if (auto arr = dynamic_pointer_cast<CajetaArray>(t)) {
+            return !arr->isInlineArray();
+        }
+        auto cls = dynamic_pointer_cast<CajetaClass>(t);
+        if (!cls) return false;
+        if (dynamic_pointer_cast<CajetaView>(t)) return false;
+        if (cls->isInterface() || cls->isValueType()) return false;
+        if (cls->isSharedCapableValue()) return false;
+        // String-the-class transfers by the store-site share/resolve
+        // machinery and its fields stay always-owned (§5.1.6) — it is not
+        // a value type, so it needs its own exclusion.
+        if (cls->getQName()
+                && cls->getQName()->getTypeName() == "String"
+                && cls->getQName()->getPackageName() == "cajeta.lang") {
+            return false;
+        }
+        return true;
+    }
+
+    bool CajetaClass::arrayElementCarriesSlotBits(const CajetaTypePtr& elem) {
+        if (!elem) return false;
+        if (dynamic_pointer_cast<CajetaArray>(elem)) return false;
+        if (dynamic_pointer_cast<CajetaView>(elem)) return false;
+        auto cls = dynamic_pointer_cast<CajetaClass>(elem);
+        if (!cls) return false;
+        if (cls->isInterface() || cls->isValueType()) return false;
+        if (cls->isSharedCapableValue()) return false;
+        if (cls->getQName()
+                && cls->getQName()->getTypeName() == "String"
+                && cls->getQName()->getPackageName() == "cajeta.lang") {
+            return false;
+        }
+        // The element walk releases via the vtable drop slot.
+        return cls->hasVtablePointerAtSlotZero();
+    }
+
+    // A member's release family inside a value-struct slot. Mirrors the
+    // class drop body: bit-carrying members release under their word bit;
+    // String members are always-owned (§5.1.6 — both put spellings leave
+    // the slot owning its wrapper: `#` forwards, plain dual-role-resolves
+    // a copy); shared-capable VALUE members release per Shared stake.
+    namespace {
+        enum class SlotMemberKind { BitGuarded, StringDrop, ValueShared };
+        struct SlotMemberRel {
+            uint64_t off;
+            int bit;                 // BitGuarded only
+            bool isArray;            // BitGuarded only
+            SlotMemberKind kind;
+            shared_ptr<CajetaClass> cls;   // ValueShared only
+        };
+        bool slotMemberIsString(const shared_ptr<CajetaClass>& c) {
+            return c && c->getQName()
+                && c->getQName()->getTypeName() == "String"
+                && c->getQName()->getPackageName() == "cajeta.lang";
+        }
+        std::vector<SlotMemberRel> collectSlotMembers(
+                const shared_ptr<CajetaClass>& elemCls,
+                const llvm::StructLayout* sl) {
+            std::vector<SlotMemberRel> out;
+            for (const auto& p : elemCls->getPropertyList()) {
+                if (p->isStatic()) continue;
+                int fi = elemCls->getFieldLlvmIndex(p);
+                if (fi < 0) continue;
+                uint64_t off = sl->getElementOffset((unsigned) fi);
+                if (CajetaClass::fieldHasOwnershipBit(p)) {
+                    out.push_back({off, elemCls->ownershipBitIndexOf(p),
+                        (bool) dynamic_pointer_cast<CajetaArray>(p->getType()),
+                        SlotMemberKind::BitGuarded, nullptr});
+                    continue;
+                }
+                auto mc = dynamic_pointer_cast<CajetaClass>(p->getType());
+                if (!mc || dynamic_pointer_cast<CajetaView>(p->getType())) {
+                    continue;
+                }
+                if (slotMemberIsString(mc)) {
+                    out.push_back({off, -1, false,
+                        SlotMemberKind::StringDrop, nullptr});
+                } else if (mc->isValueType() && mc->isSharedCapableValue()) {
+                    out.push_back({off, -1, false,
+                        SlotMemberKind::ValueShared, mc});
+                }
+            }
+            return out;
+        }
+    }
+
+    bool CajetaClass::arrayElementCarriesMemberBits(const CajetaTypePtr& elem) {
+        if (!elem) return false;
+        if (dynamic_pointer_cast<CajetaArray>(elem)) return false;
+        if (dynamic_pointer_cast<CajetaView>(elem)) return false;
+        auto cls = dynamic_pointer_cast<CajetaClass>(elem);
+        if (!cls) return false;
+        if (cls->isInterface() || !cls->isValueType()) return false;
+        if (cls->isSharedCapableValue()) return false;
+        if (cls->needsOwnershipWord()) return true;
+        // No word, but String / shared-value members still need the
+        // teardown walk (their release is unconditional per slot).
+        for (const auto& p : cls->getPropertyList()) {
+            if (p->isStatic()) continue;
+            auto mc = dynamic_pointer_cast<CajetaClass>(p->getType());
+            if (!mc || dynamic_pointer_cast<CajetaView>(p->getType())) {
+                continue;
+            }
+            if (slotMemberIsString(mc)
+                    || (mc->isValueType() && mc->isSharedCapableValue())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    llvm::Function* CajetaClass::getOrCreateMemberWalk(
+            const CajetaModulePtr& module, llvm::Module* m,
+            const shared_ptr<CajetaClass>& elemCls, uint64_t headerBytes,
+            uint64_t elemStride, bool withFree) {
+        if (!m || !elemCls) return nullptr;
+        auto* declTy = llvm::dyn_cast_or_null<llvm::StructType>(
+            elemCls->getLlvmType());
+        int wordIdx = elemCls->getOwnershipWordLlvmIndex();
+        if (!declTy || declTy->isOpaque()) return nullptr;
+        std::string name = std::string(withFree ? "cajeta_member_dropfree$"
+                                                : "cajeta_member_walk$")
+            + elemCls->toCanonical();
+        if (llvm::Function* f = m->getFunction(name)) return f;
+
+        const llvm::DataLayout& dl = m->getDataLayout();
+        const llvm::StructLayout* sl = dl.getStructLayout(declTy);
+        std::vector<SlotMemberRel> members = collectSlotMembers(elemCls, sl);
+        if (members.empty()) return nullptr;
+        bool anyBitGuarded = false;
+        for (const auto& mr : members) {
+            if (mr.kind == SlotMemberKind::BitGuarded) anyBitGuarded = true;
+        }
+        if (anyBitGuarded && wordIdx < 0) return nullptr;
+        uint64_t wordOff = wordIdx >= 0
+            ? sl->getElementOffset((unsigned) wordIdx) : 0;
+
+        auto& ctx = m->getContext();
+        auto* i64 = llvm::Type::getInt64Ty(ctx);
+        auto* i8 = llvm::Type::getInt8Ty(ctx);
+        auto* ptrTy = llvm::PointerType::get(ctx, 0);
+        auto* fnTy = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(ctx), {ptrTy}, false);
+        auto* f = llvm::Function::Create(
+            fnTy, llvm::Function::InternalLinkage, name, m);
+        llvm::Function* dropFn = module->getRuntimeFunction(
+            "__cajeta_class_virtual_drop", m);
+        llvm::Function* freeFn = module->getRuntimeFunction(
+            "__cajeta_free_array", m);
+
+        auto* entry = llvm::BasicBlock::Create(ctx, "entry", f);
+        auto* head = llvm::BasicBlock::Create(ctx, "slot_head", f);
+        auto* body = llvm::BasicBlock::Create(ctx, "slot_body", f);
+        auto* next = llvm::BasicBlock::Create(ctx, "slot_next", f);
+        auto* done = llvm::BasicBlock::Create(ctx, "done", f);
+        llvm::IRBuilder<> b(entry);
+        llvm::Value* hdr = f->getArg(0);
+        llvm::Value* isNull = b.CreateICmpEQ(
+            hdr, llvm::ConstantPointerNull::get(ptrTy));
+        auto* haveHdr = llvm::BasicBlock::Create(ctx, "have_hdr", f);
+        b.CreateCondBr(isNull, done, haveHdr);
+        b.SetInsertPoint(haveHdr);
+        llvm::Value* count = b.CreateAnd(
+            b.CreateLoad(i64, hdr, "count"),
+            llvm::ConstantInt::get(i64, 0x7fffffffffffffffULL));
+        llvm::Value* idxSlot = b.CreateAlloca(i64, nullptr, "i");
+        b.CreateStore(llvm::ConstantInt::get(i64, 0), idxSlot);
+        b.CreateBr(head);
+
+        b.SetInsertPoint(head);
+        llvm::Value* i = b.CreateLoad(i64, idxSlot);
+        b.CreateCondBr(b.CreateICmpSLT(i, count), body, done);
+
+        b.SetInsertPoint(body);
+        llvm::Value* slotBase = b.CreateInBoundsGEP(i8, hdr,
+            b.CreateAdd(llvm::ConstantInt::get(i64, headerBytes),
+                        b.CreateMul(i, llvm::ConstantInt::get(
+                            i64, elemStride))), "slot_base");
+        llvm::Value* wordPtr = nullptr;
+        llvm::Value* word = nullptr;
+        if (anyBitGuarded) {
+            wordPtr = b.CreateInBoundsGEP(i8, slotBase,
+                llvm::ConstantInt::get(i64, wordOff), "word_ptr");
+            word = b.CreateLoad(i64, wordPtr, "word");
+        }
+        for (const auto& mr : members) {
+            llvm::Value* mp = b.CreateInBoundsGEP(i8, slotBase,
+                llvm::ConstantInt::get(i64, mr.off), "member_ptr");
+            if (mr.kind == SlotMemberKind::ValueShared) {
+                // Inline shared-capable value member: release per stake,
+                // unconditional (mirrors drop_vshared_).
+                mr.cls->emitValueSharedOp(b, mp, module, m,
+                                          /*retain=*/false);
+                continue;
+            }
+            if (mr.kind == SlotMemberKind::StringDrop) {
+                // Always-owned String member (§5.1.6): virtual_drop the
+                // wrapper unconditionally; vacant slots hold null and the
+                // drop no-ops.
+                llvm::Value* sv = b.CreateLoad(ptrTy, mp, "member_str");
+                if (dropFn) b.CreateCall(dropFn, {sv});
+                b.CreateStore(llvm::ConstantPointerNull::get(ptrTy), mp);
+                continue;
+            }
+            llvm::Value* bit = b.CreateAnd(
+                b.CreateLShr(word, llvm::ConstantInt::get(i64, mr.bit)),
+                llvm::ConstantInt::get(i64, 1));
+            llvm::Function* fn = b.GetInsertBlock()->getParent();
+            auto* relBB = llvm::BasicBlock::Create(ctx, "member_rel", fn);
+            auto* contBB = llvm::BasicBlock::Create(ctx, "member_cont", fn);
+            b.CreateCondBr(b.CreateICmpNE(bit,
+                llvm::ConstantInt::get(i64, 0)), relBB, contBB);
+            b.SetInsertPoint(relBB);
+            llvm::Value* mv = b.CreateLoad(ptrTy, mp, "member_val");
+            llvm::Function* rel = mr.isArray ? freeFn : dropFn;
+            if (rel) b.CreateCall(rel, {mv});
+            b.CreateBr(contBB);
+            b.SetInsertPoint(contBB);
+        }
+        // Claim: the word zeroes so a second pass (dtor + auto field
+        // drop) can't re-release.
+        if (wordPtr) {
+            b.CreateStore(llvm::ConstantInt::get(i64, 0), wordPtr);
+        }
+        b.CreateBr(next);
+
+        b.SetInsertPoint(next);
+        b.CreateStore(b.CreateAdd(i, llvm::ConstantInt::get(i64, 1)),
+                      idxSlot);
+        b.CreateBr(head);
+
+        b.SetInsertPoint(done);
+        if (withFree && freeFn) b.CreateCall(freeFn, {hdr});
+        b.CreateRetVoid();
+        return f;
+    }
+
     void CajetaClass::buildInstanceStructBody(llvm::LLVMContext* lctx) {
         string canonical = qName->toCanonical();
         auto fieldLayoutType = [&](const StructurePropertyPtr& p) -> llvm::Type* {
@@ -967,6 +1257,22 @@ namespace cajeta {
             for (auto& p : cls->propertyList) {
                 if (p->isStatic()) continue;
                 llvmMembers.push_back(fieldLayoutType(p));
+            }
+            // title-tracking §5 — hidden per-instance ownership word for
+            // cls's bit-carrying fields, after own properties and before
+            // vbase slots. Mirrored by getFieldLlvmIndex. Zero-init (via
+            // the instance memset) = all borrowed.
+            {
+                bool wantsWord = false;
+                for (auto& p : cls->propertyList) {
+                    if (!p->isStatic() && fieldHasOwnershipBit(p)) {
+                        wantsWord = true;
+                        break;
+                    }
+                }
+                if (wantsWord) {
+                    llvmMembers.push_back(llvm::Type::getInt64Ty(*lctx));
+                }
             }
             // MultiClassing Phase 3 v4 vbase pointers — one per cls's
             // transitive non-self ancestor. Placed after cls's own
@@ -2480,7 +2786,24 @@ namespace cajeta {
                     val = builder->CreateFPToSI(val, storedType);
                 }
             }
-            if (val->getType() != storedType) continue;  // skip on mismatch
+            if (val->getType() != storedType) {
+                // The initializer's type is not the declared type and none of the
+                // numeric coercions above bridged it (`static int32 x = "hello"`).
+                // Skipping the store left the field silently ZERO — the
+                // initializer-type-check hole (silent-resolution diagnostics 3.1.2).
+                auto declTy = prop->getType();
+                auto initTy = expr->getResolvedType();
+                std::string declName = (declTy && declTy->getQName())
+                    ? declTy->getQName()->toCanonical() : "<unknown>";
+                std::string initName = (initTy && initTy->getQName())
+                    ? initTy->getQName()->toCanonical() : "<unresolved>";
+                throw locatedException(
+                    expr->getSourceLine(), expr->getSourceColumn() + 1,
+                    "initializer for static field '" + prop->getName()
+                        + "' has type '" + initName
+                        + "', which is not assignable to '" + declName + "'",
+                    "CAJETA_ERROR_INITIALIZER_TYPE_MISMATCH");
+            }
             builder->CreateStore(val, g);
         }
         builder->CreateRetVoid();
@@ -2921,9 +3244,26 @@ namespace cajeta {
             // view: the caller still owns it, so this teardown must not drop it.
             // Monomorphization erased the came-from-a-type-parameter fact;
             // TemplateInstantiator restores it as originTypeParamIndex.
+            // title-tracking §5 (rev 2) EXCEPTION: a vtable-class T-origin
+            // field carries a runtime ownership BIT and the guarded drop
+            // below decides per instance (`node.value = #v` → owned → drop;
+            // plain → borrowed → skip, the borrow-era outcome). The blanket
+            // skip stays only for the bit-LESS paths (shared-capable value
+            // fields release unconditionally; interfaces have no bit) —
+            // without it LinkedListNode/CacheNode owned values leaked at
+            // node teardown.
             int scalarOrigin = property->getOriginTypeParamIndex();
-            if (scalarOrigin >= 0 && !isTypeArgumentOwning((size_t) scalarOrigin))
-                continue;
+            if (scalarOrigin >= 0) {
+                auto fc = dynamic_pointer_cast<CajetaClass>(fieldType);
+                bool bitGuarded = fc
+                    && !dynamic_pointer_cast<CajetaView>(fieldType)
+                    && !(fc->isValueType() && fc->isSharedCapableValue())
+                    && !fc->isInterface()
+                    && fc->hasVtablePointerAtSlotZero()
+                    && ownershipBitIndexOf(property) >= 0
+                    && getOwnershipWordLlvmIndex() >= 0;
+                if (!bitGuarded) continue;
+            }
             unsigned fieldIdx = (unsigned) getFieldLlvmIndex(property);
 
             if (auto arrField = dynamic_pointer_cast<CajetaArray>(fieldType)) {
@@ -2936,93 +3276,95 @@ namespace cajeta {
                     freeArrayFn = cajModule->getRuntimeFunction("__cajeta_free_array", bodyModule);
                 }
                 if (!freeArrayFn) continue;
+                // title-tracking §5.1.4 — teardown frees exactly the places
+                // whose bit is owned; a borrowed (0) bit skips this field.
+                llvm::BasicBlock* ownCont = nullptr;
+                {
+                    int bitIdx = ownershipBitIndexOf(property);
+                    int wordIdx = getOwnershipWordLlvmIndex();
+                    if (bitIdx >= 0 && wordIdx >= 0 && b.GetInsertBlock()) {
+                        llvm::Type* gi64 = llvm::Type::getInt64Ty(ctx);
+                        llvm::Function* fn = b.GetInsertBlock()->getParent();
+                        llvm::Value* wordSlot = b.CreateStructGEP(
+                            rawLlvmType(), instance, (unsigned) wordIdx,
+                            "own_bits_slot");
+                        llvm::Value* w = b.CreateLoad(gi64, wordSlot);
+                        llvm::Value* bit = b.CreateAnd(
+                            b.CreateLShr(w, llvm::ConstantInt::get(gi64, bitIdx)),
+                            llvm::ConstantInt::get(gi64, 1));
+                        llvm::Value* owned = b.CreateICmpNE(
+                            bit, llvm::ConstantInt::get(gi64, 0));
+                        llvm::BasicBlock* dropBB =
+                            llvm::BasicBlock::Create(ctx, "own_drop", fn);
+                        ownCont = llvm::BasicBlock::Create(ctx, "own_cont", fn);
+                        b.CreateCondBr(owned, dropBB, ownCont);
+                        b.SetInsertPoint(dropBB);
+                    }
+                }
                 llvm::Value* slot = b.CreateStructGEP(
                     rawLlvmType(), instance, fieldIdx,
                     std::string("drop_arr_slot_") + property->getName());
                 llvm::Value* arrPtr = b.CreateLoad(ptrTy, slot,
                     std::string("drop_arr_ptr_") + property->getName());
-                // element-ownership §7.1.4 (plan 3.2.2): owning-instantiated
-                // element storage drops its LIVE elements before the buffer is
-                // freed. Gated on (a) the field's template-declared type being
-                // `P[]` (originElementTypeParamIndex, TemplateInstantiator),
-                // (b) this instantiation marking P owning (`#`), (c) a
-                // droppable element type (String → __cajeta_string_drop,
-                // vtable class → __cajeta_class_virtual_drop; both idempotent
-                // via the live-set claim, so aliased elements free once), and
-                // (d) an @ElementCount-marked field bounding the loop — the
-                // array header word is CAPACITY, not live count, so an
-                // unmarked walk would drop garbage in [size..capacity).
-                // No marker → no loop (borrow-era status quo; non-contiguous
-                // slot stores like HashMap keep their bespoke destructor).
-                int originIdx = property->getOriginElementTypeParamIndex();
-                if (originIdx >= 0 && isTypeArgumentOwning((size_t) originIdx)) {
-                    llvm::Function* elemDropFn = nullptr;
-                    auto elemType = arrField->getElementType();
-                    if (auto elemClass = dynamic_pointer_cast<CajetaClass>(elemType)) {
-                        bool elemIsString =
-                            elemClass->getQName()->getTypeName() == "String"
-                            && elemClass->getQName()->getPackageName() == "cajeta.lang";
-                        if (elemIsString) {
-                            elemDropFn = cajModule->getRuntimeFunction(
-                                "__cajeta_string_drop", bodyModule);
-                        } else if (!dynamic_pointer_cast<CajetaView>(elemType)
-                                   && !elemClass->isInterface()
-                                   && elemClass->hasVtablePointerAtSlotZero()) {
-                            elemClass->patchVirtualTableDropFn();
-                            elemDropFn = cajModule->getRuntimeFunction(
-                                "__cajeta_class_virtual_drop", bodyModule);
-                        }
+                // title-stores §3.2 — bit-capable elements: drop every
+                // OWNED slot via the tail bitmap before freeing the buffer
+                // (vacant/borrowed slots skip; no @ElementCount).
+                if (CajetaClass::arrayElementCarriesSlotBits(
+                        arrField->getElementType())) {
+                    if (llvm::Function* walkFn = cajModule->getRuntimeFunction(
+                            "__cajeta_tail_elem_drop_walk", bodyModule)) {
+                        const llvm::DataLayout& wdl = bodyModule->getDataLayout();
+                        llvm::Type* wi64 = llvm::Type::getInt64Ty(ctx);
+                        b.CreateCall(walkFn, {arrPtr,
+                            llvm::ConstantInt::get(wi64,
+                                wdl.getTypeAllocSize(arrField->getLlvmType())),
+                            llvm::ConstantInt::get(wi64,
+                                arrField->elementStrideBytes(wdl, &ctx))});
                     }
-                    StructurePropertyPtr countProp;
-                    if (elemDropFn) {
-                        for (auto& p : propertyList) {
-                            if (p && !p->isStatic()
-                                    && p->findAnnotation("ElementCount")) {
-                                countProp = p;
-                                break;
-                            }
-                        }
-                    }
-                    if (elemDropFn && countProp) {
-                        llvm::Function* dropElemsFn = cajModule->getRuntimeFunction(
-                            "__cajeta_drop_array_elements", bodyModule);
-                        if (dropElemsFn) {
-                            unsigned countIdx =
-                                (unsigned) getFieldLlvmIndex(countProp);
-                            llvm::Value* countSlot = b.CreateStructGEP(
-                                rawLlvmType(), instance, countIdx,
-                                std::string("drop_elem_count_slot_")
-                                    + property->getName());
-                            llvm::Type* countTy =
-                                countProp->getType()->getLlvmType();
-                            llvm::Value* count = b.CreateLoad(countTy, countSlot,
-                                std::string("drop_elem_count_")
-                                    + property->getName());
-                            llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
-                            if (countTy != i64Ty) {
-                                count = b.CreateSExt(count, i64Ty);
-                            }
-                            // Header + stride mirror the
-                            // __cajeta_new_array_header allocation
-                            // (ArrayInitializer/ArrayCreatorRest): String
-                            // elements are inline 64-byte value slots,
-                            // class refs 8-byte ptr slots; the reference
-                            // pointer sits at the slot base either way.
-                            const llvm::DataLayout& dl =
+                }
+                // title-stores Unit 5 — String elements: every resident
+                // slot owns its wrapper (dual-role stores), release
+                // unconditionally before the buffer frees.
+                {
+                    auto strElem = dynamic_pointer_cast<CajetaClass>(
+                        arrField->getElementType());
+                    if (strElem && slotMemberIsString(strElem)) {
+                        if (llvm::Function* swFn = cajModule->getRuntimeFunction(
+                                "__cajeta_string_elem_drop_walk", bodyModule)) {
+                            const llvm::DataLayout& swDl =
                                 bodyModule->getDataLayout();
-                            uint64_t headerBytes =
-                                dl.getTypeAllocSize(arrField->getLlvmType());
-                            uint64_t strideBytes = dl.getTypeAllocSize(
-                                arrField->getElementLlvmType(&ctx));
-                            b.CreateCall(dropElemsFn, {
-                                arrPtr, count,
-                                llvm::ConstantInt::get(i64Ty, headerBytes),
-                                llvm::ConstantInt::get(i64Ty, strideBytes),
-                                elemDropFn});
+                            llvm::Type* swi64 = llvm::Type::getInt64Ty(ctx);
+                            b.CreateCall(swFn, {arrPtr,
+                                llvm::ConstantInt::get(swi64,
+                                    swDl.getTypeAllocSize(
+                                        arrField->getLlvmType())),
+                                llvm::ConstantInt::get(swi64,
+                                    arrField->elementStrideBytes(
+                                        swDl, &ctx))});
                         }
                     }
                 }
+                // title-stores §3.3.2 (Unit 4) — value-struct elements:
+                // walk slots × member bits (each slot's inline ownership
+                // word) before the buffer frees.
+                if (CajetaClass::arrayElementCarriesMemberBits(
+                        arrField->getElementType())) {
+                    const llvm::DataLayout& wdl = bodyModule->getDataLayout();
+                    if (llvm::Function* mwFn = getOrCreateMemberWalk(
+                            cajModule, bodyModule,
+                            dynamic_pointer_cast<CajetaClass>(
+                                arrField->getElementType()),
+                            wdl.getTypeAllocSize(arrField->getLlvmType()),
+                            arrField->elementStrideBytes(wdl, &ctx),
+                            /*withFree=*/false)) {
+                        b.CreateCall(mwFn, {arrPtr});
+                    }
+                }
                 b.CreateCall(freeArrayFn, {arrPtr});
+                if (ownCont) {
+                    b.CreateBr(ownCont);
+                    b.SetInsertPoint(ownCont);
+                }
                 continue;
             }
 
@@ -3058,56 +3400,43 @@ namespace cajeta {
                 }
                 if (!virtualDropFn) continue;
                 fieldClass->patchVirtualTableDropFn();
+                // title-tracking §5.1.4 — bit-guarded (see the array twin).
+                llvm::BasicBlock* ownCont = nullptr;
+                {
+                    int bitIdx = ownershipBitIndexOf(property);
+                    int wordIdx = getOwnershipWordLlvmIndex();
+                    if (bitIdx >= 0 && wordIdx >= 0 && b.GetInsertBlock()) {
+                        llvm::Type* gi64 = llvm::Type::getInt64Ty(ctx);
+                        llvm::Function* fn = b.GetInsertBlock()->getParent();
+                        llvm::Value* wordSlot = b.CreateStructGEP(
+                            rawLlvmType(), instance, (unsigned) wordIdx,
+                            "own_bits_slot");
+                        llvm::Value* w = b.CreateLoad(gi64, wordSlot);
+                        llvm::Value* bit = b.CreateAnd(
+                            b.CreateLShr(w, llvm::ConstantInt::get(gi64, bitIdx)),
+                            llvm::ConstantInt::get(gi64, 1));
+                        llvm::Value* owned = b.CreateICmpNE(
+                            bit, llvm::ConstantInt::get(gi64, 0));
+                        llvm::BasicBlock* dropBB =
+                            llvm::BasicBlock::Create(ctx, "own_drop", fn);
+                        ownCont = llvm::BasicBlock::Create(ctx, "own_cont", fn);
+                        b.CreateCondBr(owned, dropBB, ownCont);
+                        b.SetInsertPoint(dropBB);
+                    }
+                }
                 llvm::Value* slot = b.CreateStructGEP(
                     rawLlvmType(), instance, fieldIdx,
                     std::string("drop_ref_slot_") + property->getName());
                 llvm::Value* refPtr = b.CreateLoad(ptrTy, slot,
                     std::string("drop_ref_ptr_") + property->getName());
                 b.CreateCall(virtualDropFn, {refPtr});
+                if (ownCont) {
+                    b.CreateBr(ownCont);
+                    b.SetInsertPoint(ownCont);
+                }
                 continue;
             }
         }
-    }
-
-    bool CajetaClass::isBorrowModeContainer() {
-        if (!isInstantiation()) return false;
-        // Does leaving position k plain make this container dangerous to
-        // let escape? Only when the argument has reference semantics — a
-        // value-type element is stored by copy/share (Unit 3 manages the
-        // shared-capable ones) and a primitive by value; neither can
-        // dangle. Placeholder args (mode-agnostic method-template walks,
-        // unfilled forward refs) don't confine — their shape isn't known.
-        auto argConfines = [&](int k) {
-            if (k < 0 || (size_t) k >= typeArguments.size()) return false;
-            if (isTypeArgumentOwning((size_t) k)) return false;
-            auto argClass = dynamic_pointer_cast<CajetaClass>(typeArguments[k]);
-            return argClass && !argClass->isPlaceholder()
-                && !argClass->isWildcard()
-                && !argClass->isValueType();
-        };
-        // `methods` (unlike methodList) also holds constructors, so an
-        // authored `#T` ctor formal (the Optional shape) is seen too.
-        for (auto& [key, m] : methods) {
-            if (!m) continue;
-            for (auto& [pname, fp] : m->getParameters()) {
-                if (fp && fp->wasAuthoredTransferred()
-                        && argConfines(fp->getOriginTypeParamIndex())) {
-                    return true;
-                }
-            }
-            if (m->isReturnsOwnership()
-                    && argConfines(m->getOriginReturnTypeParamIndex())) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    bool CajetaClass::isStdlibTemplateInstantiation() {
-        auto origin = templateOrigin ? templateOrigin : shared_from_this();
-        auto originClass = dynamic_pointer_cast<CajetaClass>(origin);
-        return originClass && originClass->getModule()
-            && originClass->getModule() == CajetaModule::getStdlibModule();
     }
 
     bool CajetaClass::isSharedCapableValue() {
@@ -5302,10 +5631,58 @@ namespace cajeta {
         return fn;
     }
 
+    // Build the diagnostic for a call that named a member which did not resolve.
+    // Two DIFFERENT mistakes, and conflating them misleads: if `scale` exists but
+    // takes an int32, telling the user there is "no member scale" sends them
+    // looking for a typo that isn't there. So the presence of same-named
+    // candidates (here or on any ancestor) picks the error.
+    Exception CajetaClass::memberNotFoundException(const string& methodName,
+            const vector<ParameterEntry>& parameters, int line, int column) {
+        vector<string> candidates;
+        std::function<void(CajetaClass*)> collect = [&](CajetaClass* cls) {
+            if (!cls) return;
+            for (auto& mEntry : cls->getMethods()) {
+                auto& m = mEntry.second;
+                if (!m || m->getName() != methodName) continue;
+                string sig = methodName + "(";
+                auto pl = m->getParameterList();
+                bool isStatic = m->getModifiers().find(STATIC)
+                    != m->getModifiers().end();
+                size_t first = isStatic ? 0 : 1;   // skip the implicit `this`
+                for (size_t i = first; i < pl.size(); ++i) {
+                    if (i > first) sig += ", ";
+                    auto pt = pl[i] ? pl[i]->getType() : nullptr;
+                    sig += (pt && pt->getQName())
+                        ? pt->getQName()->toCanonical() : "?";
+                }
+                sig += ")";
+                candidates.push_back(sig);
+            }
+            for (auto& sup : cls->getSuperClasses()) collect(sup.get());
+        };
+        collect(this);
+
+        string recv = getQName() ? getQName()->toCanonical() : "<unknown>";
+        if (candidates.empty()) {
+            return locatedException(line, column,
+                "no member '" + methodName + "' on '" + recv + "'",
+                "CAJETA_ERROR_MEMBER_NOT_FOUND");
+        }
+        string msg = "no overload of '" + methodName + "' on '" + recv
+            + "' accepts " + std::to_string(parameters.size())
+            + " argument(s). Candidates:";
+        for (auto& c : candidates) msg += "\n    " + c;
+        return locatedException(line, column, msg,
+            "CAJETA_ERROR_NO_MATCHING_OVERLOAD");
+    }
+
     llvm::Value* CajetaClass::invokeMethod(string& methodName, vector<ParameterEntry> parameters, bool isConstructor, llvm::Value* thisValue,
                                             CajetaModulePtr callerModule, bool forceDirectCall,
                                             const vector<CajetaTypePtr>& explicitMethodTypeArgs,
-                                            llvm::Value* sretTarget) {
+                                            llvm::Value* sretTarget,
+                                            llvm::Value* transferWord,
+                                            bool errorIfUnresolved,
+                                            int callLine, int callColumn) {
         // Partial (positional + named) calls reorder to positional here; this also
         // turns a mixed call into one with no labels, so `floatingParams` below is
         // false for it and the positional resolution applies.
@@ -5325,12 +5702,38 @@ namespace cajeta {
         MethodPtr method = resolveMethod(methodName, parameters, isConstructor,
             floatingParams, explicitMethodTypeArgs, callerModule);
         if (!method) {
-            // NOTE: a hard "no matching constructor" error here (to catch the
-            // silent-uninitialized-object footgun) is too aggressive — the
-            // stdlib legitimately builds `Optional<int32>(false, null)` for the
-            // empty case, where `null` (pointer) doesn't match the `int32` value
-            // param and the call relies on memset-zero. A proper safety net must
-            // first make null→primitive ctor args resolve; tracked separately.
+// title-tracking Unit 1 (plan 1.2.1): an unresolved CONSTRUCTOR is
+            // a hard error. The old silent `return nullptr` left the object
+            // malloc+memset'd with its vtable installed but NO ctor run — the
+            // exact footgun behind the "HashMap<K,V>() then put() SIGSEGVs on
+            // null ctrl" crash (2026-07-10). The former blocker — the stdlib's
+            // `Optional<T>(false, null)` empty-case idiom, which could never
+            // resolve for primitive T — was retired in favor of the one-arg
+            // `Optional(boolean present)` ctor, so nothing legitimate relies
+            // on the silent skip anymore. (main's silent-resolution work kept
+            // ctors exempt because that idiom still lived there; this branch
+            // retired it, so the hard error stands — merge 2026-07-12.)
+            if (isConstructor) {
+                string args;
+                for (auto& p : parameters) {
+                    if (!args.empty()) args += ", ";
+                    args += p.type ? p.type->toCanonical() : string("<?>");
+                }
+                throw Exception(
+                    "no matching constructor `" + methodName + "(" + args
+                        + ")` on `" + toCanonical() + "`. Without a matching "
+                        "constructor the instance would be left zero-initialized "
+                        "(vtable installed, no ctor run) and fail at first use. "
+                        "Fix: match an existing constructor's signature, or add "
+                        "the overload.",
+                    "CAJETA_ERROR_NO_MATCHING_CONSTRUCTOR");
+            }
+            // silent-resolution-diagnostics: explicit non-ctor call sites opt
+            // into a located error instead of the silent null.
+            if (errorIfUnresolved) {
+                throw memberNotFoundException(methodName, parameters,
+                    callLine, callColumn);
+            }
             return nullptr;
         }
         // Visibility enforcement. Caller's class is the top of the
@@ -5629,6 +6032,21 @@ namespace cajeta {
                 method = spec;   // downstream callee lookup + sig use the instance
                 break;
             }
+        }
+
+        // title-tracking Unit 5 (spec §4.4): the trailing hidden transfer
+        // word. Appended after any closure-specialization retarget so the
+        // FINAL method's signature decides; every dispatch shape below
+        // (direct, vtable, iface) shares this arg list. A caller that did
+        // not compute a word (ctor paths, synthesized sites) passes the
+        // all-borrow constant 0.
+        if (method->needsTransferWord()) {
+            llvm::Value* twv = transferWord;
+            if (!twv) {
+                twv = llvm::ConstantInt::get(
+                    llvm::Type::getInt64Ty(*emitMod->getLlvmContext()), 0);
+            }
+            methodArgs.push_back(twv);
         }
 
         // Cross-module dispatch: when the receiver class lives in a

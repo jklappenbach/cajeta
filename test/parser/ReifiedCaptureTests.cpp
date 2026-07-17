@@ -27,7 +27,7 @@ const char* BOX =
     "package test;\n"
     "public class Box<T> {\n"
     "    T value;\n"
-    "    public Box(T v) { this.value = v; }\n"
+    "    public Box(T v) { this.value #= v; }\n"
     "    public T get() { return this.value; }\n"
     "}\n";
 
@@ -89,7 +89,7 @@ TEST(ReifiedCaptureTests, tryAsPresentOnMatch) {
         "import cajeta.lang.Optional;\n"
         "public class Box<T> {\n"
         "    T value;\n"
-        "    public Box(T v) { this.value = v; }\n"
+        "    public Box(T v) { this.value #= v; }\n"
         "    public T get() { return this.value; }\n"
         "}\n"
         "public final class D {\n"
@@ -111,7 +111,7 @@ TEST(ReifiedCaptureTests, tryAsEmptyOnMismatch) {
         "import cajeta.lang.Optional;\n"
         "public class Box<T> {\n"
         "    T value;\n"
-        "    public Box(T v) { this.value = v; }\n"
+        "    public Box(T v) { this.value #= v; }\n"
         "    public T get() { return this.value; }\n"
         "}\n"
         "public final class D {\n"
@@ -272,7 +272,7 @@ TEST(ReifiedCaptureTests, unguardedCastThrowsClassCastException) {
         "import cajeta.error.ClassCastException;\n"
         "public class Box<T> {\n"
         "    T value;\n"
-        "    public Box(T v) { this.value = v; }\n"
+        "    public Box(T v) { this.value #= v; }\n"
         "    public T get() { return this.value; }\n"
         "}\n"
         "public final class D {\n"
@@ -339,7 +339,7 @@ const char* ANIMALS =
     "public class Cat { public int32 meow() { return 3; } }\n"
     "public class Box<T> {\n"
     "    T value;\n"
-    "    public Box(T v) { this.value = v; }\n"
+    "    public Box(T v) { this.value #= v; }\n"
     "    public T get() { return this.value; }\n"
     "}\n";
 
@@ -430,7 +430,7 @@ const char* BOXF =
     "import cajeta.error.ClassCastException;\n"
     "public class Box<T> {\n"
     "    T value;\n"
-    "    public Box(T v) { this.value = v; }\n"
+    "    public Box(T v) { this.value #= v; }\n"
     "    public T get() { return this.value; }\n"
     "}\n";
 

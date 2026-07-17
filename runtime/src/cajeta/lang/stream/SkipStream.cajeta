@@ -30,7 +30,7 @@ public final class SkipStream<T> extends Stream<T> {
      * constructing this directly.
      */
     public SkipStream(#Stream<T> source, int32 n) {
-        this.source = source;
+        this.source #= source;
         this.remaining = n;
     }
 

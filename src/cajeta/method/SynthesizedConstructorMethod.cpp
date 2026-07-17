@@ -1,3 +1,4 @@
+#include "../error/Diagnostics.h"
 #include "SynthesizedConstructorMethod.h"
 #include "../type/CajetaClass.h"
 #include "../type/CajetaView.h"
@@ -106,7 +107,17 @@ namespace cajeta {
                 int idx = parent->getFieldLlvmIndex(prop);
                 if (idx < 0) continue;
                 llvm::Value* initVal = init->generateCode(module);
-                if (!initVal) continue;
+                if (!initVal) {
+                    // Twin of the user-ctor path in Method.cpp: the field HAS an
+                    // initializer and it lowered to nothing, so `continue` left
+                    // the field silently zero (silent-resolution diagnostics
+                    // 3.1.3). A class with no user ctor inits its fields HERE.
+                    throw locatedException(
+                        init->getSourceLine(), init->getSourceColumn() + 1,
+                        "initializer for field '" + prop->getName()
+                            + "' did not resolve to a value",
+                        "CAJETA_ERROR_UNRESOLVED_EXPRESSION");
+                }
                 llvm::Value* fp = b.CreateStructGEP(
                     parent->getLlvmType(), thisPtr, (unsigned) idx,
                     std::string("ctor.init.") + prop->getName());

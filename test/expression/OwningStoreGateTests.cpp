@@ -8,7 +8,7 @@
 // We isolate the gate from field TEARDOWN (which lands with the drop-walk in a
 // later sub-unit) using a DIFFERENTIAL: two holders differing only in the
 // field-store shape —
-//   (control) `this.s = #s;`  — an explicit `#`-move, already a transfer, and
+//   (control) `this.s #= s;`  — an explicit `#`-move, already a transfer, and
 //   (test)    `this.s = s;`   — a bare `#`-param store.
 // Both leave their String field undropped, so any field-teardown leak is
 // COMMON to both. The only population difference is the copy-strand: before the
@@ -67,7 +67,7 @@ int64_t deltaFor(const char* storeStmt, int32_t n) {
 // strands the moved-in source, so its delta exceeds the move baseline by ~n.
 TEST(OwningStoreGateTests, bareHashParamStoreMovesLikeExplicitMove) {
     const int32_t n = 2000;
-    int64_t moveDelta = deltaFor("this.s = #s;", n);
+    int64_t moveDelta = deltaFor("this.s #= s;", n);
     int64_t bareDelta = deltaFor("this.s = s;", n);
     ASSERT_GE(moveDelta, 0);
     ASSERT_GE(bareDelta, 0);
