@@ -10,7 +10,7 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [external-debug](external-debug-spec.md) | [plan](../agents/external-debug-plan.md) | active — Units 1–6 delivered and green; one item (5.1.7 cycle-render test) is untestable, awaiting a call on whether to close |
 | [ide-symbol-index](ide-symbol-index-spec.md) | [plan](../agents/ide-symbol-index-plan.md) | active — Units 1-9 implemented and green; awaiting live-IDE acceptance passes (7.3, 8.3, 9.3) |
 | [ide-features](ide-features-spec.md) | [plan](../agents/ide-features-plan.md) | active — refactoring, hierarchy, call graph, gutter nav; blocked until ide-symbol-index closes |
-| [lint-server](lint-server-spec.md) | [plan](../agents/lint-server-plan.md) | draft — warm per-edit lint via in-process stdlib reuse; queued behind ide-symbol-index (per-edit lint on tour-sized roots exceeds the plugin's 10 s timeout today) |
+| [lint-server](lint-server-spec.md) | [plan](../agents/lint-server-plan.md) | active — Unit 1 (in-process reuse parity) delivered and green; Unit 2 (server loop + protocol) next |
 | [silent-resolution-diagnostics](silent-resolution-diagnostics-spec.md) | [plan](../agents/silent-resolution-diagnostics-plan.md) | active |
 | [optional-borrow-ownership](optional-borrow-ownership-spec.md) | [plan](../agents/cajeta/optional-borrow-ownership-plan.md) | active |
 | [docs-refactor](docs-refactor-spec.md) | [plan](../agents/docs-refactor-plan.md) | active |

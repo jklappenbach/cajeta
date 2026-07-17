@@ -578,9 +578,36 @@ namespace cajeta::xref {
         }
     }
 
+    namespace {
+        // Stdlib-reuse baseline (lint-server Unit 1): the capture logs as the
+        // prime left them, restored — not cleared — by resetCapture so a warm
+        // lint starts from the same log state a fresh process's stdlib parse
+        // produces. `valid` guards production, where no prime ever runs.
+        struct CaptureBaseline {
+            bool valid = false;
+            std::vector<TemplateMember> templateMembers;
+            std::vector<Call> calls;
+            std::vector<Reference> references;
+        };
+        thread_local CaptureBaseline gCaptureBaseline;
+    }
+
+    void captureBaseline() {
+        gCaptureBaseline.templateMembers = gTemplateMembers;
+        gCaptureBaseline.calls = gCalls;
+        gCaptureBaseline.references = gReferences;
+        gCaptureBaseline.valid = true;
+    }
+
     void resetCapture() {
-        gTemplateMembers.clear();
         gOpenSites.clear();
+        if (gCaptureBaseline.valid) {
+            gTemplateMembers = gCaptureBaseline.templateMembers;
+            gCalls = gCaptureBaseline.calls;
+            gReferences = gCaptureBaseline.references;
+            return;
+        }
+        gTemplateMembers.clear();
         gCalls.clear();
         gReferences.clear();
     }

@@ -171,8 +171,16 @@ namespace cajeta::xref {
     // Off by default: a build that does not ask for xref captures nothing.
     void setCaptureEnabled(bool enabled);
     bool captureEnabled();
-    // Clear per-compile state. Call at the start of a compile.
+    // Clear per-compile state. Call at the start of a compile. When a
+    // baseline was captured (stdlib-reuse prime), this RESTORES the baseline
+    // instead of clearing — a warm lint's logs then begin exactly where a
+    // fresh process's stdlib parse would leave them (template members
+    // especially; lint-server Unit 1). Production one-shot runs never
+    // capture a baseline, so they clear, as always.
     void resetCapture();
+    // Snapshot the capture logs (stdlib-reuse prime, after the stdlib
+    // parse). Same thread-affinity as the logs themselves.
+    void captureBaseline();
     void registerTemplateMember(TemplateMember member);
 
     // ---- source-file interning (2.2.8) -------------------------------------

@@ -7,6 +7,7 @@
 #include <llvm/TargetParser/Host.h>
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CompilerMode.h"
+#include "cajeta/compile/LintService.h"
 #include "cajeta/error/Exception.h"
 #include "cajeta/error/Diagnostics.h"
 #include "cajeta/error/DiagnosticEngine.h"
@@ -696,31 +697,11 @@ int main(int argc, const char* argv[]) {
                           << lintSourceRoot << "\n";
             return 1;
         }
-        // Collect-and-continue: recoverable semantic errors report to the engine
-        // (multiple, located) instead of aborting; un-migrated throw sites are
-        // caught and folded in. All emitted at the end (diagnostic-engine-spec).
-        cajeta::DiagnosticEngine engine;
-        cajeta::DiagnosticEngine::setActive(&engine);
-        try {
-            compiler.lint(lintFile, lintSourceRoot, lintShadow);
-        } catch (cajeta::SyntaxErrorException&) {
-            cajeta::DiagnosticEngine::setActive(nullptr);
-            // The buffer did not parse, so nothing was captured for it — the
-            // stream is a version line and records for nothing, which is the
-            // signal for the plugin to KEEP its previous index for this file
-            // (a stale answer beats a wrong one; ide-symbol-index §7).
-            compiler.emitLintXrefStream(lintFile, lintSourceRoot, lintShadow);
-            return 1;  // syntax diagnostics already emitted during parsing
-        } catch (cajeta::Exception& e) {
-            engine.report("error", e.getErrorId(), e.getMessage(),
-                          e.getFile(), e.getLine(), e.getColumn());
-        } catch (const std::exception& e) {
-            engine.report("error", "", e.what());
-        }
-        cajeta::DiagnosticEngine::setActive(nullptr);
-        engine.emit(jsonDiag);
-        compiler.emitLintXrefStream(lintFile, lintSourceRoot, lintShadow);
-        return engine.hasErrors() ? 1 : 0;
+        // Engine lifecycle, exception folding, and emit order live in
+        // runLintDriver, shared verbatim with the warm-lint path
+        // (lint-server spec 1.4.1: parity by construction).
+        return cajeta::lintservice::runLintDriver(
+            compiler, lintFile, lintSourceRoot, lintShadow);
     }
 
     // Manifest builds force tree-shake off + link-mode full
