@@ -93,6 +93,11 @@
         <statusBarWidgetFactory
             id="CajetaXrefStatus"
             implementation="dev.cajeta.idea.xref.CajetaXrefStatusWidgetFactory"/>
+        <!-- Unit 8 §8.3: expose the mounted stdlib/dependency source as read-only
+             library source roots so Ctrl-click into stdlib types resolves.
+             The mount itself runs in the background startup activity below. -->
+        <additionalLibraryRootsProvider
+            implementation="dev.cajeta.idea.xref.CajetaXrefLibraryRootsProvider"/>
 
         <lang.parserDefinition
             language="Cajeta"
@@ -130,6 +135,8 @@
         <applicationService
             serviceImplementation="dev.cajeta.idea.markdown.MarkdownEngineRegistry"/>
 
+        <postStartupActivity
+            implementation="dev.cajeta.idea.xref.CajetaStdlibMountStartup"/>
         <postStartupActivity
             implementation="dev.cajeta.idea.markdown.InstallCommentCaretListener"/>
 
