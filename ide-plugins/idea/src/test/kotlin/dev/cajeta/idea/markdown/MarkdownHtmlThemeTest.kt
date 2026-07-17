@@ -47,6 +47,17 @@ class MarkdownHtmlThemeTest {
      * emitting one is safe on both surfaces.
      */
     @Test
+    fun inlineAndFencedCodeCarryTheEditorFontSize() {
+        // Bug: code/pre had no font-size, so Swing rendered them at a fixed
+        // default that didn't scale with the surrounding comment text.
+        val doc = MarkdownHtmlTheme.wrap("<p><code>x</code></p>", palette.copy(fontSizePt = 13.5f))
+        assertTrue("inline code carries the editor size",
+            Regex("""\bcode\s*\{[^}]*font-size:\s*13\.5pt""").containsMatchIn(doc))
+        assertTrue("fenced code carries the editor size",
+            Regex("""\bpre\s*\{[^}]*font-size:\s*13\.5pt""").containsMatchIn(doc))
+    }
+
+    @Test
     fun carriesFractionalFontSizeIntoCss() {
         val doc = MarkdownHtmlTheme.wrap("<p>hi</p>", palette.copy(fontSizePt = 13.5f))
         assertTrue("fractional body size emitted", doc.contains("font-size: 13.5pt"))

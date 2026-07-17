@@ -706,19 +706,40 @@ internal object MarkdownFoldEditorListener : EditorFactoryListener {
         return n
     }
 
-    private fun stripCommentMarkers(raw: String): String {
-        return raw.lineSequence()
-            .map { line ->
-                val trimmed = line.trim()
-                when {
-                    trimmed.startsWith("//") -> trimmed.removePrefix("//").trimStart()
-                    trimmed.startsWith("/*") -> trimmed
-                        .removePrefix("/*").removeSuffix("*/").trim()
-                    trimmed.startsWith("*") -> trimmed.removePrefix("*").trimStart()
-                    else -> trimmed
-                }
+}
+
+/**
+ * Strip comment delimiters from a raw `//` or `/* */` comment run, leaving the
+ * markdown body. Pure (no editor state) so it is unit-tested directly.
+ *
+ * The delimiters must be removed cleanly or they render as markdown: `/**`
+ * left a lone `*` (a bullet) and `*/` left a `/`. A KDoc continuation gutter
+ * (`* `) is stripped, but never `**` (bold) or `*x` (italic).
+ */
+internal fun stripCommentMarkers(raw: String): String {
+    return raw.lineSequence()
+        .map { line ->
+            var s = line.trim()
+            if (s.startsWith("//")) {
+                s = s.removePrefix("//")
+            } else {
+                // Block-comment OPEN: strip the whole opener, including the
+                // extra '*' of the KDoc `/**` form. (Removing only `/*` left
+                // a lone `*`, which markdown rendered as a bullet.)
+                if (s.startsWith("/**")) s = s.removePrefix("/**")
+                else if (s.startsWith("/*")) s = s.removePrefix("/*")
+                // Block-comment CLOSE: strip a trailing `*/`. (Matching the
+                // leading-`*` gutter first left the `/` behind, rendered
+                // literally.)
+                if (s.endsWith("*/")) s = s.removeSuffix("*/")
+                // KDoc continuation gutter: a leading `* ` or a bare `*`
+                // only — never `**` (bold) or `*x` (italic), which are real
+                // markdown.
+                s = s.trimStart()
+                if (s == "*") s = "" else if (s.startsWith("* ")) s = s.substring(2)
             }
-            .joinToString("\n")
-            .trim()
-    }
+            s.trim()
+        }
+        .joinToString("\n")
+        .trim()
 }

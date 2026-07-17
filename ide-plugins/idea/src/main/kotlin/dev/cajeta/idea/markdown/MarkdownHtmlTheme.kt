@@ -49,9 +49,9 @@ object MarkdownHtmlTheme {
             a { color: ${p.accent}; text-decoration: underline; }
             ul, ol { margin: 4px 0 4px 20px; padding: 0; }
             li { margin: 2px 0; }
-            code { font-family: $mono; background: ${p.codeBackground};
+            code { font-family: $mono; font-size: ${pt(s)}; background: ${p.codeBackground};
                    padding: 0 3px; }
-            pre { font-family: $mono; background: ${p.codeBackground};
+            pre { font-family: $mono; font-size: ${pt(s)}; background: ${p.codeBackground};
                   border: 1px solid ${p.border}; margin: 6px 0; padding: 6px 8px; }
             pre code { background: transparent; padding: 0; }
             blockquote { margin: 6px 0; padding: 2px 0 2px 10px;
