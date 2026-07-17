@@ -695,17 +695,22 @@ namespace cajeta {
         // Type → descriptor map built from the filtered + override-
         // applied set. Used by the @Inject resolver below.
         vector<ComponentDescriptorPtr> active;
-        // Test-mode override: when we see @TestComponent and we're
-        // compiling for tests, this descriptor's class type masks any
-        // same-class non-test @Component.
-        set<string> testOverriddenTypes;
+        // Test-mode override: an active @TestComponent masks every
+        // non-test @Component that implements an interface the double
+        // also implements, so the double stands in at that interface's
+        // injection sites. Keyed on interface canonical names. A double
+        // with no interface masks nothing — it is injectable only by its
+        // own concrete type (preserves the own-type stub behavior).
+        set<string> testOverriddenInterfaces;
         if (testMode) {
             for (auto& c : componentClasses) {
                 if (!c || !c->klass) continue;
                 if (!c->isTestComponent) continue;
                 if (!profileMatches(c)) continue;
-                if (c->klass->getQName()) {
-                    testOverriddenTypes.insert(c->klass->getQName()->toCanonical());
+                for (auto& iface : c->klass->getImplementedInterfaces()) {
+                    if (iface && iface->getQName()) {
+                        testOverriddenInterfaces.insert(iface->getQName()->toCanonical());
+                    }
                 }
             }
         }
@@ -713,11 +718,19 @@ namespace cajeta {
             if (!c || !c->klass) continue;
             if (!profileMatches(c)) continue;
             if (c->isTestComponent && !testMode) continue;
-            // In test mode, drop the non-test @Component whose type
-            // is overridden by a @TestComponent of the same type.
-            if (testMode && !c->isTestComponent && c->klass->getQName()
-                    && testOverriddenTypes.count(c->klass->getQName()->toCanonical())) {
-                continue;
+            // In test mode, drop a non-test @Component that shares an
+            // interface with an active @TestComponent.
+            if (testMode && !c->isTestComponent) {
+                bool masked = false;
+                for (auto& iface : c->klass->getImplementedInterfaces()) {
+                    if (iface && iface->getQName()
+                            && testOverriddenInterfaces.count(
+                                   iface->getQName()->toCanonical())) {
+                        masked = true;
+                        break;
+                    }
+                }
+                if (masked) continue;
             }
             active.push_back(c);
         }

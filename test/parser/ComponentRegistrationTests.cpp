@@ -345,3 +345,135 @@ TEST(ComponentRegistrationTests, testComponentExcludedInProdMode) {
         EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_MISSING_COMPONENT");
     }
 }
+
+// --- Unit 1 (di-profile-selection §2): @TestComponent masks a same-
+// --- interface @Component under --profile=test, by shared interface. ---
+
+namespace {
+// Short type name of the resolved target for a consumer's first
+// @Inject field ("" if unresolved). Used to assert which provider won.
+std::string resolvedTargetName(const std::string& consumerShort) {
+    auto d = findDescriptor(consumerShort);
+    if (!d || d->resolvedFields.empty()) return "";
+    auto& rd = d->resolvedFields[0];
+    if (!rd.target || !rd.target->klass || !rd.target->klass->getQName()) return "";
+    return rd.target->klass->getQName()->getTypeName();
+}
+} // namespace
+
+// In test mode a @TestComponent implementing an interface masks the
+// non-test @Component implementing that same interface: @Inject Sink
+// resolves to the double, not ambiguous.
+TEST(ComponentRegistrationTests, testComponentMasksSameInterfaceComponent) {
+    auto src =
+        "package test;\n"
+        "public interface Sink {\n"
+        "    public int32 tag();\n"
+        "}\n"
+        "@Component public class RealSink implements Sink {\n"
+        "    public RealSink() { return; }\n"
+        "    public int32 tag() { return 1; }\n"
+        "}\n"
+        "@TestComponent public class FakeSink implements Sink {\n"
+        "    public FakeSink() { return; }\n"
+        "    public int32 tag() { return 2; }\n"
+        "}\n"
+        "@Component public class App {\n"
+        "    @Inject Sink s;\n"
+        "    public App() { return; }\n"
+        "}\n";
+    Compiler compiler;
+    compileForInspection(compiler, src, "test.App");
+    CajetaModule::setActiveProfile("test");
+    EXPECT_NO_THROW(CajetaModule::resolveDependencyGraph());
+    EXPECT_EQ(resolvedTargetName("App"), "FakeSink");
+    CajetaModule::setActiveProfile("prod");
+}
+
+// Same source, prod profile: the @TestComponent is filtered out and
+// the real interface impl is wired.
+TEST(ComponentRegistrationTests, prodKeepsRealInterfaceComponent) {
+    auto src =
+        "package test;\n"
+        "public interface Sink {\n"
+        "    public int32 tag();\n"
+        "}\n"
+        "@Component public class RealSink implements Sink {\n"
+        "    public RealSink() { return; }\n"
+        "    public int32 tag() { return 1; }\n"
+        "}\n"
+        "@TestComponent public class FakeSink implements Sink {\n"
+        "    public FakeSink() { return; }\n"
+        "    public int32 tag() { return 2; }\n"
+        "}\n"
+        "@Component public class App {\n"
+        "    @Inject Sink s;\n"
+        "    public App() { return; }\n"
+        "}\n";
+    Compiler compiler;
+    compileForInspection(compiler, src, "test.App");
+    CajetaModule::setActiveProfile("prod");
+    EXPECT_NO_THROW(CajetaModule::resolveDependencyGraph());
+    EXPECT_EQ(resolvedTargetName("App"), "RealSink");
+}
+
+// Multiple real impls of one interface plus a @TestComponent: in test
+// mode all reals are masked and the double is the sole provider (no
+// DI_AMBIGUOUS despite three would-be candidates).
+TEST(ComponentRegistrationTests, multipleRealImplsAllMaskedInTest) {
+    auto src =
+        "package test;\n"
+        "public interface Sink {\n"
+        "    public int32 tag();\n"
+        "}\n"
+        "@Component public class DiskSink implements Sink {\n"
+        "    public DiskSink() { return; }\n"
+        "    public int32 tag() { return 1; }\n"
+        "}\n"
+        "@Component public class NetSink implements Sink {\n"
+        "    public NetSink() { return; }\n"
+        "    public int32 tag() { return 2; }\n"
+        "}\n"
+        "@TestComponent public class FakeSink implements Sink {\n"
+        "    public FakeSink() { return; }\n"
+        "    public int32 tag() { return 3; }\n"
+        "}\n"
+        "@Component public class App {\n"
+        "    @Inject Sink s;\n"
+        "    public App() { return; }\n"
+        "}\n";
+    Compiler compiler;
+    compileForInspection(compiler, src, "test.App");
+    CajetaModule::setActiveProfile("test");
+    EXPECT_NO_THROW(CajetaModule::resolveDependencyGraph());
+    EXPECT_EQ(resolvedTargetName("App"), "FakeSink");
+    CajetaModule::setActiveProfile("prod");
+}
+
+// A @TestComponent that implements no interface masks nothing: an
+// unrelated real interface impl still resolves in test mode. Guards
+// against over-masking.
+TEST(ComponentRegistrationTests, noInterfaceDoubleMasksNothing) {
+    auto src =
+        "package test;\n"
+        "public interface Sink {\n"
+        "    public int32 tag();\n"
+        "}\n"
+        "@Component public class RealSink implements Sink {\n"
+        "    public RealSink() { return; }\n"
+        "    public int32 tag() { return 1; }\n"
+        "}\n"
+        "@TestComponent public class StubOnly {\n"
+        "    public StubOnly() { return; }\n"
+        "}\n"
+        "@Component public class App {\n"
+        "    @Inject Sink s;\n"
+        "    public App() { return; }\n"
+        "}\n";
+    Compiler compiler;
+    compileForInspection(compiler, src, "test.App");
+    CajetaModule::setActiveProfile("test");
+    EXPECT_NO_THROW(CajetaModule::resolveDependencyGraph());
+    EXPECT_EQ(resolvedTargetName("App"), "RealSink");
+    CajetaModule::setActiveProfile("prod");
+}
