@@ -554,3 +554,52 @@ TEST(ComponentRegistrationTests, profileListFiltersUnderEither) {
     }
     CajetaModule::setActiveProfile("prod");
 }
+
+// --- Unit 3 (di-profile-selection §3): shipped cajeta.aot annotation types. ---
+
+// Using the annotations with the shipped declarations imported compiles
+// and captures their profile / test-component data. (Imports are lenient —
+// an unresolved import is ignored — so this guards that the shipped types
+// coexist with the by-short-name recognition, not import resolution.)
+TEST(ComponentRegistrationTests, aotAnnotationImportsCompileAndCapture) {
+    auto src =
+        "package test;\n"
+        "import cajeta.aot.Profile;\n"
+        "import cajeta.aot.TestComponent;\n"
+        "@Component @Profile(\"prod\") public class ImportedProd {\n"
+        "    public ImportedProd() { return; }\n"
+        "}\n"
+        "@TestComponent public class ImportedStub {\n"
+        "    public ImportedStub() { return; }\n"
+        "}\n";
+    Compiler compiler;
+    EXPECT_NO_THROW(compileForInspection(compiler, src, "test.ImportedProd"));
+    auto desc = findDescriptor("ImportedProd");
+    ASSERT_NE(desc, nullptr);
+    ASSERT_EQ(desc->profiles.size(), 1u);
+    EXPECT_EQ(desc->profiles[0], "prod");
+    auto stub = findDescriptor("ImportedStub");
+    ASSERT_NE(stub, nullptr);
+    EXPECT_TRUE(stub->isTestComponent);
+}
+
+// Bare short-name usage (no import) still compiles and captures — shipping
+// the declarations must not break the recognize-by-short-name path.
+TEST(ComponentRegistrationTests, bareShortNameAnnotationsStillCompile) {
+    auto src =
+        "package test;\n"
+        "@Component @Profile(\"prod\") public class BareProd {\n"
+        "    public BareProd() { return; }\n"
+        "}\n"
+        "@TestComponent public class BareStub {\n"
+        "    public BareStub() { return; }\n"
+        "}\n";
+    Compiler compiler;
+    EXPECT_NO_THROW(compileForInspection(compiler, src, "test.BareProd"));
+    auto desc = findDescriptor("BareProd");
+    ASSERT_NE(desc, nullptr);
+    EXPECT_EQ(desc->profiles.size(), 1u);
+    auto stub = findDescriptor("BareStub");
+    ASSERT_NE(stub, nullptr);
+    EXPECT_TRUE(stub->isTestComponent);
+}

@@ -91,19 +91,25 @@ mode, `@TestComponent`s are dropped as today.
 
 ### 3.1 Requirement
 `cajeta.aot` ships declared annotation types for the two DI annotations whose
-behavior lives in the core substrate — `@Profile` and `@TestComponent` — so user
-code has an importable, documented type (parity with `@Component`). Recognition
-stays by short-name; the declarations do not change compiler behavior, they document
-and stabilize the surface. Framework stereotypes (`@Repository`, …) are out of scope
-(§1.4) and belong to primavera.
+behavior lives in the core substrate — `@Profile` and `@TestComponent` — so the
+substrate has a real, documented type for each (parity with `@Component`), rather
+than a magic short-name with no declaration. Recognition stays by short-name; the
+declarations do not change compile behavior. Framework stereotypes (`@Repository`, …)
+are out of scope (§1.4) and belong to primavera.
+
+Note: Cajeta imports are lenient — an unresolved `import` is silently ignored, and
+annotations are recognized by short-name whether or not imported. So the value here
+is that the types **exist** (documentation, discoverability, no name collision, a
+target for future tooling/reflection), not that an import newly "resolves."
 
 ### 3.2 Use cases
-- **3.2.1 Profile.** As a developer, `import cajeta.aot.Profile;` resolves and
-  `@Profile("prod")` compiles against a real type.
-- **3.2.2 TestComponent.** `import cajeta.aot.TestComponent;` resolves and
-  `@TestComponent` compiles against a real type.
-- **3.2.3 No regression.** Existing code that used the bare short-name annotations
-  with no import continues to compile unchanged.
+- **3.2.1 Profile.** `@Profile(...)` compiles and captures its profile list whether
+  `cajeta.aot.Profile` is imported or used bare; the declared type exists in the stdlib.
+- **3.2.2 TestComponent.** `@TestComponent` compiles and sets `isTestComponent` whether
+  `cajeta.aot.TestComponent` is imported or used bare; the declared type exists.
+- **3.2.3 No regression.** Existing code using the bare short-name annotations with no
+  import continues to compile and capture unchanged; the shipped declarations introduce
+  no collision.
 
 ### 3.3 `@Profile` value cardinality
 - **3.3.1** `@Profile` accepts multiple profile names with **any-of** semantics:
@@ -122,8 +128,9 @@ and stabilize the surface. Framework stereotypes (`@Repository`, …) are out of
 1. `--profile=test` swaps a shared-interface `@TestComponent` in for the real
    `@Component` with no ambiguity; `--profile=prod` uses the real one (§2.2.1–2.2.2).
 2. Existing `@TestComponent`/`@Profile` gtests stay green (no regression) (§2.2.3).
-3. `import cajeta.aot.Profile;` and `import cajeta.aot.TestComponent;` resolve; the
-   annotations compile against declared types; bare-short-name usage still compiles (§3).
+3. `cajeta.aot.Profile` and `cajeta.aot.TestComponent` exist as declared types (clean
+   stdlib build); the annotations compile and capture with the imports present or used
+   bare (imports are lenient) (§3).
 4. `@Profile({"dev", "test"})` includes the component under both profiles (§3.3).
 5. A `.cajeta` demo (tour or sample) exercises profile selection and a test-double
    swap end to end via `--emit=exe`.
