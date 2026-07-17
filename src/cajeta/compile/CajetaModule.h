@@ -750,6 +750,12 @@ namespace cajeta {
         // active/codegen module pointers. No-ops in production.
         static void captureBaseline();
         static void restoreBaseline();
+        // lint-server sibling-context reuse (spec §4): a second baseline slot
+        // for "stdlib + sibling sweep", restored independently of the pristine
+        // stdlib baseline on a warm request. See CajetaType's matching set.
+        static void captureContextBaseline();
+        static void restoreContextBaseline();
+        static void invalidateContextBaseline();
 
         llvm::IRBuilder<>* getBuilder() const;
 

@@ -8,7 +8,12 @@
 // shared-context Compiler.
 #pragma once
 
+#include <cstdint>
+#include <functional>
+#include <map>
+#include <set>
 #include <string>
+#include <utility>
 
 namespace cajeta {
     class Compiler;
@@ -28,8 +33,32 @@ namespace cajeta::lintservice {
     // folding, diagnostics then xref stream, all on stderr. Returns the
     // process exit code (0 clean, 1 diagnostics/syntax error). The caller
     // owns flag validation (main.cpp) and Compiler construction.
+    //
+    // skipContextRegistration / afterContextRegistration forward to
+    // Compiler::lint for the warm sibling-context path (spec §4); one-shot
+    // callers leave them defaulted.
     int runLintDriver(Compiler& compiler, const std::string& file,
-                      const std::string& sourceRoot, const std::string& shadow);
+                      const std::string& sourceRoot, const std::string& shadow,
+                      bool skipContextRegistration = false,
+                      const std::function<void()>& afterContextRegistration = {});
+
+    // Warm sibling context for one project root (spec §4). Persists across
+    // requests in the server. `excluded` is the single under-root path the
+    // sweep omits (the target, or its --shadow original); `stamps` is every
+    // swept sibling's (mtime, size). A request is served warm iff the root,
+    // that exclusion, and every stamp match — otherwise the root is reswept
+    // and this is refreshed.
+    struct SiblingContext {
+        std::string root;
+        std::set<std::string> excluded;
+        std::map<std::string, std::pair<std::int64_t, std::uintmax_t>> stamps;
+        bool valid = false;
+    };
+
+    struct LintOutcome {
+        int rc = 0;
+        int siblingsReparsed = 0;   // 0 on a warm hit; the swept count on a resweep
+    };
 
     // One warm lint request: prime the stdlib once per process (front-end
     // only), restore the baseline, and run the driver on a fresh Compiler
@@ -42,6 +71,14 @@ namespace cajeta::lintservice {
     // stderr here too (fd 2). The server loop redirects fd 2 per request to
     // capture that payload; a direct caller sees it on its own stderr.
     int warmLint(const LintRequest& req);
+
+    // The server's per-request entry: like warmLint, but reuses the sibling
+    // context across requests (spec §4). On a warm hit (root + exclusion +
+    // every sibling stamp unchanged) it restores the context baseline and
+    // skips the sweep (siblingsReparsed = 0); otherwise it resweeps the root,
+    // re-captures the context baseline, and reports the swept count. `ctx` is
+    // persistent server state, updated in place.
+    LintOutcome warmLintServed(const LintRequest& req, SiblingContext& ctx);
 
     struct ServerOptions {
         std::string sourceRoot;   // --source-root: shared across requests

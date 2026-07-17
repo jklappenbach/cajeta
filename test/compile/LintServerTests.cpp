@@ -129,15 +129,24 @@ bool has(const std::string& hay, const std::string& needle) {
     return hay.find(needle) != std::string::npos;
 }
 
+// The done marker for request `id` carries a trailing stats field
+// (siblingsReparsed), so match by prefix: `{"kind":"done","id":<id>` followed
+// by ',' or '}'.
+bool isDoneFor(const std::string& line, int id) {
+    const std::string head = "{\"kind\":\"done\",\"id\":" + std::to_string(id);
+    if (line.rfind(head, 0) != 0) return false;
+    char next = line.size() > head.size() ? line[head.size()] : '\0';
+    return next == ',' || next == '}';
+}
+
 // The payload slice for request `id`: the raw bytes between the previous
 // marker line (ready, or the previous done/error) and this id's done
 // marker. Returns false if the done marker is missing.
 bool payloadSlice(const std::string& out, int id, std::string& slice) {
-    const std::string done = "{\"kind\":\"done\",\"id\":" + std::to_string(id) + "}";
     auto ls = lines(out);
     size_t end = ls.size();
     for (size_t i = 0; i < ls.size(); ++i)
-        if (ls[i] == done) { end = i; break; }
+        if (isDoneFor(ls[i], id)) { end = i; break; }
     if (end == ls.size()) return false;
     // Walk back to the previous marker (server/done/error record).
     size_t start = 0;
@@ -239,8 +248,8 @@ TEST(LintServer, TwoSequentialRequestsBracketAndEcho) {
     for (size_t i = 0; i < ls.size(); ++i)
         if (ls[i].rfind("{\"kind\":\"done\"", 0) == 0) markers.push_back(i);
     ASSERT_EQ(markers.size(), 2u) << r.out;
-    EXPECT_EQ(ls[markers[0]], "{\"kind\":\"done\",\"id\":1}");
-    EXPECT_EQ(ls[markers[1]], "{\"kind\":\"done\",\"id\":2}");
+    EXPECT_TRUE(isDoneFor(ls[markers[0]], 1)) << ls[markers[0]];
+    EXPECT_TRUE(isDoneFor(ls[markers[1]], 2)) << ls[markers[1]];
 
     std::string slice1, slice2;
     ASSERT_TRUE(payloadSlice(r.out, 1, slice1));
@@ -295,7 +304,7 @@ TEST(LintServer, ShutdownRecordExitsCleanlyAndStopsServing) {
 
     std::string slice;
     EXPECT_TRUE(payloadSlice(r.out, 1, slice));
-    EXPECT_FALSE(has(r.out, "{\"kind\":\"done\",\"id\":2}"))
+    EXPECT_FALSE(has(r.out, "{\"kind\":\"done\",\"id\":2"))
         << "a request after shutdown was processed:\n" << r.out;
 }
 

@@ -235,20 +235,58 @@ namespace cajeta {
             map<string, WildcardInfoEntry> g_wildcardInfo;
         };
         TypeGlobalsBaseline g_typeBaseline;
+        // A SECOND, independent slot for the lint-server sibling context
+        // (lint-server-spec §4): "stdlib + the sibling sweep", captured after
+        // registerLintContext so a warm request restores it instead of paying
+        // the sweep. Independent of g_typeBaseline (pristine stdlib), which the
+        // resweep path still needs. valid guards the never-captured case.
+        TypeGlobalsBaseline g_typeContextBaseline;
+
+        void captureTypeBaselineInto(TypeGlobalsBaseline& b,
+                                     const map<string, CajetaTypePtr>& canonicalMap,
+                                     const map<string, map<string, int32_t>>& enumConstants,
+                                     const map<TypeKey, CajetaTypePtr>& typeMap,
+                                     const map<llvm::Type::TypeID, CajetaTypePtr>& llvmTypeIdMap) {
+            b.canonicalMap = canonicalMap;
+            b.enumConstants = enumConstants;
+            b.typeMap = typeMap;
+            b.llvmTypeIdMap = llvmTypeIdMap;
+            b.g_archive = g_archive;
+            b.g_enumArchive = g_enumArchive;
+            b.g_valueTypeArchive = g_valueTypeArchive;
+            b.g_interfaceArchive = g_interfaceArchive;
+            b.g_archiveTemplateMeta = g_archiveTemplateMeta;
+            b.g_wildcardInfo = g_wildcardInfo;
+            b.valid = true;
+        }
     }
 
     void CajetaType::captureBaseline() {
-        g_typeBaseline.canonicalMap = canonicalMap;
-        g_typeBaseline.enumConstants = enumConstants;
-        g_typeBaseline.typeMap = typeMap;
-        g_typeBaseline.llvmTypeIdMap = llvmTypeIdMap;
-        g_typeBaseline.g_archive = g_archive;
-        g_typeBaseline.g_enumArchive = g_enumArchive;
-        g_typeBaseline.g_valueTypeArchive = g_valueTypeArchive;
-        g_typeBaseline.g_interfaceArchive = g_interfaceArchive;
-        g_typeBaseline.g_archiveTemplateMeta = g_archiveTemplateMeta;
-        g_typeBaseline.g_wildcardInfo = g_wildcardInfo;
-        g_typeBaseline.valid = true;
+        captureTypeBaselineInto(g_typeBaseline, canonicalMap, enumConstants,
+                                typeMap, llvmTypeIdMap);
+    }
+
+    void CajetaType::captureContextBaseline() {
+        captureTypeBaselineInto(g_typeContextBaseline, canonicalMap, enumConstants,
+                                typeMap, llvmTypeIdMap);
+    }
+
+    void CajetaType::restoreContextBaseline() {
+        if (!g_typeContextBaseline.valid) return;
+        canonicalMap = g_typeContextBaseline.canonicalMap;
+        enumConstants = g_typeContextBaseline.enumConstants;
+        typeMap = g_typeContextBaseline.typeMap;
+        llvmTypeIdMap = g_typeContextBaseline.llvmTypeIdMap;
+        g_archive = g_typeContextBaseline.g_archive;
+        g_enumArchive = g_typeContextBaseline.g_enumArchive;
+        g_valueTypeArchive = g_typeContextBaseline.g_valueTypeArchive;
+        g_interfaceArchive = g_typeContextBaseline.g_interfaceArchive;
+        g_archiveTemplateMeta = g_typeContextBaseline.g_archiveTemplateMeta;
+        g_wildcardInfo = g_typeContextBaseline.g_wildcardInfo;
+    }
+
+    void CajetaType::invalidateContextBaseline() {
+        g_typeContextBaseline = TypeGlobalsBaseline{};
     }
 
     void CajetaType::releaseThrownTransientStructNames() {

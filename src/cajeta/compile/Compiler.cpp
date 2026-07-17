@@ -1208,6 +1208,27 @@ namespace cajeta {
         g_stdlibParsedPackages = g_stdlibEagerBaseline;
     }
 
+    // lint-server sibling-context reuse (spec §4): the sibling sweep may parse
+    // a lazy stdlib package (a `cajeta.math` importer), mutating the four lazy
+    // registries above. The context baseline must snapshot them post-sweep so a
+    // warm restore reinstates "already parsed" exactly, rather than resetLazy's
+    // roll-back-to-eager-floor. Opaque handle so callers don't touch the sets.
+    Compiler::LazyStdlibState Compiler::captureLazyStdlibState() {
+        LazyStdlibState s;
+        s.parsedPackages = g_stdlibParsedPackages;
+        s.prescanned = g_lazyPrescanned;
+        s.parsed = g_lazyParsed;
+        s.queue = g_lazyQueue;
+        return s;
+    }
+
+    void Compiler::restoreLazyStdlibState(const LazyStdlibState& s) {
+        g_stdlibParsedPackages = s.parsedPackages;
+        g_lazyPrescanned = s.prescanned;
+        g_lazyParsed = s.parsed;
+        g_lazyQueue = s.queue;
+    }
+
     void Compiler::compile(CajetaModulePtr module) {
         ensureStdlibModule();
         modules.push_back(module);
@@ -1226,7 +1247,8 @@ namespace cajeta {
     }
 
     void Compiler::lint(const string& file, const string& sourceRoot,
-                        const string& shadow) {
+                        const string& shadow, bool skipContextRegistration,
+                        const std::function<void()>& afterContextRegistration) {
         // Single-file diagnostics: reuse the compile pipeline's parse +
         // semantic/validation/DI passes, then STOP before the Phase-1/2 codegen
         // loop and any emit (compiler-lint-mode-spec §3). With --source-root,
@@ -1255,8 +1277,12 @@ namespace cajeta {
             ? targetPath.parent_path().string() : ".";
         if (dir.empty() || dir.back() != '/') dir.append("/");
 
-        if (!sourceRoot.empty()) {
+        if (!sourceRoot.empty() && !skipContextRegistration) {
             registerLintContext(sourceRoot, file, shadow, json);
+            // lint-server §4: with the sibling sweep just done and the target
+            // not yet parsed, this is the point to snapshot the sibling context
+            // baseline (warm-lint resweep path) — it excludes the target.
+            if (afterContextRegistration) afterContextRegistration();
         }
 
         // Prescan the target file so its own (possibly forward) declarations

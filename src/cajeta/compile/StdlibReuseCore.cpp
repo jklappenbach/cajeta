@@ -95,4 +95,39 @@ namespace cajeta {
         }
     }
 
+    void StdlibReuseCore::captureContextBaseline() {
+        if (!isPrimed) return;
+        CajetaType::captureContextBaseline();
+        CajetaModule::captureContextBaseline();
+        // The stdlib module gains classes only when a swept sibling pulled a
+        // lazy package (cajeta.math) into it; snapshot the post-sweep set so a
+        // warm restore reinstates them (the pristine baselineStructures does
+        // not). Siblings themselves are EXTERNAL modules — their classes live
+        // in the canonical/structure maps captured above, not here.
+        contextStructures = stdlibModule->getStructures();
+        contextLazyState = Compiler::captureLazyStdlibState();
+        hasContextBaseline = true;
+    }
+
+    void StdlibReuseCore::restoreContextBaseline() {
+        if (!hasContextBaseline) return;
+        // Lint never codegens, so there are no per-template method
+        // instantiations or per-class llvm bindings to unwind (unlike
+        // restoreBaseline) — this is a pure reinstatement of the captured
+        // registries. Reassigning the maps drops the previous request's target
+        // (its entries were never in the snapshot).
+        CajetaType::restoreContextBaseline();
+        CajetaModule::restoreContextBaseline();
+        stdlibModule->getStructures() = contextStructures;
+        Compiler::restoreLazyStdlibState(contextLazyState);
+    }
+
+    void StdlibReuseCore::invalidateContextBaseline() {
+        hasContextBaseline = false;
+        contextStructures.clear();
+        contextLazyState = Compiler::LazyStdlibState{};
+        CajetaType::invalidateContextBaseline();
+        CajetaModule::invalidateContextBaseline();
+    }
+
 } // namespace cajeta

@@ -480,6 +480,15 @@ class CajetaType : public Modifiable, public Annotatable,
         // reuse path (production never calls them).
         static void captureBaseline();
         static void restoreBaseline();
+        // lint-server sibling-context reuse (spec §4): a SECOND baseline slot
+        // holding "stdlib + the sibling sweep", captured after
+        // registerLintContext and restored (independently of the pristine
+        // stdlib baseline) on a warm request so it skips the sweep.
+        // invalidate clears it so the next request resweeps. No-ops until a
+        // context is captured (production one-shot never captures one).
+        static void captureContextBaseline();
+        static void restoreContextBaseline();
+        static void invalidateContextBaseline();
         // Test stdlib-reuse support: free the shared-context LLVM struct NAMES of
         // the transient user types a THROWING compile left behind (a test whose
         // compile threw never reached its normal end-of-compile struct-name

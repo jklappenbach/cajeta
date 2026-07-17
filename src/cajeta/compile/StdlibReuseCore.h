@@ -22,10 +22,9 @@
 #include <llvm/IR/LLVMContext.h>
 
 #include "cajeta/compile/CajetaModule.h"
+#include "cajeta/compile/Compiler.h"
 
 namespace cajeta {
-
-    class Compiler;
 
     class StdlibReuseCore {
     public:
@@ -59,6 +58,21 @@ namespace cajeta {
         // lint path already calls per run).
         void restoreBaseline();
 
+        // lint-server sibling-context reuse (spec §4). captureContextBaseline
+        // snapshots "stdlib + the sibling sweep" (type + module registries,
+        // the stdlib module's structures incl. any lazy package a sibling
+        // pulled in, and the lazy bookkeeping) into a SECOND slot, independent
+        // of the pristine stdlib baseline. restoreContextBaseline reinstates it
+        // on a warm request — skipping the sweep — and drops the previous
+        // request's target (its entries aren't in the snapshot). invalidate
+        // forces the next request to resweep. Call capture right after
+        // registerLintContext and before the target is parsed, so the snapshot
+        // excludes the target.
+        void captureContextBaseline();
+        void restoreContextBaseline();
+        void invalidateContextBaseline();
+        bool contextBaselineValid() const { return hasContextBaseline; }
+
         llvm::LLVMContext* context() { return &sharedContext; }
         Compiler* primeCompiler() { return prime.get(); }
         CajetaModulePtr getStdlibModule() { return stdlibModule; }
@@ -75,6 +89,13 @@ namespace cajeta {
         std::map<std::string, CajetaClassPtr> baselineStructures;
         bool isPrimed = false;
         bool isCodegenLayered = false;
+
+        // Sibling-context slot (spec §4): the stdlib module structures + lazy
+        // state at capture time; the type/module registries live in their own
+        // second slots (CajetaType/CajetaModule::*ContextBaseline).
+        std::map<std::string, CajetaClassPtr> contextStructures;
+        Compiler::LazyStdlibState contextLazyState;
+        bool hasContextBaseline = false;
     };
 
 } // namespace cajeta

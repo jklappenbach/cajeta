@@ -42,7 +42,9 @@
 namespace cajeta::lintservice {
 
     int runLintDriver(Compiler& compiler, const std::string& file,
-                      const std::string& sourceRoot, const std::string& shadow) {
+                      const std::string& sourceRoot, const std::string& shadow,
+                      bool skipContextRegistration,
+                      const std::function<void()>& afterContextRegistration) {
         const bool jsonDiag =
             compiler.getFlags().diagFormat == DiagFormat::Json;
         // Collect-and-continue: recoverable semantic errors report to the
@@ -52,7 +54,8 @@ namespace cajeta::lintservice {
         DiagnosticEngine engine;
         DiagnosticEngine::setActive(&engine);
         try {
-            compiler.lint(file, sourceRoot, shadow);
+            compiler.lint(file, sourceRoot, shadow, skipContextRegistration,
+                          afterContextRegistration);
         } catch (SyntaxErrorException&) {
             DiagnosticEngine::setActive(nullptr);
             // The buffer did not parse, so nothing was captured for it — the
@@ -107,6 +110,119 @@ namespace cajeta::lintservice {
         // double-set / mis-layout it. Stdlib-resident names are preserved.
         CajetaType::releaseThrownTransientStructNames();
         return rc;
+    }
+
+    // ---- sibling-context reuse (spec §4) -----------------------------------
+
+    namespace {
+
+        std::string canonical(const std::string& p) {
+            std::error_code ec;
+            auto c = std::filesystem::weakly_canonical(p, ec);
+            return ec ? p : c.string();
+        }
+
+        // The single under-root path the sweep omits: the --shadow original if
+        // set, else the target file itself (registerLintContext's exclusion).
+        std::set<std::string> exclusionSet(const LintRequest& req) {
+            std::set<std::string> s;
+            s.insert(canonical(req.shadow.empty() ? req.file : req.shadow));
+            return s;
+        }
+
+        // Every .cajeta file under `root` except `excluded`, stamped by
+        // (mtime, size) — the exact set registerLintContext would sweep. mtime
+        // and size together are the invalidation key (spec §4.2).
+        std::map<std::string, std::pair<std::int64_t, std::uintmax_t>>
+        scanRootStamps(const std::string& root,
+                       const std::set<std::string>& excluded) {
+            namespace fs = std::filesystem;
+            std::map<std::string, std::pair<std::int64_t, std::uintmax_t>> out;
+            std::error_code ec;
+            for (fs::recursive_directory_iterator it(root, ec), end;
+                     it != end; it.increment(ec)) {
+                if (ec) break;
+                if (!it->is_regular_file()) continue;
+                if (it->path().extension() != ".cajeta") continue;
+                std::string canon = canonical(it->path().string());
+                if (excluded.count(canon)) continue;
+                std::error_code sec, mec;
+                std::uintmax_t size = fs::file_size(it->path(), sec);
+                auto mtime = fs::last_write_time(it->path(), mec);
+                if (sec || mec) continue;   // vanished mid-scan; skip
+                out[canon] = { mtime.time_since_epoch().count(), size };
+            }
+            return out;
+        }
+
+    } // namespace
+
+    LintOutcome warmLintServed(const LintRequest& req, SiblingContext& ctx) {
+        LintOutcome out;
+        struct SharedContextGuard {
+            ~SharedContextGuard() { Compiler::setSharedContext(nullptr); }
+        } guard;
+
+        auto& core = StdlibReuseCore::instance();
+        core.ensurePrimed();
+
+        auto runTarget = [&](bool warm) {
+            Compiler compiler;
+            compiler.getMutableFlags().diagFormat =
+                req.jsonDiagnostics ? DiagFormat::Json : DiagFormat::Text;
+            compiler.getMutableFlags().emitXref = req.emitXref ? "-" : "";
+            std::function<void()> afterContext;
+            if (!warm) {
+                // Resweep: snapshot the context baseline right after the sweep
+                // (before the target parses), so future warm requests skip it.
+                afterContext = [&]() { core.captureContextBaseline(); };
+            }
+            out.rc = runLintDriver(compiler, req.file, req.sourceRoot, req.shadow,
+                                   /*skipContextRegistration=*/warm, afterContext);
+            CajetaType::releaseThrownTransientStructNames();
+        };
+
+        // No source root: no siblings, so no context to keep — behave exactly
+        // like the plain warm lint (restore pristine, lint the target).
+        if (req.sourceRoot.empty()) {
+            core.restoreBaseline();
+            Compiler::setSharedContext(core.context());
+            runTarget(/*warm=*/false);
+            out.siblingsReparsed = 0;
+            core.invalidateContextBaseline();   // a rootless request voids any prior context
+            ctx.valid = false;
+            return out;
+        }
+
+        auto excluded = exclusionSet(req);
+        auto stamps = scanRootStamps(req.sourceRoot, excluded);
+
+        const bool hot = core.contextBaselineValid() && ctx.valid
+            && ctx.root == req.sourceRoot && ctx.excluded == excluded
+            && ctx.stamps == stamps;
+
+        if (hot) {
+            core.restoreContextBaseline();
+            Compiler::setSharedContext(core.context());
+            runTarget(/*warm=*/true);
+            out.siblingsReparsed = 0;
+        } else {
+            core.restoreBaseline();
+            Compiler::setSharedContext(core.context());
+            runTarget(/*warm=*/false);
+            out.siblingsReparsed = static_cast<int>(stamps.size());
+            // Only trust the context for future warm hits if the capture
+            // actually happened (the sweep can throw before the callback).
+            if (core.contextBaselineValid()) {
+                ctx.root = req.sourceRoot;
+                ctx.excluded = std::move(excluded);
+                ctx.stamps = std::move(stamps);
+                ctx.valid = true;
+            } else {
+                ctx.valid = false;
+            }
+        }
+        return out;
     }
 
     // ---- the server loop (spec §2) -----------------------------------------
@@ -189,6 +305,7 @@ namespace cajeta::lintservice {
         std::cout << "{\"kind\":\"server\",\"proto\":{\"major\":1,\"minor\":0},"
                      "\"state\":\"ready\"}\n" << std::flush;
 
+        SiblingContext ctx;   // persists across requests (spec §4)
         std::string line;
         while (std::getline(std::cin, line)) {
             if (line.empty()) continue;   // tolerate blank separator lines
@@ -243,10 +360,16 @@ namespace cajeta::lintservice {
             req.emitXref = obj->getBoolean("emitXref").value_or(false);
 
             // The captured stderr IS the payload; markers bracket it on stdout.
-            std::string payload = captureStderr([&]() { warmLint(req); });
+            // The sibling context (siblings kept warm across requests) is
+            // reused / refreshed here — siblingsReparsed reports the sweep it
+            // took (0 warm; the full count on a resweep).
+            LintOutcome outcome;
+            std::string payload = captureStderr(
+                [&]() { outcome = warmLintServed(req, ctx); });
             std::cout << payload;
-            std::cout << "{\"kind\":\"done\",\"id\":" << (id ? *id : 0) << "}\n"
-                      << std::flush;
+            std::cout << "{\"kind\":\"done\",\"id\":" << (id ? *id : 0)
+                      << ",\"siblingsReparsed\":" << outcome.siblingsReparsed
+                      << "}\n" << std::flush;
         }
         return 0;   // stdin EOF
     }
