@@ -1,0 +1,83 @@
+//
+// transform-intrinsics Unit 3 — the reverse-mode autodiff LOGIC (spec §5), tested
+// as pure C++ over a hand-built forward DAG, decoupled from the AST walk and the
+// synthesis plumbing. `reverseModeGrad` composes VjpRegistry rules in reverse into
+// a grad SOURCE expression; `emitBackwardSource` assembles the Tier-A helper class.
+//
+#include <gtest/gtest.h>
+#include <string>
+#include <vector>
+
+#include "cajeta/transform/GradBackward.h"
+
+using cajeta::transform::AdNode;
+using cajeta::transform::reverseModeGrad;
+using cajeta::transform::emitBackwardSource;
+
+namespace {
+// x is node 0 (input param); x*x is node 1 (output).
+std::vector<AdNode> squareDag() {
+    return {
+        AdNode{"x", true, "", {}},
+        AdNode{"x * x", false, "mul", {0, 0}},
+    };
+}
+} // namespace
+
+// d/dx (x*x) = g*x + g*x with g seeded to 1.0f (x used twice → both accumulate).
+TEST(GradBackward, squareGradAccumulatesReusedInput) {
+    std::string missing;
+    std::string grad = reverseModeGrad(squareDag(), 0, &missing);
+    EXPECT_TRUE(missing.empty());
+    EXPECT_EQ(grad, "(1.0f) * x + (1.0f) * x");
+}
+
+// d/dx (x + x) = g + g (add rule is identity cotangents).
+TEST(GradBackward, addGradIsIdentityTwice) {
+    std::vector<AdNode> dag = {
+        AdNode{"x", true, "", {}},
+        AdNode{"x + x", false, "add", {0, 0}},
+    };
+    std::string missing;
+    EXPECT_EQ(reverseModeGrad(dag, 0, &missing), "(1.0f) + (1.0f)");
+    EXPECT_TRUE(missing.empty());
+}
+
+// d/dx (-x) = -(g).
+TEST(GradBackward, negateGrad) {
+    std::vector<AdNode> dag = {
+        AdNode{"x", true, "", {}},
+        AdNode{"-(x)", false, "negate", {0}},
+    };
+    std::string missing;
+    EXPECT_EQ(reverseModeGrad(dag, 0, &missing), "-((1.0f))");
+    EXPECT_TRUE(missing.empty());
+}
+
+// A primitive with no registered VJP rule → the composer reports it by name
+// (the §5.3 missing-rule signal), grad expr empty.
+TEST(GradBackward, missingRuleReportedByName) {
+    std::vector<AdNode> dag = {
+        AdNode{"x", true, "", {}},
+        AdNode{"sin(x)", false, "sin", {0}},
+    };
+    std::string missing;
+    EXPECT_EQ(reverseModeGrad(dag, 0, &missing), "");
+    EXPECT_EQ(missing, "sin");
+}
+
+// The assembled Tier-A backward source: a helper class with a static `make()`
+// returning the backward as a lambda producing `stack GradResult<V,G>(value, grads)`.
+TEST(GradBackward, emitsTierASourceMakeReturningLambda) {
+    std::string src = emitBackwardSource(
+        "__GradBwd_1", "x", "float32", "float32", "float32",
+        "x * x", "(1.0f) * x + (1.0f) * x");
+    EXPECT_NE(src.find("import cajeta.nucleo.transform.GradResult;"), std::string::npos);
+    EXPECT_NE(src.find("class __GradBwd_1"), std::string::npos);
+    EXPECT_NE(src.find(
+        "static (float32) -> GradResult<float32,float32> make()"), std::string::npos);
+    EXPECT_NE(src.find(
+        "return (float32 x) -> stack GradResult<float32,float32>"
+        "(x * x, (1.0f) * x + (1.0f) * x);"),
+        std::string::npos);
+}

@@ -38,6 +38,26 @@ TEST(GradResultRecord, stackCtorReturnByValue) {
         "}\n"), 15.0f);
 }
 
+// The make()-returns-lambda shape the U3 synthesizer emits: a static returns the
+// backward as a lambda constructing GradResult by value; the caller stores the
+// function value and invokes it. This is the hand-written mirror of the generated
+// source — validating the return strategy before the parse-extract plumbing.
+TEST(GradResultRecord, makeReturnsLambdaConstructingGradResult) {
+    EXPECT_FLOAT_EQ(runF32(
+        "package test;\n"
+        "import cajeta.nucleo.transform.GradResult;\n"
+        "public final class G {\n"
+        "    static (float32) -> GradResult<float32,float32> make() {\n"
+        "        return (float32 x) -> stack GradResult<float32,float32>(x * x, 2.0f * x);\n"
+        "    }\n"
+        "    public static float32 run() {\n"
+        "        (float32) -> GradResult<float32,float32> g = make();\n"
+        "        GradResult<float32,float32> r = g(3.0f);\n"
+        "        return r.value + r.grads;\n"
+        "    }\n"
+        "}\n"), 15.0f);
+}
+
 // Heap construction of the same generic record (the RecPair-tested path).
 TEST(GradResultRecord, heapCtorReadFields) {
     EXPECT_FLOAT_EQ(runF32(
