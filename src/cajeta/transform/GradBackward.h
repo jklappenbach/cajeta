@@ -11,10 +11,12 @@
 //
 #pragma once
 
+#include <map>
 #include <string>
 #include <vector>
 
 namespace cajeta {
+    class Expression;
     namespace transform {
 
         // A node in f's forward computation DAG. Nodes are in topological order;
@@ -28,6 +30,16 @@ namespace cajeta {
             std::string primitive;          // "" for a leaf
             std::vector<size_t> operands;   // child node indices (primitive only)
         };
+
+        // Build f's forward DAG from the lambda body expression (nodes in
+        // topological order, back() = output). Input-param leaves are deduped so a
+        // reused input accumulates its cotangents. v1 supports `+ - *` and unary `-`
+        // over the parameters; any other construct returns false and sets *err.
+        bool buildDag(Expression* body,
+                      const std::vector<std::string>& paramNames,
+                      std::vector<AdNode>& outNodes,
+                      std::map<std::string, size_t>& outParamNodeIndex,
+                      std::string* err);
 
         // Reverse-mode over `nodes` (back() = output): seed the output cotangent to
         // 1.0f and compose VjpRegistry rules in reverse, returning the grad SOURCE

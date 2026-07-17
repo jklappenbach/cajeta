@@ -62,11 +62,8 @@ TEST(TransformIntrinsics, JitRecognizedIdentity) {
     EXPECT_EQ(runI32("(int32) -> int32 g = Jit((int32 x) -> x * x + 1); return g(3);"), 10);
 }
 
-// 1.1.1 — Grad is recognized (intercepted before ordinary resolution).
-// U1 placeholder is identity; SUPERSEDED by U3 (Grad -> GradResult<V,G>).
-TEST(TransformIntrinsics, GradRecognized_U1Placeholder) {
-    EXPECT_EQ(runI32("(int32) -> int32 g = Grad((int32 x) -> x * 2); return g(21);"), 42);
-}
+// 1.1.1 — Grad's real behavior (returns GradResult) is covered end-to-end in
+// test/transform/GradEndToEndTests.cpp (U3). Recognition is proven there.
 
 // 1.1.1 — Vmap is recognized. U1 placeholder is identity; SUPERSEDED by U5.
 TEST(TransformIntrinsics, VmapRecognized_U1Placeholder) {

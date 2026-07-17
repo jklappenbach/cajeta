@@ -36,6 +36,12 @@ namespace cajeta {
                                                         g + " * " + o[0]};
                     }});
 
+                // c = a - b  ->  a_bar += g, b_bar += -g
+                r.add({"sub", 2,
+                    [](const std::string& g, const std::vector<std::string>&) {
+                        return std::vector<std::string>{g, "-(" + g + ")"};
+                    }});
+
                 // c = -a  ->  a_bar += -g
                 r.add({"negate", 1,
                     [](const std::string& g, const std::vector<std::string>&) {

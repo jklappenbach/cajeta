@@ -20,6 +20,12 @@
 #include "cajeta/type/CajetaView.h"
 #include "cajeta/type/CajetaFunctionType.h"
 #include "cajeta/method/Method.h"
+#include "cajeta/transform/GradBackward.h"
+#include "cajeta/synth/SourceSynthesisParse.h"
+#include "cajeta/synth/SourceSynthesis.h"
+#include "cajeta/compile/CajetaLlvmVisitor.h"
+#include "cajeta/asn/ClassBodyDeclaration.h"
+#include "cajeta/type/QualifiedName.h"
 #include "cajeta/method/FactoryProviderMethod.h"
 #include "cajeta/error/Diagnostics.h"
 #include "cajeta/error/Exception.h"
@@ -481,6 +487,133 @@ namespace cajeta {
         return droppableTempClass(ne->getResolvedType());
     }
 
+    // transform-intrinsics U3 — synthesize Grad(f)'s Tier-A backward and return it
+    // as a callable value. Walk f's lambda body into a forward DAG, reverse-compose
+    // the VJP rules into a grad source expression, emit a helper class whose static
+    // make() returns the backward as a lambda, parse-extract + codegen make, and
+    // emit a call to it (make() yields the {fn,null,null} closure record). The
+    // returned function's type (P)->GradResult<V,G> is make()'s return type.
+    static llvm::Value* emitGradBackward(MethodCallExpression* self,
+                                         const std::shared_ptr<LambdaExpression>& lam,
+                                         const std::shared_ptr<CajetaFunctionType>& fnType,
+                                         CajetaModulePtr module,
+                                         CajetaTypePtr& outResolvedType) {
+        auto locErr = [&](const std::string& msg, const char* id) {
+            return Exception(msg, id, "", self->getSourceLine(), self->getSourceColumn());
+        };
+
+        const auto& pnames = lam->getParamNames();
+        const auto& ptypes = lam->getParamTypes();
+        if (pnames.size() != 1 || ptypes.size() != 1) {
+            throw locErr("transform intrinsic 'Grad' v1 differentiates a "
+                         "single-parameter function", "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        }
+
+        // Resolve the lambda + its body so AST sub-nodes carry ops/types.
+        lam->setExpectedType(fnType);
+        lam->resolveTypes(module);
+        auto bodyExpr = std::dynamic_pointer_cast<Expression>(lam->getBody());
+        if (!bodyExpr) {
+            throw locErr("transform intrinsic 'Grad' v1 requires an expression-body "
+                         "lambda", "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        }
+
+        // Reverse-mode over the body DAG -> grad source expression.
+        std::vector<cajeta::transform::AdNode> nodes;
+        std::map<std::string, size_t> pidx;
+        std::string err;
+        if (!cajeta::transform::buildDag(bodyExpr.get(), pnames, nodes, pidx, &err)) {
+            throw locErr(err, "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        }
+        std::string missing;
+        std::string gradExpr =
+            cajeta::transform::reverseModeGrad(nodes, pidx[pnames[0]], &missing);
+        if (!missing.empty()) {
+            throw locErr("transform intrinsic 'Grad': no VJP rule for primitive '"
+                         + missing + "'", "CAJETA_ERROR_TRANSFORM_NO_VJP_RULE");
+        }
+
+        std::string paramTy = ptypes[0]->toCanonical();
+        std::string valueTy = fnType->getReturnType()->toCanonical();
+        std::string outputVal = nodes.back().valueExpr;
+
+        // Synthesize the backward helper class (Tier-A source).
+        std::string className = "__GradBwd_" + cajeta::synth::deriveSynthName(
+            "grad", fnType->toCanonical(), {outputVal, gradExpr});
+        std::string pkg = module->getQName()->getPackageName();
+        std::string source = (pkg.empty() ? std::string() : ("package " + pkg + ";\n"))
+            + cajeta::transform::emitBackwardSource(className, pnames[0], paramTy,
+                                                    valueTy, paramTy, outputVal, gradExpr);
+
+        // Parse-extract the `make` method (mirrors MethodTemplateInstantiator).
+        auto* compUnit = cajeta::synth::parseSynthesizedUnit(source);
+        CajetaParser::ClassDeclarationContext* classDecl = nullptr;
+        for (auto* td : compUnit->typeDeclaration()) {
+            if (auto* cd = td->classDeclaration()) { classDecl = cd; break; }
+        }
+        if (!classDecl) {
+            throw locErr("transform intrinsic 'Grad': synthesized backward did not "
+                         "parse", "CAJETA_ERROR_TRANSFORM_SYNTH_FAILED");
+        }
+
+        auto prevActive = CajetaModule::getActiveModule();
+        CajetaModule::setActiveModule(module);
+        auto wrapperQName = QualifiedName::getOrInsert(
+            className, module->getQName()->getPackageName());
+        auto wrapperClass = std::make_shared<CajetaClass>(
+            module, wrapperQName, std::list<QualifiedNamePtr>{});
+        auto& stack = module->getStructureStack();
+        std::list<CajetaClassPtr> savedStack;
+        savedStack.swap(stack);
+        stack.push_back(wrapperClass);
+
+        CajetaLlvmVisitor visitor(module);
+        auto bodyAny = visitor.visitClassBody(classDecl->classBody());
+        auto classBody = std::any_cast<ClassBodyDeclarationPtr>(bodyAny);
+
+        MethodPtr makeMethod;
+        for (auto& decl : classBody->getDeclarations()) {
+            if (auto md = std::dynamic_pointer_cast<MethodDeclaration>(decl)) {
+                if (md->getMethod() && md->getMethod()->getName() == "make") {
+                    makeMethod = md->getMethod();
+                    break;
+                }
+            }
+        }
+
+        if (!makeMethod) {
+            stack.clear(); stack.swap(savedStack);
+            CajetaModule::setActiveModule(prevActive);
+            throw locErr("transform intrinsic 'Grad': synthesized backward produced "
+                         "no make()", "CAJETA_ERROR_TRANSFORM_SYNTH_FAILED");
+        }
+
+        // Emit make's prototype then body (its inner lambda + GradResult ctor emit
+        // here). Prototype first — the synthesized-method pattern (CajetaClass.cpp
+        // factory/builder). Save the caller's insertion point — generateCode moves
+        // the builder into make.
+        auto savedIP = module->getBuilder()->saveIP();
+        makeMethod->generatePrototype();
+        makeMethod->generateCode();
+        module->getBuilder()->restoreIP(savedIP);
+
+        llvm::Function* makeFn = makeMethod->getLlvmFunction();
+
+        stack.clear(); stack.swap(savedStack);
+        CajetaModule::setActiveModule(prevActive);
+
+        if (!makeFn) {
+            throw locErr("transform intrinsic 'Grad': synthesized backward failed to "
+                         "emit", "CAJETA_ERROR_TRANSFORM_SYNTH_FAILED");
+        }
+
+        // Grad(f) == make(): the returned closure record value.
+        llvm::Value* result = module->getBuilder()->CreateCall(
+            makeMethod->getLlvmFunctionType(), makeFn, {});
+        outResolvedType = makeMethod->getReturnType();
+        return result;
+    }
+
     llvm::Value* MethodCallExpression::generateCode(CajetaModulePtr module) {
         auto* builder = module->getBuilder();
         llvm::LLVMContext& llvmCtx = *module->getLlvmContext();
@@ -572,6 +705,22 @@ namespace cajeta {
                         + "' requires a function argument",
                         "CAJETA_ERROR_TRANSFORM_NOT_FUNCTION",
                         "", getSourceLine(), getSourceColumn());
+                }
+                // Grad (U3): differentiate f's lambda body via Tier-A synthesis.
+                if (methodCallName == "Grad") {
+                    auto lam = std::dynamic_pointer_cast<LambdaExpression>(
+                        parameters[0].expression);
+                    if (!lam) {
+                        throw Exception(
+                            "transform intrinsic 'Grad' requires a lambda literal "
+                            "whose body can be differentiated",
+                            "CAJETA_ERROR_TRANSFORM_NOT_SPECIALIZABLE",
+                            "", getSourceLine(), getSourceColumn());
+                    }
+                    CajetaTypePtr gradType;
+                    llvm::Value* g = emitGradBackward(this, lam, fnType, module, gradType);
+                    resolvedType = gradType;
+                    return g;
                 }
                 llvm::Value* raw = argExpr->generateCode(module);
                 llvm::Value* fnVal = loadIfLValue(module, raw, argExpr);
