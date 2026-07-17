@@ -6,11 +6,11 @@
 
 #include <gtest/gtest.h>
 
+#include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <random>
-#include <regex>
 #include <sstream>
 #include <string>
 
@@ -23,6 +23,26 @@ namespace {
 #else
 #  define CAJETA_ST_DEVNULL "/dev/null"
 #endif
+
+// Line number out of a trace frame: given `prefix` = "test.App.run(App.cajeta:",
+// find `<prefix><digits>)` in `text` and return the digits. -1 if there is no
+// such frame, 0 is never returned for a well-formed one — so `> 0` asserts both
+// "the frame is present" and "its line number is real", which is what the tests
+// want to say.
+//
+// Hand-rolled rather than std::regex, and NOT a style preference: <regex> in this
+// TU emitted libstdc++'s _AnyMatcher vague-linkage statics, which collided at
+// link time with the copies inside liblldCommon.a and broke the mingw release
+// target (`multiple definition of ...::__nul`). See the commit message — the
+// underlying toolchain mixing on the Windows runner is a separate, unfixed bug.
+int frameLine(const std::string& text, const std::string& prefix) {
+    auto at = text.find(prefix);
+    if (at == std::string::npos) return -1;
+    size_t p = at + prefix.size(), q = p;
+    while (q < text.size() && std::isdigit(static_cast<unsigned char>(text[q]))) ++q;
+    if (q == p || q >= text.size() || text[q] != ')') return -1;
+    return std::stoi(text.substr(p, q - p));
+}
 
 std::string compilerBinary() {
     const char* envRoot = std::getenv("CAJETA_SOURCE_ROOT");
@@ -102,11 +122,8 @@ TEST(StackTraceText, uncaughtPrintsSemanticFrame) {
 
     EXPECT_NE(rc, 0) << "an uncaught throw must fail the run";
     // e.g. "  at test.App.run(App.cajeta:5)"
-    std::regex frame(R"(test\.App\.run\(App\.cajeta:(\d+)\))");
-    std::smatch m;
-    ASSERT_TRUE(std::regex_search(err, m, frame))
-        << "expected a semantic frame in the trace; stderr:\n" << err;
-    EXPECT_GT(std::stoi(m[1].str()), 0) << "line number must be positive";
+    EXPECT_GT(frameLine(err, "test.App.run(App.cajeta:"), 0)
+        << "expected a semantic frame with a positive line number; stderr:\n" << err;
 }
 
 // ExceptionReview 5.7 — printStackTrace() prints the throwable's own message
@@ -130,8 +147,7 @@ TEST(StackTraceText, printStackTracePrintsMessageThenFrames) {
     EXPECT_EQ(rc, 0) << "the throw is caught; the run must succeed. stderr:\n" << err;
     EXPECT_NE(err.find("outer failure"), std::string::npos)
         << "message line missing; stderr:\n" << err;
-    std::regex frame(R"(test\.App\.deep\(App\.cajeta:(\d+)\))");
-    EXPECT_TRUE(std::regex_search(err, frame))
+    EXPECT_GT(frameLine(err, "test.App.deep(App.cajeta:"), 0)
         << "expected a semantic frame for the throw site; stderr:\n" << err;
     // Message precedes frames.
     EXPECT_LT(err.find("outer failure"), err.find("at test.App.deep"))
@@ -167,8 +183,7 @@ TEST(StackTraceText, printStackTracePrintsCauseChain) {
         << "cause chain not printed; stderr:\n" << err;
     // The top throwable was thrown, so it carries semantic frames. The cause was
     // constructed but never thrown -> no frames, per throw-site capture (3.1).
-    std::regex frame(R"(test\.App\.deep\(App\.cajeta:(\d+)\))");
-    EXPECT_TRUE(std::regex_search(err, frame))
+    EXPECT_GT(frameLine(err, "test.App.deep(App.cajeta:"), 0)
         << "expected a semantic frame for the throw site; stderr:\n" << err;
     // Ordering: the cause link must follow the top throwable's message.
     EXPECT_LT(err.find("outer failure"), err.find("Caused by: root cause"))
