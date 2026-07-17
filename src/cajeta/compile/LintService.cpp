@@ -2,7 +2,18 @@
 
 #include "cajeta/compile/LintService.h"
 
+#include <cstdint>
+#include <cstdio>
 #include <exception>
+#include <filesystem>
+#include <fstream>
+#include <functional>
+#include <iostream>
+#include <optional>
+#include <sstream>
+#include <string>
+
+#include <llvm/Support/JSON.h>
 
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CompilerMode.h"
@@ -10,6 +21,23 @@
 #include "cajeta/error/DiagnosticEngine.h"
 #include "cajeta/error/Exception.h"
 #include "cajeta/type/CajetaType.h"
+
+#ifdef _WIN32
+#  include <io.h>
+#  include <process.h>
+#  define CAJETA_DUP _dup
+#  define CAJETA_DUP2 _dup2
+#  define CAJETA_CLOSE _close
+#  define CAJETA_FILENO _fileno
+#  define CAJETA_GETPID _getpid
+#else
+#  include <unistd.h>
+#  define CAJETA_DUP dup
+#  define CAJETA_DUP2 dup2
+#  define CAJETA_CLOSE close
+#  define CAJETA_FILENO fileno
+#  define CAJETA_GETPID getpid
+#endif
 
 namespace cajeta::lintservice {
 
@@ -79,6 +107,148 @@ namespace cajeta::lintservice {
         // double-set / mis-layout it. Stdlib-resident names are preserved.
         CajetaType::releaseThrownTransientStructNames();
         return rc;
+    }
+
+    // ---- the server loop (spec §2) -----------------------------------------
+
+    namespace {
+
+        std::string jsonEscape(const std::string& s) {
+            // llvm::json::Value round-trips the escaping; wrap the raw string.
+            std::string out;
+            llvm::raw_string_ostream os(out);
+            os << llvm::json::Value(s);
+            os.flush();
+            return out;   // includes the surrounding quotes
+        }
+
+        // A `{"kind":"error",...}` record; the id (when the request carried
+        // one) sits right after kind so a consumer can correlate it. stdout,
+        // flushed per line like every protocol record.
+        void emitErrorRecord(std::optional<int64_t> id, const char* code,
+                             const std::string& message) {
+            std::string o = "{\"kind\":\"error\"";
+            if (id) o += ",\"id\":" + std::to_string(*id);
+            o += ",\"code\":" + jsonEscape(code);
+            o += ",\"message\":" + jsonEscape(message);
+            o += "}\n";
+            std::cout << o << std::flush;
+        }
+
+        std::string readCaptureFile(const std::filesystem::path& p) {
+            std::ifstream in(p, std::ios::binary);
+            std::stringstream ss;
+            ss << in.rdbuf();
+            return ss.str();
+        }
+
+        // Run `fn` with fd 2 (stderr) redirected to a fresh temp file; return
+        // what it wrote there. This is where the one-shot lint's diagnostics
+        // and xref stream land, so the captured bytes ARE the response payload
+        // — byte-identical to one-shot stderr by construction (spec 2.1.2).
+        // Restores fd 2 on every path; degrades to no capture if the temp file
+        // can't be opened (payload empty, server survives).
+        std::string captureStderr(const std::function<void()>& fn) {
+            namespace fs = std::filesystem;
+            static uint64_t counter = 0;
+            fs::path capPath = fs::temp_directory_path()
+                / ("cajeta_lintsrv_cap_" + std::to_string(CAJETA_GETPID())
+                   + "_" + std::to_string(counter++));
+
+            std::fflush(stderr);
+            std::cerr.flush();
+            int savedFd = CAJETA_DUP(CAJETA_FILENO(stderr));
+            FILE* redirect = std::fopen(capPath.string().c_str(), "wb");
+            if (!redirect) { CAJETA_CLOSE(savedFd); fn(); return ""; }
+            CAJETA_DUP2(CAJETA_FILENO(redirect), CAJETA_FILENO(stderr));
+
+            fn();
+
+            std::fflush(stderr);
+            std::cerr.flush();
+            CAJETA_DUP2(savedFd, CAJETA_FILENO(stderr));
+            CAJETA_CLOSE(savedFd);
+            std::fclose(redirect);
+
+            std::string payload = readCaptureFile(capPath);
+            std::error_code ec;
+            fs::remove(capPath, ec);
+            return payload;
+        }
+
+    } // namespace
+
+    int runLintServer(const ServerOptions& opts) {
+        // Pay the prime cost up front, BEFORE announcing ready — the plugin
+        // treats the ready record as "warm and answering" (spec 2.1). Clear
+        // the shared context the prime leaves set; each request re-binds it
+        // through warmLint, and nothing constructs a Compiler in between.
+        StdlibReuseCore::instance().ensurePrimed();
+        Compiler::setSharedContext(nullptr);
+
+        std::cout << "{\"kind\":\"server\",\"proto\":{\"major\":1,\"minor\":0},"
+                     "\"state\":\"ready\"}\n" << std::flush;
+
+        std::string line;
+        while (std::getline(std::cin, line)) {
+            if (line.empty()) continue;   // tolerate blank separator lines
+
+            auto parsed = llvm::json::parse(line);
+            if (!parsed) {
+                llvm::consumeError(parsed.takeError());
+                emitErrorRecord(std::nullopt, "malformed-request",
+                                "request line is not valid JSON");
+                continue;
+            }
+            const llvm::json::Object* obj = parsed->getAsObject();
+            if (!obj) {
+                emitErrorRecord(std::nullopt, "malformed-request",
+                                "request must be a JSON object");
+                continue;
+            }
+
+            std::optional<int64_t> id;
+            if (auto v = obj->getInteger("id")) id = *v;
+
+            auto kind = obj->getString("kind");
+            if (!kind) {
+                emitErrorRecord(id, "missing-kind",
+                                "request has no \"kind\"");
+                continue;
+            }
+            if (*kind == "shutdown") return 0;   // clean exit; ignore the rest
+            if (*kind != "lint") {
+                emitErrorRecord(id, "unknown-kind",
+                                "unknown request kind: " + kind->str());
+                continue;
+            }
+
+            auto file = obj->getString("file");
+            if (!file) {
+                emitErrorRecord(id, "missing-file",
+                                "lint request has no \"file\"");
+                continue;
+            }
+            std::string filePath = file->str();
+            if (!std::filesystem::exists(filePath)) {
+                emitErrorRecord(id, "file-not-found", "no such file: " + filePath);
+                continue;
+            }
+
+            LintRequest req;
+            req.file = filePath;
+            req.sourceRoot = opts.sourceRoot;
+            if (auto sh = obj->getString("shadow")) req.shadow = sh->str();
+            req.jsonDiagnostics = opts.jsonDiagnostics;
+            req.emitXref = obj->getBoolean("emitXref").value_or(false);
+
+            // The captured stderr IS the payload; markers bracket it on stdout.
+            std::string payload = captureStderr([&]() { warmLint(req); });
+            std::cout << payload;
+            std::cout << "{\"kind\":\"done\",\"id\":" << (id ? *id : 0) << "}\n"
+                      << std::flush;
+        }
+        return 0;   // stdin EOF
     }
 
 } // namespace cajeta::lintservice

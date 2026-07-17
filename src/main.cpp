@@ -114,6 +114,20 @@ void printUsage(const char* progname) {
               << "                                       Type.method(File.cajeta:NN). full = adds\n"
               << "                                       safepoints + locals for an external debugger.\n"
               << "\n"
+              << "Lint / IDE (compiler-lint-mode-spec, lint-server-spec):\n"
+              << "  --lint <file>                        Diagnostics-only: run the semantic passes over one\n"
+              << "                                       file and stop before codegen. Pair with --emit-xref\n"
+              << "                                       (bare) for xref records on the diagnostic channel.\n"
+              << "  --lint <dir> --emit-xref=<path>      Whole-root xref export: one document over every file.\n"
+              << "  --source-root <dir>                  Project context for --lint: sibling files are parsed\n"
+              << "                                       for their signatures so cross-file references resolve.\n"
+              << "  --shadow <path>                      On-disk file the linted (staged) buffer stands in for;\n"
+              << "                                       records report against this original path.\n"
+              << "  --lint-server                        Warm lint daemon: prime the stdlib once, then read\n"
+              << "                                       NDJSON lint requests on stdin and answer warm on stdout\n"
+              << "                                       (proto 1.0). Honors --source-root / --diag-format;\n"
+              << "                                       emitXref is a per-request field. See lint-server-spec.\n"
+              << "\n"
               << "Output:\n"
               << "  --emit=ir|obj|cja|uber|exe           Output mode. Default ir.\n"
               << "  --link-mode=lean|full                Linker/DCE policy. lean (default for --emit=exe)\n"
@@ -325,6 +339,7 @@ int main(int argc, const char* argv[]) {
     // file is the sole positional; handled after the arg loop, before the
     // three-positional compile path (compiler-lint-mode-spec §2).
     bool lintMode = false;
+    bool lintServerMode = false; // --lint-server: warm NDJSON lint daemon (lint-server-spec)
     std::string lintSourceRoot;  // --source-root: project context (lint-source-root-spec)
     std::string lintShadow;      // --shadow: on-disk twin the linted buffer replaces
     // Track whether --xpu-arch was given explicitly so the amdgpu backend can
@@ -608,6 +623,8 @@ int main(int argc, const char* argv[]) {
             compiler.setOutputPath(argv[++i]);
         } else if (arg == "--lint") {
             lintMode = true;
+        } else if (arg == "--lint-server") {
+            lintServerMode = true;
         } else if (arg == "--source-root") {
             if (i + 1 >= argc) {
                 std::cerr << "cajeta: --source-root requires a path\n";
@@ -630,6 +647,49 @@ int main(int argc, const char* argv[]) {
         } else {
             positional.push_back(arg);
         }
+    }
+
+    // --lint-server: the warm NDJSON lint daemon (lint-server-spec §2).
+    // Distinct mode — reads requests on stdin, never a positional file; the
+    // xref stream is a per-REQUEST toggle, so a CLI --emit-xref here is a
+    // category error. Refuse the nonsensical combos before priming so the
+    // plugin never sees a half-started server.
+    if (lintServerMode) {
+        bool jsonDiag = compiler.getFlags().diagFormat == DiagFormat::Json;
+        if (!compiler.getFlags().emitXref.empty()) {
+            if (jsonDiag)
+                cajeta::emitJsonDiagnostic("error", "xref-server",
+                    "--emit-xref is a per-request field in server mode "
+                    "(\"emitXref\":true), not a CLI flag");
+            else
+                std::cerr << "cajeta: --lint-server takes emitXref as a "
+                             "per-request field, not a CLI --emit-xref flag\n";
+            return 1;
+        }
+        if (!positional.empty()) {
+            if (jsonDiag)
+                cajeta::emitJsonDiagnostic("error", "server-positional",
+                    "--lint-server reads requests on stdin; it takes no "
+                    "positional file", positional[0]);
+            else
+                std::cerr << "cajeta: --lint-server takes no positional file "
+                             "(requests arrive on stdin)\n";
+            return 1;
+        }
+        if (!lintSourceRoot.empty()
+                && !std::filesystem::is_directory(lintSourceRoot)) {
+            if (jsonDiag)
+                cajeta::emitJsonDiagnostic("error", "source-root",
+                                           "not a directory: " + lintSourceRoot);
+            else
+                std::cerr << "cajeta: --source-root not a directory: "
+                          << lintSourceRoot << "\n";
+            return 1;
+        }
+        cajeta::lintservice::ServerOptions opts;
+        opts.sourceRoot = lintSourceRoot;
+        opts.jsonDiagnostics = jsonDiag;
+        return cajeta::lintservice::runLintServer(opts);
     }
 
     // --lint <file>: run the diagnostic passes over one file and stop before
