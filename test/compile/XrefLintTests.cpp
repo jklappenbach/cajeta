@@ -199,6 +199,34 @@ TEST(XrefLint, AllocationCreatedTypeIsRecordedAsReference) {
         << refs << "\n" << all;
 }
 
+// ide-symbol-index (annotation navigation): an annotation USE (`@Marker`) is
+// recorded as a type reference at its name token, so Ctrl-click on an
+// annotation navigates to its declaration. Annotations canonicalize under the
+// `code` pseudo-package, so the reference target is `code.Marker` — matching
+// the declaration, which registers the same way.
+TEST(XrefLint, AnnotationUseIsRecordedAsReference) {
+    auto root = freshTempDir("annref");
+    auto target = writeUnit(root, "demo/Ann.cajeta",
+        "package demo;\n"
+        "annotation Marker { }\n"
+        "@Marker\n"
+        "public class Ann { }\n");
+
+    std::string err;
+    int rc = runCapturingStderr(
+        "--lint " + target.string() + " --source-root " + root.string()
+        + " --diag-format=json --emit-xref", err);
+    ASSERT_NE(rc, -1) << "compiler binary missing";
+
+    std::string all;
+    for (auto& l : xrefLines(err)) all += l + "\n";
+    EXPECT_TRUE(has(all, "\"target\": \"code.Marker\""))
+        << "the `@Marker` use was not recorded as a reference:\n" << all;
+    // And a compiler intrinsic (@Native) with no declaration records nothing.
+    EXPECT_FALSE(has(all, "\"target\": \"code.Native\""))
+        << "an intrinsic annotation must not invent an edge:\n" << all;
+}
+
 // The stream is scoped to the linted file: sibling and stdlib declarations are
 // the whole-root export's job (and would bloat every keystroke's output).
 TEST(XrefLint, TheStreamCarriesOnlyTheLintedFilesRecords) {

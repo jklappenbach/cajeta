@@ -12,7 +12,43 @@
 #include <string>
 #include <vector>
 
+#include "cajeta/type/CajetaType.h"
+#include "cajeta/compile/CajetaModule.h"
+#include "cajeta/xref/XrefIndex.h"
+
 namespace cajeta {
+
+    // ide-symbol-index: record the annotation NAME (`@Retry`) as an xref type
+    // reference at its token, so Ctrl-click on an annotation navigates to its
+    // declaration. Like allocation-created types, the annotation name is
+    // resolved off the parse-time type path (it goes through QualifiedName, not
+    // CajetaType::fromContext), so without this it carries no edge. Gated on
+    // xref::captureEnabled(), so a normal compile never runs it; a miss records
+    // nothing.
+    static void recordAnnotationXref(const QualifiedNamePtr& qn,
+                                     antlr4::Token* tok) {
+        if (!xref::captureEnabled() || !qn || !tok || !tok->getInputStream())
+            return;
+        const std::string* file =
+            xref::internSourceFile(tok->getInputStream()->getSourceName());
+        if (!file) return;
+        try {
+            // A bare `@Ann` canonicalizes to `code.Ann` (QualifiedName::
+            // fromContext defaults the package to "code"), exactly as the
+            // annotation's declaration registers — so the qn's canonical IS
+            // the target. Record only when it names a REAL declaration: a
+            // compiler intrinsic like @Native / @Inline has none, and an edge
+            // to a non-existent declaration is just noise (pruned anyway).
+            std::string target = qn->toCanonical();
+            auto lt = target.find('<');
+            if (lt != std::string::npos) target = target.substr(0, lt);
+            if (target.empty()) return;
+            auto& cm = CajetaType::getCanonicalMap();
+            if (cm.find(target) == cm.end()) return;
+            xref::noteTypeReference(target, *file, (int) tok->getLine(),
+                                    (int) tok->getCharPositionInLine());
+        } catch (...) {}
+    }
 
     // Strip surrounding ASCII whitespace from a literal's text. Annotation
     // argument tokens come from ANTLR's getText() which concatenates token text
@@ -89,16 +125,21 @@ namespace cajeta {
     AnnotationInstancePtr parseAnnotationInstance(CajetaParser::AnnotationContext* ann) {
         if (!ann) return nullptr;
         QualifiedNamePtr qn;
+        antlr4::Token* nameTok = nullptr;   // the annotation type-name token
         if (ann->qualifiedName()) {
             qn = QualifiedName::fromContext(ann->qualifiedName());
+            const auto& ids = ann->qualifiedName()->identifier();
+            if (!ids.empty()) nameTok = ids.back()->getStart();
         } else if (auto* alt = ann->altAnnotationQualifiedName()) {
             // `pkg.@MyAnn` form — leaf identifier is the annotation name.
             const auto& ids = alt->identifier();
             if (!ids.empty()) {
                 qn = QualifiedName::getOrInsert(ids.back()->getText(), "");
+                nameTok = ids.back()->getStart();
             }
         }
         if (!qn) return nullptr;
+        recordAnnotationXref(qn, nameTok);
 
         auto inst = std::make_shared<AnnotationInstance>(qn);
 
