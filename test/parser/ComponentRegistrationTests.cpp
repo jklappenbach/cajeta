@@ -477,3 +477,80 @@ TEST(ComponentRegistrationTests, noInterfaceDoubleMasksNothing) {
     EXPECT_EQ(resolvedTargetName("App"), "RealSink");
     CajetaModule::setActiveProfile("prod");
 }
+
+// --- Unit 2 (di-profile-selection §3.3): @Profile multi-value (any-of). ---
+
+namespace {
+bool profilesContain(const CajetaModule::ComponentDescriptorPtr& d,
+                     const std::string& p) {
+    return d && std::find(d->profiles.begin(), d->profiles.end(), p)
+                    != d->profiles.end();
+}
+} // namespace
+
+// Array-literal form @Profile({"dev","test"}) captures every listed name
+// (StringList under the implicit "value" key).
+TEST(ComponentRegistrationTests, profileListCapturedFromArrayForm) {
+    auto src =
+        "package test;\n"
+        "@Component @Profile({\"dev\", \"test\"}) public class MultiDb {\n"
+        "    public MultiDb() { return; }\n"
+        "}\n";
+    Compiler compiler;
+    compileForInspection(compiler, src, "test.MultiDb");
+    auto desc = findDescriptor("MultiDb");
+    ASSERT_NE(desc, nullptr);
+    EXPECT_EQ(desc->profiles.size(), 2u);
+    EXPECT_TRUE(profilesContain(desc, "dev"));
+    EXPECT_TRUE(profilesContain(desc, "test"));
+}
+
+// Repeated @Profile annotations still accumulate (the pre-existing
+// single-string path must keep working).
+TEST(ComponentRegistrationTests, repeatedProfileStillCaptured) {
+    auto src =
+        "package test;\n"
+        "@Component @Profile(\"dev\") @Profile(\"test\") public class RepeatDb {\n"
+        "    public RepeatDb() { return; }\n"
+        "}\n";
+    Compiler compiler;
+    compileForInspection(compiler, src, "test.RepeatDb");
+    auto desc = findDescriptor("RepeatDb");
+    ASSERT_NE(desc, nullptr);
+    EXPECT_EQ(desc->profiles.size(), 2u);
+    EXPECT_TRUE(profilesContain(desc, "dev"));
+    EXPECT_TRUE(profilesContain(desc, "test"));
+}
+
+// Any-of filtering: a component @Profile({"dev","test"}) is included
+// under either "dev" or "test", and excluded under "prod" (the @Inject
+// then goes unsatisfied).
+TEST(ComponentRegistrationTests, profileListFiltersUnderEither) {
+    auto src =
+        "package test;\n"
+        "public interface Store {\n"
+        "    public int32 kind();\n"
+        "}\n"
+        "@Component @Profile({\"dev\", \"test\"}) public class MemStore implements Store {\n"
+        "    public MemStore() { return; }\n"
+        "    public int32 kind() { return 1; }\n"
+        "}\n"
+        "@Component public class App {\n"
+        "    @Inject Store s;\n"
+        "    public App() { return; }\n"
+        "}\n";
+    Compiler compiler;
+    compileForInspection(compiler, src, "test.App");
+    CajetaModule::setActiveProfile("dev");
+    EXPECT_NO_THROW(CajetaModule::resolveDependencyGraph());
+    CajetaModule::setActiveProfile("test");
+    EXPECT_NO_THROW(CajetaModule::resolveDependencyGraph());
+    CajetaModule::setActiveProfile("prod");
+    try {
+        CajetaModule::resolveDependencyGraph();
+        FAIL() << "expected CAJETA_ERROR_MISSING_COMPONENT under prod";
+    } catch (Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_MISSING_COMPONENT");
+    }
+    CajetaModule::setActiveProfile("prod");
+}

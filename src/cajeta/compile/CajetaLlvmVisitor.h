@@ -634,8 +634,18 @@ namespace cajeta {
                     for (auto& inst : structure->getAnnotationInstances()) {
                         if (inst && inst->getName()
                                 && inst->getName()->getTypeName() == "Profile") {
-                            const string& p = inst->getString();
-                            if (!p.empty()) desc->profiles.push_back(p);
+                            // Array form @Profile({"dev","test"}) → StringList;
+                            // single @Profile("dev") → String. Repeated
+                            // @Profile annotations accumulate across instances.
+                            const vector<string>& list = inst->getStringList();
+                            if (!list.empty()) {
+                                for (auto& p : list) {
+                                    if (!p.empty()) desc->profiles.push_back(p);
+                                }
+                            } else {
+                                const string& p = inst->getString();
+                                if (!p.empty()) desc->profiles.push_back(p);
+                            }
                         }
                     }
                     CajetaModule::registerComponent(desc);

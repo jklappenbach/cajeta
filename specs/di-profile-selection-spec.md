@@ -108,10 +108,12 @@ and stabilize the surface. Framework stereotypes (`@Repository`, …) are out of
 ### 3.3 `@Profile` value cardinality
 - **3.3.1** `@Profile` accepts multiple profile names with **any-of** semantics:
   a component is included if any listed profile equals the active profile.
-- **3.3.2** Two spellings are supported: repeated `@Profile("dev") @Profile("test")`
-  (already captured today) and a single `@Profile("dev", "test")` list form. The
-  declaration is `String[] value()`; the visitor reads a string list, falling back
-  to the single-string form.
+- **3.3.2** Three spellings are supported: single `@Profile("dev")`, the array-literal
+  list `@Profile({"dev", "test"})`, and repeated `@Profile("dev") @Profile("test")`
+  (already captured today). The declaration is `String[] value()`; the visitor reads a
+  string list (array form) and falls back to the single-string form. Cajeta annotation
+  grammar allows only one unnamed arg, so the multi-value spelling is the `{...}` array,
+  not comma-separated positional args.
 
 ---
 
@@ -122,6 +124,6 @@ and stabilize the surface. Framework stereotypes (`@Repository`, …) are out of
 2. Existing `@TestComponent`/`@Profile` gtests stay green (no regression) (§2.2.3).
 3. `import cajeta.aot.Profile;` and `import cajeta.aot.TestComponent;` resolve; the
    annotations compile against declared types; bare-short-name usage still compiles (§3).
-4. `@Profile("dev", "test")` includes the component under both profiles (§3.3).
+4. `@Profile({"dev", "test"})` includes the component under both profiles (§3.3).
 5. A `.cajeta` demo (tour or sample) exercises profile selection and a test-double
    swap end to end via `--emit=exe`.
