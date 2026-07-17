@@ -162,6 +162,43 @@ TEST(XrefLint, LintEmitsXrefRecordsAmongDiagnostics) {
         << "no type reference to the sibling-resolved demo.Helper:\n" << all;
 }
 
+// ide-symbol-index (allocation-type navigation): the CREATED type of an
+// allocation (`heap Helper()` / `stack Helper()`) is recorded as a type
+// reference at its token, so Ctrl-click on the allocated type resolves. The
+// allocation's type is otherwise resolved only in the codegen pass, which lint
+// stops before — so it must be captured at parse time, like declaration-
+// position type references. Here Target names Helper ONLY through allocations,
+// so a reference to demo.Helper can only have come from the created type.
+TEST(XrefLint, AllocationCreatedTypeIsRecordedAsReference) {
+    auto root = makeProject("alloc");
+    auto target = writeUnit(root, "demo/Target.cajeta",
+        "package demo;\n"
+        "public class Target {\n"
+        "    public void run() {\n"
+        "        Object a = heap Helper();\n"
+        "        Object b = stack Helper();\n"
+        "    }\n"
+        "}\n");
+
+    std::string err;
+    int rc = runCapturingStderr(
+        "--lint " + target.string() + " --source-root " + root.string()
+        + " --diag-format=json --emit-xref", err);
+    ASSERT_NE(rc, -1) << "compiler binary missing";
+
+    std::string all;
+    for (auto& l : xrefLines(err)) all += l + "\n";
+    // Two allocation sites → two reference records to the same declaration.
+    EXPECT_TRUE(has(all, "\"target\": \"demo.Helper\""))
+        << "the allocation's created type was not recorded as a reference:\n" << all;
+    int refs = 0;
+    for (auto& l : xrefLines(err))
+        if (has(l, "\"rel\":\"references\"") && has(l, "\"target\": \"demo.Helper\"")) ++refs;
+    EXPECT_GE(refs, 2)
+        << "expected a reference for each of `heap Helper()` and `stack Helper()`; got "
+        << refs << "\n" << all;
+}
+
 // The stream is scoped to the linted file: sibling and stdlib declarations are
 // the whole-root export's job (and would bloat every keystroke's output).
 TEST(XrefLint, TheStreamCarriesOnlyTheLintedFilesRecords) {

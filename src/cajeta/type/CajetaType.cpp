@@ -728,6 +728,31 @@ namespace cajeta {
         return it != canonicalMap.end() ? it->second : nullptr;
     }
 
+    std::string CajetaType::canonicalNameScoped(const string& shortName,
+                                                CajetaModulePtr module) {
+        // Tier 1: own package — accept a name that is built (canonicalMap) OR
+        // merely prescan-registered (g_archive), so a forward reference still
+        // resolves to its declaration's canonical FQN.
+        string ownPkg = scopePackageOf(module);
+        if (!ownPkg.empty()) {
+            string canon = ownPkg + "." + shortName;
+            if (canonicalMap.count(canon) || g_archive.count(canon)) return canon;
+        }
+        // Tier 2: explicit imports.
+        if (module) {
+            auto& imports = module->getImports();
+            auto it = imports.find(shortName);
+            if (it != imports.end() && !it->second.empty()) {
+                return it->second.begin()->second->toCanonical();
+            }
+        }
+        // Tier 3: the global short-name key (last-writer-wins across packages),
+        // via the archive so a not-yet-built forward reference is covered.
+        auto a = g_archive.find(shortName);
+        if (a != g_archive.end()) return a->second;
+        return {};
+    }
+
     CajetaTypePtr CajetaType::of(string typeName, string package) {
         QualifiedNamePtr qName = QualifiedName::getOrInsert(typeName, package);
         return CajetaType::canonicalMap[qName->toCanonical()];

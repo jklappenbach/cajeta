@@ -349,6 +349,17 @@ class CajetaType : public Modifiable, public Annotatable,
         static CajetaTypePtr ofScoped(const string& shortName,
                                       CajetaModulePtr module);
 
+        // The canonical FQN a scoped bare name denotes, as a STRING — mirroring
+        // ofScoped's tiers (own package → imports → global) but tolerant of a
+        // FORWARD reference: a name that is only prescan-registered (in the
+        // archive) and not yet built into canonicalMap still resolves. Used by
+        // the xref reference capture for `heap Point(...)` created types, where
+        // the whole-root export's directory-order parse routinely reaches an
+        // allocation before its target's declaration is built. Returns "" when
+        // the name names nothing known. Position-free — the caller supplies it.
+        static std::string canonicalNameScoped(const string& shortName,
+                                               CajetaModulePtr module);
+
         // Find a generic (template) class registered under the bare short
         // name `shortName`, scanning the process-global canonicalMap. Used to
         // recover from same-short-name collisions: a parameterized reference
