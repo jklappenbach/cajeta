@@ -549,12 +549,23 @@ namespace cajeta {
                          "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
         }
 
+        // A parameter-independent body has an identically ZERO gradient. `pidx` is a
+        // map, so `pidx[pnames[0]]` would default-insert index 0 and report the wrong
+        // (nonzero) cotangent accumulated there — emit an explicit zero instead.
         std::string missing;
-        std::string gradExpr =
-            cajeta::transform::reverseModeGrad(nodes, pidx[pnames[0]], elem, &missing);
-        if (!missing.empty()) {
-            throw locErr("transform intrinsic 'Grad': no VJP rule for primitive '"
-                         + missing + "'", "CAJETA_ERROR_TRANSFORM_NO_VJP_RULE");
+        std::string gradExpr;
+        auto paramNode = pidx.find(pnames[0]);
+        if (paramNode == pidx.end()) {
+            gradExpr = paramIsTensor
+                ? ("Tensor.zerosLike<" + elem + ">(" + pnames[0] + ")")
+                : "0.0f";
+        } else {
+            gradExpr = cajeta::transform::reverseModeGrad(
+                nodes, paramNode->second, elem, &missing);
+            if (!missing.empty()) {
+                throw locErr("transform intrinsic 'Grad': no VJP rule for primitive '"
+                             + missing + "'", "CAJETA_ERROR_TRANSFORM_NO_VJP_RULE");
+            }
         }
 
         // The value type is the body's resolved type (the returned expression),
@@ -576,6 +587,11 @@ namespace cajeta {
                     if (r) valueTy = r->toCanonical();
                 }
             }
+        }
+        if (valueTy.empty() || valueTy == "void") {
+            throw locErr("transform intrinsic 'Grad': could not determine the value "
+                         "type of the differentiated function",
+                         "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
         }
         std::string outputVal = nodes.back().valueExpr;
 
@@ -603,51 +619,65 @@ namespace cajeta {
                          "parse", "CAJETA_ERROR_TRANSFORM_SYNTH_FAILED");
         }
 
-        auto prevActive = CajetaModule::getActiveModule();
-        CajetaModule::setActiveModule(module);
         auto wrapperQName = QualifiedName::getOrInsert(
             className, module->getQName()->getPackageName());
         auto wrapperClass = std::make_shared<CajetaClass>(
             module, wrapperQName, std::list<QualifiedNamePtr>{});
-        auto& stack = module->getStructureStack();
-        std::list<CajetaClassPtr> savedStack;
-        savedStack.swap(stack);
-        stack.push_back(wrapperClass);
 
-        CajetaLlvmVisitor visitor(module);
-        auto bodyAny = visitor.visitClassBody(classDecl->classBody());
-        auto classBody = std::any_cast<ClassBodyDeclarationPtr>(bodyAny);
+        // Restore active-module, structure stack, and builder insertion point on
+        // EVERY exit — including an exception from visitClassBody / generateCode over
+        // the synthesized (user-derived) source, which would otherwise leave compiler
+        // globals corrupted for the rest of the process.
+        struct SynthStateGuard {
+            CajetaModulePtr module;
+            CajetaModulePtr prevActive;
+            std::list<CajetaClassPtr> savedStack;
+            llvm::IRBuilderBase::InsertPoint savedIP;
+            SynthStateGuard(CajetaModulePtr m, const CajetaClassPtr& wrapper)
+                : module(m), prevActive(CajetaModule::getActiveModule()),
+                  savedIP(m->getBuilder()->saveIP()) {
+                CajetaModule::setActiveModule(m);
+                auto& stk = m->getStructureStack();
+                savedStack.swap(stk);
+                stk.push_back(wrapper);
+            }
+            ~SynthStateGuard() {
+                auto& stk = module->getStructureStack();
+                stk.clear();
+                stk.swap(savedStack);
+                CajetaModule::setActiveModule(prevActive);
+                module->getBuilder()->restoreIP(savedIP);
+            }
+        };
 
         MethodPtr makeMethod;
-        for (auto& decl : classBody->getDeclarations()) {
-            if (auto md = std::dynamic_pointer_cast<MethodDeclaration>(decl)) {
-                if (md->getMethod() && md->getMethod()->getName() == "make") {
-                    makeMethod = md->getMethod();
-                    break;
+        llvm::Function* makeFn = nullptr;
+        {
+            SynthStateGuard guard(module, wrapperClass);
+
+            CajetaLlvmVisitor visitor(module);
+            auto bodyAny = visitor.visitClassBody(classDecl->classBody());
+            auto classBody = std::any_cast<ClassBodyDeclarationPtr>(bodyAny);
+
+            for (auto& decl : classBody->getDeclarations()) {
+                if (auto md = std::dynamic_pointer_cast<MethodDeclaration>(decl)) {
+                    if (md->getMethod() && md->getMethod()->getName() == "make") {
+                        makeMethod = md->getMethod();
+                        break;
+                    }
                 }
             }
+            if (!makeMethod) {
+                throw locErr("transform intrinsic 'Grad': synthesized backward "
+                             "produced no make()", "CAJETA_ERROR_TRANSFORM_SYNTH_FAILED");
+            }
+
+            // Emit make's prototype then body (its inner lambda + GradResult ctor
+            // emit here). Prototype first — the synthesized-method pattern.
+            makeMethod->generatePrototype();
+            makeMethod->generateCode();
+            makeFn = makeMethod->getLlvmFunction();
         }
-
-        if (!makeMethod) {
-            stack.clear(); stack.swap(savedStack);
-            CajetaModule::setActiveModule(prevActive);
-            throw locErr("transform intrinsic 'Grad': synthesized backward produced "
-                         "no make()", "CAJETA_ERROR_TRANSFORM_SYNTH_FAILED");
-        }
-
-        // Emit make's prototype then body (its inner lambda + GradResult ctor emit
-        // here). Prototype first — the synthesized-method pattern (CajetaClass.cpp
-        // factory/builder). Save the caller's insertion point — generateCode moves
-        // the builder into make.
-        auto savedIP = module->getBuilder()->saveIP();
-        makeMethod->generatePrototype();
-        makeMethod->generateCode();
-        module->getBuilder()->restoreIP(savedIP);
-
-        llvm::Function* makeFn = makeMethod->getLlvmFunction();
-
-        stack.clear(); stack.swap(savedStack);
-        CajetaModule::setActiveModule(prevActive);
 
         if (!makeFn) {
             throw locErr("transform intrinsic 'Grad': synthesized backward failed to "

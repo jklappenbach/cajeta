@@ -8,6 +8,7 @@
 #include "cajeta/asn/expression/Identifier.h"
 #include "cajeta/asn/expression/BinaryOpExpression.h"
 #include "cajeta/asn/expression/MethodCallExpression.h"
+#include "cajeta/asn/expression/LiteralExpression.h"
 #include "cajeta/type/CajetaType.h"
 
 #include <set>
@@ -51,6 +52,13 @@ namespace cajeta {
                     }
                     // A non-parameter identifier is a scalar constant w.r.t. inputs.
                     nodes.push_back(AdNode{name, false, "", {}, false});
+                    return nodes.size() - 1;
+                }
+
+                // A numeric literal is a constant leaf (its source text, zero
+                // cotangent contribution) — e.g. `2.0f * x`, `x - 1.0f`.
+                if (auto* lit = dynamic_cast<LiteralExpression*>(e)) {
+                    nodes.push_back(AdNode{lit->getRawValue(), false, "", {}, false});
                     return nodes.size() - 1;
                 }
 

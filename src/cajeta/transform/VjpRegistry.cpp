@@ -1,7 +1,8 @@
 //
 // transform-intrinsics Unit 2 — built-in VJP rules (spec §7).
 //
-// The minimal rule set that validates the mechanism: add / mul / negate / matmul.
+// The minimal rule set that validates the mechanism: add / mul / sub / negate /
+// matmul / sum.
 // Every rule is expressed in built-in primitives, so each rule's own IR is
 // differentiable — second-order Grad (§5.1) composes for free on this set.
 //

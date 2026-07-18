@@ -75,6 +75,24 @@ TEST(GradEndToEnd, nestedMulSubGrad) {
         "        return r.value * 100.0f + r.grads;"), 605.0f);  // value 6, grads 5
 }
 
+// Numeric literals in the body are constants (zero cotangent): d/dx (2x + 1) = 2.
+// value at x=3 is 7, grad 2 -> 7*100 + 2 = 702.
+TEST(GradEndToEnd, literalsInBody) {
+    EXPECT_FLOAT_EQ(runF32(
+        "(float32) -> GradResult<float32,float32> g = Grad((float32 x) -> 2.0f * x + 1.0f);\n"
+        "        GradResult<float32,float32> r = g(3.0f);\n"
+        "        return r.value * 100.0f + r.grads;"), 702.0f);
+}
+
+// A parameter-independent body has an identically ZERO gradient — never a spurious
+// nonzero from a defaulted node index. value 3, grad 0 -> 3*100 + 0 = 300.
+TEST(GradEndToEnd, paramUnusedZeroGrad) {
+    EXPECT_FLOAT_EQ(runF32(
+        "(float32) -> GradResult<float32,float32> g = Grad((float32 x) -> 3.0f + 4.0f);\n"
+        "        GradResult<float32,float32> r = g(5.0f);\n"
+        "        return r.value * 100.0f + r.grads;"), 700.0f);  // value 7, grad 0
+}
+
 // A misspelled/unsupported primitive fails with a named compile error, never a
 // silent wrong gradient (spec §5.3). Division has no VJP rule in v1.
 TEST(GradEndToEnd, unsupportedOpNamedError) {
