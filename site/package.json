@@ -14,7 +14,7 @@
     "build": "astro build",
     "preview": "astro preview",
     "regen": "scripts/regen.sh",
-    "deploy": "scripts/regen.sh && npx wrangler deploy",
+    "deploy": "scripts/regen.sh && wrangler deploy",
     "test": "node --test \"scripts/**/*.test.mjs\""
   },
   "dependencies": {
@@ -30,6 +30,7 @@
   "devDependencies": {
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.0",
+    "wrangler": "^4.112.0"
   }
 }
