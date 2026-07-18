@@ -288,7 +288,7 @@ public class Server {
      */
     public void dispatch(#TcpStream conn) {
         this.inflight.fetchAdd(1);
-        spawn serveConnection(this.handler, this.inflight, conn);
+        spawn serveConnection(this.handler, this.inflight, #conn);
     }
 
     /**
