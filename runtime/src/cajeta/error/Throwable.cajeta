@@ -185,11 +185,14 @@ public class Throwable {
             boolean first = true;
             Throwable c = oc.get();
             boolean walking = true;
-            while (walking) {
+            int32 depth = 0;
+            // Bounded: a user-built cause cycle must not spin forever (matches printStackTrace).
+            while (walking && depth < 64) {
                 if (!first) { j = j + ","; }
                 String cm = c.message;
                 j = j + "{\"code\":\"" + c.code() + "\",\"message\":\"" + jsonEscape(cm) + "\"}";
                 first = false;
+                depth = depth + 1;
                 Optional<Throwable> nxt = c.getCause();
                 if (nxt.isPresent()) {
                     c = nxt.get();
