@@ -434,6 +434,13 @@ int64_t __cajeta_drop_entry_flag(struct cajeta_drop_entry* e) {
 // The `active` flag sits at the same offset in the base and debug entry
 // shapes, so the base cast is valid for both. Pure read — safe to call from
 // the debugger thread while parked (FR-2.3).
+//
+// `used, retain` (external-debug §4.1.7): this is the ONLY runtime signal that a
+// local was moved out of. The ownership ROLE is static, so an owner that has had
+// `#` applied to it still reports Owner — only this flag says the drop entry was
+// deactivated. Nothing in generated code calls it, so an AOT link dropped it, and
+// gdb would have rendered a moved-from local as a live value.
+__attribute__((used, retain))
 int8_t __cajeta_dbg_local_drop_active(void* frame, int i) {
     if (!frame) return -1;
     struct cajeta_dbg_frame* f = frame;
@@ -822,6 +829,10 @@ void* __cajeta_class_for_name(void* nameBytes) {
 // NULL as "cannot prove the bound" and fail the capture safely. Also strengthens
 // reflection (a name->rtti primitive for the reflective layer).
 #define CAJETA_CLASSOBJECT_RTTI_OFFSET 8
+// `used, retain` (external-debug §4): the debugger's parent-chain walk goes
+// parent_name -> here, and a program that never reflects calls this from nowhere,
+// so DCE / --gc-sections would drop it from an AOT binary.
+__attribute__((used, retain))
 void* __cajeta_rtti_for_name(const char* name) {
     if (!name) return NULL;
     for (int i = 0; i < g_cajeta_class_count; ++i) {
@@ -869,6 +880,14 @@ int32_t __cajeta_is_subtype(void* leafRtti, void* boundRtti) {
     return 0;
 }
 
+// external-debug §4.1.2: the same hop, exported. A debugger holds only a local's
+// ADDRESS; this is how it reaches the object's DYNAMIC type (a `Shape s` holding
+// a `Circle` must render as a Circle) and, through the RTTI, that type's field
+// names, byte offsets, and type flags. `used, retain` — nothing in generated code
+// calls it, so DCE and --gc-sections would drop it from an AOT binary.
+__attribute__((used, retain))
+void* __cajeta_rtti_of(void* obj);
+
 // obj -> its CajetaRtti* (the obj->vtable->classObject->rtti hop), or NULL when
 // obj isn't a real heap object carrying a vtable/classObject/rtti.
 static void* cajeta_rtti_from_obj(void* obj) {
@@ -879,6 +898,11 @@ static void* cajeta_rtti_from_obj(void* obj) {
         *(void**) ((char*) vtable + CAJETA_VTABLE_CLASSOBJECT_OFFSET);
     if (!classObject) return NULL;
     return *(void**) ((char*) classObject + CAJETA_CLASSOBJECT_RTTI_OFFSET);
+}
+
+__attribute__((used, retain))
+void* __cajeta_rtti_of(void* obj) {
+    return cajeta_rtti_from_obj(obj);
 }
 
 // True iff canonical instantiation name `typeName` (e.g. "test.Box<test.Dog>")
@@ -996,6 +1020,40 @@ int32_t __cajeta_rtti_name_len(void* rtti) {
     if (!rtti) return 0;
     const char* n = ((CajetaRtti*) rtti)->typeName;
     return n ? (int32_t) strlen(n) : 0;
+}
+
+// external-debug §4: the raw C string, for a debugger. The name_into form below
+// writes into a cajeta int8[] — the right shape for cajeta callers, useless to
+// gdb, which has no cajeta array to hand it. `used, retain`: nothing in generated
+// code calls this.
+__attribute__((used, retain))
+const char* __cajeta_rtti_type_name(void* rtti) {
+    if (!rtti) return "";
+    const char* n = ((CajetaRtti*) rtti)->typeName;
+    return n ? n : "";
+}
+
+// Field name, likewise raw. (field_name_into writes a cajeta int8[].)
+__attribute__((used, retain))
+const char* __cajeta_rtti_field_name(void* rtti, int32_t idx) {
+    if (!rtti) return "";
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->propertyCount || !r->properties) return "";
+    const char* n = r->properties[idx].name;
+    return n ? n : "";
+}
+
+// A class's RTTI carries only its OWN fields — an inherited field lives on the
+// parent's. Parents are recorded as NAMES, so the walk a debugger makes is
+// parent_name -> __cajeta_rtti_for_name -> that RTTI's fields. Without this a
+// `Circle` renders `radius` and silently loses the `sides` it inherits.
+__attribute__((used, retain))
+const char* __cajeta_rtti_parent_name(void* rtti, int32_t idx) {
+    if (!rtti) return "";
+    CajetaRtti* r = (CajetaRtti*) rtti;
+    if (idx < 0 || idx >= r->parentCount || !r->parentNames) return "";
+    const char* n = r->parentNames[idx];
+    return n ? n : "";
 }
 // Copy the canonical type name into a caller-allocated int8[] (`out` =
 // { i64 count, [count x i8] }), clamped to the array's capacity. Out-param

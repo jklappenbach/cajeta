@@ -23,6 +23,7 @@
 #include "CompilationContext.h"
 #include "CacheManifest.h"
 #include <optional>
+#include <functional>
 #include <string>
 #include <set>
 #include <vector>
@@ -371,8 +372,33 @@ namespace cajeta {
         // codegen/emit. No entry method. Diagnostics surface as the compile
         // path's do (syntax via the JSON/console listener; semantic via thrown
         // cajeta::Exception caught by the caller).
+        // skipContextRegistration (lint-server §4): the sibling context is
+        // already warm in the global registries (restored from the context
+        // baseline), so skip the registerLintContext sweep and lint only the
+        // target. afterContextRegistration, when set, is invoked right after a
+        // sweep actually runs and BEFORE the target is parsed — the warm-lint
+        // resweep path captures the context baseline there so the snapshot
+        // excludes the target.
         void lint(const string& file, const string& sourceRoot = "",
-                  const string& shadow = "");
+                  const string& shadow = "",
+                  bool skipContextRegistration = false,
+                  const std::function<void()>& afterContextRegistration = {});
+
+        // Whole-root xref export (ide-symbol-index §2.0.3): parse every .cajeta
+        // under `root` — continuing past broken files — run the resolution
+        // passes lint runs, and write ONE xref document to flags.emitXref. For
+        // cold indexing of a project, a dependency's sources, or the stdlib; no
+        // entry method, no codegen. Returns how many files failed to parse.
+        int lintRoot(const string& root);
+
+        // Lint-mode xref stream (ide-symbol-index §2.0.2): emit the records
+        // captured for the linted file as NDJSON on stderr — the diagnostic
+        // channel — so the plugin's per-edit invocation gets diagnostics AND
+        // xref from one subprocess (§1.5.2). `shadow`, when set, is the
+        // ORIGINAL path the staged buffer stands in for; records are reported
+        // against it. No-op unless flags.emitXref asked for the stream ("-").
+        void emitLintXrefStream(const string& file, const string& sourceRoot,
+                                const string& shadow);
 
         // Ensure the Compiler's dedicated stdlib module exists and is
         // parsed + prototype-built. Idempotent — created lazily on
@@ -391,6 +417,19 @@ namespace cajeta {
         static bool stdlibPackageParsed(const std::string& pkg);
         static const std::set<std::string>& stdlibParsedPackages();
         static void resetLazyStdlibState();
+
+        // lint-server sibling-context reuse (spec §4): snapshot/restore the
+        // lazy-stdlib bookkeeping so the context baseline can reinstate a
+        // sibling-triggered lazy parse (e.g. a `cajeta.math` importer) rather
+        // than resetLazyStdlibState's roll-back-to-eager-floor. Opaque handle.
+        struct LazyStdlibState {
+            std::set<std::string> parsedPackages;
+            std::set<std::string> prescanned;
+            std::set<std::string> parsed;
+            std::vector<std::string> queue;
+        };
+        static LazyStdlibState captureLazyStdlibState();
+        static void restoreLazyStdlibState(const LazyStdlibState& s);
 
         // compile-cache Unit 2 (spec §2/§4) — the persistent stdlib-PRIME
         // cache key. discriminator = compiler version + the stdlib-

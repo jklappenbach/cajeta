@@ -43,6 +43,12 @@ debugger is one frontend; the notebook is another.
 > compiler has no `DIBuilder` / `DICompileUnit` codegen today). Each
 > section below is shipped where it matches that list and design
 > otherwise.
+>
+> DWARF is not planned. To debug a **compiled binary** in gdb, see
+> [ExternalDebugging.md](ExternalDebugging.md): the same encoding this
+> page describes is embedded in the binary and read by a gdb bridge
+> (`cjbreak` / `cjstack` / `cjlocals` / `cjstep`), so one mechanism
+> serves the JIT, an AOT binary, and device targets alike.
 
 ## Table of contents
 

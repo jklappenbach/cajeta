@@ -100,7 +100,10 @@ namespace cajeta {
         pairs.emplace_back("profile-counters", onOff(f.profileCounters));
         pairs.emplace_back("lazy-scope", onOff(f.lazyScope));
         pairs.emplace_back("line-info", onOff(f.lineInfo));
-        pairs.emplace_back("debug-info", onOff(f.debugInfo));
+        // The level, not a bool: `off` and `line` differ in emitted IR (the
+        // shadow stack) but would share a cache key under onOff(debugInfo),
+        // so one's artifact would be re-published for the other.
+        pairs.emplace_back("debug-info", debugInfoName(f.debugInfoLevel));
 
         pairs.emplace_back("opt",
             f.opt == OptLevel::O0 ? "0"

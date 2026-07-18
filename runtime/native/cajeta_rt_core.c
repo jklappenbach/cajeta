@@ -430,6 +430,195 @@ int32_t __cajeta_shadow_snapshot(CajetaShadowFrame* out, int32_t max) {
     return w;
 }
 
+// Print the LIVE shadow stack — the frames on this thread right now, innermost
+// first — as `at Type.method(File.cajeta:NN)` lines to `fd` (1 stdout, 2 stderr).
+//
+// The shadow stack already resolves a *captured* trace (a throwable's, via
+// __cajeta_print_trace), which is the semantic alternative to DWARF across the
+// whole product matrix: it works identically in the JIT, in an AOT binary, and
+// on device targets, none of which carry debug sections. What was missing is the
+// live view a DEBUGGER needs. An external debugger stopped at a breakpoint has a
+// native backtrace of mangled symbols and nothing else; from gdb,
+//
+//     (gdb) call (void) __cajeta_print_stack(2)
+//
+// renders the Cajeta call stack with source files and line numbers, with no
+// debug info in the binary. Also the natural source for a `cajeta dap`
+// stackTrace request and for a panic handler.
+//
+// Reads only thread-local state written by __cajeta_line_enter/mark/leave, so it
+// is safe to call from a stopped thread. No allocation, no locks.
+//
+// `used, retain` on this and the accessors below: NOTHING in generated code calls
+// them — a debugger does, from outside — so the IR-level DCE (lean link) and the
+// linker's --gc-sections would both drop them, and the symbol would simply not be
+// in the binary when you need it. `used` pins the definition through GlobalDCE
+// (@llvm.used); `retain` marks the section SHF_GNU_RETAIN so the linker keeps it
+// too. Cost is a few hundred bytes.
+__attribute__((used, retain))
+void __cajeta_print_stack(int32_t fd) {
+    FILE* out = (fd == 1) ? stdout : stderr;
+    int32_t n = __cajeta_shadow_top;
+    if (n > CAJETA_SHADOW_MAX) n = CAJETA_SHADOW_MAX;
+    if (n <= 0) {
+        fprintf(out, "  <no cajeta frames: line-info off, or not in cajeta code>\n");
+        fflush(out);
+        return;
+    }
+    for (int32_t i = n - 1; i >= 0; i--) {
+        const CajetaFrameDesc* d = __cajeta_shadow[i].desc;
+        const char* t = (d && d->typeName)   ? d->typeName   : "?";
+        const char* m = (d && d->methodName) ? d->methodName : "?";
+        const char* f = (d && d->fileName)   ? d->fileName   : "?";
+        // Basename only, matching the captured-trace format.
+        const char* base = f;
+        for (const char* q = f; *q; q++) if (*q == '/' || *q == '\\') base = q + 1;
+        fprintf(out, "  at %s.%s(%s:%d)\n", t, m, base, __cajeta_shadow[i].line);
+    }
+    fflush(out);
+}
+
+// Depth of the live shadow stack, and one frame by index (0 = innermost).
+// Field accessors rather than a struct return, so a debugger — or any consumer
+// that cannot see this file's types without debug info — can walk frames
+// through plain calls.
+__attribute__((used, retain))
+int32_t __cajeta_stack_depth(void) {
+    int32_t n = __cajeta_shadow_top;
+    return n > CAJETA_SHADOW_MAX ? CAJETA_SHADOW_MAX : (n < 0 ? 0 : n);
+}
+__attribute__((used, retain))
+const char* __cajeta_stack_type(int32_t i) {
+    int32_t n = __cajeta_stack_depth();
+    if (i < 0 || i >= n) return "";
+    const CajetaFrameDesc* d = __cajeta_shadow[n - 1 - i].desc;
+    return (d && d->typeName) ? d->typeName : "?";
+}
+__attribute__((used, retain))
+const char* __cajeta_stack_method(int32_t i) {
+    int32_t n = __cajeta_stack_depth();
+    if (i < 0 || i >= n) return "";
+    const CajetaFrameDesc* d = __cajeta_shadow[n - 1 - i].desc;
+    return (d && d->methodName) ? d->methodName : "?";
+}
+__attribute__((used, retain))
+const char* __cajeta_stack_file(int32_t i) {
+    int32_t n = __cajeta_stack_depth();
+    if (i < 0 || i >= n) return "";
+    const CajetaFrameDesc* d = __cajeta_shadow[n - 1 - i].desc;
+    return (d && d->fileName) ? d->fileName : "?";
+}
+__attribute__((used, retain))
+int32_t __cajeta_stack_line(int32_t i) {
+    int32_t n = __cajeta_stack_depth();
+    if (i < 0 || i >= n) return 0;
+    return __cajeta_shadow[n - 1 - i].line;
+}
+
+// ============================================================================
+// The embedded location table (external-debug §3).
+//
+// The compiler's DbgLocTable maps loc_id -> {file, line, col, function}. It is
+// a compiler-PROCESS global: `cajeta dap` can read it only because the DAP
+// compiles and runs in one process. An external debugger attached to a built
+// binary has no compiler, so under --debug-info=full codegen serializes the
+// table into the binary as a constant array and emits a global ctor that
+// registers it here. These accessors are then the debugger's whole view:
+// loc_id -> source position, and (file, line) -> the ids to arm.
+//
+// Registration rather than a weak extern: the table's definition is emitted at
+// end of codegen, but the runtime bitcode is linked into each module long
+// before that, so a weak default here and a strong definition there would
+// collide in one module (LLVM renames the second, silently). A ctor call is
+// the same shape the XPU kernel registry already uses, and it behaves
+// identically under LLJIT and a native link.
+//
+// A `line` or `off` build registers nothing: the table stays empty and every
+// accessor answers benignly (§3.1.4). `used, retain` because nothing in
+// generated code calls these — DCE and --gc-sections would otherwise drop
+// them, which is exactly how __cajeta_print_stack was lost on its first cut.
+// ============================================================================
+typedef struct {
+    const char* file;
+    int32_t     line;
+    int32_t     col;
+    const char* func;
+} CajetaDbgLocEntry;
+
+static const CajetaDbgLocEntry* __cajeta_dbg_loc_entries = 0;
+static int32_t __cajeta_dbg_loc_n = 0;
+
+// Called from the ctor codegen emits under --debug-info=full. A null/empty
+// registration CLEARS the table (an `off`/`line` binary registers nothing at
+// all, and this keeps "no table" reachable for tests).
+__attribute__((used, retain))
+void __cajeta_dbg_register_loc_table(const CajetaDbgLocEntry* entries,
+                                     int32_t count) {
+    if (!entries || count <= 0) {
+        __cajeta_dbg_loc_entries = 0;
+        __cajeta_dbg_loc_n = 0;
+        return;
+    }
+    __cajeta_dbg_loc_entries = entries;
+    __cajeta_dbg_loc_n = count;
+}
+
+__attribute__((used, retain))
+int32_t __cajeta_dbg_loc_count(void) {
+    return __cajeta_dbg_loc_entries ? __cajeta_dbg_loc_n : 0;
+}
+
+__attribute__((used, retain))
+const char* __cajeta_dbg_loc_file(int32_t id) {
+    if (!__cajeta_dbg_loc_entries || id < 0 || id >= __cajeta_dbg_loc_n) return "";
+    const char* f = __cajeta_dbg_loc_entries[id].file;
+    return f ? f : "";
+}
+
+__attribute__((used, retain))
+int32_t __cajeta_dbg_loc_line(int32_t id) {
+    if (!__cajeta_dbg_loc_entries || id < 0 || id >= __cajeta_dbg_loc_n) return 0;
+    return __cajeta_dbg_loc_entries[id].line;
+}
+
+__attribute__((used, retain))
+int32_t __cajeta_dbg_loc_col(int32_t id) {
+    if (!__cajeta_dbg_loc_entries || id < 0 || id >= __cajeta_dbg_loc_n) return 0;
+    return __cajeta_dbg_loc_entries[id].col;
+}
+
+__attribute__((used, retain))
+const char* __cajeta_dbg_loc_func(int32_t id) {
+    if (!__cajeta_dbg_loc_entries || id < 0 || id >= __cajeta_dbg_loc_n) return "";
+    const char* f = __cajeta_dbg_loc_entries[id].func;
+    return f ? f : "";
+}
+
+// The ids a line breakpoint on (file, line) must arm. `file` matches by suffix
+// on a path boundary, so a debugger may pass either the table's stored path
+// ("cajeta/lang/Guid.cajeta") or just the basename ("Guid.cajeta"). Writes up
+// to `max` ids into `out` and returns the number written; pass out=0 to count.
+__attribute__((used, retain))
+int32_t __cajeta_dbg_ids_for_line(const char* file, int32_t line,
+                                  int32_t* out, int32_t max) {
+    if (!__cajeta_dbg_loc_entries || !file) return 0;
+    size_t flen = strlen(file);
+    int32_t found = 0;
+    for (int32_t i = 0; i < __cajeta_dbg_loc_n; ++i) {
+        const CajetaDbgLocEntry* e = &__cajeta_dbg_loc_entries[i];
+        if (e->line != line || !e->file) continue;
+        size_t elen = strlen(e->file);
+        if (elen < flen) continue;
+        if (strcmp(e->file + (elen - flen), file) != 0) continue;
+        // Suffix must start at a path boundary: "Guid.cajeta" must not match
+        // "MyGuid.cajeta".
+        if (elen > flen && e->file[elen - flen - 1] != '/') continue;
+        if (out && found < max) out[found] = i;
+        found++;
+    }
+    return found;
+}
+
 void __cajeta_dbg_local(const char* name, const char* type, void* addr,
                         uint8_t alloc, uint8_t ownership, void* drop_entry) {
     struct cajeta_dbg_frame** top = __cajeta_dbg_top_ptr();
@@ -449,35 +638,59 @@ void __cajeta_dbg_local(const char* name, const char* type, void* addr,
 // reads it through the NATIVE copy. Pure pointer arithmetic on a passed-in
 // void* means both copies resolve a chain node identically, so the host can
 // dereference a pointer the JIT side produced. Used by DebugVars::walkFrames.
+//
+// external-debug §4: `used, retain` on all of them. In-process (the DAP) they are
+// called from C++ and survive; in an AOT binary NOTHING calls them, so DCE and
+// --gc-sections drop them — leaving an external debugger unable to read the very
+// locals the program is busy recording.
+
+// The chain head, for a debugger that has no frame pointer to start from. The DAP
+// is HANDED frame_top by the safepoint handler; gdb is not, so it needs its own
+// way in. Sound for an AOT binary, where the runtime is a single copy and there is
+// no JIT/native TLS split.
+__attribute__((used, retain))
+void* __cajeta_dbg_frame_top(void) {
+    struct cajeta_dbg_frame** top = __cajeta_dbg_top_ptr();
+    return top ? *top : NULL;
+}
+
+__attribute__((used, retain))
 int __cajeta_dbg_frame_depth(void* top) {
     int n = 0;
     for (struct cajeta_dbg_frame* f = top; f; f = f->prev) n++;
     return n;
 }
+__attribute__((used, retain))
 void* __cajeta_dbg_frame_prev(void* frame) {
     return frame ? ((struct cajeta_dbg_frame*) frame)->prev : NULL;
 }
+__attribute__((used, retain))
 const char* __cajeta_dbg_frame_func(void* frame) {
     return frame ? ((struct cajeta_dbg_frame*) frame)->func : NULL;
 }
+__attribute__((used, retain))
 int32_t __cajeta_dbg_frame_loc(void* frame) {
     return frame ? ((struct cajeta_dbg_frame*) frame)->current_loc : -1;
 }
+__attribute__((used, retain))
 int __cajeta_dbg_frame_nlocals(void* frame) {
     return frame ? ((struct cajeta_dbg_frame*) frame)->nlocals : 0;
 }
+__attribute__((used, retain))
 const char* __cajeta_dbg_local_name(void* frame, int i) {
     if (!frame) return NULL;
     struct cajeta_dbg_frame* f = frame;
     if (i < 0 || i >= f->nlocals) return NULL;
     return f->locals[i].name;
 }
+__attribute__((used, retain))
 const char* __cajeta_dbg_local_type(void* frame, int i) {
     if (!frame) return NULL;
     struct cajeta_dbg_frame* f = frame;
     if (i < 0 || i >= f->nlocals) return NULL;
     return f->locals[i].type;
 }
+__attribute__((used, retain))
 void* __cajeta_dbg_local_addr(void* frame, int i) {
     if (!frame) return NULL;
     struct cajeta_dbg_frame* f = frame;
@@ -486,12 +699,14 @@ void* __cajeta_dbg_local_addr(void* frame, int i) {
 }
 // CP7-1b: the two memory facets. Out-of-range reads back 0 (== Unknown), the
 // same neutral fallback codegen uses when a facet isn't statically known.
+__attribute__((used, retain))
 uint8_t __cajeta_dbg_local_alloc(void* frame, int i) {
     if (!frame) return 0;
     struct cajeta_dbg_frame* f = frame;
     if (i < 0 || i >= f->nlocals) return 0;
     return f->locals[i].alloc;
 }
+__attribute__((used, retain))
 uint8_t __cajeta_dbg_local_ownership(void* frame, int i) {
     if (!frame) return 0;
     struct cajeta_dbg_frame* f = frame;

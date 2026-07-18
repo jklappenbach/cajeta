@@ -49,9 +49,9 @@ struct Facets { std::string alloc, ownership, lifetime; };
 // 6 public class Demo {
 // 7     public static int32 main() {
 // 8         int32 n = 5;
-// 9         Box owned = new Box(1);
+// 9         Box owned = heap Box(1);
 // 10        Box alias = owned;
-// 11        Box gone = new Box(2);
+// 11        Box gone = heap Box(2);
 // 12        Box taken = #gone;
 // 13        int32 here = 0;
 // 14        return n + owned.v + alias.v + taken.v + here;   <-- breakpoint
@@ -66,9 +66,9 @@ const char* kProg =
     "public class Demo {\n"
     "    public static int32 main() {\n"
     "        int32 n = 5;\n"
-    "        Box owned = new Box(1);\n"
+    "        Box owned = heap Box(1);\n"
     "        Box alias = owned;\n"
-    "        Box gone = new Box(2);\n"
+    "        Box gone = heap Box(2);\n"
     "        Box taken = #gone;\n"
     "        int32 here = 0;\n"
     "        return n + owned.v + alias.v + taken.v + here;\n"
@@ -91,7 +91,7 @@ const char* kBorrowProg =
     "        return r;\n"
     "    }\n"
     "    public static int32 main() {\n"
-    "        Box owned = new Box(8);\n"
+    "        Box owned = heap Box(8);\n"
     "        return peek(owned);\n"
     "    }\n"
     "}\n";

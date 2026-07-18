@@ -11,6 +11,7 @@
 #include "cajeta/synth/SourceSynthesisParse.h"
 #include "cajeta/synth/SynthesizerRegistry.h"
 #include "cajeta/type/CajetaClass.h"
+#include "cajeta/xref/XrefIndex.h"
 #include "cajeta/type/CajetaArray.h"
 #include "cajeta/type/CajetaView.h"
 #include "cajeta/type/CajetaView.h"
@@ -94,6 +95,10 @@ namespace cajeta {
                 for (auto& imp : res.imports) {
                     cajeta::synth::injectImportIfUnbound(pModule, imp.first, imp.second);
                 }
+                // Synthesized members have no source file; mask the parse and the
+                // walk so their callees are not attributed to a real call site
+                // (ide-symbol-index 2.2.8).
+                xref::SyntheticSourceScope xrefMask;
                 auto* body = cajeta::synth::parseClassBodyFragment(res.classBodyFragment);
                 for (auto* cbd : body->classBodyDeclaration()) {
                     MemberDeclarationPtr mem;
@@ -224,6 +229,7 @@ namespace cajeta {
             if (expr.empty()) return;
             string src = "{ public static boolean operator== (" + typeName
                 + " a, " + typeName + " b) { return " + expr + "; } }";
+            xref::SyntheticSourceScope xrefMask;   // see 2.2.8
             auto* body = cajeta::synth::parseClassBodyFragment(src);
             for (auto* cbd : body->classBodyDeclaration()) {
                 MemberDeclarationPtr mem;
@@ -278,16 +284,185 @@ namespace cajeta {
             return visitChildren(ctx);
         }
 
+        // Record a declaration's NAME-token position on the built type, so the xref
+        // export can map it back to an editor offset (ide-symbol-index §2). The
+        // name token, not the declaration start: `public class Foo` should point at
+        // `Foo`, which is what an IDE navigates to and renames.
+        static void captureDeclPosition(const CajetaClassPtr& built,
+                                        antlr4::ParserRuleContext* nameCtx) {
+            if (!built || !nameCtx || !nameCtx->getStart()) return;
+            built->setDeclPosition(
+                (int) nameCtx->getStart()->getLine(),
+                (int) nameCtx->getStart()->getCharPositionInLine());
+        }
+
+        // xref plan 1.5 — a template's body walk is skipped, so it holds no Method
+        // objects and its members are invisible to the declaration export. Scan the
+        // parse tree directly for what an IDE needs to NAVIGATE to a member: its
+        // name, its position, and its parameter types as written. Deliberately does
+        // no type resolution — `T` stays `T`. That is not a limitation: the template
+        // IS the source the developer edits, and `Box::get(T)` is what is written
+        // there.
+        void captureTemplateMembers(antlr4::ParserRuleContext* ctx,
+                                    const CajetaClassPtr& structure) {
+            if (!ctx || !structure) return;
+            const string ownerFqn = structure->getQName()->toCanonical();
+            const string file     = pModule->currentSourceFile();
+
+            CajetaParser::ClassBodyContext* body = nullptr;
+            for (auto* child : ctx->children) {
+                if ((body = dynamic_cast<CajetaParser::ClassBodyContext*>(child))) break;
+            }
+            if (!body) return;
+
+            // Parameter types AS WRITTEN — `(T)`, `(int32, T)`, `()`.
+            auto paramText = [](CajetaParser::FormalParametersContext* fp) -> string {
+                string out = "(";
+                if (fp && fp->formalParameterList()) {
+                    bool first = true;
+                    for (auto* p : fp->formalParameterList()->formalParameter()) {
+                        if (!p->typeType()) continue;
+                        if (!first) out += ",";
+                        out += p->typeType()->getText();
+                        first = false;
+                    }
+                }
+                return out + ")";
+            };
+
+            // Declared parameter count — excludes the receiver, which the compiler's
+            // own canonical form includes. Both are needed to map a resolved
+            // instantiation method back to this template member (Unit 2).
+            auto paramCount = [](CajetaParser::FormalParametersContext* fp) -> int {
+                if (!fp || !fp->formalParameterList()) return 0;
+                return (int) fp->formalParameterList()->formalParameter().size();
+            };
+
+            // The DISPLAY label (2.2.6) — `T get(int32 index)`, as written, names
+            // included. Distinct from the overload key, which is the identity.
+            auto displayText = [](const string& ret, const string& name,
+                                  CajetaParser::FormalParametersContext* fp) -> string {
+                string out;
+                if (!ret.empty()) out += ret + " ";
+                out += name + "(";
+                if (fp && fp->formalParameterList()) {
+                    bool first = true;
+                    for (auto* p : fp->formalParameterList()->formalParameter()) {
+                        if (!p->typeType()) continue;
+                        if (!first) out += ", ";
+                        first = false;
+                        if (p->REFERENCE()) out += "#";
+                        out += p->typeType()->getText();
+                        if (p->variableDeclaratorId()) {
+                            out += " " + p->variableDeclaratorId()->getText();
+                        }
+                    }
+                }
+                return out + ")";
+            };
+
+            bool memberIsStatic = false;   // set per classBodyDeclaration below
+
+            auto note = [&](const string& name, const string& kind,
+                            const string& key, antlr4::Token* tok,
+                            int declaredParams = 0,
+                            const string& signature = "") {
+                if (!tok) return;
+                xref::TemplateMember m;
+                m.ownerFqn       = ownerFqn;
+                m.name           = name;
+                m.kind           = kind;
+                m.overloadKey    = key;
+                m.signature      = signature;
+                m.declaredParams = declaredParams;
+                m.isStatic       = memberIsStatic;
+                m.at             = xref::SourceRef{file, (int) tok->getLine(),
+                                                   (int) tok->getCharPositionInLine()};
+                xref::registerTemplateMember(std::move(m));
+            };
+
+            for (auto* decl : body->classBodyDeclaration()) {
+                auto* member = decl->memberDeclaration();
+                if (!member) continue;
+
+                // `classBodyDeclaration : modifier* memberDeclaration` — a static
+                // member has no receiver, so its expected instantiation arity is its
+                // declared arity, not declared+1.
+                memberIsStatic = false;
+                for (auto* mod : decl->modifier()) {
+                    if (mod->getText() == "static") { memberIsStatic = true; break; }
+                }
+
+                if (auto* md = member->methodDeclaration()) {
+                    const string name = md->identifier()->getText();
+                    const string ret  = md->typeTypeOrVoid()
+                                      ? md->typeTypeOrVoid()->getText() : string("void");
+                    note(name, "method",
+                         ownerFqn + "::" + name + paramText(md->formalParameters()),
+                         md->identifier()->getStart(),
+                         paramCount(md->formalParameters()),
+                         displayText(ret, name, md->formalParameters()));
+                } else if (auto* cd = member->constructorDeclaration()) {
+                    const string name = cd->identifier()->getText();
+                    note(name, "constructor",
+                         ownerFqn + "::" + name + paramText(cd->formalParameters()),
+                         cd->identifier()->getStart(),
+                         paramCount(cd->formalParameters()),
+                         displayText("", name, cd->formalParameters()));
+                } else if (auto* od = member->operatorOverloadDeclaration()) {
+                    // Operators must survive here too — cajetadoc omits them
+                    // entirely, so this export is their only source.
+                    //
+                    // Recover the actual symbol (`operator+`, `operator[]=`) from the
+                    // tokens between OPERATOR and the parameter list. Emitting a bare
+                    // "operator" would name every operator identically — a WRONG
+                    // name, which is worse than a missing one.
+                    string sym;
+                    bool afterKw = false;
+                    for (auto* child : od->children) {
+                        if (dynamic_cast<CajetaParser::FormalParametersContext*>(child)) break;
+                        if (!afterKw) {
+                            auto* term = dynamic_cast<antlr4::tree::TerminalNode*>(child);
+                            if (term && term == od->OPERATOR()) afterKw = true;
+                            continue;
+                        }
+                        sym += child->getText();
+                    }
+                    const string name = "operator" + sym;
+                    const string ret  = od->typeTypeOrVoid()
+                                      ? od->typeTypeOrVoid()->getText() : string("void");
+                    note(name, "method",
+                         ownerFqn + "::" + name + paramText(od->formalParameters()),
+                         od->OPERATOR() ? od->OPERATOR()->getSymbol() : nullptr,
+                         paramCount(od->formalParameters()),
+                         displayText(ret, name, od->formalParameters()));
+                } else if (auto* fd = member->fieldDeclaration()) {
+                    if (!fd->variableDeclarators()) continue;
+                    const string ftype = fd->typeType() ? fd->typeType()->getText() : string();
+                    for (auto* vd : fd->variableDeclarators()->variableDeclarator()) {
+                        if (!vd->variableDeclaratorId()) continue;
+                        const string name = vd->variableDeclaratorId()->getText();
+                        note(name, "field", "", vd->variableDeclaratorId()->getStart(),
+                             0, ftype.empty() ? name : ftype + " " + name);
+                    }
+                }
+            }
+        }
+
         virtual std::any visitClassDeclaration(CajetaParser::ClassDeclarationContext* ctx) override {
-            return std::any(buildClassLike(ctx, ctx->identifier()->getText(),
+            auto built = buildClassLike(ctx, ctx->identifier()->getText(),
                 ctx->typeParameters(), ctx->EXTENDS(), ctx->IMPLEMENTS(),
-                ctx->PERMITS(), ctx->typeList(), /*isRecord=*/false));
+                ctx->PERMITS(), ctx->typeList(), /*isRecord=*/false);
+            captureDeclPosition(built, ctx->identifier());
+            return std::any(built);
         }
 
         virtual std::any visitRecordDeclaration(CajetaParser::RecordDeclarationContext* ctx) override {
-            return std::any(buildClassLike(ctx, ctx->identifier()->getText(),
+            auto built = buildClassLike(ctx, ctx->identifier()->getText(),
                 ctx->typeParameters(), ctx->EXTENDS(), ctx->IMPLEMENTS(),
-                nullptr, ctx->typeList(), /*isRecord=*/true));
+                nullptr, ctx->typeList(), /*isRecord=*/true);
+            captureDeclPosition(built, ctx->identifier());
+            return std::any(built);
         }
 
         // Shared builder for class-like declarations (class / record).
@@ -683,6 +858,16 @@ namespace cajeta {
             // map by `instantiate(...)`, where T is bound to a concrete type.
             // Skipping here also keeps the template out of getAllMethods'
             // codegen worklist by way of having no methods at all.
+            //
+            // xref (ide-symbol-index plan 1.5): "no methods at all" is exactly why
+            // no generic type used to export a single member — `ArrayList.add`, the
+            // most-called method in the stdlib, was absent from the index. Capture
+            // the template's members DECLARATIVELY here, before the skip: name,
+            // position, and parameter types as written. No resolution — that is what
+            // the skipped walk cannot do, and navigation does not need it.
+            if (structure->isTemplate() && xref::captureEnabled()) {
+                captureTemplateMembers(ctx, structure);
+            }
             if (!structure->isTemplate()) {
                 structure->setClassBody(std::any_cast<ClassBodyDeclarationPtr>(visitChildren(ctx)));
 
@@ -994,6 +1179,7 @@ namespace cajeta {
                 name, pModule->getQName()->getPackageName() + packageAdj);
             auto viewStructure = make_shared<CajetaView>(pModule, qName);
             CajetaClassPtr structure = static_pointer_cast<CajetaClass>(viewStructure);
+            captureDeclPosition(structure, ctx->identifier());
 
             if (auto* typeDecl = dynamic_cast<CajetaParser::TypeDeclarationContext*>(ctx->parent)) {
                 for (auto* mod : typeDecl->classOrInterfaceModifier()) {
@@ -1058,12 +1244,32 @@ namespace cajeta {
             // both forms for class names).
             CajetaType::getCanonicalMap()[qName->getTypeName()] = enumType;
 
+            // xref (ide-symbol-index plan 1.4): an enum is a CajetaType, not a
+            // CajetaClass, so it needs its declaring file + position recorded here
+            // or the export cannot locate it at all.
+            enumType->setDeclaringFile(pModule->currentSourceFile());
+            if (ctx->identifier() && ctx->identifier()->getStart()) {
+                enumType->setDeclPosition(
+                    (int) ctx->identifier()->getStart()->getLine(),
+                    (int) ctx->identifier()->getStart()->getCharPositionInLine());
+            }
+
             // Walk constants in declared order and assign sequential ordinals.
             int32_t ordinal = 0;
             if (auto* constants = ctx->enumConstants()) {
                 for (auto* ec : constants->enumConstant()) {
                     string constName = ec->identifier()->getText();
                     CajetaType::registerEnumConstant(name, constName, ordinal++);
+                    // The ordinal registry carries no position, so record each
+                    // constant's own — otherwise Ctrl-click on `GREEN` would land
+                    // on `Color`, or on nothing.
+                    if (ec->identifier()->getStart()) {
+                        CajetaType::registerEnumConstantPosition(
+                            name, constName,
+                            pModule->currentSourceFile(),
+                            (int) ec->identifier()->getStart()->getLine(),
+                            (int) ec->identifier()->getStart()->getCharPositionInLine());
+                    }
                 }
             }
             return std::any(nullptr);
@@ -1161,6 +1367,7 @@ namespace cajeta {
                     pModule, qName, qExtended, qImplemented);
             }
             interface->setIsInterface(true);
+            captureDeclPosition(interface, ctx->identifier());
             // @ValueType is meaningless on an interface (value types are by-value
             // POD). The interface path never attaches annotations to the structure,
             // so check the enclosing typeDeclaration's modifiers directly and reject.
@@ -1297,6 +1504,13 @@ namespace cajeta {
                         pModule, methodName, returnType, formals,
                         /*block=*/nullptr, interface);
                     method->setAbstract(true);
+                    // xref (ide-symbol-index §2): interface methods are the TARGET
+                    // of every override edge, so they must be locatable.
+                    if (common->getStart()) {
+                        method->setDeclPosition(
+                            (int) common->getStart()->getLine(),
+                            (int) common->getStart()->getCharPositionInLine());
+                    }
                     classBody->getDeclarations().push_back(
                         make_shared<MethodDeclaration>(method, common->getStart()));
                 }
@@ -1482,6 +1696,7 @@ namespace cajeta {
                                             << declText << "\n";
                                     }
                                 }
+                                xref::SyntheticSourceScope xrefMask;   // see 2.2.8
                                 auto* frag = cajeta::synth::parseClassBodyFragment(
                                     "{ " + declText + " }");
                                 for (auto* cbd : frag->classBodyDeclaration()) {
@@ -1751,6 +1966,15 @@ namespace cajeta {
                 // nested classBody) .back() is the immediately
                 // enclosing class, which is the correct parent.
                 pModule->getStructureStack().back());
+            // xref (ide-symbol-index §2): the `operator` keyword is this
+            // declaration's name token. Operators MUST appear in the export —
+            // cajetadoc's model omits them entirely (cajetadoc-model-fidelity §2.1),
+            // so this is the only place an IDE can learn they exist.
+            if (ctx->OPERATOR() && ctx->OPERATOR()->getSymbol()) {
+                method->setDeclPosition(
+                    (int) ctx->OPERATOR()->getSymbol()->getLine(),
+                    (int) ctx->OPERATOR()->getSymbol()->getCharPositionInLine());
+            }
             // `#T operator+ (...)` — return transfers ownership. With
             // the unified typeTypeOrVoid grammar, REFERENCE lives
             // inside the typeTypeOrVoid subtree for every alternative.
@@ -1891,6 +2115,13 @@ namespace cajeta {
                 // classes the stack has one entry and .back() ==
                 // .front().
                 pModule->getStructureStack().back());
+            // xref (ide-symbol-index §2): point at the method's NAME token — what an
+            // IDE navigates to and renames — not at its modifiers.
+            if (ctx->identifier() && ctx->identifier()->getStart()) {
+                method->setDeclPosition(
+                    (int) ctx->identifier()->getStart()->getLine(),
+                    (int) ctx->identifier()->getStart()->getCharPositionInLine());
+            }
             if (isMethodTemplate) {
                 method->setMethodTypeParameters(std::move(methodTypeParameters));
                 // Source-text capture happens in visitClassBodyDeclaration
@@ -1962,6 +2193,12 @@ namespace cajeta {
                 formalParameters,
                 block,
                 pModule->getStructureStack().back());
+            // xref (ide-symbol-index §2) — the constructor's name token.
+            if (ctx->identifier() && ctx->identifier()->getStart()) {
+                method->setDeclPosition(
+                    (int) ctx->identifier()->getStart()->getLine(),
+                    (int) ctx->identifier()->getStart()->getCharPositionInLine());
+            }
             // Constructors can also declare `throws T1, T2` per the grammar.
             if (auto* qnList = ctx->qualifiedNameList()) {
                 vector<QualifiedNamePtr> throws;
@@ -2246,25 +2483,39 @@ namespace cajeta {
             // Flagged isAnnotation so buildPendingPrototypes skips it — it never
             // lands in the structure map, keeping it out of the type-based
             // pointcut discriminator (resolveAdviceMatches). Body elements inert.
-            // Package "code" matches how a bare `@Ann` usage canonicalizes
-            // (QualifiedName::fromContext → "code.Ann"), so the declared type and
-            // the applied annotation unify — classesAnnotated<@Ann>() injects the
-            // same canonical the runtime registry matches on.
+            // The annotation's IDENTITY carries its REAL package (derived like
+            // a class's — see the class path's `pModule->getQName()...`), so
+            // xref/navigation, reflection, and any FQN display show
+            // `tour.lang.Traced`, not a `code.` pseudo-package.
+            const std::string annName = ctx->identifier()->getText();
             QualifiedNamePtr qName = QualifiedName::getOrInsert(
-                ctx->identifier()->getText(), "code");
+                annName, pModule->getQName()->getPackageName());
             list<QualifiedNamePtr> none;
             auto ann = make_shared<CajetaClass>(pModule, qName, none, none);
             ann->setIsAnnotation(true);
             auto& canon = CajetaType::getCanonicalMap();
-            // Register ONLY under the canonical "code.<Name>" key. A bare `@Foo`
-            // usage and classesAnnotated<@Foo>() both canonicalize to "code.Foo"
-            // (QualifiedName::fromContext), and findAnnotation/advice match by
-            // short name against per-class instances — none need a bare short-name
-            // canonicalMap entry. Registering the short name here would CLOBBER a
-            // real class of the same short name, making that class in type
-            // position resolve to the layout-less annotation → SIGSEGV at
-            // allocation (task #65).
-            canon[qName->toCanonical()] = static_pointer_cast<CajetaType>(ann);
+            // The canonicalMap KEY, however, stays the collision-safe "code"
+            // pseudo-package. A bare `@Foo` usage and classesAnnotated<@Foo>()
+            // both canonicalize to "code.Foo" (QualifiedName::fromContext), and
+            // findAnnotation/advice match by short name against per-class
+            // instances — so keying by the real FQN would CLOBBER a same-named
+            // real class, making that class in type position resolve to the
+            // layout-less annotation → SIGSEGV at allocation (task #65). The
+            // key and the identity are deliberately distinct.
+            QualifiedNamePtr codeKey = QualifiedName::getOrInsert(annName, "code");
+            canon[codeKey->toCanonical()] = static_pointer_cast<CajetaType>(ann);
+
+            // xref (ide-symbol-index plan 4.4): never in structures, so the
+            // export's class walk only sees this canonicalMap entry — without a
+            // declaring position stamped here it is unplaceable and silently
+            // absent (every annotation-only stdlib file was). Mirrors the enum
+            // stamping in visitEnumDeclaration.
+            ann->setDeclaringFile(pModule->currentSourceFile());
+            if (ctx->identifier() && ctx->identifier()->getStart()) {
+                ann->setDeclPosition(
+                    (int) ctx->identifier()->getStart()->getLine(),
+                    (int) ctx->identifier()->getStart()->getCharPositionInLine());
+            }
             return std::any(nullptr);
         }
 

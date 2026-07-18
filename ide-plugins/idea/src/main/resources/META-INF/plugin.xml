@@ -79,6 +79,26 @@
         <fileEditorProvider
             implementation="dev.cajeta.idea.jsonl.JsonlFileEditorProvider"/>
 
+        <!-- ide-symbol-index Unit 6: compiler-authoritative xref cache. Shards
+             (.cjxref, one per source file, written under .cajeta/xref/) feed a
+             FileBasedIndex; the index is cache, not authority. -->
+        <fileType
+            name="Cajeta Xref Shard"
+            implementationClass="dev.cajeta.idea.xref.CajetaXrefFileType"
+            fieldName="INSTANCE"
+            extensions="cjxref"/>
+        <fileBasedIndex
+            implementation="dev.cajeta.idea.xref.CajetaXrefIndex"/>
+        <!-- Unit 9: visible degradation — freshness state + reason. -->
+        <statusBarWidgetFactory
+            id="CajetaXrefStatus"
+            implementation="dev.cajeta.idea.xref.CajetaXrefStatusWidgetFactory"/>
+        <!-- Unit 8 §8.3: expose the mounted stdlib/dependency source as read-only
+             library source roots so Ctrl-click into stdlib types resolves.
+             The mount itself runs in the background startup activity below. -->
+        <additionalLibraryRootsProvider
+            implementation="dev.cajeta.idea.xref.CajetaXrefLibraryRootsProvider"/>
+
         <lang.parserDefinition
             language="Cajeta"
             implementationClass="dev.cajeta.idea.parser.CajetaParserDefinition"/>
@@ -116,6 +136,8 @@
             serviceImplementation="dev.cajeta.idea.markdown.MarkdownEngineRegistry"/>
 
         <postStartupActivity
+            implementation="dev.cajeta.idea.xref.CajetaSourceMountStartup"/>
+        <postStartupActivity
             implementation="dev.cajeta.idea.markdown.InstallCommentCaretListener"/>
 
         <postStartupActivity
@@ -148,6 +170,11 @@
     <actions>
         <group id="dev.cajeta.idea.toolsGroup" text="Cajeta" popup="true">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <action
+                id="dev.cajeta.idea.xref.RebuildIndex"
+                class="dev.cajeta.idea.xref.CajetaXrefRebuildAction"
+                text="Rebuild Cajeta Xref Index"
+                description="Whole-root compiler export, ingested into the xref index in the background."/>
             <action
                 id="dev.cajeta.idea.TypeFixtureAction"
                 class="dev.cajeta.idea.harness.TypeFixtureAction"

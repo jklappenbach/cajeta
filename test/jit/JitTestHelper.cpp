@@ -18,6 +18,8 @@
 #include "cajeta/buildtool/IrCache.h"
 #include "cajeta/buildtool/PrimeCache.h"
 #include "cajeta/compile/Compiler.h"
+#include "cajeta/compile/StdlibReuseCore.h"
+#include "cajeta/dbg/DebugLocTable.h"
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/type/CajetaType.h"
 #include "cajeta/type/CajetaClass.h"
@@ -224,11 +226,16 @@ bool stdlibReusable(const CajetaJit::Options& o) {
 // Process-global cache: the stdlib parsed + codegen'd ONCE into a shared
 // LLVMContext, with a captured post-stdlib baseline restored before each reusing
 // test. Collapses the ~14s/test stdlib parse+codegen to a one-time cost.
+//
+// The prime/restore CORE (shared context, prime Compiler, type/module/xref
+// baselines, structures snapshot, lazy-stdlib + instantiation rollback)
+// lives in src/cajeta/compile/StdlibReuseCore (factored for the lint
+// server, plan 1.2.1). This cache LAYERS the JIT-specific pieces on top:
+// the codegen passes at prime, llvm-level pristineness snapshots
+// (verifyPristine), transient struct-name release, the prime-cache lookup
+// seam, and the shared stdlib dylib fork.
 struct StdlibReuseCache {
-    llvm::LLVMContext sharedContext;
-    std::unique_ptr<cajeta::Compiler> primeCompiler;   // owns the TargetMachine the stdlib references
-    cajeta::CajetaModulePtr stdlibModule;
-    std::map<std::string, cajeta::CajetaClassPtr> baselineStructures;
+    cajeta::CajetaModulePtr stdlibModule;   // = StdlibReuseCore's, cached for the llvm-level probes
     std::set<std::string> baselineStructNames;   // stdlib llvm StructType names at prime
     // Per-baseline-function signature (instruction count; SIZE_MAX = declaration)
     // captured at prime. A reusing test that MUTATES or REMOVES a baseline
@@ -253,7 +260,6 @@ struct StdlibReuseCache {
         // [compile-cache plan Unit 1] phase-split instrumentation, env-gated.
         const bool kPrimeTiming = std::getenv("CAJETA_PRIME_TIMING") != nullptr;
         auto _ptStart = std::chrono::steady_clock::now();
-        cajeta::Compiler::setSharedContext(&sharedContext);
         // [compile-cache plan Unit 2] persistent-prime lookup seam (spec §3).
         // Key computed + lookup issued here; nothing is STORED yet (the
         // artifact writer is Unit 3), so today every lookup is a miss and
@@ -288,24 +294,20 @@ struct StdlibReuseCache {
                 }
             }
         }
-        // First Compiler under the shared context primes the global type
-        // tables (resetGlobals + init) in that context.
-        primeCompiler = std::make_unique<cajeta::Compiler>();
-        primeCompiler->ensureStdlibModule();            // (a) front-end: parse + typecheck stdlib
+        // (a) front-end + (b) IR-gen, via the shared core: the core primes
+        // the front-end (parse + prototypes) and captures the global
+        // baselines; the layer callback adds the JIT-only codegen passes,
+        // after which the core RE-captures so restores return to the
+        // post-codegen state — the same net sequence the pre-factoring
+        // cache ran inline.
+        auto& core = cajeta::StdlibReuseCore::instance();
+        core.ensurePrimed();                             // (a) front-end: parse + typecheck stdlib
         auto _ptAfterFrontEnd = std::chrono::steady_clock::now();
-        runCodegenPasses(primeCompiler->getModules());   // (b) IR-gen: codegen bodies + static inits
+        core.ensureCodegenLayer([](cajeta::Compiler& prime) {
+            runCodegenPasses(prime.getModules());        // (b) IR-gen: codegen bodies + static inits
+        });
         auto _ptAfterIrGen = std::chrono::steady_clock::now();
-        stdlibModule = cajeta::CajetaModule::getStdlibModule();
-        // Snapshot the pristine state AFTER the stdlib is fully built.
-        cajeta::CajetaType::captureBaseline();
-        cajeta::CajetaModule::captureBaseline();
-        baselineStructures = stdlibModule->getStructures();
-        // Snapshot each baseline stdlib class's module-bound llvm bindings
-        // (drop/vtable/RTTI/static-field globals + method functions) so
-        // restoreBaseline can reset any that a reusing test lazily generated
-        // into its own per-test module — the cross-module-reference leak.
-        for (auto& [canon, klass] : baselineStructures)
-            if (klass) klass->captureReuseBaseline();
+        stdlibModule = core.getStdlibModule();
         // Record the stdlib's llvm StructType names so per-test (user) struct
         // names can be stripped afterward — see clearTransientStructNames.
         for (auto* st : stdlibModule->getLlvmModule()->getIdentifiedStructTypes())
@@ -403,55 +405,22 @@ struct StdlibReuseCache {
                 st->setName("");
     }
 
-    // Reset per-test global state to the captured post-stdlib baseline: drop
-    // every user module's types/methods/structures AND any user-triggered
-    // stdlib template instantiation's CAJETA-side objects. The stdlib
-    // llvm::Module itself is left as-is — codegen must target it (the cached
-    // baseline objects hold llvm::Function*/Global* pointers INTO it, so a new
-    // instantiation that references a baseline vtable must be emitted there too;
-    // emitting into a clone yields cross-module references). The merge takes a
-    // self-contained CLONE, so the (growing) cached module is never consumed.
-    // Instantiations accumulate in it across the shard — bounded and harmless
-    // for built-in type args; see the known-limitation note at the call site.
+    // Reset per-test global state to the captured post-stdlib baseline. The
+    // mechanics (reuse-epoch bump, type/module registries, structures, lazy
+    // stdlib rollback, method-template-instantiation removal, per-class llvm
+    // binding reset) live in StdlibReuseCore::restoreBaseline — the factored
+    // core this cache layers on. The stdlib llvm::Module itself is left
+    // as-is — codegen must target it (the cached baseline objects hold
+    // llvm::Function*/Global* pointers INTO it, so a new instantiation that
+    // references a baseline vtable must be emitted there too; emitting into
+    // a clone yields cross-module references). The merge takes a
+    // self-contained CLONE, so the (growing) cached module is never
+    // consumed. Instantiations accumulate in it across the shard — bounded
+    // and harmless for built-in type args; see the known-limitation note at
+    // the call site.
     void restoreBaseline() {
         if (!primed) return;
-        // Advance the reuse generation so per-template method-instantiation
-        // caches (held on persistent stdlib Methods) invalidate stale entries
-        // bound to the previous test's now-freed user emit module.
-        cajeta::CajetaModule::bumpReuseEpoch();
-        cajeta::CajetaType::restoreBaseline();
-        cajeta::CajetaModule::restoreBaseline();   // re-pins the stdlib singleton
-        stdlibModule->getStructures() = baselineStructures;
-        // Lazy stdlib: the baseline was captured before any on-demand package
-        // (cajeta.math) was parsed, and the restore above drops those types.
-        // Clear the lazy bookkeeping too, so a later test importing the package
-        // re-parses it instead of skipping it as "already parsed".
-        cajeta::Compiler::resetLazyStdlibState();
-        // Drop every method-template instantiation a PRIOR test registered on a
-        // persistent stdlib class (e.g. ParallelDriver::forEachWorker<test.M>,
-        // forEachParallelChain<test.M>). Such a class outlives the per-test user
-        // module its instantiations were codegen'd into; left registered, the
-        // next test's resolveMethod finds the stale entry and skips re-emitting
-        // the body into ITS module — the call site then references an undefined
-        // symbol at JIT link. The per-template methodInstantiationCache is already
-        // epoch-invalidated; this clears the parallel registration on the host
-        // class so the next test re-instantiates + re-codegens cleanly. (Class-
-        // template instantiations like Stream<test.M> ride their own per-test
-        // class object, which is dropped with the user module — no cleanup
-        // needed.) Collect-then-remove to avoid mutating the maps mid-iteration.
-        for (auto& [canonical, klass] : stdlibModule->getStructures()) {
-            if (!klass) continue;
-            std::vector<cajeta::MethodPtr> stale;
-            for (auto& m : klass->getMethodList()) {
-                if (m && m->isMethodTemplateInstantiation()) stale.push_back(m);
-            }
-            for (auto& m : stale) klass->removeMethod(m);
-            // Reset this class's module-bound llvm bindings (drop/vtable/RTTI/
-            // static-field globals + remaining method functions) that a reusing
-            // test generated into its own per-test module, so the next test
-            // regenerates into its module rather than referencing a freed one.
-            klass->restoreReuseBaseline();
-        }
+        cajeta::StdlibReuseCore::instance().restoreBaseline();
     }
 
     // ===================== U7b (fork B): shared stdlib JITDylib ============
@@ -799,7 +768,8 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         if (reuseStdlib) {
             stdlibCache.ensurePrimed();
             stdlibCache.restoreBaseline();
-            cajeta::Compiler::setSharedContext(&stdlibCache.sharedContext);
+            cajeta::Compiler::setSharedContext(
+                cajeta::StdlibReuseCore::instance().context());
             cajeta::Compiler::setReuseHazardArmed(true);
         } else {
             cajeta::Compiler::setSharedContext(nullptr);
@@ -821,6 +791,13 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         }
         compiler->getMutableFlags().lineInfo = opts.lineInfoEnabled;
         compiler->getMutableFlags().stackTraceCapture = opts.stackTraceCaptureEnabled;
+        if (opts.debugInfoEnabled) {
+            compiler->getMutableFlags().debugInfo = true;
+            compiler->getMutableFlags().debugInfoLevel = cajeta::DebugInfo::Full;
+            // Ids are dense and sequential from 0 per compile; a previous test's
+            // entries would shift this one's.
+            cajeta::dbg::globalDbgLocTable().clear();
+        }
         // CAJETA_LAZY_SCOPE=1 runs the whole suite under --lazy-scope so the
         // safe lazy-frame path (ensure_at at spawn sites) gets full coverage.
         if (const char* lz = std::getenv("CAJETA_LAZY_SCOPE")) {

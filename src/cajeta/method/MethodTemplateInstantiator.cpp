@@ -33,6 +33,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include "cajeta/xref/XrefIndex.h"
 
 namespace cajeta {
 
@@ -375,6 +376,12 @@ namespace cajeta {
             + "public class " + wrapperClassName + " {\n"
             + effectiveSource + "\n"
             + "}\n";
+
+        // Synthesized snippet: its positions refer to the snippet, not to a file.
+        // Mask the parse AND the walk below, or the instantiated body's callees are
+        // attributed to the user call site that triggered the instantiation
+        // (ide-symbol-index 2.2.8).
+        xref::SyntheticSourceScope xrefMask;
 
         // Leaking parse (shared helper): the extracted method's AST holds token
         // pointers the later body codegen dereferences, so the pipeline must

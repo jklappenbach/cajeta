@@ -144,6 +144,15 @@ namespace cajeta {
         bool prototypeBuilt = false;
         bool recordType = false;
         CajetaModulePtr module;
+
+        // `declaringFile` / `declLine` / `declColumn` now live on CajetaType — an
+        // ENUM is a CajetaType and not a CajetaClass, so a class-only field left
+        // every enum unlocatable (ide-symbol-index plan 1.4). Accessors are
+        // inherited; only the capture helper stays here.
+
+        // Read the module's current parse file into declaringFile. Out-of-line:
+        // CajetaModule is only forward-declared here.
+        void captureDeclaringFile();
         // Emit target for this class's own IR (vtable / RTTI / clinit / static
         // fields). Null → getEmitModule() falls back to `module` (production /
         // non-reuse: resolution and emission coincide). Set only in the stdlib
@@ -321,10 +330,21 @@ namespace cajeta {
         CajetaClass(CajetaModulePtr module) {
             this->module = module;
             scope = nullptr;
+            captureDeclaringFile();
         }
         CajetaClass(CajetaModulePtr module, QualifiedNamePtr qName, list<QualifiedNamePtr> qImplemented);
 
         CajetaClass(CajetaModulePtr module, QualifiedNamePtr qName, list<QualifiedNamePtr> qExtended, list<QualifiedNamePtr> qImplemented);
+
+        // The source file this class was DECLARED in, remapped (build-root
+        // independent). Recorded at construction from the module's current parse
+        // file, because the module cannot answer it later: the stdlib parses
+        // every file into one module (external-debug §6). A template
+        // instantiation inherits it from its template — the instantiation
+        // happens wherever the use site is, but the code still lives in the
+        // template's file.
+        // getDeclaringFile / setDeclaringFile / getDeclLine / getDeclColumn /
+        // setDeclPosition are inherited from CajetaType.
 
         /**
          * Create a structure that provides for a boolean type for whether the reference owns the instance and should delete at scope-end,
@@ -387,6 +407,11 @@ namespace cajeta {
             this->qExtended = std::move(ext);
             this->qImplemented = std::move(impl);
             this->placeholderFlag = false;
+            // A placeholder was constructed at its first REFERENCE, so it
+            // captured whatever file that reference sat in (String, referenced
+            // from BFloat16.cajeta, reported BFloat16.cajeta). This is the
+            // declaration — recapture.
+            captureDeclaringFile();
         }
         list<CajetaClassPtr>& getImplementedInterfaces() { return implementedInterfaces; }
         const list<QualifiedNamePtr>& getQImplemented() const { return qImplemented; }
@@ -1155,10 +1180,23 @@ namespace cajeta {
         // the ACTIVE module's builder, not the instantiation's emit module (which
         // can differ — and yield a freed insert block — when the template lives in
         // a classpath .cja). resolveTypes-phase callers leave it null.
+        //
+        // This is the ONE choke point every callee resolution passes through, so it
+        // is where the xref export records call edges (ide-symbol-index §2). It is a
+        // thin wrapper: `resolveMethodImpl` does the work (and has many return
+        // paths), the wrapper notes the result exactly once. No-op unless
+        // --emit-xref.
         MethodPtr resolveMethod(string& methodName, vector<ParameterEntry>& parameters,
             bool isConstructor, bool floatingParams,
             const vector<CajetaTypePtr>& explicitMethodTypeArgs = {},
             CajetaModulePtr activeModule = nullptr);
+
+    private:
+        MethodPtr resolveMethodImpl(string& methodName, vector<ParameterEntry>& parameters,
+            bool isConstructor, bool floatingParams,
+            const vector<CajetaTypePtr>& explicitMethodTypeArgs,
+            CajetaModulePtr activeModule);
+    public:
 
         // Register + prototype + generate a method-template instantiation
         // exactly as a call site would (bringMethodTemplateInstantiationToLife).

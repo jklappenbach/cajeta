@@ -22,6 +22,7 @@
 #include "cajeta/buildtool/DiagnosticFormat.h"
 #include "cajeta/buildtool/Flavor.h"
 #include "cajeta/buildtool/IrCache.h"
+#include "cajeta/error/Diagnostics.h"
 #include "cajeta/buildtool/Lockfile.h"   // sha256Hex
 #include "cajeta/buildtool/Manifest.h"
 #include "cajeta/buildtool/Reproducibility.h"
@@ -476,6 +477,13 @@ namespace cajeta::buildtool {
                             // outputs, and the skip must be visible always.
                             llvm::outs() << "[cache] hit — re-published "
                                          << outputPath.string() << "\n";
+                            // A cached build spawns no compiler, so it emits no
+                            // phase records — the IDE would show an instant green
+                            // check under an empty tree. Say, structurally, that
+                            // the output came from cache.
+                            if (diagnosticFormat() == DiagFormat::Json) {
+                                emitJsonCacheHit(outputPath.string());
+                            }
                             ActionResult hit;
                             hit.outputs["format"] = formatLabel;
                             hit.outputs["flavor"] = flavor;

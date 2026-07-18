@@ -9,6 +9,7 @@
 #include "llvm/TargetParser/Triple.h"
 #include "../error/Exception.h"
 #include "../error/DiagnosticEngine.h"
+#include "../xref/XrefIndex.h"
 
 #include "CajetaModule.h"
 #include "../logging/CajetaLogger.h"
@@ -349,6 +350,29 @@ namespace cajeta {
     void CajetaModule::onImportDeclaration(CajetaParser::ImportDeclarationContext* ctx) {
         auto qName = QualifiedName::fromContext(ctx->qualifiedName());
         imports[qName->getTypeName()][qName->getPackageName()] = qName;
+        // xref (ide-symbol-index): record the imported type as a reference at
+        // its name token, so Ctrl-click on `import a.b.Gzip;` navigates to the
+        // type. Imports resolve here, not through CajetaType::fromContext, so
+        // without this they carry no edge. Gated on --emit-xref; a wildcard
+        // (`a.b.*`) or an unresolved name records nothing (prune drops the
+        // rest). Positioned at the LEAF identifier — the type name a developer
+        // Ctrl-clicks.
+        if (xref::captureEnabled() && !qName->getTypeName().empty()
+                && qName->getTypeName() != "*" && ctx->qualifiedName()) {
+            const auto& ids = ctx->qualifiedName()->identifier();
+            if (!ids.empty()) {
+                if (auto* tok = ids.back()->getStart()) {
+                    if (tok->getInputStream()) {
+                        if (const std::string* file = xref::internSourceFile(
+                                tok->getInputStream()->getSourceName())) {
+                            xref::noteTypeReference(qName->toCanonical(), *file,
+                                (int) tok->getLine(),
+                                (int) tok->getCharPositionInLine());
+                        }
+                    }
+                }
+            }
+        }
         // Lazy stdlib: an import of an on-demand package (e.g. cajeta.math)
         // triggers that package's prescan + enqueue so its types resolve
         // during this parse and are fully parsed at the next drain point.
@@ -426,19 +450,39 @@ namespace cajeta {
             CajetaModulePtr stdlibModule;
         };
         ModuleGlobalsBaseline g_moduleBaseline;
+        // lint-server sibling context (spec §4): a SECOND slot holding the
+        // module registries after the sibling sweep, restored independently of
+        // the pristine g_moduleBaseline on a warm request. See CajetaType's
+        // matching context baseline.
+        ModuleGlobalsBaseline g_moduleContextBaseline;
+
+        void captureModuleBaselineInto(
+                ModuleGlobalsBaseline& b,
+                const map<string, MethodPtr>& methods,
+                const map<string, CajetaModulePtr>& strutureToModule,
+                const map<string, CajetaModulePtr>& moduleVariables,
+                const vector<CajetaClassPtr>& aspectClasses,
+                const vector<CajetaModule::ComponentDescriptorPtr>& componentClasses,
+                const vector<CajetaModule::FactoryDescriptorPtr>& factoryClasses,
+                const string& activeProfile,
+                const CajetaModulePtr& stdlibModule) {
+            b.methods = methods;
+            b.strutureToModule = strutureToModule;
+            b.moduleVariables = moduleVariables;
+            b.aspectClasses = aspectClasses;
+            b.componentClasses = componentClasses;
+            b.factoryClasses = factoryClasses;
+            b.activeProfile = activeProfile;
+            b.methodArchive = Method::getArchive();
+            b.stdlibModule = stdlibModule;
+            b.valid = true;
+        }
     }
 
     void CajetaModule::captureBaseline() {
-        g_moduleBaseline.methods = methods;
-        g_moduleBaseline.strutureToModule = strutureToModule;
-        g_moduleBaseline.moduleVariables = moduleVariables;
-        g_moduleBaseline.aspectClasses = aspectClasses;
-        g_moduleBaseline.componentClasses = componentClasses;
-        g_moduleBaseline.factoryClasses = factoryClasses;
-        g_moduleBaseline.activeProfile = activeProfile;
-        g_moduleBaseline.methodArchive = Method::getArchive();
-        g_moduleBaseline.stdlibModule = stdlibModule;
-        g_moduleBaseline.valid = true;
+        captureModuleBaselineInto(g_moduleBaseline, methods, strutureToModule,
+            moduleVariables, aspectClasses, componentClasses, factoryClasses,
+            activeProfile, stdlibModule);
     }
 
     void CajetaModule::restoreBaseline() {
@@ -455,6 +499,31 @@ namespace cajeta {
         // Transient per-compile pointers must not leak across tests.
         activeModule.reset();
         currentCodegenModule.reset();
+    }
+
+    void CajetaModule::captureContextBaseline() {
+        captureModuleBaselineInto(g_moduleContextBaseline, methods,
+            strutureToModule, moduleVariables, aspectClasses, componentClasses,
+            factoryClasses, activeProfile, stdlibModule);
+    }
+
+    void CajetaModule::restoreContextBaseline() {
+        if (!g_moduleContextBaseline.valid) return;
+        methods = g_moduleContextBaseline.methods;
+        strutureToModule = g_moduleContextBaseline.strutureToModule;
+        moduleVariables = g_moduleContextBaseline.moduleVariables;
+        aspectClasses = g_moduleContextBaseline.aspectClasses;
+        componentClasses = g_moduleContextBaseline.componentClasses;
+        factoryClasses = g_moduleContextBaseline.factoryClasses;
+        activeProfile = g_moduleContextBaseline.activeProfile;
+        Method::getArchive() = g_moduleContextBaseline.methodArchive;
+        stdlibModule = g_moduleContextBaseline.stdlibModule;
+        activeModule.reset();
+        currentCodegenModule.reset();
+    }
+
+    void CajetaModule::invalidateContextBaseline() {
+        g_moduleContextBaseline = ModuleGlobalsBaseline{};
     }
 
     // Walks the registered aspects, identifies each advice method by

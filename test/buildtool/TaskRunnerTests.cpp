@@ -477,3 +477,107 @@ TEST(TaskRunnerTests, errorsOnRunTaskTargetUnknown) {
     auto msg = errorText(outputs.takeError());
     EXPECT_NE(msg.find("unknown task 'ghost'"), std::string::npos);
 }
+
+// ─── CLI params reach action params ───────────────────────────────────
+//
+// A task's `params` block declares what the TASK takes, so `-p` naming anything
+// else used to be dropped — including every param of a builtin action. The
+// builtin clean task is just `{"action": "clean"}` with no params block, which
+// made `cajeta clean -p keep-cache=true` silently do nothing (2026-07-11): there
+// was no way to reach a documented action param from the command line unless the
+// project re-declared it in cajeta.json. CLI params are now overlaid onto each
+// action invocation's params.
+
+namespace {
+
+    // Records the params its action was handed, so a test can assert on the
+    // TYPES the action actually sees (a `-p` value arrives as a string).
+    class RecordingAction : public cajeta::buildtool::Action {
+    public:
+        explicit RecordingAction(llvm::json::Object* sink) : sink_(sink) {}
+        std::string name() const override { return "record"; }
+        llvm::Expected<cajeta::buildtool::ActionResult> run(
+            const llvm::json::Object& params,
+            cajeta::buildtool::TaskContext&) const override {
+            *sink_ = params;
+            return cajeta::buildtool::ActionResult{};
+        }
+    private:
+        llvm::json::Object* sink_;
+    };
+
+    llvm::json::Object runRecording(const std::string& manifest,
+                                    const cajeta::buildtool::TaskInvocationParams& cli) {
+        auto l = mustLoad(manifest);
+        llvm::json::Object seen;
+        ActionRegistry registry;
+        registry.registerAction(std::make_unique<RecordingAction>(&seen));
+        auto outputs = runTask(l.tasks, "t", cli, l.props, registry);
+        EXPECT_TRUE((bool)outputs) << errorText(outputs.takeError());
+        return seen;
+    }
+
+    const char* kRecordTask = R"({
+        "details": { "name": "a.b", "version": "0.1" },
+        "tasks": { "t": { "actions": [{ "action": "record" }] } }
+    })";
+
+} // namespace
+
+TEST(TaskRunnerTests, cliParamReachesAnActionTheTaskNeverDeclared) {
+    cajeta::buildtool::TaskInvocationParams cli;
+    cli.values["keep-cache"] = "true";
+    auto seen = runRecording(kRecordTask, cli);
+
+    // Typed, not stringly: the action asks getBoolean(), which sees nothing for
+    // the STRING "true" — an uncoerced overlay would look wired and change nothing.
+    auto b = seen.getBoolean("keep-cache");
+    ASSERT_TRUE(b.has_value()) << "keep-cache must arrive as a JSON boolean";
+    EXPECT_TRUE(*b);
+}
+
+TEST(TaskRunnerTests, cliParamsCoerceToTheTypeAnActionAsksFor) {
+    cajeta::buildtool::TaskInvocationParams cli;
+    cli.values["flag"] = "false";
+    cli.values["jobs"] = "8";
+    cli.values["label"] = "release-candidate";
+    auto seen = runRecording(kRecordTask, cli);
+
+    ASSERT_TRUE(seen.getBoolean("flag").has_value());
+    EXPECT_FALSE(*seen.getBoolean("flag"));
+    ASSERT_TRUE(seen.getInteger("jobs").has_value());
+    EXPECT_EQ(*seen.getInteger("jobs"), 8);
+    ASSERT_TRUE(seen.getString("label").has_value());
+    EXPECT_EQ(seen.getString("label")->str(), "release-candidate");
+}
+
+// The CLI is an override: it wins over a value the manifest pinned, which is
+// exactly what a user changing it from the command line is asking for.
+TEST(TaskRunnerTests, cliParamOverridesTheManifestsActionParam) {
+    cajeta::buildtool::TaskInvocationParams cli;
+    cli.values["keep-cache"] = "true";
+    auto seen = runRecording(R"({
+        "details": { "name": "a.b", "version": "0.1" },
+        "tasks": { "t": { "actions": [
+            { "action": "record", "keep-cache": false }
+        ] } }
+    })", cli);
+    ASSERT_TRUE(seen.getBoolean("keep-cache").has_value());
+    EXPECT_TRUE(*seen.getBoolean("keep-cache")) << "CLI must win over the manifest";
+}
+
+// Declared task params keep working — they still bind for ${params.<name>}
+// substitution, and they also reach the action (same name, same value).
+TEST(TaskRunnerTests, declaredTaskParamsStillBindAndSubstitute) {
+    cajeta::buildtool::TaskInvocationParams cli;
+    cli.values["greeting"] = "hei";
+    auto seen = runRecording(R"({
+        "details": { "name": "a.b", "version": "0.1" },
+        "tasks": { "t": {
+            "params": { "greeting": { "type": "string", "default": "hello" } },
+            "actions": [{ "action": "record", "echoed": "${params.greeting}" }]
+        } }
+    })", cli);
+    ASSERT_TRUE(seen.getString("echoed").has_value());
+    EXPECT_EQ(seen.getString("echoed")->str(), "hei");
+}

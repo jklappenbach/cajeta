@@ -21,6 +21,7 @@
 #include "../compile/CompilationContext.h"
 #include "../error/InvalidOperandException.h"
 #include "../error/Exception.h"
+#include "cajeta/xref/XrefIndex.h"
 
 namespace cajeta {
 
@@ -74,6 +75,8 @@ namespace cajeta {
     // thread-safe-compiler Unit 2: per-thread so concurrent compiles don't share.
     thread_local map<string, CajetaTypePtr> CajetaType::canonicalMap;
     thread_local map<string, map<string, int32_t>> CajetaType::enumConstants;
+    thread_local map<string, map<string, EnumConstantPos>>
+        CajetaType::enumConstantPositions;
     thread_local map<TypeKey, CajetaTypePtr> CajetaType::typeMap;
     thread_local map<llvm::Type::TypeID, CajetaTypePtr> CajetaType::llvmTypeIdMap;
 
@@ -196,6 +199,10 @@ namespace cajeta {
         typeMap.clear();
         llvmTypeIdMap.clear();
         enumConstants.clear();
+        // Cleared with enumConstants, never apart from it: a stale position that
+        // outlived its enum would point Ctrl-click at whatever now occupies that
+        // offset — a wrong answer, which is worse than none.
+        enumConstantPositions.clear();
         g_archive.clear();
         g_enumArchive.clear();
         g_valueTypeArchive.clear();
@@ -228,20 +235,58 @@ namespace cajeta {
             map<string, WildcardInfoEntry> g_wildcardInfo;
         };
         TypeGlobalsBaseline g_typeBaseline;
+        // A SECOND, independent slot for the lint-server sibling context
+        // (lint-server-spec §4): "stdlib + the sibling sweep", captured after
+        // registerLintContext so a warm request restores it instead of paying
+        // the sweep. Independent of g_typeBaseline (pristine stdlib), which the
+        // resweep path still needs. valid guards the never-captured case.
+        TypeGlobalsBaseline g_typeContextBaseline;
+
+        void captureTypeBaselineInto(TypeGlobalsBaseline& b,
+                                     const map<string, CajetaTypePtr>& canonicalMap,
+                                     const map<string, map<string, int32_t>>& enumConstants,
+                                     const map<TypeKey, CajetaTypePtr>& typeMap,
+                                     const map<llvm::Type::TypeID, CajetaTypePtr>& llvmTypeIdMap) {
+            b.canonicalMap = canonicalMap;
+            b.enumConstants = enumConstants;
+            b.typeMap = typeMap;
+            b.llvmTypeIdMap = llvmTypeIdMap;
+            b.g_archive = g_archive;
+            b.g_enumArchive = g_enumArchive;
+            b.g_valueTypeArchive = g_valueTypeArchive;
+            b.g_interfaceArchive = g_interfaceArchive;
+            b.g_archiveTemplateMeta = g_archiveTemplateMeta;
+            b.g_wildcardInfo = g_wildcardInfo;
+            b.valid = true;
+        }
     }
 
     void CajetaType::captureBaseline() {
-        g_typeBaseline.canonicalMap = canonicalMap;
-        g_typeBaseline.enumConstants = enumConstants;
-        g_typeBaseline.typeMap = typeMap;
-        g_typeBaseline.llvmTypeIdMap = llvmTypeIdMap;
-        g_typeBaseline.g_archive = g_archive;
-        g_typeBaseline.g_enumArchive = g_enumArchive;
-        g_typeBaseline.g_valueTypeArchive = g_valueTypeArchive;
-        g_typeBaseline.g_interfaceArchive = g_interfaceArchive;
-        g_typeBaseline.g_archiveTemplateMeta = g_archiveTemplateMeta;
-        g_typeBaseline.g_wildcardInfo = g_wildcardInfo;
-        g_typeBaseline.valid = true;
+        captureTypeBaselineInto(g_typeBaseline, canonicalMap, enumConstants,
+                                typeMap, llvmTypeIdMap);
+    }
+
+    void CajetaType::captureContextBaseline() {
+        captureTypeBaselineInto(g_typeContextBaseline, canonicalMap, enumConstants,
+                                typeMap, llvmTypeIdMap);
+    }
+
+    void CajetaType::restoreContextBaseline() {
+        if (!g_typeContextBaseline.valid) return;
+        canonicalMap = g_typeContextBaseline.canonicalMap;
+        enumConstants = g_typeContextBaseline.enumConstants;
+        typeMap = g_typeContextBaseline.typeMap;
+        llvmTypeIdMap = g_typeContextBaseline.llvmTypeIdMap;
+        g_archive = g_typeContextBaseline.g_archive;
+        g_enumArchive = g_typeContextBaseline.g_enumArchive;
+        g_valueTypeArchive = g_typeContextBaseline.g_valueTypeArchive;
+        g_interfaceArchive = g_typeContextBaseline.g_interfaceArchive;
+        g_archiveTemplateMeta = g_typeContextBaseline.g_archiveTemplateMeta;
+        g_wildcardInfo = g_typeContextBaseline.g_wildcardInfo;
+    }
+
+    void CajetaType::invalidateContextBaseline() {
+        g_typeContextBaseline = TypeGlobalsBaseline{};
     }
 
     void CajetaType::releaseThrownTransientStructNames() {
@@ -683,6 +728,31 @@ namespace cajeta {
         return it != canonicalMap.end() ? it->second : nullptr;
     }
 
+    std::string CajetaType::canonicalNameScoped(const string& shortName,
+                                                CajetaModulePtr module) {
+        // Tier 1: own package — accept a name that is built (canonicalMap) OR
+        // merely prescan-registered (g_archive), so a forward reference still
+        // resolves to its declaration's canonical FQN.
+        string ownPkg = scopePackageOf(module);
+        if (!ownPkg.empty()) {
+            string canon = ownPkg + "." + shortName;
+            if (canonicalMap.count(canon) || g_archive.count(canon)) return canon;
+        }
+        // Tier 2: explicit imports.
+        if (module) {
+            auto& imports = module->getImports();
+            auto it = imports.find(shortName);
+            if (it != imports.end() && !it->second.empty()) {
+                return it->second.begin()->second->toCanonical();
+            }
+        }
+        // Tier 3: the global short-name key (last-writer-wins across packages),
+        // via the archive so a not-yet-built forward reference is covered.
+        auto a = g_archive.find(shortName);
+        if (a != g_archive.end()) return a->second;
+        return {};
+    }
+
     CajetaTypePtr CajetaType::of(string typeName, string package) {
         QualifiedNamePtr qName = QualifiedName::getOrInsert(typeName, package);
         return CajetaType::canonicalMap[qName->toCanonical()];
@@ -743,7 +813,7 @@ namespace cajeta {
         }
     }
 
-    cajeta::CajetaTypePtr cajeta::CajetaType::fromContext(CajetaParser::TypeTypeContext* ctx, CajetaModulePtr module) {
+    cajeta::CajetaTypePtr cajeta::CajetaType::fromContextImpl(CajetaParser::TypeTypeContext* ctx, CajetaModulePtr module) {
         // Fall back to the active module set during the walk — many parse-time
         // call sites don't have a `module` to pass. See CajetaModule::activeModule.
         if (!module) {
@@ -1396,6 +1466,43 @@ namespace cajeta {
         }
 
         return type;
+    }
+
+    // Recording wrapper (ide-symbol-index 2.1.5 / 2.2.2). fromContext is the one
+    // choke point every type name in the language passes through — field types,
+    // parameter and return types, type arguments, locals, extends/implements — so
+    // hooking it here gives the IDE every type reference with no per-site
+    // instrumentation, exactly as resolveMethod does for calls.
+    //
+    // The ctx knows its own file (Compiler::parseSource names each real-source
+    // stream), so a name in a SYNTHESIZED snippet resolves to no file and is
+    // skipped: its line numbers refer to the snippet, not to anywhere.
+    cajeta::CajetaTypePtr cajeta::CajetaType::fromContext(CajetaParser::TypeTypeContext* ctx, CajetaModulePtr module) {
+        CajetaTypePtr resolved = fromContextImpl(ctx, module);
+        if (!xref::captureEnabled() || !resolved || !ctx) return resolved;
+
+        auto* tok = ctx->getStart();
+        if (!tok || !tok->getInputStream()) return resolved;
+        const std::string* file =
+            xref::internSourceFile(tok->getInputStream()->getSourceName());
+        if (!file) return resolved;                 // synthesized source: no position
+
+        // Only NAMED types are navigable. A primitive (`int32`) declares nowhere,
+        // and an array/function type is structural — its ELEMENT type is what a
+        // developer Ctrl-clicks, and that resolved through its own fromContext call
+        // (this function recurses), so it is already recorded at its own position.
+        auto klass = std::dynamic_pointer_cast<CajetaClass>(resolved);
+        if (!klass) return resolved;
+
+        // An instantiation (`ArrayList<int32>`) has no source of its own — the
+        // declaration is the TEMPLATE's, which is what the index carries.
+        std::string target = klass->getQName()->toCanonical();
+        auto lt = target.find('<');
+        if (lt != std::string::npos) target = target.substr(0, lt);
+
+        xref::noteTypeReference(target, *file, (int) tok->getLine(),
+                                (int) tok->getCharPositionInLine());
+        return resolved;
     }
 
     CajetaTypePtr CajetaType::toPointerType() {

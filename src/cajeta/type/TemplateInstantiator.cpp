@@ -32,6 +32,7 @@
 #include "../compile/CajetaLlvmVisitor.h"
 #include "../compile/Compiler.h"   // Compiler::getSharedContext() — reuse-mode gate
 #include "../error/Exception.h"
+#include "cajeta/xref/XrefIndex.h"
 #include "CajetaParser.h"
 #include "CajetaLexer.h"
 
@@ -472,6 +473,11 @@ namespace cajeta {
                 return static_pointer_cast<CajetaClass>(shared_from_this());
             }
 
+            // The snippet's positions refer to the snippet, not to any file — mask
+            // the parse and the walk so the instantiated body's callees are not
+            // attributed to the user call site that triggered it (2.2.8).
+            xref::SyntheticSourceScope xrefMask;
+
             string ifInput = synthesizePreamble(module) + templateSource + "\n";
             antlr4::ANTLRInputStream ifStream(ifInput);
             CajetaLexer ifLexer(&ifStream);
@@ -528,6 +534,9 @@ namespace cajeta {
             auto ifInst = make_shared<CajetaClass>(
                 module, ifInstQName, ifExtended, ifImplemented);
             ifInst->setIsInterface(true);
+            // The instantiation happens at the use site, but the code lives in
+            // the template's file — that is what its frames must name.
+            ifInst->setDeclaringFile(getDeclaringFile());
             if (emitOwner != module) ifInst->setEmitModule(emitOwner);
             ifInst->setTypeParameters(typeParameters);
             ifInst->setTypeArguments(args);
@@ -605,6 +614,8 @@ namespace cajeta {
         // parser's lifetime so we don't retain parse trees across compilation
         // phases — we re-parse on demand. The result of this expensive work
         // is cached above; re-parsing only runs once per unique arg list.
+        xref::SyntheticSourceScope xrefMask;   // synthesized snippet — see 2.2.8
+
         string input = synthesizePreamble(module) + templateSource + "\n";
 
         antlr4::ANTLRInputStream inputStream(input);
@@ -758,6 +769,9 @@ namespace cajeta {
         // body walk emits method IR (prototype-on-reference), so the emit target
         // must already be in place.
         auto inst = make_shared<CajetaClass>(module, instQName, instExtended, instImplemented);
+        // The instantiation happens at the use site, but the code lives in the
+        // template's file — that is what its frames must name.
+        inst->setDeclaringFile(getDeclaringFile());
         if (recordDecl) inst->setRecordType(true);
         if (emitOwner != module) inst->setEmitModule(emitOwner);
         // Carry the template's class-level annotations onto the instantiation —
@@ -994,6 +1008,8 @@ namespace cajeta {
         // Re-parse the captured snippet to walk constructor declarations.
         // Same machinery as instantiate, just used for inspection — we
         // don't push substitutions or emit IR here.
+        xref::SyntheticSourceScope xrefMask;   // synthesized snippet — see 2.2.8
+
         string input = synthesizePreamble(module) + templateSource + "\n";
         antlr4::ANTLRInputStream inputStream(input);
         CajetaLexer lexer(&inputStream);

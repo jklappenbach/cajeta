@@ -94,6 +94,9 @@ namespace cajeta {
     protected:
         static thread_local map<string, MethodPtr> archive;  // per-compile (U3)
         string name;
+        // Declaration name-token position; see getDeclLine(). 0 = synthesized.
+        int declLine = 0;
+        int declColumn = 0;
         CajetaClassPtr parent;
         CajetaTypePtr returnType;
         // True iff the return type is prefixed with `#`, meaning the method
@@ -634,6 +637,18 @@ namespace cajeta {
         // once. Frames stay on the stack — each enclosing block will
         // observe the terminator and skip its own fire on the way out.
         void emitOwnerDrops(CajetaModulePtr module);
+
+        // Position of the declaration's NAME token (1-based line, 0-based col).
+        // Set by the visitor at each method/constructor declaration site; 0 means
+        // synthesized (drop methods, mocks, template instantiations). Consumed by
+        // the xref export (ide-symbol-index §2).
+        int getDeclLine() const { return declLine; }
+        int getDeclColumn() const { return declColumn; }
+
+        void setDeclPosition(int line, int column) {
+            declLine = line;
+            declColumn = column;
+        }
 
         const string& getName() const {
             return name;

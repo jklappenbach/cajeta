@@ -156,6 +156,10 @@ BuiltJit buildJit(const JitRunOptions& opts) {
     // Statement-boundary safepoint emission (CP2). Reset the global loc table
     // so this compile's loc_ids start at 0.
     compiler->getMutableFlags().debugInfo = opts.debugInfo;
+    // Keep the level in step with the bool the JIT host sets directly, so the
+    // cache flag set and any level-driven codegen see the same world.
+    compiler->getMutableFlags().debugInfoLevel =
+        opts.debugInfo ? DebugInfo::Full : DebugInfo::Line;
     if (opts.debugInfo) cajeta::dbg::globalDbgLocTable().clear();
 
     fs::path archiveRoot = fs::temp_directory_path()

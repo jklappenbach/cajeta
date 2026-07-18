@@ -71,6 +71,14 @@ class CajetaDebugProcess(
             return
         }
 
+        // Mount the compiler's stdlib source in the background (idempotent,
+        // cheap on cache hit) so a stop in a stdlib frame opens a real file
+        // (ide-symbol-index 8.2.4).
+        com.intellij.openapi.application.ApplicationManager.getApplication()
+            .executeOnPooledThread {
+                dev.cajeta.idea.xref.CajetaSourceMountGlue.ensureStdlibMounted()
+            }
+
         try {
             val proc = CajetaDapLauncher(binary, CajetaDapLauncher.defaultDllDir()).start()
             process = proc
@@ -202,7 +210,11 @@ class CajetaDebugProcess(
 
     private fun resolvePosition(frame: DapStackFrame): XSourcePosition? {
         if (frame.path.isBlank() || frame.line <= 0) return null
+        // A library/stdlib frame reports the path the COMPILER knew — root-
+        // relative or absolute on the build machine. When it does not exist
+        // locally, the mounted twin does (ide-symbol-index 8.2.4).
         val file = LocalFileSystem.getInstance().findFileByPath(frame.path.replace('\\', '/'))
+            ?: dev.cajeta.idea.xref.CajetaMountedSources.findMountedBySuffix(frame.path)
             ?: return null
         return XDebuggerUtil.getInstance().createPosition(file, frame.line - 1) // DAP line is 1-based
     }

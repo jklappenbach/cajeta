@@ -28,11 +28,20 @@ namespace cajeta {
         if (!fn) return;
 
         std::string function;
+        std::string file;
         if (auto method = module->getCurrentMethod()) {
             function = method->getLlvmSymbolName();
+            // The declaring class's file, remapped — same source as #FrameDesc
+            // (external-debug §6). getSourcePath() was the raw ABSOLUTE path,
+            // which is not reproducible across build roots (§3.1.3) and is
+            // EMPTY for every stdlib statement (one module, no source path).
+            if (auto parent = method->getParent()) {
+                file = parent->getDeclaringFile();
+            }
         }
+        if (file.empty()) file = module->remappedSourcePath();
         int32_t locId = dbg::globalDbgLocTable().add(
-            module->getSourcePath(),
+            file,
             statement->getSourceLine(),
             statement->getSourceColumn(),
             function);
@@ -119,10 +128,15 @@ namespace cajeta {
             llvm::BasicBlock* insertBB = builder
                 ? builder->GetInsertBlock() : nullptr;
             if (insertBB && insertBB->hasTerminator()) break;
+            // U3: mark the current shadow frame's line at each statement
+            // boundary. BEFORE the safepoint, not after: a debugger stopped AT a
+            // safepoint reads the shadow stack to render the frame, and if the
+            // mark had not run yet the frame would still carry the PREVIOUS
+            // statement's line — `cjbreak F.cajeta:14` would stop and `cjstack`
+            // would report :13 (external-debug §5.1).
+            if (lineInfo) dbg::emitLineMark(module, child->getSourceLine());
             // CP2: statement-boundary safepoint before each statement.
             if (debugInfo) emitDebugSafepoint(module, child);
-            // U3: mark the current shadow frame's line at each statement boundary.
-            if (lineInfo) dbg::emitLineMark(module, child->getSourceLine());
             child->generateCode(module);
         }
 

@@ -41,4 +41,11 @@ namespace cajeta::dbg {
                       const std::string& type, llvm::Value* slot,
                       MemoryFacets facets, llvm::Value* dropEntry);
 
+    // external-debug §3: serialize the compiler's DbgLocTable into `module` as a
+    // constant array, plus a global ctor registering it with the runtime, so an
+    // external debugger can resolve loc_id <-> (file, line) with no compiler
+    // present. Call ONCE, at end of codegen, after every safepoint has claimed
+    // its id. No-op unless --debug-info=full or the table is empty.
+    void emitDbgLocTable(cajeta::CajetaModulePtr module);
+
 } // namespace cajeta::dbg

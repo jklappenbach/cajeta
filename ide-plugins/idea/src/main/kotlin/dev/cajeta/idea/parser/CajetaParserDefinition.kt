@@ -15,10 +15,10 @@ import com.intellij.psi.tree.TokenSet
 import dev.cajeta.idea.CajetaLanguage
 import dev.cajeta.idea.parser.antlr.CajetaLexer
 import dev.cajeta.idea.parser.antlr.CajetaParser
+import dev.cajeta.idea.psi.CajetaPsiElementFactory
 import org.antlr.intellij.adaptor.lexer.ANTLRLexerAdaptor
 import org.antlr.intellij.adaptor.lexer.PSIElementTypeFactory
 import org.antlr.intellij.adaptor.parser.ANTLRParserAdaptor
-import org.antlr.intellij.adaptor.psi.ANTLRPsiNode
 import org.antlr.v4.runtime.BaseErrorListener
 import org.antlr.v4.runtime.Parser as Antlr4Parser
 import org.antlr.v4.runtime.RecognitionException
@@ -65,6 +65,21 @@ class CajetaParserDefinition : ParserDefinition {
 
     override fun getFileNodeType(): IFileElementType = FILE
 
+    // ide-symbol-index Unit 5 (plan 5.4): the adaptor's parse-tree→PSI
+    // converter advances the PsiBuilder exactly once per parse-tree TERMINAL
+    // and trusts the builder to auto-skip whitespace. The builder only skips
+    // token types declared here — the default is TokenType.WHITE_SPACE, which
+    // our lexer's WS is not. Without this override every terminal advance
+    // consumed a WS instead, the rule markers drifted and closed early, and
+    // everything after the first composite dangled FLAT under the file node
+    // (whitespace even landed inside `identifier` nodes). Nothing consumed
+    // rule structure before the named-element layer, so it went unnoticed.
+    override fun getWhitespaceTokens(): TokenSet =
+        PSIElementTypeFactory.createTokenSet(
+            CajetaLanguage,
+            CajetaLexer.WS,
+        )
+
     override fun getCommentTokens(): TokenSet {
         // CajetaLexer.g4:232-233 routes COMMENT and LINE_COMMENT to
         // channel(HIDDEN). The adaptor exposes IElementTypes for them
@@ -83,7 +98,10 @@ class CajetaParserDefinition : ParserDefinition {
             CajetaLexer.TEXT_BLOCK,
         )
 
-    override fun createElement(node: ASTNode): PsiElement = ANTLRPsiNode(node)
+    // ide-symbol-index Unit 5 (spec §3.0.1): typed named elements for the
+    // declaring rules, ANTLRPsiNode for everything else.
+    override fun createElement(node: ASTNode): PsiElement =
+        CajetaPsiElementFactory.createElement(node)
 
     override fun createFile(viewProvider: FileViewProvider): PsiFile =
         CajetaPsiFile(viewProvider)

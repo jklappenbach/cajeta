@@ -75,6 +75,12 @@ namespace cajeta {
         NewExpression(antlr4::Token* token) : Expression(token) { }
 
         NewExpression(CajetaParser::CreatorContext* creatorContext, antlr4::Token* token) : Expression(token) {
+            // The leaf type-name token of `heap pkg.Point(...)` — the `Point`.
+            // Captured so the created type can be recorded as an xref reference
+            // at parse time (ide-symbol-index): lint stops before the codegen
+            // pass that otherwise resolves an allocation's type, so without this
+            // Ctrl-click on `heap Point(...)` would find no edge.
+            antlr4::Token* createdTypeToken = nullptr;
             if (creatorContext->createdName() != nullptr) {
                 if (creatorContext->createdName()->primitiveType()) {
                     typeName = creatorContext->createdName()->primitiveType()->getText();
@@ -84,6 +90,7 @@ namespace cajeta {
                     for (auto& identifierPart: creatorContext->createdName()->identifier()) {
                         if (n++ == count - 1) {
                             typeName = identifierPart->getText();
+                            createdTypeToken = identifierPart->getStart();
                         } else {
                             package.append(identifierPart->getText());
                         }
@@ -189,6 +196,9 @@ namespace cajeta {
                     boundElementType = am->lookupTypeParameter(typeName);
                 }
             }
+            // Record the created type as an xref reference at its token (parse
+            // time, so lint captures it). No-op unless --emit-xref is on.
+            recordCreatedTypeXref(createdTypeToken);
         }
 
         const vector<CajetaTypePtr>& getTypeArguments() const { return typeArguments; }
@@ -196,6 +206,14 @@ namespace cajeta {
 
         void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
+
+    private:
+        // ide-symbol-index: record the created type (`heap Point(...)`) as a
+        // type-reference edge at `tok`, resolving the name scoped like
+        // resolveTypes. Best-effort and gated on xref::captureEnabled(), so a
+        // normal compile never runs it; a resolution miss or throw records no
+        // edge rather than affecting the compile.
+        void recordCreatedTypeXref(antlr4::Token* tok);
     };
 
 } // code

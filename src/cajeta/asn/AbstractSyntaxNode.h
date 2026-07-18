@@ -34,6 +34,7 @@
 #include <vector>
 #include "ParserRuleContext.h"
 #include "CajetaParser.h"
+#include "cajeta/xref/XrefIndex.h"
 
 using namespace std;
 
@@ -48,6 +49,15 @@ namespace cajeta {
     protected:
         int sourceLine;
         int sourceColumn;
+        // The file these tokens were parsed FROM — interned, so this costs a
+        // pointer and only when --emit-xref is on. Null for a node built from a
+        // synthesized re-parse (template instantiation, mock synthesis), whose
+        // line numbers refer to a snippet rather than to any file. See
+        // xref::internSourceFile.
+        //
+        // Not the same thing as "the module being compiled": a stdlib body is
+        // generated while a user module is active.
+        const string* sourceFile = nullptr;
         string sourceText;
         vector<AbstractSyntaxNodePtr> children;
     public:
@@ -56,6 +66,14 @@ namespace cajeta {
                 sourceLine = token->getLine();
                 sourceText = token->getText();
                 sourceColumn = token->getCharPositionInLine();
+                // Gated BEFORE getSourceName(), which returns a std::string by
+                // value: without this a normal build would pay a string allocation
+                // per AST node for an index it never asked for.
+                if (xref::captureEnabled()) {
+                    if (auto* stream = token->getInputStream()) {
+                        sourceFile = xref::internSourceFile(stream->getSourceName());
+                    }
+                }
             }
         }
 
@@ -69,6 +87,15 @@ namespace cajeta {
 
         int getSourceColumn() const {
             return sourceColumn;
+        }
+
+        // "" when this node came from synthesized source (or xref capture is off).
+        // An empty file is the signal to record NOTHING for this node: a position
+        // with no file behind it cannot be navigated to, and guessing at one sends
+        // the developer somewhere real and wrong.
+        const string& getSourceFile() const {
+            static const string kNone;
+            return sourceFile ? *sourceFile : kNone;
         }
 
         const string& getSourceText() const {

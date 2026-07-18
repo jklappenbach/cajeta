@@ -25,7 +25,21 @@ namespace cajeta {
         // into the LLVM global's initializer. For instance fields, kept
         // for future <init> emission. nullptr when no initializer.
         AbstractSyntaxNodePtr initializer;
+        // Declaration name position (1-based line, 0-based col), taken from the
+        // VariableDeclarator AST node — which, unlike CajetaClass and Method, is
+        // an AbstractSyntaxNode and already carries it. 0 = synthesized.
+        // Consumed by the xref export (ide-symbol-index §2).
+        int declLine = 0;
+        int declColumn = 0;
     public:
+        int getDeclLine() const { return declLine; }
+        int getDeclColumn() const { return declColumn; }
+
+        void setDeclPosition(int line, int column) {
+            declLine = line;
+            declColumn = column;
+        }
+
         StructureProperty(string name, int order) {
             this->name = name;
             this->order = order;

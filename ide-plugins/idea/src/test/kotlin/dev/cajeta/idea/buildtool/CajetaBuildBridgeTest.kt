@@ -93,6 +93,68 @@ class CajetaBuildBridgeTest {
         assertTrue(bOut.all { it.message.contains("B-out") } && bOut.isNotEmpty())
     }
 
+    /**
+     * A line the parser claims (a compile-phase record, a diagnostic) surfaces as
+     * its structured event and is NOT also echoed — otherwise the console the user
+     * reads fills with raw NDJSON. Plain lines are still echoed verbatim.
+     */
+    @Test
+    fun structuredLinesDoNotLeakRawJsonIntoTheConsole() {
+        val l = Recording()
+        val phase = """{"kind":"progress","phase":"codegen","state":"start","label":"Generating code"}"""
+        CajetaBuildBridge.execute(
+            l, BID, "cajeta build", "/p", 0L, { null },
+            FakeProcess { s ->
+                s.append("$phase\n", stdout = false)
+                s.append("[cache] hit\n", stdout = true)
+                ProcessOutcome(0, false)
+            },
+            lineParser = BuildOutputParser(),
+        )
+        val console = l.events.map { it.second }.filterIsInstance<OutputBuildEvent>()
+        assertTrue("no raw JSON in the console", console.none { it.message.contains("\"kind\"") })
+        assertTrue("plain output still echoes", console.any { it.message.contains("[cache] hit") })
+        assertTrue(
+            "the phase surfaces as a build node",
+            l.events.map { it.second }.any { it is com.intellij.build.events.StartEvent },
+        )
+    }
+
+    /**
+     * The parser's grouping node ("Compile") is closed when the process exits, and
+     * BEFORE the build's own finish event — an open node renders as still-running
+     * under a finished build.
+     */
+    @Test
+    fun parserNodesAreClosedBeforeTheBuildFinishes() {
+        val l = Recording()
+        CajetaBuildBridge.execute(
+            l, BID, "cajeta build", "/p", 0L, { null },
+            FakeProcess { s ->
+                s.append("""{"kind":"progress","phase":"parse","state":"start","label":"Parsing"}""" + "\n", false)
+                s.append("""{"kind":"progress","phase":"parse","state":"finish","label":"Parsing","elapsedMs":12}""" + "\n", false)
+                ProcessOutcome(0, false)
+            },
+            lineParser = BuildOutputParser(),
+        )
+        val kinds = l.events.map { it.second }
+        val lastFinishNode = kinds.indexOfLast { it is com.intellij.build.events.FinishEvent && it !is FinishBuildEvent }
+        val buildFinish = kinds.indexOfFirst { it is FinishBuildEvent }
+        assertTrue("a group/phase node was closed", lastFinishNode >= 0)
+        assertTrue("nodes close before the build does", lastFinishNode < buildFinish)
+    }
+
+    /** Output not terminated by a newline must still reach the console at exit. */
+    @Test
+    fun trailingPartialLineIsFlushed() {
+        val (l, _) = run(FakeProcess { sink ->
+            sink.append("no trailing newline", stdout = true)
+            ProcessOutcome(exitCode = 0, cancelled = false)
+        })
+        val console = l.events.map { it.second }.filterIsInstance<OutputBuildEvent>()
+        assertTrue(console.any { it.message.contains("no trailing newline") })
+    }
+
     @Test
     fun preflightProblemFinishesFailureWithoutSpawning() {
         val proc = FakeProcess { ProcessOutcome(0, false) }

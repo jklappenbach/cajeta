@@ -217,6 +217,14 @@ install(FILES
         DESTINATION ${CMAKE_INSTALL_DOCDIR}
         COMPONENT cajeta)
 
+# The gdb bridge (specs/external-debug-spec.md §5). Cajeta emits no DWARF, so
+# gdb's native verbs see nothing; this script reads Cajeta's own encoding and
+# provides cjbreak / cjstack / cjlocals / cjstep instead. Ships beside the
+# compiler; load it with `gdb -x <datadir>/cajeta/gdb/cajeta_gdb.py ./binary`.
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/tools/gdb/cajeta_gdb.py"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/cajeta/gdb"
+        COMPONENT cajeta)
+
 # Man page (Unix only; Windows has no man infrastructure).
 if(NOT WIN32)
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/man/cajeta.1"

@@ -4,6 +4,7 @@
 
 #include "CreatorRest.h"
 #include "cajeta/compile/CajetaModule.h"
+#include "cajeta/xref/XrefIndex.h"
 #include "cajeta/type/CajetaClass.h"
 #include "cajeta/type/CajetaArray.h"
 #include "cajeta/util/MemoryManager.h"
@@ -30,6 +31,16 @@ namespace cajeta {
     // block alloca) then dispatches to the matching constructor with the
     // user-supplied arguments. Returns the instance pointer either way.
     llvm::Value* ClassCreatorRest::generateCode(CajetaModulePtr module) {
+        // xref (ide-symbol-index §2): `heap Foo(args)` / `stack Foo(args)` resolves a
+        // CONSTRUCTOR through CajetaClass::resolveMethod, so open this call site or
+        // the constructor call is recorded against whatever site happens to be open
+        // (or, with none open, dropped). Ctrl-click on `heap Derived(7)` should land
+        // on Derived's constructor.
+        // The file comes from THIS NODE, not from `module` — see
+        // MethodCallExpression::generateCode.
+        xref::CallSiteScope xrefSite(getSourceFile(),
+                                     getSourceLine(), getSourceColumn());
+
         if (!targetType) {
             return nullptr;
         }

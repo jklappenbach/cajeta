@@ -6,6 +6,7 @@
 #include "CreatorRest.h"
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/type/CajetaClass.h"
+#include "cajeta/xref/XrefIndex.h"
 #include "cajeta/type/CajetaArray.h"
 #include "cajeta/type/CajetaVector.h"
 #include "cajeta/type/CajetaMatrix.h"
@@ -95,6 +96,42 @@ namespace cajeta {
             if (p.defaultType.empty()) return type;
         }
         return klass->instantiate({});
+    }
+
+    void NewExpression::recordCreatedTypeXref(antlr4::Token* tok) {
+        if (!xref::captureEnabled() || typeName.empty() || !tok) return;
+        if (!tok->getInputStream()) return;
+        const std::string* file =
+            xref::internSourceFile(tok->getInputStream()->getSourceName());
+        if (!file) return;   // synthesized source (template/mock): no position
+        try {
+            // Resolve the created type NAME to its declaration's canonical FQN,
+            // scoped like resolveTypes (own package → imports → global) and
+            // tolerant of a forward reference — the whole-root export parses in
+            // directory order and routinely reaches `heap Square(...)` before
+            // Square.cajeta is built. A qualified `heap pkg.Point()` carries a
+            // (dot-less-concatenated) package; try it first, else resolve the
+            // leaf name scoped. A miss records nothing.
+            CajetaModulePtr module = CajetaModule::getActiveModule();
+            std::string target;
+            if (!package.empty()) {
+                std::string qualified = package + "." + typeName;
+                if (CajetaType::getArchive().count(qualified)) target = qualified;
+            }
+            if (target.empty())
+                target = CajetaType::canonicalNameScoped(typeName, module);
+            if (target.empty()) return;
+            // An instantiation (`ArrayList<int32>`) navigates to the TEMPLATE's
+            // declaration — strip any argument list, mirroring fromContext.
+            auto lt = target.find('<');
+            if (lt != std::string::npos) target = target.substr(0, lt);
+            xref::noteTypeReference(target, *file, (int) tok->getLine(),
+                                    (int) tok->getCharPositionInLine());
+        } catch (...) {
+            // Reference capture is best-effort: a resolution that throws here
+            // (it would throw again, reported, in the codegen pass) must never
+            // turn into a lint/compile failure.
+        }
     }
 
     void NewExpression::resolveTypes(CajetaModulePtr module) {

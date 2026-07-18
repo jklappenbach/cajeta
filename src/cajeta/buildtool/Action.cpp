@@ -67,6 +67,11 @@ namespace cajeta::buildtool {
         params_[name] = value;
     }
 
+    void TaskContext::setCliParams(
+        const std::map<std::string, std::string>& values) {
+        cliParams_ = values;
+    }
+
     void TaskContext::publishOutputs(
         const std::string& id,
         const std::map<std::string, std::string>& outputs) {

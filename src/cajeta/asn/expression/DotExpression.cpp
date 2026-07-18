@@ -2,6 +2,7 @@
 // Created by James Klappenbach on 4/14/23.
 //
 
+#include "cajeta/xref/XrefIndex.h"
 #include "../../error/Diagnostics.h"
 #include "DotExpression.h"
 #include "../../compile/CajetaModule.h"
@@ -26,6 +27,10 @@ namespace cajeta {
         // empty name and rely on the lhs's codegen to surface the right error.
         if (ctx->identifier()) {
             identifier = ctx->identifier()->getText();
+            if (auto* idTok = ctx->identifier()->getStart()) {
+                idLine   = (int) idTok->getLine();
+                idColumn = (int) idTok->getCharPositionInLine();
+            }
         }
     }
 
@@ -108,6 +113,11 @@ namespace cajeta {
                     // return-type pin).
                     resolvedType = CajetaType::captureProject(
                         pit->second->getType());
+                    // xref (2.1.6): `cls` — not `klass` — is the class that actually
+                    // DECLARES this field. For an inherited field the two differ, and
+                    // naming the receiver's class would point Ctrl-click at a type
+                    // that declares nothing of the sort.
+                    recordFieldXref(cls);
                     return true;
                 }
                 for (auto& parent : cls->getSuperClasses()) {
@@ -116,6 +126,23 @@ namespace cajeta {
                 return false;
             };
         findProp(klass);
+    }
+
+    // Record `receiver.field` as a reference to the field's declaration. No-op
+    // unless --emit-xref, and skipped entirely when this node came from synthesized
+    // source (getSourceFile() empty) — a snippet's positions are not anywhere.
+    void DotExpression::recordFieldXref(const CajetaClassPtr& owner) {
+        if (!xref::captureEnabled() || !owner || idLine <= 0) return;
+        const string& file = getSourceFile();
+        if (file.empty()) return;
+
+        // An instantiation (`Box<int32>`) has no source; its field is declared on
+        // the template, which is what the index carries.
+        string ownerFqn = owner->getQName()->toCanonical();
+        auto lt = ownerFqn.find('<');
+        if (lt != string::npos) ownerFqn = ownerFqn.substr(0, lt);
+
+        xref::noteFieldReference(ownerFqn + "." + identifier, file, idLine, idColumn);
     }
 
     // `a.b` lowers to a struct GEP. lhs may be the alloca holding the struct (stack-local)

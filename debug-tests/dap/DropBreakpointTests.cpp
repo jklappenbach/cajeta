@@ -68,7 +68,7 @@ const char* kDtorProg =
     "}\n"                                    // 10
     "public class Demo {\n"                  // 11
     "    public static int32 main() {\n"     // 12
-    "        Foo f = new Foo(7);\n"          // 13
+    "        Foo f = heap Foo(7);\n"          // 13
     "        return 0;\n"                    // 14  <-- f drops here -> ~Foo runs
     "    }\n"                                // 15
     "}\n";                                   // 16
@@ -84,7 +84,7 @@ const char* kNoDtorProg =
     "}\n"
     "public class Demo {\n"
     "    public static int32 main() {\n"
-    "        Bare b = new Bare(9);\n"
+    "        Bare b = heap Bare(9);\n"
     "        return 0;\n"
     "    }\n"
     "}\n";

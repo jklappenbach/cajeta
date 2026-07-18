@@ -10,14 +10,29 @@ using namespace std;
 
 namespace cajeta {
 
+    class CajetaClass;
+    typedef std::shared_ptr<CajetaClass> CajetaClassPtr;
+
     class DotExpression : public Expression {
         string identifier;
+        // Position of the IDENTIFIER token, not of the expression. The node's own
+        // sourceLine/Column point at the lhs (`person` in `person.address`), but a
+        // field reference must anchor on the name the developer Ctrl-clicks — the
+        // IDE resolves a reference by the offset under the caret. 0 when the rhs is
+        // not an identifier form. (ide-symbol-index 2.1.6)
+        int idLine = 0;
+        int idColumn = 0;
     public:
         DotExpression(CajetaParser::ExpressionContext* ctx, antlr4::Token* token);
 
         const string& getIdentifier() const { return identifier; }
 
         void resolveTypes(CajetaModulePtr module) override;
+
+        // Emit an xref reference edge for this field access, targeting the class
+        // that DECLARES the field (which for an inherited field is not the
+        // receiver's class). See DotExpression.cpp.
+        void recordFieldXref(const CajetaClassPtr& owner);
 
         llvm::Value* generateCode(CajetaModulePtr module) override;
 

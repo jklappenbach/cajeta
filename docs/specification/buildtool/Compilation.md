@@ -902,9 +902,12 @@ These are always on at `-O1` and above; disable individually via
   Loop vectorizer + SLP (superword-level parallelism) both on at
   -O2+.
 - `--unroll=on|off` — loop unrolling.
-- `--debug-info=full|line|off` — DWARF emission. `full` includes
-  variable info; `line` is just file:line mapping; `off` strips
-  all debug info for smallest binaries.
+- `--debug-info=full|line|off` — debug records, in Cajeta's own
+  encoding (never DWARF). `line` (the default) keeps the shadow
+  stack, so a trace resolves to `Type.method(File.cajeta:NN)`;
+  `full` adds statement safepoints, local records, and the embedded
+  location table an external debugger reads; `off` emits neither,
+  for the smallest binaries.
 
 ### Tradeoffs to know
 
@@ -1003,9 +1006,10 @@ These override the mode default after it expands. Full semantics in
 | `--stack-trace-capture=on|off` | `backtrace(3)` at throw site.                 |
 | `--profile-counters=on|off`   | Per-method PGO-collection instrumentation.     |
 
-DWARF debug-info emission is mode-driven (an internal `debugInfo`
-toggle, opt-in under a debugger); there is no `--debug-info` /
-`--frame-pointer` / `--strip-symbols` flag **(planned)**.
+Debug records are controlled by `--debug-info=off|line|full` (see
+Optimization above) and carry Cajeta's own encoding — the compiler
+emits no DWARF at all. There is no `--frame-pointer` /
+`--strip-symbols` flag **(planned)**.
 
 ### Diagnostics
 
