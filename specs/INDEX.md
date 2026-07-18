@@ -7,7 +7,6 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 
 | Spec | Plan | Status |
 |------|------|--------|
-| [di-profile-selection](di-profile-selection-spec.md) | [plan](../agents/di-profile-selection-plan.md) | active — DI `@Profile` ship + `@TestComponent` interface-masking fix; motivates cajeta-logging Phase 3 |
 | [silent-resolution-diagnostics](silent-resolution-diagnostics-spec.md) | [plan](../agents/silent-resolution-diagnostics-plan.md) | active |
 | [optional-borrow-ownership](optional-borrow-ownership-spec.md) | [plan](../agents/cajeta/optional-borrow-ownership-plan.md) | active |
 | [docs-refactor](docs-refactor-spec.md) | [plan](../agents/docs-refactor-plan.md) | active |
