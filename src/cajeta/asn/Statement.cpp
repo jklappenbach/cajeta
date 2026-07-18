@@ -454,7 +454,14 @@ namespace cajeta {
             if (auto mceD = dynamic_pointer_cast<MethodCallExpression>(
                     expression)) {
                 MethodPtr rm = mceD->getResolvedMethod();
-                if (rm && rm->returnsClassPointer()) {
+                // Only when the callee actually STORES the flag: a raw-IR
+                // synthesized class-pointer body (getter `return this.f`,
+                // builder-setter `return this`, factory provider, ...) has
+                // emitsReturnFlag()==false and never touches the TLS, so the
+                // flag here is a STALE value from a prior flag-emitting call —
+                // reading it drops a value the callee never surrendered
+                // (double-free / UAF). Mirrors the ReturnStatement guard below.
+                if (rm && rm->returnsClassPointer() && rm->emitsReturnFlag()) {
                     auto* b = module->getBuilder();
                     llvm::Function* getFlag = module->getRuntimeFunction(
                         "__cajeta_return_flag_get");
