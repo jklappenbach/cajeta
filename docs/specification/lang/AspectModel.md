@@ -179,7 +179,8 @@ implements** — the double takes over that interface's `@Inject` sites. Masking
 interface-scoped: a double with no interface masks nothing (it is injectable only by
 its own concrete type), and a `@Component` injected by concrete type is not masked.
 Outside test mode, `@TestComponent`s are dropped. Both annotations are declared in
-`cajeta.aot`; the compiler recognizes them by short name.
+`cajeta.aot`; the compiler recognizes them by short name. Worked end-to-end example:
+`samples/profile-di/` (one source built under `--profile=prod`/`dev`/`test`).
 
 ---
 
