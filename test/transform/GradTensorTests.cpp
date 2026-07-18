@@ -7,6 +7,14 @@
 // scalar above the sum and tensor below it, so each DAG node is rank-tagged and
 // the accumulation-add is spelled per surface (`+` vs `Tensor.add<E>`).
 //
+// The reverse-mode SOURCE synthesis is correct + dump-verified (CAJETA_GRAD_DUMP),
+// parses and type-checks. The tensor Grad e2e tests are DISABLED not for an
+// autodiff reason but for a GENERAL compiler bug isolated below
+// (DISABLED_valueTypeRecordHeapFieldReturnUAF): returning a value-type `record`
+// whose field is a freshly-allocated heap object frees that object on the callee
+// frame's arena reset, dangling the returned copy. Repro needs no lambda, no
+// synthesis, no Grad. See [[reference_synth_backward_class_pointer_codegen_bug]].
+//
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
 #include "cajeta/error/Exception.h"
@@ -30,10 +38,44 @@ float runTensorGrad(const std::string& body) {
     auto fn = jit->lookup<float (*)()>("run");
     return fn();
 }
+float runWithSrc(const std::string& src) {
+    auto jit = CajetaJit::compile(src, "test.G");
+    auto fn = jit->lookup<float (*)()>("run");
+    return fn();
+}
 } // namespace
 
-// DIAG A — the record holds a tensor gradient at all (no Grad involved).
-// value 5, grads = x = [1,2,3] sum 6; total 11.
+// The minimal repro of the blocking bug — NO lambda, NO synthesis, NO Grad.
+// A static method returns a value-type `record` whose grad field is a freshly
+// allocated tensor; `mk`'s arena frame resets on return and frees that tensor, so
+// the caller reads a dangling `r.grads` (SIGABRT in __cajeta_new_array_header_arena
+// with a garbage count from the freed shape). The scalar GradResult<f32,f32> is
+// immune (float fields have no drop). Same arena-escape family as the deferred
+// interprocedural stack-promotion work; needs real escape analysis, not a patch.
+// value 6 + sum(ones [1,1,1])=3 → 9.
+TEST(GradTensor, DISABLED_valueTypeRecordHeapFieldReturnUAF) {
+    EXPECT_FLOAT_EQ(runWithSrc(
+        "package test;\n"
+        "import cajeta.math.Tensor;\n"
+        "import cajeta.nucleo.transform.GradResult;\n"
+        "public final class G {\n"
+        "    public static GradResult<float32, Tensor<float32>> mk(Tensor<float32> xx) {\n"
+        "        return stack GradResult<float32, Tensor<float32>>(\n"
+        "            Tensor.sum<float32,float32>(xx),\n"
+        "            Tensor.mulScalar<float32>(Tensor.onesLike<float32>(xx), 1.0f));\n"
+        "    }\n"
+        "    public static float32 run() {\n"
+        "        float32[] fa = { 1.0f, 2.0f, 3.0f };\n"
+        "        int64[] s3 = heap int64[1]; s3[0] = 3;\n"
+        "        Tensor<float32> x = Tensor.of<float32>(fa, s3);\n"
+        "        GradResult<float32, Tensor<float32>> r = mk(x);\n"
+        "        return r.value + Tensor.sum<float32,float32>(r.grads);\n"
+        "    }\n"
+        "}\n"), 9.0f);
+}
+
+// The record holds a tensor gradient when built + read in the SAME frame (no
+// cross-frame return, so no arena-escape). value 5 + sum(x [1,2,3])=6 → 11.
 TEST(GradTensor, gradResultHoldsTensorField) {
     EXPECT_FLOAT_EQ(runTensorGrad(
         "float32[] fa = { 1.0f, 2.0f, 3.0f };\n"
@@ -44,33 +86,21 @@ TEST(GradTensor, gradResultHoldsTensorField) {
         "        return r.value + Tensor.sum<float32,float32>(r.grads);"), 11.0f);
 }
 
-// The simplest tensor Grad: loss(x) = sum(x), grad = ones. value 6; total 9.
-//
-// DISABLED: the reverse-mode SOURCE synthesis is correct (CAJETA_GRAD_DUMP shows
-// the backward computes `mulScalar(onesLike(xx), 1.0f)` = ones, and it parses +
-// type-checks), but EXECUTING the synthesized backward SIGABRTs in
-// __cajeta_new_array_header_arena with a garbage (negative) count — xx reads as a
-// corrupt Tensor pointer. It is a codegen bug in the SYNTHESIZED-method path for a
-// class-pointer parameter, NOT the tensor autodiff logic:
-//   * the identical grad expression in a PLAIN lambda works (plainLambdaOnesLikeGrad),
-//   * the scalar synthesized backward works (GradEndToEndTests),
-//   * GradResult<f32, Tensor<f32>> holds a tensor fine (gradResultHoldsTensorField).
-// Needs a focused compiler fix (IR diff of the make()-returned lambda body vs a
-// plain lambda's) before re-enabling. See transform-intrinsics-plan 3.1.1.
-TEST(GradTensor, DISABLED_sumIdentityGrad) {
+// A tensor arena allocation AFTER a Tensor.sum, in-frame — the order the tensor
+// backward uses (value=sum first, grad alloc second). In-frame it is fine; only
+// the cross-frame RETURN of the allocated tensor dangles. value 6 + 3 → 9.
+TEST(GradTensor, arenaAllocAfterSum) {
     EXPECT_FLOAT_EQ(runTensorGrad(
         "float32[] fa = { 1.0f, 2.0f, 3.0f };\n"
         "        int64[] s3 = heap int64[1]; s3[0] = 3;\n"
         "        Tensor<float32> x = Tensor.of<float32>(fa, s3);\n"
-        "        (Tensor<float32>) -> GradResult<float32, Tensor<float32>> g =\n"
-        "            Grad((Tensor<float32> xx) -> Tensor.sum<float32,float32>(xx));\n"
-        "        GradResult<float32, Tensor<float32>> r = g(x);\n"
-        "        return r.value + Tensor.sum<float32,float32>(r.grads);"), 9.0f);
+        "        float32 s = Tensor.sum<float32,float32>(x);\n"
+        "        Tensor<float32> o = Tensor.onesLike<float32>(x);\n"
+        "        return s + Tensor.sum<float32,float32>(o);"), 9.0f);
 }
 
-// DIAG C — a PLAIN (non-synthesized) lambda with a Tensor param used inline as a
-// call arg. Isolates whether the crash is a general lambda-Tensor-param codegen
-// bug or specific to the synthesized backward. value 6.
+// A plain lambda with a Tensor param used inline as a call arg works — the tensor
+// autodiff logic and closure/param handling are sound. value 6.
 TEST(GradTensor, plainLambdaTensorParamSum) {
     EXPECT_FLOAT_EQ(runTensorGrad(
         "float32[] fa = { 1.0f, 2.0f, 3.0f };\n"
@@ -81,8 +111,8 @@ TEST(GradTensor, plainLambdaTensorParamSum) {
         "        return f(x);"), 6.0f);
 }
 
-// DIAG D — a PLAIN lambda whose body is exactly the sum(x) grad expression
-// (onesLike*1), reduced so run() returns a scalar. sum([1,1,1]) = 3.
+// The exact sum(x) grad expression (onesLike*1) in a plain lambda, reduced so it
+// does NOT escape (consumed by sum) — works. sum([1,1,1]) = 3.
 TEST(GradTensor, plainLambdaOnesLikeGrad) {
     EXPECT_FLOAT_EQ(runTensorGrad(
         "float32[] fa = { 1.0f, 2.0f, 3.0f };\n"
@@ -94,10 +124,23 @@ TEST(GradTensor, plainLambdaOnesLikeGrad) {
         "        return f(x);"), 3.0f);
 }
 
-// 3.1.1 — the spec's literal example: loss(x) = sum(x*x), a scalar over a tensor.
-// value = 1+4+9 = 14; grad = 2x = [2,4,6], sum 12; total 26.
-// DISABLED: same synthesized-backward class-pointer-param codegen bug as
-// DISABLED_sumIdentityGrad (the backward SOURCE is dump-verified correct).
+// 3.1.1 (simplest tensor Grad) — loss(x) = sum(x), grad = ones. Backward SOURCE is
+// dump-verified correct; DISABLED on DISABLED_valueTypeRecordHeapFieldReturnUAF.
+// value 6 + sum(ones)=3 → 9.
+TEST(GradTensor, DISABLED_sumIdentityGrad) {
+    EXPECT_FLOAT_EQ(runTensorGrad(
+        "float32[] fa = { 1.0f, 2.0f, 3.0f };\n"
+        "        int64[] s3 = heap int64[1]; s3[0] = 3;\n"
+        "        Tensor<float32> x = Tensor.of<float32>(fa, s3);\n"
+        "        (Tensor<float32>) -> GradResult<float32, Tensor<float32>> g =\n"
+        "            Grad((Tensor<float32> xx) -> Tensor.sum<float32,float32>(xx));\n"
+        "        GradResult<float32, Tensor<float32>> r = g(x);\n"
+        "        return r.value + Tensor.sum<float32,float32>(r.grads);"), 9.0f);
+}
+
+// 3.1.1 — the spec's literal example: loss(x) = sum(x*x), grad = 2x. Backward
+// SOURCE is dump-verified correct; DISABLED on the same arena-escape UAF.
+// value 14 + sum([2,4,6])=12 → 26.
 TEST(GradTensor, DISABLED_sumOfSquaresValueAndGrad) {
     EXPECT_FLOAT_EQ(runTensorGrad(
         "float32[] fa = { 1.0f, 2.0f, 3.0f };\n"
