@@ -233,6 +233,29 @@ TEST(XrefLint, AnnotationUseIsRecordedAsReference) {
         << "an intrinsic annotation must not invent an edge:\n" << all;
 }
 
+// ide-symbol-index: an `import a.b.Type;` statement is recorded as a type
+// reference at its leaf name, so Ctrl-click on an import navigates to the type.
+// Imports resolve outside CajetaType::fromContext, so without explicit capture
+// they carry no edge.
+TEST(XrefLint, ImportStatementIsRecordedAsReference) {
+    auto root = freshTempDir("import") / "src";
+    writeUnit(root, "dep/Widget.cajeta", "package dep;\npublic class Widget { }\n");
+    auto target = writeUnit(root, "app/App.cajeta",
+        "package app;\n"
+        "import dep.Widget;\n"
+        "public class App {\n"
+        "    public static void main() { }\n"
+        "}\n");
+
+    std::string err;
+    runCapturingStderr("--lint " + target.string() + " --source-root " + root.string()
+                       + " --diag-format=json --emit-xref", err);
+    std::string all;
+    for (auto& l : xrefLines(err)) all += l + "\n";
+    EXPECT_TRUE(has(all, "\"target\": \"dep.Widget\""))
+        << "the import statement was not recorded as a reference:\n" << all;
+}
+
 // ide-symbol-index §8.3.1: the whole-root export ingests --classpath
 // dependencies, so a `.cja` dep's declarations appear in the index and a
 // project reference into the dep resolves — the compiler half of dependency

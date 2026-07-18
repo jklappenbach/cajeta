@@ -9,6 +9,7 @@
 #include "llvm/TargetParser/Triple.h"
 #include "../error/Exception.h"
 #include "../error/DiagnosticEngine.h"
+#include "../xref/XrefIndex.h"
 
 #include "CajetaModule.h"
 #include "../logging/CajetaLogger.h"
@@ -349,6 +350,29 @@ namespace cajeta {
     void CajetaModule::onImportDeclaration(CajetaParser::ImportDeclarationContext* ctx) {
         auto qName = QualifiedName::fromContext(ctx->qualifiedName());
         imports[qName->getTypeName()][qName->getPackageName()] = qName;
+        // xref (ide-symbol-index): record the imported type as a reference at
+        // its name token, so Ctrl-click on `import a.b.Gzip;` navigates to the
+        // type. Imports resolve here, not through CajetaType::fromContext, so
+        // without this they carry no edge. Gated on --emit-xref; a wildcard
+        // (`a.b.*`) or an unresolved name records nothing (prune drops the
+        // rest). Positioned at the LEAF identifier — the type name a developer
+        // Ctrl-clicks.
+        if (xref::captureEnabled() && !qName->getTypeName().empty()
+                && qName->getTypeName() != "*" && ctx->qualifiedName()) {
+            const auto& ids = ctx->qualifiedName()->identifier();
+            if (!ids.empty()) {
+                if (auto* tok = ids.back()->getStart()) {
+                    if (tok->getInputStream()) {
+                        if (const std::string* file = xref::internSourceFile(
+                                tok->getInputStream()->getSourceName())) {
+                            xref::noteTypeReference(qName->toCanonical(), *file,
+                                (int) tok->getLine(),
+                                (int) tok->getCharPositionInLine());
+                        }
+                    }
+                }
+            }
+        }
         // Lazy stdlib: an import of an on-demand package (e.g. cajeta.math)
         // triggers that package's prescan + enqueue so its types resolve
         // during this parse and are fully parsed at the next drain point.
