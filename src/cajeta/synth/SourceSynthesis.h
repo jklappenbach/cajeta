@@ -34,9 +34,12 @@ namespace cajeta::synth {
     // is byte-identical across compiles (reproducible builds; spec §8.3).
     //
     // The result is always a valid identifier: every character outside
-    // [A-Za-z0-9_] is replaced by '_'. Distinct (prefix, trigger, args) inputs
-    // yield distinct names (arity included), so two specializations never
-    // collide in the visitor's structure stack / canonical map.
+    // [A-Za-z0-9_] is replaced by '_'. NOTE: that sanitize step is NOT
+    // injective — inputs differing only in collapsed characters (e.g. a
+    // nested-template canonical with '<' / ',' / '::' vs a name already
+    // containing '_') can map to the SAME name. Callers must not rely on this
+    // for correctness; distinctness holds only for inputs whose sanitized forms
+    // differ. (A collision-free encoding would need to escape, not collapse.)
     std::string deriveSynthName(const std::string& prefix,
                                 const std::string& triggerCanonical,
                                 const std::vector<std::string>& argCanonicals);
