@@ -75,6 +75,25 @@ TEST(GradBackward, tensorSumOfSquaresUsesTensorSurface) {
     EXPECT_NE(grad.find("Tensor.add<float32>("), std::string::npos);
 }
 
+// matmul reverse-composition through the composer (not just the rule in isolation):
+// loss = sum(A @ B), so dA = g @ B^T with g the sum's broadcast cotangent. Verifies
+// the transposed-product spelling + surface selection compose end-to-end.
+TEST(GradBackward, matmulReverseCompositionTensorSurface) {
+    std::vector<AdNode> dag = {
+        AdNode{"A", true, "", {}, true},                                       // param tensor
+        AdNode{"B", false, "", {}, true},                                      // const tensor
+        AdNode{"Tensor.matmul<float32>(A, B)", false, "matmul", {0, 1}, true}, // A @ B
+        AdNode{"Tensor.sum<float32,float32>(Tensor.matmul<float32>(A, B))",
+               false, "sum", {2}, false},                                      // scalar loss
+    };
+    std::string missing;
+    std::string grad = reverseModeGrad(dag, 0, "float32", &missing);
+    EXPECT_TRUE(missing.empty());
+    EXPECT_NE(grad.find("Tensor.matmul<float32>("), std::string::npos);
+    EXPECT_NE(grad.find(".transpose())"), std::string::npos);       // B^T in dA
+    EXPECT_NE(grad.find("Tensor.onesLike<float32>"), std::string::npos); // sum broadcast
+}
+
 // A primitive with no registered VJP rule → the composer reports it by name
 // (the §5.3 missing-rule signal), grad expr empty.
 TEST(GradBackward, missingRuleReportedByName) {
