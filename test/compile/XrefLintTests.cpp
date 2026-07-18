@@ -201,9 +201,9 @@ TEST(XrefLint, AllocationCreatedTypeIsRecordedAsReference) {
 
 // ide-symbol-index (annotation navigation): an annotation USE (`@Marker`) is
 // recorded as a type reference at its name token, so Ctrl-click on an
-// annotation navigates to its declaration. Annotations canonicalize under the
-// `code` pseudo-package, so the reference target is `code.Marker` — matching
-// the declaration, which registers the same way.
+// annotation navigates to its declaration. The annotation carries its REAL
+// package as its identity (`demo.Marker`, not the internal `code.` key), so
+// the reference target and the declaration record agree on `demo.Marker`.
 TEST(XrefLint, AnnotationUseIsRecordedAsReference) {
     auto root = freshTempDir("annref");
     auto target = writeUnit(root, "demo/Ann.cajeta",
@@ -220,9 +220,15 @@ TEST(XrefLint, AnnotationUseIsRecordedAsReference) {
 
     std::string all;
     for (auto& l : xrefLines(err)) all += l + "\n";
-    EXPECT_TRUE(has(all, "\"target\": \"code.Marker\""))
-        << "the `@Marker` use was not recorded as a reference:\n" << all;
-    // And a compiler intrinsic (@Native) with no declaration records nothing.
+    // The annotation's declaration and the @Marker use both carry the real
+    // package, and never leak the internal `code.` key.
+    EXPECT_TRUE(has(all, "\"fqn\": \"demo.Marker\"") && has(all, "\"kind\": \"annotation\""))
+        << "the annotation declaration is not under its real package:\n" << all;
+    EXPECT_TRUE(has(all, "\"target\": \"demo.Marker\""))
+        << "the `@Marker` use was not recorded against its real package:\n" << all;
+    EXPECT_FALSE(has(all, "code.Marker"))
+        << "the internal `code.` key leaked into the export:\n" << all;
+    // A compiler intrinsic (@Native) with no declaration records nothing.
     EXPECT_FALSE(has(all, "\"target\": \"code.Native\""))
         << "an intrinsic annotation must not invent an edge:\n" << all;
 }
@@ -474,8 +480,12 @@ TEST(XrefLint, AnAnnotationDeclarationIsExportedAtItsOwnToken) {
 
     std::string all;
     for (auto& l : xrefLines(err)) all += l + "\n";
-    EXPECT_TRUE(has(all, "\"fqn\": \"code.Retry\""))
-        << "annotation declaration missing from the stream:\n" << all;
+    // The annotation carries its REAL package (demo), not the internal `code.`
+    // key it registers under.
+    EXPECT_TRUE(has(all, "\"fqn\": \"demo.Retry\""))
+        << "annotation declaration missing / not under its real package:\n" << all;
+    EXPECT_FALSE(has(all, "code.Retry"))
+        << "the internal `code.` key leaked into the export:\n" << all;
     EXPECT_TRUE(has(all, "\"kind\": \"annotation\"")) << all;
     EXPECT_TRUE(has(all, "\"file\": \"demo/Retry.cajeta\", \"line\": 3")) << all;
 }

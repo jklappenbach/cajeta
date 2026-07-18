@@ -602,6 +602,19 @@ namespace cajeta {
                     if (rt && rt->toCanonical() == "cajeta.reflect.Class") {
                         std::string tok =
                             explicitMethodTypeArgs[0]->toCanonical();
+                        // classesAnnotated matches the runtime annotation
+                        // registry, which keys APPLIED annotations under the
+                        // internal "code" identity (the fromContext canonical),
+                        // not the annotation's real package. Realign the query
+                        // token to that key so registry and query agree; the
+                        // real package remains the annotation's navigable
+                        // identity (xref/reflection/display).
+                        if (isAnnotatedToken) {
+                            auto ac = std::dynamic_pointer_cast<CajetaClass>(
+                                explicitMethodTypeArgs[0]);
+                            if (ac && ac->isAnnotation() && ac->getQName())
+                                tok = "code." + ac->getQName()->getTypeName();
+                        }
                         MethodCallParameter arg;
                         if (isAnnotatedToken) {
                             arg.expression =

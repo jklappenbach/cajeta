@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "cajeta/type/CajetaType.h"
+#include "cajeta/type/CajetaClass.h"
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/xref/XrefIndex.h"
 
@@ -33,18 +34,21 @@ namespace cajeta {
             xref::internSourceFile(tok->getInputStream()->getSourceName());
         if (!file) return;
         try {
-            // A bare `@Ann` canonicalizes to `code.Ann` (QualifiedName::
-            // fromContext defaults the package to "code"), exactly as the
-            // annotation's declaration registers — so the qn's canonical IS
-            // the target. Record only when it names a REAL declaration: a
-            // compiler intrinsic like @Native / @Inline has none, and an edge
-            // to a non-existent declaration is just noise (pruned anyway).
-            std::string target = qn->toCanonical();
-            auto lt = target.find('<');
-            if (lt != std::string::npos) target = target.substr(0, lt);
-            if (target.empty()) return;
+            // The annotation registers under the collision-safe "code.<Name>"
+            // KEY, but its real qName (e.g. tour.lang.Traced) is the navigable
+            // identity the declaration record carries. Look it up by that key
+            // and emit the REAL canonical, so the reference matches the
+            // declaration. Only a real annotation declaration yields an edge —
+            // a compiler intrinsic like @Native / @Inline has none.
+            QualifiedNamePtr key =
+                QualifiedName::getOrInsert(qn->getTypeName(), "code");
             auto& cm = CajetaType::getCanonicalMap();
-            if (cm.find(target) == cm.end()) return;
+            auto it = cm.find(key->toCanonical());
+            if (it == cm.end() || !it->second) return;
+            auto klass = std::dynamic_pointer_cast<CajetaClass>(it->second);
+            if (!klass || !klass->isAnnotation() || !klass->getQName()) return;
+            std::string target = klass->getQName()->toCanonical();
+            if (target.empty()) return;
             xref::noteTypeReference(target, *file, (int) tok->getLine(),
                                     (int) tok->getCharPositionInLine());
         } catch (...) {}

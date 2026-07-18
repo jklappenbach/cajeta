@@ -2473,25 +2473,27 @@ namespace cajeta {
             // Flagged isAnnotation so buildPendingPrototypes skips it — it never
             // lands in the structure map, keeping it out of the type-based
             // pointcut discriminator (resolveAdviceMatches). Body elements inert.
-            // Package "code" matches how a bare `@Ann` usage canonicalizes
-            // (QualifiedName::fromContext → "code.Ann"), so the declared type and
-            // the applied annotation unify — classesAnnotated<@Ann>() injects the
-            // same canonical the runtime registry matches on.
+            // The annotation's IDENTITY carries its REAL package (derived like
+            // a class's — see the class path's `pModule->getQName()...`), so
+            // xref/navigation, reflection, and any FQN display show
+            // `tour.lang.Traced`, not a `code.` pseudo-package.
+            const std::string annName = ctx->identifier()->getText();
             QualifiedNamePtr qName = QualifiedName::getOrInsert(
-                ctx->identifier()->getText(), "code");
+                annName, pModule->getQName()->getPackageName());
             list<QualifiedNamePtr> none;
             auto ann = make_shared<CajetaClass>(pModule, qName, none, none);
             ann->setIsAnnotation(true);
             auto& canon = CajetaType::getCanonicalMap();
-            // Register ONLY under the canonical "code.<Name>" key. A bare `@Foo`
-            // usage and classesAnnotated<@Foo>() both canonicalize to "code.Foo"
-            // (QualifiedName::fromContext), and findAnnotation/advice match by
-            // short name against per-class instances — none need a bare short-name
-            // canonicalMap entry. Registering the short name here would CLOBBER a
-            // real class of the same short name, making that class in type
-            // position resolve to the layout-less annotation → SIGSEGV at
-            // allocation (task #65).
-            canon[qName->toCanonical()] = static_pointer_cast<CajetaType>(ann);
+            // The canonicalMap KEY, however, stays the collision-safe "code"
+            // pseudo-package. A bare `@Foo` usage and classesAnnotated<@Foo>()
+            // both canonicalize to "code.Foo" (QualifiedName::fromContext), and
+            // findAnnotation/advice match by short name against per-class
+            // instances — so keying by the real FQN would CLOBBER a same-named
+            // real class, making that class in type position resolve to the
+            // layout-less annotation → SIGSEGV at allocation (task #65). The
+            // key and the identity are deliberately distinct.
+            QualifiedNamePtr codeKey = QualifiedName::getOrInsert(annName, "code");
+            canon[codeKey->toCanonical()] = static_pointer_cast<CajetaType>(ann);
 
             // xref (ide-symbol-index plan 4.4): never in structures, so the
             // export's class walk only sees this canonicalMap entry — without a
