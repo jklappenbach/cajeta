@@ -119,48 +119,26 @@ void emitBuiltinOp(const std::string& recv, const std::string& name,
 }
 
 // Visit every node reachable from `node`, calling `fn` once per node.
-//
-// `getChildren()` alone is insufficient: many statement / expression
-// forms hold their sub-nodes in private fields reached via dedicated
-// getters (LocalVariableDeclaration's declarator initializers,
-// MethodCallExpression's argument list, the various Statement
-// sub-expressions). This mirrors the node coverage of
-// Expression.cpp's `collectFreeIdentifiers`. The private-field
-// sub-nodes are disjoint from `getChildren()`, so we recurse both with
-// no double-visit.
 void forEachNode(const AbstractSyntaxNodePtr& node,
                  const std::function<void(const AbstractSyntaxNodePtr&)>& fn) {
     if (!node) return;
     fn(node);
 
-    // Expression forms with args outside `children`.
-    if (auto mc = std::dynamic_pointer_cast<MethodCallExpression>(node)) {
-        for (auto& p : mc->getParameters()) forEachNode(p.expression, fn);
-    } else if (auto ce = std::dynamic_pointer_cast<CallExpression>(node)) {
+    // `forEachSubNode` is the canonical analysis-descent primitive: it visits
+    // the payloads statements/calls hide in private fields (if/loop/try/switch
+    // bodies, return/throw expressions, ctor and method-call arguments) AND the
+    // codegen children. A plain getChildren() walk stops dead at any loop/try/
+    // switch body, so the launch-site and builtin scans must use this.
+    // Two forms hold a sub-node in a private field with no forEachSubNode
+    // override, so the primitive can't reach them: a CallExpression's args, and
+    // a VariableDeclarator's initializer (`uint32 i = KernelThread.x()` — the
+    // builtin read lives here). Visit those explicitly.
+    if (auto ce = std::dynamic_pointer_cast<CallExpression>(node)) {
         for (auto& a : ce->getArgs()) forEachNode(a.expression, fn);
+    } else if (auto vd = std::dynamic_pointer_cast<VariableDeclarator>(node)) {
+        forEachNode(vd->getInitializer(), fn);
     }
-
-    // Statement forms with sub-nodes in private fields.
-    if (auto lvd = std::dynamic_pointer_cast<LocalVariableDeclaration>(node)) {
-        for (auto& vd : lvd->getVariableDeclarators()) {
-            if (vd) forEachNode(vd->getInitializer(), fn);
-        }
-    } else if (auto ret = std::dynamic_pointer_cast<ReturnStatement>(node)) {
-        forEachNode(ret->getExpression(), fn);
-    } else if (auto ifs = std::dynamic_pointer_cast<IfStatement>(node)) {
-        forEachNode(ifs->getCondition(), fn);
-        forEachNode(ifs->getThenBranch(), fn);
-        forEachNode(ifs->getElseBranch(), fn);
-    } else if (auto es = std::dynamic_pointer_cast<ExpressionStatement>(node)) {
-        forEachNode(es->getExpression(), fn);
-    } else if (auto ls = std::dynamic_pointer_cast<LabelStatement>(node)) {
-        forEachNode(ls->getBlock(), fn);
-    } else if (auto ss = std::dynamic_pointer_cast<ScopeStatement>(node)) {
-        forEachNode(ss->getBlock(), fn);
-    }
-
-    // Generic children (operands, block statements, the call receiver).
-    for (auto& child : node->getChildren()) forEachNode(child, fn);
+    node->forEachSubNode([&](const AbstractSyntaxNodePtr& sub) { forEachNode(sub, fn); });
 }
 
 // `"grid:"` → `"grid"`. Parameter labels keep their trailing colon

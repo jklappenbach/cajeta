@@ -4595,6 +4595,7 @@ private:
     }
 
     bool exprSigned(const ExpressionPtr& e) {
+        if (!e) return true;
         if (auto* f = structFieldOf(e)) return f->isSigned;
         if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(e)) {
             auto it = signedness.find(id->getTextValue());
@@ -4609,7 +4610,17 @@ private:
             return true;
         }
         if (std::dynamic_pointer_cast<IntegerLiteralExpression>(e)) return true;
-        return false;
+        // Composite forms: kernel bodies aren't host-type-resolved, so a nested
+        // expression has no signedness map key. Recurse — a computed value is
+        // signed if either operand is (else `(a-b) < 0` lowers to ICmpULT, an
+        // always-false unsigned compare, and `(a+b)/2` / `sum >> k` pick UDiv /
+        // LShr). Unary forms carry their operand's signedness (`-x` is signed).
+        if (auto bin = std::dynamic_pointer_cast<BinaryOpExpression>(e))
+            return exprSigned(exprChild(bin, 0)) || exprSigned(exprChild(bin, 1));
+        if (auto pre = std::dynamic_pointer_cast<PrefixExpression>(e))
+            return exprSigned(exprChild(pre, 0));
+        // Unknown leaf (cast, call, ternary): signed is the language default.
+        return true;
     }
 
     llvm::Value* coerceTo(llvm::Value* v, llvm::Type* ty) {
