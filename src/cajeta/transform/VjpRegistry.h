@@ -23,16 +23,35 @@
 namespace cajeta {
     namespace transform {
 
-        // A VJP rule for one differentiable primitive. `cotangents(g, operands)`
+        // The arithmetic surface a rule emits over. Scalar primitives use infix
+        // operators (`a + b`); tensor primitives use `cajeta.math.Tensor` static
+        // calls, which need the element-type spelling. The one abstraction that
+        // varies between a scalar `x*x` body and a tensor `sum(x*x)` body: it also
+        // spells cotangent accumulation (`+` vs `Tensor.add<E>`) for the composer.
+        struct GradSurface {
+            bool tensor = false;
+            std::string elem;        // element type for tensor spellings (e.g. "float32")
+            std::string add(const std::string& a, const std::string& b) const {
+                // Scalar accumulation stays bare (`a + b`) — it is re-parenthesized
+                // at every use site; the tensor form is a call, so needs none.
+                return tensor ? ("Tensor.add<" + elem + ">(" + a + ", " + b + ")")
+                              : (a + " + " + b);
+            }
+        };
+
+        // A VJP rule for one differentiable primitive. `cotangents(g, operands, s)`
         // returns the source expression for each operand's cotangent contribution,
-        // given the output-cotangent source `g` and the operand sources. e.g.
-        // mul(a,b): { "g * b", "g * a" }.
+        // given the output-cotangent source `g`, the operand sources, and the
+        // arithmetic surface `s` to spell them over. e.g. mul(a,b) on the scalar
+        // surface: { "g * b", "g * a" }; on the tensor surface:
+        // { "Tensor.mul<E>(g, b)", "Tensor.mul<E>(g, a)" }.
         struct VjpRule {
             std::string primitive;   // canonical primitive id
             int arity = 0;           // operand count
             std::function<std::vector<std::string>(
                 const std::string& g,
-                const std::vector<std::string>& operands)> cotangents;
+                const std::vector<std::string>& operands,
+                const GradSurface& s)> cotangents;
         };
 
         // The compiler-internal VJP rule table. `builtin()` is the single,

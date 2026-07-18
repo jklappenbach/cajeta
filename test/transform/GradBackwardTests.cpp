@@ -27,7 +27,7 @@ std::vector<AdNode> squareDag() {
 // d/dx (x*x) = g*x + g*x with g seeded to 1.0f (x used twice → both accumulate).
 TEST(GradBackward, squareGradAccumulatesReusedInput) {
     std::string missing;
-    std::string grad = reverseModeGrad(squareDag(), 0, &missing);
+    std::string grad = reverseModeGrad(squareDag(), 0, "", &missing);
     EXPECT_TRUE(missing.empty());
     EXPECT_EQ(grad, "(1.0f) * x + (1.0f) * x");
 }
@@ -39,7 +39,7 @@ TEST(GradBackward, addGradIsIdentityTwice) {
         AdNode{"x + x", false, "add", {0, 0}},
     };
     std::string missing;
-    EXPECT_EQ(reverseModeGrad(dag, 0, &missing), "(1.0f) + (1.0f)");
+    EXPECT_EQ(reverseModeGrad(dag, 0, "", &missing), "(1.0f) + (1.0f)");
     EXPECT_TRUE(missing.empty());
 }
 
@@ -50,8 +50,29 @@ TEST(GradBackward, negateGrad) {
         AdNode{"-(x)", false, "negate", {0}},
     };
     std::string missing;
-    EXPECT_EQ(reverseModeGrad(dag, 0, &missing), "-((1.0f))");
+    EXPECT_EQ(reverseModeGrad(dag, 0, "", &missing), "-((1.0f))");
     EXPECT_TRUE(missing.empty());
+}
+
+// Tensor reduction: d/dx sum(x*x). Cotangents are scalar at the output (seed
+// 1.0f), tensor below the sum — so the accumulation of x's two contributions is
+// spelled `Tensor.add<E>`, and the sum's cotangent broadcasts via onesLike*g.
+TEST(GradBackward, tensorSumOfSquaresUsesTensorSurface) {
+    std::vector<AdNode> dag = {
+        AdNode{"x", true, "", {}, true},                                   // param tensor
+        AdNode{"Tensor.mul<float32>(x, x)", false, "mul", {0, 0}, true},   // elementwise
+        AdNode{"Tensor.sum<float32,float32>(Tensor.mul<float32>(x, x))",
+               false, "sum", {1}, false},                                  // scalar output
+    };
+    std::string missing;
+    std::string grad = reverseModeGrad(dag, 0, "float32", &missing);
+    EXPECT_TRUE(missing.empty());
+    // sum's cotangent broadcasts the scalar seed back over the operand's shape,
+    EXPECT_NE(grad.find(
+        "Tensor.mulScalar<float32>(Tensor.onesLike<float32>("), std::string::npos);
+    // mul's rule is elementwise, and x's two contributions accumulate over tensors.
+    EXPECT_NE(grad.find("Tensor.mul<float32>("), std::string::npos);
+    EXPECT_NE(grad.find("Tensor.add<float32>("), std::string::npos);
 }
 
 // A primitive with no registered VJP rule → the composer reports it by name
@@ -62,7 +83,7 @@ TEST(GradBackward, missingRuleReportedByName) {
         AdNode{"sin(x)", false, "sin", {0}},
     };
     std::string missing;
-    EXPECT_EQ(reverseModeGrad(dag, 0, &missing), "");
+    EXPECT_EQ(reverseModeGrad(dag, 0, "", &missing), "");
     EXPECT_EQ(missing, "sin");
 }
 

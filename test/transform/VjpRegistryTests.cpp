@@ -16,16 +16,20 @@
 
 #include "cajeta/transform/VjpRegistry.h"
 
+using cajeta::transform::GradSurface;
 using cajeta::transform::VjpRegistry;
 using cajeta::transform::VjpRule;
 
 namespace {
+// Scalar surface by default; pass a tensor surface to exercise the tensor spelling.
 std::vector<std::string> cot(const std::string& prim, const std::string& g,
-                             const std::vector<std::string>& operands) {
+                             const std::vector<std::string>& operands,
+                             const GradSurface& s = GradSurface{}) {
     const VjpRule* r = VjpRegistry::builtin().lookup(prim);
     EXPECT_NE(r, nullptr) << "no rule for " << prim;
-    return r->cotangents(g, operands);
+    return r->cotangents(g, operands, s);
 }
+const GradSurface kTensorF32{true, "float32"};
 } // namespace
 
 // 2.1.1 — a registered primitive's rule is retrievable by identity; an
@@ -36,6 +40,7 @@ TEST(VjpRegistryTests, lookupByPrimitiveIdentity) {
     EXPECT_NE(reg.lookup("mul"), nullptr);
     EXPECT_NE(reg.lookup("matmul"), nullptr);
     EXPECT_NE(reg.lookup("negate"), nullptr);
+    EXPECT_NE(reg.lookup("sum"), nullptr);
     EXPECT_EQ(reg.lookup("no_such_primitive"), nullptr);
 }
 
@@ -54,10 +59,26 @@ TEST(VjpRegistryTests, negateRuleNegatesCotangent) {
     EXPECT_EQ(cot("negate", "g", {"a"}), (std::vector<std::string>{"-(g)"}));
 }
 TEST(VjpRegistryTests, matmulRuleUsesTransposedProducts) {
-    // C = A @ B  ->  A_bar += g @ B^T, B_bar += A^T @ g
-    EXPECT_EQ(cot("matmul", "g", {"A", "B"}),
-              (std::vector<std::string>{"matmul(g, transpose(B))",
-                                        "matmul(transpose(A), g)"}));
+    // C = A @ B  ->  A_bar += g @ B^T, B_bar += A^T @ g (tensor-surface spelling).
+    EXPECT_EQ(cot("matmul", "g", {"A", "B"}, kTensorF32),
+              (std::vector<std::string>{"Tensor.matmul<float32>(g, B.transpose())",
+                                        "Tensor.matmul<float32>(A.transpose(), g)"}));
+}
+
+// 2.1.2 (tensor surface) — elementwise mul spells `Tensor.mul<E>`.
+TEST(VjpRegistryTests, mulRuleTensorSurfaceSpelling) {
+    EXPECT_EQ(cot("mul", "g", {"a", "b"}, kTensorF32),
+              (std::vector<std::string>{"Tensor.mul<float32>(g, b)",
+                                        "Tensor.mul<float32>(g, a)"}));
+}
+
+// 2.1.2 (reduction) — sum's VJP broadcasts the scalar cotangent back over the
+// operand's shape: ones_like(a) * g.
+TEST(VjpRegistryTests, sumRuleBroadcastsCotangent) {
+    EXPECT_EQ(cot("sum", "g", {"a"}, kTensorF32),
+              (std::vector<std::string>{
+                  "Tensor.mulScalar<float32>(Tensor.onesLike<float32>(a), g)"}));
+    EXPECT_EQ(VjpRegistry::builtin().lookup("sum")->arity, 1);
 }
 
 // 2.1.2 — rule arity is declared and matches the operand count.

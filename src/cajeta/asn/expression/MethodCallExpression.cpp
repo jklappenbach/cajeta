@@ -518,23 +518,65 @@ namespace cajeta {
                          "lambda", "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
         }
 
+        // The tensor element-type spelling drives the tensor-surface rule source;
+        // the param's rank seeds the DAG's input leaves.
+        std::string paramTy = ptypes[0]->toCanonical();
+        bool paramIsTensor = paramTy.rfind("cajeta.math.Tensor", 0) == 0
+                          || paramTy.rfind("Tensor<", 0) == 0;
+        std::string elem = paramTy;
+        if (paramIsTensor) {
+            auto lt = paramTy.find('<');
+            auto gt = paramTy.rfind('>');
+            if (lt != std::string::npos && gt != std::string::npos && gt > lt + 1)
+                elem = paramTy.substr(lt + 1, gt - lt - 1);
+        }
+
         // Reverse-mode over the body DAG -> grad source expression.
         std::vector<cajeta::transform::AdNode> nodes;
         std::map<std::string, size_t> pidx;
         std::string err;
-        if (!cajeta::transform::buildDag(bodyExpr.get(), pnames, nodes, pidx, &err)) {
+        if (!cajeta::transform::buildDag(bodyExpr.get(), pnames, paramIsTensor,
+                                         nodes, pidx, &err)) {
             throw locErr(err, "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
         }
+
+        // v1 differentiates a SCALAR-valued function: the reverse pass seeds the
+        // output cotangent to 1.0f, which only types for a scalar output (a tensor
+        // output would be a Jacobian — out of scope).
+        if (!nodes.empty() && nodes.back().isTensor) {
+            throw locErr("transform intrinsic 'Grad' v1 differentiates a "
+                         "scalar-valued function (reduce with sum(...))",
+                         "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        }
+
         std::string missing;
         std::string gradExpr =
-            cajeta::transform::reverseModeGrad(nodes, pidx[pnames[0]], &missing);
+            cajeta::transform::reverseModeGrad(nodes, pidx[pnames[0]], elem, &missing);
         if (!missing.empty()) {
             throw locErr("transform intrinsic 'Grad': no VJP rule for primitive '"
                          + missing + "'", "CAJETA_ERROR_TRANSFORM_NO_VJP_RULE");
         }
 
-        std::string paramTy = ptypes[0]->toCanonical();
-        std::string valueTy = fnType->getReturnType()->toCanonical();
+        // The value type is the body's resolved type (the returned expression),
+        // which is set after resolveTypes; the function-type's return slot can
+        // still read void when the return was inferred, not declared.
+        std::string valueTy = fnType->getReturnType()
+            ? fnType->getReturnType()->toCanonical() : std::string("void");
+        if ((valueTy.empty() || valueTy == "void") && bodyExpr->getResolvedType()) {
+            valueTy = bodyExpr->getResolvedType()->toCanonical();
+        }
+        // A `Tensor.sum<E,R>(...)` output reduces a tensor to a scalar R — generic
+        // static-return inference doesn't always populate the slot here, so read R
+        // directly off the call's explicit type args.
+        if (valueTy.empty() || valueTy == "void") {
+            if (auto sumCall = std::dynamic_pointer_cast<MethodCallExpression>(bodyExpr)) {
+                if (sumCall->getMethodCallName() == "sum"
+                        && !sumCall->getExplicitMethodTypeArgs().empty()) {
+                    auto r = sumCall->getExplicitMethodTypeArgs().back();
+                    if (r) valueTy = r->toCanonical();
+                }
+            }
+        }
         std::string outputVal = nodes.back().valueExpr;
 
         // Synthesize the backward helper class (Tier-A source).
@@ -543,7 +585,12 @@ namespace cajeta {
         std::string pkg = module->getQName()->getPackageName();
         std::string source = (pkg.empty() ? std::string() : ("package " + pkg + ";\n"))
             + cajeta::transform::emitBackwardSource(className, pnames[0], paramTy,
-                                                    valueTy, paramTy, outputVal, gradExpr);
+                                                    valueTy, paramTy, outputVal, gradExpr,
+                                                    paramIsTensor);
+        if (std::getenv("CAJETA_GRAD_DUMP")) {
+            fprintf(stderr, "=== GRAD BACKWARD SOURCE ===\n%s\n=== END ===\n",
+                    source.c_str());
+        }
 
         // Parse-extract the `make` method (mirrors MethodTemplateInstantiator).
         auto* compUnit = cajeta::synth::parseSynthesizedUnit(source);

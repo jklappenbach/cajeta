@@ -29,14 +29,19 @@ namespace cajeta {
             bool isInputParam = false;
             std::string primitive;          // "" for a leaf
             std::vector<size_t> operands;   // child node indices (primitive only)
+            bool isTensor = false;          // rank tag: this node's value is a tensor
         };
 
         // Build f's forward DAG from the lambda body expression (nodes in
         // topological order, back() = output). Input-param leaves are deduped so a
         // reused input accumulates its cotangents. v1 supports `+ - *` and unary `-`
-        // over the parameters; any other construct returns false and sets *err.
+        // over scalar parameters, and `Tensor.mul/add/sub/matmul/sum` over tensor
+        // parameters; any other construct returns false and sets *err. `paramIsTensor`
+        // seeds the rank of the input leaves (a `Tensor.<op>` node's rank is
+        // structural: elementwise ops stay tensor, `sum` reduces to scalar).
         bool buildDag(Expression* body,
                       const std::vector<std::string>& paramNames,
+                      bool paramIsTensor,
                       std::vector<AdNode>& outNodes,
                       std::map<std::string, size_t>& outParamNodeIndex,
                       std::string* err);
@@ -45,8 +50,11 @@ namespace cajeta {
         // 1.0f and compose VjpRegistry rules in reverse, returning the grad SOURCE
         // expression accumulated at `paramIndex`. A primitive with no registered
         // rule returns "" and sets *missingPrimitive to its id (the §5.3 signal).
+        // `elem` is the tensor element-type spelling (e.g. "float32"); rules and
+        // cotangent accumulation over tensor-tagged nodes are emitted over it.
         std::string reverseModeGrad(const std::vector<AdNode>& nodes,
                                     size_t paramIndex,
+                                    const std::string& elem,
                                     std::string* missingPrimitive);
 
         // Assemble the Tier-A backward helper-class source. The class holds one
@@ -63,7 +71,8 @@ namespace cajeta {
                                        const std::string& valueTypeName,
                                        const std::string& gradTypeName,
                                        const std::string& outputValueExpr,
-                                       const std::string& gradExpr);
+                                       const std::string& gradExpr,
+                                       bool importTensor = false);
 
     } // namespace transform
 } // namespace cajeta
