@@ -5,6 +5,7 @@
 #include "CajetaClass.h"
 #include "CajetaFunctionType.h"
 #include "CajetaView.h"
+#include "llvm/TargetParser/Triple.h"
 #include "StructureMetadata.h"
 #include "../error/Diagnostics.h"
 #include "../field/Field.h"
@@ -3033,8 +3034,16 @@ namespace cajeta {
             return existing;
         }
 
+        // LinkOnceODR (see the heap drop fn below) — the stack drop wrapper is
+        // likewise materialized per-use and must merge across TUs, not collide.
         llvmStackDropFunction = llvm::Function::Create(fnTy,
-            llvm::Function::ExternalLinkage, dropName, lmod);
+            llvm::Function::LinkOnceODRLinkage, dropName, lmod);
+        {
+            llvm::Triple dropTriple(lmod->getTargetTriple());
+            if (!dropTriple.isOSBinFormatMachO()) {
+                llvmStackDropFunction->setComdat(lmod->getOrInsertComdat(dropName));
+            }
+        }
         llvm::BasicBlock* bb = llvm::BasicBlock::Create(
             ctx, "entry", llvmStackDropFunction);
         llvm::IRBuilder<> b(bb);
@@ -3594,8 +3603,20 @@ namespace cajeta {
             return existing;
         }
 
+        // LinkOnceODR so a class drop fn materialized in more than one module
+        // (the defining module + any consumer TU that drops an instance —
+        // happens for classes whose drop wrapper is emitted lazily per use)
+        // merges to a single definition at link time instead of a
+        // "duplicate symbol" error. The body is deterministic per class, so
+        // ODR holds. Mirrors the Task<T> drop fn (CajetaTask.cpp).
         llvmDropFunction = llvm::Function::Create(fnTy,
-            llvm::Function::ExternalLinkage, dropName, lmod);
+            llvm::Function::LinkOnceODRLinkage, dropName, lmod);
+        {
+            llvm::Triple dropTriple(lmod->getTargetTriple());
+            if (!dropTriple.isOSBinFormatMachO()) {
+                llvmDropFunction->setComdat(lmod->getOrInsertComdat(dropName));
+            }
+        }
         // The drop body's runtime callees (__cajeta_free here,
         // __cajeta_class_virtual_drop / __cajeta_free_array / __cajeta_iface_drop
         // in emitDropBodyInline) are resolved via getRuntimeFunction, which lands
