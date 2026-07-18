@@ -4,7 +4,7 @@
 > value whose static type is a **template wildcard** (`Foo<?>` / `Foo<? extends B>`) or a
 > template supertype is recovered to a **concrete instantiation** (`Foo<float32>`) at
 > runtime — soundly, *because* cajeta monomorphizes. Companion: `numeric-bounds-spec.md`
-> (the bound side) and `docs/specification/cajeta-math/tensor-spec.md` §2.1 (the airlock that needs
+> (the bound side) and `docs/specification/math/tensor-spec.md` §2.1 (the airlock that needs
 > this). Supersedes the deferred Phase-2.1+ items in `docs/CaptureConversion.md` for the
 > **explicit** capture forms.
 

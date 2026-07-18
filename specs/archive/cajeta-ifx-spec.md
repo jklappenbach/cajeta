@@ -2,7 +2,7 @@
 
 **Status:** Draft. Requirements for `cajeta.ifx` ("interface framework") — the stdlib
 **facade + backend SPI + registry** for the window / input / audio platform layer.
-Extracted from `cajeta-gfx-spec.md` §9 (Platform layer); that section remains the
+Extracted from `gfx-spec.md` §9 (Platform layer); that section remains the
 umbrella rationale.
 
 ## 1. Definition
@@ -206,7 +206,7 @@ detail lives in each `cajeta-ifx-*` repo's spec/plan (Appendix B — Interop).
 
 ## 9. References
 
-- Umbrella & rationale: `cajeta-gfx-spec.md` §9.1–§9.8.
+- Umbrella & rationale: `gfx-spec.md` §9.1–§9.8.
 - Contract impl: `runtime/src/cajeta/ifx/` (stdlib).
 - Backends: `cajeta-ifx-{windows,linux,macos,ios,android}`, `cajeta-ifx-harness`.
 - Melt (build-target selector): `cajeta-ifx-backend`.
