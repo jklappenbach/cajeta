@@ -3393,11 +3393,15 @@ namespace cajeta {
         // inlinable call (the monomorphization C++/Rust get for free). Indirect
         // calls go through the fn's ADDRESS (held in the record), which stays
         // valid across modules in the final binary regardless of linkage.
-        // Capturing closures keep external linkage (the heap record + drop_fn
-        // path is unchanged).
+        // Capturing closures are ALSO internal: the fn is referenced only by
+        // ADDRESS through the heap closure record, never by symbol name — and
+        // their names come from a thread_local counter, so two modules
+        // compiled on different threads mint the SAME external name for
+        // DIFFERENT bodies (duplicate-symbol at link, or worse, a silent
+        // wrong-body merge). Internal linkage keeps each module's lambdas
+        // private; the stored address stays valid in the final binary.
         llvm::GlobalValue::LinkageTypes lambdaLinkage =
-            captures.empty() ? llvm::Function::InternalLinkage
-                             : llvm::Function::ExternalLinkage;
+            llvm::Function::InternalLinkage;
         llvm::Function* fn = llvm::Function::Create(
             fnType->getLlvmFunctionType(),
             lambdaLinkage,
@@ -3752,7 +3756,7 @@ namespace cajeta {
             llvm::FunctionType* dropFnTy = llvm::FunctionType::get(
                 llvm::Type::getVoidTy(llvmCtx), {ptrTy}, /*isVarArg=*/false);
             llvm::Function* dropFn = llvm::Function::Create(dropFnTy,
-                llvm::Function::ExternalLinkage, dropName, lmod);
+                llvm::Function::InternalLinkage, dropName, lmod);
             llvm::BasicBlock* dropEntryBB = llvm::BasicBlock::Create(
                 llvmCtx, "entry", dropFn);
             llvm::IRBuilder<> dropBuilder(dropEntryBB);
@@ -4135,7 +4139,7 @@ namespace cajeta {
             llvm::Function* thunk = existing
                 ? existing
                 : llvm::Function::Create(fnType->getLlvmFunctionType(),
-                    llvm::Function::ExternalLinkage, thunkName, lmod);
+                    llvm::Function::InternalLinkage, thunkName, lmod);
             if (!existing) {
                 llvm::BasicBlock* tbb = llvm::BasicBlock::Create(
                     llvmCtx, "entry", thunk);
@@ -4236,7 +4240,7 @@ namespace cajeta {
         llvm::Function* thunk = existing
             ? existing
             : llvm::Function::Create(fnType->getLlvmFunctionType(),
-                llvm::Function::ExternalLinkage, thunkName, lmod);
+                llvm::Function::InternalLinkage, thunkName, lmod);
         // M5(b) — when the function-type is sret-shaped the thunk also takes
         // a hidden sret slot at arg 0; mirror the attribute on its parameter
         // and shift captures/user-arg indices by 1.
@@ -4404,7 +4408,7 @@ namespace cajeta {
         llvm::FunctionType* dropFnTy = llvm::FunctionType::get(
             llvm::Type::getVoidTy(llvmCtx), {ptrTy}, /*isVarArg=*/false);
         llvm::Function* dropFn = llvm::Function::Create(dropFnTy,
-            llvm::Function::ExternalLinkage, dropName, lmod);
+            llvm::Function::InternalLinkage, dropName, lmod);
         llvm::BasicBlock* dropEntryBB = llvm::BasicBlock::Create(
             llvmCtx, "entry", dropFn);
         {

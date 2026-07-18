@@ -3520,8 +3520,19 @@ namespace cajeta {
         llvm::FunctionType* fnTy = llvm::FunctionType::get(
             llvm::Type::getVoidTy(ctx), {(llvm::Type*) ptrTy},
             /*isVarArg=*/false);
+        // LinkOnceODR + comdat (see getOrCreateDropFunction): the value-release
+        // fn is materialized per-use and can be emitted into more than one TU
+        // (the defining module + any consumer that value-releases the type), so
+        // ExternalLinkage collides with 'duplicate symbol' at link. The body is
+        // deterministic per class, so ODR holds.
         llvm::Function* fn = llvm::Function::Create(fnTy,
-            llvm::Function::ExternalLinkage, relName, lmod);
+            llvm::Function::LinkOnceODRLinkage, relName, lmod);
+        {
+            llvm::Triple relTriple(lmod->getTargetTriple());
+            if (!relTriple.isOSBinFormatMachO()) {
+                fn->setComdat(lmod->getOrInsertComdat(relName));
+            }
+        }
         // Same emit-module pinning dance as getOrCreateDropFunction: the
         // body's runtime callees must land in `lmod`.
         llvm::Module* prevEmitLlvm = CajetaModule::getCurrentEmitLlvmModule();
