@@ -233,6 +233,49 @@ TEST(XrefLint, AnnotationUseIsRecordedAsReference) {
         << "an intrinsic annotation must not invent an edge:\n" << all;
 }
 
+// ide-symbol-index: a static method-call receiver (`Registry.count()`) is
+// recorded as a type reference so Ctrl-click on it navigates — BUT a
+// same-named local/parameter/field is never recorded, so the pass can never
+// produce a wrong jump (spec: "a stale answer or no answer, never a wrong
+// one"). The scope is per-method: the type receiver in one method is captured
+// even though another method shadows the name with a local.
+TEST(XrefLint, StaticReceiverIsCapturedButShadowingLocalIsNot) {
+    auto root = freshTempDir("staticrecv") / "src";
+    writeUnit(root, "dep/Registry.cajeta",
+        "package dep;\n"
+        "public class Registry {\n"
+        "    public static int32 count() { return 0; }\n"
+        "}\n");
+    auto target = writeUnit(root, "app/App.cajeta",
+        "package app;\n"                              // 1
+        "import dep.Registry;\n"                      // 2
+        "public class App {\n"                        // 3
+        "    public static void useType() {\n"        // 4
+        "        int32 n = Registry.count();\n"       // 5  Registry = TYPE  → capture
+        "    }\n"                                      // 6
+        "    public static void shadow() {\n"         // 7
+        "        int32 Registry = 5;\n"               // 8  local named Registry
+        "        int32 m = Registry + 1;\n"           // 9  Registry = local → never
+        "    }\n"                                      // 10
+        "}\n");                                        // 11
+
+    std::string err;
+    runCapturingStderr("--lint " + target.string() + " --source-root " + root.string()
+                       + " --diag-format=json --emit-xref", err);
+
+    std::set<int> refLines;
+    for (auto& l : xrefLines(err)) {
+        if (!has(l, "\"rel\":\"references\"")) continue;
+        if (!has(l, "\"target\": \"dep.Registry\"")) continue;
+        auto p = l.find("\"line\":");
+        if (p != std::string::npos) refLines.insert(std::atoi(l.c_str() + p + 7));
+    }
+    EXPECT_TRUE(refLines.count(5))
+        << "static receiver `Registry.count()` (line 5) was not captured";
+    EXPECT_FALSE(refLines.count(9))
+        << "a shadowing local `Registry` (line 9) was captured — a wrong jump";
+}
+
 // ide-symbol-index: an `import a.b.Type;` statement is recorded as a type
 // reference at its leaf name, so Ctrl-click on an import navigates to the type.
 // Imports resolve outside CajetaType::fromContext, so without explicit capture

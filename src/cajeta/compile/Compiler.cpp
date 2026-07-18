@@ -24,6 +24,7 @@
 #include "StdlibEmbedded.h"
 #include "cajeta/dbg/DebugCodegen.h"
 #include "cajeta/xref/XrefIndex.h"
+#include "cajeta/xref/StaticReceiverCapture.h"
 #include "cajeta/runtime/EmbeddedTls.h"
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
@@ -1330,6 +1331,11 @@ namespace cajeta {
         CajetaModule::buildPendingPrototypes();
         CajetaModule::resolveAdviceMatches();
         CajetaModule::resolveDependencyGraph();
+
+        // Static-receiver type references (see lintRoot) for the target's own
+        // body — so per-edit navigation on `Gzip.decompress(...)` matches the
+        // whole-root export.
+        xref::captureStaticReceivers(module);
     }
 
     // --source-root: register every sibling `.cajeta` under `root` (except the
@@ -1560,6 +1566,18 @@ namespace cajeta {
         guarded("prototypes", [] { CajetaModule::buildPendingPrototypes(); });
         guarded("advice", [] { CajetaModule::resolveAdviceMatches(); });
         guarded("dependencies", [] { CajetaModule::resolveDependencyGraph(); });
+
+        // Static method-call / field-access receivers (`Gzip.decompress(...)`)
+        // resolve in codegen, which the export stops before — walk the parsed
+        // bodies here to record the receiver's TYPE reference (scope-aware, so
+        // a local/field of the same name is never mistaken for a type). Skip
+        // the stdlib module: the project's own files are what a developer
+        // navigates.
+        auto stdlib = CajetaModule::getStdlibModule();
+        for (auto& m : modules) {
+            if (m && m != stdlib) guarded("static-receivers",
+                [&] { xref::captureStaticReceivers(m); });
+        }
 
         writeXrefIndex(flags.emitXref, rootSlash);
         return failed;
