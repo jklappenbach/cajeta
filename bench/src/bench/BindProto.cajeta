@@ -20,8 +20,8 @@ public final class BindProto {
 
     // key at openQuotePos (the '"'); does the quoted key equal `name`?
     static boolean keyEq(int8[] b, int32 openQuotePos, String name) {
-        int8[] nb = name.bytes;
-        int32 nlen = name.byteLength;
+        int8[] nb = name.toBytes();
+        int32 nlen = (int32) nb.count();
         int32 i = 0;
         while (i < nlen) {
             int32 bp = openQuotePos + 1 + i;

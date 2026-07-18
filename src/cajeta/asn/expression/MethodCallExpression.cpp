@@ -8966,16 +8966,9 @@ namespace cajeta {
         // named a member that must exist, so a miss is a compile error here
         // rather than a null that surfaces later (or never). Speculative callers
         // (BinaryOpExpression probing for `operator+`) leave the flag false.
-        //
-        // PARKED (2026-07-13): flipped to false to keep main green. Turning this
-        // on is CORRECT and it found four real bugs — but it also rejects
-        // `tools/mcp`, which uses `.byteLength` / `.bytes` as FIELDS on String
-        // (the 36779177 re-core made them methods, and every field-style caller
-        // kept compiling as null). Repairing those 37 sites needs ownership
-        // decisions on the OWNED `#int8[]` from `toBytes()` — borrow territory,
-        // owned by another workstream. Re-land this with that repair, as one
-        // piece. Work: branch feature/silent-resolution-diagnostics @ f086c73e;
-        // findings: agents/silent-resolution-diagnostics-plan.md 1.3.3.
+        // Unparked 2026-07-18: the field-style String callers the park was
+        // waiting on are gone (tools/mcp already reads byteLength()/toBytes());
+        // only JsonDemo + BindProto still needed the toBytes() repair.
         llvm::Value* callResult = targetClass->invokeMethod(methodCallName, entries,
             /*isConstructor=*/false, thisValue, /*callerModule=*/module,
             /*forceDirectCall=*/(isSuperCall || targetIsFinalClass),
@@ -8984,9 +8977,7 @@ namespace cajeta {
             // title-tracking Unit 5 / 7.2.2: the per-call transfer word
             // rides the ABI only (the moveMask TLS is retired).
             /*transferWord=*/transferWordVal,
-            // main 547f0a0c parked member-not-found hard errors (tools/mcp
-            // String re-core repair pending) — keep the park across the merge.
-            /*errorIfUnresolved=*/false,
+            /*errorIfUnresolved=*/true,
             getSourceLine(), getSourceColumn() + 1);
 
         if (nullSafeStringMethod) {
