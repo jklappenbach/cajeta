@@ -1548,8 +1548,14 @@ namespace cajeta {
                 // pointer bits over the first field. Copy the whole body;
                 // a first-class struct value (by-value return) stores
                 // directly.
+                // An ARRAY ELEMENT takes the same copy path: a value-type element
+                // keeps its own layout inline (CajetaArray::getElementLlvmType), so
+                // `a[i] = stack Rec(..)` must copy the body — a plain pointer store
+                // wrote the address bits over the first field and the element read
+                // back uninitialized.
                 if (dynamic_pointer_cast<DotExpression>(lhsAst)
-                        || dynamic_pointer_cast<IdentifierExpression>(lhsAst)) {
+                        || dynamic_pointer_cast<IdentifierExpression>(lhsAst)
+                        || dynamic_pointer_cast<ArrayIndexExpression>(lhsAst)) {
                     if (!lhsAst->getResolvedType()) lhsAst->resolveTypes(module);
                     auto lhsCls = dynamic_pointer_cast<CajetaClass>(lhsAst->getResolvedType());
                     // Identifier LHS: only an inline value slot (alloca of the

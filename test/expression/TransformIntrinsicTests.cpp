@@ -65,10 +65,10 @@ TEST(TransformIntrinsics, JitRecognizedIdentity) {
 // 1.1.1 — Grad's real behavior (returns GradResult) is covered end-to-end in
 // test/transform/GradEndToEndTests.cpp (U3). Recognition is proven there.
 
-// 1.1.1 — Vmap is recognized. U1 placeholder is identity; SUPERSEDED by U5.
-TEST(TransformIntrinsics, VmapRecognized_U1Placeholder) {
-    EXPECT_EQ(runI32("(int32) -> int32 g = Vmap((int32 x) -> x + 5); return g(37);"), 42);
-}
+// 1.1.1 — Vmap's real behavior (batches over a leading axis, returning
+// `(T[]) -> #R[]`) is covered in test/transform/VmapTests.cpp (U5). Recognition
+// is proven there. The U1 identity-placeholder test was retired when U5 replaced
+// the placeholder: it asserted `Vmap(f)` reproduced `f` at f's own signature.
 
 // 1.1.1 + F8 — Pmap is recognized but deliberately unimplemented in v1: the
 // recognizer intercepts it and errors "not yet implemented" (proof of
