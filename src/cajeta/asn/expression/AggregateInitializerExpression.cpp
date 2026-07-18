@@ -93,7 +93,14 @@ namespace cajeta {
             llvm::Type::getInt64Ty(ctx),
             dl.getTypeAllocSize(bodyTy));
         if (stackAlloc) {
-            bodyPtr = builder->CreateAlloca(bodyTy);
+            // Emit the alloca in the function ENTRY block (not the current,
+            // possibly in-loop, insert point) so an aggregate initializer in a
+            // loop body reuses one stack slot instead of leaking a fresh alloca
+            // per iteration (stack overflow at high iteration counts).
+            llvm::Function* curFn = builder->GetInsertBlock()->getParent();
+            llvm::BasicBlock& entryBB = curFn->getEntryBlock();
+            llvm::IRBuilder<> entryB(&entryBB, entryBB.getFirstInsertionPt());
+            bodyPtr = entryB.CreateAlloca(bodyTy);
             builder->CreateStore(llvm::Constant::getNullValue(bodyTy), bodyPtr);
         } else {
             bodyPtr = MemoryManager::createMallocInstruction(

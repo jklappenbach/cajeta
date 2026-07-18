@@ -1376,7 +1376,16 @@ namespace cajeta {
         // Populate cases and emit each group's statements. Fall-through is implicit
         // — if a group's terminator hasn't been set after emitting its body, we
         // branch to the next group's block (or after, if last).
-        module->pushLoopContext(afterBB, afterBB);  // `break` jumps out
+        // `break` jumps out of the switch, but `continue` targets the
+        // ENCLOSING loop (a switch is not a loop) — preserve that loop's
+        // continue target instead of hijacking it to afterBB. When the switch
+        // isn't inside a loop, afterBB is a harmless fallback (a bare
+        // `continue` there is already a semantic error).
+        llvm::BasicBlock* enclosingCont =
+            module->hasLoopContext()
+                ? module->currentLoopContext().continueTarget
+                : afterBB;
+        module->pushLoopContext(enclosingCont, afterBB);
         bool anyArmMerged = false;
         for (size_t i = 0; i < groups.size(); i++) {
             auto& g = groups[i];
