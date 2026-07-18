@@ -104,7 +104,7 @@ naming.
    boundary:** no use-after-free of a buffer whose only remaining
    user is an in-flight kernel.
 6. **Graphics pipelines (raster, ray tracing, mesh shaders) live one
-   layer up in [`cajeta.render`](../gfx/cajeta-gfx-spec.md), built on the Vulkan
+   layer up in [`cajeta.render`](../gfx/gfx-spec.md), built on the Vulkan
    substrate here.** XPU itself is compute-only.
 
 ### 1.2 Non-goals
@@ -121,7 +121,7 @@ naming.
 - **No CUDA-source compatibility.** Cajeta is not a CUDA replacement
   at the syntax level. Existing CUDA `.cu` files do not compile.
 - **No graphics surface here.** Vertex / fragment / mesh / ray
-  pipelines belong to [`cajeta.render`](../gfx/cajeta-gfx-spec.md), which
+  pipelines belong to [`cajeta.render`](../gfx/gfx-spec.md), which
   consumes `cajeta.xpu.vulkan` as its dispatch substrate.
 
 ### 1.3 What's distinctive about Cajeta's combination
@@ -459,7 +459,7 @@ compute-side image sampling. The writable twin is `Image2D` — a
 (`OpImageWrite`) and reads back on the host with `img.download(...)`;
 see [`WritableImages.md`](../gpu/WritableImages.md). Graphics-side texture work
 (framebuffers, render targets, attachments) lives in
-[`cajeta.render`](../gfx/cajeta-gfx-spec.md). Bindless textures are exposed via
+[`cajeta.render`](../gfx/gfx-spec.md). Bindless textures are exposed via
 `BindlessTexture<Format>` on all three backends but with different
 underlying mechanisms (NVIDIA bindless / HIP / Vulkan descriptor
 indexing).
@@ -688,7 +688,7 @@ the device exposes the extensions the SPIR-V module declares.
 - ML inference where ~80% of native perf is acceptable in exchange
   for a single shipping binary.
 - Compute kernels embedded in a Vulkan-based renderer (see
-  [`cajeta.render`](../gfx/cajeta-gfx-spec.md)). One device, one command stream
+  [`cajeta.render`](../gfx/gfx-spec.md)). One device, one command stream
   shared with rasterization or ray tracing.
 - Anything where the Vulkan ecosystem (RenderDoc, NSight Graphics,
   Radeon GPU Profiler, MoltenVK / Vulkan SDK) is the debugging
@@ -1066,7 +1066,7 @@ a working sample.
    ML-training-grade scheduling.
 
 Graphics phases (raster, ray tracing, mesh shaders) are tracked in
-[`cajeta.render`'s phasing](../gfx/cajeta-gfx-spec.md), not here.
+[`cajeta.render`'s phasing](../gfx/gfx-spec.md), not here.
 
 ---
 
@@ -1228,7 +1228,7 @@ in `cajeta.xpu.nvidia`, `cajeta.xpu.amd`, and `cajeta.xpu.vulkan`,
 each named for what they actually are. The library ships as one `.so`
 and `dlopen`s drivers on demand; binaries pay only for the backends
 they use. Graphics pipelines live one layer up in
-[`cajeta.render`](../gfx/cajeta-gfx-spec.md), built on `cajeta.xpu.vulkan`. The
+[`cajeta.render`](../gfx/gfx-spec.md), built on `cajeta.xpu.vulkan`. The
 prefix `xpu` is forward-compatible: when NPU / TPU / FPGA backends
 arrive, they slot in alongside the GPUs without renaming anything the
 rest of the codebase depends on.

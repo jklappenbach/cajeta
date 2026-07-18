@@ -36,7 +36,7 @@ Verdicts: **guide** → seeds `docs/guide/` · **specification** →
 | history/StructsViewsStatus.md | retire | status tracker, complete (832/832) |
 | gpu/CajetaGPU.md + gpu/*.md (10 capability docs) | specification | specification/gpu/ (new module) |
 | gpu/xpu/*.md | specification | specification/xpu/ (new module) |
-| gpu/gfx/CajetaGFX.md, CajetaRender.md | retire | cajeta-gfx-spec.md explicitly supersedes ("both drifted") |
+| gpu/gfx/CajetaGFX.md, CajetaRender.md | retire | gfx-spec.md explicitly supersedes ("both drifted") |
 | cajeta/gpu/ifx/ (README + .cajeta code) | relocate | samples/ per plan — README says target is runtime/src/cajeta/ifx/ (see questions) |
 | buildtool/LibraryProjectType.md | specification | specification/buildtool/ (already slated) |
 

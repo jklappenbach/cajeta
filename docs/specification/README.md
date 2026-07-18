@@ -117,7 +117,7 @@ Core semantics: types, ownership, memory, dispatch.
   [WavePrefixScan](xpu/WavePrefixScan.md), [SubgroupRotate](xpu/SubgroupRotate.md),
   [QuadControl](xpu/QuadControl.md), [IntegerAtomics](xpu/IntegerAtomics.md),
   [FloatAtomics](xpu/FloatAtomics.md), [ShaderClock](xpu/ShaderClock.md).
-- [cajeta.gfx](gfx/cajeta-gfx-spec.md) — graphics primitives over XPU.
+- [cajeta.gfx](gfx/gfx-spec.md) — graphics primitives over XPU.
 
 ## Toolchain and platform
 

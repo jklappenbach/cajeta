@@ -134,4 +134,4 @@ and the per-domain `WindowBackend`/`InputBackend`/`AudioBackend`, `IfxInfo`, the
 types (`Window`, `Surface`, `WindowEvent`, `InputDevice`, `AudioStream`), the enums
 (`Feature`, `LifecyclePhase`, `Permission`, `PermissionState`), `IfxException`, and the
 recording seam (`VideoSink`/`AudioSink` + `PngSequenceVideoSink`/`WavAudioSink`). Design
-rationale: `documents/gfx/cajeta-gfx-spec.md` §9.
+rationale: `documents/gfx/gfx-spec.md` §9.

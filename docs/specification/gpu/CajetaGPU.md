@@ -384,7 +384,7 @@ match this document:
 - Deep per-cell ledger — [`xpu/CajetaXPU-Matrix.md`](../xpu/CajetaXPU-Matrix.md); cross-backend
   discipline — [`xpu/CajetaXPU-Variance.md`](../xpu/CajetaXPU-Variance.md).
 - Compute — [`xpu/CajetaXPU.md`](../xpu/CajetaXPU.md); CPU — [`xpu/CajetaCPU.md`](../xpu/CajetaCPU.md).
-  Graphics — [`gfx/CajetaGFX.md`](../gfx/cajeta-gfx-spec.md).
+  Graphics — [`gfx/CajetaGFX.md`](../gfx/gfx-spec.md).
 - Per-feature — `ValueTypeCatalog`, `Quaternions`, `MatrixDeterminantInverse`, `MaskSelect`,
   `IntegerDotProduct`, `BitInstructions`, `WritableImages`,
   `xpu/{FloatAtomics,IntegerAtomics,WaveReductions,WavePrefixScan,SubgroupRotate,QuadControl,ShaderClock}`.
