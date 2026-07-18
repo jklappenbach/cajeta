@@ -165,6 +165,17 @@ namespace cajeta {
                               llvm::Value* value,
                               const ExpressionPtr& srcExpr) {
             unsigned fieldIdx = (unsigned) classType->getFieldLlvmIndex(prop);
+            // generateCode can legitimately yield nullptr (a void / no-value
+            // expression); the user-binding call sites pass it straight in.
+            // Fail loud instead of dereferencing it below (SIGSEGV).
+            if (!value) {
+                char buf[512];
+                snprintf(buf, sizeof(buf),
+                    "aggregate initializer for '%s': the expression bound to "
+                    "field '%s' produces no value",
+                    typeName.c_str(), prop->getName().c_str());
+                throw Exception(buf, "CAJETA_ERROR_AGGREGATE_INIT_TYPE");
+            }
             if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(value)) {
                 value = builder->CreateLoad(a->getAllocatedType(), a);
             }

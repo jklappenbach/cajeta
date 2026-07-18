@@ -4,6 +4,7 @@
 #include "cajeta/synth/SynthesizerRegistry.h"
 
 #include <map>
+#include <mutex>
 #include <set>
 
 #include "cajeta/error/Exception.h"
@@ -291,9 +292,14 @@ namespace cajeta::synth {
     }
 
     void registerBuiltinSynthesizers() {
-        static bool done = false;
-        if (done) return;
-        done = true;
+        // Registers into the shared, mutex-less instance() vectors and is
+        // called from per-compile dispatch sites. A plain `static bool done`
+        // let two threads (thread-safe compiler) both run the emplace_backs —
+        // a data race plus duplicate synthesizers (-> spurious
+        // CAJETA_ERROR_SYNTH_AMBIGUOUS). call_once runs the whole block exactly
+        // once across all threads.
+        static std::once_flag builtinOnce;
+        std::call_once(builtinOnce, [] {
         auto& reg = SynthesizerRegistry::instance();
         // Order mirrors the former MethodTemplateInstantiator if-else chain. The
         // codecs are mutually exclusive by declaring class, so at most one ever
@@ -416,6 +422,7 @@ namespace cajeta::synth {
             r.classBodyFragment = std::move(frag);
             return r;
         });
+        });  // std::call_once
     }
 
 }
