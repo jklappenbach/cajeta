@@ -148,4 +148,23 @@ class XrefStreamParserTest {
                    "--source-root", "/root", "--shadow", "/root/f.cajeta", "--emit-xref"),
             with)
     }
+
+    // Dependency archives ride the per-edit lint as --classpath, so the buffer's
+    // references into a dependency resolve and survive the shard rewrite (§8.3.1).
+    @Test
+    fun lintArgvAppendsClasspathWhenDependenciesGiven() {
+        val none = CajetacRunner.lintArgv("/bin/cajeta", "/tmp/f.cajeta", "/root", "/root/f.cajeta",
+            emitXref = true)
+        assertFalse(none.any { it.startsWith("--classpath") })
+
+        val deps = listOf(java.nio.file.Paths.get("/c/a.cja"),
+                          java.nio.file.Paths.get("/c/b.cja"))
+        val with = CajetacRunner.lintArgv("/bin/cajeta", "/tmp/f.cajeta", "/root", "/root/f.cajeta",
+            emitXref = true, classpath = deps)
+        assertEquals(
+            listOf("/bin/cajeta", "--lint", "/tmp/f.cajeta", "--diag-format=json",
+                   "--source-root", "/root", "--shadow", "/root/f.cajeta",
+                   "--classpath=/c/a.cja,/c/b.cja", "--emit-xref"),
+            with)
+    }
 }

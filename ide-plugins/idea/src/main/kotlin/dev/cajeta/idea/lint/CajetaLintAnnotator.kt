@@ -7,20 +7,23 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.psi.PsiFile
 import dev.cajeta.idea.xref.CajetaXrefShards
 
-data class LintInput(val path: String, val text: String)
+data class LintInput(val path: String, val text: String, val basePath: String?)
 
 class CajetaLintAnnotator : ExternalAnnotator<LintInput, LintOutput>() {
 
     override fun collectInformation(file: PsiFile): LintInput? {
         val path = file.virtualFile?.path ?: return null
-        return LintInput(path, file.text)
+        return LintInput(path, file.text, file.project.basePath)
     }
 
     // ide-symbol-index Unit 6 (6.2.4): the per-edit lint run now carries the
     // buffer's xref records on the same stderr (one subprocess, §1.5.2); the
-    // stream costs ~2% of the lint wall time (Unit 3 numbers).
+    // stream costs ~2% of the lint wall time (Unit 3 numbers). The project base
+    // rides along so the run resolves dependency archives — otherwise this
+    // stream clobbers the whole-root shard's dependency Ctrl-click targets.
     override fun doAnnotate(input: LintInput): LintOutput =
-        CajetacRunner.lintWithXref(input.path, input.text, emitXref = true)
+        CajetacRunner.lintWithXref(input.path, input.text, emitXref = true,
+                                   basePath = input.basePath)
 
     override fun apply(file: PsiFile, output: LintOutput, holder: AnnotationHolder) {
         for (d in output.diagnostics) {

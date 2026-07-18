@@ -35,6 +35,7 @@ object CajetacRunner {
         filePath: String,
         bufferText: String,
         emitXref: Boolean,
+        basePath: String? = null,
     ): LintOutput {
         val compilerPath = CajetaSettings.instance.compilerPath
         if (compilerPath.isBlank() || !File(compilerPath).canExecute()) {
@@ -49,8 +50,13 @@ object CajetacRunner {
             // root (derived from the file's package) and shadow the on-disk twin
             // so the staged buffer replaces it (lint-source-root-spec §5/§7).
             val sourceRoot = sourceRootOf(filePath, bufferText)
+            // Same dependency archives the whole-root rebuild passes, so the
+            // buffer's references into a dependency resolve and survive into the
+            // shard instead of being clobbered on the next edit (§8.3.1).
+            val classpath = dev.cajeta.idea.xref.CajetaSourceMountGlue
+                .dependencyArchives(basePath)
             val stderr = runCompiler(compilerPath, tempFile, sourceRoot, filePath,
-                                     emitXref)
+                                     emitXref, classpath)
                 ?: return LintOutput(emptyList(), XrefStream.EMPTY)
             val xref = if (emitXref) XrefStreamParser.demux(stderr)
                        else XrefStream.EMPTY
@@ -112,12 +118,20 @@ object CajetacRunner {
         sourceRoot: String? = null,
         shadow: String? = null,
         emitXref: Boolean = false,
+        classpath: List<Path> = emptyList(),
     ): List<String> {
         val args = mutableListOf(compilerPath, "--lint", file, "--diag-format=json")
         if (sourceRoot != null) {
             args += listOf("--source-root", sourceRoot)
             if (shadow != null) args += listOf("--shadow", shadow)
         }
+        // Dependency archives on the classpath so single-file lint resolves
+        // dependency types (§8.3.1). Without it the buffer's references to a
+        // dependency type are dropped as dangling, and this stream — which
+        // overwrites the whole-root shard — would erase every dependency
+        // Ctrl-click target the last rebuild produced.
+        if (classpath.isNotEmpty())
+            args += "--classpath=" + classpath.joinToString(",") { it.toString() }
         // Bare (pathless) --emit-xref: the records ride the diagnostic stream as
         // kind:"xref" NDJSON, reported against the --shadow original.
         if (emitXref) args += "--emit-xref"
@@ -130,10 +144,11 @@ object CajetacRunner {
         sourceRoot: String? = null,
         shadow: String? = null,
         emitXref: Boolean = false,
+        classpath: List<Path> = emptyList(),
     ): String? {
         return try {
             val args = lintArgv(compilerPath, file.toString(), sourceRoot, shadow,
-                                emitXref)
+                                emitXref, classpath)
             val pb = ProcessBuilder(args).redirectErrorStream(false)
             val process = pb.start()
             process.outputStream.close()

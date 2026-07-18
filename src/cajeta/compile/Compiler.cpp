@@ -1271,6 +1271,17 @@ namespace cajeta {
         xref::setCaptureEnabled(!flags.emitXref.empty());
 
         ensureStdlibModule();
+
+        // Ingest --classpath dependency archives (no-op when none given), so a
+        // single-file lint resolves dependency types exactly as the whole-root
+        // export does. Without this, a reference to a dependency type (e.g.
+        // `Gzip.decompress(...)` against a codec `.cja`) has no declaration to
+        // vouch it and pruneDanglingEdges drops the edge — the per-edit stream
+        // would then CLOBBER the good whole-root shard with one missing every
+        // dependency reference. Armed after capture is on so the dependency
+        // declarations are emitted as xref targets too.
+        ingestClasspath();
+
         const bool json = getFlags().diagFormat == DiagFormat::Json;
 
         std::filesystem::path targetPath(file);
