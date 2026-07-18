@@ -11,6 +11,7 @@
 //
 #pragma once
 
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -18,6 +19,26 @@
 namespace cajeta {
     class Expression;
     namespace transform {
+
+        // U4 — how a call to a user function resolves for the DAG walk. The
+        // resolver (supplied by the Grad recognizer, which has the enclosing
+        // class) maps a call name+arity to either a differentiate-through inline
+        // target (the callee's single return expression + its param names) or a
+        // @NoGrad stop-gradient (the call becomes a constant leaf). `found` false
+        // means "not a resolvable user helper" — the caller then errors as an
+        // unsupported body. The resolver stays in the compiler core so this
+        // transform lib carries no CajetaClass/Method dependency.
+        struct InlineTarget {
+            bool found = false;
+            bool noGrad = false;             // @NoGrad -> constant leaf
+            bool returnIsTensor = false;     // rank of the call's result
+            std::string returnTy;            // callee return type canonical (value-type fallback)
+            std::string qualifiedName;       // "G.sq" — forward-value source for @NoGrad
+            std::vector<std::string> paramNames;   // callee params (inline case)
+            Expression* body = nullptr;      // callee's single return expr (inline case)
+        };
+        using CallResolver =
+            std::function<InlineTarget(const std::string& name, size_t arity)>;
 
         // A node in f's forward computation DAG. Nodes are in topological order;
         // the last node is the output. A leaf carries `valueExpr` = the input
@@ -43,6 +64,7 @@ namespace cajeta {
         bool buildDag(Expression* body,
                       const std::vector<std::string>& paramNames,
                       const std::map<std::string, bool>& paramIsTensor,
+                      const CallResolver& resolveCall,
                       std::vector<AdNode>& outNodes,
                       std::map<std::string, size_t>& outParamNodeIndex,
                       std::string* err);

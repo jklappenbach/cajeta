@@ -35,6 +35,8 @@ namespace cajeta {
             // unsupported construct, sets `err` and returns 0 (callers short-circuit).
             size_t buildNode(Expression* e,
                              const std::map<std::string, bool>& paramIsTensor,
+                             const CallResolver& resolveCall,
+                             std::map<std::string, size_t>& bindings,
                              std::vector<AdNode>& nodes,
                              std::map<std::string, size_t>& paramIdx,
                              std::string& err) {
@@ -42,6 +44,10 @@ namespace cajeta {
 
                 if (auto* id = dynamic_cast<IdentifierExpression*>(e)) {
                     std::string name = id->getTextValue();
+                    // An inlined callee's parameter (U4): resolves to the node the
+                    // argument was built into, so gradient flows through the call.
+                    auto b = bindings.find(name);
+                    if (b != bindings.end()) return b->second;
                     auto rank = paramIsTensor.find(name);
                     if (rank != paramIsTensor.end()) {
                         auto it = paramIdx.find(name);
@@ -77,9 +83,9 @@ namespace cajeta {
                     auto& ch = b->getChildren();
                     if (ch.size() < 2) { err = "Grad: malformed binary expression"; return 0; }
                     size_t li = buildNode(dynamic_cast<Expression*>(ch[0].get()),
-                                          paramIsTensor, nodes, paramIdx, err);
+                                          paramIsTensor, resolveCall, bindings, nodes, paramIdx, err);
                     size_t ri = buildNode(dynamic_cast<Expression*>(ch[1].get()),
-                                          paramIsTensor, nodes, paramIdx, err);
+                                          paramIsTensor, resolveCall, bindings, nodes, paramIdx, err);
                     if (!err.empty()) return 0;
                     std::string val = "(" + nodes[li].valueExpr + " " + opStr + " "
                                     + nodes[ri].valueExpr + ")";
@@ -97,7 +103,7 @@ namespace cajeta {
                     auto& ch = p->getChildren();
                     if (ch.empty()) { err = "Grad: malformed unary expression"; return 0; }
                     size_t oi = buildNode(dynamic_cast<Expression*>(ch[0].get()),
-                                          paramIsTensor, nodes, paramIdx, err);
+                                          paramIsTensor, resolveCall, bindings, nodes, paramIdx, err);
                     if (!err.empty()) return 0;
                     std::string val = "-(" + nodes[oi].valueExpr + ")";
                     nodes.push_back(AdNode{val, false, "negate", {oi}, false});
@@ -129,7 +135,7 @@ namespace cajeta {
                         std::vector<size_t> operandIdx;
                         for (size_t k = 0; k < nOperands; ++k) {
                             auto* ae = dynamic_cast<Expression*>(args[k].expression.get());
-                            size_t ci = buildNode(ae, paramIsTensor, nodes,
+                            size_t ci = buildNode(ae, paramIsTensor, resolveCall, bindings, nodes,
                                                   paramIdx, err);
                             if (!err.empty()) return 0;
                             operandIdx.push_back(ci);
@@ -145,6 +151,63 @@ namespace cajeta {
                         nodes.push_back(AdNode{val, false, op, operandIdx, op != "sum"});
                         return nodes.size() - 1;
                     }
+
+                    // U4 — a call to a user helper. The resolver (compiler core)
+                    // maps it to a differentiate-through inline target or a @NoGrad
+                    // stop-gradient. Build each argument node FIRST (in the caller's
+                    // binding context) so they carry the right forward source and,
+                    // for the inline case, the gradient inputs.
+                    const auto& args = mc->getParameters();
+                    InlineTarget t = resolveCall ? resolveCall(op, args.size())
+                                                 : InlineTarget{};
+                    if (t.found) {
+                        std::vector<size_t> argIdx;
+                        argIdx.reserve(args.size());
+                        for (const auto& a : args) {
+                            auto* ae = dynamic_cast<Expression*>(a.expression.get());
+                            size_t ci = buildNode(ae, paramIsTensor, resolveCall,
+                                                  bindings, nodes, paramIdx, err);
+                            if (!err.empty()) return 0;
+                            argIdx.push_back(ci);
+                        }
+                        if (t.noGrad) {
+                            // Stop-gradient: forward value = qualified call over the
+                            // arg sources; a leaf (no operands) -> zero cotangent, no
+                            // backward term. The value is preserved so f's value is
+                            // correct (spec §9.2).
+                            std::string val = t.qualifiedName + "(";
+                            for (size_t k = 0; k < argIdx.size(); ++k) {
+                                if (k) val += ", ";
+                                val += nodes[argIdx[k]].valueExpr;
+                            }
+                            val += ")";
+                            nodes.push_back(AdNode{val, false, "", {}, t.returnIsTensor});
+                            return nodes.size() - 1;
+                        }
+                        // Differentiate through: bind the callee's params to the arg
+                        // nodes (shadowing any same-named binding) and walk its
+                        // single return expression, so cotangents flow into the args.
+                        if (t.paramNames.size() != args.size() || !t.body) {
+                            err = "Grad: cannot inline '" + op + "' — it must be a "
+                                  "single-return-expression function whose parameter "
+                                  "count matches the call";
+                            return 0;
+                        }
+                        std::vector<std::pair<std::string, size_t>> shadowed;
+                        std::vector<std::string> added;
+                        for (size_t k = 0; k < t.paramNames.size(); ++k) {
+                            auto it = bindings.find(t.paramNames[k]);
+                            if (it != bindings.end()) shadowed.push_back(*it);
+                            else added.push_back(t.paramNames[k]);
+                            bindings[t.paramNames[k]] = argIdx[k];
+                        }
+                        size_t r = buildNode(t.body, paramIsTensor, resolveCall,
+                                             bindings, nodes, paramIdx, err);
+                        for (const auto& s : shadowed) bindings[s.first] = s.second;
+                        for (const auto& n : added) bindings.erase(n);
+                        if (!err.empty()) return 0;
+                        return r;
+                    }
                 }
 
                 err = "Grad: unsupported expression in the differentiated body "
@@ -157,12 +220,15 @@ namespace cajeta {
         bool buildDag(Expression* body,
                       const std::vector<std::string>& paramNames,
                       const std::map<std::string, bool>& paramIsTensor,
+                      const CallResolver& resolveCall,
                       std::vector<AdNode>& outNodes,
                       std::map<std::string, size_t>& outParamNodeIndex,
                       std::string* err) {
             (void)paramNames;   // membership + rank both come from paramIsTensor
             std::string localErr;
-            buildNode(body, paramIsTensor, outNodes, outParamNodeIndex, localErr);
+            std::map<std::string, size_t> bindings;   // inlined-callee params (U4)
+            buildNode(body, paramIsTensor, resolveCall, bindings, outNodes,
+                      outParamNodeIndex, localErr);
             if (!localErr.empty()) { if (err) *err = localErr; return false; }
             return true;
         }

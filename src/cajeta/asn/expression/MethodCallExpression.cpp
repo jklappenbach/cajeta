@@ -20,6 +20,7 @@
 #include "cajeta/type/CajetaView.h"
 #include "cajeta/type/CajetaFunctionType.h"
 #include "cajeta/method/Method.h"
+#include "cajeta/asn/Statement.h"
 #include "cajeta/transform/GradBackward.h"
 #include "cajeta/synth/SourceSynthesisParse.h"
 #include "cajeta/synth/SourceSynthesis.h"
@@ -491,6 +492,56 @@ namespace cajeta {
     // symbolic differentiation pass (transform-intrinsics U3).
     struct GradPieces { std::string valueExpr; std::string gradExpr; };
 
+    // Find the first ReturnStatement's expression anywhere under `node` (U4 —
+    // a helper's single-return body reached for DAG inlining). The returned
+    // expression isn't in `children`, so walk via forEachSubNode.
+    static Expression* findReturnExpr(const AbstractSyntaxNodePtr& node) {
+        if (!node) return nullptr;
+        if (auto* ret = dynamic_cast<ReturnStatement*>(node.get()))
+            return ret->getExpression().get();
+        Expression* found = nullptr;
+        node->forEachSubNode([&](const AbstractSyntaxNodePtr& c) {
+            if (!found) found = findReturnExpr(c);
+        });
+        return found;
+    }
+
+    // Build the U4 call resolver over the class currently being compiled: map a
+    // call name+arity to a same-class static single-return helper, distinguishing
+    // @NoGrad (stop-gradient) from a differentiate-through inline target. A name
+    // that isn't a unique same-class static (ambiguous overload, instance method,
+    // imported/other-class) resolves to not-found -> the DAG walk errors as an
+    // unsupported body (v1 scope; wider resolution is a follow-on).
+    static cajeta::transform::CallResolver makeCallResolver(CajetaModulePtr module) {
+        CajetaClassPtr enclosing = module->getStructureStack().empty()
+            ? nullptr : module->getStructureStack().back();
+        return [enclosing](const std::string& name, size_t arity)
+                -> cajeta::transform::InlineTarget {
+            cajeta::transform::InlineTarget t;
+            if (!enclosing) return t;
+            MethodPtr match;
+            for (auto& m : enclosing->getMethodList()) {
+                if (m && m->isStatic() && m->getName() == name
+                        && m->getParameterList().size() == arity) {
+                    if (match) return cajeta::transform::InlineTarget{};  // ambiguous
+                    match = m;
+                }
+            }
+            if (!match) return t;
+            t.found = true;
+            t.noGrad = match->findAnnotation("NoGrad") != nullptr;
+            auto rt = match->getReturnType();
+            std::string rc = rt ? rt->toCanonical() : std::string();
+            t.returnIsTensor = rc.rfind("cajeta.math.Tensor", 0) == 0
+                            || rc.rfind("Tensor<", 0) == 0;
+            t.returnTy = rc;
+            t.qualifiedName = enclosing->getQName()->getTypeName() + "." + name;
+            for (auto& p : match->getParameterList()) t.paramNames.push_back(p->getName());
+            t.body = findReturnExpr(match->getBlock());
+            return t;
+        };
+    }
+
     // Symbolically differentiate `bodyExpr` w.r.t. the parameter `pnames[argnum]`
     // (rank `selIsTensor`, element `elem`) over the params in `paramRank`. Returns
     // the inlined forward value source and the grad source (an explicit zero when
@@ -502,14 +553,16 @@ namespace cajeta {
             MethodCallExpression* self, Expression* bodyExpr,
             const std::vector<std::string>& pnames,
             const std::map<std::string, bool>& paramRank,
-            size_t argnum, const std::string& elem, bool selIsTensor) {
+            size_t argnum, const std::string& elem, bool selIsTensor,
+            const cajeta::transform::CallResolver& resolveCall) {
         auto locErr = [&](const std::string& msg, const char* id) {
             return Exception(msg, id, "", self->getSourceLine(), self->getSourceColumn());
         };
         std::vector<cajeta::transform::AdNode> nodes;
         std::map<std::string, size_t> pidx;
         std::string err;
-        if (!cajeta::transform::buildDag(bodyExpr, pnames, paramRank, nodes, pidx, &err)) {
+        if (!cajeta::transform::buildDag(bodyExpr, pnames, paramRank, resolveCall,
+                                         nodes, pidx, &err)) {
             throw locErr(err, "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
         }
         // The reverse pass seeds the output cotangent to 1.0f — a scalar output.
@@ -518,17 +571,21 @@ namespace cajeta {
                          "function (reduce with sum(...))",
                          "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
         }
+        std::string zero = selIsTensor
+            ? ("Tensor.zerosLike<" + elem + ">(" + pnames[argnum] + ")") : "0.0f";
         std::string gradExpr, missing;
         auto pn = pidx.find(pnames[argnum]);
         if (pn == pidx.end()) {
-            gradExpr = selIsTensor
-                ? ("Tensor.zerosLike<" + elem + ">(" + pnames[argnum] + ")") : "0.0f";
+            gradExpr = zero;
         } else {
             gradExpr = cajeta::transform::reverseModeGrad(nodes, pn->second, elem, &missing);
             if (!missing.empty()) {
                 throw locErr("transform intrinsic 'Grad': no VJP rule for primitive '"
                              + missing + "'", "CAJETA_ERROR_TRANSFORM_NO_VJP_RULE");
             }
+            // The param is present but has NO path to the output (it feeds only a
+            // @NoGrad/constant region) -> empty cotangent = an explicit zero.
+            if (gradExpr.empty()) gradExpr = zero;
         }
         return { nodes.empty() ? std::string() : nodes.back().valueExpr, gradExpr };
     }
@@ -723,8 +780,10 @@ namespace cajeta {
         bool selIsTensor = tensorElem(selTy, elem);
 
         // Reverse-mode over the body DAG -> forward value + grad source expressions.
+        // The resolver lets the walk inline same-class helpers (@NoGrad = stop) (U4).
+        auto resolveCall = makeCallResolver(module);
         GradPieces gp = differentiateBody(self, bodyExpr.get(), pnames, paramRank,
-                                          (size_t)argnum, elem, selIsTensor);
+                                          (size_t)argnum, elem, selIsTensor, resolveCall);
         std::string outputVal = gp.valueExpr;
         std::string gradExpr = gp.gradExpr;
 
@@ -746,6 +805,15 @@ namespace cajeta {
                     auto r = sumCall->getExplicitMethodTypeArgs().back();
                     if (r) valueTy = r->toCanonical();
                 }
+            }
+        }
+        // U4 — when the whole body is a bare user-helper call `sq(x)`, its type is
+        // unresolved pre-codegen; take the callee's return type off the resolver.
+        if (valueTy.empty() || valueTy == "void") {
+            if (auto call = std::dynamic_pointer_cast<MethodCallExpression>(bodyExpr)) {
+                auto t = resolveCall(call->getMethodCallName(),
+                                     call->getParameters().size());
+                if (t.found && !t.returnTy.empty()) valueTy = t.returnTy;
             }
         }
         if (valueTy.empty() || valueTy == "void") {
@@ -831,9 +899,12 @@ namespace cajeta {
 
         // deriv[k] = f^(k) as source. The first pass yields f (value) and f' (grad);
         // each later pass re-parses the previous grad string and differentiates it.
+        // The base pass may inline same-class helpers (@NoGrad = stop); the re-parsed
+        // grad strings are pure built-in ops, so the resolver is a harmless no-op there.
+        auto resolveCall = makeCallResolver(module);
         std::vector<std::string> deriv;
         GradPieces p = differentiateBody(self, baseBody.get(), pnames, paramRank,
-                                         0, selTy, false);
+                                         0, selTy, false, resolveCall);
         deriv.push_back(p.valueExpr);   // f^(0)
         deriv.push_back(p.gradExpr);    // f^(1)
         for (size_t k = 2; k <= depth; ++k) {
@@ -844,7 +915,7 @@ namespace cajeta {
                              "gradient", "CAJETA_ERROR_TRANSFORM_SYNTH_FAILED");
             }
             GradPieces pk = differentiateBody(self, parsed.get(), pnames, paramRank,
-                                              0, selTy, false);
+                                              0, selTy, false, resolveCall);
             deriv.push_back(pk.gradExpr);   // f^(k)
         }
 
