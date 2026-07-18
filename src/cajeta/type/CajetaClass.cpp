@@ -636,6 +636,22 @@ namespace cajeta {
                     if (p->isStatic()) continue;
                     slot++;
                 }
+                // title-tracking §5 — mirror the hidden per-instance ownership
+                // word embedSubObject emits (after own properties, before vbase
+                // slots) for any class carrying a bit-carrying owned field.
+                // Omitting it made every later sub-object's slot index too low,
+                // so a secondary vtable got stored into an earlier sub-object's
+                // ownership word — corrupting drop bits (double-free / leak).
+                {
+                    bool wantsWord = false;
+                    for (auto& p : cls->propertyList) {
+                        if (!p->isStatic() && fieldHasOwnershipBit(p)) {
+                            wantsWord = true;
+                            break;
+                        }
+                    }
+                    if (wantsWord) slot++;
+                }
                 // MultiClassing Phase 3 v4: each class's slice in the
                 // flattened layout ends with one ptr per transitive
                 // non-self ancestor (vbase pointers). Advance `slot`

@@ -823,6 +823,13 @@ namespace cajeta {
         llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
         llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
 
+        // sret (value-returning) methods prepend a hidden result pointer at
+        // LLVM arg 0, so parameterList index i maps to LLVM arg i+1 — the same
+        // shift generateCode applies when building ParameterFields. Without
+        // this, a @NonNull check reads the wrong argument (e.g. `this` instead
+        // of the annotated formal) and silently passes on null.
+        unsigned sretOffset = returnsStackValue() ? 1u : 0u;
+
         for (size_t i = 0; i < parameterList.size(); ++i) {
             auto& p = parameterList[i];
             if (!p) continue;
@@ -845,8 +852,9 @@ namespace cajeta {
             // can return placeholder shapes for forward-declared / not-
             // yet-built types and trip "Invalid size request" / opaque-
             // pointer surprises. Only pointer-typed args can be null.
-            if (i >= llvmFunction->arg_size()) continue;
-            llvm::Value* argVal = llvmFunction->getArg((unsigned) i);
+            unsigned argIdx = (unsigned) i + sretOffset;
+            if (argIdx >= llvmFunction->arg_size()) continue;
+            llvm::Value* argVal = llvmFunction->getArg(argIdx);
             if (!argVal->getType()->isPointerTy()) continue;
 
             llvm::Value* isNull = b->CreateICmpEQ(
