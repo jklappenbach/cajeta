@@ -134,6 +134,28 @@ TEST(GradEndToEnd, argnumOutOfRangeNamedError) {
         "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
 }
 
+// 3.1.6 — second-order: Grad(Grad(f)) differentiates the gradient. For f = x*x,
+// f' = 2x and f'' = 2, so the result carries {value: f'(x)=2x, grads: f''=2}.
+// At x=3: value 6, grads 2 -> 6*100 + 2 = 602.
+TEST(GradEndToEnd, secondOrderSquare) {
+    EXPECT_FLOAT_EQ(runF32(
+        "(float32) -> GradResult<float32,float32> g2 =\n"
+        "            Grad(Grad((float32 x) -> x * x));\n"
+        "        GradResult<float32,float32> r = g2(3.0f);\n"
+        "        return r.value * 100.0f + r.grads;"), 602.0f);
+}
+
+// 3.1.6 — second-order with a non-constant f'': for f = x*x*x, f' = 3x^2 and
+// f'' = 6x, so {value: f'(x)=3x^2, grads: f''(x)=6x}. At x=2: value 12, grads 12
+// -> 12*100 + 12 = 1212. Confirms the re-parsed gradient is itself differentiated.
+TEST(GradEndToEnd, secondOrderCube) {
+    EXPECT_FLOAT_EQ(runF32(
+        "(float32) -> GradResult<float32,float32> g2 =\n"
+        "            Grad(Grad((float32 x) -> x * x * x));\n"
+        "        GradResult<float32,float32> r = g2(2.0f);\n"
+        "        return r.value * 100.0f + r.grads;"), 1212.0f);
+}
+
 // A misspelled/unsupported primitive fails with a named compile error, never a
 // silent wrong gradient (spec §5.3). Division has no VJP rule in v1.
 TEST(GradEndToEnd, unsupportedOpNamedError) {

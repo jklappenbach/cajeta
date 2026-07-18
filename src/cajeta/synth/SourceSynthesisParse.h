@@ -29,4 +29,11 @@ namespace cajeta::synth {
     // Same deliberate leak (see above). Returns the compilationUnit context.
     CajetaParser::CompilationUnitContext* parseSynthesizedUnit(const std::string& src);
 
+    // Parse a bare expression fragment — the seam for re-differentiating a
+    // synthesized grad SOURCE string (second-order Grad, 3.1.6). The returned
+    // context is fed to Expression::fromContext to rebuild the AST, which
+    // buildDag walks structurally (no resolveTypes / scope needed). Same
+    // deliberate leak (see above). Returns the expression context.
+    CajetaParser::ExpressionContext* parseExpressionFragment(const std::string& src);
+
 }
