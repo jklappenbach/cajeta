@@ -354,7 +354,7 @@ namespace cajeta {
         // Per-method dedupe: with method-level templates the same Method
         // can be instantiated many times. Key on parent canonical +
         // method's labeled canonical so each declaration warns once.
-        static std::unordered_set<std::string> warned;
+        static thread_local std::unordered_set<std::string> warned;
         // Dedupe by source-canonical (template args trimmed): the same
         // source-level method warning shouldn't repeat for each
         // template instantiation (Stream<int32>.next, Stream<int64>.next

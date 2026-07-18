@@ -153,6 +153,24 @@ namespace cajeta {
         // section).
         std::vector<uint8_t> zstdDecompress(const uint8_t* src, size_t srcLen,
                                              uint64_t uncompressedSize) {
+            // Security surface: uncompressedSize comes straight from the
+            // untrusted archive bytes, so a decompression bomb could claim a
+            // huge size with a tiny payload → bad_alloc/OOM before we even
+            // decompress. Cross-check it against the zstd frame's own declared
+            // content size, and cap at a sane absolute limit so a hostile frame
+            // that declares a matching-but-absurd size can't force a huge alloc.
+            static const uint64_t kMaxDecompressed = 1ull << 30;  // 1 GiB
+            unsigned long long frameSize =
+                ZSTD_getFrameContentSize(src, srcLen);
+            if (frameSize == ZSTD_CONTENTSIZE_ERROR
+                    || frameSize == ZSTD_CONTENTSIZE_UNKNOWN
+                    || frameSize != uncompressedSize
+                    || uncompressedSize > kMaxDecompressed) {
+                throw std::runtime_error(
+                    "CajetaArchive: rejecting zstd section — uncompressed size "
+                    "undeclared, mismatched, or over the 1 GiB cap (malformed "
+                    "or hostile archive)");
+            }
             std::vector<uint8_t> out((size_t) uncompressedSize);
             size_t produced = ZSTD_decompress(out.data(), out.size(),
                 src, srcLen);

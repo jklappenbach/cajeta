@@ -182,13 +182,12 @@ namespace cajeta {
     }
 
     bool operator<(const TypeKey& a, const TypeKey& b) {
-        if (a.typeId < b.typeId) {
-            return true;
-        }
-        if (a.typeCode < b.typeCode) {
-            return true;
-        }
-        return false;
+        // Lexicographic (typeId, then typeCode). The old OR-of-two-less-thans
+        // was not a strict weak ordering — it made comp(a,b) && comp(b,a) both
+        // true for e.g. {IntegerTyID,32} vs {PointerTyID,0}, corrupting the
+        // std::map<TypeKey,...> that of() looks up.
+        if (a.typeId != b.typeId) return a.typeId < b.typeId;
+        return a.typeCode < b.typeCode;
     }
 
     void CajetaType::resetGlobals() {
