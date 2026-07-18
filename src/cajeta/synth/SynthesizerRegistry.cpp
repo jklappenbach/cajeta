@@ -343,7 +343,7 @@ namespace cajeta::synth {
             MemberSynthesisResult r;
             r.classBodyFragment = "{ static Logger log = Log.defaultFor(\""
                 + structure->getQName()->toCanonical() + "\"); }";
-            r.imports = {{"Logger", "org.cajeta.logging"}, {"Log", "org.cajeta.logging"}};
+            r.imports = {{"Logger", "dev.cajeta.logging"}, {"Log", "dev.cajeta.logging"}};
             return r;
         });
 
