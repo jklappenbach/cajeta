@@ -41,7 +41,7 @@ The stdlib GPU tier is three nested, **write-once-run-everywhere** packages:
   today, more as they land — that the numerical library lowers onto. Built on `cajeta.xpu`.
   (The `Tensor` and the numpy-equivalent numerical library do **not** live here — they are
   **`cajeta.math`**, a backend-agnostic, CPU-first stdlib package that *uses* `cajeta.xpu` /
-  `cajeta.xpu.xpu` for acceleration. See `documents/cajeta-math/numpy-porting-spec.md`.)
+  `cajeta.xpu.xpu` for acceleration. See `documents/math/numpy-porting-spec.md`.)
 - **`cajeta.xpu.gfx`** — the graphics facet: rasterization, the render graph, the ray-tracing
   pipeline + basic graphics algorithms — the **primitives an engine dev composes, not an
   engine** — built on `cajeta.xpu`.
@@ -384,7 +384,7 @@ match this document:
 - Deep per-cell ledger — [`xpu/CajetaXPU-Matrix.md`](../xpu/CajetaXPU-Matrix.md); cross-backend
   discipline — [`xpu/CajetaXPU-Variance.md`](../xpu/CajetaXPU-Variance.md).
 - Compute — [`xpu/CajetaXPU.md`](../xpu/CajetaXPU.md); CPU — [`xpu/CajetaCPU.md`](../xpu/CajetaCPU.md).
-  Graphics — [`gfx/CajetaGFX.md`](../cajeta-gfx/cajeta-gfx-spec.md).
+  Graphics — [`gfx/CajetaGFX.md`](../gfx/cajeta-gfx-spec.md).
 - Per-feature — `ValueTypeCatalog`, `Quaternions`, `MatrixDeterminantInverse`, `MaskSelect`,
   `IntegerDotProduct`, `BitInstructions`, `WritableImages`,
   `xpu/{FloatAtomics,IntegerAtomics,WaveReductions,WavePrefixScan,SubgroupRotate,QuadControl,ShaderClock}`.

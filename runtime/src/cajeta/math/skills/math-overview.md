@@ -122,4 +122,4 @@ Quaternion<float32> yaw = Rotation.fromAxisAngle(up, 0.7853982f);
 
 Class-level depth lives in the per-type skills (when present) and the doc-comments
 in each source file under `runtime/src/cajeta/math/`. Specs:
-`documents/cajeta-math/tensor-spec.md` (Tensor) and the cajeta-gfx plan (gfx types).
+`documents/math/tensor-spec.md` (Tensor) and the cajeta-gfx plan (gfx types).

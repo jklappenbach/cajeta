@@ -4,7 +4,7 @@
 > **numeric marker hierarchy** (`Numeric ⊃ Floating / Integral / Complex`; `bool` standalone)
 > that **primitive types satisfy intrinsically**, usable as template-parameter and wildcard
 > **bounds**. Companion: `reified-capture-spec.md` (recover concreteness to operate) and
-> `docs/specification/cajeta-math/tensor-spec.md` §2.1/§3 (the dtype-generic surface that needs this).
+> `docs/specification/math/tensor-spec.md` §2.1/§3 (the dtype-generic surface that needs this).
 
 ## 1. Scope & role
 A bound like `Number` / `Floating` exists to range over **numeric types** — and the numeric

@@ -174,6 +174,6 @@ numbers.
 - `docs/specification/README.md`: collapse the "compiler-defined" note for
   Vector/Quaternion to the Matrix-style wording (declared surface), or to
   plain stdlib wording on a §5 pass.
-- `docs/specification/cajeta-math/Quaternions.md` and `Simd.md`: status
+- `docs/specification/math/Quaternions.md` and `Simd.md`: status
   lines updated to reflect where the implementation lives.
 - cajetadoc output covers `cajeta.math.Vector` / `Quaternion` (use case 2.1).
