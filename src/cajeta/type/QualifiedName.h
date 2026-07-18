@@ -66,7 +66,11 @@ namespace cajeta {
         const string& toCanonical() { return canonical; }
 
         bool operator<(const QualifiedNamePtr& rhs) const {
-            return typeName < rhs->typeName && packageName < rhs->packageName;
+            // Lexicographic — the old AND-of-two-less-thans was not a strict
+            // weak ordering (both a<b and b<a false for unequal names),
+            // breaking std::set/std::sort over QualifiedName.
+            if (typeName != rhs->typeName) return typeName < rhs->typeName;
+            return packageName < rhs->packageName;
         }
 
         bool operator==(const QualifiedNamePtr& source) const {

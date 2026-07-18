@@ -1439,7 +1439,9 @@ namespace cajeta {
         // before deciding placeholder vs unknown-type error.
         prescanSourceRoot(sourceRootPath, getFlags().diagFormat == DiagFormat::Json);
 
-        list<string>* modulePaths = listModulePaths(sourceRootPath);
+        // unique_ptr: the many emit/link calls below throw, and the trailing
+        // `delete` never ran on those paths — leaking the list.
+        std::unique_ptr<list<string>> modulePaths(listModulePaths(sourceRootPath));
 
         for (string sourcePath: *modulePaths) {
             CajetaModulePtr module = createModule(sourcePath, sourceRootPath, archiveRootPath);
@@ -1965,8 +1967,7 @@ namespace cajeta {
         if (emitMode == EmitMode::Exe) {
             linkExecutable(archiveRootPath);
         }
-
-        delete modulePaths;
+        // modulePaths freed by unique_ptr.
     }
 
     // Per-module emission driven by --emit. IR (default) writes the .ll file the

@@ -572,32 +572,6 @@ namespace cajeta {
             "CAJETA_ERROR_NOT_IMPLEMENTED");
     }
 
-    // Resolve a value-of-slot for sites that consumed an l-value (alloca or ArrayIndex
-    // GEP). Returns the loaded value when `v` is such an address; otherwise returns
-    // `v` unchanged (constants, intermediates). `valueType` is the Cajeta type of the
-    // element (used to pick the load size — reference types load as `ptr`, primitives
-    // load as their own LLVM type).
-    static llvm::Value* readSlot(CajetaModulePtr module, llvm::Value* v,
-                                  CajetaTypePtr valueType) {
-        if (!v) return v;
-        auto* builder = module->getBuilder();
-        if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(v)) {
-            return builder->CreateLoad(a->getAllocatedType(), a);
-        }
-        if (!v->getType()->isPointerTy() || !valueType) return v;
-        llvm::Type* loadTy;
-        if (dynamic_pointer_cast<CajetaArray>(valueType)) {
-            // Slot stores a `ptr` to the inner header (or to any reference).
-            loadTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
-        } else if (valueType->getTypeFlags() & STRUCT_FLAG) {
-            loadTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
-        } else {
-            loadTy = valueType->getLlvmType();
-        }
-        if (!loadTy) return v;
-        return builder->CreateLoad(loadTy, v);
-    }
-
     void ArrayIndexExpression::resolveTypes(CajetaModulePtr module) {
         AbstractSyntaxNode::resolveTypes(module);
         // One level of indexing unwraps one CajetaArray layer. `int[][]` indexed once

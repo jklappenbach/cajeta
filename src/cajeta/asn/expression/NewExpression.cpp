@@ -135,6 +135,12 @@ namespace cajeta {
             }
             if (klass && klass->isTemplate()) {
                 type = klass->instantiate(typeArguments);
+            } else {
+                // Type arguments given to a non-template type — reject instead
+                // of silently discarding them (compiling an ill-formed program).
+                throw Exception(
+                    "type '" + typeName + "' is not a template but was given "
+                    "type arguments", "CAJETA_ERROR_TYPE_ARGS_ON_NON_TEMPLATE");
             }
         } else if (!isDiamond) {
             // Bare `heap Box(args)` of a default-bearing template → Box<defaults>.
@@ -323,6 +329,12 @@ namespace cajeta {
             }
             if (klass && klass->isTemplate()) {
                 type = klass->instantiate(typeArguments);
+            } else {
+                // Type arguments given to a non-template type — reject instead
+                // of silently discarding them (compiling an ill-formed program).
+                throw Exception(
+                    "type '" + typeName + "' is not a template but was given "
+                    "type arguments", "CAJETA_ERROR_TYPE_ARGS_ON_NON_TEMPLATE");
             }
         }
         // Diamond form (`new Box<>(args)`): infer type arguments from the
