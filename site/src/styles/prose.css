@@ -1,0 +1,197 @@
+/* Editorial typesetting for rendered doc pages. Scoped under .prose. */
+
+.prose {
+  font-family: var(--font-body);
+  font-size: 1.0625rem;
+  line-height: 1.72;
+  color: var(--ink);
+}
+
+/* --- headings: display serif with optical sizing ----------------------- */
+.prose h1,
+.prose h2,
+.prose h3,
+.prose h4,
+.prose h5,
+.prose h6 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--ink);
+  scroll-margin-top: 5.5rem;
+}
+
+.prose > h1:first-child,
+.prose .doc-title {
+  font-size: clamp(2.1rem, 5vw, 2.9rem);
+  font-weight: 550;
+  font-variation-settings: 'opsz' 72;
+  letter-spacing: -0.015em;
+  margin: 0 0 1rem;
+}
+
+.prose h2 {
+  font-size: 1.65rem;
+  font-variation-settings: 'opsz' 40;
+  margin: 2.75rem 0 0.9rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--line);
+}
+.prose h3 {
+  font-size: 1.28rem;
+  margin: 2rem 0 0.6rem;
+}
+.prose h4 {
+  font-size: 1.05rem;
+  margin: 1.6rem 0 0.5rem;
+}
+.prose h5,
+.prose h6 {
+  font-family: var(--font-ui);
+  font-size: 0.85rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  margin: 1.5rem 0 0.4rem;
+}
+
+/* --- the drop capital --------------------------------------------------- */
+.prose > p.lede::first-letter {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-variation-settings: 'opsz' 144;
+  float: left;
+  font-size: 3.6em;
+  line-height: 0.82;
+  padding: 0.06em 0.12em 0 0;
+  color: var(--accent);
+}
+
+/* --- body --------------------------------------------------------------- */
+.prose p {
+  margin: 0 0 1.1rem;
+}
+
+.prose strong {
+  font-weight: 650;
+}
+
+.prose hr {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 2.5rem auto;
+  width: 40%;
+}
+
+.prose ul,
+.prose ol {
+  padding-left: 1.4rem;
+  margin: 0 0 1.1rem;
+}
+.prose li {
+  margin: 0.3rem 0;
+}
+.prose li::marker {
+  color: var(--accent);
+}
+
+/* --- quotes ------------------------------------------------------------- */
+.prose blockquote {
+  margin: 1.75rem 0;
+  padding: 0.9rem 1.4rem;
+  border-left: 3px solid var(--accent);
+  background: var(--accent-wash);
+  border-radius: 0 0.5rem 0.5rem 0;
+  color: var(--ink-soft);
+  font-style: italic;
+}
+.prose blockquote p:last-child {
+  margin-bottom: 0;
+}
+
+/* --- code --------------------------------------------------------------- */
+.prose code {
+  font-family: var(--font-mono);
+  font-size: 0.84em;
+}
+
+.prose :not(pre) > code {
+  background: var(--bg-sunken);
+  border: 1px solid var(--line);
+  border-radius: 0.3rem;
+  padding: 0.08em 0.35em;
+  white-space: nowrap;
+}
+
+.prose pre.astro-code {
+  margin: 1.5rem 0;
+  padding: 1.1rem 1.3rem;
+  border-radius: 0.7rem;
+  border: 1px solid var(--line);
+  font-size: 0.85rem;
+  line-height: 1.6;
+  overflow-x: auto;
+  box-shadow: var(--card-shadow);
+}
+
+/* --- tables: ruled, editorial ------------------------------------------ */
+.prose .table-scroll {
+  overflow-x: auto;
+  margin: 1.75rem 0;
+}
+
+.prose table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-ui);
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+.prose thead th {
+  font-weight: 650;
+  text-align: left;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  border-bottom: 2px solid var(--ink);
+  padding: 0.5rem 0.9rem 0.45rem 0;
+}
+.prose tbody td {
+  border-bottom: 1px solid var(--line);
+  padding: 0.55rem 0.9rem 0.55rem 0;
+  vertical-align: top;
+}
+.prose tbody tr:hover {
+  background: color-mix(in srgb, var(--accent-wash) 45%, transparent);
+}
+.prose table code {
+  white-space: nowrap;
+}
+
+/* --- misc --------------------------------------------------------------- */
+.prose a {
+  color: var(--accent);
+}
+.prose a:hover {
+  color: var(--accent-strong);
+}
+
+.prose img {
+  border-radius: 0.6rem;
+  box-shadow: var(--card-shadow);
+}
+
+.prose details {
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+  padding: 0.7rem 1rem;
+  margin: 1.25rem 0;
+  background: var(--bg-raised);
+}
+.prose summary {
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-weight: 600;
+  font-size: 0.9rem;
+}

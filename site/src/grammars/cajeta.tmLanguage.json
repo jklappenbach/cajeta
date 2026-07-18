@@ -1,0 +1,101 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "cajeta",
+  "scopeName": "source.cajeta",
+  "fileTypes": ["cajeta", "cj"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#chars" },
+    { "include": "#annotations" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#constants" },
+    { "include": "#numbers" },
+    { "include": "#functions" },
+    { "include": "#classnames" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "name": "comment.line.double-slash.cajeta", "match": "//.*$" },
+        { "name": "comment.block.documentation.cajeta", "begin": "/\\*\\*", "end": "\\*/" },
+        { "name": "comment.block.cajeta", "begin": "/\\*", "end": "\\*/" }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.triple.cajeta",
+          "begin": "\"\"\"",
+          "end": "\"\"\""
+        },
+        {
+          "name": "string.quoted.double.cajeta",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [{ "name": "constant.character.escape.cajeta", "match": "\\\\." }]
+        }
+      ]
+    },
+    "chars": {
+      "name": "string.quoted.single.cajeta",
+      "match": "'(\\\\.|[^'\\\\]+)'"
+    },
+    "annotations": {
+      "name": "storage.type.annotation.cajeta",
+      "match": "@[A-Za-z_][A-Za-z0-9_]*"
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.cajeta",
+          "match": "\\b(if|else|for|while|do|switch|case|default|break|continue|return|try|catch|finally|throw|throws|yield|goto|assert)\\b"
+        },
+        {
+          "name": "keyword.other.memory.cajeta",
+          "match": "\\b(mut|view|stack|heap|scope|shared|spawn|detach|async|await)\\b|#(?=[A-Za-z_(])"
+        },
+        {
+          "name": "keyword.other.declaration.cajeta",
+          "match": "\\b(class|interface|enum|record|structure|annotation|operator|extends|implements|permits|sealed|open|package|import|pModule|exports|requires|opens|provides|uses|to|with|transitive)\\b"
+        },
+        {
+          "name": "storage.modifier.cajeta",
+          "match": "\\b(public|private|protected|static|final|abstract|const|native|transient|volatile|strictfp|instanceof|super|this|new)\\b"
+        }
+      ]
+    },
+    "types": {
+      "name": "storage.type.primitive.cajeta",
+      "match": "\\b(u?int(8|16|32|64|128)|float(16|32|64|128)|boolean|char|void|var)\\b"
+    },
+    "constants": {
+      "name": "constant.language.cajeta",
+      "match": "\\b(true|false|null)\\b"
+    },
+    "numbers": {
+      "patterns": [
+        { "name": "constant.numeric.hex.cajeta", "match": "\\b0[xX][0-9a-fA-F_]+\\b" },
+        { "name": "constant.numeric.binary.cajeta", "match": "\\b0[bB][01_]+\\b" },
+        {
+          "name": "constant.numeric.cajeta",
+          "match": "\\b[0-9][0-9_]*(\\.[0-9_]+)?([eE][+-]?[0-9]+)?[fFdDlL]?\\b"
+        }
+      ]
+    },
+    "functions": {
+      "name": "entity.name.function.cajeta",
+      "match": "\\b[a-z_][A-Za-z0-9_]*(?=\\s*\\()"
+    },
+    "classnames": {
+      "name": "entity.name.type.cajeta",
+      "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+    },
+    "operators": {
+      "name": "keyword.operator.cajeta",
+      "match": "(->|=>|::|\\+\\+|--|&&|\\|\\||[-+*/%=<>!&|^~?:])"
+    }
+  }
+}

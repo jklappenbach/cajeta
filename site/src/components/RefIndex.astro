@@ -1,0 +1,83 @@
+---
+// Left index for a reference section (specification/stdlib): Overview, then
+// docs grouped by subdirectory, current page highlighted. Model built by
+// sectionNav() in scripts/lib/extract.mjs. variant="rail" renders the
+// desktop sidebar; variant="mobile" a collapsible block above the content.
+interface NavDoc {
+  slug: string;
+  url: string;
+  title: string;
+}
+interface Props {
+  sectionLabel: string;
+  sectionUrl: string;
+  nav: {
+    overview: { title: string; url: string; slug: string } | null;
+    groups: { name: string; docs: NavDoc[] }[];
+  };
+  activeSlug: string | null;
+  variant?: 'rail' | 'mobile';
+}
+const { sectionLabel, sectionUrl, nav, activeSlug, variant = 'rail' } = Astro.props;
+const isOverview = activeSlug === null || activeSlug === nav.overview?.slug;
+---
+
+{
+  variant === 'rail' ? (
+    <aside class="guide-index ref-index" aria-label={`${sectionLabel} index`}>
+      <div>
+        <a class="guide-name" href={sectionUrl}>
+          {sectionLabel}
+        </a>
+        {nav.overview && (
+          <ol>
+            <li>
+              <a href={nav.overview.url} aria-current={isOverview ? 'page' : undefined}>
+                {nav.overview.title}
+              </a>
+            </li>
+          </ol>
+        )}
+        {nav.groups.map((g) => (
+          <>
+            {g.name !== '' && <p class="ref-group">{g.name}</p>}
+            <ol>
+              {g.docs.map((d) => (
+                <li>
+                  <a href={d.url} aria-current={d.slug === activeSlug ? 'page' : undefined}>
+                    {d.title}
+                  </a>
+                </li>
+              ))}
+            </ol>
+          </>
+        ))}
+      </div>
+    </aside>
+  ) : (
+    <details class="guide-index-mobile">
+      <summary>{sectionLabel} index</summary>
+      {nav.overview && (
+        <ol>
+          <li>
+            <a href={nav.overview.url}>{nav.overview.title}</a>
+          </li>
+        </ol>
+      )}
+      {nav.groups.map((g) => (
+        <>
+          {g.name !== '' && <p class="ref-group">{g.name}</p>}
+          <ol>
+            {g.docs.map((d) => (
+              <li>
+                <a href={d.url} aria-current={d.slug === activeSlug ? 'page' : undefined}>
+                  {d.title}
+                </a>
+              </li>
+            ))}
+          </ol>
+        </>
+      ))}
+    </details>
+  )
+}
