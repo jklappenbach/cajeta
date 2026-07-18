@@ -715,14 +715,33 @@ internal object MarkdownFoldEditorListener : EditorFactoryListener {
  * The delimiters must be removed cleanly or they render as markdown: `/**`
  * left a lone `*` (a bullet) and `*/` left a `/`. A KDoc continuation gutter
  * (`* `) is stripped, but never `**` (bold) or `*x` (italic).
+ *
+ * Only the comment SCAFFOLDING comes off — the leading whitespace, the gutter,
+ * and at most ONE space after it. Whatever indentation follows is content and
+ * survives verbatim, because inside a fenced block it IS the code:
+ *
+ *     * ```cajeta
+ *     * if (clean.startsWith("Hello")) {
+ *     *     String loud = clean.toUpperCase();
+ *     * }
+ *     * ```
+ *
+ * A blanket `line.trim()` here flattened those four spaces and rendered every
+ * fenced block hard against the left margin.
  */
 internal fun stripCommentMarkers(raw: String): String {
-    return raw.lineSequence()
+    val lines = raw.lineSequence()
         .map { line ->
-            var s = line.trim()
-            if (s.startsWith("//")) {
-                s = s.removePrefix("//")
+            // Delimiters are detected on a leading-trimmed VIEW; `s` keeps
+            // whatever follows them so content indentation is never touched.
+            val lead = line.trimStart()
+            var s: String
+            if (lead.startsWith("//")) {
+                s = lead.removePrefix("//")
+                // The conventional one-space gutter after `//`, and no more.
+                if (s.startsWith(" ")) s = s.substring(1)
             } else {
+                s = lead
                 // Block-comment OPEN: strip the whole opener, including the
                 // extra '*' of the KDoc `/**` form. (Removing only `/*` left
                 // a lone `*`, which markdown rendered as a bullet.)
@@ -734,12 +753,21 @@ internal fun stripCommentMarkers(raw: String): String {
                 if (s.endsWith("*/")) s = s.removeSuffix("*/")
                 // KDoc continuation gutter: a leading `* ` or a bare `*`
                 // only — never `**` (bold) or `*x` (italic), which are real
-                // markdown.
-                s = s.trimStart()
-                if (s == "*") s = "" else if (s.startsWith("* ")) s = s.substring(2)
+                // markdown. Exactly one space after the `*` is gutter; any
+                // further indentation belongs to the content.
+                val g = s.trimStart()
+                s = when {
+                    g == "*" -> ""
+                    g.startsWith("* ") -> g.substring(2)
+                    else -> g
+                }
             }
-            s.trim()
+            s.trimEnd()
         }
+        .toList()
+    // Drop blank leading/trailing LINES. A `.trim()` on the joined text would
+    // also eat the first content line's indentation.
+    return lines.dropWhile { it.isBlank() }
+        .dropLastWhile { it.isBlank() }
         .joinToString("\n")
-        .trim()
 }

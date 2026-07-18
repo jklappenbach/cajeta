@@ -57,4 +57,48 @@ class StripCommentMarkersTest {
     fun contentBeforeCloserOnSameLine() {
         assertEquals("Last line.", stripCommentMarkers("/**\n * Last line. */"))
     }
+
+    // Indentation inside a fenced block is CONTENT, not scaffolding. The
+    // stripper used to run line.trim(), which flattened every fenced block to
+    // the left margin — the real case is runtime/src/cajeta/lang/String.cajeta.
+    @Test
+    fun fencedCodeKeepsItsIndentation() {
+        val raw = """
+            /**
+             * ```cajeta
+             * if (clean.startsWith("Hello")) {
+             *     String loud = clean.toUpperCase();
+             * }
+             * ```
+             */
+        """.trimIndent()
+        assertEquals(
+            "```cajeta\n" +
+            "if (clean.startsWith(\"Hello\")) {\n" +
+            "    String loud = clean.toUpperCase();\n" +
+            "}\n" +
+            "```",
+            stripCommentMarkers(raw))
+    }
+
+    // Only ONE space after the gutter is scaffolding; deeper nesting survives
+    // at full depth.
+    @Test
+    fun deeperNestingKeepsEveryLevel() {
+        val out = stripCommentMarkers("/**\n * a\n *     b\n *         c\n */")
+        assertEquals("a\n    b\n        c", out)
+    }
+
+    // The same rule for `//` runs: `// ` is the gutter, the rest is content.
+    @Test
+    fun lineCommentKeepsIndentationPastTheGutter() {
+        assertEquals("a\n    b", stripCommentMarkers("// a\n//     b"))
+    }
+
+    // A blank gutter line inside a fence stays blank rather than vanishing.
+    @Test
+    fun blankGutterLineSurvivesAsBlank() {
+        assertEquals("```\na\n\nb\n```",
+            stripCommentMarkers("/**\n * ```\n * a\n *\n * b\n * ```\n */"))
+    }
 }
