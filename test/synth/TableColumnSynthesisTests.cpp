@@ -91,11 +91,7 @@ TEST(TableColumnSynthesisTests, injectsFloatColumnAccessor) {
 // (MemberNotFoundTests) — that identity is the composition-only property source
 // synthesis promises: synthesized members are checked exactly like hand-written
 // ones. Asserting the id, not merely "it threw", is what pins that.
-// PARKED (2026-07-13): member-not-found is held back on main so tools/mcp
-// compiles (it reads String's `byteLength`/`bytes` as FIELDS; the 36779177
-// re-core made them methods). Re-enable with that repair. Work lives on
-// feature/silent-resolution-diagnostics @ f086c73e; see the plan's 1.3.3.
-TEST(TableColumnSynthesisTests, DISABLED_columnTypoIsCaughtAtCompileTime) {
+TEST(TableColumnSynthesisTests, columnTypoIsCaughtAtCompileTime) {
     // The correct accessor resolves and runs.
     auto good = std::string(kTableSrc) +
         "public final class D {\n"

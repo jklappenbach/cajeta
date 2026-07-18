@@ -5937,21 +5937,33 @@ namespace cajeta {
         if (auto klass = dynamic_pointer_cast<CajetaClass>(receiverType)) {
             targetClass = klass;
         }
-        // PARKED (2026-07-13) — see the note at the invokeMethod call below. A
-        // receiver that was WRITTEN but named nothing (`NoSuchType.nope()`) should
-        // be an "unknown type" error rather than falling through to the
-        // enclosing-class fallback (which blames the wrong receiver). Held back
-        // with the rest of the member-not-found work so main stays green.
-        //   if (!targetClass && !children.empty() && !receiver && !receiverType) {
-        //       if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(
-        //               children[0])) {
-        //           throw locatedException(
-        //               getSourceLine(), getSourceColumn() + 1,
-        //               "unknown type '" + idExpr->getTextValue()
-        //                   + "' (no class, and no local of that name, is in scope)",
-        //               "CAJETA_ERROR_UNRESOLVED_TYPE");
-        //       }
-        //   }
+        // The enclosing-class fallback below belongs to BARE calls (`foo()`,
+        // children empty) only. When a receiver WAS written, substituting the
+        // enclosing class blames a type the user never named at this site — the
+        // 2.4.2 wart, where `b.get().tag()` off an unprojected wildcard reported
+        // "no member 'tag' on 'test.D'".
+        if (!targetClass && !children.empty()) {
+            if (!receiver && !receiverType) {
+                if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(
+                        children[0])) {
+                    throw locatedException(
+                        getSourceLine(), getSourceColumn() + 1,
+                        "unknown type '" + idExpr->getTextValue()
+                            + "' (no class, and no local of that name, is in scope)",
+                        "CAJETA_ERROR_UNRESOLVED_TYPE");
+                }
+            }
+            // Receiver written and typed, but its type is not a class surface
+            // (e.g. an unprojected wildcard sentinel from `Box<?>::get()`), so
+            // there is nothing to look a member up on. Name the RECEIVER.
+            throw locatedException(
+                getSourceLine(), getSourceColumn() + 1,
+                "no member '" + methodCallName + "' on '"
+                    + (receiverType ? receiverType->toCanonical()
+                                    : std::string("<unresolved receiver>"))
+                    + "'",
+                "CAJETA_ERROR_MEMBER_NOT_FOUND");
+        }
         if (!targetClass) {
             if (module->getStructureStack().empty()) {
                 return nullptr;
