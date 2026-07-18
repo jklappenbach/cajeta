@@ -7,13 +7,10 @@
 // scalar above the sum and tensor below it, so each DAG node is rank-tagged and
 // the accumulation-add is spelled per surface (`+` vs `Tensor.add<E>`).
 //
-// The reverse-mode SOURCE synthesis is correct + dump-verified (CAJETA_GRAD_DUMP),
-// parses and type-checks. The tensor Grad e2e tests are DISABLED not for an
-// autodiff reason but for a GENERAL compiler bug isolated below
-// (DISABLED_valueTypeRecordHeapFieldReturnUAF): returning a value-type `record`
-// whose field is a freshly-allocated heap object frees that object on the callee
-// frame's arena reset, dangling the returned copy. Repro needs no lambda, no
-// synthesis, no Grad. See [[reference_synth_backward_class_pointer_codegen_bug]].
+// `GradResult<f32, Tensor<f32>>` is a generic value-type record that OWNS the heap
+// grad in its field — sound because the ctor `#=`-transfers ownership into the field
+// (the same idiom `MapEntry<K,V>` uses for `HashMap<_, class>`). A plain `=` borrow-
+// stored it and the returned copy dangled (fixed 2026-07-18).
 //
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
@@ -45,15 +42,11 @@ float runWithSrc(const std::string& src) {
 }
 } // namespace
 
-// The minimal repro of the blocking bug — NO lambda, NO synthesis, NO Grad.
-// A static method returns a value-type `record` whose grad field is a freshly
-// allocated tensor; `mk`'s arena frame resets on return and frees that tensor, so
-// the caller reads a dangling `r.grads` (SIGABRT in __cajeta_new_array_header_arena
-// with a garbage count from the freed shape). The scalar GradResult<f32,f32> is
-// immune (float fields have no drop). Same arena-escape family as the deferred
-// interprocedural stack-promotion work; needs real escape analysis, not a patch.
-// value 6 + sum(ones [1,1,1])=3 → 9.
-TEST(GradTensor, DISABLED_valueTypeRecordHeapFieldReturnUAF) {
+// A value-type record that OWNS a heap tensor field, returned across a frame — the
+// pattern the tensor backward uses. Sound because `GradResult`'s ctor `#=`-transfers
+// the owned grad into the field (the fix; a plain `=` borrow-stored it and the
+// returned copy dangled). Same idiom as `MapEntry`'s `#= value`. value 6 + 3 → 9.
+TEST(GradTensor, valueTypeRecordOwnedTensorFieldReturn) {
     EXPECT_FLOAT_EQ(runWithSrc(
         "package test;\n"
         "import cajeta.math.Tensor;\n"
@@ -124,10 +117,8 @@ TEST(GradTensor, plainLambdaOnesLikeGrad) {
         "        return f(x);"), 3.0f);
 }
 
-// 3.1.1 (simplest tensor Grad) — loss(x) = sum(x), grad = ones. Backward SOURCE is
-// dump-verified correct; DISABLED on DISABLED_valueTypeRecordHeapFieldReturnUAF.
-// value 6 + sum(ones)=3 → 9.
-TEST(GradTensor, DISABLED_sumIdentityGrad) {
+// 3.1.1 (simplest tensor Grad) — loss(x) = sum(x), grad = ones. value 6 + 3 → 9.
+TEST(GradTensor, sumIdentityGrad) {
     EXPECT_FLOAT_EQ(runTensorGrad(
         "float32[] fa = { 1.0f, 2.0f, 3.0f };\n"
         "        int64[] s3 = heap int64[1]; s3[0] = 3;\n"
@@ -138,10 +129,9 @@ TEST(GradTensor, DISABLED_sumIdentityGrad) {
         "        return r.value + Tensor.sum<float32,float32>(r.grads);"), 9.0f);
 }
 
-// 3.1.1 — the spec's literal example: loss(x) = sum(x*x), grad = 2x. Backward
-// SOURCE is dump-verified correct; DISABLED on the same arena-escape UAF.
+// 3.1.1 — the spec's literal example: loss(x) = sum(x*x), grad = 2x.
 // value 14 + sum([2,4,6])=12 → 26.
-TEST(GradTensor, DISABLED_sumOfSquaresValueAndGrad) {
+TEST(GradTensor, sumOfSquaresValueAndGrad) {
     EXPECT_FLOAT_EQ(runTensorGrad(
         "float32[] fa = { 1.0f, 2.0f, 3.0f };\n"
         "        int64[] s3 = heap int64[1]; s3[0] = 3;\n"

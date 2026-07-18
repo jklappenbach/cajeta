@@ -20,7 +20,7 @@ public record GradResult<V, G> {
     G grads;
 
     public GradResult(V value, G grads) {
-        this.value = value;
-        this.grads = grads;
+        this.value #= value;
+        this.grads #= grads;
     }
 }
