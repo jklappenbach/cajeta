@@ -504,9 +504,29 @@ namespace cajeta {
 
         const auto& pnames = lam->getParamNames();
         const auto& ptypes = lam->getParamTypes();
-        if (pnames.size() != 1 || ptypes.size() != 1) {
-            throw locErr("transform intrinsic 'Grad' v1 differentiates a "
-                         "single-parameter function", "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        if (pnames.empty() || pnames.size() != ptypes.size()) {
+            throw locErr("transform intrinsic 'Grad' requires a lambda with one or "
+                         "more explicitly-typed parameters",
+                         "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        }
+
+        // argnums (3.1.4): `Grad<N>(f)` differentiates w.r.t. parameter N; the bare
+        // `Grad(f)` defaults to arg 0. N rides in as a CajetaConstantType type arg.
+        int64_t argnum = 0;
+        const auto& gTypeArgs = self->getExplicitMethodTypeArgs();
+        if (!gTypeArgs.empty()) {
+            auto c = std::dynamic_pointer_cast<CajetaConstantType>(gTypeArgs[0]);
+            if (!c) {
+                throw locErr("transform intrinsic 'Grad<...>' argnum selector must be "
+                             "an integer constant", "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+            }
+            argnum = c->getValue();
+        }
+        if (argnum < 0 || argnum >= (int64_t)pnames.size()) {
+            throw locErr("transform intrinsic 'Grad<" + std::to_string(argnum)
+                         + ">' selects an argument out of range for the "
+                         + std::to_string(pnames.size()) + "-parameter function",
+                         "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
         }
 
         // Resolve the lambda + its body so AST sub-nodes carry ops/types.
@@ -518,24 +538,36 @@ namespace cajeta {
                          "lambda", "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
         }
 
-        // The tensor element-type spelling drives the tensor-surface rule source;
-        // the param's rank seeds the DAG's input leaves.
-        std::string paramTy = ptypes[0]->toCanonical();
-        bool paramIsTensor = paramTy.rfind("cajeta.math.Tensor", 0) == 0
-                          || paramTy.rfind("Tensor<", 0) == 0;
-        std::string elem = paramTy;
-        if (paramIsTensor) {
-            auto lt = paramTy.find('<');
-            auto gt = paramTy.rfind('>');
-            if (lt != std::string::npos && gt != std::string::npos && gt > lt + 1)
-                elem = paramTy.substr(lt + 1, gt - lt - 1);
+        // Per-parameter rank (a param is a tensor iff its type is Tensor<...>) — a
+        // multi-arg f may mix scalar and tensor params, so each input leaf's rank
+        // is keyed by name. The SELECTED arg's element type drives the tensor rule
+        // spelling and the gradient's return type.
+        auto tensorElem = [](const std::string& ty, std::string& elemOut) -> bool {
+            bool t = ty.rfind("cajeta.math.Tensor", 0) == 0
+                  || ty.rfind("Tensor<", 0) == 0;
+            elemOut = ty;
+            if (t) {
+                auto lt = ty.find('<');
+                auto gt = ty.rfind('>');
+                if (lt != std::string::npos && gt != std::string::npos && gt > lt + 1)
+                    elemOut = ty.substr(lt + 1, gt - lt - 1);
+            }
+            return t;
+        };
+        std::map<std::string, bool> paramRank;
+        for (size_t i = 0; i < pnames.size(); ++i) {
+            std::string ignore;
+            paramRank[pnames[i]] = tensorElem(ptypes[i]->toCanonical(), ignore);
         }
+        std::string selTy = ptypes[argnum]->toCanonical();
+        std::string elem;
+        bool selIsTensor = tensorElem(selTy, elem);
 
         // Reverse-mode over the body DAG -> grad source expression.
         std::vector<cajeta::transform::AdNode> nodes;
         std::map<std::string, size_t> pidx;
         std::string err;
-        if (!cajeta::transform::buildDag(bodyExpr.get(), pnames, paramIsTensor,
+        if (!cajeta::transform::buildDag(bodyExpr.get(), pnames, paramRank,
                                          nodes, pidx, &err)) {
             throw locErr(err, "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
         }
@@ -549,15 +581,16 @@ namespace cajeta {
                          "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
         }
 
-        // A parameter-independent body has an identically ZERO gradient. `pidx` is a
-        // map, so `pidx[pnames[0]]` would default-insert index 0 and report the wrong
-        // (nonzero) cotangent accumulated there — emit an explicit zero instead.
+        // The gradient is taken w.r.t. the SELECTED arg. A body that doesn't use it
+        // has an identically ZERO gradient there. `pidx` is a map, so
+        // `pidx[pnames[argnum]]` would default-insert and report a spurious cotangent
+        // — emit an explicit zero (tensor- or scalar-shaped) instead.
         std::string missing;
         std::string gradExpr;
-        auto paramNode = pidx.find(pnames[0]);
+        auto paramNode = pidx.find(pnames[argnum]);
         if (paramNode == pidx.end()) {
-            gradExpr = paramIsTensor
-                ? ("Tensor.zerosLike<" + elem + ">(" + pnames[0] + ")")
+            gradExpr = selIsTensor
+                ? ("Tensor.zerosLike<" + elem + ">(" + pnames[argnum] + ")")
                 : "0.0f";
         } else {
             gradExpr = cajeta::transform::reverseModeGrad(
@@ -595,14 +628,29 @@ namespace cajeta {
         }
         std::string outputVal = nodes.back().valueExpr;
 
+        // The backward lambda takes ALL of f's params (keeps f's arity), grading
+        // only the selected one. Import cajeta.math.Tensor if any param is a tensor
+        // or the synthesized source references a Tensor static (e.g. zerosLike).
+        std::vector<std::string> paramTys;
+        paramTys.reserve(pnames.size());
+        bool importTensor = false;
+        for (size_t i = 0; i < pnames.size(); ++i) {
+            paramTys.push_back(ptypes[i]->toCanonical());
+            importTensor = importTensor || paramRank[pnames[i]];
+        }
+        if (outputVal.find("Tensor.") != std::string::npos
+                || gradExpr.find("Tensor.") != std::string::npos) {
+            importTensor = true;
+        }
+
         // Synthesize the backward helper class (Tier-A source).
         std::string className = "__GradBwd_" + cajeta::synth::deriveSynthName(
             "grad", fnType->toCanonical(), {outputVal, gradExpr});
         std::string pkg = module->getQName()->getPackageName();
         std::string source = (pkg.empty() ? std::string() : ("package " + pkg + ";\n"))
-            + cajeta::transform::emitBackwardSource(className, pnames[0], paramTy,
-                                                    valueTy, paramTy, outputVal, gradExpr,
-                                                    paramIsTensor);
+            + cajeta::transform::emitBackwardSource(className, pnames, paramTys,
+                                                    valueTy, selTy, outputVal, gradExpr,
+                                                    importTensor);
         if (std::getenv("CAJETA_GRAD_DUMP")) {
             fprintf(stderr, "=== GRAD BACKWARD SOURCE ===\n%s\n=== END ===\n",
                     source.c_str());

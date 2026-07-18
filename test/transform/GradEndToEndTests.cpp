@@ -93,6 +93,47 @@ TEST(GradEndToEnd, paramUnusedZeroGrad) {
         "        return r.value * 100.0f + r.grads;"), 700.0f);  // value 7, grad 0
 }
 
+// 3.1.4 — multi-arg f, default argnum 0: Grad((float32 x, float32 y) -> x*y)
+// differentiates w.r.t. arg 0, so value = x*y, grads = d/dx = y. The backward
+// lambda takes BOTH params. At (3,4): value 12, grad 4 -> 12*100 + 4 = 1204.
+TEST(GradEndToEnd, multiArgDefaultArgnumZero) {
+    EXPECT_FLOAT_EQ(runF32(
+        "(float32,float32) -> GradResult<float32,float32> g =\n"
+        "            Grad((float32 x, float32 y) -> x * y);\n"
+        "        GradResult<float32,float32> r = g(3.0f, 4.0f);\n"
+        "        return r.value * 100.0f + r.grads;"), 1204.0f);
+}
+
+// 3.1.4 — argnum selection: Grad<1>(f) differentiates w.r.t. arg 1, so
+// grads = d/dy (x*y) = x = 3. value 12, grad 3 -> 12*100 + 3 = 1203.
+TEST(GradEndToEnd, multiArgArgnumOne) {
+    EXPECT_FLOAT_EQ(runF32(
+        "(float32,float32) -> GradResult<float32,float32> g =\n"
+        "            Grad<1>((float32 x, float32 y) -> x * y);\n"
+        "        GradResult<float32,float32> r = g(3.0f, 4.0f);\n"
+        "        return r.value * 100.0f + r.grads;"), 1203.0f);
+}
+
+// 3.1.4 — the SELECTED arg drives the zero-grad path: Grad<1>((x,y) -> x*x) is
+// independent of y, so grads = 0 even though arg 0 has a nonzero gradient.
+// value 9, grad 0 -> 9*100 + 0 = 900.
+TEST(GradEndToEnd, multiArgUnusedSelectedArgZeroGrad) {
+    EXPECT_FLOAT_EQ(runF32(
+        "(float32,float32) -> GradResult<float32,float32> g =\n"
+        "            Grad<1>((float32 x, float32 y) -> x * x);\n"
+        "        GradResult<float32,float32> r = g(3.0f, 4.0f);\n"
+        "        return r.value * 100.0f + r.grads;"), 900.0f);
+}
+
+// 3.1.4 — an out-of-range argnum is a named, located compile error, not a crash.
+TEST(GradEndToEnd, argnumOutOfRangeNamedError) {
+    EXPECT_EQ(compileErrorId(
+        "(float32,float32) -> GradResult<float32,float32> g =\n"
+        "            Grad<5>((float32 x, float32 y) -> x * y);\n"
+        "        return g(1.0f, 2.0f).value;"),
+        "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+}
+
 // A misspelled/unsupported primitive fails with a named compile error, never a
 // silent wrong gradient (spec §5.3). Division has no VJP rule in v1.
 TEST(GradEndToEnd, unsupportedOpNamedError) {

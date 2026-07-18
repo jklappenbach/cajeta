@@ -110,7 +110,7 @@ TEST(GradBackward, missingRuleReportedByName) {
 // returning the backward as a lambda producing `stack GradResult<V,G>(value, grads)`.
 TEST(GradBackward, emitsTierASourceMakeReturningLambda) {
     std::string src = emitBackwardSource(
-        "__GradBwd_1", "x", "float32", "float32", "float32",
+        "__GradBwd_1", {"x"}, {"float32"}, "float32", "float32",
         "x * x", "(1.0f) * x + (1.0f) * x");
     EXPECT_NE(src.find("import cajeta.nucleo.transform.GradResult;"), std::string::npos);
     EXPECT_NE(src.find("class __GradBwd_1"), std::string::npos);
@@ -119,5 +119,20 @@ TEST(GradBackward, emitsTierASourceMakeReturningLambda) {
     EXPECT_NE(src.find(
         "return (float32 x) -> stack GradResult<float32,float32>"
         "(x * x, (1.0f) * x + (1.0f) * x);"),
+        std::string::npos);
+}
+
+// 3.1.4 — the multi-param backward takes ALL of f's params (so the returned
+// closure has f's exact arity); the grad is w.r.t. the selected arg only.
+TEST(GradBackward, emitsMultiParamBackward) {
+    std::string src = emitBackwardSource(
+        "__GradBwd_2", {"x", "y"}, {"float32", "float32"}, "float32", "float32",
+        "(x * y)", "(1.0f) * y");
+    EXPECT_NE(src.find(
+        "static (float32,float32) -> GradResult<float32,float32> make()"),
+        std::string::npos);
+    EXPECT_NE(src.find(
+        "return (float32 x, float32 y) -> stack GradResult<float32,float32>"
+        "((x * y), (1.0f) * y);"),
         std::string::npos);
 }

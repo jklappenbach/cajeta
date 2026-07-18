@@ -33,8 +33,8 @@ namespace cajeta {
             // Recursively lower expression `e` into DAG nodes; returns its node
             // index. Input-param leaves are interned via `paramIdx`. On the first
             // unsupported construct, sets `err` and returns 0 (callers short-circuit).
-            size_t buildNode(Expression* e, const std::set<std::string>& params,
-                             bool paramIsTensor,
+            size_t buildNode(Expression* e,
+                             const std::map<std::string, bool>& paramIsTensor,
                              std::vector<AdNode>& nodes,
                              std::map<std::string, size_t>& paramIdx,
                              std::string& err) {
@@ -42,10 +42,11 @@ namespace cajeta {
 
                 if (auto* id = dynamic_cast<IdentifierExpression*>(e)) {
                     std::string name = id->getTextValue();
-                    if (params.count(name)) {
+                    auto rank = paramIsTensor.find(name);
+                    if (rank != paramIsTensor.end()) {
                         auto it = paramIdx.find(name);
                         if (it != paramIdx.end()) return it->second;
-                        nodes.push_back(AdNode{name, true, "", {}, paramIsTensor});
+                        nodes.push_back(AdNode{name, true, "", {}, rank->second});
                         size_t idx = nodes.size() - 1;
                         paramIdx[name] = idx;
                         return idx;
@@ -76,9 +77,9 @@ namespace cajeta {
                     auto& ch = b->getChildren();
                     if (ch.size() < 2) { err = "Grad: malformed binary expression"; return 0; }
                     size_t li = buildNode(dynamic_cast<Expression*>(ch[0].get()),
-                                          params, paramIsTensor, nodes, paramIdx, err);
+                                          paramIsTensor, nodes, paramIdx, err);
                     size_t ri = buildNode(dynamic_cast<Expression*>(ch[1].get()),
-                                          params, paramIsTensor, nodes, paramIdx, err);
+                                          paramIsTensor, nodes, paramIdx, err);
                     if (!err.empty()) return 0;
                     std::string val = "(" + nodes[li].valueExpr + " " + opStr + " "
                                     + nodes[ri].valueExpr + ")";
@@ -96,7 +97,7 @@ namespace cajeta {
                     auto& ch = p->getChildren();
                     if (ch.empty()) { err = "Grad: malformed unary expression"; return 0; }
                     size_t oi = buildNode(dynamic_cast<Expression*>(ch[0].get()),
-                                          params, paramIsTensor, nodes, paramIdx, err);
+                                          paramIsTensor, nodes, paramIdx, err);
                     if (!err.empty()) return 0;
                     std::string val = "-(" + nodes[oi].valueExpr + ")";
                     nodes.push_back(AdNode{val, false, "negate", {oi}, false});
@@ -128,7 +129,7 @@ namespace cajeta {
                         std::vector<size_t> operandIdx;
                         for (size_t k = 0; k < nOperands; ++k) {
                             auto* ae = dynamic_cast<Expression*>(args[k].expression.get());
-                            size_t ci = buildNode(ae, params, paramIsTensor, nodes,
+                            size_t ci = buildNode(ae, paramIsTensor, nodes,
                                                   paramIdx, err);
                             if (!err.empty()) return 0;
                             operandIdx.push_back(ci);
@@ -155,13 +156,13 @@ namespace cajeta {
 
         bool buildDag(Expression* body,
                       const std::vector<std::string>& paramNames,
-                      bool paramIsTensor,
+                      const std::map<std::string, bool>& paramIsTensor,
                       std::vector<AdNode>& outNodes,
                       std::map<std::string, size_t>& outParamNodeIndex,
                       std::string* err) {
-            std::set<std::string> params(paramNames.begin(), paramNames.end());
+            (void)paramNames;   // membership + rank both come from paramIsTensor
             std::string localErr;
-            buildNode(body, params, paramIsTensor, outNodes, outParamNodeIndex, localErr);
+            buildNode(body, paramIsTensor, outNodes, outParamNodeIndex, localErr);
             if (!localErr.empty()) { if (err) *err = localErr; return false; }
             return true;
         }
@@ -214,22 +215,30 @@ namespace cajeta {
         }
 
         std::string emitBackwardSource(const std::string& className,
-                                       const std::string& paramName,
-                                       const std::string& paramTypeName,
+                                       const std::vector<std::string>& paramNames,
+                                       const std::vector<std::string>& paramTypeNames,
                                        const std::string& valueTypeName,
                                        const std::string& gradTypeName,
                                        const std::string& outputValueExpr,
                                        const std::string& gradExpr,
                                        bool importTensor) {
             std::string gr = "GradResult<" + valueTypeName + "," + gradTypeName + ">";
-            std::string fnTy = "(" + paramTypeName + ") -> " + gr;
+            // `(T0,T1) -> GR` for make()'s return type; `(T0 p0, T1 p1)` for the
+            // returned lambda's param list — the closure keeps f's full arity.
+            std::string sig, plist;
+            for (size_t i = 0; i < paramNames.size(); ++i) {
+                if (i) { sig += ","; plist += ", "; }
+                sig += paramTypeNames[i];
+                plist += paramTypeNames[i] + " " + paramNames[i];
+            }
+            std::string fnTy = "(" + sig + ") -> " + gr;
             return
                 (importTensor ? std::string("import cajeta.math.Tensor;\n")
                               : std::string())
               + "import cajeta.nucleo.transform.GradResult;\n"
                 "public class " + className + " {\n"
                 "    public static " + fnTy + " make() {\n"
-                "        return (" + paramTypeName + " " + paramName + ") -> stack "
+                "        return (" + plist + ") -> stack "
                     + gr + "(" + outputValueExpr + ", " + gradExpr + ");\n"
                 "    }\n"
                 "}\n";

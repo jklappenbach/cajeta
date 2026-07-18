@@ -37,11 +37,12 @@ namespace cajeta {
         // reused input accumulates its cotangents. v1 supports `+ - *` and unary `-`
         // over scalar parameters, and `Tensor.mul/add/sub/matmul/sum` over tensor
         // parameters; any other construct returns false and sets *err. `paramIsTensor`
-        // seeds the rank of the input leaves (a `Tensor.<op>` node's rank is
-        // structural: elementwise ops stay tensor, `sum` reduces to scalar).
+        // seeds the rank of each input leaf per parameter name (a `Tensor.<op>`
+        // node's rank is structural: elementwise ops stay tensor, `sum` reduces to
+        // scalar), so a multi-arg f can mix scalar and tensor parameters.
         bool buildDag(Expression* body,
                       const std::vector<std::string>& paramNames,
-                      bool paramIsTensor,
+                      const std::map<std::string, bool>& paramIsTensor,
                       std::vector<AdNode>& outNodes,
                       std::map<std::string, size_t>& outParamNodeIndex,
                       std::string* err);
@@ -58,16 +59,18 @@ namespace cajeta {
                                     std::string* missingPrimitive);
 
         // Assemble the Tier-A backward helper-class source. The class holds one
-        // static `make()` that RETURNS the backward as a lambda:
-        //   static (P) -> GradResult<V,G> make() {
-        //       return (P p) -> stack GradResult<V,G>(outputValueExpr, gradExpr);
+        // static `make()` that RETURNS the backward as a lambda taking ALL of f's
+        // params (so the closure keeps f's exact arity) but grading only the
+        // selected arg:
+        //   static (P0,P1) -> GradResult<V,G> make() {
+        //       return (P0 p0, P1 p1) -> stack GradResult<V,G>(outputValueExpr, gradExpr);
         //   }
         // Returning a lambda reuses the existing closure-record + value-type-sret
         // machinery — `Grad(f)` recognizer just parse-extracts `make`, codegens it,
         // and emits a call to it to obtain the closure value.
         std::string emitBackwardSource(const std::string& className,
-                                       const std::string& paramName,
-                                       const std::string& paramTypeName,
+                                       const std::vector<std::string>& paramNames,
+                                       const std::vector<std::string>& paramTypeNames,
                                        const std::string& valueTypeName,
                                        const std::string& gradTypeName,
                                        const std::string& outputValueExpr,
