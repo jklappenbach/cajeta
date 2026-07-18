@@ -1489,6 +1489,12 @@ namespace cajeta {
         xref::setCaptureEnabled(!flags.emitXref.empty());
 
         ensureStdlibModule();
+        // Classpath dependencies (§8.3.1): ingest each `.cja`'s ClassSource
+        // entries so the export carries the dependency's declarations AND the
+        // project's references into it resolve — otherwise Ctrl-click on a
+        // `dev.cajeta.codec` type has no target. Signature-only (no codegen),
+        // like the stdlib parse; no-op when no --classpath was given.
+        ingestClasspath();
         const bool json = getFlags().diagFormat == DiagFormat::Json;
         prescanSourceRoot(root, json);
 

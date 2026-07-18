@@ -233,6 +233,57 @@ TEST(XrefLint, AnnotationUseIsRecordedAsReference) {
         << "an intrinsic annotation must not invent an edge:\n" << all;
 }
 
+// ide-symbol-index §8.3.1: the whole-root export ingests --classpath
+// dependencies, so a `.cja` dep's declarations appear in the index and a
+// project reference into the dep resolves — the compiler half of dependency
+// Ctrl-click (the plugin mounts the dep source and passes --classpath).
+TEST(XrefLint, WholeRootExportIngestsClasspathDependencyDeclarations) {
+    if (!fs::exists(compilerBinary())) GTEST_SKIP() << "compiler binary unavailable";
+
+    // Build a library .cja carrying DepType's source.
+    auto lib = freshTempDir("depcja");
+    writeUnit(lib, "src/dep/DepType.cajeta",
+        "package dep;\n"
+        "public class DepType {\n"
+        "    public int32 answer() { return 42; }\n"
+        "}\n");
+    auto arc = lib / "arc";
+    fs::create_directories(arc);
+    std::string build = compilerBinary() + " dep.DepType " + (lib / "src").string()
+                      + " " + arc.string() + " --emit=cja > " CAJETA_XLINT_DEVNULL " 2>&1";
+    ASSERT_EQ(std::system(build.c_str()) == 0 ? 0 : -1, 0) << "lib .cja build failed";
+    fs::path cja;
+    for (auto& e : fs::directory_iterator(arc))
+        if (e.path().extension() == ".cja") { cja = e.path(); break; }
+    ASSERT_FALSE(cja.empty()) << "no .cja produced";
+
+    // A consumer project that references DepType (as a field type).
+    auto root = freshTempDir("depconsumer") / "src";
+    writeUnit(root, "app/App.cajeta",
+        "package app;\n"
+        "import dep.DepType;\n"
+        "public class App {\n"
+        "    DepType d;\n"
+        "    public static void main() { }\n"
+        "}\n");
+
+    // Whole-root export WITH the dependency on the classpath.
+    auto outDoc = freshTempDir("depout") / "xref.json";
+    std::string cmd = compilerBinary() + " --lint " + root.string()
+                    + " --emit-xref=" + outDoc.string()
+                    + " --classpath=" + cja.string()
+                    + " --diag-format=json > " CAJETA_XLINT_DEVNULL " 2>&1";
+    (void) std::system(cmd.c_str());
+    std::ifstream in(outDoc);
+    std::string doc((std::istreambuf_iterator<char>(in)),
+                     std::istreambuf_iterator<char>());
+
+    EXPECT_TRUE(has(doc, "\"fqn\": \"dep.DepType\""))
+        << "classpath dependency declaration missing from the export:\n" << doc;
+    EXPECT_TRUE(has(doc, "\"target\": \"dep.DepType\""))
+        << "the project's reference into the dependency did not resolve:\n" << doc;
+}
+
 // The stream is scoped to the linted file: sibling and stdlib declarations are
 // the whole-root export's job (and would bloat every keystroke's output).
 TEST(XrefLint, TheStreamCarriesOnlyTheLintedFilesRecords) {

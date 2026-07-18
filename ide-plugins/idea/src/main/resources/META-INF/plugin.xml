@@ -136,7 +136,7 @@
             serviceImplementation="dev.cajeta.idea.markdown.MarkdownEngineRegistry"/>
 
         <postStartupActivity
-            implementation="dev.cajeta.idea.xref.CajetaStdlibMountStartup"/>
+            implementation="dev.cajeta.idea.xref.CajetaSourceMountStartup"/>
         <postStartupActivity
             implementation="dev.cajeta.idea.markdown.InstallCommentCaretListener"/>
 

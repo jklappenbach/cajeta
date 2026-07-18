@@ -38,6 +38,23 @@ object CajetaSourceMountGlue {
         run(listOf(compilerPath, "stdlib", "extract", dest.toString()))
     }
 
+    /**
+     * The project's resolved dependency `.cja` archives (§8.3.1): the resolver
+     * places each at `<projectBase>/.cajeta/cache/artifacts/<sha256>.cja` — the
+     * content-hash path it hands the compiler as `--classpath`. Both the source
+     * mount ([CajetaSourceMountStartup]) and the whole-root export
+     * ([CajetaXrefRebuildAction], which passes them as `--classpath` so the
+     * export carries the dependency's declarations) discover deps here. Empty
+     * when the project has never been resolved/built.
+     */
+    fun dependencyArchives(basePath: String?): List<Path> {
+        if (basePath == null) return emptyList()
+        val dir = File(basePath, ".cajeta/cache/artifacts")
+        if (!dir.isDirectory) return emptyList()
+        return dir.listFiles { f -> f.isFile && f.name.endsWith(".cja") }
+            ?.sortedBy { it.name }?.map { it.toPath() } ?: emptyList()
+    }
+
     /** The compiler identity the stdlib cache keys on: `cajeta --version`. */
     fun compilerIdentity(compilerPath: String): String? = try {
         val p = ProcessBuilder(compilerPath, "--version")

@@ -49,8 +49,15 @@ class CajetaXrefRebuildAction : AnAction("Rebuild Cajeta Xref Index") {
                     indicator.isIndeterminate = true
                     try {
                         val out = Files.createTempFile("cajeta-xref-", ".json")
-                        val p = ProcessBuilder(compilerPath, "--lint", srcRoot,
-                                "--emit-xref=$out", "--diag-format=json")
+                        // Pass resolved dependency .cja's on the classpath so the
+                        // export carries their declarations — otherwise Ctrl-click
+                        // into a dependency type has no target (§8.3.1).
+                        val argv = mutableListOf(compilerPath, "--lint", srcRoot,
+                            "--emit-xref=$out", "--diag-format=json")
+                        val deps = CajetaSourceMountGlue.dependencyArchives(base)
+                        if (deps.isNotEmpty())
+                            argv.add("--classpath=" + deps.joinToString(",") { it.toString() })
+                        val p = ProcessBuilder(argv)
                             .redirectErrorStream(false).start()
                         p.inputStream.bufferedReader().readText()
                         p.errorStream.bufferedReader().readText()
