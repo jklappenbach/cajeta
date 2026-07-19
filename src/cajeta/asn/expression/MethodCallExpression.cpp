@@ -21,6 +21,14 @@
 #include "cajeta/type/CajetaView.h"
 #include "cajeta/type/CajetaFunctionType.h"
 #include "cajeta/method/Method.h"
+#include "cajeta/asn/Statement.h"
+#include "cajeta/transform/GradBackward.h"
+#include "cajeta/transform/VmapBatch.h"
+#include "cajeta/synth/SourceSynthesisParse.h"
+#include "cajeta/synth/SourceSynthesis.h"
+#include "cajeta/compile/CajetaLlvmVisitor.h"
+#include "cajeta/asn/ClassBodyDeclaration.h"
+#include "cajeta/type/QualifiedName.h"
 #include "cajeta/method/FactoryProviderMethod.h"
 #include "cajeta/error/Diagnostics.h"
 #include "cajeta/error/Exception.h"
@@ -482,6 +490,620 @@ namespace cajeta {
         return droppableTempClass(ne->getResolvedType());
     }
 
+    // The inlined forward value source + the grad source produced by one
+    // symbolic differentiation pass (transform-intrinsics U3).
+    struct GradPieces { std::string valueExpr; std::string gradExpr; };
+
+    // Find the first ReturnStatement's expression anywhere under `node` (U4 —
+    // a helper's single-return body reached for DAG inlining). The returned
+    // expression isn't in `children`, so walk via forEachSubNode.
+    static Expression* findReturnExpr(const AbstractSyntaxNodePtr& node) {
+        if (!node) return nullptr;
+        if (auto* ret = dynamic_cast<ReturnStatement*>(node.get()))
+            return ret->getExpression().get();
+        Expression* found = nullptr;
+        node->forEachSubNode([&](const AbstractSyntaxNodePtr& c) {
+            if (!found) found = findReturnExpr(c);
+        });
+        return found;
+    }
+
+    // Build the U4 call resolver over the class currently being compiled: map a
+    // call name+arity to a same-class static single-return helper, distinguishing
+    // @NoGrad (stop-gradient) from a differentiate-through inline target. A name
+    // that isn't a unique same-class static (ambiguous overload, instance method,
+    // imported/other-class) resolves to not-found -> the DAG walk errors as an
+    // unsupported body (v1 scope; wider resolution is a follow-on).
+    static cajeta::transform::CallResolver makeCallResolver(CajetaModulePtr module) {
+        CajetaClassPtr enclosing = module->getStructureStack().empty()
+            ? nullptr : module->getStructureStack().back();
+        return [enclosing](const std::string& name, size_t arity)
+                -> cajeta::transform::InlineTarget {
+            cajeta::transform::InlineTarget t;
+            if (!enclosing) return t;
+            MethodPtr match;
+            for (auto& m : enclosing->getMethodList()) {
+                if (m && m->isStatic() && m->getName() == name
+                        && m->getParameterList().size() == arity) {
+                    if (match) return cajeta::transform::InlineTarget{};  // ambiguous
+                    match = m;
+                }
+            }
+            if (!match) return t;
+            t.found = true;
+            t.noGrad = match->findAnnotation("NoGrad") != nullptr;
+            auto rt = match->getReturnType();
+            std::string rc = rt ? rt->toCanonical() : std::string();
+            t.returnIsTensor = rc.rfind("cajeta.math.Tensor", 0) == 0
+                            || rc.rfind("Tensor<", 0) == 0;
+            t.returnTy = rc;
+            t.qualifiedName = enclosing->getQName()->getTypeName() + "." + name;
+            for (auto& p : match->getParameterList()) t.paramNames.push_back(p->getName());
+            t.body = findReturnExpr(match->getBlock());
+            return t;
+        };
+    }
+
+    // Symbolically differentiate `bodyExpr` w.r.t. the parameter `pnames[argnum]`
+    // (rank `selIsTensor`, element `elem`) over the params in `paramRank`. Returns
+    // the inlined forward value source and the grad source (an explicit zero when
+    // the body is independent of the selected param). Throws named, located errors
+    // for an unsupported body / missing VJP rule. Shared by the first-order and
+    // higher-order paths — the latter re-parses a prior pass's grad source and
+    // differentiates it again (the F7 expressible subset).
+    static GradPieces differentiateBody(
+            MethodCallExpression* self, Expression* bodyExpr,
+            const std::vector<std::string>& pnames,
+            const std::map<std::string, bool>& paramRank,
+            size_t argnum, const std::string& elem, bool selIsTensor,
+            const cajeta::transform::CallResolver& resolveCall) {
+        auto locErr = [&](const std::string& msg, const char* id) {
+            return Exception(msg, id, "", self->getSourceLine(), self->getSourceColumn());
+        };
+        std::vector<cajeta::transform::AdNode> nodes;
+        std::map<std::string, size_t> pidx;
+        std::string err;
+        if (!cajeta::transform::buildDag(bodyExpr, pnames, paramRank, resolveCall,
+                                         nodes, pidx, &err)) {
+            throw locErr(err, "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        }
+        // The reverse pass seeds the output cotangent to 1.0f — a scalar output.
+        if (!nodes.empty() && nodes.back().isTensor) {
+            throw locErr("transform intrinsic 'Grad' differentiates a scalar-valued "
+                         "function (reduce with sum(...))",
+                         "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        }
+        std::string zero = selIsTensor
+            ? ("Tensor.zerosLike<" + elem + ">(" + pnames[argnum] + ")") : "0.0f";
+        std::string gradExpr, missing;
+        auto pn = pidx.find(pnames[argnum]);
+        if (pn == pidx.end()) {
+            gradExpr = zero;
+        } else {
+            gradExpr = cajeta::transform::reverseModeGrad(nodes, pn->second, elem, &missing);
+            if (!missing.empty()) {
+                throw locErr("transform intrinsic 'Grad': no VJP rule for primitive '"
+                             + missing + "'", "CAJETA_ERROR_TRANSFORM_NO_VJP_RULE");
+            }
+            // The param is present but has NO path to the output (it feeds only a
+            // @NoGrad/constant region) -> empty cotangent = an explicit zero.
+            if (gradExpr.empty()) gradExpr = zero;
+        }
+        return { nodes.empty() ? std::string() : nodes.back().valueExpr, gradExpr };
+    }
+
+    // Emit the Tier-A backward helper class for a differentiated function and
+    // return the callable closure value: synthesize `class __GradBwd_N { static
+    // (P...) -> GradResult<V,G> make() { return (P... p) -> stack GradResult<V,G>
+    // (outputVal, gradExpr); } }`, parse-extract + codegen make(), and emit a call
+    // to it (make() yields the {fn,null,null} closure record). `outResolvedType`
+    // receives make()'s return type. Shared by first-order and higher-order Grad.
+    static llvm::Value* synthesizeMakeClosure(
+            MethodCallExpression* self, CajetaModulePtr module,
+            const std::string& className, const std::string& source,
+            const char* what, CajetaTypePtr& outResolvedType);
+
+    static llvm::Value* emitBackwardClosure(
+            MethodCallExpression* self, CajetaModulePtr module,
+            const std::string& classSeed,
+            const std::vector<std::string>& pnames,
+            const std::vector<std::string>& paramTys,
+            const std::string& valueTy, const std::string& gradTy,
+            const std::string& outputVal, const std::string& gradExpr,
+            bool importTensor, CajetaTypePtr& outResolvedType) {
+        std::string className = "__GradBwd_" + cajeta::synth::deriveSynthName(
+            "grad", classSeed, {outputVal, gradExpr});
+        std::string pkg = module->getQName()->getPackageName();
+        std::string source = (pkg.empty() ? std::string() : ("package " + pkg + ";\n"))
+            + cajeta::transform::emitBackwardSource(className, pnames, paramTys,
+                                                    valueTy, gradTy, outputVal, gradExpr,
+                                                    importTensor);
+        if (std::getenv("CAJETA_GRAD_DUMP")) {
+            fprintf(stderr, "=== GRAD BACKWARD SOURCE ===\n%s\n=== END ===\n",
+                    source.c_str());
+        }
+
+        return synthesizeMakeClosure(self, module, className, source, "Grad",
+                                     outResolvedType);
+    }
+
+    // transform-intrinsics — the shared Tier-A synthesis seam: parse `source`,
+    // extract its single static `make()`, codegen it, and emit a call to it so
+    // the transform's result is make()'s returned closure record. `what` names
+    // the intrinsic in diagnostics. Used by Grad (U3) and Vmap (U5).
+    static llvm::Value* synthesizeMakeClosure(
+            MethodCallExpression* self, CajetaModulePtr module,
+            const std::string& className, const std::string& source,
+            const char* what, CajetaTypePtr& outResolvedType) {
+        auto locErr = [&](const std::string& msg, const char* id) {
+            return Exception(msg, id, "", self->getSourceLine(), self->getSourceColumn());
+        };
+        const std::string intrin = std::string("transform intrinsic '") + what + "'";
+
+        // Parse-extract the `make` method (mirrors MethodTemplateInstantiator).
+        auto* compUnit = cajeta::synth::parseSynthesizedUnit(source);
+        CajetaParser::ClassDeclarationContext* classDecl = nullptr;
+        for (auto* td : compUnit->typeDeclaration()) {
+            if (auto* cd = td->classDeclaration()) { classDecl = cd; break; }
+        }
+        if (!classDecl) {
+            throw locErr(intrin + ": synthesized source did not parse",
+                         "CAJETA_ERROR_TRANSFORM_SYNTH_FAILED");
+        }
+
+        auto wrapperQName = QualifiedName::getOrInsert(
+            className, module->getQName()->getPackageName());
+        auto wrapperClass = std::make_shared<CajetaClass>(
+            module, wrapperQName, std::list<QualifiedNamePtr>{});
+
+        // Restore active-module, structure stack, and builder insertion point on
+        // EVERY exit — including an exception from visitClassBody / generateCode over
+        // the synthesized (user-derived) source, which would otherwise leave compiler
+        // globals corrupted for the rest of the process.
+        struct SynthStateGuard {
+            CajetaModulePtr module;
+            CajetaModulePtr prevActive;
+            std::list<CajetaClassPtr> savedStack;
+            llvm::IRBuilderBase::InsertPoint savedIP;
+            SynthStateGuard(CajetaModulePtr m, const CajetaClassPtr& wrapper)
+                : module(m), prevActive(CajetaModule::getActiveModule()),
+                  savedIP(m->getBuilder()->saveIP()) {
+                CajetaModule::setActiveModule(m);
+                auto& stk = m->getStructureStack();
+                savedStack.swap(stk);
+                stk.push_back(wrapper);
+            }
+            ~SynthStateGuard() {
+                auto& stk = module->getStructureStack();
+                stk.clear();
+                stk.swap(savedStack);
+                CajetaModule::setActiveModule(prevActive);
+                module->getBuilder()->restoreIP(savedIP);
+            }
+        };
+
+        MethodPtr makeMethod;
+        llvm::Function* makeFn = nullptr;
+        {
+            SynthStateGuard guard(module, wrapperClass);
+
+            CajetaLlvmVisitor visitor(module);
+            auto bodyAny = visitor.visitClassBody(classDecl->classBody());
+            auto classBody = std::any_cast<ClassBodyDeclarationPtr>(bodyAny);
+
+            for (auto& decl : classBody->getDeclarations()) {
+                if (auto md = std::dynamic_pointer_cast<MethodDeclaration>(decl)) {
+                    if (md->getMethod() && md->getMethod()->getName() == "make") {
+                        makeMethod = md->getMethod();
+                        break;
+                    }
+                }
+            }
+            if (!makeMethod) {
+                throw locErr(intrin + ": synthesized source produced no make()",
+                             "CAJETA_ERROR_TRANSFORM_SYNTH_FAILED");
+            }
+
+            // Emit make's prototype then body (its inner lambda + GradResult ctor
+            // emit here). Prototype first — the synthesized-method pattern.
+            makeMethod->generatePrototype();
+            makeMethod->generateCode();
+            makeFn = makeMethod->getLlvmFunction();
+        }
+
+        if (!makeFn) {
+            throw locErr(intrin + ": synthesized source failed to emit",
+                         "CAJETA_ERROR_TRANSFORM_SYNTH_FAILED");
+        }
+
+        // Transform(f) == make(): the returned closure record value.
+        llvm::Value* result = module->getBuilder()->CreateCall(
+            makeMethod->getLlvmFunctionType(), makeFn, {});
+        outResolvedType = makeMethod->getReturnType();
+        return result;
+    }
+
+    // transform-intrinsics U3 — synthesize Grad(f)'s Tier-A backward and return it
+    // as a callable value. Walk f's lambda body into a forward DAG, reverse-compose
+    // the VJP rules into a grad source expression, emit a helper class whose static
+    // make() returns the backward as a lambda, parse-extract + codegen make, and
+    // emit a call to it (make() yields the {fn,null,null} closure record). The
+    // returned function's type (P)->GradResult<V,G> is make()'s return type.
+    static llvm::Value* emitGradBackward(MethodCallExpression* self,
+                                         const std::shared_ptr<LambdaExpression>& lam,
+                                         const std::shared_ptr<CajetaFunctionType>& fnType,
+                                         CajetaModulePtr module,
+                                         CajetaTypePtr& outResolvedType) {
+        auto locErr = [&](const std::string& msg, const char* id) {
+            return Exception(msg, id, "", self->getSourceLine(), self->getSourceColumn());
+        };
+
+        const auto& pnames = lam->getParamNames();
+        const auto& ptypes = lam->getParamTypes();
+        if (pnames.empty() || pnames.size() != ptypes.size()) {
+            throw locErr("transform intrinsic 'Grad' requires a lambda with one or "
+                         "more explicitly-typed parameters",
+                         "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        }
+
+        // argnums (3.1.4): `Grad<N>(f)` differentiates w.r.t. parameter N; the bare
+        // `Grad(f)` defaults to arg 0. N rides in as a CajetaConstantType type arg.
+        int64_t argnum = 0;
+        const auto& gTypeArgs = self->getExplicitMethodTypeArgs();
+        if (!gTypeArgs.empty()) {
+            auto c = std::dynamic_pointer_cast<CajetaConstantType>(gTypeArgs[0]);
+            if (!c) {
+                throw locErr("transform intrinsic 'Grad<...>' argnum selector must be "
+                             "an integer constant", "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+            }
+            argnum = c->getValue();
+        }
+        if (argnum < 0 || argnum >= (int64_t)pnames.size()) {
+            throw locErr("transform intrinsic 'Grad<" + std::to_string(argnum)
+                         + ">' selects an argument out of range for the "
+                         + std::to_string(pnames.size()) + "-parameter function",
+                         "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        }
+
+        // Resolve the lambda + its body so AST sub-nodes carry ops/types.
+        lam->setExpectedType(fnType);
+        lam->resolveTypes(module);
+        auto bodyExpr = std::dynamic_pointer_cast<Expression>(lam->getBody());
+        if (!bodyExpr) {
+            throw locErr("transform intrinsic 'Grad' v1 requires an expression-body "
+                         "lambda", "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        }
+
+        // Per-parameter rank (a param is a tensor iff its type is Tensor<...>) — a
+        // multi-arg f may mix scalar and tensor params, so each input leaf's rank
+        // is keyed by name. The SELECTED arg's element type drives the tensor rule
+        // spelling and the gradient's return type.
+        auto tensorElem = [](const std::string& ty, std::string& elemOut) -> bool {
+            bool t = ty.rfind("cajeta.math.Tensor", 0) == 0
+                  || ty.rfind("Tensor<", 0) == 0;
+            elemOut = ty;
+            if (t) {
+                auto lt = ty.find('<');
+                auto gt = ty.rfind('>');
+                if (lt != std::string::npos && gt != std::string::npos && gt > lt + 1)
+                    elemOut = ty.substr(lt + 1, gt - lt - 1);
+            }
+            return t;
+        };
+        std::map<std::string, bool> paramRank;
+        for (size_t i = 0; i < pnames.size(); ++i) {
+            std::string ignore;
+            paramRank[pnames[i]] = tensorElem(ptypes[i]->toCanonical(), ignore);
+        }
+        std::string selTy = ptypes[argnum]->toCanonical();
+        std::string elem;
+        bool selIsTensor = tensorElem(selTy, elem);
+
+        // Reverse-mode over the body DAG -> forward value + grad source expressions.
+        // The resolver lets the walk inline same-class helpers (@NoGrad = stop) (U4).
+        auto resolveCall = makeCallResolver(module);
+        GradPieces gp = differentiateBody(self, bodyExpr.get(), pnames, paramRank,
+                                          (size_t)argnum, elem, selIsTensor, resolveCall);
+        std::string outputVal = gp.valueExpr;
+        std::string gradExpr = gp.gradExpr;
+
+        // The value type is the body's resolved type (the returned expression),
+        // which is set after resolveTypes; the function-type's return slot can
+        // still read void when the return was inferred, not declared.
+        std::string valueTy = fnType->getReturnType()
+            ? fnType->getReturnType()->toCanonical() : std::string("void");
+        if ((valueTy.empty() || valueTy == "void") && bodyExpr->getResolvedType()) {
+            valueTy = bodyExpr->getResolvedType()->toCanonical();
+        }
+        // A `Tensor.sum<E,R>(...)` output reduces a tensor to a scalar R — generic
+        // static-return inference doesn't always populate the slot here, so read R
+        // directly off the call's explicit type args.
+        if (valueTy.empty() || valueTy == "void") {
+            if (auto sumCall = std::dynamic_pointer_cast<MethodCallExpression>(bodyExpr)) {
+                if (sumCall->getMethodCallName() == "sum"
+                        && !sumCall->getExplicitMethodTypeArgs().empty()) {
+                    auto r = sumCall->getExplicitMethodTypeArgs().back();
+                    if (r) valueTy = r->toCanonical();
+                }
+            }
+        }
+        // U4 — when the whole body is a bare user-helper call `sq(x)`, its type is
+        // unresolved pre-codegen; take the callee's return type off the resolver.
+        if (valueTy.empty() || valueTy == "void") {
+            if (auto call = std::dynamic_pointer_cast<MethodCallExpression>(bodyExpr)) {
+                auto t = resolveCall(call->getMethodCallName(),
+                                     call->getParameters().size());
+                if (t.found && !t.returnTy.empty()) valueTy = t.returnTy;
+            }
+        }
+        if (valueTy.empty() || valueTy == "void") {
+            throw locErr("transform intrinsic 'Grad': could not determine the value "
+                         "type of the differentiated function",
+                         "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        }
+
+        // The backward lambda takes ALL of f's params (keeps f's arity), grading
+        // only the selected one. Import cajeta.math.Tensor if any param is a tensor
+        // or the synthesized source references a Tensor static (e.g. zerosLike).
+        std::vector<std::string> paramTys;
+        paramTys.reserve(pnames.size());
+        bool importTensor = false;
+        for (size_t i = 0; i < pnames.size(); ++i) {
+            paramTys.push_back(ptypes[i]->toCanonical());
+            importTensor = importTensor || paramRank[pnames[i]];
+        }
+        if (outputVal.find("Tensor.") != std::string::npos
+                || gradExpr.find("Tensor.") != std::string::npos) {
+            importTensor = true;
+        }
+
+        return emitBackwardClosure(self, module, fnType->toCanonical(), pnames,
+                                   paramTys, valueTy, selTy, outputVal, gradExpr,
+                                   importTensor, outResolvedType);
+    }
+
+    // transform-intrinsics U5 — synthesize Vmap(f)'s batched form (spec §6.1/§6.2).
+    // Build f's forward DAG over its parameter, require every primitive in it to
+    // carry a batching rule, then emit the batched helper class whose make()
+    // returns a lambda applying f's inlined body across the argument's leading
+    // axis. A body the DAG can't express, or a primitive with no batching rule, is
+    // a named error here rather than a silently wrong batch (§6.2).
+    static llvm::Value* emitVmapBatched(MethodCallExpression* self,
+                                        const std::shared_ptr<LambdaExpression>& lam,
+                                        const std::shared_ptr<CajetaFunctionType>& fnType,
+                                        CajetaModulePtr module,
+                                        CajetaTypePtr& outResolvedType) {
+        auto locErr = [&](const std::string& msg, const char* id) {
+            return Exception(msg, id, "", self->getSourceLine(), self->getSourceColumn());
+        };
+
+        const auto& pnames = lam->getParamNames();
+        const auto& ptypes = lam->getParamTypes();
+        if (pnames.size() != 1 || ptypes.size() != 1) {
+            throw locErr("transform intrinsic 'Vmap' v1 batches a single-parameter "
+                         "function over one leading axis",
+                         "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        }
+
+        lam->setExpectedType(fnType);
+        lam->resolveTypes(module);
+        auto bodyExpr = std::dynamic_pointer_cast<Expression>(lam->getBody());
+        if (!bodyExpr) {
+            throw locErr("transform intrinsic 'Vmap' v1 requires an expression-body "
+                         "lambda", "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        }
+
+        // The batch axis is the argument's, so each example is a scalar of f's own
+        // parameter type; rank stays per-example (the axis is not in the DAG).
+        std::map<std::string, bool> paramRank;
+        paramRank[pnames[0]] = false;
+        auto resolveCall = makeCallResolver(module);
+        std::vector<cajeta::transform::AdNode> nodes;
+        std::map<std::string, size_t> paramNodeIndex;
+        std::string err;
+        if (!cajeta::transform::buildDag(bodyExpr.get(), pnames, paramRank, resolveCall,
+                                         nodes, paramNodeIndex, &err) || nodes.empty()) {
+            throw locErr("transform intrinsic 'Vmap': no batching rule for this body "
+                         "(v1 batches + - * and unary - over the batch element)",
+                         "CAJETA_ERROR_TRANSFORM_NO_BATCH_RULE");
+        }
+        for (const auto& n : nodes) {
+            if (!n.primitive.empty()
+                    && !cajeta::transform::hasBatchRule(n.primitive)) {
+                throw locErr("transform intrinsic 'Vmap': no batching rule for "
+                             "primitive '" + n.primitive + "'",
+                             "CAJETA_ERROR_TRANSFORM_NO_BATCH_RULE");
+            }
+        }
+
+        std::string paramTy = ptypes[0]->toCanonical();
+        std::string resultTy = fnType->getReturnType()
+            ? fnType->getReturnType()->toCanonical() : std::string("void");
+        if ((resultTy.empty() || resultTy == "void") && bodyExpr->getResolvedType()) {
+            resultTy = bodyExpr->getResolvedType()->toCanonical();
+        }
+        if (resultTy.empty() || resultTy == "void") {
+            throw locErr("transform intrinsic 'Vmap': could not determine the batch "
+                         "element type", "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        }
+
+        const std::string& bodySrc = nodes.back().valueExpr;
+        std::string className = "__VmapBatch_" + cajeta::synth::deriveSynthName(
+            "vmap", pnames[0], {bodySrc, resultTy});
+        std::string pkg = module->getQName()->getPackageName();
+        std::string source = (pkg.empty() ? std::string() : ("package " + pkg + ";\n"))
+            + cajeta::transform::emitBatchedSource(className, pnames[0], paramTy,
+                                                   resultTy, bodySrc);
+        if (std::getenv("CAJETA_VMAP_DUMP")) {
+            fprintf(stderr, "=== VMAP BATCHED SOURCE ===\n%s\n=== END ===\n",
+                    source.c_str());
+        }
+        return synthesizeMakeClosure(self, module, className, source, "Vmap",
+                                     outResolvedType);
+    }
+
+    // transform-intrinsics U5 (5.1.3) — Vmap(Grad(f)): batch the DIFFERENTIATED
+    // form, giving per-example gradients. Intercepted before the argument resolves,
+    // because `Grad(f)` has no function type until it is itself transformed (the
+    // nested-Grad precedent). Rather than batching a call to Grad's closure, the
+    // per-example body IS Grad's synthesized `GradResult<V,G>{value, grad}`, so the
+    // batched loop carries the same inlined forward+backward source.
+    static llvm::Value* emitVmapOfGrad(MethodCallExpression* self,
+                                       const std::shared_ptr<MethodCallExpression>& innerGrad,
+                                       CajetaModulePtr module,
+                                       CajetaTypePtr& outResolvedType) {
+        auto locErr = [&](const std::string& msg, const char* id) {
+            return Exception(msg, id, "", self->getSourceLine(), self->getSourceColumn());
+        };
+
+        if (innerGrad->getParameters().size() != 1) {
+            throw locErr("transform intrinsic 'Vmap(Grad(f))' requires a single-argument "
+                         "Grad", "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        }
+        auto lam = std::dynamic_pointer_cast<LambdaExpression>(
+            innerGrad->getParameters()[0].expression);
+        if (!lam) {
+            throw locErr("transform intrinsic 'Vmap(Grad(f))' requires a lambda literal",
+                         "CAJETA_ERROR_TRANSFORM_NOT_SPECIALIZABLE");
+        }
+        lam->resolveTypes(module);
+        auto fnType = std::dynamic_pointer_cast<CajetaFunctionType>(lam->getResolvedType());
+        if (!fnType) {
+            throw locErr("transform intrinsic 'Vmap(Grad(f))' could not resolve f's "
+                         "function type", "CAJETA_ERROR_TRANSFORM_NOT_FUNCTION");
+        }
+        const auto& pnames = lam->getParamNames();
+        const auto& ptypes = lam->getParamTypes();
+        if (pnames.size() != 1 || ptypes.size() != 1) {
+            throw locErr("transform intrinsic 'Vmap(Grad(f))' v1 batches a single-"
+                         "parameter function", "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        }
+        auto bodyExpr = std::dynamic_pointer_cast<Expression>(lam->getBody());
+        if (!bodyExpr) {
+            throw locErr("transform intrinsic 'Vmap(Grad(f))' v1 requires an "
+                         "expression-body lambda", "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        }
+
+        std::string paramTy = ptypes[0]->toCanonical();
+        if (paramTy.rfind("cajeta.math.Tensor", 0) == 0 || paramTy.rfind("Tensor<", 0) == 0) {
+            throw locErr("transform intrinsic 'Vmap(Grad(f))' is scalar-only in v1 "
+                         "(tensor batching needs per-op rules)",
+                         "CAJETA_ERROR_TRANSFORM_NO_BATCH_RULE");
+        }
+
+        // Differentiate one example exactly as first-order Grad does, then batch the
+        // resulting GradResult construction over the axis.
+        std::map<std::string, bool> paramRank;
+        paramRank[pnames[0]] = false;
+        auto resolveCall = makeCallResolver(module);
+        GradPieces gp = differentiateBody(self, bodyExpr.get(), pnames, paramRank,
+                                          0, paramTy, false, resolveCall);
+
+        std::string valueTy = bodyExpr->getResolvedType()
+            ? bodyExpr->getResolvedType()->toCanonical() : paramTy;
+        std::string resultTy = "GradResult<" + valueTy + "," + paramTy + ">";
+        std::string bodySrc = "stack " + resultTy + "(" + gp.valueExpr + ", "
+                            + gp.gradExpr + ")";
+
+        std::string className = "__VmapBatch_" + cajeta::synth::deriveSynthName(
+            "vmapgrad", pnames[0], {gp.valueExpr, gp.gradExpr});
+        std::string pkg = module->getQName()->getPackageName();
+        std::string source = (pkg.empty() ? std::string() : ("package " + pkg + ";\n"))
+            + cajeta::transform::emitBatchedSource(className, pnames[0], paramTy,
+                                                   resultTy, bodySrc, true);
+        if (std::getenv("CAJETA_VMAP_DUMP")) {
+            fprintf(stderr, "=== VMAP(GRAD) SOURCE ===\n%s\n=== END ===\n", source.c_str());
+        }
+        return synthesizeMakeClosure(self, module, className, source, "Vmap",
+                                     outResolvedType);
+    }
+
+    // transform-intrinsics 3.1.6 — higher-order Grad(Grad(...(f))). The outer Grad
+    // differentiates the GRADIENT produced by the inner Grad, so at nesting depth d
+    // the result carries {value: f^(d-1), grads: f^(d)}. Works because each backward
+    // is emitted as ordinary differentiable source (F7): we compute f' symbolically,
+    // re-parse it, and differentiate again — repeated d times. v1 restricts this to
+    // a single scalar parameter (tensor higher-order needs broadcast-op VJP rules).
+    static llvm::Value* emitNestedGrad(MethodCallExpression* self,
+                                       CajetaModulePtr module,
+                                       CajetaTypePtr& outResolvedType) {
+        auto locErr = [&](const std::string& msg, const char* id) {
+            return Exception(msg, id, "", self->getSourceLine(), self->getSourceColumn());
+        };
+
+        // Unwrap Grad(Grad(...(f))) to the base lambda, counting the nesting depth.
+        size_t depth = 1;   // self is the outermost Grad
+        auto cur = std::dynamic_pointer_cast<Expression>(self->getParameters()[0].expression);
+        std::shared_ptr<LambdaExpression> baseLam;
+        while (cur) {
+            if (auto lam = std::dynamic_pointer_cast<LambdaExpression>(cur)) {
+                baseLam = lam; break;
+            }
+            auto mc = std::dynamic_pointer_cast<MethodCallExpression>(cur);
+            if (!mc || mc->getMethodCallName() != "Grad"
+                    || mc->getParameters().size() != 1) {
+                break;
+            }
+            ++depth;
+            cur = std::dynamic_pointer_cast<Expression>(mc->getParameters()[0].expression);
+        }
+        if (!baseLam) {
+            throw locErr("transform intrinsic 'Grad' requires a lambda literal whose "
+                         "body can be differentiated",
+                         "CAJETA_ERROR_TRANSFORM_NOT_SPECIALIZABLE");
+        }
+
+        const auto& pnames = baseLam->getParamNames();
+        const auto& ptypes = baseLam->getParamTypes();
+        if (pnames.size() != 1 || ptypes.size() != 1 || !ptypes[0]) {
+            throw locErr("higher-order Grad(Grad(...)) differentiates a single scalar "
+                         "parameter in v1", "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        }
+        std::string selTy = ptypes[0]->toCanonical();
+        if (selTy.rfind("cajeta.math.Tensor", 0) == 0 || selTy.rfind("Tensor<", 0) == 0) {
+            throw locErr("higher-order Grad(Grad(...)) is scalar-only in v1 (tensor "
+                         "second-order needs broadcast-op VJP rules)",
+                         "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        }
+        std::map<std::string, bool> paramRank{{pnames[0], false}};
+
+        auto baseBody = std::dynamic_pointer_cast<Expression>(baseLam->getBody());
+        if (!baseBody) {
+            throw locErr("transform intrinsic 'Grad' requires an expression-body lambda",
+                         "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        }
+
+        // deriv[k] = f^(k) as source. The first pass yields f (value) and f' (grad);
+        // each later pass re-parses the previous grad string and differentiates it.
+        // The base pass may inline same-class helpers (@NoGrad = stop); the re-parsed
+        // grad strings are pure built-in ops, so the resolver is a harmless no-op there.
+        auto resolveCall = makeCallResolver(module);
+        std::vector<std::string> deriv;
+        GradPieces p = differentiateBody(self, baseBody.get(), pnames, paramRank,
+                                         0, selTy, false, resolveCall);
+        deriv.push_back(p.valueExpr);   // f^(0)
+        deriv.push_back(p.gradExpr);    // f^(1)
+        for (size_t k = 2; k <= depth; ++k) {
+            auto* exprCtx = cajeta::synth::parseExpressionFragment(deriv.back());
+            auto parsed = Expression::fromContext(exprCtx);
+            if (!parsed) {
+                throw locErr("higher-order Grad: could not re-parse the intermediate "
+                             "gradient", "CAJETA_ERROR_TRANSFORM_SYNTH_FAILED");
+            }
+            GradPieces pk = differentiateBody(self, parsed.get(), pnames, paramRank,
+                                              0, selTy, false, resolveCall);
+            deriv.push_back(pk.gradExpr);   // f^(k)
+        }
+
+        // Grad(Grad(...)) at depth d carries {value: f^(d-1), grads: f^(d)}.
+        std::string outputVal = deriv[depth - 1];
+        std::string gradExpr = deriv[depth];
+        std::string classSeed = "gradgrad" + std::to_string(depth) + ":" + selTy;
+        return emitBackwardClosure(self, module, classSeed, pnames, {selTy},
+                                   selTy, selTy, outputVal, gradExpr,
+                                   /*importTensor*/ false, outResolvedType);
+    }
+
     llvm::Value* MethodCallExpression::generateCode(CajetaModulePtr module) {
         // xref (ide-symbol-index §2): open this call site for the duration of its
         // codegen. CajetaClass::resolveMethod — the choke point every callee
@@ -559,6 +1181,120 @@ namespace cajeta {
                         return opt;
                     }
                 }
+            }
+        }
+
+        // ----- transform-intrinsics U1: Grad/Jit/Vmap/Pmap combinator recognition -----
+        // Trusted value-level combinators over function values (spec §2, §3): a
+        // bare call `Grad(f)` with one function argument is intercepted here
+        // (name-recognition, the Math.*/tryAs precedent) BEFORE ordinary resolution
+        // and before the bare-closure-call path below. The transform must see f's
+        // monomorphized body via closure specialization: a directly-written
+        // non-capturing lambda yields a constant {fn,null,null} record
+        // (extractClosureTarget != null); a target resolved only at runtime is a
+        // clear compile error (§2.2). U1 installs an identity placeholder (real
+        // transforms: Grad U3, Vmap U5, Jit U6); Pmap is declared-but-deferred (F8).
+        if (children.empty() && parameters.size() == 1
+                && (methodCallName == "Grad" || methodCallName == "Jit"
+                    || methodCallName == "Vmap" || methodCallName == "Pmap")) {
+            // Higher-order Grad(Grad(...(f))) (3.1.6): the argument is itself a Grad
+            // call, not a lambda — its resolvedType is not a function type until it
+            // is transformed, so intercept BEFORE resolving argExpr and differentiate
+            // the base lambda `depth` times symbolically.
+            if (methodCallName == "Grad") {
+                if (auto innerGrad = std::dynamic_pointer_cast<MethodCallExpression>(
+                        parameters[0].expression)) {
+                    if (innerGrad->getMethodCallName() == "Grad") {
+                        CajetaTypePtr gradType;
+                        llvm::Value* g = emitNestedGrad(this, module, gradType);
+                        resolvedType = gradType;
+                        return g;
+                    }
+                }
+            }
+            // Vmap(Grad(f)) (5.1.3): like nested Grad, the argument is a transform
+            // call whose type is not a function type until it is transformed, so
+            // intercept BEFORE resolving argExpr and batch the differentiated form.
+            if (methodCallName == "Vmap") {
+                if (auto innerGrad = std::dynamic_pointer_cast<MethodCallExpression>(
+                        parameters[0].expression)) {
+                    if (innerGrad->getMethodCallName() == "Grad") {
+                        CajetaTypePtr vgType;
+                        llvm::Value* v = emitVmapOfGrad(this, innerGrad, module, vgType);
+                        resolvedType = vgType;
+                        return v;
+                    }
+                }
+            }
+            if (auto argExpr = dynamic_pointer_cast<Expression>(parameters[0].expression)) {
+                if (!argExpr->getResolvedType()) argExpr->resolveTypes(module);
+                auto fnType = dynamic_pointer_cast<CajetaFunctionType>(
+                    argExpr->getResolvedType());
+                if (!fnType) {
+                    throw Exception(
+                        "transform intrinsic '" + methodCallName
+                        + "' requires a function argument",
+                        "CAJETA_ERROR_TRANSFORM_NOT_FUNCTION",
+                        "", getSourceLine(), getSourceColumn());
+                }
+                // Grad (U3): differentiate f's lambda body via Tier-A synthesis.
+                if (methodCallName == "Grad") {
+                    auto lam = std::dynamic_pointer_cast<LambdaExpression>(
+                        parameters[0].expression);
+                    if (!lam) {
+                        throw Exception(
+                            "transform intrinsic 'Grad' requires a lambda literal "
+                            "whose body can be differentiated",
+                            "CAJETA_ERROR_TRANSFORM_NOT_SPECIALIZABLE",
+                            "", getSourceLine(), getSourceColumn());
+                    }
+                    CajetaTypePtr gradType;
+                    llvm::Value* g = emitGradBackward(this, lam, fnType, module, gradType);
+                    resolvedType = gradType;
+                    return g;
+                }
+                // Vmap (U5): batch f's body over the argument's leading axis.
+                if (methodCallName == "Vmap") {
+                    auto lam = std::dynamic_pointer_cast<LambdaExpression>(
+                        parameters[0].expression);
+                    if (!lam) {
+                        throw Exception(
+                            "transform intrinsic 'Vmap' requires a lambda literal "
+                            "whose body can be batched",
+                            "CAJETA_ERROR_TRANSFORM_NOT_SPECIALIZABLE",
+                            "", getSourceLine(), getSourceColumn());
+                    }
+                    CajetaTypePtr vmapType;
+                    llvm::Value* v = emitVmapBatched(this, lam, fnType, module, vmapType);
+                    resolvedType = vmapType;
+                    return v;
+                }
+                llvm::Value* raw = argExpr->generateCode(module);
+                llvm::Value* fnVal = loadIfLValue(module, raw, argExpr);
+                llvm::Constant* record = nullptr;
+                llvm::Function* target =
+                    CajetaClass::extractClosureTarget(fnVal, &record);
+                if (!target) {
+                    throw Exception(
+                        "transform intrinsic '" + methodCallName
+                        + "' requires a specializable target — a statically-known "
+                          "function whose body is visible at the call site; the "
+                          "argument here is resolved only at runtime",
+                        "CAJETA_ERROR_TRANSFORM_NOT_SPECIALIZABLE",
+                        "", getSourceLine(), getSourceColumn());
+                }
+                if (methodCallName == "Pmap") {
+                    throw Exception(
+                        "transform intrinsic 'Pmap' is not yet implemented "
+                        "(deferred in v1; use Vmap/Jit for now)",
+                        "CAJETA_ERROR_TRANSFORM_PMAP_UNIMPLEMENTED",
+                        "", getSourceLine(), getSourceColumn());
+                }
+                // U1 identity placeholder: the transformed function IS f, typed as
+                // its function type, so `(T)->R g = Jit(f); g(x)` dispatches through
+                // the ordinary closure-call path on the same record.
+                resolvedType = fnType;
+                return fnVal;
             }
         }
 
@@ -2432,11 +3168,16 @@ namespace cajeta {
                     return builder->CreateCall(fn, {x});
                 }
                 if (methodCallName == "round" && parameters.size() == 1) {
-                    // Match Java's Math.round(double) → long: half-up rounding to i64.
+                    // Java's Math.round(double) → long is (long)floor(x + 0.5)
+                    // (ties toward +inf), NOT llvm.round (ties away from zero) —
+                    // they disagree on negative .5 values, e.g. round(-2.5): Java
+                    // -2, llvm.round -3.
                     llvm::Value* x = toF64(loadArg(0));
+                    llvm::Value* half = llvm::ConstantFP::get(f64Ty, 0.5);
+                    llvm::Value* shifted = builder->CreateFAdd(x, half);
                     llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
-                        lm, llvm::Intrinsic::round, {f64Ty});
-                    llvm::Value* rounded = builder->CreateCall(fn, {x});
+                        lm, llvm::Intrinsic::floor, {f64Ty});
+                    llvm::Value* rounded = builder->CreateCall(fn, {shifted});
                     return builder->CreateFPToSI(rounded, i64Ty);
                 }
                 // Single-arg transcendentals — all take/return double.
@@ -4523,6 +5264,16 @@ namespace cajeta {
                     auto scoped = CajetaType::ofScoped(
                         idExpr->getTextValue(), module);
                     if (scoped) {
+                        // Static call on an ENUM name (`Verb.parse(...)`):
+                        // the scoped result is the i32-backed enum type, not
+                        // a class, so the cast below would leave receiverType
+                        // null and the call would error as an unknown type.
+                        // Adopt it as the receiver — the ENUM_FLAG redirect
+                        // at resolution routes it to the "$enum" companion,
+                        // where the enum body's statics live.
+                        if (scoped->getTypeFlags() & ENUM_FLAG) {
+                            receiverType = scoped;
+                        }
                         if (auto cls = dynamic_pointer_cast<CajetaClass>(scoped)) {
                             // REFL-1.7: a static call on a bare TEMPLATE name
                             // (e.g. `Class.of(...)`, `Class.forName(...)`). The
@@ -5227,21 +5978,53 @@ namespace cajeta {
         if (auto klass = dynamic_pointer_cast<CajetaClass>(receiverType)) {
             targetClass = klass;
         }
-        // PARKED (2026-07-13) — see the note at the invokeMethod call below. A
-        // receiver that was WRITTEN but named nothing (`NoSuchType.nope()`) should
-        // be an "unknown type" error rather than falling through to the
-        // enclosing-class fallback (which blames the wrong receiver). Held back
-        // with the rest of the member-not-found work so main stays green.
-        //   if (!targetClass && !children.empty() && !receiver && !receiverType) {
-        //       if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(
-        //               children[0])) {
-        //           throw locatedException(
-        //               getSourceLine(), getSourceColumn() + 1,
-        //               "unknown type '" + idExpr->getTextValue()
-        //                   + "' (no class, and no local of that name, is in scope)",
-        //               "CAJETA_ERROR_UNRESOLVED_TYPE");
-        //       }
-        //   }
+        // Enum receiver: the value is an i32 ordinal, so `receiverType` is the
+        // i32-backed enum type rather than a class — its members live on the
+        // "$enum" companion the enum declaration registered. Redirect the
+        // lookup there. The companion is FINAL, so the call devirtualizes and
+        // the ordinal passes straight through as `this` (typed as the enum in
+        // the companion's signatures — see Method::prependThisParameter).
+        bool enumReceiver = false;
+        if (!targetClass && receiverType
+                && (receiverType->getTypeFlags() & ENUM_FLAG)
+                && receiverType->getQName()) {
+            enumReceiver = true;
+            auto& cmap = CajetaType::getCanonicalMap();
+            auto it = cmap.find(receiverType->getQName()->toCanonical() + "$enum");
+            if (it == cmap.end()) {
+                it = cmap.find(receiverType->getQName()->getTypeName() + "$enum");
+            }
+            if (it != cmap.end()) {
+                targetClass = dynamic_pointer_cast<CajetaClass>(it->second);
+            }
+        }
+        // The enclosing-class fallback below belongs to BARE calls (`foo()`,
+        // children empty) only. When a receiver WAS written, substituting the
+        // enclosing class blames a type the user never named at this site — the
+        // 2.4.2 wart, where `b.get().tag()` off an unprojected wildcard reported
+        // "no member 'tag' on 'test.D'".
+        if (!targetClass && !children.empty()) {
+            if (!receiver && !receiverType) {
+                if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(
+                        children[0])) {
+                    throw locatedException(
+                        getSourceLine(), getSourceColumn() + 1,
+                        "unknown type '" + idExpr->getTextValue()
+                            + "' (no class, and no local of that name, is in scope)",
+                        "CAJETA_ERROR_UNRESOLVED_TYPE");
+                }
+            }
+            // Receiver written and typed, but its type is not a class surface
+            // (e.g. an unprojected wildcard sentinel from `Box<?>::get()`), so
+            // there is nothing to look a member up on. Name the RECEIVER.
+            throw locatedException(
+                getSourceLine(), getSourceColumn() + 1,
+                "no member '" + methodCallName + "' on '"
+                    + (receiverType ? receiverType->toCanonical()
+                                    : std::string("<unresolved receiver>"))
+                    + "'",
+                "CAJETA_ERROR_MEMBER_NOT_FOUND");
+        }
         if (!targetClass) {
             if (module->getStructureStack().empty()) {
                 return nullptr;
@@ -5279,6 +6062,15 @@ namespace cajeta {
         // that fails JIT verify with "Instruction does not dominate all
         // uses".
         llvm::Value* thisValue = receiver;
+        // An enum receiver's `this` is the ORDINAL, not an object address. A
+        // local (`Verb v = ...; v.weight()`) evaluates to its alloca, so load
+        // the i32 out of it; a constant receiver (`Verb.POST.weight()`) is
+        // already the value and passes through.
+        if (enumReceiver && thisValue && thisValue->getType()->isPointerTy()
+                && receiverType && receiverType->getLlvmType()) {
+            thisValue = builder->CreateLoad(receiverType->getLlvmType(), thisValue,
+                                            "enum.this");
+        }
         if (!thisValue) {
             MethodPtr enclosing = module->getCurrentMethod();
             bool inStatic = enclosing
@@ -8256,16 +9048,9 @@ namespace cajeta {
         // named a member that must exist, so a miss is a compile error here
         // rather than a null that surfaces later (or never). Speculative callers
         // (BinaryOpExpression probing for `operator+`) leave the flag false.
-        //
-        // PARKED (2026-07-13): flipped to false to keep main green. Turning this
-        // on is CORRECT and it found four real bugs — but it also rejects
-        // `tools/mcp`, which uses `.byteLength` / `.bytes` as FIELDS on String
-        // (the 36779177 re-core made them methods, and every field-style caller
-        // kept compiling as null). Repairing those 37 sites needs ownership
-        // decisions on the OWNED `#int8[]` from `toBytes()` — borrow territory,
-        // owned by another workstream. Re-land this with that repair, as one
-        // piece. Work: branch feature/silent-resolution-diagnostics @ f086c73e;
-        // findings: agents/silent-resolution-diagnostics-plan.md 1.3.3.
+        // Unparked 2026-07-18: the field-style String callers the park was
+        // waiting on are gone (tools/mcp already reads byteLength()/toBytes());
+        // only JsonDemo + BindProto still needed the toBytes() repair.
         llvm::Value* callResult = targetClass->invokeMethod(methodCallName, entries,
             /*isConstructor=*/false, thisValue, /*callerModule=*/module,
             /*forceDirectCall=*/(isSuperCall || targetIsFinalClass),
@@ -8274,9 +9059,7 @@ namespace cajeta {
             // title-tracking Unit 5 / 7.2.2: the per-call transfer word
             // rides the ABI only (the moveMask TLS is retired).
             /*transferWord=*/transferWordVal,
-            // main 547f0a0c parked member-not-found hard errors (tools/mcp
-            // String re-core repair pending) — keep the park across the merge.
-            /*errorIfUnresolved=*/false,
+            /*errorIfUnresolved=*/true,
             getSourceLine(), getSourceColumn() + 1);
 
         if (nullSafeStringMethod) {

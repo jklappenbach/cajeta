@@ -343,3 +343,29 @@ int32_t __cajeta_net_await_writable(int32_t fd) {
     return __cajeta_net_reactor_poll_fd(fd, CAJETA_IO_WRITE, -1);
 #endif
 }
+
+// Deadline-bounded twins (NET-3.4). On Linux these ride the fiber-parking
+// __cajeta_io_wait_timed engine — the carrier stays free while the fiber
+// waits, which is the whole point: the old path ran the blocking select()
+// probe on the carrier thread, so a server head-read with a 30s budget
+// starved every fiber co-hosted on that carrier (the cajeta-http loopback
+// flake — the peer that would have sent the awaited bytes sat un-runnable
+// on the blocked carrier's deque until the deadline dropped the
+// connection). Non-fiber callers and non-Linux fall through to the
+// blocking probe, whose thread-blocking semantics are correct there.
+// Returns 1 READY / 0 TIMEOUT / -1 ERROR — the poll_fd contract.
+int32_t __cajeta_net_await_readable_timed(int32_t fd, int32_t timeout_ms) {
+#if defined(__linux__)
+    return __cajeta_io_wait_timed(fd, CAJETA_IO_READ, timeout_ms);
+#else
+    return __cajeta_net_reactor_poll_fd(fd, CAJETA_IO_READ, timeout_ms);
+#endif
+}
+
+int32_t __cajeta_net_await_writable_timed(int32_t fd, int32_t timeout_ms) {
+#if defined(__linux__)
+    return __cajeta_io_wait_timed(fd, CAJETA_IO_WRITE, timeout_ms);
+#else
+    return __cajeta_net_reactor_poll_fd(fd, CAJETA_IO_WRITE, timeout_ms);
+#endif
+}

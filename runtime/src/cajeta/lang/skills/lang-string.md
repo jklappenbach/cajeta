@@ -68,7 +68,7 @@ Transforms (return owned `#String`, allocate a fresh buffer):
 ```cajeta
 import cajeta.lang.String;
 
-heap String s = "  Hello, Cajeta!  ";
+String s = "  Hello, Cajeta!  ";            // a literal is a static view
 #String trimmed = s.trim();                 // owned: "Hello, Cajeta!"
 if (trimmed.contains("Cajeta")) {
     #String sub  = trimmed.substring(7, 13);     // "Cajeta" (byte-indexed)

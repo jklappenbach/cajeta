@@ -159,10 +159,16 @@ namespace cajeta {
         }
 
         const string& getHierarchicalName() {
-            if (hierarchicalName.empty() && parent) {
-                return hierarchicalName = parent->buildHierarchicalName() + "." + name;
+            // Memoize once. The old form recomputed on every call and, on the
+            // second call for a parented field, fell through to overwrite the
+            // cached `Parent.name` with the bare `name` — returning the wrong
+            // value on alternate reads.
+            if (hierarchicalName.empty()) {
+                hierarchicalName = parent
+                    ? parent->buildHierarchicalName() + "." + name
+                    : name;
             }
-            return hierarchicalName = name;
+            return hierarchicalName;
         }
 
         CajetaTypePtr getType() const {

@@ -61,9 +61,18 @@ first-class function types, closures, **closure specialization**, method-level t
 - **Autodiff:** mid-level-IR pass (the moat); one VJP rule-set, two drivers (compiled `Grad` + eager tape).
 
 ## Status & next step
-All specs are **drafts for review** (2026-06-23). The foundation-first progression
-(`language-foundations.md` §3) sets the order: **records + source-synthesis** first, then the
-transform intrinsics, then núcleo core (column → expr → autograd → nn/optim → frame →
-sparse/linalg), then the façades, with the splat flagship as the first integration milestone.
-Each spec becomes a **plan** (`agents/cajeta/nucleo/<name>-plan.md`) via the design skill, at
-which point its `TBD (plan-time)` markers are resolved.
+The foundation-first progression (`language-foundations.md` §3) sets the order: **records +
+source-synthesis** first, then the transform intrinsics, then núcleo core (column → expr →
+autograd → nn/optim → frame → sparse/linalg), then the façades, with the splat flagship as the
+first integration milestone. Each spec becomes a **plan** (`agents/cajeta/nucleo/<name>-plan.md`)
+via the design skill, at which point its `TBD (plan-time)` markers are resolved.
+
+Progress:
+- **records** — ✅ complete (`records-plan.md`, 48/48).
+- **source-synthesis** — ✅ complete (`source-synthesis-plan.md`, 42/42).
+- **transform-intrinsics** — 🔨 **ACTIVE** (`transform-intrinsics-plan.md`; all F1–F8 resolved
+  2026-07-17). ML-spine slice: VJP registry + `Grad` (Tier-A backward) + `@NoGrad` + `Vmap` +
+  `Jit` + `@Grad`/`@Vmap`/`@Jit` sugar. `Pmap`, Tier-B fusion, `@Checkpoint`/`@Autocast`, and the
+  higher-order rule slot are deferred to follow-ups; the real tensor-op rule content + eager tape
+  are `nucleo-autograd-spec.md`.
+- Everything below transform-intrinsics — **draft** (specs written 2026-06-23; no plan yet).

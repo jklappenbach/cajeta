@@ -44,6 +44,15 @@ namespace cajeta::synth {
         return parser->compilationUnit();
     }
 
+    CajetaParser::ExpressionContext* parseExpressionFragment(const std::string& src) {
+        auto* input = new antlr4::ANTLRInputStream(src);
+        auto* lexer = new CajetaLexer(input);
+        auto* tokens = new antlr4::CommonTokenStream(lexer);
+        tokens->fill();
+        auto* parser = new CajetaParser(tokens);
+        return parser->expression();
+    }
+
     namespace {
         // Map any non-identifier character to '_' so the derived name is a legal
         // identifier. Deterministic and injective enough for our inputs: the

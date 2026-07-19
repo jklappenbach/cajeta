@@ -454,7 +454,14 @@ namespace cajeta {
             if (auto mceD = dynamic_pointer_cast<MethodCallExpression>(
                     expression)) {
                 MethodPtr rm = mceD->getResolvedMethod();
-                if (rm && rm->returnsClassPointer()) {
+                // Only when the callee actually STORES the flag: a raw-IR
+                // synthesized class-pointer body (getter `return this.f`,
+                // builder-setter `return this`, factory provider, ...) has
+                // emitsReturnFlag()==false and never touches the TLS, so the
+                // flag here is a STALE value from a prior flag-emitting call —
+                // reading it drops a value the callee never surrendered
+                // (double-free / UAF). Mirrors the ReturnStatement guard below.
+                if (rm && rm->returnsClassPointer() && rm->emitsReturnFlag()) {
                     auto* b = module->getBuilder();
                     llvm::Function* getFlag = module->getRuntimeFunction(
                         "__cajeta_return_flag_get");
@@ -587,6 +594,15 @@ namespace cajeta {
                 "condition did not resolve to a value (a sub-expression produced"
                 " nothing — e.g. a method or member that does not exist on the"
                 " receiver's type)",
+                "CAJETA_ERROR_UNRESOLVED_EXPRESSION");
+        }
+        // A `void` call is PRESENT but valueless, so the null guard above misses
+        // it and the i1 coercion below asserts inside LLVM (1.2.3).
+        if (cond->getResolvedType()
+                && cond->getResolvedType()->toCanonical() == "void") {
+            throw locatedException(
+                cond->getSourceLine(), cond->getSourceColumn() + 1,
+                "condition is a 'void' expression, which has no value to test",
                 "CAJETA_ERROR_UNRESOLVED_EXPRESSION");
         }
         if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
@@ -1369,7 +1385,16 @@ namespace cajeta {
         // Populate cases and emit each group's statements. Fall-through is implicit
         // — if a group's terminator hasn't been set after emitting its body, we
         // branch to the next group's block (or after, if last).
-        module->pushLoopContext(afterBB, afterBB);  // `break` jumps out
+        // `break` jumps out of the switch, but `continue` targets the
+        // ENCLOSING loop (a switch is not a loop) — preserve that loop's
+        // continue target instead of hijacking it to afterBB. When the switch
+        // isn't inside a loop, afterBB is a harmless fallback (a bare
+        // `continue` there is already a semantic error).
+        llvm::BasicBlock* enclosingCont =
+            module->hasLoopContext()
+                ? module->currentLoopContext().continueTarget
+                : afterBB;
+        module->pushLoopContext(enclosingCont, afterBB);
         bool anyArmMerged = false;
         for (size_t i = 0; i < groups.size(); i++) {
             auto& g = groups[i];
@@ -2286,6 +2311,15 @@ namespace cajeta {
                 "returned expression did not resolve to a value (a sub-expression"
                 " produced nothing — e.g. a method or member that does not exist"
                 " on the receiver's type)",
+                "CAJETA_ERROR_UNRESOLVED_EXPRESSION");
+        }
+        // A `void` call is present but valueless, so the guard above misses it and
+        // `return D.nothing();` in a value-returning method compiled SILENTLY (1.2.3).
+        if (!retTy->isVoidTy() && expression->getResolvedType()
+                && expression->getResolvedType()->toCanonical() == "void") {
+            throw locatedException(
+                expression->getSourceLine(), expression->getSourceColumn() + 1,
+                "returned expression is 'void', but the method returns a value",
                 "CAJETA_ERROR_UNRESOLVED_EXPRESSION");
         }
         llvm::Type* valTy = val->getType();

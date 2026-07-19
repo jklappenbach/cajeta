@@ -246,6 +246,15 @@ namespace cajeta {
             // enum type is registered in canonicalMap; the constant table is
             // a separate side-map populated by visitEnumDeclaration.
             if (auto v = CajetaType::lookupEnumConstant(ns, identifier)) {
+                // Type the constant as the ENUM rather than raw int32, so a
+                // method invoked directly on it (`Verb.POST.weight()`) can
+                // reach the enum's companion class. The VALUE is unchanged —
+                // still the ordinal.
+                auto& cmap = CajetaType::getCanonicalMap();
+                auto et = cmap.find(ns);
+                if (et != cmap.end()) {
+                    resolvedType = et->second;
+                }
                 return llvm::ConstantInt::get(
                     llvm::Type::getInt32Ty(ctx), *v, /*isSigned=*/true);
             }
@@ -391,19 +400,15 @@ namespace cajeta {
             // (`base` is non-null, guarded above), so the receiver is not a bare
             // type name — statics / enum constants / qualified names bail out
             // earlier and keep their fall-through. An unmatched name on an
-            // INSTANCE is a field typo, and returning null here is what lets
+            // INSTANCE is a field typo, and returning null here is what let
             // `p.vee` compile to nothing.
-            //
-            // PARKED (2026-07-13) — see the note at the invokeMethod call in
-            // MethodCallExpression.cpp. This throw is what rejects `tools/mcp`'s
-            // `s.byteLength` (a FIELD read of a method, left behind by the String
-            // re-core 36779177). Re-land with that repair.
-            //   throw locatedException(
-            //       getSourceLine(), getSourceColumn() + 1,
-            //       "no member '" + identifier + "' on '"
-            //           + klass->getQName()->toCanonical() + "'",
-            //       "CAJETA_ERROR_MEMBER_NOT_FOUND");
-            return nullptr;
+            std::string msg = "no member '" + identifier + "' on '"
+                + klass->getQName()->toCanonical() + "'";
+            std::string hint = klass->suggestMemberName(identifier);
+            if (!hint.empty()) msg += " — did you mean '" + hint + "'?";
+            throw locatedException(
+                getSourceLine(), getSourceColumn() + 1, msg,
+                "CAJETA_ERROR_MEMBER_NOT_FOUND");
         }
         // Self-shadow resolves ambiguity. Take the receiver class's
         // own property if it declared one.

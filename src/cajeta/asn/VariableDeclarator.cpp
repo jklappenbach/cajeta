@@ -4,6 +4,7 @@
 
 #include "VariableDeclarator.h"
 #include "../compile/CajetaModule.h"
+#include "../error/Diagnostics.h"
 #include "../type/CajetaArray.h"
 
 namespace cajeta {
@@ -24,6 +25,15 @@ namespace cajeta {
         auto& back = children.back();
         llvm::Value* v = back->generateCode(module);
         auto exprAst = dynamic_pointer_cast<Expression>(back);
+        // A `void` call is present but valueless, so the null-init guards miss it
+        // and initializing from one hung the compiler rather than diagnosing (1.2.3).
+        if (exprAst && exprAst->getResolvedType()
+                && exprAst->getResolvedType()->toCanonical() == "void") {
+            throw locatedException(
+                exprAst->getSourceLine(), exprAst->getSourceColumn() + 1,
+                "initializer is a 'void' expression, which has no value to store",
+                "CAJETA_ERROR_UNRESOLVED_EXPRESSION");
+        }
         return loadIfLValue(module, v, exprAst);
     }
 

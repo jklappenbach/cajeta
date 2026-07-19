@@ -643,6 +643,22 @@ namespace cajeta {
                     if (p->isStatic()) continue;
                     slot++;
                 }
+                // title-tracking §5 — mirror the hidden per-instance ownership
+                // word embedSubObject emits (after own properties, before vbase
+                // slots) for any class carrying a bit-carrying owned field.
+                // Omitting it made every later sub-object's slot index too low,
+                // so a secondary vtable got stored into an earlier sub-object's
+                // ownership word — corrupting drop bits (double-free / leak).
+                {
+                    bool wantsWord = false;
+                    for (auto& p : cls->propertyList) {
+                        if (!p->isStatic() && fieldHasOwnershipBit(p)) {
+                            wantsWord = true;
+                            break;
+                        }
+                    }
+                    if (wantsWord) slot++;
+                }
                 // MultiClassing Phase 3 v4: each class's slice in the
                 // flattened layout ends with one ptr per transitive
                 // non-self ancestor (vbase pointers). Advance `slot`
@@ -3527,8 +3543,19 @@ namespace cajeta {
         llvm::FunctionType* fnTy = llvm::FunctionType::get(
             llvm::Type::getVoidTy(ctx), {(llvm::Type*) ptrTy},
             /*isVarArg=*/false);
+        // LinkOnceODR + comdat (see getOrCreateDropFunction): the value-release
+        // fn is materialized per-use and can be emitted into more than one TU
+        // (the defining module + any consumer that value-releases the type), so
+        // ExternalLinkage collides with 'duplicate symbol' at link. The body is
+        // deterministic per class, so ODR holds.
         llvm::Function* fn = llvm::Function::Create(fnTy,
-            llvm::Function::ExternalLinkage, relName, lmod);
+            llvm::Function::LinkOnceODRLinkage, relName, lmod);
+        {
+            llvm::Triple relTriple(lmod->getTargetTriple());
+            if (!relTriple.isOSBinFormatMachO()) {
+                fn->setComdat(lmod->getOrInsertComdat(relName));
+            }
+        }
         // Same emit-module pinning dance as getOrCreateDropFunction: the
         // body's runtime callees must land in `lmod`.
         llvm::Module* prevEmitLlvm = CajetaModule::getCurrentEmitLlvmModule();
@@ -3826,7 +3853,21 @@ namespace cajeta {
 
             llvm::Function* calleeInMod = CajetaModule::ensureFunctionInModule(lmod, callee);
             std::vector<llvm::Value*> callArgs;
-            if (hasThis) callArgs.push_back(objArg);
+            if (hasThis) {
+                llvm::Type* thisTy = cTy->getParamType(0);
+                if (thisTy->isPointerTy()) {
+                    callArgs.push_back(objArg);
+                } else {
+                    // Enum companion: `this` is the i32 ordinal, not an object
+                    // address (signature is the source of truth, per above).
+                    // The reflective caller hands the receiver by pointer, so
+                    // load the ordinal out of it. Without this the trampoline
+                    // passes `ptr` where the callee wants i32 — a module-
+                    // verify failure that broke the whole JIT pipeline for
+                    // any compile containing an enum with methods.
+                    callArgs.push_back(b.CreateLoad(thisTy, objArg, "this.ord"));
+                }
+            }
             for (unsigned p = userStart; p < cTy->getNumParams(); ++p) {
                 llvm::Type* pt = cTy->getParamType(p);
                 llvm::Value* slot = b.CreateInBoundsGEP(i64Ty, argsArg,
@@ -5425,6 +5466,35 @@ namespace cajeta {
         string generic = Method::buildGeneric(static_pointer_cast<CajetaClass>(shared_from_this()), methodName, parameters, floatingParams);
         string canonical = Method::buildCanonical(static_pointer_cast<CajetaClass>(shared_from_this()), methodName, parameters, floatingParams);
 
+        // Resolution tracing: `CAJETA_DBG_RESOLVE=<methodName>` dumps every
+        // resolve attempt for that name — the call-site keys, each arg's
+        // resolved canonical, and the indexed buckets on this class. This is
+        // the fastest way to see WHY an overload missed (an arg whose type
+        // resolved to a same-named class from another package prints
+        // differently here and nowhere else). Env-gated; zero cost unset.
+        if (const char* dbg = std::getenv("CAJETA_DBG_RESOLVE");
+                dbg && methodName == dbg) {
+            fprintf(stderr, "[dbg-res] resolve '%s' on %s floating=%d\n",
+                    methodName.c_str(), toCanonical().c_str(), (int) floatingParams);
+            fprintf(stderr, "[dbg-res]   call generic:   %s\n", generic.c_str());
+            fprintf(stderr, "[dbg-res]   call canonical: %s\n", canonical.c_str());
+            for (auto& p : parameters) {
+                fprintf(stderr, "[dbg-res]   arg label='%s' type=%s\n",
+                        p.label.c_str(),
+                        p.type ? p.type->toCanonical().c_str() : "<null>");
+            }
+            auto* gm = isConstructor
+                ? (floatingParams ? &labeledConstructorMap : &unlabeledConstructorMap)
+                : (floatingParams ? &labeledMethodMap : &unlabeledMethodMap);
+            for (auto& [g, cm] : *gm) {
+                if (g.find(methodName) == string::npos) continue;
+                fprintf(stderr, "[dbg-res]   indexed generic (eq=%d): %s\n",
+                        (int) (g == generic), g.c_str());
+                for (auto& [c, m] : cm)
+                    fprintf(stderr, "[dbg-res]     canonical: %s\n", c.c_str());
+            }
+        }
+
         map<string, map<string, MethodPtr>>* genericMap;
         if (isConstructor) {
             genericMap = floatingParams ? &labeledConstructorMap : &unlabeledConstructorMap;
@@ -5439,6 +5509,11 @@ namespace cajeta {
                 return it->second;
             }
             MethodPtr m = getClosestMethod(methodName, parameters, canonicalMap);
+            if (const char* dbg = std::getenv("CAJETA_DBG_RESOLVE");
+                    dbg && methodName == dbg) {
+                fprintf(stderr, "[dbg-res]   canonical miss; closest=%s\n",
+                        m ? "FOUND" : "null");
+            }
             if (m) return m;
         }
 
@@ -5652,11 +5727,58 @@ namespace cajeta {
         return fn;
     }
 
+    llvm::Function* CajetaClass::extractClosureTarget(llvm::Value* closureArg,
+                                                      llvm::Constant** outRecord) {
+        return extractClosureTargetFn(closureArg, outRecord, 0);
+    }
+
     // Build the diagnostic for a call that named a member which did not resolve.
     // Two DIFFERENT mistakes, and conflating them misleads: if `scale` exists but
     // takes an int32, telling the user there is "no member scale" sends them
     // looking for a typo that isn't there. So the presence of same-named
     // candidates (here or on any ancestor) picks the error.
+    // silent-resolution 4.2.1 — bounded edit distance over the receiver's REAL
+    // member names. Bounded twice: at most 2 edits, and at most a third of the
+    // longer name, so a short name can't drag in a distant member. Returns ""
+    // when nothing is close enough — a wrong guess is worse than no guess (4.1.2).
+    string CajetaClass::suggestMemberName(const string& typo) {
+        auto editDistance = [](const string& a, const string& b) -> size_t {
+            vector<size_t> prev(b.size() + 1), cur(b.size() + 1);
+            for (size_t j = 0; j <= b.size(); ++j) prev[j] = j;
+            for (size_t i = 1; i <= a.size(); ++i) {
+                cur[0] = i;
+                for (size_t j = 1; j <= b.size(); ++j) {
+                    size_t sub = prev[j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1);
+                    cur[j] = std::min({sub, prev[j] + 1, cur[j - 1] + 1});
+                }
+                prev = cur;
+            }
+            return prev[b.size()];
+        };
+
+        string best;
+        size_t bestDist = SIZE_MAX;
+        std::function<void(CajetaClass*)> consider = [&](CajetaClass* cls) {
+            if (!cls) return;
+            auto weigh = [&](const string& name) {
+                // Never offer a compiler-internal artifact (spec 4.3).
+                if (name.rfind("__", 0) == 0) return;
+                if (name == typo) return;
+                size_t d = editDistance(typo, name);
+                size_t longer = std::max(typo.size(), name.size());
+                if (d > 2 || d * 3 > longer) return;
+                if (d < bestDist) { bestDist = d; best = name; }
+            };
+            for (auto& mEntry : cls->getMethods()) {
+                if (mEntry.second) weigh(mEntry.second->getName());
+            }
+            for (auto& pEntry : cls->getProperties()) weigh(pEntry.first);
+            for (auto& sup : cls->getSuperClasses()) consider(sup.get());
+        };
+        consider(this);
+        return best;
+    }
+
     Exception CajetaClass::memberNotFoundException(const string& methodName,
             const vector<ParameterEntry>& parameters, int line, int column) {
         vector<string> candidates;
@@ -5685,8 +5807,10 @@ namespace cajeta {
 
         string recv = getQName() ? getQName()->toCanonical() : "<unknown>";
         if (candidates.empty()) {
-            return locatedException(line, column,
-                "no member '" + methodName + "' on '" + recv + "'",
+            string msg = "no member '" + methodName + "' on '" + recv + "'";
+            string hint = suggestMemberName(methodName);
+            if (!hint.empty()) msg += " — did you mean '" + hint + "'?";
+            return locatedException(line, column, msg,
                 "CAJETA_ERROR_MEMBER_NOT_FOUND");
         }
         string msg = "no overload of '" + methodName + "' on '" + recv
@@ -6339,6 +6463,27 @@ namespace cajeta {
                         llvm::ConstantInt::get(
                             llvm::Type::getInt64Ty(llvmCtx), off),
                         "subobj_this");
+                }
+            }
+        }
+
+        // Coerce the receiver to the callee's DECLARED `this` type. An enum
+        // method's `this` is the i32 ordinal, not an object address, so a
+        // pointer receiver (the alloca of an enum local) has to be loaded.
+        // Driven off the signature rather than off the receiver so it is
+        // agnostic to which resolution path produced `thisValue`; object
+        // receivers, whose declared `this` is a pointer, are left untouched.
+        if (!isStatic && (int) methodArgs.size() > sretOffset
+                && methodArgs[sretOffset]
+                && methodArgs[sretOffset]->getType()->isPointerTy()) {
+            auto formals = method->getParameterList();
+            if (!formals.empty() && formals.front()
+                    && formals.front()->getName() == "this"
+                    && formals.front()->getType()) {
+                llvm::Type* wantTy = formals.front()->getType()->getLlvmType();
+                if (wantTy && !wantTy->isPointerTy()) {
+                    methodArgs[sretOffset] = builder->CreateLoad(
+                        wantTy, methodArgs[sretOffset], "enum.this");
                 }
             }
         }

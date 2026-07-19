@@ -82,6 +82,12 @@ namespace amd {
             llvm::LLVMContext devCtx;
             llvm::Module devMod("xpu.dev." + entryName, devCtx);
             configureDeviceModule(devMod, *tm);
+            // The single lowered IR is codegen'd for every arch in the bundle;
+            // record the full list so per-subtarget feature gates (the direct
+            // global->LDS load) stay conservative across all of them, not just
+            // archList[0]. See AmdgpuKernelLowering::bundleHasVmemToLds.
+            devMod.addModuleFlag(llvm::Module::Warning, "cajeta.amdgpu.archlist",
+                                 llvm::MDString::get(devCtx, arch));
             llvm::Function* kfn = nullptr;
             try {
                 kfn = lowerKernel(method, devMod);

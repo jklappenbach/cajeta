@@ -57,12 +57,16 @@ namespace cajeta {
     }
 
     QualifiedNamePtr QualifiedName::getOrInsert(string typeName, string packageName) {
-        map<string, QualifiedNamePtr> packagesToTypeName = cache[typeName];
-        QualifiedNamePtr qName = packagesToTypeName[packageName];
+        // Key the shared intern cache as cache[package][typeName], same as
+        // getOrCreate — the old (typeName-outer) keying meant the two entry
+        // points never shared entries, so identical canonical names got
+        // distinct shared_ptrs (breaks pointer-identity comparisons).
+        map<string, QualifiedNamePtr> packagesToTypeName = cache[packageName];
+        QualifiedNamePtr qName = packagesToTypeName[typeName];
         if (qName == nullptr) {
             qName = make_shared<QualifiedName>(typeName, packageName);
-            packagesToTypeName[packageName] = qName;
-            cache[typeName] = packagesToTypeName;
+            packagesToTypeName[typeName] = qName;
+            cache[packageName] = packagesToTypeName;
         }
         return qName;
     }

@@ -212,11 +212,17 @@ namespace cajeta {
                 // the resulting CreateCall references a module-
                 // local Function (the JIT links definitions across
                 // modules by symbol name at load time).
+                // getLlvmFunction() is a RAW accessor — null before the target
+                // is prototyped; only getLlvmFunctionType() forces the lazy
+                // prototype. Force it FIRST (own statement) so we never depend
+                // on unspecified argument evaluation order handing a null
+                // Function into ensureFunctionVisible/CreateCall.
+                llvm::FunctionType* targetTy =
+                    targetInject->getLlvmFunctionType();
                 llvm::Function* targetFn = CajetaModule::ensureFunctionVisible(
-                    builder, targetInject->getLlvmFunction(),
-                    targetInject->getLlvmFunctionType());
+                    builder, targetInject->getLlvmFunction(), targetTy);
                 depPtr = builder->CreateCall(
-                    targetInject->getLlvmFunctionType(),
+                    targetTy,
                     targetFn,
                     {},
                     rd.field->getName() + "_dep");

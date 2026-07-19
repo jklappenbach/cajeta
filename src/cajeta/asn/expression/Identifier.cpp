@@ -102,6 +102,14 @@ namespace cajeta {
                         return builder->CreateStructGEP(klass->getLlvmType(),
                             thisPtr, fieldIdx, identifier);
                     }
+                    // Matched a non-static instance field, but there is no
+                    // `this` in scope (bare reference from a static method or a
+                    // clinit). Fail loud instead of returning null IR that
+                    // SIGSEGVs downstream.
+                    throw Exception(
+                        "instance field '" + identifier + "' referenced with no "
+                        "receiver ('this' not in scope) — qualify it or make the "
+                        "field static", "CAJETA_ERROR_INSTANCE_FIELD_NO_RECEIVER");
                 }
             }
         }

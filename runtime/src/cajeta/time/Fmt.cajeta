@@ -18,7 +18,7 @@ package cajeta.time;
  * pos = Fmt.writeUint(buf, pos, 9, 2);    // "09"
  * pos = Fmt.writeChar(buf, pos, 58);      // ':'  (ASCII 58)
  * pos = Fmt.writeUint(buf, pos, 30, 2);   // "30"
- * heap String text = heap String(#buf, pos);
+ * String text = heap String(#buf, pos);
  * ```
  *
  * Package-private: not part of the public `cajeta.time` surface.

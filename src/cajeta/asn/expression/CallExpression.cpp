@@ -286,6 +286,20 @@ namespace cajeta {
                     headerTy, v, 0, "bufarr.size.ptr");
                 llvm::Value* count =
                     builder->CreateLoad(i64Ty, sizePtr, "bufarr.count");
+                // ENFORCE the v1 cap: the descriptor array is a fixed
+                // [kMaxBindlessBuffers+1 x i64], so a runtime count > the cap
+                // must be clamped or the slot loop/store overruns the alloca
+                // (OOB stack write + a matching OOB read in the runtime, which
+                // trusts slot[0]). The comment above claimed this cap but it
+                // was never emitted.
+                {
+                    llvm::Value* cap =
+                        llvm::ConstantInt::get(i64Ty, kMaxBindlessBuffers);
+                    llvm::Value* over =
+                        builder->CreateICmpUGT(count, cap, "bufarr.overcap");
+                    count = builder->CreateSelect(over, cap, count,
+                                                  "bufarr.count.capped");
+                }
                 // slot[0] = count
                 builder->CreateStore(count, builder->CreateInBoundsGEP(
                     arrSlotTy, slot, {zero, zero}, "bufarr.count.slot"));

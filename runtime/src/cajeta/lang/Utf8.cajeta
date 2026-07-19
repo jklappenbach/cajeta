@@ -66,7 +66,8 @@ public final class Utf8 {
     /** Byte-for-byte equality against a String's window. */
     public boolean equalsString(String s) {
         if (s == null) {
-            return (this.len & 0x7FFFFFFF) == 0;
+            // A null reference is not an empty string — match String.equals(null).
+            return false;
         }
         return Cajeta.utf8EqualsString(this, s);
     }

@@ -68,6 +68,75 @@ TEST(SilentResolutionDiagnosticsTests, nullInValuePositionIsLocated) {
     }
 }
 
+// 1.2.3: a CALL ARGUMENT that lowers to nothing must fail at the argument,
+// not slide into the callee as a null. A `void` call has no value, so using
+// one as an argument is the reachable form now that Unit 2 makes an
+// unresolvable member throw at the resolution site.
+TEST(SilentResolutionDiagnosticsTests, voidValueAsCallArgumentIsRejected) {
+    try {
+        runI32(
+            "package test;\n"
+            "public final class D {\n"
+            "    public static void nothing() { return; }\n"
+            "    public static int32 takes(int32 a) { return a; }\n"
+            "    public static int32 run() {\n"
+            "        return D.takes(D.nothing());\n"
+            "    }\n"
+            "}\n");
+        FAIL() << "expected a void-valued argument to fail the compile";
+    } catch (cajeta::Exception& e) {
+        // Overload resolution already rejects it: a void argument matches no
+        // candidate, so the arg position needs no separate guard.
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_NO_MATCHING_OVERLOAD")
+            << "got: " << e.getErrorId() << " — " << e.getMessage();
+        EXPECT_TRUE(e.hasLocation()) << "the argument guard must carry a span";
+    }
+}
+
+// 1.2.3: the same for an ASSIGNMENT RHS. `x = D.nothing()` has nothing to
+// store; today it stores nothing and x keeps its old value silently.
+TEST(SilentResolutionDiagnosticsTests, voidValueAsAssignmentRhsIsRejected) {
+    try {
+        runI32(
+            "package test;\n"
+            "public final class D {\n"
+            "    public static void nothing() { return; }\n"
+            "    public static int32 run() {\n"
+            "        int32 x = 1;\n"
+            "        x = D.nothing();\n"
+            "        return x;\n"
+            "    }\n"
+            "}\n");
+        FAIL() << "expected a void-valued assignment RHS to fail the compile";
+    } catch (cajeta::Exception& e) {
+        // Assignment is a binary op, so it shares 1.2.2's operand channel.
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_NULL_OPERAND")
+            << "got: " << e.getErrorId() << " — " << e.getMessage();
+        EXPECT_TRUE(e.hasLocation()) << "the RHS guard must carry a span";
+    }
+}
+
+// 1.2.3 (over-rejection guard): legitimate null and legitimately-typed
+// arguments/RHS still compile. `null` IS a value; a void call in STATEMENT
+// position is legal and must stay so.
+TEST(SilentResolutionDiagnosticsTests, legitimateArgumentsAndRhsStillCompile) {
+    int32_t got = runI32(
+        "package test;\n"
+        "public final class D {\n"
+        "    public static void nothing() { return; }\n"
+        "    public static int32 takesRef(String s) { if (s == null) { return 3; } return 0; }\n"
+        "    public static int32 run() {\n"
+        "        D.nothing();\n"
+        "        String s = null;\n"
+        "        int32 x = 0;\n"
+        "        x = D.takesRef(null);\n"
+        "        x = D.takesRef(s);\n"
+        "        return x;\n"
+        "    }\n"
+        "}\n");
+    EXPECT_EQ(got, 3);
+}
+
 // 1.1.3: the backstop must not fire on values that are legitimately absent
 // (a void return) or legitimately null (a null-initialized reference).
 // These are the false positives that would otherwise force the check to be

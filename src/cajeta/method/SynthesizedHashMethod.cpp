@@ -252,11 +252,31 @@ namespace cajeta {
                             "hash() manually on it");
                     }
 
-                    llvm::Value* vtableVal = b.CreateLoad(
-                        ptrTy, fieldPtr,
-                        std::string("hash.v.") + prop->getName());
+                    // A class field is embedded INLINE only when its class is a
+                    // value type; a reference class field is stored as a POINTER
+                    // to a heap object. The hash() receiver and the vtable base
+                    // are the OBJECT — the slot itself for inline, the loaded
+                    // heap pointer for a reference. (Before this, a reference
+                    // field's object pointer was misread as the vtable and the
+                    // slot address was passed as `this` — garbage dispatch.)
+                    bool inlineEmbedded =
+                        fieldKlass && fieldKlass->isValueType();
+                    llvm::Value* objPtr = inlineEmbedded
+                        ? fieldPtr
+                        : b.CreateLoad(ptrTy, fieldPtr,
+                              std::string("hash.o.") + prop->getName());
+                    // Inline: null-check the embedded vtable (uninitialized
+                    // object). Reference: null-check the object pointer (unset
+                    // field); the vtable load is deferred to the non-null branch
+                    // so a null field never dereferences.
+                    llvm::Value* vtableInline = inlineEmbedded
+                        ? b.CreateLoad(ptrTy, objPtr,
+                              std::string("hash.v.") + prop->getName())
+                        : nullptr;
+                    llvm::Value* nullProbe =
+                        inlineEmbedded ? vtableInline : objPtr;
                     llvm::Value* isNull = b.CreateICmpEQ(
-                        vtableVal,
+                        nullProbe,
                         llvm::ConstantPointerNull::get(
                             llvm::cast<llvm::PointerType>(ptrTy)),
                         std::string("hash.vnull.") + prop->getName());
@@ -283,8 +303,14 @@ namespace cajeta {
                     llvm::Value* nullContribution = seedAcc;
                     b.CreateBr(mergeBB);
 
-                    // Non-null branch — vtable virtual dispatch.
+                    // Non-null branch — vtable virtual dispatch. The vtable is
+                    // at the object's slot 0: reuse the inline load, or load it
+                    // from the (now known non-null) heap pointer for a reference.
                     b.SetInsertPoint(callBB);
+                    llvm::Value* vtableVal = inlineEmbedded
+                        ? vtableInline
+                        : b.CreateLoad(ptrTy, objPtr,
+                              std::string("hash.v.") + prop->getName());
                     int64_t sigHash = synthSignatureHash(
                         fieldHashMethod->toCanonical(/*labeled=*/false));
                     llvm::Value* fnPtr = b.CreateCall(
@@ -294,7 +320,7 @@ namespace cajeta {
                               llvm::APInt(64, (uint64_t) sigHash, false)) },
                         std::string("hash.fn.") + prop->getName());
                     llvm::Value* callResult = b.CreateCall(
-                        hashCallTy, fnPtr, { fieldPtr },
+                        hashCallTy, fnPtr, { objPtr },
                         std::string("hash.cr.") + prop->getName());
                     b.CreateBr(mergeBB);
 

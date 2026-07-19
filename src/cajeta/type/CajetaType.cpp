@@ -185,13 +185,12 @@ namespace cajeta {
     }
 
     bool operator<(const TypeKey& a, const TypeKey& b) {
-        if (a.typeId < b.typeId) {
-            return true;
-        }
-        if (a.typeCode < b.typeCode) {
-            return true;
-        }
-        return false;
+        // Lexicographic (typeId, then typeCode). The old OR-of-two-less-thans
+        // was not a strict weak ordering — it made comp(a,b) && comp(b,a) both
+        // true for e.g. {IntegerTyID,32} vs {PointerTyID,0}, corrupting the
+        // std::map<TypeKey,...> that of() looks up.
+        if (a.typeId != b.typeId) return a.typeId < b.typeId;
+        return a.typeCode < b.typeCode;
     }
 
     void CajetaType::resetGlobals() {
@@ -688,6 +687,23 @@ namespace cajeta {
             if (m->getParent() && m->getParent()->getQName()) {
                 const string& p =
                     m->getParent()->getQName()->getPackageName();
+                if (!p.empty()) return p;
+            }
+        }
+        // No current method (a resolve pre-pass, or class-level codegen):
+        // the structure stack's top is the class lexically being visited —
+        // its package is the right scope. Without this tier, resolution on
+        // the merged stdlib module fell through to the module qName below,
+        // which post-parse is the meaningless `cajeta.runtime` — tier 1 then
+        // missed and the GLOBAL short-name key answered, binding a stdlib
+        // class's bare self-reference (`HttpServer.serveConnectionWithLimits`
+        // inside cajeta.io.net.http.HttpServer) to a same-named USER class.
+        // That was cajeta-http's NO_MATCHING_OVERLOAD build break: stdlib-
+        // typed args matched against the user class's formals.
+        if (!module->getStructureStack().empty()) {
+            auto& top = module->getStructureStack().back();
+            if (top && top->getQName()) {
+                const string& p = top->getQName()->getPackageName();
                 if (!p.empty()) return p;
             }
         }

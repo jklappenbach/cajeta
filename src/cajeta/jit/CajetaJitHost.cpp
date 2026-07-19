@@ -87,11 +87,16 @@ std::vector<std::filesystem::path> collectSources(const std::filesystem::path& r
 std::string findEntryMangled(llvm::Module* mod, const std::string& dottedEntry) {
     std::string target = entryTargetFromDotted(dottedEntry);
     if (target.empty()) return "";
-    std::string withParen = target + "(";
+    // The entry is invoked through a NO-ARG function pointer, so bind only the
+    // no-arg overload. The old prefix match on `method(` matched any arity /
+    // overload and would call a parameterized method through a no-arg pointer
+    // (UB). Mangled names always carry the parameter list, so `name == target`
+    // is a defensive fallback for any unparenthesized shape.
+    std::string noArg = target + "()";
     for (auto& fn : *mod) {
         if (fn.isDeclaration()) continue;
         std::string name = fn.getName().str();
-        if (name == target || name.rfind(withParen, 0) == 0) {
+        if (name == noArg || name == target) {
             return name;
         }
     }

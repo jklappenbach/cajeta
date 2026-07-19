@@ -23,7 +23,9 @@ namespace cajeta {
 
     class ParameterField : public Field, public enable_shared_from_this<Field> {
     protected:
-        bool reference;
+        // `reference` is inherited from Field — do NOT redeclare it here, or the
+        // shadow hides Field::reference and isReference() never sees writes made
+        // through ParameterField.
         llvm::Function* llvmFunction;
         int paramIndex;
         // Retained reference to the declaring formal so downstream

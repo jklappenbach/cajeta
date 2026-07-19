@@ -978,10 +978,11 @@ namespace cajeta {
 
             string targetDirs = targetPath.substr(0, targetPath.rfind("/"));
             std::filesystem::create_directories(targetDirs);
-            llvm::raw_ostream* out = new llvm::raw_fd_ostream(targetPath, ec, llvm::sys::fs::CD_CreateAlways);
-            printf("\n\n");
-            llvmModule->print(llvm::outs(), nullptr);
-            llvmModule->print(*out, nullptr);
+            // Stack ostream (RAII): flushes + closes on scope exit. The old
+            // heap-allocated raw_fd_ostream was never deleted or flushed —
+            // leaking the fd and risking an unflushed/truncated .ll.
+            llvm::raw_fd_ostream out(targetPath, ec, llvm::sys::fs::CD_CreateAlways);
+            llvmModule->print(out, nullptr);
         }
 
         void setCurrentMethod(MethodPtr method) {

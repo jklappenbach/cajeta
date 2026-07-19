@@ -51,11 +51,7 @@ cajeta::Exception expectThrows(const std::string& src) {
 } // namespace
 
 // 2.1.1: the method name and the receiver's canonical type both appear.
-// PARKED (2026-07-13): member-not-found is held back on main so tools/mcp
-// compiles (it reads String's `byteLength`/`bytes` as FIELDS; the 36779177
-// re-core made them methods). Re-enable with that repair. Work lives on
-// feature/silent-resolution-diagnostics @ f086c73e; see the plan's 1.3.3.
-TEST(MemberNotFoundTests, DISABLED_misspelledMethodNamesMemberAndReceiver) {
+TEST(MemberNotFoundTests, misspelledMethodNamesMemberAndReceiver) {
     auto e = expectThrows(std::string(kPoint) +
         "public final class D {\n"
         "    public static int32 run() {\n"
@@ -73,11 +69,7 @@ TEST(MemberNotFoundTests, DISABLED_misspelledMethodNamesMemberAndReceiver) {
 }
 
 // 2.1.2: a misspelled FIELD is diagnosed too, at its own span.
-// PARKED (2026-07-13): member-not-found is held back on main so tools/mcp
-// compiles (it reads String's `byteLength`/`bytes` as FIELDS; the 36779177
-// re-core made them methods). Re-enable with that repair. Work lives on
-// feature/silent-resolution-diagnostics @ f086c73e; see the plan's 1.3.3.
-TEST(MemberNotFoundTests, DISABLED_misspelledFieldIsDiagnosed) {
+TEST(MemberNotFoundTests, misspelledFieldIsDiagnosed) {
     auto e = expectThrows(std::string(kPoint) +
         "public final class D {\n"
         "    public static int32 run() {\n"
@@ -95,11 +87,7 @@ TEST(MemberNotFoundTests, DISABLED_misspelledFieldIsDiagnosed) {
 // 2.1.3: the name EXISTS but no overload accepts these arguments. That is a
 // different mistake from "no such member" and must not be reported as one --
 // telling a user `scale` does not exist, when it does, sends them the wrong way.
-// PARKED (2026-07-13): member-not-found is held back on main so tools/mcp
-// compiles (it reads String's `byteLength`/`bytes` as FIELDS; the 36779177
-// re-core made them methods). Re-enable with that repair. Work lives on
-// feature/silent-resolution-diagnostics @ f086c73e; see the plan's 1.3.3.
-TEST(MemberNotFoundTests, DISABLED_overloadMismatchIsDistinctFromMemberNotFound) {
+TEST(MemberNotFoundTests, overloadMismatchIsDistinctFromMemberNotFound) {
     auto e = expectThrows(std::string(kPoint) +
         "public final class D {\n"
         "    public static int32 run() {\n"

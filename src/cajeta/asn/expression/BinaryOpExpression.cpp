@@ -149,6 +149,15 @@ namespace cajeta {
             builder->CreateStore(
                 llvm::ConstantInt::get(i64Ty, (uint64_t) IFACE_KIND_BORROWED_CLASS),
                 kindSlot);
+        } else if (llvm::isa<llvm::ConstantPointerNull>(rhsVal)) {
+            // `arr[i] = null` (the assignment-based drop idiom): zero the
+            // 24-byte fat-pointer body (null vtable / borrowed) — do NOT memcpy
+            // from the null source, which faults. Mirrors the interface-FIELD
+            // null store.
+            const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
+            uint64_t bodyBytes = dl.getTypeAllocSize(bodyTy);
+            builder->CreateMemSet(slot, builder->getInt8(0), bodyBytes,
+                llvm::MaybeAlign(8));
         } else {
             // Interface → interface: rhsVal points at a 24-byte body; copy it in.
             const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
@@ -1028,6 +1037,30 @@ namespace cajeta {
                   " on an array, where the size accessor is `count()`)",
                 "CAJETA_ERROR_NULL_OPERAND");
         }
+        // A `void` call is PRESENT but valueless, so the null guard above misses
+        // it — an assignment RHS then hung the compiler rather than diagnosing (1.2.3).
+        {
+            auto isVoidOperand = [](const ExpressionPtr& e) {
+                return e && e->getResolvedType()
+                    && e->getResolvedType()->toCanonical() == "void";
+            };
+            bool lVoid = isVoidOperand(lhsAst);
+            bool rVoid = isVoidOperand(rhsAst);
+            if (lVoid || rVoid) {
+                const char* opSym = opdispatch::binaryOpSymbol(binaryOp);
+                std::string what = opSym
+                    ? (std::string("binary operator '") + opSym + "'")
+                    : std::string("assignment");
+                std::string side = (lVoid && rVoid) ? "both operands"
+                                 : (lVoid ? "the left operand"
+                                          : "the right-hand side");
+                throw locatedException(
+                    getSourceLine(), getSourceColumn() + 1,
+                    what + " has a 'void' expression as " + side
+                    + " (a void call produces no value to use here)",
+                    "CAJETA_ERROR_NULL_OPERAND");
+            }
+        }
 
         // B1: Matrix binary ops, intercepted before the built-in/vector path.
         // `+ - /` are element-wise over same-shape matrices -> Matrix<T,R,C>;
@@ -1548,8 +1581,14 @@ namespace cajeta {
                 // pointer bits over the first field. Copy the whole body;
                 // a first-class struct value (by-value return) stores
                 // directly.
+                // An ARRAY ELEMENT takes the same copy path: a value-type element
+                // keeps its own layout inline (CajetaArray::getElementLlvmType), so
+                // `a[i] = stack Rec(..)` must copy the body — a plain pointer store
+                // wrote the address bits over the first field and the element read
+                // back uninitialized.
                 if (dynamic_pointer_cast<DotExpression>(lhsAst)
-                        || dynamic_pointer_cast<IdentifierExpression>(lhsAst)) {
+                        || dynamic_pointer_cast<IdentifierExpression>(lhsAst)
+                        || dynamic_pointer_cast<ArrayIndexExpression>(lhsAst)) {
                     if (!lhsAst->getResolvedType()) lhsAst->resolveTypes(module);
                     auto lhsCls = dynamic_pointer_cast<CajetaClass>(lhsAst->getResolvedType());
                     // Identifier LHS: only an inline value slot (alloca of the

@@ -344,7 +344,8 @@ compiler output modes.
   streamingWriter: wrote 2 lines, total bytes = 23
   streamingReader: read 23 bytes; position after read = 23
 
-=== tour complete: 127 self-checks passed ===
+=== tour complete: <n> self-checks passed ===   (count shrank when the
+    Http/Ws demos moved out with dev.cajeta.http; illustrative output)
 separate tours: samples/tour/xpu (GPU kernels), samples/tour/ifx (windowing, headless), samples/tour/tls (TLS loopback)
 ```
 
@@ -384,8 +385,9 @@ Features that work but are exercised elsewhere:
 - **GPU kernels, windowing, TLS** — each has its own entry point (see the
   `xpu/`, `ifx/`, `tls/` subfolders above); they need environment-dependent
   build flags, a display-or-headless decision, or generated certificates.
-- **Deeper networking** (HTTP, WebSocket, DNS) — covered by the test suite;
-  the tour shows the TCP server (`ServerDemo`) and TLS (`tls/`).
+- **HTTP / WebSocket** — application protocols, not stdlib: they live in the
+  external `dev.cajeta.http` library (with its own tour); the stdlib tour
+  shows the TCP server (`ServerDemo`), DNS (`DnsDemo`), and TLS (`tls/`).
 
 ## Pending
 

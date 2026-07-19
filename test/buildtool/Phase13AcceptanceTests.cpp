@@ -61,7 +61,7 @@ namespace {
 
     ProvenanceInputs goodInputs() {
         ProvenanceInputs p;
-        p.archiveName = "cajeta.io.net.http-1.2.4.cja";
+        p.archiveName = "dev.cajeta.http-1.2.4.cja";
         p.archiveSha256 = "sha256:" + std::string(64, 'a');
         p.manifestChecksum = "sha256:" + std::string(64, 'b');
         p.lockfileChecksum = "sha256:" + std::string(64, 'c');
@@ -145,7 +145,7 @@ TEST(Phase13, provenanceComposesValidStatementEnvelope) {
     EXPECT_NE(doc.find("https://in-toto.io/Statement/v1"), std::string::npos);
     EXPECT_NE(doc.find("https://slsa.dev/provenance/v1"), std::string::npos);
     EXPECT_NE(doc.find("https://cajeta.org/build/v1"), std::string::npos);
-    EXPECT_NE(doc.find("cajeta.io.net.http-1.2.4.cja"), std::string::npos);
+    EXPECT_NE(doc.find("dev.cajeta.http-1.2.4.cja"), std::string::npos);
     // Subject digest carries the bare hex (no `sha256:` prefix).
     std::string bareHex = inp.archiveSha256.substr(7);
     auto pos = doc.find("\"digest\":");

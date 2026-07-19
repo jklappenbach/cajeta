@@ -253,14 +253,16 @@ TEST(MultiSourceCompileTests, arrayListOfUserClassCrossFile) {
 }
 
 // A user class whose SHORT name collides with an embedded-stdlib class
-// (here `HttpRequest`, colliding with `cajeta.io.net.http.HttpRequest`)
+// (here `Uri`, colliding with `cajeta.io.net.uri.Uri`; the original
+// regression hit `HttpRequest` before the http stack moved out to the
+// external dev.cajeta.http library — the compiler path is identical)
 // must not derail resolution in EITHER direction:
 //
-//   - stdlib code compiled alongside (App also imports HttpParser, which
-//     pulls the whole cajeta.io.net.http package in) refers to its own
-//     `HttpRequest` bare — same-package references must not bind the
-//     user's x.HttpRequest;
-//   - App's `import x.HttpRequest;` must steer App's bare `HttpRequest`
+//   - stdlib code compiled alongside (App also imports PercentCodec,
+//     pulling the cajeta.io.net.uri package into play; Uri.cajeta's own
+//     methods reference `Uri` bare) — same-package references must not
+//     bind the user's x.Uri;
+//   - App's `import x.Uri;` must steer App's bare `Uri`
 //     to the user class even though the stdlib class owns (or later
 //     overwrites) the global short-name key in canonicalMap.
 //
@@ -268,27 +270,29 @@ TEST(MultiSourceCompileTests, arrayListOfUserClassCrossFile) {
 // global short-name key (toCanonical() of a package-less name IS the
 // short name), so whichever same-named class registered last poisoned
 // every other package's bare references — an unlocated
-// CAJETA_ERROR_NULL_OPERAND out of stdlib http internals. The fix
+// CAJETA_ERROR_NULL_OPERAND out of stdlib internals. The fix
 // resolves bare names own-package-first, then via explicit imports
 // (including forward refs: an imported-but-unvisited canonical
 // synthesizes its placeholder from the IMPORT, never the global
 // short-name key), and only then falls back to the global tiers.
 TEST(MultiSourceCompileTests, userClassShadowingStdlibShortName) {
     std::map<std::string, std::string> sources;
-    sources["x.HttpRequest"] =
+    sources["x.Uri"] =
         "package x;\n"
-        "public class HttpRequest {\n"
+        "public class Uri {\n"
         "    public int32 v;\n"
-        "    public HttpRequest() { this.v = 7; }\n"
+        "    public Uri() { this.v = 7; }\n"
         "}\n";
     sources["app.App"] =
         "package app;\n"
-        "import x.HttpRequest;\n"
-        "import cajeta.io.net.http.HttpParser;\n"
+        "import cajeta.lang.String;\n"
+        "import x.Uri;\n"
+        "import cajeta.io.net.uri.PercentCodec;\n"
         "public final class App {\n"
         "    public static int32 run() {\n"
-        "        HttpRequest r = heap HttpRequest();\n"
-        "        HttpParser p = HttpParser.forRequest();\n"
+        "        Uri r = heap Uri();\n"
+        "        String d = PercentCodec.decode(\"a%20b\");\n"
+        "        if (d.byteLength() != 3) return -1;\n"
         "        return r.v;\n"
         "    }\n"
         "}\n";
