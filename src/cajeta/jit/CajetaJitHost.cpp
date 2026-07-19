@@ -648,7 +648,8 @@ std::unique_ptr<JitDebugSession> startDebugSession(
         const JitRunOptions& opts,
         const std::vector<Breakpoint>& breakpoints,
         std::string* error,
-        bool armExceptions) {
+        bool armExceptions,
+        bool stopOnEntry) {
     // Debug sessions always emit safepoints.
     JitRunOptions dbgOpts = opts;
     dbgOpts.debugInfo = true;
@@ -676,6 +677,9 @@ std::unique_ptr<JitDebugSession> startDebugSession(
     // CP6f-3: arm break-on-throw BEFORE the program thread starts (below), so a
     // program that throws immediately can't race past the arm.
     if (armExceptions) impl->controller.armException();
+    // Same rule for stopOnEntry: arm before the thread starts, or the program
+    // races past its own first statement.
+    if (stopOnEntry) impl->controller.armEntry();
 
     llvm::orc::LLJIT* jit = impl->built.jit.get();
 

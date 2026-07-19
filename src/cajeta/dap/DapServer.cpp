@@ -115,9 +115,14 @@ void DapServer::runToStopOrExit(const Emit& emit) {
             rebuildFrameTable(std::move(frames));
             Json body = Json::object();
             // CP6f-3: reason reflects breakpoint vs exception stop.
-            body["reason"] =
-                ev.reason == cajeta::dbg::StopEvent::StopReason::Exception
-                    ? "exception" : "breakpoint";
+            switch (ev.reason) {
+                case cajeta::dbg::StopEvent::StopReason::Exception:
+                    body["reason"] = "exception"; break;
+                case cajeta::dbg::StopEvent::StopReason::Entry:
+                    body["reason"] = "entry"; break;
+                default:
+                    body["reason"] = "breakpoint"; break;
+            }
             // CP6f-2b: the real stopped fiber id (0 = entry/main thread, >=1 a
             // spawned fiber) instead of a hard-coded 1.
             body["threadId"] = static_cast<int>(ev.fiberId);
@@ -234,6 +239,7 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         launchOpts_.sourceRoot = args.at("sourceRoot").asString();
         if (launchOpts_.sourceRoot.empty())
             launchOpts_.sourceRoot = args.at("source-root").asString();
+        stopOnEntry_ = args.at("stopOnEntry").asBool();
         emit(makeResponse(seq_++, requestSeq, command, true, Json::object()));
         return true;
     }
@@ -285,7 +291,8 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         // CP6f-3: arm break-on-throw inside startDebugSession (before the
         // program thread starts) so an immediate throw can't race past it.
         session_ = cajeta::jit::startDebugSession(launchOpts_, breakpoints_,
-                                                  &err, exceptionsArmed_);
+                                                  &err, exceptionsArmed_,
+                                                  stopOnEntry_);
         bool ok = session_ != nullptr;
         emit(makeResponse(seq_++, requestSeq, command, ok,
                           ok ? Json::object() : Json(err)));

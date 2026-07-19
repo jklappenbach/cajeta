@@ -50,6 +50,21 @@ namespace cajeta::dbg {
         return exceptionArmed;
     }
 
+    void DebugController::armEntry() {
+        std::lock_guard<std::mutex> lock(mutex);
+        entryArmed = true;
+    }
+
+    void DebugController::disarmEntry() {
+        std::lock_guard<std::mutex> lock(mutex);
+        entryArmed = false;
+    }
+
+    bool DebugController::isEntryArmed() const {
+        std::lock_guard<std::mutex> lock(mutex);
+        return entryArmed;
+    }
+
     void DebugController::onSafepoint(int32_t locId, long fiberId) {
         onSafepoint(locId, fiberId, nullptr);
     }
@@ -57,7 +72,12 @@ namespace cajeta::dbg {
     void DebugController::onSafepoint(int32_t locId, long fiberId,
                                      void* frameTop) {
         std::unique_lock<std::mutex> lock(mutex);
-        if (armed.count(locId) == 0) return;
+        // stopOnEntry: the first safepoint reached IS the entry method's first
+        // executable statement, so an entry stop needs no line resolution.
+        // Consumed here under the lock so it fires exactly once.
+        const bool entryStop = entryArmed;
+        if (entryStop) entryArmed = false;
+        if (!entryStop && armed.count(locId) == 0) return;
 
         // CP6f-2d: open the cross-carrier stop round BEFORE blocking so every
         // other carrier observes it (__cajeta_stop_is_requested) at its next
@@ -67,7 +87,12 @@ namespace cajeta::dbg {
         // an armed safepoint first this round), request() returns 0 — we are NOT
         // the primary. Don't publish a competing stop; return so the runtime
         // safepoint parks us as an ordinary secondary (__cajeta_stop_park).
-        if (__cajeta_stop_request() == 0) return;
+        if (__cajeta_stop_request() == 0) {
+            // Not the primary this round, so we did NOT take the stop. Put the
+            // entry arm back rather than swallowing it.
+            if (entryStop) entryArmed = true;
+            return;
+        }
         // How many carriers must quiesce before inspection: every OTHER carrier
         // in the pool (this primary parks here, in the controller, not the
         // coordinator). <=0 (single carrier / no pool) makes the barrier a
@@ -78,6 +103,8 @@ namespace cajeta::dbg {
         stopped = true;
         resumeRequested = false;
         current = StopEvent{locId, fiberId, frameTop};
+        current.reason = entryStop ? StopEvent::StopReason::Entry
+                                   : StopEvent::StopReason::Breakpoint;
         stoppedCv.notify_all();
         resumeCv.wait(lock, [this] { return resumeRequested; });
         stopped = false;

@@ -30,7 +30,9 @@ namespace cajeta::dbg {
         // (CP3); Exception = an armed throw caught at the __cajeta_throw
         // chokepoint (CP6f-3, before the stack unwinds, so the throwing frame
         // is still inspectable).
-        enum class StopReason { Breakpoint, Exception };
+        // Entry = a one-shot stop at the first safepoint the program reaches,
+        // i.e. the entry method's first executable statement (DAP stopOnEntry).
+        enum class StopReason { Breakpoint, Exception, Entry };
 
         int32_t locId = -1;
         long fiberId = 0;
@@ -66,6 +68,14 @@ namespace cajeta::dbg {
         void armException();
         void disarmException();
         bool isExceptionArmed() const;
+
+        // DAP stopOnEntry: park at the FIRST safepoint reached, whatever its
+        // locId, then clear itself. One-shot by construction — a sticky flag
+        // would re-park at every later statement, which is a step, not an
+        // entry stop. Arm before the program thread starts.
+        void armEntry();
+        void disarmEntry();
+        bool isEntryArmed() const;
 
         // --- executing (carrier) thread ---
         // At a statement safepoint. If locId is armed, record the stop, wake
@@ -111,6 +121,7 @@ namespace cajeta::dbg {
         std::condition_variable resumeCv;    // signaled by resume()
         std::unordered_set<int32_t> armed;
         bool exceptionArmed = false;
+        bool entryArmed = false;
         bool stopped = false;
         bool resumeRequested = false;
         StopEvent current;

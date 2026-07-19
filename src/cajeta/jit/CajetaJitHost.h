@@ -122,10 +122,13 @@ namespace cajeta::jit {
     // BEFORE the program thread starts, so a program that throws/hits a bp
     // immediately can't race past the arm. Returns null on a compile/JIT failure
     // (with a message in *error when non-null).
+    // `stopOnEntry` parks at the first safepoint (the entry method's first
+    // executable statement) — armed before the thread starts, like exceptions.
     std::unique_ptr<JitDebugSession> startDebugSession(
         const JitRunOptions& opts,
         const std::vector<Breakpoint>& breakpoints,
         std::string* error = nullptr,
-        bool armExceptions = false);
+        bool armExceptions = false,
+        bool stopOnEntry = false);
 
 } // namespace cajeta::jit

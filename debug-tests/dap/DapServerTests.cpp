@@ -624,3 +624,106 @@ TEST(DapServerSession, DisconnectEndsLoop) {
     EXPECT_FALSE(keepGoing);
     EXPECT_NE(findResponse(log, "disconnect"), nullptr);
 }
+
+// --- stopOnEntry (run-config-ergonomics Unit 4 / spec §5) -------------------
+// The flag has always been persisted by the plugin and sent on the launch
+// request, but the server never read it, so the checkbox did nothing. These
+// pin the behaviour it advertises.
+
+// 4.1.1 / spec 5.2.1 — halts at the entry method before its body runs.
+TEST(DapServerSession, StopOnEntryHaltsBeforeTheFirstStatement) {
+    TempProgram p("demo", "Calc.cajeta", kProg);
+    DapServer srv;
+    std::vector<Json> log;
+
+    drive(srv, req(1, "initialize", Json::object()), log);
+    Json launchArgs = Json::object();
+    launchArgs["entry-method"] = "demo.Calc.main";
+    launchArgs["sourceRoot"] = p.sourceRoot();
+    launchArgs["stopOnEntry"] = true;
+    drive(srv, req(2, "launch", launchArgs), log);
+    // No breakpoints at all: the only thing that can park it is entry.
+    drive(srv, req(3, "configurationDone", Json::object()), log);
+
+    EXPECT_EQ(countEvent(log, "stopped"), 1);
+    EXPECT_EQ(countEvent(log, "terminated"), 0);  // parked, not done
+
+    // The reason distinguishes an entry stop from a breakpoint stop.
+    const Json* stop = nullptr;
+    for (const auto& m : log)
+        if (m.at("type").asString() == "event" &&
+            m.at("event").asString() == "stopped") { stop = &m; break; }
+    ASSERT_NE(stop, nullptr);
+    EXPECT_EQ(stop->at("body").at("reason").asString(), std::string("entry"));
+
+    // Always resume before the session is destroyed: ~JitDebugSession join()s
+    // the program thread, and a thread still parked at a stop never returns.
+    drive(srv, req(4, "continue", Json::object()), log);
+}
+
+// 4.1.2 — the stop is usable: a frame at the entry method's first body line.
+TEST(DapServerSession, StopOnEntryReportsAFrameAtTheEntryMethod) {
+    TempProgram p("demo", "Calc.cajeta", kProg);
+    DapServer srv;
+    std::vector<Json> log;
+
+    drive(srv, req(1, "initialize", Json::object()), log);
+    Json launchArgs = Json::object();
+    launchArgs["entry-method"] = "demo.Calc.main";
+    launchArgs["sourceRoot"] = p.sourceRoot();
+    launchArgs["stopOnEntry"] = true;
+    drive(srv, req(2, "launch", launchArgs), log);
+    drive(srv, req(3, "configurationDone", Json::object()), log);
+    ASSERT_EQ(countEvent(log, "stopped"), 1);
+
+    log.clear();
+    drive(srv, req(4, "stackTrace", Json::object()), log);
+    const Json* st = findResponse(log, "stackTrace");
+    ASSERT_NE(st, nullptr);
+    const Json& frames = st->at("body").at("stackFrames");
+    ASSERT_GT(frames.size(), 0u);
+    // Line 4 is `int32 a = 6;` — the first executable statement, NOT yet run.
+    EXPECT_EQ(frames[0].at("line").asInt(), 4);
+
+    drive(srv, req(5, "continue", Json::object()), log);  // resume before teardown
+}
+
+// 4.1.3 / spec 5.2.2 — resume from an entry stop with no breakpoints runs out.
+TEST(DapServerSession, StopOnEntryThenContinueRunsToTermination) {
+    TempProgram p("demo", "Calc.cajeta", kProg);
+    DapServer srv;
+    std::vector<Json> log;
+
+    drive(srv, req(1, "initialize", Json::object()), log);
+    Json launchArgs = Json::object();
+    launchArgs["entry-method"] = "demo.Calc.main";
+    launchArgs["sourceRoot"] = p.sourceRoot();
+    launchArgs["stopOnEntry"] = true;
+    drive(srv, req(2, "launch", launchArgs), log);
+    drive(srv, req(3, "configurationDone", Json::object()), log);
+    ASSERT_EQ(countEvent(log, "stopped"), 1);
+
+    log.clear();
+    drive(srv, req(4, "continue", Json::object()), log);
+    EXPECT_EQ(countEvent(log, "terminated"), 1);
+    // Entry must fire ONCE, not at every subsequent safepoint.
+    EXPECT_EQ(countEvent(log, "stopped"), 0);
+}
+
+// 4.1.4 / spec 5.2.3 — the existing-behaviour guard.
+TEST(DapServerSession, WithoutStopOnEntryTheProgramDoesNotHaltAtEntry) {
+    TempProgram p("demo", "Calc.cajeta", kProg);
+    DapServer srv;
+    std::vector<Json> log;
+
+    drive(srv, req(1, "initialize", Json::object()), log);
+    Json launchArgs = Json::object();
+    launchArgs["entry-method"] = "demo.Calc.main";
+    launchArgs["sourceRoot"] = p.sourceRoot();
+    launchArgs["stopOnEntry"] = false;
+    drive(srv, req(2, "launch", launchArgs), log);
+    drive(srv, req(3, "configurationDone", Json::object()), log);
+
+    EXPECT_EQ(countEvent(log, "stopped"), 0);
+    EXPECT_EQ(countEvent(log, "terminated"), 1);
+}

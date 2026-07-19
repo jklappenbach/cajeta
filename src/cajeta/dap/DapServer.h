@@ -103,6 +103,9 @@ namespace cajeta::dap {
 
         int seq_ = 1;                          // outbound seq counter
         cajeta::jit::JitRunOptions launchOpts_;
+        // DAP launch `stopOnEntry`. The plugin has always sent this; until now
+        // nothing read it, so the IDE checkbox did nothing.
+        bool stopOnEntry_ = false;
         std::vector<cajeta::jit::Breakpoint> breakpoints_;
         // CP6f: per-breakpoint condition keyed by (file basename, line). Empty
         // or absent entry means an unconditional breakpoint.
