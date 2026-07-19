@@ -168,3 +168,34 @@ TEST(EnumTests, methodCalledOnEnumConstant) {
     // POST is ordinal 1; 1 + 40 = 41.
     EXPECT_EQ(runI32(src), 41);
 }
+
+// A STATIC method in an enum body, invoked on the enum's name. The bare
+// `Verb` receiver resolves to the i32 enum type (not a class), which the
+// class-name-receiver fallback now adopts so the ENUM_FLAG redirect can
+// route the call to the companion. Also covers a String-typed return and
+// enum-typed return from enum-body methods.
+TEST(EnumTests, staticMethodOnEnumName) {
+    auto src =
+        "package test;\n"
+        "public enum Verb {\n"
+        "    GET,\n"
+        "    POST;\n"
+        "\n"
+        "    public static Verb parse(int32 code) {\n"
+        "        if (code == 0) { return Verb.GET; }\n"
+        "        return Verb.POST;\n"
+        "    }\n"
+        "\n"
+        "    public int32 doubled() {\n"
+        "        return this * 2;\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Verb v = Verb.parse(1);\n"
+        "        return v.doubled() + Verb.parse(0);\n"
+        "    }\n"
+        "}\n";
+    // parse(1)=POST(1) doubled -> 2; + parse(0)=GET(0) -> 2.
+    EXPECT_EQ(runI32(src), 2);
+}

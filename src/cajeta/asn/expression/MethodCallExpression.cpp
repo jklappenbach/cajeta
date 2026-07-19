@@ -5238,6 +5238,16 @@ namespace cajeta {
                     auto scoped = CajetaType::ofScoped(
                         idExpr->getTextValue(), module);
                     if (scoped) {
+                        // Static call on an ENUM name (`Verb.parse(...)`):
+                        // the scoped result is the i32-backed enum type, not
+                        // a class, so the cast below would leave receiverType
+                        // null and the call would error as an unknown type.
+                        // Adopt it as the receiver — the ENUM_FLAG redirect
+                        // at resolution routes it to the "$enum" companion,
+                        // where the enum body's statics live.
+                        if (scoped->getTypeFlags() & ENUM_FLAG) {
+                            receiverType = scoped;
+                        }
                         if (auto cls = dynamic_pointer_cast<CajetaClass>(scoped)) {
                             // REFL-1.7: a static call on a bare TEMPLATE name
                             // (e.g. `Class.of(...)`, `Class.forName(...)`). The
