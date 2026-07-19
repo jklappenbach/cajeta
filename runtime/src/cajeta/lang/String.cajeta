@@ -417,10 +417,18 @@ public final class String {
                         | ((b2 & 0x3F) << 6)
                         |  (b3 & 0x3F);
                 width = 4;
-            } else {
-                // Stray continuation or invalid leader — skip without counting.
+            } else if ((b0 & 0xC0) == 0x80) {
+                // Stray continuation byte — skip without counting (count() skips
+                // these too, so the two stay in lockstep).
                 i = i + 1;
                 continue;
+            } else {
+                // Invalid leader (0xF8-0xFF) — count it as a one-byte codepoint
+                // carrying the raw byte, matching count()'s leader classification
+                // so `for i in [0,count())` codepointAt iteration never yields a
+                // spurious trailing 0.
+                decoded = b0;
+                width = 1;
             }
             if (cp == cpIdx) {
                 return (char) decoded;
