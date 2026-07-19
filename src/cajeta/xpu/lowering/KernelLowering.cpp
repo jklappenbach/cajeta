@@ -4576,7 +4576,12 @@ private:
             }
             return;
         }
-        bool lFp = lt->isFloatingPointTy(), rFp = rt->isFloatingPointTy();
+        // Same-shape here (scalar↔scalar or same-length vector↔vector); test
+        // FP-ness and integer width on the SCALAR/element type so same-length
+        // vectors with differing element types are unified element-wise rather
+        // than tripping getIntegerBitWidth() on a vector type.
+        bool lFp = lt->getScalarType()->isFloatingPointTy();
+        bool rFp = rt->getScalarType()->isFloatingPointTy();
         if (lFp || rFp) {
             llvm::Type* fT = lFp ? lt : rt;
             if (!lFp)        l = sign ? builder.CreateSIToFP(l, fT) : builder.CreateUIToFP(l, fT);
@@ -4585,7 +4590,8 @@ private:
             else if (rt != fT) r = builder.CreateFPCast(r, fT);
             return;
         }
-        llvm::Type* wide = lt->getIntegerBitWidth() >= rt->getIntegerBitWidth() ? lt : rt;
+        llvm::Type* wide =
+            lt->getScalarSizeInBits() >= rt->getScalarSizeInBits() ? lt : rt;
         l = builder.CreateIntCast(l, wide, sign);
         r = builder.CreateIntCast(r, wide, sign);
     }

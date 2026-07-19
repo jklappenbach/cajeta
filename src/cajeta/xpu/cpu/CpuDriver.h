@@ -28,7 +28,9 @@ namespace cpu {
 
     // The uniform launcher-thunk signature emitted by CpuRegistration:
     // argv is the kernelParams array (argv[i] → &arg_i value), coord is the
-    // per-work-item i32[9] = {tid.xyz, ctaid.xyz, ntid.xyz}.
+    // per-work-item i32[13] = {tid.xyz, ctaid.xyz, ntid.xyz, nctaid.xyz,
+    // dynSharedBytes} — the 12 coordinate params the kernel reads plus the
+    // dynamic-shared size at coord[12]. See CpuDriver.cpp's launch loop.
     using CpuLaunchFn = void (*)(void** argv, const std::int32_t* coord);
 
     class CpuDriver {

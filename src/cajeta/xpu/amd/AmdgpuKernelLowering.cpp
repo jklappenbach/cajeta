@@ -124,13 +124,15 @@ public:
         b.CreateFence(ord, sc);
     }
 
-    // Async global->LDS copy (xpu-pipelined-gemm-primitives U2). gfx1151 (RDNA3.5)
-    // has the LDS-direct vmem load `global_load_lds_{ubyte,ushort,dword}` but NOT
-    // the gfx1250+ async-mark hardware. So `copy` issues `global_load_lds` per
-    // element — the data goes global->LDS with NO VGPR staging buffer (frees the
-    // registers the WMMA accumulator path is starved for), the key ISA win over the
-    // staged global->reg->LDS path. The workgroup stripes it (e = tid, tid+nthr, ...),
-    // so each wave's lanes coalesce. Element size must be 1/2/4 bytes; wider (e.g.
+    // Async global->LDS copy (xpu-pipelined-gemm-primitives U2). The LDS-direct
+    // vmem load `global_load_lds_{ubyte,ushort,dword}` exists on GFX9/CDNA and
+    // gfx1250+, but NOT on RDNA1-3.5 (gfx10xx/gfx11xx incl. gfx1151), which fall
+    // back to the synchronous staged copy (see archHasVmemToLds / bundleHasVmemToLds).
+    // Where it IS available, `copy` issues `global_load_lds` per element — the data
+    // goes global->LDS with NO VGPR staging buffer (frees the registers the WMMA
+    // accumulator path is starved for), the key ISA win over the staged
+    // global->reg->LDS path. The workgroup stripes it (e = tid, tid+nthr, ...), so
+    // each wave's lanes coalesce. Element size must be 1/2/4 bytes; wider (e.g.
     // fp64) falls back to the synchronous strided seam (the fp64 path uses CoopStage,
     // not AsyncCopy). `commit` is a no-op (no async-mark); `wait` drains outstanding
     // vmem so the landed LDS is safe to publish through the caller's Barrier — a full
