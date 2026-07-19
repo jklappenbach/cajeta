@@ -1019,6 +1019,76 @@ namespace cajeta {
                                      outResolvedType);
     }
 
+    // transform-intrinsics U7 — annotation sugar. A call to a static method
+    // carrying a `@Grad`/`@Vmap`/`@Jit` stack desugars to the nested combinator
+    // form: annotations in WRITTEN order, nearest the declaration (last written)
+    // applied first, so `@Jit @Vmap @Grad f` == `Jit(Vmap(Grad(f)))` (spec §4.2).
+    // The sugar is ONLY sugar (7.2.2): it builds a synthetic lambda from the
+    // method's single return expression and synthetic combinator NODES around
+    // it, then runs the same U1 recognizer driver — every composition and every
+    // error shape is byte-identical to the explicit form. The transformed
+    // closure is then invoked with the call's own arguments through the shared
+    // emitClosureCall path.
+    static llvm::Value* emitTransformAnnotatedCall(
+            MethodCallExpression* self, MethodPtr m,
+            const std::vector<std::string>& chain,
+            CajetaModulePtr module, CajetaTypePtr& outResolvedType) {
+        auto locErr = [&](const std::string& msg, const char* id) {
+            return Exception(msg, id, "", self->getSourceLine(), self->getSourceColumn());
+        };
+        Expression* bodyRaw = findReturnExpr(m->getBlock());
+        if (!m->isStatic() || !bodyRaw) {
+            throw locErr("transform annotations (@Grad/@Vmap/@Jit) require a "
+                         "static single-return-expression method",
+                         "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        }
+        std::vector<std::string> pnames;
+        std::vector<CajetaTypePtr> ptypes;
+        for (auto& p : m->getParameterList()) {
+            pnames.push_back(p->getName());
+            ptypes.push_back(p->getType());
+        }
+        // Non-owning alias: the method's AST owns the body for the whole
+        // compile, so the synthetic lambda only borrows it.
+        AbstractSyntaxNodePtr bodyAlias(AbstractSyntaxNodePtr(), bodyRaw);
+        auto lam = std::make_shared<LambdaExpression>(
+            nullptr, pnames, ptypes, bodyAlias);
+        lam->setSourceSpan(self->getSourceLine(), self->getSourceColumn());
+        lam->setExpectedType(std::make_shared<CajetaFunctionType>(
+            module, ptypes, m->getReturnType()));
+
+        ExpressionPtr cur = lam;
+        for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+            MethodCallParameter p;
+            p.expression = cur;
+            auto node = std::make_shared<MethodCallExpression>(
+                *it, std::vector<MethodCallParameter>{p});
+            node->setSourceSpan(self->getSourceLine(), self->getSourceColumn());
+            cur = node;
+        }
+        llvm::Value* closure = cur->generateCode(module);
+        auto fnT = std::dynamic_pointer_cast<CajetaFunctionType>(
+            cur->getResolvedType());
+        if (!closure || !fnT) {
+            throw locErr("transform annotations on '" + m->getName()
+                         + "' produced no callable transform",
+                         "CAJETA_ERROR_TRANSFORM_SYNTH_FAILED");
+        }
+        llvm::Value* closurePtr = closure;
+        if (!closure->getType()->isPointerTy()) {
+            auto* builder = module->getBuilder();
+            llvm::Function* curFn = builder->GetInsertBlock()->getParent();
+            llvm::IRBuilder<> eb(&curFn->getEntryBlock(),
+                                 curFn->getEntryBlock().begin());
+            llvm::Value* slot = eb.CreateAlloca(closure->getType(), nullptr,
+                                                "sugar.closure");
+            builder->CreateStore(closure, slot);
+            closurePtr = slot;
+        }
+        return emitClosureCall(module, closurePtr, fnT, self->getParameters(),
+                               outResolvedType);
+    }
+
     // transform-intrinsics 3.1.6 — higher-order Grad(Grad(...(f))). The outer Grad
     // differentiates the GRADIENT produced by the inner Grad, so at nesting depth d
     // the result carries {value: f^(d-1), grads: f^(d)}. Works because each backward
@@ -6061,6 +6131,37 @@ namespace cajeta {
                 return nullptr;
             }
             targetClass = module->getStructureStack().back();
+        }
+
+        // transform-intrinsics U7 — annotation sugar: a call to a static method
+        // carrying @Grad/@Vmap/@Jit desugars to the nested combinator form and
+        // dispatches through the transformed closure instead of the raw method.
+        if (!superCtorCall) {
+            MethodPtr sugarMatch;
+            bool sugarAmbiguous = false;
+            for (auto& mm : targetClass->getMethodList()) {
+                if (mm && mm->isStatic() && mm->getName() == methodCallName
+                        && mm->getParameterList().size() == parameters.size()) {
+                    if (sugarMatch) { sugarAmbiguous = true; break; }
+                    sugarMatch = mm;
+                }
+            }
+            if (sugarMatch && !sugarAmbiguous) {
+                std::vector<std::string> chain;
+                for (auto& a : sugarMatch->getAnnotationInstances()) {
+                    if (!a || !a->getName()) continue;
+                    const std::string& an = a->getName()->getTypeName();
+                    if (an == "Grad" || an == "Vmap" || an == "Jit")
+                        chain.push_back(an);
+                }
+                if (!chain.empty()) {
+                    CajetaTypePtr sugarType;
+                    llvm::Value* v = emitTransformAnnotatedCall(
+                        this, sugarMatch, chain, module, sugarType);
+                    resolvedType = sugarType;
+                    return v;
+                }
+            }
         }
 
         // Kernel-only operations. `buf.vload<N>(i)` / `buf.vstore(i, v)` are

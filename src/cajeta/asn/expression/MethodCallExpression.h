@@ -45,6 +45,14 @@ namespace cajeta {
     class MethodCallExpression : public Expression {
         string methodCallName;
         vector<MethodCallParameter> parameters;
+    public:
+        // transform-intrinsics U7 — a compiler-built bare combinator call (the
+        // annotation-sugar desugar). No parser context; the caller stamps the
+        // desugared call site's span via setSourceSpan.
+        MethodCallExpression(string name, vector<MethodCallParameter> params)
+            : Expression(nullptr), methodCallName(std::move(name)),
+              parameters(std::move(params)) { }
+    private:
         // title-tracking 6.2.2 — set by the Cajeta.flagged(v, owned)
         // intrinsic: the runtime i64 title flag paired with this call's
         // value. ReturnStatement reads it to thread a container's MANUAL
