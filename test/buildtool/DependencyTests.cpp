@@ -253,7 +253,7 @@ TEST(DependencyTests, parsesDependenciesShortForm) {
         "details": { "name": "a.b", "version": "0.1" },
         "settings": {
             "dependencies": {
-                "cajeta.io.net.http": "1.2.*",
+                "dev.cajeta.http": "1.2.*",
                 "cajeta.lang":        "0.5.0"
             }
         }

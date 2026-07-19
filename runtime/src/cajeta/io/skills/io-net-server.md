@@ -85,7 +85,7 @@ Port `0` ⇒ an ephemeral port; read it back after `build()` via `s.localAddress
 
 ## What this component does NOT do
 
-- No request parsing or protocol — this is raw TCP. For HTTP routing use `cajeta/io/net/http/HttpServer` (which runs the same handler on either model).
+- No request parsing or protocol — this is raw TCP. For HTTP routing use the external `dev.cajeta.http` library's `HttpServer` (which runs the same handler shape on either model).
 - No automatic `close()` of the accepted stream — the handler owns and closes it.
 - No restart of a `STOPPED` server.
 - No backlog/limits wiring from the builder yet (see caveat above).

@@ -3,9 +3,9 @@ package mcp;
 import cajeta.io.net.SocketAddress;
 import cajeta.io.net.TcpListener;
 import cajeta.io.net.TcpStream;
-import cajeta.io.net.http.HttpServer;
-import cajeta.io.net.http.HttpRequest;
-import cajeta.io.net.http.HttpResponse;
+import dev.cajeta.http.server.HttpServer;
+import dev.cajeta.http.HttpRequest;
+import dev.cajeta.http.HttpResponse;
 import cajeta.io.net.Headers;
 import cajeta.lang.String;
 import dev.cajeta.codec.compress.Gzip;
@@ -17,8 +17,10 @@ import dev.cajeta.codec.compress.Gzip;
  * (200), or empty (202) for a notification that produces no reply. Selected with
  * `--http=PORT`; stdio stays the default. gzip negotiation lands in units 3/4.
  *
- * A blocking single-connection accept loop (`TcpListener`) drives the stdlib's
- * pure `HttpServer.handleRequestBytes` byte path — `HttpServer.serve()` itself
+ * A blocking single-connection accept loop (`TcpListener`) drives the
+ * cajeta-http library's pure `HttpServer.handleRequestBytes` byte path
+ * (`dev.cajeta.http` — HTTP is an application protocol and lives outside
+ * the stdlib; the stdlib supplies the TCP transport) — `HttpServer.serve()` itself
  * needs the fiber reactor, which a plain `main` doesn't bootstrap. Concurrency /
  * keep-alive / SSE are deferred (P-MCP-SSE); one request per connection is
  * plenty for a local toolchain MCP server.

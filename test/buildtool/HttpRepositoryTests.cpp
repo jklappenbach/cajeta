@@ -177,13 +177,13 @@ TEST(HttpRepositoryTests, errorsOnUnknownAuthType) {
 
 TEST(HttpRepositoryTests, listVersionsParsesV1Response) {
     TestHttpServer srv;
-    srv.route("/cajeta.io.net.http/versions.json", 200,
+    srv.route("/dev.cajeta.http/versions.json", 200,
               R"({"versions":["1.0.0","1.2.3","1.2.4"],"deprecated":[]})");
 
     auto stage = makeTempDir("listvers");
     HttpRepository repo("test", srv.baseUrl(),
                         RepositoryAuth{}, stage.string());
-    auto vers = repo.listVersions("cajeta.io.net.http");
+    auto vers = repo.listVersions("dev.cajeta.http");
     ASSERT_TRUE((bool)vers) << errorText(vers.takeError());
     ASSERT_EQ(vers->size(), 3u);
     EXPECT_EQ((*vers)[0], "1.0.0");

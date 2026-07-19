@@ -59,7 +59,7 @@ the `run.sh` here verifies:
         "dependencies": {
             // "*" means "use whatever the melt says" (1.2.5 from
             // this melt's curated table).
-            "cajeta.io.net.http": "*",
+            "dev.cajeta.http": "*",
             "cajeta.lang":        "*",
             // Explicit version overrides the melt.
             "vendor.special":     "3.2.1"

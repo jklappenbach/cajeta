@@ -41,7 +41,7 @@ namespace cajeta::buildtool {
     // properties — callers do).
     struct ProvenanceInputs {
         // Subject:
-        std::string archiveName;       // e.g. "cajeta.io.net.http-1.2.4.cja"
+        std::string archiveName;       // e.g. "dev.cajeta.http-1.2.4.cja"
         std::string archiveSha256;      // "sha256:<hex>"
         // Build definition:
         std::string manifestChecksum;

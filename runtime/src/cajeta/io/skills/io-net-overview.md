@@ -31,12 +31,14 @@ is the library-wide invariant — see the `cajeta.io` library skill.
 | Parse / build an address | `SocketAddress.parse("h:p")`, `IpAddress.parse`, `SocketAddress.of(#ip, port)` |
 | Pool/reuse byte buffers | `BufferPool.acquire()` / `release(#buf)` |
 | Map an OS error to a typed exception | `NetErrors.fromErrno(ordinal, detail)` |
-| HTTP / WebSocket / TLS / DNS / URI | the `http` / `ws` / `tls` / `dns` / `uri` subpackages |
+| TLS / DNS / URI | the `tls` / `dns` / `uri` subpackages |
+| HTTP / WebSocket | the external `dev.cajeta.http` library |
 
 **Not here:** there is no event-loop you write callbacks against (use fibers + the
-buffered reader/writer); no built-in connection *pool* for clients; no HTTP/2 (`http` is
-HTTP/1.1); `Reactor` (the `reactor` subpackage) is the fd-readiness park primitive the
-async ops drive — you rarely call it directly.
+buffered reader/writer); no built-in connection *pool* for clients; no HTTP or
+WebSocket (application protocols — external `dev.cajeta.http`); `Reactor` (the
+`reactor` subpackage) is the fd-readiness park primitive the async ops drive — you
+rarely call it directly.
 
 ## Inventory
 
@@ -138,9 +140,9 @@ or unbracketed IPv6, raises `MalformedAddressException`.
 
 - Buffers (cursors, watermarks, pooling): `ByteBuffer`, `RingBuffer`, `BufferPool` class skills.
 - Servers (models, builder, drain, caps): `Server`, `ServerBuilder`, `ServerModel`, `SharedPoolServer`.
-- Protocols: `cajeta/io/net/http` (HTTP/1.1 client+server), `.../ws` (WebSocket),
-  `.../tls` (TLS termination via `TlsStream`/`TlsListener`), `.../dns` (resolution),
-  `.../uri` (URI parse/encode).
+- Protocols: `.../tls` (TLS termination via `TlsStream`/`TlsListener`), `.../dns`
+  (resolution), `.../uri` (URI parse/encode). HTTP/1.1 + WebSocket live in the
+  external `dev.cajeta.http` library.
 - Reactor primitive: `cajeta/io/net/reactor/Reactor`.
 - The leaf `cajeta.io.Buffer` (SWAR loads) is a *different* type in the parent package —
   not the networking buffers above.
