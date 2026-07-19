@@ -727,17 +727,34 @@ std::string emitOptixCommittedTriModule(const MethodPtr& method, llvm::Module& m
     // ---- resolve each ray component: a constant, or a b0[i]/b1[i] load ----------
     // RayComp.field == -1 means a constant `value`; else it's F_B0/F_B1 (load[i]).
     struct RayComp { int field = -1; float value = 0.0f; };
+    // The raygen loads every b0[...]/b1[...] component at the launch index, so
+    // the subscript must be exactly the launch-index variable: a bare
+    // identifier, identical across all components. A computed index (b0[i+1],
+    // b0[2*i]) or a second, differing index would otherwise be silently loaded
+    // at the launch index instead — the XPU-N04 "never a silent miscompile"
+    // invariant. Pin the shared index name here.
+    std::string rayIndexName;
     const auto resolveComp = [&](const ExpressionPtr& e) -> RayComp {
         RayComp rc;
         if (evalConstF32(e, rc.value)) return rc;
         // A `name[i]` load: ArrayIndexExpression whose base identifier is b0 or b1.
         if (auto ai = std::dynamic_pointer_cast<ArrayIndexExpression>(e)) {
             const auto& kids = ai->getChildren();
-            if (!kids.empty()) {
+            if (kids.size() >= 2) {
                 if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(kids[0])) {
                     const std::string& nm = id->getTextValue();
-                    if (nm == bufNames[0]) { rc.field = F_B0; return rc; }
-                    if (nm == bufNames[1]) { rc.field = F_B1; return rc; }
+                    if (nm == bufNames[0] || nm == bufNames[1]) {
+                        auto idxId = std::dynamic_pointer_cast<IdentifierExpression>(kids[1]);
+                        if (!idxId)
+                            throwN04("a ray-component index must be the plain "
+                                     "launch-index variable, not a computed expression.");
+                        if (rayIndexName.empty())
+                            rayIndexName = idxId->getTextValue();
+                        else if (rayIndexName != idxId->getTextValue())
+                            throwN04("ray components use differing index variables.");
+                        rc.field = (nm == bufNames[0]) ? F_B0 : F_B1;
+                        return rc;
+                    }
                 }
             }
         }

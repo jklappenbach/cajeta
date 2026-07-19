@@ -719,7 +719,8 @@ private:
                 builder.CreateRetVoid();
             } else {
                 llvm::Value* v = lowerExpr(rs->getExpression());
-                builder.CreateRet(coerceTo(v, fn->getReturnType()));
+                builder.CreateRet(coerceTo(v, fn->getReturnType(),
+                                           exprSigned(rs->getExpression())));
             }
             return;
         }
@@ -852,7 +853,7 @@ private:
             llvm::Value* v = lowerExpr(initExpr);
             if (!slotTy) slotTy = v->getType();  // infer slot type from initializer
             llvm::Value* slot = entryAlloca(slotTy, nm);
-            builder.CreateStore(coerceTo(v, slotTy), slot);
+            builder.CreateStore(coerceTo(v, slotTy, exprSigned(initExpr)), slot);
             values[nm] = slot;
             slotTypes[nm] = slotTy;
             signedness[nm] = typeIsSigned(declType);
@@ -1292,12 +1293,14 @@ private:
         auto [addr, elemTy] = lowerLValueAddr(lhs);
         llvm::Value* rv = lowerExpr(rhs);
         BinaryOp op = bin->getBinaryOp();
+        bool rvSigned = exprSigned(rhs);
         if (op != BINARY_OP_ASSIGN) {
             llvm::Value* cur = builder.CreateLoad(elemTy, addr, "cur");
             rv = applyBinOp(compoundBase(op), cur, rv, lvalueSigned(lhs),
                             elemTy->isFloatingPointTy());
+            rvSigned = lvalueSigned(lhs);
         }
-        builder.CreateStore(coerceTo(rv, elemTy), addr);
+        builder.CreateStore(coerceTo(rv, elemTy, rvSigned), addr);
     }
 
     static BinaryOp compoundBase(BinaryOp op) {
@@ -4623,12 +4626,19 @@ private:
         return true;
     }
 
-    llvm::Value* coerceTo(llvm::Value* v, llvm::Type* ty) {
+    // `isSigned` governs integer WIDENING only (sign- vs zero-extend); it is
+    // the signedness of the SOURCE value, since `uint64 h = <i32 expr>` must
+    // zero-extend an unsigned i32 (e.g. Bits.reverse yielding 0x80000000) but
+    // sign-extend a signed one. Narrowing and same-width casts ignore it. The
+    // default (signed) suits the index/config coercions that dominate the
+    // callers; value-carrying sites (return, decl-init, assign) pass the real
+    // source signedness.
+    llvm::Value* coerceTo(llvm::Value* v, llvm::Type* ty, bool isSigned = true) {
         if (v->getType() == ty) return v;
         if (v->getType()->isFloatingPointTy() && ty->isFloatingPointTy())
             return builder.CreateFPCast(v, ty);
         if (v->getType()->isIntegerTy() && ty->isIntegerTy())
-            return builder.CreateIntCast(v, ty, /*signed=*/true);
+            return builder.CreateIntCast(v, ty, isSigned);
         return v;  // best effort; shape mismatches surface in the verifier
     }
 
