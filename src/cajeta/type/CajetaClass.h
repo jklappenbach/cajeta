@@ -1128,6 +1128,12 @@ namespace cajeta {
         Exception memberNotFoundException(const string& methodName,
             const vector<ParameterEntry>& parameters, int line, int column);
 
+        // silent-resolution 4.2.1 — the nearest real member name to `typo`
+        // (methods + properties, this class and its ancestors), or "" when
+        // nothing is close enough. Compiler-internal `__` members are never
+        // offered (spec 4.3).
+        string suggestMemberName(const string& typo);
+
         // Construction helpers, factored out of ClassCreatorRest::generateCode
         // so synthesized codegen sites (a throwing capture cast, tryAs, ...)
         // can build a class instance without re-implementing the malloc /

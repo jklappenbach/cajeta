@@ -5660,6 +5660,48 @@ namespace cajeta {
     // takes an int32, telling the user there is "no member scale" sends them
     // looking for a typo that isn't there. So the presence of same-named
     // candidates (here or on any ancestor) picks the error.
+    // silent-resolution 4.2.1 — bounded edit distance over the receiver's REAL
+    // member names. Bounded twice: at most 2 edits, and at most a third of the
+    // longer name, so a short name can't drag in a distant member. Returns ""
+    // when nothing is close enough — a wrong guess is worse than no guess (4.1.2).
+    string CajetaClass::suggestMemberName(const string& typo) {
+        auto editDistance = [](const string& a, const string& b) -> size_t {
+            vector<size_t> prev(b.size() + 1), cur(b.size() + 1);
+            for (size_t j = 0; j <= b.size(); ++j) prev[j] = j;
+            for (size_t i = 1; i <= a.size(); ++i) {
+                cur[0] = i;
+                for (size_t j = 1; j <= b.size(); ++j) {
+                    size_t sub = prev[j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1);
+                    cur[j] = std::min({sub, prev[j] + 1, cur[j - 1] + 1});
+                }
+                prev = cur;
+            }
+            return prev[b.size()];
+        };
+
+        string best;
+        size_t bestDist = SIZE_MAX;
+        std::function<void(CajetaClass*)> consider = [&](CajetaClass* cls) {
+            if (!cls) return;
+            auto weigh = [&](const string& name) {
+                // Never offer a compiler-internal artifact (spec 4.3).
+                if (name.rfind("__", 0) == 0) return;
+                if (name == typo) return;
+                size_t d = editDistance(typo, name);
+                size_t longer = std::max(typo.size(), name.size());
+                if (d > 2 || d * 3 > longer) return;
+                if (d < bestDist) { bestDist = d; best = name; }
+            };
+            for (auto& mEntry : cls->getMethods()) {
+                if (mEntry.second) weigh(mEntry.second->getName());
+            }
+            for (auto& pEntry : cls->getProperties()) weigh(pEntry.first);
+            for (auto& sup : cls->getSuperClasses()) consider(sup.get());
+        };
+        consider(this);
+        return best;
+    }
+
     Exception CajetaClass::memberNotFoundException(const string& methodName,
             const vector<ParameterEntry>& parameters, int line, int column) {
         vector<string> candidates;
@@ -5688,8 +5730,10 @@ namespace cajeta {
 
         string recv = getQName() ? getQName()->toCanonical() : "<unknown>";
         if (candidates.empty()) {
-            return locatedException(line, column,
-                "no member '" + methodName + "' on '" + recv + "'",
+            string msg = "no member '" + methodName + "' on '" + recv + "'";
+            string hint = suggestMemberName(methodName);
+            if (!hint.empty()) msg += " — did you mean '" + hint + "'?";
+            return locatedException(line, column, msg,
                 "CAJETA_ERROR_MEMBER_NOT_FOUND");
         }
         string msg = "no overload of '" + methodName + "' on '" + recv

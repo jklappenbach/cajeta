@@ -375,10 +375,12 @@ namespace cajeta {
             // earlier and keep their fall-through. An unmatched name on an
             // INSTANCE is a field typo, and returning null here is what let
             // `p.vee` compile to nothing.
+            std::string msg = "no member '" + identifier + "' on '"
+                + klass->getQName()->toCanonical() + "'";
+            std::string hint = klass->suggestMemberName(identifier);
+            if (!hint.empty()) msg += " — did you mean '" + hint + "'?";
             throw locatedException(
-                getSourceLine(), getSourceColumn() + 1,
-                "no member '" + identifier + "' on '"
-                    + klass->getQName()->toCanonical() + "'",
+                getSourceLine(), getSourceColumn() + 1, msg,
                 "CAJETA_ERROR_MEMBER_NOT_FOUND");
         }
         // Self-shadow resolves ambiguity. Take the receiver class's
