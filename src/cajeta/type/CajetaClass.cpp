@@ -3846,7 +3846,21 @@ namespace cajeta {
 
             llvm::Function* calleeInMod = CajetaModule::ensureFunctionInModule(lmod, callee);
             std::vector<llvm::Value*> callArgs;
-            if (hasThis) callArgs.push_back(objArg);
+            if (hasThis) {
+                llvm::Type* thisTy = cTy->getParamType(0);
+                if (thisTy->isPointerTy()) {
+                    callArgs.push_back(objArg);
+                } else {
+                    // Enum companion: `this` is the i32 ordinal, not an object
+                    // address (signature is the source of truth, per above).
+                    // The reflective caller hands the receiver by pointer, so
+                    // load the ordinal out of it. Without this the trampoline
+                    // passes `ptr` where the callee wants i32 — a module-
+                    // verify failure that broke the whole JIT pipeline for
+                    // any compile containing an enum with methods.
+                    callArgs.push_back(b.CreateLoad(thisTy, objArg, "this.ord"));
+                }
+            }
             for (unsigned p = userStart; p < cTy->getNumParams(); ++p) {
                 llvm::Type* pt = cTy->getParamType(p);
                 llvm::Value* slot = b.CreateInBoundsGEP(i64Ty, argsArg,
@@ -5378,6 +5392,35 @@ namespace cajeta {
         string generic = Method::buildGeneric(static_pointer_cast<CajetaClass>(shared_from_this()), methodName, parameters, floatingParams);
         string canonical = Method::buildCanonical(static_pointer_cast<CajetaClass>(shared_from_this()), methodName, parameters, floatingParams);
 
+        // Resolution tracing: `CAJETA_DBG_RESOLVE=<methodName>` dumps every
+        // resolve attempt for that name — the call-site keys, each arg's
+        // resolved canonical, and the indexed buckets on this class. This is
+        // the fastest way to see WHY an overload missed (an arg whose type
+        // resolved to a same-named class from another package prints
+        // differently here and nowhere else). Env-gated; zero cost unset.
+        if (const char* dbg = std::getenv("CAJETA_DBG_RESOLVE");
+                dbg && methodName == dbg) {
+            fprintf(stderr, "[dbg-res] resolve '%s' on %s floating=%d\n",
+                    methodName.c_str(), toCanonical().c_str(), (int) floatingParams);
+            fprintf(stderr, "[dbg-res]   call generic:   %s\n", generic.c_str());
+            fprintf(stderr, "[dbg-res]   call canonical: %s\n", canonical.c_str());
+            for (auto& p : parameters) {
+                fprintf(stderr, "[dbg-res]   arg label='%s' type=%s\n",
+                        p.label.c_str(),
+                        p.type ? p.type->toCanonical().c_str() : "<null>");
+            }
+            auto* gm = isConstructor
+                ? (floatingParams ? &labeledConstructorMap : &unlabeledConstructorMap)
+                : (floatingParams ? &labeledMethodMap : &unlabeledMethodMap);
+            for (auto& [g, cm] : *gm) {
+                if (g.find(methodName) == string::npos) continue;
+                fprintf(stderr, "[dbg-res]   indexed generic (eq=%d): %s\n",
+                        (int) (g == generic), g.c_str());
+                for (auto& [c, m] : cm)
+                    fprintf(stderr, "[dbg-res]     canonical: %s\n", c.c_str());
+            }
+        }
+
         map<string, map<string, MethodPtr>>* genericMap;
         if (isConstructor) {
             genericMap = floatingParams ? &labeledConstructorMap : &unlabeledConstructorMap;
@@ -5392,6 +5435,11 @@ namespace cajeta {
                 return it->second;
             }
             MethodPtr m = getClosestMethod(methodName, parameters, canonicalMap);
+            if (const char* dbg = std::getenv("CAJETA_DBG_RESOLVE");
+                    dbg && methodName == dbg) {
+                fprintf(stderr, "[dbg-res]   canonical miss; closest=%s\n",
+                        m ? "FOUND" : "null");
+            }
             if (m) return m;
         }
 
@@ -6294,6 +6342,27 @@ namespace cajeta {
                         llvm::ConstantInt::get(
                             llvm::Type::getInt64Ty(llvmCtx), off),
                         "subobj_this");
+                }
+            }
+        }
+
+        // Coerce the receiver to the callee's DECLARED `this` type. An enum
+        // method's `this` is the i32 ordinal, not an object address, so a
+        // pointer receiver (the alloca of an enum local) has to be loaded.
+        // Driven off the signature rather than off the receiver so it is
+        // agnostic to which resolution path produced `thisValue`; object
+        // receivers, whose declared `this` is a pointer, are left untouched.
+        if (!isStatic && (int) methodArgs.size() > sretOffset
+                && methodArgs[sretOffset]
+                && methodArgs[sretOffset]->getType()->isPointerTy()) {
+            auto formals = method->getParameterList();
+            if (!formals.empty() && formals.front()
+                    && formals.front()->getName() == "this"
+                    && formals.front()->getType()) {
+                llvm::Type* wantTy = formals.front()->getType()->getLlvmType();
+                if (wantTy && !wantTy->isPointerTy()) {
+                    methodArgs[sretOffset] = builder->CreateLoad(
+                        wantTy, methodArgs[sretOffset], "enum.this");
                 }
             }
         }

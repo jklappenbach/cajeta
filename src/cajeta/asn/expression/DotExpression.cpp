@@ -219,6 +219,15 @@ namespace cajeta {
             // enum type is registered in canonicalMap; the constant table is
             // a separate side-map populated by visitEnumDeclaration.
             if (auto v = CajetaType::lookupEnumConstant(ns, identifier)) {
+                // Type the constant as the ENUM rather than raw int32, so a
+                // method invoked directly on it (`Verb.POST.weight()`) can
+                // reach the enum's companion class. The VALUE is unchanged —
+                // still the ordinal.
+                auto& cmap = CajetaType::getCanonicalMap();
+                auto et = cmap.find(ns);
+                if (et != cmap.end()) {
+                    resolvedType = et->second;
+                }
                 return llvm::ConstantInt::get(
                     llvm::Type::getInt32Ty(ctx), *v, /*isSigned=*/true);
             }

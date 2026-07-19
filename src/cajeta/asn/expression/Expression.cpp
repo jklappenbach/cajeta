@@ -4646,6 +4646,21 @@ namespace cajeta {
         if (!thisField) return nullptr;
         auto alloca = thisField->getOrCreateAllocation();
         if (chosenAncestorName.empty()) {
+            // In an ENUM body `this` is the i32 ordinal, not an object
+            // address, so type it from the method's declared `this` formal.
+            // Otherwise the l-value is treated as an object pointer and never
+            // loaded, and `this == Verb.GET` compares a ptr against an i32 —
+            // an LLVM ICmp same-type assertion.
+            if (MethodPtr cur = module->getCurrentMethod()) {
+                auto formals = cur->getParameterList();
+                if (!formals.empty() && formals.front()
+                        && formals.front()->getName() == "this"
+                        && formals.front()->getType()
+                        && formals.front()->getType()->getLlvmType()
+                        && !formals.front()->getType()->getLlvmType()->isPointerTy()) {
+                    resolvedType = formals.front()->getType();
+                }
+            }
             return static_cast<llvm::Value*>(alloca);
         }
         // Self-resolve when the pre-pass didn't (e.g., for expressions

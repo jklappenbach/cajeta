@@ -1137,6 +1137,14 @@ namespace cajeta {
                 pModule->getStructureStack().pop_back();
                 CajetaType::getCanonicalMap()[cName->toCanonical()] = companion;
                 CajetaType::getCanonicalMap()[cName->getTypeName()] = companion;
+                // Register with the MODULE as well: getAllMethods() walks
+                // `structures`, and that is what the codegen driver (and the
+                // JIT harness) iterate to force each method's LLVM function
+                // type and emit its body. Without this the companion's methods
+                // resolve but are never lowered, so the call site builds
+                // against a half-formed signature — which is why the AOT path
+                // worked while the JIT path failed verification.
+                pModule->getStructures()[cName->toCanonical()] = companion;
                 CajetaModule::getStructureToModule()[cName->toCanonical()] = pModule;
             }
             return std::any(nullptr);
