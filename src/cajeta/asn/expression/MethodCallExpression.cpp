@@ -904,8 +904,8 @@ namespace cajeta {
         std::string err;
         if (!cajeta::transform::buildDag(bodyExpr.get(), pnames, paramRank, resolveCall,
                                          nodes, paramNodeIndex, &err) || nodes.empty()) {
-            throw locErr("transform intrinsic 'Vmap': no batching rule for this body "
-                         "(v1 batches + - * and unary - over the batch element)",
+            throw locErr("transform intrinsic 'Vmap': no batching rule for this body — "
+                         + (err.empty() ? std::string("empty body") : err),
                          "CAJETA_ERROR_TRANSFORM_NO_BATCH_RULE");
         }
         for (const auto& n : nodes) {

@@ -151,6 +151,30 @@ TEST(JitFuse, composesOverVmapGrad) {
            "differentiated arithmetic";
 }
 
+// 3.3.3 (closed by U6) — the synthesized backward participates in ordinary IR
+// optimization: Jit(Grad(f)) runs the standard function pipeline over the
+// backward's fresh functions (tagged __JitFused_) and the gradient survives it
+// unchanged — the backward is ordinary IR, not something opt must tiptoe past.
+TEST(JitFuse, backwardParticipatesInOrdinaryOpt) {
+    CajetaJit::Options opts;
+    opts.captureIr = true;
+    auto jit = CajetaJit::compile(
+        "package test;\n"
+        "import cajeta.nucleo.transform.GradResult;\n"
+        "public final class T {\n"
+        "    public static float32 run() {\n"
+        "        (float32) -> GradResult<float32,float32> g =\n"
+        "            Jit(Grad((float32 x) -> x * x));\n"
+        "        GradResult<float32,float32> r = g(3.0f);\n"
+        "        return r.value * 100.0f + r.grads;\n"
+        "    }\n"
+        "}\n", "test.T", opts);
+    EXPECT_FLOAT_EQ(jit->lookup<float (*)()>("run")(), 906.0f);
+    EXPECT_NE(jit->getModuleIr().find("__JitFused_"), std::string::npos)
+        << "the backward's synthesized functions were not run through the "
+           "ordinary optimization pipeline";
+}
+
 // 6.2.2 (signature preservation, second shape) — the Jit'd function is stored,
 // passed through a second call, and still dispatches with f's signature.
 TEST(JitFuse, jitOfVmapAloneStillBatches) {

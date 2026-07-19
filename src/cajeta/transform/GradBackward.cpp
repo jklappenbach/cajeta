@@ -7,6 +7,7 @@
 #include "cajeta/asn/expression/Expression.h"
 #include "cajeta/asn/expression/Identifier.h"
 #include "cajeta/asn/expression/BinaryOpExpression.h"
+#include "cajeta/asn/expression/OperatorDispatch.h"
 #include "cajeta/asn/expression/MethodCallExpression.h"
 #include "cajeta/asn/expression/LiteralExpression.h"
 #include "cajeta/type/CajetaType.h"
@@ -75,10 +76,14 @@ namespace cajeta {
                         case BINARY_OP_MUL: prim = "mul"; opStr = "*"; break;
                         case BINARY_OP_ADD: prim = "add"; opStr = "+"; break;
                         case BINARY_OP_SUB: prim = "sub"; opStr = "-"; break;
-                        default:
-                            err = "Grad: unsupported binary operator in the "
-                                  "differentiated body (v1: + - *)";
+                        default: {
+                            const char* sym = opdispatch::binaryOpSymbol(b->getBinaryOp());
+                            err = std::string("unsupported binary operator '")
+                                + (sym ? sym : "?")
+                                + "' in the transformed body (v1 supports + - * "
+                                  "and unary -)";
                             return 0;
+                        }
                     }
                     auto& ch = b->getChildren();
                     if (ch.size() < 2) { err = "Grad: malformed binary expression"; return 0; }
@@ -141,6 +146,27 @@ namespace cajeta {
                             operandIdx.push_back(ci);
                         }
                         std::string ta = typeArgList(mc);
+                        // 8.1.2 — rank validation with the statically-known
+                        // rank-kind and dtype (dims are not in the type system).
+                        // matmul CONTRACTS two tensors and sum REDUCES one, so a
+                        // scalar operand there is definitively wrong; elementwise
+                        // ops are left alone (a scalar operand may be a broadcast).
+                        auto rankOf = [&](size_t idx) {
+                            return nodes[idx].isTensor ? "tensor" : "scalar";
+                        };
+                        if (op == "matmul" && (!nodes[operandIdx[0]].isTensor
+                                               || !nodes[operandIdx[1]].isTensor)) {
+                            err = "Tensor.matmul" + ta + " rank mismatch: left operand"
+                                  " is " + rankOf(operandIdx[0]) + ", right operand is "
+                                + rankOf(operandIdx[1])
+                                + " (matmul contracts two tensors)";
+                            return 0;
+                        }
+                        if (op == "sum" && !nodes[operandIdx[0]].isTensor) {
+                            err = "Tensor.sum" + ta
+                                + " expects a tensor operand, got scalar";
+                            return 0;
+                        }
                         std::string val = "Tensor." + op + ta + "(";
                         for (size_t k = 0; k < nOperands; ++k) {
                             if (k) val += ", ";
