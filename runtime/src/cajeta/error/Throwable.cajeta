@@ -10,7 +10,7 @@ import cajeta.lang.Optional;
  * `UnrecoverableException`.
  *
  * ```cajeta
- * heap Throwable err = Throwable("disk is full");
+ * Throwable err = heap Throwable("disk is full");
  * String why = err.message;
  * ```
  *
@@ -28,7 +28,7 @@ public class Throwable {
      * Wrap a message into a throwable.
      *
      * ```cajeta
-     * heap Throwable err = Throwable("unexpected end of input");
+     * Throwable err = heap Throwable("unexpected end of input");
      * ```
      *
      * @EntryPoint

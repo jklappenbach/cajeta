@@ -14,7 +14,7 @@ package cajeta.lang;
  * `startsWith`, `codepointAt`, ...) read without allocating.
  *
  * ```cajeta
- * heap String s = "  Hello, World  ";
+ * String s = "  Hello, World  ";         // a literal is a static view
  * String clean = s.trim();               // "Hello, World"
  * if (clean.startsWith("Hello") && clean.contains("World")) {
  *     String loud = clean.toUpperCase(); // "HELLO, WORLD"
@@ -61,7 +61,7 @@ public final class String {
      * Constructs the empty String (Inline form, zero bytes).
      *
      * ```cajeta
-     * heap String s = String();
+     * String s = heap String();
      * boolean blank = s.isEmpty();   // true
      * int64 n = s.count();           // 0
      * ```
