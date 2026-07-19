@@ -11,6 +11,7 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [ide-symbol-index](ide-symbol-index-spec.md) | [plan](../agents/ide-symbol-index-plan.md) | active — Units 1-9 implemented and green; 8.3.1 (dependency Ctrl-click) confirmed live 2026-07-18; remaining: live-IDE acceptance 8.3.2, 8.3.3, 9.3.1, 9.3.2 |
 | [ide-features](ide-features-spec.md) | [plan](../agents/ide-features-plan.md) | active — refactoring, hierarchy, call graph, gutter nav; blocked until ide-symbol-index closes |
 | [lint-server](lint-server-spec.md) | [plan](../agents/lint-server-plan.md) | active — Units 1–3 delivered and green (reuse parity; NDJSON `--lint-server` daemon; warm sibling-context reuse); Unit 4 (IntelliJ plugin client + lifecycle) next |
+| [run-config-ergonomics](run-config-ergonomics-spec.md) | [plan](../agents/run-config-ergonomics-plan.md) | active — spec approved 2026-07-18; plan awaiting approval; Units 1-6 unstarted |
 | [silent-resolution-diagnostics](silent-resolution-diagnostics-spec.md) | [plan](../agents/silent-resolution-diagnostics-plan.md) | active |
 | [docs-refactor](docs-refactor-spec.md) | [plan](../agents/docs-refactor-plan.md) | active |
 | [cja-source-view](cja-source-view-spec.md) | [plan](../agents/cja-source-view-plan.md) | active |
