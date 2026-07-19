@@ -1,5 +1,6 @@
 package dev.cajeta.idea.debugger
 
+import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.project.Project
 import dev.cajeta.idea.buildtool.CajetaManifest
 import dev.cajeta.idea.xref.CajetaXrefFreshness
@@ -102,10 +103,16 @@ object EntryMethodCandidates {
         // an out-of-date list is far better than pretending there are none.
         val available = CajetaXrefFreshness.getInstance(project).state !=
             CajetaXrefFreshness.State.UNAVAILABLE
+        // FileBasedIndex needs a READ ACTION, not merely a background thread —
+        // off-EDT alone trips "Read access is allowed from inside read-action
+        // only". Both are required: the read action for correctness, the pooled
+        // thread so the settings dialog never blocks on index access.
         val records = if (!available) emptyList() else
             runCatching {
-                XrefQuery.fqnsForSimpleName(project, "main")
-                    .flatMap { XrefQuery.declarationsOf(project, it) }
+                ReadAction.compute<List<Json.Obj>, RuntimeException> {
+                    XrefQuery.fqnsForSimpleName(project, "main")
+                        .flatMap { XrefQuery.declarationsOf(project, it) }
+                }
             }.getOrDefault(emptyList())
         return merge(manifest, records, available)
     }
