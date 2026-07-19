@@ -1028,6 +1028,30 @@ namespace cajeta {
                   " on an array, where the size accessor is `count()`)",
                 "CAJETA_ERROR_NULL_OPERAND");
         }
+        // A `void` call is PRESENT but valueless, so the null guard above misses
+        // it — an assignment RHS then hung the compiler rather than diagnosing (1.2.3).
+        {
+            auto isVoidOperand = [](const ExpressionPtr& e) {
+                return e && e->getResolvedType()
+                    && e->getResolvedType()->toCanonical() == "void";
+            };
+            bool lVoid = isVoidOperand(lhsAst);
+            bool rVoid = isVoidOperand(rhsAst);
+            if (lVoid || rVoid) {
+                const char* opSym = opdispatch::binaryOpSymbol(binaryOp);
+                std::string what = opSym
+                    ? (std::string("binary operator '") + opSym + "'")
+                    : std::string("assignment");
+                std::string side = (lVoid && rVoid) ? "both operands"
+                                 : (lVoid ? "the left operand"
+                                          : "the right-hand side");
+                throw locatedException(
+                    getSourceLine(), getSourceColumn() + 1,
+                    what + " has a 'void' expression as " + side
+                    + " (a void call produces no value to use here)",
+                    "CAJETA_ERROR_NULL_OPERAND");
+            }
+        }
 
         // B1: Matrix binary ops, intercepted before the built-in/vector path.
         // `+ - /` are element-wise over same-shape matrices -> Matrix<T,R,C>;

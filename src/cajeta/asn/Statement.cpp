@@ -589,6 +589,15 @@ namespace cajeta {
                 " receiver's type)",
                 "CAJETA_ERROR_UNRESOLVED_EXPRESSION");
         }
+        // A `void` call is PRESENT but valueless, so the null guard above misses
+        // it and the i1 coercion below asserts inside LLVM (1.2.3).
+        if (cond->getResolvedType()
+                && cond->getResolvedType()->toCanonical() == "void") {
+            throw locatedException(
+                cond->getSourceLine(), cond->getSourceColumn() + 1,
+                "condition is a 'void' expression, which has no value to test",
+                "CAJETA_ERROR_UNRESOLVED_EXPRESSION");
+        }
         if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
             v = builder->CreateLoad(a->getAllocatedType(), a);
         }
@@ -2286,6 +2295,15 @@ namespace cajeta {
                 "returned expression did not resolve to a value (a sub-expression"
                 " produced nothing — e.g. a method or member that does not exist"
                 " on the receiver's type)",
+                "CAJETA_ERROR_UNRESOLVED_EXPRESSION");
+        }
+        // A `void` call is present but valueless, so the guard above misses it and
+        // `return D.nothing();` in a value-returning method compiled SILENTLY (1.2.3).
+        if (!retTy->isVoidTy() && expression->getResolvedType()
+                && expression->getResolvedType()->toCanonical() == "void") {
+            throw locatedException(
+                expression->getSourceLine(), expression->getSourceColumn() + 1,
+                "returned expression is 'void', but the method returns a value",
                 "CAJETA_ERROR_UNRESOLVED_EXPRESSION");
         }
         llvm::Type* valTy = val->getType();
