@@ -176,9 +176,14 @@ XpuMirLaunchSitePtr buildLaunchSite(
 
     auto site = std::make_shared<XpuMirLaunchSite>();
 
-    // Kernel name: the receiver of `<kernel>.launch(...)`.
+    // Kernel name: the receiver of `<kernel>.launch(...)`. Require it to
+    // resolve to a known @Kernel — every kernel is built before this second
+    // pass runs, so an `obj.launch(...)()` whose receiver matches no kernel is
+    // an unrelated user method named `launch`, not an XPU launch site. (A local
+    // variable that shadows a kernel's short name can still collide by
+    // suffix-match; disambiguating that needs the receiver's resolved type.)
     std::string recv = receiverIdentifier(callee.get());
-    site->kernelCanonicalName = recv;   // fallback: bare name
+    bool matched = false;
     for (auto& k : kernels) {
         if (!k) continue;
         const std::string& cn = k->canonicalName;
@@ -187,9 +192,11 @@ XpuMirLaunchSitePtr buildLaunchSite(
              cn.compare(cn.size() - recv.size() - 1, recv.size() + 1,
                         "." + recv) == 0)) {
             site->kernelCanonicalName = cn;
+            matched = true;
             break;
         }
     }
+    if (!matched) return nullptr;
 
     // launch() config: first positional arg is the stream; labeled
     // `grid:` / `block:` carry the dimension array literals.

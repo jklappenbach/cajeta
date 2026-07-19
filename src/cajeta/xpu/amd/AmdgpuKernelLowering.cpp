@@ -147,18 +147,36 @@ public:
         return false;
     }
 
+    // A kernel is lowered ONCE but codegen'd for every arch in a multi-arch
+    // bundle, so emitting global_load_lds is safe only when EVERY target arch
+    // supports it — otherwise an unsupporting arch Cannot-selects and the kernel
+    // is silently dropped from the bundle. `cajeta.amdgpu.archlist` carries the
+    // full bundle; fall back to the single-arch flag when it is absent.
+    static bool bundleHasVmemToLds(llvm::Module& m) {
+        auto readFlag = [&](const char* name) -> llvm::StringRef {
+            if (auto* f = m.getModuleFlag(name))
+                if (auto* s = llvm::dyn_cast<llvm::MDString>(f)) return s->getString();
+            return {};
+        };
+        llvm::StringRef list = readFlag("cajeta.amdgpu.archlist");
+        if (list.empty()) return archHasVmemToLds(readFlag("cajeta.amdgpu.arch"));
+        llvm::SmallVector<llvm::StringRef, 4> arches;
+        list.split(arches, ',', -1, /*KeepEmpty=*/false);
+        for (auto a : arches)
+            if (!archHasVmemToLds(a.trim())) return false;
+        return !arches.empty();
+    }
+
     void asyncCopy(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* dstBase,
                    llvm::Type* dstElem, llvm::Value* dstOffset, llvm::Value* srcBase,
                    llvm::Type* srcElem, llvm::Value* srcOffset,
                    llvm::Value* count) override {
         llvm::LLVMContext& ctx = m.getContext();
         uint64_t elemBytes = m.getDataLayout().getTypeStoreSize(srcElem);
-        llvm::StringRef arch;
-        if (auto* f = m.getModuleFlag("cajeta.amdgpu.arch"))
-            if (auto* s = llvm::dyn_cast<llvm::MDString>(f)) arch = s->getString();
-        // No native direct global->LDS on this subtarget, or a width the LDS-direct
-        // load can't carry (1/2/4 bytes only) — use the synchronous staged copy.
-        if (!archHasVmemToLds(arch)
+        // No native direct global->LDS on some target arch in the bundle, or a
+        // width the LDS-direct load can't carry (1/2/4 bytes only) — use the
+        // synchronous staged copy (correct on every arch).
+        if (!bundleHasVmemToLds(m)
                 || (elemBytes != 1 && elemBytes != 2 && elemBytes != 4)) {
             LoweringTarget::asyncCopy(b, m, dstBase, dstElem, dstOffset, srcBase,
                                       srcElem, srcOffset, count);
