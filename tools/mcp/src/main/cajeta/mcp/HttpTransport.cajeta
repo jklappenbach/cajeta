@@ -228,7 +228,14 @@ public class HttpTransport {
                 return HttpTransport.jsonRpcError(400, -32700,
                     "invalid gzip request body");
             }
-            decoded = Gzip.decompress(body, (int64) blen);
+            // '#=' move-bind: Gzip.decompress returns an OWNED buffer and a
+            // plain '=' into a pre-declared local is a borrow under the 0.9
+            // rules (latent use-after-free). NOTE this does NOT fix the known
+            // inbound-gzip crash: that is an upstream dev.cajeta.codec bug —
+            // Deflate.inflate mishandles real-world DEFLATE (stock gzip's
+            // fixed-Huffman + LZ77 back-references; standalone repro returns
+            // an empty buffer for a valid 64-byte member whose ISIZE is 46).
+            decoded #= Gzip.decompress(body, (int64) blen);
             decodedLen = (int32) decoded.count();
         }
         ResponseSink sink = heap ResponseSink(false, null);
