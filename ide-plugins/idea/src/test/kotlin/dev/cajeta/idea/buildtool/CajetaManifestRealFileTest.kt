@@ -1,6 +1,7 @@
 package dev.cajeta.idea.buildtool
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.io.File
@@ -20,5 +21,24 @@ class CajetaManifestRealFileTest {
         val b = CajetaManifest.parseBuildSettings(f.readText())
         assertEquals("mcp.Server.main", b.entryMethod)
         assertEquals("src/main/cajeta", b.sourceRoot)
+    }
+
+    /**
+     * 2.3.1, resolver half — the value the editor will prefill for the real
+     * tools/mcp project. That the editor RENDERS it is a live-IDE check; this
+     * pins that the right path is computed from the real manifest and tree.
+     */
+    @Test
+    fun defaultSourceRootForToolsMcpComesFromItsManifest() {
+        val base = File("../../tools/mcp")
+        assumeTrue("tools/mcp not found at ${base.absolutePath}",
+            File(base, "cajeta.json").isFile)
+
+        val manifest = CajetaManifest.parseBuildSettings(File(base, "cajeta.json").readText())
+        val resolved = CajetaRoots.defaultSourceRoot(base.path, manifest.sourceRoot)
+
+        assertEquals(File(base, "src/main/cajeta").path, resolved)
+        assertTrue("resolved source root should exist on disk: $resolved",
+            File(resolved).isDirectory)
     }
 }

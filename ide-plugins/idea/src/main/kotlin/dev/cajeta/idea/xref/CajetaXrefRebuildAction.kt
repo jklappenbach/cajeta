@@ -38,10 +38,11 @@ class CajetaXrefRebuildAction : AnAction("Rebuild Cajeta Xref Index") {
                 return
             }
             val base = project.basePath ?: return
-            // The compiler wants the SOURCE root; prefer the conventional
-            // layout, fall back to the project base.
-            val srcRoot = File(base, "src/main/cajeta")
-                .takeIf { it.isDirectory }?.path ?: base
+            // The compiler wants the SOURCE root. Resolved through the shared
+            // convention so this export and the debug run configuration always
+            // describe the same tree (run-config-ergonomics 2.2.3 / spec 3.1.3).
+            val srcRoot = dev.cajeta.idea.buildtool.CajetaRoots
+                .conventionalSourceRoot(base)
 
             freshness.refreshStarted()
             object : Task.Backgroundable(project, "Rebuilding Cajeta xref index", true) {
