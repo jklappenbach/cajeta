@@ -1047,9 +1047,17 @@ namespace cajeta {
             // resolved at DotExpression codegen to an i32 constant via the
             // CajetaType::enumConstants registry.
             //
+            // An enum BODY (`; classBodyDeclaration*`) IS supported: its
+            // members register on a companion CajetaClass filed under the
+            // enum's canonical name + the "$enum" suffix. The enum VALUE
+            // stays an i32 ordinal — no object, no vtable — so an instance
+            // method takes the ordinal as its `this` (pre-inserted below,
+            // consumed by the ENUM_FLAG receiver path in
+            // MethodCallExpression::generateCode). Enums cannot be
+            // subclassed, so that static dispatch is always correct.
+            //
             // Not yet supported (deferred):
             //  - constants with arguments: `MONDAY(1)`
-            //  - enum bodies with methods
             //  - `implements` clause on enum
             string name = ctx->identifier()->getText();
             string packageAdj;
@@ -1081,6 +1089,55 @@ namespace cajeta {
                     string constName = ec->identifier()->getText();
                     CajetaType::registerEnumConstant(name, constName, ordinal++);
                 }
+            }
+
+            // --- enum body: members live on a companion class ---------------
+            // `enumBodyDeclarations` is `';' classBodyDeclaration*` — the same
+            // production a class body uses — so pushing a structure and
+            // visiting the body reuses the existing member-registration path
+            // wholesale. The companion is filed under a "$enum"-suffixed key
+            // so it cannot collide with the i32 enum type occupying the
+            // enum's own canonical slot in canonicalMap.
+            if (auto* body = ctx->enumBodyDeclarations()) {
+                QualifiedNamePtr cName = QualifiedName::getOrInsert(
+                    name + "$enum",
+                    pModule->getQName()->getPackageName() + packageAdj);
+                list<QualifiedNamePtr> noExtends;
+                list<QualifiedNamePtr> noImplements;
+                auto companion = make_shared<CajetaClass>(
+                    pModule, cName, noExtends, noImplements);
+                // Enums are implicitly final: no subclass can override, which
+                // is what licenses the static dispatch at the call site.
+                companion->addModifier(FINAL);
+
+                pModule->getStructureStack().push_back(companion);
+                // Mirror visitClassBody: members register by being visited as
+                // classBodyDeclarations and attached via setClassBody — a bare
+                // visitChildren walks them but registers nothing.
+                ClassBodyDeclarationPtr classBody =
+                    make_shared<ClassBodyDeclaration>(body->getStart());
+                for (auto* cbd : body->classBodyDeclaration()) {
+                    classBody->getDeclarations().push_back(
+                        std::any_cast<MemberDeclarationPtr>(
+                            visitClassBodyDeclaration(cbd)));
+                }
+                companion->setClassBody(classBody);
+
+                // Give every instance method an explicit `this` typed as the
+                // ENUM (i32) before prototypes are generated. Method's own
+                // injection would otherwise splice in a `pointer` `this` — it
+                // skips when `this` is already at position 0 — and a pointer
+                // receiver is exactly what has no meaning for an ordinal.
+                for (auto& m : companion->getMethodList()) {
+                    if (!m || m->isStatic()) continue;
+                    m->prependThisParameter(enumType);
+                }
+
+                companion->generatePrototype();
+                pModule->getStructureStack().pop_back();
+                CajetaType::getCanonicalMap()[cName->toCanonical()] = companion;
+                CajetaType::getCanonicalMap()[cName->getTypeName()] = companion;
+                CajetaModule::getStructureToModule()[cName->toCanonical()] = pModule;
             }
             return std::any(nullptr);
         }

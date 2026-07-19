@@ -89,3 +89,82 @@ TEST(EnumTests, switchOnEnumValue) {
         "}\n";
     EXPECT_EQ(runI32(src), 300);
 }
+
+// ---------------------------------------------------------------------------
+// Enum bodies with methods (was "not in v1 scope"). An enum value is still an
+// i32 ordinal; a method declared in the enum body is dispatched statically
+// (enums are final — there is no subclass to override) with the ordinal passed
+// as the receiver. Before this landed, declaring a method compiled but CALLING
+// one SIGSEGV'd in MethodCallExpression::generateCode: the method was parsed
+// and its body generated, but attached to nothing, so there was no receiver to
+// dispatch on.
+// ---------------------------------------------------------------------------
+
+// The minimal case: an instance method on an enum, called on a local.
+TEST(EnumTests, instanceMethodOnEnumValue) {
+    auto src =
+        "package test;\n"
+        "public enum Verb {\n"
+        "    GET,\n"
+        "    POST;\n"
+        "\n"
+        "    public int32 weight() {\n"
+        "        return 7;\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Verb v = Verb.GET;\n"
+        "        return v.weight();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 7);
+}
+
+// `this` inside an enum method is the receiver's ordinal, so a method can
+// branch on which constant it was called on — the whole point of the feature
+// (RFC-style predicate tables like Method.isSafe()).
+TEST(EnumTests, enumMethodReadsThisOrdinal) {
+    auto src =
+        "package test;\n"
+        "public enum Verb {\n"
+        "    GET,\n"
+        "    POST;\n"
+        "\n"
+        "    public boolean isSafe() {\n"
+        "        return this == Verb.GET;\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Verb g = Verb.GET;\n"
+        "        Verb p = Verb.POST;\n"
+        "        int32 acc = 0;\n"
+        "        if (g.isSafe()) { acc = acc + 10; }\n"
+        "        if (!p.isSafe()) { acc = acc + 5; }\n"
+        "        return acc;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 15);
+}
+
+// A method called directly on a constant (no intervening local).
+TEST(EnumTests, methodCalledOnEnumConstant) {
+    auto src =
+        "package test;\n"
+        "public enum Verb {\n"
+        "    GET,\n"
+        "    POST;\n"
+        "\n"
+        "    public int32 ordinalPlus(int32 n) {\n"
+        "        return this + n;\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        return Verb.POST.ordinalPlus(40);\n"
+        "    }\n"
+        "}\n";
+    // POST is ordinal 1; 1 + 40 = 41.
+    EXPECT_EQ(runI32(src), 41);
+}

@@ -5942,6 +5942,26 @@ namespace cajeta {
         if (auto klass = dynamic_pointer_cast<CajetaClass>(receiverType)) {
             targetClass = klass;
         }
+        // Enum receiver: the value is an i32 ordinal, so `receiverType` is the
+        // i32-backed enum type rather than a class — its members live on the
+        // "$enum" companion the enum declaration registered. Redirect the
+        // lookup there. The companion is FINAL, so the call devirtualizes and
+        // the ordinal passes straight through as `this` (typed as the enum in
+        // the companion's signatures — see Method::prependThisParameter).
+        bool enumReceiver = false;
+        if (!targetClass && receiverType
+                && (receiverType->getTypeFlags() & ENUM_FLAG)
+                && receiverType->getQName()) {
+            enumReceiver = true;
+            auto& cmap = CajetaType::getCanonicalMap();
+            auto it = cmap.find(receiverType->getQName()->toCanonical() + "$enum");
+            if (it == cmap.end()) {
+                it = cmap.find(receiverType->getQName()->getTypeName() + "$enum");
+            }
+            if (it != cmap.end()) {
+                targetClass = dynamic_pointer_cast<CajetaClass>(it->second);
+            }
+        }
         // The enclosing-class fallback below belongs to BARE calls (`foo()`,
         // children empty) only. When a receiver WAS written, substituting the
         // enclosing class blames a type the user never named at this site — the
@@ -6006,6 +6026,15 @@ namespace cajeta {
         // that fails JIT verify with "Instruction does not dominate all
         // uses".
         llvm::Value* thisValue = receiver;
+        // An enum receiver's `this` is the ORDINAL, not an object address. A
+        // local (`Verb v = ...; v.weight()`) evaluates to its alloca, so load
+        // the i32 out of it; a constant receiver (`Verb.POST.weight()`) is
+        // already the value and passes through.
+        if (enumReceiver && thisValue && thisValue->getType()->isPointerTy()
+                && receiverType && receiverType->getLlvmType()) {
+            thisValue = builder->CreateLoad(receiverType->getLlvmType(), thisValue,
+                                            "enum.this");
+        }
         if (!thisValue) {
             MethodPtr enclosing = module->getCurrentMethod();
             bool inStatic = enclosing

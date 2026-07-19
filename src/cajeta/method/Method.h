@@ -503,6 +503,28 @@ namespace cajeta {
 
         map<string, FormalParameterPtr> getParameters() { return parameters; }
 
+        /**
+         * Prepend an explicit `this` parameter of type `t`, unless one is
+         * already at slot 0.
+         *
+         * For enum bodies: an enum value is an i32 ordinal, not an object, so
+         * the receiver must be typed as the enum itself. generatePrototype's
+         * own injection would otherwise splice in a `pointer` `this` — it
+         * skips precisely when `this` already occupies slot 0, which is what
+         * this call arranges — and a pointer receiver is meaningless for an
+         * ordinal.
+         */
+        void prependThisParameter(const CajetaTypePtr& t) {
+            if (!parameterList.empty() && parameterList.front()
+                    && parameterList.front()->getName() == "this") {
+                return;
+            }
+            auto p = make_shared<FormalParameter>(string("this"), t);
+            p->setParent(shared_from_this());
+            parameterList.insert(parameterList.begin(), p);
+            parameters[p->getName()] = p;
+        }
+
         CajetaTypePtr getReturnType() { return returnType; }
 
         CajetaClassPtr getParent() const { return parent; }
