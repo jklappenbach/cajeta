@@ -107,7 +107,7 @@ public class Records {
         try {
             return readConfig(path);
         } catch (RecoverableException low) {
-            heap RecoverableException wrap = RecoverableException("config load failed: " + path);
+            RecoverableException wrap = heap RecoverableException("config load failed: " + path);
             wrap.cause = low;        // no cause ctor — assign the field
             throw wrap;
         }
