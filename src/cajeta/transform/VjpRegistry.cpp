@@ -16,6 +16,26 @@ namespace cajeta {
         }
 
         const VjpRule* VjpRegistry::lookup(const std::string& primitive) const {
+            // 3.1.5 probe hook — CAJETA_NUCLEO_FORCE_BAD_VJP=<primitive>
+            // substitutes a deliberately ill-typed rule (an undeclared function
+            // reference) so tests can prove the synthesized backward re-enters
+            // the CHECKED pipeline: the bad source must be rejected, never
+            // emitted. Read per lookup at this one site; the builtin table
+            // stays immutable, so no state can leak between compiles.
+            if (const char* bad = std::getenv("CAJETA_NUCLEO_FORCE_BAD_VJP")) {
+                if (primitive == bad) {
+                    static const VjpRule forcedBad{
+                        "__forced_bad", 0,
+                        [](const std::string& g,
+                           const std::vector<std::string>& operands,
+                           const GradSurface&) {
+                            return std::vector<std::string>(
+                                operands.size(),
+                                "__cajeta_forced_bad_vjp(" + g + ")");
+                        }};
+                    return &forcedBad;
+                }
+            }
             auto it = rules.find(primitive);
             return it == rules.end() ? nullptr : &it->second;
         }

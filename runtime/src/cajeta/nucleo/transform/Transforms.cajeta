@@ -1,0 +1,40 @@
+package cajeta.nucleo.transform;
+
+/**
+ * The transform-intrinsic surface (transform-intrinsics spec §2-§6): the
+ * trusted, value-level combinators `Grad` / `Jit` / `Vmap` / `Pmap`, and the
+ * annotation sugar `@Grad` / `@Jit` / `@Vmap` that desugars onto them.
+ *
+ * These are COMPILER INTRINSICS, not methods of this class: a bare call
+ * `Grad(f)` on a statically-known function is recognized and transformed at
+ * compile time, and its type is transform-polymorphic — each combinator maps a
+ * function TYPE to a different function type, which is beyond what a single
+ * declared generic signature can express. This file is the importable home of
+ * the contract; the types a caller actually names live beside it
+ * ([[GradResult]]).
+ *
+ * The combinators, nearest-the-declaration-first under composition (spec §4;
+ * `@Jit @Vmap @Grad f` == `Jit(Vmap(Grad(f)))`):
+ *
+ * - `Grad(f)`: for `f : (P...) -> S` with scalar-valued `S`, gives
+ *   `(P...) -> GradResult<S, G>` — the forward value and the gradient w.r.t.
+ *   argument 0 (`Grad<N>(f)` selects argument N). Scalar and Tensor arguments;
+ *   second-order via `Grad(Grad(f))` (scalar). `@NoGrad` on a called helper
+ *   makes it a constant leaf.
+ * - `Vmap(f)`: for `f : (T) -> R`, gives `(T[]) -> #R[]` — `f` lifted over a
+ *   leading batch axis with no hand-written loop. `Vmap(Grad(f))` batches the
+ *   differentiated form (per-example gradients).
+ * - `Jit(f)`: same signature as `f`, body fused (temporaries eliminated).
+ *   Composes over the others: `Jit(Vmap(Grad(f)))` fuses the batched,
+ *   differentiated form.
+ * - `Pmap(f)`: reserved (spec F8) — recognized, reports
+ *   CAJETA_ERROR_TRANSFORM_PMAP_UNIMPLEMENTED in v1.
+ *
+ * Every misuse is a named, located compile error: a runtime-only function
+ * value is CAJETA_ERROR_TRANSFORM_NOT_SPECIALIZABLE, an op outside the
+ * differentiable/batchable set names the operator, and a rank mismatch names
+ * the ranks and dtype.
+ */
+public final class Transforms {
+    private Transforms() { }
+}
