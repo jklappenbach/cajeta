@@ -139,6 +139,14 @@ void optimizeModuleThinLTOPreLink(llvm::Module& m, llvm::TargetMachine* tm, OptL
     mpm.run(m, env.mam);
 }
 
+void fuseFunction(llvm::Function& f, llvm::TargetMachine* tm) {
+    if (f.isDeclaration()) return;
+    PassEnv env(tm);
+    llvm::FunctionPassManager fpm = env.pb.buildFunctionSimplificationPipeline(
+        llvm::OptimizationLevel::O2, llvm::ThinOrFullLTOPhase::None);
+    fpm.run(f, env.fam);
+}
+
 void vectorizeFunction(llvm::Function& f, llvm::TargetMachine* tm) {
     if (f.isDeclaration()) return;
     PassEnv env(tm);

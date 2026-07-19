@@ -23,6 +23,8 @@
 #include "cajeta/asn/Statement.h"
 #include "cajeta/transform/GradBackward.h"
 #include "cajeta/transform/VmapBatch.h"
+#include "cajeta/compile/Optimizer.h"
+#include "llvm/Transforms/Utils/Cloning.h"
 #include "cajeta/synth/SourceSynthesisParse.h"
 #include "cajeta/synth/SourceSynthesis.h"
 #include "cajeta/compile/CajetaLlvmVisitor.h"
@@ -1199,6 +1201,32 @@ namespace cajeta {
                     }
                 }
             }
+            // Jit over a transform (6.1.2): the argument is a Vmap/Grad call whose
+            // type is not a function type until IT is transformed, so intercept
+            // BEFORE resolving argExpr. The inner transform emits its synthesized
+            // functions; Jit then fuses each one IN PLACE (they are fresh — no
+            // other caller sees the pre-fused body) and tags it __JitFused_. The
+            // returned value and type are the inner transform's own, so the call
+            // site keeps the composed signature (6.2.2).
+            if (methodCallName == "Jit") {
+                if (auto innerT = std::dynamic_pointer_cast<MethodCallExpression>(
+                        parameters[0].expression)) {
+                    const std::string& n = innerT->getMethodCallName();
+                    if (n == "Vmap" || n == "Grad") {
+                        std::set<const llvm::Function*> before;
+                        for (auto& fn : module->getLlvmModule()->functions())
+                            before.insert(&fn);
+                        llvm::Value* inner = innerT->generateCode(module);
+                        for (auto& fn : module->getLlvmModule()->functions()) {
+                            if (fn.isDeclaration() || before.count(&fn)) continue;
+                            cajeta::fuseFunction(fn, nullptr);
+                            fn.setName("__JitFused_" + fn.getName().str());
+                        }
+                        resolvedType = innerT->getResolvedType();
+                        return inner;
+                    }
+                }
+            }
             // Vmap(Grad(f)) (5.1.3): like nested Grad, the argument is a transform
             // call whose type is not a function type until it is transformed, so
             // intercept BEFORE resolving argExpr and batch the differentiated form.
@@ -1277,9 +1305,38 @@ namespace cajeta {
                         "CAJETA_ERROR_TRANSFORM_PMAP_UNIMPLEMENTED",
                         "", getSourceLine(), getSourceColumn());
                 }
-                // U1 identity placeholder: the transformed function IS f, typed as
-                // its function type, so `(T)->R g = Jit(f); g(x)` dispatches through
-                // the ordinary closure-call path on the same record.
+                // Jit(f) on a directly-written lambda (6.1.1/6.2.1): clone the
+                // specialized target as __JitFused_<name>, fuse the clone, and
+                // return a fresh {fusedFn, null, null} record of the same shape,
+                // so `(T)->R g = Jit(f); g(x)` dispatches through the ordinary
+                // closure-call path — f's signature exactly (6.2.2). The original
+                // function is left intact for any other use of f.
+                if (methodCallName == "Jit" && record) {
+                    if (auto* gvRec = llvm::dyn_cast<llvm::GlobalVariable>(record)) {
+                        if (auto* init = llvm::dyn_cast<llvm::ConstantStruct>(
+                                gvRec->getInitializer())) {
+                            llvm::ValueToValueMapTy vm;
+                            llvm::Function* clone = llvm::CloneFunction(target, vm);
+                            clone->setName("__JitFused_" + target->getName().str());
+                            cajeta::fuseFunction(*clone, nullptr);
+                            std::vector<llvm::Constant*> elems;
+                            for (unsigned i = 0; i < init->getType()->getNumElements(); ++i)
+                                elems.push_back(i == 0
+                                    ? static_cast<llvm::Constant*>(clone)
+                                    : init->getAggregateElement(i));
+                            auto* fusedRec = new llvm::GlobalVariable(
+                                *module->getLlvmModule(), init->getType(),
+                                /*isConstant=*/true, llvm::GlobalValue::PrivateLinkage,
+                                llvm::ConstantStruct::get(init->getType(), elems),
+                                gvRec->getName() + ".jit");
+                            resolvedType = fnType;
+                            return fusedRec;
+                        }
+                    }
+                }
+                // Identity fallback (non-Jit, or a record shape the fuser does not
+                // recognize): the transformed function IS f, typed as its function
+                // type, dispatching through the ordinary closure-call path.
                 resolvedType = fnType;
                 return fnVal;
             }
