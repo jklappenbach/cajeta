@@ -138,6 +138,31 @@ namespace cajeta {
             // promotion pass would pick the wider of lhs/rhs; for now this matches the
             // existing assumption in codegen (lhs drives the op type).
             AbstractSyntaxNode::resolveTypes(module);
+            // ...EXCEPT comparisons and short-circuit logical ops, whose
+            // result is boolean (the enum comments above say so; codegen
+            // emits i1). Typing them as the LHS operand let `x > 0` ride the
+            // "number" generic bucket into a boolean formal via closest-
+            // match, but a reference LHS had no such bridge:
+            // `s != null && s.equals(...)` typed as cajeta.lang.String and
+            // missed every overload — a silent resolution miss until
+            // silent-resolution-diagnostics made it NO_MATCHING_OVERLOAD.
+            // (Operator-overloaded EQ/NE also return boolean by stdlib
+            // convention; generateCode re-stamps resolvedType for override
+            // calls regardless.)
+            switch (binaryOp) {
+                case BINARY_OP_LT:
+                case BINARY_OP_LE:
+                case BINARY_OP_GT:
+                case BINARY_OP_GE:
+                case BINARY_OP_EQ:
+                case BINARY_OP_NE:
+                case BINARY_OP_LOGAND:
+                case BINARY_OP_LOGOR:
+                    resolvedType = CajetaType::of("boolean");
+                    return;
+                default:
+                    break;
+            }
             if (!children.empty()) {
                 if (auto lhs = dynamic_pointer_cast<Expression>(children[0])) {
                     resolvedType = lhs->getResolvedType();

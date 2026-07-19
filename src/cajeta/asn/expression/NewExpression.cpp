@@ -117,11 +117,21 @@ namespace cajeta {
         // already reflects T → concrete-arg even though the stack is
         // long gone by the time resolveTypes runs.
         CajetaTypePtr type = boundElementType;
+        // Bare names resolve SCOPED FIRST (own package → imports → global),
+        // mirroring generateCode below. The old ordering ran the raw
+        // `of(name, "")` global short-name key first — last-writer-wins
+        // across packages — and its non-null hit SHORT-CIRCUITED the scoped
+        // lookup entirely: resolvedType then carried the wrong same-named
+        // class into overload resolution even though generateCode would
+        // later re-resolve correctly. `heap HttpParserLimits()` inside the
+        // embedded stdlib stamped the USER'S HttpParserLimits (or vice
+        // versa), and the call's ParameterEntry mismatched every candidate —
+        // the cajeta-http NO_MATCHING_OVERLOAD regression, a silent miss
+        // until silent-resolution-diagnostics made it fatal.
+        if (!type && package.empty()) {
+            type = CajetaType::ofScoped(typeName, module);
+        }
         if (!type) type = CajetaType::of(typeName, package);
-        // Bare name: resolve scoped (own package → imports → global) —
-        // the raw global short-name key is last-writer-wins across
-        // packages, so `heap Foo()` would build a same-named class from
-        // another package whenever one registered later.
         if (!type) type = CajetaType::ofScoped(typeName, module);
         if (!type) return;
         if (!typeArguments.empty()) {
