@@ -19,6 +19,7 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [net-server-shutdown-wake](net-server-shutdown-wake-spec.md) | — (docs-refactor 15.6) | draft |
 | [matrix-element-callarg](matrix-element-callarg-spec.md) | — (docs-refactor 15.8) | draft |
 | [kernel-device-call-diagnostic](kernel-device-call-diagnostic-spec.md) | — (docs-refactor 15.9) | draft |
+| [channel-ownership](channel-ownership-spec.md) | [plan](../agents/channel-ownership-plan.md) | draft |
 | [profile](profile-spec.md) | — | draft |
 | [jit-run-parse-abort](jit-run-parse-abort-spec.md) | — | draft |
 | [cajeta-ir-phase-b](cajeta-ir-phase-b-spec.md) | — (§4/§5 resolved; §2 forwarding, §3 captures remain) | draft |
