@@ -1,0 +1,15 @@
+package cajeta.aot;
+
+/**
+ * Declares a test double in the compile-time DI graph. Under `--profile=test`
+ * the class is included and masks every non-test @Component that implements an
+ * interface this double also implements — the double takes over that
+ * interface's @Inject sites (AspectModel.md § "Profiles and test-component
+ * masking"). Masking is interface-scoped: a double with no interface masks
+ * nothing (it is injectable only by its own concrete type). Outside test mode,
+ * @TestComponent classes are dropped from the graph.
+ *
+ * Core: recognized and lowered by the compiler like @Component.
+ */
+annotation TestComponent {
+}

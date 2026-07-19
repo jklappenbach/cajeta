@@ -118,6 +118,13 @@ CudaDriver::~CudaDriver() {
 
 bool CudaDriver::init() {
     if (initialized) return true;
+    // A prior failed init() may have left an Api (and an open dlopen handle);
+    // release it before retrying so `api` isn't overwritten and leaked.
+    if (api) {
+        if (api->lib) closeLib(api->lib);
+        delete api;
+        api = nullptr;
+    }
     api = new Api();
     if (!api->resolveAll()) {
         std::fprintf(stderr, "cajeta.xpu.nvidia: could not load %s\n", kCudaLib);

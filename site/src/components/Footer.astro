@@ -1,0 +1,14 @@
+---
+import manifest from '../data/manifest.json';
+const { totalDocs, totalWords } = manifest.stats;
+---
+
+<footer class="site-footer">
+  <div class="bar">
+    <span>
+      Cajeta — a systems language with borrow-checked memory. Rendered live from
+      <code>docs/</code>: {totalDocs} documents, {Math.round(totalWords / 1000)}k words.
+    </span>
+    <a href="https://github.com/jklappenbach/cajeta">GitHub</a>
+  </div>
+</footer>

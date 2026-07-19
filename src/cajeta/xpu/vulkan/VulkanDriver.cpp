@@ -119,6 +119,7 @@ struct VulkanDriver::Impl {
         bool live = false;
     };
     std::vector<BufferRec> buffers;  // handle = index + 1
+    std::vector<std::size_t> freeSlots;  // reclaimed indices, reused by allocate
 
     BufferRec* rec(VulkanDriver::Buffer h) {
         if (h == 0 || h > buffers.size()) return nullptr;
@@ -159,6 +160,7 @@ struct VulkanDriver::Impl {
                 if (r.memory) freeMemory(device, r.memory, nullptr);
             }
             buffers.clear();
+            freeSlots.clear();
             if (cmdPool) destroyCommandPool(device, cmdPool, nullptr);
             destroyDevice(device, nullptr);
             device = VK_NULL_HANDLE;
@@ -727,6 +729,14 @@ VulkanDriver::Buffer VulkanDriver::alloc(std::size_t bytes) {
         return 0;
     }
     rec.live = true;
+    // Reuse a reclaimed slot if one is free, else grow the table. Without this
+    // the handle table grew unbounded across alloc/free cycles.
+    if (!d.freeSlots.empty()) {
+        std::size_t idx = d.freeSlots.back();
+        d.freeSlots.pop_back();
+        d.buffers[idx] = rec;
+        return (Buffer)(idx + 1);  // handle = index + 1
+    }
     d.buffers.push_back(rec);
     return (Buffer) d.buffers.size();  // handle = index + 1
 }
@@ -759,6 +769,7 @@ void VulkanDriver::free(Buffer b) {
     r->mapped = nullptr;
     r->buffer = VK_NULL_HANDLE;
     r->memory = VK_NULL_HANDLE;
+    d.freeSlots.push_back((std::size_t)(b - 1));  // reclaim the slot
 }
 
 bool VulkanDriver::launch(const void* spirv, std::size_t len, const char* entry,

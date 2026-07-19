@@ -75,6 +75,10 @@ namespace cajeta {
                  builder),
           outer(outer) {
         this->parent = builder;
+        // build() returns a fresh __cajeta_alloc'd instance, so the caller owns
+        // it — the caller's drop chain must fire. Mirrors
+        // SynthesizedStaticFactoryMethod; without this the built object leaks.
+        this->setReturnsOwnership(true);
     }
 
     void SynthesizedBuildMethod::generateCode() {

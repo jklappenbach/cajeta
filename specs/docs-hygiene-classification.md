@@ -14,7 +14,7 @@ Verdicts: **guide** → seeds `docs/guide/` · **specification** →
 | CompilerModes.md | specification | specification/buildtool/ |
 | Documentation.md | specification | specification/buildtool/ |
 | IncrementalCompilation.md | specification | specification/buildtool/ |
-| CajetaMath.md | specification | specification/cajeta-math/ |
+| CajetaMath.md | specification | specification/math/ |
 | CajetaCaramelo.md | moved out | relocated to the cajeta-caramelo repo (docs/specification/CajetaCaramelo.md) — Caramelo is a consumer, not a foundation spec |
 | Debugging.md | specification | specification/debugging/ (new) |
 | DI-override-hook.md | specification | specification/lang/ |
@@ -36,7 +36,7 @@ Verdicts: **guide** → seeds `docs/guide/` · **specification** →
 | history/StructsViewsStatus.md | retire | status tracker, complete (832/832) |
 | gpu/CajetaGPU.md + gpu/*.md (10 capability docs) | specification | specification/gpu/ (new module) |
 | gpu/xpu/*.md | specification | specification/xpu/ (new module) |
-| gpu/gfx/CajetaGFX.md, CajetaRender.md | retire | cajeta-gfx-spec.md explicitly supersedes ("both drifted") |
+| gpu/gfx/CajetaGFX.md, CajetaRender.md | retire | gfx-spec.md explicitly supersedes ("both drifted") |
 | cajeta/gpu/ifx/ (README + .cajeta code) | relocate | samples/ per plan — README says target is runtime/src/cajeta/ifx/ (see questions) |
 | buildtool/LibraryProjectType.md | specification | specification/buildtool/ (already slated) |
 

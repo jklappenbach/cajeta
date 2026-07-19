@@ -1,0 +1,36 @@
+{
+  "name": "cajeta-site",
+  "version": "1.0.0",
+  "description": "Public documentation site for the Cajeta language — renders the canonical docs/ tree in place.",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "dev": "npm run manifest && astro dev",
+    "manifest": "node scripts/build-manifest.mjs",
+    "prebuild": "npm run manifest",
+    "build": "astro build",
+    "preview": "astro preview",
+    "regen": "scripts/regen.sh",
+    "deploy": "scripts/regen.sh && wrangler deploy",
+    "test": "node --test \"scripts/**/*.test.mjs\""
+  },
+  "dependencies": {
+    "@astrojs/react": "^4.4.0",
+    "@fontsource-variable/fraunces": "^5.2.0",
+    "@fontsource-variable/inter": "^5.2.0",
+    "@fontsource-variable/jetbrains-mono": "^5.2.0",
+    "@fontsource-variable/source-serif-4": "^5.2.0",
+    "astro": "^5.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "typescript": "^5.9.0",
+    "wrangler": "^4.112.0"
+  }
+}

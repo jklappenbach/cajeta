@@ -1,0 +1,16 @@
+---
+interface Props {
+  url: string;
+  title: string;
+  description: string;
+  minutes: number;
+  metaPrefix?: string;
+}
+const { url, title, description, minutes, metaPrefix } = Astro.props;
+---
+
+<a class="doc-card" href={url}>
+  <h3>{title}</h3>
+  <p>{description}</p>
+  <span class="meta">{metaPrefix ? `${metaPrefix} · ` : ''}{minutes} min read</span>
+</a>

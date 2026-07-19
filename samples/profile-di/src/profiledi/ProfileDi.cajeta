@@ -1,0 +1,59 @@
+package profiledi;
+
+import cajeta.aot.Profile;
+import cajeta.aot.TestComponent;
+
+// End-to-end demo of cajeta.aot DI profiles + @TestComponent masking.
+// The SAME source is built under three --profile values (see run.sh);
+// the compile-time DI graph resolves a different Store / Greeting each
+// time, with no code change:
+//
+//   --profile=prod  -> store=sql  greeting=real-greeting
+//   --profile=dev   -> store=mem  greeting=real-greeting
+//   --profile=test  -> store=mem  greeting=fake-greeting
+//
+// Store shows profile selection and the any-of array form; Greeting
+// shows a @TestComponent masking a profile-neutral @Component by shared
+// interface under --profile=test.
+
+interface Store { public String tag(); }
+interface Greeting { public String text(); }
+
+// Profile-scoped Store impls. SqlStore is prod-only; MemStore is active
+// under BOTH dev and test (array-literal any-of).
+@Component @Profile("prod") public class SqlStore implements Store {
+    public SqlStore() { return; }
+    public String tag() { return "sql"; }
+}
+
+@Component @Profile({"dev", "test"}) public class MemStore implements Store {
+    public MemStore() { return; }
+    public String tag() { return "mem"; }
+}
+
+// ProdGreeting is profile-neutral (always eligible). Under --profile=test
+// the @TestComponent double masks it via the shared Greeting interface.
+@Component public class ProdGreeting implements Greeting {
+    public ProdGreeting() { return; }
+    public String text() { return "real-greeting"; }
+}
+
+@TestComponent public class FakeGreeting implements Greeting {
+    public FakeGreeting() { return; }
+    public String text() { return "fake-greeting"; }
+}
+
+@Component public class App {
+    @Inject Store store;
+    @Inject Greeting greeting;
+    public App() { return; }
+    public int32 run() {
+        System.stdout.println("RESULT store=" + this.store.tag()
+            + " greeting=" + this.greeting.text());
+        return 0;
+    }
+    public static int32 main() {
+        App a = App.__cajeta_inject();
+        return a.run();
+    }
+}

@@ -3142,11 +3142,16 @@ namespace cajeta {
                     return builder->CreateCall(fn, {x});
                 }
                 if (methodCallName == "round" && parameters.size() == 1) {
-                    // Match Java's Math.round(double) → long: half-up rounding to i64.
+                    // Java's Math.round(double) → long is (long)floor(x + 0.5)
+                    // (ties toward +inf), NOT llvm.round (ties away from zero) —
+                    // they disagree on negative .5 values, e.g. round(-2.5): Java
+                    // -2, llvm.round -3.
                     llvm::Value* x = toF64(loadArg(0));
+                    llvm::Value* half = llvm::ConstantFP::get(f64Ty, 0.5);
+                    llvm::Value* shifted = builder->CreateFAdd(x, half);
                     llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
-                        lm, llvm::Intrinsic::round, {f64Ty});
-                    llvm::Value* rounded = builder->CreateCall(fn, {x});
+                        lm, llvm::Intrinsic::floor, {f64Ty});
+                    llvm::Value* rounded = builder->CreateCall(fn, {shifted});
                     return builder->CreateFPToSI(rounded, i64Ty);
                 }
                 // Single-arg transcendentals — all take/return double.

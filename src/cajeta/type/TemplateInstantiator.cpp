@@ -820,6 +820,13 @@ namespace cajeta {
         // returns a ClassBodyDeclarationPtr we hand to inst->setClassBody, then
         // generatePrototype lowers the class to LLVM types + functions exactly
         // as it would for a non-templated class.
+        //
+        // The walk / synthesis / generatePrototype can throw (e.g.
+        // CAJETA_ERROR_VTABLE_SLOT_UNRESOLVED in an incremental build). Guard so
+        // the substitution frame, active-module, and structure stack are
+        // restored on a throw — otherwise a caught-and-continued compile runs
+        // with a corrupted module state.
+        try {
         CajetaLlvmVisitor visitor(module);
         auto bodyAny = visitor.visitClassBody(
             classDecl ? classDecl->classBody() : recordDecl->classBody());
@@ -891,6 +898,13 @@ namespace cajeta {
         // after-the-fact reparent. generatePrototype emits the class's own
         // vtable/RTTI/struct into the emit module via its own swap.
         inst->generatePrototype();
+        } catch (...) {
+            CajetaModule::setActiveModule(prevActive);
+            stack.clear();
+            stack.swap(savedStack);
+            module->popTypeSubstitution();
+            throw;
+        }
 
         CajetaModule::setActiveModule(prevActive);
         stack.clear();

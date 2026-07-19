@@ -5,6 +5,7 @@
 #include "CajetaClass.h"
 #include "CajetaFunctionType.h"
 #include "CajetaView.h"
+#include "llvm/TargetParser/Triple.h"
 #include "StructureMetadata.h"
 #include "../error/Diagnostics.h"
 #include "../field/Field.h"
@@ -634,6 +635,22 @@ namespace cajeta {
                 for (auto& p : cls->propertyList) {
                     if (p->isStatic()) continue;
                     slot++;
+                }
+                // title-tracking §5 — mirror the hidden per-instance ownership
+                // word embedSubObject emits (after own properties, before vbase
+                // slots) for any class carrying a bit-carrying owned field.
+                // Omitting it made every later sub-object's slot index too low,
+                // so a secondary vtable got stored into an earlier sub-object's
+                // ownership word — corrupting drop bits (double-free / leak).
+                {
+                    bool wantsWord = false;
+                    for (auto& p : cls->propertyList) {
+                        if (!p->isStatic() && fieldHasOwnershipBit(p)) {
+                            wantsWord = true;
+                            break;
+                        }
+                    }
+                    if (wantsWord) slot++;
                 }
                 // MultiClassing Phase 3 v4: each class's slice in the
                 // flattened layout ends with one ptr per transitive
@@ -3033,8 +3050,16 @@ namespace cajeta {
             return existing;
         }
 
+        // LinkOnceODR (see the heap drop fn below) — the stack drop wrapper is
+        // likewise materialized per-use and must merge across TUs, not collide.
         llvmStackDropFunction = llvm::Function::Create(fnTy,
-            llvm::Function::ExternalLinkage, dropName, lmod);
+            llvm::Function::LinkOnceODRLinkage, dropName, lmod);
+        {
+            llvm::Triple dropTriple(lmod->getTargetTriple());
+            if (!dropTriple.isOSBinFormatMachO()) {
+                llvmStackDropFunction->setComdat(lmod->getOrInsertComdat(dropName));
+            }
+        }
         llvm::BasicBlock* bb = llvm::BasicBlock::Create(
             ctx, "entry", llvmStackDropFunction);
         llvm::IRBuilder<> b(bb);
@@ -3511,8 +3536,19 @@ namespace cajeta {
         llvm::FunctionType* fnTy = llvm::FunctionType::get(
             llvm::Type::getVoidTy(ctx), {(llvm::Type*) ptrTy},
             /*isVarArg=*/false);
+        // LinkOnceODR + comdat (see getOrCreateDropFunction): the value-release
+        // fn is materialized per-use and can be emitted into more than one TU
+        // (the defining module + any consumer that value-releases the type), so
+        // ExternalLinkage collides with 'duplicate symbol' at link. The body is
+        // deterministic per class, so ODR holds.
         llvm::Function* fn = llvm::Function::Create(fnTy,
-            llvm::Function::ExternalLinkage, relName, lmod);
+            llvm::Function::LinkOnceODRLinkage, relName, lmod);
+        {
+            llvm::Triple relTriple(lmod->getTargetTriple());
+            if (!relTriple.isOSBinFormatMachO()) {
+                fn->setComdat(lmod->getOrInsertComdat(relName));
+            }
+        }
         // Same emit-module pinning dance as getOrCreateDropFunction: the
         // body's runtime callees must land in `lmod`.
         llvm::Module* prevEmitLlvm = CajetaModule::getCurrentEmitLlvmModule();
@@ -3594,8 +3630,20 @@ namespace cajeta {
             return existing;
         }
 
+        // LinkOnceODR so a class drop fn materialized in more than one module
+        // (the defining module + any consumer TU that drops an instance —
+        // happens for classes whose drop wrapper is emitted lazily per use)
+        // merges to a single definition at link time instead of a
+        // "duplicate symbol" error. The body is deterministic per class, so
+        // ODR holds. Mirrors the Task<T> drop fn (CajetaTask.cpp).
         llvmDropFunction = llvm::Function::Create(fnTy,
-            llvm::Function::ExternalLinkage, dropName, lmod);
+            llvm::Function::LinkOnceODRLinkage, dropName, lmod);
+        {
+            llvm::Triple dropTriple(lmod->getTargetTriple());
+            if (!dropTriple.isOSBinFormatMachO()) {
+                llvmDropFunction->setComdat(lmod->getOrInsertComdat(dropName));
+            }
+        }
         // The drop body's runtime callees (__cajeta_free here,
         // __cajeta_class_virtual_drop / __cajeta_free_array / __cajeta_iface_drop
         // in emitDropBodyInline) are resolved via getRuntimeFunction, which lands

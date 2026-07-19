@@ -1,0 +1,110 @@
+---
+// Book-style reader shell: left chapter index, main content panel (slot),
+// centered prev/next pager. Chapters come either from numbered H2s inside
+// one doc (src/lib/chapters.mjs) or from numbered files in a section
+// (fileChapters in scripts/lib/extract.mjs).
+interface ChapterLink {
+  slug: string;
+  title: string;
+  url: string;
+}
+
+interface Props {
+  guideTitle: string;
+  guideMeta: { path: string; minutes: number; words: number } | undefined;
+  section: { name: string; url: string } | undefined;
+  chapters: ChapterLink[];
+  index: number;
+}
+
+const { guideTitle, guideMeta, section, chapters, index } = Astro.props;
+const chapter = chapters[index];
+const prev = index > 0 ? chapters[index - 1] : null;
+const next = index < chapters.length - 1 ? chapters[index + 1] : null;
+---
+
+<div class="guide-shell">
+  <aside class="guide-index" aria-label="Chapters">
+    <div>
+      <a class="guide-name" href={chapters[0].url}>{guideTitle}</a>
+      <ol>
+        {
+          chapters.map((c, i) => (
+            <li>
+              <a href={c.url} aria-current={i === index ? 'page' : undefined}>
+                {c.title}
+              </a>
+            </li>
+          ))
+        }
+      </ol>
+    </div>
+  </aside>
+
+  <article class="prose guide-panel">
+    <p class="kicker">
+      <a href="/">docs</a>
+      {
+        section && (
+          <>
+            <span class="sep">/</span>
+            <a href={section.url}>{section.name}</a>
+          </>
+        )
+      }
+      <span class="sep">/</span>
+      <a href={chapters[0].url}>{guideTitle}</a>
+    </p>
+
+    <details class="guide-index-mobile">
+      <summary>Chapters — {chapter.title}</summary>
+      <ol>
+        {
+          chapters.map((c, i) => (
+            <li>
+              <a href={c.url} aria-current={i === index ? 'page' : undefined}>
+                {c.title}
+              </a>
+            </li>
+          ))
+        }
+      </ol>
+    </details>
+
+    <slot />
+
+    <nav class="pager" aria-label="Chapter navigation">
+      {
+        prev ? (
+          <a class="pager-link prev" href={prev.url} rel="prev">
+            <span class="arrow">←</span>
+            <span class="pager-text">
+              <span class="pager-label">Previous</span>
+              <span class="pager-title">{prev.title}</span>
+            </span>
+          </a>
+        ) : (
+          <span class="pager-spacer" />
+        )
+      }
+      <span class="pager-pos">{index + 1} / {chapters.length}</span>
+      {
+        next ? (
+          <a class="pager-link next" href={next.url} rel="next">
+            <span class="pager-text">
+              <span class="pager-label">Next</span>
+              <span class="pager-title">{next.title}</span>
+            </span>
+            <span class="arrow">→</span>
+          </a>
+        ) : (
+          <span class="pager-spacer" />
+        )
+      }
+    </nav>
+
+    <p class="doc-meta">
+      Source: <code>{guideMeta?.src}</code> · {guideMeta?.minutes} min · {guideMeta?.words} words
+    </p>
+  </article>
+</div>

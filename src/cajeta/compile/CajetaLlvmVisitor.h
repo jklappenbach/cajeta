@@ -525,8 +525,24 @@ namespace cajeta {
             // Annotatable::findAnnotation. The by-name set is also
             // populated for the call sites that only need presence.
             // See AspectModel.md § Implementation roadmap A1.
+            // Modifiers + annotations sit on the TypeDeclaration for a
+            // top-level class, but on the enclosing classBodyDeclaration for a
+            // NESTED class (classBodyDeclaration -> memberDeclaration ->
+            // classDeclaration, so ctx->parent is a MemberDeclaration). Gather
+            // the classOrInterfaceModifier list from whichever applies — nested
+            // @ValueType / final / etc. were silently dropped before.
+            std::vector<CajetaParser::ClassOrInterfaceModifierContext*> coims;
             if (auto* typeDecl = dynamic_cast<CajetaParser::TypeDeclarationContext*>(ctx->parent)) {
-                for (auto* mod : typeDecl->classOrInterfaceModifier()) {
+                for (auto* m : typeDecl->classOrInterfaceModifier()) coims.push_back(m);
+            } else if (auto* memberDecl = dynamic_cast<CajetaParser::MemberDeclarationContext*>(ctx->parent)) {
+                if (auto* cbd = dynamic_cast<CajetaParser::ClassBodyDeclarationContext*>(memberDecl->parent)) {
+                    for (auto* m : cbd->modifier()) {
+                        if (auto* coim = m->classOrInterfaceModifier()) coims.push_back(coim);
+                    }
+                }
+            }
+            {
+                for (auto* mod : coims) {
                     // Keyword modifiers (final / public / abstract / …) on the
                     // class declaration: capture onto the structure so codegen
                     // can ask `getModifiers()`. `final` in particular lets
@@ -634,8 +650,18 @@ namespace cajeta {
                     for (auto& inst : structure->getAnnotationInstances()) {
                         if (inst && inst->getName()
                                 && inst->getName()->getTypeName() == "Profile") {
-                            const string& p = inst->getString();
-                            if (!p.empty()) desc->profiles.push_back(p);
+                            // Array form @Profile({"dev","test"}) → StringList;
+                            // single @Profile("dev") → String. Repeated
+                            // @Profile annotations accumulate across instances.
+                            const vector<string>& list = inst->getStringList();
+                            if (!list.empty()) {
+                                for (auto& p : list) {
+                                    if (!p.empty()) desc->profiles.push_back(p);
+                                }
+                            } else {
+                                const string& p = inst->getString();
+                                if (!p.empty()) desc->profiles.push_back(p);
+                            }
                         }
                     }
                     CajetaModule::registerComponent(desc);
@@ -1377,6 +1403,15 @@ namespace cajeta {
                         std::make_shared<NestedClassDeclaration>(
                             nullptr, ctx->getStart()));
                 }
+            }
+            // A classBodyDeclaration can be a bare `;` or a `STATIC? block`
+            // initializer — both have no memberDeclaration(). Don't hand null
+            // to visitMemberDeclaration (visitChildren(nullptr) → SIGSEGV);
+            // return the same benign no-op the nested-type paths use.
+            if (!ctx->memberDeclaration()) {
+                return std::static_pointer_cast<MemberDeclaration>(
+                    std::make_shared<NestedClassDeclaration>(
+                        nullptr, ctx->getStart()));
             }
             MemberDeclarationPtr memberDeclaration = any_cast<MemberDeclarationPtr>(visitMemberDeclaration(
                 ctx->memberDeclaration()));

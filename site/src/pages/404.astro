@@ -1,0 +1,25 @@
+---
+import Base from '../layouts/Base.astro';
+import manifest from '../data/manifest.json';
+
+const guideStart =
+  manifest.docs.find((d) => d.slug === 'guide/readme')?.url ??
+  manifest.docs.find((d) => d.slug === 'languageguide')?.url ??
+  '/';
+---
+
+<Base title="Not found — Cajeta documentation">
+  <div class="page-narrow" style="text-align: center;">
+    <p class="kicker">404</p>
+    <h1 style="font-family: var(--font-display); font-size: clamp(2.2rem, 6vw, 3.4rem); font-weight: 550; margin: 0 0 1rem;">
+      Nothing simmering here.
+    </h1>
+    <p style="color: var(--ink-soft); margin-bottom: 2rem;">
+      This page doesn't exist — the document may have moved when <code>docs/</code> was reorganized.
+    </p>
+    <div class="hero-ctas" style="justify-content: center;">
+      <a class="button primary" href="/">Back to the docs</a>
+      <a class="button ghost" href={guideStart}>The guide</a>
+    </div>
+  </div>
+</Base>

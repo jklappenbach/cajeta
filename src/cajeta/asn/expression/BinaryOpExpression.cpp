@@ -149,6 +149,15 @@ namespace cajeta {
             builder->CreateStore(
                 llvm::ConstantInt::get(i64Ty, (uint64_t) IFACE_KIND_BORROWED_CLASS),
                 kindSlot);
+        } else if (llvm::isa<llvm::ConstantPointerNull>(rhsVal)) {
+            // `arr[i] = null` (the assignment-based drop idiom): zero the
+            // 24-byte fat-pointer body (null vtable / borrowed) — do NOT memcpy
+            // from the null source, which faults. Mirrors the interface-FIELD
+            // null store.
+            const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
+            uint64_t bodyBytes = dl.getTypeAllocSize(bodyTy);
+            builder->CreateMemSet(slot, builder->getInt8(0), bodyBytes,
+                llvm::MaybeAlign(8));
         } else {
             // Interface → interface: rhsVal points at a 24-byte body; copy it in.
             const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();

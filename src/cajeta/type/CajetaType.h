@@ -464,13 +464,11 @@ class CajetaType : public Modifiable, public Annotatable,
         // by name in `ctx` if present, else creates a fresh opaque one.
         static llvm::StructType* getOrCreateLlvmStructNoRegister(llvm::LLVMContext* ctx, const string& name);
 
-        static CajetaTypePtr create() {
-            return CajetaType::create();
-        }
-
         static CajetaTypePtr create(QualifiedNamePtr qName) {
             CajetaTypePtr result = make_shared<CajetaType>(qName);
-            typeMap[TypeKey(result->llvmType)] = result;
+            // Guard: a qName-only CajetaType has no llvmType yet, and
+            // TypeKey(nullptr) dereferences it — only index by type when present.
+            if (result->llvmType) typeMap[TypeKey(result->llvmType)] = result;
             result->rank = canonicalMap.size();
             canonicalMap[result->canonical] = result;
 

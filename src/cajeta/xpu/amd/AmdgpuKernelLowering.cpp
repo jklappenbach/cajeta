@@ -124,13 +124,15 @@ public:
         b.CreateFence(ord, sc);
     }
 
-    // Async global->LDS copy (xpu-pipelined-gemm-primitives U2). gfx1151 (RDNA3.5)
-    // has the LDS-direct vmem load `global_load_lds_{ubyte,ushort,dword}` but NOT
-    // the gfx1250+ async-mark hardware. So `copy` issues `global_load_lds` per
-    // element — the data goes global->LDS with NO VGPR staging buffer (frees the
-    // registers the WMMA accumulator path is starved for), the key ISA win over the
-    // staged global->reg->LDS path. The workgroup stripes it (e = tid, tid+nthr, ...),
-    // so each wave's lanes coalesce. Element size must be 1/2/4 bytes; wider (e.g.
+    // Async global->LDS copy (xpu-pipelined-gemm-primitives U2). The LDS-direct
+    // vmem load `global_load_lds_{ubyte,ushort,dword}` exists on GFX9/CDNA and
+    // gfx1250+, but NOT on RDNA1-3.5 (gfx10xx/gfx11xx incl. gfx1151), which fall
+    // back to the synchronous staged copy (see archHasVmemToLds / bundleHasVmemToLds).
+    // Where it IS available, `copy` issues `global_load_lds` per element — the data
+    // goes global->LDS with NO VGPR staging buffer (frees the registers the WMMA
+    // accumulator path is starved for), the key ISA win over the staged
+    // global->reg->LDS path. The workgroup stripes it (e = tid, tid+nthr, ...), so
+    // each wave's lanes coalesce. Element size must be 1/2/4 bytes; wider (e.g.
     // fp64) falls back to the synchronous strided seam (the fp64 path uses CoopStage,
     // not AsyncCopy). `commit` is a no-op (no async-mark); `wait` drains outstanding
     // vmem so the landed LDS is safe to publish through the caller's Barrier — a full
@@ -147,18 +149,36 @@ public:
         return false;
     }
 
+    // A kernel is lowered ONCE but codegen'd for every arch in a multi-arch
+    // bundle, so emitting global_load_lds is safe only when EVERY target arch
+    // supports it — otherwise an unsupporting arch Cannot-selects and the kernel
+    // is silently dropped from the bundle. `cajeta.amdgpu.archlist` carries the
+    // full bundle; fall back to the single-arch flag when it is absent.
+    static bool bundleHasVmemToLds(llvm::Module& m) {
+        auto readFlag = [&](const char* name) -> llvm::StringRef {
+            if (auto* f = m.getModuleFlag(name))
+                if (auto* s = llvm::dyn_cast<llvm::MDString>(f)) return s->getString();
+            return {};
+        };
+        llvm::StringRef list = readFlag("cajeta.amdgpu.archlist");
+        if (list.empty()) return archHasVmemToLds(readFlag("cajeta.amdgpu.arch"));
+        llvm::SmallVector<llvm::StringRef, 4> arches;
+        list.split(arches, ',', -1, /*KeepEmpty=*/false);
+        for (auto a : arches)
+            if (!archHasVmemToLds(a.trim())) return false;
+        return !arches.empty();
+    }
+
     void asyncCopy(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* dstBase,
                    llvm::Type* dstElem, llvm::Value* dstOffset, llvm::Value* srcBase,
                    llvm::Type* srcElem, llvm::Value* srcOffset,
                    llvm::Value* count) override {
         llvm::LLVMContext& ctx = m.getContext();
         uint64_t elemBytes = m.getDataLayout().getTypeStoreSize(srcElem);
-        llvm::StringRef arch;
-        if (auto* f = m.getModuleFlag("cajeta.amdgpu.arch"))
-            if (auto* s = llvm::dyn_cast<llvm::MDString>(f)) arch = s->getString();
-        // No native direct global->LDS on this subtarget, or a width the LDS-direct
-        // load can't carry (1/2/4 bytes only) — use the synchronous staged copy.
-        if (!archHasVmemToLds(arch)
+        // No native direct global->LDS on some target arch in the bundle, or a
+        // width the LDS-direct load can't carry (1/2/4 bytes only) — use the
+        // synchronous staged copy (correct on every arch).
+        if (!bundleHasVmemToLds(m)
                 || (elemBytes != 1 && elemBytes != 2 && elemBytes != 4)) {
             LoweringTarget::asyncCopy(b, m, dstBase, dstElem, dstOffset, srcBase,
                                       srcElem, srcOffset, count);

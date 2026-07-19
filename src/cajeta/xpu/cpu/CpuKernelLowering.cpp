@@ -178,6 +178,10 @@ public:
             "nctaid.x", "nctaid.y", "nctaid.z"};
         for (unsigned c = 0; c < kNumCoordParams; ++c)
             fn->getArg(i++)->setName(kCoordNames[c]);
+        // Marks that this function carries the 12 trailing coord params, so
+        // coord() can distinguish a kernel from a @Device helper (which the CPU
+        // target lowers through the same builtin path but with no coord params).
+        fn->addFnAttr("cajeta-cpu-kernel");
         decorateKernel(fn, m);
         return fn;
     }
@@ -539,6 +543,18 @@ private:
     static llvm::Value* coord(llvm::IRBuilderBase& b, unsigned group,
                               unsigned dim) {
         llvm::Function* fn = b.GetInsertBlock()->getParent();
+        // Coords live only on functions createKernel built (the last 12 args).
+        // A @Device helper reaching a thread/workgroup builtin on the CPU
+        // backend has none — without this guard arg_size()-12 underflows and
+        // getArg() reads out of bounds. The other backends read hardware
+        // intrinsics, so this restriction is CPU-only.
+        if (!fn->hasFnAttribute("cajeta-cpu-kernel") ||
+            fn->arg_size() < kNumCoordParams)
+            throw cajeta::Exception(
+                "XPU CPU backend: thread/workgroup coordinate builtins are not "
+                "supported inside a @Device helper (only in the @Kernel body); "
+                "pass the coordinate in as a parameter instead",
+                "XPU-C01");
         unsigned n = fn->arg_size();
         return fn->getArg(n - kNumCoordParams + group + dim);
     }

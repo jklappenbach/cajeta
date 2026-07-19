@@ -719,7 +719,8 @@ private:
                 builder.CreateRetVoid();
             } else {
                 llvm::Value* v = lowerExpr(rs->getExpression());
-                builder.CreateRet(coerceTo(v, fn->getReturnType()));
+                builder.CreateRet(coerceTo(v, fn->getReturnType(),
+                                           exprSigned(rs->getExpression())));
             }
             return;
         }
@@ -852,7 +853,7 @@ private:
             llvm::Value* v = lowerExpr(initExpr);
             if (!slotTy) slotTy = v->getType();  // infer slot type from initializer
             llvm::Value* slot = entryAlloca(slotTy, nm);
-            builder.CreateStore(coerceTo(v, slotTy), slot);
+            builder.CreateStore(coerceTo(v, slotTy, exprSigned(initExpr)), slot);
             values[nm] = slot;
             slotTypes[nm] = slotTy;
             signedness[nm] = typeIsSigned(declType);
@@ -1292,12 +1293,14 @@ private:
         auto [addr, elemTy] = lowerLValueAddr(lhs);
         llvm::Value* rv = lowerExpr(rhs);
         BinaryOp op = bin->getBinaryOp();
+        bool rvSigned = exprSigned(rhs);
         if (op != BINARY_OP_ASSIGN) {
             llvm::Value* cur = builder.CreateLoad(elemTy, addr, "cur");
             rv = applyBinOp(compoundBase(op), cur, rv, lvalueSigned(lhs),
                             elemTy->isFloatingPointTy());
+            rvSigned = lvalueSigned(lhs);
         }
-        builder.CreateStore(coerceTo(rv, elemTy), addr);
+        builder.CreateStore(coerceTo(rv, elemTy, rvSigned), addr);
     }
 
     static BinaryOp compoundBase(BinaryOp op) {
@@ -4573,7 +4576,12 @@ private:
             }
             return;
         }
-        bool lFp = lt->isFloatingPointTy(), rFp = rt->isFloatingPointTy();
+        // Same-shape here (scalar↔scalar or same-length vector↔vector); test
+        // FP-ness and integer width on the SCALAR/element type so same-length
+        // vectors with differing element types are unified element-wise rather
+        // than tripping getIntegerBitWidth() on a vector type.
+        bool lFp = lt->getScalarType()->isFloatingPointTy();
+        bool rFp = rt->getScalarType()->isFloatingPointTy();
         if (lFp || rFp) {
             llvm::Type* fT = lFp ? lt : rt;
             if (!lFp)        l = sign ? builder.CreateSIToFP(l, fT) : builder.CreateUIToFP(l, fT);
@@ -4582,7 +4590,8 @@ private:
             else if (rt != fT) r = builder.CreateFPCast(r, fT);
             return;
         }
-        llvm::Type* wide = lt->getIntegerBitWidth() >= rt->getIntegerBitWidth() ? lt : rt;
+        llvm::Type* wide =
+            lt->getScalarSizeInBits() >= rt->getScalarSizeInBits() ? lt : rt;
         l = builder.CreateIntCast(l, wide, sign);
         r = builder.CreateIntCast(r, wide, sign);
     }
@@ -4595,6 +4604,7 @@ private:
     }
 
     bool exprSigned(const ExpressionPtr& e) {
+        if (!e) return true;
         if (auto* f = structFieldOf(e)) return f->isSigned;
         if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(e)) {
             auto it = signedness.find(id->getTextValue());
@@ -4609,15 +4619,32 @@ private:
             return true;
         }
         if (std::dynamic_pointer_cast<IntegerLiteralExpression>(e)) return true;
-        return false;
+        // Composite forms: kernel bodies aren't host-type-resolved, so a nested
+        // expression has no signedness map key. Recurse — a computed value is
+        // signed if either operand is (else `(a-b) < 0` lowers to ICmpULT, an
+        // always-false unsigned compare, and `(a+b)/2` / `sum >> k` pick UDiv /
+        // LShr). Unary forms carry their operand's signedness (`-x` is signed).
+        if (auto bin = std::dynamic_pointer_cast<BinaryOpExpression>(e))
+            return exprSigned(exprChild(bin, 0)) || exprSigned(exprChild(bin, 1));
+        if (auto pre = std::dynamic_pointer_cast<PrefixExpression>(e))
+            return exprSigned(exprChild(pre, 0));
+        // Unknown leaf (cast, call, ternary): signed is the language default.
+        return true;
     }
 
-    llvm::Value* coerceTo(llvm::Value* v, llvm::Type* ty) {
+    // `isSigned` governs integer WIDENING only (sign- vs zero-extend); it is
+    // the signedness of the SOURCE value, since `uint64 h = <i32 expr>` must
+    // zero-extend an unsigned i32 (e.g. Bits.reverse yielding 0x80000000) but
+    // sign-extend a signed one. Narrowing and same-width casts ignore it. The
+    // default (signed) suits the index/config coercions that dominate the
+    // callers; value-carrying sites (return, decl-init, assign) pass the real
+    // source signedness.
+    llvm::Value* coerceTo(llvm::Value* v, llvm::Type* ty, bool isSigned = true) {
         if (v->getType() == ty) return v;
         if (v->getType()->isFloatingPointTy() && ty->isFloatingPointTy())
             return builder.CreateFPCast(v, ty);
         if (v->getType()->isIntegerTy() && ty->isIntegerTy())
-            return builder.CreateIntCast(v, ty, /*signed=*/true);
+            return builder.CreateIntCast(v, ty, isSigned);
         return v;  // best effort; shape mismatches surface in the verifier
     }
 

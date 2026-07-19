@@ -22,7 +22,11 @@ namespace cajeta {
     public:
         ClassLoader(string classPath, llvm::LLVMContext* context) {
             if (classPath.empty()) {
-                classPath = std::getenv("CAJETA_CLASSPATH");
+                // getenv returns nullptr when unset — assigning that to a
+                // std::string is UB (strlen(nullptr) → SIGSEGV).
+                if (const char* env = std::getenv("CAJETA_CLASSPATH")) {
+                    classPath = env;
+                }
             }
             if (classPath.empty()) {
                 std::filesystem::path cwd = std::filesystem::current_path();

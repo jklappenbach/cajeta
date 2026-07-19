@@ -1,0 +1,163 @@
+---
+// Section landing pages. Three shapes:
+//  - guide: the book reader opened at its introduction
+//  - specification/stdlib: the reference browser (Overview or generated index)
+//  - everything else: the classic card grid
+import { getCollection, render } from 'astro:content';
+import Base from '../../layouts/Base.astro';
+import DocCard from '../../components/DocCard.astro';
+import DocFilter from '../../components/react/DocFilter.tsx';
+import GuideReader from '../../components/GuideReader.astro';
+import RefIndex from '../../components/RefIndex.astro';
+import manifest from '../../data/manifest.json';
+import { fileChapters, sectionNav } from '../../../scripts/lib/extract.mjs';
+
+const REF_SECTIONS = ['specification', 'stdlib', 'benchmarks'];
+
+export async function getStaticPaths() {
+  return manifest.sections.map((s) => ({
+    params: { section: s.name },
+    props: { section: s },
+  }));
+}
+
+const { section } = Astro.props;
+const docs = manifest.docs.filter((d) => d.section === section.name);
+
+// --- guide: reader intro ------------------------------------------------
+const chapters = fileChapters(docs);
+// --- ref sections: browser ----------------------------------------------
+const nav = REF_SECTIONS.includes(section.name) ? sectionNav(docs, section.url) : null;
+
+// entry to render on this landing page (guide README / section README)
+const landingSlug = chapters?.[0]?.slug ?? nav?.overview?.slug ?? null;
+const landingMeta = landingSlug ? manifest.docs.find((d) => d.slug === landingSlug) : null;
+let Content = null;
+if (landingSlug) {
+  const entries = [
+    ...(await getCollection('docs', (e) => e.id === landingSlug)),
+    ...(await getCollection('bench', (e) => e.id === landingSlug)),
+  ];
+  if (entries[0]) ({ Content } = await render(entries[0]));
+}
+const guideTitle = landingMeta?.title ?? section.label;
+
+// --- card grid fallback ---------------------------------------------------
+const groups = [...new Set(docs.map((d) => d.group))].sort();
+const grouped = groups.map((g) => ({
+  name: g,
+  docs: docs
+    .filter((d) => d.group === g)
+    .sort((a, b) =>
+      a.order !== null && b.order !== null
+        ? a.order - b.order
+        : a.title.localeCompare(b.title, undefined, { numeric: true })
+    ),
+}));
+const labelBySection = Object.fromEntries(manifest.sections.map((s) => [s.name, s.label]));
+const filterDocs = docs.map((d) => ({
+  url: d.url,
+  title: d.title,
+  description: d.description,
+  section: d.section,
+  sectionLabel: d.group || section.label,
+  minutes: d.minutes,
+}));
+---
+
+<Base
+  title={`${section.label} — Cajeta documentation`}
+  description={`Cajeta ${section.label}: ${section.count} documents.`}
+  activeSection={section.name}
+>
+  {
+    chapters && Content ? (
+      <GuideReader
+        guideTitle={guideTitle}
+        guideMeta={landingMeta}
+        section={section}
+        chapters={chapters}
+        index={0}
+      >
+        <Content />
+      </GuideReader>
+    ) : nav ? (
+      <div class="guide-shell">
+        <RefIndex sectionLabel={section.label} sectionUrl={section.url} nav={nav} activeSlug={landingSlug} />
+        <article class="prose guide-panel">
+          <p class="kicker">
+            <a href="/">docs</a>
+            <span class="sep">/</span>
+            {section.name}
+          </p>
+          <RefIndex
+            sectionLabel={section.label}
+            sectionUrl={section.url}
+            nav={nav}
+            activeSlug={landingSlug}
+            variant="mobile"
+          />
+          {
+            Content ? (
+              <Content />
+            ) : (
+              <>
+                <h1>{section.label}</h1>
+                <p>
+                  {section.count} documents · {Math.round(section.words / 1000)}k words. Pick an
+                  area:
+                </p>
+                <ul>
+                  {nav.groups.map((g) => (
+                    <li>
+                      <a href={g.docs[0].url}>{g.name || 'General'}</a> — {g.docs.length}{' '}
+                      documents
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )
+          }
+        </article>
+      </div>
+    ) : (
+      <div class="page">
+        <p class="kicker">
+          <a href="/">docs</a>
+          <span class="sep">/</span>
+          {section.name}
+        </p>
+        <h1
+          class="hero-title"
+          style="font-family: var(--font-display); font-size: clamp(2rem, 5vw, 3rem); font-weight: 550; margin: 0 0 0.5rem;"
+        >
+          {section.label}
+        </h1>
+        <p class="section-sub">
+          {section.count} documents · {Math.round(section.words / 1000)}k words
+        </p>
+
+        {docs.length > 8 && (
+          <DocFilter client:idle docs={filterDocs} placeholder={`Filter ${section.label}…`} />
+        )}
+
+        {grouped.map((g) => (
+          <>
+            {g.name !== '' && <h2 class="group-heading">{g.name}</h2>}
+            <div class="card-grid">
+              {g.docs.map((d) => (
+                <DocCard
+                  url={d.url}
+                  title={d.title}
+                  description={d.description}
+                  minutes={d.minutes}
+                  metaPrefix={d.group || undefined}
+                />
+              ))}
+            </div>
+          </>
+        ))}
+      </div>
+    )
+  }
+</Base>

@@ -93,7 +93,14 @@ namespace cajeta {
             llvm::Type::getInt64Ty(ctx),
             dl.getTypeAllocSize(bodyTy));
         if (stackAlloc) {
-            bodyPtr = builder->CreateAlloca(bodyTy);
+            // Emit the alloca in the function ENTRY block (not the current,
+            // possibly in-loop, insert point) so an aggregate initializer in a
+            // loop body reuses one stack slot instead of leaking a fresh alloca
+            // per iteration (stack overflow at high iteration counts).
+            llvm::Function* curFn = builder->GetInsertBlock()->getParent();
+            llvm::BasicBlock& entryBB = curFn->getEntryBlock();
+            llvm::IRBuilder<> entryB(&entryBB, entryBB.getFirstInsertionPt());
+            bodyPtr = entryB.CreateAlloca(bodyTy);
             builder->CreateStore(llvm::Constant::getNullValue(bodyTy), bodyPtr);
         } else {
             bodyPtr = MemoryManager::createMallocInstruction(
@@ -165,6 +172,17 @@ namespace cajeta {
                               llvm::Value* value,
                               const ExpressionPtr& srcExpr) {
             unsigned fieldIdx = (unsigned) classType->getFieldLlvmIndex(prop);
+            // generateCode can legitimately yield nullptr (a void / no-value
+            // expression); the user-binding call sites pass it straight in.
+            // Fail loud instead of dereferencing it below (SIGSEGV).
+            if (!value) {
+                char buf[512];
+                snprintf(buf, sizeof(buf),
+                    "aggregate initializer for '%s': the expression bound to "
+                    "field '%s' produces no value",
+                    typeName.c_str(), prop->getName().c_str());
+                throw Exception(buf, "CAJETA_ERROR_AGGREGATE_INIT_TYPE");
+            }
             if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(value)) {
                 value = builder->CreateLoad(a->getAllocatedType(), a);
             }

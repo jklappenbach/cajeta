@@ -75,19 +75,19 @@ Core semantics: types, ownership, memory, dispatch.
 
 ## Math and numerics
 
-- [cajeta.math](cajeta-math/CajetaMath.md) — the numerical foundation library.
-- [cajeta.math.Tensor](cajeta-math/tensor-spec.md) — the keystone n-d array (spec).
-- [numpy-porting-spec](cajeta-math/numpy-porting-spec.md) — numpy surface classification and placement.
-- [cajeta.math.Vector](cajeta-math/Simd.md) — data-parallel SIMD ops on `Vector<T,N>`
-  (+ [tour](cajeta-math/Simd-tour.md)).
-- [cajeta.math.Quaternion](cajeta-math/Quaternions.md) — quaternion rotation ops.
-- [cajeta.math.Matrix](cajeta-math/MatrixDeterminantInverse.md) — `Matrix<T,R,C>` determinant
+- [cajeta.math](math/CajetaMath.md) — the numerical foundation library.
+- [cajeta.math.Tensor](math/tensor-spec.md) — the keystone n-d array (spec).
+- [numpy-porting-spec](math/numpy-porting-spec.md) — numpy surface classification and placement.
+- [cajeta.math.Vector](math/Simd.md) — data-parallel SIMD ops on `Vector<T,N>`
+  (+ [tour](math/Simd-tour.md)).
+- [cajeta.math.Quaternion](math/Quaternions.md) — quaternion rotation ops.
+- [cajeta.math.Matrix](math/MatrixDeterminantInverse.md) — `Matrix<T,R,C>` determinant
   and inverse.
 
   `Vector`, `Quaternion`, and `Matrix<T,R,C>` are compiler-defined value types, not stdlib
   source; no import needed. They lower to flat LLVM vectors — native SIMD instructions where
   the host CPU has them — and lower the same way inside XPU kernels on the device backends.
-- [sorting-spec](cajeta-sorting/sorting-spec.md) — the comparison seam, host sort, Tensor sort.
+- [sorting-spec](sorting/sorting-spec.md) — the comparison seam, host sort, Tensor sort.
 - [Núcleo](nucleo/README.md) — the Python scientific-stack port (own index).
 - Caramelo (formerly Toffee) — the PyTorch-successor ML framework — is a
   *consumer* of the foundation and lives in its own repo (`cajeta-caramelo`);
@@ -117,7 +117,7 @@ Core semantics: types, ownership, memory, dispatch.
   [WavePrefixScan](xpu/WavePrefixScan.md), [SubgroupRotate](xpu/SubgroupRotate.md),
   [QuadControl](xpu/QuadControl.md), [IntegerAtomics](xpu/IntegerAtomics.md),
   [FloatAtomics](xpu/FloatAtomics.md), [ShaderClock](xpu/ShaderClock.md).
-- [cajeta.gfx](cajeta-gfx/cajeta-gfx-spec.md) — graphics primitives over XPU.
+- [cajeta.gfx](gfx/gfx-spec.md) — graphics primitives over XPU.
 
 ## Toolchain and platform
 

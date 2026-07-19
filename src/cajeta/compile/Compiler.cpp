@@ -578,8 +578,17 @@ namespace cajeta {
         }
         auto prevActive = CajetaModule::getActiveModule();
         CajetaModule::setActiveModule(module);
-        auto visitor = new CajetaLlvmVisitor(module);
-        parseTree->accept(visitor);
+        // RAII: the semantic visitor throws on many inputs, so restore the
+        // active-module global and free the visitor on ALL exits (throw or
+        // normal) — the old trailing delete/restore leaked and corrupted the
+        // active-module global on a thrown semantic error.
+        struct ActiveModuleRestore {
+            decltype(prevActive) prev;
+            ~ActiveModuleRestore() { CajetaModule::setActiveModule(prev); }
+        } activeRestore{prevActive};
+        std::unique_ptr<CajetaLlvmVisitor> visitor(
+            new CajetaLlvmVisitor(module));
+        parseTree->accept(visitor.get());
         // Skip the noisy tree dump for the stdlib parse — already-known
         // content, would drown out the user's parse tree in test logs.
         // For user code, the dump is **off by default** and gated behind
@@ -595,8 +604,7 @@ namespace cajeta {
                 std::cout << parseTree->toStringTree(&parser, true) << std::endl;
             }
         }
-        delete visitor;
-        CajetaModule::setActiveModule(prevActive);
+        // visitor freed + active module restored by RAII above.
     }
 
     // ───────────────────────────────────────────────────────────────────
@@ -1431,7 +1439,9 @@ namespace cajeta {
         // before deciding placeholder vs unknown-type error.
         prescanSourceRoot(sourceRootPath, getFlags().diagFormat == DiagFormat::Json);
 
-        list<string>* modulePaths = listModulePaths(sourceRootPath);
+        // unique_ptr: the many emit/link calls below throw, and the trailing
+        // `delete` never ran on those paths — leaking the list.
+        std::unique_ptr<list<string>> modulePaths(listModulePaths(sourceRootPath));
 
         for (string sourcePath: *modulePaths) {
             CajetaModulePtr module = createModule(sourcePath, sourceRootPath, archiveRootPath);
@@ -1957,8 +1967,7 @@ namespace cajeta {
         if (emitMode == EmitMode::Exe) {
             linkExecutable(archiveRootPath);
         }
-
-        delete modulePaths;
+        // modulePaths freed by unique_ptr.
     }
 
     // Per-module emission driven by --emit. IR (default) writes the .ll file the

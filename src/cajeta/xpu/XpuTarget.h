@@ -35,12 +35,14 @@ namespace cajeta {
 namespace cajeta {
 namespace xpu {
 
-    // The concrete device backends.
+    // The concrete device backends. These values are a runtime ABI — cast to
+    // ids in emitBackendManifest — so the explicit initializers are load-bearing:
+    // never renumber or reorder without updating every consumer of the manifest.
     enum class Backend {
-        Nvptx,     // NVIDIA: AST -> device IR -> PTX -> ptxas -> cubin.
-        Amdgpu,    // AMD:    AST -> device IR -> AMDGCN ISA -> lld -> hsaco.
-        Spirv,     // Vulkan: AST -> device IR -> SPIR-V (descriptor-set SSBOs).
-        Cpu,       // CPU:    AST -> host IR (grid->threads) -> native object.
+        Nvptx  = 0,  // NVIDIA: AST -> device IR -> PTX -> ptxas -> cubin.
+        Amdgpu = 1,  // AMD:    AST -> device IR -> AMDGCN ISA -> lld -> hsaco.
+        Spirv  = 2,  // Vulkan: AST -> device IR -> SPIR-V (descriptor-set SSBOs).
+        Cpu    = 3,  // CPU:    AST -> host IR (grid->threads) -> native object.
     };
 
     // Lowercase backend name for diagnostics / artifact suffixes.

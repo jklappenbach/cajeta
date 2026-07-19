@@ -197,6 +197,61 @@ TEST(XpuMirLaunchSiteTests, launchSiteRecognizedInHostBody) {
     EXPECT_EQ(site->kernelArgs.size(), 4u);
 }
 
+// Regression (compiler-xpu review, finding #1): the body walk must descend
+// into loop/if/try bodies, not just statement-level nodes. A grid-stride
+// kernel reads its builtins inside the for-init and for-update — both in the
+// ForStatement's private fields — and those must still be captured.
+TEST(XpuMirLaunchSiteTests, bodyOpsCapturedInsideLoop) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "import cajeta.xpu.Workgroup;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void grid(KernelBuffer<float32> y, uint32 n) {\n"
+        "        for (uint32 i = KernelThread.globalIdX(); i < n;\n"
+        "             i += Workgroup.dimX()) {\n"
+        "            y[i] = 1.0f;\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    auto mir = XpuMirBuilder::buildForModule(module);
+    auto k = findKernel(mir, ".grid");
+    ASSERT_NE(k, nullptr);
+    EXPECT_EQ(countOps(k->bodyOps, OpKind::ThreadId, Axis::X), 1u);
+    EXPECT_EQ(countOps(k->bodyOps, OpKind::WorkgroupDim, Axis::X), 1u);
+}
+
+// Regression (finding #1): a launch site inside a loop must be recorded — the
+// AMDGPU flat-work-group-size bound is derived from launchSites, so a missed
+// larger-block launch inside a loop would under-bound the kernel.
+TEST(XpuMirLaunchSiteTests, launchSiteRecognizedInsideLoop) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void k(KernelBuffer<float32> y, uint32 n) { }\n"
+        "    public static void run(KernelBuffer<float32> y, uint32 n,\n"
+        "                           int32 steps) {\n"
+        "        for (int32 s = 0; s < steps; s += 1) {\n"
+        "            k.launch(KernelStream.current(),\n"
+        "                     grid: [n], block: [256])(y, n);\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    auto mir = XpuMirBuilder::buildForModule(module);
+    ASSERT_NE(mir, nullptr);
+    ASSERT_EQ(mir->launchSites.size(), 1u);
+    EXPECT_EQ(mir->launchSites[0]->kernelCanonicalName, "test.M.k");
+}
+
 // No launch call → no launch sites.
 TEST(XpuMirLaunchSiteTests, noLaunchSitesWhenAbsent) {
     auto src =
