@@ -97,6 +97,22 @@ the title to the caller and marks the Optional empty; empty → throws
 borrow → error, matching `operator#[]`'s "extraction requires a resident
 owned element" precedent. Receiver idiom:
 
+> **Design rationale (title-tracking §6.2/§6.3/§6.4).** `get()` stays a
+> read — always a borrow, correct in both element modes (the
+> optional-borrow-ownership loop-walk cases depend on it). The caller's
+> `#=` spelling cannot make `get()` yield the title: moving ownership out
+> requires the container's participation (presence flips, bit decays), so
+> the model dispatches caller-`#` intent to a **distinct canonical name**
+> (§6.3.1 forbids a `#`-only overload of one name). `take()` is that name
+> for Optional, on the §6.3 *extract* contract — panic when no title is
+> resident — chosen over the §6.4 *remove* contract (flagged return,
+> title-or-borrow) deliberately: a channel receiver that silently got a
+> borrow back from `take()` would recreate the dangling-payload bug this
+> spec exists to fix. Generalizing §6.3 dispatch from indexed places to
+> method places (`ctx #= o.get()` selecting a `#`-variant, as `#cache[k]`
+> selects `operator#[]`) is a coherent future language feature and is
+> explicitly out of scope here (§3).
+
 ```cajeta
 Optional<FiberContext> o = ch.receive();
 FiberContext ctx #= o.take();
