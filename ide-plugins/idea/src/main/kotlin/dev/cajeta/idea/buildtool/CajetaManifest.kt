@@ -39,6 +39,78 @@ object CajetaManifest {
      */
     fun normalizeEntryMethod(raw: String): String = raw.replace("::", ".")
 
+    /**
+     * `cajeta.json` is JSONC, not strict JSON: it allows `//` line comments,
+     * `/* */` block comments, and trailing commas. This mirrors the compiler's
+     * preprocessor in `src/cajeta/buildtool/JsonC.h`, which is the authority on
+     * what the manifest format accepts.
+     *
+     * Length is PRESERVED — stripped spans become spaces rather than being
+     * deleted — so any offset a downstream parse error reports still points at
+     * the right place in the original file.
+     *
+     * String-aware by necessity: `"https://example.com"` holds a `//` that is
+     * data, and a stripper that ignored that would silently eat the rest of
+     * every line containing a URL.
+     */
+    fun stripJsonComments(source: String): String {
+        val a = CharArray(source.length)
+
+        // Pass 1 — comments become whitespace. String-aware: a `//` inside
+        // "https://..." is data, and eating it would swallow the rest of the line.
+        var i = 0
+        var inString = false
+        while (i < source.length) {
+            val c = source[i]
+            if (inString) {
+                a[i] = c
+                // Copy an escape pair wholesale: `\"` does not close the string.
+                if (c == '\\' && i + 1 < source.length) { a[i + 1] = source[i + 1]; i += 2; continue }
+                if (c == '"') inString = false
+                i++
+                continue
+            }
+            when {
+                c == '"' -> { inString = true; a[i] = c; i++ }
+                c == '/' && i + 1 < source.length && source[i + 1] == '/' ->
+                    while (i < source.length && source[i] != '\n') { a[i] = ' '; i++ }
+                c == '/' && i + 1 < source.length && source[i + 1] == '*' -> {
+                    val end = source.indexOf("*/", i + 2)
+                    val stop = if (end < 0) source.length else end + 2
+                    while (i < stop) { a[i] = if (source[i] == '\n') '\n' else ' '; i++ }
+                }
+                else -> { a[i] = c; i++ }
+            }
+        }
+
+        // Pass 2 — a comma is TRAILING only if the next significant character
+        // closes the container. Deciding that by look-ahead, rather than by
+        // tracking pending commas, is what keeps `["a", "b"]` intact: an
+        // earlier version blanked that separator and produced invalid JSON.
+        i = 0
+        inString = false
+        while (i < a.size) {
+            val c = a[i]
+            if (inString) {
+                if (c == '\\') { i += 2; continue }
+                if (c == '"') inString = false
+                i++
+                continue
+            }
+            when {
+                c == '"' -> { inString = true; i++ }
+                c == ',' -> {
+                    var j = i + 1
+                    while (j < a.size && a[j].isWhitespace()) j++
+                    if (j < a.size && (a[j] == '}' || a[j] == ']')) a[i] = ' '
+                    i++
+                }
+                else -> i++
+            }
+        }
+        return String(a)
+    }
+
     /** [parseBuildSettings] for the project's manifest, or empty when absent. */
     fun buildSettings(project: Project): BuildSettings {
         val p = path(project) ?: return BuildSettings()
@@ -61,7 +133,7 @@ object CajetaManifest {
      */
     fun parseBuildSettings(text: String): BuildSettings {
         val build = try {
-            Json.parse(text).opt("settings")?.opt("build")
+            Json.parse(stripJsonComments(text)).opt("settings")?.opt("build")
         } catch (e: Exception) {
             null
         } ?: return BuildSettings()

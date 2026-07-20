@@ -84,23 +84,101 @@ std::vector<std::filesystem::path> collectSources(const std::filesystem::path& r
 
 // Resolve a dotted `package.Class.method` entry to its cajeta-mangled IR
 // function name (`package.Class::method(...)`). Returns "" if not found.
-std::string findEntryMangled(llvm::Module* mod, const std::string& dottedEntry) {
+// Resolve the entry function, accepting the two shapes the compiled-binary
+// shim accepts (Compiler::emitCMainShim): a no-arg `main()`, or the canonical
+// application entry `static int32 main(String[] args)`.
+//
+// Matching is on the LLVM SIGNATURE, not on the spelling of the parameter, so
+// `String[]` and `cajeta.lang.String[]` both resolve (spec 7.2.2). The earlier
+// version bound only `target + "()"`, which made every conventional entry
+// unlaunchable; the version before THAT prefix-matched `method(` and would call
+// a parameterized method through a no-arg pointer, which is UB. Returning the
+// arity here lets the caller pick a correctly-typed pointer (spec 7.2.5).
+std::string findEntryMangled(llvm::Module* mod, const std::string& dottedEntry,
+                             bool* takesArgs) {
+    if (takesArgs) *takesArgs = false;
     std::string target = entryTargetFromDotted(dottedEntry);
     if (target.empty()) return "";
-    // The entry is invoked through a NO-ARG function pointer, so bind only the
-    // no-arg overload. The old prefix match on `method(` matched any arity /
-    // overload and would call a parameterized method through a no-arg pointer
-    // (UB). Mangled names always carry the parameter list, so `name == target`
-    // is a defensive fallback for any unparenthesized shape.
-    std::string noArg = target + "()";
+
+    const std::string noArg = target + "()";
+    const std::string withParams = target + "(";
+    std::string argsForm;
+
     for (auto& fn : *mod) {
         if (fn.isDeclaration()) continue;
         std::string name = fn.getName().str();
-        if (name == noArg || name == target) {
-            return name;
+        if (name == noArg || name == target) return name;   // no-arg wins
+        // Exactly one pointer parameter is the `String[] args` shape. Any other
+        // arity is a different overload and is NOT an entry point.
+        if (name.rfind(withParams, 0) == 0 && argsForm.empty() &&
+            fn.arg_size() == 1 && fn.getArg(0)->getType()->isPointerTy()) {
+            argsForm = name;
         }
     }
+    if (!argsForm.empty()) {
+        if (takesArgs) *takesArgs = true;
+        return argsForm;
+    }
     return "";
+}
+
+
+// The runtime's argv marshaller — the SAME one Compiler::emitCMainShim calls for
+// a compiled binary (spec 7.2.4: one marshalling rule, or the debugger and the
+// binary disagree about what a program's args are). Resolved out of the JIT so
+// the allocation and the String vtable come from the program's own module.
+extern "C" void* __cajeta_args_make(int64_t argc, char** argv,
+                                    void* string_vtable, int64_t str_size,
+                                    int64_t off_lentag, int64_t off_aux,
+                                    int64_t off_base, int64_t off_cplen);
+
+// Build the cajeta `String[]` to hand a `main(String[] args)` entry.
+// Returns nullptr if the String class or its layout is unavailable, in which
+// case the caller must NOT invoke a parameterized entry.
+void* makeEntryArgs(llvm::orc::LLJIT* jit,
+                    const std::vector<std::string>& programArgs) {
+    if (!jit) return nullptr;
+    auto klass = std::dynamic_pointer_cast<cajeta::CajetaClass>(
+        cajeta::CajetaType::of("String"));
+    if (!klass) return nullptr;
+    auto* strStructTy = llvm::dyn_cast_or_null<llvm::StructType>(
+        klass->getLlvmType());
+    if (!strStructTy) return nullptr;
+
+    // Layout from the LLJIT's DataLayout — the one the JIT'd code actually
+    // uses, exactly as the shim reads the module's. Nothing about the String
+    // ABI is hardcoded here or there.
+    //
+    // NOT from compiler->getModules(): buildJit LINKS every non-primary module
+    // into the primary, and Linker::linkModules consumes the donor, so reaching
+    // back through that list yields a destroyed Module and segfaults in
+    // getStructLayout. The struct TYPE is context-owned and outlives the merge.
+    const llvm::DataLayout& dl = jit->getDataLayout();
+    const llvm::StructLayout* sl = dl.getStructLayout(strStructTy);
+    const int64_t strSize = (int64_t) dl.getTypeAllocSize(strStructTy);
+    const int64_t offLenTag = (int64_t) sl->getElementOffset(1);
+    const int64_t offAux    = (int64_t) sl->getElementOffset(2);
+    const int64_t offBase   = (int64_t) sl->getElementOffset(3);
+    const int64_t offCpLen  = (int64_t) sl->getElementOffset(4);
+
+    // The vtable lives in the JIT'd module, so take its RUNTIME address.
+    void* vtable = nullptr;
+    if (auto* vt = klass->getVirtualTableGlobal()) {
+        if (auto sym = jit->lookup(vt->getName())) {
+            vtable = reinterpret_cast<void*>(sym->getValue());
+        } else {
+            cajeta::jit::consumeError(sym.takeError());
+        }
+    }
+
+    std::vector<char*> argv;
+    argv.reserve(programArgs.size());
+    for (auto& a : programArgs) argv.push_back(const_cast<char*>(a.c_str()));
+
+    return __cajeta_args_make((int64_t) argv.size(),
+                              argv.empty() ? nullptr : argv.data(),
+                              vtable, strSize, offLenTag, offAux, offBase,
+                              offCpLen);
 }
 
 // Count call sites to @__cajeta_dbg_safepoint inside one function (CP2: one
@@ -127,6 +205,9 @@ struct BuiltJit {
     std::unique_ptr<llvm::orc::LLJIT> jit;
     std::string entryName;          // cajeta-mangled IR name of the entry fn
     bool returnsInt32 = false;
+    // True when the entry is `main(String[] args)`; the caller must then build
+    // the args array and invoke through an int(*)(void*) pointer.
+    bool entryTakesArgs = false;
     int entrySafepointsEmitted = 0; // static count inside the entry fn
     int errorCode = 0;              // 0 ok; else a runJit-style return code
 };
@@ -253,10 +334,12 @@ BuiltJit buildJit(const JitRunOptions& opts) {
 
     llvm::Module* llvmModule = primary->getLlvmModule();
 
-    out.entryName = findEntryMangled(llvmModule, opts.entryMethod);
+    out.entryName = findEntryMangled(llvmModule, opts.entryMethod,
+                                     &out.entryTakesArgs);
     if (out.entryName.empty()) {
-        std::cerr << "cajeta jit: could not find static no-arg entry `"
-                  << opts.entryMethod << "` (package.Class.method)\n";
+        std::cerr << "cajeta jit: could not find static entry `"
+                  << opts.entryMethod
+                  << "` — expected `main()` or `main(String[] args)`\n";
         out.errorCode = 1;
         return out;
     }
@@ -515,15 +598,30 @@ int runJit(const JitRunOptions& opts, JitRunResult* result) {
     // measures only the entry's execution, not the global ctors above.
     callVoidSymbol(jit, "__cajeta_dbg_reset_safepoint_count");
 
+    // A parameterized entry is invoked through a correctly-typed pointer, never
+    // the no-arg one (spec 7.2.5 — the UB the old narrowing guarded against).
+    void* entryArgs = nullptr;
+    if (built.entryTakesArgs) {
+        entryArgs = makeEntryArgs(jit, opts.programArgs);
+        if (!entryArgs) {
+            std::cerr << "cajeta jit: entry `" << opts.entryMethod
+                      << "` takes String[] but the args array could not be "
+                         "materialized\n";
+            return 1;
+        }
+    }
+
     int rc = 0;
+    void* addr = reinterpret_cast<void*>(entrySym->getValue());
     if (built.returnsInt32) {
-        auto fn = reinterpret_cast<int(*)()>(entrySym->getValue());
-        rc = fn();
+        rc = built.entryTakesArgs
+                 ? reinterpret_cast<int(*)(void*)>(addr)(entryArgs)
+                 : reinterpret_cast<int(*)()>(addr)();
         std::cerr << "[jit-run] entry " << opts.entryMethod
                   << " returned " << rc << "\n";
     } else {
-        auto fn = reinterpret_cast<void(*)()>(entrySym->getValue());
-        fn();
+        if (built.entryTakesArgs) reinterpret_cast<void(*)(void*)>(addr)(entryArgs);
+        else reinterpret_cast<void(*)()>(addr)();
         std::cerr << "[jit-run] entry " << opts.entryMethod
                   << " completed (void)\n";
     }
@@ -720,13 +818,33 @@ std::unique_ptr<JitDebugSession> startDebugSession(
     }
     void* entryAddr = reinterpret_cast<void*>(entrySym->getValue());
     bool returnsInt32 = impl->built.returnsInt32;
+    bool takesArgs = impl->built.entryTakesArgs;
+
+    // Materialize args BEFORE the program thread starts, so a failure here is a
+    // clean launch failure rather than a crash inside the debuggee.
+    void* entryArgs = nullptr;
+    if (takesArgs) {
+        entryArgs = makeEntryArgs(jit, opts.programArgs);
+        if (!entryArgs) {
+            if (error) *error = "entry takes String[] but args could not be built";
+            {
+                std::lock_guard<std::mutex> lock(g_activeMutex);
+                g_activeController = nullptr;
+            }
+            installHandler(jit, nullptr);
+            return nullptr;
+        }
+    }
 
     JitDebugSession::Impl* raw = impl.get();
-    raw->thread = std::thread([raw, entryAddr, returnsInt32]() {
+    raw->thread = std::thread([raw, entryAddr, returnsInt32, takesArgs, entryArgs]() {
         if (returnsInt32) {
-            raw->exitCode = reinterpret_cast<int(*)()>(entryAddr)();
+            raw->exitCode = takesArgs
+                ? reinterpret_cast<int(*)(void*)>(entryAddr)(entryArgs)
+                : reinterpret_cast<int(*)()>(entryAddr)();
         } else {
-            reinterpret_cast<void(*)()>(entryAddr)();
+            if (takesArgs) reinterpret_cast<void(*)(void*)>(entryAddr)(entryArgs);
+            else reinterpret_cast<void(*)()>(entryAddr)();
             raw->exitCode = 0;
         }
         // Shut the fiber carrier down from the program thread (it owns the

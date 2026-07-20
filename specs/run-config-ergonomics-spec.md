@@ -247,3 +247,60 @@ read differently (1.4.3).
 when I open the configuration, then the manifest-declared entry methods are still
 offered, the source root still defaults, and the environment and stop-on-entry
 controls still work.
+
+---
+
+## 7. The debugger must accept the canonical entry signature
+
+Added 2026-07-19, discovered while verifying §5 live. The dropdown in §2 offers
+entry methods the debugger cannot actually launch, which makes §2 and §5
+unusable on any real project.
+
+### 7.1 Background
+7.1.1 The canonical application entry point is
+`public static int32 main(String[] args)` — the same shape Java and C++ use.
+Arguments come from the CLI or invocation. Whether `String` is written bare or
+as `cajeta.lang.String` is a spelling difference and must not affect matching.
+
+7.1.2 The compiled-binary path already implements this. `Compiler::emitCMainShim`
+accepts both a no-arg `main()` and `main(String[] args)`, and materializes the
+array from C `argv` via the runtime helper `__cajeta_args_make`, which takes the
+String layout from LLVM's DataLayout so no String ABI is hardcoded.
+
+7.1.3 The JIT/debug path did NOT adopt it. `findEntryMangled` binds only
+`Class.method()`. The narrowing was itself a correctness fix — the entry is
+invoked through a no-arg function pointer, and an earlier prefix match would
+call a parameterized method through that pointer, which is UB — but it left the
+canonical signature unlaunchable.
+
+7.1.4 Consequence: `configurationDone` fails with "could not find static no-arg
+entry" for every conventional entry point. Verified on samples/tour
+(`static int32 main(String[] args)`, no dependencies) and tools/mcp.
+
+### 7.2 Requirements
+7.2.1 The JIT/debug launch accepts `static int32 main(String[] args)` as an
+entry point, matching the shapes `emitCMainShim` accepts.
+
+7.2.2 Matching is independent of how the element type is spelled — `String` and
+`cajeta.lang.String` both resolve.
+
+7.2.3 A no-arg `main()` continues to work unchanged.
+
+7.2.4 The args array is materialized through the SAME runtime path the binary
+shim uses, not a second implementation. One marshalling rule, or the debugger
+and the binary drift on what a program's args are.
+
+7.2.5 A parameterized entry is never invoked through a no-arg function pointer
+(the UB that 7.1.3's narrowing was introduced to prevent).
+
+### 7.3 Use cases
+7.3.1 As a developer debugging samples/tour, when I launch with entry
+`tour.Tour.main`, then the session starts and can stop, rather than failing with
+"could not find static no-arg entry".
+
+7.3.2 As a developer whose entry is a no-arg `main()`, when I launch, then it
+behaves exactly as before this change.
+
+7.3.3 As a developer, when the entry method receives args, then `args` inside
+the debuggee is a usable `String[]` of the expected length rather than null or
+garbage.

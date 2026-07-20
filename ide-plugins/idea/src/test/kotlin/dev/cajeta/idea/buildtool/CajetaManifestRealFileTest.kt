@@ -2,6 +2,8 @@ package dev.cajeta.idea.buildtool
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertFalse
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.io.File
@@ -40,5 +42,21 @@ class CajetaManifestRealFileTest {
         assertEquals(File(base, "src/main/cajeta").path, resolved)
         assertTrue("resolved source root should exist on disk: $resolved",
             File(resolved).isDirectory)
+    }
+
+    /**
+     * The manifest that exposed the strict-JSON bug: samples/tour/cajeta.json
+     * opens with a block of `//` comments, so the plugin read NOTHING from it
+     * and the run configuration lost every manifest default.
+     */
+    @Test
+    fun readsTheCommentedTourManifest() {
+        val f = File("../../samples/tour/cajeta.json")
+        assumeTrue("samples/tour/cajeta.json not found at ${f.absolutePath}", f.isFile)
+
+        val b = CajetaManifest.parseBuildSettings(f.readText())
+        assertNotNull("entry-method should be read despite // comments", b.entryMethod)
+        assertNotNull("source-root should be read despite // comments", b.sourceRoot)
+        assertFalse("entry method must be normalized", b.entryMethod!!.contains("::"))
     }
 }
