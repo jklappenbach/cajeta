@@ -70,6 +70,14 @@ namespace cajeta {
         // substitution) and view field accessors (DotExpression.cpp).
         static bool isVariableSize(const StructurePropertyPtr& property);
 
+        // True iff `property` is an ELEMENT-ARRAY field (view v1.1,
+        // specs/view-element-arrays-spec.md): `V[]` where V is a view
+        // type, or `String[]`. Wire layout: u32 count + count elements
+        // back-to-back, each self-delimiting. Subset of isVariableSize;
+        // the ctor sweep walks these with a per-element runtime loop
+        // (primitive `T[]` advances by count*sizeof(T) instead).
+        static bool isElementArray(const StructurePropertyPtr& property);
+
         // No vtable header — view properties stay at 0-based LLVM
         // indices. CajetaClass's default reserves slot 0 for the vtable
         // pointer. Override carried over from the retired

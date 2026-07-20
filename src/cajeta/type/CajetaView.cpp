@@ -28,6 +28,17 @@ namespace cajeta {
         return false;
     }
 
+    bool CajetaView::isElementArray(const StructurePropertyPtr& property) {
+        if (!property || !property->getType()) return false;
+        auto arr = dynamic_pointer_cast<CajetaArray>(property->getType());
+        if (!arr) return false;
+        auto elem = arr->getElementType();
+        if (!elem) return false;
+        if (dynamic_pointer_cast<CajetaView>(elem)) return true;
+        auto qn = elem->getQName();
+        return qn && qn->getTypeName() == "String";
+    }
+
     llvm::Type* CajetaView::getLlvmType() {
         if (isFrozen() && CajetaType::rawLlvmType() == nullptr) {
             llvm::LLVMContext* ctx = currentLlvmContext();
@@ -139,6 +150,29 @@ namespace cajeta {
                         "layout or wrap the inner array in its own view type.",
                         canonical.c_str(), property->getName().c_str());
                     throw Exception(buf, "CAJETA_ERROR_VIEW_NESTED_ELEMENT_ARRAY");
+                }
+                // Composition flavor of the same restriction: a `V[]` field
+                // whose element view itself declares an element-array field
+                // is nested var-size arrays by composition — the single-level
+                // ctor sweep and the O(1) offset table both assume elements
+                // contain only fixed / String / primitive-T[] fields.
+                if (auto elemView = dynamic_pointer_cast<CajetaView>(
+                        arr->getElementType())) {
+                    for (auto& ep : elemView->getPropertyList()) {
+                        if (CajetaView::isElementArray(ep)) {
+                            char buf[320];
+                            snprintf(buf, sizeof(buf),
+                                "view '%s' field '%s': element view '%s' "
+                                "itself declares element-array field '%s'; "
+                                "element arrays in views are single-level "
+                                "(see specs/view-element-arrays-spec.md).",
+                                canonical.c_str(), property->getName().c_str(),
+                                elemView->getQName()->getTypeName().c_str(),
+                                ep->getName().c_str());
+                            throw Exception(buf,
+                                "CAJETA_ERROR_VIEW_NESTED_ELEMENT_ARRAY");
+                        }
+                    }
                 }
             }
             bool isVar = CajetaView::isVariableSize(property);
