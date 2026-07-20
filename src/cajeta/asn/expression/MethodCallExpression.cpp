@@ -23,6 +23,7 @@
 #include "cajeta/asn/Statement.h"
 #include "cajeta/transform/GradBackward.h"
 #include "cajeta/transform/VmapBatch.h"
+#include "cajeta/transform/FuseExpr.h"
 #include "cajeta/compile/Optimizer.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "cajeta/synth/SourceSynthesisParse.h"
@@ -1027,6 +1028,80 @@ namespace cajeta {
                                      outResolvedType);
     }
 
+    // nucleo-expr U1 — `Fuse(f)` over an elementwise tensor expression. Walks
+    // f's body into the shared DAG, lowers every node to ELEMENT-level scalar
+    // source, and synthesizes one loop that allocates a single result tensor:
+    // the N-operators-one-kernel, no-temporaries claim (spec §3.1). Explicit
+    // force: building runs nothing; calling the returned function evaluates.
+    static llvm::Value* emitFusedExpr(MethodCallExpression* self,
+                                      const std::shared_ptr<LambdaExpression>& lam,
+                                      const std::shared_ptr<CajetaFunctionType>& fnType,
+                                      CajetaModulePtr module,
+                                      CajetaTypePtr& outResolvedType) {
+        auto locErr = [&](const std::string& msg, const char* id) {
+            return Exception(msg, id, "", self->getSourceLine(), self->getSourceColumn());
+        };
+
+        const auto& pnames = lam->getParamNames();
+        const auto& ptypes = lam->getParamTypes();
+        if (pnames.size() != 1 || ptypes.size() != 1) {
+            throw locErr("transform intrinsic 'Fuse' v1 fuses a single-parameter "
+                         "tensor expression",
+                         "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        }
+        std::string paramTy = ptypes[0]->toCanonical();
+        std::string elem;
+        {
+            auto lt = paramTy.find('<');
+            auto gt = paramTy.rfind('>');
+            bool isTensor = paramTy.rfind("cajeta.math.Tensor", 0) == 0
+                         || paramTy.rfind("Tensor<", 0) == 0;
+            if (!isTensor || lt == std::string::npos || gt == std::string::npos) {
+                throw locErr("transform intrinsic 'Fuse' v1 requires a Tensor<E> "
+                             "parameter", "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+            }
+            elem = paramTy.substr(lt + 1, gt - lt - 1);
+        }
+
+        lam->setExpectedType(fnType);
+        lam->resolveTypes(module);
+        auto bodyExpr = std::dynamic_pointer_cast<Expression>(lam->getBody());
+        if (!bodyExpr) {
+            throw locErr("transform intrinsic 'Fuse' v1 requires an expression-body "
+                         "lambda", "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        }
+
+        std::map<std::string, bool> paramRank;
+        paramRank[pnames[0]] = true;                 // the fused input is a tensor
+        auto resolveCall = makeCallResolver(module);
+        std::vector<cajeta::transform::AdNode> nodes;
+        std::map<std::string, size_t> paramNodeIndex;
+        std::string err;
+        if (!cajeta::transform::buildDag(bodyExpr.get(), pnames, paramRank, resolveCall,
+                                         nodes, paramNodeIndex, &err) || nodes.empty()) {
+            throw locErr("transform intrinsic 'Fuse': cannot fuse this body — " + err,
+                         "CAJETA_ERROR_TRANSFORM_NOT_FUSIBLE");
+        }
+        std::string elemErr;
+        std::string elemSrc = cajeta::transform::elementExpr(
+            nodes, nodes.size() - 1, "__i", &elemErr);
+        if (elemSrc.empty()) {
+            throw locErr("transform intrinsic 'Fuse': cannot fuse this body — "
+                         + elemErr, "CAJETA_ERROR_TRANSFORM_NOT_FUSIBLE");
+        }
+
+        std::string className = "__Fused_" + cajeta::synth::deriveSynthName(
+            "fuse", pnames[0], {elemSrc, elem});
+        std::string pkg = module->getQName()->getPackageName();
+        std::string source = (pkg.empty() ? std::string() : ("package " + pkg + ";\n"))
+            + cajeta::transform::emitFusedSource(className, pnames[0], elem, elemSrc);
+        if (std::getenv("CAJETA_FUSE_DUMP")) {
+            fprintf(stderr, "=== FUSED SOURCE ===\n%s\n=== END ===\n", source.c_str());
+        }
+        return synthesizeMakeClosure(self, module, className, source, "Fuse",
+                                     outResolvedType);
+    }
+
     // transform-intrinsics U7 — annotation sugar. A call to a static method
     // carrying a `@Grad`/`@Vmap`/`@Jit` stack desugars to the nested combinator
     // form: annotations in WRITTEN order, nearest the declaration (last written)
@@ -1263,7 +1338,8 @@ namespace cajeta {
         // transforms: Grad U3, Vmap U5, Jit U6); Pmap is declared-but-deferred (F8).
         if (children.empty() && parameters.size() == 1
                 && (methodCallName == "Grad" || methodCallName == "Jit"
-                    || methodCallName == "Vmap" || methodCallName == "Pmap")) {
+                    || methodCallName == "Vmap" || methodCallName == "Pmap"
+                    || methodCallName == "Fuse")) {
             // Higher-order Grad(Grad(...(f))) (3.1.6): the argument is itself a Grad
             // call, not a lambda — its resolvedType is not a function type until it
             // is transformed, so intercept BEFORE resolving argExpr and differentiate
@@ -1345,6 +1421,22 @@ namespace cajeta {
                     llvm::Value* g = emitGradBackward(this, lam, fnType, module, gradType);
                     resolvedType = gradType;
                     return g;
+                }
+                // Fuse (nucleo-expr U1): fuse f's elementwise tensor body.
+                if (methodCallName == "Fuse") {
+                    auto lam = std::dynamic_pointer_cast<LambdaExpression>(
+                        parameters[0].expression);
+                    if (!lam) {
+                        throw Exception(
+                            "transform intrinsic 'Fuse' requires a lambda literal "
+                            "whose body can be fused",
+                            "CAJETA_ERROR_TRANSFORM_NOT_SPECIALIZABLE",
+                            "", getSourceLine(), getSourceColumn());
+                    }
+                    CajetaTypePtr fuseType;
+                    llvm::Value* v = emitFusedExpr(this, lam, fnType, module, fuseType);
+                    resolvedType = fuseType;
+                    return v;
                 }
                 // Vmap (U5): batch f's body over the argument's leading axis.
                 if (methodCallName == "Vmap") {
