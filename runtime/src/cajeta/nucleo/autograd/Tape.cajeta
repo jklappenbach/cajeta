@@ -1,0 +1,189 @@
+package cajeta.nucleo.autograd;
+
+import cajeta.error.Exception;
+
+/**
+ * The runtime eager tape — define-by-run differentiation (nucleo-autograd
+ * spec §5). Ops compute their forward value eagerly AND record a node; a
+ * `backward(out)` seeds the output cotangent to 1 and replays each node's
+ * VJP contribution in reverse. This is the dynamic-control-flow driver: the
+ * loop whose trip count arrives at runtime differentiates here, where the
+ * compiled `Grad` (which must specialize statically) cannot.
+ *
+ * The cotangent algebra below is the SAME rule content the compile-time
+ * registry (`VjpRegistry::builtin()`) emits as source — kept in agreement by
+ * the U3 test bar (one rule-set, two drivers; literal sharing is the recorded
+ * follow-on). Node storage is parallel primitive arrays: no per-node objects,
+ * no collection-ownership hazards, O(1) amortized append.
+ *
+ * ```cajeta
+ * Tape t = heap Tape();
+ * Var x = t.var(3.0f);
+ * Var y = t.mul(x, x);
+ * t.backward(y);
+ * float32 dydx = t.grad(x);   // 6.0
+ * ```
+ */
+public class Tape {
+    // Op tags. 0 = leaf. Binary: 1 add, 2 sub, 3 mul, 4 div.
+    // Unary: 5 neg, 6 exp, 7 log, 8 sqrt.
+    int8[] tag;
+    int32[] lhs;
+    int32[] rhs;
+    float32[] val;
+    float32[] grd;
+    int32 n;
+    boolean ran;
+
+    public Tape() {
+        this.tag = heap int8[16];
+        this.lhs = heap int32[16];
+        this.rhs = heap int32[16];
+        this.val = heap float32[16];
+        this.grd = heap float32[16];
+        this.n = 0;
+        this.ran = false;
+    }
+
+    void grow() {
+        int32 cap = (int32) this.tag.count();
+        if (this.n < cap) {
+            return;
+        }
+        int32 ncap = cap * 2;
+        int8[] t2 = heap int8[ncap];
+        int32[] l2 = heap int32[ncap];
+        int32[] r2 = heap int32[ncap];
+        float32[] v2 = heap float32[ncap];
+        float32[] g2 = heap float32[ncap];
+        int32 i = 0;
+        while (i < this.n) {
+            t2[i] = this.tag[i];
+            l2[i] = this.lhs[i];
+            r2[i] = this.rhs[i];
+            v2[i] = this.val[i];
+            g2[i] = this.grd[i];
+            i = i + 1;
+        }
+        this.tag = t2;
+        this.lhs = l2;
+        this.rhs = r2;
+        this.val = v2;
+        this.grd = g2;
+    }
+
+    Var push(int8 t, int32 a, int32 b, float32 v) {
+        this.grow();
+        this.tag[this.n] = t;
+        this.lhs[this.n] = a;
+        this.rhs[this.n] = b;
+        this.val[this.n] = v;
+        this.grd[this.n] = 0.0f;
+        Var out = stack Var(this.n);
+        this.n = this.n + 1;
+        return out;
+    }
+
+    /** A differentiated input leaf holding `v`. */
+    public Var var(float32 v) {
+        return this.push((int8) 0, -1, -1, v);
+    }
+
+    public Var add(Var a, Var b) {
+        return this.push((int8) 1, a.idx, b.idx, this.val[a.idx] + this.val[b.idx]);
+    }
+
+    public Var sub(Var a, Var b) {
+        return this.push((int8) 2, a.idx, b.idx, this.val[a.idx] - this.val[b.idx]);
+    }
+
+    public Var mul(Var a, Var b) {
+        return this.push((int8) 3, a.idx, b.idx, this.val[a.idx] * this.val[b.idx]);
+    }
+
+    public Var div(Var a, Var b) {
+        return this.push((int8) 4, a.idx, b.idx, this.val[a.idx] / this.val[b.idx]);
+    }
+
+    public Var neg(Var a) {
+        return this.push((int8) 5, a.idx, -1, -this.val[a.idx]);
+    }
+
+    public Var exp(Var a) {
+        // Bound local: a field-array element inline as a call arg emits its
+        // address ([[project_class_param_field_read_needs_local]]).
+        float32 av = this.val[a.idx];
+        return this.push((int8) 6, a.idx, -1, (float32) Math.exp(av));
+    }
+
+    public Var log(Var a) {
+        float32 av = this.val[a.idx];
+        return this.push((int8) 7, a.idx, -1, (float32) Math.log(av));
+    }
+
+    public Var sqrt(Var a) {
+        float32 av = this.val[a.idx];
+        return this.push((int8) 8, a.idx, -1, (float32) Math.sqrt(av));
+    }
+
+    /** The recorded forward value of `v`. */
+    public float32 valueOf(Var v) {
+        return this.val[v.idx];
+    }
+
+    /** The gradient of the `backward` output w.r.t. `v`. */
+    public float32 grad(Var v) {
+        return this.grd[v.idx];
+    }
+
+    /**
+     * Replay the tape in reverse from `out`, accumulating cotangents. One
+     * backward per tape — a second call throws rather than silently
+     * re-accumulating into stale gradients (spec 3.2: no hidden accumulator).
+     */
+    public void backward(Var out) {
+        if (this.ran) {
+            throw heap Exception("backward() already ran on this tape");
+        }
+        this.ran = true;
+        this.grd[out.idx] = 1.0f;
+        int32 i = out.idx;
+        while (i >= 0) {
+            float32 g = this.grd[i];
+            int8 t = this.tag[i];
+            int32 a = this.lhs[i];
+            int32 b = this.rhs[i];
+            if (g != 0.0f && t != (int8) 0) {
+                // The registry's cotangent algebra, replayed (VjpRegistry).
+                if (t == (int8) 1) {                       // add: g, g
+                    this.grd[a] = this.grd[a] + g;
+                    this.grd[b] = this.grd[b] + g;
+                } else if (t == (int8) 2) {                // sub: g, -g
+                    this.grd[a] = this.grd[a] + g;
+                    this.grd[b] = this.grd[b] - g;
+                } else if (t == (int8) 3) {                // mul: g*b, g*a
+                    this.grd[a] = this.grd[a] + g * this.val[b];
+                    this.grd[b] = this.grd[b] + g * this.val[a];
+                } else if (t == (int8) 4) {                // div: g/b, -g*a/(b*b)
+                    float32 vb = this.val[b];
+                    this.grd[a] = this.grd[a] + g / vb;
+                    this.grd[b] = this.grd[b] - g * this.val[a] / (vb * vb);
+                } else if (t == (int8) 5) {                // neg: -g
+                    this.grd[a] = this.grd[a] - g;
+                } else if (t == (int8) 6) {                // exp: g*exp(a)
+                    this.grd[a] = this.grd[a] + g * this.val[i];
+                } else if (t == (int8) 7) {                // log: g/a
+                    this.grd[a] = this.grd[a] + g / this.val[a];
+                } else if (t == (int8) 8) {                // sqrt: g/(2*sqrt(a))
+                    this.grd[a] = this.grd[a] + g / (2.0f * this.val[i]);
+                }
+            }
+            i = i - 1;
+        }
+    }
+
+    /** Nodes recorded so far. */
+    public int32 count() {
+        return this.n;
+    }
+}
