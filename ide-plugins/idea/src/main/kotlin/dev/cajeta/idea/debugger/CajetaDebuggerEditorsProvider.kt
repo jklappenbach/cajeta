@@ -3,7 +3,6 @@ package dev.cajeta.idea.debugger
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.fileTypes.FileType
 import com.intellij.openapi.project.Project
-import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiFileFactory
 import com.intellij.xdebugger.XExpression
 import com.intellij.xdebugger.XSourcePosition
@@ -28,7 +27,13 @@ class CajetaDebuggerEditorsProvider : XDebuggerEditorsProvider() {
     ): Document {
         val psiFile = PsiFileFactory.getInstance(project)
             .createFileFromText("cajetaFragment.cajeta", CajetaFileType, expression.expression)
-        return PsiDocumentManager.getInstance(project).getDocument(psiFile)
-            ?: throw IllegalStateException("could not create a document for the debugger fragment")
+        // NOT PsiDocumentManager.getDocument(): the fragment file is
+        // non-physical (no event system), and since 2026.x getDocument returns
+        // null for those (PsiDocumentManagerBase gates on
+        // supportsSendingPsiEvents), which broke the Watch/Evaluate editor
+        // with "could not create a document". fileDocument reads the view
+        // provider's document directly, which has no such gate on any
+        // platform version.
+        return psiFile.fileDocument
     }
 }
