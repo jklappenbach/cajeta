@@ -348,6 +348,13 @@ struct cajeta_fiber {
     // Same aliasing rationale as scope_top/drop_top; selected by
     // __cajeta_dbg_top_ptr based on fiber-vs-main context.
     struct cajeta_dbg_frame* dbg_top;
+    // Per-fiber frame arena (cajeta_rt_core.c). Same aliasing rationale as
+    // scope_top/drop_top/exc_top: the arena's LIFO mark/reset discipline holds
+    // per logical stack, and a carrier interleaves many fiber stacks — a
+    // shared per-thread arena let one fiber's scope-exit reset reclaim a
+    // PARKED fiber's live allocations (http:0.11). Lazily mapped on first
+    // arena alloc; returned to the arena pool at fiber teardown.
+    cajeta_arena arena;
     // Home carrier — the carrier that FIRST dispatched (started) this fiber.
     // -1 until then. Once a fiber has started, its saved `ucontext` (stack +
     // register state) is bound to that carrier; resuming it on a *different*
@@ -576,6 +583,16 @@ static __thread struct cajeta_carrier* __cajeta_my_carrier = NULL;
 // __cajeta_current_fiber — the main thread sees it null and falls through
 // to the cond_wait path in __cajeta_task_wait.
 static __thread struct cajeta_fiber* __cajeta_current_fiber = NULL;
+
+// Frame-arena context selector (forward-declared in cajeta_rt_core.c, same
+// TU): the running fiber's own arena, else the thread's. Mirrors
+// __cajeta_scope_top_ptr / __cajeta_drop_top_ptr below.
+static cajeta_arena* __cajeta_arena_ptr(void) {
+    if (__cajeta_current_fiber) {
+        return &__cajeta_current_fiber->arena;
+    }
+    return &__cajeta_arena;
+}
 static __thread ucontext_t __cajeta_carrier_ctx;
 
 // Scope chain for code running outside a fiber (the main entry point, or
@@ -918,6 +935,8 @@ static void* __cajeta_carrier_loop(void* arg) {
             // plus any unbalanced set/push the body left — where() pops its own).
             __cajeta_fiber_local_free_chain(f->fl_top);
             f->fl_top = NULL;
+            // Recycle the fiber's frame-arena mapping (no-op if never used).
+            __cajeta_arena_release_mapping(&f->arena);
             __cajeta_fiber_stack_free(f->stack);
             free(f);
         }
@@ -992,6 +1011,7 @@ void __cajeta_task_shutdown(void) {
     for (struct cajeta_fiber* f = __cajeta_parked_head; f; ) {
         struct cajeta_fiber* nx = f->next;
         if (f->slot_ptr) *f->slot_ptr = NULL;
+        __cajeta_arena_release_mapping(&f->arena);
         __cajeta_fiber_stack_free(f->stack); free(f); f = nx;
     }
     __cajeta_parked_head = NULL;
@@ -1062,6 +1082,7 @@ void __cajeta_task_run(void* arg, cajeta_task_trampoline_fn trampoline,
     // the spawner's pop order, which matters for detach as well as structured
     // spawn; child where()s push fresh frames, never mutating an inherited one.
     f->fl_top = __cajeta_fiber_local_snapshot_current();
+    f->arena = (cajeta_arena) { NULL, 0, 0, 0, 0 };  // lazily mapped on first use
     f->home_carrier = -1;   // assigned on first dispatch (see carrier_loop)
     if (fiber_slot) *fiber_slot = f;
 
