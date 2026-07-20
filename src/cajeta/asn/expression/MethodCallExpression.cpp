@@ -6270,7 +6270,8 @@ namespace cajeta {
                 for (auto& a : sugarMatch->getAnnotationInstances()) {
                     if (!a || !a->getName()) continue;
                     const std::string& an = a->getName()->getTypeName();
-                    if (an == "Grad" || an == "Vmap" || an == "Jit")
+                    if (an == "Grad" || an == "Vmap" || an == "Jit"
+                            || an == "Fuse")
                         chain.push_back(an);
                 }
                 if (!chain.empty()) {

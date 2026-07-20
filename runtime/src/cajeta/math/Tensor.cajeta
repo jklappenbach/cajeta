@@ -3608,7 +3608,8 @@ public class Tensor<T> {
     public static #Tensor<E> divScalar<E extends Numeric>(Tensor<E> t, E s) {
         return Tensor.scalarOp<E>(t, s, 3);
     }
-    /** Weak **float** scalar over an integer tensor `t + s` → `Tensor<float64>` (category
+
+    /** Weak float scalar over an int tensor `t + s` -> `Tensor<float64>` (category
      *  bump). See {@link #scalarOpF}. */
     public static #Tensor<float64> addScalarF<E extends Integral>(Tensor<E> t, float64 s) {
         return Tensor.scalarOpF<E>(t, s, 0);
