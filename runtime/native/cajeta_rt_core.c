@@ -1291,14 +1291,59 @@ typedef struct {
                                // POSIX: set to RESERVE (the kernel commits on fault)
 } cajeta_arena;
 
+// The NON-FIBER arena: main thread + any native helper thread. Carrier-hosted
+// fibers each own a `cajeta_arena` inside their `struct cajeta_fiber` instead —
+// the LIFO mark/reset discipline the arena depends on holds per LOGICAL stack,
+// and a carrier interleaves many fiber stacks. With a single per-thread arena a
+// fiber that PARKED mid-frame (await, readAsync, …) left its live allocations
+// above marks that co-hosted fibers would reset right through: the resumed
+// fiber then read/wrote recycled bytes (http:0.11 — the client-loopback
+// index-0-of-empty SIGABRT; kin to the double-close and lambda-capture
+// double-free reports). Same per-fiber rationale — and the same accessor
+// pattern — as scope_top/drop_top/exc_top/fl_top.
 static __thread cajeta_arena __cajeta_arena = { NULL, 0, 0, 0, 0 };
+
+// Selects the current context's arena: the running fiber's own, else the
+// thread's. Defined in cajeta_rt_concurrent_exec.c (same TU — see
+// cajeta_runtime.c's include order) where __cajeta_current_fiber lives.
+static cajeta_arena* __cajeta_arena_ptr(void);
+
+// --- arena-mapping pool ------------------------------------------------------
+// Fibers are born and die constantly; mmap/munmap per fiber would churn. A
+// completed fiber's mapping goes on this free-list and the next arena init
+// (any thread, any fiber) reuses it. Entries are tiny malloc'd nodes; the
+// mappings themselves are uniform CAJETA_ARENA_RESERVE reservations. Depth is
+// bounded by peak concurrent arena-USING contexts (lazy init means fibers that
+// never arena-allocate never hold a mapping). Process-lifetime, like the
+// per-thread arenas — never unmapped at shutdown.
+struct cajeta_arena_pooled {
+    unsigned char* base;
+    size_t retained;
+    size_t committed;
+    struct cajeta_arena_pooled* next;
+};
+static struct cajeta_arena_pooled* __cajeta_arena_pool = NULL;
+static pthread_mutex_t __cajeta_arena_pool_mu = PTHREAD_MUTEX_INITIALIZER;
 
 // Defined in cajeta_rt_concurrent_sync.c (included later in this TU). Adds a batch
 // of drops to the test drop-count — used by the arena reset to account for the
 // non-escaping primitive arrays it reclaims in bulk.
 void __cajeta_drop_count_add(int64_t n);
 
-static void __cajeta_arena_init(void) {
+static void __cajeta_arena_init(cajeta_arena* a) {
+    // Reuse a pooled mapping from a completed fiber when one is available.
+    pthread_mutex_lock(&__cajeta_arena_pool_mu);
+    struct cajeta_arena_pooled* pooled = __cajeta_arena_pool;
+    if (pooled) __cajeta_arena_pool = pooled->next;
+    pthread_mutex_unlock(&__cajeta_arena_pool_mu);
+    if (pooled) {
+        a->base = pooled->base;
+        a->retained = pooled->retained;
+        a->committed = pooled->committed;
+        a->bump = 0;
+        free(pooled);
+        return;
+    }
 #if defined(_WIN32)
     // No MAP_NORESERVE on Windows: reserve the address range now, commit pages
     // lazily as the bump advances (__cajeta_arena_bump). Reserved-but-uncommitted
@@ -1308,7 +1353,7 @@ static void __cajeta_arena_init(void) {
         fprintf(stderr, "cajeta: arena VirtualAlloc(MEM_RESERVE) failed\n");
         abort();
     }
-    __cajeta_arena.committed = 0;
+    a->committed = 0;
 #else
     void* p = mmap(NULL, CAJETA_ARENA_RESERVE, PROT_READ | PROT_WRITE,
                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
@@ -1316,11 +1361,51 @@ static void __cajeta_arena_init(void) {
         fprintf(stderr, "cajeta: arena mmap failed\n");
         abort();
     }
-    __cajeta_arena.committed = CAJETA_ARENA_RESERVE;   // kernel commits on first touch
+    a->committed = CAJETA_ARENA_RESERVE;   // kernel commits on first touch
 #endif
-    __cajeta_arena.base = (unsigned char*) p;
-    __cajeta_arena.bump = 0;
-    __cajeta_arena.retained = 0;
+    a->base = (unsigned char*) p;
+    a->bump = 0;
+    a->retained = 0;
+}
+
+// Return a dead fiber's mapping to the pool (no-op if it never allocated).
+// Called from the fiber teardown paths in cajeta_rt_concurrent_exec.c. When
+// the fiber retained real memory, hand the pages back to the OS first so a
+// deep-recursion outlier doesn't pin RSS from inside the pool.
+static void __cajeta_arena_release_mapping(cajeta_arena* a) {
+    if (!a->base) return;
+    if (a->retained > CAJETA_ARENA_TRIM_THRESHOLD) {
+#if defined(_WIN32)
+        VirtualFree(a->base, a->retained, MEM_DECOMMIT);
+        a->committed = 0;
+#else
+        madvise(a->base, a->retained, MADV_DONTNEED);
+#endif
+        a->retained = 0;
+    }
+    struct cajeta_arena_pooled* node = malloc(sizeof(*node));
+    if (!node) {
+        // Can't track it — unmap rather than leak the reservation.
+#if defined(_WIN32)
+        VirtualFree(a->base, 0, MEM_RELEASE);
+#else
+        munmap(a->base, CAJETA_ARENA_RESERVE);
+#endif
+        a->base = NULL;
+        return;
+    }
+    node->base = a->base;
+    node->retained = a->retained;
+    node->committed = a->committed;
+    pthread_mutex_lock(&__cajeta_arena_pool_mu);
+    node->next = __cajeta_arena_pool;
+    __cajeta_arena_pool = node;
+    pthread_mutex_unlock(&__cajeta_arena_pool_mu);
+    a->base = NULL;
+    a->bump = 0;
+    a->retained = 0;
+    a->count = 0;
+    a->committed = 0;
 }
 
 static inline size_t __cajeta_arena_align8(size_t n) {
@@ -1336,31 +1421,32 @@ static inline size_t __cajeta_arena_align8(size_t n) {
 // code when frame-arena U3 began routing primitive arrays here. malloc restores
 // the noalias the malloc path gets for free, and propagates through inlining.
 __attribute__((malloc)) static inline void* __cajeta_arena_bump(uint64_t size) {
-    if (!__cajeta_arena.base) __cajeta_arena_init();
+    cajeta_arena* a = __cajeta_arena_ptr();
+    if (!a->base) __cajeta_arena_init(a);
     size_t n = __cajeta_arena_align8((size_t) size);
-    if (__cajeta_arena.bump + n > CAJETA_ARENA_RESERVE) {
+    if (a->bump + n > CAJETA_ARENA_RESERVE) {
         fprintf(stderr, "cajeta: arena exhausted (request=%zu, reserve=%zu)\n",
                 (size_t) size, (size_t) CAJETA_ARENA_RESERVE);
         abort();
     }
-    unsigned char* p = __cajeta_arena.base + __cajeta_arena.bump;
-    __cajeta_arena.bump += n;
-    if (__cajeta_arena.bump > __cajeta_arena.retained) {
-        __cajeta_arena.retained = __cajeta_arena.bump;
+    unsigned char* p = a->base + a->bump;
+    a->bump += n;
+    if (a->bump > a->retained) {
+        a->retained = a->bump;
     }
 #if defined(_WIN32)
     // Commit the page(s) the new [p, p+n) region spans before returning it.
-    if (__cajeta_arena.bump > __cajeta_arena.committed) {
+    if (a->bump > a->committed) {
         size_t pg = 4096;                                   // x64 Windows page
-        size_t need = (__cajeta_arena.bump + (pg - 1)) & ~(pg - 1);
+        size_t need = (a->bump + (pg - 1)) & ~(pg - 1);
         if (need > CAJETA_ARENA_RESERVE) need = CAJETA_ARENA_RESERVE;
-        if (!VirtualAlloc(__cajeta_arena.base + __cajeta_arena.committed,
-                          need - __cajeta_arena.committed,
+        if (!VirtualAlloc(a->base + a->committed,
+                          need - a->committed,
                           MEM_COMMIT, PAGE_READWRITE)) {
             fprintf(stderr, "cajeta: arena VirtualAlloc(MEM_COMMIT) failed\n");
             abort();
         }
-        __cajeta_arena.committed = need;
+        a->committed = need;
     }
 #endif
     return p;
@@ -1400,7 +1486,7 @@ __attribute__((malloc)) void* __cajeta_new_array_header_arena(uint64_t header_si
     }
     void* hdr = __cajeta_arena_alloc((uint64_t) total);   // zeroed
     *((int64_t*) hdr) = (int64_t) count;
-    __cajeta_arena.count++;   // reclaimed (and drop-counted) at the next scope reset
+    __cajeta_arena_ptr()->count++;   // reclaimed (and drop-counted) at the next scope reset
     return hdr;
 }
 
@@ -1411,9 +1497,10 @@ __attribute__((malloc)) void* __cajeta_new_array_header_arena(uint64_t header_si
 // (not just the live bump) so stale pointers into reset regions also answer
 // true (they're equally unshareable).
 int __cajeta_arena_owns(const void* p) {
-    return __cajeta_arena.base
-        && (const unsigned char*) p >= __cajeta_arena.base
-        && (const unsigned char*) p < __cajeta_arena.base + CAJETA_ARENA_RESERVE;
+    cajeta_arena* a = __cajeta_arena_ptr();
+    return a->base
+        && (const unsigned char*) p >= a->base
+        && (const unsigned char*) p < a->base + CAJETA_ARENA_RESERVE;
 }
 
 // Capture the current bump offset AND the live array count. Stash at scope entry;
@@ -1422,13 +1509,15 @@ int __cajeta_arena_owns(const void* p) {
 // live-array count (millions). The token is opaque to the compiler (Block.cpp only
 // stashes it and hands it back to reset), so packing changes nothing for codegen.
 uint64_t __cajeta_arena_mark(void) {
-    return ((uint64_t) __cajeta_arena.count << 40) | (uint64_t) __cajeta_arena.bump;
+    cajeta_arena* a = __cajeta_arena_ptr();
+    return ((uint64_t) a->count << 40) | (uint64_t) a->bump;
 }
 
 // O(1) reclaim: restore the bump to `mark`. All objects allocated since the mark
 // are abandoned in place (their bytes reused on the next bump). Trim backstop:
 // when retained pages run well past the new mark, hand them back to the OS.
 void __cajeta_arena_reset(uint64_t mark) {
+    cajeta_arena* a = __cajeta_arena_ptr();
     size_t m       = (size_t) (mark & (((uint64_t) 1 << 40) - 1));
     size_t count_m = (size_t) (mark >> 40);
     // Each non-escaping primitive array reclaimed here used to free() at scope exit
@@ -1436,13 +1525,13 @@ void __cajeta_arena_reset(uint64_t mark) {
     // arena reclaims them in one O(1) bump-reset — no per-array free, no live-set —
     // so account for the delta here in bulk. Keeps drop-count probes accurate
     // without re-adding any per-array cost. Test-only instrumentation.
-    if (__cajeta_arena.count > count_m) {
-        __cajeta_drop_count_add((int64_t) (__cajeta_arena.count - count_m));
+    if (a->count > count_m) {
+        __cajeta_drop_count_add((int64_t) (a->count - count_m));
     }
-    __cajeta_arena.count = count_m;
-    __cajeta_arena.bump = m;
-    if (__cajeta_arena.base
-            && __cajeta_arena.retained > m + CAJETA_ARENA_TRIM_THRESHOLD) {
+    a->count = count_m;
+    a->bump = m;
+    if (a->base
+            && a->retained > m + CAJETA_ARENA_TRIM_THRESHOLD) {
 #if defined(_WIN32)
         size_t pg = 4096;
 #else
@@ -1450,23 +1539,23 @@ void __cajeta_arena_reset(uint64_t mark) {
         if (pg == 0) pg = 4096;
 #endif
         size_t from = (m + pg - 1) & ~(pg - 1);                       // round up
-        size_t to   = (__cajeta_arena.retained + pg - 1) & ~(pg - 1);
+        size_t to   = (a->retained + pg - 1) & ~(pg - 1);
         if (to > from) {
 #if defined(_WIN32)
             // Hand the pages back to the OS; a later bump re-commits them.
-            VirtualFree(__cajeta_arena.base + from, to - from, MEM_DECOMMIT);
-            if (__cajeta_arena.committed > from) __cajeta_arena.committed = from;
+            VirtualFree(a->base + from, to - from, MEM_DECOMMIT);
+            if (a->committed > from) a->committed = from;
 #else
-            madvise(__cajeta_arena.base + from, to - from, MADV_DONTNEED);
+            madvise(a->base + from, to - from, MADV_DONTNEED);
 #endif
         }
-        __cajeta_arena.retained = m;
+        a->retained = m;
     }
 }
 
 // Test/introspection: current bytes in use, and high-water retained bytes.
-int64_t __cajeta_arena_bytes(void)    { return (int64_t) __cajeta_arena.bump; }
-int64_t __cajeta_arena_retained(void) { return (int64_t) __cajeta_arena.retained; }
+int64_t __cajeta_arena_bytes(void)    { return (int64_t) __cajeta_arena_ptr()->bump; }
+int64_t __cajeta_arena_retained(void) { return (int64_t) __cajeta_arena_ptr()->retained; }
 
 // cajeta.lang.String wrapper layout (generatePrototype embed order, mirrored
 // by the literal/concat lowerings) — slices plan 6.2.2: the storage is the

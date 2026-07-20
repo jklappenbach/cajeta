@@ -1,0 +1,80 @@
+package tour.math;
+
+import tour.DemoClass;
+import cajeta.lang.Math;
+import cajeta.nucleo.transform.GradResult;
+import cajeta.nucleo.autograd.Tape;
+import cajeta.nucleo.autograd.Var;
+
+// Differentiation, both drivers (guide ch. 22; docs/stdlib/nucleo/).
+//
+//   * Compiled: `Grad(f)` transforms a statically-known function at compile
+//     time into `(P) -> GradResult<V,G>` — value and gradient together, no
+//     global .grad state. `Vmap` batches it; `Jit` fuses it; the annotation
+//     stack `@Jit @Vmap @Grad` is sugar for exactly that nesting.
+//   * Eager: a runtime `Tape` records ops as they execute — this is the
+//     driver for DYNAMIC control flow (a loop bound only known at runtime),
+//     which the compiled path cannot specialize. Same rules, same gradients.
+public class AutogradDemo extends DemoClass {
+    static boolean close(float32 a, float32 b) {
+        return Math.abs(a - b) < 0.001f;
+    }
+
+    // The annotation stack: calls to dsq get per-example gradients, fused.
+    @Jit @Vmap @Grad
+    public static float32 dsq(float32 x) { return x * x; }
+
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Autograd --");
+
+        // Compiled Grad: d/dx x*x at 3 -> value 9, grad 6.
+        (float32) -> GradResult<float32,float32> g = Grad((float32 x) -> x * x);
+        GradResult<float32,float32> r = g(3.0f);
+        System.stdout.println("  Grad(x*x)(3):      value = " + r.value + ", grad = " + r.grads);
+        this.check(close(r.value, 9.0f) && close(r.grads, 6.0f), "Grad value+grad");
+
+        // The widened rule set composes: d/dx log(x*x) = 2/x at 3.
+        (float32) -> GradResult<float32,float32> h =
+            Grad((float32 x) -> Math.log(x * x));
+        GradResult<float32,float32> rh = h(3.0f);
+        System.stdout.println("  Grad(log(x*x))(3): grad = " + rh.grads);
+        this.check(close(rh.grads, 2.0f / 3.0f), "chain rule through Math.log");
+
+        // The sugar: @Jit @Vmap @Grad == Jit(Vmap(Grad(f))) — batch in,
+        // per-example gradients out.
+        float32[] xs = {1.0f, 2.0f, 3.0f};
+        GradResult<float32,float32>[] rs = AutogradDemo.dsq(xs);
+        System.stdout.println("  @Jit @Vmap @Grad over {1,2,3}: grads = {"
+            + rs[0].grads + ", " + rs[1].grads + ", " + rs[2].grads + "}");
+        this.check(close(rs[0].grads, 2.0f) && close(rs[1].grads, 4.0f)
+            && close(rs[2].grads, 6.0f), "annotation stack per-example grads");
+
+        // Eager tape: d/dx x^n with n only known at RUNTIME — the compiled
+        // path cannot specialize this loop; the tape records the path taken.
+        int32 n = (int32) xs.count() + 2;              // 5, at runtime
+        Tape t = heap Tape();
+        Var x = t.var(2.0f);
+        Var y = x;
+        int32 i = 1;
+        while (i < n) {
+            y = t.mul(y, x);
+            i = i + 1;
+        }
+        t.backward(y);
+        System.stdout.println("  Tape d/dx x^" + n + " at 2 = " + t.grad(x)
+            + " (recorded " + t.count() + " nodes)");
+        this.check(close(t.grad(x), 80.0f), "tape runtime-bounded loop");
+
+        // stopGrad: the value flows, the gradient does not (the @NoGrad
+        // analog). f = x * stop(x*x): value 27, d/dx = x*x = 9.
+        Tape t2 = heap Tape();
+        Var x2 = t2.var(3.0f);
+        Var y2 = t2.mul(x2, t2.stopGrad(t2.mul(x2, x2)));
+        t2.backward(y2);
+        System.stdout.println("  stopGrad: value = " + t2.valueOf(y2)
+            + ", grad = " + t2.grad(x2));
+        this.check(close(t2.valueOf(y2), 27.0f) && close(t2.grad(x2), 9.0f),
+            "stopGrad value flows, gradient stops");
+    }
+}

@@ -35,6 +35,14 @@ namespace cajeta {
     // a ThinLTO-bitcode-with-summary write so the linker can import across modules.
     void optimizeModuleThinLTOPreLink(llvm::Module& m, llvm::TargetMachine* tm, OptLevel level);
 
+    // transform-intrinsics U6 (Jit) — run the standard O2 function-simplification
+    // pipeline over one function: SROA/mem2reg, early-CSE/GVN, instcombine, DCE,
+    // simplifycfg. This is the "fusion" a Tier-A Jit(f) applies to the specialized
+    // (possibly already-transformed) body: temporaries eliminated, the composed
+    // form flattened, semantics preserved. `tm` may be null (no TTI cost-modeling
+    // needed — this pipeline does not vectorize).
+    void fuseFunction(llvm::Function& f, llvm::TargetMachine* tm);
+
     // Run a focused vectorization pipeline on a single function: mem2reg,
     // loop-rotate, LoopVectorize, SLPVectorizer, instcombine, simplifycfg. Used
     // by the CPU backend to vectorize the per-block kernel wrapper's work-item

@@ -62,11 +62,11 @@ TEST(Vmap, batchLengthIsTheArgumentAxis) {
 }
 
 // 5.1.2 — an op with NO batching rule is a named, located compile error, never a
-// silently wrong batch. Division has no rule in the v1 primitive set.
+// silently wrong batch. Modulo has no batching rule (div joined the set in nucleo-autograd U1).
 TEST(Vmap, unbatchableOpNamedError) {
     EXPECT_EQ(compileErrorId(
         "float32[] xs = {1.0f, 2.0f};\n"
-        "        (float32[]) -> #float32[] g = Vmap((float32 x) -> x / x);\n"
+        "        (float32[]) -> #float32[] g = Vmap((float32 x) -> x % x);\n"
         "        float32[] ys = g(xs);\n"
         "        return ys[0];"), "CAJETA_ERROR_TRANSFORM_NO_BATCH_RULE");
 }

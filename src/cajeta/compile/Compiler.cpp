@@ -293,7 +293,11 @@ namespace cajeta {
 
         std::any visitViewDeclaration(
                 CajetaParser::ViewDeclarationContext* ctx) override {
-            registerAndRecurse(ctx->identifier()->getText(), ctx);
+            // markView=true so a cross-file forward reference synthesizes a
+            // CajetaView placeholder (see fromContext), not a class shell.
+            registerAndRecurse(ctx->identifier()->getText(), ctx,
+                                /*markEnum=*/false, /*markValueType=*/false,
+                                /*markInterface=*/false, /*markView=*/true);
             return defaultResult();
         }
 
@@ -368,7 +372,8 @@ namespace cajeta {
                                  antlr4::tree::ParseTree* tree,
                                  bool markEnum = false,
                                  bool markValueType = false,
-                                 bool markInterface = false) {
+                                 bool markInterface = false,
+                                 bool markView = false) {
             // Compose canonical from package + enclosing class
             // stack + this short name. Mirrors CajetaLlvmVisitor's
             // visitClassDeclaration package-adjustment for nested
@@ -385,6 +390,7 @@ namespace cajeta {
             if (markEnum) CajetaType::markArchiveEnum(canonical);
             if (markValueType) CajetaType::markArchiveValueType(canonical);
             if (markInterface) CajetaType::markArchiveInterface(canonical);
+            if (markView) CajetaType::markArchiveView(canonical);
             lastCanonical = canonical;
             enclosingStack.push_back(shortName);
             visitChildren(tree);

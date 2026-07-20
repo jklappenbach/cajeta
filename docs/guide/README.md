@@ -35,6 +35,7 @@ Chapters link to [tour](../../samples/tour/) demos you can run, and to the
 | [19 DI & aspects](19-di-aspects.md) | @Component, @Inject, @Factory, advice |
 | [20 Error handling](20-error-handling.md) | Exceptions; why there's no try-with-resources |
 | [21 Reflection](21-reflection.md) | cajeta.reflect and the keep-set |
+| [22 Differentiation](22-differentiation.md) | Grad/Vmap/Jit, the annotation stack, and the eager Tape |
 
 ## Part III — The standard library
 

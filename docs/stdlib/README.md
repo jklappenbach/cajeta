@@ -226,6 +226,17 @@ tutorial; it links here for API detail. Docs link the
 | [KernelStream](xpu/KernelStream.md) | Ordered queue of XPU work |
 | [MeshSimplifier](xpu/mesh/MeshSimplifier.md) | Garland–Heckbert edge-collapse mesh simplifier |
 
+## cajeta.nucleo
+
+The ML spine: compile-time function transforms and the runtime eager tape.
+
+| Class | |
+|---|---|
+| [Transforms](nucleo/Transforms.md) | The `Grad`/`Vmap`/`Jit` compile-time transform intrinsics + `@Grad`/`@Vmap`/`@Jit` sugar |
+| [GradResult](nucleo/Transforms.md) | The typed `{value, grads}` return bag of a differentiated function |
+| [Tape](nucleo/Tape.md) | Define-by-run autograd: records ops eagerly, replays gradients in reverse |
+| [Var](nucleo/Tape.md) | Handle to one tape node (value + gradient readback) |
+
 ## cajeta.gfx
 
 | Class | |
