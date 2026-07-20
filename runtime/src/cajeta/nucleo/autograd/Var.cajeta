@@ -1,0 +1,15 @@
+package cajeta.nucleo.autograd;
+
+/**
+ * A handle to one node on a {@link Tape} — the eager tape's analog of a
+ * differentiable value. A `Var` is just the node's index (a value record,
+ * stack-copied freely); its value and gradient live on the tape it came from,
+ * read back with `tape.valueOf(v)` / `tape.grad(v)` after `tape.backward(...)`.
+ */
+public record Var {
+    int32 idx;
+
+    public Var(int32 idx) {
+        this.idx = idx;
+    }
+}

@@ -56,7 +56,18 @@ namespace cajeta {
                 sourceLine = token->getLine();
                 sourceText = token->getText();
                 sourceColumn = token->getCharPositionInLine();
+            } else {
+                sourceLine = 0;
+                sourceColumn = 0;
             }
+        }
+
+        // transform-intrinsics U7 — synthetic (parser-less) nodes carry the
+        // span of the construct they desugar, so their diagnostics locate at
+        // the source the user actually wrote.
+        void setSourceSpan(int line, int column) {
+            sourceLine = line;
+            sourceColumn = column;
         }
 
         void addChild(AbstractSyntaxNodePtr child) {

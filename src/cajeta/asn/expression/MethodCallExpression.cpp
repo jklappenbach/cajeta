@@ -23,6 +23,8 @@
 #include "cajeta/asn/Statement.h"
 #include "cajeta/transform/GradBackward.h"
 #include "cajeta/transform/VmapBatch.h"
+#include "cajeta/compile/Optimizer.h"
+#include "llvm/Transforms/Utils/Cloning.h"
 #include "cajeta/synth/SourceSynthesisParse.h"
 #include "cajeta/synth/SourceSynthesis.h"
 #include "cajeta/compile/CajetaLlvmVisitor.h"
@@ -819,7 +821,8 @@ namespace cajeta {
         // directly off the call's explicit type args.
         if (valueTy.empty() || valueTy == "void") {
             if (auto sumCall = std::dynamic_pointer_cast<MethodCallExpression>(bodyExpr)) {
-                if (sumCall->getMethodCallName() == "sum"
+                if ((sumCall->getMethodCallName() == "sum"
+                         || sumCall->getMethodCallName() == "mean")
                         && !sumCall->getExplicitMethodTypeArgs().empty()) {
                     auto r = sumCall->getExplicitMethodTypeArgs().back();
                     if (r) valueTy = r->toCanonical();
@@ -834,6 +837,13 @@ namespace cajeta {
                                      call->getParameters().size());
                 if (t.found && !t.returnTy.empty()) valueTy = t.returnTy;
             }
+        }
+        // nucleo-autograd U1 — a scalar body whose type is still unknown (e.g. a
+        // bare Math.exp(x) intrinsic call, unresolved pre-codegen) computes over
+        // the selected param's scalar type; the DAG has already rejected anything
+        // it cannot express, so selTy is the honest answer.
+        if ((valueTy.empty() || valueTy == "void") && !selIsTensor) {
+            valueTy = selTy;
         }
         if (valueTy.empty() || valueTy == "void") {
             throw locErr("transform intrinsic 'Grad': could not determine the value "
@@ -902,8 +912,8 @@ namespace cajeta {
         std::string err;
         if (!cajeta::transform::buildDag(bodyExpr.get(), pnames, paramRank, resolveCall,
                                          nodes, paramNodeIndex, &err) || nodes.empty()) {
-            throw locErr("transform intrinsic 'Vmap': no batching rule for this body "
-                         "(v1 batches + - * and unary - over the batch element)",
+            throw locErr("transform intrinsic 'Vmap': no batching rule for this body — "
+                         + (err.empty() ? std::string("empty body") : err),
                          "CAJETA_ERROR_TRANSFORM_NO_BATCH_RULE");
         }
         for (const auto& n : nodes) {
@@ -1015,6 +1025,76 @@ namespace cajeta {
         }
         return synthesizeMakeClosure(self, module, className, source, "Vmap",
                                      outResolvedType);
+    }
+
+    // transform-intrinsics U7 — annotation sugar. A call to a static method
+    // carrying a `@Grad`/`@Vmap`/`@Jit` stack desugars to the nested combinator
+    // form: annotations in WRITTEN order, nearest the declaration (last written)
+    // applied first, so `@Jit @Vmap @Grad f` == `Jit(Vmap(Grad(f)))` (spec §4.2).
+    // The sugar is ONLY sugar (7.2.2): it builds a synthetic lambda from the
+    // method's single return expression and synthetic combinator NODES around
+    // it, then runs the same U1 recognizer driver — every composition and every
+    // error shape is byte-identical to the explicit form. The transformed
+    // closure is then invoked with the call's own arguments through the shared
+    // emitClosureCall path.
+    static llvm::Value* emitTransformAnnotatedCall(
+            MethodCallExpression* self, MethodPtr m,
+            const std::vector<std::string>& chain,
+            CajetaModulePtr module, CajetaTypePtr& outResolvedType) {
+        auto locErr = [&](const std::string& msg, const char* id) {
+            return Exception(msg, id, "", self->getSourceLine(), self->getSourceColumn());
+        };
+        Expression* bodyRaw = findReturnExpr(m->getBlock());
+        if (!m->isStatic() || !bodyRaw) {
+            throw locErr("transform annotations (@Grad/@Vmap/@Jit) require a "
+                         "static single-return-expression method",
+                         "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        }
+        std::vector<std::string> pnames;
+        std::vector<CajetaTypePtr> ptypes;
+        for (auto& p : m->getParameterList()) {
+            pnames.push_back(p->getName());
+            ptypes.push_back(p->getType());
+        }
+        // Non-owning alias: the method's AST owns the body for the whole
+        // compile, so the synthetic lambda only borrows it.
+        AbstractSyntaxNodePtr bodyAlias(AbstractSyntaxNodePtr(), bodyRaw);
+        auto lam = std::make_shared<LambdaExpression>(
+            nullptr, pnames, ptypes, bodyAlias);
+        lam->setSourceSpan(self->getSourceLine(), self->getSourceColumn());
+        lam->setExpectedType(std::make_shared<CajetaFunctionType>(
+            module, ptypes, m->getReturnType()));
+
+        ExpressionPtr cur = lam;
+        for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+            MethodCallParameter p;
+            p.expression = cur;
+            auto node = std::make_shared<MethodCallExpression>(
+                *it, std::vector<MethodCallParameter>{p});
+            node->setSourceSpan(self->getSourceLine(), self->getSourceColumn());
+            cur = node;
+        }
+        llvm::Value* closure = cur->generateCode(module);
+        auto fnT = std::dynamic_pointer_cast<CajetaFunctionType>(
+            cur->getResolvedType());
+        if (!closure || !fnT) {
+            throw locErr("transform annotations on '" + m->getName()
+                         + "' produced no callable transform",
+                         "CAJETA_ERROR_TRANSFORM_SYNTH_FAILED");
+        }
+        llvm::Value* closurePtr = closure;
+        if (!closure->getType()->isPointerTy()) {
+            auto* builder = module->getBuilder();
+            llvm::Function* curFn = builder->GetInsertBlock()->getParent();
+            llvm::IRBuilder<> eb(&curFn->getEntryBlock(),
+                                 curFn->getEntryBlock().begin());
+            llvm::Value* slot = eb.CreateAlloca(closure->getType(), nullptr,
+                                                "sugar.closure");
+            builder->CreateStore(closure, slot);
+            closurePtr = slot;
+        }
+        return emitClosureCall(module, closurePtr, fnT, self->getParameters(),
+                               outResolvedType);
     }
 
     // transform-intrinsics 3.1.6 — higher-order Grad(Grad(...(f))). The outer Grad
@@ -1199,6 +1279,32 @@ namespace cajeta {
                     }
                 }
             }
+            // Jit over a transform (6.1.2): the argument is a Vmap/Grad call whose
+            // type is not a function type until IT is transformed, so intercept
+            // BEFORE resolving argExpr. The inner transform emits its synthesized
+            // functions; Jit then fuses each one IN PLACE (they are fresh — no
+            // other caller sees the pre-fused body) and tags it __JitFused_. The
+            // returned value and type are the inner transform's own, so the call
+            // site keeps the composed signature (6.2.2).
+            if (methodCallName == "Jit") {
+                if (auto innerT = std::dynamic_pointer_cast<MethodCallExpression>(
+                        parameters[0].expression)) {
+                    const std::string& n = innerT->getMethodCallName();
+                    if (n == "Vmap" || n == "Grad") {
+                        std::set<const llvm::Function*> before;
+                        for (auto& fn : module->getLlvmModule()->functions())
+                            before.insert(&fn);
+                        llvm::Value* inner = innerT->generateCode(module);
+                        for (auto& fn : module->getLlvmModule()->functions()) {
+                            if (fn.isDeclaration() || before.count(&fn)) continue;
+                            cajeta::fuseFunction(fn, nullptr);
+                            fn.setName("__JitFused_" + fn.getName().str());
+                        }
+                        resolvedType = innerT->getResolvedType();
+                        return inner;
+                    }
+                }
+            }
             // Vmap(Grad(f)) (5.1.3): like nested Grad, the argument is a transform
             // call whose type is not a function type until it is transformed, so
             // intercept BEFORE resolving argExpr and batch the differentiated form.
@@ -1277,9 +1383,38 @@ namespace cajeta {
                         "CAJETA_ERROR_TRANSFORM_PMAP_UNIMPLEMENTED",
                         "", getSourceLine(), getSourceColumn());
                 }
-                // U1 identity placeholder: the transformed function IS f, typed as
-                // its function type, so `(T)->R g = Jit(f); g(x)` dispatches through
-                // the ordinary closure-call path on the same record.
+                // Jit(f) on a directly-written lambda (6.1.1/6.2.1): clone the
+                // specialized target as __JitFused_<name>, fuse the clone, and
+                // return a fresh {fusedFn, null, null} record of the same shape,
+                // so `(T)->R g = Jit(f); g(x)` dispatches through the ordinary
+                // closure-call path — f's signature exactly (6.2.2). The original
+                // function is left intact for any other use of f.
+                if (methodCallName == "Jit" && record) {
+                    if (auto* gvRec = llvm::dyn_cast<llvm::GlobalVariable>(record)) {
+                        if (auto* init = llvm::dyn_cast<llvm::ConstantStruct>(
+                                gvRec->getInitializer())) {
+                            llvm::ValueToValueMapTy vm;
+                            llvm::Function* clone = llvm::CloneFunction(target, vm);
+                            clone->setName("__JitFused_" + target->getName().str());
+                            cajeta::fuseFunction(*clone, nullptr);
+                            std::vector<llvm::Constant*> elems;
+                            for (unsigned i = 0; i < init->getType()->getNumElements(); ++i)
+                                elems.push_back(i == 0
+                                    ? static_cast<llvm::Constant*>(clone)
+                                    : init->getAggregateElement(i));
+                            auto* fusedRec = new llvm::GlobalVariable(
+                                *module->getLlvmModule(), init->getType(),
+                                /*isConstant=*/true, llvm::GlobalValue::PrivateLinkage,
+                                llvm::ConstantStruct::get(init->getType(), elems),
+                                gvRec->getName() + ".jit");
+                            resolvedType = fnType;
+                            return fusedRec;
+                        }
+                    }
+                }
+                // Identity fallback (non-Jit, or a record shape the fuser does not
+                // recognize): the transformed function IS f, typed as its function
+                // type, dispatching through the ordinary closure-call path.
                 resolvedType = fnType;
                 return fnVal;
             }
@@ -6335,6 +6470,37 @@ namespace cajeta {
                 return nullptr;
             }
             targetClass = module->getStructureStack().back();
+        }
+
+        // transform-intrinsics U7 — annotation sugar: a call to a static method
+        // carrying @Grad/@Vmap/@Jit desugars to the nested combinator form and
+        // dispatches through the transformed closure instead of the raw method.
+        if (!superCtorCall) {
+            MethodPtr sugarMatch;
+            bool sugarAmbiguous = false;
+            for (auto& mm : targetClass->getMethodList()) {
+                if (mm && mm->isStatic() && mm->getName() == methodCallName
+                        && mm->getParameterList().size() == parameters.size()) {
+                    if (sugarMatch) { sugarAmbiguous = true; break; }
+                    sugarMatch = mm;
+                }
+            }
+            if (sugarMatch && !sugarAmbiguous) {
+                std::vector<std::string> chain;
+                for (auto& a : sugarMatch->getAnnotationInstances()) {
+                    if (!a || !a->getName()) continue;
+                    const std::string& an = a->getName()->getTypeName();
+                    if (an == "Grad" || an == "Vmap" || an == "Jit")
+                        chain.push_back(an);
+                }
+                if (!chain.empty()) {
+                    CajetaTypePtr sugarType;
+                    llvm::Value* v = emitTransformAnnotatedCall(
+                        this, sugarMatch, chain, module, sugarType);
+                    resolvedType = sugarType;
+                    return v;
+                }
+            }
         }
 
         // Kernel-only operations. `buf.vload<N>(i)` / `buf.vstore(i, v)` are

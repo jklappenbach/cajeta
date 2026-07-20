@@ -8,7 +8,9 @@ namespace cajeta {
 
         bool hasBatchRule(const std::string& primitive) {
             return primitive == "add" || primitive == "sub"
-                || primitive == "mul" || primitive == "negate";
+                || primitive == "mul" || primitive == "negate"
+                || primitive == "div" || primitive == "exp"
+                || primitive == "log" || primitive == "sqrt";
         }
 
         std::string emitBatchedSource(const std::string& className,
