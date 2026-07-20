@@ -53,6 +53,10 @@ namespace cajeta {
         // column needs validity propagation there and nowhere else; keep that
         // assumption from leaking into the emitter or the recognizer so a
         // null-aware variant slots in beside this rather than forcing a rewrite.
+        // The contract is PINNED by test/nucleo/FuseSeamTests.cpp, which drives
+        // this function directly over a hand-built DAG (exact element source,
+        // reduction staging, get1-free emitters) — a null-aware variant must
+        // match that shape, changing only the leaf read.
         std::string elementExpr(const std::vector<AdNode>& nodes, size_t idx,
                                 const std::string& indexVar,
                                 std::vector<Hoist>* hoists, std::string* err);

@@ -30,19 +30,6 @@ int64_t runI64(const std::string& body) {
     return jit->lookup<int64_t (*)()>("run")();
 }
 
-std::string errIdOf(const std::string& body) {
-    std::string src =
-        "package test;\n"
-        "import cajeta.math.Tensor;\n"
-        "public final class T {\n"
-        "    public static float32 run() {\n"
-        "        " + body + "\n"
-        "    }\n"
-        "}\n";
-    try { CajetaJit::compile(src, "test.T"); }
-    catch (cajeta::Exception& e) { return e.getErrorId(); }
-    return "";
-}
 } // namespace
 
 // 1.1.2 — BUILDING allocates nothing. Constructing the fused function without
@@ -75,19 +62,30 @@ TEST(FuseLaziness, callingAllocatesTheResult) {
         "        return Cajeta.liveCount() - base;"), 0);
 }
 
-// 1.1.4 — a reduction is not elementwise-fusible: it BOUNDS a fusion region
-// (U2 stages it). Until then it must be a named, located error, never a
-// silently wrong or partially-fused kernel.
-TEST(FuseLaziness, reductionNotYetFusibleIsNamedError) {
-    EXPECT_EQ(errIdOf(
-        "float32[] fa = { 1.0f, 2.0f };\n"
+// 1.1.4, OVERTAKEN BY U2 and repurposed (2026-07-20, U5 sweep): this test
+// originally asserted a reduction operand was a named error ("until U2
+// stages it") — U2 landed staging but never updated the assertion (its
+// targeted blast radius missed this file). The staged behavior is now the
+// pin: `mul(t, sum(t))` hoists the reduction once and broadcasts it into the
+// fused loop. x = {1,2}: sum = 3, r = {3,6}, sum(r) = 9.
+TEST(FuseLaziness, reductionOperandStagesAndBroadcasts) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.math.Tensor;\n"
+        "public final class T {\n"
+        "    public static float32 run() {\n"
+        "        float32[] fa = { 1.0f, 2.0f };\n"
         "        int64[] s = heap int64[1]; s[0] = 2;\n"
         "        Tensor<float32> x = Tensor.of<float32>(fa, s);\n"
         "        (Tensor<float32>) -> #Tensor<float32> g =\n"
         "            Fuse((Tensor<float32> t) ->\n"
         "                Tensor.mul<float32>(t, Tensor.sum<float32,float32>(t)));\n"
         "        Tensor<float32> r = g(x);\n"
-        "        return 0.0f;"), "CAJETA_ERROR_TRANSFORM_NOT_FUSIBLE");
+        "        return Tensor.sum<float32,float32>(r);\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.T");
+    EXPECT_FLOAT_EQ(jit->lookup<float (*)()>("run")(), 9.0f);
 }
 
 // 1.1.4 — a non-lambda target keeps the transform family's specialization

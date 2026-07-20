@@ -1372,6 +1372,39 @@ namespace cajeta {
                         resolvedType = gradType;
                         return g;
                     }
+                    // nucleo-expr U5 — Grad(Fuse(f)): the autograd seam is "one
+                    // DAG, two consumers" (plan X8) — Fuse and Grad both walk
+                    // f's body via buildDag, one emitting the fused loop, the
+                    // other the backward. Fuse(f) is semantically f, so Grad
+                    // over it differentiates the SAME lambda the fuser walks;
+                    // no graph translation, no second recognizer path.
+                    if (innerGrad->getMethodCallName() == "Fuse"
+                            && innerGrad->getParameters().size() == 1) {
+                        auto lam = std::dynamic_pointer_cast<LambdaExpression>(
+                            innerGrad->getParameters()[0].expression);
+                        if (!lam) {
+                            throw Exception(
+                                "transform intrinsic 'Grad(Fuse(f))' requires a "
+                                "lambda literal whose body can be differentiated",
+                                "CAJETA_ERROR_TRANSFORM_NOT_SPECIALIZABLE",
+                                "", getSourceLine(), getSourceColumn());
+                        }
+                        lam->resolveTypes(module);
+                        auto fnType = std::dynamic_pointer_cast<CajetaFunctionType>(
+                            lam->getResolvedType());
+                        if (!fnType) {
+                            throw Exception(
+                                "transform intrinsic 'Grad(Fuse(f))' could not "
+                                "resolve f's function type",
+                                "CAJETA_ERROR_TRANSFORM_NOT_FUNCTION",
+                                "", getSourceLine(), getSourceColumn());
+                        }
+                        CajetaTypePtr gradType;
+                        llvm::Value* g = emitGradBackward(this, lam, fnType,
+                                                          module, gradType);
+                        resolvedType = gradType;
+                        return g;
+                    }
                 }
             }
             // Jit over a transform (6.1.2): the argument is a Vmap/Grad call whose
@@ -1392,6 +1425,19 @@ namespace cajeta {
                         llvm::Value* inner = innerT->generateCode(module);
                         for (auto& fn : module->getLlvmModule()->functions()) {
                             if (fn.isDeclaration() || before.count(&fn)) continue;
+                            // Only the transform's OWN synthesis (its helper
+                            // classes and their lambdas). A tensor-surface
+                            // backward also instantiates stdlib templates
+                            // (e.g. Tensor::sum) as new definitions here —
+                            // those are shared, NAME-addressed symbols, and
+                            // renaming one orphans every later call site that
+                            // looks it up by name (nucleo-expr 5.1.2).
+                            llvm::StringRef n = fn.getName();
+                            if (!n.contains("__GradBwd_")
+                                    && !n.contains("__VmapBatch_")
+                                    && !n.contains("__Fused_")
+                                    && !n.contains("__cajeta_lambda_"))
+                                continue;
                             cajeta::fuseFunction(fn, nullptr);
                             fn.setName("__JitFused_" + fn.getName().str());
                         }

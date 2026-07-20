@@ -80,8 +80,14 @@ Progress:
   (`cajeta.nucleo.autograd.{Tape,Var}` — define-by-run, runtime-bounded loops, stopGrad), and
   the eager==compiled agreement bar. Deferred: tensor tape ops, literal registry sharing
   (generate tape source from the registry), `Diff<T>`, `@Checkpoint` remat, conv/softmax rules.
-- **nucleo-expr** — 🔨 **ACTIVE** (`nucleo-expr-plan.md`, approved 2026-07-20): compile-time
-  fused tensor expressions via a `Fuse` transform intrinsic + explicit `.eval()`; the headline
-  bar is allocation count (an N-op chain allocates ONE buffer). Deferred: the relational half
-  (§4 pushdown, §7 column sharing, X7 nulls) with nucleo-column/frame; GPU lowering (X6).
+- **nucleo-expr** — ✅ v1 tensor increment complete (`nucleo-expr-plan.md`, 2026-07-20):
+  `Fuse` intrinsic + `@Fuse` sugar fuse an N-op elementwise tensor chain into ONE loop
+  allocating only the result (the headline bar, measured); reductions stage with the
+  elementwise tail fused; the CALL is the force point (no `.eval` — X5 narrowed it away);
+  autograd seam closed (`Grad(Fuse(f))` / `@Grad @Fuse` — one DAG, two consumers; the
+  backward is ordinary Jit-fusable IR) and the column seam pinned (`elementExpr` is the
+  single dense-buffer site, contract-tested for the [X7] null-aware variant). Deferred:
+  operator-spelled bodies (`a * b` needs a type-system decision — plan 4.2.2), the
+  relational half (§4 pushdown, §7 column sharing, X7 nulls) with nucleo-column/frame,
+  GPU lowering (X6), and the §3.4 fuse-vs-materialize heuristic.
 - Everything below nucleo-expr — **draft** (specs written 2026-06-23; no plan yet).
