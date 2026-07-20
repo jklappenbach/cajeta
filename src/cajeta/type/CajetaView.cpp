@@ -125,6 +125,22 @@ namespace cajeta {
                     canonical.c_str(), property->getName().c_str());
                 throw Exception(buf, "CAJETA_ERROR_VIEW_RECURSIVE");
             }
+            // Nested element arrays (`V[][]`, `String[][]`, `int32[][]`) are
+            // rejected: the element-array wire layout (u32 count + elements
+            // back-to-back, view-element-arrays spec) is single-level; an
+            // array whose elements are themselves arrays has no v1.1 layout.
+            if (auto arr = dynamic_pointer_cast<CajetaArray>(fieldType)) {
+                if (dynamic_pointer_cast<CajetaArray>(arr->getElementType())) {
+                    char buf[256];
+                    snprintf(buf, sizeof(buf),
+                        "view '%s' field '%s' is an array of arrays; element "
+                        "arrays in views are single-level (see "
+                        "specs/view-element-arrays-spec.md). Flatten the "
+                        "layout or wrap the inner array in its own view type.",
+                        canonical.c_str(), property->getName().c_str());
+                    throw Exception(buf, "CAJETA_ERROR_VIEW_NESTED_ELEMENT_ARRAY");
+                }
+            }
             bool isVar = CajetaView::isVariableSize(property);
             if (isVar) {
                 sawVariableSize = true;
