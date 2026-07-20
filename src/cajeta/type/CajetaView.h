@@ -78,6 +78,28 @@ namespace cajeta {
         // (primitive `T[]` advances by count*sizeof(T) instead).
         static bool isElementArray(const StructurePropertyPtr& property);
 
+        // Access-side offset arithmetic (post-validation — the ctor sweep
+        // already proved every prefix in-bounds, so these emit NO checks).
+        // Both walk relative to `basePtr` (the view's data pointer) and
+        // return the new offset as an i64 llvm::Value*.
+        //
+        // emitAccessAdvance: advance `offset` over one property of a view —
+        // fixed (+static size), String (+4+len), primitive T[]
+        // (+4+count*sizeof(T)), or element array (+4 + a runtime loop over
+        // the elements; constant stride when the element view is
+        // fixed-size).
+        static llvm::Value* emitAccessAdvance(CajetaModulePtr module,
+            const StructurePropertyPtr& property,
+            llvm::Value* basePtr, llvm::Value* offset);
+
+        // emitElementAdvance: advance `offset` over ONE element of a `V[]`
+        // field — walks V's properties in declaration order. V is
+        // guaranteed element-array-free (the generatePrototype composition
+        // guard), so this emits straight-line code.
+        static llvm::Value* emitElementAdvance(CajetaModulePtr module,
+            const shared_ptr<CajetaView>& elemView,
+            llvm::Value* basePtr, llvm::Value* offset);
+
         // No vtable header — view properties stay at 0-based LLVM
         // indices. CajetaClass's default reserves slot 0 for the vtable
         // pointer. Override carried over from the retired

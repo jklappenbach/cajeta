@@ -10,12 +10,31 @@ using namespace std;
 
 namespace cajeta {
 
+    class StructureProperty;
+    typedef shared_ptr<StructureProperty> StructurePropertyPtr;
+
     class DotExpression : public Expression {
         string identifier;
+        // view v1.1 element arrays (specs/view-element-arrays-spec.md):
+        // when set, generateCode on an element-array view field returns the
+        // raw i8* to the field's u32 count prefix instead of throwing the
+        // bare-read error. One-shot — cleared on use. Set only by the
+        // callers that consume the prefix directly: ArrayIndexExpression
+        // (f[i]) and MethodCallExpression (f.count()).
+        bool elementArrayPrefixMode = false;
     public:
         DotExpression(CajetaParser::ExpressionContext* ctx, antlr4::Token* token);
 
         const string& getIdentifier() const { return identifier; }
+
+        void setElementArrayPrefixMode(bool m) { elementArrayPrefixMode = m; }
+
+        // Non-null iff this dot names a view element-array field (`V[]` /
+        // `String[]`) on a view-typed receiver — the gate the f[i] and
+        // f.count() special paths key on. Resolves the receiver's type if
+        // needed.
+        StructurePropertyPtr resolveViewElementArrayProperty(
+            CajetaModulePtr module);
 
         void resolveTypes(CajetaModulePtr module) override;
 

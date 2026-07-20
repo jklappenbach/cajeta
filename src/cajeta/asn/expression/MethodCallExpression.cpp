@@ -4659,6 +4659,33 @@ namespace cajeta {
             }
         }
 
+        // View element-array count (view v1.1): `m.ds.count()` reads the
+        // u32 count prefix in place — the field has no materializable
+        // receiver value (bare element-array reads are a static error), so
+        // intercept BEFORE receiver generation. Non-negative by ctor
+        // validation, so zext/sext agree.
+        if (methodCallName == "count" && parameters.empty()
+                && !children.empty()) {
+            if (auto dotChild = dynamic_pointer_cast<DotExpression>(children[0])) {
+                if (dotChild->resolveViewElementArrayProperty(module)) {
+                    dotChild->setElementArrayPrefixMode(true);
+                    llvm::Value* prefixPtr = dotChild->generateCode(module);
+                    if (prefixPtr) {
+                        llvm::Type* i64Ty2 =
+                            llvm::Type::getInt64Ty(*module->getLlvmContext());
+                        llvm::Type* i32Ty2 =
+                            llvm::Type::getInt32Ty(*module->getLlvmContext());
+                        resolvedType = CajetaType::of("int64");
+                        return builder->CreateIntCast(
+                            builder->CreateLoad(i32Ty2, prefixPtr,
+                                "earr_count32"),
+                            i64Ty2, /*isSigned=*/true, "earr_count");
+                    }
+                    return nullptr;
+                }
+            }
+        }
+
         // Determine receiver (if any) from children[0]; the lhs is added when this node
         // was constructed via the DOT-methodCall branch.
         llvm::Value* receiver = nullptr;

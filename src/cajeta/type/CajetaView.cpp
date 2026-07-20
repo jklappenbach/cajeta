@@ -39,6 +39,142 @@ namespace cajeta {
         return qn && qn->getTypeName() == "String";
     }
 
+    llvm::Value* CajetaView::emitElementAdvance(CajetaModulePtr module,
+            const shared_ptr<CajetaView>& elemView,
+            llvm::Value* basePtr, llvm::Value* offset) {
+        auto* builder = module->getBuilder();
+        auto& ctx = *module->getLlvmContext();
+        const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+        for (auto& p : elemView->getPropertyList()) {
+            if (CajetaView::isVariableSize(p)) {
+                llvm::Value* pPtr = builder->CreateInBoundsGEP(
+                    i8Ty, basePtr, offset, "elem_vlen_ptr");
+                llvm::Value* len = builder->CreateIntCast(
+                    builder->CreateLoad(i32Ty, pPtr), i64Ty, /*isSigned=*/true);
+                uint64_t elemBytes = 1;
+                if (auto arrType = dynamic_pointer_cast<CajetaArray>(p->getType())) {
+                    if (auto et = arrType->getElementLlvmType(&ctx)) {
+                        elemBytes = dl.getTypeAllocSize(et);
+                        if (elemBytes == 0) elemBytes = 1;
+                    }
+                }
+                llvm::Value* dataBytes = (elemBytes == 1) ? len
+                    : builder->CreateMul(len,
+                        llvm::ConstantInt::get(i64Ty, elemBytes));
+                offset = builder->CreateAdd(
+                    builder->CreateAdd(offset,
+                        llvm::ConstantInt::get(i64Ty, 4)),
+                    dataBytes, "elem_after_var");
+            } else {
+                uint64_t sz = dl.getTypeAllocSize(p->getType()->getLlvmType());
+                offset = builder->CreateAdd(offset,
+                    llvm::ConstantInt::get(i64Ty, sz), "elem_after_fixed");
+            }
+        }
+        return offset;
+    }
+
+    llvm::Value* CajetaView::emitAccessAdvance(CajetaModulePtr module,
+            const StructurePropertyPtr& property,
+            llvm::Value* basePtr, llvm::Value* offset) {
+        auto* builder = module->getBuilder();
+        auto& ctx = *module->getLlvmContext();
+        const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+
+        if (!CajetaView::isVariableSize(property)) {
+            uint64_t sz = dl.getTypeAllocSize(property->getType()->getLlvmType());
+            return builder->CreateAdd(offset,
+                llvm::ConstantInt::get(i64Ty, sz), "adv_fixed");
+        }
+
+        if (CajetaView::isElementArray(property)) {
+            llvm::Value* cPtr = builder->CreateInBoundsGEP(
+                i8Ty, basePtr, offset, "adv_count_ptr");
+            llvm::Value* count = builder->CreateIntCast(
+                builder->CreateLoad(i32Ty, cPtr), i64Ty, /*isSigned=*/true);
+            llvm::Value* start = builder->CreateAdd(offset,
+                llvm::ConstantInt::get(i64Ty, 4), "adv_elems_start");
+            shared_ptr<CajetaView> elemView;
+            if (auto arrType = dynamic_pointer_cast<CajetaArray>(
+                    property->getType())) {
+                elemView = dynamic_pointer_cast<CajetaView>(
+                    arrType->getElementType());
+            }
+            // Fixed-size elements: constant stride, no loop.
+            if (elemView && elemView->getVariableSizeFieldCount() == 0) {
+                uint64_t stride = elemView->getFixedSize();
+                return builder->CreateAdd(start,
+                    builder->CreateMul(count,
+                        llvm::ConstantInt::get(i64Ty, stride)),
+                    "adv_stride_end");
+            }
+            // Var-size elements: runtime loop over the elements.
+            llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+            llvm::BasicBlock* preBB = builder->GetInsertBlock();
+            llvm::BasicBlock* hdrBB = llvm::BasicBlock::Create(
+                ctx, "adv_earr_hdr", parentFn);
+            llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(
+                ctx, "adv_earr_body", parentFn);
+            llvm::BasicBlock* exitBB = llvm::BasicBlock::Create(
+                ctx, "adv_earr_exit", parentFn);
+            builder->CreateBr(hdrBB);
+            builder->SetInsertPoint(hdrBB);
+            llvm::PHINode* kPhi = builder->CreatePHI(i64Ty, 2, "adv_k");
+            llvm::PHINode* offPhi = builder->CreatePHI(i64Ty, 2, "adv_off");
+            kPhi->addIncoming(llvm::ConstantInt::get(i64Ty, 0), preBB);
+            offPhi->addIncoming(start, preBB);
+            builder->CreateCondBr(
+                builder->CreateICmpSLT(kPhi, count), bodyBB, exitBB);
+            builder->SetInsertPoint(bodyBB);
+            llvm::Value* offAfter;
+            if (elemView) {
+                offAfter = emitElementAdvance(module, elemView, basePtr, offPhi);
+            } else {
+                // String[] element: i32 len + len bytes.
+                llvm::Value* pPtr = builder->CreateInBoundsGEP(
+                    i8Ty, basePtr, offPhi, "adv_slen_ptr");
+                llvm::Value* len = builder->CreateIntCast(
+                    builder->CreateLoad(i32Ty, pPtr), i64Ty, /*isSigned=*/true);
+                offAfter = builder->CreateAdd(
+                    builder->CreateAdd(offPhi,
+                        llvm::ConstantInt::get(i64Ty, 4)),
+                    len, "adv_after_str");
+            }
+            llvm::Value* kNext = builder->CreateAdd(kPhi,
+                llvm::ConstantInt::get(i64Ty, 1));
+            llvm::BasicBlock* bodyEndBB = builder->GetInsertBlock();
+            builder->CreateBr(hdrBB);
+            kPhi->addIncoming(kNext, bodyEndBB);
+            offPhi->addIncoming(offAfter, bodyEndBB);
+            builder->SetInsertPoint(exitBB);
+            return offPhi;
+        }
+
+        // Scalar String / primitive T[].
+        llvm::Value* pPtr = builder->CreateInBoundsGEP(
+            i8Ty, basePtr, offset, "adv_vlen_ptr");
+        llvm::Value* len = builder->CreateIntCast(
+            builder->CreateLoad(i32Ty, pPtr), i64Ty, /*isSigned=*/true);
+        uint64_t elemBytes = 1;
+        if (auto arrType = dynamic_pointer_cast<CajetaArray>(property->getType())) {
+            if (auto et = arrType->getElementLlvmType(&ctx)) {
+                elemBytes = dl.getTypeAllocSize(et);
+                if (elemBytes == 0) elemBytes = 1;
+            }
+        }
+        llvm::Value* dataBytes = (elemBytes == 1) ? len
+            : builder->CreateMul(len, llvm::ConstantInt::get(i64Ty, elemBytes));
+        return builder->CreateAdd(
+            builder->CreateAdd(offset, llvm::ConstantInt::get(i64Ty, 4)),
+            dataBytes, "adv_after_var");
+    }
+
     llvm::Type* CajetaView::getLlvmType() {
         if (isFrozen() && CajetaType::rawLlvmType() == nullptr) {
             llvm::LLVMContext* ctx = currentLlvmContext();
