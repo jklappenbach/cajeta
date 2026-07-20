@@ -113,6 +113,70 @@ class CajetaDebugSessionTest {
         assertEquals(listOf("initialize", "launch", "configurationDone"), received.toList())
     }
 
+    /** 5.1.2 — configured entries reach the server as the standard DAP `env`. */
+    @Test
+    fun launchCarriesEnvironmentEntries() {
+        connect()
+        runServer()
+        session.start()
+
+        session.launch(
+            CajetaDebugSession.LaunchParams(
+                "demo.Calc.main", "/tmp/root",
+                envVars = linkedMapOf("FOO" to "1", "BAR" to "two"),
+            ),
+        ).get(5, TimeUnit.SECONDS)
+
+        val env = lastRequestByCommand["launch"]!!.at("arguments").at("env")
+        assertEquals("1", env.at("FOO").asString())
+        assertEquals("two", env.at("BAR").asString())
+    }
+
+    /** 5.1.3 — inheritance is a separate fact from the entries themselves;
+     *  the server cannot infer it from an empty map. */
+    @Test
+    fun launchCarriesInheritFlag() {
+        connect()
+        runServer()
+        session.start()
+
+        session.launch(
+            CajetaDebugSession.LaunchParams(
+                "demo.Calc.main", "/tmp/root", inheritSystemEnv = false,
+            ),
+        ).get(5, TimeUnit.SECONDS)
+
+        assertEquals(
+            false,
+            lastRequestByCommand["launch"]!!.at("arguments")
+                .at("inheritSystemEnv").asBool(),
+        )
+    }
+
+    /**
+     * 5.1.4 — the no-regression guard. Unit 5 is inert by design: until the
+     * server reads these fields (Unit 6), a default configuration must produce
+     * the request it produced before (spec 4.1.6). Asserting on the exact key
+     * set is deliberate — an `env: {}` that a future server treated as "empty
+     * environment" rather than "unspecified" would silently blank the debuggee's
+     * environment, so absence must stay absence on the wire.
+     */
+    @Test
+    fun launchWithNoEnvironmentIsUnchanged() {
+        connect()
+        runServer()
+        session.start()
+
+        session.launch(CajetaDebugSession.LaunchParams("demo.Calc.main", "/tmp/root"))
+            .get(5, TimeUnit.SECONDS)
+
+        val args = lastRequestByCommand["launch"]!!.at("arguments") as Json.Obj
+        assertEquals(
+            setOf("entry-method", "sourceRoot", "stopOnEntry"),
+            args.entries.keys,
+        )
+    }
+
     @Test
     fun routesStoppedThenExitedThenTerminated() {
         connect()

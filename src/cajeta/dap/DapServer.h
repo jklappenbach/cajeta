@@ -32,6 +32,7 @@
 #include "cajeta/dbg/DebugLocTable.h"
 #include "cajeta/dbg/DebugVars.h"
 #include "cajeta/jit/CajetaJitHost.h"
+#include "cajeta/util/Environment.h"
 
 namespace cajeta::dap {
 
@@ -106,6 +107,15 @@ namespace cajeta::dap {
         // DAP launch `stopOnEntry`. The plugin has always sent this; until now
         // nothing read it, so the IDE checkbox did nothing.
         bool stopOnEntry_ = false;
+        // The launch environment overlay, and whether the shell's environment
+        // is inherited under it (spec §4). Applied at configurationDone.
+        std::map<std::string, std::string> launchEnv_;
+        bool inheritSystemEnv_ = true;
+        // Undoes that overlay. The JIT runs IN-PROCESS, so applying the
+        // environment mutates this server; restoring on destruction is what
+        // keeps one session out of the next (spec 4.1.4) even when the session
+        // never ends cleanly.
+        cajeta::util::EnvironmentScope envScope_;
         std::vector<cajeta::jit::Breakpoint> breakpoints_;
         // CP6f: per-breakpoint condition keyed by (file basename, line). Empty
         // or absent entry means an unconditional breakpoint.

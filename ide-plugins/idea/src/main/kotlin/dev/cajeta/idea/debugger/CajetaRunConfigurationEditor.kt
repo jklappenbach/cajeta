@@ -1,5 +1,6 @@
 package dev.cajeta.idea.debugger
 
+import com.intellij.execution.configuration.EnvironmentVariablesComponent
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.options.SettingsEditor
 import com.intellij.openapi.ui.ComboBox
@@ -25,11 +26,17 @@ class CajetaRunConfigurationEditor : SettingsEditor<CajetaRunConfiguration>() {
     }
     private val sourceRootField = JBTextField()
     private val stopOnEntryCheck = JBCheckBox("Stop on entry")
+    // The platform's standard widget (spec 4.1.1): it supplies both the
+    // name/value table and the "inherit system environment" toggle, so the
+    // control reads and behaves the way it does in every other run
+    // configuration.
+    private val environmentComponent = EnvironmentVariablesComponent()
 
     private val panel: JComponent = FormBuilder.createFormBuilder()
         .addLabeledComponent("Entry method:", entryMethodCombo)
         .addComponentToRightColumn(entryMethodHint)
         .addLabeledComponent("Source root:", sourceRootField)
+        .addComponent(environmentComponent)
         .addComponent(stopOnEntryCheck)
         .panel
 
@@ -51,6 +58,8 @@ class CajetaRunConfigurationEditor : SettingsEditor<CajetaRunConfiguration>() {
                 CajetaManifest.buildSettings(configuration.project).sourceRoot)
 
         stopOnEntryCheck.isSelected = configuration.stopOnEntry
+        environmentComponent.envs = configuration.envVars
+        environmentComponent.isPassParentEnvs = configuration.inheritSystemEnv
         loadCandidates(configuration)
     }
 
@@ -99,6 +108,8 @@ class CajetaRunConfigurationEditor : SettingsEditor<CajetaRunConfiguration>() {
         configuration.entryMethod = EntryMethodCandidates.persistedValueFor(editorText)
         configuration.sourceRoot = sourceRootField.text.trim()
         configuration.stopOnEntry = stopOnEntryCheck.isSelected
+        configuration.envVars = environmentComponent.envs
+        configuration.inheritSystemEnv = environmentComponent.isPassParentEnvs
     }
 
     override fun createEditor(): JComponent = panel

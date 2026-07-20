@@ -752,7 +752,8 @@ std::unique_ptr<JitDebugSession> startDebugSession(
         const std::vector<Breakpoint>& breakpoints,
         std::string* error,
         bool armExceptions,
-        bool stopOnEntry) {
+        bool stopOnEntry,
+        const std::function<void()>& beforeRun) {
     // Debug sessions always emit safepoints.
     JitRunOptions dbgOpts = opts;
     dbgOpts.debugInfo = true;
@@ -837,6 +838,10 @@ std::unique_ptr<JitDebugSession> startDebugSession(
     }
 
     JitDebugSession::Impl* raw = impl.get();
+    // Last thing before the program runs: anything the debuggee must observe
+    // but the build must not have seen (the DAP launch environment).
+    if (beforeRun) beforeRun();
+
     raw->thread = std::thread([raw, entryAddr, returnsInt32, takesArgs, entryArgs]() {
         if (returnsInt32) {
             raw->exitCode = takesArgs

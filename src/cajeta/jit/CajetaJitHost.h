@@ -11,6 +11,7 @@
 //
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -124,11 +125,18 @@ namespace cajeta::jit {
     // (with a message in *error when non-null).
     // `stopOnEntry` parks at the first safepoint (the entry method's first
     // executable statement) — armed before the thread starts, like exceptions.
+    // `beforeRun` runs after the program is built and armed but before the
+    // program thread starts. That window is where process-global state the
+    // DEBUGGEE should see — but the COMPILER should not — belongs: the DAP
+    // server's launch environment overlay is applied here, so a configuration
+    // that suppresses inherited variables cannot strip the environment the
+    // in-process build itself depends on (PATH, HOME, TMPDIR, ROCM_PATH).
     std::unique_ptr<JitDebugSession> startDebugSession(
         const JitRunOptions& opts,
         const std::vector<Breakpoint>& breakpoints,
         std::string* error = nullptr,
         bool armExceptions = false,
-        bool stopOnEntry = false);
+        bool stopOnEntry = false,
+        const std::function<void()>& beforeRun = {});
 
 } // namespace cajeta::jit

@@ -34,6 +34,36 @@ class CajetaRunConfigurationTest : BasePlatformTestCase() {
         assertTrue(config.stopOnEntry)
     }
 
+    /** 5.1.1 — environment entries and the inherit flag persist like the rest. */
+    fun testEnvironmentRoundTrips() {
+        val config = templateConfig()
+
+        config.envVars = linkedMapOf("FOO" to "1", "BAR" to "two")
+        config.inheritSystemEnv = false
+
+        assertEquals(mapOf("FOO" to "1", "BAR" to "two"), config.envVars)
+        assertFalse(config.inheritSystemEnv)
+    }
+
+    /**
+     * 5.1.1 — the defaults matter as much as the round-trip: an existing
+     * configuration deserialized from disk has no env state at all, and must
+     * come back as "no entries, inherit the shell" — the behaviour it had
+     * before this feature existed (spec 4.1.6).
+     */
+    fun testEnvironmentDefaultsToEmptyAndInheriting() {
+        val config = templateConfig()
+
+        assertTrue(config.envVars.isEmpty())
+        assertTrue(config.inheritSystemEnv)
+    }
+
+    private fun templateConfig(): CajetaRunConfiguration {
+        val type = ConfigurationTypeUtil.findConfigurationType(CajetaConfigurationType::class.java)!!
+        return type.configurationFactories[0]
+            .createTemplateConfiguration(project) as CajetaRunConfiguration
+    }
+
     fun testRunnerGatesOnDebugExecutorAndCajetaConfig() {
         val runner = CajetaProgramRunner()
         val type = ConfigurationTypeUtil.findConfigurationType(CajetaConfigurationType::class.java)!!

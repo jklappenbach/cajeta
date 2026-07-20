@@ -240,6 +240,18 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         if (launchOpts_.sourceRoot.empty())
             launchOpts_.sourceRoot = args.at("source-root").asString();
         stopOnEntry_ = args.at("stopOnEntry").asBool();
+        // Environment (spec §4). Absence of "env" means UNSPECIFIED, not
+        // "empty environment" — every launch sent before this feature existed
+        // omits it, and reading that as an empty environment would blank the
+        // debuggee's. Same for the inherit flag, which defaults to on.
+        launchEnv_.clear();
+        const Json& env = args.at("env");
+        if (env.isObject())
+            for (const auto& kv : env.items())
+                launchEnv_[kv.first] = kv.second.asString();
+        inheritSystemEnv_ = args.at("inheritSystemEnv").isBool()
+                                ? args.at("inheritSystemEnv").asBool()
+                                : true;
         emit(makeResponse(seq_++, requestSeq, command, true, Json::object()));
         return true;
     }
@@ -288,11 +300,23 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
 
     if (command == "configurationDone") {
         std::string err;
+        // The launch environment is applied through startDebugSession's
+        // beforeRun hook: after the build, before the program thread starts.
+        // The debuggee's first System.env.get therefore sees it (spec 4.1.3)
+        // while the in-process compile still runs under the real environment —
+        // which matters because an inheritSystemEnv=false configuration
+        // suppresses every undeclared variable, and the build needs PATH and
+        // friends. envScope_ remembers what it displaced and restores from its
+        // destructor (4.1.4).
+        auto applyEnv = [this]() {
+            if (!launchEnv_.empty() || !inheritSystemEnv_)
+                envScope_.apply(launchEnv_, inheritSystemEnv_);
+        };
         // CP6f-3: arm break-on-throw inside startDebugSession (before the
         // program thread starts) so an immediate throw can't race past it.
         session_ = cajeta::jit::startDebugSession(launchOpts_, breakpoints_,
                                                   &err, exceptionsArmed_,
-                                                  stopOnEntry_);
+                                                  stopOnEntry_, applyEnv);
         bool ok = session_ != nullptr;
         emit(makeResponse(seq_++, requestSeq, command, ok,
                           ok ? Json::object() : Json(err)));
@@ -467,6 +491,11 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
             if (!terminated_) session_->controller().resume();
             session_->join();
         }
+        // The program thread has joined, so nothing can read the environment
+        // any more: put back what the launch displaced (spec 4.1.4). The scope
+        // also restores from its destructor, which covers the abnormal exits
+        // that never reach this line.
+        envScope_.restore();
         emit(makeResponse(seq_++, requestSeq, command, true, Json::object()));
         return false;  // end the loop
     }

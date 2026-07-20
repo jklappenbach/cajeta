@@ -23,6 +23,8 @@ class CajetaDebugSession(private val client: DapClient) {
         val entryMethod: String,
         val sourceRoot: String,
         val stopOnEntry: Boolean = false,
+        val envVars: Map<String, String> = emptyMap(),
+        val inheritSystemEnv: Boolean = true,
     )
 
     /** A line breakpoint, optionally conditional (CP6f). A blank condition is
@@ -189,11 +191,28 @@ class CajetaDebugSession(private val client: DapClient) {
             .handle { _, _ -> null as Void? } // succeed even if the server is already gone
             .whenComplete { _, _ -> client.close() }
 
-    private fun launchArgs(p: LaunchParams): Json = Json.obj(
-        "entry-method" to Json.of(p.entryMethod),
-        "sourceRoot" to Json.of(p.sourceRoot),
-        "stopOnEntry" to Json.of(p.stopOnEntry),
-    )
+    /**
+     * The environment fields are emitted only when they DIVERGE from the
+     * default (spec 4.1.6): no entries and inheritance on produces exactly the
+     * request this sent before §4 existed. Absence therefore means "unspecified"
+     * rather than "empty environment" — a distinction the server depends on,
+     * since an `env: {}` read as the latter would blank the debuggee's
+     * environment on every default launch.
+     */
+    private fun launchArgs(p: LaunchParams): Json {
+        val args = Json.obj(
+            "entry-method" to Json.of(p.entryMethod),
+            "sourceRoot" to Json.of(p.sourceRoot),
+            "stopOnEntry" to Json.of(p.stopOnEntry),
+        )
+        if (p.envVars.isNotEmpty()) {
+            val env = Json.obj()
+            for ((k, v) in p.envVars) env[k] = Json.of(v)
+            args["env"] = env
+        }
+        if (!p.inheritSystemEnv) args["inheritSystemEnv"] = Json.of(false)
+        return args
+    }
 
     private fun breakpointArgs(file: String, breakpoints: List<LineBreakpoint>): Json {
         val bps = Json.arr()

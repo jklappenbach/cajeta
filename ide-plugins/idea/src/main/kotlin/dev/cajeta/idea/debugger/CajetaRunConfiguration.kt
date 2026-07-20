@@ -40,6 +40,14 @@ class CajetaRunConfiguration(
         get() = options.stopOnEntry
         set(value) { options.stopOnEntry = value }
 
+    override var envVars: Map<String, String>
+        get() = options.envVars
+        set(value) { options.envVars = value }
+
+    override var inheritSystemEnv: Boolean
+        get() = options.inheritSystemEnv
+        set(value) { options.inheritSystemEnv = value }
+
     override fun getConfigurationEditor(): SettingsEditor<out RunConfiguration> =
         CajetaRunConfigurationEditor()
 

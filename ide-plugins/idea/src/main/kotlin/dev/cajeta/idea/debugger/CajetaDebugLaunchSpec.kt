@@ -13,4 +13,9 @@ interface CajetaDebugLaunchSpec {
     val entryMethod: String
     val sourceRoot: String
     val stopOnEntry: Boolean
+
+    /** Environment overlay for the debuggee (spec §4). Defaulted so an
+     *  implementation with no environment of its own stays source-compatible. */
+    val envVars: Map<String, String> get() = emptyMap()
+    val inheritSystemEnv: Boolean get() = true
 }

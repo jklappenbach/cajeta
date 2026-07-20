@@ -104,6 +104,8 @@ class CajetaDebugProcess(
                     entryMethod = configuration.entryMethod,
                     sourceRoot = configuration.sourceRoot,
                     stopOnEntry = configuration.stopOnEntry,
+                    envVars = configuration.envVars,
+                    inheritSystemEnv = configuration.inheritSystemEnv,
                 ),
                 initialBreakpoints,
                 // CP6f-3b: arm break-on-throw inside the handshake (before

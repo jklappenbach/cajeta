@@ -9,6 +9,8 @@
 //
 #include <gtest/gtest.h>
 
+#include <cstdlib>
+#include <map>
 #include <vector>
 
 #include "cajeta/dap/DapServer.h"
@@ -726,4 +728,147 @@ TEST(DapServerSession, WithoutStopOnEntryTheProgramDoesNotHaltAtEntry) {
 
     EXPECT_EQ(countEvent(log, "stopped"), 0);
     EXPECT_EQ(countEvent(log, "terminated"), 1);
+}
+
+// --- environment variables (run-config-ergonomics Unit 6 / spec §4) ---------
+// The JIT runs IN-PROCESS, so applying the launch environment mutates this
+// very process. That makes restore (4.1.4) a correctness requirement, not
+// hygiene: without it the first session's variables leak into every session
+// after it, and into the DAP server itself.
+
+namespace {
+
+const char* kEnvProg =
+    "package demo;\n"
+    "public class Env {\n"
+    "    public static int32 main() {\n"
+    "        String v = System.env.get(\"CAJETA_DAP_TEST_VAR\");\n"
+    "        if (v == null) { return 0; }\n"
+    "        if (v.equals(\"one\")) { return 1; }\n"
+    "        if (v.equals(\"two\")) { return 2; }\n"
+    "        return 9;\n"
+    "    }\n"
+    "}\n";
+
+const char* kVar = "CAJETA_DAP_TEST_VAR";
+
+// The debuggee reports what it saw through its exit code, so a single int
+// distinguishes unset (0) from each configured value.
+int exitCodeOf(const std::vector<Json>& log) {
+    for (const auto& m : log)
+        if (m.at("type").asString() == "event" &&
+            m.at("event").asString() == "exited")
+            return m.at("body").at("exitCode").asInt();
+    return -1;
+}
+
+// Run one whole session to termination and report what the debuggee observed.
+// `env` entries are sent as the DAP `env` object; a null `env` sends none at
+// all, which must remain distinct from sending an empty one (4.2.5 / 6.1.6).
+int runWithEnv(const TempProgram& p,
+               const std::map<std::string, std::string>* env,
+               const bool* inheritSystemEnv = nullptr) {
+    DapServer srv;
+    std::vector<Json> log;
+    drive(srv, req(1, "initialize", Json::object()), log);
+    Json launchArgs = Json::object();
+    launchArgs["entry-method"] = "demo.Env.main";
+    launchArgs["sourceRoot"] = p.sourceRoot();
+    if (env) {
+        Json e = Json::object();
+        for (const auto& kv : *env) e[kv.first] = kv.second;
+        launchArgs["env"] = std::move(e);
+    }
+    if (inheritSystemEnv) launchArgs["inheritSystemEnv"] = *inheritSystemEnv;
+    drive(srv, req(2, "launch", launchArgs), log);
+    drive(srv, req(3, "configurationDone", Json::object()), log);
+    drive(srv, req(4, "disconnect", Json::object()), log);
+    return exitCodeOf(log);
+}
+
+// Set/clear a variable in THIS process, so a test can stage the "inherited"
+// environment the server is expected to overlay or suppress.
+void putVar(const char* name, const char* value) {
+    if (value) ::setenv(name, value, 1); else ::unsetenv(name);
+}
+
+} // namespace
+
+// 6.1.1 / spec 4.2.1 — a configured entry reaches System.env.get.
+TEST(DapServerEnvironment, ConfiguredVariableIsVisibleToTheDebuggee) {
+    TempProgram p("demo", "Env.cajeta", kEnvProg);
+    putVar(kVar, nullptr);
+    std::map<std::string, std::string> env{{kVar, "one"}};
+    EXPECT_EQ(runWithEnv(p, &env), 1);
+}
+
+// 6.1.2 / spec 4.2.2 — the configuration wins over the inherited value.
+TEST(DapServerEnvironment, ConfiguredEntryOverridesAnInheritedVariable) {
+    TempProgram p("demo", "Env.cajeta", kEnvProg);
+    putVar(kVar, "two");
+    std::map<std::string, std::string> env{{kVar, "one"}};
+    EXPECT_EQ(runWithEnv(p, &env), 1);
+    // And the server put the inherited value back (4.1.4).
+    EXPECT_STREQ(::getenv(kVar), "two");
+    putVar(kVar, nullptr);
+}
+
+// 6.1.3 / spec 4.2.3 — with inheritance off, an undeclared variable that
+// exists in the server's environment is NOT visible to the debuggee.
+TEST(DapServerEnvironment, InheritanceOffHidesUndeclaredVariables) {
+    TempProgram p("demo", "Env.cajeta", kEnvProg);
+    putVar(kVar, "two");
+    std::map<std::string, std::string> env{{"CAJETA_DAP_TEST_OTHER", "x"}};
+    const bool inherit = false;
+    EXPECT_EQ(runWithEnv(p, &env, &inherit), 0);
+    EXPECT_STREQ(::getenv(kVar), "two");
+    putVar(kVar, nullptr);
+}
+
+// 6.1.4 / spec 4.2.4 — THE contamination test. Two sessions in one process:
+// the second must not observe the first's variable.
+TEST(DapServerEnvironment, RestoreKeepsOneSessionOutOfTheNext) {
+    TempProgram p("demo", "Env.cajeta", kEnvProg);
+    putVar(kVar, nullptr);
+
+    std::map<std::string, std::string> first{{kVar, "one"}};
+    EXPECT_EQ(runWithEnv(p, &first), 1);
+    EXPECT_EQ(::getenv(kVar), nullptr);   // unset again after the session
+
+    EXPECT_EQ(runWithEnv(p, nullptr), 0); // second session: never set
+}
+
+// 6.1.5 — restore must not depend on a clean shutdown. Here the server is
+// destroyed with the session still live and no disconnect ever sent; a
+// destructor-driven guard restores, an explicit call at the end of a happy
+// path would not.
+TEST(DapServerEnvironment, RestoreHoldsWhenTheSessionEndsAbnormally) {
+    TempProgram p("demo", "Env.cajeta", kEnvProg);
+    putVar(kVar, "two");
+    {
+        DapServer srv;
+        std::vector<Json> log;
+        drive(srv, req(1, "initialize", Json::object()), log);
+        Json launchArgs = Json::object();
+        launchArgs["entry-method"] = "demo.Env.main";
+        launchArgs["sourceRoot"] = p.sourceRoot();
+        Json e = Json::object();
+        e[kVar] = "one";
+        launchArgs["env"] = std::move(e);
+        drive(srv, req(2, "launch", launchArgs), log);
+        drive(srv, req(3, "configurationDone", Json::object()), log);
+        // No disconnect, no terminate — just drop the server.
+    }
+    EXPECT_STREQ(::getenv(kVar), "two");
+    putVar(kVar, nullptr);
+}
+
+// 6.1.6 / spec 4.2.5 — no `env` in the request changes nothing. The inherited
+// variable stays visible, which is the pre-feature behaviour.
+TEST(DapServerEnvironment, NoEnvInTheRequestLeavesTheEnvironmentUntouched) {
+    TempProgram p("demo", "Env.cajeta", kEnvProg);
+    putVar(kVar, "two");
+    EXPECT_EQ(runWithEnv(p, nullptr), 2);
+    EXPECT_STREQ(::getenv(kVar), "two");
+    putVar(kVar, nullptr);
 }
