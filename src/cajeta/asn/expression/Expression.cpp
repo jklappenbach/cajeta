@@ -5538,10 +5538,16 @@ namespace cajeta {
         // scope-anchored cleanup (docs/specification/concurrent/Concurrency.md § detach semantics).
         // The Task wrapper leaks for the process lifetime; the body's
         // own locals still drop normally on the carrier-side chain.
-        if (!detachMode) {
+        if (!detachMode && !discardedMode) {
             // Pick the push variant + entry size based on the CompilerFlags
             // (docs/CompilerModes.md). Mirrors the LVD path's choice
             // so the chain has uniformly-shaped entries within a build.
+            // discardedMode skips this too: a statement-position spawn's
+            // Task is scope-owned (registered below via scope_register_owned
+            // — the runtime scope frame joins AND frees it), because a
+            // per-site drop-entry alloca cannot represent N tasks live at
+            // once from a loop, and its wait-on-drop joined at the innermost
+            // brace, serializing spawn loops the spec promises concurrent.
             bool debugTags = module->getFlags().sourceTags;
             llvm::Function* dropPush = module->getRuntimeFunction(
                 debugTags ? "__cajeta_drop_push_debug" : "__cajeta_drop_push");
@@ -5639,7 +5645,17 @@ namespace cajeta {
                     }
                 }
             }
-            if (llvm::Function* regFn = module->getRuntimeFunction(
+            if (discardedMode) {
+                // Scope-owned: the frame joins on the done flag as usual and
+                // ALSO frees the task struct at release (scope_exit /
+                // scope_exit_to / the throw unwind), replacing the drop
+                // entry skipped above.
+                if (llvm::Function* regFn = module->getRuntimeFunction(
+                        "__cajeta_scope_register_owned")) {
+                    outerBuilder->CreateCall(regFn,
+                        {doneRegSlot, excRegSlot, fiberRegSlot, taskInstance});
+                }
+            } else if (llvm::Function* regFn = module->getRuntimeFunction(
                     "__cajeta_scope_register")) {
                 outerBuilder->CreateCall(regFn,
                     {doneRegSlot, excRegSlot, fiberRegSlot});

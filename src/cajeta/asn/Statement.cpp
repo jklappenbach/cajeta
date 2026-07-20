@@ -392,6 +392,14 @@ namespace cajeta {
     }
 
     llvm::Value* ExpressionStatement::generateCode(CajetaModulePtr module) {
+        // A statement-position `spawn f(...);` never binds its Task —
+        // mark it so the lowering hands ownership to the runtime scope
+        // frame instead of a per-site drop entry (see SpawnExpression::
+        // discardedMode). Detach arrives via DetachExpression and never
+        // takes this path.
+        if (auto sp = dynamic_pointer_cast<SpawnExpression>(expression)) {
+            sp->setDiscardedMode(true);
+        }
         // discarded-wildcard-next (docs/LintRules.md). When an
         // element-producing call on a wildcard receiver appears in
         // statement position — the returned `#Optional<?>` is allocated
