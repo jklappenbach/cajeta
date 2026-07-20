@@ -2148,8 +2148,6 @@ namespace cajeta {
                         llvm::Function* arenaAlloc =
                             module->getRuntimeFunction("__cajeta_arena_alloc");
                         if (arenaAlloc) {
-                            llvm::PointerType* ptrTy =
-                                llvm::PointerType::get(llvmCtx, 0);
                             int fixedSlots = structType->tableFixedSlotCount();
                             llvm::Value* slotCount = builder->CreateAdd(
                                 llvm::ConstantInt::get(i64Ty, fixedSlots),
@@ -2277,7 +2275,6 @@ namespace cajeta {
                                 i8Ty, desc,
                                 llvm::ConstantInt::get(i64Ty, 8), "vea_desc_t");
                             builder->CreateStore(table, tSlot);
-                            (void) ptrTy;
                             viewValue = desc;
                         }
                     }
