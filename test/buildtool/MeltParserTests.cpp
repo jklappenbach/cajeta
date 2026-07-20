@@ -98,7 +98,7 @@ TEST(MeltParserTests, parseMeltCapturesAllExportableFields) {
         "details": { "name": "p", "version": "1.0.0" },
         "melt": {
             "dependencies": {
-                "cajeta.io.net.http": "1.2.5",
+                "dev.cajeta.http": "1.2.5",
                 "x.y.z":              ">=1.0.0,<2.0.0"
             },
             "properties": {
@@ -126,7 +126,7 @@ TEST(MeltParserTests, parseMeltCapturesAllExportableFields) {
     ASSERT_TRUE((bool)melt) << errorText(melt.takeError());
 
     EXPECT_EQ(melt->dependencies.size(), 2u);
-    EXPECT_EQ(melt->dependencies["cajeta.io.net.http"], "1.2.5");
+    EXPECT_EQ(melt->dependencies["dev.cajeta.http"], "1.2.5");
     EXPECT_EQ(melt->dependencies["x.y.z"], ">=1.0.0,<2.0.0");
 
     EXPECT_EQ(melt->properties.size(), 2u);

@@ -96,7 +96,7 @@ TEST(ManifestTests, groupAndLibraryDeriveFromReverseDnsName) {
         EXPECT_EQ(m->details.library(), expectedLib);
     };
     checkSplit("com.example.foo", "com.example", "foo");
-    checkSplit("cajeta.io.net.http", "cajeta.io.net", "http");
+    checkSplit("dev.cajeta.http", "dev.cajeta", "http");
     checkSplit("monoartifact", "", "monoartifact");
 }
 

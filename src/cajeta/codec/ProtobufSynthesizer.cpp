@@ -123,15 +123,24 @@ namespace cajeta {
                     const std::string bv = "b_" + b.name;
                     os << "        int8[] " << bv << " = cur.readBytes("
                        << slot << ");\n";
-                    os << "        e." << b.name
+                    // Length BEFORE the ctor adopts #bv; the String local
+                    // then surrenders its title into the field ('#') — the
+                    // 0.9 rules treat a plain store as a lend of a dying temp.
+                    os << "        int32 n_" << b.name << " = (int32) "
+                       << bv << ".count();\n";
+                    os << "        String s_" << b.name
                        << " = heap cajeta.lang.String(#" << bv
-                       << ", (int32) " << bv << ".count());\n";
+                       << ", n_" << b.name << ");\n";
+                    os << "        e." << b.name << " = #s_" << b.name << ";\n";
                     break;
                 }
-                case Decode::BytesLen:
-                    os << "        e." << b.name << " = cur.readBytes("
+                case Decode::BytesLen: {
+                    const std::string bv = "b_" + b.name;
+                    os << "        int8[] " << bv << " = cur.readBytes("
                        << slot << ");\n";
+                    os << "        e." << b.name << " = #" << bv << ";\n";
                     break;
+                }
                 case Decode::MessageLen: {
                     // Nested message: read the LEN payload, recurse through the
                     // synthesizer. Same-class static call → short `Protobuf`
@@ -139,9 +148,10 @@ namespace cajeta {
                     const std::string bv = "b_" + b.name;
                     os << "        int8[] " << bv << " = cur.readBytes("
                        << slot << ");\n";
-                    os << "        e." << b.name << " = Protobuf.parse<"
-                       << b.canon << ">(" << bv << ", (int64) " << bv
-                       << ".count());\n";
+                    os << "        " << b.canon << " m_" << b.name
+                       << " = Protobuf.parse<" << b.canon << ">(" << bv
+                       << ", (int64) " << bv << ".count());\n";
+                    os << "        e." << b.name << " = #m_" << b.name << ";\n";
                     break;
                 }
                 case Decode::Unsupported:
@@ -190,11 +200,12 @@ namespace cajeta {
         os << "            frame[k] = fb;\n";
         os << "            k = k + 1;\n";
         os << "        }\n";
-        os << "        outv[i] = Protobuf.parse<" << Ec << ">(frame, fl);\n";
+        os << "        " << Ec << " m = Protobuf.parse<" << Ec << ">(frame, fl);\n";
+        os << "        outv[i] = #m;\n";
         os << "        i = i + 1;\n";
         os << "        p = start + fl;\n";
         os << "    }\n";
-        os << "    return outv;\n";
+        os << "    return #outv;\n";
         os << "}\n";
         return os.str();
     }
@@ -243,7 +254,7 @@ namespace cajeta {
                 case Decode::StringLen:
                     os << "    cajeta.lang.String " << fv << " = value." << b.name << ";\n";
                     os << "    if (" << fv << " != null) {\n";
-                    os << "        int8[] sb_" << b.name << " = " << fv << ".bytes;\n";
+                    os << "        int8[] sb_" << b.name << " = " << fv << ".toBytes();\n";
                     os << "        w.writeLenField(" << tag << ", sb_" << b.name
                        << ", (int32) sb_" << b.name << ".count());\n";
                     os << "    }\n";

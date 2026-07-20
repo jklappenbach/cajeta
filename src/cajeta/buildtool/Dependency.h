@@ -66,7 +66,7 @@ namespace cajeta::buildtool {
     // shape ({"version": "...", "from": "<repo-name>"}). Path / Git
     // dependency sources land in 6c.
     struct DependencySpec {
-        std::string name;            // e.g. "cajeta.io.net.http"
+        std::string name;            // e.g. "dev.cajeta.http"
         std::string versionConstraint;  // semver constraint string
         std::optional<std::string> fromRepo;  // optional repository pin
     };

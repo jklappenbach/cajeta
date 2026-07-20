@@ -10,8 +10,9 @@ description: Routing table and cross-cutting rules (ownership, close, errors, sy
 `cajeta.io` is the runtime's I/O surface: an in-memory byte `Buffer`, filesystem
 access (`cajeta.io.file`), and a full networking stack (`cajeta.io.net` and its
 sub-packages). It is built bottom-up around one transport seam — the
-`ByteChannel` async byte interface — so plaintext and TLS, and HTTP and
-WebSocket, all ride the same buffered reader/writer.
+`ByteChannel` async byte interface — so plaintext and TLS (and application
+protocols built above, like `dev.cajeta.http`'s HTTP and WebSocket) all ride
+the same buffered reader/writer.
 
 ## Task → entry point
 
@@ -25,9 +26,7 @@ WebSocket, all ride the same buffered reader/writer.
 | Make a fiber-friendly TCP client (no carrier block) | `TcpStream.connectAsync(#SocketAddress)` |
 | Listen/accept TCP | `TcpListener.bind(SocketAddress)` → `accept()` / `acceptAsync()` |
 | Run a concurrency-managed TCP server | `Server.bind(addr, handler)` (NET-4 accept loop, graceful drain) |
-| Send one HTTP/HTTPS request | `heap HttpClient()` → `.get(url)` or `.send(uri, req)` |
-| Serve HTTP/1.1 | `HttpServer.bind("0.0.0.0:8080", handler)` → `runAsync()` / `serve()` |
-| Speak WebSocket on an upgraded conn | `WebSocket.forClient/forServer(reader, writer)` |
+| Speak HTTP or WebSocket | the external `dev.cajeta.http` library (HTTP is application-layer, not stdlib) |
 | Wrap a socket in TLS | `TlsStream.client/clientSystemTrust/server(#TcpStream, …)` |
 | Resolve a hostname | `Dns.resolve(host[, port[, ResolveFamily]])` |
 | Parse/build a URL | `Uri.parse(String)` / `Uri.builder()` |
@@ -38,12 +37,8 @@ Negative rows (capabilities **not** here — don't hunt for them):
 
 - **No directory/path mutation** in `File` — there is no `mkdir`, and
   `writeAllBytes` does **not** create parent directories.
-- **No connection pooling / keep-alive reuse / redirects** in v1 `HttpClient` —
-  it stamps `Connection: close` (one exchange per socket) and buffers the body
-  in memory.
-- **No `WebSocket.connect()` facade** — `WebSocket` is the post-handshake
-  message channel; do the HTTP Upgrade first (`WsClientHandshake` /
-  `WsServerHandshake` / `WsUpgrade`), then `forClient` / `forServer`.
+- **No HTTP or WebSocket** — both moved to the external `dev.cajeta.http`
+  library; the stdlib ships the transport layer (TCP/UDP/TLS/DNS/URI) only.
 - **No drop-on-scope close for file streams yet** (see invariants) — always
   call `close()`.
 
@@ -61,14 +56,15 @@ Negative rows (capabilities **not** here — don't hunt for them):
   explicitly.) All `close()` are idempotent and set the fd to `-1`.
 - **Errors are exceptions, not Optionals.** File faults descend from
   `cajeta.io.file.IoException`; every network fault descends from
-  `cajeta.io.net.NetException` (DNS/TLS/HTTP/WS/URI included), each carrying a
+  `cajeta.io.net.NetException` (DNS/TLS/URI included — `dev.cajeta.http`'s
+  HTTP/WS exceptions extend it too), each carrying a
   `kind` ordinal. Both extend `RecoverableException`: catch the specific subtype
   or declare it in `throws`. A request-boundary `catch (NetException e)` is the
   universal net-out.
 - **Sync vs async I/O model.** Sync ops (`read`/`write`/`close`, socket options)
   are intrinsic-lowered and **block the carrier thread**. Async ops
   (`readAsync`/`writeAllAsync`/`connectAsync`/`acceptAsync`, and everything
-  `HttpClient`/`HttpServer`/`Server` drive) **park the fiber** on the reactor
+  `Server` drives) **park the fiber** on the reactor
   and resume when the fd is ready — the carrier never blocks. Use the async
   forms inside server handlers and fibers.
 - **EOF / sentinels.** `ByteChannel.readAsync` returns `0` on orderly peer close
@@ -77,16 +73,21 @@ Negative rows (capabilities **not** here — don't hunt for them):
 - **Null.** Numeric IP literals and names both go through `Dns.resolve`; a null
   host raises rather than returning null.
 
-## End-to-end example (HTTPS GET)
+## End-to-end example (TCP echo round-trip)
 
 ```cajeta
-import cajeta.io.net.http.HttpClient;
-import cajeta.io.net.http.HttpResponse;
+import cajeta.io.net.SocketAddress;
+import cajeta.io.net.TcpStream;
 
-HttpClient client = heap HttpClient();
-HttpResponse resp = client.get("https://example.test/path");  // resolves, connects (fiber-parking), TLS, sends, parses
-System.stdout.println(resp.statusCode() + " / " + resp.bodyLength() + " bytes");
+TcpStream conn = TcpStream.connect(SocketAddress.parse("127.0.0.1:7000"));  // resolves, connects (fiber-parking)
+int8[] msg = heap int8[5];
+conn.write(msg, (int64) 0, (int64) 5);
+int64 n = conn.read(msg, (int64) 0, (int64) 5);
+conn.close();
 ```
+
+(HTTP/WebSocket live in the external `dev.cajeta.http` library — the stdlib
+ships the transport layer only.)
 
 Streaming file round-trip (note the explicit `close()`):
 
@@ -116,9 +117,6 @@ r.close();
   parks the fiber (servers, concurrency).
 - **Server run:** `serve()` blocks the caller; `runAsync()` returns an async
   task you `spawn` then `shutdown(Duration)`.
-- **HTTP request:** `get(url)` is the convenience; `send(uri, req)` for full
-  control over method/headers/body. `HttpServer.bind` (fiber-per-connection) vs
-  `bindWithModel`/`builder()` to pick a `ServerModel` (shared-pool).
 - **TLS trust:** `clientSystemTrust` (OS CA store, public PKI) vs `client`
   (pinned PEM anchor, private/self-signed).
 
@@ -142,6 +140,6 @@ r.close();
 ## Going deeper
 
 Packages: `cajeta.io.file` (filesystem), `cajeta.io.net` (sockets, `Server`,
-`ByteChannel`), `cajeta.io.net.dns`, `cajeta.io.net.http`, `cajeta.io.net.tls`,
-`cajeta.io.net.uri`, `cajeta.io.net.ws`. See the per-package/class skills for
+`ByteChannel`), `cajeta.io.net.dns`, `cajeta.io.net.tls`,
+`cajeta.io.net.uri`. See the per-package/class skills for
 signatures, return-ownership detail, and protocol sequences.

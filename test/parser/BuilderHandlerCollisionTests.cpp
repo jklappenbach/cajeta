@@ -55,24 +55,31 @@ TEST(BuilderHandlerCollisionTests, fieldAndMethodSameNameDispatchesToMethod) {
 }
 
 // Bug #1 end-to-end: a BARE-param lambda arg of a fluent-chained `.handler(...)`
-// on the stdlib HttpServerBuilder infers from the setter's formal type.
+// infers from the setter's formal type. (Historically hit via the http
+// HttpServerBuilder — that stack now lives in the external dev.cajeta.http
+// library, so the fluent field/method-colliding builder is fixtured locally;
+// the compiler path under test is identical.)
 TEST(BuilderHandlerCollisionTests, fluentBareParamLambdaInfers) {
     auto src =
         "package test;\n"
-        "import cajeta.io.net.ServerModel;\n"
-        "import cajeta.io.net.http.HttpServer;\n"
-        "import cajeta.io.net.http.HttpServerBuilder;\n"
-        "import cajeta.io.net.http.HttpRequest;\n"
-        "import cajeta.io.net.http.HttpResponse;\n"
+        "public class Resp { public int32 code; public Resp(int32 c) { this.code = c; } }\n"
+        "public class Builder {\n"
+        "    public (int32) -> #Resp handler;\n"          // FIELD named `handler`
+        "    public int32 poolSize;\n"
+        "    public Builder() { this.handler = null; this.poolSize = 0; }\n"
+        "    public static #Builder make() { return heap Builder(); }\n"
+        "    public Builder pool(int32 n) { this.poolSize = n; return this; }\n"
+        "    public Builder handler((int32) -> #Resp handler) {\n"  // METHOD `handler`
+        "        this.handler = handler; return this;\n"
+        "    }\n"
+        "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        HttpServerBuilder b = HttpServer.builder()\n"
-        "            .bind(\"0.0.0.0:8080\")\n"
-        "            .model(ServerModel.sharedPool(16))\n"
-        "            .handler((req) -> HttpResponse.of(200));\n"   // BARE param
-        "        ServerModel m = b.selectedModel();\n"
-        "        if (!m.isSharedPool()) return -1;\n"
-        "        if (m.getPoolSize() != 16) return -2;\n"
+        "        Builder b = Builder.make()\n"
+        "            .pool(16)\n"
+        "            .handler((req) -> heap Resp(req));\n"   // BARE param
+        "        if (b.poolSize != 16) return -2;\n"
+        "        if (b.handler == null) return -1;\n"
         "        return 1;\n"
         "    }\n"
         "}\n";

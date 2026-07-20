@@ -121,14 +121,9 @@ tutorial; it links here for API detail. Docs link the
 | [Uri](io/net/uri/Uri.md) | Immutable parsed URI (RFC 3986) |
 | [UriBuilder](io/net/uri/UriBuilder.md) | Builder for `Uri` |
 
-## cajeta.io.net.http
-
-| Class | |
-|---|---|
-| [HttpClient](io/net/http/HttpClient.md) | HTTP/1.1 client |
-| [HttpServer](io/net/http/HttpServer.md) | HTTP/1.1 server |
-| [HttpServerBuilder](io/net/http/HttpServerBuilder.md) | Fluent builder for `HttpServer` |
-| [Router](io/net/http/Router.md) | Minimal HTTP router |
+> HTTP/1.1 and WebSocket are **not stdlib** — they are application-layer
+> protocols and live in the external
+> [`dev.cajeta.http`](https://github.com/jklappenbach/cajeta-http) library.
 
 ## cajeta.io.net.tls
 
@@ -136,12 +131,6 @@ tutorial; it links here for API detail. Docs link the
 |---|---|
 | [TlsConnection](io/net/tls/TlsConnection.md) | One TLS connection's engine state |
 | [TlsListener](io/net/tls/TlsListener.md) | Server-side TLS termination over `TcpListener` |
-
-## cajeta.io.net.ws
-
-| Class | |
-|---|---|
-| [WebSocket](io/net/ws/WebSocket.md) | Live RFC 6455 WebSocket connection |
 
 ## cajeta.hash
 

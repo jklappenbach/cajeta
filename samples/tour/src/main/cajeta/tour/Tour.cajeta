@@ -101,8 +101,6 @@ public final class Tour {
         demos.add(heap ServerDemo());
         demos.add(heap UriDemo());
         demos.add(heap DnsDemo());
-        demos.add(heap HttpDemo());
-        demos.add(heap WsDemo());
         demos.add(heap OperatorOverloadDemo());
         demos.add(heap LinearAlgebraDemo());
         demos.add(heap QuaternionDemo());

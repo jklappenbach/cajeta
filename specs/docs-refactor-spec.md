@@ -121,8 +121,8 @@ the shipped stdlib surface. This spec defines the target state for all four.
 
 ### 3.1 Requirements
 1. A hierarchical reference: one directory per stdlib package (package path minus
-   the constant `cajeta.` root, e.g. `cajeta.io.net.http` →
-   `docs/stdlib/io/net/http/`), one document per main component class —
+   the constant `cajeta.` root, e.g. `cajeta.io.net.tls` →
+   `docs/stdlib/io/net/tls/`), one document per main component class —
    `docs/stdlib/collection/ArrayList.md`.
 2. "Main component class" = a class with entry points and public methods meant for
    users to call. Internal helpers get no document. **Coverage rule: every worthy

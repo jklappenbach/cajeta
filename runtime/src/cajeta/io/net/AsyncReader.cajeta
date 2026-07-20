@@ -295,7 +295,7 @@ public class AsyncReader implements AsyncIterator<int8[]> {
      * end-of-stream, the same terminate-on-`0` contract as [`read`](#read).
      * A non-positive `timeoutMs` is the unbounded [`read`](#read).
      *
-     * The [`HttpServer`](http/HttpServer.cajeta) head-read loop drives this
+     * The HTTP head-read loop (external `dev.cajeta.http`) drives this
      * per byte under a per-request wall-clock budget so a client that
      * dribbles a partial head is evicted instead of pinning a worker.
      */

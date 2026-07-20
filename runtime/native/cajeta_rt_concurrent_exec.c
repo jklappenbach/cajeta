@@ -348,6 +348,13 @@ struct cajeta_fiber {
     // Same aliasing rationale as scope_top/drop_top; selected by
     // __cajeta_dbg_top_ptr based on fiber-vs-main context.
     struct cajeta_dbg_frame* dbg_top;
+    // Per-fiber frame arena (cajeta_rt_core.c). Same aliasing rationale as
+    // scope_top/drop_top/exc_top: the arena's LIFO mark/reset discipline holds
+    // per logical stack, and a carrier interleaves many fiber stacks — a
+    // shared per-thread arena let one fiber's scope-exit reset reclaim a
+    // PARKED fiber's live allocations (http:0.11). Lazily mapped on first
+    // arena alloc; returned to the arena pool at fiber teardown.
+    cajeta_arena arena;
     // Home carrier — the carrier that FIRST dispatched (started) this fiber.
     // -1 until then. Once a fiber has started, its saved `ucontext` (stack +
     // register state) is bound to that carrier; resuming it on a *different*
@@ -576,6 +583,16 @@ static __thread struct cajeta_carrier* __cajeta_my_carrier = NULL;
 // __cajeta_current_fiber — the main thread sees it null and falls through
 // to the cond_wait path in __cajeta_task_wait.
 static __thread struct cajeta_fiber* __cajeta_current_fiber = NULL;
+
+// Frame-arena context selector (forward-declared in cajeta_rt_core.c, same
+// TU): the running fiber's own arena, else the thread's. Mirrors
+// __cajeta_scope_top_ptr / __cajeta_drop_top_ptr below.
+static cajeta_arena* __cajeta_arena_ptr(void) {
+    if (__cajeta_current_fiber) {
+        return &__cajeta_current_fiber->arena;
+    }
+    return &__cajeta_arena;
+}
 static __thread ucontext_t __cajeta_carrier_ctx;
 
 // Scope chain for code running outside a fiber (the main entry point, or
@@ -918,6 +935,8 @@ static void* __cajeta_carrier_loop(void* arg) {
             // plus any unbalanced set/push the body left — where() pops its own).
             __cajeta_fiber_local_free_chain(f->fl_top);
             f->fl_top = NULL;
+            // Recycle the fiber's frame-arena mapping (no-op if never used).
+            __cajeta_arena_release_mapping(&f->arena);
             __cajeta_fiber_stack_free(f->stack);
             free(f);
         }
@@ -992,6 +1011,7 @@ void __cajeta_task_shutdown(void) {
     for (struct cajeta_fiber* f = __cajeta_parked_head; f; ) {
         struct cajeta_fiber* nx = f->next;
         if (f->slot_ptr) *f->slot_ptr = NULL;
+        __cajeta_arena_release_mapping(&f->arena);
         __cajeta_fiber_stack_free(f->stack); free(f); f = nx;
     }
     __cajeta_parked_head = NULL;
@@ -1062,6 +1082,7 @@ void __cajeta_task_run(void* arg, cajeta_task_trampoline_fn trampoline,
     // the spawner's pop order, which matters for detach as well as structured
     // spawn; child where()s push fresh frames, never mutating an inherited one.
     f->fl_top = __cajeta_fiber_local_snapshot_current();
+    f->arena = (cajeta_arena) { NULL, 0, 0, 0, 0 };  // lazily mapped on first use
     f->home_carrier = -1;   // assigned on first dispatch (see carrier_loop)
     if (fiber_slot) *fiber_slot = f;
 
@@ -1523,6 +1544,15 @@ struct cajeta_io_waiter {
     int events;
     struct cajeta_fiber* fiber;
     struct cajeta_io_waiter* next;
+    // Timed-wait support (__cajeta_io_wait_timed). A timed waiter lives on
+    // the WAITING FIBER'S STACK (safe: the stack persists across park/
+    // resume — the cajeta_timer_entry ownership rule), so the reactor wake
+    // path must not free it: it marks `fired` instead, and the fiber reads
+    // that flag under task_mutex to tell an I/O wake from a deadline wake.
+    // Untimed (heap) waiters keep the original reactor-frees-on-wake
+    // contract with both fields zero.
+    int stack_owned;
+    int fired;
 };
 
 #if defined(__linux__)
@@ -1558,14 +1588,18 @@ static void* __cajeta_reactor_loop(void* arg) {
                 if ((*p)->fd == fd) {
                     struct cajeta_io_waiter* w = *p;
                     *p = w->next;
-                    // The fd auto-removed itself from epoll via
-                    // EPOLLONESHOT; just need to detach + publish the
-                    // fiber.
+                    // EPOLLONESHOT disarmed the fd's registration (it stays
+                    // in the interest list, disabled, until DEL or close —
+                    // the ADD→EEXIST→MOD path in io_wait re-arms it); just
+                    // detach + publish the fiber.
+                    w->fired = 1;
                     if (__cajeta_parked_remove_locked(w->fiber)) {
                         w->fiber->next = to_publish;
                         to_publish = w->fiber;
                     }
-                    free(w);
+                    // A stack-owned waiter (timed wait) belongs to the
+                    // fiber's frame — the fiber reads `fired` after resume.
+                    if (!w->stack_owned) free(w);
                 } else {
                     p = &(*p)->next;
                 }
@@ -1641,6 +1675,8 @@ int32_t __cajeta_io_wait(int32_t fd, int32_t events) {
     w->fd = fd;
     w->events = events;
     w->fiber = __cajeta_current_fiber;
+    w->stack_owned = 0;
+    w->fired = 0;
     w->next = __cajeta_reactor_waiters;
     __cajeta_reactor_waiters = w;
     struct epoll_event ep;
@@ -1664,6 +1700,142 @@ int32_t __cajeta_io_wait(int32_t fd, int32_t events) {
     // is one-shot, so a missed wake would hang the fiber permanently).
     __cajeta_fiber_park_locked();
     return 1;
+}
+
+// Deadline-bounded fiber I/O wait — the fiber-parking twin of the blocking
+// __cajeta_net_reactor_poll_fd probe. Returns 1 (ready), 0 (deadline
+// elapsed first), or -1 (setup error).
+//
+// WHY THIS EXISTS (the carrier-starvation bug): Reactor.awaitReadableTimed
+// used to run the portable select() probe, which blocks the calling OS
+// THREAD. On a fiber that means the whole carrier stalls for up to the
+// deadline — and every fiber co-hosted on that carrier starves with it.
+// cajeta-http's server head-read (readWithin, 30s budget) parked its
+// carrier while the CLIENT fiber that would have sent the request bytes
+// sat un-runnable on the same carrier's deque: the head read then "timed
+// out" against a peer that was never allowed to run, the server dropped
+// the connection without a response, and the client saw EOF mid-head —
+// a scheduling-roulette flake (~25% per run, layout-sensitive) that
+// reproduced as a failing run taking exactly the 30s head budget while
+// passing runs took 6ms.
+//
+// Mechanism: combine the reactor's one-shot fd waiter with the R9.1 timer
+// wheel — both entries live on THIS FIBER'S STACK (the timer-entry
+// ownership rule; the stack persists across park/resume), both armed
+// under the one task_mutex, and the park loop re-checks both wake
+// conditions under that same mutex so the reactor-thread wake, the
+// timer-thread wake, and a scope cancellation can each fire exactly once
+// with no lost-wakeup window:
+//   - reactor wake: detaches the waiter, sets w.fired (stack-owned, so it
+//     does NOT free), publishes the fiber → loop sees fired → 1.
+//   - timer wake: consumes the timer entry, publishes the fiber → loop
+//     sees the elapsed deadline → cancels the waiter (detach + epoll DEL)
+//     → 0. The DEL also clears the EPOLLONESHOT registration the wake
+//     path would otherwise have left disarmed-but-registered.
+//   - both race: fired wins (the data IS there); the loser's entry is
+//     cancelled idempotently.
+int32_t __cajeta_io_wait_timed(int32_t fd, int32_t events, int32_t timeout_ms) {
+    if (timeout_ms < 0) {
+        // Unbounded: the plain park path already has the right semantics.
+        return __cajeta_io_wait(fd, events);
+    }
+    if (!__cajeta_current_fiber) {
+        // Non-fiber caller (the main thread): a throwaway epoll with the
+        // deadline — blocking the caller is the correct semantic here.
+        int epfd = epoll_create1(EPOLL_CLOEXEC);
+        if (epfd < 0) return -1;
+        struct epoll_event ep;
+        ep.events = __cajeta_io_events_to_epoll(events);
+        ep.data.fd = fd;
+        if (epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ep) < 0) {
+            close(epfd);
+            return -1;
+        }
+        struct epoll_event got;
+        int n;
+        do {
+            n = epoll_wait(epfd, &got, 1, timeout_ms);
+        } while (n < 0 && errno == EINTR);
+        close(epfd);
+        if (n < 0) return -1;
+        return (n > 0) ? 1 : 0;
+    }
+
+    int64_t deadline_ns = __cajeta_now_ns()
+                        + (int64_t) timeout_ms * 1000000LL;
+    struct cajeta_io_waiter w;
+    w.fd = fd;
+    w.events = events;
+    w.fiber = __cajeta_current_fiber;
+    w.stack_owned = 1;
+    w.fired = 0;
+    struct cajeta_timer_entry entry;
+    entry.deadline_ns = deadline_ns;
+    entry.fiber = __cajeta_current_fiber;
+    entry.next = NULL;
+
+    pthread_mutex_lock(&__cajeta_task_mutex);
+    __cajeta_reactor_ensure_started_locked();
+    if (!__cajeta_reactor_started) {
+        pthread_mutex_unlock(&__cajeta_task_mutex);
+        return -1;
+    }
+    w.next = __cajeta_reactor_waiters;
+    __cajeta_reactor_waiters = &w;
+    struct epoll_event ep;
+    ep.events = __cajeta_io_events_to_epoll(events);
+    ep.data.fd = fd;
+    int rc = epoll_ctl(__cajeta_reactor_epfd, EPOLL_CTL_ADD, fd, &ep);
+    if (rc < 0 && errno == EEXIST) {
+        rc = epoll_ctl(__cajeta_reactor_epfd, EPOLL_CTL_MOD, fd, &ep);
+    }
+    if (rc < 0) {
+        __cajeta_reactor_cancel_locked(&w);
+        pthread_mutex_unlock(&__cajeta_task_mutex);
+        return -1;
+    }
+    __cajeta_timer_ensure_started_locked();
+    int signal_timer = (__cajeta_timer_head == NULL
+                        || __cajeta_timer_head->deadline_ns > deadline_ns);
+    __cajeta_timer_insert_locked(&entry);
+    pthread_mutex_unlock(&__cajeta_task_mutex);
+    if (signal_timer) {
+        pthread_cond_signal(&__cajeta_timer_cond);
+    }
+
+    for (;;) {
+        // Re-check both wake conditions under the mutex the reactor and
+        // timer threads use, then park atomically — the same lost-wakeup
+        // bracket as __cajeta_task_wait_timeout.
+        pthread_mutex_lock(&__cajeta_task_mutex);
+        if (w.fired) {
+            pthread_mutex_unlock(&__cajeta_task_mutex);
+            __cajeta_timer_cancel(&entry);
+            return 1;
+        }
+        if (__cajeta_now_ns() >= deadline_ns) {
+            // Deadline first: withdraw the (stack-owned) waiter so the
+            // reactor can never touch this frame after we return, and
+            // clear the epoll registration.
+            __cajeta_reactor_cancel_locked(&w);
+            pthread_mutex_unlock(&__cajeta_task_mutex);
+            __cajeta_timer_cancel(&entry);
+            return 0;
+        }
+        __cajeta_fiber_park_locked();  // releases the mutex, then swaps
+        // R5-C: honor a scope cancellation delivered while parked —
+        // withdraw BOTH entries first (they are stack memory about to
+        // unwind with the throw).
+        void* cancel = __cajeta_current_fiber->cancel_with;
+        if (cancel) {
+            __cajeta_current_fiber->cancel_with = NULL;
+            pthread_mutex_lock(&__cajeta_task_mutex);
+            __cajeta_reactor_cancel_locked(&w);
+            pthread_mutex_unlock(&__cajeta_task_mutex);
+            __cajeta_timer_cancel(&entry);
+            __cajeta_throw(cancel);
+        }
+    }
 }
 
 // Linux eventfd surface, exposed for test bring-up and for cooperative
@@ -1696,6 +1868,13 @@ int32_t __cajeta_fd_close(int32_t fd) {
 int32_t __cajeta_io_wait(int32_t fd, int32_t events) {
     (void) fd; (void) events;
     fprintf(stderr, "cajeta: __cajeta_io_wait not yet implemented on this platform\n");
+    return -1;
+}
+
+int32_t __cajeta_io_wait_timed(int32_t fd, int32_t events, int32_t timeout_ms) {
+    (void) fd; (void) events; (void) timeout_ms;
+    fprintf(stderr,
+        "cajeta: __cajeta_io_wait_timed not yet implemented on this platform\n");
     return -1;
 }
 int32_t __cajeta_eventfd_create(void) {

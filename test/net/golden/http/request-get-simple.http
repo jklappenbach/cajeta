@@ -1,5 +1,0 @@
-GET /hello.txt HTTP/1.1
-Host: www.example.test
-User-Agent: cajeta-net/1.0
-Accept: */*
-

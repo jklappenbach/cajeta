@@ -114,14 +114,26 @@ namespace cajeta {
                     os << "            " << objVar << "." << b.name << " = "
                        << cursorVar << ".readBool(" << slot << ");\n";
                     break;
-                case Decode::Str:
-                    os << "            " << objVar << "." << b.name << " = "
+                case Decode::Str: {
+                    // readString returns an OWNED #String: hoist to a local
+                    // (the init-decl adopts it) and surrender the title into
+                    // the field with '#' — a plain store is a lend of a
+                    // dying temp under the 0.9 ownership rules.
+                    const std::string sv = "v" + path + "_" + b.name;
+                    os << "            String " << sv << " = "
                        << cursorVar << ".readString(" << slot << ");\n";
+                    os << "            " << objVar << "." << b.name << " = #"
+                       << sv << ";\n";
                     break;
-                case Decode::Bytes:
-                    os << "            " << objVar << "." << b.name << " = "
+                }
+                case Decode::Bytes: {
+                    const std::string bv = "v" + path + "_" + b.name;
+                    os << "            int8[] " << bv << " = "
                        << cursorVar << ".readBytes(" << slot << ");\n";
+                    os << "            " << objVar << "." << b.name << " = #"
+                       << bv << ";\n";
                     break;
+                }
                 case Decode::Message: {
                     const std::string childPath = path + "_" + b.name;
                     const std::string childObj = "o" + childPath;
@@ -130,7 +142,7 @@ namespace cajeta {
                        << b.canon << "();\n";
                     emitStructBind(os, b.nested, cursorVar, childObj, childPath);
                     os << "            " << cursorVar << ".stepOut();\n";
-                    os << "            " << objVar << "." << b.name << " = "
+                    os << "            " << objVar << "." << b.name << " = #"
                        << childObj << ";\n";
                     break;
                 }
@@ -181,11 +193,11 @@ namespace cajeta {
         os << "    while (more) {\n";
         os << "        " << Ec << " e = heap " << Ec << "();\n";
         emitStructBind(os, E, "cur", "e", "");
-        os << "        outv[i] = e;\n";
+        os << "        outv[i] = #e;\n";
         os << "        i = i + 1;\n";
         os << "        more = cur.nextTopLevel();\n";
         os << "    }\n";
-        os << "    return outv;\n";
+        os << "    return #outv;\n";
         os << "}\n";
         return os.str();
     }
@@ -234,7 +246,7 @@ namespace cajeta {
                     os << "    if (" << vloc << " != null) {\n";
                     os << "        " << w << ".writeFieldSid(" << sid << ");\n";
                     os << "        int8[] sb" << path << "_" << b.name << " = "
-                       << vloc << ".bytes;\n";
+                       << vloc << ".toBytes();\n";
                     os << "        " << w << ".writeStringValue(sb" << path << "_"
                        << b.name << ", (int32) sb" << path << "_" << b.name
                        << ".count());\n";
