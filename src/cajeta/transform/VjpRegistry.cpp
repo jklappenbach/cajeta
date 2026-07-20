@@ -106,6 +106,89 @@ namespace cajeta {
                                 + "(" + o[0] + "), " + g + ")"};
                     }});
 
+                // nucleo-autograd U1 — the widened cut: div, exp, log, sqrt, mean.
+                // Forward subexpressions are re-inlined (pure), matching the
+                // existing rules' style. Tensor div spells the 3-type-arg form.
+
+                // c = a / b  ->  a_bar += g/b, b_bar += -(g*a)/(b*b).
+                r.add({"div", 2,
+                    [](const std::string& g, const std::vector<std::string>& o,
+                       const GradSurface& s) {
+                        if (s.tensor) {
+                            std::string e = "<" + s.elem + ">";
+                            std::string e3 = "<" + s.elem + ", " + s.elem + ", "
+                                + s.elem + ">";
+                            return std::vector<std::string>{
+                                "Tensor.div" + e3 + "(" + g + ", " + o[1] + ")",
+                                "Tensor.mulScalar" + e + "(Tensor.div" + e3
+                                    + "(Tensor.mul" + e + "(" + g + ", " + o[0]
+                                    + "), Tensor.mul" + e + "(" + o[1] + ", "
+                                    + o[1] + ")), -1.0f)"};
+                        }
+                        return std::vector<std::string>{
+                            "(" + g + ") / (" + o[1] + ")",
+                            "-((" + g + ") * (" + o[0] + ")) / ((" + o[1]
+                                + ") * (" + o[1] + "))"};
+                    }});
+
+                // c = exp(a)  ->  a_bar += g * exp(a).
+                r.add({"exp", 1,
+                    [](const std::string& g, const std::vector<std::string>& o,
+                       const GradSurface& s) {
+                        if (s.tensor) {
+                            std::string e = "<" + s.elem + ">";
+                            return std::vector<std::string>{
+                                "Tensor.mul" + e + "(" + g + ", Tensor.exp" + e
+                                    + "(" + o[0] + "))"};
+                        }
+                        return std::vector<std::string>{
+                            "(" + g + ") * Math.exp(" + o[0] + ")"};
+                    }});
+
+                // c = log(a)  ->  a_bar += g / a.
+                r.add({"log", 1,
+                    [](const std::string& g, const std::vector<std::string>& o,
+                       const GradSurface& s) {
+                        if (s.tensor) {
+                            std::string e3 = "<" + s.elem + ", " + s.elem + ", "
+                                + s.elem + ">";
+                            return std::vector<std::string>{
+                                "Tensor.div" + e3 + "(" + g + ", " + o[0] + ")"};
+                        }
+                        return std::vector<std::string>{
+                            "(" + g + ") / (" + o[0] + ")"};
+                    }});
+
+                // c = sqrt(a)  ->  a_bar += g / (2 * sqrt(a)).
+                r.add({"sqrt", 1,
+                    [](const std::string& g, const std::vector<std::string>& o,
+                       const GradSurface& s) {
+                        if (s.tensor) {
+                            std::string e = "<" + s.elem + ">";
+                            std::string e3 = "<" + s.elem + ", " + s.elem + ", "
+                                + s.elem + ">";
+                            return std::vector<std::string>{
+                                "Tensor.div" + e3 + "(" + g + ", Tensor.mulScalar"
+                                    + e + "(Tensor.sqrt" + e + "(" + o[0]
+                                    + "), 2.0f))"};
+                        }
+                        return std::vector<std::string>{
+                            "(" + g + ") / (2.0f * Math.sqrt(" + o[0] + "))"};
+                    }});
+
+                // s = mean(a)  ->  a_bar += broadcast(g / numel(a)) — sum's rule
+                // with the count divided out (tensor-only, like sum).
+                r.add({"mean", 1,
+                    [](const std::string& g, const std::vector<std::string>& o,
+                       const GradSurface& s) {
+                        std::string e = "<" + s.elem + ">";
+                        return std::vector<std::string>{
+                            "Tensor.mulScalar" + e + "(Tensor.onesLike" + e
+                                + "(" + o[0] + "), (" + g
+                                + ") / ((float32) Tensor.productOf(Tensor.shapeOf"
+                                + e + "(" + o[0] + "))))"};
+                    }});
+
                 return r;
             }();
             return registry;

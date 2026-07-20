@@ -821,7 +821,8 @@ namespace cajeta {
         // directly off the call's explicit type args.
         if (valueTy.empty() || valueTy == "void") {
             if (auto sumCall = std::dynamic_pointer_cast<MethodCallExpression>(bodyExpr)) {
-                if (sumCall->getMethodCallName() == "sum"
+                if ((sumCall->getMethodCallName() == "sum"
+                         || sumCall->getMethodCallName() == "mean")
                         && !sumCall->getExplicitMethodTypeArgs().empty()) {
                     auto r = sumCall->getExplicitMethodTypeArgs().back();
                     if (r) valueTy = r->toCanonical();
@@ -836,6 +837,13 @@ namespace cajeta {
                                      call->getParameters().size());
                 if (t.found && !t.returnTy.empty()) valueTy = t.returnTy;
             }
+        }
+        // nucleo-autograd U1 — a scalar body whose type is still unknown (e.g. a
+        // bare Math.exp(x) intrinsic call, unresolved pre-codegen) computes over
+        // the selected param's scalar type; the DAG has already rejected anything
+        // it cannot express, so selTy is the honest answer.
+        if ((valueTy.empty() || valueTy == "void") && !selIsTensor) {
+            valueTy = selTy;
         }
         if (valueTy.empty() || valueTy == "void") {
             throw locErr("transform intrinsic 'Grad': could not determine the value "

@@ -70,9 +70,13 @@ via the design skill, at which point its `TBD (plan-time)` markers are resolved.
 Progress:
 - **records** — ✅ complete (`records-plan.md`, 48/48).
 - **source-synthesis** — ✅ complete (`source-synthesis-plan.md`, 42/42).
-- **transform-intrinsics** — 🔨 **ACTIVE** (`transform-intrinsics-plan.md`; all F1–F8 resolved
-  2026-07-17). ML-spine slice: VJP registry + `Grad` (Tier-A backward) + `@NoGrad` + `Vmap` +
-  `Jit` + `@Grad`/`@Vmap`/`@Jit` sugar. `Pmap`, Tier-B fusion, `@Checkpoint`/`@Autocast`, and the
+- **transform-intrinsics** — ✅ complete (`transform-intrinsics-plan.md`, 63/63, 2026-07-19).
+  ML-spine slice: VJP registry + `Grad` (Tier-A backward) + `@NoGrad` + `Vmap` + `Jit` +
+  `@Grad`/`@Vmap`/`@Jit` sugar. `Pmap`, Tier-B fusion, `@Checkpoint`/`@Autocast`, and the
   higher-order rule slot are deferred to follow-ups; the real tensor-op rule content + eager tape
   are `nucleo-autograd-spec.md`.
-- Everything below transform-intrinsics — **draft** (specs written 2026-06-23; no plan yet).
+- **nucleo-autograd** — 🔨 **ACTIVE** (`nucleo-autograd-plan.md`, authored 2026-07-19): widened
+  VJP rule cut (div/exp/log/sqrt/mean) + the scalar eager tape (`cajeta.nucleo.autograd.Tape`)
+  with the eager==compiled agreement bar. Deferred there: tensor tape ops, literal registry
+  sharing (generate tape source from the registry), `Diff<T>`, `@Checkpoint` remat.
+- Everything below nucleo-autograd — **draft** (specs written 2026-06-23; no plan yet).

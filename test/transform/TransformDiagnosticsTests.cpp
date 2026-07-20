@@ -49,11 +49,11 @@ Diag diagOf(const std::string& body) {
 // 8.1.1 — an unsupported op in a differentiated body names the OPERATOR.
 TEST(TransformDiagnostics, unsupportedOpNamedAndLocated) {
     Diag d = diagOf(
-        "(float32) -> GradResult<float32,float32> g = Grad((float32 x) -> x / x);\n"
+        "(float32) -> GradResult<float32,float32> g = Grad((float32 x) -> x % x);\n"
         "        return g(2.0f).value;");
     EXPECT_EQ(d.id, "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
     EXPECT_TRUE(d.located) << d.msg;
-    EXPECT_NE(d.msg.find("'/'"), std::string::npos)
+    EXPECT_NE(d.msg.find("'%'"), std::string::npos)
         << "must name the offending operator, got: " << d.msg;
 }
 
@@ -62,12 +62,12 @@ TEST(TransformDiagnostics, unsupportedOpNamedAndLocated) {
 TEST(TransformDiagnostics, noBatchRuleNamedAndLocated) {
     Diag d = diagOf(
         "float32[] xs = {1.0f, 2.0f};\n"
-        "        (float32[]) -> #float32[] g = Vmap((float32 x) -> x / x);\n"
+        "        (float32[]) -> #float32[] g = Vmap((float32 x) -> x % x);\n"
         "        float32[] ys = g(xs);\n"
         "        return ys[0];");
     EXPECT_EQ(d.id, "CAJETA_ERROR_TRANSFORM_NO_BATCH_RULE");
     EXPECT_TRUE(d.located) << d.msg;
-    EXPECT_NE(d.msg.find("'/'"), std::string::npos)
+    EXPECT_NE(d.msg.find("'%'"), std::string::npos)
         << "must name the offending operator, got: " << d.msg;
 }
 

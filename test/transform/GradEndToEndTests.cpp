@@ -157,9 +157,9 @@ TEST(GradEndToEnd, secondOrderCube) {
 }
 
 // A misspelled/unsupported primitive fails with a named compile error, never a
-// silent wrong gradient (spec §5.3). Division has no VJP rule in v1.
+// silent wrong gradient (spec §5.3). Modulo has no VJP rule (division joined the set in nucleo-autograd U1).
 TEST(GradEndToEnd, unsupportedOpNamedError) {
     EXPECT_EQ(compileErrorId(
-        "(float32) -> GradResult<float32,float32> g = Grad((float32 x) -> x / x);\n"
+        "(float32) -> GradResult<float32,float32> g = Grad((float32 x) -> x % x);\n"
         "        return g(2.0f).value;"), "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
 }

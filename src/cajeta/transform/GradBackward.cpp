@@ -76,11 +76,12 @@ namespace cajeta {
                         case BINARY_OP_MUL: prim = "mul"; opStr = "*"; break;
                         case BINARY_OP_ADD: prim = "add"; opStr = "+"; break;
                         case BINARY_OP_SUB: prim = "sub"; opStr = "-"; break;
+                        case BINARY_OP_DIV: prim = "div"; opStr = "/"; break;
                         default: {
                             const char* sym = opdispatch::binaryOpSymbol(b->getBinaryOp());
                             err = std::string("unsupported binary operator '")
                                 + (sym ? sym : "?")
-                                + "' in the transformed body (v1 supports + - * "
+                                + "' in the transformed body (v1 supports + - * / "
                                   "and unary -)";
                             return 0;
                         }
@@ -128,10 +129,33 @@ namespace cajeta {
                     }
                     const std::string& op = mc->getMethodCallName();
                     static const std::set<std::string> tensorOps =
-                        {"mul", "add", "sub", "matmul", "sum"};
+                        {"mul", "add", "sub", "matmul", "sum",
+                         "exp", "log", "sqrt", "mean"};
+                    static const std::set<std::string> tensorUnary =
+                        {"sum", "exp", "log", "sqrt", "mean"};
+                    // nucleo-autograd U1 — the scalar Math.* intrinsics are the
+                    // scalar spelling of the widened unary primitives.
+                    static const std::set<std::string> mathUnary =
+                        {"exp", "log", "sqrt"};
+                    if (recv == "Math" && mathUnary.count(op)) {
+                        const auto& margs = mc->getParameters();
+                        if (margs.size() != 1) {
+                            err = "malformed Math." + op
+                                + " in the transformed body";
+                            return 0;
+                        }
+                        auto* ae = dynamic_cast<Expression*>(margs[0].expression.get());
+                        size_t ci = buildNode(ae, paramIsTensor, resolveCall,
+                                              bindings, nodes, paramIdx, err);
+                        if (!err.empty()) return 0;
+                        std::string val = "Math." + op + "("
+                            + nodes[ci].valueExpr + ")";
+                        nodes.push_back(AdNode{val, false, op, {ci}, false});
+                        return nodes.size() - 1;
+                    }
                     if (recv == "Tensor" && tensorOps.count(op)) {
                         const auto& args = mc->getParameters();
-                        size_t nOperands = (op == "sum") ? 1 : 2;
+                        size_t nOperands = tensorUnary.count(op) ? 1 : 2;
                         if (args.size() < nOperands) {
                             err = "Grad: malformed Tensor." + op
                                 + " in the differentiated body";
@@ -173,8 +197,9 @@ namespace cajeta {
                             val += nodes[operandIdx[k]].valueExpr;
                         }
                         val += ")";
-                        // Elementwise ops stay tensor-ranked; `sum` reduces to scalar.
-                        nodes.push_back(AdNode{val, false, op, operandIdx, op != "sum"});
+                        // Elementwise ops stay tensor-ranked; `sum`/`mean` reduce.
+                        bool outTensor = (op != "sum" && op != "mean");
+                        nodes.push_back(AdNode{val, false, op, operandIdx, outTensor});
                         return nodes.size() - 1;
                     }
 
