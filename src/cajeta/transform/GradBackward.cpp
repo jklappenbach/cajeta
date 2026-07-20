@@ -130,7 +130,10 @@ namespace cajeta {
                     const std::string& op = mc->getMethodCallName();
                     static const std::set<std::string> tensorOps =
                         {"mul", "add", "sub", "matmul", "sum",
-                         "exp", "log", "sqrt", "mean"};
+                         "exp", "log", "sqrt", "mean",
+                         // nucleo-expr U2 — scalar-broadcast family + std.
+                         "addScalar", "subScalar", "mulScalar", "divScalar",
+                         "std"};
                     static const std::set<std::string> tensorUnary =
                         {"sum", "exp", "log", "sqrt", "mean"};
                     // nucleo-autograd U1 — the scalar Math.* intrinsics are the
@@ -155,7 +158,10 @@ namespace cajeta {
                     }
                     if (recv == "Tensor" && tensorOps.count(op)) {
                         const auto& args = mc->getParameters();
-                        size_t nOperands = tensorUnary.count(op) ? 1 : 2;
+                        // `std(t, ddof)` reduces ONE tensor (ddof is a plain
+                        // int, re-inlined verbatim, not a graph operand).
+                        size_t nOperands = (tensorUnary.count(op) || op == "std")
+                            ? 1 : 2;
                         if (args.size() < nOperands) {
                             err = "Grad: malformed Tensor." + op
                                 + " in the differentiated body";
@@ -196,9 +202,16 @@ namespace cajeta {
                             if (k) val += ", ";
                             val += nodes[operandIdx[k]].valueExpr;
                         }
+                        if (op == "std" && args.size() > 1) {
+                            if (auto* de = dynamic_cast<Expression*>(
+                                    args[1].expression.get())) {
+                                val += ", " + de->getSourceText();
+                            }
+                        }
                         val += ")";
                         // Elementwise ops stay tensor-ranked; `sum`/`mean` reduce.
-                        bool outTensor = (op != "sum" && op != "mean");
+                        bool outTensor = (op != "sum" && op != "mean"
+                                          && op != "std");
                         nodes.push_back(AdNode{val, false, op, operandIdx, outTensor});
                         return nodes.size() - 1;
                     }

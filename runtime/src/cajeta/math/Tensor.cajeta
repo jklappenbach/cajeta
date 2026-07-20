@@ -3525,6 +3525,7 @@ public class Tensor<T> {
             E r = v + s;
             if (op == 1) { r = v - s; }
             if (op == 2) { r = v * s; }
+            if (op == 3) { r = v / s; }
             st.set(lin, r);
             lin = lin + 1;
             int32 ax = nd - 1;
@@ -3602,6 +3603,10 @@ public class Tensor<T> {
     /** Weak scalar `t * s` (keeps `E`). */
     public static #Tensor<E> mulScalar<E extends Numeric>(Tensor<E> t, E s) {
         return Tensor.scalarOp<E>(t, s, 2);
+    }
+    /** Elementwise `t / s` against a scalar (completes the add/sub/mul family). */
+    public static #Tensor<E> divScalar<E extends Numeric>(Tensor<E> t, E s) {
+        return Tensor.scalarOp<E>(t, s, 3);
     }
     /** Weak **float** scalar over an integer tensor `t + s` → `Tensor<float64>` (category
      *  bump). See {@link #scalarOpF}. */

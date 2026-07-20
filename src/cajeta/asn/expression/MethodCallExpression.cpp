@@ -1082,19 +1082,38 @@ namespace cajeta {
             throw locErr("transform intrinsic 'Fuse': cannot fuse this body — " + err,
                          "CAJETA_ERROR_TRANSFORM_NOT_FUSIBLE");
         }
+        // U2 — a reduction at the ROOT is scalar-valued: the elementwise body
+        // fuses INTO its accumulation loop, so no output tensor exists at all.
+        // A reduction anywhere else is loop-invariant and stages to a hoisted
+        // preheader local.
+        const cajeta::transform::AdNode& root = nodes.back();
+        bool reductionRoot = cajeta::transform::isReduction(root.primitive);
+        size_t bodyIdx = reductionRoot ? root.operands[0] : nodes.size() - 1;
+
         std::string elemErr;
+        std::vector<cajeta::transform::Hoist> hoists;
         std::string elemSrc = cajeta::transform::elementExpr(
-            nodes, nodes.size() - 1, "__i", &elemErr);
+            nodes, bodyIdx, "__i", &hoists, &elemErr);
         if (elemSrc.empty()) {
             throw locErr("transform intrinsic 'Fuse': cannot fuse this body — "
                          + elemErr, "CAJETA_ERROR_TRANSFORM_NOT_FUSIBLE");
         }
+        if (reductionRoot && root.primitive == "std") {
+            throw locErr("transform intrinsic 'Fuse': 'std' as the whole fused "
+                         "expression is not staged in v1 (use it inside an "
+                         "elementwise body)",
+                         "CAJETA_ERROR_TRANSFORM_NOT_FUSIBLE");
+        }
 
         std::string className = "__Fused_" + cajeta::synth::deriveSynthName(
-            "fuse", pnames[0], {elemSrc, elem});
+            "fuse", pnames[0], {elemSrc, elem, root.primitive});
         std::string pkg = module->getQName()->getPackageName();
         std::string source = (pkg.empty() ? std::string() : ("package " + pkg + ";\n"))
-            + cajeta::transform::emitFusedSource(className, pnames[0], elem, elemSrc);
+            + (reductionRoot
+                ? cajeta::transform::emitFusedReductionSource(
+                      className, pnames[0], elem, root.primitive, elemSrc, hoists)
+                : cajeta::transform::emitFusedSource(
+                      className, pnames[0], elem, elemSrc, hoists));
         if (std::getenv("CAJETA_FUSE_DUMP")) {
             fprintf(stderr, "=== FUSED SOURCE ===\n%s\n=== END ===\n", source.c_str());
         }

@@ -28,13 +28,38 @@ namespace cajeta {
         // (`sum`/`mean`) do NOT: they bound a fusion region (U2).
         bool fusesElementwise(const std::string& primitive);
 
+        // U2 — a reduction hoisted out of the loop. `local` is the preheader
+        // variable name; `init` is its tensor-level initializer source.
+        struct Hoist {
+            std::string local;
+            std::string init;
+        };
+
         // The ELEMENT-level source of node `idx` — the whole subexpression as
         // scalar arithmetic over `paramName.get1(<indexVar>)` leaves. This is
         // what collapses N tensor operators into one loop body with no
         // temporaries. Returns "" and sets *err when the node (or any operand)
         // is not elementwise-fusible.
+        //
+        // A REDUCTION operand (sum/mean/std) does not fuse elementwise — it is
+        // loop-invariant, so it is STAGED: appended to `hoists` and referenced
+        // by its local name inside the loop (spec §3.3, "fuse what is legally
+        // fusible and schedule the reduction as its own stage"). A reduction at
+        // the ROOT is the whole expression's value and is not a loop at all —
+        // the caller checks that case before asking for an element expression.
+        //
+        // THE COLUMN SEAM (plan X7-seam): this function is the ONLY place that
+        // assumes a dense, always-valid buffer — the `get1(i)` leaf. A nullable
+        // column needs validity propagation there and nowhere else; keep that
+        // assumption from leaking into the emitter or the recognizer so a
+        // null-aware variant slots in beside this rather than forcing a rewrite.
         std::string elementExpr(const std::vector<AdNode>& nodes, size_t idx,
-                                const std::string& indexVar, std::string* err);
+                                const std::string& indexVar,
+                                std::vector<Hoist>* hoists, std::string* err);
+
+        // Whether `primitive` reduces a tensor to a scalar (bounds a fusion
+        // region rather than fusing into it).
+        bool isReduction(const std::string& primitive);
 
         // Assemble the fused helper-class source: one static make() returning a
         // lambda that allocates the single result tensor and runs the fused
@@ -52,7 +77,18 @@ namespace cajeta {
         std::string emitFusedSource(const std::string& className,
                                     const std::string& paramName,
                                     const std::string& elem,
-                                    const std::string& elemExprSrc);
+                                    const std::string& elemExprSrc,
+                                    const std::vector<Hoist>& hoists);
+
+        // A reduction-rooted expression (`sum(t*t)`) is a scalar-valued fused
+        // form: the elementwise body fuses INTO the reduction's accumulation
+        // loop, so there is no output tensor at all.
+        std::string emitFusedReductionSource(const std::string& className,
+                                             const std::string& paramName,
+                                             const std::string& elem,
+                                             const std::string& reductionPrim,
+                                             const std::string& elemExprSrc,
+                                             const std::vector<Hoist>& hoists);
 
     } // namespace transform
 } // namespace cajeta
