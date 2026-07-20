@@ -80,4 +80,8 @@ Progress:
   (`cajeta.nucleo.autograd.{Tape,Var}` — define-by-run, runtime-bounded loops, stopGrad), and
   the eager==compiled agreement bar. Deferred: tensor tape ops, literal registry sharing
   (generate tape source from the registry), `Diff<T>`, `@Checkpoint` remat, conv/softmax rules.
-- Everything below nucleo-autograd — **draft** (specs written 2026-06-23; no plan yet).
+- **nucleo-expr** — 🔨 **ACTIVE** (`nucleo-expr-plan.md`, approved 2026-07-20): compile-time
+  fused tensor expressions via a `Fuse` transform intrinsic + explicit `.eval()`; the headline
+  bar is allocation count (an N-op chain allocates ONE buffer). Deferred: the relational half
+  (§4 pushdown, §7 column sharing, X7 nulls) with nucleo-column/frame; GPU lowering (X6).
+- Everything below nucleo-expr — **draft** (specs written 2026-06-23; no plan yet).
