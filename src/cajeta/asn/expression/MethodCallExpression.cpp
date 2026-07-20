@@ -1844,6 +1844,21 @@ namespace cajeta {
             auto structType = dynamic_pointer_cast<CajetaView>(
                 CajetaType::of(methodCallName));
             if (structType) {
+                // view v1.1: descriptor views (element-array fields) carry a
+                // frame-arena-backed {data, table} descriptor that cannot
+                // outlive the constructing frame — but the owning form is
+                // exactly the escape hatch (ViewOwningTests). Reject the
+                // combination until a heap-tabled owning variant exists.
+                if (structType->getHasElementArrayField()
+                        && parameters[0].callerTransferred) {
+                    throw Exception(
+                        "owning form `" + methodCallName + "(#bytes)` is not "
+                        "supported for views with element-array fields (v1.1): "
+                        "the offset table lives in the frame arena and cannot "
+                        "escape the constructing frame. Use the borrow form `"
+                        + methodCallName + "(bytes)`.",
+                        "CAJETA_ERROR_VIEW_ELEMENT_ARRAY_OWNING");
+                }
                 // Evaluate the byte[] argument; load through if it's an alloca.
                 llvm::Value* bytesPtr = parameters[0].expression->generateCode(module);
                 if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(bytesPtr)) {
@@ -1907,6 +1922,10 @@ namespace cajeta {
                 llvm::Value* dataPtr = builder->CreateInBoundsGEP(
                     i8Ty, bytesPtr,
                     llvm::ConstantInt::get(i64Ty, 8), "view_data_ptr");
+                // The value this construction yields: the raw data pointer,
+                // or (view v1.1, set below) the arena descriptor for views
+                // with element-array fields.
+                llvm::Value* viewValue = dataPtr;
 
                 // S5.3 + S5b.3 — length-prefix validation sweep. Walks the
                 // view's properties in declaration order, tracking a running
@@ -1927,56 +1946,337 @@ namespace cajeta {
                     llvm::Value* offset = llvm::ConstantInt::get(
                         i64Ty, fixedPrefixSize);
                     const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
-                    bool sawVar = false;
+                    llvm::Type* i32Ty = llvm::Type::getInt32Ty(llvmCtx);
                     int diagIdx = 0;
+                    // view v1.1: total var-size-element count across all
+                    // element-array fields — sized during the validation
+                    // sweep, consumed by the offset-table allocation below.
+                    llvm::Value* totalVarElems = llvm::ConstantInt::get(i64Ty, 0);
+
+                    // Emit `cond == false → tag-throw` and leave the builder
+                    // in the ok block. Same tag scheme as the size check
+                    // above (0xCA1E7A00 | site index).
+                    auto emitCheck = [&](llvm::Value* okCond, const char* nm) {
+                        llvm::BasicBlock* fBB = llvm::BasicBlock::Create(
+                            llvmCtx, std::string(nm) + "_fail", parentFn);
+                        llvm::BasicBlock* oBB = llvm::BasicBlock::Create(
+                            llvmCtx, std::string(nm) + "_ok", parentFn);
+                        builder->CreateCondBr(okCond, oBB, fBB);
+                        builder->SetInsertPoint(fBB);
+                        if (llvm::Function* throwFn =
+                                module->getRuntimeFunction("__cajeta_throw")) {
+                            uint64_t tag = (uint64_t) 0xCA1E7A00
+                                | (uint64_t)(diagIdx & 0xFF);
+                            llvm::PointerType* ptrTy =
+                                llvm::PointerType::get(llvmCtx, 0);
+                            llvm::Value* tagPtr = builder->CreateIntToPtr(
+                                llvm::ConstantInt::get(i64Ty, tag), ptrTy);
+                            builder->CreateCall(throwFn, {tagPtr});
+                        }
+                        builder->CreateUnreachable();
+                        builder->SetInsertPoint(oBB);
+                        diagIdx++;
+                    };
+
+                    // Read the signed i32 prefix at (dataPtr + off):
+                    // pre-load bounds check (off+4 <= haveBytes), load,
+                    // byte-swap per the OWNING view's wire order (VEA-4),
+                    // sign-extend, reject negatives. Negative lengths /
+                    // counts are malformed wire data, not 2^31-byte fields.
+                    auto emitReadPrefix = [&](llvm::Value* off,
+                                              const char* nm,
+                                              ViewEndianness pe) -> llvm::Value* {
+                        llvm::Value* after4 = builder->CreateAdd(
+                            off, llvm::ConstantInt::get(i64Ty, 4));
+                        emitCheck(builder->CreateICmpULE(after4, haveBytes), nm);
+                        llvm::Value* pPtr = builder->CreateInBoundsGEP(
+                            i8Ty, dataPtr, off);
+                        llvm::Value* p32 = CajetaView::emitSwapIfNeeded(
+                            module, pe, builder->CreateLoad(i32Ty, pPtr));
+                        llvm::Value* p64 = builder->CreateIntCast(
+                            p32, i64Ty, /*isSigned=*/true);
+                        emitCheck(builder->CreateICmpSGE(p64,
+                            llvm::ConstantInt::get(i64Ty, 0)), nm);
+                        return p64;
+                    };
+                    ViewEndianness outerE = structType->getEndianness();
+
+                    // Advance over one scalar var-size property: String
+                    // (prefix = byte length) or primitive T[] (prefix =
+                    // ELEMENT COUNT — data bytes are count * sizeof(T);
+                    // the pre-v1.1 sweep advanced 4+count, correct only
+                    // for int8[]).
+                    auto emitScalarVarAdvance =
+                        [&](const StructurePropertyPtr& p,
+                            llvm::Value* off,
+                            ViewEndianness pe) -> llvm::Value* {
+                        llvm::Value* len = emitReadPrefix(off, "vlen", pe);
+                        // p == nullptr → String[] element (byte-length
+                        // prefix, elemBytes 1).
+                        uint64_t elemBytes = 1;
+                        if (p) {
+                            if (auto arrType = dynamic_pointer_cast<CajetaArray>(
+                                    p->getType())) {
+                                if (auto et = arrType->getElementLlvmType(&llvmCtx)) {
+                                    elemBytes = dl.getTypeAllocSize(et);
+                                    if (elemBytes == 0) elemBytes = 1;
+                                }
+                            }
+                        }
+                        llvm::Value* dataBytes = (elemBytes == 1) ? len
+                            : builder->CreateMul(len,
+                                llvm::ConstantInt::get(i64Ty, elemBytes));
+                        llvm::Value* after = builder->CreateAdd(
+                            builder->CreateAdd(off,
+                                llvm::ConstantInt::get(i64Ty, 4)),
+                            dataBytes, "vlen_after_field");
+                        emitCheck(builder->CreateICmpULE(after, haveBytes),
+                            "vlen");
+                        return after;
+                    };
+
+                    // Advance over one ELEMENT of a V[] field: walk the
+                    // element view's properties in declaration order. The
+                    // composition guard in generatePrototype guarantees the
+                    // element declares only fixed / String / primitive-T[]
+                    // fields, so this recursion is single-level.
+                    auto emitViewElementAdvance =
+                        [&](const CajetaViewPtr& elemView,
+                            llvm::Value* off) -> llvm::Value* {
+                        ViewEndianness elemE = elemView->getEndianness();
+                        for (auto& ep : elemView->getPropertyList()) {
+                            if (CajetaView::isVariableSize(ep)) {
+                                off = emitScalarVarAdvance(ep, off, elemE);
+                            } else {
+                                uint64_t sz = dl.getTypeAllocSize(
+                                    ep->getType()->getLlvmType());
+                                off = builder->CreateAdd(off,
+                                    llvm::ConstantInt::get(i64Ty, sz),
+                                    "elem_fixed_after");
+                                emitCheck(builder->CreateICmpULE(off,
+                                    haveBytes), "elem_fixed");
+                            }
+                        }
+                        return off;
+                    };
+
+                    // Advance over an element-array field (`V[]`/`String[]`):
+                    // read the count, then a RUNTIME loop validating each
+                    // element in turn (element count is dynamic — this is
+                    // the one place the sweep cannot unroll).
+                    auto emitElementArrayAdvance =
+                        [&](const StructurePropertyPtr& p,
+                            llvm::Value* off) -> llvm::Value* {
+                        llvm::Value* count = emitReadPrefix(off, "ecount", outerE);
+                        if (CajetaView::elementArrayHasVarSizeElements(p)) {
+                            totalVarElems = builder->CreateAdd(
+                                totalVarElems, count, "vea_totelems");
+                        }
+                        llvm::Value* start = builder->CreateAdd(
+                            off, llvm::ConstantInt::get(i64Ty, 4));
+                        CajetaViewPtr elemView;
+                        if (auto arrType = dynamic_pointer_cast<CajetaArray>(
+                                p->getType())) {
+                            elemView = dynamic_pointer_cast<CajetaView>(
+                                arrType->getElementType());
+                        }
+                        llvm::BasicBlock* preBB = builder->GetInsertBlock();
+                        llvm::BasicBlock* hdrBB = llvm::BasicBlock::Create(
+                            llvmCtx, "earr_hdr", parentFn);
+                        llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(
+                            llvmCtx, "earr_body", parentFn);
+                        llvm::BasicBlock* exitBB = llvm::BasicBlock::Create(
+                            llvmCtx, "earr_exit", parentFn);
+                        builder->CreateBr(hdrBB);
+                        builder->SetInsertPoint(hdrBB);
+                        llvm::PHINode* kPhi = builder->CreatePHI(i64Ty, 2, "earr_k");
+                        llvm::PHINode* offPhi = builder->CreatePHI(i64Ty, 2, "earr_off");
+                        kPhi->addIncoming(llvm::ConstantInt::get(i64Ty, 0), preBB);
+                        offPhi->addIncoming(start, preBB);
+                        builder->CreateCondBr(
+                            builder->CreateICmpSLT(kPhi, count), bodyBB, exitBB);
+                        builder->SetInsertPoint(bodyBB);
+                        llvm::Value* offAfter = elemView
+                            ? emitViewElementAdvance(elemView, offPhi)
+                            // String[] element: i32 len + len bytes.
+                            : emitScalarVarAdvance(nullptr, offPhi, outerE);
+                        llvm::Value* kNext = builder->CreateAdd(
+                            kPhi, llvm::ConstantInt::get(i64Ty, 1));
+                        // The advance emitters split blocks; the back-edge
+                        // comes from wherever the builder ended up.
+                        llvm::BasicBlock* bodyEndBB = builder->GetInsertBlock();
+                        builder->CreateBr(hdrBB);
+                        kPhi->addIncoming(kNext, bodyEndBB);
+                        offPhi->addIncoming(offAfter, bodyEndBB);
+                        builder->SetInsertPoint(exitBB);
+                        return offPhi;
+                    };
+
+                    bool sawVar = false;
                     for (auto& p : structType->getPropertyList()) {
                         bool isVar = CajetaView::isVariableSize(p);
                         if (!sawVar && !isVar) {
                             // Pre-first-var fixed field: already in fixedPrefixSize.
                             continue;
                         }
-                        if (isVar) sawVar = true;
-                        llvm::BasicBlock* failBB = llvm::BasicBlock::Create(
-                            llvmCtx, "vlen_fail", parentFn);
-                        llvm::BasicBlock* okBB2 = llvm::BasicBlock::Create(
-                            llvmCtx, "vlen_ok", parentFn);
-                        llvm::Value* afterField = nullptr;
                         if (isVar) {
-                            // Read i32 prefix at (dataPtr + offset), then advance.
-                            llvm::Value* prefixPtr = builder->CreateInBoundsGEP(
-                                i8Ty, dataPtr, offset, "vlen_prefix_ptr");
-                            llvm::Value* prefix32 = builder->CreateLoad(
-                                llvm::Type::getInt32Ty(llvmCtx), prefixPtr,
-                                "vlen_prefix");
-                            llvm::Value* prefix64 = builder->CreateIntCast(
-                                prefix32, i64Ty, /*isSigned=*/true);
-                            llvm::Value* fourPlus = builder->CreateAdd(
-                                prefix64, llvm::ConstantInt::get(i64Ty, 4),
-                                "vlen_after_prefix");
-                            afterField = builder->CreateAdd(
-                                offset, fourPlus, "vlen_after_field");
+                            sawVar = true;
+                            offset = CajetaView::isElementArray(p)
+                                ? emitElementArrayAdvance(p, offset)
+                                : emitScalarVarAdvance(p, offset, outerE);
                         } else {
                             // Post-var fixed field: advance by static size.
-                            uint64_t sz = dl.getTypeAllocSize(p->getType()->getLlvmType());
-                            afterField = builder->CreateAdd(
-                                offset, llvm::ConstantInt::get(i64Ty, sz),
+                            uint64_t sz = dl.getTypeAllocSize(
+                                p->getType()->getLlvmType());
+                            offset = builder->CreateAdd(offset,
+                                llvm::ConstantInt::get(i64Ty, sz),
                                 "vlen_after_postvar_fixed");
+                            emitCheck(builder->CreateICmpULE(offset,
+                                haveBytes), "vlen_postvar");
                         }
-                        llvm::Value* vlenOk = builder->CreateICmpULE(
-                            afterField, haveBytes, "vlen_ok");
-                        builder->CreateCondBr(vlenOk, okBB2, failBB);
-                        builder->SetInsertPoint(failBB);
-                        if (llvm::Function* throwFn = module->getRuntimeFunction("__cajeta_throw")) {
-                            uint64_t tag = (uint64_t) 0xCA1E7A00 | (uint64_t)(diagIdx & 0xFF);
-                            llvm::PointerType* ptrTy = llvm::PointerType::get(llvmCtx, 0);
-                            llvm::Value* tagPtr = builder->CreateIntToPtr(
-                                llvm::ConstantInt::get(i64Ty, tag), ptrTy);
-                            builder->CreateCall(throwFn, {tagPtr});
+                    }
+
+                    // ---- view v1.1: offset table + descriptor (pass 2) ----
+                    // The sweep above proved the buffer well-formed and sized
+                    // the per-element regions (totalVarElems). Fill pass:
+                    // record each post-first-var property's absolute start
+                    // offset in its fixed slot, and each var-size element's
+                    // absolute offset in its field's region. Table +
+                    // descriptor live in the per-fiber frame arena —
+                    // reclaimed with the constructing scope, no malloc.
+                    if (structType->getHasElementArrayField()) {
+                        llvm::Function* arenaAlloc =
+                            module->getRuntimeFunction("__cajeta_arena_alloc");
+                        if (arenaAlloc) {
+                            int fixedSlots = structType->tableFixedSlotCount();
+                            llvm::Value* slotCount = builder->CreateAdd(
+                                llvm::ConstantInt::get(i64Ty, fixedSlots),
+                                totalVarElems, "vea_slots");
+                            llvm::Value* table = builder->CreateCall(
+                                arenaAlloc,
+                                {builder->CreateMul(slotCount,
+                                    llvm::ConstantInt::get(i64Ty, 8))});
+                            auto tableSlotPtr = [&](llvm::Value* idx) {
+                                return builder->CreateInBoundsGEP(
+                                    i64Ty, table, idx, "vea_slot");
+                            };
+                            llvm::Value* fillOff = llvm::ConstantInt::get(
+                                i64Ty, fixedPrefixSize);
+                            llvm::Value* regionCursor = llvm::ConstantInt::get(
+                                i64Ty, fixedSlots);
+                            bool fSawVar = false;
+                            for (auto& p : structType->getPropertyList()) {
+                                bool isVar = CajetaView::isVariableSize(p);
+                                if (!fSawVar && !isVar) continue;
+                                if (isVar) fSawVar = true;
+                                int slot = structType->tableSlotOf(p);
+                                builder->CreateStore(fillOff,
+                                    tableSlotPtr(llvm::ConstantInt::get(
+                                        i64Ty, slot)));
+                                if (!isVar) {
+                                    uint64_t sz = dl.getTypeAllocSize(
+                                        p->getType()->getLlvmType());
+                                    fillOff = builder->CreateAdd(fillOff,
+                                        llvm::ConstantInt::get(i64Ty, sz));
+                                    continue;
+                                }
+                                if (!CajetaView::isElementArray(p)) {
+                                    fillOff = CajetaView::emitAccessAdvance(
+                                        module, p, dataPtr, fillOff, outerE);
+                                    continue;
+                                }
+                                // Element array: count, then either stride
+                                // math (fixed elements — no region) or a
+                                // fill loop recording each element offset.
+                                llvm::Value* cPtr = builder->CreateInBoundsGEP(
+                                    i8Ty, dataPtr, fillOff, "vea_fill_cptr");
+                                llvm::Value* cnt = builder->CreateIntCast(
+                                    CajetaView::emitSwapIfNeeded(module, outerE,
+                                        builder->CreateLoad(
+                                            llvm::Type::getInt32Ty(llvmCtx),
+                                            cPtr)),
+                                    i64Ty, /*isSigned=*/true);
+                                llvm::Value* elemsStart = builder->CreateAdd(
+                                    fillOff, llvm::ConstantInt::get(i64Ty, 4));
+                                auto arrT = dynamic_pointer_cast<CajetaArray>(
+                                    p->getType());
+                                auto elemView = dynamic_pointer_cast<CajetaView>(
+                                    arrT->getElementType());
+                                if (!CajetaView::elementArrayHasVarSizeElements(p)) {
+                                    fillOff = builder->CreateAdd(elemsStart,
+                                        builder->CreateMul(cnt,
+                                            llvm::ConstantInt::get(i64Ty,
+                                                elemView->getFixedSize())));
+                                    continue;
+                                }
+                                builder->CreateStore(regionCursor,
+                                    tableSlotPtr(llvm::ConstantInt::get(
+                                        i64Ty, slot + 1)));
+                                llvm::BasicBlock* preBB = builder->GetInsertBlock();
+                                llvm::BasicBlock* hdrBB = llvm::BasicBlock::Create(
+                                    llvmCtx, "vea_fill_hdr", parentFn);
+                                llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(
+                                    llvmCtx, "vea_fill_body", parentFn);
+                                llvm::BasicBlock* exitBB = llvm::BasicBlock::Create(
+                                    llvmCtx, "vea_fill_exit", parentFn);
+                                builder->CreateBr(hdrBB);
+                                builder->SetInsertPoint(hdrBB);
+                                llvm::PHINode* kPhi = builder->CreatePHI(
+                                    i64Ty, 2, "vea_fill_k");
+                                llvm::PHINode* oPhi = builder->CreatePHI(
+                                    i64Ty, 2, "vea_fill_off");
+                                kPhi->addIncoming(
+                                    llvm::ConstantInt::get(i64Ty, 0), preBB);
+                                oPhi->addIncoming(elemsStart, preBB);
+                                builder->CreateCondBr(
+                                    builder->CreateICmpSLT(kPhi, cnt),
+                                    bodyBB, exitBB);
+                                builder->SetInsertPoint(bodyBB);
+                                builder->CreateStore(oPhi, tableSlotPtr(
+                                    builder->CreateAdd(regionCursor, kPhi)));
+                                llvm::Value* oNext;
+                                if (elemView) {
+                                    oNext = CajetaView::emitElementAdvance(
+                                        module, elemView, dataPtr, oPhi);
+                                } else {
+                                    llvm::Value* sPtr = builder->CreateInBoundsGEP(
+                                        i8Ty, dataPtr, oPhi, "vea_fill_sptr");
+                                    llvm::Value* sLen = builder->CreateIntCast(
+                                        CajetaView::emitSwapIfNeeded(module,
+                                            outerE,
+                                            builder->CreateLoad(
+                                                llvm::Type::getInt32Ty(llvmCtx),
+                                                sPtr)),
+                                        i64Ty, /*isSigned=*/true);
+                                    oNext = builder->CreateAdd(
+                                        builder->CreateAdd(oPhi,
+                                            llvm::ConstantInt::get(i64Ty, 4)),
+                                        sLen);
+                                }
+                                llvm::Value* kNext = builder->CreateAdd(kPhi,
+                                    llvm::ConstantInt::get(i64Ty, 1));
+                                llvm::BasicBlock* bodyEndBB =
+                                    builder->GetInsertBlock();
+                                builder->CreateBr(hdrBB);
+                                kPhi->addIncoming(kNext, bodyEndBB);
+                                oPhi->addIncoming(oNext, bodyEndBB);
+                                builder->SetInsertPoint(exitBB);
+                                fillOff = oPhi;
+                                regionCursor = builder->CreateAdd(
+                                    regionCursor, cnt, "vea_region_next");
+                            }
+                            // Descriptor {i8* data, i64* table} — also
+                            // arena-backed so the view value stays a plain
+                            // (non-alloca) pointer, same shape as dataPtr.
+                            llvm::Value* desc = builder->CreateCall(arenaAlloc,
+                                {llvm::ConstantInt::get(i64Ty, 16)});
+                            builder->CreateStore(dataPtr, desc);
+                            llvm::Value* tSlot = builder->CreateInBoundsGEP(
+                                i8Ty, desc,
+                                llvm::ConstantInt::get(i64Ty, 8), "vea_desc_t");
+                            builder->CreateStore(table, tSlot);
+                            viewValue = desc;
                         }
-                        builder->CreateUnreachable();
-                        builder->SetInsertPoint(okBB2);
-                        offset = afterField;
-                        diagIdx++;
                     }
                 }
 
@@ -2005,7 +2305,7 @@ namespace cajeta {
                     }
                 }
 
-                return dataPtr;
+                return viewValue;
             }
         }
 
@@ -4531,6 +4831,37 @@ namespace cajeta {
                         llvm::Value* cstr = builder->CreateCall(fn, {v});
                         return wrapCStringIntoClassString(module, cstr, "valueOfF64");
                     }
+                }
+            }
+        }
+
+        // View element-array count (view v1.1): `m.ds.count()` reads the
+        // u32 count prefix in place — the field has no materializable
+        // receiver value (bare element-array reads are a static error), so
+        // intercept BEFORE receiver generation. Non-negative by ctor
+        // validation, so zext/sext agree.
+        if (methodCallName == "count" && parameters.empty()
+                && !children.empty()) {
+            if (auto dotChild = dynamic_pointer_cast<DotExpression>(children[0])) {
+                if (dotChild->resolveViewElementArrayProperty(module)) {
+                    dotChild->setElementArrayPrefixMode(true);
+                    llvm::Value* prefixPtr = dotChild->generateCode(module);
+                    if (prefixPtr) {
+                        llvm::Type* i64Ty2 =
+                            llvm::Type::getInt64Ty(*module->getLlvmContext());
+                        llvm::Type* i32Ty2 =
+                            llvm::Type::getInt32Ty(*module->getLlvmContext());
+                        resolvedType = CajetaType::of("int64");
+                        ViewEndianness cntE = dotChild->getEarrViewType()
+                            ? dotChild->getEarrViewType()->getEndianness()
+                            : ViewEndianness::Host;
+                        return builder->CreateIntCast(
+                            CajetaView::emitSwapIfNeeded(module, cntE,
+                                builder->CreateLoad(i32Ty2, prefixPtr,
+                                    "earr_count32")),
+                            i64Ty2, /*isSigned=*/true, "earr_count");
+                    }
+                    return nullptr;
                 }
             }
         }
