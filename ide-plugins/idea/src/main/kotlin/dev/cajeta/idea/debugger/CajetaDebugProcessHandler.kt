@@ -38,4 +38,8 @@ class CajetaDebugProcessHandler : ProcessHandler() {
     fun emitOutput(text: String) {
         notifyTextAvailable(text, ProcessOutputTypes.STDOUT)
     }
+
+    fun emitError(text: String) {
+        notifyTextAvailable(text, ProcessOutputTypes.STDERR)
+    }
 }

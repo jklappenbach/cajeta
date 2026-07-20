@@ -82,6 +82,9 @@ class CajetaDebugProcess(
         try {
             val proc = CajetaDapLauncher(binary, CajetaDapLauncher.defaultDllDir()).start()
             process = proc
+            // stderr is outside the DAP transport; undrained it deadlocks the
+            // server on the first large diagnostic (see StderrPump).
+            StderrPump(proc.errorStream) { processHandler.emitError(it) }.start()
             val ds = CajetaDebugSession(DapClient(DapTransport(proc.inputStream, proc.outputStream)))
             dapSession = ds
 
