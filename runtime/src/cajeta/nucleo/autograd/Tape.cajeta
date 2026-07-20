@@ -26,7 +26,8 @@ import cajeta.error.Exception;
  */
 public class Tape {
     // Op tags. 0 = leaf. Binary: 1 add, 2 sub, 3 mul, 4 div.
-    // Unary: 5 neg, 6 exp, 7 log, 8 sqrt.
+    // Unary: 5 neg, 6 exp, 7 log, 8 sqrt. 9 = stopGrad (value passes,
+    // cotangent does not — the tape's @NoGrad analog).
     int8[] tag;
     int32[] lhs;
     int32[] rhs;
@@ -124,6 +125,15 @@ public class Tape {
     public Var sqrt(Var a) {
         float32 av = this.val[a.idx];
         return this.push((int8) 8, a.idx, -1, (float32) Math.sqrt(av));
+    }
+
+    /**
+     * Stop-gradient: `v`'s value flows forward, but no cotangent flows back
+     * through it — the tape analog of `@NoGrad` (spec 8.1/8.2). The backward
+     * simply has no case for it: a statically-absent term, not a masked one.
+     */
+    public Var stopGrad(Var a) {
+        return this.push((int8) 9, a.idx, -1, this.val[a.idx]);
     }
 
     /** The recorded forward value of `v`. */

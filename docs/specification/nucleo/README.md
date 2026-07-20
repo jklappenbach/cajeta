@@ -75,8 +75,9 @@ Progress:
   `@Grad`/`@Vmap`/`@Jit` sugar. `Pmap`, Tier-B fusion, `@Checkpoint`/`@Autocast`, and the
   higher-order rule slot are deferred to follow-ups; the real tensor-op rule content + eager tape
   are `nucleo-autograd-spec.md`.
-- **nucleo-autograd** — 🔨 **ACTIVE** (`nucleo-autograd-plan.md`, authored 2026-07-19): widened
-  VJP rule cut (div/exp/log/sqrt/mean) + the scalar eager tape (`cajeta.nucleo.autograd.Tape`)
-  with the eager==compiled agreement bar. Deferred there: tensor tape ops, literal registry
-  sharing (generate tape source from the registry), `Diff<T>`, `@Checkpoint` remat.
+- **nucleo-autograd** — ✅ v1 increment complete (`nucleo-autograd-plan.md`, 2026-07-19):
+  widened VJP rules (div/exp/log/sqrt/mean, scalar + tensor spellings), the scalar eager tape
+  (`cajeta.nucleo.autograd.{Tape,Var}` — define-by-run, runtime-bounded loops, stopGrad), and
+  the eager==compiled agreement bar. Deferred: tensor tape ops, literal registry sharing
+  (generate tape source from the registry), `Diff<T>`, `@Checkpoint` remat, conv/softmax rules.
 - Everything below nucleo-autograd — **draft** (specs written 2026-06-23; no plan yet).
