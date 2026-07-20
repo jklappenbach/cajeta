@@ -382,6 +382,13 @@ class CajetaType : public Modifiable, public Annotatable,
         static void markArchiveEnum(const string& canonical);
         static bool isArchiveEnum(const string& canonical);
 
+        // Mark / query a prescan-noted VIEW declaration. Read by
+        // fromContext's placeholder synthesis so a forward reference to a
+        // view gets a CajetaView placeholder (view classification and
+        // member lookup dynamic_cast the type), not a class shell.
+        static void markArchiveView(const string& canonical);
+        static bool isArchiveView(const string& canonical);
+
         // Mark a previously-registered archive entry as an @ValueType
         // class. Read by fromContext's placeholder-synthesis path so a
         // cross-file value-type-typed declaration (`Vec2 a;`) is born
