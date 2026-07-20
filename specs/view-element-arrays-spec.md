@@ -128,7 +128,11 @@ buys O(1) access for the cost of a table write per element.
   instance's offset table as it goes. One pass, no re-walking.
 - Any prefix overrun at any depth throws `ParseException` from the
   constructor, carrying the view type name, field, and element index.
-- Both construction forms (borrow `V(buf)` / owning `V(#buf)`) work unchanged.
+- Borrow construction (`V(buf)`) works unchanged. The owning form
+  (`V(#buf)`) is REJECTED for element-array views in v1.1
+  (`CAJETA_ERROR_VIEW_ELEMENT_ARRAY_OWNING`): the offset table + descriptor
+  are frame-arena-backed and cannot escape the constructing frame. A
+  heap-tabled owning variant is a registered follow-up.
 
 ### 3.4 Representation (the implementation crux)
 
@@ -137,10 +141,12 @@ buys O(1) access for the cost of a table write per element.
   for existing code.
 - Views that do declare one carry a per-instance offset table. The table's
   size is dynamic (depends on the decoded count), so it cannot be a fixed
-  alloca; the plan decides the mechanism (fat two-pointer value + dynamically
-  sized stack allocation at the construction site is the expected shape).
-  Whatever the mechanism: construction on the happy path performs **no heap
-  allocation**.
+  alloca. REALIZED DESIGN (VEA-3b): both the table and a 16-byte
+  `{i8* data, i64* table}` descriptor are allocated from the **per-fiber
+  frame arena** (`__cajeta_arena_alloc`; block-scoped mark/reset reclaims
+  them with the constructing scope). The view's value is the descriptor
+  pointer — still a single plain pointer, no ABI change anywhere. No heap
+  allocation, no dynamic alloca, no stack growth in receive loops.
 
 ### 3.5 Mutation
 

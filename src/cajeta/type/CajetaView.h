@@ -56,9 +56,19 @@ namespace cajeta {
         // the default value of `endianness` alone can't distinguish
         // "user wrote @HostEndian" from "user wrote nothing".
         bool endiannessExplicit = false;
+        // Set when an outer view propagated its annotation to this view as
+        // a `V[]` element (VEA-4). Distinct from `endiannessExplicit` so a
+        // second, conflicting inheritance can be detected.
+        bool endiannessInherited = false;
         // Count of variable-size fields. Populated during generatePrototype;
         // used by getMinimumSize and the construction-time validation sweep.
         int variableSizeFieldCount = 0;
+        // view v1.1: true iff any property is an element-array field
+        // (`V[]` / `String[]`). Such views are DESCRIPTOR views — their
+        // value is a pointer to an arena-allocated {i8* data, i64* table}
+        // pair, not the raw data pointer. Populated during
+        // generatePrototype.
+        bool hasElementArrayField_ = false;
     public:
         CajetaView(CajetaModulePtr module) : CajetaClass(module) { }
         CajetaView(CajetaModulePtr module, QualifiedNamePtr qName)
@@ -87,10 +97,13 @@ namespace cajeta {
         // fixed (+static size), String (+4+len), primitive T[]
         // (+4+count*sizeof(T)), or element array (+4 + a runtime loop over
         // the elements; constant stride when the element view is
-        // fixed-size).
+        // fixed-size). `e` is the CONTAINING view's effective endianness —
+        // every prefix load byte-swaps per it (VEA-4); element views use
+        // their own effective endianness (inherited = same as outer).
         static llvm::Value* emitAccessAdvance(CajetaModulePtr module,
             const StructurePropertyPtr& property,
-            llvm::Value* basePtr, llvm::Value* offset);
+            llvm::Value* basePtr, llvm::Value* offset,
+            ViewEndianness e = ViewEndianness::Host);
 
         // emitElementAdvance: advance `offset` over ONE element of a `V[]`
         // field — walks V's properties in declaration order. V is
@@ -99,6 +112,33 @@ namespace cajeta {
         static llvm::Value* emitElementAdvance(CajetaModulePtr module,
             const shared_ptr<CajetaView>& elemView,
             llvm::Value* basePtr, llvm::Value* offset);
+
+        // --- Descriptor views (view v1.1 offset table) -------------------
+        // A view declaring any element-array field is a DESCRIPTOR view:
+        // its runtime value is a pointer to an arena-allocated
+        // `{i8* data, i64* table}` pair. The table gives O(1) offsets:
+        // one fixed slot per post-first-var property (its absolute start
+        // offset in the buffer), plus a second slot for each var-size-
+        // element array (the table index where its per-element offsets
+        // begin); the per-element offset regions follow the fixed slots.
+        bool getHasElementArrayField() const { return hasElementArrayField_; }
+
+        // True iff `property` is an element array whose ELEMENTS are
+        // var-size (String[] always; V[] when V has var-size fields) —
+        // these get a per-element offset region; fixed-stride arrays
+        // don't.
+        static bool elementArrayHasVarSizeElements(
+            const StructurePropertyPtr& property);
+
+        // Fixed slot index of `property` in the offset table, or -1 if the
+        // property precedes the first var-size field (its offset is
+        // compile-time constant). Layout: properties from the first
+        // var-size one onward, in declaration order; var-size-element
+        // arrays take 2 slots ({start, region-index}), everything else 1.
+        int tableSlotOf(const StructurePropertyPtr& property) const;
+
+        // Total fixed slots (the per-element regions start here).
+        int tableFixedSlotCount() const;
 
         // No vtable header — view properties stay at 0-based LLVM
         // indices. CajetaClass's default reserves slot 0 for the vtable
@@ -112,6 +152,28 @@ namespace cajeta {
         ViewEndianness getEndianness() const { return endianness; }
         void setEndianness(ViewEndianness e) { endianness = e; endiannessExplicit = true; }
         bool hasExplicitEndianness() const { return endiannessExplicit; }
+
+        // view v1.1 (VEA-4): endianness inheritance for element views. An
+        // unannotated view used as a `V[]` element inherits the OUTER
+        // view's annotation at prototype time (Views.md § Endianness
+        // inheritance — first wired here). Explicit annotation wins;
+        // inheriting two different orders from different outers is a
+        // compile error (the caller throws).
+        bool hasInheritedEndianness() const { return endiannessInherited; }
+        void inheritEndianness(ViewEndianness e) {
+            endianness = e;
+            endiannessInherited = true;
+        }
+
+        // True iff a multi-byte prefix/field of a view with endianness `e`
+        // needs a byte swap on this build's host order.
+        static bool needsBswap(CajetaModulePtr module, ViewEndianness e);
+
+        // bswap `v` (a loaded multi-byte integer) when `e` differs from
+        // host order; identity otherwise. Every wire prefix/count load
+        // routes through this (VEA-4).
+        static llvm::Value* emitSwapIfNeeded(CajetaModulePtr module,
+            ViewEndianness e, llvm::Value* v);
 
         ViewAlignment getAlignment() const { return alignment; }
         void setAlignment(ViewAlignment a) { alignment = a; }

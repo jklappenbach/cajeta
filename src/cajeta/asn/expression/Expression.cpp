@@ -733,8 +733,12 @@ namespace cajeta {
                 llvm::Value* prefixPtr = dotChild->generateCode(module);
                 if (!prefixPtr) return nullptr;
                 llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+                ViewEndianness earrE = dotChild->getEarrViewType()
+                    ? dotChild->getEarrViewType()->getEndianness()
+                    : ViewEndianness::Host;
                 llvm::Value* count = builder->CreateIntCast(
-                    builder->CreateLoad(i32Ty, prefixPtr, "earr_count32"),
+                    CajetaView::emitSwapIfNeeded(module, earrE,
+                        builder->CreateLoad(i32Ty, prefixPtr, "earr_count32")),
                     i64Ty, /*isSigned=*/true, "earr_count");
                 llvm::Value* idx = loadIfLValue(
                     module, children[1]->generateCode(module),
@@ -769,7 +773,71 @@ namespace cajeta {
                 auto arrT = dynamic_pointer_cast<CajetaArray>(eaProp->getType());
                 auto elemView = arrT ? dynamic_pointer_cast<CajetaView>(
                     arrT->getElementType()) : nullptr;
-                // Element offset relative to prefixPtr: 4 (count) + ...
+                // O(1) path (view v1.1 offset table): the prefix-mode dot
+                // stashed the descriptor's data base + table + slot. Element
+                // offset = table[region + i] (absolute), where region =
+                // table[slot+1]. Fixed-stride elements skip the region and
+                // use stride math off the field start.
+                if (dotChild->getEarrTable()) {
+                    llvm::Value* tbl = dotChild->getEarrTable();
+                    llvm::Value* dataBase = dotChild->getEarrDataBase();
+                    int slot = dotChild->getEarrSlot();
+                    llvm::Value* absOff;
+                    if (elemView && elemView->getVariableSizeFieldCount() == 0) {
+                        llvm::Value* fieldStart = builder->CreateLoad(i64Ty,
+                            builder->CreateInBoundsGEP(i64Ty, tbl,
+                                llvm::ConstantInt::get(i64Ty, slot)),
+                            "earr_tbl_start");
+                        absOff = builder->CreateAdd(
+                            builder->CreateAdd(fieldStart,
+                                llvm::ConstantInt::get(i64Ty, 4)),
+                            builder->CreateMul(idx, llvm::ConstantInt::get(
+                                i64Ty, elemView->getFixedSize())),
+                            "earr_tbl_stride");
+                    } else {
+                        llvm::Value* region = builder->CreateLoad(i64Ty,
+                            builder->CreateInBoundsGEP(i64Ty, tbl,
+                                llvm::ConstantInt::get(i64Ty, slot + 1)),
+                            "earr_tbl_region");
+                        absOff = builder->CreateLoad(i64Ty,
+                            builder->CreateInBoundsGEP(i64Ty, tbl,
+                                builder->CreateAdd(region, idx)),
+                            "earr_tbl_elem");
+                    }
+                    llvm::Value* tblElemPtr = builder->CreateInBoundsGEP(
+                        i8Ty, dataBase, absOff, "earr_elem");
+                    if (elemView) {
+                        resolvedType = elemView;
+                        llvm::AllocaInst* slot2 = builder->CreateAlloca(
+                            llvm::PointerType::get(ctx, 0), nullptr,
+                            "earr.slot");
+                        builder->CreateStore(tblElemPtr, slot2);
+                        return slot2;
+                    }
+                    llvm::Value* sLen2 = builder->CreateIntCast(
+                        CajetaView::emitSwapIfNeeded(module, earrE,
+                            builder->CreateLoad(i32Ty, tblElemPtr,
+                                "earr_str_len32")),
+                        i64Ty, /*isSigned=*/true);
+                    llvm::Value* sData2 = builder->CreateInBoundsGEP(
+                        i8Ty, tblElemPtr, llvm::ConstantInt::get(i64Ty, 4),
+                        "earr_str_data");
+                    llvm::Function* toOwned2 = module->getRuntimeFunction(
+                        "__cajeta_str_view_to_owned");
+                    if (!toOwned2) return nullptr;
+                    resolvedType = CajetaType::of("String");
+                    llvm::Value* str2 = wrapCStringIntoClassString(module,
+                        builder->CreateCall(toOwned2, {sData2, sLen2}),
+                        "earr_str");
+                    llvm::AllocaInst* sSlot2 = builder->CreateAlloca(
+                        llvm::PointerType::get(ctx, 0), nullptr,
+                        "earr.str.slot");
+                    builder->CreateStore(str2, sSlot2);
+                    return sSlot2;
+                }
+                // Fallback (non-descriptor views can't reach here in
+                // practice — element-array fields imply a descriptor —
+                // but keep the walk for safety).
                 llvm::Value* elemOff;
                 if (elemView && elemView->getVariableSizeFieldCount() == 0) {
                     // Fixed-size elements: constant stride.
@@ -805,7 +873,8 @@ namespace cajeta {
                         llvm::Value* sPtr = builder->CreateInBoundsGEP(
                             i8Ty, prefixPtr, offPhi, "earr_slen_ptr");
                         llvm::Value* sLen = builder->CreateIntCast(
-                            builder->CreateLoad(i32Ty, sPtr), i64Ty,
+                            CajetaView::emitSwapIfNeeded(module, earrE,
+                                builder->CreateLoad(i32Ty, sPtr)), i64Ty,
                             /*isSigned=*/true);
                         offAfter = builder->CreateAdd(
                             builder->CreateAdd(offPhi,
@@ -836,7 +905,8 @@ namespace cajeta {
                 // String[] element: materialize the owned String, same
                 // helper pair the String view-field read uses.
                 llvm::Value* sLen = builder->CreateIntCast(
-                    builder->CreateLoad(i32Ty, elemPtr, "earr_str_len32"),
+                    CajetaView::emitSwapIfNeeded(module, earrE,
+                        builder->CreateLoad(i32Ty, elemPtr, "earr_str_len32")),
                     i64Ty, /*isSigned=*/true);
                 llvm::Value* sData = builder->CreateInBoundsGEP(
                     i8Ty, elemPtr, llvm::ConstantInt::get(i64Ty, 4),

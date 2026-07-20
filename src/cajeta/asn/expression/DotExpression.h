@@ -22,7 +22,23 @@ namespace cajeta {
         // callers that consume the prefix directly: ArrayIndexExpression
         // (f[i]) and MethodCallExpression (f.count()).
         bool elementArrayPrefixMode = false;
+        // Stashed by a prefix-mode generateCode for the caller
+        // (ArrayIndexExpression) — the descriptor view's unwrapped data
+        // base, offset table, and the field's fixed slot index. Null/-1
+        // when the receiver is not a descriptor view.
+        llvm::Value* earrDataBase = nullptr;
+        llvm::Value* earrTable = nullptr;
+        int earrSlot = -1;
+        // Receiver view type, stashed by resolveViewElementArrayProperty —
+        // callers need its effective endianness for count/len prefix reads.
+        shared_ptr<class CajetaView> earrViewType;
     public:
+        llvm::Value* getEarrDataBase() const { return earrDataBase; }
+        llvm::Value* getEarrTable() const { return earrTable; }
+        int getEarrSlot() const { return earrSlot; }
+        const shared_ptr<class CajetaView>& getEarrViewType() const {
+            return earrViewType;
+        }
         DotExpression(CajetaParser::ExpressionContext* ctx, antlr4::Token* token);
 
         const string& getIdentifier() const { return identifier; }

@@ -159,7 +159,9 @@ namespace cajeta {
         if (!viewType) return nullptr;
         for (auto& p : viewType->getPropertyList()) {
             if (p->getName() == identifier) {
-                return CajetaView::isElementArray(p) ? p : nullptr;
+                if (!CajetaView::isElementArray(p)) return nullptr;
+                earrViewType = viewType;
+                return p;
             }
         }
         return nullptr;
@@ -595,6 +597,27 @@ namespace cajeta {
             }
         }
 
+        // view v1.1 descriptor unwrap: a view with element-array fields
+        // carries its value as a pointer to an arena {i8* data, i64* table}
+        // pair. Unwrap once — every access below (fixed StructGEP, var-size,
+        // post-var) then works on the real data pointer, and var-size
+        // offsets come from the table (O(1), no walk).
+        llvm::Value* veaTable = nullptr;
+        if (auto descView = dynamic_pointer_cast<CajetaView>(klass)) {
+            if (descView->getHasElementArrayField() && base) {
+                auto* b = module->getBuilder();
+                auto& c = *module->getLlvmContext();
+                llvm::PointerType* pTy = llvm::PointerType::get(c, 0);
+                llvm::Value* descPtr = base;
+                base = b->CreateLoad(pTy, descPtr, "vea_data");
+                llvm::Value* tSlot = b->CreateInBoundsGEP(
+                    llvm::Type::getInt8Ty(c), descPtr,
+                    llvm::ConstantInt::get(llvm::Type::getInt64Ty(c), 8),
+                    "vea_tslot");
+                veaTable = b->CreateLoad(pTy, tSlot, "vea_table");
+            }
+        }
+
         // Field index depends on the receiver type. CajetaClass instances
         // reserve LLVM slot 0 for the vtable pointer, so user fields land at
         // index getOrder()+1. CajetaView (no vtable) uses getOrder() directly.
@@ -618,14 +641,24 @@ namespace cajeta {
             llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
             llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
 
-            // Walk every property before this one in declaration order,
-            // starting past the fixed prefix. emitAccessAdvance handles each
-            // kind — String (4+len), primitive T[] (4+count*sizeof(T) — the
-            // old 4+count walk was correct only for int8[]), fixed-between-
-            // var fields (+static size), and element arrays (runtime loop).
+            // Field start offset. Descriptor views (element-array fields
+            // present) read it from the offset table in O(1); plain views
+            // walk every property before this one in declaration order —
+            // emitAccessAdvance handles each kind: String (4+len),
+            // primitive T[] (4+count*sizeof(T) — the old 4+count walk was
+            // correct only for int8[]), and fixed-between-var fields
+            // (+static size).
             uint64_t fixedPrefixSize = viewType->getFixedSize();
-            llvm::Value* offset = llvm::ConstantInt::get(i64Ty, fixedPrefixSize);
-            {
+            llvm::Value* offset;
+            if (veaTable) {
+                int slot = viewType->tableSlotOf(property);
+                offset = builder->CreateLoad(i64Ty,
+                    builder->CreateInBoundsGEP(i64Ty, veaTable,
+                        llvm::ConstantInt::get(i64Ty, slot),
+                        identifier + "_tbl_slot"),
+                    identifier + "_tbl_off");
+            } else {
+                offset = llvm::ConstantInt::get(i64Ty, fixedPrefixSize);
                 bool sawVar = false;
                 for (auto& p : viewType->getPropertyList()) {
                     if (p == property) break;
@@ -633,7 +666,7 @@ namespace cajeta {
                     if (!sawVar && !pVar) continue;  // in the fixed prefix
                     if (pVar) sawVar = true;
                     offset = CajetaView::emitAccessAdvance(
-                        module, p, base, offset);
+                        module, p, base, offset, viewType->getEndianness());
                 }
             }
 
@@ -645,6 +678,9 @@ namespace cajeta {
             if (CajetaView::isElementArray(property)) {
                 if (elementArrayPrefixMode) {
                     elementArrayPrefixMode = false;
+                    earrDataBase = base;
+                    earrTable = veaTable;
+                    earrSlot = veaTable ? viewType->tableSlotOf(property) : -1;
                     return builder->CreateInBoundsGEP(
                         i8Ty, base, offset, identifier + "_earr_prefix");
                 }
@@ -658,8 +694,9 @@ namespace cajeta {
 
             llvm::Value* prefixPtr = builder->CreateInBoundsGEP(
                 i8Ty, base, offset, identifier + "_len_ptr");
-            llvm::Value* length = builder->CreateLoad(
-                i32Ty, prefixPtr, identifier + "_len");
+            llvm::Value* length = CajetaView::emitSwapIfNeeded(
+                module, viewType->getEndianness(),
+                builder->CreateLoad(i32Ty, prefixPtr, identifier + "_len"));
             llvm::Value* length64 = builder->CreateIntCast(
                 length, i64Ty, /*isSigned=*/true);
             llvm::Value* dataOffset = builder->CreateAdd(
@@ -735,6 +772,19 @@ namespace cajeta {
                 llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
                 llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
 
+                // Descriptor view: the field's absolute offset is in the
+                // table — O(1), no walk over preceding var-size fields.
+                if (veaTable) {
+                    int slot = viewType->tableSlotOf(property);
+                    llvm::Value* tOff = builder->CreateLoad(i64Ty,
+                        builder->CreateInBoundsGEP(i64Ty, veaTable,
+                            llvm::ConstantInt::get(i64Ty, slot),
+                            identifier + "_tbl_slot"),
+                        identifier + "_tbl_off");
+                    return builder->CreateInBoundsGEP(
+                        i8Ty, base, tOff, identifier + "_ptr");
+                }
+
                 uint64_t fixedPrefixSize = viewType->getFixedSize();
                 llvm::Value* offset = llvm::ConstantInt::get(i64Ty, fixedPrefixSize);
 
@@ -753,7 +803,7 @@ namespace cajeta {
                     // already (handled by the starting offset).
                     if (pVar) sawVar = true;
                     offset = CajetaView::emitAccessAdvance(
-                        module, p, base, offset);
+                        module, p, base, offset, viewType->getEndianness());
                 }
 
                 llvm::Value* fieldPtr = builder->CreateInBoundsGEP(
