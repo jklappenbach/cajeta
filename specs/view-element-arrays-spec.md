@@ -84,7 +84,7 @@ buys O(1) access for the cost of a table write per element.
    ```
 
    Decode: `GossipMessage m = GossipMessage(datagram);` validates the whole
-   frame once; `m.deltas[i]` is an O(1) borrow; `m.deltas.length` is the
+   frame once; `m.deltas[i]` is an O(1) borrow; `m.deltas.count()` is the
    count. No allocation on the receive path.
 
 2. **Repeated records in binary formats generally** — DNS RR sections, TLV
@@ -115,7 +115,7 @@ buys O(1) access for the cost of a table write per element.
 - `String[]` element access returns the same thing a `String` view field read
   returns today (consistency rule — whatever S5's `String` field accessor
   produces, the element accessor produces).
-- `outer.f.length` (count) is O(1). Out-of-range index throws
+- `outer.f.count()` is O(1). Out-of-range index throws
   `IndexOutOfBoundsException`, consistent with array indexing elsewhere.
 - Access cost: **O(1)** for var-size `V` (offset table), stride math for
   fixed-size `V`.
