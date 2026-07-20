@@ -264,4 +264,24 @@ public class Tasks {
             }
         }
     }
+
+    /** Native cooperative sleep: parks the FIBER (main-thread callers
+     *  cond_timedwait) for up to `nanos` — the timer-wheel path
+     *  (`__cajeta_fiber_sleep_nanos`), same primitive Channel.select's
+     *  polling backoff uses. */
+    @Native("__cajeta_fiber_sleep_nanos")
+    private static void sleepNanosNative(int64 nanos);
+
+    /**
+     * Cooperative sleep for `millis` milliseconds — parks the calling
+     * fiber (never the carrier). Non-positive durations return
+     * immediately. The building block for bounded polling waits (e.g. a
+     * timed channel drain) until cancellable parks land.
+     */
+    public static void sleepMillis(int64 millis) {
+        if (millis <= 0) {
+            return;
+        }
+        Tasks.sleepNanosNative(millis * 1000000);
+    }
 }
