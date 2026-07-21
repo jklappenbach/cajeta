@@ -730,6 +730,278 @@ TEST(DapServerSession, WithoutStopOnEntryTheProgramDoesNotHaltAtEntry) {
     EXPECT_EQ(countEvent(log, "terminated"), 1);
 }
 
+// --- stepping (dap-stepping Unit 2 / spec §3, §5.1) --------------------------
+// next/stepIn/stepOut over the pending-step controller mode. One program with
+// a user callee (add) and a stdlib call (String concat), so step-over is
+// exercised across both kinds of deeper safepoints.
+
+namespace {
+
+const char* kStepProg =
+    "package demo;\n"
+    "public class Steps {\n"
+    "    public static int32 add(int32 x, int32 y) {\n"
+    "        int32 s = x + y;\n"          // line 4
+    "        return s;\n"                 // line 5
+    "    }\n"
+    "    public static int32 main() {\n"
+    "        int32 a = 6;\n"              // line 8
+    "        int32 b = add(a, 7);\n"      // line 9  (user call)
+    "        String msg = \"b=\" + b;\n"  // line 10 (stdlib concat)
+    "        int32 c = b + 1;\n"          // line 11
+    "        return c;\n"                 // line 12
+    "    }\n"
+    "}\n";
+
+// Boot a session on `p` (entry demo.Steps.main) with breakpoints at `lines`,
+// driving through configurationDone; `log` ends holding the first stop.
+void bootToFirstStop(DapServer& srv, std::vector<Json>& log,
+                     const TempProgram& p, const std::vector<int>& lines) {
+    drive(srv, req(1, "initialize", Json::object()), log);
+    Json launchArgs = Json::object();
+    launchArgs["entry-method"] = "demo.Steps.main";
+    launchArgs["sourceRoot"] = p.sourceRoot();
+    drive(srv, req(2, "launch", launchArgs), log);
+    Json bpArgs = Json::object();
+    Json src = Json::object();
+    src["path"] = "Steps.cajeta";
+    bpArgs["source"] = src;
+    Json bps = Json::array();
+    for (int line : lines) {
+        Json bp = Json::object();
+        bp["line"] = line;
+        bps.push_back(bp);
+    }
+    bpArgs["breakpoints"] = bps;
+    drive(srv, req(3, "setBreakpoints", bpArgs), log);
+    drive(srv, req(4, "configurationDone", Json::object()), log);
+}
+
+const Json* lastEvent(const std::vector<Json>& log, const std::string& ev) {
+    const Json* found = nullptr;
+    for (const auto& m : log)
+        if (m.at("type").asString() == "event" &&
+            m.at("event").asString() == ev) found = &m;
+    return found;
+}
+
+// Send a step verb for `threadId`, capturing everything it emits.
+void step(DapServer& srv, std::vector<Json>& log, int seq,
+          const std::string& verb, int threadId) {
+    Json args = Json::object();
+    args["threadId"] = threadId;
+    drive(srv, req(seq, verb, args), log);
+}
+
+// Innermost frame (line, function name) of `threadId` via stackTrace.
+std::pair<int, std::string> innermostFrame(DapServer& srv, int seq,
+                                           int threadId) {
+    std::vector<Json> log;
+    Json args = Json::object();
+    args["threadId"] = threadId;
+    drive(srv, req(seq, "stackTrace", args), log);
+    const Json* resp = findResponse(log, "stackTrace");
+    if (!resp) return {-1, ""};
+    const Json& frames = resp->at("body").at("stackFrames");
+    if (frames.size() == 0) return {-1, ""};
+    return {frames[0].at("line").asInt(), frames[0].at("name").asString()};
+}
+
+} // namespace
+
+// 2.1.1 `next` at a breakpoint stop: success response, then a stopped event
+// with reason "step" on the same thread, parked at the next line.
+TEST(DapServerSession, NextStopsAtTheNextLineWithReasonStep) {
+    TempProgram p("demo", "Steps.cajeta", kStepProg);
+    DapServer srv;
+    std::vector<Json> log;
+    bootToFirstStop(srv, log, p, {8});
+    ASSERT_EQ(countEvent(log, "stopped"), 1);
+    const Json* stop = lastEvent(log, "stopped");
+    EXPECT_EQ(stop->at("body").at("reason").asString(), "breakpoint");
+    const int tid = stop->at("body").at("threadId").asInt();
+
+    log.clear();
+    step(srv, log, 5, "next", tid);
+    const Json* resp = findResponse(log, "next");
+    ASSERT_NE(resp, nullptr);
+    EXPECT_TRUE(resp->at("success").asBool());
+    ASSERT_EQ(countEvent(log, "stopped"), 1);
+    const Json* stepStop = lastEvent(log, "stopped");
+    EXPECT_EQ(stepStop->at("body").at("reason").asString(), "step");
+    EXPECT_EQ(stepStop->at("body").at("threadId").asInt(), tid);
+    auto [line, func] = innermostFrame(srv, 6, tid);
+    EXPECT_EQ(line, 9);
+    EXPECT_NE(func.find("main"), std::string::npos);
+
+    // Still parked: disconnect resumes the carrier and joins the
+    // program thread — without it the fixture destructor deadlocks.
+    log.clear();
+    drive(srv, req(99, "disconnect", Json::object()), log);
+}
+
+// 2.1.2 `next` over a statement that calls a method — the callee's deeper
+// safepoints don't park. Twice: over a user call (add), then over a stdlib
+// call (String concat).
+TEST(DapServerSession, NextOverACallStopsAtTheCallersNextLine) {
+    TempProgram p("demo", "Steps.cajeta", kStepProg);
+    DapServer srv;
+    std::vector<Json> log;
+    bootToFirstStop(srv, log, p, {9});
+    ASSERT_EQ(countEvent(log, "stopped"), 1);
+    const int tid = lastEvent(log, "stopped")->at("body").at("threadId").asInt();
+
+    log.clear();
+    step(srv, log, 5, "next", tid);   // over add(a, 7)
+    ASSERT_EQ(countEvent(log, "stopped"), 1);
+    EXPECT_EQ(lastEvent(log, "stopped")->at("body").at("reason").asString(),
+              "step");
+    auto [line1, func1] = innermostFrame(srv, 6, tid);
+    EXPECT_EQ(line1, 10);
+    EXPECT_NE(func1.find("main"), std::string::npos);
+
+    log.clear();
+    step(srv, log, 7, "next", tid);   // over the stdlib concat
+    ASSERT_EQ(countEvent(log, "stopped"), 1);
+    auto [line2, func2] = innermostFrame(srv, 8, tid);
+    EXPECT_EQ(line2, 11);
+    EXPECT_NE(func2.find("main"), std::string::npos);
+
+    // Still parked: disconnect resumes the carrier and joins the
+    // program thread — without it the fixture destructor deadlocks.
+    log.clear();
+    drive(srv, req(99, "disconnect", Json::object()), log);
+}
+
+// 2.1.3 `stepIn` at a call stops at the callee's first line; `stepOut` from
+// the callee stops back in the caller.
+TEST(DapServerSession, StepInEntersCalleeAndStepOutReturnsToCaller) {
+    TempProgram p("demo", "Steps.cajeta", kStepProg);
+    DapServer srv;
+    std::vector<Json> log;
+    bootToFirstStop(srv, log, p, {9});
+    ASSERT_EQ(countEvent(log, "stopped"), 1);
+    const int tid = lastEvent(log, "stopped")->at("body").at("threadId").asInt();
+
+    log.clear();
+    step(srv, log, 5, "stepIn", tid);
+    ASSERT_EQ(countEvent(log, "stopped"), 1);
+    EXPECT_EQ(lastEvent(log, "stopped")->at("body").at("reason").asString(),
+              "step");
+    auto [inLine, inFunc] = innermostFrame(srv, 6, tid);
+    EXPECT_EQ(inLine, 4);
+    EXPECT_NE(inFunc.find("add"), std::string::npos);
+
+    log.clear();
+    step(srv, log, 7, "stepOut", tid);
+    ASSERT_EQ(countEvent(log, "stopped"), 1);
+    EXPECT_EQ(lastEvent(log, "stopped")->at("body").at("reason").asString(),
+              "step");
+    auto [outLine, outFunc] = innermostFrame(srv, 8, tid);
+    EXPECT_EQ(outLine, 10);
+    EXPECT_NE(outFunc.find("main"), std::string::npos);
+
+    // Still parked: disconnect resumes the carrier and joins the
+    // program thread — without it the fixture destructor deadlocks.
+    log.clear();
+    drive(srv, req(99, "disconnect", Json::object()), log);
+}
+
+// 2.1.4 `next` on a method's last line: the frame returns, and the stop lands
+// in the caller (the depth <= origin rule).
+TEST(DapServerSession, NextOnAMethodsLastLineStopsInTheCaller) {
+    TempProgram p("demo", "Steps.cajeta", kStepProg);
+    DapServer srv;
+    std::vector<Json> log;
+    bootToFirstStop(srv, log, p, {5});   // return s; in add
+    ASSERT_EQ(countEvent(log, "stopped"), 1);
+    const int tid = lastEvent(log, "stopped")->at("body").at("threadId").asInt();
+
+    log.clear();
+    step(srv, log, 5, "next", tid);
+    ASSERT_EQ(countEvent(log, "stopped"), 1);
+    EXPECT_EQ(lastEvent(log, "stopped")->at("body").at("reason").asString(),
+              "step");
+    auto [line, func] = innermostFrame(srv, 6, tid);
+    EXPECT_EQ(line, 10);
+    EXPECT_NE(func.find("main"), std::string::npos);
+
+    // Still parked: disconnect resumes the carrier and joins the
+    // program thread — without it the fixture destructor deadlocks.
+    log.clear();
+    drive(srv, req(99, "disconnect", Json::object()), log);
+}
+
+// 2.1.5 A step with no parked stop fails cleanly with a readable message and
+// leaves the session usable (a later launch still stops at its breakpoint).
+TEST(DapServerSession, StepWithNoParkedStopFailsCleanly) {
+    TempProgram p("demo", "Steps.cajeta", kStepProg);
+    DapServer srv;
+    std::vector<Json> log;
+
+    drive(srv, req(1, "initialize", Json::object()), log);
+    Json launchArgs = Json::object();
+    launchArgs["entry-method"] = "demo.Steps.main";
+    launchArgs["sourceRoot"] = p.sourceRoot();
+    drive(srv, req(2, "launch", launchArgs), log);
+
+    log.clear();
+    step(srv, log, 3, "next", 0);
+    const Json* resp = findResponse(log, "next");
+    ASSERT_NE(resp, nullptr);
+    EXPECT_FALSE(resp->at("success").asBool());
+    EXPECT_FALSE(resp->at("body").asString().empty());
+    EXPECT_EQ(countEvent(log, "stopped"), 0);
+
+    // Session unchanged: configure a breakpoint and run — it still parks.
+    Json bpArgs = Json::object();
+    Json src = Json::object();
+    src["path"] = "Steps.cajeta";
+    bpArgs["source"] = src;
+    Json bps = Json::array();
+    Json bp = Json::object();
+    bp["line"] = 8;
+    bps.push_back(bp);
+    bpArgs["breakpoints"] = bps;
+    drive(srv, req(4, "setBreakpoints", bpArgs), log);
+    drive(srv, req(5, "configurationDone", Json::object()), log);
+    EXPECT_EQ(countEvent(log, "stopped"), 1);
+
+    // Still parked: disconnect resumes the carrier and joins the
+    // program thread — without it the fixture destructor deadlocks.
+    log.clear();
+    drive(srv, req(99, "disconnect", Json::object()), log);
+}
+
+// 2.1.6 Breakpoint wins over a pending step: stepping over a call whose body
+// holds an armed breakpoint stops THERE with reason "breakpoint", and no step
+// stop ever follows.
+TEST(DapServerSession, BreakpointWinsOverAPendingStep) {
+    TempProgram p("demo", "Steps.cajeta", kStepProg);
+    DapServer srv;
+    std::vector<Json> log;
+    bootToFirstStop(srv, log, p, {9, 4});   // at the call + inside add
+    ASSERT_EQ(countEvent(log, "stopped"), 1);
+    const int tid = lastEvent(log, "stopped")->at("body").at("threadId").asInt();
+    auto [line0, func0] = innermostFrame(srv, 90, tid);
+    EXPECT_EQ(line0, 9);   // first stop is the call site
+
+    log.clear();
+    step(srv, log, 5, "next", tid);   // pending step-over; bp at line 4 is deeper
+    ASSERT_EQ(countEvent(log, "stopped"), 1);
+    EXPECT_EQ(lastEvent(log, "stopped")->at("body").at("reason").asString(),
+              "breakpoint");
+    auto [line, func] = innermostFrame(srv, 6, tid);
+    EXPECT_EQ(line, 4);
+    EXPECT_NE(func.find("add"), std::string::npos);
+
+    // The pending step was cleared: continue runs to termination, no third stop.
+    log.clear();
+    drive(srv, req(7, "continue", Json::object()), log);
+    EXPECT_EQ(countEvent(log, "stopped"), 0);
+    EXPECT_EQ(countEvent(log, "terminated"), 1);
+}
+
 // --- environment variables (run-config-ergonomics Unit 6 / spec §4) ---------
 // The JIT runs IN-PROCESS, so applying the launch environment mutates this
 // very process. That makes restore (4.1.4) a correctness requirement, not

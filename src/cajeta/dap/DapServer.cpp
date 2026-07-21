@@ -84,6 +84,26 @@ Json variableJson(const cajeta::dbg::DbgVar& v, const std::string& renderedValue
     return var;
 }
 
+// dap-stepping: chain-length accessor from the C runtime — a pure pointer
+// chase, cheap enough to run per candidate safepoint while a step is pending
+// (walkFrames would decode every local of every frame).
+extern "C" int __cajeta_dbg_frame_depth(void* top);
+
+namespace {
+// dap-stepping: the controller compares the step origin's "line" as an opaque
+// key. Fold the file into it so a coincidental line-number match in another
+// source file doesn't read as "same line" (the same-line skip is per
+// (file, line)). -1 = unknown loc; the masked hash can never produce it.
+int lineKeyForLoc(int32_t locId) {
+    const auto& table = globalDbgLocTable();
+    if (locId < 0 || static_cast<size_t>(locId) >= table.size()) return -1;
+    const auto& loc = table.at(locId);
+    size_t h = std::hash<std::string>{}(loc.file) * 31u
+             + static_cast<size_t>(loc.line);
+    return static_cast<int>(h & 0x7fffffff);
+}
+} // namespace
+
 DapServer::DapServer() = default;
 
 DapServer::~DapServer() {
@@ -114,12 +134,14 @@ void DapServer::runToStopOrExit(const Emit& emit) {
             // CP6f-2b-ii: build the cross-thread frame table for this stop.
             rebuildFrameTable(std::move(frames));
             Json body = Json::object();
-            // CP6f-3: reason reflects breakpoint vs exception stop.
+            // CP6f-3: reason reflects breakpoint vs exception vs step stop.
             switch (ev.reason) {
                 case cajeta::dbg::StopEvent::StopReason::Exception:
                     body["reason"] = "exception"; break;
                 case cajeta::dbg::StopEvent::StopReason::Entry:
                     body["reason"] = "entry"; break;
+                case cajeta::dbg::StopEvent::StopReason::Step:
+                    body["reason"] = "step"; break;
                 default:
                     body["reason"] = "breakpoint"; break;
             }
@@ -318,6 +340,16 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
                                                   &err, exceptionsArmed_,
                                                   stopOnEntry_, applyEnv);
         bool ok = session_ != nullptr;
+        if (ok) {
+            // dap-stepping: give the controller its depth/line seams. Depth is
+            // the carrier's own frame-chain length at the safepoint (the
+            // carrier is executing the chase, so the chain is stable); line is
+            // the (file, line) key. Only consulted while a step is pending,
+            // and depth only once the line already differs.
+            session_->controller().setStepProviders(
+                [](void* frameTop) { return __cajeta_dbg_frame_depth(frameTop); },
+                [](int32_t locId) { return lineKeyForLoc(locId); });
+        }
         emit(makeResponse(seq_++, requestSeq, command, ok,
                           ok ? Json::object() : Json(err)));
         if (ok) runToStopOrExit(emit);
@@ -482,6 +514,50 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
             session_->controller().resume();
             runToStopOrExit(emit);
         }
+        return true;
+    }
+
+    if (command == "next" || command == "stepIn" || command == "stepOut") {
+        // dap-stepping spec §3: only valid against the currently stopped
+        // fiber. While running (or after termination) fail with a message —
+        // never crash, never disturb the session.
+        if (!session_ || terminated_ || !haveStop_) {
+            emit(makeResponse(seq_++, requestSeq, command, false,
+                              Json(std::string("cannot step: no stopped "
+                                               "thread (program running or "
+                                               "terminated)"))));
+            return true;
+        }
+        const int stoppedTid = static_cast<int>(currentStop_.fiberId);
+        const int threadId =
+            args.has("threadId") ? args.at("threadId").asInt() : stoppedTid;
+        if (threadId != stoppedTid) {
+            emit(makeResponse(
+                seq_++, requestSeq, command, false,
+                Json("cannot step thread " + std::to_string(threadId) +
+                     ": the stopped thread is " + std::to_string(stoppedTid))));
+            return true;
+        }
+        // Origin: the stopped fiber's frame count and (file, line) key. An
+        // exception stop has locId -1 — its line comes from the innermost
+        // frame's recorded current loc.
+        int originDepth = 0;
+        int32_t originLoc = currentStop_.locId;
+        for (const auto& fe : frameTable_) {
+            if (fe.threadId != stoppedTid) continue;
+            if (originDepth == 0 && originLoc < 0) originLoc = fe.info.locId;
+            ++originDepth;
+        }
+        const cajeta::dbg::StepKind kind =
+            command == "next"     ? cajeta::dbg::StepKind::Over
+            : command == "stepIn" ? cajeta::dbg::StepKind::In
+                                  : cajeta::dbg::StepKind::Out;
+        emit(makeResponse(seq_++, requestSeq, command, true, Json::object()));
+        haveStop_ = false;
+        session_->controller().resumeWithStep(kind, currentStop_.fiberId,
+                                              originDepth,
+                                              lineKeyForLoc(originLoc));
+        runToStopOrExit(emit);
         return true;
     }
 
