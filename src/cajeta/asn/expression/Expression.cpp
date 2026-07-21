@@ -19,6 +19,7 @@
 #include "cajeta/type/CajetaMatrix.h"
 #include "cajeta/type/MatrixOps.h"
 #include "cajeta/type/CajetaTask.h"
+#include "cajeta/type/CajetaView.h"
 #include "cajeta/error/ExplicitCastRequiredException.h"
 #include "cajeta/error/InvalidOperandException.h"
 #include "BinaryOpExpression.h"
@@ -716,6 +717,213 @@ namespace cajeta {
                     rowVal->getType(), nullptr, "mat.row.slot");
                 builder->CreateStore(rowVal, slot);
                 return slot;
+            }
+        }
+
+        // View element-array access (view v1.1,
+        // specs/view-element-arrays-spec.md): `m.ds[i]` where `ds` is a
+        // `V[]` / `String[]` field on a view. No owned-array materialization
+        // — compute the element's buffer offset and hand back a view value
+        // (V) or an owned String. Fixed-size element views use stride math;
+        // var-size elements walk i self-delimiting elements (offset-table
+        // O(1) upgrade tracked in the plan).
+        if (auto dotChild = dynamic_pointer_cast<DotExpression>(children[0])) {
+            if (auto eaProp = dotChild->resolveViewElementArrayProperty(module)) {
+                dotChild->setElementArrayPrefixMode(true);
+                llvm::Value* prefixPtr = dotChild->generateCode(module);
+                if (!prefixPtr) return nullptr;
+                llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+                ViewEndianness earrE = dotChild->getEarrViewType()
+                    ? dotChild->getEarrViewType()->getEndianness()
+                    : ViewEndianness::Host;
+                llvm::Value* count = builder->CreateIntCast(
+                    CajetaView::emitSwapIfNeeded(module, earrE,
+                        builder->CreateLoad(i32Ty, prefixPtr, "earr_count32")),
+                    i64Ty, /*isSigned=*/true, "earr_count");
+                llvm::Value* idx = loadIfLValue(
+                    module, children[1]->generateCode(module),
+                    dynamic_pointer_cast<Expression>(children[1]));
+                if (idx->getType() != i64Ty) {
+                    idx = builder->CreateIntCast(idx, i64Ty, /*isSigned=*/true,
+                        "earr_idx");
+                }
+                // Bounds: 0 <= idx < count, else throw (catchable, same
+                // mechanism as the view-ctor checks).
+                llvm::Value* inBounds = builder->CreateAnd(
+                    builder->CreateICmpSGE(idx,
+                        llvm::ConstantInt::get(i64Ty, 0)),
+                    builder->CreateICmpSLT(idx, count), "earr_inbounds");
+                llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+                llvm::BasicBlock* failBB = llvm::BasicBlock::Create(
+                    ctx, "earr_oob", parentFn);
+                llvm::BasicBlock* okBB = llvm::BasicBlock::Create(
+                    ctx, "earr_ok", parentFn);
+                builder->CreateCondBr(inBounds, okBB, failBB);
+                builder->SetInsertPoint(failBB);
+                if (llvm::Function* throwFn =
+                        module->getRuntimeFunction("__cajeta_throw")) {
+                    llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
+                    llvm::Value* tagPtr = builder->CreateIntToPtr(
+                        llvm::ConstantInt::get(i64Ty, 0xCA1E7B00), ptrTy);
+                    builder->CreateCall(throwFn, {tagPtr});
+                }
+                builder->CreateUnreachable();
+                builder->SetInsertPoint(okBB);
+
+                auto arrT = dynamic_pointer_cast<CajetaArray>(eaProp->getType());
+                auto elemView = arrT ? dynamic_pointer_cast<CajetaView>(
+                    arrT->getElementType()) : nullptr;
+                // O(1) path (view v1.1 offset table): the prefix-mode dot
+                // stashed the descriptor's data base + table + slot. Element
+                // offset = table[region + i] (absolute), where region =
+                // table[slot+1]. Fixed-stride elements skip the region and
+                // use stride math off the field start.
+                if (dotChild->getEarrTable()) {
+                    llvm::Value* tbl = dotChild->getEarrTable();
+                    llvm::Value* dataBase = dotChild->getEarrDataBase();
+                    int slot = dotChild->getEarrSlot();
+                    llvm::Value* absOff;
+                    if (elemView && elemView->getVariableSizeFieldCount() == 0) {
+                        llvm::Value* fieldStart = builder->CreateLoad(i64Ty,
+                            builder->CreateInBoundsGEP(i64Ty, tbl,
+                                llvm::ConstantInt::get(i64Ty, slot)),
+                            "earr_tbl_start");
+                        absOff = builder->CreateAdd(
+                            builder->CreateAdd(fieldStart,
+                                llvm::ConstantInt::get(i64Ty, 4)),
+                            builder->CreateMul(idx, llvm::ConstantInt::get(
+                                i64Ty, elemView->getFixedSize())),
+                            "earr_tbl_stride");
+                    } else {
+                        llvm::Value* region = builder->CreateLoad(i64Ty,
+                            builder->CreateInBoundsGEP(i64Ty, tbl,
+                                llvm::ConstantInt::get(i64Ty, slot + 1)),
+                            "earr_tbl_region");
+                        absOff = builder->CreateLoad(i64Ty,
+                            builder->CreateInBoundsGEP(i64Ty, tbl,
+                                builder->CreateAdd(region, idx)),
+                            "earr_tbl_elem");
+                    }
+                    llvm::Value* tblElemPtr = builder->CreateInBoundsGEP(
+                        i8Ty, dataBase, absOff, "earr_elem");
+                    if (elemView) {
+                        resolvedType = elemView;
+                        llvm::AllocaInst* slot2 = builder->CreateAlloca(
+                            llvm::PointerType::get(ctx, 0), nullptr,
+                            "earr.slot");
+                        builder->CreateStore(tblElemPtr, slot2);
+                        return slot2;
+                    }
+                    llvm::Value* sLen2 = builder->CreateIntCast(
+                        CajetaView::emitSwapIfNeeded(module, earrE,
+                            builder->CreateLoad(i32Ty, tblElemPtr,
+                                "earr_str_len32")),
+                        i64Ty, /*isSigned=*/true);
+                    llvm::Value* sData2 = builder->CreateInBoundsGEP(
+                        i8Ty, tblElemPtr, llvm::ConstantInt::get(i64Ty, 4),
+                        "earr_str_data");
+                    llvm::Function* toOwned2 = module->getRuntimeFunction(
+                        "__cajeta_str_view_to_owned");
+                    if (!toOwned2) return nullptr;
+                    resolvedType = CajetaType::of("String");
+                    llvm::Value* str2 = wrapCStringIntoClassString(module,
+                        builder->CreateCall(toOwned2, {sData2, sLen2}),
+                        "earr_str");
+                    llvm::AllocaInst* sSlot2 = builder->CreateAlloca(
+                        llvm::PointerType::get(ctx, 0), nullptr,
+                        "earr.str.slot");
+                    builder->CreateStore(str2, sSlot2);
+                    return sSlot2;
+                }
+                // Fallback (non-descriptor views can't reach here in
+                // practice — element-array fields imply a descriptor —
+                // but keep the walk for safety).
+                llvm::Value* elemOff;
+                if (elemView && elemView->getVariableSizeFieldCount() == 0) {
+                    // Fixed-size elements: constant stride.
+                    elemOff = builder->CreateAdd(
+                        llvm::ConstantInt::get(i64Ty, 4),
+                        builder->CreateMul(idx, llvm::ConstantInt::get(
+                            i64Ty, elemView->getFixedSize())),
+                        "earr_stride_off");
+                } else {
+                    // Var-size elements: walk idx elements.
+                    llvm::BasicBlock* preBB = builder->GetInsertBlock();
+                    llvm::BasicBlock* hdrBB = llvm::BasicBlock::Create(
+                        ctx, "earr_walk_hdr", parentFn);
+                    llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(
+                        ctx, "earr_walk_body", parentFn);
+                    llvm::BasicBlock* exitBB = llvm::BasicBlock::Create(
+                        ctx, "earr_walk_exit", parentFn);
+                    builder->CreateBr(hdrBB);
+                    builder->SetInsertPoint(hdrBB);
+                    llvm::PHINode* kPhi = builder->CreatePHI(i64Ty, 2, "earr_walk_k");
+                    llvm::PHINode* offPhi = builder->CreatePHI(i64Ty, 2, "earr_walk_off");
+                    kPhi->addIncoming(llvm::ConstantInt::get(i64Ty, 0), preBB);
+                    offPhi->addIncoming(llvm::ConstantInt::get(i64Ty, 4), preBB);
+                    builder->CreateCondBr(
+                        builder->CreateICmpSLT(kPhi, idx), bodyBB, exitBB);
+                    builder->SetInsertPoint(bodyBB);
+                    llvm::Value* offAfter;
+                    if (elemView) {
+                        offAfter = CajetaView::emitElementAdvance(
+                            module, elemView, prefixPtr, offPhi);
+                    } else {
+                        // String[] element: i32 len + len bytes.
+                        llvm::Value* sPtr = builder->CreateInBoundsGEP(
+                            i8Ty, prefixPtr, offPhi, "earr_slen_ptr");
+                        llvm::Value* sLen = builder->CreateIntCast(
+                            CajetaView::emitSwapIfNeeded(module, earrE,
+                                builder->CreateLoad(i32Ty, sPtr)), i64Ty,
+                            /*isSigned=*/true);
+                        offAfter = builder->CreateAdd(
+                            builder->CreateAdd(offPhi,
+                                llvm::ConstantInt::get(i64Ty, 4)),
+                            sLen, "earr_walk_after");
+                    }
+                    llvm::Value* kNext = builder->CreateAdd(
+                        kPhi, llvm::ConstantInt::get(i64Ty, 1));
+                    llvm::BasicBlock* bodyEndBB = builder->GetInsertBlock();
+                    builder->CreateBr(hdrBB);
+                    kPhi->addIncoming(kNext, bodyEndBB);
+                    offPhi->addIncoming(offAfter, bodyEndBB);
+                    builder->SetInsertPoint(exitBB);
+                    elemOff = offPhi;
+                }
+                llvm::Value* elemPtr = builder->CreateInBoundsGEP(
+                    i8Ty, prefixPtr, elemOff, "earr_elem");
+                if (elemView) {
+                    // A view value borrowing the outer's buffer. Wrap in a
+                    // slot so consumers (loadIfLValue shape) read the
+                    // pointer correctly — mirrors the vector branch above.
+                    resolvedType = elemView;
+                    llvm::AllocaInst* slot = builder->CreateAlloca(
+                        llvm::PointerType::get(ctx, 0), nullptr, "earr.slot");
+                    builder->CreateStore(elemPtr, slot);
+                    return slot;
+                }
+                // String[] element: materialize the owned String, same
+                // helper pair the String view-field read uses.
+                llvm::Value* sLen = builder->CreateIntCast(
+                    CajetaView::emitSwapIfNeeded(module, earrE,
+                        builder->CreateLoad(i32Ty, elemPtr, "earr_str_len32")),
+                    i64Ty, /*isSigned=*/true);
+                llvm::Value* sData = builder->CreateInBoundsGEP(
+                    i8Ty, elemPtr, llvm::ConstantInt::get(i64Ty, 4),
+                    "earr_str_data");
+                llvm::Function* toOwned = module->getRuntimeFunction(
+                    "__cajeta_str_view_to_owned");
+                if (!toOwned) return nullptr;
+                resolvedType = CajetaType::of("String");
+                llvm::Value* cstr = builder->CreateCall(toOwned, {sData, sLen});
+                llvm::Value* str = wrapCStringIntoClassString(
+                    module, cstr, "earr_str");
+                // Slot-wrap like the element-view path: ArrayIndex consumers
+                // loadIfLValue the result as an address.
+                llvm::AllocaInst* sSlot = builder->CreateAlloca(
+                    llvm::PointerType::get(ctx, 0), nullptr, "earr.str.slot");
+                builder->CreateStore(str, sSlot);
+                return sSlot;
             }
         }
 
@@ -5330,10 +5538,16 @@ namespace cajeta {
         // scope-anchored cleanup (docs/specification/concurrent/Concurrency.md § detach semantics).
         // The Task wrapper leaks for the process lifetime; the body's
         // own locals still drop normally on the carrier-side chain.
-        if (!detachMode) {
+        if (!detachMode && !discardedMode) {
             // Pick the push variant + entry size based on the CompilerFlags
             // (docs/CompilerModes.md). Mirrors the LVD path's choice
             // so the chain has uniformly-shaped entries within a build.
+            // discardedMode skips this too: a statement-position spawn's
+            // Task is scope-owned (registered below via scope_register_owned
+            // — the runtime scope frame joins AND frees it), because a
+            // per-site drop-entry alloca cannot represent N tasks live at
+            // once from a loop, and its wait-on-drop joined at the innermost
+            // brace, serializing spawn loops the spec promises concurrent.
             bool debugTags = module->getFlags().sourceTags;
             llvm::Function* dropPush = module->getRuntimeFunction(
                 debugTags ? "__cajeta_drop_push_debug" : "__cajeta_drop_push");
@@ -5431,7 +5645,17 @@ namespace cajeta {
                     }
                 }
             }
-            if (llvm::Function* regFn = module->getRuntimeFunction(
+            if (discardedMode) {
+                // Scope-owned: the frame joins on the done flag as usual and
+                // ALSO frees the task struct at release (scope_exit /
+                // scope_exit_to / the throw unwind), replacing the drop
+                // entry skipped above.
+                if (llvm::Function* regFn = module->getRuntimeFunction(
+                        "__cajeta_scope_register_owned")) {
+                    outerBuilder->CreateCall(regFn,
+                        {doneRegSlot, excRegSlot, fiberRegSlot, taskInstance});
+                }
+            } else if (llvm::Function* regFn = module->getRuntimeFunction(
                     "__cajeta_scope_register")) {
                 outerBuilder->CreateCall(regFn,
                     {doneRegSlot, excRegSlot, fiberRegSlot});

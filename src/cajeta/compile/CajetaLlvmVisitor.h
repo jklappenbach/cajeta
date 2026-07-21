@@ -1008,7 +1008,30 @@ namespace cajeta {
             }
             QualifiedNamePtr qName = QualifiedName::getOrInsert(
                 name, pModule->getQName()->getPackageName() + packageAdj);
-            auto viewStructure = make_shared<CajetaView>(pModule, qName);
+            // Placeholder reuse (mirrors visitClassDeclaration): an
+            // earlier-parsed file's forward reference synthesized a
+            // CajetaView placeholder via fromContext; fill the SAME
+            // shared_ptr so every captured reference (element types of
+            // `V[]` fields, parameter types) becomes the real view.
+            shared_ptr<CajetaView> viewStructure;
+            {
+                auto& canon = CajetaType::getCanonicalMap();
+                auto it = canon.find(qName->toCanonical());
+                if (it == canon.end()) {
+                    it = canon.find(qName->getTypeName());
+                }
+                if (it != canon.end()) {
+                    auto existing = dynamic_pointer_cast<CajetaView>(it->second);
+                    if (existing && existing->isPlaceholder()) {
+                        existing->fillFromDeclaration(
+                            pModule, qName, {}, {});
+                        viewStructure = existing;
+                    }
+                }
+            }
+            if (!viewStructure) {
+                viewStructure = make_shared<CajetaView>(pModule, qName);
+            }
             CajetaClassPtr structure = static_pointer_cast<CajetaClass>(viewStructure);
 
             if (auto* typeDecl = dynamic_cast<CajetaParser::TypeDeclarationContext*>(ctx->parent)) {

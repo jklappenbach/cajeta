@@ -564,6 +564,16 @@ namespace cajeta {
         // before calling generateCode through this same trampoline path
         // — single source of truth for the spawn/detach lowering.
         bool detachMode = false;
+        // Statement-position spawn whose Task is never bound to a local
+        // (`spawn f(x);` as a statement). Set by ExpressionStatement before
+        // generateCode. The lowering then registers the task with the scope
+        // frame as SCOPE-OWNED (__cajeta_scope_register_owned) instead of
+        // emitting a drop entry: a per-site drop-entry alloca cannot
+        // represent N live tasks from a loop, and its wait-on-drop joined at
+        // the innermost brace — serializing spec-legal spawn loops (the
+        // Concurrency.md `scope { for { spawn } }` example). The scope both
+        // joins (as before, via scope_register bookkeeping) and frees.
+        bool discardedMode = false;
     public:
         SpawnExpression(antlr4::Token* token) : Expression(token) { }
         void resolveTypes(CajetaModulePtr module) override;
@@ -571,6 +581,8 @@ namespace cajeta {
         llvm::Value* getDropEntry() const { return dropEntry; }
         void setDetachMode(bool v) { detachMode = v; }
         bool getDetachMode() const { return detachMode; }
+        void setDiscardedMode(bool v) { discardedMode = v; }
+        bool getDiscardedMode() const { return discardedMode; }
     };
 
     class DetachExpression : public Expression {

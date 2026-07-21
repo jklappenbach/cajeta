@@ -339,6 +339,16 @@ void __cajeta_throw(void* value) {
         }
         *dropTop = e->prev;
     }
+    // NOTE: a throw does NOT walk the scope chain here. A scope-owned
+    // discarded-spawn task stranded by this throw (its `scope { }` exit
+    // skipped) is still joined + freed by the CATCHING function's
+    // __cajeta_scope_exit_to(entry watermark), which walks every frame
+    // above function entry on the way out — so nothing leaks and every
+    // child is joined before the catcher returns. (Borrow lifetime across
+    // the throw is the static checker's concern, per Concurrency.md.) An
+    // earlier attempt to join per-try here was removed: an exc-frame
+    // watermark can name a scope frame already popped between try-entry
+    // and the throw, so walking to it freed live frames.
     // U3: the unwound frames never ran __cajeta_line_leave, so restore the
     // shadow line-stack depth to the catching try-frame's watermark before we
     // resume in its catch block. Snapshot already taken in __cajeta_trace_record.

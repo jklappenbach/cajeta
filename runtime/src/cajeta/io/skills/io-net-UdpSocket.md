@@ -2,7 +2,7 @@
 id: io-net-UdpSocket
 applies-to: [cajeta/io/net/UdpSocket]
 title: UdpSocket — connectionless datagram socket (bind, sendTo/recvFrom, optional connect)
-description: UDP socket access point; bind() factory, sendTo/recvFrom (recvFrom returns RecvResult with count+sender), optional connect for address-less send/recv. Sync-only in v1.
+description: UDP socket access point; bind() factory, sendTo/recvFrom (recvFrom returns RecvResult with count+sender), optional connect for address-less send/recv, recvFromAsync (fiber-parking receive).
 ---
 
 # UdpSocket
@@ -98,9 +98,12 @@ result's lifetime, retain the `RecvResult` (it owns `from`). See `cajeta/io/net/
 
 ## What v1 does NOT do (don't hunt for these)
 
-- **Sync only.** There are no non-blocking or async (`*Async`) forms on this surface yet —
-  they are gated on `cajeta.io.net.reactor.Reactor` and return in a later milestone. Do not
-  look for `recvFromAsync` here.
+- **Mostly sync.** `recvFromAsync(dst, offset, capacity)` is the one async form
+  (NET-3.3): it parks the FIBER on the reactor until a datagram is ready, then
+  receives it — the receive-loop primitive (single receive fiber per socket;
+  a spurious wakeup re-parks). There is no `sendToAsync` yet (UDP sends rarely
+  block) and no timed variant — bound a wait with `Tasks.withTimeout` around a
+  channel hand-off instead.
 - **No multicast join/leave** and no generic `setOption` — only the typed option accessors
   listed above.
 - **Not a stream.** No connection, no backpressure, no `read`/`write` channel semantics —

@@ -144,7 +144,48 @@ Variable-size fields can appear anywhere in the declaration. Fields **after** a 
 
 **Validation.** Every length-prefix is validated against the remaining buffer size at construction. A length-prefix value larger than the remaining bytes throws `ParseException` from the construction call. See "Security" below.
 
-**Not supported in v1:** arrays of variable-size elements (`String[]`), `T[]` where `T` is itself variable-size. The single-level-deep model covers the protocol patterns we care about; deep variable-size nesting needs offset-tree machinery deferred to v1.1.
+**Element arrays (v1.1).** Arrays of variable-size elements are supported as *element-array fields*: `V[] f;` where `V` is a view type (fixed-size or var-size), and `String[] f;`. See § Element arrays below. Still not supported: nested element arrays (`V[][]`, `String[][]`, or a `V[]` whose element view itself declares an element array) — rejected with `CAJETA_ERROR_VIEW_NESTED_ELEMENT_ARRAY`.
+
+---
+
+## Element arrays (v1.1)
+
+Spec: `specs/view-element-arrays-spec.md` (driving consumer: cajeta-gossip's piggyback delta list).
+
+```cajeta
+@BigEndian
+view Delta {
+    int8   state;
+    int64  incarnation;
+    String name;              // var-size element ⇒ Delta is var-size
+}
+
+@BigEndian
+view GossipMessage {
+    int32   magic;
+    String  senderName;
+    Delta[] deltas;           // u32 count + count elements back-to-back
+    int8[]  payload;
+}
+```
+
+**Wire layout:** a `u32` element count, then the elements back-to-back, each in `V`'s own layout (self-delimiting via its internal prefixes). No per-element framing overhead — the layout overlays foreign protocols (DNS RR sections, TLV lists) as-is.
+
+**Surface.**
+- `m.deltas[i]` — an element view of type `V` borrowing the outer's buffer (zero-copy; chains, binds to locals, writes through on fixed fields). Out-of-range indexing throws.
+- `m.deltas.count()` — the element count, O(1).
+- `String[]` elements read as owned `String`s (same as a `String` field read).
+- **Bare reads of the field are a static error** (`CAJETA_ERROR_VIEW_ELEMENT_ARRAY_BARE_READ`) — elements are borrows, not copyable values; index or `count()`.
+- Fixed fields may follow an element array; they are reachable in O(1).
+
+**Cost model.** Construction validates the whole frame in one sweep (count, every element's internal prefixes — a malformed inner prefix throws from the constructor) and fills a per-instance offset table in the **per-fiber frame arena** (no heap allocation; reclaimed with the constructing scope). After construction, element access is **O(1)** — a table load, no walking. Fixed-size element views skip the table entirely (constant-stride math). The view's value becomes a pointer to an arena `{data, table}` descriptor; views without element-array fields keep the plain single-pointer representation unchanged.
+
+**Endianness inheritance (wired in v1.1).** An unannotated view used as a `V[]` element inherits the outer view's annotation — fields *and* internal length-prefixes read in the inherited order. An element view with its own annotation keeps it (mixed-endian records). Inheriting two different orders from different outers is rejected (`CAJETA_ERROR_VIEW_ENDIAN_AMBIGUOUS`): annotate the element view explicitly. All length/count prefixes of annotated views are read in the view's declared wire order.
+
+**Restrictions (v1.1).**
+- Single level: no `V[][]` / `String[][]`, and the element view may not itself declare an element-array field.
+- The owning construction form (`M(#bytes)`) is rejected for element-array views (`CAJETA_ERROR_VIEW_ELEMENT_ARRAY_OWNING`) — the descriptor is frame-arena-backed and cannot escape the constructing frame. Use the borrow form.
+- Encode stays writer-side: var-size fields (including element arrays) are not assignable through a view; producers build the buffer with a writer and overlay the view to read.
 
 ---
 

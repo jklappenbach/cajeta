@@ -283,6 +283,14 @@ struct cajeta_scope_entry {
     int32_t* done_addr;
     void** exception_addr;  // points to the Throwable* slot; NULL on success
     void** fiber_slot;      // points to Task's fiber-ptr slot; runtime fills it
+    // Non-NULL iff the SCOPE owns freeing this task struct: set for a
+    // DISCARDED `spawn` statement (no local binds the Task, so no drop
+    // entry can free it — a static drop entry can't span loop
+    // iterations, which is why the old drop-entry approach joined at the
+    // innermost brace and serialized spec-legal spawn loops). The scope
+    // frees it after the join in scope_exit / scope_exit_to / the throw
+    // unwind. NULL for a bound Task (its local's drop owns the free).
+    void* owned_task;
 };
 
 struct cajeta_scope_frame {

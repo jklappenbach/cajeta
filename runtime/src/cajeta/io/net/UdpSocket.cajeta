@@ -1,6 +1,8 @@
 package cajeta.io.net;
 
 import cajeta.io.net.RecvResult;
+import cajeta.io.net.WouldBlockException;
+import cajeta.io.net.reactor.Reactor;
 import cajeta.io.net.SocketAddress;
 
 // NOTE (NET / b2 socket receiver-lowering): this is the **sync** surface of
@@ -188,6 +190,46 @@ public class UdpSocket {
      * Close the underlying socket. Idempotent; sets `this.fd = -1`. Intrinsic-
      * lowered to `__cajeta_net_close(this.fd)`.
      */
+    /** Toggle non-blocking mode on `fd` (tracked form). Returns 0 / -1. */
+    @Native("__cajeta_net_set_nonblocking_tracked")
+    private static int32 setNonBlockingNative(int32 fd, int32 nonblocking);
+
+    /**
+     * Put this socket's descriptor into non-blocking mode and ensure the
+     * net reactor is initialized — idempotent one-time setup, same shape as
+     * `TcpStream.ensureAsyncReady` (NET-3.3).
+     */
+    void ensureAsyncReady() {
+        int32 fd = this.fd;
+        UdpSocket.setNonBlockingNative(fd, 1);
+        Reactor.init();
+    }
+
+    /**
+     * Async [`recvFrom`](#recvFrom): **parks the fiber** (not the carrier)
+     * on the reactor until a datagram is ready, then receives it — the UDP
+     * half of plan item **NET-3.3**, and the primitive a gossip-style
+     * receive loop drives (`dev.cajeta.gossip`).
+     *
+     * Await-first readiness: park on
+     * [`Reactor.awaitReadable`](reactor/Reactor.cajeta#awaitReadable)
+     * (level-triggered — returns immediately when a datagram is already
+     * queued), then the non-blocking `recvFrom` collects it. A spurious
+     * wakeup (another consumer drained the socket first) re-parks; the
+     * intended use is a single receive fiber per socket.
+     */
+    public #RecvResult recvFromAsync(int8[] dst, int32 offset, int32 capacity) {
+        this.ensureAsyncReady();
+        while (true) {
+            Reactor.awaitReadable(this.fd);
+            try {
+                return this.recvFrom(dst, offset, capacity);
+            } catch (WouldBlockException e) {
+                // spurious readiness — re-park
+            }
+        }
+    }
+
     public void close() {
         return;
     }

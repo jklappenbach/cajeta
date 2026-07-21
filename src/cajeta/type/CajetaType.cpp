@@ -12,6 +12,7 @@
 #include "CajetaArray.h"
 #include "CajetaCapture.h"
 #include "CajetaClass.h"
+#include "CajetaView.h"
 #include "CajetaTask.h"
 #include "CajetaConstantType.h"
 #include "CajetaVector.h"
@@ -123,6 +124,7 @@ namespace cajeta {
     // class-shaped placeholder. Populated by the prescan visitor's
     // visitEnumDeclaration override.
     static thread_local set<string> g_enumArchive;
+    static thread_local set<string> g_viewArchive;
     // Archive entries known to be @ValueType classes. Read by
     // fromContext's placeholder-synthesis path so a cross-file
     // value-type-typed declaration gets a placeholder born with
@@ -197,6 +199,7 @@ namespace cajeta {
         enumConstants.clear();
         g_archive.clear();
         g_enumArchive.clear();
+        g_viewArchive.clear();
         g_valueTypeArchive.clear();
         g_interfaceArchive.clear();
         g_archiveTemplateMeta.clear();
@@ -221,6 +224,7 @@ namespace cajeta {
             map<llvm::Type::TypeID, CajetaTypePtr> llvmTypeIdMap;
             map<string, string> g_archive;
             set<string> g_enumArchive;
+            set<string> g_viewArchive;
             set<string> g_valueTypeArchive;
             set<string> g_interfaceArchive;
             map<string, ArchiveTemplateMeta> g_archiveTemplateMeta;
@@ -236,6 +240,7 @@ namespace cajeta {
         g_typeBaseline.llvmTypeIdMap = llvmTypeIdMap;
         g_typeBaseline.g_archive = g_archive;
         g_typeBaseline.g_enumArchive = g_enumArchive;
+        g_typeBaseline.g_viewArchive = g_viewArchive;
         g_typeBaseline.g_valueTypeArchive = g_valueTypeArchive;
         g_typeBaseline.g_interfaceArchive = g_interfaceArchive;
         g_typeBaseline.g_archiveTemplateMeta = g_archiveTemplateMeta;
@@ -289,6 +294,7 @@ namespace cajeta {
         llvmTypeIdMap = g_typeBaseline.llvmTypeIdMap;
         g_archive = g_typeBaseline.g_archive;
         g_enumArchive = g_typeBaseline.g_enumArchive;
+        g_viewArchive = g_typeBaseline.g_viewArchive;
         g_valueTypeArchive = g_typeBaseline.g_valueTypeArchive;
         g_interfaceArchive = g_typeBaseline.g_interfaceArchive;
         g_archiveTemplateMeta = g_typeBaseline.g_archiveTemplateMeta;
@@ -303,6 +309,14 @@ namespace cajeta {
 
     bool CajetaType::isArchiveEnum(const string& canonical) {
         return g_enumArchive.count(canonical) > 0;
+    }
+
+    void CajetaType::markArchiveView(const string& canonical) {
+        g_viewArchive.insert(canonical);
+    }
+
+    bool CajetaType::isArchiveView(const string& canonical) {
+        return g_viewArchive.count(canonical) > 0;
     }
 
     void CajetaType::markArchiveValueType(const string& canonical) {
@@ -1013,6 +1027,26 @@ namespace cajeta {
                         // lookups land the interface CajetaClass (a
                         // class→interface upcast at a call site needs the
                         // formal's type to dynamic_cast to CajetaClass).
+                        canonicalMap[canonical] = placeholder;
+                        canonicalMap[shortName] = placeholder;
+                        type = placeholder;
+                    } else if (isArchiveView(canonical)) {
+                        // Forward-referenced VIEW: the placeholder must
+                        // BE a CajetaView, not a class shell — view
+                        // classification (CajetaView::isElementArray,
+                        // descriptor-view detection, member lookup via
+                        // captured type ptrs) dynamic_casts the element/
+                        // receiver type, and a class-shaped placeholder
+                        // silently declassifies it (the gossip
+                        // Delta[]-before-Delta bug: file visit order is
+                        // directory order, so GossipMessage.cajeta's
+                        // `Delta[] deltas` resolved before Delta.cajeta
+                        // was visited). visitViewDeclaration later
+                        // detects this placeholder and fills the SAME
+                        // shared_ptr (annotations, body, prototype).
+                        auto placeholder = std::make_shared<CajetaView>(
+                            module, phName);
+                        placeholder->setPlaceholder(true);
                         canonicalMap[canonical] = placeholder;
                         canonicalMap[shortName] = placeholder;
                         type = placeholder;
