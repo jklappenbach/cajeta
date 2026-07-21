@@ -90,4 +90,11 @@ Progress:
   operator-spelled bodies (`a * b` needs a type-system decision — plan 4.2.2), the
   relational half (§4 pushdown, §7 column sharing, X7 nulls) with nucleo-column/frame,
   GPU lowering (X6), and the §3.4 fuse-vs-materialize heuristic.
-- Everything below nucleo-expr — **draft** (specs written 2026-06-23; no plan yet).
+- **nucleo-column** — 🔨 **ACTIVE** (`nucleo-column-plan.md`, approved 2026-07-20): the
+  Arrow-laid-out columnar substrate — `Column<T>`/`NullableColumn<T>` (bit-identical to
+  tensor buffers when non-null, zero-copy views both ways), matched-struct C Data
+  Interface (export + foreign-backed zero-copy import, no `libarrow`), 64-byte aligned
+  owned buffers (aligned start offset), utf8 columns, `cajeta.mxfp4` extension carry.
+  Deferred in-plan: Storage native mode (zero-copy tensor import), boolean columns,
+  large offsets, MX scales/kernels, codec readers, device story.
+- Everything below nucleo-column — **draft** (specs written 2026-06-23; no plan yet).
