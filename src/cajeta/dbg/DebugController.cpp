@@ -77,7 +77,24 @@ namespace cajeta::dbg {
         // Consumed here under the lock so it fires exactly once.
         const bool entryStop = entryArmed;
         if (entryStop) entryArmed = false;
-        if (!entryStop && armed.count(locId) == 0) return;
+        const bool breakpointStop = armed.count(locId) != 0;
+
+        // dap-stepping: does this safepoint satisfy the pending step? Only on
+        // the origin fiber, only at a different line (multi-statement lines
+        // stop once), depth per verb. An armed breakpoint at this safepoint
+        // wins over the step (checked first below). No providers -> never.
+        bool stepStop = false;
+        if (!entryStop && !breakpointStop && stepPending
+            && fiberId == stepFiber && depthOfFrame && lineOfLoc
+            && lineOfLoc(locId) != stepOriginLine) {
+            const int depth = depthOfFrame(frameTop);
+            switch (stepKind) {
+                case StepKind::In:   stepStop = true; break;
+                case StepKind::Over: stepStop = depth <= stepOriginDepth; break;
+                case StepKind::Out:  stepStop = depth < stepOriginDepth; break;
+            }
+        }
+        if (!entryStop && !breakpointStop && !stepStop) return;
 
         // CP6f-2d: open the cross-carrier stop round BEFORE blocking so every
         // other carrier observes it (__cajeta_stop_is_requested) at its next
@@ -100,11 +117,15 @@ namespace cajeta::dbg {
         __cajeta_stop_set_expected(__cajeta_carrier_count_get() - 1);
 
         // Park: publish the stop, wake the debugger thread, wait for resume.
+        // Any park consumes the pending step (breakpoint/entry parks clear it;
+        // a step park is it completing).
+        stepPending = false;
         stopped = true;
         resumeRequested = false;
         current = StopEvent{locId, fiberId, frameTop};
-        current.reason = entryStop ? StopEvent::StopReason::Entry
-                                   : StopEvent::StopReason::Breakpoint;
+        current.reason = entryStop        ? StopEvent::StopReason::Entry
+                         : breakpointStop ? StopEvent::StopReason::Breakpoint
+                                          : StopEvent::StopReason::Step;
         stoppedCv.notify_all();
         resumeCv.wait(lock, [this] { return resumeRequested; });
         stopped = false;
@@ -128,6 +149,7 @@ namespace cajeta::dbg {
 
         // Park with reason=Exception. locId is -1 (no safepoint loc); the DAP
         // layer reads the throwing line from the innermost frame's current_loc.
+        stepPending = false;   // an exception park clears any pending step
         stopped = true;
         resumeRequested = false;
         current = StopEvent{-1, fiberId, frameTop,
@@ -189,11 +211,37 @@ namespace cajeta::dbg {
         // stale stop is seen again, manifesting as a phantom second `stopped`).
         stopped = false;
         resumeRequested = true;
+        // A plain continue cancels any pending step (a park already cleared
+        // it in the normal flow; this covers a continue issued in between).
+        stepPending = false;
         resumeCv.notify_all();
         // CP6f-2d: release every secondary/hand-off-parked carrier together
         // (resume-all, spec §2.5). Clears stop_requested so no carrier re-parks
         // at its next safepoint, and wakes all parked carriers.
         __cajeta_stop_clear();
+    }
+
+    void DebugController::resumeWithStep(StepKind kind, long fiberId,
+                                         int originDepth, int originLine) {
+        std::lock_guard<std::mutex> lock(mutex);
+        stepPending = true;
+        stepKind = kind;
+        stepFiber = fiberId;
+        stepOriginDepth = originDepth;
+        stepOriginLine = originLine;
+        // Same release sequence as resume() (which we can't call here — it
+        // would clear the step we just armed).
+        stopped = false;
+        resumeRequested = true;
+        resumeCv.notify_all();
+        __cajeta_stop_clear();
+    }
+
+    void DebugController::setStepProviders(
+        std::function<int(void*)> depthFn, std::function<int(int32_t)> lineFn) {
+        std::lock_guard<std::mutex> lock(mutex);
+        depthOfFrame = std::move(depthFn);
+        lineOfLoc = std::move(lineFn);
     }
 
     bool DebugController::isStopped() const {
