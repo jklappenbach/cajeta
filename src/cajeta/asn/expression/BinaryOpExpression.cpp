@@ -705,6 +705,45 @@ namespace cajeta {
         return nullptr;
     }
 
+    CajetaTypePtr BinaryOpExpression::comparisonResultType(CajetaModulePtr module) {
+        CajetaTypePtr boolTy = CajetaType::of("boolean");
+        if (children.size() < 2) return boolTy;
+        auto lhs = dynamic_pointer_cast<Expression>(children[0]);
+        auto rhs = dynamic_pointer_cast<Expression>(children[1]);
+        if (!lhs || !rhs) return boolTy;
+        CajetaTypePtr lt = lhs->getResolvedType();
+        CajetaTypePtr rt = rhs->getResolvedType();
+        // Pre-pass: operand types not yet known — do not stamp; the caller's
+        // later `if (!resolvedType) resolveTypes(...)` recomputes with them.
+        if (!lt && !rt) return nullptr;
+        const char* sym = nullptr;
+        switch (binaryOp) {
+            case BINARY_OP_LT: sym = "<";  break;
+            case BINARY_OP_LE: sym = "<="; break;
+            case BINARY_OP_GT: sym = ">";  break;
+            case BINARY_OP_GE: sym = ">="; break;
+            case BINARY_OP_EQ: sym = "=="; break;
+            case BINARY_OP_NE: sym = "!="; break;
+            default: return boolTy;
+        }
+        std::string name = std::string("operator") + sym;
+        for (const CajetaTypePtr& side : {lt, rt}) {
+            auto cls = dynamic_pointer_cast<CajetaClass>(side);
+            if (!cls || cls->isInterface()
+                    || (cls->getTypeFlags() & PRIMITIVE_FLAG)) {
+                continue;
+            }
+            vector<ParameterEntry> entries;
+            entries.push_back(ParameterEntry(lt ? lt : side, "", nullptr));
+            entries.push_back(ParameterEntry(rt ? rt : side, "", nullptr));
+            if (MethodPtr m = cls->resolveMethod(name, entries,
+                    /*isConstructor=*/false, /*floatingParams=*/false)) {
+                if (m->getReturnType()) return m->getReturnType();
+            }
+        }
+        return boolTy;
+    }
+
     llvm::Value* BinaryOpExpression::generateCode(CajetaModulePtr module) {
         auto* builder = module->getBuilder();
         if (std::getenv("CAJETA_TRACE_BINOP") || std::getenv("CAJETA_DEBUG_ICMP")) {

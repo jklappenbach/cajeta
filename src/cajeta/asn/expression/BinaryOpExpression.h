@@ -124,6 +124,13 @@ namespace cajeta {
         }
 
         bool isAssignment() const { return assignment; }
+
+        // Comparison result typing, override-aware (defined in the .cpp —
+        // needs CajetaClass::resolveMethod). Returns the matching operator
+        // override's declared return type, `boolean` when there is none, or
+        // nullptr when the operand types are not yet resolvable (caller
+        // leaves resolvedType unset for later re-resolution).
+        CajetaTypePtr comparisonResultType(CajetaModulePtr module);
         BinaryOp getBinaryOp() const { return binaryOp; }
 
         // Frame-arena routing (frame-arena-plan U2): set by Method's escape pre-pass
@@ -155,7 +162,21 @@ namespace cajeta {
                 case BINARY_OP_GT:
                 case BINARY_OP_GE:
                 case BINARY_OP_EQ:
-                case BINARY_OP_NE:
+                case BINARY_OP_NE: {
+                    // nucleo-frame U1 — a class operand may declare a
+                    // comparison override with a NON-boolean return (a DSL
+                    // node: `col.price > 0.0` -> Predicate). Type from the
+                    // override's declared return when one resolves; boolean
+                    // otherwise (every in-tree override returns boolean, so
+                    // this changes nothing for them). When the operand types
+                    // are not yet resolvable (the pre-pass runs before
+                    // locals register), leave the type UNSET so the caller's
+                    // later null-check re-resolution computes it with real
+                    // operand types — a premature boolean stamp is exactly
+                    // what broke argument-position overload resolution.
+                    resolvedType = comparisonResultType(module);
+                    return;
+                }
                 case BINARY_OP_LOGAND:
                 case BINARY_OP_LOGOR:
                     resolvedType = CajetaType::of("boolean");
