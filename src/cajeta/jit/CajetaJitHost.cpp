@@ -16,15 +16,18 @@
 #include "cajeta/jit/CajetaJitErrorShim.h"
 #include "cajeta/jit/CajetaJitWinSymbols.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <mutex>
 #include <set>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -34,6 +37,7 @@
 #include "cajeta/compile/DropBackfill.h"
 #include "cajeta/compile/NativeLink.h"
 #include "cajeta/buildtool/NativeProvision.h"
+#include "cajeta/buildtool/Lockfile.h"
 #include "cajeta/type/CajetaClass.h"
 #include "cajeta/type/CajetaType.h"
 #include "cajeta/dbg/DebugLocTable.h"
@@ -134,34 +138,58 @@ extern "C" void* __cajeta_args_make(int64_t argc, char** argv,
                                     int64_t off_lentag, int64_t off_aux,
                                     int64_t off_base, int64_t off_cplen);
 
+// The String ABI facts makeEntryArgs needs, split from their derivation so a
+// whole-program cache HIT (no type world) can carry them in the slot's meta
+// sidecar (fast-debug-launch 4.2.4). On a cold build they are derived from
+// the live types right after LLJIT initialize.
+struct EntryArgsABI {
+    bool valid = false;
+    int64_t strSize = 0;
+    int64_t offLenTag = 0;
+    int64_t offAux = 0;
+    int64_t offBase = 0;
+    int64_t offCpLen = 0;
+    std::string vtableSymbol;  // `<canonical>#VTable`
+};
+
+// Derive the String ABI from the live type world (cold path only).
+// Layout from the LLJIT's DataLayout — the one the JIT'd code actually
+// uses, exactly as the shim reads the module's. Nothing about the String
+// ABI is hardcoded here or there.
+//
+// NOT from compiler->getModules(): buildJit LINKS every non-primary module
+// into the primary, and Linker::linkModules consumes the donor, so reaching
+// back through that list yields a destroyed Module and segfaults in
+// getStructLayout. The struct TYPE is context-owned and outlives the merge.
+EntryArgsABI deriveEntryArgsABI(llvm::orc::LLJIT* jit) {
+    EntryArgsABI abi;
+    if (!jit) return abi;
+    auto klass = std::dynamic_pointer_cast<cajeta::CajetaClass>(
+        cajeta::CajetaType::of("String"));
+    if (!klass) return abi;
+    auto* strStructTy = llvm::dyn_cast_or_null<llvm::StructType>(
+        klass->getLlvmType());
+    if (!strStructTy) return abi;
+
+    const llvm::DataLayout& dl = jit->getDataLayout();
+    const llvm::StructLayout* sl = dl.getStructLayout(strStructTy);
+    abi.strSize = (int64_t) dl.getTypeAllocSize(strStructTy);
+    abi.offLenTag = (int64_t) sl->getElementOffset(1);
+    abi.offAux    = (int64_t) sl->getElementOffset(2);
+    abi.offBase   = (int64_t) sl->getElementOffset(3);
+    abi.offCpLen  = (int64_t) sl->getElementOffset(4);
+    abi.vtableSymbol = klass->getQName()->toCanonical() + "#VTable";
+    abi.valid = true;
+    return abi;
+}
+
 // Build the cajeta `String[]` to hand a `main(String[] args)` entry.
 // Returns nullptr if the String class or its layout is unavailable, in which
 // case the caller must NOT invoke a parameterized entry.
 void* makeEntryArgs(llvm::orc::LLJIT* jit,
-                    const std::vector<std::string>& programArgs) {
-    if (!jit) return nullptr;
-    auto klass = std::dynamic_pointer_cast<cajeta::CajetaClass>(
-        cajeta::CajetaType::of("String"));
-    if (!klass) return nullptr;
-    auto* strStructTy = llvm::dyn_cast_or_null<llvm::StructType>(
-        klass->getLlvmType());
-    if (!strStructTy) return nullptr;
-
-    // Layout from the LLJIT's DataLayout — the one the JIT'd code actually
-    // uses, exactly as the shim reads the module's. Nothing about the String
-    // ABI is hardcoded here or there.
-    //
-    // NOT from compiler->getModules(): buildJit LINKS every non-primary module
-    // into the primary, and Linker::linkModules consumes the donor, so reaching
-    // back through that list yields a destroyed Module and segfaults in
-    // getStructLayout. The struct TYPE is context-owned and outlives the merge.
-    const llvm::DataLayout& dl = jit->getDataLayout();
-    const llvm::StructLayout* sl = dl.getStructLayout(strStructTy);
-    const int64_t strSize = (int64_t) dl.getTypeAllocSize(strStructTy);
-    const int64_t offLenTag = (int64_t) sl->getElementOffset(1);
-    const int64_t offAux    = (int64_t) sl->getElementOffset(2);
-    const int64_t offBase   = (int64_t) sl->getElementOffset(3);
-    const int64_t offCpLen  = (int64_t) sl->getElementOffset(4);
+                    const std::vector<std::string>& programArgs,
+                    const EntryArgsABI& abi) {
+    if (!jit || !abi.valid) return nullptr;
 
     // The vtable lives in the JIT'd module, so take its RUNTIME address.
     // Looked up by its canonical NAME (`<class>#VTable`, the same string
@@ -170,14 +198,10 @@ void* makeEntryArgs(llvm::orc::LLJIT* jit,
     // already consumed (late drop-thunk synthesis re-homes it there), and
     // dereferencing it here is a read of freed memory.
     void* vtable = nullptr;
-    {
-        const std::string vtName =
-            klass->getQName()->toCanonical() + "#VTable";
-        if (auto sym = jit->lookup(vtName)) {
-            vtable = reinterpret_cast<void*>(sym->getValue());
-        } else {
-            cajeta::jit::consumeError(sym.takeError());
-        }
+    if (auto sym = jit->lookup(abi.vtableSymbol)) {
+        vtable = reinterpret_cast<void*>(sym->getValue());
+    } else {
+        cajeta::jit::consumeError(sym.takeError());
     }
 
     std::vector<char*> argv;
@@ -186,8 +210,8 @@ void* makeEntryArgs(llvm::orc::LLJIT* jit,
 
     return __cajeta_args_make((int64_t) argv.size(),
                               argv.empty() ? nullptr : argv.data(),
-                              vtable, strSize, offLenTag, offAux, offBase,
-                              offCpLen);
+                              vtable, abi.strSize, abi.offLenTag, abi.offAux,
+                              abi.offBase, abi.offCpLen);
 }
 
 // Count call sites to @__cajeta_dbg_safepoint inside one function (CP2: one
@@ -220,7 +244,337 @@ struct BuiltJit {
     int entrySafepointsEmitted = 0; // static count inside the entry fn
     int errorCode = 0;              // 0 ok; else a runJit-style return code
     JitBuildPhases phases;          // wall-clock breakdown (fast-debug-launch 1.2.1)
+    EntryArgsABI entryArgsABI;      // derived cold / read from slot meta on hit
+    bool cacheHit = false;          // served from the whole-program slot (4.1.1)
 };
+
+// --- Whole-program merged-module cache (fast-debug-launch Unit 4) -----------
+// Slot layout under <cacheDir>/jit/<key>/:
+//   program.bc     — the MERGED program's bitcode (exactly the bytes the LLJIT
+//                    round-trip serializes on a cold build)
+//   program.meta   — entry facts + String ABI (tab-delimited, versioned)
+//   program.dbgloc — the loc-table sidecar (only for -g builds)
+// The key is content-addressed (compiler version+git ⊕ flags ⊕ entry ⊕ every
+// source digest), so "stale" is impossible by construction; load failures of
+// any kind mean MISS, never an error.
+//
+// KNOWN GAP (plan Unit 5 acceptance): classpath ARCHIVES are not folded into
+// the key yet — a dependency .cja bump without a source edit could serve a
+// stale program. Fold archive digests once the JIT dep-resolution path is
+// pinned down.
+
+struct WholeProgramSlot {
+    std::filesystem::path dir;
+    std::filesystem::path bc() const { return dir / "program.bc"; }
+    std::filesystem::path meta() const { return dir / "program.meta"; }
+    std::filesystem::path dbgloc() const { return dir / "program.dbgloc"; }
+};
+
+std::string wholeProgramKey(const JitRunOptions& opts,
+                            const std::vector<std::filesystem::path>& sources,
+                            const std::filesystem::path& sourceRoot) {
+    std::ostringstream in;
+    in << CAJETA_VERSION << '+' << CAJETA_GIT_HASH << '\n'
+       << "mode=debug\n"
+       << "debugInfo=" << (opts.debugInfo ? 1 : 0) << '\n'
+       << "entry=" << opts.entryMethod << '\n';
+    std::vector<std::pair<std::string, std::string>> entries;
+    entries.reserve(sources.size());
+    for (const auto& p : sources) {
+        std::ifstream f(p, std::ios::binary);
+        std::stringstream bytes;
+        bytes << f.rdbuf();
+        std::error_code ec;
+        std::filesystem::path rel = std::filesystem::relative(p, sourceRoot, ec);
+        entries.emplace_back((ec ? p : rel).generic_string(),
+                             cajeta::buildtool::sha256Hex(bytes.str()));
+    }
+    std::sort(entries.begin(), entries.end());
+    for (const auto& [rel, digest] : entries) in << rel << ':' << digest << '\n';
+    return cajeta::buildtool::sha256Hex(in.str());
+}
+
+// Best-effort slot write; a failure never fails the launch. Files land via
+// tmp + rename so a concurrent launch can't read a torn slot.
+void writeWholeProgramSlot(const WholeProgramSlot& slot, const BuiltJit& built,
+                           llvm::StringRef bcBytes, bool debugInfo) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::create_directories(slot.dir, ec);
+    if (ec) return;
+
+    auto place = [](const fs::path& target, auto writeFn) -> bool {
+        fs::path tmp = target;
+        tmp += ".tmp";
+        if (!writeFn(tmp)) return false;
+        std::error_code renameEc;
+        fs::rename(tmp, target, renameEc);
+        return !renameEc;
+    };
+
+    bool ok = place(slot.bc(), [&](const fs::path& p) {
+        std::ofstream out(p, std::ios::binary | std::ios::trunc);
+        out.write(bcBytes.data(), (std::streamsize) bcBytes.size());
+        return out.good();
+    });
+    ok = ok && place(slot.meta(), [&](const fs::path& p) {
+        std::ofstream out(p, std::ios::binary | std::ios::trunc);
+        out << "cajeta-jitmeta-v1\n"
+            << "entry\t" << built.entryName << '\n'
+            << "takesArgs\t" << (built.entryTakesArgs ? 1 : 0) << '\n'
+            << "returnsInt32\t" << (built.returnsInt32 ? 1 : 0) << '\n'
+            << "safepoints\t" << built.entrySafepointsEmitted << '\n';
+        if (built.entryArgsABI.valid) {
+            const EntryArgsABI& a = built.entryArgsABI;
+            out << "strabi\t" << a.strSize << '\t' << a.offLenTag << '\t'
+                << a.offAux << '\t' << a.offBase << '\t' << a.offCpLen << '\t'
+                << a.vtableSymbol << '\n';
+        }
+        return out.good();
+    });
+    if (ok && debugInfo) {
+        ok = place(slot.dbgloc(), [&](const fs::path& p) {
+            return cajeta::dbg::writeDbgLocSidecar(
+                p.string(), cajeta::dbg::globalDbgLocTable());
+        });
+    }
+    if (!ok) {
+        // Leave no half-slot behind: a partial slot would MISS anyway (meta
+        // gate), but clean up so the next write starts fresh.
+        fs::remove_all(slot.dir, ec);
+    }
+}
+
+// Parse program.meta. Strict: any anomaly = miss.
+bool loadSlotMeta(const std::filesystem::path& path, BuiltJit& out) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return false;
+    std::string line;
+    if (!std::getline(in, line) || line != "cajeta-jitmeta-v1") return false;
+    bool haveEntry = false, haveTakes = false, haveReturns = false,
+         haveSafepoints = false;
+    while (std::getline(in, line)) {
+        if (line.empty()) continue;
+        std::istringstream fields(line);
+        std::string tag;
+        if (!std::getline(fields, tag, '\t')) return false;
+        try {
+            if (tag == "entry") {
+                if (!std::getline(fields, out.entryName)) return false;
+                haveEntry = !out.entryName.empty();
+            } else if (tag == "takesArgs") {
+                std::string v;
+                if (!std::getline(fields, v)) return false;
+                out.entryTakesArgs = (v == "1");
+                haveTakes = true;
+            } else if (tag == "returnsInt32") {
+                std::string v;
+                if (!std::getline(fields, v)) return false;
+                out.returnsInt32 = (v == "1");
+                haveReturns = true;
+            } else if (tag == "safepoints") {
+                std::string v;
+                if (!std::getline(fields, v)) return false;
+                out.entrySafepointsEmitted = std::stoi(v);
+                haveSafepoints = true;
+            } else if (tag == "strabi") {
+                std::string sz, o1, o2, o3, o4;
+                EntryArgsABI a;
+                if (!std::getline(fields, sz, '\t') ||
+                    !std::getline(fields, o1, '\t') ||
+                    !std::getline(fields, o2, '\t') ||
+                    !std::getline(fields, o3, '\t') ||
+                    !std::getline(fields, o4, '\t') ||
+                    !std::getline(fields, a.vtableSymbol)) return false;
+                a.strSize = std::stoll(sz);
+                a.offLenTag = std::stoll(o1);
+                a.offAux = std::stoll(o2);
+                a.offBase = std::stoll(o3);
+                a.offCpLen = std::stoll(o4);
+                a.valid = !a.vtableSymbol.empty();
+                out.entryArgsABI = a;
+            }
+            // Unknown tags: ignored (forward compatibility within v1).
+        } catch (...) {
+            return false;
+        }
+    }
+    return haveEntry && haveTakes && haveReturns && haveSafepoints;
+}
+
+// Build + initialize the LLJIT from a MERGED program's bitcode bytes — the
+// tail of the cold pipeline, shared verbatim with the whole-program cache HIT
+// path (fast-debug-launch 4.2.4). On failure sets out.errorCode, resets
+// out.jit, and returns false.
+bool buildLLJITFromBuffer(llvm::StringRef bcBytes, const JitRunOptions& opts,
+                          BuiltJit& out) {
+    // Round-trip the module through bitcode into a fresh context owned by a
+    // ThreadSafeModule (the documented LLJIT path).
+    auto tsCtx = std::make_unique<llvm::LLVMContext>();
+    auto memBuffer = llvm::MemoryBuffer::getMemBufferCopy(bcBytes, "cajeta_jitrun");
+    llvm::orc::ThreadSafeContext tsContext(std::move(tsCtx));
+#if LLVM_VERSION_MAJOR >= 21
+    auto parsed = tsContext.withContextDo([&](llvm::LLVMContext* ctx) {
+        return llvm::parseBitcodeFile(memBuffer->getMemBufferRef(), *ctx);
+    });
+#else
+    auto parsed = llvm::parseBitcodeFile(memBuffer->getMemBufferRef(),
+                                         *tsContext.getContext());
+#endif
+    if (!parsed) {
+        std::cerr << "cajeta jit: bitcode reparse failed: "
+                  << cajeta::jit::toString(parsed.takeError()) << "\n";
+        out.errorCode = 1;
+        return false;
+    }
+    // Native-dependency requirements (native-deps unit 8): read the live
+    // @Native libs from the module BEFORE it is moved into the JIT. ORC
+    // generators (added after the process generator below) are lazy, so DCE is
+    // automatic — a generator is consulted only for a symbol actually
+    // materialized. The JIT NEVER fetches at run time; artifacts must be local.
+    std::set<std::string> liveNativeLibs = cajeta::collectLiveNativeLibs(**parsed);
+
+    llvm::orc::ThreadSafeModule tsModule(std::move(*parsed), std::move(tsContext));
+
+    auto jitOrErr = llvm::orc::LLJITBuilder().create();
+    if (!jitOrErr) {
+        std::cerr << "cajeta jit: LLJIT create failed: "
+                  << cajeta::jit::toString(jitOrErr.takeError()) << "\n";
+        out.errorCode = 1;
+        return false;
+    }
+    out.jit = std::move(*jitOrErr);
+
+    // GDB JIT symbolization. On in debug mode (so `cajeta jit-run -g` yields
+    // named JIT frames under a debugger instead of bare addresses), off in
+    // release (enableDebuggerSupport installs a JITLink plugin that synthesizes
+    // and registers a debug object per module — real per-module overhead paid
+    // whether or not a debugger ever attaches). CAJETA_JIT_GDB=1 force-enables
+    // it regardless of mode for ad-hoc release-JIT diagnostics. Requires the
+    // JITLink ObjectLinkingLayer (the LLVM 22 default on x86-64 ELF); on RTDyld
+    // it returns an Error we surface and continue (symbolization simply absent).
+    if (opts.debugInfo || std::getenv("CAJETA_JIT_GDB")) {
+        if (auto err = llvm::orc::enableDebuggerSupport(*out.jit)) {
+            std::cerr << "cajeta jit: GDB symbolization unavailable: "
+                      << cajeta::jit::toString(std::move(err)) << "\n";
+        }
+    }
+
+    if (auto err = out.jit->addIRModule(std::move(tsModule))) {
+        std::cerr << "cajeta jit: addIRModule failed: "
+                  << cajeta::jit::toString(std::move(err)) << "\n";
+        out.jit.reset();
+        out.errorCode = 1;
+        return false;
+    }
+
+    auto& mainDylib = out.jit->getMainJITDylib();
+    auto generator = llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
+        out.jit->getDataLayout().getGlobalPrefix());
+    if (!generator) {
+        std::cerr << "cajeta jit: process-symbol generator failed: "
+                  << cajeta::jit::toString(generator.takeError()) << "\n";
+        out.jit.reset();
+        out.errorCode = 1;
+        return false;
+    }
+    mainDylib.addGenerator(std::move(*generator));
+
+    {
+        size_t winSymCount = 0;
+        const JitWinSym* winSyms = winJitSymbols(&winSymCount);
+        if (winSymCount) {
+            auto& execSession = out.jit->getExecutionSession();
+            llvm::orc::SymbolMap winSymMap;
+            for (size_t i = 0; i < winSymCount; ++i) {
+                winSymMap[execSession.intern(winSyms[i].name)] =
+                    llvm::orc::ExecutorSymbolDef(
+                        llvm::orc::ExecutorAddr::fromPtr(winSyms[i].addr),
+                        llvm::JITSymbolFlags::Exported);
+            }
+            cajeta::jit::cantFail(
+                mainDylib.define(llvm::orc::absoluteSymbols(std::move(winSymMap))));
+        }
+    }
+
+    // Native-dependency JIT generators (native-deps unit 8). For each
+    // referenced @Native lib, resolve a LOCAL artifact (.cja native/ extraction
+    // / CAJETA_NATIVE_PATH / ~/.cajeta/native — never the network) and add an
+    // ORC generator so its symbols resolve at materialization. Lazy → a lib
+    // whose symbols are never materialized is never loaded (DCE for JIT). A
+    // genuinely-referenced-but-absent lib surfaces as an undefined symbol at
+    // materialization (precise placement message lands in unit 11).
+    if (!liveNativeLibs.empty()) {
+        auto& execSession = out.jit->getExecutionSession();
+        const char prefix = out.jit->getDataLayout().getGlobalPrefix();
+        const std::string platform = cajeta::hostNativePlatform();
+        const std::vector<std::string> dirs = cajeta::nativeLinkSearchDirs();
+        for (const auto& lib : liveNativeLibs) {
+            auto art = cajeta::findNativeJitArtifact(lib, platform, dirs);
+            if (!art) continue;  // absent → lazy lookup fails loud only if needed
+            if (art->isStatic) {
+                auto gen = llvm::orc::StaticLibraryDefinitionGenerator::Load(
+                    out.jit->getObjLinkingLayer(), art->path.c_str());
+                if (gen) mainDylib.addGenerator(std::move(*gen));
+                else std::cerr << "cajeta jit: native lib '" << lib
+                               << "' load failed: "
+                               << cajeta::jit::toString(gen.takeError()) << "\n";
+            } else {
+                auto gen = llvm::orc::DynamicLibrarySearchGenerator::Load(
+                    art->path.c_str(), prefix);
+                if (gen) mainDylib.addGenerator(std::move(*gen));
+                else std::cerr << "cajeta jit: native lib '" << lib
+                               << "' load failed: "
+                               << cajeta::jit::toString(gen.takeError()) << "\n";
+            }
+        }
+    }
+    // NOTE: the fp128 soft-float helpers (__trunctfdf2, __fixtfdi, ...) that the
+    // stdlib's Float128 emits are NOT installed here. Apple arm64 has no
+    // __float128 type and ships no compiler-rt tf family, so there is nothing to
+    // take the address of. Instead they are compiled (as target-neutral integer
+    // IR) into the embedded runtime bitcode and linked into every JIT module —
+    // see runtime/native/cajeta_fp128_builtins.ll and src/CMakeLists.txt.
+
+    if (auto err = out.jit->initialize(mainDylib)) {
+        std::cerr << "cajeta jit: LLJIT initialize failed: "
+                  << cajeta::jit::toString(std::move(err)) << "\n";
+        out.jit.reset();
+        out.errorCode = 1;
+        return false;
+    }
+    return true;
+}
+
+// Attempt a whole-program cache hit. Any anomaly — missing/corrupt file,
+// meta mismatch, bitcode that will not build — is a MISS (returns false with
+// out reset), never an error: the caller falls back to the full compile.
+bool tryLoadWholeProgramSlot(const WholeProgramSlot& slot,
+                             const JitRunOptions& opts, BuiltJit& out) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (!fs::is_regular_file(slot.bc(), ec) ||
+        !fs::is_regular_file(slot.meta(), ec)) return false;
+    if (!loadSlotMeta(slot.meta(), out)) return false;
+    if (opts.debugInfo) {
+        // The cached module's safepoints carry baked loc ids; the sidecar is
+        // the only thing that can decode them, so no sidecar = no hit.
+        auto& table = cajeta::dbg::globalDbgLocTable();
+        table.clear();
+        if (!cajeta::dbg::loadDbgLocSidecar(slot.dbgloc().string(), table)) {
+            table.clear();
+            return false;
+        }
+    }
+    auto buf = llvm::MemoryBuffer::getFile(slot.bc().string());
+    if (!buf) return false;
+    if (!buildLLJITFromBuffer((*buf)->getBuffer(), opts, out)) {
+        out.jit.reset();
+        out.errorCode = 0;  // miss, not failure — the full compile runs next
+        return false;
+    }
+    return true;
+}
 
 // Shared pipeline: compile every .cajeta under opts.sourceRoot, merge modules,
 // build + initialize an LLJIT, and resolve the entry. On failure sets
@@ -263,6 +617,21 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
         std::cerr << "cajeta jit: no .cajeta files under " << sourceRoot << "\n";
         out.errorCode = 2;
         return out;
+    }
+
+    // Whole-program cache attempt (fast-debug-launch 4.2.4): on a hit the
+    // Compiler is never constructed — the launch pays digesting + bitcode
+    // load + LLJIT materialization only.
+    if (!opts.cacheDir.empty()) {
+        endPhase(out.phases.collectSeconds);
+        WholeProgramSlot slot{fs::path(opts.cacheDir) / "jit"
+                              / wholeProgramKey(opts, sourcePaths, sourceRoot)};
+        if (tryLoadWholeProgramSlot(slot, opts, out)) {
+            out.cacheHit = true;
+            progress("jit", "", 0, 0);
+            endPhase(out.phases.jitSeconds);
+            return out;
+        }
     }
 
     out.compiler = std::make_unique<Compiler>();
@@ -441,146 +810,27 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
         return out;
     }
 
-    // Round-trip the module through bitcode into a fresh context owned by a
-    // ThreadSafeModule (the documented LLJIT path).
-    auto tsCtx = std::make_unique<llvm::LLVMContext>();
     llvm::SmallVector<char, 0> bitcodeBuf;
     {
         llvm::raw_svector_ostream os(bitcodeBuf);
         llvm::WriteBitcodeToFile(*llvmModule, os);
     }
-    auto memBuffer = llvm::MemoryBuffer::getMemBufferCopy(
-        llvm::StringRef(bitcodeBuf.data(), bitcodeBuf.size()), "cajeta_jitrun");
-    llvm::orc::ThreadSafeContext tsContext(std::move(tsCtx));
-#if LLVM_VERSION_MAJOR >= 21
-    auto parsed = tsContext.withContextDo([&](llvm::LLVMContext* ctx) {
-        return llvm::parseBitcodeFile(memBuffer->getMemBufferRef(), *ctx);
-    });
-#else
-    auto parsed = llvm::parseBitcodeFile(memBuffer->getMemBufferRef(),
-                                         *tsContext.getContext());
-#endif
-    if (!parsed) {
-        std::cerr << "cajeta jit: bitcode reparse failed: "
-                  << cajeta::jit::toString(parsed.takeError()) << "\n";
-        out.errorCode = 1;
+    if (!buildLLJITFromBuffer(
+            llvm::StringRef(bitcodeBuf.data(), bitcodeBuf.size()), opts, out))
         return out;
-    }
-    // Native-dependency requirements (native-deps unit 8): read the live
-    // @Native libs from the module BEFORE it is moved into the JIT. ORC
-    // generators (added after the process generator below) are lazy, so DCE is
-    // automatic — a generator is consulted only for a symbol actually
-    // materialized. The JIT NEVER fetches at run time; artifacts must be local.
-    std::set<std::string> liveNativeLibs = cajeta::collectLiveNativeLibs(**parsed);
 
-    llvm::orc::ThreadSafeModule tsModule(std::move(*parsed), std::move(tsContext));
+    // ABI for makeEntryArgs, derived while the type world is still alive; it
+    // rides the slot meta so a HIT launch never needs CajetaType (4.2.4).
+    out.entryArgsABI = deriveEntryArgsABI(out.jit.get());
 
-    auto jitOrErr = llvm::orc::LLJITBuilder().create();
-    if (!jitOrErr) {
-        std::cerr << "cajeta jit: LLJIT create failed: "
-                  << cajeta::jit::toString(jitOrErr.takeError()) << "\n";
-        out.errorCode = 1;
-        return out;
-    }
-    out.jit = std::move(*jitOrErr);
-
-    // GDB JIT symbolization. On in debug mode (so `cajeta jit-run -g` yields
-    // named JIT frames under a debugger instead of bare addresses), off in
-    // release (enableDebuggerSupport installs a JITLink plugin that synthesizes
-    // and registers a debug object per module — real per-module overhead paid
-    // whether or not a debugger ever attaches). CAJETA_JIT_GDB=1 force-enables
-    // it regardless of mode for ad-hoc release-JIT diagnostics. Requires the
-    // JITLink ObjectLinkingLayer (the LLVM 22 default on x86-64 ELF); on RTDyld
-    // it returns an Error we surface and continue (symbolization simply absent).
-    if (opts.debugInfo || std::getenv("CAJETA_JIT_GDB")) {
-        if (auto err = llvm::orc::enableDebuggerSupport(*out.jit)) {
-            std::cerr << "cajeta jit: GDB symbolization unavailable: "
-                      << cajeta::jit::toString(std::move(err)) << "\n";
-        }
-    }
-
-    if (auto err = out.jit->addIRModule(std::move(tsModule))) {
-        std::cerr << "cajeta jit: addIRModule failed: "
-                  << cajeta::jit::toString(std::move(err)) << "\n";
-        out.jit.reset();
-        out.errorCode = 1;
-        return out;
-    }
-
-    auto& mainDylib = out.jit->getMainJITDylib();
-    auto generator = llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
-        out.jit->getDataLayout().getGlobalPrefix());
-    if (!generator) {
-        std::cerr << "cajeta jit: process-symbol generator failed: "
-                  << cajeta::jit::toString(generator.takeError()) << "\n";
-        out.jit.reset();
-        out.errorCode = 1;
-        return out;
-    }
-    mainDylib.addGenerator(std::move(*generator));
-
-    {
-        size_t winSymCount = 0;
-        const JitWinSym* winSyms = winJitSymbols(&winSymCount);
-        if (winSymCount) {
-            auto& execSession = out.jit->getExecutionSession();
-            llvm::orc::SymbolMap winSymMap;
-            for (size_t i = 0; i < winSymCount; ++i) {
-                winSymMap[execSession.intern(winSyms[i].name)] =
-                    llvm::orc::ExecutorSymbolDef(
-                        llvm::orc::ExecutorAddr::fromPtr(winSyms[i].addr),
-                        llvm::JITSymbolFlags::Exported);
-            }
-            cajeta::jit::cantFail(
-                mainDylib.define(llvm::orc::absoluteSymbols(std::move(winSymMap))));
-        }
-    }
-
-    // Native-dependency JIT generators (native-deps unit 8). For each
-    // referenced @Native lib, resolve a LOCAL artifact (.cja native/ extraction
-    // / CAJETA_NATIVE_PATH / ~/.cajeta/native — never the network) and add an
-    // ORC generator so its symbols resolve at materialization. Lazy → a lib
-    // whose symbols are never materialized is never loaded (DCE for JIT). A
-    // genuinely-referenced-but-absent lib surfaces as an undefined symbol at
-    // materialization (precise placement message lands in unit 11).
-    if (!liveNativeLibs.empty()) {
-        auto& execSession = out.jit->getExecutionSession();
-        const char prefix = out.jit->getDataLayout().getGlobalPrefix();
-        const std::string platform = cajeta::hostNativePlatform();
-        const std::vector<std::string> dirs = cajeta::nativeLinkSearchDirs();
-        for (const auto& lib : liveNativeLibs) {
-            auto art = cajeta::findNativeJitArtifact(lib, platform, dirs);
-            if (!art) continue;  // absent → lazy lookup fails loud only if needed
-            if (art->isStatic) {
-                auto gen = llvm::orc::StaticLibraryDefinitionGenerator::Load(
-                    out.jit->getObjLinkingLayer(), art->path.c_str());
-                if (gen) mainDylib.addGenerator(std::move(*gen));
-                else std::cerr << "cajeta jit: native lib '" << lib
-                               << "' load failed: "
-                               << cajeta::jit::toString(gen.takeError()) << "\n";
-            } else {
-                auto gen = llvm::orc::DynamicLibrarySearchGenerator::Load(
-                    art->path.c_str(), prefix);
-                if (gen) mainDylib.addGenerator(std::move(*gen));
-                else std::cerr << "cajeta jit: native lib '" << lib
-                               << "' load failed: "
-                               << cajeta::jit::toString(gen.takeError()) << "\n";
-            }
-        }
-    }
-    // NOTE: the fp128 soft-float helpers (__trunctfdf2, __fixtfdi, ...) that the
-    // stdlib's Float128 emits are NOT installed here. Apple arm64 has no
-    // __float128 type and ships no compiler-rt tf family, so there is nothing to
-    // take the address of. Instead they are compiled (as target-neutral integer
-    // IR) into the embedded runtime bitcode and linked into every JIT module —
-    // see runtime/native/cajeta_fp128_builtins.ll and src/CMakeLists.txt.
-
-    if (auto err = out.jit->initialize(mainDylib)) {
-        std::cerr << "cajeta jit: LLJIT initialize failed: "
-                  << cajeta::jit::toString(std::move(err)) << "\n";
-        out.jit.reset();
-        out.errorCode = 1;
-        return out;
+    // Populate the whole-program slot (4.2.3): the bytes are EXACTLY what the
+    // LLJIT round-trip just consumed, so a hit replays this build bit-for-bit.
+    if (!opts.cacheDir.empty()) {
+        writeWholeProgramSlot(
+            WholeProgramSlot{fs::path(opts.cacheDir) / "jit"
+                             / wholeProgramKey(opts, sourcePaths, sourceRoot)},
+            out, llvm::StringRef(bitcodeBuf.data(), bitcodeBuf.size()),
+            opts.debugInfo);
     }
     endPhase(out.phases.jitSeconds);
 
@@ -684,6 +934,7 @@ int runJit(const JitRunOptions& opts, JitRunResult* result) {
     if (result) {
         result->entrySafepointsEmitted = built.entrySafepointsEmitted;
         result->phases = built.phases;
+        result->cacheHit = built.cacheHit;
     }
 
     auto entrySym = jit->lookup(built.entryName);
@@ -701,7 +952,7 @@ int runJit(const JitRunOptions& opts, JitRunResult* result) {
     // the no-arg one (spec 7.2.5 — the UB the old narrowing guarded against).
     void* entryArgs = nullptr;
     if (built.entryTakesArgs) {
-        entryArgs = makeEntryArgs(jit, opts.programArgs);
+        entryArgs = makeEntryArgs(jit, opts.programArgs, built.entryArgsABI);
         if (!entryArgs) {
             std::cerr << "cajeta jit: entry `" << opts.entryMethod
                       << "` takes String[] but the args array could not be "
@@ -924,7 +1175,8 @@ std::unique_ptr<JitDebugSession> startDebugSession(
     // clean launch failure rather than a crash inside the debuggee.
     void* entryArgs = nullptr;
     if (takesArgs) {
-        entryArgs = makeEntryArgs(jit, opts.programArgs);
+        entryArgs = makeEntryArgs(jit, opts.programArgs,
+                                  impl->built.entryArgsABI);
         if (!entryArgs) {
             if (error) *error = "entry takes String[] but args could not be built";
             {
@@ -982,6 +1234,9 @@ int dispatchJitRun(int argc, const char* argv[]) {
             opts.debugInfo = true;
         } else if (a == "--debug-info=off") {
             opts.debugInfo = false;
+        } else if (a.rfind("--cache-dir=", 0) == 0) {
+            // fast-debug-launch 4.2.1: whole-program JIT cache root.
+            opts.cacheDir = a.substr(std::string("--cache-dir=").size());
         } else if (a == "--diag-format=json") {
             // Route an uncaught throw through the runtime NDJSON emitter. The
             // in-process JIT runtime reads CAJETA_DIAG_FORMAT lazily on the first

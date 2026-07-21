@@ -124,6 +124,7 @@ TEST(DbgLocSidecar, RoundTripsSparseTable) {
     t.add("A.cajeta", 10, 2, "demo.A::main");                    // 0
     t.add("A.cajeta", 11, 2, "demo.A::main");                    // 1
     t.setAt(5, {"weird\tname.cajeta", 3, 1, "demo.W::f"});       // hole 2..4
+    t.add("A.cajeta", 12, 2, "");   // 6 — EMPTY function (clinit-style entry)
     auto path = tempSidecarPath();
     ASSERT_TRUE(cajeta::dbg::writeDbgLocSidecar(path.string(), t));
 

@@ -33,6 +33,12 @@ namespace cajeta::jit {
         std::vector<std::string> programArgs;
         // Reserved for CP2+: emit __cajeta_dbg_safepoint polls + debug frames.
         bool debugInfo = false;
+        // Whole-program JIT cache root (fast-debug-launch 4.2.1). Non-empty
+        // enables the cache: a slot keyed on compiler version+flags+entry+
+        // source digests holds the MERGED program bitcode + sidecars, and a
+        // launch whose key matches loads it without constructing a Compiler.
+        // Empty = today's full compile, unconditionally.
+        std::string cacheDir;
         // Optional build-progress callback (fast-debug-launch 1.2.2). Invoked
         // from the calling thread at phase boundaries — phase is one of
         // "collect", "parse", "codegen", "finalize", "merge", "jit" — and once
@@ -72,6 +78,9 @@ namespace cajeta::jit {
         long safepointsExecuted = 0;
         // Build-phase wall-clock breakdown (fast-debug-launch 1.2.1).
         JitBuildPhases phases;
+        // True when this launch was served from the whole-program cache slot
+        // (fast-debug-launch 4.1.1) — no Compiler was constructed.
+        bool cacheHit = false;
     };
 
     // Compile + JIT + run. Returns the process-style exit code (0 on success,

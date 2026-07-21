@@ -104,8 +104,12 @@ namespace {
             if (!std::getline(fields, idStr, '\t') ||
                 !std::getline(fields, lineStr, '\t') ||
                 !std::getline(fields, colStr, '\t') ||
-                !std::getline(fields, fileEsc, '\t') ||
-                !std::getline(fields, fnEsc)) return false;
+                !std::getline(fields, fileEsc, '\t')) return false;
+            // The function field is allowed to be EMPTY (DbgLoc.function may
+            // be empty — e.g. clinit statements), and getline on the
+            // exhausted tail then reports failure with nothing read. That is
+            // an empty field, not a malformed line.
+            if (!std::getline(fields, fnEsc)) fnEsc.clear();
             DbgLoc loc;
             int32_t id;
             try {
