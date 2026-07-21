@@ -3436,6 +3436,62 @@ public class Tensor<T> {
     public static #Tensor<E> ceil<E extends Floating>(Tensor<E> a) { return Tensor.ufloat<E>(a, 6); }
     /** Elementwise round (floating; round-half-up per `Math.round`). */
     public static #Tensor<E> round<E extends Floating>(Tensor<E> a) { return Tensor.ufloat<E>(a, 7); }
+    /**
+     * Reduce `g` back to `like`'s shape by SUMMING over the axes broadcasting
+     * expanded (right-aligned; leading extra axes and size-1 axes of `like`
+     * both sum) — the shape-restoring backward of a broadcast forward
+     * (PyTorch's `sum_to`). Same-shape input returns a fresh copy. The
+     * widened `add`/`sub` VJP rules emit this so a broadcast bias's gradient
+     * comes back bias-shaped (nucleo-nn-optim U4).
+     */
+    public static #Tensor<E> sumTo<E extends Numeric>(Tensor<E> g, Tensor<E> like) {
+        int32 gd = (int32) g.shapeDims.count();
+        int32 ld = (int32) like.shapeDims.count();
+        int64[] ls = heap int64[ld];
+        int32 c = 0;
+        while (c < ld) {
+            ls[c] = like.shapeDims[c];
+            c = c + 1;
+        }
+        Tensor<E> acc = Tensor.zeros<E>(ls);
+        int64 n = Tensor.productOf(g.shapeDims);
+        int64[] gi = heap int64[gd];
+        int32 k = 0;
+        while (k < gd) {
+            gi[k] = 0;
+            k = k + 1;
+        }
+        int64[] li = heap int64[ld];
+        int64 lin = 0;
+        while (lin < n) {
+            E v = g.getAt(gi);
+            int32 a = 0;
+            while (a < ld) {
+                int64 gv = gi[a + (gd - ld)];
+                if (like.shapeDims[a] == 1) {
+                    li[a] = 0;
+                } else {
+                    li[a] = gv;
+                }
+                a = a + 1;
+            }
+            acc.setAt(li, acc.getAt(li) + v);
+            lin = lin + 1;
+            int32 ax = gd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                gi[ax] = gi[ax] + 1;
+                if (gi[ax] >= g.shapeDims[ax]) {
+                    gi[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        return #acc;
+    }
+
     /** Elementwise rectified linear unit: `max(v, 0)` (floating). Differentiable
      *  (VJP registered); its gradient is {@link #reluMask}. */
     public static #Tensor<E> relu<E extends Floating>(Tensor<E> a) { return Tensor.ufloat<E>(a, 8); }
