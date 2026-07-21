@@ -14,7 +14,7 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [run-config-ergonomics](run-config-ergonomics-spec.md) | [plan](../agents/run-config-ergonomics-plan.md) | active — spec approved 2026-07-18; plan awaiting approval; Units 1-6 unstarted |
 | [dap-stepping](dap-stepping-spec.md) | [plan](../agents/dap-stepping-plan.md) | active — Units 1-3 implemented and green 2026-07-20 (e685c697, 161477ae, e3bb926f); plugin installed in both CLions; remaining: 3.3.2 live F8/F7/Shift-F8 pass on tour |
 | [fast-debug-launch](fast-debug-launch-spec.md) | [plan](../agents/fast-debug-launch-plan.md) | active — Units 1-7 delivered 2026-07-21, tour warm launch 42.6s→0.45s; edit loop spun off to resident-debug-server; remaining: live passes 2.3.1/10.3.x |
-| [resident-debug-server](resident-debug-server-spec.md) | — | draft — spec authored 2026-07-21 (fast-debug-launch 7.3.2 decision); plan next |
+| [resident-debug-server](resident-debug-server-spec.md) | [plan](../agents/resident-debug-server-plan.md) | active — spec + plan approved 2026-07-21; Units 1-7 unstarted (v1 coarse ~15s at Unit 4, v2 seconds at Unit 6) |
 | [silent-resolution-diagnostics](silent-resolution-diagnostics-spec.md) | [plan](../agents/silent-resolution-diagnostics-plan.md) | active |
 | [docs-refactor](docs-refactor-spec.md) | [plan](../agents/docs-refactor-plan.md) | active |
 | [cja-source-view](cja-source-view-spec.md) | [plan](../agents/cja-source-view-plan.md) | active |
