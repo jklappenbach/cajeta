@@ -4688,9 +4688,16 @@ namespace cajeta {
         // A reified runtime check is warranted (and sound) when the lhs is a
         // wildcard, or a different instantiation of the same generic base, and the
         // target is a concrete class instantiation we can name.
+        // nucleo-nn U2 widened this: a CLASS-typed lhs whose static type differs
+        // from the target is the plain downcast question (`Object o` from a
+        // reflective walk, a base-typed ref) — the static type cannot pin the
+        // answer, so it must also ask the RTTI (previously it folded to FALSE,
+        // which made `o instanceof Parameter` on an Object-typed value lie).
         auto targetClass = dynamic_pointer_cast<CajetaClass>(type);
+        bool lhsIsClass = (bool) dynamic_pointer_cast<CajetaClass>(lhsType);
         bool wantRuntime = targetClass && targetConcrete && lhsType
-            && lhsCanon != targetCanon && (lhsIsWildcard || sameBase);
+            && lhsCanon != targetCanon
+            && (lhsIsWildcard || sameBase || lhsIsClass);
 
         // Class-bounded-wildcard target `Base<? extends Bound>` (§5): not a
         // concrete instantiation (so `wantRuntime` is false), but still a real

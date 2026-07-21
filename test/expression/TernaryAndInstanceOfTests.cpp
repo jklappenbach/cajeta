@@ -109,3 +109,36 @@ TEST(InstanceOfTests, mismatchingPrimitive) {
     auto fn = jit->lookup<bool (*)()>("run");
     EXPECT_FALSE(fn());
 }
+
+// nucleo-nn U2 — the "real RTTI / class-hierarchy walks are future work" note
+// above is now half-retired: a CLASS-typed lhs whose static type differs from
+// the target (the plain downcast question — an Object-typed value from a
+// reflective walk, a base-typed ref) asks the RTTI at runtime instead of
+// folding to false, and the runtime is-a walk is TRANSITIVE (parent names
+// resolve through the class registry, level by level).
+TEST(InstanceOfTests, objectLhsAsksRttiAndChainIsTransitive) {
+    std::string src =
+        "package test;\n"
+        "public class A { public int32 tag() { return 1; } }\n"
+        "public class B extends A { }\n"
+        "public class C extends B { }\n"
+        "public final class T {\n"
+        "    public static int32 run() {\n"
+        "        C c = heap C();\n"
+        "        Object o = c;\n"
+        "        int32 acc = 0;\n"
+        "        if (o instanceof C x) { acc = acc + 1; }\n"       // exact
+        "        if (o instanceof B y) { acc = acc + 10; }\n"      // one level
+        "        if (o instanceof A z) { acc = acc + 100; }\n"     // transitive
+        "        A a = heap A();\n"
+        "        Object oa = a;\n"
+        "        if (oa instanceof C w) { acc = acc + 1000; }\n"   // downcast miss
+        "        return acc;\n"
+        "    }\n"
+        "}\n";
+    auto jit = cajeta_test::CajetaJit::compile(src, "test.T");
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 111);
+}

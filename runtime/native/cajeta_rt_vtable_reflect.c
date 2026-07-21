@@ -732,6 +732,32 @@ void* __cajeta_object_get_class(void* obj) {
 // obj -> vtable(slot 0) -> classObject(+CAJETA_VTABLE_CLASSOBJECT_OFFSET) ->
 // rtti(classObject+8). Returns 1 on match, 0 otherwise. Null-safe — the backbone
 // of `instanceof Tensor<float32>` and the `(Tensor<float32>) w` capture cast.
+// Resolve a registered class name to its rtti through the REFL-8 registry
+// (defined below) — lets the isa walk cross MORE than one inheritance level:
+// parent NAMES are strings, so each level re-enters via its registered class.
+static void* cajeta_registry_rtti_for(const char* name);
+
+// Transitive is-a by canonical name: exact match, else recurse through every
+// parent name (depth-capped — inheritance chains are shallow; the cap only
+// guards a corrupt cyclic table). nucleo-nn U2 widened this from the original
+// one-level check so `o instanceof Base` holds through deep chains.
+static int32_t cajeta_rtti_isa_named(void* rttiP, const char* targetName,
+                                     int depth) {
+    if (!rttiP || depth > 32) return 0;
+    CajetaRtti* r = (CajetaRtti*) rttiP;
+    if (r->typeName && strcmp(r->typeName, targetName) == 0) return 1;
+    for (int32_t i = 0; i < r->parentCount; ++i) {
+        const char* pn = r->parentNames ? r->parentNames[i] : NULL;
+        if (!pn) continue;
+        if (strcmp(pn, targetName) == 0) return 1;
+        if (cajeta_rtti_isa_named(cajeta_registry_rtti_for(pn), targetName,
+                                  depth + 1)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int32_t __cajeta_instanceof_named(void* obj, const char* targetName) {
     if (!obj || !targetName) return 0;
     void* vtable = *(void**) obj;                 // header slot 0
@@ -740,16 +766,7 @@ int32_t __cajeta_instanceof_named(void* obj, const char* targetName) {
         *(void**) ((char*) vtable + CAJETA_VTABLE_CLASSOBJECT_OFFSET);
     if (!classObject) return 0;
     void* rtti = *(void**) ((char*) classObject + 8);
-    if (!rtti) return 0;
-    CajetaRtti* r = (CajetaRtti*) rtti;
-    if (r->typeName && strcmp(r->typeName, targetName) == 0) return 1;
-    for (int32_t i = 0; i < r->parentCount; ++i) {
-        if (r->parentNames && r->parentNames[i]
-                && strcmp(r->parentNames[i], targetName) == 0) {
-            return 1;
-        }
-    }
-    return 0;
+    return cajeta_rtti_isa_named(rtti, targetName, 0);
 }
 
 // --- cajeta.reflect class registry (REFL-8) --------------------------------
@@ -765,6 +782,18 @@ int32_t __cajeta_instanceof_named(void* obj, const char* targetName) {
 static struct { const char* name; void* classObject; }* g_cajeta_classes = NULL;
 static int g_cajeta_class_count = 0;
 static int g_cajeta_class_cap   = 0;
+
+static void* cajeta_registry_rtti_for(const char* name) {
+    if (!name) return NULL;
+    for (int i = 0; i < g_cajeta_class_count; ++i) {
+        if (g_cajeta_classes[i].name
+                && strcmp(g_cajeta_classes[i].name, name) == 0) {
+            void* co = g_cajeta_classes[i].classObject;
+            return co ? *(void**) ((char*) co + 8) : NULL;
+        }
+    }
+    return NULL;
+}
 
 void __cajeta_register_class(const char* name, void* classObject) {
     if (!name || !classObject) return;
@@ -1195,6 +1224,44 @@ void* __cajeta_field_get_ref(void* obj, void* rtti, int32_t idx) {
     int32_t off = cajeta_field_offset(rtti, idx);
     if (!obj || off < 0) return NULL;
     return *(void**) ((char*) obj + off);
+}
+// nucleo-nn-optim U2: borrow-read the reference field at `idx` of `obj`,
+// deriving the rtti from obj's own vtable (obj -> vtable(slot 0) ->
+// classObject(+CAJETA_VTABLE_CLASSOBJECT_OFFSET) -> rtti(classObject+8)).
+// Single-object provenance keeps the cajeta-side declaration a legal borrow
+// return (`this` + a scalar index — the multi-reference-param borrow shape is
+// rejected by the checker). The caller kind-checks; this just reads the slot.
+// Defined in cajeta_rt_inject.c (included after this file in the single-TU
+// build): the field's return-kind classifier (6 = reference).
+int32_t __cajeta_rtti_field_kind(void* rtti, int32_t idx);
+
+static void* cajeta_object_rtti(void* obj) {
+    if (!obj) return NULL;
+    void* vtable = *(void**) obj;
+    if (!vtable) return NULL;
+    void* classObject =
+        *(void**) ((char*) vtable + CAJETA_VTABLE_CLASSOBJECT_OFFSET);
+    if (!classObject) return NULL;
+    return *(void**) ((char*) classObject + 8);
+}
+void* __cajeta_object_field_ref(void* obj, int32_t idx) {
+    return __cajeta_field_get_ref(obj, cajeta_object_rtti(obj), idx);
+}
+// Object-receiver companions for the self-walk (nucleo-nn's Module): count,
+// reference-kind test, and name of the receiver's OWN fields, rtti derived
+// from the object — no Class<?> object needed (wildcard-receiver member
+// resolution is not available to stdlib code today).
+int32_t __cajeta_object_field_count(void* obj) {
+    return __cajeta_rtti_field_count(cajeta_object_rtti(obj));
+}
+int32_t __cajeta_object_field_is_ref(void* obj, int32_t idx) {
+    return __cajeta_rtti_field_kind(cajeta_object_rtti(obj), idx) == 6 ? 1 : 0;
+}
+int32_t __cajeta_object_field_name_len(void* obj, int32_t idx) {
+    return __cajeta_rtti_field_name_len(cajeta_object_rtti(obj), idx);
+}
+void __cajeta_object_field_name_into(void* obj, int32_t idx, void* out) {
+    __cajeta_rtti_field_name_into(cajeta_object_rtti(obj), idx, out);
 }
 // Method `idx`'s canonical signature name length / copy (parallel to the field
 // name readers). Used to locate a method by name and for diagnostics.
