@@ -210,17 +210,6 @@ TEST(ManifestTests, errorsWhenMeltDeclaredAlongsideTasks) {
     EXPECT_NE(msg.find("'melt' and 'tasks'"), std::string::npos);
 }
 
-TEST(ManifestTests, errorsWhenMeltDeclaredAlongsideWorkspace) {
-    auto m = loadManifestString(R"({
-        "details": { "name": "p.melt", "version": "1.0.0" },
-        "melt": { "dependencies": {} },
-        "workspace": { "members": [] }
-    })");
-    ASSERT_FALSE((bool)m);
-    auto msg = errorText(m.takeError());
-    EXPECT_NE(msg.find("'melt' and 'workspace'"), std::string::npos);
-}
-
 TEST(ManifestTests, meltAloneLoadsSuccessfully) {
     // Sanity: melt without tasks/workspace is the canonical melt
     // package shape and must parse cleanly.

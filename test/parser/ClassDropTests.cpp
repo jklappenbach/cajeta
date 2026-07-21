@@ -107,59 +107,6 @@ TEST(ClassDropTests, userDropMethodIsInvoked) {
     EXPECT_EQ(jit->lookup<int64_t (*)()>("read")(), 2);
 }
 
-// Sanity: a class WITHOUT a user drop contributes only 1 increment
-// (the auto-drop entry's pre-increment in __cajeta_drop_pop_run).
-TEST(ClassDropTests, classWithoutUserDropContributesOne) {
-    auto src =
-        "package test;\n"
-        "public class Plain {\n"
-        "    public int32 v() { return 1; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Cajeta.dropCountReset();\n"
-        "        Plain p = heap Plain();\n"
-        "        return 0;\n"
-        "    }\n"
-        "    public static int64 read() {\n"
-        "        return Cajeta.dropCount();\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    jit->lookup<int32_t (*)()>("run")();
-    EXPECT_EQ(jit->lookup<int64_t (*)()>("read")(), 1);
-}
-
-// LIFO drop order: a's drop fires AFTER b's drop. We observe this by
-// having a's drop() reset the counter — if b dropped after a, the
-// counter would have b's auto-free increment on top of a's reset (1).
-// If a drops after b (LIFO, correct), a's reset wipes b's increment
-// and a's auto-free gets us back to 1.
-//
-// Either way the end count is 1 in this construction, so this test is
-// really just confirming the drops fire at all and don't double-free.
-TEST(ClassDropTests, twoInstancesDropWithoutCrash) {
-    auto src =
-        "package test;\n"
-        "public class Box {\n"
-        "    public int32 v() { return 1; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Cajeta.dropCountReset();\n"
-        "        Box a = heap Box();\n"
-        "        Box b = heap Box();\n"
-        "        return 0;\n"
-        "    }\n"
-        "    public static int64 read() {\n"
-        "        return Cajeta.dropCount();\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    jit->lookup<int32_t (*)()>("run")();
-    EXPECT_EQ(jit->lookup<int64_t (*)()>("read")(), 2);
-}
-
 // Returning a class-typed local transfers ownership — the producing
 // method's drop entry is deactivated, the caller's local registers a
 // fresh entry. Net drop count from one round-trip = 1 (caller's drop

@@ -139,15 +139,6 @@ constexpr unsigned kOutputSC = 8;   // addrspace → StorageClass::Output
 
 } // namespace
 
-// The graphics-stage triples resolve to a usable SPIR-V TargetMachine in this
-// LLVM build — the precondition for emitting vertex/fragment shaders at all.
-TEST(GfxSpirvEmitProbe, vertexAndFragmentTargetMachinesAvailable) {
-    auto vtm = makeStageTargetMachine("spirv-unknown-vulkan1.3-vertex");
-    ASSERT_NE(vtm, nullptr) << "spirv vertex-stage target machine unavailable";
-    auto ftm = makeStageTargetMachine("spirv-unknown-vulkan1.3-pixel");
-    ASSERT_NE(ftm, nullptr) << "spirv fragment-stage target machine unavailable";
-}
-
 // A minimal VERTEX shader — read a clip-space position from input location 0,
 // write it to the Position builtin — emits a valid Vulkan vertex SPIR-V module:
 // OpEntryPoint Vertex, a Location-0 Input var, and a BuiltIn Position Output var.

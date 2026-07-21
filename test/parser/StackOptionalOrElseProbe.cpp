@@ -70,29 +70,6 @@ int32_t runI32Direct(const std::string& body) {
 
 } // namespace
 
-// Baseline: two sequential locals, third terminal is isPresent/get.
-// Already pinned by ChannelTests.sequentialReceivesIsPresent — repeated
-// here for local diff against the failing variant.
-TEST(StackOptionalOrElseProbe, threeLocalsThirdIsPresentGet) {
-    int32_t v = runI32(
-        "    public static int32 run() {\n"
-        "        Channel<int32> ch = heap Channel<int32>(2);\n"
-        "        ch.send(11);\n"
-        "        ch.send(22);\n"
-        "        ch.close();\n"
-        "        Optional<int32> oa = ch.receive();\n"
-        "        int32 a = oa.get();\n"
-        "        Optional<int32> ob = ch.receive();\n"
-        "        int32 b = ob.get();\n"
-        "        Optional<int32> oc = ch.receive();\n"
-        "        int32 c = -1;\n"
-        "        if (oc.isPresent()) { c = oc.get(); }\n"
-        "        return a + b + c;\n"
-        "    }\n"
-    );
-    EXPECT_EQ(v, 32);  // 11 + 22 + (-1)
-}
-
 // Even smaller: one stack Optional<int32> with orElse(literal).
 TEST(StackOptionalOrElseProbe, singleStackOptionalOrElseLiteral) {
     int32_t v = runI32Direct(

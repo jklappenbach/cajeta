@@ -193,29 +193,3 @@ TEST(XpuWideBReadProbeTests, benchFaithfulBReadIsWide) {
     EXPECT_GT(b128_80, b128_66)
         << "torch's 8-aligned LDS stride (80, pad 16) should widen the col-major B read to ds_read_b128";
 }
-
-// U1.1.a/b/c: col-major B load vs the row-major control — record the routing verdict.
-TEST(XpuWideBReadProbeTests, bColMajorBReadWidensVsRowMajor) {
-    std::string isaRow = isaOf(srcWithBLayout(0), "bread");   // current behavior
-    std::string isaCol = isaOf(srcWithBLayout(1), "bread");   // hypothesis
-    ASSERT_FALSE(isaRow.empty()) << "row-major B kernel failed to lower";
-    ASSERT_FALSE(isaCol.empty()) << "col-major B kernel failed to lower";
-    EXPECT_EQ(isaCol.find("Cannot select"), std::string::npos) << isaCol;
-
-    Widths row = readWidths(isaRow);
-    Widths col = readWidths(isaCol);
-
-    bool kernelOnly = (col.u16 < row.u16) && (col.b128 > row.b128);
-    const char* verdict = kernelOnly
-        ? "KERNEL-ONLY (col-major B vectorizes; U2 codegen NOT needed → U3 layout)"
-        : "CODEGEN (col-major B did NOT widen; U2 codegen required)";
-
-    std::cerr << "[wide-b] matrix-B ds_read widths (1x A-frag + 1x B-frag):\n"
-              << "  row-major B (layout 0, current): b128=" << row.b128
-              << " b64=" << row.b64 << " u16=" << row.u16 << "\n"
-              << "  col-major B (layout 1, hypoth.): b128=" << col.b128
-              << " b64=" << col.b64 << " u16=" << col.u16 << "\n"
-              << "  VERDICT: " << verdict << "\n";
-
-    SUCCEED() << "probe measured; verdict logged for plan U1.3";
-}

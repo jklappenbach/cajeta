@@ -1,0 +1,74 @@
+# Per-plan regression manifest TEMPLATE — the middle tier, between
+# light_filter.txt and the full sweep. Copy to test/regression_manifest.txt and
+# edit it per plan.
+#
+# NOT TO BE CONFUSED WITH test/regression_filter.txt:
+#   regression_filter.txt   PERMANENT, tracked. The 563 tests that pin specific
+#                           previously-fixed bugs. Never edited per plan; it is
+#                           the suite's institutional memory.
+#   regression_manifest.txt THROWAWAY, per plan (gitignored). The suites the
+#                           plan you are working on touches, run exhaustively.
+# Both are consumed the same way: ./regression_tests.sh --manifest FILE
+#
+# WHAT THIS IS FOR
+# ----------------
+# The light sweep answers "did I break something broad?" in ~2.5 minutes. The
+# full sweep answers "is everything green?" in ~51 minutes. Neither answers the
+# question you actually have mid-plan: "did I break the subsystem I am
+# ACTIVELY changing?" — for which one representative per code path is far too
+# thin, and 5381 tests is far too slow.
+#
+# So a regression manifest is a per-plan, throwaway file: the SUITES the
+# current plan touches, run exhaustively. It is expected to change with every
+# plan and is not meant to be committed long-term (test/regression_manifest.txt
+# should be gitignored; this .example.txt is the tracked template).
+#
+# FORMAT
+# ------
+# One gtest pattern per line. Unlike light_filter.txt, prefer WHOLE SUITES
+# (`Suite.*`) — the point of this tier is exhaustiveness within a narrow blast
+# radius. `#` comments and blank lines ignored.
+#
+# COST MODEL
+# ----------
+# Whole suites are the cheap shape here. A JIT suite costs ~16s of stdlib prime
+# per process plus marginal per-test time, and BATCH=1 pays that prime ONCE for
+# the whole suite (splitting only at BATCH_MAX=16 tests per chunk). So running
+# all 44 tests of VectorTests costs barely more than running one of them. This
+# is the exact opposite of light_filter.txt's economics, where every line was a
+# new process.
+#
+# Rule of thumb: ~16s + (sum of the suite's per-test seed durations) / workers.
+# A 10-suite manifest over mid-size JIT suites lands in the 3-8 minute range.
+#
+# USAGE
+# -----
+#   ./regression_tests.sh                             # full sweep (unchanged)
+#   ./regression_tests.sh --manifest test/regression_manifest.txt
+#   REGRESSION_MANIFEST=test/regression_manifest.txt ./regression_tests.sh
+#
+# ---------------------------------------------------------------------------
+# EXAMPLE — a plan touching the title-stores / ownership machinery.
+# Delete all of this and write your own.
+# ---------------------------------------------------------------------------
+
+# Direct blast radius: everything that asserts on ownership bits and drops.
+TitleAssignTests.*
+FieldOwnershipBitsTests.*
+MemberBitmapTests.*
+ElementSlotSemanticsTests.*
+ArraySlotBitsTests.*
+DropGapTests.*
+LocalLinearityTests.*
+SignatureAbiTests.*
+
+# Second ring: the containers whose element-drop walks consume those bits.
+ContainerSweepTests.*
+ContainerTitleTests.*
+OwnershipLeakProbe.*
+OwnedProbe.*
+
+# Third ring: strings and slices share the stake/refcount machinery.
+SubstringSliceTests.*
+SharedFieldDropTests.*
+Utf8TaggedFormsTests.*

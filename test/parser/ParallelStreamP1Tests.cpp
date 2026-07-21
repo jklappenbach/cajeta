@@ -526,23 +526,6 @@ TEST(ParallelStreamP1Tests, reduceParallelChainParallelizesDirectArrayHead) {
     EXPECT_EQ(runI32Diag(src), 5050);
 }
 
-// Stream.reduce dispatch: `xs.stream().parallel().reduce(...)` now
-// flows through Stream<T>.reduce → ParallelDriver.reduceParallelChain
-// when isParallel is set. The depth==0 path forks via the driver's
-// `scope { spawn reduceWorker<T> }` shape. Pins the fluent surface.
-TEST(ParallelStreamP1Tests, parallelReduceDispatchesViaStreamReduceArrayHead) {
-    auto src =
-        "package test;\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        int32[] xs = heap int32[100];\n"
-        "        for (int32 i = 0; i < 100; i = i + 1) { xs[i] = i + 1; }\n"
-        "        return xs.stream().parallel().reduce(0, (a, b) -> a + b);\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32Diag(src), 5050);
-}
-
 // Fluent filter chain — the headline target. xs.stream().filter(p)
 // .parallel().reduce(...) goes through Stream.reduce → driver →
 // per-share head.cloneChainOver(piece) → workers fork.

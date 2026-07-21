@@ -1,0 +1,347 @@
+# Light sweep — the between-phase gate.
+#
+# Runs in ~90 seconds on the 32-core reference host. Its job is to answer one
+# question, fast: "did the phase I just finished break something broad?" It is
+# NOT a release gate and NOT a merge gate — those are release_filter.txt and
+# the full sweep respectively.
+#
+# RATIONALE
+# ---------
+# The full battery is 5381 tests / 26.7 CPU-hours / ~51 min wall. That is far
+# too slow to run between steps of a plan, so in practice it does not get run,
+# and breakage is discovered several phases late when it is expensive to
+# bisect. This file is the subset that buys the most breadth per second.
+#
+# The naive construction — "take every test under a second" — does not work
+# here. The median test costs ~10.4s (p25=5.5s, p75=27.9s) because most tests
+# JIT-compile a whole Cajeta program plus the stdlib prelude. Only 1024 rows in
+# test-durations.seed.tsv are <=1ms, and most of those are not "fast tests":
+# they are either pure-C++ buildtool unit tests (genuinely instant) or members
+# of shared-fixture suites whose one SetUpTestSuite compile is amortized away
+# and therefore INVISIBLE in the per-test timings. So the tier is picked by
+# hand, one representative per code path, not by a duration threshold.
+#
+# COST MODEL — MEASURED, and not what the seed durations suggest
+# --------------------------------------------------------------
+# MEASURED: 143s wall, 190 tests, 32 workers, NO_BUILD=1, on the 32-core host.
+#
+# Do NOT size this tier from the per-test numbers in test-durations.seed.tsv.
+# They are misleading, because the dominant cost is per-PROCESS, not per-test.
+# cajeta_tests.sh (BATCH=1) runs one process per suite, and every process that
+# touches the JIT pays a fixed stdlib prime. Measured directly, standalone:
+#
+#     ManifestTests.loadsAllSixTopLevelBlocks      0.01s   (seed:  0ms)
+#     NetSocketTests.tcpLoopbackEchoRoundTrips     0.01s   (seed:  0ms)
+#     BinaryOpTests.intAdd                        16.03s   (seed: 9947ms)
+#     DropGapTests.declareThenMoveAssign          16.21s   (seed:  0ms)
+#
+# So there are exactly two kinds of test here, and the seed file cannot tell
+# them apart:
+#   * pure C++ (buildtool, net native floor, CIR, archive) — ~0.01s. FREE.
+#   * anything that compiles Cajeta — ~16s floor per SUITE, whatever it asserts.
+#     A "0ms" DropGapTests row costs 16s the moment it is the only member of
+#     its process.
+#
+# This list touches 172 suites: 96 JIT-touching, 76 pure C++. The 96 JIT
+# processes alone are 96 x 16s = 1536 CPU-seconds = ~48s of the 143s wall
+# before a single assertion runs.
+#
+# THE LEVER, therefore, is DISTINCT JIT SUITE COUNT — not test duration:
+#   * Adding a test to a suite ALREADY listed here is nearly free (it joins an
+#     existing process and pays only its marginal time).
+#   * Adding a test from a NEW JIT suite costs ~16s CPU (~0.5s wall) even if
+#     the test itself is instant.
+#   * Adding pure-C++ tests is free. Add as many as you want.
+#   * Dropping a cheap test from an already-listed suite saves nothing.
+# When this tier gets too slow, consolidate representatives into fewer suites;
+# do not go hunting for slow individual tests.
+#
+# WHAT IS DELIBERATELY NOT HERE
+# -----------------------------
+# cajeta.math is represented by ONE test. The nine other math/gfx-math tests
+# the audit nominated (NumpyOps x4, DTypeTests, CastTests.roundToIntModes,
+# TensorTests.structuralOpsAreViews, GfxFrustumTests, GfxTransformTests) each
+# cost 61-84s of MARGINAL time on top of their suite prime, and together are
+# 687 CPU-seconds — 43% of this tier's measured test time for one subsystem.
+# They also pull in 5 new JIT suites (+80s CPU of prime). Estimated at ~+24s
+# wall on 32 workers, proportionally worse on fewer. Deferred to keep the base
+# gate honest on a laptop: run them via `./light_tests.sh --math`.
+#
+# Also absent, by construction: anything that forks the real `cajeta` binary
+# (IncrementalBuild.*, ReproducibleIr.EmittedIrIsByteIdentical*,
+# StackTraceText.*, CajetaArchiveEmitTests.*), anything needing live network,
+# DNS, or a cloud CLI, anything multi-threaded/timing-sensitive
+# (HashMapStreamParallelTests.*), and every large-N stress sweep. Those are the
+# exhaustive tier — they are valuable, they are just not diagnostic ENOUGH per
+# second to justify a place in a gate that must stay under two minutes.
+#
+# FORMAT
+# ------
+# One gtest filter pattern per line. Unlike release_filter.txt, these are
+# FULLY-QUALIFIED `Suite.test` names, not `Suite.*` wildcards — the whole point
+# is to take one representative per code path, not whole suites. Blank lines
+# and `#` comments are ignored. light_tests.sh joins the patterns with `:` into
+# a single --gtest_filter.
+#
+# MAINTENANCE
+# -----------
+# light_tests.sh fails loudly if any pattern matches zero discovered tests, so
+# a rename cannot silently turn a line into a no-op and shrink the gate. When
+# you add a subsystem, add ONE representative here — pick the cheapest test
+# that still touches the whole path, and prefer a test whose failure message
+# localizes the break. If your pick costs more than 78s you have moved the
+# critical path and made every future run of this gate slower; say so in the
+# commit message.
+
+# --- Build tool: manifest / resolver / lockfile core --------------------
+# All hermetic pure-C++ (0-1ms each); the entire block is effectively free and
+# covers the layer every `cajeta build` invocation walks before compiling.
+JsonCTests.parsesRealisticManifestFragment
+ManifestTests.loadsAllSixTopLevelBlocks
+ManifestEditorTests.roundTripAddThenRemoveReturnsSameDecls
+PropertiesTests.topologicalResolutionAcrossThreeLevels
+YamlTests.scalarTypingAndMap
+FrontMatterSplitTests.splitsHeaderAndBody
+DependencyTests.versionSatisfiesRangeOperators
+DependencyTests.mvsRepicksOnTighterChildConstraint
+DependencyTests.projectResolutionEndToEnd
+LockfileTests.sha256MatchesKnownVector
+LockfileTests.writeReadRoundTrip
+IrCacheTests.storeThenLookupRoundTrips
+SourceDigestTests.modifyingImportedFileChangesDependent
+PrimeCacheKeyTests.liveStdlibKeyIsStable
+ResolverTimingsTests.countersOnSingleDirectDep
+PathOverrideTests.projectResolutionWiresPathOverride
+UpgraderTests.picksHighestAvailableVersion
+
+# --- Build tool: repositories, melts, olla, natives ---------------------
+HttpRepositoryTests.listVersionsParsesV1Response
+GitRepositoryTests.listVersionsReturnsDeclaredVersionOnMatch
+MeltParserTests.parseMeltCapturesAllExportableFields
+MeltResolverTests.singleMeltAggregatesConstraints
+MeltResolverTests.projectResolutionAppliesStarFromMelt
+MeltUpgraderTests.planFindsHighestVersionAcrossRepos
+OllaStoreTest.WriteReadRoundTrip
+OllaWriteThroughTest.RemoteFetchWritesThroughThenServesLocally
+NativeDepsManifestTests.parsesFullNativeLibrariesBlock
+NativeResolverCollectTests.unionsTwoDeps
+NativeResolverResolveTests.probeOrderFirstHitWins
+NativePackagingTests.bakesArtifactAndMetadata
+NativeProvisionTests.cacheProviderResolvesOffline
+
+# --- Build tool: actions, tasks, plugins, phase acceptances -------------
+ActionCatalogTests.versionBumpPatchMutatesManifest
+BuildActionTests.settingsBuildParsesBinariesRegistry
+CleanActionTests.defaultRemovesBuildDir
+TestActionTests.passingBinaryReportsPassed
+CoverageReportTests.parseSimpleMap
+TaskRunnerTests.threadsActionOutputsToLaterActions
+TasksJson.GoldenShapeMatchesSpecSection3
+PluginTests.resolvePluginsFetchesHighestSatisfying
+PluginRuntimeTests.propagatesOutputsFromProtocolStream
+InitTemplateTests.everyManifestParses
+FlavorTests.effectivePropertiesMergesBuiltInAndOverrides
+FlavorTests.toCompilerFlagsRendersDeterministically
+Phase7AcceptanceTests.testActionCoverageEmitsHtmlConsoleAndSarif
+Phase8AcceptanceTests.releaseStringResolvesToBuiltInBundle
+Phase9AcceptanceTests.packageCacheHitsSkipUnchangedInput
+Phase10AcceptanceTests.trustAddThenVerifyEndToEnd
+Phase11.reproducibilityFlagsCarrySourceDateEpochAndPrefixMap
+Phase12.threeMemberWorkspaceBuildsInOneInvocation
+Phase13.provenanceVerifyAcceptsValidDoc
+Phase14.dispatchReExecsWhenPinnedInstalled
+
+# --- Build tool: skills (parse / index / match / search / package) ------
+SkillDocumentTests.parsesValidSkill
+SkillIndexTests.serializeDeserializeRoundTrips
+SkillMatcherTests.singleSegmentTypoResolves
+SkillSearchTests.hierarchicalPrefixInclusive
+SkillGetTests.batchAcrossArchivesByteIdentical
+EmbeddedStdlibSkillsTests.archivesCoverStdlibLibraries
+StdlibSkillDiscoveryTests.contextSeededWithStdlibWhenNoPackages
+
+# --- Compiler front end / archive / IR plumbing -------------------------
+CompilerTests.canParseOnValidShortPackage
+CompilationContextTests.perThreadIsolation
+TypeRegistryThreadLocalTests.enumRegistryIsThreadLocal
+OptimizerInlineTests.alwaysInlineFoldsAtO0
+NativeLinkTests.prunedSymbolExcluded
+CajetaArchiveTests.compressedRoundtripPreservesEntries
+CajetaArchiveTests.findEntryFindsByName
+ReproducibleIr.CreateModuleEmbedsSameNameAcrossRoots
+LintMode.SemanticErrorJsonEmitsNdjson
+MathLazyParseTests.lazyStdlibParseSkipsUnusedPackages
+
+# --- CIR / closure specialization / JIT dylib contract ------------------
+CirCoreTests.dumpRoundTripsStructure
+CirAnalysisTests.escapingParameterLeavesIndirect
+ClosureSpecializationTests.specializedInstanceCallsLambdaDirect
+ClosureForwardingTests.forwardingResultCorrect
+SharedStdlibDylibSpike.sharedStdlibResolvesAcrossUserDylibsCtorRunsOnce
+
+# --- Diagnostics / errors / throwables ----------------------------------
+DiagnosticEngine.FinalizeSortsBySpanAndDedups
+ExceptionLocation.CarriesSpanWhenBuiltWithOne
+ThrowableApi.getMessageRoundTrip
+DiagnosticJson.framesSerializeStackTrace
+ThrowableOptionalTests.toJsonByteIdentical
+UnsupportedExpressionTests.methodReferenceTypeThrowsNotImplemented
+
+# --- Core codegen: literals, arithmetic, control flow, casts, switch ----
+# The canary block. If the parse -> IR -> JIT -> lookup -> call pipeline is
+# broken at all, these fail first and cheapest.
+LiteralExpressionTests.integerLiteralZero
+LiteralExpressionTests.floatLiteralFloat64
+BinaryOpTests.intAdd
+CompareTests.lessOrEqual
+ControlFlowTests.whileBasicCounting
+ControlFlowTests.ifElseSelectsElse
+SwitchTests.defaultBranch
+SwitchExpressionTests.defaultArm
+CastTests.floatToInt
+FpTests.float64Precision
+LocalInitializerTests.widenedCopyAcrossWidths
+NamedArgumentTests.partialNamedSuffixReordered
+NullHandlingTests.bareNullAsClassRefArg
+EnhancedForTests.sumIntArray
+ConversionIntrinsicTests.roundTripIntStringInt
+MathIntrinsicTests.sqrtBasic
+TernaryIntCodegenTests.BoolLocalCondArithArm
+TernaryStringConcatTests.IntTernaryInConcatUnchanged
+LoopLocalAllocaTests.SlotAllocaInEntryBlock
+ScopeFrameElisionTests.spawnFreeMethodElidesScopeEnter
+
+# --- Arrays, inline arrays, bounds, overflow guards ---------------------
+ArrayTests.writeThenRead
+ArrayTests.boundsCheckFiresOnOutOfRange
+CompilerOptionTests.overflowChecksSignedAddTraps
+InlineArrayFieldTests.InlineAndHeapFieldsCoexistNoBleed
+InlineArrayFieldBoundsTests.ConstIndexAboveLengthErrors
+
+# --- Exceptions: throw / landingpad / catch dispatch --------------------
+TryCatchTests.throwValueAvailableInCatch
+CatchMatchingTests.firstMatchingClauseWins
+
+# --- Ownership, titles, transfer-word ABI, drop bookkeeping -------------
+# The highest-risk subsystem in the compiler and the one most likely to
+# regress silently (leaks and double-frees do not fail loudly). Every pick
+# here carries a Cajeta.liveCount() oracle folded into its return value.
+DropGapTests.declareThenMoveAssign
+DropGapTests.tempArgDrops
+DropGapTests.arrayElemMoveDrops
+DropGapTests.arrayElemTakeOut
+TitleAssignTests.localDeclParity
+FieldOwnershipBitsTests.ownedStoreDropsAtTeardown
+MemberBitmapTests.memberMoveOutForwardsAndClearsOnlyThatBit
+ElementSlotSemanticsTests.storeForwardsFlagTeardownDropsOwnedOnly
+ArraySlotBitsTests.slotExtractionMovesTitle
+StringElemStoreTests.fieldGrowCopyLoopKeepsElements
+SignatureAbiTests.forwardChainThreadsFlag
+SignatureAbiTests.freshReturnStillNeedsTransfer
+LocalLinearityTests.doubleCallArgTransferIsCompileError
+LocalLinearityTests.legalMoveChainSingleDrop
+TypeSigilRetirementTests.localDeclarationSigilRejected
+TransferAssignDeprecationTests.localDeclTransferAssignWarns
+PlainStoreDiagnosticTests.fieldStoreOfFormalWarns
+OwnedProbe.secondArgTransferredResolvesPerFormal
+OwnershipLeakProbe.arrayListOwnedElementsDropped
+ArenaArrayProbe.mixedScopeRoutedCorrectly
+SharedFieldDropTests.moveIsRcNeutral
+ObjectCloneTests.sliceCloneDetaches
+ValueCloneTests.referenceCloneIsDistinctObject
+
+# --- Strings, slices, Utf8, StringBuilder -------------------------------
+StringMethodsTests.equalsAfterConcat
+SubstringSliceTests.substringOutlivesSource
+StringBuilderSsoTests.BoundaryBuildsBitExactAndMetaCorrect
+Utf8Tests.equalityHashRepresentationIndependent
+Utf8TaggedFormsTests.copyRetainsSharedForm
+ViewSafeConsumerTests.xxhashViewParity
+
+# --- Collections (one representative per container family) --------------
+# Each of these costs 40-53s because it instantiates a stdlib container
+# template. They are the most expensive block here after cajeta.math; one
+# test per family is the ceiling this tier can afford.
+HashMapTests.putThenGet
+HashSetTests.addRemoveThenNotContains
+LinkedListTests.getReturnsValueAtIndex
+NewCollectionsTests.immutableSetDedupContains
+ContainerSweepTests.arrayListBorrowAddLeavesOwnerAlive
+HashMapStreamTests.valuesCountMatchesMapCount
+SortTests.sortAscending
+PrimitiveHashIntrinsicTests.int32HashIsDeterministic
+HashMapUserClassValueTests.noCtorClassDefaultConstructs
+HashMapUserClassValueTests.noCtorClassWithArgsIsHardError
+
+# --- SIMD / Vector / host vector intrinsics -----------------------------
+VectorHostGoldenIrTests.lowersToFlatVectorIntrinsics
+VectorTests.accStripeIntrinsicChain
+VectorRejectTests.componentOutOfRangeRejected
+Float64VectorTests.loadMulSum
+HostArrayVloadTests.vload4Int64
+SaxpyKernelTests.vectorizedExactNoTail
+QuaternionTests.hamiltonProductIJequalsK
+VqSortInt64Tests.randomLarge
+
+# --- Native bridge, file/system IO, paths -------------------------------
+NativeAnnotationTests.forwardsNoArgStatic
+FileIoTests.writeAllBytesRoundTripsViaReadAllBytes
+SystemIoTests.concatFromLocal
+PathTests.nameOfSimplePath
+
+# --- Net: native socket floor, reactor, non-blocking classifier ---------
+# Almost all 0-101ms — native extern "C" only, no JIT, loopback only. The
+# cheapest real coverage in the whole battery.
+NetSocketTests.tcpLoopbackEchoRoundTrips
+NetSockaddrTests.v4PackUnpackRoundTrips
+NetNonBlockingTests.wouldBlockClassifiedNotAsHardError
+NetReactorTests.readReadyAfterPeerSend
+NetReactorLifecycleTests.lazyInitLatches
+NetAsyncOpsTests.readAsyncLoopWakesOnPeerData
+LoopbackFixtures.tcpEchoRoundTripsPayload
+MockPeer.replaysCannedResponse
+TlsEngineTests.memoryBioHandshakeAndPlaintextRoundTrip
+
+# --- Net: server harnesses (lifecycle, models, backpressure) ------------
+ServerLifecycleHarnessTests.fullLifecycleReachesStopped
+FiberPerConnHarnessTests.oneFiberPerAcceptedConnection
+SharedPoolHarnessTests.allConnectionsHandledExactlyOnce
+ConnectionLimiterHarnessTests.capRefusesExcess
+ModelSelectionHarnessTests.sharedPoolModelSelectsModelBWithPoolSize
+ReactorHarnessTests.activeCountTracksRegisterDeregister
+
+# --- Net: compiler-side lowering + address/exception taxonomy -----------
+NetLoopbackEchoTest.loopbackEchoRoundTrips
+NetAddressTests.v4AndV6ParseRoundTrip
+NetExceptionTests.refusedCaughtBySpecificSubtype
+DnsCacheTests.cacheHitSkipsSecondLookup
+
+# --- URI ----------------------------------------------------------------
+UriResolveTests.rfc3986ReferenceResolutionVectors
+UriPercentTests.encodeDecodeRoundTripReservedAndUtf8
+UriQueryParamsTests.roundTripFormMode
+UriParseTests.malformedPortCitesPosition
+
+# --- gfx / ifx (headless only; no device, no swapchain presentation) ----
+GfxRenderGraphTests.dependenciesOfBuildsPrereqsThenSorts
+GfxPipelineConfigTests.vertexFormatBytesMapsVkFormats
+GfxFrameSyncTests.headlessSwapchainConstructsAndReportsDescription
+GfxGraphicsRegistrationTests.vertexAndFragmentShadersAutoRegister
+IfxFacadeTests.nullFloorsImplementAllThreeBackendInterfaces
+IfxRegistryTests.domainsSelectIndependently
+IfxRegistryTests.interactiveRequestWithOnlyNullFloorFailsLoudly
+IfxRegistryTests.sharedRegistryAutoRegistersNullWindowFloor
+
+# --- cajeta.math (ONE representative — see "WHAT IS NOT HERE" above) ----
+# Covers lazy cajeta.math parse, every Tensor factory, C-order stride
+# computation, and element reads. At 78.5s it IS this tier's critical path.
+TensorTests.tensorConstructionAndShape
+
+# --- MCP service --------------------------------------------------------
+# Deliberately empty. The MCP service is mid-migration onto the external
+# cajeta-http libs, and tools/mcp does not currently build on main
+# (CAJETA_ERROR_UNRESOLVED_EXPRESSION at :98:16). Both candidates below are
+# therefore parked rather than listed — a gate that starts red gets ignored.
+# Restore them once the http migration lands and the build is green:
+#   CajetaMcpServerTests.lifecycleAndErrors
+#   CajetaMcpServerTests.jitExecuteCapturesReturnAndStdout

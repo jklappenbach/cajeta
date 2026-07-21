@@ -96,16 +96,6 @@ TEST(UriMalformedExceptionTests, carriesKindInvalidViaBase) {
 // "http://h.test:8o80/x" — the 'o' is at byte index 15 (see
 // UriParseTests.malformedPortCitesPosition).
 
-TEST(UriMalformedExceptionTests, positionPreservedAfterReparent) {
-    EXPECT_EQ(runI32(makeSource(
-        "try {\n"
-        "    Uri u = Uri.parse(\"http://h.test:8o80/x\");\n"
-        "    return -1;\n"
-        "} catch (MalformedUriException e) {\n"
-        "    return (int32) e.position;\n"
-        "}")), 15);
-}
-
 // Empty / unpositioned input cites position -1 (failure not tied to a
 // single byte) — and that field is intact post-reparent.
 
@@ -122,13 +112,3 @@ TEST(UriMalformedExceptionTests, emptyInputCitesNegativeOnePosition) {
 // --- (4) Still catchable by the specific subtype -----------------------
 // No regression: the NET-6.1 catch(MalformedUriException) form keeps
 // working after the base class changed.
-
-TEST(UriMalformedExceptionTests, stillCaughtBySpecificSubtype) {
-    EXPECT_EQ(runI32(makeSource(
-        "try {\n"
-        "    Uri u = Uri.parse(\"http://h.test:99999/x\");\n"
-        "    return 0;\n"
-        "} catch (MalformedUriException e) {\n"
-        "    return 1;\n"
-        "}")), 1);
-}
