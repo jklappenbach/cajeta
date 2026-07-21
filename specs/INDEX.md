@@ -12,7 +12,7 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [ide-features](ide-features-spec.md) | [plan](../agents/ide-features-plan.md) | active — refactoring, hierarchy, call graph, gutter nav; blocked until ide-symbol-index closes |
 | [lint-server](lint-server-spec.md) | [plan](../agents/lint-server-plan.md) | active — Units 1–3 delivered and green (reuse parity; NDJSON `--lint-server` daemon; warm sibling-context reuse); Unit 4 (IntelliJ plugin client + lifecycle) next |
 | [run-config-ergonomics](run-config-ergonomics-spec.md) | [plan](../agents/run-config-ergonomics-plan.md) | active — spec approved 2026-07-18; plan awaiting approval; Units 1-6 unstarted |
-| [jit-drop-backfill](jit-drop-backfill-spec.md) | [plan](../agents/jit-drop-backfill-plan.md) | active — approved 2026-07-20; JIT lacks the AOT drop-thunk backfill, LLJIT init fails on non-trivial programs |
+| [jit-drop-backfill](jit-drop-backfill-spec.md) | [plan](../agents/jit-drop-backfill-plan.md) | active — Units 1-3 delivered 2026-07-20 (root cause: llvm::Linker lazy-discards linkonce_odr thunks at JIT merge; weak_odr pin + shared backfill); only 3.3.3 (Julian's live CLion pass) remains |
 | [silent-resolution-diagnostics](silent-resolution-diagnostics-spec.md) | [plan](../agents/silent-resolution-diagnostics-plan.md) | active |
 | [docs-refactor](docs-refactor-spec.md) | [plan](../agents/docs-refactor-plan.md) | active |
 | [cja-source-view](cja-source-view-spec.md) | [plan](../agents/cja-source-view-plan.md) | active |
