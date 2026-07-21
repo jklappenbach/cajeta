@@ -258,6 +258,55 @@ struct BuiltJit {
 };
 
 
+// Per-module debug-loc id ranges (resident-debug-server 3.2.1). Bases come
+// from an append-only name-keyed registry under the cache so an unchanged
+// module keeps its base across edits and file additions — that stability is
+// what keeps its -g IR byte-identical and its pooled object servable.
+// Without a cacheDir the slots are per-process (deterministic within a run).
+void assignDbgLocRanges(const std::string& cacheDir,
+                        const std::vector<cajeta::CajetaModulePtr>& modules) {
+    namespace fs = std::filesystem;
+    std::map<std::string, int32_t> slots;
+    int32_t next = 0;
+    fs::path reg;
+    if (!cacheDir.empty()) {
+        reg = fs::path(cacheDir) / "jit" / "locranges.map";
+        std::ifstream in(reg);
+        std::string line;
+        while (std::getline(in, line)) {
+            auto tab = line.find('\t');
+            if (tab == std::string::npos) continue;
+            int32_t slot = (int32_t) std::atoi(line.substr(0, tab).c_str());
+            slots[line.substr(tab + 1)] = slot;
+            next = std::max(next, slot + 1);
+        }
+    }
+    std::ofstream append;
+    if (!reg.empty()) {
+        std::error_code ec;
+        fs::create_directories(reg.parent_path(), ec);
+        append.open(reg, std::ios::app);
+    }
+    for (const auto& m : modules) {
+        const std::string name = m->remappedSourcePath();
+        int32_t slot;
+        auto it = slots.find(name);
+        if (it != slots.end()) {
+            slot = it->second;
+        } else {
+            slot = next++;
+            slots[name] = slot;
+            if (append.is_open()) append << slot << '\t' << name << '\n';
+        }
+        const int64_t base =
+            (int64_t)(slot) * cajeta::CajetaModule::kDbgLocRange;
+        if (base + cajeta::CajetaModule::kDbgLocRange
+                > (int64_t) INT32_MAX) continue;  // id space exhausted: dense fallback
+        m->dbgLocBase = (int32_t) base;
+        m->dbgLocUsed = 0;
+    }
+}
+
 // Content-addressed pools (resident-debug-server 2.2.3): every module's
 // bitcode and compiled object live under <cacheDir>/jit/{bcpool,objpool}/
 // keyed by the module's IR digest. The digest IS the identity, so serving a
@@ -811,6 +860,14 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
     cajeta::CajetaModule::setActiveProfile("debug");
     cajeta::CajetaModule::resolveDependencyGraph();
     out.phases.parseStdlibSeconds += stdlibHookSeconds;
+    if (opts.debugInfo) {
+        // Ranged loc ids (3.2.1): every module parsed by now. Modules that
+        // appear DURING codegen (late instantiation) stay unranged and fall
+        // back to the dense allocator — correct, merely unpooled.
+        auto mods = compiler->getModules();   // ONE copy (getModules-by-value)
+        std::vector<cajeta::CajetaModulePtr> modList(mods.begin(), mods.end());
+        assignDbgLocRanges(opts.cacheDir, modList);
+    }
     endPhase(out.phases.parseSeconds);
     progress("codegen", "", 0, 0);
 
@@ -1260,13 +1317,14 @@ std::unique_ptr<JitDebugSession> startDebugSession(
     // Arm: match each breakpoint against the loc table by file BASENAME + line.
     namespace fs = std::filesystem;
     const auto& table = cajeta::dbg::globalDbgLocTable();
-    for (const auto& bp : breakpoints) {
-        for (size_t id = 0; id < table.size(); ++id) {
-            const auto& loc = table.at(static_cast<int32_t>(id));
+    const std::vector<int32_t> ids = table.assignedIds();  // sparse ranges:
+    for (const auto& bp : breakpoints) {                   // never 0..size()
+        for (int32_t id : ids) {
+            const auto& loc = table.at(id);
             if (loc.line != bp.line) continue;
             std::string base = fs::path(loc.file).filename().string();
             if (base == bp.file || loc.file == bp.file) {
-                impl->controller.arm(static_cast<int32_t>(id));
+                impl->controller.arm(id);
             }
         }
     }

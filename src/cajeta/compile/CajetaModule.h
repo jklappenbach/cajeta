@@ -731,6 +731,19 @@ namespace cajeta {
         static llvm::Module* getCurrentEmitLlvmModule() { return currentEmitLlvmModule; }
         static void setCurrentEmitLlvmModule(llvm::Module* m) { currentEmitLlvmModule = m; }
 
+        // Per-module debug-loc id range (resident-debug-server 3.2.1).
+        // Assigned by the JIT host before codegen from a name-keyed,
+        // append-only registry so unchanged modules keep their bases across
+        // edits (stable -g IR = pooled objects survive). -1 = unranged: the
+        // AOT/lint paths keep the dense global allocator.
+        static constexpr int32_t kDbgLocRange = 1 << 20;
+        int32_t dbgLocBase = -1;
+        int32_t dbgLocUsed = 0;
+        int32_t takeDbgLocId() {
+            if (dbgLocBase < 0 || dbgLocUsed >= kDbgLocRange) return -1;
+            return dbgLocBase + dbgLocUsed++;
+        }
+
         static CajetaModulePtr getStdlibModule() { return stdlibModule; }
         static void setStdlibModule(CajetaModulePtr m) { stdlibModule = m; }
 

@@ -40,11 +40,21 @@ namespace cajeta {
             }
         }
         if (file.empty()) file = module->remappedSourcePath();
-        int32_t locId = dbg::globalDbgLocTable().add(
-            file,
-            statement->getSourceLine(),
-            statement->getSourceColumn(),
-            function);
+        // Ranged modules (JIT path) claim ids from their own range so an
+        // edit elsewhere never shifts this module's baked constants; the
+        // dense allocator remains for AOT/lint (and range overflow).
+        int32_t locId = module->takeDbgLocId();
+        if (locId >= 0) {
+            dbg::globalDbgLocTable().setAt(
+                locId, dbg::DbgLoc{file, statement->getSourceLine(),
+                                   statement->getSourceColumn(), function});
+        } else {
+            locId = dbg::globalDbgLocTable().add(
+                file,
+                statement->getSourceLine(),
+                statement->getSourceColumn(),
+                function);
+        }
 
         llvm::Value* arg = llvm::ConstantInt::get(
             llvm::Type::getInt32Ty(*module->getLlvmContext()),

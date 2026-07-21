@@ -99,11 +99,11 @@ TEST(WholeProgramCache, ColdVsWarmDebugEquivalence) {
     auto idsForBaseLine = [](const std::string& base, int line) {
         std::vector<int32_t> ids;
         const auto& t = cajeta::dbg::globalDbgLocTable();
-        for (size_t i = 0; i < t.size(); ++i) {
-            const auto& loc = t.at((int32_t) i);
+        for (int32_t id : t.assignedIds()) {   // sparse ranges: no 0..size()
+            const auto& loc = t.at(id);
             if (loc.line != line || loc.file.empty()) continue;
             if (fs::path(loc.file).filename().string() == base)
-                ids.push_back((int32_t) i);
+                ids.push_back(id);
         }
         return ids;
     };

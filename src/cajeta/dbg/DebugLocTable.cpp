@@ -1,5 +1,6 @@
 #include "cajeta/dbg/DebugLocTable.h"
 
+#include <algorithm>
 #include <cassert>
 #include <fstream>
 #include <sstream>
@@ -44,34 +45,41 @@ namespace {
 
     int32_t DbgLocTable::add(const std::string& file, int line, int col,
                              const std::string& function) {
-        int32_t id = static_cast<int32_t>(locs.size());
-        locs.push_back(DbgLoc{file, line, col, function});
+        int32_t id = nextId++;
+        locs.emplace(id, DbgLoc{file, line, col, function});
         return id;
     }
 
     const DbgLoc& DbgLocTable::at(int32_t id) const {
-        assert(id >= 0 && static_cast<size_t>(id) < locs.size()
-               && "DbgLocTable::at id out of range");
-        return locs[static_cast<size_t>(id)];
+        assert(id >= 0 && id < nextId && "DbgLocTable::at id out of range");
+        static const DbgLoc kHole{};
+        auto it = locs.find(id);
+        return it == locs.end() ? kHole : it->second;
     }
 
     std::vector<int32_t> DbgLocTable::idsForLine(const std::string& file,
                                                  int line) const {
         std::vector<int32_t> out;
-        for (size_t i = 0; i < locs.size(); ++i) {
-            if (locs[i].file.empty()) continue;  // sparse-replay hole
-            if (locs[i].line == line && locs[i].file == file) {
-                out.push_back(static_cast<int32_t>(i));
-            }
+        for (const auto& [id, loc] : locs) {
+            if (loc.file.empty()) continue;  // explicit hole entry
+            if (loc.line == line && loc.file == file) out.push_back(id);
         }
+        std::sort(out.begin(), out.end());   // map order is unspecified
         return out;
+    }
+
+    std::vector<int32_t> DbgLocTable::assignedIds() const {
+        std::vector<int32_t> ids;
+        ids.reserve(locs.size());
+        for (const auto& [id, loc] : locs) ids.push_back(id);
+        std::sort(ids.begin(), ids.end());
+        return ids;
     }
 
     void DbgLocTable::setAt(int32_t id, DbgLoc loc) {
         assert(id >= 0 && "DbgLocTable::setAt negative id");
-        size_t idx = static_cast<size_t>(id);
-        if (idx >= locs.size()) locs.resize(idx + 1);  // holes are default DbgLoc
-        locs[idx] = std::move(loc);
+        locs[id] = std::move(loc);
+        if (id >= nextId) nextId = id + 1;
     }
 
     DbgLocTable& globalDbgLocTable() {
@@ -83,8 +91,8 @@ namespace {
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
         if (!out) return false;
         out << "cajeta-dbgloc-v1\n";
-        for (size_t id = 0; id < table.size(); ++id) {
-            const DbgLoc& loc = table.at(static_cast<int32_t>(id));
+        for (int32_t id : table.assignedIds()) {
+            const DbgLoc& loc = table.at(id);
             if (loc.file.empty() && loc.line == 0) continue;  // hole
             out << id << '\t' << loc.line << '\t' << loc.col << '\t'
                 << escape(loc.file) << '\t' << escape(loc.function) << '\n';

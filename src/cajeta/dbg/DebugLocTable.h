@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace cajeta::dbg {
@@ -47,16 +48,27 @@ namespace cajeta::dbg {
         // Look up by id. Caller must pass a valid id (< size()).
         const DbgLoc& at(int32_t id) const;
 
-        size_t size() const { return locs.size(); }
+        // One past the highest assigned id (holes included) — the dense
+        // "table extent", NOT the entry count. Storage is SPARSE
+        // (resident-debug-server 3.2.1): per-module id ranges put real
+        // entries megabytes apart, and a dense vector would materialize
+        // every hole.
+        size_t size() const { return (size_t) nextId; }
         bool empty() const { return locs.empty(); }
-        void clear() { locs.clear(); }
+        void clear() { locs.clear(); nextId = 0; }
 
         // All ids whose (file, line) match — the loc_ids a line breakpoint on
         // (file, line) should arm (CP3). `file` matches by exact string.
         std::vector<int32_t> idsForLine(const std::string& file, int line) const;
 
+        // Every assigned id, ascending. THE iteration surface under sparse
+        // per-module ranges — size() is an extent (possibly tens of
+        // millions), so 0..size() scans are forbidden.
+        std::vector<int32_t> assignedIds() const;
+
     private:
-        std::vector<DbgLoc> locs;
+        std::unordered_map<int32_t, DbgLoc> locs;
+        int32_t nextId = 0;   // max assigned id + 1
     };
 
     // Process-global table backing codegen emission sites for the active
