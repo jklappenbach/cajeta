@@ -1003,6 +1003,17 @@ int dispatchJitRun(int argc, const char* argv[]) {
     for (size_t i = 2; i < positional.size(); ++i)
         opts.programArgs.push_back(positional[i]);
 
+    // fast-debug-launch 2.2.2: the same progress seam the DAP server narrates
+    // through, as plain stderr lines (stdout stays the program's).
+    opts.onProgress = [](const std::string& phase, const std::string& detail,
+                         int current, int total) {
+        if (phase == "parse" && total > 0)
+            std::cerr << "[jit] parse " << current << "/" << total
+                      << " " << detail << "\n";
+        else if (total == 0)
+            std::cerr << "[jit] " << phase << "\n";
+    };
+
     // CAJETA_JIT_PHASES=1: dump the build-phase wall-clock breakdown to stderr
     // (fast-debug-launch 1.3.1 — the measurement that gates stdlib caching).
     if (std::getenv("CAJETA_JIT_PHASES")) {

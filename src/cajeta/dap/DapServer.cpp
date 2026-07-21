@@ -334,13 +334,40 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
             if (!launchEnv_.empty() || !inheritSystemEnv_)
                 envScope_.apply(launchEnv_, inheritSystemEnv_);
         };
+        // fast-debug-launch 2.2.1: narrate the in-process compile as `output`
+        // events so a working launch never reads as a hang. buildJit runs on
+        // THIS thread inside startDebugSession, so emitting through `emit` is
+        // safe and ordered; the callback is cleared right after because it
+        // captures the stack-scoped `emit`.
+        launchOpts_.onProgress = [this, &emit](const std::string& phase,
+                                               const std::string& detail,
+                                               int current, int total) {
+            std::string line;
+            if (phase == "collect") line = "cajeta: compile started\n";
+            else if (phase == "parse" && total > 0)
+                line = "cajeta: compiling [" + std::to_string(current) + "/"
+                     + std::to_string(total) + "] " + detail + "\n";
+            else if (phase == "codegen") line = "cajeta: generating code\n";
+            else if (phase == "merge") line = "cajeta: linking modules\n";
+            else if (phase == "jit") line = "cajeta: preparing JIT\n";
+            if (line.empty()) return;
+            Json body = Json::object();
+            body["category"] = "console";
+            body["output"] = std::move(line);
+            emit(makeEvent(seq_++, "output", std::move(body)));
+        };
         // CP6f-3: arm break-on-throw inside startDebugSession (before the
         // program thread starts) so an immediate throw can't race past it.
         session_ = cajeta::jit::startDebugSession(launchOpts_, breakpoints_,
                                                   &err, exceptionsArmed_,
                                                   stopOnEntry_, applyEnv);
+        launchOpts_.onProgress = nullptr;
         bool ok = session_ != nullptr;
         if (ok) {
+            Json body = Json::object();
+            body["category"] = "console";
+            body["output"] = "cajeta: compile finished\n";
+            emit(makeEvent(seq_++, "output", std::move(body)));
             // dap-stepping: give the controller its depth/line seams. Depth is
             // the carrier's own frame-chain length at the safepoint (the
             // carrier is executing the chase, so the chain is stable); line is
