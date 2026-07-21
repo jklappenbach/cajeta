@@ -101,8 +101,13 @@ from session N into session N+1. Server-side per-session state
   relaunch, then the static has its initial value again.
 - 4.2.2 As a developer using launch env overlays, when session 1 sets
   `FOO=1` and session 2 doesn't, then session 2's debuggee sees no `FOO`.
-- 4.2.3 As a developer whose debuggee throws or is force-terminated, when I
-  relaunch, then the new session is unaffected.
+- 4.2.3 As a developer whose debuggee exits abnormally or is
+  force-terminated, when I relaunch, then the new session is unaffected.
+  NOTE (2026-07-21, found in Unit 1 TDD): an UNCAUGHT throw terminates the
+  process — the runtime's uncaught handler exits, and in-process that is the
+  server. Recovery is the plugin respawn (§2.2.2) at the cost of residency;
+  armed break-on-throw parks instead and is unaffected. Making the uncaught
+  path session-scoped is future work, out of scope here.
 
 ## 5 Staleness and failure
 

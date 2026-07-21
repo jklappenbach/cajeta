@@ -619,11 +619,15 @@ TEST(DapServerSession, NoBreakpointsRunsToTermination) {
     EXPECT_EQ(countEvent(log, "terminated"), 1);
 }
 
-TEST(DapServerSession, DisconnectEndsLoop) {
+// Contract CHANGED by resident-debug-server 1.2.1 (2026-07-21): disconnect
+// ends the SESSION and keeps the request loop alive for the next one; the
+// PROCESS ends at stdin EOF (run()'s read loop) or when the launcher kills
+// it. MultiSessionTests pin the full reset; this pins the loop verdict.
+TEST(DapServerSession, DisconnectEndsSessionNotLoop) {
     DapServer srv;
     std::vector<Json> log;
     bool keepGoing = drive(srv, req(1, "disconnect", Json::object()), log);
-    EXPECT_FALSE(keepGoing);
+    EXPECT_TRUE(keepGoing);
     EXPECT_NE(findResponse(log, "disconnect"), nullptr);
 }
 

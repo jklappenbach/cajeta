@@ -600,15 +600,35 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         if (session_) {
             // Let the program finish if it's parked.
             if (!terminated_) session_->controller().resume();
-            session_->join();
+            session_->join();  // also detaches handlers + active controller
         }
         // The program thread has joined, so nothing can read the environment
         // any more: put back what the launch displaced (spec 4.1.4). The scope
         // also restores from its destructor, which covers the abnormal exits
         // that never reach this line.
         envScope_.restore();
+        // Resident lifecycle (resident-debug-server 1.2.1): this ends the
+        // SESSION, not the process — reset every per-session member so the
+        // next initialize/launch starts exactly like a fresh process would.
+        // The PROCESS ends at stdin EOF (run()'s read loop) or on the
+        // launcher killing it; a lingering idle server costs only memory.
+        session_.reset();
+        launchOpts_ = cajeta::jit::JitRunOptions{};
+        stopOnEntry_ = false;
+        launchEnv_.clear();
+        inheritSystemEnv_ = true;
+        breakpoints_.clear();
+        conditions_.clear();
+        exceptionsArmed_ = false;
+        currentStop_ = {};
+        frameTable_.clear();
+        varRefToFrame_.clear();
+        nextVarRef_ = 1;
+        haveStop_ = false;
+        terminated_ = false;
+        exitCode_ = 0;
         emit(makeResponse(seq_++, requestSeq, command, true, Json::object()));
-        return false;  // end the loop
+        return true;
     }
 
     // Unknown request: reply unsuccessfully but keep going.
