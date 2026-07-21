@@ -102,4 +102,9 @@ Progress:
   columns, 64-bit offsets, null-carrying utf8 import, nullable narrowing, the live
   pyarrow probe (needs the embedding seam — C-ABI conformance is consumer-tested
   in-tree), MX scales/kernels, codec readers, device story.
-- Everything below nucleo-column — **draft** (specs written 2026-06-23; no plan yet).
+- **nucleo-nn-optim** — 🔨 ACTIVE (`nucleo-nn-optim-plan.md`, approved 2026-07-21):
+  Module/Parameter + reflection collection, optimizer protocol (SGD/Adam/AdamW),
+  pure-function LR schedulers, MSE loss, FiberLocal train/eval + Dropout, and the
+  enabling compiler extension `GradAll<K>` (one backward pass for K parameter
+  tensors) + `Tensor.relu` VJP. Bar: 2-layer relu MLP trained end-to-end.
+- Everything below nucleo-nn-optim — **draft** (specs written 2026-06-23; no plan yet).
