@@ -176,11 +176,11 @@ TEST(WholeProgramCache, CorruptSlotFallsBackToCompile) {
     JitRunResult r1;
     ASSERT_EQ(runJit(p.opts(), &r1), 42);
 
-    // Garbage every program.bc under the cache tree.
+    // Garbage every pooled module bitcode under the cache tree.
     int corrupted = 0;
     for (auto& entry : fs::recursive_directory_iterator(p.cacheDir)) {
         if (entry.is_regular_file() &&
-            entry.path().filename() == "program.bc") {
+            entry.path().extension() == ".bc") {
             std::ofstream out(entry.path(),
                               std::ios::binary | std::ios::trunc);
             out << "not bitcode";
@@ -192,10 +192,8 @@ TEST(WholeProgramCache, CorruptSlotFallsBackToCompile) {
     JitRunResult r2;
     ASSERT_EQ(runJit(p.opts(), &r2), 42);
     EXPECT_FALSE(r2.cacheHit);
-    // The failed hit attempt must DISARM the object cache: the fallback
-    // compile's freshly-emitted IR may not be byte-identical to what run 1's
-    // program.o was compiled from, so serving it would be unsound.
-    EXPECT_FALSE(r2.objectCacheHit);
+    // (Pooled OBJECTS may still legitimately serve here: they are
+    // content-addressed by module IR digest, so a serve proves identity.)
 }
 
 // 4.1.6 — String[] entry on a HIT launch gets usable args without the type
@@ -279,4 +277,43 @@ TEST(ObjectCache, IrChangeNeverServesStaleObject) {
     ASSERT_EQ(runJit(p.opts(), &r3), 35);
     EXPECT_TRUE(r3.cacheHit);
     EXPECT_TRUE(r3.objectCacheHit);
+}
+
+
+// ---- resident-debug-server Unit 2: per-module delivery (plan 2.1.3) -------
+// Modules reach the LLJIT individually, content-addressed by IR digest in a
+// shared pool. An edit therefore recompiles the edited module's object and
+// SERVES the rest — the property that makes edit relaunches cheap.
+
+TEST(PerModuleDelivery, EditRecompilesOnlyTheEditedModulesObject) {
+    CachedProgram p;
+
+    JitRunResult r1;
+    ASSERT_EQ(runJit(p.opts(), &r1), 42);   // populates the pools
+    EXPECT_GT(r1.moduleObjectsCompiled, 0);
+    EXPECT_EQ(r1.moduleObjectsServed, 0);
+
+    {
+        std::ofstream out(p.prog.root / "demo" / "Helper.cajeta",
+                          std::ios::trunc);
+        out << "package demo;\n"
+               "public class Helper {\n"
+               "    public static int32 six() {\n"
+               "        return 5;\n"
+               "    }\n"
+               "}\n";
+    }
+
+    JitRunResult r2;
+    ASSERT_EQ(runJit(p.opts(), &r2), 35);
+    EXPECT_FALSE(r2.cacheHit);
+    // Unchanged modules' IR digests match the pool: served, not recompiled.
+    // Across FRESH processes exactly one module recompiles (verified by
+    // hand on the pool); inside ONE test process the reused stdlib module
+    // drifts between compiles (it accumulates run-1 instantiations), so it
+    // may re-digest too — hence <= 2, and the same total module count.
+    EXPECT_GT(r2.moduleObjectsServed, 0);
+    EXPECT_LE(r2.moduleObjectsCompiled, 2);
+    EXPECT_EQ(r2.moduleObjectsServed + r2.moduleObjectsCompiled,
+              r1.moduleObjectsCompiled);
 }

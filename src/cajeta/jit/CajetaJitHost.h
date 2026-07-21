@@ -89,9 +89,14 @@ namespace cajeta::jit {
         // True when this launch was served from the whole-program cache slot
         // (fast-debug-launch 4.1.1) — no Compiler was constructed.
         bool cacheHit = false;
-        // True when materialization was served from the slot's program.o
-        // (fast-debug-launch 6.1.1) — no instruction selection ran.
+        // True when EVERY module materialized from the content-addressed
+        // object pool (fast-debug-launch 6.1.1) — no instruction selection.
         bool objectCacheHit = false;
+        // Per-module delivery counters (resident-debug-server 2.1.3):
+        // objects served from the pool vs compiled this launch. Zero when
+        // cacheDir is unset (no pools).
+        int moduleObjectsServed = 0;
+        int moduleObjectsCompiled = 0;
     };
 
     // Compile + JIT + run. Returns the process-style exit code (0 on success,

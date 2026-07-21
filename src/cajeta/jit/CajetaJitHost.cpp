@@ -248,72 +248,80 @@ struct BuiltJit {
     JitBuildPhases phases;          // wall-clock breakdown (fast-debug-launch 1.2.1)
     EntryArgsABI entryArgsABI;      // derived cold / read from slot meta on hit
     bool cacheHit = false;          // served from the whole-program slot (4.1.1)
-    bool objectCacheHit = false;    // materialized from program.o (6.1.1)
+    bool objectCacheHit = false;    // ALL modules materialized from pool (6.1.1)
+    int moduleObjectsServed = 0;    // pool serves this launch (2.1.3)
+    int moduleObjectsCompiled = 0;  // pool compiles this launch (2.1.3)
     // The ObjectCache wired into the LLJIT's compiler (null when cacheDir is
     // empty). The LLJIT holds a raw pointer, so it must live as long as the
     // JIT — late materialization is legal even if today's flow front-loads it.
     std::unique_ptr<llvm::ObjectCache> objCache;
 };
 
-// --- Whole-program merged-module cache (fast-debug-launch Unit 4) -----------
-// Slot layout under <cacheDir>/jit/<key>/:
-//   program.bc     — the MERGED program's bitcode (exactly the bytes the LLJIT
-//                    round-trip serializes on a cold build)
-//   program.meta   — entry facts + String ABI (tab-delimited, versioned)
-//   program.dbgloc — the loc-table sidecar (only for -g builds)
-// The key is content-addressed (compiler version+git ⊕ flags ⊕ entry ⊕ every
-// source digest), so "stale" is impossible by construction; load failures of
-// any kind mean MISS, never an error.
-//
-// Classpath archives are NOT part of the key because the JIT path loads
-// none: dispatchJitRun has no --classpath and buildJit never walks archives
-// (everything comes from sources + the embedded stdlib, both keyed). If the
-// JIT ever grows classpath support, fold each archive's digest here or the
-// cache serves stale programs across dep bumps.
 
-struct WholeProgramSlot {
-    std::filesystem::path dir;
-    std::filesystem::path bc() const { return dir / "program.bc"; }
-    std::filesystem::path meta() const { return dir / "program.meta"; }
-    std::filesystem::path dbgloc() const { return dir / "program.dbgloc"; }
-    std::filesystem::path obj() const { return dir / "program.o"; }
-};
-
-// ORC ObjectCache over the slot's program.o (fast-debug-launch Unit 6).
-// SERVES only when armed — the HIT path arms it, because there the module
-// being materialized IS the slot's own bitcode, so object↔IR pairing is
-// sound by construction. A cold build never serves (pairing an older .o with
-// freshly-emitted IR would bet on byte-deterministic codegen); it only
-// RECORDS the compiled object so the slot write persists it for launch N+1.
-class SlotObjectCache : public llvm::ObjectCache {
+// Content-addressed pools (resident-debug-server 2.2.3): every module's
+// bitcode and compiled object live under <cacheDir>/jit/{bcpool,objpool}/
+// keyed by the module's IR digest. The digest IS the identity, so serving a
+// pooled artifact proves it matches the IR — no arming, no staleness, ever.
+// The program slot is now just a manifest: entry meta + ordered module
+// digests (+ the dbgloc sidecar for -g).
+class PoolObjectCache : public llvm::ObjectCache {
 public:
-    explicit SlotObjectCache(std::filesystem::path objPath)
-        : objPath_(std::move(objPath)) {}
+    explicit PoolObjectCache(std::filesystem::path poolDir)
+        : pool_(std::move(poolDir)) {}
 
-    void notifyObjectCompiled(const llvm::Module*,
+    void notifyObjectCompiled(const llvm::Module* m,
                               llvm::MemoryBufferRef obj) override {
-        compiled_ = llvm::MemoryBuffer::getMemBufferCopy(
-            obj.getBuffer(), obj.getBufferIdentifier());
+        compiled_++;
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        fs::create_directories(pool_, ec);
+        if (ec) return;
+        fs::path target = pool_ / (m->getModuleIdentifier() + ".o");
+        fs::path tmp = target;
+        tmp += ".tmp";
+        {
+            std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+            out.write(obj.getBufferStart(),
+                      (std::streamsize) obj.getBufferSize());
+            if (!out.good()) return;
+        }
+        fs::rename(tmp, target, ec);
     }
 
-    std::unique_ptr<llvm::MemoryBuffer> getObject(const llvm::Module*) override {
-        if (!serveArmed_) return nullptr;
-        auto buf = llvm::MemoryBuffer::getFile(objPath_.string());
+    std::unique_ptr<llvm::MemoryBuffer> getObject(const llvm::Module* m) override {
+        auto buf = llvm::MemoryBuffer::getFile(
+            (pool_ / (m->getModuleIdentifier() + ".o")).string());
         if (!buf) return nullptr;
-        hit_ = true;
+        served_++;
         return std::move(*buf);
     }
 
-    void armServe() { serveArmed_ = true; }
-    void disarmServe() { serveArmed_ = false; }
-    bool wasHit() const { return hit_; }
-    llvm::MemoryBuffer* compiledBytes() const { return compiled_.get(); }
+    int served() const { return served_.load(); }
+    int compiled() const { return compiled_.load(); }
 
 private:
-    std::filesystem::path objPath_;
-    std::unique_ptr<llvm::MemoryBuffer> compiled_;
-    bool serveArmed_ = false;
-    bool hit_ = false;
+    std::filesystem::path pool_;
+    std::atomic<int> served_{0};
+    std::atomic<int> compiled_{0};
+};
+
+// One module's bitcode + its pool key. The digest doubles as the LLVM module
+// identifier so PoolObjectCache can address the object pool.
+struct ModuleBC {
+    std::string digest;   // "sha256:<hex>" of `bytes`
+    std::string bytes;
+};
+
+struct WholeProgramSlot {
+    std::filesystem::path dir;   // <cacheDir>/jit/<program-key>/
+    std::filesystem::path meta() const { return dir / "program.meta"; }
+    std::filesystem::path dbgloc() const { return dir / "program.dbgloc"; }
+    std::filesystem::path bcPool() const {
+        return dir.parent_path() / "bcpool";
+    }
+    std::filesystem::path objPool() const {
+        return dir.parent_path() / "objpool";
+    }
 };
 
 std::string wholeProgramKey(const JitRunOptions& opts,
@@ -340,31 +348,15 @@ std::string wholeProgramKey(const JitRunOptions& opts,
     return cajeta::buildtool::sha256Hex(in.str());
 }
 
-// Best-effort slot write; a failure never fails the launch. Files land via
-// tmp + rename so a concurrent launch can't read a torn slot.
-// Persist a compiled object beside the slot (best-effort, independent of the
-// bc/meta chain — a failed .o write costs speed on the next launch, nothing
-// else, so it must never invalidate an otherwise-good slot).
-void writeSlotObject(const WholeProgramSlot& slot, llvm::MemoryBuffer* obj) {
-    if (!obj) return;
-    namespace fs = std::filesystem;
-    fs::path tmp = slot.obj();
-    tmp += ".tmp";
-    {
-        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-        out.write(obj->getBufferStart(), (std::streamsize) obj->getBufferSize());
-        if (!out.good()) return;
-    }
-    std::error_code ec;
-    fs::rename(tmp, slot.obj(), ec);
-}
-
+// Persist the program manifest + any pool bitcodes not already present.
+// Best-effort: a failed write costs the next launch speed, nothing else.
 void writeWholeProgramSlot(const WholeProgramSlot& slot, const BuiltJit& built,
-                           llvm::StringRef bcBytes, bool debugInfo,
-                           llvm::MemoryBuffer* obj) {
+                           const std::vector<ModuleBC>& modules,
+                           bool debugInfo) {
     namespace fs = std::filesystem;
     std::error_code ec;
     fs::create_directories(slot.dir, ec);
+    fs::create_directories(slot.bcPool(), ec);
     if (ec) return;
 
     auto place = [](const fs::path& target, auto writeFn) -> bool {
@@ -376,14 +368,19 @@ void writeWholeProgramSlot(const WholeProgramSlot& slot, const BuiltJit& built,
         return !renameEc;
     };
 
-    bool ok = place(slot.bc(), [&](const fs::path& p) {
-        std::ofstream out(p, std::ios::binary | std::ios::trunc);
-        out.write(bcBytes.data(), (std::streamsize) bcBytes.size());
-        return out.good();
-    });
+    bool ok = true;
+    for (const auto& m : modules) {
+        fs::path bc = slot.bcPool() / (m.digest + ".bc");
+        if (fs::exists(bc, ec)) continue;   // content-addressed: idempotent
+        ok = place(bc, [&](const fs::path& p) {
+            std::ofstream out(p, std::ios::binary | std::ios::trunc);
+            out.write(m.bytes.data(), (std::streamsize) m.bytes.size());
+            return out.good();
+        }) && ok;
+    }
     ok = ok && place(slot.meta(), [&](const fs::path& p) {
         std::ofstream out(p, std::ios::binary | std::ios::trunc);
-        out << "cajeta-jitmeta-v1\n"
+        out << "cajeta-jitmeta-v2\n"
             << "entry\t" << built.entryName << '\n'
             << "takesArgs\t" << (built.entryTakesArgs ? 1 : 0) << '\n'
             << "returnsInt32\t" << (built.returnsInt32 ? 1 : 0) << '\n'
@@ -394,6 +391,7 @@ void writeWholeProgramSlot(const WholeProgramSlot& slot, const BuiltJit& built,
                 << a.offAux << '\t' << a.offBase << '\t' << a.offCpLen << '\t'
                 << a.vtableSymbol << '\n';
         }
+        for (const auto& m : modules) out << "module\t" << m.digest << '\n';
         return out.good();
     });
     if (ok && debugInfo) {
@@ -403,20 +401,20 @@ void writeWholeProgramSlot(const WholeProgramSlot& slot, const BuiltJit& built,
         });
     }
     if (!ok) {
-        // Leave no half-slot behind: a partial slot would MISS anyway (meta
-        // gate), but clean up so the next write starts fresh.
-        fs::remove_all(slot.dir, ec);
-        return;
+        // No half-manifest: without meta the slot MISSES; pooled files are
+        // content-addressed and harmless to leave.
+        fs::remove(slot.meta(), ec);
+        fs::remove(slot.dbgloc(), ec);
     }
-    writeSlotObject(slot, obj);
 }
 
-// Parse program.meta. Strict: any anomaly = miss.
-bool loadSlotMeta(const std::filesystem::path& path, BuiltJit& out) {
+// Parse program.meta (v2). Strict: any anomaly = miss.
+bool loadSlotMeta(const std::filesystem::path& path, BuiltJit& out,
+                  std::vector<std::string>& moduleDigests) {
     std::ifstream in(path, std::ios::binary);
     if (!in) return false;
     std::string line;
-    if (!std::getline(in, line) || line != "cajeta-jitmeta-v1") return false;
+    if (!std::getline(in, line) || line != "cajeta-jitmeta-v2") return false;
     bool haveEntry = false, haveTakes = false, haveReturns = false,
          haveSafepoints = false;
     while (std::getline(in, line)) {
@@ -459,57 +457,65 @@ bool loadSlotMeta(const std::filesystem::path& path, BuiltJit& out) {
                 a.offCpLen = std::stoll(o4);
                 a.valid = !a.vtableSymbol.empty();
                 out.entryArgsABI = a;
+            } else if (tag == "module") {
+                std::string d;
+                if (!std::getline(fields, d) || d.empty()) return false;
+                moduleDigests.push_back(d);
             }
-            // Unknown tags: ignored (forward compatibility within v1).
+            // Unknown tags: ignored (forward compatibility within v2).
         } catch (...) {
             return false;
         }
     }
-    return haveEntry && haveTakes && haveReturns && haveSafepoints;
+    return haveEntry && haveTakes && haveReturns && haveSafepoints
+        && !moduleDigests.empty();
 }
 
-// Build + initialize the LLJIT from a MERGED program's bitcode bytes — the
-// tail of the cold pipeline, shared verbatim with the whole-program cache HIT
-// path (fast-debug-launch 4.2.4). On failure sets out.errorCode, resets
-// out.jit, and returns false.
-bool buildLLJITFromBuffer(llvm::StringRef bcBytes, const JitRunOptions& opts,
-                          SlotObjectCache* objCache, BuiltJit& out) {
-    // Round-trip the module through bitcode into a fresh context owned by a
-    // ThreadSafeModule (the documented LLJIT path).
+// Build + initialize the LLJIT from per-module bitcodes — the tail of the
+// cold pipeline, shared verbatim with the slot HIT path
+// (resident-debug-server 2.2.1). Each module parses into its own context,
+// its identifier set to its digest so the object pool can address it. On
+// failure sets out.errorCode, resets out.jit, and returns false.
+bool buildLLJITFromModules(const std::vector<ModuleBC>& modules,
+                           const JitRunOptions& opts,
+                           PoolObjectCache* objCache, BuiltJit& out) {
     using SplitClock = std::chrono::steady_clock;
-    auto tsCtx = std::make_unique<llvm::LLVMContext>();
-    auto memBuffer = llvm::MemoryBuffer::getMemBufferCopy(bcBytes, "cajeta_jitrun");
-    llvm::orc::ThreadSafeContext tsContext(std::move(tsCtx));
-    SplitClock::time_point reparseStart = SplitClock::now();
+    std::vector<llvm::orc::ThreadSafeModule> tsms;
+    tsms.reserve(modules.size());
+    std::set<std::string> liveNativeLibs;
+    for (const auto& mbc : modules) {
+        auto tsCtx = std::make_unique<llvm::LLVMContext>();
+        auto memBuffer =
+            llvm::MemoryBuffer::getMemBufferCopy(mbc.bytes, mbc.digest);
+        llvm::orc::ThreadSafeContext tsContext(std::move(tsCtx));
+        SplitClock::time_point reparseStart = SplitClock::now();
 #if LLVM_VERSION_MAJOR >= 21
-    auto parsed = tsContext.withContextDo([&](llvm::LLVMContext* ctx) {
-        return llvm::parseBitcodeFile(memBuffer->getMemBufferRef(), *ctx);
-    });
+        auto parsed = tsContext.withContextDo([&](llvm::LLVMContext* ctx) {
+            return llvm::parseBitcodeFile(memBuffer->getMemBufferRef(), *ctx);
+        });
 #else
-    auto parsed = llvm::parseBitcodeFile(memBuffer->getMemBufferRef(),
-                                         *tsContext.getContext());
+        auto parsed = llvm::parseBitcodeFile(memBuffer->getMemBufferRef(),
+                                             *tsContext.getContext());
 #endif
-    out.phases.jitReparseSeconds +=
-        std::chrono::duration<double>(SplitClock::now() - reparseStart).count();
-    if (!parsed) {
-        std::cerr << "cajeta jit: bitcode reparse failed: "
-                  << cajeta::jit::toString(parsed.takeError()) << "\n";
-        out.errorCode = 1;
-        return false;
+        out.phases.jitReparseSeconds +=
+            std::chrono::duration<double>(SplitClock::now() - reparseStart)
+                .count();
+        if (!parsed) {
+            std::cerr << "cajeta jit: bitcode reparse failed: "
+                      << cajeta::jit::toString(parsed.takeError()) << "\n";
+            out.errorCode = 1;
+            return false;
+        }
+        // The digest names the module so PoolObjectCache can serve/persist
+        // its object; also read @Native requirements BEFORE the move.
+        (*parsed)->setModuleIdentifier(mbc.digest);
+        std::set<std::string> libs = cajeta::collectLiveNativeLibs(**parsed);
+        liveNativeLibs.insert(libs.begin(), libs.end());
+        tsms.emplace_back(std::move(*parsed), std::move(tsContext));
     }
-    // Native-dependency requirements (native-deps unit 8): read the live
-    // @Native libs from the module BEFORE it is moved into the JIT. ORC
-    // generators (added after the process generator below) are lazy, so DCE is
-    // automatic — a generator is consulted only for a symbol actually
-    // materialized. The JIT NEVER fetches at run time; artifacts must be local.
-    std::set<std::string> liveNativeLibs = cajeta::collectLiveNativeLibs(**parsed);
-
-    llvm::orc::ThreadSafeModule tsModule(std::move(*parsed), std::move(tsContext));
 
     llvm::orc::LLJITBuilder builder;
     if (objCache) {
-        // fast-debug-launch 6.2.1: route compilation through the slot's
-        // ObjectCache. Mirrors LLJIT's single-threaded default compiler.
         builder.setCompileFunctionCreator(
             [objCache](llvm::orc::JITTargetMachineBuilder jtmb)
                 -> llvm::Expected<
@@ -529,14 +535,6 @@ bool buildLLJITFromBuffer(llvm::StringRef bcBytes, const JitRunOptions& opts,
     }
     out.jit = std::move(*jitOrErr);
 
-    // GDB JIT symbolization. On in debug mode (so `cajeta jit-run -g` yields
-    // named JIT frames under a debugger instead of bare addresses), off in
-    // release (enableDebuggerSupport installs a JITLink plugin that synthesizes
-    // and registers a debug object per module — real per-module overhead paid
-    // whether or not a debugger ever attaches). CAJETA_JIT_GDB=1 force-enables
-    // it regardless of mode for ad-hoc release-JIT diagnostics. Requires the
-    // JITLink ObjectLinkingLayer (the LLVM 22 default on x86-64 ELF); on RTDyld
-    // it returns an Error we surface and continue (symbolization simply absent).
     if (opts.debugInfo || std::getenv("CAJETA_JIT_GDB")) {
         if (auto err = llvm::orc::enableDebuggerSupport(*out.jit)) {
             std::cerr << "cajeta jit: GDB symbolization unavailable: "
@@ -544,12 +542,14 @@ bool buildLLJITFromBuffer(llvm::StringRef bcBytes, const JitRunOptions& opts,
         }
     }
 
-    if (auto err = out.jit->addIRModule(std::move(tsModule))) {
-        std::cerr << "cajeta jit: addIRModule failed: "
-                  << cajeta::jit::toString(std::move(err)) << "\n";
-        out.jit.reset();
-        out.errorCode = 1;
-        return false;
+    for (auto& tsm : tsms) {
+        if (auto err = out.jit->addIRModule(std::move(tsm))) {
+            std::cerr << "cajeta jit: addIRModule failed: "
+                      << cajeta::jit::toString(std::move(err)) << "\n";
+            out.jit.reset();
+            out.errorCode = 1;
+            return false;
+        }
     }
 
     auto& mainDylib = out.jit->getMainJITDylib();
@@ -581,21 +581,15 @@ bool buildLLJITFromBuffer(llvm::StringRef bcBytes, const JitRunOptions& opts,
         }
     }
 
-    // Native-dependency JIT generators (native-deps unit 8). For each
-    // referenced @Native lib, resolve a LOCAL artifact (.cja native/ extraction
-    // / CAJETA_NATIVE_PATH / ~/.cajeta/native — never the network) and add an
-    // ORC generator so its symbols resolve at materialization. Lazy → a lib
-    // whose symbols are never materialized is never loaded (DCE for JIT). A
-    // genuinely-referenced-but-absent lib surfaces as an undefined symbol at
-    // materialization (precise placement message lands in unit 11).
     if (!liveNativeLibs.empty()) {
         auto& execSession = out.jit->getExecutionSession();
+        (void) execSession;
         const char prefix = out.jit->getDataLayout().getGlobalPrefix();
         const std::string platform = cajeta::hostNativePlatform();
         const std::vector<std::string> dirs = cajeta::nativeLinkSearchDirs();
         for (const auto& lib : liveNativeLibs) {
             auto art = cajeta::findNativeJitArtifact(lib, platform, dirs);
-            if (!art) continue;  // absent → lazy lookup fails loud only if needed
+            if (!art) continue;  // absent -> lazy lookup fails loud only if needed
             if (art->isStatic) {
                 auto gen = llvm::orc::StaticLibraryDefinitionGenerator::Load(
                     out.jit->getObjLinkingLayer(), art->path.c_str());
@@ -613,15 +607,9 @@ bool buildLLJITFromBuffer(llvm::StringRef bcBytes, const JitRunOptions& opts,
             }
         }
     }
-    // NOTE: the fp128 soft-float helpers (__trunctfdf2, __fixtfdi, ...) that the
-    // stdlib's Float128 emits are NOT installed here. Apple arm64 has no
-    // __float128 type and ships no compiler-rt tf family, so there is nothing to
-    // take the address of. Instead they are compiled (as target-neutral integer
-    // IR) into the embedded runtime bitcode and linked into every JIT module —
-    // see runtime/native/cajeta_fp128_builtins.ll and src/CMakeLists.txt.
 
     SplitClock::time_point matStart = SplitClock::now();
-    if (auto err = out.jit->initialize(mainDylib)) {
+    if (auto err = out.jit->initialize(out.jit->getMainJITDylib())) {
         std::cerr << "cajeta jit: LLJIT initialize failed: "
                   << cajeta::jit::toString(std::move(err)) << "\n";
         out.jit.reset();
@@ -633,20 +621,16 @@ bool buildLLJITFromBuffer(llvm::StringRef bcBytes, const JitRunOptions& opts,
     return true;
 }
 
-// Attempt a whole-program cache hit. Any anomaly — missing/corrupt file,
-// meta mismatch, bitcode that will not build — is a MISS (returns false with
-// out reset), never an error: the caller falls back to the full compile.
+// Attempt a whole-program manifest hit. Any anomaly — missing/corrupt meta,
+// pool bitcode, sidecar, or a module set that will not build — is a MISS
+// (out reset), never an error: the caller falls back to the full compile.
 bool tryLoadWholeProgramSlot(const WholeProgramSlot& slot,
                              const JitRunOptions& opts,
-                             SlotObjectCache* objCache, BuiltJit& out) {
+                             PoolObjectCache* objCache, BuiltJit& out) {
     namespace fs = std::filesystem;
-    std::error_code ec;
-    if (!fs::is_regular_file(slot.bc(), ec) ||
-        !fs::is_regular_file(slot.meta(), ec)) return false;
-    if (!loadSlotMeta(slot.meta(), out)) return false;
+    std::vector<std::string> digests;
+    if (!loadSlotMeta(slot.meta(), out, digests)) return false;
     if (opts.debugInfo) {
-        // The cached module's safepoints carry baked loc ids; the sidecar is
-        // the only thing that can decode them, so no sidecar = no hit.
         auto& table = cajeta::dbg::globalDbgLocTable();
         table.clear();
         if (!cajeta::dbg::loadDbgLocSidecar(slot.dbgloc().string(), table)) {
@@ -654,14 +638,19 @@ bool tryLoadWholeProgramSlot(const WholeProgramSlot& slot,
             return false;
         }
     }
-    auto buf = llvm::MemoryBuffer::getFile(slot.bc().string());
-    if (!buf) return false;
-    // The module about to materialize IS this slot's bitcode, so serving the
-    // slot's object is sound — but ONLY here: disarm again on failure, or the
-    // fallback cold compile would pair this slot's .o with freshly-emitted IR.
-    if (objCache) objCache->armServe();
-    if (!buildLLJITFromBuffer((*buf)->getBuffer(), opts, objCache, out)) {
-        if (objCache) objCache->disarmServe();
+    std::vector<ModuleBC> modules;
+    modules.reserve(digests.size());
+    for (const auto& d : digests) {
+        auto buf = llvm::MemoryBuffer::getFile(
+            (slot.bcPool() / (d + ".bc")).string());
+        if (!buf) return false;
+        // Verify the pool file really is its digest (a torn/corrupt pool
+        // entry must MISS, not fail the launch downstream).
+        std::string bytes((*buf)->getBufferStart(), (*buf)->getBufferSize());
+        if (cajeta::buildtool::sha256Hex(bytes) != d) return false;
+        modules.push_back(ModuleBC{d, std::move(bytes)});
+    }
+    if (!buildLLJITFromModules(modules, opts, objCache, out)) {
         out.jit.reset();
         out.errorCode = 0;  // miss, not failure — the full compile runs next
         return false;
@@ -717,18 +706,28 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
     // load + LLJIT materialization only. Slot + object cache are computed
     // once here and shared with the cold-path slot write below.
     WholeProgramSlot slot;
-    std::unique_ptr<SlotObjectCache> objCache;
+    std::unique_ptr<PoolObjectCache> objCache;
+    size_t moduleCount = 0;
+    auto recordPoolCounters = [&](size_t count) {
+        moduleCount = count;
+        if (!objCache) return;
+        out.moduleObjectsServed = objCache->served();
+        out.moduleObjectsCompiled = objCache->compiled();
+        out.objectCacheHit =
+            count > 0 && objCache->served() == (int) count;
+    };
     if (!opts.cacheDir.empty()) {
         endPhase(out.phases.collectSeconds);
         slot.dir = fs::path(opts.cacheDir) / "jit"
                  / wholeProgramKey(opts, sourcePaths, sourceRoot);
-        objCache = std::make_unique<SlotObjectCache>(slot.obj());
+        objCache = std::make_unique<PoolObjectCache>(slot.objPool());
+        std::vector<std::string> hitDigests;
         if (tryLoadWholeProgramSlot(slot, opts, objCache.get(), out)) {
             out.cacheHit = true;
-            out.objectCacheHit = objCache->wasHit();
-            // First warm launch compiles the object (no program.o yet);
-            // persist it so launch N+2 skips instruction selection too.
-            if (!objCache->wasHit()) writeSlotObject(slot, objCache->compiledBytes());
+            // served/compiled counts come from the pool cache; the manifest
+            // module count is what tryLoad delivered (compiled+served).
+            recordPoolCounters((size_t) (objCache->served()
+                                         + objCache->compiled()));
             out.objCache = std::move(objCache);
             progress("jit", "cached", 0, 0);
             endPhase(out.phases.jitSeconds);
@@ -900,20 +899,22 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
     endPhase(out.phases.finalizeSeconds);
     progress("merge", "", 0, 0);
 
+    // Per-module delivery (resident-debug-server 2.2.1): no destructive
+    // merge. Entry metadata is read from the module that declares it, then
+    // every module is verified + serialized individually — the digests key
+    // the content-addressed pools.
     for (auto& m : compiler->getModules()) {
-        if (m == primary) continue;
-        std::unique_ptr<llvm::Module> donor(m->getLlvmModule());
-        if (llvm::Linker::linkModules(*primary->getLlvmModule(), std::move(donor))) {
-            std::cerr << "cajeta jit: module merge failed\n";
-            out.errorCode = 1;
-            return out;
+        out.entryName = findEntryMangled(m->getLlvmModule(), opts.entryMethod,
+                                         &out.entryTakesArgs);
+        if (!out.entryName.empty()) {
+            llvm::Function* entryLlvm =
+                m->getLlvmModule()->getFunction(out.entryName);
+            out.returnsInt32 =
+                entryLlvm && entryLlvm->getReturnType()->isIntegerTy(32);
+            out.entrySafepointsEmitted = countSafepointCalls(entryLlvm);
+            break;
         }
     }
-
-    llvm::Module* llvmModule = primary->getLlvmModule();
-
-    out.entryName = findEntryMangled(llvmModule, opts.entryMethod,
-                                     &out.entryTakesArgs);
     if (out.entryName.empty()) {
         std::cerr << "cajeta jit: could not find static entry `"
                   << opts.entryMethod
@@ -921,47 +922,53 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
         out.errorCode = 1;
         return out;
     }
-    llvm::Function* entryLlvm = llvmModule->getFunction(out.entryName);
-    out.returnsInt32 = entryLlvm && entryLlvm->getReturnType()->isIntegerTy(32);
-    out.entrySafepointsEmitted = countSafepointCalls(entryLlvm);
 
     endPhase(out.phases.mergeSeconds);
     progress("jit", "", 0, 0);
 
-    if (std::getenv("CAJETA_DUMP_IR")) llvmModule->print(llvm::errs(), nullptr);
-
-    std::string verifyErr;
-    llvm::raw_string_ostream verifyStream(verifyErr);
-    if (llvm::verifyModule(*llvmModule, &verifyStream)) {
-        std::cerr << "cajeta jit: IR verify failed: " << verifyErr << "\n";
-        out.errorCode = 1;
-        return out;
-    }
-
-    llvm::SmallVector<char, 0> bitcodeBuf;
+    const bool dumpIr = std::getenv("CAJETA_DUMP_IR") != nullptr;
+    std::vector<ModuleBC> moduleBCs;
     {
-        Clock::time_point s = Clock::now();
-        llvm::raw_svector_ostream os(bitcodeBuf);
-        llvm::WriteBitcodeToFile(*llvmModule, os);
-        out.phases.jitSerializeSeconds +=
-            std::chrono::duration<double>(Clock::now() - s).count();
+        auto mods = compiler->getModules();   // ONE copy (getModules-by-value)
+        moduleBCs.reserve(mods.size());
+        for (auto& m : mods) {
+            llvm::Module* lm = m->getLlvmModule();
+            if (dumpIr) lm->print(llvm::errs(), nullptr);
+            std::string verifyErr;
+            llvm::raw_string_ostream verifyStream(verifyErr);
+            if (llvm::verifyModule(*lm, &verifyStream)) {
+                std::cerr << "cajeta jit: IR verify failed ("
+                          << lm->getModuleIdentifier() << "): " << verifyErr
+                          << "\n";
+                out.errorCode = 1;
+                return out;
+            }
+            Clock::time_point s = Clock::now();
+            llvm::SmallVector<char, 0> buf;
+            {
+                llvm::raw_svector_ostream os(buf);
+                llvm::WriteBitcodeToFile(*lm, os);
+            }
+            out.phases.jitSerializeSeconds +=
+                std::chrono::duration<double>(Clock::now() - s).count();
+            std::string bytes(buf.data(), buf.size());
+            std::string digest = cajeta::buildtool::sha256Hex(bytes);
+            moduleBCs.push_back(ModuleBC{std::move(digest), std::move(bytes)});
+        }
     }
-    if (!buildLLJITFromBuffer(
-            llvm::StringRef(bitcodeBuf.data(), bitcodeBuf.size()), opts,
-            objCache.get(), out))
+
+    if (!buildLLJITFromModules(moduleBCs, opts, objCache.get(), out))
         return out;
+    recordPoolCounters(moduleBCs.size());
 
     // ABI for makeEntryArgs, derived while the type world is still alive; it
     // rides the slot meta so a HIT launch never needs CajetaType (4.2.4).
     out.entryArgsABI = deriveEntryArgsABI(out.jit.get());
 
-    // Populate the whole-program slot (4.2.3): the bytes are EXACTLY what the
-    // LLJIT round-trip just consumed, so a hit replays this build bit-for-bit.
-    // The object the cache captured during initialize rides along (6.2.1).
+    // Persist the manifest + any pool bitcodes not already present; objects
+    // were persisted by PoolObjectCache as they compiled.
     if (!opts.cacheDir.empty()) {
-        writeWholeProgramSlot(
-            slot, out, llvm::StringRef(bitcodeBuf.data(), bitcodeBuf.size()),
-            opts.debugInfo, objCache ? objCache->compiledBytes() : nullptr);
+        writeWholeProgramSlot(slot, out, moduleBCs, opts.debugInfo);
     }
     out.objCache = std::move(objCache);
     endPhase(out.phases.jitSeconds);
@@ -1068,6 +1075,8 @@ int runJit(const JitRunOptions& opts, JitRunResult* result) {
         result->phases = built.phases;
         result->cacheHit = built.cacheHit;
         result->objectCacheHit = built.objectCacheHit;
+        result->moduleObjectsServed = built.moduleObjectsServed;
+        result->moduleObjectsCompiled = built.moduleObjectsCompiled;
     }
 
     auto entrySym = jit->lookup(built.entryName);
