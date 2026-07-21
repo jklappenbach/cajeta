@@ -80,13 +80,51 @@ public class TcpStream implements ByteChannel {
      * skips the park. On a hard failure (e.g. `ConnectionRefused`) the codegen
      * closes the fd and raises. Takes ownership of `addr`. *(NET-3.3.)*
      *
-     * The body is a placeholder; the call is intrinsic-lowered in
-     * `MethodCallExpression` (the static `TcpStream.connect`/`connectAsync`
-     * block), so this returns through the codegen, never the stub.
+     * ## Failure typing
+     *
+     * The intrinsic ([`connectAsyncNative`](#connectAsyncNative)) reports
+     * failures as **legacy integer tags** — `0x200 +` the normalized
+     * `cajeta_net_err` ordinal (`0x100`/`0x101` for the pre-dial pack /
+     * socket failures). This wrapper is the seam that turns them into the
+     * typed [`NetException`](NetException.cajeta) family via
+     * [`NetErrors.fromErrno`](NetErrors.cajeta): a refused dial surfaces as
+     * a catchable `ConnectionRefusedException` whose `kind` reads
+     * correctly. Before this wrapper the raw tag reached user catch
+     * clauses as the bound "object" — reading `e.kind` dereferenced
+     * `0x107` and crashed (found by cajeta-http's retry loop, the first
+     * code to *read* a caught dial failure).
      *
      * @EntryPoint
      */
     public static #TcpStream connectAsync(#SocketAddress addr) {
+        try {
+            return TcpStream.connectAsyncNative(#addr);
+        } catch (Exception tag) {
+            // Legacy int throws bind the raw value to the catch variable;
+            // a real Throwable would be a >= 4096 pointer — re-raise those
+            // untouched (nothing below this frame throws them today, but
+            // the guard keeps the decode honest).
+            int64 t = 0;
+            t = tag;
+            if (t >= (int64) 4096) {
+                throw tag;
+            }
+            int32 err = (int32) (t - (int64) 512);      // 0x200 tag base
+            if (err < 0 || err > 99) {
+                err = 99;                               // OTHER (pre-dial tags)
+            }
+            throw NetErrors.fromErrno(err, "connectAsync");
+        }
+    }
+
+    /**
+     * The intrinsic behind [`connectAsync`](#connectAsync). The body is a
+     * placeholder; the call is intrinsic-lowered in `MethodCallExpression`
+     * (the static `TcpStream.connect`/`connectAsyncNative` block), so this
+     * returns through the codegen, never the stub. Failure = a legacy tag
+     * throw (see the wrapper).
+     */
+    static #TcpStream connectAsyncNative(#SocketAddress addr) {
         return heap TcpStream(-1);
     }
 

@@ -3197,7 +3197,19 @@ namespace cajeta {
                 // an in-progress connect parks the fiber on the reactor's
                 // writable readiness, then reads SO_ERROR — a distinct control
                 // shape lowered below.
-                bool isConnectAsync = wantStream && methodCallName == "connectAsync"
+                //
+                // The trigger is the PRIVATE `connectAsyncNative` — the public
+                // `TcpStream.connectAsync` is now real cajeta code that wraps
+                // this intrinsic and maps its failure TAGS (0x200 + normalized
+                // `cajeta_net_err` ordinal, thrown as legacy IntToPtr values)
+                // into typed `NetException` subtypes via `NetErrors.fromErrno`.
+                // Before that wrapper, the raw tags reached user catch clauses
+                // directly: `catch (NetException e)` BOUND the tag as the
+                // object pointer (legacy int throws match the first clause
+                // unconditionally), so reading `e.kind` dereferenced 0x107 —
+                // the cajeta-http 1.4c retry loop was the first code to read a
+                // caught dial failure and SIGSEGV'd.
+                bool isConnectAsync = wantStream && methodCallName == "connectAsyncNative"
                                  && parameters.size() == 1;
                 bool isBind    = wantListener && methodCallName == "bind"
                                  && parameters.size() == 1;
@@ -3230,6 +3242,7 @@ namespace cajeta {
                     llvm::Function* inProgFn  = module->getRuntimeFunction("__cajeta_net_is_in_progress");
                     llvm::Function* awaitWrFn = module->getRuntimeFunction("__cajeta_net_await_writable");
                     llvm::Function* connResFn = module->getRuntimeFunction("__cajeta_net_connect_result");
+                    llvm::Function* lastErrFn = module->getRuntimeFunction("__cajeta_net_last_error");
 
                     // Resolve the SocketAddress / IpAddress llvm struct types
                     // so we can GEP the ip / family / octets / port fields.
@@ -3380,12 +3393,31 @@ namespace cajeta {
                             builder->CreateCondBr(isInProg, awaitBB, hardFailBB);
 
                             // hard connect failure (e.g. ECONNREFUSED returned
-                            // synchronously): close + throw.
+                            // synchronously): capture the normalized errno
+                            // BEFORE close() clobbers it, close, then throw the
+                            // ordinal-carrying tag (0x200 + err) for the cajeta
+                            // `connectAsync` wrapper to materialize as a typed
+                            // NetException.
                             builder->SetInsertPoint(hardFailBB);
+                            llvm::Value* hardErr = nullptr;
+                            if (lastErrFn) {
+                                hardErr = builder->CreateCall(lastErrFn, {},
+                                    "na.aconnect_lasterr");
+                            }
                             if (closeFn) builder->CreateCall(closeFn, {fd});
                             if (throwFn) {
+                                llvm::Value* tagVal;
+                                if (hardErr) {
+                                    llvm::Value* e64 = builder->CreateSExt(
+                                        hardErr, i64Ty);
+                                    tagVal = builder->CreateAdd(
+                                        llvm::ConstantInt::get(i64Ty, 0x200), e64);
+                                } else {
+                                    tagVal = llvm::ConstantInt::get(i64Ty,
+                                        0x200 + 99);   // OTHER
+                                }
                                 llvm::Value* tagPtr = builder->CreateIntToPtr(
-                                    llvm::ConstantInt::get(i64Ty, 0x106), ptrTy);
+                                    tagVal, ptrTy);
                                 builder->CreateCall(throwFn, {tagPtr});
                             }
                             builder->CreateUnreachable();
@@ -3402,12 +3434,19 @@ namespace cajeta {
                                 llvmCtx, "na.aconnect_sofail", parentFn);
                             builder->CreateCondBr(soOk, doneBB, soFailBB);
 
-                            // SO_ERROR != 0 → the connect failed after readiness.
+                            // SO_ERROR != 0 → the connect failed after
+                            // readiness. `soerr` already IS the normalized
+                            // ordinal (connect_result maps it), so encode it
+                            // into the same 0x200-based tag.
                             builder->SetInsertPoint(soFailBB);
                             if (closeFn) builder->CreateCall(closeFn, {fd});
                             if (throwFn) {
+                                llvm::Value* so64 = builder->CreateSExt(
+                                    soerr, i64Ty);
+                                llvm::Value* tagVal = builder->CreateAdd(
+                                    llvm::ConstantInt::get(i64Ty, 0x200), so64);
                                 llvm::Value* tagPtr = builder->CreateIntToPtr(
-                                    llvm::ConstantInt::get(i64Ty, 0x107), ptrTy);
+                                    tagVal, ptrTy);
                                 builder->CreateCall(throwFn, {tagPtr});
                             }
                             builder->CreateUnreachable();
