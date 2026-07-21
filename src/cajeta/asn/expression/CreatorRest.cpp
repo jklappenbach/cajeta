@@ -7,6 +7,7 @@
 #include "cajeta/type/CajetaClass.h"
 #include "cajeta/type/CajetaArray.h"
 #include "cajeta/util/MemoryManager.h"
+#include "cajeta/asn/expression/DotExpression.h"
 #include "cajeta/asn/expression/Expression.h"
 #include "cajeta/asn/expression/Identifier.h"
 #include "cajeta/asn/expression/MethodCallExpression.h"
@@ -400,6 +401,49 @@ namespace cajeta {
                         auto argExpr = parameters[argIdx].expression;
                         if (dynamic_pointer_cast<MoveExpression>(argExpr)) continue;
                         if (dynamic_pointer_cast<NewExpression>(argExpr)) continue;
+                        // Borrow SHAPES the identifier-only check let through
+                        // (the JsonValue.asString `heap String(this.strBytes,
+                        // n)` corruption, dodged call-side in 65588252): a
+                        // field read, an array-element read, and a
+                        // borrow-returning call are all borrows a consuming
+                        // `#T` ctor formal must not accept — a @Native-cored
+                        // consumer (String.adopt) can never see the runtime
+                        // title flag and frees/adopts unconditionally.
+                        const char* borrowShape = nullptr;
+                        if (dynamic_pointer_cast<DotExpression>(argExpr)) {
+                            borrowShape = "a field read";
+                        } else if (dynamic_pointer_cast<ArrayIndexExpression>(
+                                       argExpr)) {
+                            borrowShape = "an array-element read";
+                        } else if (auto argCall =
+                                       std::dynamic_pointer_cast<MethodCallExpression>(
+                                           argExpr)) {
+                            MethodPtr rm =
+                                MethodCallExpression::resolveArgCalleeShallow(
+                                    argCall, module);
+                            // Arrays carry PRIMITIVE_FLAG but are droppable
+                            // buffers — only ownership-less SCALARS skip.
+                            bool scalarReturn = rm && rm->getReturnType()
+                                && (rm->getReturnType()->getTypeFlags()
+                                    & PRIMITIVE_FLAG)
+                                && !std::dynamic_pointer_cast<CajetaArray>(
+                                       rm->getReturnType());
+                            if (rm && !rm->isReturnsOwnership()
+                                    && rm->getReturnType() && !scalarReturn) {
+                                borrowShape = "a call returning a borrow (no `#R`)";
+                            }
+                        }
+                        if (borrowShape) {
+                            throw Exception(
+                                "constructor `" + ctorName + "` declares parameter `"
+                                    + fp->getName() + "` as `#T` (ownership transfer "
+                                    "required), but the argument is "
+                                    + borrowShape + " — a borrow. Pass a fresh copy "
+                                    "(`#heap ...`) or an owned local surrendered "
+                                    "with `#`. See docs/specification/lang/"
+                                    "OwnershipTransfer.md.",
+                                "CAJETA_ERROR_TRANSFER_REQUIRED");
+                        }
                         auto idExpr = std::dynamic_pointer_cast<IdentifierExpression>(
                             argExpr);
                         if (!idExpr) continue;

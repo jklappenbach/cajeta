@@ -143,6 +143,19 @@ namespace cajeta {
         }
 
         const string& getMethodCallName() const { return methodCallName; }
+
+        // Conservative callee peek for ARGUMENT-position calls, used by the
+        // `#T`-formal transfer checks (here and CreatorRest) to classify a
+        // call-result argument as owned-returning (`-> #R`) or a borrow
+        // BEFORE the arg has generated (resolvedMethod is only set during
+        // the call's own codegen). Resolves the receiver class (bare call ->
+        // enclosing class; `X.m()` -> X as a type name; `expr.m()` -> expr's
+        // resolved type) and answers ONLY on a unique name+arity match —
+        // ambiguity or an unresolvable receiver returns null so the caller
+        // stays conservative (no false rejections).
+        static MethodPtr resolveArgCalleeShallow(
+            const std::shared_ptr<MethodCallExpression>& call,
+            CajetaModulePtr module);
         void setMethodCallName(const string& name) { methodCallName = name; }
         bool isSuperCtorCall() const { return superCtorCall; }
         const vector<CajetaTypePtr>& getExplicitMethodTypeArgs() const {

@@ -1277,6 +1277,55 @@ namespace cajeta {
                                    /*importTensor*/ false, outResolvedType);
     }
 
+    MethodPtr MethodCallExpression::resolveArgCalleeShallow(
+            const std::shared_ptr<MethodCallExpression>& call,
+            CajetaModulePtr module) {
+        if (!call || !module) return nullptr;
+        if (auto rm = call->getResolvedMethod()) return rm;
+        CajetaClassPtr recv;
+        auto& kids = call->getChildren();
+        if (kids.empty()) {
+            if (!module->getStructureStack().empty()) {
+                recv = module->getStructureStack().back();
+            }
+        } else {
+            auto recvExpr = std::dynamic_pointer_cast<Expression>(kids.front());
+            if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(recvExpr)) {
+                if (id->getTextValue() == "this") {
+                    // `this.m()` — the receiver is the enclosing class; the
+                    // bare `this` identifier resolves only at codegen.
+                    if (!module->getStructureStack().empty()) {
+                        recv = module->getStructureStack().back();
+                    }
+                } else {
+                    recv = std::dynamic_pointer_cast<CajetaClass>(
+                        CajetaType::resolveNamed(
+                            QualifiedName::getOrCreate(id->getTextValue()),
+                            module));
+                }
+            }
+            if (!recv && recvExpr) {
+                if (!recvExpr->getResolvedType()) {
+                    try { recvExpr->resolveTypes(module); } catch (...) { }
+                }
+                recv = std::dynamic_pointer_cast<CajetaClass>(
+                    recvExpr->getResolvedType());
+            }
+        }
+        if (!recv) return nullptr;
+        MethodPtr match;
+        for (auto& mm : recv->getMethodList()) {
+            if (!mm || mm->getName() != call->getMethodCallName()) continue;
+            auto pl = mm->getParameterList();
+            size_t formalCount = pl.size();
+            if (!pl.empty() && pl.front()->getName() == "this") formalCount--;
+            if (formalCount != call->getParameters().size()) continue;
+            if (match) return nullptr;   // ambiguous overloads — stay quiet
+            match = mm;
+        }
+        return match;
+    }
+
     llvm::Value* MethodCallExpression::generateCode(CajetaModulePtr module) {
         auto* builder = module->getBuilder();
         llvm::LLVMContext& llvmCtx = *module->getLlvmContext();
@@ -9181,6 +9230,48 @@ namespace cajeta {
                     auto argExpr = parameters[argIdx].expression;
                     if (dynamic_pointer_cast<MoveExpression>(argExpr)) continue;
                     if (dynamic_pointer_cast<NewExpression>(argExpr)) continue;
+                    // Borrow SHAPES the identifier-only check silently let
+                    // through (the JsonValue.asString / JsonObject.keys
+                    // corruption, dodged call-side in 65588252): a field
+                    // read, an array-element read, and a borrow-returning
+                    // call are all borrows — and when the consuming chain
+                    // ends in a @Native (which can never read the runtime
+                    // title flag), the native frees or adopts memory the
+                    // caller still owns. There is no surrender spelling for
+                    // these shapes, so the fix is a copy or an owned local.
+                    const char* borrowShape = nullptr;
+                    if (dynamic_pointer_cast<DotExpression>(argExpr)) {
+                        borrowShape = "a field read";
+                    } else if (dynamic_pointer_cast<ArrayIndexExpression>(argExpr)) {
+                        borrowShape = "an array-element read";
+                    } else if (auto argCall =
+                                   std::dynamic_pointer_cast<MethodCallExpression>(
+                                       argExpr)) {
+                        MethodPtr rm = resolveArgCalleeShallow(argCall, module);
+                        // Skip only ownership-less SCALARS: arrays carry
+                        // PRIMITIVE_FLAG in this type system but are
+                        // droppable buffers — the exact case (`int8[]`)
+                        // the consuming-native hazard is about.
+                        bool scalarReturn = rm && rm->getReturnType()
+                            && (rm->getReturnType()->getTypeFlags()
+                                & PRIMITIVE_FLAG)
+                            && !std::dynamic_pointer_cast<CajetaArray>(
+                                   rm->getReturnType());
+                        if (rm && !rm->isReturnsOwnership()
+                                && rm->getReturnType() && !scalarReturn) {
+                            borrowShape = "a call returning a borrow (no `#R`)";
+                        }
+                    }
+                    if (borrowShape) {
+                        throw Exception(
+                            "method `" + methodCallName + "` declares parameter `"
+                                + fp->getName() + "` as `#T` (ownership transfer "
+                                "required), but the argument is " + borrowShape
+                                + " — a borrow. Pass a fresh copy (`#heap ...`) "
+                                "or an owned local surrendered with `#`. "
+                                "See docs/specification/lang/OwnershipTransfer.md.",
+                            "CAJETA_ERROR_TRANSFER_REQUIRED");
+                    }
                     auto idExpr = std::dynamic_pointer_cast<IdentifierExpression>(
                         argExpr);
                     if (!idExpr) continue;
