@@ -1,5 +1,7 @@
 package cajeta.nucleo.column;
 
+import cajeta.math.DType;
+
 /**
  * `NullableColumn<T>` — the nullable half of the §3 type distinction
  * (nucleo-column-spec): a separable validity bitmap (1 bit per element,
@@ -144,5 +146,28 @@ public class NullableColumn<T> {
     /** Data address of the validity bitmap (interop/alignment; spec §6). */
     public int64 validityAddress() {
         return this.validity.dataAddress();
+    }
+
+    @Native("__cajeta_arrow_export_fixed")
+    private int64 exportFixed(int64 dataAddr, int64 len, int64 nullCount,
+                              int64 validityAddr, int32 kind, int32 bits);
+
+    /**
+     * The C Data Interface export (spec §4.1): buffers = [validity, data],
+     * the true null count, and the NULLABLE flag — over LIVE buffers, a
+     * zero-copy borrow exactly as {@link Column#exportArrow} (spec 4.4).
+     */
+    public int64 exportArrow() {
+        DType d = DType.of<T>();
+        int64 nulls = 0;
+        int64 i = 0;
+        while (i < this.len) {
+            if (!this.isValid(i)) {
+                nulls = nulls + 1;
+            }
+            i = i + 1;
+        }
+        return this.exportFixed(this.dataAddress(), this.len, nulls,
+                                this.validityAddress(), d.kind(), d.bits());
     }
 }

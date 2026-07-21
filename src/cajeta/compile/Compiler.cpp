@@ -766,6 +766,18 @@ namespace cajeta {
                 == g_lazyQueue.end()) {
             g_lazyQueue.push_back(pkg);
         }
+        // Lazy-package DEPENDENCIES that must be concrete BEFORE the package
+        // parses (the drain pops LIFO, so a dep pushed AFTER drains FIRST):
+        // cajeta.nucleo.column declares FIELDS of cajeta.math types
+        // (`Tensor<T> root`), and field-type resolution needs the real class
+        // at parse — a mid-parse import note would drain math only after
+        // Column.cajeta already failed with UNKNOWN_TYPE. (cajeta.xpu.mesh
+        // needs no entry: it touches math only in method bodies, which
+        // resolve after the drain.)
+        if (pkg == "cajeta.nucleo.column"
+                || pkg.rfind("cajeta.nucleo.column.", 0) == 0) {
+            noteStdlibImportImpl("cajeta.math");
+        }
     }
 
     // Fully parse every enqueued lazy package into the stdlib module, then
