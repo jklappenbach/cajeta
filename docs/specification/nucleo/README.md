@@ -102,9 +102,16 @@ Progress:
   columns, 64-bit offsets, null-carrying utf8 import, nullable narrowing, the live
   pyarrow probe (needs the embedding seam — C-ABI conformance is consumer-tested
   in-tree), MX scales/kernels, codec readers, device story.
-- **nucleo-nn-optim** — 🔨 ACTIVE (`nucleo-nn-optim-plan.md`, approved 2026-07-21):
-  Module/Parameter + reflection collection, optimizer protocol (SGD/Adam/AdamW),
-  pure-function LR schedulers, MSE loss, FiberLocal train/eval + Dropout, and the
-  enabling compiler extension `GradAll<K>` (one backward pass for K parameter
-  tensors) + `Tensor.relu` VJP. Bar: 2-layer relu MLP trained end-to-end.
+- **nucleo-nn-optim** — ✅ v1 complete (`nucleo-nn-optim-plan.md`, 2026-07-21):
+  the neural-net spine. `GradAll<K>` (one closure returning ordered grads for the
+  leading K args) + `Tensor.relu` VJP + broadcast-aware `add`/`sub` backward
+  (`Tensor.sumTo`); `Module`/`Parameter` with reflection collection (declared
+  order, dotted names, buffers); `Linear`; the optimizer protocol with
+  SGD/Adam/AdamW (explicit positional grads, fail-loud, lazy state); pure
+  `lr(step)` schedules + thin wrapper; `Losses.mse*` (Grad inlines qualified
+  statics); FiberLocal train/eval + seeded Dropout. THE BAR: a 2-layer relu MLP
+  trains end-to-end under each optimizer (TrainEndToEndTests). v1 core is
+  float32/non-generic. Deferred, recorded in-plan: crossEntropy + axis
+  reductions, BatchNorm, generic Module<T> (two compiler gaps), call sugar,
+  clip/accumulate wrappers, SSA-locals backward, serialization.
 - Everything below nucleo-nn-optim — **draft** (specs written 2026-06-23; no plan yet).
