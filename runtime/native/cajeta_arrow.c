@@ -176,6 +176,71 @@ void __cajeta_arrow_peek_into(void* self, int64_t src, int64_t i,
            (size_t) elemBytes);
 }
 
+// --- Variable-length (utf8) support (U5) ------------------------------------
+
+// 1 iff the schema's format is utf8 ("u"). Large utf8 ("U") is v1-deferred.
+int64_t __cajeta_arrow_read_is_utf8(void* self, int64_t schemaAddr) {
+    (void) self;
+    const CajArrowSchema* s = (const CajArrowSchema*) (intptr_t) schemaAddr;
+    return (s && s->format && s->format[0] == 'u' && !s->format[1]) ? 1 : 0;
+}
+
+// Typed peeks for the NON-generic StringColumn (no wildcard sentinel, so
+// direct returns are safe): int32 offsets and uint8 data bytes.
+int32_t __cajeta_arrow_peek_i32(void* self, int64_t addr, int64_t i) {
+    (void) self;
+    return ((const int32_t*) (intptr_t) addr)[i];
+}
+int32_t __cajeta_arrow_peek_u8(void* self, int64_t addr, int64_t i) {
+    (void) self;
+    return (int32_t) ((const uint8_t*) (intptr_t) addr)[i];
+}
+
+// utf8 export: 3 buffers [validity|NULL, offsets(int32, len+1), data(bytes)],
+// same bundle head + release contract as the fixed-width export.
+typedef struct CajArrowExportBundle3 {
+    CajArrowSchema schema;
+    CajArrowArray array;
+    const void* buffers[3];
+    int refs;
+} CajArrowExportBundle3;
+
+static void caj_arrow_schema_release3(CajArrowSchema* s) {
+    if (!s || !s->release) return;
+    CajArrowExportBundle3* b = (CajArrowExportBundle3*) s->private_data;
+    s->release = NULL;
+    if (--b->refs == 0) free(b);
+}
+static void caj_arrow_array_release3(CajArrowArray* a) {
+    if (!a || !a->release) return;
+    CajArrowExportBundle3* b = (CajArrowExportBundle3*) a->private_data;
+    a->release = NULL;
+    if (--b->refs == 0) free(b);
+}
+
+int64_t __cajeta_arrow_export_varlen(void* self, int64_t offsetsAddr,
+                                     int64_t dataAddr, int64_t length) {
+    (void) self;
+    CajArrowExportBundle3* b =
+        (CajArrowExportBundle3*) calloc(1, sizeof(CajArrowExportBundle3));
+    if (!b) return 0;
+    b->refs = 2;
+    b->buffers[0] = NULL;
+    b->buffers[1] = (const void*) (intptr_t) offsetsAddr;
+    b->buffers[2] = (const void*) (intptr_t) dataAddr;
+    b->schema.format = "u";
+    b->schema.name = "";
+    b->schema.release = caj_arrow_schema_release3;
+    b->schema.private_data = b;
+    b->array.length = length;
+    b->array.null_count = 0;
+    b->array.n_buffers = 3;
+    b->array.buffers = b->buffers;
+    b->array.release = caj_arrow_array_release3;
+    b->array.private_data = b;
+    return (int64_t)(intptr_t) b;
+}
+
 // Export a fixed-width column over live buffers. validityAddr 0 = non-null
 // column (buffers[0] NULL, flags 0); nonzero = bitmap present + NULLABLE
 // flag. Returns the bundle address, 0 on an unsupported dtype.

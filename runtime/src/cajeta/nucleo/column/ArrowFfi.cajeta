@@ -34,4 +34,17 @@ public class ArrowFfi {
      *  dtype-blind, so generic readers stay cast-free (wildcard-safe). */
     @Native("__cajeta_arrow_peek_into")
     public void peekInto(int64 dataAddr, int64 i, int32 elemBytes, int64 dst);
+
+    /** 1 iff the schema's format is utf8 ("u"). */
+    @Native("__cajeta_arrow_read_is_utf8")
+    public int64 readIsUtf8(int64 schemaAddr);
+
+    /** int32 offsets-buffer element (StringColumn is non-generic — direct
+     *  typed returns are wildcard-safe there). */
+    @Native("__cajeta_arrow_peek_i32")
+    public int32 peekI32(int64 addr, int64 i);
+
+    /** uint8 data-buffer byte, widened to int32. */
+    @Native("__cajeta_arrow_peek_u8")
+    public int32 peekU8(int64 addr, int64 i);
 }
