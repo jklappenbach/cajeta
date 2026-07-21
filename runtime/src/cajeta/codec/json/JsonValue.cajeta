@@ -152,7 +152,17 @@ public final class JsonValue {
         if (this.kind != 3) {
             return null;
         }
-        return heap String(this.strBytes, this.strLen);
+        // The (#int8[], int32) String ctor CONSUMES its buffer (its
+        // @Native core frees short inputs, adopts long ones) — it must
+        // never see this value's owned strBytes. Wrap a fresh copy.
+        int32 n = this.strLen;
+        int8[] copy = heap int8[n];
+        int32 i = 0;
+        while (i < n) {
+            copy[i] = this.strBytes[i];
+            i = i + 1;
+        }
+        return heap String(#copy, n);
     }
 
     @Inline
