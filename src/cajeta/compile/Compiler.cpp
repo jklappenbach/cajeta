@@ -8,6 +8,7 @@
 #include "cajeta/buildtool/Lockfile.h"   // sha256Hex
 #include "cajeta/buildtool/PrimeCache.h"
 #include "cajeta/buildtool/skill/SkillPackager.h"
+#include "DropBackfill.h"
 #include "ObligationReplay.h"
 
 // Stamped by CMake add_compile_definitions; fallbacks for editors/tools.
@@ -2241,41 +2242,17 @@ namespace cajeta {
                     }
                 }
             }
-            // Drop-function backfill. A full build synthesizes a type's
-            // stack/heap drop wrappers lazily when a CONSUMER's codegen
-            // drops a value of the type; a skipped consumer never fires
-            // that, leaving its cached .bc with dangling extern drop
-            // declarations (incl. for instantiations created only
+            // Drop-function backfill (shared with the JIT — DropBackfill.h).
+            // A skipped consumer's cached .bc arrives with dangling extern
+            // drop declarations (incl. for instantiations created only
             // INDIRECTLY during stdlib codegen — the obligation set can't
-            // enumerate these). Scan every loaded .bc for undefined
-            // `__cajeta[_stack]_<type>_drop` declarations and synthesize
-            // exactly those into the type's own module — the full-build
-            // layout. Mangling mirrors getOrCreate{Stack,}DropFunction.
-            auto mangleDropPart = [](std::string s) {
-                for (char& c : s) {
-                    if (c == ':' || c == '.' || c == '<' || c == '>'
-                        || c == ',' || c == ' ') c = '_';
-                }
-                return s;
-            };
-            std::map<std::string, CajetaClassPtr> classByDropSymbol;
-            for (auto& [canon, type] : CajetaType::getCanonicalMap()) {
-                auto klass = std::dynamic_pointer_cast<CajetaClass>(type);
-                if (!klass || klass->isTemplate()) continue;
-                std::string m = mangleDropPart(canon);
-                classByDropSymbol["__cajeta_stack_" + m + "_drop"] = klass;
-                classByDropSymbol["__cajeta_" + m + "_drop"] = klass;
-            }
+            // enumerate these); scan the cache-loaded modules and synthesize
+            // exactly those.
+            std::vector<CajetaModulePtr> cacheLoaded;
             for (auto& module: modules) {
-                if (!module->isIncrementalClean()) continue;
-                for (auto& fn : module->getLlvmModule()->functions()) {
-                    if (!fn.isDeclaration()) continue;
-                    auto hit = classByDropSymbol.find(fn.getName().str());
-                    if (hit == classByDropSymbol.end()) continue;
-                    hit->second->getOrCreateStackDropFunction();
-                    hit->second->getOrCreateDropFunction();
-                }
+                if (module->isIncrementalClean()) cacheLoaded.push_back(module);
             }
+            backfillDropFunctions(cacheLoaded);
         }
 
         // Archive emit bundles every parsed module's bitcode into one
