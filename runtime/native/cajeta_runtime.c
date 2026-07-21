@@ -125,6 +125,7 @@ typedef void (*cajeta_ctor_fn)(void* self);
 #include "cajeta_rt_hash.c"
 #include "cajeta_rt_lang.c"
 #include "cajeta_rt_process.c"
+#include "cajeta_arrow.c"   // nucleo-column Arrow C Data Interface shims
 #include "cajeta_xpu.c"   // XPU/GPU module
 
 // ---------------------------------------------------------------------------

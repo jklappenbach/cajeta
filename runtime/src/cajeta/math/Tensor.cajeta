@@ -402,6 +402,17 @@ public class Tensor<T> {
         return d.bytes();
     }
 
+    /**
+     * Data address of this view's element 0 (storage base + scaled offset) —
+     * the Arrow interop seam (nucleo-column-spec §4/§6/§7): aligned-offset
+     * computation, alignment probes, and C-Data export read it. Additive; no
+     * existing behavior rides on it.
+     */
+    public int64 hostAddress() {
+        return this.store.hostAddress()
+             + this.offsetVal * ((int64) this.itemsize());
+    }
+
     /** Total bytes of the elements (`size * itemsize`). */
     public int64 nbytes() {
         return this.size() * (int64) this.itemsize();

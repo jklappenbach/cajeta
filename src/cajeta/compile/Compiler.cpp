@@ -659,7 +659,15 @@ namespace cajeta {
         // cajeta.xpu.mesh (Qem / MeshSimplifier) is the ONLY eager-prelude
         // consumer of cajeta.math; making it lazy keeps cajeta.math out of the
         // eager prelude (MathLazyParse — guarded by CompilerTests).
-        return pkg == "cajeta.xpu.mesh" || pkg.rfind("cajeta.xpu.mesh.", 0) == 0;
+        if (pkg == "cajeta.xpu.mesh" || pkg.rfind("cajeta.xpu.mesh.", 0) == 0) {
+            return true;
+        }
+        // cajeta.nucleo.column (the Arrow columnar substrate) imports
+        // cajeta.math (Tensor/DType) — same shape as cajeta.xpu.mesh: lazy,
+        // so a program that never touches columns keeps math out of the
+        // eager prelude (MathLazyParse bar).
+        return pkg == "cajeta.nucleo.column"
+            || pkg.rfind("cajeta.nucleo.column.", 0) == 0;
     }
 
     // compile-cache Unit 2 — the persistent stdlib-prime cache key (spec §2).

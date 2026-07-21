@@ -82,4 +82,16 @@ public class Storage<T> {
     public KernelBuffer<T> deviceBuffer() {
         return this.dev;
     }
+
+    // nucleo-column: the host buffer's data address, for the Arrow interop
+    // seam (aligned-offset computation and C-Data export; nucleo-column-spec
+    // §4/§6). Instance @Native per the KernelBuffer precedent — a static on a
+    // generic class resolves to the uninstantiated template.
+    @Native("__cajeta_arrow_addr")
+    private int64 dataAddr(T[] a);
+
+    /** Data address of the host buffer (Arrow interop / alignment probes). */
+    public int64 hostAddress() {
+        return this.dataAddr(this.host);
+    }
 }
