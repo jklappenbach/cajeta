@@ -32,8 +32,17 @@ namespace cajeta::dbg {
         // (0, 1, 2, ...), one per emission site (one per statement) — NOT
         // deduplicated, so two statements on the same line get distinct ids
         // (both map to the same (file,line) for breakpoint arming).
+        // After setAt() replay, appends continue past the max replayed id, so
+        // fresh codegen can never collide with a cached module's baked ids.
         int32_t add(const std::string& file, int line, int col,
                     const std::string& function);
+
+        // Sparse replay (fast-debug-launch 3.2.1): place `loc` at exactly
+        // `id`, growing the table with HOLES as needed. A hole is a default
+        // DbgLoc (empty file, line 0); at() returns it harmlessly and
+        // idsForLine() never matches one. Used to restore a cached module's
+        // loc ids, which are baked into its safepoint calls as constants.
+        void setAt(int32_t id, DbgLoc loc);
 
         // Look up by id. Caller must pass a valid id (< size()).
         const DbgLoc& at(int32_t id) const;
@@ -53,5 +62,14 @@ namespace cajeta::dbg {
     // Process-global table backing codegen emission sites for the active
     // debug compile. Single-threaded codegen, so no synchronization.
     DbgLocTable& globalDbgLocTable();
+
+    // Loc-table sidecar (fast-debug-launch 3.2.2) — the persistence pair for
+    // cache slots. The format is sparse-native (one line per NON-hole entry,
+    // strings escaped for tab/newline/backslash), so holes round-trip for
+    // free. write returns false on I/O failure; load returns false on a
+    // missing/malformed file and leaves `into` in an unspecified partial
+    // state — callers treat false as "no sidecar, fall back to compiling".
+    bool writeDbgLocSidecar(const std::string& path, const DbgLocTable& table);
+    bool loadDbgLocSidecar(const std::string& path, DbgLocTable& into);
 
 } // namespace cajeta::dbg
