@@ -1,0 +1,41 @@
+package cajeta.nucleo.nn;
+
+import cajeta.math.Tensor;
+
+/**
+ * Losses — backend-neutral differentiable loss functions (spec §7;
+ * resolution N8): free functions (statics) over ordinary `cajeta.math`
+ * primitives, differentiable because those primitives carry VJP rules — no
+ * base class, no registration, and a custom loss is just another function
+ * (§7.4). `Grad` inlines these through the qualified-static resolver, so
+ * `Grad((w, b, x, t) -> Losses.mse(forwardExpr, t))` differentiates.
+ *
+ * Reduction is selected by FUNCTION (the return type reflects the choice —
+ * §7.3 narrowed for a typed surface): {@link #mse} is the `mean` default,
+ * {@link #mseSum} the `sum` form, {@link #mseNone} the elementwise tensor.
+ * Cross-entropy is DEFERRED behind axis-wise reductions (plan ledger).
+ */
+public final class Losses {
+
+    /** Mean squared error, `mean` reduction (the default): a differentiable
+     *  scalar over sub/mul/mean. */
+    public static float32 mse(Tensor<float32> pred, Tensor<float32> target) {
+        return Tensor.mean<float32,float32>(
+            Tensor.mul<float32>(Tensor.sub<float32>(pred, target),
+                                Tensor.sub<float32>(pred, target)));
+    }
+
+    /** Mean squared error, `sum` reduction. */
+    public static float32 mseSum(Tensor<float32> pred, Tensor<float32> target) {
+        return Tensor.sum<float32,float32>(
+            Tensor.mul<float32>(Tensor.sub<float32>(pred, target),
+                                Tensor.sub<float32>(pred, target)));
+    }
+
+    /** Mean squared error, `none` reduction: the elementwise squared errors. */
+    public static #Tensor<float32> mseNone(Tensor<float32> pred,
+                                           Tensor<float32> target) {
+        return Tensor.mul<float32>(Tensor.sub<float32>(pred, target),
+                                   Tensor.sub<float32>(pred, target));
+    }
+}

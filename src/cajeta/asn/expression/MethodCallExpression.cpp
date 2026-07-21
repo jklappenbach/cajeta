@@ -519,12 +519,27 @@ namespace cajeta {
     static cajeta::transform::CallResolver makeCallResolver(CajetaModulePtr module) {
         CajetaClassPtr enclosing = module->getStructureStack().empty()
             ? nullptr : module->getStructureStack().back();
-        return [enclosing](const std::string& name, size_t arity)
-                -> cajeta::transform::InlineTarget {
+        return [enclosing](const std::string& recv, const std::string& name,
+                           size_t arity) -> cajeta::transform::InlineTarget {
             cajeta::transform::InlineTarget t;
-            if (!enclosing) return t;
+            // Bare call -> the enclosing class. Qualified (`Losses.mse(...)`)
+            // -> the NAMED class from the canonical map (nn U7: stdlib loss
+            // functions differentiate through). The cross-class target must
+            // be self-contained (a single return over primitives) — its own
+            // bare-name helper calls would resolve against the WRONG class,
+            // so they miss and error as unsupported, never silently misbind.
+            CajetaClassPtr host = enclosing;
+            if (!recv.empty()
+                    && !(enclosing && enclosing->getQName()
+                         && enclosing->getQName()->getTypeName() == recv)) {
+                auto& cmap = CajetaType::getCanonicalMap();
+                auto it = cmap.find(recv);
+                host = (it != cmap.end())
+                    ? dynamic_pointer_cast<CajetaClass>(it->second) : nullptr;
+            }
+            if (!host) return t;
             MethodPtr match;
-            for (auto& m : enclosing->getMethodList()) {
+            for (auto& m : host->getMethodList()) {
                 if (m && m->isStatic() && m->getName() == name
                         && m->getParameterList().size() == arity) {
                     if (match) return cajeta::transform::InlineTarget{};  // ambiguous
@@ -539,7 +554,7 @@ namespace cajeta {
             t.returnIsTensor = rc.rfind("cajeta.math.Tensor", 0) == 0
                             || rc.rfind("Tensor<", 0) == 0;
             t.returnTy = rc;
-            t.qualifiedName = enclosing->getQName()->getTypeName() + "." + name;
+            t.qualifiedName = host->getQName()->getTypeName() + "." + name;
             for (auto& p : match->getParameterList()) t.paramNames.push_back(p->getName());
             t.body = findReturnExpr(match->getBlock());
             return t;
@@ -840,7 +855,14 @@ namespace cajeta {
         // unresolved pre-codegen; take the callee's return type off the resolver.
         if (valueTy.empty() || valueTy == "void") {
             if (auto call = std::dynamic_pointer_cast<MethodCallExpression>(bodyExpr)) {
-                auto t = resolveCall(call->getMethodCallName(),
+                std::string vrecv;
+                if (!call->getChildren().empty()) {
+                    if (auto* rid = dynamic_cast<IdentifierExpression*>(
+                            call->getChildren()[0].get())) {
+                        vrecv = rid->getTextValue();
+                    }
+                }
+                auto t = resolveCall(vrecv, call->getMethodCallName(),
                                      call->getParameters().size());
                 if (t.found && !t.returnTy.empty()) valueTy = t.returnTy;
             }
@@ -996,7 +1018,14 @@ namespace cajeta {
         }
         if (valueTy.empty() || valueTy == "void") {
             if (auto call = std::dynamic_pointer_cast<MethodCallExpression>(bodyExpr)) {
-                auto t = resolveCall(call->getMethodCallName(),
+                std::string vrecv;
+                if (!call->getChildren().empty()) {
+                    if (auto* rid = dynamic_cast<IdentifierExpression*>(
+                            call->getChildren()[0].get())) {
+                        vrecv = rid->getTextValue();
+                    }
+                }
+                auto t = resolveCall(vrecv, call->getMethodCallName(),
                                      call->getParameters().size());
                 if (t.found && !t.returnTy.empty()) valueTy = t.returnTy;
             }

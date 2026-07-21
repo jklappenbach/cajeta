@@ -37,8 +37,13 @@ namespace cajeta {
             std::vector<std::string> paramNames;   // callee params (inline case)
             Expression* body = nullptr;      // callee's single return expr (inline case)
         };
+        // `recv` is the written receiver identifier ("" for a bare same-class
+        // call, "Losses" for a qualified static like `Losses.mse(...)`) — the
+        // resolver maps qualified calls to OTHER classes' static single-return
+        // helpers so stdlib loss functions differentiate through (nn U7).
         using CallResolver =
-            std::function<InlineTarget(const std::string& name, size_t arity)>;
+            std::function<InlineTarget(const std::string& recv,
+                                       const std::string& name, size_t arity)>;
 
         // A node in f's forward computation DAG. Nodes are in topological order;
         // the last node is the output. A leaf carries `valueExpr` = the input

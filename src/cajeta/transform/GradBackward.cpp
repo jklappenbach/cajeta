@@ -222,8 +222,9 @@ namespace cajeta {
                     // binding context) so they carry the right forward source and,
                     // for the inline case, the gradient inputs.
                     const auto& args = mc->getParameters();
-                    InlineTarget t = resolveCall ? resolveCall(op, args.size())
-                                                 : InlineTarget{};
+                    InlineTarget t = resolveCall
+                        ? resolveCall(recv, op, args.size())
+                        : InlineTarget{};
                     if (t.found) {
                         std::vector<size_t> argIdx;
                         argIdx.reserve(args.size());
