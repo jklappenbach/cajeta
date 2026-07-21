@@ -413,6 +413,27 @@ public class Tensor<T> {
              + this.offsetVal * ((int64) this.itemsize());
     }
 
+    @Native("__cajeta_arrow_export_fixed")
+    private int64 arrowExportFixed(int64 dataAddr, int64 len, int64 nullCount,
+                                   int64 validityAddr, int32 kind, int32 bits);
+
+    /**
+     * The Tensor Arrow retrofit's export half (nucleo-column-spec §7.2,
+     * ADDITIVE beside {@link #protocol}): this contiguous tensor's flat
+     * element run as a C Data Interface bundle over the LIVE buffer — the
+     * same zero-copy borrow + shells-only release contract as the column
+     * export. The caller keeps this tensor alive for the consumer's reads
+     * (the `TensorProtocol` discipline). Contiguous C-order tensors only;
+     * the import direction lives column-side (`Column.importAsTensor` —
+     * cajeta.math cannot import the column package without a lazy-parse
+     * cycle).
+     */
+    public int64 exportArrow() {
+        DType d = DType.of<T>();
+        return this.arrowExportFixed(this.hostAddress(), this.size(), 0, 0,
+                                     d.kind(), d.bits());
+    }
+
     /** Total bytes of the elements (`size * itemsize`). */
     public int64 nbytes() {
         return this.size() * (int64) this.itemsize();

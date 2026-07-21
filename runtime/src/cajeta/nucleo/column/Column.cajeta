@@ -274,6 +274,63 @@ public class Column<T> {
         return heap Column<E>(data, schemaAddr, arrayAddr, n);
     }
 
+    /**
+     * The Tensor retrofit's IMPORT half (spec §7.3 as narrowed): import a
+     * foreign fixed-width array and cross the compute boundary in one step —
+     * materialize an owned aligned copy, hand back its tensor view as
+     * `Tensor<?>` (capture via instanceof + cast). One explicit copy; the
+     * producer's releases fire when the transient foreign borrow drops.
+     * Lives HERE rather than on `Tensor` because cajeta.math cannot import
+     * this package (lazy-parse cycle: column -> math).
+     */
+    public static #Tensor<?> importAsTensor(int64 schemaAddr, int64 arrayAddr) {
+        ArrowFfi f = stack ArrowFfi();
+        if (f.readNullCount(arrayAddr) != 0) {
+            throw heap ColumnTypeException(
+                "array carries nulls - the dense tensor substrate needs an "
+                + "explicit fill/drop through NullableColumn first");
+        }
+        int64 packed = f.readDtype(schemaAddr);
+        if (packed < 0) {
+            throw heap ColumnTypeException(
+                "unknown or unmodeled Arrow format for a tensor import");
+        }
+        int32 kind = (int32) (packed >> 8);
+        int32 bits = (int32) (packed & 255);
+        if (kind == DType.KIND_INT) {
+            if (bits == 8)  { return Column.importTensorTyped<int8>(schemaAddr, arrayAddr); }
+            if (bits == 16) { return Column.importTensorTyped<int16>(schemaAddr, arrayAddr); }
+            if (bits == 32) { return Column.importTensorTyped<int32>(schemaAddr, arrayAddr); }
+            return Column.importTensorTyped<int64>(schemaAddr, arrayAddr);
+        }
+        if (kind == DType.KIND_UINT) {
+            if (bits == 8)  { return Column.importTensorTyped<uint8>(schemaAddr, arrayAddr); }
+            if (bits == 16) { return Column.importTensorTyped<uint16>(schemaAddr, arrayAddr); }
+            if (bits == 32) { return Column.importTensorTyped<uint32>(schemaAddr, arrayAddr); }
+            return Column.importTensorTyped<uint64>(schemaAddr, arrayAddr);
+        }
+        if (bits == 32) { return Column.importTensorTyped<float32>(schemaAddr, arrayAddr); }
+        return Column.importTensorTyped<float64>(schemaAddr, arrayAddr);
+    }
+
+    static #Tensor<?> importTensorTyped<E>(int64 schemaAddr, int64 arrayAddr) {
+        Column<?> w = Column.importForeign(schemaAddr, arrayAddr, 0);
+        Column<E> c = (Column<E>) w;
+        // Copy into a tensor that OWNS its storage outright — returning a
+        // view of a column-owned root would dangle once the transient
+        // column drops (the root has no owner but the doomed wrapper).
+        int64 n = c.size();
+        int64[] shp = heap int64[1];
+        shp[0] = n;
+        Tensor<E> t = Tensor.zeros<E>(shp);
+        int64 i = 0;
+        while (i < n) {
+            t.set1(i, c.get(i));
+            i = i + 1;
+        }
+        return #t;
+    }
+
     // Instance @Native per the KernelBuffer precedent (generic class ->
     // instance dispatch); `this` is ignored on the C side.
     @Native("__cajeta_arrow_export_fixed")

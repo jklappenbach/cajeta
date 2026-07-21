@@ -1,0 +1,84 @@
+package cajeta.nucleo.column;
+
+/**
+ * `MxColumn` — the MX extension-type carrier (nucleo-column-spec §5), v1
+ * MECHANISM: a LOGICAL type (`cajeta.mxfp4`, block size in metadata) over
+ * PHYSICAL packed `uint8` storage. A view, never a re-encode: wrapping and
+ * unwrapping touch no bytes. Export tags the schema with
+ * `ARROW:extension:name`/`metadata`; a consumer that knows the extension
+ * rebuilds the logical type, one that doesn't still moves the physical
+ * bytes (spec 5.2 — graceful degradation). Scales buffers and MX compute
+ * kernels are deferred to the autograd/xpu lanes; the extension NAME tracks
+ * the ecosystem's MX-Arrow convention when it converges.
+ */
+public class MxColumn {
+    Column<uint8> packed;   // physical bytes (owned or foreign column)
+    int32 blockSize;        // MX block size (metadata)
+    int64 byteLen;
+
+    /** Logical mxfp4 view over packed bytes. Consumes the column. */
+    public MxColumn(Column<uint8> packed, int32 blockSize, int64 byteLen) {
+        this.packed #= packed;
+        this.blockSize = blockSize;
+        this.byteLen = byteLen;
+    }
+
+    /** Wrap packed mxfp4 bytes (a view — no re-encode). */
+    public static #MxColumn mxfp4(Column<uint8> packed, int32 blockSize) {
+        int64 n = packed.size();
+        return heap MxColumn(#packed, blockSize, n);
+    }
+
+    /** Physical byte count. */
+    public int64 size() {
+        return this.byteLen;
+    }
+
+    /** The MX block size carried in the extension metadata. */
+    public int32 block() {
+        return this.blockSize;
+    }
+
+    /** Physical byte at `k`. */
+    public int32 byteAt(int64 k) {
+        return (int32) this.packed.get(k);
+    }
+
+    /** Physical data address (the view shares the packed column's buffer). */
+    public int64 dataAddress() {
+        return this.packed.dataAddress();
+    }
+
+    @Native("__cajeta_arrow_export_mx")
+    private int64 exportMx(int64 dataAddr, int64 byteLen, int32 blockSize);
+
+    /**
+     * Export with the extension tag (spec 5.2): physical "C" bytes +
+     * `ARROW:extension:name` = cajeta.mxfp4 and the block size in
+     * `ARROW:extension:metadata`. Same borrow/release contract as every
+     * other export.
+     */
+    public int64 exportArrow() {
+        return this.exportMx(this.dataAddress(), this.byteLen, this.blockSize);
+    }
+
+    /**
+     * Import a cajeta.mxfp4-tagged array as the logical MX column (spec
+     * 5.3). A DIFFERENT extension is a named error here — but its physical
+     * bytes still import through `Column.importArrow` (which ignores
+     * extension metadata): the unknown-extension degradation path.
+     */
+    public static #MxColumn importArrow(int64 schemaAddr, int64 arrayAddr) {
+        ArrowFfi f = stack ArrowFfi();
+        if (f.readExtKind(schemaAddr) != 1) {
+            throw heap ColumnTypeException(
+                "not a cajeta.mxfp4-tagged array - unknown extensions "
+                + "import physically via Column.importArrow");
+        }
+        int64 block = f.readExtBlock(schemaAddr);
+        int64 data = f.readBuffer(arrayAddr, 1);
+        int64 n = f.readLength(arrayAddr);
+        Column<uint8> packed = heap Column<uint8>(data, schemaAddr, arrayAddr, n);
+        return heap MxColumn(#packed, (int32) block, n);
+    }
+}

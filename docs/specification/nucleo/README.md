@@ -90,11 +90,16 @@ Progress:
   operator-spelled bodies (`a * b` needs a type-system decision — plan 4.2.2), the
   relational half (§4 pushdown, §7 column sharing, X7 nulls) with nucleo-column/frame,
   GPU lowering (X6), and the §3.4 fuse-vs-materialize heuristic.
-- **nucleo-column** — 🔨 **ACTIVE** (`nucleo-column-plan.md`, approved 2026-07-20): the
-  Arrow-laid-out columnar substrate — `Column<T>`/`NullableColumn<T>` (bit-identical to
-  tensor buffers when non-null, zero-copy views both ways), matched-struct C Data
-  Interface (export + foreign-backed zero-copy import, no `libarrow`), 64-byte aligned
-  owned buffers (aligned start offset), utf8 columns, `cajeta.mxfp4` extension carry.
-  Deferred in-plan: Storage native mode (zero-copy tensor import), boolean columns,
-  large offsets, MX scales/kernels, codec readers, device story.
+- **nucleo-column** — ✅ v1 complete (`nucleo-column-plan.md`, 2026-07-21): the
+  Arrow-laid-out columnar substrate. `Column<T>`/`NullableColumn<T>`/`StringColumn`/
+  `MxColumn` — tensor-bit-identical when non-null with zero-copy views both ways;
+  64-byte-aligned owned buffers (aligned start offset); matched-struct C Data Interface
+  with no `libarrow`: zero-copy export (live-buffer borrow, shells-only release) and
+  zero-copy import (foreign-backed columns, releases exactly once, `materialize()` at
+  the compute boundary); utf8 ("u") both directions; `cajeta.mxfp4` extension carry with
+  physical-bytes degradation. The package is LAZY (it pulls cajeta.math). Deferred,
+  recorded in-plan: Storage native mode (zero-copy tensor over foreign memory), boolean
+  columns, 64-bit offsets, null-carrying utf8 import, nullable narrowing, the live
+  pyarrow probe (needs the embedding seam — C-ABI conformance is consumer-tested
+  in-tree), MX scales/kernels, codec readers, device story.
 - Everything below nucleo-column — **draft** (specs written 2026-06-23; no plan yet).

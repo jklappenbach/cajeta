@@ -241,6 +241,133 @@ int64_t __cajeta_arrow_export_varlen(void* self, int64_t offsetsAddr,
     return (int64_t)(intptr_t) b;
 }
 
+// --- MX extension types (U7, spec §5) ---------------------------------------
+// An extension type is a LOGICAL name + metadata riding the schema over a
+// physical storage type (here: packed uint8). The metadata field uses the C
+// Data Interface's binary key-value blob: int32 n_pairs, then per pair
+// int32 keyLen, key bytes, int32 valLen, value bytes (native endian).
+
+#define CAJ_MX_FP4_NAME "cajeta.mxfp4"
+
+typedef struct CajArrowExtBundle {
+    CajArrowSchema schema;
+    CajArrowArray array;
+    const void* buffers[2];
+    int refs;
+    char metadata[128];       // serialized kv blob (name + block size)
+    char extMeta[32];         // {"block":N}
+} CajArrowExtBundle;
+
+static void caj_arrow_schema_release_ext(CajArrowSchema* s) {
+    if (!s || !s->release) return;
+    CajArrowExtBundle* b = (CajArrowExtBundle*) s->private_data;
+    s->release = NULL;
+    if (--b->refs == 0) free(b);
+}
+static void caj_arrow_array_release_ext(CajArrowArray* a) {
+    if (!a || !a->release) return;
+    CajArrowExtBundle* b = (CajArrowExtBundle*) a->private_data;
+    a->release = NULL;
+    if (--b->refs == 0) free(b);
+}
+
+static size_t caj_meta_put(char* p, const char* key, const char* val) {
+    int32_t kl = (int32_t) strlen(key);
+    int32_t vl = (int32_t) strlen(val);
+    size_t n = 0;
+    memcpy(p + n, &kl, 4); n += 4;
+    memcpy(p + n, key, (size_t) kl); n += (size_t) kl;
+    memcpy(p + n, &vl, 4); n += 4;
+    memcpy(p + n, val, (size_t) vl); n += (size_t) vl;
+    return n;
+}
+
+// Export packed MX bytes as physical uint8 ("C") tagged with the extension
+// name + block-size metadata: a consumer that knows the extension rebuilds
+// the logical type; one that doesn't still moves the bytes (spec 5.2).
+int64_t __cajeta_arrow_export_mx(void* self, int64_t dataAddr,
+                                 int64_t byteLen, int32_t blockSize) {
+    (void) self;
+    CajArrowExtBundle* b =
+        (CajArrowExtBundle*) calloc(1, sizeof(CajArrowExtBundle));
+    if (!b) return 0;
+    b->refs = 2;
+    snprintf(b->extMeta, sizeof(b->extMeta), "{\"block\":%d}", blockSize);
+    char* p = b->metadata;
+    int32_t pairs = 2;
+    memcpy(p, &pairs, 4);
+    size_t off = 4;
+    off += caj_meta_put(p + off, "ARROW:extension:name", CAJ_MX_FP4_NAME);
+    off += caj_meta_put(p + off, "ARROW:extension:metadata", b->extMeta);
+    (void) off;
+    b->buffers[0] = NULL;
+    b->buffers[1] = (const void*) (intptr_t) dataAddr;
+    b->schema.format = "C";
+    b->schema.name = "";
+    b->schema.metadata = b->metadata;
+    b->schema.release = caj_arrow_schema_release_ext;
+    b->schema.private_data = b;
+    b->array.length = byteLen;
+    b->array.n_buffers = 2;
+    b->array.buffers = b->buffers;
+    b->array.release = caj_arrow_array_release_ext;
+    b->array.private_data = b;
+    return (int64_t)(intptr_t) b;
+}
+
+// Scan a schema's metadata blob for ARROW:extension:name. Returns:
+// 1 = cajeta.mxfp4, 0 = no extension entry, -1 = a different extension.
+int64_t __cajeta_arrow_read_ext_kind(void* self, int64_t schemaAddr) {
+    (void) self;
+    const CajArrowSchema* s = (const CajArrowSchema*) (intptr_t) schemaAddr;
+    if (!s || !s->metadata) return 0;
+    const char* p = s->metadata;
+    int32_t pairs;
+    memcpy(&pairs, p, 4);
+    p += 4;
+    for (int32_t k = 0; k < pairs; ++k) {
+        int32_t kl; memcpy(&kl, p, 4); p += 4;
+        const char* key = p; p += kl;
+        int32_t vl; memcpy(&vl, p, 4); p += 4;
+        const char* val = p; p += vl;
+        if (kl == (int32_t) strlen("ARROW:extension:name")
+                && memcmp(key, "ARROW:extension:name", (size_t) kl) == 0) {
+            if (vl == (int32_t) strlen(CAJ_MX_FP4_NAME)
+                    && memcmp(val, CAJ_MX_FP4_NAME, (size_t) vl) == 0) {
+                return 1;
+            }
+            return -1;
+        }
+    }
+    return 0;
+}
+
+// Block size out of the mx extension metadata ({"block":N}); 0 when absent.
+int64_t __cajeta_arrow_read_ext_block(void* self, int64_t schemaAddr) {
+    (void) self;
+    const CajArrowSchema* s = (const CajArrowSchema*) (intptr_t) schemaAddr;
+    if (!s || !s->metadata) return 0;
+    const char* p = s->metadata;
+    int32_t pairs;
+    memcpy(&pairs, p, 4);
+    p += 4;
+    for (int32_t k = 0; k < pairs; ++k) {
+        int32_t kl; memcpy(&kl, p, 4); p += 4;
+        const char* key = p; p += kl;
+        int32_t vl; memcpy(&vl, p, 4); p += 4;
+        const char* val = p; p += vl;
+        if (kl == (int32_t) strlen("ARROW:extension:metadata")
+                && memcmp(key, "ARROW:extension:metadata", (size_t) kl) == 0) {
+            long n = 0;
+            for (int32_t i = 0; i < vl; ++i) {
+                if (val[i] >= '0' && val[i] <= '9') n = n * 10 + (val[i] - '0');
+            }
+            return (int64_t) n;
+        }
+    }
+    return 0;
+}
+
 // Export a fixed-width column over live buffers. validityAddr 0 = non-null
 // column (buffers[0] NULL, flags 0); nonzero = bitmap present + NULLABLE
 // flag. Returns the bundle address, 0 on an unsupported dtype.
