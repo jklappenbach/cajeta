@@ -49,6 +49,8 @@
 #include "llvm/ExecutionEngine/Orc/AbsoluteSymbols.h"
 #include "llvm/ExecutionEngine/Orc/Debugging/DebuggerSupport.h"
 #include "llvm/ExecutionEngine/Orc/ExecutionUtils.h"
+#include "llvm/ExecutionEngine/ObjectCache.h"
+#include "llvm/ExecutionEngine/Orc/CompileUtils.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 #include "llvm/IR/InstrTypes.h"
@@ -246,6 +248,11 @@ struct BuiltJit {
     JitBuildPhases phases;          // wall-clock breakdown (fast-debug-launch 1.2.1)
     EntryArgsABI entryArgsABI;      // derived cold / read from slot meta on hit
     bool cacheHit = false;          // served from the whole-program slot (4.1.1)
+    bool objectCacheHit = false;    // materialized from program.o (6.1.1)
+    // The ObjectCache wired into the LLJIT's compiler (null when cacheDir is
+    // empty). The LLJIT holds a raw pointer, so it must live as long as the
+    // JIT — late materialization is legal even if today's flow front-loads it.
+    std::unique_ptr<llvm::ObjectCache> objCache;
 };
 
 // --- Whole-program merged-module cache (fast-debug-launch Unit 4) -----------
@@ -269,6 +276,44 @@ struct WholeProgramSlot {
     std::filesystem::path bc() const { return dir / "program.bc"; }
     std::filesystem::path meta() const { return dir / "program.meta"; }
     std::filesystem::path dbgloc() const { return dir / "program.dbgloc"; }
+    std::filesystem::path obj() const { return dir / "program.o"; }
+};
+
+// ORC ObjectCache over the slot's program.o (fast-debug-launch Unit 6).
+// SERVES only when armed — the HIT path arms it, because there the module
+// being materialized IS the slot's own bitcode, so object↔IR pairing is
+// sound by construction. A cold build never serves (pairing an older .o with
+// freshly-emitted IR would bet on byte-deterministic codegen); it only
+// RECORDS the compiled object so the slot write persists it for launch N+1.
+class SlotObjectCache : public llvm::ObjectCache {
+public:
+    explicit SlotObjectCache(std::filesystem::path objPath)
+        : objPath_(std::move(objPath)) {}
+
+    void notifyObjectCompiled(const llvm::Module*,
+                              llvm::MemoryBufferRef obj) override {
+        compiled_ = llvm::MemoryBuffer::getMemBufferCopy(
+            obj.getBuffer(), obj.getBufferIdentifier());
+    }
+
+    std::unique_ptr<llvm::MemoryBuffer> getObject(const llvm::Module*) override {
+        if (!serveArmed_) return nullptr;
+        auto buf = llvm::MemoryBuffer::getFile(objPath_.string());
+        if (!buf) return nullptr;
+        hit_ = true;
+        return std::move(*buf);
+    }
+
+    void armServe() { serveArmed_ = true; }
+    void disarmServe() { serveArmed_ = false; }
+    bool wasHit() const { return hit_; }
+    llvm::MemoryBuffer* compiledBytes() const { return compiled_.get(); }
+
+private:
+    std::filesystem::path objPath_;
+    std::unique_ptr<llvm::MemoryBuffer> compiled_;
+    bool serveArmed_ = false;
+    bool hit_ = false;
 };
 
 std::string wholeProgramKey(const JitRunOptions& opts,
@@ -297,8 +342,26 @@ std::string wholeProgramKey(const JitRunOptions& opts,
 
 // Best-effort slot write; a failure never fails the launch. Files land via
 // tmp + rename so a concurrent launch can't read a torn slot.
+// Persist a compiled object beside the slot (best-effort, independent of the
+// bc/meta chain — a failed .o write costs speed on the next launch, nothing
+// else, so it must never invalidate an otherwise-good slot).
+void writeSlotObject(const WholeProgramSlot& slot, llvm::MemoryBuffer* obj) {
+    if (!obj) return;
+    namespace fs = std::filesystem;
+    fs::path tmp = slot.obj();
+    tmp += ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        out.write(obj->getBufferStart(), (std::streamsize) obj->getBufferSize());
+        if (!out.good()) return;
+    }
+    std::error_code ec;
+    fs::rename(tmp, slot.obj(), ec);
+}
+
 void writeWholeProgramSlot(const WholeProgramSlot& slot, const BuiltJit& built,
-                           llvm::StringRef bcBytes, bool debugInfo) {
+                           llvm::StringRef bcBytes, bool debugInfo,
+                           llvm::MemoryBuffer* obj) {
     namespace fs = std::filesystem;
     std::error_code ec;
     fs::create_directories(slot.dir, ec);
@@ -343,7 +406,9 @@ void writeWholeProgramSlot(const WholeProgramSlot& slot, const BuiltJit& built,
         // Leave no half-slot behind: a partial slot would MISS anyway (meta
         // gate), but clean up so the next write starts fresh.
         fs::remove_all(slot.dir, ec);
+        return;
     }
+    writeSlotObject(slot, obj);
 }
 
 // Parse program.meta. Strict: any anomaly = miss.
@@ -408,7 +473,7 @@ bool loadSlotMeta(const std::filesystem::path& path, BuiltJit& out) {
 // path (fast-debug-launch 4.2.4). On failure sets out.errorCode, resets
 // out.jit, and returns false.
 bool buildLLJITFromBuffer(llvm::StringRef bcBytes, const JitRunOptions& opts,
-                          BuiltJit& out) {
+                          SlotObjectCache* objCache, BuiltJit& out) {
     // Round-trip the module through bitcode into a fresh context owned by a
     // ThreadSafeModule (the documented LLJIT path).
     auto tsCtx = std::make_unique<llvm::LLVMContext>();
@@ -437,7 +502,21 @@ bool buildLLJITFromBuffer(llvm::StringRef bcBytes, const JitRunOptions& opts,
 
     llvm::orc::ThreadSafeModule tsModule(std::move(*parsed), std::move(tsContext));
 
-    auto jitOrErr = llvm::orc::LLJITBuilder().create();
+    llvm::orc::LLJITBuilder builder;
+    if (objCache) {
+        // fast-debug-launch 6.2.1: route compilation through the slot's
+        // ObjectCache. Mirrors LLJIT's single-threaded default compiler.
+        builder.setCompileFunctionCreator(
+            [objCache](llvm::orc::JITTargetMachineBuilder jtmb)
+                -> llvm::Expected<
+                    std::unique_ptr<llvm::orc::IRCompileLayer::IRCompiler>> {
+                auto tm = jtmb.createTargetMachine();
+                if (!tm) return tm.takeError();
+                return std::make_unique<llvm::orc::TMOwningSimpleCompiler>(
+                    std::move(*tm), objCache);
+            });
+    }
+    auto jitOrErr = builder.create();
     if (!jitOrErr) {
         std::cerr << "cajeta jit: LLJIT create failed: "
                   << cajeta::jit::toString(jitOrErr.takeError()) << "\n";
@@ -551,7 +630,8 @@ bool buildLLJITFromBuffer(llvm::StringRef bcBytes, const JitRunOptions& opts,
 // meta mismatch, bitcode that will not build — is a MISS (returns false with
 // out reset), never an error: the caller falls back to the full compile.
 bool tryLoadWholeProgramSlot(const WholeProgramSlot& slot,
-                             const JitRunOptions& opts, BuiltJit& out) {
+                             const JitRunOptions& opts,
+                             SlotObjectCache* objCache, BuiltJit& out) {
     namespace fs = std::filesystem;
     std::error_code ec;
     if (!fs::is_regular_file(slot.bc(), ec) ||
@@ -569,7 +649,12 @@ bool tryLoadWholeProgramSlot(const WholeProgramSlot& slot,
     }
     auto buf = llvm::MemoryBuffer::getFile(slot.bc().string());
     if (!buf) return false;
-    if (!buildLLJITFromBuffer((*buf)->getBuffer(), opts, out)) {
+    // The module about to materialize IS this slot's bitcode, so serving the
+    // slot's object is sound — but ONLY here: disarm again on failure, or the
+    // fallback cold compile would pair this slot's .o with freshly-emitted IR.
+    if (objCache) objCache->armServe();
+    if (!buildLLJITFromBuffer((*buf)->getBuffer(), opts, objCache, out)) {
+        if (objCache) objCache->disarmServe();
         out.jit.reset();
         out.errorCode = 0;  // miss, not failure — the full compile runs next
         return false;
@@ -622,13 +707,22 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
 
     // Whole-program cache attempt (fast-debug-launch 4.2.4): on a hit the
     // Compiler is never constructed — the launch pays digesting + bitcode
-    // load + LLJIT materialization only.
+    // load + LLJIT materialization only. Slot + object cache are computed
+    // once here and shared with the cold-path slot write below.
+    WholeProgramSlot slot;
+    std::unique_ptr<SlotObjectCache> objCache;
     if (!opts.cacheDir.empty()) {
         endPhase(out.phases.collectSeconds);
-        WholeProgramSlot slot{fs::path(opts.cacheDir) / "jit"
-                              / wholeProgramKey(opts, sourcePaths, sourceRoot)};
-        if (tryLoadWholeProgramSlot(slot, opts, out)) {
+        slot.dir = fs::path(opts.cacheDir) / "jit"
+                 / wholeProgramKey(opts, sourcePaths, sourceRoot);
+        objCache = std::make_unique<SlotObjectCache>(slot.obj());
+        if (tryLoadWholeProgramSlot(slot, opts, objCache.get(), out)) {
             out.cacheHit = true;
+            out.objectCacheHit = objCache->wasHit();
+            // First warm launch compiles the object (no program.o yet);
+            // persist it so launch N+2 skips instruction selection too.
+            if (!objCache->wasHit()) writeSlotObject(slot, objCache->compiledBytes());
+            out.objCache = std::move(objCache);
             progress("jit", "cached", 0, 0);
             endPhase(out.phases.jitSeconds);
             return out;
@@ -817,7 +911,8 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
         llvm::WriteBitcodeToFile(*llvmModule, os);
     }
     if (!buildLLJITFromBuffer(
-            llvm::StringRef(bitcodeBuf.data(), bitcodeBuf.size()), opts, out))
+            llvm::StringRef(bitcodeBuf.data(), bitcodeBuf.size()), opts,
+            objCache.get(), out))
         return out;
 
     // ABI for makeEntryArgs, derived while the type world is still alive; it
@@ -826,13 +921,13 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
 
     // Populate the whole-program slot (4.2.3): the bytes are EXACTLY what the
     // LLJIT round-trip just consumed, so a hit replays this build bit-for-bit.
+    // The object the cache captured during initialize rides along (6.2.1).
     if (!opts.cacheDir.empty()) {
         writeWholeProgramSlot(
-            WholeProgramSlot{fs::path(opts.cacheDir) / "jit"
-                             / wholeProgramKey(opts, sourcePaths, sourceRoot)},
-            out, llvm::StringRef(bitcodeBuf.data(), bitcodeBuf.size()),
-            opts.debugInfo);
+            slot, out, llvm::StringRef(bitcodeBuf.data(), bitcodeBuf.size()),
+            opts.debugInfo, objCache ? objCache->compiledBytes() : nullptr);
     }
+    out.objCache = std::move(objCache);
     endPhase(out.phases.jitSeconds);
 
     return out;
@@ -936,6 +1031,7 @@ int runJit(const JitRunOptions& opts, JitRunResult* result) {
         result->entrySafepointsEmitted = built.entrySafepointsEmitted;
         result->phases = built.phases;
         result->cacheHit = built.cacheHit;
+        result->objectCacheHit = built.objectCacheHit;
     }
 
     auto entrySym = jit->lookup(built.entryName);

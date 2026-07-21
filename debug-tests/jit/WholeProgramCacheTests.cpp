@@ -192,6 +192,10 @@ TEST(WholeProgramCache, CorruptSlotFallsBackToCompile) {
     JitRunResult r2;
     ASSERT_EQ(runJit(p.opts(), &r2), 42);
     EXPECT_FALSE(r2.cacheHit);
+    // The failed hit attempt must DISARM the object cache: the fallback
+    // compile's freshly-emitted IR may not be byte-identical to what run 1's
+    // program.o was compiled from, so serving it would be unsound.
+    EXPECT_FALSE(r2.objectCacheHit);
 }
 
 // 4.1.6 — String[] entry on a HIT launch gets usable args without the type
@@ -226,4 +230,53 @@ TEST(WholeProgramCache, StringArrayEntryUsableOnHit) {
 
     std::error_code ec;
     fs::remove_all(cacheDir, ec);
+}
+
+// ---- fast-debug-launch Unit 6: ORC ObjectCache (plan 6.1.x) ----------------
+// The warm residue after Unit 4 is LLJIT materialization (instruction
+// selection over the whole merged module). program.o beside the slot converts
+// that into loading one object file. The slot key already content-addresses
+// the IR, so a stale object is structurally impossible — pinned behaviorally
+// below by asserting the EDITED program's result, not just a flag.
+
+TEST(ObjectCache, SecondLaunchServesObjectFromCache) {
+    CachedProgram p;
+
+    JitRunResult r1;
+    ASSERT_EQ(runJit(p.opts(), &r1), 42);
+    EXPECT_FALSE(r1.objectCacheHit);
+
+    JitRunResult r2;
+    ASSERT_EQ(runJit(p.opts(), &r2), 42);
+    EXPECT_TRUE(r2.cacheHit);
+    EXPECT_TRUE(r2.objectCacheHit);
+}
+
+TEST(ObjectCache, IrChangeNeverServesStaleObject) {
+    CachedProgram p;
+
+    JitRunResult r1;
+    ASSERT_EQ(runJit(p.opts(), &r1), 42);
+
+    // Change behavior: six() -> five(). A stale object would still return 42.
+    {
+        std::ofstream out(p.prog.root / "demo" / "Helper.cajeta",
+                          std::ios::trunc);
+        out << "package demo;\n"
+               "public class Helper {\n"
+               "    public static int32 six() {\n"
+               "        return 5;\n"
+               "    }\n"
+               "}\n";
+    }
+
+    JitRunResult r2;
+    ASSERT_EQ(runJit(p.opts(), &r2), 35);   // 5 * 7 — behavior, not flags
+    EXPECT_FALSE(r2.cacheHit);
+    EXPECT_FALSE(r2.objectCacheHit);
+
+    JitRunResult r3;
+    ASSERT_EQ(runJit(p.opts(), &r3), 35);
+    EXPECT_TRUE(r3.cacheHit);
+    EXPECT_TRUE(r3.objectCacheHit);
 }

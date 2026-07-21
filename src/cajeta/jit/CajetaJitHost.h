@@ -81,6 +81,9 @@ namespace cajeta::jit {
         // True when this launch was served from the whole-program cache slot
         // (fast-debug-launch 4.1.1) — no Compiler was constructed.
         bool cacheHit = false;
+        // True when materialization was served from the slot's program.o
+        // (fast-debug-launch 6.1.1) — no instruction selection ran.
+        bool objectCacheHit = false;
     };
 
     // Compile + JIT + run. Returns the process-style exit code (0 on success,
