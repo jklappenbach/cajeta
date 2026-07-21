@@ -141,3 +141,42 @@ TEST(JitBuildPhases, ProgressCallbackFiresInOrderWithSourceCounts) {
         EXPECT_NE(e.detail.find(".cajeta"), std::string::npos);
     }
 }
+
+// ---- fast-debug-launch Unit 7: sub-phase splits (plan 7.1.1) ---------------
+// The Stage-B rescope needs to know WHERE edit-relaunch time goes: parse is
+// split stdlib vs user (initial ensureStdlibModule + on-demand lazy package
+// parses vs the user sources), and the jit phase into serialize / reparse /
+// materialize. Each split is a subset of its parent segment.
+
+TEST(JitBuildPhases, SubPhaseSplitsAreSubsets) {
+    TempProgram p("demo", "PhaseC.cajeta",
+        "package demo;\n"
+        "public class PhaseC {\n"
+        "    public static int32 main() {\n"
+        "        int32 a = 6;\n"
+        "        return a * 7;\n"
+        "    }\n"
+        "}\n");
+
+    JitRunOptions opts;
+    opts.sourceRoot = p.sourceRoot();
+    opts.entryMethod = "demo.PhaseC.main";
+
+    JitRunResult result;
+    ASSERT_EQ(runJit(opts, &result), 42);
+
+    const auto& ph = result.phases;
+    // Parse split: stdlib share is real work (the stdlib always parses) and
+    // never exceeds the parse segment it is measured inside.
+    EXPECT_GT(ph.parseStdlibSeconds, 0.0);
+    EXPECT_LE(ph.parseStdlibSeconds, ph.parseSeconds + 1e-6);
+
+    // Jit split: serialize/reparse/materialize are consecutive pieces of the
+    // jit segment; reparse and materialize always run, serialize only cold.
+    EXPECT_GT(ph.jitSerializeSeconds, 0.0);
+    EXPECT_GT(ph.jitReparseSeconds, 0.0);
+    EXPECT_GT(ph.jitMaterializeSeconds, 0.0);
+    const double jitSum = ph.jitSerializeSeconds + ph.jitReparseSeconds
+                        + ph.jitMaterializeSeconds;
+    EXPECT_LE(jitSum, ph.jitSeconds + 1e-6);
+}

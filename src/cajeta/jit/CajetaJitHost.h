@@ -64,6 +64,14 @@ namespace cajeta::jit {
         double mergeSeconds = 0;          // linkModules donor merge
         double jitSeconds = 0;            // verify + LLJIT build/initialize
         double totalSeconds = 0;          // whole buildJit wall time
+
+        // Sub-phase splits (fast-debug-launch 7.2.1) — each a SUBSET of the
+        // parent segment above, measured inside it. They locate the
+        // edit-relaunch cost the Stage-B rescope targets.
+        double parseStdlibSeconds = 0;    // ensureStdlibModule + lazy pkg parses
+        double jitSerializeSeconds = 0;   // WriteBitcodeToFile (cold only)
+        double jitReparseSeconds = 0;     // parseBitcodeFile round-trip/load
+        double jitMaterializeSeconds = 0; // LLJIT initialize (incl. codegen)
     };
 
     // Optional diagnostics filled by runJit when a non-null result is passed.

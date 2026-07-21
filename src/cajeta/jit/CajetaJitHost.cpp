@@ -476,9 +476,11 @@ bool buildLLJITFromBuffer(llvm::StringRef bcBytes, const JitRunOptions& opts,
                           SlotObjectCache* objCache, BuiltJit& out) {
     // Round-trip the module through bitcode into a fresh context owned by a
     // ThreadSafeModule (the documented LLJIT path).
+    using SplitClock = std::chrono::steady_clock;
     auto tsCtx = std::make_unique<llvm::LLVMContext>();
     auto memBuffer = llvm::MemoryBuffer::getMemBufferCopy(bcBytes, "cajeta_jitrun");
     llvm::orc::ThreadSafeContext tsContext(std::move(tsCtx));
+    SplitClock::time_point reparseStart = SplitClock::now();
 #if LLVM_VERSION_MAJOR >= 21
     auto parsed = tsContext.withContextDo([&](llvm::LLVMContext* ctx) {
         return llvm::parseBitcodeFile(memBuffer->getMemBufferRef(), *ctx);
@@ -487,6 +489,8 @@ bool buildLLJITFromBuffer(llvm::StringRef bcBytes, const JitRunOptions& opts,
     auto parsed = llvm::parseBitcodeFile(memBuffer->getMemBufferRef(),
                                          *tsContext.getContext());
 #endif
+    out.phases.jitReparseSeconds +=
+        std::chrono::duration<double>(SplitClock::now() - reparseStart).count();
     if (!parsed) {
         std::cerr << "cajeta jit: bitcode reparse failed: "
                   << cajeta::jit::toString(parsed.takeError()) << "\n";
@@ -616,6 +620,7 @@ bool buildLLJITFromBuffer(llvm::StringRef bcBytes, const JitRunOptions& opts,
     // IR) into the embedded runtime bitcode and linked into every JIT module —
     // see runtime/native/cajeta_fp128_builtins.ll and src/CMakeLists.txt.
 
+    SplitClock::time_point matStart = SplitClock::now();
     if (auto err = out.jit->initialize(mainDylib)) {
         std::cerr << "cajeta jit: LLJIT initialize failed: "
                   << cajeta::jit::toString(std::move(err)) << "\n";
@@ -623,6 +628,8 @@ bool buildLLJITFromBuffer(llvm::StringRef bcBytes, const JitRunOptions& opts,
         out.errorCode = 1;
         return false;
     }
+    out.phases.jitMaterializeSeconds +=
+        std::chrono::duration<double>(SplitClock::now() - matStart).count();
     return true;
 }
 
@@ -748,6 +755,31 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
     cajeta::prescanSourceRoot(sourceRoot.string());
     endPhase(out.phases.collectSeconds);
 
+    // Parse split (7.2.1): the initial stdlib parse is triggered explicitly
+    // (idempotent — the first compile() would fire it anyway) so it can be
+    // timed, and the lazy-import hook the Compiler just installed is
+    // decorated so on-demand stdlib package parses land in the same bucket.
+    // The decorator writes a thread_local accumulator, NOT out.phases — the
+    // hook is a thread_local that outlives this call, and a captured &out
+    // would dangle.
+    {
+        Clock::time_point s = Clock::now();
+        compiler->ensureStdlibModule();
+        out.phases.parseStdlibSeconds +=
+            std::chrono::duration<double>(Clock::now() - s).count();
+    }
+    static thread_local double stdlibHookSeconds;
+    stdlibHookSeconds = 0;
+    if (auto inner = cajeta::CajetaModule::stdlibImportHook) {
+        cajeta::CajetaModule::stdlibImportHook =
+            [inner](const std::string& pkg) {
+                Clock::time_point s = Clock::now();
+                inner(pkg);
+                stdlibHookSeconds +=
+                    std::chrono::duration<double>(Clock::now() - s).count();
+            };
+    }
+
     cajeta::CajetaModulePtr primary;
     try {
         const int totalSources = (int) sourcePaths.size();
@@ -779,6 +811,7 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
     cajeta::CajetaModule::resolveAdviceMatches();
     cajeta::CajetaModule::setActiveProfile("debug");
     cajeta::CajetaModule::resolveDependencyGraph();
+    out.phases.parseStdlibSeconds += stdlibHookSeconds;
     endPhase(out.phases.parseSeconds);
     progress("codegen", "", 0, 0);
 
@@ -907,8 +940,11 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
 
     llvm::SmallVector<char, 0> bitcodeBuf;
     {
+        Clock::time_point s = Clock::now();
         llvm::raw_svector_ostream os(bitcodeBuf);
         llvm::WriteBitcodeToFile(*llvmModule, os);
+        out.phases.jitSerializeSeconds +=
+            std::chrono::duration<double>(Clock::now() - s).count();
     }
     if (!buildLLJITFromBuffer(
             llvm::StringRef(bitcodeBuf.data(), bitcodeBuf.size()), opts,
@@ -1374,12 +1410,16 @@ int dispatchJitRun(int argc, const char* argv[]) {
         const auto& ph = result.phases;
         std::cerr << "[jit-phases] collect=" << ph.collectSeconds
                   << "s parse=" << ph.parseSeconds
-                  << "s codegen(stdlib)=" << ph.codegenStdlibSeconds
+                  << "s (stdlib=" << ph.parseStdlibSeconds
+                  << "s) codegen(stdlib)=" << ph.codegenStdlibSeconds
                   << "s codegen(user)=" << ph.codegenUserSeconds
                   << "s finalize=" << ph.finalizeSeconds
                   << "s merge=" << ph.mergeSeconds
                   << "s jit=" << ph.jitSeconds
-                  << "s total=" << ph.totalSeconds << "s\n";
+                  << "s (ser=" << ph.jitSerializeSeconds
+                  << "s reparse=" << ph.jitReparseSeconds
+                  << "s mat=" << ph.jitMaterializeSeconds
+                  << "s) total=" << ph.totalSeconds << "s\n";
         return code;
     }
     return runJit(opts);
