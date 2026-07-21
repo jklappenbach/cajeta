@@ -1,6 +1,7 @@
 package cajeta.nucleo.column;
 
 import cajeta.math.DType;
+import cajeta.math.Storage;
 import cajeta.math.Tensor;
 
 /**
@@ -32,6 +33,14 @@ public class Column<T> {
     Tensor<T> root;    // rank-1 window host; owned storage (or adopted alias)
     int64 off;         // element offset of the aligned data start within root
     int64 len;         // logical element count
+    // FOREIGN backing mode (spec 4.2, the Q-import resolution): an imported
+    // column borrows the PRODUCER's buffer zero-copy. fData != 0 selects the
+    // mode; fSchema/fArray hold the producer's structs so the destructor can
+    // honor the release contract exactly once. Owned columns keep all three 0.
+    int64 fData;
+    int64 fSchema;
+    int64 fArray;
+    Storage<T> stage;  // foreign mode: 1-element staging slot for cast-free reads
 
     /**
      * Wrap a rank-1 root tensor. `root` is surrendered (`#`-moved) by the
@@ -43,6 +52,39 @@ public class Column<T> {
         this.root #= root;
         this.off = off;
         this.len = len;
+        this.fData = 0;
+        this.fSchema = 0;
+        this.fArray = 0;
+        this.stage = null;
+    }
+
+    /**
+     * FOREIGN-backed column over a producer's buffer (zero-copy borrow).
+     * Passing schema/array 0 makes a release-less view (the validity half of
+     * a nullable import — the data column owns the release). Internal — use
+     * {@link #importArrow}.
+     */
+    public Column(int64 fData, int64 fSchema, int64 fArray, int64 len) {
+        this.root = null;
+        this.off = 0;
+        this.len = len;
+        this.fData = fData;
+        this.fSchema = fSchema;
+        this.fArray = fArray;
+        this.stage #= heap Storage<T>(1);
+    }
+
+    /**
+     * The cross-ABI ownership contract (spec 4.3): when a foreign-backed
+     * column drops, the producer's releases run exactly once (destructor
+     * fires once via the live-set claim; the released-marker null makes any
+     * later call a no-op).
+     */
+    ~Column() {
+        if (this.fArray != 0) {
+            ArrowFfi f = stack ArrowFfi();
+            f.callReleases(this.fSchema, this.fArray);
+        }
     }
 
     // The v1 dtype gate. One place; import/export reuse it (plan U3/U4).
@@ -108,11 +150,27 @@ public class Column<T> {
 
     /** Read element `i` — a direct indexed load, no validity branch (spec 2.3, 3.3). */
     public T get(int64 i) {
+        if (this.fData != 0) {
+            // Cast-free foreign read: byte-copy the element into the owned
+            // 1-slot stage, read it back as a native T. (A `(T)` numeric
+            // conversion here miscompiles under the `Column<?>` wildcard
+            // instantiation's pointer-shaped sentinel.)
+            ArrowFfi f = stack ArrowFfi();
+            DType d = DType.of<T>();
+            f.peekInto(this.fData, i, d.bytes(), this.stage.hostAddress());
+            return this.stage.get(0);
+        }
         return this.root.get1(this.off + i);
     }
 
-    /** Write `v` to element `i`. */
+    /** Write `v` to element `i`. Imported (foreign-backed) columns are
+     *  read-only borrows — {@link #materialize} first. */
     public void set(int64 i, T v) {
+        if (this.fData != 0) {
+            throw heap ColumnTypeException(
+                "an imported column is a read-only borrow of the producer's "
+                + "buffer - materialize() an owned copy to write");
+        }
         this.root.set1(this.off + i, v);
     }
 
@@ -120,16 +178,100 @@ public class Column<T> {
      * ZERO-COPY tensor view of exactly this column's elements (spec 7.4) —
      * a slice of the root, so the tensor engine's view/drop machinery
      * applies unchanged. Writes are mutually visible; the column must
-     * outlive the view (the `TensorProtocol` borrow discipline).
+     * outlive the view (the `TensorProtocol` borrow discipline). A
+     * FOREIGN-backed column has no tensor view (the compute boundary is an
+     * explicit copy — the Q-import resolution): {@link #materialize} first.
      */
     public #Tensor<T> asTensor() {
+        if (this.fData != 0) {
+            throw heap ColumnTypeException(
+                "a foreign-backed (imported) column has no zero-copy tensor "
+                + "view - materialize() the owned copy first");
+        }
         return this.root.slice(0, this.off, this.off + this.len);
+    }
+
+    /**
+     * An OWNED, aligned, dense copy of this column — the explicit crossing
+     * from a foreign borrow into the compute substrate (spec 4.2 as
+     * narrowed; also a plain deep copy for owned columns).
+     */
+    public #Column<T> materialize() {
+        Column<T> out = Column.zeros<T>(this.len);
+        int64 i = 0;
+        while (i < this.len) {
+            out.set(i, this.get(i));
+            i = i + 1;
+        }
+        return #out;
     }
 
     /** Data address of element 0 (Arrow interop / alignment probes; spec §6). */
     public int64 dataAddress() {
+        if (this.fData != 0) {
+            return this.fData;
+        }
         return this.root.hostAddress()
              + this.off * ((int64) this.root.itemsize());
+    }
+
+    /**
+     * The import airlock (spec 4.2, 3.5): wrap a producer's
+     * `ArrowSchema`/`ArrowArray` pair ZERO-COPY as a `Column<?>` — callers
+     * capture via `instanceof` + cast (the `Tensor.fromProtocol` idiom). An
+     * array carrying nulls belongs to {@link NullableColumn#importArrow};
+     * an unmodeled format or nonzero offset is a named error, never a
+     * misread.
+     */
+    public static #Column<?> importArrow(int64 schemaAddr, int64 arrayAddr) {
+        ArrowFfi f = stack ArrowFfi();
+        if (f.readNullCount(arrayAddr) != 0) {
+            throw heap ColumnTypeException(
+                "array carries nulls (null_count > 0) - import it with "
+                + "NullableColumn.importArrow (the type reflects the "
+                + "physical reality)");
+        }
+        return Column.importForeign(schemaAddr, arrayAddr, 0);
+    }
+
+    // Shared airlock core: dtype-dispatch a foreign wrap. validityGuard 1
+    // relaxes the null-count check (NullableColumn's path). Internal.
+    static #Column<?> importForeign(int64 schemaAddr, int64 arrayAddr,
+                                    int32 validityGuard) {
+        ArrowFfi f = stack ArrowFfi();
+        if (f.readOffset(arrayAddr) != 0) {
+            throw heap ColumnTypeException(
+                "nonzero ArrowArray.offset is not supported in v1");
+        }
+        int64 packed = f.readDtype(schemaAddr);
+        if (packed < 0) {
+            throw heap ColumnTypeException(
+                "unknown or unmodeled Arrow format for a v1 fixed-width "
+                + "column import");
+        }
+        int32 kind = (int32) (packed >> 8);
+        int32 bits = (int32) (packed & 255);
+        int64 data = f.readBuffer(arrayAddr, 1);
+        int64 n = f.readLength(arrayAddr);
+        if (kind == DType.KIND_INT) {
+            if (bits == 8)  { return Column.wrapForeign<int8>(data, schemaAddr, arrayAddr, n); }
+            if (bits == 16) { return Column.wrapForeign<int16>(data, schemaAddr, arrayAddr, n); }
+            if (bits == 32) { return Column.wrapForeign<int32>(data, schemaAddr, arrayAddr, n); }
+            return Column.wrapForeign<int64>(data, schemaAddr, arrayAddr, n);
+        }
+        if (kind == DType.KIND_UINT) {
+            if (bits == 8)  { return Column.wrapForeign<uint8>(data, schemaAddr, arrayAddr, n); }
+            if (bits == 16) { return Column.wrapForeign<uint16>(data, schemaAddr, arrayAddr, n); }
+            if (bits == 32) { return Column.wrapForeign<uint32>(data, schemaAddr, arrayAddr, n); }
+            return Column.wrapForeign<uint64>(data, schemaAddr, arrayAddr, n);
+        }
+        if (bits == 32) { return Column.wrapForeign<float32>(data, schemaAddr, arrayAddr, n); }
+        return Column.wrapForeign<float64>(data, schemaAddr, arrayAddr, n);
+    }
+
+    static #Column<?> wrapForeign<E>(int64 data, int64 schemaAddr,
+                                     int64 arrayAddr, int64 n) {
+        return heap Column<E>(data, schemaAddr, arrayAddr, n);
     }
 
     // Instance @Native per the KernelBuffer precedent (generic class ->

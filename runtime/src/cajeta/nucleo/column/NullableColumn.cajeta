@@ -148,6 +148,60 @@ public class NullableColumn<T> {
         return this.validity.dataAddress();
     }
 
+    /**
+     * The nullable import airlock (spec 3.5, 4.2): an array WITH a validity
+     * bitmap wraps ZERO-COPY as a `NullableColumn<?>` (capture via
+     * `instanceof` + cast). The DATA column carries the producer's release
+     * handles (exactly-once at drop); the validity view is release-less.
+     * An array without a bitmap belongs to {@link Column#importArrow}.
+     */
+    public static #NullableColumn<?> importArrow(int64 schemaAddr,
+                                                 int64 arrayAddr) {
+        ArrowFfi f = stack ArrowFfi();
+        int64 validity = f.readBuffer(arrayAddr, 0);
+        if (validity == 0) {
+            throw heap ColumnTypeException(
+                "array carries no validity bitmap - import it with "
+                + "Column.importArrow");
+        }
+        if (f.readOffset(arrayAddr) != 0) {
+            throw heap ColumnTypeException(
+                "nonzero ArrowArray.offset is not supported in v1");
+        }
+        int64 packed = f.readDtype(schemaAddr);
+        if (packed < 0) {
+            throw heap ColumnTypeException(
+                "unknown or unmodeled Arrow format for a v1 fixed-width "
+                + "column import");
+        }
+        int32 kind = (int32) (packed >> 8);
+        int32 bits = (int32) (packed & 255);
+        int64 data = f.readBuffer(arrayAddr, 1);
+        int64 n = f.readLength(arrayAddr);
+        if (kind == DType.KIND_INT) {
+            if (bits == 8)  { return NullableColumn.wrapN<int8>(data, validity, schemaAddr, arrayAddr, n); }
+            if (bits == 16) { return NullableColumn.wrapN<int16>(data, validity, schemaAddr, arrayAddr, n); }
+            if (bits == 32) { return NullableColumn.wrapN<int32>(data, validity, schemaAddr, arrayAddr, n); }
+            return NullableColumn.wrapN<int64>(data, validity, schemaAddr, arrayAddr, n);
+        }
+        if (kind == DType.KIND_UINT) {
+            if (bits == 8)  { return NullableColumn.wrapN<uint8>(data, validity, schemaAddr, arrayAddr, n); }
+            if (bits == 16) { return NullableColumn.wrapN<uint16>(data, validity, schemaAddr, arrayAddr, n); }
+            if (bits == 32) { return NullableColumn.wrapN<uint32>(data, validity, schemaAddr, arrayAddr, n); }
+            return NullableColumn.wrapN<uint64>(data, validity, schemaAddr, arrayAddr, n);
+        }
+        if (bits == 32) { return NullableColumn.wrapN<float32>(data, validity, schemaAddr, arrayAddr, n); }
+        return NullableColumn.wrapN<float64>(data, validity, schemaAddr, arrayAddr, n);
+    }
+
+    static #NullableColumn<?> wrapN<E>(int64 data, int64 validity,
+                                       int64 schemaAddr, int64 arrayAddr,
+                                       int64 n) {
+        Column<E> vals = heap Column<E>(data, schemaAddr, arrayAddr, n);
+        Column<uint8> bits = heap Column<uint8>(validity, 0, 0, (n + 7) / 8);
+        return heap NullableColumn<E>(#vals, #bits, n);
+    }
+
     @Native("__cajeta_arrow_export_fixed")
     private int64 exportFixed(int64 dataAddr, int64 len, int64 nullCount,
                               int64 validityAddr, int32 kind, int32 bits);

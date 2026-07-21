@@ -100,6 +100,82 @@ static const char* caj_arrow_format(int32_t kind, int32_t bits) {
     return NULL;
 }
 
+// --- IMPORT half (U4): read foreign structs, peek elements, honor release --
+
+// Reverse of caj_arrow_format: single-char format -> (kind<<8)|bits, -1 for
+// anything v1 fixed-width import doesn't model ("e"/f16 excluded — no
+// portable half-float peek; strings/nested are U5/deferred).
+int64_t __cajeta_arrow_read_dtype(void* self, int64_t schemaAddr) {
+    (void) self;
+    const CajArrowSchema* s = (const CajArrowSchema*) (intptr_t) schemaAddr;
+    if (!s || !s->format || !s->format[0] || s->format[1]) return -1;
+    switch (s->format[0]) {
+        case 'c': return (1 << 8) | 8;
+        case 's': return (1 << 8) | 16;
+        case 'i': return (1 << 8) | 32;
+        case 'l': return (1 << 8) | 64;
+        case 'C': return (2 << 8) | 8;
+        case 'S': return (2 << 8) | 16;
+        case 'I': return (2 << 8) | 32;
+        case 'L': return (2 << 8) | 64;
+        case 'f': return (3 << 8) | 32;
+        case 'g': return (3 << 8) | 64;
+        default:  return -1;
+    }
+}
+
+int64_t __cajeta_arrow_read_length(void* self, int64_t arrayAddr) {
+    (void) self;
+    const CajArrowArray* a = (const CajArrowArray*) (intptr_t) arrayAddr;
+    return a ? a->length : 0;
+}
+
+int64_t __cajeta_arrow_read_null_count(void* self, int64_t arrayAddr) {
+    (void) self;
+    const CajArrowArray* a = (const CajArrowArray*) (intptr_t) arrayAddr;
+    return a ? a->null_count : 0;
+}
+
+int64_t __cajeta_arrow_read_offset(void* self, int64_t arrayAddr) {
+    (void) self;
+    const CajArrowArray* a = (const CajArrowArray*) (intptr_t) arrayAddr;
+    return a ? a->offset : 0;
+}
+
+int64_t __cajeta_arrow_read_buffer(void* self, int64_t arrayAddr, int64_t idx) {
+    (void) self;
+    const CajArrowArray* a = (const CajArrowArray*) (intptr_t) arrayAddr;
+    if (!a || !a->buffers || idx < 0 || idx >= a->n_buffers) return 0;
+    return (int64_t) (intptr_t) a->buffers[idx];
+}
+
+// The cross-ABI ownership contract (spec 4.3): invoke the PRODUCER's release
+// on both structs. The released-marker null checks make a second call a
+// no-op, and the importing column's destructor runs once (live-set claim),
+// so the producer sees exactly one release per struct.
+void __cajeta_arrow_call_releases(void* self, int64_t schemaAddr,
+                                  int64_t arrayAddr) {
+    (void) self;
+    CajArrowArray* a = (CajArrowArray*) (intptr_t) arrayAddr;
+    CajArrowSchema* s = (CajArrowSchema*) (intptr_t) schemaAddr;
+    if (a && a->release) a->release(a);
+    if (s && s->release) s->release(s);
+}
+
+// Element peek for the foreign-backed column: a dtype-BLIND byte copy of
+// element `i` into the column's 1-element owned staging buffer, which the
+// cajeta side then reads back as a native `T` — no numeric conversion
+// anywhere, so the generic get() stays cast-free (a `(T)` conversion inside
+// an instance method miscompiles under the `Column<?>` wildcard
+// instantiation's pointer-shaped sentinel).
+void __cajeta_arrow_peek_into(void* self, int64_t src, int64_t i,
+                              int32_t elemBytes, int64_t dst) {
+    (void) self;
+    memcpy((void*) (intptr_t) dst,
+           (const char*) (intptr_t) src + (size_t) i * (size_t) elemBytes,
+           (size_t) elemBytes);
+}
+
 // Export a fixed-width column over live buffers. validityAddr 0 = non-null
 // column (buffers[0] NULL, flags 0); nonzero = bitmap present + NULLABLE
 // flag. Returns the bundle address, 0 on an unsupported dtype.

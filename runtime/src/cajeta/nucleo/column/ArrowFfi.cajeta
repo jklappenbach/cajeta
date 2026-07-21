@@ -1,0 +1,37 @@
+package cajeta.nucleo.column;
+
+/**
+ * Package-internal bindings to the Arrow C Data Interface shims
+ * (`runtime/native/cajeta_arrow.c`). Instance `@Native` methods on a
+ * non-generic class (the `String.adopt` shape); call sites build a cheap
+ * `stack ArrowFfi()` and read through it. Not part of the column API.
+ */
+public class ArrowFfi {
+    public ArrowFfi() { }
+
+    /** (kind << 8) | bits for a v1 fixed-width format; -1 when unmodeled. */
+    @Native("__cajeta_arrow_read_dtype")
+    public int64 readDtype(int64 schemaAddr);
+
+    @Native("__cajeta_arrow_read_length")
+    public int64 readLength(int64 arrayAddr);
+
+    @Native("__cajeta_arrow_read_null_count")
+    public int64 readNullCount(int64 arrayAddr);
+
+    @Native("__cajeta_arrow_read_offset")
+    public int64 readOffset(int64 arrayAddr);
+
+    /** buffers[idx] as an address; 0 when absent/out of range. */
+    @Native("__cajeta_arrow_read_buffer")
+    public int64 readBuffer(int64 arrayAddr, int64 idx);
+
+    /** Invoke the producer's releases (both structs, released-marker safe). */
+    @Native("__cajeta_arrow_call_releases")
+    public void callReleases(int64 schemaAddr, int64 arrayAddr);
+
+    /** Copy element `i` (elemBytes wide) from a foreign buffer into `dst` —
+     *  dtype-blind, so generic readers stay cast-free (wildcard-safe). */
+    @Native("__cajeta_arrow_peek_into")
+    public void peekInto(int64 dataAddr, int64 i, int32 elemBytes, int64 dst);
+}
