@@ -256,6 +256,73 @@ class CajetaDebugSessionTest {
         assertEquals("a == 6", bps[1].at("condition").asString())
     }
 
+    // --- stepping (dap-stepping 3.1.1 / 3.1.2) ---
+
+    @Test
+    fun stepOverSendsNextWithThreadId() {
+        connect()
+        runServer()
+        session.start()
+
+        session.stepOver(3).get(5, TimeUnit.SECONDS)
+
+        assertEquals(3, lastRequestByCommand["next"]!!.at("arguments").at("threadId").asInt())
+    }
+
+    @Test
+    fun stepIntoSendsStepInWithThreadId() {
+        connect()
+        runServer()
+        session.start()
+
+        session.stepInto(0).get(5, TimeUnit.SECONDS)
+
+        assertEquals(0, lastRequestByCommand["stepIn"]!!.at("arguments").at("threadId").asInt())
+    }
+
+    @Test
+    fun stepOutSendsStepOutWithThreadId() {
+        connect()
+        runServer()
+        session.start()
+
+        session.stepOut(7).get(5, TimeUnit.SECONDS)
+
+        assertEquals(7, lastRequestByCommand["stepOut"]!!.at("arguments").at("threadId").asInt())
+    }
+
+    /** 3.1.2 — a `stopped` with reason "step" arrives through the SAME
+     *  onStopped callback as a breakpoint stop, with its threadId intact, so
+     *  the platform layer's position update needs no reason-specific path. */
+    @Test
+    fun stepStopRoutesThroughOnStoppedLikeABreakpoint() {
+        connect()
+        val stops = Collections.synchronizedList(mutableListOf<Pair<String, Int>>())
+        val twoStops = CountDownLatch(2)
+        session.onStopped = { body ->
+            stops.add(body.at("reason").asString() to body.at("threadId").asInt())
+            twoStops.countDown()
+        }
+
+        runServer { command, srv ->
+            when (command) {
+                "configurationDone" ->
+                    srv.write(event("stopped", Json.obj("reason" to Json.of("breakpoint"), "threadId" to Json.of(2))))
+                "next" ->
+                    srv.write(event("stopped", Json.obj("reason" to Json.of("step"), "threadId" to Json.of(2))))
+            }
+        }
+        session.start()
+        session.launch(
+            CajetaDebugSession.LaunchParams("demo.Calc.main", "/tmp/root"),
+            listOf(CajetaDebugSession.LineBreakpoint("Calc.cajeta", 6)),
+        ).get(5, TimeUnit.SECONDS)
+        session.stepOver(2).get(5, TimeUnit.SECONDS)
+
+        assertTrue("expected breakpoint + step stops", twoStops.await(5, TimeUnit.SECONDS))
+        assertEquals(listOf("breakpoint" to 2, "step" to 2), stops.toList())
+    }
+
     @Test
     fun parseStackFramesDecodesFramesFromBody() {
         val response = Json.obj(

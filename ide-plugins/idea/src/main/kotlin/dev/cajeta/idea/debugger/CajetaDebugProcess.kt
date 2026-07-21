@@ -52,6 +52,11 @@ class CajetaDebugProcess(
     @Volatile
     private var launched = false
 
+    // The fiber the last `stopped` event parked (dap-stepping): step requests
+    // must name the stopped thread — the server rejects any other.
+    @Volatile
+    private var stoppedThreadId = 0
+
     override fun getEditorsProvider(): XDebuggerEditorsProvider = editorsProvider
 
     override fun doGetProcessHandler(): ProcessHandler = processHandler
@@ -93,7 +98,11 @@ class CajetaDebugProcess(
             ds.onTerminated = { clearDecorations(); processHandler.reportTerminated(0) }
             ds.onOutput = { text -> processHandler.emitOutput(text) }
             ds.onClosed = { clearDecorations(); processHandler.reportTerminated(0) }
-            ds.onStopped = { body -> onStopped(ds, body.opt("threadId")?.asInt() ?: 0) }
+            ds.onStopped = { body ->
+                val tid = body.opt("threadId")?.asInt() ?: 0
+                stoppedThreadId = tid
+                onStopped(ds, tid)
+            }
 
             ds.start()
 
@@ -230,9 +239,18 @@ class CajetaDebugProcess(
     }
 
     override fun startStepOver(context: XSuspendContext?) {
-        // Real stepping is CP6e; for now resume to the next breakpoint.
         clearDecorations()
-        dapSession?.resume()
+        dapSession?.stepOver(stoppedThreadId)
+    }
+
+    override fun startStepInto(context: XSuspendContext?) {
+        clearDecorations()
+        dapSession?.stepInto(stoppedThreadId)
+    }
+
+    override fun startStepOut(context: XSuspendContext?) {
+        clearDecorations()
+        dapSession?.stepOut(stoppedThreadId)
     }
 
     override fun stop() {

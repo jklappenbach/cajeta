@@ -107,6 +107,20 @@ class CajetaDebugSession(private val client: DapClient) {
     /** DAP `continue` — resume the parked program. */
     fun resume(): CompletableFuture<Json> = client.sendRequest("continue")
 
+    /** DAP `next` — step over: stop at [threadId]'s next line, skipping any
+     *  frames the current statement calls into (dap-stepping §3). */
+    fun stepOver(threadId: Int): CompletableFuture<Json> =
+        client.sendRequest("next", Json.obj("threadId" to Json.of(threadId)))
+
+    /** DAP `stepIn` — step into the call at the current line (stdlib included;
+     *  the mounted sources make those frames navigable). */
+    fun stepInto(threadId: Int): CompletableFuture<Json> =
+        client.sendRequest("stepIn", Json.obj("threadId" to Json.of(threadId)))
+
+    /** DAP `stepOut` — run to the caller's next line after the call. */
+    fun stepOut(threadId: Int): CompletableFuture<Json> =
+        client.sendRequest("stepOut", Json.obj("threadId" to Json.of(threadId)))
+
     /**
      * Replace the breakpoints for one source file (DAP setBreakpoints is
      * whole-file-replace). Used for live add/remove once the session is running;
