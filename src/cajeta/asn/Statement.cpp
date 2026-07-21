@@ -318,6 +318,11 @@ namespace cajeta {
                 if (auto* catchType = ccCtx->catchType()) {
                     if (!catchType->qualifiedName().empty()) {
                         string typeName = catchType->qualifiedName(0)->getText();
+                        // Parse-time pre-seed only — a bare registry hit can
+                        // miss (sibling-file/archive class) or land a
+                        // same-named shadow. resolveTypes re-resolves the
+                        // retained NAME through the scoped tier discipline.
+                        c.typeNameText = typeName;
                         c.type = CajetaType::of(typeName);
                         if (!c.type) {
                             c.type = CajetaType::of(typeName, "");
@@ -962,6 +967,27 @@ namespace cajeta {
     void TryStatement::resolveTypes(CajetaModulePtr module) {
         if (tryBlock) tryBlock->resolveTypes(module);
         for (auto& c : catchClauses) {
+            // Re-resolve the catch type AS WRITTEN through the scoped tier
+            // discipline (own package -> imports -> global -> archive
+            // placeholders) — the parse-time pre-seed used the bare global
+            // registry, which misses sibling-file/archive classes and can
+            // land a same-named shadow. Without this, a missed type silently
+            // degraded the clause to an int64-bound CATCH-ALL: the wrong
+            // clause could catch, and the bound variable held pointer bits.
+            if (!c.typeNameText.empty()) {
+                if (auto scoped = CajetaType::resolveNamed(
+                        QualifiedName::getOrCreate(c.typeNameText), module)) {
+                    c.type = scoped;
+                }
+            }
+            if (!c.type && !c.typeNameText.empty()) {
+                throw locatedException(
+                    getSourceLine(), getSourceColumn() + 1,
+                    "catch type '" + c.typeNameText + "' does not resolve to "
+                    "a type in scope (declare it, import it, or qualify it) — "
+                    "an unresolved catch type is not a catch-all",
+                    "CAJETA_ERROR_CATCH_TYPE_UNRESOLVED");
+            }
             if (c.body) c.body->resolveTypes(module);
         }
         if (finallyBlock) finallyBlock->resolveTypes(module);
