@@ -7,6 +7,8 @@
 //
 #include <gtest/gtest.h>
 
+#include <filesystem>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -137,4 +139,62 @@ TEST(DapLaunchProgress, OutputEventsWellFormed) {
                                      << text;
     }
     EXPECT_GT(outputCount, 0);
+}
+
+// ---- fast-debug-launch Unit 5: launch carries cacheDir (plan 5.1.1) -------
+// With cacheDir in the launch request, the second identical session is served
+// from the whole-program slot: the console says so, and no per-source compile
+// lines appear. (Without cacheDir every launch compiles — pinned by every
+// other test in this binary.)
+
+namespace {
+
+std::vector<Json> runSessionWithCache(const TempProgram& p,
+                                      const std::string& cacheDir) {
+    DapServer srv;
+    std::vector<Json> log;
+    drive(srv, req(1, "initialize", Json::object()), log);
+    Json launchArgs = Json::object();
+    launchArgs["entry-method"] = "demo.Prog.main";
+    launchArgs["sourceRoot"] = p.sourceRoot();
+    launchArgs["cacheDir"] = cacheDir;
+    drive(srv, req(2, "launch", launchArgs), log);
+    drive(srv, req(3, "configurationDone", Json::object()), log);
+    return log;
+}
+
+} // namespace
+
+TEST(DapLaunchProgress, CacheDirMakesSecondSessionCached) {
+    TempProgram p("demo", "Prog.cajeta", kProg);
+    static std::mt19937_64 rng(std::random_device{}());
+    std::filesystem::path cacheDir =
+        std::filesystem::temp_directory_path()
+        / ("cajeta_dapcache_test_" + std::to_string(rng()));
+    std::filesystem::create_directories(cacheDir);
+
+    // Session 1: cold — narrates the compile, populates the slot.
+    std::vector<Json> coldLog = runSessionWithCache(p, cacheDir.string());
+    bool coldCompiled = false;
+    for (const auto& t : outputTexts(coldLog))
+        if (t.find("compile started") != std::string::npos) coldCompiled = true;
+    ASSERT_TRUE(coldCompiled);
+    ASSERT_GE(firstEventIndex(coldLog, "exited"), 0);
+
+    // Session 2: warm — says "cached", never narrates per-source compiling,
+    // and the program still runs to the same exit.
+    std::vector<Json> warmLog = runSessionWithCache(p, cacheDir.string());
+    bool saidCached = false, saidCompiling = false;
+    for (const auto& t : outputTexts(warmLog)) {
+        if (t.find("cached") != std::string::npos) saidCached = true;
+        if (t.find("compiling [") != std::string::npos) saidCompiling = true;
+    }
+    EXPECT_TRUE(saidCached);
+    EXPECT_FALSE(saidCompiling);
+    int exited = firstEventIndex(warmLog, "exited");
+    ASSERT_GE(exited, 0);
+    EXPECT_EQ(warmLog[exited].at("body").at("exitCode").asInt(), 42);
+
+    std::error_code ec;
+    std::filesystem::remove_all(cacheDir, ec);
 }

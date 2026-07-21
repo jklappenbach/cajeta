@@ -177,6 +177,28 @@ class CajetaDebugSessionTest {
         )
     }
 
+    /** fast-debug-launch 5.1.2 — a run config with a cache dir sends it on the
+     *  launch request, so the server can serve the whole-program slot. */
+    @Test
+    fun launchCarriesCacheDir() {
+        connect()
+        runServer()
+        session.start()
+
+        session.launch(
+            CajetaDebugSession.LaunchParams(
+                "demo.Calc.main", "/tmp/root",
+                cacheDir = "/proj/.cajeta/cache",
+            ),
+        ).get(5, TimeUnit.SECONDS)
+
+        assertEquals(
+            "/proj/.cajeta/cache",
+            lastRequestByCommand["launch"]!!.at("arguments")
+                .at("cacheDir").asString(),
+        )
+    }
+
     @Test
     fun routesStoppedThenExitedThenTerminated() {
         connect()

@@ -258,10 +258,11 @@ struct BuiltJit {
 // source digest), so "stale" is impossible by construction; load failures of
 // any kind mean MISS, never an error.
 //
-// KNOWN GAP (plan Unit 5 acceptance): classpath ARCHIVES are not folded into
-// the key yet — a dependency .cja bump without a source edit could serve a
-// stale program. Fold archive digests once the JIT dep-resolution path is
-// pinned down.
+// Classpath archives are NOT part of the key because the JIT path loads
+// none: dispatchJitRun has no --classpath and buildJit never walks archives
+// (everything comes from sources + the embedded stdlib, both keyed). If the
+// JIT ever grows classpath support, fold each archive's digest here or the
+// cache serves stale programs across dep bumps.
 
 struct WholeProgramSlot {
     std::filesystem::path dir;
@@ -628,7 +629,7 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
                               / wholeProgramKey(opts, sourcePaths, sourceRoot)};
         if (tryLoadWholeProgramSlot(slot, opts, out)) {
             out.cacheHit = true;
-            progress("jit", "", 0, 0);
+            progress("jit", "cached", 0, 0);
             endPhase(out.phases.jitSeconds);
             return out;
         }

@@ -261,6 +261,12 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         launchOpts_.sourceRoot = args.at("sourceRoot").asString();
         if (launchOpts_.sourceRoot.empty())
             launchOpts_.sourceRoot = args.at("source-root").asString();
+        // fast-debug-launch 5.2.1: whole-program cache root. Absence (or
+        // empty) = unspecified = full compile — the same convention as `env`,
+        // so every pre-cache client keeps today's behavior.
+        launchOpts_.cacheDir = args.at("cacheDir").asString();
+        if (launchOpts_.cacheDir.empty())
+            launchOpts_.cacheDir = args.at("cache-dir").asString();
         stopOnEntry_ = args.at("stopOnEntry").asBool();
         // Environment (spec §4). Absence of "env" means UNSPECIFIED, not
         // "empty environment" — every launch sent before this feature existed
@@ -349,7 +355,9 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
                      + std::to_string(total) + "] " + detail + "\n";
             else if (phase == "codegen") line = "cajeta: generating code\n";
             else if (phase == "merge") line = "cajeta: linking modules\n";
-            else if (phase == "jit") line = "cajeta: preparing JIT\n";
+            else if (phase == "jit")
+                line = detail == "cached" ? "cajeta: using cached build\n"
+                                          : "cajeta: preparing JIT\n";
             if (line.empty()) return;
             Json body = Json::object();
             body["category"] = "console";

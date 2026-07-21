@@ -25,6 +25,9 @@ class CajetaDebugSession(private val client: DapClient) {
         val stopOnEntry: Boolean = false,
         val envVars: Map<String, String> = emptyMap(),
         val inheritSystemEnv: Boolean = true,
+        /** Whole-program JIT cache root (fast-debug-launch 5.2.2). Blank =
+         *  not sent = the server compiles from scratch, as before. */
+        val cacheDir: String = "",
     )
 
     /** A line breakpoint, optionally conditional (CP6f). A blank condition is
@@ -225,6 +228,8 @@ class CajetaDebugSession(private val client: DapClient) {
             args["env"] = env
         }
         if (!p.inheritSystemEnv) args["inheritSystemEnv"] = Json.of(false)
+        // Blank stays off the wire (absence = unspecified, like env above).
+        if (p.cacheDir.isNotBlank()) args["cacheDir"] = Json.of(p.cacheDir)
         return args
     }
 

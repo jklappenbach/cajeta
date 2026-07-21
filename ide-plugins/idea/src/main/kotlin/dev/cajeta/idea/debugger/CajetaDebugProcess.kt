@@ -118,6 +118,10 @@ class CajetaDebugProcess(
                     stopOnEntry = configuration.stopOnEntry,
                     envVars = configuration.envVars,
                     inheritSystemEnv = configuration.inheritSystemEnv,
+                    // fast-debug-launch 5.2.2: the shared project cache tree;
+                    // the server serves a whole-program slot on a warm launch.
+                    cacheDir = session.project.basePath
+                        ?.let { "$it/.cajeta/cache" } ?: "",
                 ),
                 initialBreakpoints,
                 // CP6f-3b: arm break-on-throw inside the handshake (before
