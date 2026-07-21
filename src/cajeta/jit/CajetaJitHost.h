@@ -33,6 +33,31 @@ namespace cajeta::jit {
         std::vector<std::string> programArgs;
         // Reserved for CP2+: emit __cajeta_dbg_safepoint polls + debug frames.
         bool debugInfo = false;
+        // Optional build-progress callback (fast-debug-launch 1.2.2). Invoked
+        // from the calling thread at phase boundaries — phase is one of
+        // "collect", "parse", "codegen", "finalize", "merge", "jit" — and once
+        // per source during "parse" with detail = the source's root-relative
+        // path and current/total = 1-based source counts. Boundary events
+        // carry current = total = 0. Unset = no calls, no behavior change.
+        std::function<void(const std::string& phase, const std::string& detail,
+                           int current, int total)> onProgress;
+    };
+
+    // Wall-clock breakdown of one buildJit run (fast-debug-launch 1.2.1).
+    // The named phases are disjoint segments of the same interval, so their
+    // sum never exceeds totalSeconds (loop bookkeeping between segments is
+    // deliberately unattributed). Codegen is split by module owner: the one
+    // process-wide stdlib module vs everything else — the split that decides
+    // whether stdlib cache slots (plan Unit 7) are worth building.
+    struct JitBuildPhases {
+        double collectSeconds = 0;        // fs walk + compiler setup + prescan
+        double parseSeconds = 0;          // per-source parse (incl. lazy stdlib)
+        double codegenStdlibSeconds = 0;  // method codegen, stdlib module
+        double codegenUserSeconds = 0;    // method codegen, user modules
+        double finalizeSeconds = 0;       // REFL-2 + drop backfill/pin
+        double mergeSeconds = 0;          // linkModules donor merge
+        double jitSeconds = 0;            // verify + LLJIT build/initialize
+        double totalSeconds = 0;          // whole buildJit wall time
     };
 
     // Optional diagnostics filled by runJit when a non-null result is passed.
@@ -45,6 +70,8 @@ namespace cajeta::jit {
         // module's counter, reset immediately before invoking the entry so it
         // measures only the entry's execution, not global ctors).
         long safepointsExecuted = 0;
+        // Build-phase wall-clock breakdown (fast-debug-launch 1.2.1).
+        JitBuildPhases phases;
     };
 
     // Compile + JIT + run. Returns the process-style exit code (0 on success,

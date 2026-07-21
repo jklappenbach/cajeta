@@ -17,6 +17,7 @@
 #include "cajeta/jit/CajetaJitWinSymbols.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdlib>
 #include <filesystem>
@@ -218,14 +219,34 @@ struct BuiltJit {
     bool entryTakesArgs = false;
     int entrySafepointsEmitted = 0; // static count inside the entry fn
     int errorCode = 0;              // 0 ok; else a runJit-style return code
+    JitBuildPhases phases;          // wall-clock breakdown (fast-debug-launch 1.2.1)
 };
 
 // Shared pipeline: compile every .cajeta under opts.sourceRoot, merge modules,
 // build + initialize an LLJIT, and resolve the entry. On failure sets
 // errorCode (and prints to stderr) and leaves jit null.
-BuiltJit buildJit(const JitRunOptions& opts) {
+// buildJit() below wraps this to stamp phases.totalSeconds on every exit path.
+BuiltJit buildJitImpl(const JitRunOptions& opts) {
     BuiltJit out;
     ensureJitInitialized();
+
+    using Clock = std::chrono::steady_clock;
+    // Consecutive-segment timing: endPhase() closes the current segment into
+    // its slot and opens the next. The codegen quiescence loop instead
+    // accumulates into the stdlib/user buckets directly (its bookkeeping
+    // between method loops stays unattributed, so sum(phases) <= total).
+    Clock::time_point phaseStart = Clock::now();
+    auto endPhase = [&phaseStart](double& slot) {
+        Clock::time_point n = Clock::now();
+        slot += std::chrono::duration<double>(n - phaseStart).count();
+        phaseStart = n;
+    };
+    auto progress = [&opts](const char* phase, const std::string& detail,
+                            int current, int total) {
+        if (opts.onProgress) opts.onProgress(phase, detail, current, total);
+    };
+
+    progress("collect", "", 0, 0);
 
     namespace fs = std::filesystem;
     std::error_code ec;
@@ -261,10 +282,17 @@ BuiltJit buildJit(const JitRunOptions& opts) {
     fs::create_directories(archiveRoot, ec);
 
     cajeta::prescanSourceRoot(sourceRoot.string());
+    endPhase(out.phases.collectSeconds);
 
     cajeta::CajetaModulePtr primary;
     try {
+        const int totalSources = (int) sourcePaths.size();
+        int currentSource = 0;
         for (auto& sourcePath : sourcePaths) {
+            std::error_code relEc;
+            fs::path rel = fs::relative(sourcePath, sourceRoot, relEc);
+            progress("parse", (relEc ? sourcePath : rel).string(),
+                     ++currentSource, totalSources);
             auto m = compiler->createModule(sourcePath.string(),
                                             sourceRoot.string(),
                                             archiveRoot.string());
@@ -287,6 +315,22 @@ BuiltJit buildJit(const JitRunOptions& opts) {
     cajeta::CajetaModule::resolveAdviceMatches();
     cajeta::CajetaModule::setActiveProfile("debug");
     cajeta::CajetaModule::resolveDependencyGraph();
+    endPhase(out.phases.parseSeconds);
+    progress("codegen", "", 0, 0);
+
+    // stdlib vs user attribution: the whole parsed stdlib lives in the ONE
+    // process-wide CajetaModule::stdlibModule; everything else is user code.
+    // This split gates plan Unit 7 (stdlib cache slots).
+    auto codegenBucket = [&out](const cajeta::CajetaModulePtr& m) -> double& {
+        return m == cajeta::CajetaModule::getStdlibModule()
+                   ? out.phases.codegenStdlibSeconds
+                   : out.phases.codegenUserSeconds;
+    };
+    auto timeInto = [](double& slot, const auto& fn) {
+        Clock::time_point s = Clock::now();
+        fn();
+        slot += std::chrono::duration<double>(Clock::now() - s).count();
+    };
 
     // Phase 1 (signatures) + Phase 2 (bodies) to quiescence. Codegen-phase
     // diagnostics (immutable-field writes, unknown with(...) labels, …)
@@ -298,9 +342,13 @@ BuiltJit buildJit(const JitRunOptions& opts) {
             size_t methodCount = 0;
             for (auto& m : compiler->getModules()) methodCount += m->getAllMethods().size();
             for (auto& m : compiler->getModules())
-                for (auto& method : m->getAllMethods()) method->getLlvmFunctionType();
+                timeInto(codegenBucket(m), [&] {
+                    for (auto& method : m->getAllMethods()) method->getLlvmFunctionType();
+                });
             for (auto& m : compiler->getModules())
-                for (auto& method : m->getAllMethods()) method->generateCode();
+                timeInto(codegenBucket(m), [&] {
+                    for (auto& method : m->getAllMethods()) method->generateCode();
+                });
             size_t after = 0;
             for (auto& m : compiler->getModules()) after += m->getAllMethods().size();
             if (after == methodCount && after == prevMethodCount) break;
@@ -308,14 +356,19 @@ BuiltJit buildJit(const JitRunOptions& opts) {
         }
 
         for (auto& m : compiler->getModules())
-            for (auto& [name, klass] : m->getStructures())
-                if (klass) klass->generateStaticInitializers();
+            timeInto(codegenBucket(m), [&] {
+                for (auto& [name, klass] : m->getStructures())
+                    if (klass) klass->generateStaticInitializers();
+            });
     } catch (cajeta::Exception& e) {
         std::cerr << "cajeta jit: [" << e.getErrorId() << "] "
                   << e.getMessage() << "\n";
         out.errorCode = 1;
         return out;
     }
+
+    phaseStart = Clock::now();  // close the codegen segment (bucketed above)
+    progress("finalize", "", 0, 0);
 
     // REFL-2 — fill the reflective invoke-adapter bodies + finalize/register
     // #ClassObjects now that every method's LLVM function exists. Mirrors
@@ -347,6 +400,8 @@ BuiltJit buildJit(const JitRunOptions& opts) {
         // in-process linkModules merge can't lazy-discard them.
         cajeta::pinDropFunctionDefinitions(scanModules);
     }
+    endPhase(out.phases.finalizeSeconds);
+    progress("merge", "", 0, 0);
 
     for (auto& m : compiler->getModules()) {
         if (m == primary) continue;
@@ -372,6 +427,9 @@ BuiltJit buildJit(const JitRunOptions& opts) {
     llvm::Function* entryLlvm = llvmModule->getFunction(out.entryName);
     out.returnsInt32 = entryLlvm && entryLlvm->getReturnType()->isIntegerTy(32);
     out.entrySafepointsEmitted = countSafepointCalls(entryLlvm);
+
+    endPhase(out.phases.mergeSeconds);
+    progress("jit", "", 0, 0);
 
     if (std::getenv("CAJETA_DUMP_IR")) llvmModule->print(llvm::errs(), nullptr);
 
@@ -524,7 +582,19 @@ BuiltJit buildJit(const JitRunOptions& opts) {
         out.errorCode = 1;
         return out;
     }
+    endPhase(out.phases.jitSeconds);
 
+    return out;
+}
+
+// Public shape of the pipeline: run the impl and stamp the wall total on
+// every exit path (error returns leave a partial but consistent record).
+BuiltJit buildJit(const JitRunOptions& opts) {
+    using Clock = std::chrono::steady_clock;
+    Clock::time_point t0 = Clock::now();
+    BuiltJit out = buildJitImpl(opts);
+    out.phases.totalSeconds =
+        std::chrono::duration<double>(Clock::now() - t0).count();
     return out;
 }
 
@@ -611,7 +681,10 @@ int runJit(const JitRunOptions& opts, JitRunResult* result) {
     cajeta::buildtool::setNativePhase(cajeta::buildtool::NativePhase::Execution);
 
     llvm::orc::LLJIT* jit = built.jit.get();
-    if (result) result->entrySafepointsEmitted = built.entrySafepointsEmitted;
+    if (result) {
+        result->entrySafepointsEmitted = built.entrySafepointsEmitted;
+        result->phases = built.phases;
+    }
 
     auto entrySym = jit->lookup(built.entryName);
     if (!entrySym) {
@@ -929,6 +1002,23 @@ int dispatchJitRun(int argc, const char* argv[]) {
     opts.entryMethod = positional[1];
     for (size_t i = 2; i < positional.size(); ++i)
         opts.programArgs.push_back(positional[i]);
+
+    // CAJETA_JIT_PHASES=1: dump the build-phase wall-clock breakdown to stderr
+    // (fast-debug-launch 1.3.1 — the measurement that gates stdlib caching).
+    if (std::getenv("CAJETA_JIT_PHASES")) {
+        JitRunResult result;
+        int code = runJit(opts, &result);
+        const auto& ph = result.phases;
+        std::cerr << "[jit-phases] collect=" << ph.collectSeconds
+                  << "s parse=" << ph.parseSeconds
+                  << "s codegen(stdlib)=" << ph.codegenStdlibSeconds
+                  << "s codegen(user)=" << ph.codegenUserSeconds
+                  << "s finalize=" << ph.finalizeSeconds
+                  << "s merge=" << ph.mergeSeconds
+                  << "s jit=" << ph.jitSeconds
+                  << "s total=" << ph.totalSeconds << "s\n";
+        return code;
+    }
     return runJit(opts);
 }
 
