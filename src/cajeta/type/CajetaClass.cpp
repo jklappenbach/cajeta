@@ -5434,6 +5434,35 @@ namespace cajeta {
             if (it != canonicalMap.end()) {
                 return it->second;
             }
+            // Enum ordinal decay. An enum constant argument is typed as its
+            // ENUM (so `Verb.POST.weight()` reaches the companion class), but
+            // its VALUE is the i32 ordinal, and an `int32` formal is the
+            // documented way to receive one (`Texture2D(w, h, int32 format)`).
+            // Retry the exact lookup with enum-typed args decayed to int32
+            // BEFORE the closest-match scan — that scan scores by label, so
+            // for positional calls every candidate ties at 0 and bucket order
+            // picks the overload, which can bind the WRONG one (an enum
+            // ordinal landing in an `int64 deviceHandle` slot).
+            bool anyEnum = false;
+            vector<ParameterEntry> decayed = parameters;
+            for (auto& p : decayed) {
+                if (p.type && (p.type->getTypeFlags() & ENUM_FLAG)) {
+                    auto i32It = CajetaType::getCanonicalMap().find("int32");
+                    if (i32It != CajetaType::getCanonicalMap().end()) {
+                        p.type = i32It->second;
+                        anyEnum = true;
+                    }
+                }
+            }
+            if (anyEnum) {
+                string decayedCanonical = Method::buildCanonical(
+                    static_pointer_cast<CajetaClass>(shared_from_this()),
+                    methodName, decayed, floatingParams);
+                auto dit = canonicalMap.find(decayedCanonical);
+                if (dit != canonicalMap.end()) {
+                    return dit->second;
+                }
+            }
             MethodPtr m = getClosestMethod(methodName, parameters, canonicalMap);
             if (const char* dbg = std::getenv("CAJETA_DBG_RESOLVE");
                     dbg && methodName == dbg) {

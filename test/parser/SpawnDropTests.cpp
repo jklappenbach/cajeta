@@ -71,14 +71,16 @@ TEST(SpawnDropTests, twoAwaitSpawnsBothDrop) {
         "        int32 b = await spawn compute();"), 2);
 }
 
-// Bare spawn (no await): under sync lowering, the inner call runs
-// inline and the task is marked done immediately. The drop entry was
-// still pushed at the spawn site, so scope-exit fires the drop and
-// frees the struct. This is the case the leak gap explicitly described:
-// without the drop wiring, this allocation would leak with no path to
-// reclaim it.
-TEST(SpawnDropTests, bareSpawnStillDrops) {
-    EXPECT_EQ(observe("spawn compute();"), 1);
+// Bare spawn (no await): the Task is DISCARDED — no local binds it — so
+// since 4e7d68ab it registers with the runtime scope frame as scope-owned
+// (__cajeta_scope_register_owned) instead of pushing a drop entry: a
+// per-site drop slot can't represent N live tasks from a spawn loop, and
+// its wait-on-drop joined at the innermost brace, serializing spec-legal
+// `scope { for { spawn } }` loops. The scope joins and __cajeta_free's
+// the struct at exit (join semantics pinned by SpawnScopeJoinTests), so
+// nothing leaks — but no DROP fires, and the counter stays 0.
+TEST(SpawnDropTests, bareSpawnFreesViaScopeNotDrop) {
+    EXPECT_EQ(observe("spawn compute();"), 0);
 }
 
 // Spawn inside an inner `scope { }` block. The drop entry registers
