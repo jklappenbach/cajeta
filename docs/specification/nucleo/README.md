@@ -114,4 +114,11 @@ Progress:
   float32/non-generic. Deferred, recorded in-plan: crossEntropy + axis
   reductions, BatchNorm, generic Module<T> (two compiler gaps), call sugar,
   clip/accumulate wrappers, SSA-locals backward, serialization.
-- Everything below nucleo-nn-optim — **draft** (specs written 2026-06-23; no plan yet).
+- **nucleo-frame** — 🔨 ACTIVE (`nucleo-frame-plan.md`, approved 2026-07-21, COMPLETE
+  scope — no milestone split): typed `Table<T>` + accessor/DSL synthesis, the lazy
+  relational plan (filter/select/with/groupBy/agg/sort/join/resample/rolling/pivot/melt),
+  pushdown optimization, gradual `Table<?>` typing, SQL/Polars nulls, the index interface
+  with zone-maps + B+ + Z-order, CSV/Arrow boundaries, and full-fidelity parquet via
+  cajeta-codec. Two compiler spikes lead (operator cross-type returns; wildcard-receiver
+  member resolution).
+- Everything below nucleo-frame — **draft** (specs written 2026-06-23; no plan yet).
