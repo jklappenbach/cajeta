@@ -42,13 +42,23 @@ nothing, which reads as a hang (observed live, twice).
 ## 2 Cache-backed JIT build
 
 ### 2.1 Requirements
-`buildJit` gains an incremental mode: given a persistent per-project debug
-cache location, it loads clean classes from cache slots and compiles only
-dirty sources, using the same manifest/discriminator machinery as the AOT
-path. Every debug launch reads AND repopulates the cache, so launch N+1
-pays only for what changed since launch N. The DAP `launch` request carries
-the cache location (plugin-provided, derived from the project); absence
-means today's full compile.
+`buildJit` gains a cache mode with two tiers, given a persistent per-project
+cache location (revised 2026-07-21 after phase measurement showed codegen is
+only ~21% of a launch — parse, merge, and LLJIT init dominate):
+
+- **Whole-program tier (primary).** The merged post-compile module is cached
+  keyed on the compiler discriminator plus the digest of every source. A
+  relaunch with no edits loads it directly and skips the compiler entirely —
+  this tier alone must deliver use case 2.2.1.
+- **Per-module tier (edit loop).** On a whole-program miss, the same
+  manifest/discriminator machinery as the AOT path loads clean modules from
+  cache slots and compiles only dirty sources (use case 2.2.2), then
+  repopulates both tiers.
+
+Every debug launch reads AND repopulates the cache, so launch N+1 pays only
+for what changed since launch N. The DAP `launch` request carries the cache
+location (plugin-provided, derived from the project); absence means today's
+full compile.
 
 ### 2.2 Use cases
 - 2.2.1 As a developer who debugged tour five minutes ago, when I launch a
