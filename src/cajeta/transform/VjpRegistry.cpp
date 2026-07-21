@@ -176,6 +176,22 @@ namespace cajeta {
                             "(" + g + ") / (2.0f * Math.sqrt(" + o[0] + "))"};
                     }});
 
+                // nucleo-nn-optim U1 (1.2.3) — c = relu(a) -> a_bar += g * (a > 0).
+                // The mask helper is NOT differentiable (a.e. constant), so
+                // second-order Grad through relu fails loud on it — recorded.
+                r.add({"relu", 1,
+                    [](const std::string& g, const std::vector<std::string>& o,
+                       const GradSurface& s) {
+                        if (s.tensor) {
+                            std::string e = "<" + s.elem + ">";
+                            return std::vector<std::string>{
+                                "Tensor.mul" + e + "(" + g + ", Tensor.reluMask"
+                                    + e + "(" + o[0] + "))"};
+                        }
+                        return std::vector<std::string>{
+                            "((" + o[0] + ") > 0.0f ? (" + g + ") : 0.0f)"};
+                    }});
+
                 // s = mean(a)  ->  a_bar += broadcast(g / numel(a)) — sum's rule
                 // with the count divided out (tensor-only, like sum).
                 r.add({"mean", 1,

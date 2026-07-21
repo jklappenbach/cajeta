@@ -693,11 +693,20 @@ namespace cajeta {
             auto bodyAny = visitor.visitClassBody(classDecl->classBody());
             auto classBody = std::any_cast<ClassBodyDeclarationPtr>(bodyAny);
 
+            // Emit EVERY method of the synthesized class — prototypes first,
+            // then bodies — so make() can call sibling statics (GradAll's
+            // `grads` array builder). make() itself is the transform's value.
+            std::vector<MethodPtr> synthMethods;
             for (auto& decl : classBody->getDeclarations()) {
                 if (auto md = std::dynamic_pointer_cast<MethodDeclaration>(decl)) {
-                    if (md->getMethod() && md->getMethod()->getName() == "make") {
+                    if (!md->getMethod()) continue;
+                    // Register on the wrapper's method maps (updateParent →
+                    // addMethod) so a sibling static call BY NAME inside
+                    // make()'s lambda resolves (GradAll's `grads(...)`).
+                    md->updateParent(wrapperClass);
+                    synthMethods.push_back(md->getMethod());
+                    if (md->getMethod()->getName() == "make") {
                         makeMethod = md->getMethod();
-                        break;
                     }
                 }
             }
@@ -705,11 +714,8 @@ namespace cajeta {
                 throw locErr(intrin + ": synthesized source produced no make()",
                              "CAJETA_ERROR_TRANSFORM_SYNTH_FAILED");
             }
-
-            // Emit make's prototype then body (its inner lambda + GradResult ctor
-            // emit here). Prototype first — the synthesized-method pattern.
-            makeMethod->generatePrototype();
-            makeMethod->generateCode();
+            for (auto& m : synthMethods) m->generatePrototype();
+            for (auto& m : synthMethods) m->generateCode();
             makeFn = makeMethod->getLlvmFunction();
         }
 
@@ -870,6 +876,167 @@ namespace cajeta {
         return emitBackwardClosure(self, module, fnType->toCanonical(), pnames,
                                    paramTys, valueTy, selTy, outputVal, gradExpr,
                                    importTensor, outResolvedType);
+    }
+
+    // nucleo-nn-optim U1 — GradAll<K>(f): one backward closure returning
+    // GradResult<V, G[]> with grads for the LEADING K parameters in argument
+    // order (params first, data args after — the functional-step convention).
+    // Bare GradAll(f) grades every parameter. v1 requires the K differentiated
+    // params to share ONE type spelling (the grads array element type); the
+    // reverse walk runs per selected param over one shared DAG build.
+    static llvm::Value* emitGradAllBackward(MethodCallExpression* self,
+                                            const std::shared_ptr<LambdaExpression>& lam,
+                                            const std::shared_ptr<CajetaFunctionType>& fnType,
+                                            CajetaModulePtr module,
+                                            CajetaTypePtr& outResolvedType) {
+        auto locErr = [&](const std::string& msg, const char* id) {
+            return Exception(msg, id, "", self->getSourceLine(), self->getSourceColumn());
+        };
+
+        const auto& pnames = lam->getParamNames();
+        const auto& ptypes = lam->getParamTypes();
+        if (pnames.empty() || pnames.size() != ptypes.size()) {
+            throw locErr("transform intrinsic 'GradAll' requires a lambda with one "
+                         "or more explicitly-typed parameters",
+                         "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        }
+
+        int64_t kSel = (int64_t) pnames.size();
+        const auto& gTypeArgs = self->getExplicitMethodTypeArgs();
+        if (!gTypeArgs.empty()) {
+            auto c = std::dynamic_pointer_cast<CajetaConstantType>(gTypeArgs[0]);
+            if (!c) {
+                throw locErr("transform intrinsic 'GradAll<...>' arg-count selector "
+                             "must be an integer constant",
+                             "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+            }
+            kSel = c->getValue();
+        }
+        if (kSel < 1 || kSel > (int64_t) pnames.size()) {
+            throw locErr("transform intrinsic 'GradAll<" + std::to_string(kSel)
+                         + ">' selects a leading-argument count out of range for "
+                         "the " + std::to_string(pnames.size())
+                         + "-parameter function (1 <= K <= arity)",
+                         "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        }
+
+        // The K differentiated params must share the same type spelling — that
+        // type is the grads array's element type.
+        for (int64_t i = 1; i < kSel; ++i) {
+            if (ptypes[i]->toCanonical() != ptypes[0]->toCanonical()) {
+                throw locErr("transform intrinsic 'GradAll<" + std::to_string(kSel)
+                             + ">': the differentiated leading parameters must "
+                             "share the same type (grads return as one array); got '"
+                             + ptypes[0]->toCanonical() + "' and '"
+                             + ptypes[i]->toCanonical() + "'",
+                             "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+            }
+        }
+
+        lam->setExpectedType(fnType);
+        lam->resolveTypes(module);
+        auto bodyExpr = std::dynamic_pointer_cast<Expression>(lam->getBody());
+        if (!bodyExpr) {
+            throw locErr("transform intrinsic 'GradAll' v1 requires an "
+                         "expression-body lambda",
+                         "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        }
+
+        auto tensorElem = [](const std::string& ty, std::string& elemOut) -> bool {
+            bool t = ty.rfind("cajeta.math.Tensor", 0) == 0
+                  || ty.rfind("Tensor<", 0) == 0;
+            elemOut = ty;
+            if (t) {
+                auto lt = ty.find('<');
+                auto gt = ty.rfind('>');
+                if (lt != std::string::npos && gt != std::string::npos && gt > lt + 1)
+                    elemOut = ty.substr(lt + 1, gt - lt - 1);
+            }
+            return t;
+        };
+        std::map<std::string, bool> paramRank;
+        for (size_t i = 0; i < pnames.size(); ++i) {
+            std::string ignore;
+            paramRank[pnames[i]] = tensorElem(ptypes[i]->toCanonical(), ignore);
+        }
+        std::string selTy = ptypes[0]->toCanonical();
+        std::string elem;
+        bool selIsTensor = tensorElem(selTy, elem);
+
+        // One reverse walk per selected param (each rebuilds the shared DAG —
+        // compile-time only; the EMITTED backward is the K grad expressions).
+        auto resolveCall = makeCallResolver(module);
+        std::string outputVal;
+        std::vector<std::string> gradExprs;
+        gradExprs.reserve((size_t) kSel);
+        for (int64_t k = 0; k < kSel; ++k) {
+            GradPieces gp = differentiateBody(self, bodyExpr.get(), pnames,
+                                              paramRank, (size_t) k, elem,
+                                              selIsTensor, resolveCall);
+            if (k == 0) outputVal = gp.valueExpr;
+            gradExprs.push_back(gp.gradExpr);
+        }
+
+        // Value type: same deduction chain as Grad (declared return, resolved
+        // body, sum/mean explicit type args, helper return, scalar fallback).
+        std::string valueTy = fnType->getReturnType()
+            ? fnType->getReturnType()->toCanonical() : std::string("void");
+        if ((valueTy.empty() || valueTy == "void") && bodyExpr->getResolvedType()) {
+            valueTy = bodyExpr->getResolvedType()->toCanonical();
+        }
+        if (valueTy.empty() || valueTy == "void") {
+            if (auto sumCall = std::dynamic_pointer_cast<MethodCallExpression>(bodyExpr)) {
+                if ((sumCall->getMethodCallName() == "sum"
+                         || sumCall->getMethodCallName() == "mean")
+                        && !sumCall->getExplicitMethodTypeArgs().empty()) {
+                    auto r = sumCall->getExplicitMethodTypeArgs().back();
+                    if (r) valueTy = r->toCanonical();
+                }
+            }
+        }
+        if (valueTy.empty() || valueTy == "void") {
+            if (auto call = std::dynamic_pointer_cast<MethodCallExpression>(bodyExpr)) {
+                auto t = resolveCall(call->getMethodCallName(),
+                                     call->getParameters().size());
+                if (t.found && !t.returnTy.empty()) valueTy = t.returnTy;
+            }
+        }
+        if ((valueTy.empty() || valueTy == "void") && !selIsTensor) {
+            valueTy = selTy;
+        }
+        if (valueTy.empty() || valueTy == "void") {
+            throw locErr("transform intrinsic 'GradAll': could not determine the "
+                         "value type of the differentiated function",
+                         "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        }
+
+        std::vector<std::string> paramTys;
+        paramTys.reserve(pnames.size());
+        bool importTensor = false;
+        for (size_t i = 0; i < pnames.size(); ++i) {
+            paramTys.push_back(ptypes[i]->toCanonical());
+            importTensor = importTensor || paramRank[pnames[i]];
+        }
+        for (const auto& ge : gradExprs) {
+            if (ge.find("Tensor.") != std::string::npos) importTensor = true;
+        }
+        if (outputVal.find("Tensor.") != std::string::npos) importTensor = true;
+
+        std::string seed = outputVal;
+        for (const auto& ge : gradExprs) seed += "|" + ge;
+        std::string className = "__GradAllBwd_" + cajeta::synth::deriveSynthName(
+            "gradall", fnType->toCanonical(), {seed, valueTy});
+        std::string pkg = module->getQName()->getPackageName();
+        std::string source = (pkg.empty() ? std::string() : ("package " + pkg + ";\n"))
+            + cajeta::transform::emitGradAllSource(className, pnames, paramTys,
+                                                   valueTy, selTy, outputVal,
+                                                   gradExprs, importTensor);
+        if (std::getenv("CAJETA_GRAD_DUMP")) {
+            fprintf(stderr, "=== GRADALL BACKWARD SOURCE ===\n%s\n=== END ===\n",
+                    source.c_str());
+        }
+        return synthesizeMakeClosure(self, module, className, source, "GradAll",
+                                     outResolvedType);
     }
 
     // transform-intrinsics U5 — synthesize Vmap(f)'s batched form (spec §6.1/§6.2).
@@ -1405,7 +1572,8 @@ namespace cajeta {
         // clear compile error (§2.2). U1 installs an identity placeholder (real
         // transforms: Grad U3, Vmap U5, Jit U6); Pmap is declared-but-deferred (F8).
         if (children.empty() && parameters.size() == 1
-                && (methodCallName == "Grad" || methodCallName == "Jit"
+                && (methodCallName == "Grad" || methodCallName == "GradAll"
+                    || methodCallName == "Jit"
                     || methodCallName == "Vmap" || methodCallName == "Pmap"
                     || methodCallName == "Fuse")) {
             // Higher-order Grad(Grad(...(f))) (3.1.6): the argument is itself a Grad
@@ -1467,7 +1635,7 @@ namespace cajeta {
                 if (auto innerT = std::dynamic_pointer_cast<MethodCallExpression>(
                         parameters[0].expression)) {
                     const std::string& n = innerT->getMethodCallName();
-                    if (n == "Vmap" || n == "Grad") {
+                    if (n == "Vmap" || n == "Grad" || n == "GradAll") {
                         std::set<const llvm::Function*> before;
                         for (auto& fn : module->getLlvmModule()->functions())
                             before.insert(&fn);
@@ -1483,6 +1651,7 @@ namespace cajeta {
                             // looks it up by name (nucleo-expr 5.1.2).
                             llvm::StringRef n = fn.getName();
                             if (!n.contains("__GradBwd_")
+                                    && !n.contains("__GradAllBwd_")
                                     && !n.contains("__VmapBatch_")
                                     && !n.contains("__Fused_")
                                     && !n.contains("__cajeta_lambda_"))
@@ -1533,6 +1702,23 @@ namespace cajeta {
                     }
                     CajetaTypePtr gradType;
                     llvm::Value* g = emitGradBackward(this, lam, fnType, module, gradType);
+                    resolvedType = gradType;
+                    return g;
+                }
+                // GradAll (nucleo-nn-optim U1): one backward, leading-K grads.
+                if (methodCallName == "GradAll") {
+                    auto lam = std::dynamic_pointer_cast<LambdaExpression>(
+                        parameters[0].expression);
+                    if (!lam) {
+                        throw Exception(
+                            "transform intrinsic 'GradAll' requires a lambda literal "
+                            "whose body can be differentiated",
+                            "CAJETA_ERROR_TRANSFORM_NOT_SPECIALIZABLE",
+                            "", getSourceLine(), getSourceColumn());
+                    }
+                    CajetaTypePtr gradType;
+                    llvm::Value* g = emitGradAllBackward(this, lam, fnType, module,
+                                                         gradType);
                     resolvedType = gradType;
                     return g;
                 }

@@ -130,12 +130,12 @@ namespace cajeta {
                     const std::string& op = mc->getMethodCallName();
                     static const std::set<std::string> tensorOps =
                         {"mul", "add", "sub", "matmul", "sum",
-                         "exp", "log", "sqrt", "mean",
+                         "exp", "log", "sqrt", "mean", "relu",
                          // nucleo-expr U2 — scalar-broadcast family + std.
                          "addScalar", "subScalar", "mulScalar", "divScalar",
                          "std"};
                     static const std::set<std::string> tensorUnary =
-                        {"sum", "exp", "log", "sqrt", "mean"};
+                        {"sum", "exp", "log", "sqrt", "mean", "relu"};
                     // nucleo-autograd U1 — the scalar Math.* intrinsics are the
                     // scalar spelling of the widened unary primitives.
                     static const std::set<std::string> mathUnary =
@@ -372,6 +372,46 @@ namespace cajeta {
                     + gr + "(" + outputValueExpr + ", " + gradExpr + ");\n"
                 "    }\n"
                 "}\n";
+        }
+
+        std::string emitGradAllSource(const std::string& className,
+                                      const std::vector<std::string>& paramNames,
+                                      const std::vector<std::string>& paramTypeNames,
+                                      const std::string& valueTypeName,
+                                      const std::string& gradTypeName,
+                                      const std::string& outputValueExpr,
+                                      const std::vector<std::string>& gradExprs,
+                                      bool importTensor) {
+            std::string gr = "GradResult<" + valueTypeName + "," + gradTypeName + "[]>";
+            std::string sig, plist, alist;
+            for (size_t i = 0; i < paramNames.size(); ++i) {
+                if (i) { sig += ","; plist += ", "; alist += ", "; }
+                sig += paramTypeNames[i];
+                plist += paramTypeNames[i] + " " + paramNames[i];
+                alist += paramNames[i];
+            }
+            std::string fnTy = "(" + sig + ") -> " + gr;
+            std::string src =
+                (importTensor ? std::string("import cajeta.math.Tensor;\n")
+                              : std::string())
+              + "import cajeta.nucleo.transform.GradResult;\n"
+                "public class " + className + " {\n"
+                "    public static " + fnTy + " make() {\n"
+                "        return (" + plist + ") -> stack "
+                    + gr + "(" + outputValueExpr + ", "
+                    "grads(" + alist + "));\n"
+                "    }\n"
+                "    public static #" + gradTypeName + "[] grads(" + plist + ") {\n"
+                "        " + gradTypeName + "[] gs = heap " + gradTypeName + "["
+                    + std::to_string(gradExprs.size()) + "];\n";
+            for (size_t k = 0; k < gradExprs.size(); ++k) {
+                src += "        gs[" + std::to_string(k) + "] = "
+                    + gradExprs[k] + ";\n";
+            }
+            src += "        return gs;\n"
+                "    }\n"
+                "}\n";
+            return src;
         }
 
     } // namespace transform

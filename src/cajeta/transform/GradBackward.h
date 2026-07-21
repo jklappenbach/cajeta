@@ -99,5 +99,19 @@ namespace cajeta {
                                        const std::string& gradExpr,
                                        bool importTensor = false);
 
+        // nucleo-nn-optim U1 — the GradAll<K> variant: one closure returning
+        // GradResult<V, GT[]> with grads for the leading K args in arg order.
+        // The array is built by a sibling static (`grads`) because the lambda
+        // body is a single expression; both methods are codegen'd by the
+        // synthesis seam. `gradTypeName` is the PER-GRAD type (all K share it).
+        std::string emitGradAllSource(const std::string& className,
+                                      const std::vector<std::string>& paramNames,
+                                      const std::vector<std::string>& paramTypeNames,
+                                      const std::string& valueTypeName,
+                                      const std::string& gradTypeName,
+                                      const std::string& outputValueExpr,
+                                      const std::vector<std::string>& gradExprs,
+                                      bool importTensor);
+
     } // namespace transform
 } // namespace cajeta
