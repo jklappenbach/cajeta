@@ -13,7 +13,7 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [lint-server](lint-server-spec.md) | [plan](../agents/lint-server-plan.md) | active — Units 1–3 delivered and green (reuse parity; NDJSON `--lint-server` daemon; warm sibling-context reuse); Unit 4 (IntelliJ plugin client + lifecycle) next |
 | [run-config-ergonomics](run-config-ergonomics-spec.md) | [plan](../agents/run-config-ergonomics-plan.md) | active — spec approved 2026-07-18; plan awaiting approval; Units 1-6 unstarted |
 | [dap-stepping](dap-stepping-spec.md) | [plan](../agents/dap-stepping-plan.md) | active — Units 1-3 implemented and green 2026-07-20 (e685c697, 161477ae, e3bb926f); plugin installed in both CLions; remaining: 3.3.2 live F8/F7/Shift-F8 pass on tour |
-| [fast-debug-launch](fast-debug-launch-spec.md) | [plan](../agents/fast-debug-launch-plan.md) | active — approved 2026-07-21; buildJit cache reuse + launch progress; Units 1-8 unstarted |
+| [fast-debug-launch](fast-debug-launch-spec.md) | [plan](../agents/fast-debug-launch-plan.md) | active — Stage A (Units 1-6) delivered 2026-07-21, tour warm launch 42.8s→0.42s; Stage B rescoped to measure-first (Unit 7); live passes 2.3.1/10.3.x await Julian |
 | [silent-resolution-diagnostics](silent-resolution-diagnostics-spec.md) | [plan](../agents/silent-resolution-diagnostics-plan.md) | active |
 | [docs-refactor](docs-refactor-spec.md) | [plan](../agents/docs-refactor-plan.md) | active |
 | [cja-source-view](cja-source-view-spec.md) | [plan](../agents/cja-source-view-plan.md) | active |
