@@ -1,0 +1,32 @@
+package cajeta.nucleo.optim;
+
+import cajeta.math.Tensor;
+
+/**
+ * Optimizer — the update protocol (spec §5; resolution N6): `step(grads)`
+ * consumes ONE explicit gradient bag and writes updated parameter values in
+ * place. Grads arrive positionally, matching the stable order of the
+ * parameter collection the optimizer was constructed over (`grads[i]`
+ * belongs to `params[i]` — the same order contract `GradAll`'s leading args
+ * follow). There is NO `.grad` accumulator on parameters, no `zeroGrad`, and
+ * no global anything (spec §4): the grads' lifetime is this call.
+ *
+ * Per-parameter state (momentum, Adam moments) is owned by the OPTIMIZER,
+ * positional, lazily initialized on the first `step` (§5.4). A custom rule —
+ * including a non-backprop one (§9.3) — implements this same interface;
+ * SGD/Adam/AdamW are not special.
+ *
+ * The learning rate is observable and settable (`getLr`/`setLr`) — the seam
+ * the pure-function LR schedules' thin wrapper drives (spec §6).
+ */
+public interface Optimizer {
+    /** Apply one update from the explicit grads (positional; count/shape
+     *  mismatch throws {@link OptimizerException} — never a partial update). */
+    void step(Tensor<float32>[] grads);
+
+    /** The learning rate currently in effect (spec §6.3). */
+    float32 getLr();
+
+    /** Set the learning rate (the scheduler wrapper's write seam). */
+    void setLr(float32 v);
+}
