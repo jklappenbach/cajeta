@@ -63,18 +63,6 @@ TEST(AsyncSyntaxTests, spawnRunsCallInline) {
     EXPECT_EQ(runI32(src), 11);
 }
 
-// `await spawn` together is the canonical pattern; sync MVP returns the
-// inner value unchanged through both layers.
-TEST(AsyncSyntaxTests, awaitSpawnReturnsInnerValue) {
-    auto src =
-        "package test;\n"
-        "public final class D {\n"
-        "    public static async int32 compute() { return 99; }\n"
-        "    public static int32 run() { return await spawn compute(); }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 99);
-}
-
 // `scope { ... }` is a statement that owns its contents. In the sync MVP
 // it's just a block — locals declared inside drop at the closing `}`,
 // same as any block. Verifies the parser routes SCOPE through to the

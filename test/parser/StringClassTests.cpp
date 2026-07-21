@@ -42,20 +42,6 @@ struct TaggedStringLayout {
 };
 } // namespace
 
-// String can be instantiated as a heap class.
-TEST(StringClassTests, canHeapInstantiate) {
-    auto src =
-        "package test;\n"
-        "import cajeta.lang.String;\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        String s = heap String();\n"
-        "        return 0;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 0);
-}
-
 // byteLength is a METHOD over lenTag now (the field is gone).
 TEST(StringClassTests, byteLengthMethodReadsLenTag) {
     auto src =

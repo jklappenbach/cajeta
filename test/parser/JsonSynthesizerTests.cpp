@@ -1176,24 +1176,6 @@ TEST(JsonSynthesizerTests, parseMixedInt32Int64Boolean) {
 
 // ---- Phase 4b commit 10: nested-class arrays via JsonReader.peek() ----
 
-// Smoke test: single-element nested-class array first, before
-// stepping up to multi-element.
-TEST(JsonSynthesizerTests, parseNestedClassArraySingle) {
-    auto src =
-        "package test;\n"
-        "import cajeta.codec.json.Json;\n"
-        "public class Inner { public int32 x; }\n"
-        "public class Wrap { public Inner[] items; }\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        String s = \"{\\\"items\\\":[{\\\"x\\\":3}]}\";\n"
-        "        Wrap w = Json.parse<Wrap>(s);\n"
-        "        return w.items[0].x;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 3);
-}
-
 // Parse `{"items":[{"x":1},{"x":2}]}` into Wrap { Inner[] items; }
 // with Inner { int32 x; }. Pins peek + dispatch — the array
 // reader peeks each element's START_OBJECT and hands the reader

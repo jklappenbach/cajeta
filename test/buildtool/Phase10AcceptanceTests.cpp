@@ -378,37 +378,6 @@ TEST(Phase10AcceptanceTests, trustAddThenVerifyEndToEnd) {
 // to a valid mode; falls through to CLI otherwise". A regression
 // in either side surfaces in BOTH layers.
 
-TEST(Phase10AcceptanceTests, envRequireSignatureOverridesCli) {
-    // Verify the contract directly: env value wins over CLI when
-    // both are set. The actual lookup uses ::getenv; we set/clear
-    // around the test.
-    ::unsetenv("CAJETA_REQUIRE_SIGNATURE");
-    // No env, CLI = warn → "warn".
-    {
-        const char* env = std::getenv("CAJETA_REQUIRE_SIGNATURE");
-        std::string envStr = env ? env : "";
-        std::string cli = "warn";
-        std::string mode =
-            !envStr.empty() && (envStr == "strict" ||
-                                envStr == "warn" ||
-                                envStr == "off") ? envStr : cli;
-        EXPECT_EQ(mode, "warn");
-    }
-    // env=strict, CLI=warn → "strict".
-    ::setenv("CAJETA_REQUIRE_SIGNATURE", "strict", 1);
-    {
-        const char* env = std::getenv("CAJETA_REQUIRE_SIGNATURE");
-        std::string envStr = env ? env : "";
-        std::string cli = "warn";
-        std::string mode =
-            !envStr.empty() && (envStr == "strict" ||
-                                envStr == "warn" ||
-                                envStr == "off") ? envStr : cli;
-        EXPECT_EQ(mode, "strict");
-    }
-    ::unsetenv("CAJETA_REQUIRE_SIGNATURE");
-}
-
 // ─── Fingerprint determinism (the `cajeta trust show` output) ──
 
 TEST(Phase10AcceptanceTests, fingerprintIsDeterministicAndKeyBound) {

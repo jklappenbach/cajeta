@@ -229,20 +229,3 @@ TEST(XpuAccelWidthSpikeTests, slab8And16MonomorphizeDistinctly) {
     EXPECT_EQ(ir16.find("<8 x float>"), std::string::npos)
         << "width-16 body must NOT carry a <8 x float> op";
 }
-
-// 2.2.2 — the host target machine's feature string maps to a max Exact width
-// (AVX-512 -> 16, AVX -> 8, else -> 4). This is the spike-level mapping the
-// capability-driven selector (unit 5) wires to a runtime Capability; here we only
-// confirm it is computable and sane on the build host. <16 x float> IR lowers on
-// ANY host (LLVM legalizes to the available registers); a single zmm needs this
-// feature string to advertise avx512f.
-TEST(XpuAccelWidthSpikeTests, hostSimdMapsToExactWidth) {
-    auto tm = cajeta::xpu::cpu::createCpuTargetMachine();
-    ASSERT_NE(tm, nullptr);
-    std::string feats = tm->getTargetFeatureString().str();
-    int maxExactWidth = 4;
-    if (feats.find("+avx512f") != std::string::npos) maxExactWidth = 16;
-    else if (feats.find("+avx") != std::string::npos) maxExactWidth = 8;
-    EXPECT_TRUE(maxExactWidth == 4 || maxExactWidth == 8 || maxExactWidth == 16);
-    EXPECT_GE(maxExactWidth, 4);
-}

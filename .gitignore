@@ -112,3 +112,6 @@ build-tsan/
 # rule is not broken; something added it with `-f` or via `git add -A` before
 # the rule existed. Untrack it (`git rm --cached`), don't add another pattern.
 .cajeta/
+
+# Per-plan throwaway regression manifest (template: test/regression_manifest.example.txt)
+test/regression_manifest.txt

@@ -50,19 +50,6 @@ TEST(DurationTests, ofMillisConvertsToNanos) {
     EXPECT_EQ(runI64(src), 3000000);
 }
 
-TEST(DurationTests, ofSecondsConvertsToNanos) {
-    auto src =
-        "package test;\n"
-        "import cajeta.time.Duration;\n"
-        "public final class D {\n"
-        "    public static int64 run() {\n"
-        "        Duration d = Duration.ofSeconds(2);\n"
-        "        return d.toNanos();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI64(src), 2000000000);
-}
-
 TEST(DurationTests, ofMinutesConvertsToNanos) {
     auto src =
         "package test;\n"

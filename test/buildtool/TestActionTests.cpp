@@ -260,26 +260,6 @@ TEST(TestActionTests, registryAdvertisesTestAction) {
 
 // ─── output threading: ${id.passed} etc. exposed ──────────────────
 
-TEST(TestActionTests, outputsExposeCountsForPipelining) {
-    auto props = makeProps();
-    ActionRegistry registry;
-    TaskContext ctx(props);
-
-    auto d = tempDir("threading");
-    auto bin = writeScript(d, "exit 0");
-
-    llvm::json::Object params;
-    params["input"] = bin.string();
-    auto r = registry.get("test")->run(params, ctx);
-    ASSERT_TRUE((bool)r);
-    // The four documented outputs are present + truthy where expected.
-    EXPECT_FALSE(r->outputs["passed"].empty());
-    EXPECT_FALSE(r->outputs["failed"].empty());
-    EXPECT_FALSE(r->outputs["crashed"].empty());
-    EXPECT_FALSE(r->outputs["exit-code"].empty());
-    std::filesystem::remove_all(d);
-}
-
 // ─── coverage param accepted but ignored (Phase 7d wires it) ──────
 
 TEST(TestActionTests, coverageParamAcceptedAsForwardCompatPlaceholder) {

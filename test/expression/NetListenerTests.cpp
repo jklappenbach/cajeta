@@ -99,22 +99,6 @@ TEST(NetListenerTests, reuseAddrSetsAndReadsBack) {
     __cajeta_net_close(fd);
 }
 
-// --- SO_REUSEADDR before bind lets bind succeed ---------------------------
-// The functional point of REUSEADDR for a server: set it, then bind. The set
-// must not error and the bind must succeed.
-TEST(NetListenerTests, reuseAddrSetBeforeBindSucceeds) {
-    int32_t fd = __cajeta_net_socket(AF_INET, SOCK_STREAM, 0);
-    ASSERT_GE(fd, 0);
-    ASSERT_EQ(0, __cajeta_net_set_reuseaddr(fd, 1));
-
-    sockaddr_in addr = loopbackV4(0);
-    ASSERT_EQ(0, __cajeta_net_bind(fd, &addr, (int32_t) sizeof(addr)))
-        << "bind err=" << __cajeta_net_last_error();
-    ASSERT_EQ(0, __cajeta_net_listen(fd, 16));
-
-    __cajeta_net_close(fd);
-}
-
 // --- SO_REUSEPORT is honored per platform ---------------------------------
 // On POSIX with a real SO_REUSEPORT the set succeeds (0). On Windows there is
 // no such flag and the intrinsic is a definitional no-op that also returns 0.

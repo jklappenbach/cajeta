@@ -256,6 +256,9 @@ TEST(PluginTests, resolvePluginsRejectsCapabilityOutsideAllowlist) {
     EXPECT_NE(msg.find("'process'"), std::string::npos);
     EXPECT_NE(msg.find("plugins-allowed-capabilities"),
               std::string::npos);
+    // The message is prefixed "plugins.<name>: ..." so the offending plugin is
+    // identifiable when several are declared; nothing pinned that prefix before.
+    EXPECT_NE(msg.find("acme.policy-gate"), std::string::npos);
 }
 
 TEST(PluginTests, resolvePluginsFirstPartyUsesWiderDefault) {

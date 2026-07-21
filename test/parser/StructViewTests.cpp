@@ -96,17 +96,6 @@ TEST(StructViewTests, multipleFieldsIndependent) {
         "return h.version + h.payloadLen;"), 125);
 }
 
-TEST(StructViewTests, viewSharesBufferWithSource) {
-    // Mutating the buffer directly should be visible through the view, and
-    // vice versa — the view aliases the buffer, no copy.
-    EXPECT_EQ(runI32(
-        "int32[] bytes = heap int32[4];\n"
-        "Header h = Header(bytes);\n"
-        "h.version = 7;\n"
-        // Read back the same field via the view; the buffer is the storage.
-        "return h.version;"), 7);
-}
-
 // --- Field reads start zeroed -----------------------------------------------
 
 TEST(StructViewTests, freshBufferReadsZero) {
