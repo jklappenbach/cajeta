@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <map>
+#include <set>
 
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Module.h"
@@ -37,13 +38,26 @@ namespace cajeta {
         return (stack ? "__cajeta_stack_" : "__cajeta_") + mangled + "_drop";
     }
 
-    void backfillDropFunctions(const std::vector<CajetaModulePtr>& modulesToScan) {
+    void backfillDropFunctions(const std::vector<CajetaModulePtr>& modulesToScan,
+                               const std::vector<CajetaModulePtr>& currentModules) {
         auto classByDropSymbol = buildDropSymbolMap();
+        std::set<const llvm::Module*> live;
+        for (auto& module : currentModules) {
+            live.insert(module->getLlvmModule());
+        }
         for (auto& module : modulesToScan) {
             for (auto& fn : module->getLlvmModule()->functions()) {
                 if (!fn.isDeclaration()) continue;
                 auto hit = classByDropSymbol.find(fn.getName().str());
                 if (hit == classByDropSymbol.end()) continue;
+                // Stale-class guard (see header): only synthesize into a
+                // module of the compile in progress. Pointer membership only
+                // — a stale class's module pointer is never dereferenced.
+                auto emitModule = hit->second->getEmitModule();
+                if (!emitModule
+                    || live.find(emitModule->getLlvmModule()) == live.end()) {
+                    continue;
+                }
                 if (std::getenv("CAJETA_DROP_BACKFILL_LOG")) {
                     std::cerr << "cajeta: drop-backfill " << fn.getName().str()
                               << " (declared in "

@@ -33,7 +33,17 @@ namespace cajeta {
     // matching the historical AOT behavior). Callers choose the scan set: the
     // AOT incremental path passes its cache-loaded (incremental-clean)
     // modules; the JIT passes every compiled module.
-    void backfillDropFunctions(const std::vector<CajetaModulePtr>& modulesToScan);
+    //
+    // `currentModules` is the FULL module list of the compile in progress. It
+    // gates synthesis: the canonical type map is a persistent thread-local,
+    // so in a multi-compile process (JIT test harnesses, debug sessions) it
+    // still holds classes from EARLIER compiles whose LLVM modules were
+    // consumed by that compile's merge — synthesizing into those is a write
+    // into freed memory. A matched class is backfilled only when its emit
+    // module belongs to the current compile (pointer membership; stale
+    // pointers are never dereferenced).
+    void backfillDropFunctions(const std::vector<CajetaModulePtr>& modulesToScan,
+                               const std::vector<CajetaModulePtr>& currentModules);
 
     // JIT-merge only. llvm::Linker lazy-links linkonce_odr definitions: a
     // drop thunk defined in a donor module that links while nothing in the

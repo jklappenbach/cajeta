@@ -24,6 +24,7 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Linker/Linker.h"
+#include "llvm/Transforms/Utils/Cloning.h"
 
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CajetaModule.h"
@@ -131,7 +132,7 @@ TEST(DropBackfillTests, StackDropDeclarationIsBackfilled) {
 
     auto moduleList = compiler.getModules();  // by-value: bind ONE copy
     std::vector<CajetaModulePtr> scan(moduleList.begin(), moduleList.end());
-    backfillDropFunctions(scan);
+    backfillDropFunctions(scan, scan);
 
     llvm::Function* def = klass->getEmitModule()->getLlvmModule()->getFunction(sym);
     ASSERT_NE(def, nullptr);
@@ -156,7 +157,7 @@ TEST(DropBackfillTests, HeapDropDeclarationIsBackfilled) {
 
     auto moduleList = compiler.getModules();  // by-value: bind ONE copy
     std::vector<CajetaModulePtr> scan(moduleList.begin(), moduleList.end());
-    backfillDropFunctions(scan);
+    backfillDropFunctions(scan, scan);
 
     llvm::Function* def = klass->getEmitModule()->getLlvmModule()->getFunction(sym);
     ASSERT_NE(def, nullptr);
@@ -255,14 +256,17 @@ bool dropThunkSurvivesAdversarialMerge(bool pin) {
         EXPECT_TRUE(ownerMod->getFunction(sym)->hasWeakODRLinkage());
     }
 
-    if (llvm::Linker::linkModules(*primaryMod,
-                                  std::unique_ptr<llvm::Module>(ownerMod))
-        || llvm::Linker::linkModules(*primaryMod,
-                                     std::unique_ptr<llvm::Module>(userMod))) {
+    // Merge CLONES: linkModules consumes its source, and these llvm::Modules
+    // are held by the process-wide module registries — destroying them
+    // poisons every later in-process compile in this test binary.
+    auto primaryClone = llvm::CloneModule(*primaryMod);
+    if (llvm::Linker::linkModules(*primaryClone, llvm::CloneModule(*ownerMod))
+        || llvm::Linker::linkModules(*primaryClone,
+                                     llvm::CloneModule(*userMod))) {
         ADD_FAILURE() << "linkModules failed";
         return false;
     }
-    llvm::Function* merged = primaryMod->getFunction(sym);
+    llvm::Function* merged = primaryClone->getFunction(sym);
     return merged && !merged->isDeclaration();
 }
 
@@ -277,6 +281,51 @@ TEST(DropBackfillTests, PinnedDropThunkSurvivesLazyLinkMerge) {
     EXPECT_TRUE(dropThunkSurvivesAdversarialMerge(/*pin=*/true));
 }
 
+// 1.1.6 — stale-class guard. The canonical type map is a persistent
+// thread-local: in a multi-compile process it still holds classes from
+// earlier compiles whose LLVM modules were consumed by that compile's merge.
+// A declaration whose matched class does NOT belong to the current compile
+// must be SKIPPED — synthesizing into the stale module is a write into freed
+// memory (segfaulted cajeta_debug_test's JitHost sequence, 2026-07-20).
+// Here the "stale" class is from a prior in-process compile whose modules
+// are still alive, so the skip is observable without touching freed memory.
+TEST(DropBackfillTests, StaleClassFromEarlierCompileIsSkipped) {
+    // Compile #1 registers test.StaleOnly and abandons it. compilerA is kept
+    // alive so this test may safely INSPECT the stale module afterwards — in
+    // production the stale module is freed, which is exactly why the guard
+    // must never dereference it (it only compares pointers).
+    TempTree treeA({{"test/StaleOnly.cajeta",
+                     "package test;\n"
+                     "public class StaleOnly {\n"
+                     "    public int32 x;\n"
+                     "}\n"}});
+    Compiler compilerA;
+    compileTree(compilerA, treeA);
+    auto stale = classFor("test.StaleOnly");
+    ASSERT_NE(stale, nullptr);
+    llvm::Module* staleMod = stale->getEmitModule()->getLlvmModule();
+    ASSERT_NE(staleMod, nullptr);
+    // Compile #2 never mentions StaleOnly, but one of its modules carries a
+    // dangling declaration whose name matches the stale map entry.
+    TempTree treeB({{"test/User.cajeta", kOtherClassSource}});
+    Compiler compilerB;
+    compileTree(compilerB, treeB);
+    llvm::Module* userMod = llvmModuleOf("test.User");
+    ASSERT_NE(userMod, nullptr);
+    const std::string sym = dropSymbolName("test.StaleOnly", /*stack=*/true);
+    declareDropThunk(userMod, sym);
+
+    auto moduleList = compilerB.getModules();  // by-value: bind ONE copy
+    std::vector<CajetaModulePtr> scan(moduleList.begin(), moduleList.end());
+    size_t staleFnCountBefore = staleMod->getFunctionList().size();
+    backfillDropFunctions(scan, scan);
+
+    // Skipped: nothing synthesized into the stale module, declaration left
+    // dangling (the JIT's materialization error is preferable to corruption).
+    EXPECT_EQ(staleFnCountBefore, staleMod->getFunctionList().size());
+    EXPECT_TRUE(userMod->getFunction(sym)->isDeclaration());
+}
+
 // 1.1.4 — a module with no dangling drop declarations is left untouched.
 TEST(DropBackfillTests, CleanModuleIsUntouched) {
     TempTree tree({{"test/S.cajeta", kValueClassSource}});
@@ -289,7 +338,7 @@ TEST(DropBackfillTests, CleanModuleIsUntouched) {
     for (auto& m : scan)
         before.push_back(m->getLlvmModule()->getFunctionList().size());
 
-    backfillDropFunctions(scan);
+    backfillDropFunctions(scan, scan);
 
     size_t i = 0;
     for (auto& m : scan)

@@ -30,6 +30,7 @@
 
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CajetaModule.h"
+#include "cajeta/compile/DropBackfill.h"
 #include "cajeta/compile/NativeLink.h"
 #include "cajeta/buildtool/NativeProvision.h"
 #include "cajeta/type/CajetaClass.h"
@@ -162,9 +163,16 @@ void* makeEntryArgs(llvm::orc::LLJIT* jit,
     const int64_t offCpLen  = (int64_t) sl->getElementOffset(4);
 
     // The vtable lives in the JIT'd module, so take its RUNTIME address.
+    // Looked up by its canonical NAME (`<class>#VTable`, the same string
+    // StructureMetadata emits) — NOT via klass->getVirtualTableGlobal():
+    // that cached GlobalVariable* can point into a donor module the merge
+    // already consumed (late drop-thunk synthesis re-homes it there), and
+    // dereferencing it here is a read of freed memory.
     void* vtable = nullptr;
-    if (auto* vt = klass->getVirtualTableGlobal()) {
-        if (auto sym = jit->lookup(vt->getName())) {
+    {
+        const std::string vtName =
+            klass->getQName()->toCanonical() + "#VTable";
+        if (auto sym = jit->lookup(vtName)) {
             vtable = reinterpret_cast<void*>(sym->getValue());
         } else {
             cajeta::jit::consumeError(sym.takeError());
@@ -320,6 +328,24 @@ BuiltJit buildJit(const JitRunOptions& opts) {
             klass->emitReflectNewBody();
             klass->finalizeClassObject();
         }
+    }
+
+    // Drop-function backfill (shared with the AOT incremental path —
+    // DropBackfill.h). Consumers can reference `__cajeta[_stack]_<type>_drop`
+    // thunks whose lazy synthesis never fired (instantiations created only
+    // indirectly during stdlib codegen); without this, LLJIT initialize fails
+    // with `Symbols not found` on any program big enough to dangle one
+    // (jit-drop-backfill spec §3, surfaced on samples/tour).
+    {
+        // getModules() returns by value — bind ONE copy before taking
+        // iterators (a begin/end pair from two temporaries never meets).
+        auto jitModules = compiler->getModules();
+        std::vector<cajeta::CajetaModulePtr> scanModules(jitModules.begin(),
+                                                         jitModules.end());
+        cajeta::backfillDropFunctions(scanModules, scanModules);
+        // Then pin every definition (incl. freshly backfilled ones) so the
+        // in-process linkModules merge can't lazy-discard them.
+        cajeta::pinDropFunctionDefinitions(scanModules);
     }
 
     for (auto& m : compiler->getModules()) {

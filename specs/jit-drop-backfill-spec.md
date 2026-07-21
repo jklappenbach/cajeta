@@ -25,6 +25,16 @@ enough to leave a declaration dangling. Reproduced 2026-07-20 on
 samples/tour over stdio DAP; small programs synthesize everything
 in-session, which is why all debug-tests fixtures pass.
 
+Root cause, established during implementation (2026-07-20): the JIT has a
+SECOND dangling mode the backfill alone cannot repair. Thunks are emitted
+LinkOnceODR, and buildJit merges modules in-process with `llvm::Linker`,
+which lazy-links linkonce_odr — a donor's definition is discarded unless a
+value copied in that same link step references it (pre-existing declarations
+in the destination do not pull it in). So a synthesized-and-present
+definition can still vanish at merge, stranding consumers' declarations.
+The JIT therefore needs both halves: the shared backfill (synthesize what
+never fired) and a merge pin (keep what synthesis produced).
+
 ### 1.3 Constraints
 - The AOT backfill's observable behavior is preserved: same symbols
   synthesized, same module placement (the type's own module), same mangling.
@@ -67,6 +77,13 @@ invoke the owning class's `getOrCreateStackDropFunction` /
 initializers, and REFL-2, and before donor modules are linked into the
 primary module. Both drop families are covered. Programs that already
 materialize are unaffected.
+
+Additionally (root cause, see 1.2): before the donor merge, every drop-thunk
+DEFINITION is pinned — promoted from linkonce_odr to weak_odr (kept
+unconditionally, still ODR-mergeable) with its comdat shed — so the
+in-process `llvm::Linker` merge cannot lazily discard it in any link order.
+JIT-only: the AOT path links separate objects through the system linker,
+whose comdat resolution is correct, and is left untouched.
 
 ### 3.2 Use cases
 - 3.2.1 As a developer, when I launch `cajeta dap` on samples/tour with

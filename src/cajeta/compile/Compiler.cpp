@@ -2252,7 +2252,8 @@ namespace cajeta {
             for (auto& module: modules) {
                 if (module->isIncrementalClean()) cacheLoaded.push_back(module);
             }
-            backfillDropFunctions(cacheLoaded);
+            backfillDropFunctions(cacheLoaded,
+                std::vector<CajetaModulePtr>(modules.begin(), modules.end()));
         }
 
         // Archive emit bundles every parsed module's bitcode into one
