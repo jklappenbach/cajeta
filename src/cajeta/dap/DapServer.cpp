@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <cstdio>
 #include <iostream>
 #include <thread>
 #ifndef _WIN32
@@ -787,6 +788,15 @@ int DapServer::runOverStdio() {
         // fd 1 now feeds the pump; the protocol owns a private descriptor.
         ::dup2(pfd[1], STDOUT_FILENO);
         ::close(pfd[1]);
+        // The debuggee prints through FILE* stdout, and libc picks its
+        // buffering from what fd 1 IS at first use: a TTY gets line
+        // buffering, a PIPE gets 4KB block buffering. Redirecting to the
+        // pump turned it into a pipe, so output sat in the buffer instead of
+        // reaching the console until the buffer filled or the process ended
+        // (live 2026-07-22: tour printed nothing to the Console). Force line
+        // buffering before any I/O touches the stream — the JIT runs
+        // in-process, so this is the same stdout the debuggee uses.
+        ::setvbuf(stdout, nullptr, _IOLBF, 0);
         static __gnu_cxx::stdio_filebuf<char> protoBuf(protoFd, std::ios::out);
         static std::ostream protoStream(&protoBuf);
 
