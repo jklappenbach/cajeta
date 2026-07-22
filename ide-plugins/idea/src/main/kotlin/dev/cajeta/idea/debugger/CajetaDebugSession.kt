@@ -28,6 +28,12 @@ class CajetaDebugSession(private val client: DapClient) {
         /** Whole-program JIT cache root (fast-debug-launch 5.2.2). Blank =
          *  not sent = the server compiles from scratch, as before. */
         val cacheDir: String = "",
+        /** The binary the plugin launched (resident-debug-server 5.2.1).
+         *  Sent on initialize so a stale/wrong server refuses cleanly. */
+        val compilerPath: String = "",
+        /** Ask the server to keep its compiled world across sessions
+         *  (resident-debug-server 4.2.1). */
+        val resident: Boolean = false,
     )
 
     /** A line breakpoint, optionally conditional (CP6f). A blank condition is
@@ -72,9 +78,12 @@ class CajetaDebugSession(private val client: DapClient) {
         breakpoints: List<LineBreakpoint> = emptyList(),
         exceptionBreakpoints: Boolean = false,
     ): CompletableFuture<Void> {
+        val initArgs = Json.obj("adapterID" to Json.of("cajeta"))
+        if (params.compilerPath.isNotBlank())
+            initArgs["compilerPath"] = Json.of(params.compilerPath)
         var chain = client.sendRequest(
             "initialize",
-            Json.obj("adapterID" to Json.of("cajeta")),
+            initArgs,
         ).thenCompose {
             client.sendRequest("launch", launchArgs(params))
         }
@@ -230,6 +239,7 @@ class CajetaDebugSession(private val client: DapClient) {
         if (!p.inheritSystemEnv) args["inheritSystemEnv"] = Json.of(false)
         // Blank stays off the wire (absence = unspecified, like env above).
         if (p.cacheDir.isNotBlank()) args["cacheDir"] = Json.of(p.cacheDir)
+        if (p.resident) args["resident"] = Json.of(true)
         return args
     }
 

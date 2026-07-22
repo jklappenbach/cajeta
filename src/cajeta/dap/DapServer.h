@@ -78,7 +78,25 @@ namespace cajeta::dap {
         // debuggee's exit code (0 if it never launched).
         int run(std::istream& in, std::ostream& out);
 
+        // Identity handshake test seams (resident-debug-server 5.1.1):
+        // pretend the startup snapshot was taken before a rebuild, and
+        // expose the resolved self-exe path so a test can send a MATCHING
+        // compilerPath.
+        void overrideSelfIdentityForTest(std::string identity) {
+            selfIdentityAtStart_ = std::move(identity);
+        }
+        static std::string selfExePathForTest();
+
     private:
+        // Compiler-identity handshake (resident-debug-server 5.2.1): refuse
+        // the session and end the loop when the running image no longer
+        // matches its on-disk binary, or when the client expects a different
+        // binary (`compilerPath` on initialize). Returns true when the
+        // session may proceed.
+        bool verifyCompilerIdentity(const Json& args, const Emit& emit,
+                                    int requestSeq);
+        std::string selfIdentityAtStart_;   // "" until the first initialize
+
         // Drive the running program until it next stops at a breakpoint or
         // terminates; emit the matching `stopped` / `terminated` event.
         void runToStopOrExit(const Emit& emit);

@@ -177,6 +177,34 @@ class CajetaDebugSessionTest {
         )
     }
 
+    /** resident-debug-server 5.1.2 — the handshake carries the binary the
+     *  plugin launched (initialize.compilerPath) and the residency ask
+     *  (launch.resident), so a stale or wrong server refuses cleanly. */
+    @Test
+    fun launchCarriesCompilerPathAndResident() {
+        connect()
+        runServer()
+        session.start()
+
+        session.launch(
+            CajetaDebugSession.LaunchParams(
+                "demo.Calc.main", "/tmp/root",
+                compilerPath = "/opt/cajeta/bin/cajeta",
+                resident = true,
+            ),
+        ).get(5, TimeUnit.SECONDS)
+
+        assertEquals(
+            "/opt/cajeta/bin/cajeta",
+            lastRequestByCommand["initialize"]!!.at("arguments")
+                .at("compilerPath").asString(),
+        )
+        assertTrue(
+            lastRequestByCommand["launch"]!!.at("arguments")
+                .at("resident").asBool(),
+        )
+    }
+
     /** fast-debug-launch 5.1.2 — a run config with a cache dir sends it on the
      *  launch request, so the server can serve the whole-program slot. */
     @Test

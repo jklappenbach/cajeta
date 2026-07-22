@@ -85,25 +85,20 @@ class CajetaDebugProcess(
             }
 
         try {
-            val proc = CajetaDapLauncher(binary, CajetaDapLauncher.defaultDllDir()).start()
-            process = proc
-            // stderr is outside the DAP transport; undrained it deadlocks the
-            // server on the first large diagnostic (see StderrPump).
-            StderrPump(proc.errorStream) { processHandler.emitError(it) }.start()
-            val ds = CajetaDebugSession(DapClient(DapTransport(proc.inputStream, proc.outputStream)))
+            // Resident lifecycle (resident-debug-server §2): the project
+            // service owns ONE `cajeta dap` per project — reused across
+            // sessions, respawned when dead or when the binary setting
+            // moved, killed with the project. The service's stderr pump
+            // outlives sessions; rebind its sink to THIS session's console.
+            val resident = session.project.getService(
+                CajetaResidentDapService::class.java)
+            resident.stderrSink = { processHandler.emitError(it) }
+            val server = resident.acquire(binary)
+            process = server.process
+            val ds = CajetaDebugSession(server.client)
             dapSession = ds
 
-            processHandler.onDestroy = { ds.disconnect() }
-            ds.onExited = { code -> clearDecorations(); processHandler.reportTerminated(code) }
-            ds.onTerminated = { clearDecorations(); processHandler.reportTerminated(0) }
-            ds.onOutput = { text -> processHandler.emitOutput(text) }
-            ds.onClosed = { clearDecorations(); processHandler.reportTerminated(0) }
-            ds.onStopped = { body ->
-                val tid = body.opt("threadId")?.asInt() ?: 0
-                stoppedThreadId = tid
-                onStopped(ds, tid)
-            }
-
+            wireSessionCallbacks(ds)
             ds.start()
 
             // Seed the launch handshake from whatever breakpoints the platform
@@ -111,18 +106,22 @@ class CajetaDebugProcess(
             val initialBreakpoints = breakpointRegistry.snapshotBreakpoints()
                 .flatMap { (_, bps) -> bps }
 
+            val params = CajetaDebugSession.LaunchParams(
+                entryMethod = configuration.entryMethod,
+                sourceRoot = configuration.sourceRoot,
+                stopOnEntry = configuration.stopOnEntry,
+                envVars = configuration.envVars,
+                inheritSystemEnv = configuration.inheritSystemEnv,
+                // fast-debug-launch 5.2.2: the shared project cache tree;
+                // the server serves a whole-program slot on a warm launch.
+                cacheDir = session.project.basePath
+                    ?.let { "$it/.cajeta/cache" } ?: "",
+                // resident-debug-server 5.2.1/4.2.1: identity + residency.
+                compilerPath = binary,
+                resident = true,
+            )
             ds.launch(
-                CajetaDebugSession.LaunchParams(
-                    entryMethod = configuration.entryMethod,
-                    sourceRoot = configuration.sourceRoot,
-                    stopOnEntry = configuration.stopOnEntry,
-                    envVars = configuration.envVars,
-                    inheritSystemEnv = configuration.inheritSystemEnv,
-                    // fast-debug-launch 5.2.2: the shared project cache tree;
-                    // the server serves a whole-program slot on a warm launch.
-                    cacheDir = session.project.basePath
-                        ?.let { "$it/.cajeta/cache" } ?: "",
-                ),
+                params,
                 initialBreakpoints,
                 // CP6f-3b: arm break-on-throw inside the handshake (before
                 // configurationDone) if the user enabled it.
@@ -134,9 +133,38 @@ class CajetaDebugProcess(
                     ds.setBreakpoints(file, bps)
                 }
             }.exceptionally { e ->
-                log.warn("cajeta dap launch failed", e)
-                processHandler.emitOutput("launch failed: ${e.message}\n")
-                processHandler.reportTerminated(-1)
+                // Identity refusal exits the server (spec 5.2.1): pay the
+                // respawn HERE so the same Debug click cold-starts the new
+                // compiler instead of failing once.
+                log.warn("cajeta dap launch failed; respawning once", e)
+                resident.releaseForRespawn()
+                try {
+                    resident.stderrSink = { processHandler.emitError(it) }
+                    val fresh = resident.acquire(binary)
+                    process = fresh.process
+                    val retry = CajetaDebugSession(fresh.client)
+                    dapSession = retry
+                    wireSessionCallbacks(retry)
+                    retry.start()
+                    retry.launch(
+                        params, initialBreakpoints,
+                        exceptionBreakpoints = exceptionBreakpointHandler.armed,
+                    ).thenRun {
+                        launched = true
+                        breakpointRegistry.snapshotBreakpoints().forEach { (file, bps) ->
+                            retry.setBreakpoints(file, bps)
+                        }
+                    }.exceptionally { e2 ->
+                        log.warn("cajeta dap relaunch failed", e2)
+                        processHandler.emitOutput("launch failed: ${e2.message}\n")
+                        processHandler.reportTerminated(-1)
+                        null
+                    }
+                } catch (e2: Exception) {
+                    log.warn("cajeta dap respawn failed", e2)
+                    processHandler.emitOutput("launch failed: ${e2.message}\n")
+                    processHandler.reportTerminated(-1)
+                }
                 null
             }
         } catch (e: Exception) {
@@ -257,9 +285,27 @@ class CajetaDebugProcess(
         dapSession?.stepOut(stoppedThreadId)
     }
 
+    /** Per-session callback wiring, shared by the first launch and the
+     *  identity-refusal respawn retry. `onDestroy` DISCONNECTS only — the
+     *  resident server (project-owned) survives the session. */
+    private fun wireSessionCallbacks(ds: CajetaDebugSession) {
+        processHandler.onDestroy = { ds.disconnect() }
+        ds.onExited = { code -> clearDecorations(); processHandler.reportTerminated(code) }
+        ds.onTerminated = { clearDecorations(); processHandler.reportTerminated(0) }
+        ds.onOutput = { text -> processHandler.emitOutput(text) }
+        ds.onClosed = { clearDecorations(); processHandler.reportTerminated(0) }
+        ds.onStopped = { body ->
+            val tid = body.opt("threadId")?.asInt() ?: 0
+            stoppedThreadId = tid
+            onStopped(ds, tid)
+        }
+    }
+
     override fun stop() {
         clearDecorations()
+        // End the SESSION; the resident server stays for the next one
+        // (resident-debug-server §2). A hung debuggee is unstuck by
+        // releaseForRespawn from the service, not by killing here.
         dapSession?.disconnect()
-        process?.destroyForcibly()
     }
 }

@@ -104,6 +104,63 @@ int lineKeyForLoc(int32_t locId) {
 }
 } // namespace
 
+namespace {
+// The running server's own executable path (Linux: /proc/self/exe). Empty
+// when unresolvable — identity checks then never refuse (fail-open: a
+// missing /proc must not brick debugging on exotic hosts).
+std::string selfExePath() {
+    std::error_code ec;
+    auto p = std::filesystem::read_symlink("/proc/self/exe", ec);
+    return ec ? std::string() : p.string();
+}
+
+// size:mtime of the on-disk binary — cheap, and a rebuild always changes it.
+std::string diskIdentity(const std::string& path) {
+    if (path.empty()) return {};
+    std::error_code ec;
+    auto size = std::filesystem::file_size(path, ec);
+    if (ec) return {};
+    auto mtime = std::filesystem::last_write_time(path, ec);
+    if (ec) return {};
+    return std::to_string((unsigned long long) size) + ":"
+         + std::to_string(
+               (long long) mtime.time_since_epoch().count());
+}
+} // namespace
+
+std::string DapServer::selfExePathForTest() { return selfExePath(); }
+
+bool DapServer::verifyCompilerIdentity(const Json& args, const Emit& emit,
+                                       int requestSeq) {
+    const std::string exe = selfExePath();
+    const std::string now = diskIdentity(exe);
+    auto refuse = [&](const std::string& why) {
+        Json body = Json::object();
+        body["category"] = "console";
+        body["output"] = "cajeta: " + why + "; restarting debug server\n";
+        emit(makeEvent(seq_++, "output", std::move(body)));
+        emit(makeResponse(seq_++, requestSeq, "initialize", false, Json(why)));
+        return false;
+    };
+    // Self-check: the on-disk binary changed under this running image
+    // (a compiler rebuild). First initialize snapshots; later ones compare.
+    if (!now.empty()) {
+        if (selfIdentityAtStart_.empty()) selfIdentityAtStart_ = now;
+        else if (selfIdentityAtStart_ != now)
+            return refuse("compiler binary changed on disk");
+    }
+    // Client expectation: the binary the plugin LAUNCHED (or now intends).
+    // A different path means the compilerPath setting moved — this server
+    // is the wrong compiler entirely.
+    const std::string expected = args.at("compilerPath").asString();
+    if (!expected.empty() && !exe.empty()) {
+        std::error_code ec;
+        if (!std::filesystem::equivalent(expected, exe, ec) || ec)
+            return refuse("debug server is not the configured compiler");
+    }
+    return true;
+}
+
 DapServer::DapServer() = default;
 
 DapServer::~DapServer() {
@@ -230,6 +287,9 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
     const Json& args = request.at("arguments");
 
     if (command == "initialize") {
+        if (!verifyCompilerIdentity(args, emit, requestSeq))
+            return false;   // clean refusal; the launcher respawns fresh
+
         Json caps = Json::object();
         caps["supportsConfigurationDoneRequest"] = true;
         caps["supportsSetVariable"] = true;
