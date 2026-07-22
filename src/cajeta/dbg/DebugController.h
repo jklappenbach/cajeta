@@ -75,6 +75,8 @@ namespace cajeta::dbg {
             int originDepth;
             int kind;      // StepKind as int
             bool stopped;
+            int reason;    // 0=evaluated 1=fiber-mismatch 2=same-line
+                           // 3=chain-mismatch (9.1 diagnostics)
         };
         std::vector<StepDecision> drainStepTrace();
 

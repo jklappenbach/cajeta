@@ -673,6 +673,14 @@ struct cajeta_exception_frame {
     // throw doesn't run __cajeta_line_leave for the frames it unwinds, so on
     // catch __cajeta_throw restores __cajeta_shadow_top to this value.
     int32_t shadow_watermark;
+    // Debug frame-chain head at try-entry (resident-debug-server 9.1). Same
+    // problem, same cure: a throw runs no __cajeta_dbg_frame_leave for the
+    // frames it unwinds, so their nodes LEAKED onto the chain — every later
+    // safepoint in the catching method then reported an inflated depth and
+    // attributed its line to a dead frame. Step-over compares depths, so a
+    // single leaked frame made every subsequent step run away (live: tour
+    // line 132). __cajeta_throw trims back to this on catch.
+    struct cajeta_dbg_frame* dbg_watermark;
 };
 
 // Exposed as a compile-time-known size for the IR side; the compiler allocates a
@@ -707,6 +715,8 @@ void __cajeta_exc_push(struct cajeta_exception_frame* f) {
     f->drop_watermark = *dropTop;
     // Snapshot the shadow line-stack depth so a caught throw restores it (U3).
     f->shadow_watermark = __cajeta_shadow_top;
+    // Snapshot the debug frame-chain head (9.1) — see the field's comment.
+    f->dbg_watermark = *__cajeta_dbg_top_ptr();
     *top = f;
 }
 

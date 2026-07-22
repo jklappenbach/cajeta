@@ -221,6 +221,10 @@ void DapServer::runToStopOrExit(const Emit& emit) {
                               << " depth=" << d.depth
                               << " origin=" << d.originDepth
                               << " kind=" << d.kind
+                              << " why=" << (d.reason == 0 ? "eval"
+                                           : d.reason == 1 ? "FIBER-MISMATCH"
+                                           : d.reason == 2 ? "same-line"
+                                                           : "CHAIN-MISMATCH")
                               << (d.stopped ? "  << STOP" : "") << "\n";
                 }
             }
@@ -246,6 +250,29 @@ void DapServer::runToStopOrExit(const Emit& emit) {
             return;
         }
         if (session_->isFinished()) {
+            // A step that never landed leaves its evidence here — the
+            // step-stop dump below never runs when the program runs away.
+            {
+                const auto& table = globalDbgLocTable();
+                auto trace = session_->controller().drainStepTrace();
+                if (!trace.empty())
+                    std::cerr << "[step-trace] program EXITED with a pending "
+                                 "step; last " << trace.size()
+                              << " candidates:\n";
+                for (const auto& d : trace) {
+                    const auto& loc = table.at(d.locId);
+                    std::cerr << "[step-trace] loc=" << d.locId << " "
+                              << loc.file << ":" << loc.line
+                              << " fiber=" << d.fiberId
+                              << " depth=" << d.depth
+                              << " origin=" << d.originDepth
+                              << " why=" << (d.reason == 0 ? "eval"
+                                           : d.reason == 1 ? "FIBER-MISMATCH"
+                                           : d.reason == 2 ? "same-line"
+                                                           : "CHAIN-MISMATCH")
+                              << "\n";
+                }
+            }
             exitCode_ = session_->join();
             terminated_ = true;
             haveStop_ = false;

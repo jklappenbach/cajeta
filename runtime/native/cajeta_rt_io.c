@@ -343,6 +343,21 @@ void __cajeta_throw(void* value) {
     // shadow line-stack depth to the catching try-frame's watermark before we
     // resume in its catch block. Snapshot already taken in __cajeta_trace_record.
     __cajeta_shadow_set_top((*excTop)->shadow_watermark);
+    // 9.1: same for the DEBUG frame chain — the unwound frames never ran
+    // __cajeta_dbg_frame_leave, so free every node between the current head
+    // and the catching try-frame's watermark. Only nodes owned by THIS chain
+    // are freed (node-paired ownership); the loop is bounded against a
+    // corrupt chain rather than trusting it.
+    {
+        struct cajeta_dbg_frame** dbgTop = __cajeta_dbg_top_ptr();
+        struct cajeta_dbg_frame* mark = (*excTop)->dbg_watermark;
+        int guard = 0;
+        while (*dbgTop && *dbgTop != mark && guard++ < 65536) {
+            struct cajeta_dbg_frame* f = *dbgTop;
+            *dbgTop = f->prev;
+            if (f->owner == dbgTop) free(f);
+        }
+    }
     (*excTop)->thrown_value = value;
     longjmp((*excTop)->buf, 1);
 }

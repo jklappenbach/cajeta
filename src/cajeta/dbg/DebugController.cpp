@@ -1,5 +1,7 @@
 #include "cajeta/dbg/DebugController.h"
 
+#include <iostream>
+
 // CP6f-2d: the process-global stop coordinator lives in the C runtime
 // (cajeta_runtime.c). The controller drives it: open a stop round before the
 // primary blocks so the other carriers quiesce at their safepoints/hand-off,
@@ -84,23 +86,28 @@ namespace cajeta::dbg {
         // stop once), depth per verb. An armed breakpoint at this safepoint
         // wins over the step (checked first below). No providers -> never.
         bool stepStop = false;
-        if (!entryStop && !breakpointStop && stepPending
-            && fiberId == stepFiber && depthOfFrame && lineOfLoc
-            && lineOfLoc(locId) != stepOriginLine
-            // 9.1: the candidate's chain must carry the origin frame — a
-            // foreign carrier's chain never does, whatever its fiber id.
-            && (!containsFrame || !stepOriginFrame
-                || containsFrame(frameTop, stepOriginFrame))) {
+        if (!entryStop && !breakpointStop && stepPending && depthOfFrame
+            && lineOfLoc) {
+            // Every candidate is traced with WHY it was rejected — a silent
+            // gate is how 9.1 hid (no trace at all meant no candidate ever
+            // reached evaluation).
+            int reason = 0;
+            if (fiberId != stepFiber) reason = 1;
+            else if (lineOfLoc(locId) == stepOriginLine) reason = 2;
+            else if (containsFrame && stepOriginFrame
+                     && !containsFrame(frameTop, stepOriginFrame)) reason = 3;
             const int depth = depthOfFrame(frameTop);
-            switch (stepKind) {
-                case StepKind::In:   stepStop = true; break;
-                case StepKind::Over: stepStop = depth <= stepOriginDepth; break;
-                case StepKind::Out:  stepStop = depth < stepOriginDepth; break;
+            if (reason == 0) {
+                switch (stepKind) {
+                    case StepKind::In:   stepStop = true; break;
+                    case StepKind::Over: stepStop = depth <= stepOriginDepth; break;
+                    case StepKind::Out:  stepStop = depth < stepOriginDepth; break;
+                }
             }
             if (stepTrace.size() >= 64) stepTrace.erase(stepTrace.begin());
             stepTrace.push_back(StepDecision{locId, fiberId, depth,
                                              stepOriginDepth, (int) stepKind,
-                                             stepStop});
+                                             stepStop, reason});
         }
         if (!entryStop && !breakpointStop && !stepStop) return;
 
@@ -246,6 +253,9 @@ namespace cajeta::dbg {
         stepOriginDepth = originDepth;
         stepOriginLine = originLine;
         stepOriginFrame = originFrame;
+        std::cerr << "[step-armed] kind=" << (int) kind << " fiber=" << fiberId
+                  << " originDepth=" << originDepth
+                  << " originFrame=" << originFrame << "\n";
         // Same release sequence as resume() (which we can't call here — it
         // would clear the step we just armed).
         stopped = false;
