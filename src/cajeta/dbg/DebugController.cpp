@@ -91,12 +91,22 @@ namespace cajeta::dbg {
             // Every candidate is traced with WHY it was rejected — a silent
             // gate is how 9.1 hid (no trace at all meant no candidate ever
             // reached evaluation).
+            const int depth = depthOfFrame(frameTop);
             int reason = 0;
             if (fiberId != stepFiber) reason = 1;
             else if (lineOfLoc(locId) == stepOriginLine) reason = 2;
+            // Chain identity guards against a FOREIGN chain stealing the stop
+            // — but only while we are still at or below the origin frame. A
+            // step that RETURNS PAST the origin (step-out, or step-over whose
+            // method returns) legitimately leaves that frame behind, so
+            // demanding containment there made those steps unsatisfiable: the
+            // program ran to exit and the session died (found live 2026-07-22,
+            // "stepping up crashes debug"). Same-fiber is already required,
+            // and carriers no longer impersonate fiber 0, so a shallower
+            // candidate on this fiber is genuinely our caller.
             else if (containsFrame && stepOriginFrame
+                     && depth >= stepOriginDepth
                      && !containsFrame(frameTop, stepOriginFrame)) reason = 3;
-            const int depth = depthOfFrame(frameTop);
             if (reason == 0) {
                 switch (stepKind) {
                     case StepKind::In:   stepStop = true; break;

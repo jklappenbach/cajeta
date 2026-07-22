@@ -459,3 +459,75 @@ TEST(LambdaStep, StepOverParallelPipelineLandsOnNextLine) {
     EXPECT_EQ(file, "Prog.cajeta") << "step parked in " << file << ":" << line;
     EXPECT_EQ(line, 10);
 }
+
+// Live report 2026-07-22 ("stepping up crashes debug"): step-OUT was
+// unsatisfiable — 9.1's chain-containment gate demanded the origin frame
+// still be on the chain, which returning past it never is, so the program
+// ran to exit and the session died. Pins step-out AND step-over-that-returns.
+TEST(LambdaStep, StepOutReturnsToCallerLine) {
+    static const char* kOutProg =
+        "package demo;\n"
+        "public class Prog {\n"
+        "    public static int32 main() {\n"
+        "        int32 a = Prog.inner();\n"   // line 4  <- caller line
+        "        return a + 20;\n"            // line 5
+        "    }\n"
+        "    public static int32 inner() {\n"
+        "        int32 x = 11;\n"             // line 8  <- breakpoint
+        "        int32 y = x + 11;\n"         // line 9
+        "        return y;\n"                 // line 10
+        "    }\n"
+        "}\n";
+    TempProgram p("demo", "Prog.cajeta", kOutProg);
+    DapServer srv;
+    std::vector<Json> log;
+
+    drive(srv, req(1, "initialize", Json::object()), log);
+    Json args = Json::object();
+    args["entry-method"] = "demo.Prog.main";
+    args["sourceRoot"] = p.sourceRoot();
+    drive(srv, req(2, "launch", args), log);
+    Json bpArgs = Json::object();
+    Json src = Json::object();
+    src["path"] = "Prog.cajeta";
+    bpArgs["source"] = src;
+    Json bps = Json::array();
+    Json bp = Json::object();
+    bp["line"] = 8;
+    bps.push_back(bp);
+    bpArgs["breakpoints"] = bps;
+    drive(srv, req(3, "setBreakpoints", bpArgs), log);
+    drive(srv, req(4, "configurationDone", Json::object()), log);
+    ASSERT_EQ(stoppedReason(log), "breakpoint");
+
+    // Step OUT of inner() -> back in main, at or after the call line.
+    log.clear();
+    Json stepArgs = Json::object();
+    stepArgs["threadId"] = 0;
+    drive(srv, req(5, "stepOut", stepArgs), log);
+    EXPECT_EQ(stoppedReason(log), "step") << "step-out never landed";
+
+    log.clear();
+    drive(srv, req(6, "stackTrace", Json::object()), log);
+    int line = -1;
+    std::string fn;
+    for (const auto& m : log)
+        if (m.at("type").asString() == "response" &&
+            m.at("command").asString() == "stackTrace") {
+            const Json& fr = m.at("body").at("stackFrames");
+            if (fr.size() > 0) {
+                line = fr[0].at("line").asInt();
+                fn = fr[0].at("name").asString();
+            }
+        }
+    EXPECT_NE(fn.find("main"), std::string::npos)
+        << "step-out landed in " << fn << ":" << line;
+    EXPECT_GE(line, 4);
+
+    log.clear();
+    drive(srv, req(7, "continue", Json::object()), log);
+    for (const auto& m : log)
+        if (m.at("type").asString() == "event" &&
+            m.at("event").asString() == "exited")
+            EXPECT_EQ(m.at("body").at("exitCode").asInt(), 42);
+}
