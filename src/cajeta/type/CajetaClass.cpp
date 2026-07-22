@@ -3020,7 +3020,22 @@ namespace cajeta {
             elems.push_back(structInit->getOperand(i));
         }
         if (elems.size() < 4) return;
-        elems[3] = dropFn;
+        // getOrCreateDropFunction() hands back this class's CACHED drop
+        // handle, which may live in a DIFFERENT llvm::Module than this
+        // vtable global: the drop wrapper is emitted lazily (LinkOnceODR)
+        // in whichever module first drops an instance of the class, then
+        // cached on the class. When another module compiled first and
+        // created the cached handle, patching THIS module's vtable
+        // initializer with that foreign function produces invalid IR —
+        // "Global is referenced in a different module" — which crashes the
+        // bitcode writer (found cold-building cajeta-http: RequestBodyChannel
+        // drops a RequestBodyStream field, caching the drop in its module;
+        // RequestBodyStream's own vtable then referenced that foreign handle).
+        // Localize the drop to the vtable's own module — an extern decl the
+        // link/merge step resolves to the single ODR definition.
+        llvm::Function* localDrop = CajetaModule::ensureFunctionInModule(
+            vtGlobal->getParent(), dropFn);
+        elems[3] = localDrop ? (llvm::Constant*) localDrop : (llvm::Constant*) dropFn;
         vtGlobal->setInitializer(
             llvm::ConstantStruct::get(vtType,
                 llvm::ArrayRef<llvm::Constant*>(elems)));
