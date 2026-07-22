@@ -1,0 +1,40 @@
+package cajeta.nucleo.frame;
+
+/**
+ * `Table<T>` — the typed dataframe (nucleo-frame spec §2): a set of columns
+ * whose names and physical types derive at compile time from the fields of
+ * the **record** `T`, the table's schema. The record is a type-level
+ * descriptor — a `Table<T>` never holds row objects; each field becomes one
+ * column with the mapped physical:
+ *
+ *   float64 / float32 / int8..int64 / uint8..uint64  ->  `Column<that>`
+ *   `Instant`                                        ->  `Column<int64>` (epoch-nanos)
+ *   `Utf8`                                           ->  `StringColumn` (utf8)
+ *   `@Nullable` on a mappable field                  ->  `NullableColumn<that>`
+ *
+ * A non-record schema argument, or a field with no physical mapping, is a
+ * named compile error (`CAJETA_ERROR_FRAME_SCHEMA` /
+ * `CAJETA_ERROR_FRAME_UNMAPPED_FIELD`).
+ *
+ * The per-schema surface is synthesized at instantiation (source-synthesis
+ * facility): one public typed accessor field per column (`ticks.price` — a
+ * typo fails the compile), a constructor taking the columns in schema order
+ * (adopting them zero-copy after a loud row-length check), and the schema
+ * introspection methods `colCount` / `colNameAt` / `colTypeAt` /
+ * `colNullableAt`.
+ *
+ * ```cajeta
+ * record Tick { Instant ts; float64 price; float64 size; Utf8 venue; }
+ * Table<Tick> ticks = heap Table<Tick>(tsCol, priceCol, sizeCol, venueCol);
+ * float64 p0 = ticks.price.get(0);
+ * int64 n = ticks.rowCount();
+ * ```
+ */
+public class Table<T> {
+    int64 rows;
+
+    /** Number of rows — the shared length of every column. */
+    public int64 rowCount() {
+        return this.rows;
+    }
+}

@@ -398,44 +398,194 @@ namespace cajeta::synth {
             return r;
         });
 
-        // Table<T>: a member, instantiation-time synthesizer (spec §3.4, the
-        // 2x2's member/instantiation-time cell). On a concrete `Table<Tick>`,
-        // reflect the record type argument's fields and inject one typed column
-        // accessor per field — the direct downstream consumer of the
-        // T.class-in-template fix (records 7.1.2). Self-selects on the
-        // instantiation of a template named `Table` with a single record arg;
-        // the production binding is `dev.cajeta.nucleo.frame.Table`, but the
-        // Unit-5 shell is a test-local stand-in (a reference class holding one
-        // `T sample` row), so the gate is name + record-arg, package-agnostic.
-        // Each accessor projects its field off `sample`; a non-record arg (no
-        // fields to reflect) or a wrong arity declines. Determinism/memoization
-        // rides the instantiation cache — this fires once per monomorphization.
+        // nucleo-frame U3 — the PRODUCTION Table<T> member synthesizer
+        // (frame spec §2, §3.1; plan 3.2.2 — the U5 test-shell retarget).
+        // Keyed on `cajeta.nucleo.frame.Table` instantiations only. Per
+        // schema-record field it injects, in layout order (inherited fields
+        // first — the prefix `Table<? extends T>` relies on):
+        //   - a public typed accessor FIELD with the mapped physical column
+        //     type (`ticks.price` — a typo fails the compile);
+        //   - a constructor taking the columns in schema order (`#` owned —
+        //     zero-copy adoption) with a loud row-length check;
+        //   - the introspection methods colCount/colNameAt/colTypeAt/
+        //     colNullableAt over compile-time schema facts.
+        // Physical mapping (plan 3.2.3): primitives -> Column<that>;
+        // Instant -> Column<int64> (epoch-nanos); Utf8 -> StringColumn
+        // (utf8); @Nullable on a mappable primitive -> NullableColumn.
+        // A non-record schema arg is CAJETA_ERROR_FRAME_SCHEMA; a field
+        // with no mapping is CAJETA_ERROR_FRAME_UNMAPPED_FIELD.
+        // `Table<? extends R>` handles synthesize the accessor surface FROM
+        // THE BOUND `R` (fields + introspection, no constructor): every
+        // `Table<R' extends R>` lays out `R`'s columns as its field prefix
+        // (inherited-first enumeration below), so the covariant reads are
+        // sound. Unbounded `Table<?>` declines — no schema, no accessors.
+        // Determinism/memoization rides the instantiation cache — this
+        // fires once per monomorphization.
         reg.registerMember("table",
                 [](const SynthesisContext& c) -> std::optional<MemberSynthesisResult> {
             auto structure = c.parent;
             if (!structure || !structure->isInstantiation()) return std::nullopt;
             auto origin = structure->getTemplateOrigin();
             if (!origin || !origin->getQName()
-                    || origin->getQName()->getTypeName() != "Table") {
+                    || origin->getQName()->toCanonical()
+                        != "cajeta.nucleo.frame.Table") {
                 return std::nullopt;
             }
             const auto& args = structure->getTypeArguments();
-            if (args.size() != 1) return std::nullopt;
-            auto record = std::dynamic_pointer_cast<CajetaClass>(args[0]);
-            if (!record || !record->isRecordType()) return std::nullopt;
-            std::string frag = "{ ";
-            for (auto& prop : record->getPropertyList()) {
-                if (!prop || prop->isStatic()) continue;
-                auto ft = prop->getType();
-                if (!ft || !ft->getQName()) continue;
-                const std::string typeName = ft->getQName()->getTypeName();
-                const std::string fieldName = prop->getName();
-                frag += "public " + typeName + " " + fieldName
-                    + "() { return this.sample." + fieldName + "; } ";
+            if (args.size() != 1 || !args[0]) return std::nullopt;
+            auto arg = args[0];
+            bool boundedHandle = false;
+            if (arg->isWildcard()) {
+                if (arg->wildcardKind() != CajetaType::WildcardKind::Extends) {
+                    return std::nullopt;   // Table<?> / super-bound: no schema
+                }
+                arg = arg->wildcardBound();
+                if (!arg) return std::nullopt;
+                boundedHandle = true;
             }
+            auto record = std::dynamic_pointer_cast<CajetaClass>(arg);
+            if ((arg->getTypeFlags() & PRIMITIVE_FLAG) != 0
+                    || (record && !record->isRecordType())) {
+                throw Exception(
+                    "Table<T>'s schema argument must be a record (the "
+                    "type-level column descriptor); '" + arg->toCanonical()
+                        + "' is not a record",
+                    "CAJETA_ERROR_FRAME_SCHEMA");
+            }
+            if (!record) return std::nullopt;  // type variable / opaque handle
+
+            // Schema fields in LAYOUT order: inherited (supers-first,
+            // recursively) then own — `Table<? extends T>` reads the shared
+            // column-field prefix, so accessor order must mirror it.
+            std::vector<StructurePropertyPtr> fields;
+            std::function<void(CajetaClassPtr)> collect =
+                [&](CajetaClassPtr k) {
+                    if (!k) return;
+                    for (auto& s : k->getSuperClasses()) collect(s);
+                    for (auto& p : k->getPropertyList()) {
+                        if (p && !p->isStatic()) fields.push_back(p);
+                    }
+                };
+            collect(record);
+
+            const std::string schema = record->getQName()->toCanonical();
+            struct Col {
+                std::string name;      // record field / accessor name
+                std::string colType;   // Column<float64> / StringColumn / ...
+                std::string phys;      // physical name for colTypeAt
+                bool nullable;
+            };
+            std::vector<Col> cols;
+            for (auto& prop : fields) {
+                const std::string fieldName = prop->getName();
+                if (fieldName == "rows") {
+                    throw Exception(
+                        "Table<" + schema + ">: schema field 'rows' collides "
+                        "with Table's row-count member — rename the field",
+                        "CAJETA_ERROR_FRAME_SCHEMA");
+                }
+                auto ft = prop->getType();
+                const std::string tn = (ft && ft->getQName())
+                    ? ft->getQName()->getTypeName() : std::string();
+                const bool nullable = prop->findAnnotation("Nullable") != nullptr;
+                static const std::set<std::string> mappedPrims = {
+                    "int8", "int16", "int32", "int64",
+                    "uint8", "uint16", "uint32", "uint64",
+                    "float32", "float64"};
+                std::string phys;
+                if (mappedPrims.count(tn)) {
+                    phys = tn;
+                } else if (tn == "Instant") {
+                    phys = "int64";     // epoch-nanos
+                } else if (tn == "Utf8") {
+                    phys = "utf8";
+                } else {
+                    throw Exception(
+                        "Table<" + schema + "> field '" + fieldName
+                            + "': type '"
+                            + (ft ? ft->toCanonical() : std::string("<unresolved>"))
+                            + "' has no column mapping (mappable: numeric "
+                              "primitives, Instant, Utf8)",
+                        "CAJETA_ERROR_FRAME_UNMAPPED_FIELD");
+                }
+                if (phys == "utf8") {
+                    if (nullable) {
+                        throw Exception(
+                            "Table<" + schema + "> field '" + fieldName
+                                + "': @Nullable Utf8 columns are not supported "
+                                  "yet (no nullable utf8 physical)",
+                            "CAJETA_ERROR_FRAME_UNMAPPED_FIELD");
+                    }
+                    cols.push_back({fieldName, "StringColumn", phys, false});
+                } else if (nullable) {
+                    cols.push_back({fieldName,
+                        "NullableColumn<" + phys + ">", phys, true});
+                } else {
+                    cols.push_back({fieldName,
+                        "Column<" + phys + ">", phys, false});
+                }
+            }
+
+            std::string frag = "{\n";
+            for (auto& col : cols) {
+                frag += "    public " + col.colType + " " + col.name + ";\n";
+            }
+            // The synthesized constructor IS the fromColumns schema check:
+            // arity/type mismatches fail overload resolution at the call
+            // site; the row-length check fails loud; `#=` adopts zero-copy.
+            // Bounded-wildcard handles get no constructor — a `? extends`
+            // handle is read-only over the bound's column prefix, never
+            // constructed directly.
+            if (!boundedHandle) {
+                frag += "    public Table(";
+                for (std::size_t i = 0; i < cols.size(); ++i) {
+                    if (i) frag += ", ";
+                    frag += "#" + cols[i].colType + " " + cols[i].name;
+                }
+                frag += ") {\n";
+                frag += "        int64 __t_rows = " + cols[0].name + ".size();\n";
+                for (std::size_t i = 1; i < cols.size(); ++i) {
+                    frag += "        if (" + cols[i].name + ".size() != __t_rows) {\n"
+                        "            throw heap FrameException(\"Table<" + schema
+                        + ">: column '" + cols[i].name
+                        + "' row length does not match '" + cols[0].name + "'\");\n"
+                        "        }\n";
+                }
+                for (auto& col : cols) {
+                    frag += "        this." + col.name + " #= " + col.name + ";\n";
+                }
+                frag += "        this.rows = __t_rows;\n";
+                frag += "    }\n";
+            }
+            frag += "    public int32 colCount() { return "
+                + std::to_string(cols.size()) + "; }\n";
+            auto emitAt = [&](const std::string& mname, const std::string& retType,
+                             auto valueOf) {
+                frag += "    public " + retType + " " + mname + "(int32 i) {\n";
+                for (std::size_t i = 0; i < cols.size(); ++i) {
+                    frag += "        if (i == " + std::to_string(i)
+                        + ") { return " + valueOf(cols[i]) + "; }\n";
+                }
+                frag += "        throw heap FrameException(\"Table<" + schema
+                    + ">." + mname + ": column ordinal out of range\");\n"
+                    "    }\n";
+            };
+            emitAt("colNameAt", "String",
+                [](const Col& col) { return "\"" + col.name + "\""; });
+            emitAt("colTypeAt", "String",
+                [](const Col& col) { return "\"" + col.phys + "\""; });
+            emitAt("colNullableAt", "boolean",
+                [](const Col& col) {
+                    return std::string(col.nullable ? "true" : "false");
+                });
             frag += "}";
+
             MemberSynthesisResult r;
             r.classBodyFragment = std::move(frag);
+            r.imports = {{"Column", "cajeta.nucleo.column"},
+                         {"NullableColumn", "cajeta.nucleo.column"},
+                         {"StringColumn", "cajeta.nucleo.column"},
+                         {"FrameException", "cajeta.nucleo.frame"}};
             return r;
         });
 
@@ -467,8 +617,9 @@ namespace cajeta::synth {
             // Typed builders: each field becomes a method returning the
             // field-typed column-reference NODE (the U1 1.2.2 node family).
             // float64/float32 + integers -> ColF64 v1 (a dedicated ColI64
-            // lands with the executor units); String -> ColStr; any other
-            // field type synthesizes NO builder yet (the member-accessor
+            // lands with the executor units); Utf8 (the record-legal text
+            // field; `String` kept for the U1 test shells) -> ColStr; any
+            // other field type synthesizes NO builder yet (the member-accessor
             // synthesizer still covers direct access).
             r.imports.emplace_back("ColF64", "cajeta.nucleo.frame");
             r.imports.emplace_back("ColStr", "cajeta.nucleo.frame");
@@ -487,7 +638,7 @@ namespace cajeta::synth {
                     src += "    public #ColF64 " + fieldName
                         + "() { return ColF64.colRef(" + std::to_string(ord)
                         + ", \"" + fieldName + "\"); }\n";
-                } else if (tn == "String") {
+                } else if (tn == "String" || tn == "Utf8") {
                     src += "    public #ColStr " + fieldName
                         + "() { return ColStr.colRef(" + std::to_string(ord)
                         + ", \"" + fieldName + "\"); }\n";

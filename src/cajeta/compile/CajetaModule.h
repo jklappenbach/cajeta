@@ -916,6 +916,41 @@ namespace cajeta {
             tryFinallyStack = std::move(saved);
         }
 
+        // Full per-function codegen-stack detach: tryFinally + tryCatch (lint)
+        // + loop contexts + the pending loop label. Method bodies can be
+        // generated NESTED inside another method's codegen (a method-template
+        // instantiated on-reference at its call site — Method::generateCode),
+        // and none of the enclosing function's control-flow stacks may bleed
+        // into the nested body: a `return` there would otherwise emit the
+        // CALLER's try-frame unwind (__cajeta_exc_pop with no matching push —
+        // the popped frame is the caller's live try, so its later throw is
+        // "uncaught"). The lambda path isolates tryFinally via takeTryFinally;
+        // this is the same discipline for every per-function stack at once.
+        struct FunctionCodegenStacks {
+            std::vector<std::shared_ptr<void>> tryFinally;
+            std::vector<std::vector<CajetaTypePtr>> tryCatch;
+            std::vector<LoopContext> loops;
+            std::string pendingLabel;
+        };
+        FunctionCodegenStacks takeFunctionCodegenStacks() {
+            FunctionCodegenStacks saved;
+            saved.tryFinally = std::move(tryFinallyStack);
+            saved.tryCatch = std::move(tryCatchStack);
+            saved.loops = std::move(loopContextStack);
+            saved.pendingLabel = std::move(pendingLoopLabel);
+            tryFinallyStack.clear();
+            tryCatchStack.clear();
+            loopContextStack.clear();
+            pendingLoopLabel.clear();
+            return saved;
+        }
+        void restoreFunctionCodegenStacks(FunctionCodegenStacks saved) {
+            tryFinallyStack = std::move(saved.tryFinally);
+            tryCatchStack = std::move(saved.tryCatch);
+            loopContextStack = std::move(saved.loops);
+            pendingLoopLabel = std::move(saved.pendingLabel);
+        }
+
         void processMetadata(CajetaClassPtr structure);
 
         // Parse the embedded cajeta_runtime bitcode and Linker::linkModules-merge it
