@@ -11,8 +11,8 @@
 // resolves to a placeholder the companion runner FILLS — never a hollow
 // shell, never a skip.
 //
-// SPIKE SHAPE: builder methods return field ordinals; the real expression
-// node family replaces the bodies in 1.2.2.
+// Builders return the TYPED node family (1.2.2): `c.price()` is a
+// `#ColF64` colRef carrying its schema ordinal + name.
 //
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
@@ -24,6 +24,7 @@ using cajeta_test::CajetaJit;
 namespace {
 const char* kPrefix =
     "package test;\n"
+    "import cajeta.nucleo.frame.ColF64;\n"
     "public record Tick {\n"
     "    float64 price;\n"
     "    float64 size;\n"
@@ -47,7 +48,7 @@ TEST(CompanionSynthesisTests, colsCompanionResolvesAfterInstantiation) {
         "    public static int32 run() {\n"
         "        Table<Tick> ticks = heap Table<Tick>(stack Tick(1.0, 2.0));\n"
         "        TickCols c = heap TickCols();\n"
-        "        return c.price() * 10 + c.size() + 700;\n"
+        "        return c.price().ordinal() * 10 + c.size().ordinal() + 700;\n"
         "    }\n"
         "}\n";
     auto jit = CajetaJit::compile(src, "test.T");
@@ -63,12 +64,12 @@ TEST(CompanionSynthesisTests, colsCompanionForwardReferenceFills) {
     std::string src = std::string(kPrefix) +
         "public final class T {\n"
         "    static int32 earlier(TickCols c) {\n"
-        "        return c.price() * 100 + c.size() * 10;\n"
+        "        return c.price().ordinal() * 100 + c.size().ordinal() * 10;\n"
         "    }\n"
         "    public static int32 run() {\n"
         "        Table<Tick> ticks = heap Table<Tick>(stack Tick(1.0, 2.0));\n"
         "        TickCols c = heap TickCols();\n"
-        "        return earlier(c) + c.price() * 10 + c.size() + 700;\n"
+        "        return earlier(c) + c.price().ordinal() * 10 + c.size().ordinal() + 700;\n"
         "    }\n"
         "}\n";
     auto jit = CajetaJit::compile(src, "test.T");

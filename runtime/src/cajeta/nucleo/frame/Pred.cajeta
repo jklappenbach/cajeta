@@ -1,0 +1,70 @@
+package cajeta.nucleo.frame;
+
+/**
+ * Pred — a PREDICATE node (nucleo-frame U1): a comparison over a column
+ * expression, or a logical combination of predicates. Comparisons come from
+ * the operators on {@link ColF64}/{@link ColStr}; conjunction uses `&` and
+ * `|` (short-circuit `&&`/`||` cannot build nodes — the same reason Polars
+ * spells them `&`/`|`), negation is {@link #not}.
+ *
+ * Kinds: 20 gt, 21 ge, 22 lt, 23 le, 24 eq, 25 ne (numeric, `value` holds
+ * the literal); 26 eqStr, 27 neStr (string, `strValue`); 30 and, 31 or,
+ * 32 not (children in `leftPred`/`rightPred`). Introspectable — the
+ * pushdown optimizer and the zone-map router read these fields.
+ */
+public class Pred {
+    int32 kind;
+    ColF64 operand;      // numeric comparison child (owned)
+    ColStr strOperand;   // string comparison child (owned)
+    float64 value;
+    String strValue;
+    Pred leftPred;       // logical children (owned)
+    Pred rightPred;
+
+    Pred(int32 kind, float64 value) {
+        this.kind = kind;
+        this.value = value;
+    }
+
+    static #Pred cmp(int32 kind, #ColF64 a, float64 v) {
+        Pred p = heap Pred(kind, v);
+        p.operand #= a;
+        return #p;
+    }
+
+    static #Pred cmpStr(int32 kind, #ColStr a, String v) {
+        Pred p = heap Pred(kind, 0.0);
+        p.strOperand #= a;
+        p.strValue = v;
+        return #p;
+    }
+
+    public int32 kind() { return this.kind; }
+    public ColF64 operandExpr() { return this.operand; }
+    public ColStr strOperandExpr() { return this.strOperand; }
+    public float64 value() { return this.value; }
+    public String strValue() { return this.strValue; }
+    public Pred leftPredicate() { return this.leftPred; }
+    public Pred rightPredicate() { return this.rightPred; }
+
+    /** Logical negation — a node, not an evaluation. */
+    public #Pred not() {
+        Pred p = heap Pred(32, 0.0);
+        p.leftPred = this;
+        return #p;
+    }
+
+    public static #Pred operator&(#Pred a, #Pred b) {
+        Pred p = heap Pred(30, 0.0);
+        p.leftPred #= a;
+        p.rightPred #= b;
+        return #p;
+    }
+
+    public static #Pred operator|(#Pred a, #Pred b) {
+        Pred p = heap Pred(31, 0.0);
+        p.leftPred #= a;
+        p.rightPred #= b;
+        return #p;
+    }
+}

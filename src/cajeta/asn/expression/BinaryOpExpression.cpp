@@ -1403,6 +1403,32 @@ namespace cajeta {
                     if (disp.first) {
                         return disp.second;
                     }
+                    // nucleo-frame U1 — an ORDERING comparison between a
+                    // CLASS and a NUMERIC primitive with no matching operator
+                    // override has no meaning: the builtin path would
+                    // silently compare a POINTER against the number. Fail
+                    // loud, naming the type and operator (`ColStr > 0.0` is
+                    // the canonical mis-typed-DSL case). Class-vs-class
+                    // ordering (String < String rides a downstream builtin)
+                    // and EQ/NE (pointer identity) fall through unchanged.
+                    if ((binaryOp == BINARY_OP_LT || binaryOp == BINARY_OP_LE
+                            || binaryOp == BINARY_OP_GT
+                            || binaryOp == BINARY_OP_GE)
+                            && rhsType
+                            && (rhsType->getTypeFlags() & PRIMITIVE_FLAG)
+                            && (rhsType->getTypeFlags() & NUMBER_FLAG)) {
+                        throw Exception(
+                            "no 'operator" + std::string(opSym) + "' on '"
+                                + lhsClass->getQName()->toCanonical()
+                                + "' accepts a '"
+                                + (rhsType ? rhsType->toCanonical()
+                                           : std::string("?"))
+                                + "' operand — ordering comparisons on class "
+                                  "types require an operator override "
+                                  "(pointer ordering is not a comparison)",
+                            "CAJETA_ERROR_NO_MATCHING_OVERLOAD",
+                            "", getSourceLine(), getSourceColumn());
+                    }
                 }
             }
         }

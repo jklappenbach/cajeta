@@ -464,13 +464,35 @@ namespace cajeta::synth {
             SynthesizerRegistry::CompanionSynthesisResult r;
             r.className = record->getQName()->getTypeName() + "Cols";
             r.packageName = record->getQName()->getPackageName();
-            std::string src = "public class " + r.className + " {\n"
+            // Typed builders: each field becomes a method returning the
+            // field-typed column-reference NODE (the U1 1.2.2 node family).
+            // float64/float32 + integers -> ColF64 v1 (a dedicated ColI64
+            // lands with the executor units); String -> ColStr; any other
+            // field type synthesizes NO builder yet (the member-accessor
+            // synthesizer still covers direct access).
+            std::string src = "import cajeta.nucleo.frame.ColF64;\n"
+                "import cajeta.nucleo.frame.ColStr;\n"
+                "import cajeta.nucleo.frame.Pred;\n"
+                "public class " + r.className + " {\n"
                 "    public " + r.className + "() { }\n";
             int32_t ord = 0;
             for (auto& prop : record->getPropertyList()) {
                 if (!prop || prop->isStatic()) continue;
-                src += "    public int32 " + prop->getName()
-                    + "() { return " + std::to_string(ord++) + "; }\n";
+                auto ft = prop->getType();
+                std::string tn = (ft && ft->getQName())
+                    ? ft->getQName()->getTypeName() : std::string();
+                const std::string fieldName = prop->getName();
+                if (tn == "float64" || tn == "float32" || tn == "int32"
+                        || tn == "int64" || tn == "uint32" || tn == "uint64") {
+                    src += "    public #ColF64 " + fieldName
+                        + "() { return ColF64.colRef(" + std::to_string(ord)
+                        + ", \"" + fieldName + "\"); }\n";
+                } else if (tn == "String") {
+                    src += "    public #ColStr " + fieldName
+                        + "() { return ColStr.colRef(" + std::to_string(ord)
+                        + ", \"" + fieldName + "\"); }\n";
+                }
+                ord = ord + 1;
             }
             src += "}\n";
             r.classSource = std::move(src);

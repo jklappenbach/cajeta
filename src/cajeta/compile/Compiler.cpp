@@ -701,10 +701,16 @@ namespace cajeta {
         }
         // cajeta.nucleo.nn + cajeta.nucleo.optim (the neural-net core) import
         // cajeta.math too — same lazy shape (nucleo-nn-optim plan).
-        return pkg == "cajeta.nucleo.nn"
-            || pkg.rfind("cajeta.nucleo.nn.", 0) == 0
-            || pkg == "cajeta.nucleo.optim"
-            || pkg.rfind("cajeta.nucleo.optim.", 0) == 0;
+        if (pkg == "cajeta.nucleo.nn"
+                || pkg.rfind("cajeta.nucleo.nn.", 0) == 0
+                || pkg == "cajeta.nucleo.optim"
+                || pkg.rfind("cajeta.nucleo.optim.", 0) == 0) {
+            return true;
+        }
+        // cajeta.nucleo.frame (the typed dataframe + DSL nodes) — lazy for
+        // the same reason (pulls columns/math when used).
+        return pkg == "cajeta.nucleo.frame"
+            || pkg.rfind("cajeta.nucleo.frame.", 0) == 0;
     }
 
     // compile-cache Unit 2 — the persistent stdlib-prime cache key (spec §2).

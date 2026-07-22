@@ -1,0 +1,72 @@
+package cajeta.nucleo.frame;
+
+/**
+ * ColF64 — a float64-typed column EXPRESSION node (nucleo-frame U1): a
+ * column reference, a literal, or an arithmetic combination. Built by the
+ * synthesized `<Record>Cols` builder (`c.price()` is a colRef) and composed
+ * with ordinary operators; comparisons produce {@link Pred} nodes. The tree
+ * is INTROSPECTABLE — the optimizer reads kinds/ordinals to push predicates
+ * and projections; nothing is opaque.
+ *
+ * Ownership: operators take their node operands BY OWNERSHIP (`#`) — a
+ * node tree owns its children, and a builder expression is SINGLE-USE
+ * (re-call the builder to reuse a column reference; each call is a fresh
+ * node). Kinds: 0 colRef, 1 literal, 2 add, 3 sub, 4 mul, 5 div.
+ */
+@AutoHash
+public class ColF64 {
+    int32 kind;
+    int32 ordinal;      // colRef: the schema position
+    String name;        // colRef: the column name (diagnostics, plans)
+    float64 lit;        // literal payload
+    ColF64 left;        // arithmetic children (owned)
+    ColF64 right;
+
+    ColF64(int32 kind, int32 ordinal, String name, float64 lit) {
+        this.kind = kind;
+        this.ordinal = ordinal;
+        this.name = name;
+        this.lit = lit;
+    }
+
+    /** A column reference (the synthesized builders call this). */
+    public static #ColF64 colRef(int32 ordinal, String name) {
+        return heap ColF64(0, ordinal, name, 0.0);
+    }
+
+    /** A literal node. */
+    public static #ColF64 literal(float64 v) {
+        return heap ColF64(1, -1, "", v);
+    }
+
+    static #ColF64 arith(int32 kind, #ColF64 a, #ColF64 b) {
+        ColF64 n = heap ColF64(kind, -1, "", 0.0);
+        n.left #= a;
+        n.right #= b;
+        return #n;
+    }
+
+    public int32 kind() { return this.kind; }
+    public int32 ordinal() { return this.ordinal; }
+    public String name() { return this.name; }
+    public float64 literalValue() { return this.lit; }
+    public ColF64 leftChild() { return this.left; }
+    public ColF64 rightChild() { return this.right; }
+
+    public static #ColF64 operator+(#ColF64 a, #ColF64 b) { return ColF64.arith(2, #a, #b); }
+    public static #ColF64 operator-(#ColF64 a, #ColF64 b) { return ColF64.arith(3, #a, #b); }
+    public static #ColF64 operator*(#ColF64 a, #ColF64 b) { return ColF64.arith(4, #a, #b); }
+    public static #ColF64 operator/(#ColF64 a, #ColF64 b) { return ColF64.arith(5, #a, #b); }
+
+    public static #ColF64 operator+(#ColF64 a, float64 v) { return ColF64.arith(2, #a, ColF64.literal(v)); }
+    public static #ColF64 operator-(#ColF64 a, float64 v) { return ColF64.arith(3, #a, ColF64.literal(v)); }
+    public static #ColF64 operator*(#ColF64 a, float64 v) { return ColF64.arith(4, #a, ColF64.literal(v)); }
+    public static #ColF64 operator/(#ColF64 a, float64 v) { return ColF64.arith(5, #a, ColF64.literal(v)); }
+
+    public static #Pred operator>(#ColF64 a, float64 v)  { return Pred.cmp(20, #a, v); }
+    public static #Pred operator>=(#ColF64 a, float64 v) { return Pred.cmp(21, #a, v); }
+    public static #Pred operator<(#ColF64 a, float64 v)  { return Pred.cmp(22, #a, v); }
+    public static #Pred operator<=(#ColF64 a, float64 v) { return Pred.cmp(23, #a, v); }
+    public static #Pred operator==(#ColF64 a, float64 v) { return Pred.cmp(24, #a, v); }
+    public static #Pred operator!=(#ColF64 a, float64 v) { return Pred.cmp(25, #a, v); }
+}
