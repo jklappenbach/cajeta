@@ -84,6 +84,12 @@ class CajetaDebugProcess(
                 dev.cajeta.idea.xref.CajetaSourceMountGlue.ensureStdlibMounted()
             }
 
+        // Attach console listeners BEFORE any async DAP traffic: a warm
+        // session's narration arrives within milliseconds of launch, and
+        // notifyTextAvailable before startNotify is dropped (found live
+        // 2026-07-22 — "using cached build" never showed).
+        processHandler.startNotify()
+
         try {
             // Resident lifecycle (resident-debug-server §2): the project
             // service owns ONE `cajeta dap` per project — reused across
@@ -174,7 +180,6 @@ class CajetaDebugProcess(
             processHandler.emitOutput("failed to start cajeta dap: ${e.message}\n")
             processHandler.reportTerminated(-1)
         }
-        processHandler.startNotify()
     }
 
     /**
@@ -307,7 +312,10 @@ class CajetaDebugProcess(
         processHandler.onDestroy = { ds.disconnect() }
         ds.onExited = { code -> clearDecorations(); processHandler.reportTerminated(code) }
         ds.onTerminated = { clearDecorations(); processHandler.reportTerminated(0) }
-        ds.onOutput = { text -> processHandler.emitOutput(text) }
+        ds.onOutput = { text ->
+            log.info("cajeta-out: ${text.trimEnd().take(120)}")
+            processHandler.emitOutput(text)
+        }
         ds.onClosed = { clearDecorations(); processHandler.reportTerminated(0) }
         ds.onStopped = { body ->
             val tid = body.opt("threadId")?.asInt() ?: 0

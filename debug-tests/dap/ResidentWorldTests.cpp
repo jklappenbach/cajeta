@@ -212,3 +212,84 @@ TEST(ResidentWorld, UserTypedStdlibTemplateSurvivesResidency) {
     std::vector<Json> s2 = session(srv, p, cache.dir.string(), "demo.Prog.main");
     EXPECT_EQ(exitCodeOf(s2), 42);
 }
+
+// Live report 2026-07-22: breakpoint hits but F8 does nothing in CLion.
+// Headless stepping was only ever tested NON-resident. Pin stepping through
+// a resident, cache-backed session: park at a breakpoint, `next`, expect a
+// step stop on the following line, then run out. Two sessions so the step
+// also works on a manifest-HIT session (sidecar-replayed loc table).
+TEST(ResidentWorld, StepOverWorksInResidentAndCachedSessions) {
+    static const char* kStepProg =
+        "package demo;\n"
+        "public class Prog {\n"
+        "    public static int32 main() {\n"
+        "        int32 a = 6;\n"      // line 4  <- breakpoint
+        "        int32 b = 7;\n"      // line 5  <- expected step landing
+        "        return a * b;\n"     // line 6
+        "    }\n"
+        "}\n";
+    TempProgram p("demo", "Prog.cajeta", kStepProg);
+    CacheDirFixture cache;
+    DapServer srv;
+
+    auto stepSession = [&](int firstSeq) {
+        std::vector<Json> log;
+        drive(srv, req(firstSeq, "initialize", Json::object()), log);
+        Json args = Json::object();
+        args["entry-method"] = "demo.Prog.main";
+        args["sourceRoot"] = p.sourceRoot();
+        args["cacheDir"] = cache.dir.string();
+        args["resident"] = true;
+        drive(srv, req(firstSeq + 1, "launch", args), log);
+        Json bpArgs = Json::object();
+        Json src = Json::object();
+        src["path"] = "Prog.cajeta";
+        bpArgs["source"] = src;
+        Json bps = Json::array();
+        Json bp = Json::object();
+        bp["line"] = 4;
+        bps.push_back(bp);
+        bpArgs["breakpoints"] = bps;
+        drive(srv, req(firstSeq + 2, "setBreakpoints", bpArgs), log);
+        drive(srv, req(firstSeq + 3, "configurationDone", Json::object()), log);
+
+        // Parked on line 4?
+        int stoppedCount = 0;
+        for (const auto& m : log)
+            if (m.at("type").asString() == "event" &&
+                m.at("event").asString() == "stopped") stoppedCount++;
+        EXPECT_EQ(stoppedCount, 1);
+
+        // Step over -> a `stopped` with reason "step".
+        log.clear();
+        Json stepArgs = Json::object();
+        stepArgs["threadId"] = 0;
+        drive(srv, req(firstSeq + 4, "next", stepArgs), log);
+        std::string reason;
+        for (const auto& m : log)
+            if (m.at("type").asString() == "event" &&
+                m.at("event").asString() == "stopped")
+                reason = m.at("body").at("reason").asString();
+        EXPECT_EQ(reason, "step") << "step-over did not stop";
+
+        // stackTrace shows the landing line (5).
+        log.clear();
+        drive(srv, req(firstSeq + 5, "stackTrace", Json::object()), log);
+        int line = -1;
+        for (const auto& m : log)
+            if (m.at("type").asString() == "response" &&
+                m.at("command").asString() == "stackTrace") {
+                const Json& fr = m.at("body").at("stackFrames");
+                if (fr.size() > 0) line = fr[0].at("line").asInt();
+            }
+        EXPECT_EQ(line, 5) << "step landed on the wrong line";
+
+        log.clear();
+        drive(srv, req(firstSeq + 6, "continue", Json::object()), log);
+        EXPECT_EQ(exitCodeOf(log), 42);
+        drive(srv, req(firstSeq + 7, "disconnect", Json::object()), log);
+    };
+
+    stepSession(1);    // cold resident build
+    stepSession(20);   // manifest HIT (sidecar-replayed table)
+}
