@@ -470,10 +470,10 @@ namespace cajeta::synth {
             // lands with the executor units); String -> ColStr; any other
             // field type synthesizes NO builder yet (the member-accessor
             // synthesizer still covers direct access).
-            std::string src = "import cajeta.nucleo.frame.ColF64;\n"
-                "import cajeta.nucleo.frame.ColStr;\n"
-                "import cajeta.nucleo.frame.Pred;\n"
-                "public class " + r.className + " {\n"
+            r.imports.emplace_back("ColF64", "cajeta.nucleo.frame");
+            r.imports.emplace_back("ColStr", "cajeta.nucleo.frame");
+            r.imports.emplace_back("Pred", "cajeta.nucleo.frame");
+            std::string src = "public class " + r.className + " {\n"
                 "    public " + r.className + "() { }\n";
             int32_t ord = 0;
             for (auto& prop : record->getPropertyList()) {

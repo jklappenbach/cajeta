@@ -101,6 +101,17 @@ namespace cajeta {
                         if (!existing) continue;   // non-class entry: bail
                     }
                 }
+                // The companion's type dependencies: trigger the lazy-stdlib
+                // prescan for each import's package (the user's own source
+                // may never import it) and bind the short name in the module
+                // (only-when-unbound — the member-synthesis discipline).
+                for (auto& imp : res.imports) {
+                    if (CajetaModule::stdlibImportHook) {
+                        CajetaModule::stdlibImportHook(imp.second);
+                    }
+                    cajeta::synth::injectImportIfUnbound(
+                        pModule, imp.first, imp.second);
+                }
                 std::string source = (res.packageName.empty()
                         ? std::string()
                         : ("package " + res.packageName + ";\n"))
