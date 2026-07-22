@@ -1,6 +1,8 @@
 package dev.cajeta.idea.debugger
 
+import com.intellij.execution.filters.TextConsoleBuilderFactory
 import com.intellij.execution.process.ProcessHandler
+import com.intellij.execution.ui.ExecutionConsole
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.xdebugger.XDebugProcess
@@ -60,6 +62,24 @@ class CajetaDebugProcess(
     override fun getEditorsProvider(): XDebuggerEditorsProvider = editorsProvider
 
     override fun doGetProcessHandler(): ProcessHandler = processHandler
+
+    /**
+     * Build the console AND bind it to our process handler.
+     *
+     * The platform's default createConsole() builds a console and returns it
+     * without calling attachToProcess (verified against CLion 2026.2's
+     * intellij.platform.debugger.jar), and nothing on the split-debugger
+     * session path attaches one either — so the debuggee's stdout reached the
+     * handler and rendered nowhere. Attaching through the handler also replays
+     * output emitted before the UI existed; see CajetaDebugProcessHandler.
+     */
+    override fun createConsole(): ExecutionConsole {
+        val console = TextConsoleBuilderFactory.getInstance()
+            .createBuilder(session.project)
+            .console
+        processHandler.attachConsole(console)
+        return console
+    }
 
     override fun getBreakpointHandlers(): Array<XBreakpointHandler<*>> =
         arrayOf(breakpointHandler, exceptionBreakpointHandler)
