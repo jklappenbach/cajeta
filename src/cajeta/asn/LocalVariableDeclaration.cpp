@@ -1719,8 +1719,15 @@ namespace cajeta {
             // stay deferred (CP7 defers XPU placement + move tracking).
             if (type) {
                 dbg::FieldFacetInputs facetIn;
-                facetIn.isStackField = dynamic_pointer_cast<StackField>(field) != nullptr;
-                facetIn.isHeapField  = dynamic_pointer_cast<HeapField>(field) != nullptr;
+                // The StackField/HeapField split describes the SLOT (inline
+                // value vs pointer), which for a class local is always a
+                // pointer — so `stack Point p = stack Point(3,4)` reported
+                // heap. The alloc facet describes where the INSTANCE lives, so
+                // a `stack` creator wins over the slot kind.
+                facetIn.isStackField = initIsStackAlloc
+                    || dynamic_pointer_cast<StackField>(field) != nullptr;
+                facetIn.isHeapField  = !initIsStackAlloc
+                    && dynamic_pointer_cast<HeapField>(field) != nullptr;
                 facetIn.isReference  = field->isReference();
                 facetIn.ownsDrop     = field->getDropEntry() != nullptr;
                 dbg::emitDbgLocal(module, field->getName(),

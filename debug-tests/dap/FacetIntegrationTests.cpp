@@ -75,6 +75,31 @@ const char* kProg =
     "    }\n"
     "}\n";
 
+// `stack C(...)` allocates the instance in the caller's frame, but the local's
+// slot is still a pointer, so the StackField/HeapField split — a statement about
+// the SLOT — reported `onStack` as heap in the Variables view (live report
+// 2026-07-22, tour's AllocationDemo). The facet describes the allocation site,
+// so the creator's stack flag has to win. Both creator forms are covered:
+// `stack Box(1)` (NewExpression) and `stack Box { v: 2 }` (aggregate).
+// 7        Box onStack = stack Box(1);
+// 8        Box onStackAgg = stack Box { v: 2 };
+// 9        Box onHeap = heap Box(3);
+// 10       return onStack.v + onStackAgg.v + onHeap.v;   <-- breakpoint
+const char* kStackAllocProg =
+    "package demo;\n"
+    "public class Box {\n"
+    "    int32 v;\n"
+    "    Box(int32 x) { this.v = x; }\n"
+    "}\n"
+    "public class Demo {\n"
+    "    public static int32 main() {\n"
+    "        Box onStack = stack Box(1);\n"
+    "        Box onStackAgg = stack Box { v: 2 };\n"
+    "        Box onHeap = heap Box(3);\n"
+    "        return onStack.v + onStackAgg.v + onHeap.v;\n"
+    "    }\n"
+    "}\n";
+
 // A non-primitive parameter is a borrow (the callee doesn't own it). Breakpoint
 // inside `peek` (line 8) where `b` is in scope.
 // 7    static int32 peek(Box b) {
@@ -189,6 +214,31 @@ TEST(FacetIntegration, AllAxesAtAStop) {
 
 // The borrow ownership role, exercised via a non-primitive parameter (the
 // callee borrows it; the caller keeps ownership).
+TEST(FacetIntegration, StackCreatorReportsStackAlloc) {
+    TempProgram p("demo", "Demo.cajeta", kStackAllocProg);
+    auto f = facetsAtStop(p, /*line=*/11);
+
+    std::cout << "=== facets at stop (stack alloc) ===\n";
+    for (auto& [name, fc] : f) {
+        std::cout << "  " << name << ": alloc=" << fc.alloc
+                  << " ownership=" << fc.ownership
+                  << " lifetime=" << fc.lifetime << "\n";
+    }
+
+    ASSERT_FALSE(f.empty()) << "no variables captured at the stop";
+
+    ASSERT_TRUE(f.count("onStack"));
+    EXPECT_EQ(f["onStack"].alloc, "stack");
+
+    ASSERT_TRUE(f.count("onStackAgg"));
+    EXPECT_EQ(f["onStackAgg"].alloc, "stack");
+
+    // The heap sibling must be unaffected — the fix keys off the creator, not
+    // off the class-ness of the type.
+    ASSERT_TRUE(f.count("onHeap"));
+    EXPECT_EQ(f["onHeap"].alloc, "heap");
+}
+
 TEST(FacetIntegration, BorrowParameter) {
     TempProgram p("demo", "Demo.cajeta", kBorrowProg);
     auto f = facetsAtStop(p, /*line=*/8);
