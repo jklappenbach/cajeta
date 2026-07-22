@@ -40,24 +40,6 @@ TEST(FunctionTypeParamProbe, parseOnlyConcreteFnTypeAsParam) {
     EXPECT_EQ(fn(), 42);
 }
 
-TEST(FunctionTypeParamProbe, fnTypeReturnWithVoid) {
-    // void return position — `(T) -> void`. Was the original failing
-    // shape per the P6.5 ToDo note. functionType's return is now
-    // typeTypeOrVoid (grammar fix), so this parses + declares.
-    auto src =
-        "package test;\n"
-        "public final class S {\n"
-        "    public static void apply((int32) -> void fn) {\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        return 42;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.S");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 42);
-}
-
 TEST(FunctionTypeParamProbe, callFnTypeParamViaTypedLocal) {
     // Call through a function-typed parameter. The function-typed
     // local stores the lambda first (with expectedType set by

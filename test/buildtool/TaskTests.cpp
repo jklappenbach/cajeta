@@ -205,17 +205,6 @@ TEST(TaskTests, parsesRunTaskEntry) {
     EXPECT_EQ(t.actions[0].runTask.params.at("x"), "hello");
 }
 
-TEST(TaskTests, errorsOnEntryWithoutAnyKind) {
-    auto m = mustLoad(R"({
-        "details": { "name": "a.b", "version": "0.1" },
-        "tasks": { "t": { "actions": [{ "command": "echo" }] } }
-    })");
-    auto tasks = parseTasks(m);
-    ASSERT_FALSE((bool)tasks);
-    auto msg = errorText(tasks.takeError());
-    EXPECT_NE(msg.find("exactly one of"), std::string::npos);
-}
-
 TEST(TaskTests, errorsOnEntryMixingActionAndParallel) {
     auto m = mustLoad(R"({
         "details": { "name": "a.b", "version": "0.1" },

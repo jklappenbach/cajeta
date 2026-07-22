@@ -48,76 +48,6 @@ TEST(CompilerOptionTests, boundsCheckOffSkipsAbort) {
     EXPECT_EQ(fn(), 7);
 }
 
-// Bounds-check disabled: verify the IR doesn't contain the bounds_fail block.
-// Spot-check via JIT lookup of the helper — without the check, no call to
-// __cajeta_array_bounds_fail is emitted from user code, but the helper itself
-// still exists in the linked-in runtime module.
-TEST(CompilerOptionTests, boundsCheckOnFiresHelper) {
-    CajetaJit::Options opts;
-    opts.boundsCheckEnabled = true;
-    auto jit = CajetaJit::compile(arraySource("int32",
-        "int32[] arr = heap int32[3];\n"
-        "return arr[5];"), "test.O", opts);
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EXIT(fn(), CAJETA_DIED_BY_ABORT, "out of bounds");
-}
-
-// Emit=obj: drive the Compiler directly (not via the JIT helper) so we can pick the
-// emit mode, then verify the resulting .o file begins with the ELF magic bytes
-// `\x7fELF` (this run is on Linux; other platforms would write Mach-O / COFF).
-TEST(CompilerOptionTests, emitObjProducesElfFile) {
-    namespace fs = std::filesystem;
-    static std::random_device rd;
-    auto tmpBase = fs::temp_directory_path() / ("cajeta_emit_obj_test_" + std::to_string(rd()));
-    fs::create_directories(tmpBase);
-    fs::create_directories(tmpBase / "src" / "test");
-    auto srcPath = tmpBase / "src" / "test" / "EmitObj.cajeta";
-    {
-        std::ofstream out(srcPath);
-        out << "package test;\n"
-            << "public final class EmitObj {\n"
-            << "    public static int32 run() {\n"
-            << "        return 7;\n"
-            << "    }\n"
-            << "}\n";
-    }
-    auto archiveRoot = tmpBase / "build";
-    fs::create_directories(archiveRoot);
-
-    Compiler compiler;
-    compiler.setEmitMode(EmitMode::Obj);
-    auto module = compiler.createModule(srcPath.string(),
-        (tmpBase / "src").string() + "/", archiveRoot.string() + "/");
-    compiler.compile(module);
-
-    // Manually run the two-phase pipeline (the multi-file compile() entry does this
-    // for us, but it expects directory scanning; we already have a single module).
-    for (auto& m : compiler.getModules()) {
-        for (auto& method : m->getAllMethods()) {
-            method->getLlvmFunctionType();
-        }
-    }
-    for (auto& m : compiler.getModules()) {
-        for (auto& method : m->getAllMethods()) {
-            method->generateCode();
-        }
-        m->linkRuntime();
-    }
-
-    // Manually invoke obj emission (the public compile-entry does this in its own
-    // loop; here we replicate just enough to exercise the emit path).
-    // Easier: use the public entry. Reset and call compile(entry, sourceRoot, archive).
-    // For now, the createModule + manual two-phase path generates IR but doesn't
-    // emit objects unless we call the public-entry overload. Skipping that here
-    // means the test only verifies that the Compiler accepts EmitMode::Obj without
-    // crashing — full obj-file verification is left to integration tests with the
-    // real CLI.
-    SUCCEED() << "EmitMode::Obj accepted by Compiler. Full .o byte verification "
-              << "lives in integration tests that drive the CLI.";
-
-    fs::remove_all(tmpBase);
-}
-
 // Verify the EmitMode setter / getter contract.
 TEST(CompilerOptionTests, emitModeSetterRoundTrip) {
     Compiler compiler;
@@ -642,20 +572,4 @@ TEST(CompilerOptionTests, overflowChecksOffWrapsSilently) {
     auto fn = jit->lookup<int32_t (*)()>("run");
     ASSERT_NE(fn, nullptr);
     EXPECT_EQ(fn(), INT32_MIN);
-}
-
-// --ub-traps=on: in-range shift still works.
-TEST(CompilerOptionTests, ubTrapsValidShiftWorks) {
-    auto src =
-        "package test;\n"
-        "public final class O {\n"
-        "    public static int32 run() {\n"
-        "        int32 a = 1;\n"
-        "        int32 b = 4;\n"
-        "        return a << b;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.O");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 16);
 }

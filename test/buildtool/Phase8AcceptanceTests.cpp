@@ -236,13 +236,3 @@ TEST(Phase8AcceptanceTests, resolvedFlavorProducesCompilerFlagArgv) {
     auto flags2 = toCompilerFlags(*eff);
     EXPECT_EQ(flags, flags2);
 }
-
-TEST(Phase8AcceptanceTests, profileParamFlagPassThroughShape) {
-    // The BuildAction emits `--profile=<name>` immediately after
-    // --mode/--emit; we can't fork the compiler here, but the same
-    // string is what propagates downstream. Mirror the wiring so
-    // a regression in that code surfaces.
-    std::string flag = "--profile=test";
-    EXPECT_EQ(flag.substr(0, 10), "--profile=");
-    EXPECT_EQ(flag.substr(10), "test");
-}

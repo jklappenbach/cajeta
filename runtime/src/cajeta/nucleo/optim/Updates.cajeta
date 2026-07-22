@@ -1,0 +1,69 @@
+package cajeta.nucleo.optim;
+
+import cajeta.math.Tensor;
+import cajeta.nucleo.nn.Parameter;
+
+/**
+ * Package-internal helpers shared by the optimizers: the grads-vs-params
+ * validation (fail-loud BEFORE any write, spec §5.3) and the rank-generic
+ * elementwise walk (odometer over the parameter's own shape via
+ * `getAt`/`setAt` — `get1`/`set1` are rank-1 only).
+ */
+final class Updates {
+
+    /** Throw unless `grads` matches `params` positionally: same count, and
+     *  grads[i]'s shape equals params[i]'s. Nothing is written on failure. */
+    static void validate(Parameter[] params, Tensor<float32>[] grads) {
+        if (grads.count() != params.count()) {
+            throw heap OptimizerException(
+                "step: grad count does not match the parameter collection");
+        }
+        int32 i = 0;
+        while (i < (int32) params.count()) {
+            int64[] ps = Tensor.shapeOf<float32>(params[i].get());
+            int64[] gs = Tensor.shapeOf<float32>(grads[i]);
+            if (ps.count() != gs.count()) {
+                throw heap OptimizerException(
+                    "step: grad rank does not match its parameter");
+            }
+            int32 d = 0;
+            while (d < (int32) ps.count()) {
+                if (ps[d] != gs[d]) {
+                    throw heap OptimizerException(
+                        "step: grad shape does not match its parameter");
+                }
+                d = d + 1;
+            }
+            i = i + 1;
+        }
+    }
+
+    /** `p[idx] += scale * g[idx]` for every element (odometer walk). */
+    static void axpyInto(Tensor<float32> p, Tensor<float32> g, float32 scale) {
+        int64[] shape = Tensor.shapeOf<float32>(p);
+        int32 nd = (int32) shape.count();
+        int64 n = Tensor.productOf(shape);
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            p.setAt(idx, p.getAt(idx) + scale * g.getAt(idx));
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= shape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+    }
+}

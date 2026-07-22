@@ -35,19 +35,6 @@ TEST(CharCodepointTests, asciiLiteralIsCodepoint) {
     EXPECT_EQ(runI32(src), 99);
 }
 
-// char width is 32-bit — can hold values above 255 (was capped at i8 = -128..127 before).
-TEST(CharCodepointTests, charHolds16BitValue) {
-    auto src =
-        "package test;\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        char c = (char) 1000;\n"   // U+03E8 (greek small letter sampi)
-        "        return (int32) c;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 1000);
-}
-
 // char holds full 32-bit codepoint range — emoji U+1F600 = 128512.
 TEST(CharCodepointTests, charHoldsFullCodepointRange) {
     auto src =

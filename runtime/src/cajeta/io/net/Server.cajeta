@@ -217,7 +217,16 @@ public class Server {
                 if (conn == null) {
                     break;   // listener closed by shutdown — stop accepting
                 }
-                this.dispatch(#conn);
+                // Spawn INLINE, not via dispatch(): a statement-position
+                // spawn is joined by the nearest enclosing scope frame —
+                // for this loop, the `scope { }` above, so connections
+                // run concurrently and the scope's `}` joins the stragglers
+                // at teardown. Routed through dispatch() the join would
+                // land at dispatch's OWN function-implicit scope instead,
+                // serializing the accept loop (one connection at a time —
+                // the pre-2026-07-20 behavior).
+                this.inflight.fetchAdd(1);
+                spawn serveConnection(this.handler, this.inflight, #conn);
             }
         }
         // The scope's `}` has joined every connection fiber. If a
@@ -277,11 +286,18 @@ public class Server {
      * connection onto a worker `Channel` instead, leaving the rest of the
      * core (lifecycle, accept loop, drain) untouched.
      *
-     * The `spawn` is issued from within `serve`'s `scope`, so every
-     * connection fiber is owned + joined by that scope — the
-     * structured-concurrency property the spec requires. The spawned body
-     * is the **static** [`serveConnection`](#serveConnection) worker (the
-     * per-fiber state — handler + in-flight counter + the connection — is
+     * **This method JOINS the connection fiber before returning** — a
+     * statement-position spawn is owned by the enclosing function's
+     * implicit scope, and dispatch's ends right here. That makes it a
+     * harness/manual surface: drive one connection to completion (the
+     * accept-loop tests do exactly this — but from a helper FIBER when
+     * the handler may park mid-request, or the dispatching thread wedges
+     * until the connection ends). [`serve`](#serve) does NOT route
+     * through this method: it spawns inline inside its own `scope { }`
+     * so connections overlap and the scope joins at teardown.
+     *
+     * The spawned body is the **static**
+     * [`serveConnection`](#serveConnection) worker (per-fiber state
      * passed explicitly, the
      * [`ParallelDriver`](../lang/stream/ParallelDriver.cajeta) spawn
      * convention) so the connection fiber captures no `this`.

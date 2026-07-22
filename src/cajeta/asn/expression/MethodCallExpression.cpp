@@ -24,6 +24,7 @@
 #include "cajeta/asn/Statement.h"
 #include "cajeta/transform/GradBackward.h"
 #include "cajeta/transform/VmapBatch.h"
+#include "cajeta/transform/FuseExpr.h"
 #include "cajeta/compile/Optimizer.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "cajeta/synth/SourceSynthesisParse.h"
@@ -519,12 +520,27 @@ namespace cajeta {
     static cajeta::transform::CallResolver makeCallResolver(CajetaModulePtr module) {
         CajetaClassPtr enclosing = module->getStructureStack().empty()
             ? nullptr : module->getStructureStack().back();
-        return [enclosing](const std::string& name, size_t arity)
-                -> cajeta::transform::InlineTarget {
+        return [enclosing](const std::string& recv, const std::string& name,
+                           size_t arity) -> cajeta::transform::InlineTarget {
             cajeta::transform::InlineTarget t;
-            if (!enclosing) return t;
+            // Bare call -> the enclosing class. Qualified (`Losses.mse(...)`)
+            // -> the NAMED class from the canonical map (nn U7: stdlib loss
+            // functions differentiate through). The cross-class target must
+            // be self-contained (a single return over primitives) — its own
+            // bare-name helper calls would resolve against the WRONG class,
+            // so they miss and error as unsupported, never silently misbind.
+            CajetaClassPtr host = enclosing;
+            if (!recv.empty()
+                    && !(enclosing && enclosing->getQName()
+                         && enclosing->getQName()->getTypeName() == recv)) {
+                auto& cmap = CajetaType::getCanonicalMap();
+                auto it = cmap.find(recv);
+                host = (it != cmap.end())
+                    ? dynamic_pointer_cast<CajetaClass>(it->second) : nullptr;
+            }
+            if (!host) return t;
             MethodPtr match;
-            for (auto& m : enclosing->getMethodList()) {
+            for (auto& m : host->getMethodList()) {
                 if (m && m->isStatic() && m->getName() == name
                         && m->getParameterList().size() == arity) {
                     if (match) return cajeta::transform::InlineTarget{};  // ambiguous
@@ -539,7 +555,7 @@ namespace cajeta {
             t.returnIsTensor = rc.rfind("cajeta.math.Tensor", 0) == 0
                             || rc.rfind("Tensor<", 0) == 0;
             t.returnTy = rc;
-            t.qualifiedName = enclosing->getQName()->getTypeName() + "." + name;
+            t.qualifiedName = host->getQName()->getTypeName() + "." + name;
             for (auto& p : match->getParameterList()) t.paramNames.push_back(p->getName());
             t.body = findReturnExpr(match->getBlock());
             return t;
@@ -693,11 +709,20 @@ namespace cajeta {
             auto bodyAny = visitor.visitClassBody(classDecl->classBody());
             auto classBody = std::any_cast<ClassBodyDeclarationPtr>(bodyAny);
 
+            // Emit EVERY method of the synthesized class — prototypes first,
+            // then bodies — so make() can call sibling statics (GradAll's
+            // `grads` array builder). make() itself is the transform's value.
+            std::vector<MethodPtr> synthMethods;
             for (auto& decl : classBody->getDeclarations()) {
                 if (auto md = std::dynamic_pointer_cast<MethodDeclaration>(decl)) {
-                    if (md->getMethod() && md->getMethod()->getName() == "make") {
+                    if (!md->getMethod()) continue;
+                    // Register on the wrapper's method maps (updateParent →
+                    // addMethod) so a sibling static call BY NAME inside
+                    // make()'s lambda resolves (GradAll's `grads(...)`).
+                    md->updateParent(wrapperClass);
+                    synthMethods.push_back(md->getMethod());
+                    if (md->getMethod()->getName() == "make") {
                         makeMethod = md->getMethod();
-                        break;
                     }
                 }
             }
@@ -705,11 +730,8 @@ namespace cajeta {
                 throw locErr(intrin + ": synthesized source produced no make()",
                              "CAJETA_ERROR_TRANSFORM_SYNTH_FAILED");
             }
-
-            // Emit make's prototype then body (its inner lambda + GradResult ctor
-            // emit here). Prototype first — the synthesized-method pattern.
-            makeMethod->generatePrototype();
-            makeMethod->generateCode();
+            for (auto& m : synthMethods) m->generatePrototype();
+            for (auto& m : synthMethods) m->generateCode();
             makeFn = makeMethod->getLlvmFunction();
         }
 
@@ -834,7 +856,14 @@ namespace cajeta {
         // unresolved pre-codegen; take the callee's return type off the resolver.
         if (valueTy.empty() || valueTy == "void") {
             if (auto call = std::dynamic_pointer_cast<MethodCallExpression>(bodyExpr)) {
-                auto t = resolveCall(call->getMethodCallName(),
+                std::string vrecv;
+                if (!call->getChildren().empty()) {
+                    if (auto* rid = dynamic_cast<IdentifierExpression*>(
+                            call->getChildren()[0].get())) {
+                        vrecv = rid->getTextValue();
+                    }
+                }
+                auto t = resolveCall(vrecv, call->getMethodCallName(),
                                      call->getParameters().size());
                 if (t.found && !t.returnTy.empty()) valueTy = t.returnTy;
             }
@@ -870,6 +899,174 @@ namespace cajeta {
         return emitBackwardClosure(self, module, fnType->toCanonical(), pnames,
                                    paramTys, valueTy, selTy, outputVal, gradExpr,
                                    importTensor, outResolvedType);
+    }
+
+    // nucleo-nn-optim U1 — GradAll<K>(f): one backward closure returning
+    // GradResult<V, G[]> with grads for the LEADING K parameters in argument
+    // order (params first, data args after — the functional-step convention).
+    // Bare GradAll(f) grades every parameter. v1 requires the K differentiated
+    // params to share ONE type spelling (the grads array element type); the
+    // reverse walk runs per selected param over one shared DAG build.
+    static llvm::Value* emitGradAllBackward(MethodCallExpression* self,
+                                            const std::shared_ptr<LambdaExpression>& lam,
+                                            const std::shared_ptr<CajetaFunctionType>& fnType,
+                                            CajetaModulePtr module,
+                                            CajetaTypePtr& outResolvedType) {
+        auto locErr = [&](const std::string& msg, const char* id) {
+            return Exception(msg, id, "", self->getSourceLine(), self->getSourceColumn());
+        };
+
+        const auto& pnames = lam->getParamNames();
+        const auto& ptypes = lam->getParamTypes();
+        if (pnames.empty() || pnames.size() != ptypes.size()) {
+            throw locErr("transform intrinsic 'GradAll' requires a lambda with one "
+                         "or more explicitly-typed parameters",
+                         "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        }
+
+        int64_t kSel = (int64_t) pnames.size();
+        const auto& gTypeArgs = self->getExplicitMethodTypeArgs();
+        if (!gTypeArgs.empty()) {
+            auto c = std::dynamic_pointer_cast<CajetaConstantType>(gTypeArgs[0]);
+            if (!c) {
+                throw locErr("transform intrinsic 'GradAll<...>' arg-count selector "
+                             "must be an integer constant",
+                             "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+            }
+            kSel = c->getValue();
+        }
+        if (kSel < 1 || kSel > (int64_t) pnames.size()) {
+            throw locErr("transform intrinsic 'GradAll<" + std::to_string(kSel)
+                         + ">' selects a leading-argument count out of range for "
+                         "the " + std::to_string(pnames.size())
+                         + "-parameter function (1 <= K <= arity)",
+                         "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        }
+
+        // The K differentiated params must share the same type spelling — that
+        // type is the grads array's element type.
+        for (int64_t i = 1; i < kSel; ++i) {
+            if (ptypes[i]->toCanonical() != ptypes[0]->toCanonical()) {
+                throw locErr("transform intrinsic 'GradAll<" + std::to_string(kSel)
+                             + ">': the differentiated leading parameters must "
+                             "share the same type (grads return as one array); got '"
+                             + ptypes[0]->toCanonical() + "' and '"
+                             + ptypes[i]->toCanonical() + "'",
+                             "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+            }
+        }
+
+        lam->setExpectedType(fnType);
+        lam->resolveTypes(module);
+        auto bodyExpr = std::dynamic_pointer_cast<Expression>(lam->getBody());
+        if (!bodyExpr) {
+            throw locErr("transform intrinsic 'GradAll' v1 requires an "
+                         "expression-body lambda",
+                         "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        }
+
+        auto tensorElem = [](const std::string& ty, std::string& elemOut) -> bool {
+            bool t = ty.rfind("cajeta.math.Tensor", 0) == 0
+                  || ty.rfind("Tensor<", 0) == 0;
+            elemOut = ty;
+            if (t) {
+                auto lt = ty.find('<');
+                auto gt = ty.rfind('>');
+                if (lt != std::string::npos && gt != std::string::npos && gt > lt + 1)
+                    elemOut = ty.substr(lt + 1, gt - lt - 1);
+            }
+            return t;
+        };
+        std::map<std::string, bool> paramRank;
+        for (size_t i = 0; i < pnames.size(); ++i) {
+            std::string ignore;
+            paramRank[pnames[i]] = tensorElem(ptypes[i]->toCanonical(), ignore);
+        }
+        std::string selTy = ptypes[0]->toCanonical();
+        std::string elem;
+        bool selIsTensor = tensorElem(selTy, elem);
+
+        // One reverse walk per selected param (each rebuilds the shared DAG —
+        // compile-time only; the EMITTED backward is the K grad expressions).
+        auto resolveCall = makeCallResolver(module);
+        std::string outputVal;
+        std::vector<std::string> gradExprs;
+        gradExprs.reserve((size_t) kSel);
+        for (int64_t k = 0; k < kSel; ++k) {
+            GradPieces gp = differentiateBody(self, bodyExpr.get(), pnames,
+                                              paramRank, (size_t) k, elem,
+                                              selIsTensor, resolveCall);
+            if (k == 0) outputVal = gp.valueExpr;
+            gradExprs.push_back(gp.gradExpr);
+        }
+
+        // Value type: same deduction chain as Grad (declared return, resolved
+        // body, sum/mean explicit type args, helper return, scalar fallback).
+        std::string valueTy = fnType->getReturnType()
+            ? fnType->getReturnType()->toCanonical() : std::string("void");
+        if ((valueTy.empty() || valueTy == "void") && bodyExpr->getResolvedType()) {
+            valueTy = bodyExpr->getResolvedType()->toCanonical();
+        }
+        if (valueTy.empty() || valueTy == "void") {
+            if (auto sumCall = std::dynamic_pointer_cast<MethodCallExpression>(bodyExpr)) {
+                if ((sumCall->getMethodCallName() == "sum"
+                         || sumCall->getMethodCallName() == "mean")
+                        && !sumCall->getExplicitMethodTypeArgs().empty()) {
+                    auto r = sumCall->getExplicitMethodTypeArgs().back();
+                    if (r) valueTy = r->toCanonical();
+                }
+            }
+        }
+        if (valueTy.empty() || valueTy == "void") {
+            if (auto call = std::dynamic_pointer_cast<MethodCallExpression>(bodyExpr)) {
+                std::string vrecv;
+                if (!call->getChildren().empty()) {
+                    if (auto* rid = dynamic_cast<IdentifierExpression*>(
+                            call->getChildren()[0].get())) {
+                        vrecv = rid->getTextValue();
+                    }
+                }
+                auto t = resolveCall(vrecv, call->getMethodCallName(),
+                                     call->getParameters().size());
+                if (t.found && !t.returnTy.empty()) valueTy = t.returnTy;
+            }
+        }
+        if ((valueTy.empty() || valueTy == "void") && !selIsTensor) {
+            valueTy = selTy;
+        }
+        if (valueTy.empty() || valueTy == "void") {
+            throw locErr("transform intrinsic 'GradAll': could not determine the "
+                         "value type of the differentiated function",
+                         "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        }
+
+        std::vector<std::string> paramTys;
+        paramTys.reserve(pnames.size());
+        bool importTensor = false;
+        for (size_t i = 0; i < pnames.size(); ++i) {
+            paramTys.push_back(ptypes[i]->toCanonical());
+            importTensor = importTensor || paramRank[pnames[i]];
+        }
+        for (const auto& ge : gradExprs) {
+            if (ge.find("Tensor.") != std::string::npos) importTensor = true;
+        }
+        if (outputVal.find("Tensor.") != std::string::npos) importTensor = true;
+
+        std::string seed = outputVal;
+        for (const auto& ge : gradExprs) seed += "|" + ge;
+        std::string className = "__GradAllBwd_" + cajeta::synth::deriveSynthName(
+            "gradall", fnType->toCanonical(), {seed, valueTy});
+        std::string pkg = module->getQName()->getPackageName();
+        std::string source = (pkg.empty() ? std::string() : ("package " + pkg + ";\n"))
+            + cajeta::transform::emitGradAllSource(className, pnames, paramTys,
+                                                   valueTy, selTy, outputVal,
+                                                   gradExprs, importTensor);
+        if (std::getenv("CAJETA_GRAD_DUMP")) {
+            fprintf(stderr, "=== GRADALL BACKWARD SOURCE ===\n%s\n=== END ===\n",
+                    source.c_str());
+        }
+        return synthesizeMakeClosure(self, module, className, source, "GradAll",
+                                     outResolvedType);
     }
 
     // transform-intrinsics U5 — synthesize Vmap(f)'s batched form (spec §6.1/§6.2).
@@ -1025,6 +1222,99 @@ namespace cajeta {
             fprintf(stderr, "=== VMAP(GRAD) SOURCE ===\n%s\n=== END ===\n", source.c_str());
         }
         return synthesizeMakeClosure(self, module, className, source, "Vmap",
+                                     outResolvedType);
+    }
+
+    // nucleo-expr U1 — `Fuse(f)` over an elementwise tensor expression. Walks
+    // f's body into the shared DAG, lowers every node to ELEMENT-level scalar
+    // source, and synthesizes one loop that allocates a single result tensor:
+    // the N-operators-one-kernel, no-temporaries claim (spec §3.1). Explicit
+    // force: building runs nothing; calling the returned function evaluates.
+    static llvm::Value* emitFusedExpr(MethodCallExpression* self,
+                                      const std::shared_ptr<LambdaExpression>& lam,
+                                      const std::shared_ptr<CajetaFunctionType>& fnType,
+                                      CajetaModulePtr module,
+                                      CajetaTypePtr& outResolvedType) {
+        auto locErr = [&](const std::string& msg, const char* id) {
+            return Exception(msg, id, "", self->getSourceLine(), self->getSourceColumn());
+        };
+
+        const auto& pnames = lam->getParamNames();
+        const auto& ptypes = lam->getParamTypes();
+        if (pnames.size() != 1 || ptypes.size() != 1) {
+            throw locErr("transform intrinsic 'Fuse' v1 fuses a single-parameter "
+                         "tensor expression",
+                         "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        }
+        std::string paramTy = ptypes[0]->toCanonical();
+        std::string elem;
+        {
+            auto lt = paramTy.find('<');
+            auto gt = paramTy.rfind('>');
+            bool isTensor = paramTy.rfind("cajeta.math.Tensor", 0) == 0
+                         || paramTy.rfind("Tensor<", 0) == 0;
+            if (!isTensor || lt == std::string::npos || gt == std::string::npos) {
+                throw locErr("transform intrinsic 'Fuse' v1 requires a Tensor<E> "
+                             "parameter", "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+            }
+            elem = paramTy.substr(lt + 1, gt - lt - 1);
+        }
+
+        lam->setExpectedType(fnType);
+        lam->resolveTypes(module);
+        auto bodyExpr = std::dynamic_pointer_cast<Expression>(lam->getBody());
+        if (!bodyExpr) {
+            throw locErr("transform intrinsic 'Fuse' v1 requires an expression-body "
+                         "lambda", "CAJETA_ERROR_TRANSFORM_UNSUPPORTED_BODY");
+        }
+
+        std::map<std::string, bool> paramRank;
+        paramRank[pnames[0]] = true;                 // the fused input is a tensor
+        auto resolveCall = makeCallResolver(module);
+        std::vector<cajeta::transform::AdNode> nodes;
+        std::map<std::string, size_t> paramNodeIndex;
+        std::string err;
+        if (!cajeta::transform::buildDag(bodyExpr.get(), pnames, paramRank, resolveCall,
+                                         nodes, paramNodeIndex, &err) || nodes.empty()) {
+            throw locErr("transform intrinsic 'Fuse': cannot fuse this body — " + err,
+                         "CAJETA_ERROR_TRANSFORM_NOT_FUSIBLE");
+        }
+        // U2 — a reduction at the ROOT is scalar-valued: the elementwise body
+        // fuses INTO its accumulation loop, so no output tensor exists at all.
+        // A reduction anywhere else is loop-invariant and stages to a hoisted
+        // preheader local.
+        const cajeta::transform::AdNode& root = nodes.back();
+        bool reductionRoot = cajeta::transform::isReduction(root.primitive);
+        size_t bodyIdx = reductionRoot ? root.operands[0] : nodes.size() - 1;
+
+        std::string elemErr;
+        std::vector<cajeta::transform::Hoist> hoists;
+        std::string elemSrc = cajeta::transform::elementExpr(
+            nodes, bodyIdx, "__i", &hoists, &elemErr);
+        if (elemSrc.empty()) {
+            throw locErr("transform intrinsic 'Fuse': cannot fuse this body — "
+                         + elemErr, "CAJETA_ERROR_TRANSFORM_NOT_FUSIBLE");
+        }
+        if (reductionRoot && root.primitive == "std") {
+            throw locErr("transform intrinsic 'Fuse': 'std' as the whole fused "
+                         "expression is not staged in v1 (use it inside an "
+                         "elementwise body)",
+                         "CAJETA_ERROR_TRANSFORM_NOT_FUSIBLE");
+        }
+
+        std::string className = "__Fused_" + cajeta::synth::deriveSynthName(
+            "fuse", pnames[0], {elemSrc, elem, root.primitive});
+        std::string pkg = module->getQName()->getPackageName();
+        std::string source = (pkg.empty() ? std::string() : ("package " + pkg + ";\n"))
+            + (reductionRoot
+                ? cajeta::transform::emitFusedReductionSource(
+                      className, pnames[0], elem, root.primitive, elemSrc, hoists)
+                : cajeta::transform::emitFusedSource(
+                      className, pnames[0], elem, elemSrc, hoists));
+        if (std::getenv("CAJETA_FUSE_DUMP")) {
+            fprintf(stderr, "=== FUSED SOURCE ===\n%s\n=== END ===\n", source.c_str());
+        }
+        return synthesizeMakeClosure(self, module, className, source, "Fuse",
                                      outResolvedType);
     }
 
@@ -1184,6 +1474,55 @@ namespace cajeta {
                                    /*importTensor*/ false, outResolvedType);
     }
 
+    MethodPtr MethodCallExpression::resolveArgCalleeShallow(
+            const std::shared_ptr<MethodCallExpression>& call,
+            CajetaModulePtr module) {
+        if (!call || !module) return nullptr;
+        if (auto rm = call->getResolvedMethod()) return rm;
+        CajetaClassPtr recv;
+        auto& kids = call->getChildren();
+        if (kids.empty()) {
+            if (!module->getStructureStack().empty()) {
+                recv = module->getStructureStack().back();
+            }
+        } else {
+            auto recvExpr = std::dynamic_pointer_cast<Expression>(kids.front());
+            if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(recvExpr)) {
+                if (id->getTextValue() == "this") {
+                    // `this.m()` — the receiver is the enclosing class; the
+                    // bare `this` identifier resolves only at codegen.
+                    if (!module->getStructureStack().empty()) {
+                        recv = module->getStructureStack().back();
+                    }
+                } else {
+                    recv = std::dynamic_pointer_cast<CajetaClass>(
+                        CajetaType::resolveNamed(
+                            QualifiedName::getOrCreate(id->getTextValue()),
+                            module));
+                }
+            }
+            if (!recv && recvExpr) {
+                if (!recvExpr->getResolvedType()) {
+                    try { recvExpr->resolveTypes(module); } catch (...) { }
+                }
+                recv = std::dynamic_pointer_cast<CajetaClass>(
+                    recvExpr->getResolvedType());
+            }
+        }
+        if (!recv) return nullptr;
+        MethodPtr match;
+        for (auto& mm : recv->getMethodList()) {
+            if (!mm || mm->getName() != call->getMethodCallName()) continue;
+            auto pl = mm->getParameterList();
+            size_t formalCount = pl.size();
+            if (!pl.empty() && pl.front()->getName() == "this") formalCount--;
+            if (formalCount != call->getParameters().size()) continue;
+            if (match) return nullptr;   // ambiguous overloads — stay quiet
+            match = mm;
+        }
+        return match;
+    }
+
     llvm::Value* MethodCallExpression::generateCode(CajetaModulePtr module) {
         // xref (ide-symbol-index §2): open this call site for the duration of its
         // codegen. CajetaClass::resolveMethod — the choke point every callee
@@ -1275,8 +1614,10 @@ namespace cajeta {
         // clear compile error (§2.2). U1 installs an identity placeholder (real
         // transforms: Grad U3, Vmap U5, Jit U6); Pmap is declared-but-deferred (F8).
         if (children.empty() && parameters.size() == 1
-                && (methodCallName == "Grad" || methodCallName == "Jit"
-                    || methodCallName == "Vmap" || methodCallName == "Pmap")) {
+                && (methodCallName == "Grad" || methodCallName == "GradAll"
+                    || methodCallName == "Jit"
+                    || methodCallName == "Vmap" || methodCallName == "Pmap"
+                    || methodCallName == "Fuse")) {
             // Higher-order Grad(Grad(...(f))) (3.1.6): the argument is itself a Grad
             // call, not a lambda — its resolvedType is not a function type until it
             // is transformed, so intercept BEFORE resolving argExpr and differentiate
@@ -1287,6 +1628,39 @@ namespace cajeta {
                     if (innerGrad->getMethodCallName() == "Grad") {
                         CajetaTypePtr gradType;
                         llvm::Value* g = emitNestedGrad(this, module, gradType);
+                        resolvedType = gradType;
+                        return g;
+                    }
+                    // nucleo-expr U5 — Grad(Fuse(f)): the autograd seam is "one
+                    // DAG, two consumers" (plan X8) — Fuse and Grad both walk
+                    // f's body via buildDag, one emitting the fused loop, the
+                    // other the backward. Fuse(f) is semantically f, so Grad
+                    // over it differentiates the SAME lambda the fuser walks;
+                    // no graph translation, no second recognizer path.
+                    if (innerGrad->getMethodCallName() == "Fuse"
+                            && innerGrad->getParameters().size() == 1) {
+                        auto lam = std::dynamic_pointer_cast<LambdaExpression>(
+                            innerGrad->getParameters()[0].expression);
+                        if (!lam) {
+                            throw Exception(
+                                "transform intrinsic 'Grad(Fuse(f))' requires a "
+                                "lambda literal whose body can be differentiated",
+                                "CAJETA_ERROR_TRANSFORM_NOT_SPECIALIZABLE",
+                                "", getSourceLine(), getSourceColumn());
+                        }
+                        lam->resolveTypes(module);
+                        auto fnType = std::dynamic_pointer_cast<CajetaFunctionType>(
+                            lam->getResolvedType());
+                        if (!fnType) {
+                            throw Exception(
+                                "transform intrinsic 'Grad(Fuse(f))' could not "
+                                "resolve f's function type",
+                                "CAJETA_ERROR_TRANSFORM_NOT_FUNCTION",
+                                "", getSourceLine(), getSourceColumn());
+                        }
+                        CajetaTypePtr gradType;
+                        llvm::Value* g = emitGradBackward(this, lam, fnType,
+                                                          module, gradType);
                         resolvedType = gradType;
                         return g;
                     }
@@ -1303,13 +1677,27 @@ namespace cajeta {
                 if (auto innerT = std::dynamic_pointer_cast<MethodCallExpression>(
                         parameters[0].expression)) {
                     const std::string& n = innerT->getMethodCallName();
-                    if (n == "Vmap" || n == "Grad") {
+                    if (n == "Vmap" || n == "Grad" || n == "GradAll") {
                         std::set<const llvm::Function*> before;
                         for (auto& fn : module->getLlvmModule()->functions())
                             before.insert(&fn);
                         llvm::Value* inner = innerT->generateCode(module);
                         for (auto& fn : module->getLlvmModule()->functions()) {
                             if (fn.isDeclaration() || before.count(&fn)) continue;
+                            // Only the transform's OWN synthesis (its helper
+                            // classes and their lambdas). A tensor-surface
+                            // backward also instantiates stdlib templates
+                            // (e.g. Tensor::sum) as new definitions here —
+                            // those are shared, NAME-addressed symbols, and
+                            // renaming one orphans every later call site that
+                            // looks it up by name (nucleo-expr 5.1.2).
+                            llvm::StringRef n = fn.getName();
+                            if (!n.contains("__GradBwd_")
+                                    && !n.contains("__GradAllBwd_")
+                                    && !n.contains("__VmapBatch_")
+                                    && !n.contains("__Fused_")
+                                    && !n.contains("__cajeta_lambda_"))
+                                continue;
                             cajeta::fuseFunction(fn, nullptr);
                             fn.setName("__JitFused_" + fn.getName().str());
                         }
@@ -1358,6 +1746,39 @@ namespace cajeta {
                     llvm::Value* g = emitGradBackward(this, lam, fnType, module, gradType);
                     resolvedType = gradType;
                     return g;
+                }
+                // GradAll (nucleo-nn-optim U1): one backward, leading-K grads.
+                if (methodCallName == "GradAll") {
+                    auto lam = std::dynamic_pointer_cast<LambdaExpression>(
+                        parameters[0].expression);
+                    if (!lam) {
+                        throw Exception(
+                            "transform intrinsic 'GradAll' requires a lambda literal "
+                            "whose body can be differentiated",
+                            "CAJETA_ERROR_TRANSFORM_NOT_SPECIALIZABLE",
+                            "", getSourceLine(), getSourceColumn());
+                    }
+                    CajetaTypePtr gradType;
+                    llvm::Value* g = emitGradAllBackward(this, lam, fnType, module,
+                                                         gradType);
+                    resolvedType = gradType;
+                    return g;
+                }
+                // Fuse (nucleo-expr U1): fuse f's elementwise tensor body.
+                if (methodCallName == "Fuse") {
+                    auto lam = std::dynamic_pointer_cast<LambdaExpression>(
+                        parameters[0].expression);
+                    if (!lam) {
+                        throw Exception(
+                            "transform intrinsic 'Fuse' requires a lambda literal "
+                            "whose body can be fused",
+                            "CAJETA_ERROR_TRANSFORM_NOT_SPECIALIZABLE",
+                            "", getSourceLine(), getSourceColumn());
+                    }
+                    CajetaTypePtr fuseType;
+                    llvm::Value* v = emitFusedExpr(this, lam, fnType, module, fuseType);
+                    resolvedType = fuseType;
+                    return v;
                 }
                 // Vmap (U5): batch f's body over the argument's leading axis.
                 if (methodCallName == "Vmap") {
@@ -3223,7 +3644,19 @@ namespace cajeta {
                 // an in-progress connect parks the fiber on the reactor's
                 // writable readiness, then reads SO_ERROR — a distinct control
                 // shape lowered below.
-                bool isConnectAsync = wantStream && methodCallName == "connectAsync"
+                //
+                // The trigger is the PRIVATE `connectAsyncNative` — the public
+                // `TcpStream.connectAsync` is now real cajeta code that wraps
+                // this intrinsic and maps its failure TAGS (0x200 + normalized
+                // `cajeta_net_err` ordinal, thrown as legacy IntToPtr values)
+                // into typed `NetException` subtypes via `NetErrors.fromErrno`.
+                // Before that wrapper, the raw tags reached user catch clauses
+                // directly: `catch (NetException e)` BOUND the tag as the
+                // object pointer (legacy int throws match the first clause
+                // unconditionally), so reading `e.kind` dereferenced 0x107 —
+                // the cajeta-http 1.4c retry loop was the first code to read a
+                // caught dial failure and SIGSEGV'd.
+                bool isConnectAsync = wantStream && methodCallName == "connectAsyncNative"
                                  && parameters.size() == 1;
                 bool isBind    = wantListener && methodCallName == "bind"
                                  && parameters.size() == 1;
@@ -3256,6 +3689,7 @@ namespace cajeta {
                     llvm::Function* inProgFn  = module->getRuntimeFunction("__cajeta_net_is_in_progress");
                     llvm::Function* awaitWrFn = module->getRuntimeFunction("__cajeta_net_await_writable");
                     llvm::Function* connResFn = module->getRuntimeFunction("__cajeta_net_connect_result");
+                    llvm::Function* lastErrFn = module->getRuntimeFunction("__cajeta_net_last_error");
 
                     // Resolve the SocketAddress / IpAddress llvm struct types
                     // so we can GEP the ip / family / octets / port fields.
@@ -3406,12 +3840,31 @@ namespace cajeta {
                             builder->CreateCondBr(isInProg, awaitBB, hardFailBB);
 
                             // hard connect failure (e.g. ECONNREFUSED returned
-                            // synchronously): close + throw.
+                            // synchronously): capture the normalized errno
+                            // BEFORE close() clobbers it, close, then throw the
+                            // ordinal-carrying tag (0x200 + err) for the cajeta
+                            // `connectAsync` wrapper to materialize as a typed
+                            // NetException.
                             builder->SetInsertPoint(hardFailBB);
+                            llvm::Value* hardErr = nullptr;
+                            if (lastErrFn) {
+                                hardErr = builder->CreateCall(lastErrFn, {},
+                                    "na.aconnect_lasterr");
+                            }
                             if (closeFn) builder->CreateCall(closeFn, {fd});
                             if (throwFn) {
+                                llvm::Value* tagVal;
+                                if (hardErr) {
+                                    llvm::Value* e64 = builder->CreateSExt(
+                                        hardErr, i64Ty);
+                                    tagVal = builder->CreateAdd(
+                                        llvm::ConstantInt::get(i64Ty, 0x200), e64);
+                                } else {
+                                    tagVal = llvm::ConstantInt::get(i64Ty,
+                                        0x200 + 99);   // OTHER
+                                }
                                 llvm::Value* tagPtr = builder->CreateIntToPtr(
-                                    llvm::ConstantInt::get(i64Ty, 0x106), ptrTy);
+                                    tagVal, ptrTy);
                                 builder->CreateCall(throwFn, {tagPtr});
                             }
                             builder->CreateUnreachable();
@@ -3428,12 +3881,19 @@ namespace cajeta {
                                 llvmCtx, "na.aconnect_sofail", parentFn);
                             builder->CreateCondBr(soOk, doneBB, soFailBB);
 
-                            // SO_ERROR != 0 → the connect failed after readiness.
+                            // SO_ERROR != 0 → the connect failed after
+                            // readiness. `soerr` already IS the normalized
+                            // ordinal (connect_result maps it), so encode it
+                            // into the same 0x200-based tag.
                             builder->SetInsertPoint(soFailBB);
                             if (closeFn) builder->CreateCall(closeFn, {fd});
                             if (throwFn) {
+                                llvm::Value* so64 = builder->CreateSExt(
+                                    soerr, i64Ty);
+                                llvm::Value* tagVal = builder->CreateAdd(
+                                    llvm::ConstantInt::get(i64Ty, 0x200), so64);
                                 llvm::Value* tagPtr = builder->CreateIntToPtr(
-                                    llvm::ConstantInt::get(i64Ty, 0x107), ptrTy);
+                                    tagVal, ptrTy);
                                 builder->CreateCall(throwFn, {tagPtr});
                             }
                             builder->CreateUnreachable();
@@ -6516,7 +6976,8 @@ namespace cajeta {
                 for (auto& a : sugarMatch->getAnnotationInstances()) {
                     if (!a || !a->getName()) continue;
                     const std::string& an = a->getName()->getTypeName();
-                    if (an == "Grad" || an == "Vmap" || an == "Jit")
+                    if (an == "Grad" || an == "Vmap" || an == "Jit"
+                            || an == "Fuse")
                         chain.push_back(an);
                 }
                 if (!chain.empty()) {
@@ -9380,6 +9841,48 @@ namespace cajeta {
                     auto argExpr = parameters[argIdx].expression;
                     if (dynamic_pointer_cast<MoveExpression>(argExpr)) continue;
                     if (dynamic_pointer_cast<NewExpression>(argExpr)) continue;
+                    // Borrow SHAPES the identifier-only check silently let
+                    // through (the JsonValue.asString / JsonObject.keys
+                    // corruption, dodged call-side in 65588252): a field
+                    // read, an array-element read, and a borrow-returning
+                    // call are all borrows — and when the consuming chain
+                    // ends in a @Native (which can never read the runtime
+                    // title flag), the native frees or adopts memory the
+                    // caller still owns. There is no surrender spelling for
+                    // these shapes, so the fix is a copy or an owned local.
+                    const char* borrowShape = nullptr;
+                    if (dynamic_pointer_cast<DotExpression>(argExpr)) {
+                        borrowShape = "a field read";
+                    } else if (dynamic_pointer_cast<ArrayIndexExpression>(argExpr)) {
+                        borrowShape = "an array-element read";
+                    } else if (auto argCall =
+                                   std::dynamic_pointer_cast<MethodCallExpression>(
+                                       argExpr)) {
+                        MethodPtr rm = resolveArgCalleeShallow(argCall, module);
+                        // Skip only ownership-less SCALARS: arrays carry
+                        // PRIMITIVE_FLAG in this type system but are
+                        // droppable buffers — the exact case (`int8[]`)
+                        // the consuming-native hazard is about.
+                        bool scalarReturn = rm && rm->getReturnType()
+                            && (rm->getReturnType()->getTypeFlags()
+                                & PRIMITIVE_FLAG)
+                            && !std::dynamic_pointer_cast<CajetaArray>(
+                                   rm->getReturnType());
+                        if (rm && !rm->isReturnsOwnership()
+                                && rm->getReturnType() && !scalarReturn) {
+                            borrowShape = "a call returning a borrow (no `#R`)";
+                        }
+                    }
+                    if (borrowShape) {
+                        throw Exception(
+                            "method `" + methodCallName + "` declares parameter `"
+                                + fp->getName() + "` as `#T` (ownership transfer "
+                                "required), but the argument is " + borrowShape
+                                + " — a borrow. Pass a fresh copy (`#heap ...`) "
+                                "or an owned local surrendered with `#`. "
+                                "See docs/specification/lang/OwnershipTransfer.md.",
+                            "CAJETA_ERROR_TRANSFER_REQUIRED");
+                    }
                     auto idExpr = std::dynamic_pointer_cast<IdentifierExpression>(
                         argExpr);
                     if (!idExpr) continue;

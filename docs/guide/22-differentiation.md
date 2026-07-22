@@ -59,6 +59,42 @@ public static float32 sq(float32 x) { return x * x; }
 // T.sq now has the transformed signature: batch in, per-example grads out.
 ```
 
+## Fusing tensor expressions: Fuse
+
+NumPy evaluates `(t*t + t) - t` one operator at a time, allocating a fresh
+tensor per op. `Fuse` collapses an elementwise tensor expression into **one
+loop** that allocates only the result — and `@Fuse` on a method is the
+everyday shape:
+
+```cajeta
+@Fuse
+public static Tensor<float32> activate(Tensor<float32> t) {
+    return Tensor.add<float32>(Tensor.mul<float32>(t, t), t);
+}
+// calls run one fused pass; only the result tensor is allocated
+```
+
+The explicit form yields a reusable compiled function; building it runs
+nothing — the call is the force point:
+
+```cajeta
+(Tensor<float32>) -> #Tensor<float32> g =
+    Fuse((Tensor<float32> t) -> Tensor.add<float32>(Tensor.mul<float32>(t, t), t));
+Tensor<float32> r = g(x);
+```
+
+Reductions (`Tensor.sum` / `mean` / `std`) stage as their own pass and the
+elementwise tail fuses against their result, so the standardize shape
+`(t - mean(t)) / std(t)` runs as its reduction stages plus one fused loop.
+
+Fusion meets differentiation through one seam: `Grad(Fuse(f))` — or the
+`@Grad @Fuse` stack — differentiates the fused expression. Both transforms
+walk the same expression DAG, so the gradient is identical to the unfused
+form's, the backward is ordinary IR (`Jit` fuses it like any other function),
+and an expression that is never differentiated carries no autograd machinery
+at all. A body that cannot fuse is a named, located compile error
+(`CAJETA_ERROR_TRANSFORM_NOT_FUSIBLE`), never a silent eager fallback.
+
 ## Eager: the Tape
 
 When control flow depends on runtime data, record it:
@@ -94,4 +130,4 @@ gradients.
 | Use for | hot training steps, kernels | prototypes, dynamic models, debugging |
 
 Reference: [Transforms](../stdlib/nucleo/Transforms.md),
-[Tape](../stdlib/nucleo/Tape.md).
+[Fuse](../stdlib/nucleo/Fuse.md), [Tape](../stdlib/nucleo/Tape.md).

@@ -11,6 +11,13 @@
 > (the *how*) are deferred as `> **TBD (plan-time):**` markers and collected in §10,
 > to be resolved when this spec is turned into a plan. Outline-numbered for
 > addressability.
+>
+> **Plan-time resolutions (2026-07-20):** recorded in `agents/cajeta/nucleo/
+> nucleo-column-plan.md` §"Plan-time resolutions". One spelling amendment: the
+> language has no `T?` type syntax, so the §3 type distinction is spelled
+> **`Column<T>` vs `NullableColumn<T>`** (developer-decided 2026-07-20); read
+> `Column<T?>` below as `NullableColumn<T>`. The requirement itself — nullability
+> as a type distinction with different physical footprints — is unchanged.
 
 ## 1. Definition
 

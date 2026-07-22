@@ -44,10 +44,22 @@ namespace cajeta {
             static const VjpRegistry registry = [] {
                 VjpRegistry r;
 
-                // c = a + b  ->  a_bar += g, b_bar += g (surface-independent).
+                // c = a + b  ->  a_bar += sumTo(g, a), b_bar += sumTo(g, b).
+                // The forward BROADCASTS (numpy right-aligned), so each
+                // operand's cotangent reduces back to that operand's own
+                // shape — a [B,O]+[O] bias add hands the bias a batch-summed
+                // [O] grad, not a [B,O] one (nucleo-nn-optim U4). Same-shape
+                // operands pass through as a fresh copy inside sumTo. Scalars
+                // keep the pass-through.
                 r.add({"add", 2,
-                    [](const std::string& g, const std::vector<std::string>&,
-                       const GradSurface&) {
+                    [](const std::string& g, const std::vector<std::string>& o,
+                       const GradSurface& s) {
+                        if (s.tensor) {
+                            std::string e = "<" + s.elem + ">";
+                            return std::vector<std::string>{
+                                "Tensor.sumTo" + e + "(" + g + ", " + o[0] + ")",
+                                "Tensor.sumTo" + e + "(" + g + ", " + o[1] + ")"};
+                        }
                         return std::vector<std::string>{g, g};
                     }});
 
@@ -65,14 +77,19 @@ namespace cajeta {
                                                         g + " * " + o[0]};
                     }});
 
-                // c = a - b  ->  a_bar += g, b_bar += -g.
+                // c = a - b  ->  a_bar += sumTo(g, a), b_bar += sumTo(-g, b)
+                // (broadcast-aware like `add`; scalars keep the pass-through).
                 r.add({"sub", 2,
-                    [](const std::string& g, const std::vector<std::string>&,
+                    [](const std::string& g, const std::vector<std::string>& o,
                        const GradSurface& s) {
-                        std::string neg = s.tensor
-                            ? ("Tensor.mulScalar<" + s.elem + ">(" + g + ", -1.0f)")
-                            : ("-(" + g + ")");
-                        return std::vector<std::string>{g, neg};
+                        if (s.tensor) {
+                            std::string e = "<" + s.elem + ">";
+                            return std::vector<std::string>{
+                                "Tensor.sumTo" + e + "(" + g + ", " + o[0] + ")",
+                                "Tensor.sumTo" + e + "(Tensor.mulScalar" + e
+                                    + "(" + g + ", -1.0f), " + o[1] + ")"};
+                        }
+                        return std::vector<std::string>{g, "-(" + g + ")"};
                     }});
 
                 // c = -a  ->  a_bar += -g.
@@ -174,6 +191,22 @@ namespace cajeta {
                         }
                         return std::vector<std::string>{
                             "(" + g + ") / (2.0f * Math.sqrt(" + o[0] + "))"};
+                    }});
+
+                // nucleo-nn-optim U1 (1.2.3) — c = relu(a) -> a_bar += g * (a > 0).
+                // The mask helper is NOT differentiable (a.e. constant), so
+                // second-order Grad through relu fails loud on it — recorded.
+                r.add({"relu", 1,
+                    [](const std::string& g, const std::vector<std::string>& o,
+                       const GradSurface& s) {
+                        if (s.tensor) {
+                            std::string e = "<" + s.elem + ">";
+                            return std::vector<std::string>{
+                                "Tensor.mul" + e + "(" + g + ", Tensor.reluMask"
+                                    + e + "(" + o[0] + "))"};
+                        }
+                        return std::vector<std::string>{
+                            "((" + o[0] + ") > 0.0f ? (" + g + ") : 0.0f)"};
                     }});
 
                 // s = mean(a)  ->  a_bar += broadcast(g / numel(a)) — sum's rule

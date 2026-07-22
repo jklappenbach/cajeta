@@ -42,8 +42,34 @@ GradResult<float32, Tensor<float32>> r = g(x);   // r.grads == 2*x
 
 The differentiable primitive set: `+ - * /` and unary `-`, the scalar
 intrinsics `Math.exp` / `Math.log` / `Math.sqrt`, and the tensor statics
-`Tensor.{add,sub,mul,div,matmul,sum,mean,exp,log,sqrt}`. Anything outside the
-set is a **named, located compile error** — never a silently wrong gradient.
+`Tensor.{add,sub,mul,div,matmul,sum,mean,exp,log,sqrt,relu}`. Anything outside
+the set is a **named, located compile error** — never a silently wrong
+gradient. (`relu`'s gradient is the `Tensor.reluMask` step function, which is
+itself non-differentiable — second-order `Grad` through `relu` fails loud.)
+
+### GradAll — one backward, K parameters
+
+`GradAll(f)` for a scalar-valued `f : (P...) -> S` yields
+`(P...) -> GradResult<S, G[]>`: the forward value and the gradients with
+respect to **every** parameter, as an array in argument order. `GradAll<K>(f)`
+grades only the **leading K** arguments — the functional-step convention:
+parameters first, data arguments after. One call returns all the grads; this
+is the form a training step uses (grads for each weight in one invocation).
+
+```cajeta
+(Tensor<float32>, Tensor<float32>, Tensor<float32>)
+        -> GradResult<float32, Tensor<float32>[]> step =
+    GradAll<2>((Tensor<float32> w, Tensor<float32> b, Tensor<float32> x) ->
+        Tensor.sum<float32,float32>(
+            Tensor.add<float32>(Tensor.matmul<float32>(x, w), b)));
+GradResult<float32, Tensor<float32>[]> r = step(w, b, x);
+// r.grads[0] = dL/dw, r.grads[1] = dL/db — x is data, not graded
+```
+
+The K differentiated parameters must share one type (they fill one array);
+mixing `Tensor<float32>` and `float32` in the leading K is a named compile
+error, as are `K < 1` and `K > arity`. `Jit(GradAll<K>(f))` fuses; `@NoGrad`
+helpers are constants, exactly as under `Grad`.
 
 - Gradients are explicit return values. Calling `g` twice gives two
   independent results; there is no `.grad` accumulator and no `zero_grad`.

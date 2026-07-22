@@ -1,0 +1,227 @@
+package cajeta.nucleo.column;
+
+import cajeta.math.DType;
+
+/**
+ * `NullableColumn<T>` — the nullable half of the §3 type distinction
+ * (nucleo-column-spec): a separable validity bitmap (1 bit per element,
+ * set = valid, LSB-first per Arrow) beside a value buffer whose LAYOUT is
+ * identical to the non-null {@link Column}'s. A missing element is a real
+ * absence, never NaN-as-missing.
+ *
+ * Composed of two aligned columns — values (`Column<T>`) and the bitmap
+ * (`Column<uint8>`, ceil(n/8) bytes) — so 64-byte alignment, buffer
+ * addresses, and the C-Data export seam are the same machinery in both
+ * types. Values under a cleared bit keep their physical bytes (Arrow's
+ * contract: unspecified, moved verbatim).
+ *
+ * There is deliberately NO `asTensor()` here (spec 7.5, decided
+ * absent-by-type): the dense tensor substrate is reached only through the
+ * explicit materializations {@link #fillNulls} / {@link #dropNulls}, each
+ * returning an owned dense `Column<T>`.
+ */
+public class NullableColumn<T> {
+    Column<T> values;
+    Column<uint8> validity;    // bit-packed, LSB-first; ceil(len/8) bytes
+    int64 len;
+
+    /** Wrap the two buffers. Internal — use the factories. */
+    public NullableColumn(Column<T> values, Column<uint8> validity, int64 len) {
+        this.values #= values;
+        this.validity #= validity;
+        this.len = len;
+    }
+
+    /** All-null column of `n` elements (values zeroed, bitmap cleared). */
+    public static #NullableColumn<E> nulls<E>(int64 n) {
+        Column<E> vals = Column.zeros<E>(n);
+        Column<uint8> bits = Column.zeros<uint8>((n + 7) / 8);
+        return heap NullableColumn<E>(#vals, #bits, n);
+    }
+
+    /** Column of `vals` with per-element validity `valid`. */
+    public static #NullableColumn<E> of<E>(E[] vals, boolean[] valid) {
+        int64 n = (int64) vals.count();
+        NullableColumn<E> c = NullableColumn.nulls<E>(n);
+        int64 i = 0;
+        while (i < n) {
+            c.values.set(i, vals[(int32) i]);
+            if (valid[(int32) i]) {
+                c.setBit(i);
+            }
+            i = i + 1;
+        }
+        return #c;
+    }
+
+    void setBit(int64 i) {
+        int64 b = i >> 3;
+        int32 mask = 1 << ((int32) (i & 7));
+        int32 cur = (int32) this.validity.get(b);
+        if ((cur & mask) == 0) {
+            this.validity.set(b, (uint8) (cur + mask));
+        }
+    }
+
+    void clearBit(int64 i) {
+        int64 b = i >> 3;
+        int32 mask = 1 << ((int32) (i & 7));
+        int32 cur = (int32) this.validity.get(b);
+        if ((cur & mask) != 0) {
+            this.validity.set(b, (uint8) (cur - mask));
+        }
+    }
+
+    /** Logical element count. */
+    public int64 size() {
+        return this.len;
+    }
+
+    /** Whether element `i` is present (spec 3.4). */
+    public boolean isValid(int64 i) {
+        int32 cur = (int32) this.validity.get(i >> 3);
+        return (cur & (1 << ((int32) (i & 7)))) != 0;
+    }
+
+    /** The value at `i`. Meaningful when {@link #isValid}; a cleared slot
+     *  returns its physical bytes (unspecified content, per Arrow). */
+    public T get(int64 i) {
+        return this.values.get(i);
+    }
+
+    /** Write `v` at `i` and mark it valid. */
+    public void set(int64 i, T v) {
+        this.values.set(i, v);
+        this.setBit(i);
+    }
+
+    /** Mark element `i` null (its physical value bytes are left as-is). */
+    public void setNull(int64 i) {
+        this.clearBit(i);
+    }
+
+    /** Dense copy with every null replaced by `v` (spec 7.5's explicit route). */
+    public #Column<T> fillNulls(T v) {
+        Column<T> out = Column.zeros<T>(this.len);
+        int64 i = 0;
+        while (i < this.len) {
+            if (this.isValid(i)) {
+                out.set(i, this.values.get(i));
+            } else {
+                out.set(i, v);
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** Dense copy of the valid elements, order kept. */
+    public #Column<T> dropNulls() {
+        int64 kept = 0;
+        int64 i = 0;
+        while (i < this.len) {
+            if (this.isValid(i)) {
+                kept = kept + 1;
+            }
+            i = i + 1;
+        }
+        Column<T> out = Column.zeros<T>(kept);
+        int64 o = 0;
+        i = 0;
+        while (i < this.len) {
+            if (this.isValid(i)) {
+                out.set(o, this.values.get(i));
+                o = o + 1;
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** Data address of value element 0 (interop/alignment; spec §6). */
+    public int64 dataAddress() {
+        return this.values.dataAddress();
+    }
+
+    /** Data address of the validity bitmap (interop/alignment; spec §6). */
+    public int64 validityAddress() {
+        return this.validity.dataAddress();
+    }
+
+    /**
+     * The nullable import airlock (spec 3.5, 4.2): an array WITH a validity
+     * bitmap wraps ZERO-COPY as a `NullableColumn<?>` (capture via
+     * `instanceof` + cast). The DATA column carries the producer's release
+     * handles (exactly-once at drop); the validity view is release-less.
+     * An array without a bitmap belongs to {@link Column#importArrow}.
+     */
+    public static #NullableColumn<?> importArrow(int64 schemaAddr,
+                                                 int64 arrayAddr) {
+        ArrowFfi f = stack ArrowFfi();
+        int64 validity = f.readBuffer(arrayAddr, 0);
+        if (validity == 0) {
+            throw heap ColumnTypeException(
+                "array carries no validity bitmap - import it with "
+                + "Column.importArrow");
+        }
+        if (f.readOffset(arrayAddr) != 0) {
+            throw heap ColumnTypeException(
+                "nonzero ArrowArray.offset is not supported in v1");
+        }
+        int64 packed = f.readDtype(schemaAddr);
+        if (packed < 0) {
+            throw heap ColumnTypeException(
+                "unknown or unmodeled Arrow format for a v1 fixed-width "
+                + "column import");
+        }
+        int32 kind = (int32) (packed >> 8);
+        int32 bits = (int32) (packed & 255);
+        int64 data = f.readBuffer(arrayAddr, 1);
+        int64 n = f.readLength(arrayAddr);
+        if (kind == DType.KIND_INT) {
+            if (bits == 8)  { return NullableColumn.wrapN<int8>(data, validity, schemaAddr, arrayAddr, n); }
+            if (bits == 16) { return NullableColumn.wrapN<int16>(data, validity, schemaAddr, arrayAddr, n); }
+            if (bits == 32) { return NullableColumn.wrapN<int32>(data, validity, schemaAddr, arrayAddr, n); }
+            return NullableColumn.wrapN<int64>(data, validity, schemaAddr, arrayAddr, n);
+        }
+        if (kind == DType.KIND_UINT) {
+            if (bits == 8)  { return NullableColumn.wrapN<uint8>(data, validity, schemaAddr, arrayAddr, n); }
+            if (bits == 16) { return NullableColumn.wrapN<uint16>(data, validity, schemaAddr, arrayAddr, n); }
+            if (bits == 32) { return NullableColumn.wrapN<uint32>(data, validity, schemaAddr, arrayAddr, n); }
+            return NullableColumn.wrapN<uint64>(data, validity, schemaAddr, arrayAddr, n);
+        }
+        if (bits == 32) { return NullableColumn.wrapN<float32>(data, validity, schemaAddr, arrayAddr, n); }
+        return NullableColumn.wrapN<float64>(data, validity, schemaAddr, arrayAddr, n);
+    }
+
+    static #NullableColumn<?> wrapN<E>(int64 data, int64 validity,
+                                       int64 schemaAddr, int64 arrayAddr,
+                                       int64 n) {
+        Column<E> vals = heap Column<E>(data, schemaAddr, arrayAddr, n);
+        Column<uint8> bits = heap Column<uint8>(validity, 0, 0, (n + 7) / 8);
+        return heap NullableColumn<E>(#vals, #bits, n);
+    }
+
+    @Native("__cajeta_arrow_export_fixed")
+    private int64 exportFixed(int64 dataAddr, int64 len, int64 nullCount,
+                              int64 validityAddr, int32 kind, int32 bits);
+
+    /**
+     * The C Data Interface export (spec §4.1): buffers = [validity, data],
+     * the true null count, and the NULLABLE flag — over LIVE buffers, a
+     * zero-copy borrow exactly as {@link Column#exportArrow} (spec 4.4).
+     */
+    public int64 exportArrow() {
+        DType d = DType.of<T>();
+        int64 nulls = 0;
+        int64 i = 0;
+        while (i < this.len) {
+            if (!this.isValid(i)) {
+                nulls = nulls + 1;
+            }
+            i = i + 1;
+        }
+        return this.exportFixed(this.dataAddress(), this.len, nulls,
+                                this.validityAddress(), d.kind(), d.bits());
+    }
+}

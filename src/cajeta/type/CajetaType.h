@@ -330,6 +330,14 @@ class CajetaType : public Modifiable, public Annotatable,
 
         static CajetaTypePtr of(string typeName);
 
+        // The name-keyed core of declared-type resolution: substitution,
+        // scoped tiers (own package -> imports -> global), archive-vouched
+        // placeholder synthesis. For resolution sites that hold only a NAME
+        // (no parser context) — resolves identically to a declared type.
+        // Null when the name resolves nowhere; the caller owns the miss.
+        static CajetaTypePtr resolveNamed(QualifiedNamePtr qName,
+                                          CajetaModulePtr module);
+
         static CajetaTypePtr of(string typeName, string package);
 
         static CajetaTypePtr of(QualifiedNamePtr qName);

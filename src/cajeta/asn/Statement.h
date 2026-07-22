@@ -278,6 +278,10 @@ namespace cajeta {
     // the runtime accessor.
     struct CatchClause {
         CajetaTypePtr type;       // exception type (primitives + classes for now)
+        string typeNameText;      // the type name AS WRITTEN — re-resolved
+                                  // scoped at resolveTypes (a parse-time bare
+                                  // registry hit can miss sibling-file/archive
+                                  // classes, or land a same-named shadow)
         string variableName;       // bound name in the catch body
         BlockPtr body;
     };

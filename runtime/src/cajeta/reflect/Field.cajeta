@@ -147,6 +147,14 @@ public final class Field {
         }
     }
 
+    /** True iff this field holds an object reference (kind 6). A borrow-read
+     *  of such a field lives on the OBJECT side (`Object`-receiver natives
+     *  like nucleo-nn's `Module.fieldRef`) — a `getRef(Object)` here cannot
+     *  return a borrow (multi-reference-param borrow shapes are rejected). */
+    public boolean isReference() {
+        return fieldKind(this.rtti, this.index) == 6;
+    }
+
     public int32 getInt32(Object o) { checkAccess(); return getI32(o, this.rtti, this.index); }
     public void setInt32(Object o, int32 v) { checkAccess(); setI32(o, this.rtti, this.index, v); }
     public int64 getInt64(Object o) { checkAccess(); return getI64(o, this.rtti, this.index); }

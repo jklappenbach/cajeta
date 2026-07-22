@@ -3027,7 +3027,22 @@ namespace cajeta {
             elems.push_back(structInit->getOperand(i));
         }
         if (elems.size() < 4) return;
-        elems[3] = dropFn;
+        // getOrCreateDropFunction() hands back this class's CACHED drop
+        // handle, which may live in a DIFFERENT llvm::Module than this
+        // vtable global: the drop wrapper is emitted lazily (LinkOnceODR)
+        // in whichever module first drops an instance of the class, then
+        // cached on the class. When another module compiled first and
+        // created the cached handle, patching THIS module's vtable
+        // initializer with that foreign function produces invalid IR —
+        // "Global is referenced in a different module" — which crashes the
+        // bitcode writer (found cold-building cajeta-http: RequestBodyChannel
+        // drops a RequestBodyStream field, caching the drop in its module;
+        // RequestBodyStream's own vtable then referenced that foreign handle).
+        // Localize the drop to the vtable's own module — an extern decl the
+        // link/merge step resolves to the single ODR definition.
+        llvm::Function* localDrop = CajetaModule::ensureFunctionInModule(
+            vtGlobal->getParent(), dropFn);
+        elems[3] = localDrop ? (llvm::Constant*) localDrop : (llvm::Constant*) dropFn;
         vtGlobal->setInitializer(
             llvm::ConstantStruct::get(vtType,
                 llvm::ArrayRef<llvm::Constant*>(elems)));
@@ -5507,6 +5522,35 @@ namespace cajeta {
             auto it = canonicalMap.find(canonical);
             if (it != canonicalMap.end()) {
                 return it->second;
+            }
+            // Enum ordinal decay. An enum constant argument is typed as its
+            // ENUM (so `Verb.POST.weight()` reaches the companion class), but
+            // its VALUE is the i32 ordinal, and an `int32` formal is the
+            // documented way to receive one (`Texture2D(w, h, int32 format)`).
+            // Retry the exact lookup with enum-typed args decayed to int32
+            // BEFORE the closest-match scan — that scan scores by label, so
+            // for positional calls every candidate ties at 0 and bucket order
+            // picks the overload, which can bind the WRONG one (an enum
+            // ordinal landing in an `int64 deviceHandle` slot).
+            bool anyEnum = false;
+            vector<ParameterEntry> decayed = parameters;
+            for (auto& p : decayed) {
+                if (p.type && (p.type->getTypeFlags() & ENUM_FLAG)) {
+                    auto i32It = CajetaType::getCanonicalMap().find("int32");
+                    if (i32It != CajetaType::getCanonicalMap().end()) {
+                        p.type = i32It->second;
+                        anyEnum = true;
+                    }
+                }
+            }
+            if (anyEnum) {
+                string decayedCanonical = Method::buildCanonical(
+                    static_pointer_cast<CajetaClass>(shared_from_this()),
+                    methodName, decayed, floatingParams);
+                auto dit = canonicalMap.find(decayedCanonical);
+                if (dit != canonicalMap.end()) {
+                    return dit->second;
+                }
             }
             MethodPtr m = getClosestMethod(methodName, parameters, canonicalMap);
             if (const char* dbg = std::getenv("CAJETA_DBG_RESOLVE");

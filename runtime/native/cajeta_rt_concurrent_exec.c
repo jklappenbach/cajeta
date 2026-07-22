@@ -283,6 +283,14 @@ struct cajeta_scope_entry {
     int32_t* done_addr;
     void** exception_addr;  // points to the Throwable* slot; NULL on success
     void** fiber_slot;      // points to Task's fiber-ptr slot; runtime fills it
+    // Non-NULL iff the SCOPE owns freeing this task struct: set for a
+    // DISCARDED `spawn` statement (no local binds the Task, so no drop
+    // entry can free it — a static drop entry can't span loop
+    // iterations, which is why the old drop-entry approach joined at the
+    // innermost brace and serialized spec-legal spawn loops). The scope
+    // frees it after the join in scope_exit / scope_exit_to / the throw
+    // unwind. NULL for a bound Task (its local's drop owns the free).
+    void* owned_task;
 };
 
 struct cajeta_scope_frame {
@@ -968,7 +976,19 @@ int __cajeta_carrier_count_get(void) {
     return __cajeta_carrier_count;
 }
 
+// Defined in cajeta_xpu_dispatch.c (included after this file in the
+// single-TU build): joins the persistent CPU-kernel worker pool.
+void __cajeta_xpu_kpool_shutdown(void);
+
 void __cajeta_task_shutdown(void) {
+    // The kernel pool tears down FIRST, and unconditionally — it starts on
+    // the first fanned-out @Kernel launch, independent of whether any task
+    // carrier ever started, so it must not sit behind the workers_started
+    // early-return below. Same freed-condvar hazard as the carriers: a pool
+    // worker parked in a dying JIT module's memory corrupts a recycled futex
+    // address in a LATER module ("The futex facility returned an unexpected
+    // error code" abort).
+    __cajeta_xpu_kpool_shutdown();
     pthread_mutex_lock(&__cajeta_task_mutex);
     if (!__cajeta_task_workers_started) {
         pthread_mutex_unlock(&__cajeta_task_mutex);

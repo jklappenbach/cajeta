@@ -130,9 +130,12 @@ namespace cajeta {
                     const std::string& op = mc->getMethodCallName();
                     static const std::set<std::string> tensorOps =
                         {"mul", "add", "sub", "matmul", "sum",
-                         "exp", "log", "sqrt", "mean"};
+                         "exp", "log", "sqrt", "mean", "relu",
+                         // nucleo-expr U2 — scalar-broadcast family + std.
+                         "addScalar", "subScalar", "mulScalar", "divScalar",
+                         "std"};
                     static const std::set<std::string> tensorUnary =
-                        {"sum", "exp", "log", "sqrt", "mean"};
+                        {"sum", "exp", "log", "sqrt", "mean", "relu"};
                     // nucleo-autograd U1 — the scalar Math.* intrinsics are the
                     // scalar spelling of the widened unary primitives.
                     static const std::set<std::string> mathUnary =
@@ -155,7 +158,10 @@ namespace cajeta {
                     }
                     if (recv == "Tensor" && tensorOps.count(op)) {
                         const auto& args = mc->getParameters();
-                        size_t nOperands = tensorUnary.count(op) ? 1 : 2;
+                        // `std(t, ddof)` reduces ONE tensor (ddof is a plain
+                        // int, re-inlined verbatim, not a graph operand).
+                        size_t nOperands = (tensorUnary.count(op) || op == "std")
+                            ? 1 : 2;
                         if (args.size() < nOperands) {
                             err = "Grad: malformed Tensor." + op
                                 + " in the differentiated body";
@@ -196,9 +202,16 @@ namespace cajeta {
                             if (k) val += ", ";
                             val += nodes[operandIdx[k]].valueExpr;
                         }
+                        if (op == "std" && args.size() > 1) {
+                            if (auto* de = dynamic_cast<Expression*>(
+                                    args[1].expression.get())) {
+                                val += ", " + de->getSourceText();
+                            }
+                        }
                         val += ")";
                         // Elementwise ops stay tensor-ranked; `sum`/`mean` reduce.
-                        bool outTensor = (op != "sum" && op != "mean");
+                        bool outTensor = (op != "sum" && op != "mean"
+                                          && op != "std");
                         nodes.push_back(AdNode{val, false, op, operandIdx, outTensor});
                         return nodes.size() - 1;
                     }
@@ -209,8 +222,9 @@ namespace cajeta {
                     // binding context) so they carry the right forward source and,
                     // for the inline case, the gradient inputs.
                     const auto& args = mc->getParameters();
-                    InlineTarget t = resolveCall ? resolveCall(op, args.size())
-                                                 : InlineTarget{};
+                    InlineTarget t = resolveCall
+                        ? resolveCall(recv, op, args.size())
+                        : InlineTarget{};
                     if (t.found) {
                         std::vector<size_t> argIdx;
                         argIdx.reserve(args.size());
@@ -359,6 +373,46 @@ namespace cajeta {
                     + gr + "(" + outputValueExpr + ", " + gradExpr + ");\n"
                 "    }\n"
                 "}\n";
+        }
+
+        std::string emitGradAllSource(const std::string& className,
+                                      const std::vector<std::string>& paramNames,
+                                      const std::vector<std::string>& paramTypeNames,
+                                      const std::string& valueTypeName,
+                                      const std::string& gradTypeName,
+                                      const std::string& outputValueExpr,
+                                      const std::vector<std::string>& gradExprs,
+                                      bool importTensor) {
+            std::string gr = "GradResult<" + valueTypeName + "," + gradTypeName + "[]>";
+            std::string sig, plist, alist;
+            for (size_t i = 0; i < paramNames.size(); ++i) {
+                if (i) { sig += ","; plist += ", "; alist += ", "; }
+                sig += paramTypeNames[i];
+                plist += paramTypeNames[i] + " " + paramNames[i];
+                alist += paramNames[i];
+            }
+            std::string fnTy = "(" + sig + ") -> " + gr;
+            std::string src =
+                (importTensor ? std::string("import cajeta.math.Tensor;\n")
+                              : std::string())
+              + "import cajeta.nucleo.transform.GradResult;\n"
+                "public class " + className + " {\n"
+                "    public static " + fnTy + " make() {\n"
+                "        return (" + plist + ") -> stack "
+                    + gr + "(" + outputValueExpr + ", "
+                    "grads(" + alist + "));\n"
+                "    }\n"
+                "    public static #" + gradTypeName + "[] grads(" + plist + ") {\n"
+                "        " + gradTypeName + "[] gs = heap " + gradTypeName + "["
+                    + std::to_string(gradExprs.size()) + "];\n";
+            for (size_t k = 0; k < gradExprs.size(); ++k) {
+                src += "        gs[" + std::to_string(k) + "] = "
+                    + gradExprs[k] + ";\n";
+            }
+            src += "        return gs;\n"
+                "    }\n"
+                "}\n";
+            return src;
         }
 
     } // namespace transform

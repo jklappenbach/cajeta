@@ -4688,9 +4688,16 @@ namespace cajeta {
         // A reified runtime check is warranted (and sound) when the lhs is a
         // wildcard, or a different instantiation of the same generic base, and the
         // target is a concrete class instantiation we can name.
+        // nucleo-nn U2 widened this: a CLASS-typed lhs whose static type differs
+        // from the target is the plain downcast question (`Object o` from a
+        // reflective walk, a base-typed ref) — the static type cannot pin the
+        // answer, so it must also ask the RTTI (previously it folded to FALSE,
+        // which made `o instanceof Parameter` on an Object-typed value lie).
         auto targetClass = dynamic_pointer_cast<CajetaClass>(type);
+        bool lhsIsClass = (bool) dynamic_pointer_cast<CajetaClass>(lhsType);
         bool wantRuntime = targetClass && targetConcrete && lhsType
-            && lhsCanon != targetCanon && (lhsIsWildcard || sameBase);
+            && lhsCanon != targetCanon
+            && (lhsIsWildcard || sameBase || lhsIsClass);
 
         // Class-bounded-wildcard target `Base<? extends Bound>` (§5): not a
         // concrete instantiation (so `wantRuntime` is false), but still a real
@@ -5225,6 +5232,41 @@ namespace cajeta {
             capturedArgs.push_back(v);
             capturedArgTypes.push_back(t);
         }
+
+        // Ownership transfer for `#`-moved spawn arguments. A `spawn
+        // f(#owned)` MOVES the owned value into the spawned fiber (which
+        // becomes its sole owner and frees it when its frame exits), so the
+        // SPAWNER must relinquish it — exactly as a normal call `f(#owned)`
+        // does. Without this the spawner keeps an active drop entry for the
+        // moved local and frees it at scope exit (for a loop-body local, at
+        // each iteration's end), racing the just-spawned fiber that now
+        // owns and reads it — an intermittent use-after-free (the
+        // serve()-accept-loop crash: `spawn serveConnection(..., #conn)`
+        // with the connection fiber's reader+writer borrowing the freed
+        // conn). Mirrors MethodCallExpression's caller-side `#x` deactivation
+        // (its `deactivateIfClassLocal`), emitted here on the spawn site's
+        // (outer) builder AFTER the arg value was captured above.
+        {
+            auto scope = module->getScopeStack().isEmpty()
+                ? nullptr : module->getScopeStack().peek();
+            if (scope) {
+                for (auto& param : innerCall->getParameters()) {
+                    if (!param.callerTransferred) continue;
+                    auto idExpr = dynamic_pointer_cast<IdentifierExpression>(
+                        param.expression);
+                    if (!idExpr) continue;
+                    FieldPtr field = scope->getField(idExpr->getTextValue());
+                    if (!field) continue;
+                    if (llvm::Value* entry = field->getDropEntry()) {
+                        if (llvm::Function* mark = module->getRuntimeFunction(
+                                "__cajeta_drop_mark_inactive")) {
+                            outerBuilder->CreateCall(mark, {entry});
+                        }
+                    }
+                }
+            }
+        }
+
         // Capture the outer block AFTER arg evaluation. An arg expression
         // may have emitted its own basic blocks (e.g. ArrayIndexExpression's
         // bounds-check ok/fail split), leaving the builder positioned on a
@@ -5394,6 +5436,30 @@ namespace cajeta {
                     /*label=*/string(), loaded));
             }
             string methodNameCopy = innerCall->getMethodCallName();
+            // Transfer word (title-tracking Unit 5): a `#`-moved spawn
+            // argument transfers OWNERSHIP into the fiber, so the worker's
+            // `#`-formal must be ARMED to drop (free/close) it on exit —
+            // the fiber is the sole owner (the spawn site already
+            // deactivated the caller's own drop entry above). Without the
+            // word invokeMethod passes 0 (all-borrow) and the worker's
+            // `#conn` is never freed: e.g. Server.serveConnection's
+            // accepted TcpStream leaks and its socket stays open, wedging
+            // any peer waiting on the server to close (the ServerDeadline
+            // drip hang). Bare static call → arg index == formal index, so
+            // bit i is set for each `#`-transferred parameter i. Emitted as
+            // a compile-time constant on the trampoline's builder.
+            int64_t twBits = 0;
+            {
+                auto& sparams = innerCall->getParameters();
+                for (size_t pi = 0; pi < sparams.size() && pi < 64; ++pi) {
+                    if (sparams[pi].callerTransferred) {
+                        twBits |= ((int64_t) 1 << pi);
+                    }
+                }
+            }
+            llvm::Value* spawnTransferWord =
+                llvm::ConstantInt::get(llvm::Type::getInt64Ty(llvmCtx),
+                                       (uint64_t) twBits);
             // For static methods, thisValue is nullptr. Pass `module` as the
             // caller module so the worker call is emitted with THIS module's
             // builder/insert point (the trampoline we just built) — not the
@@ -5404,7 +5470,9 @@ namespace cajeta {
             // call into the wrong function ("instruction in another function").
             innerResult = targetClass->invokeMethod(
                 methodNameCopy, entries, /*isConstructor=*/false,
-                /*thisValue=*/nullptr, /*callerModule=*/module);
+                /*thisValue=*/nullptr, /*callerModule=*/module,
+                /*forceDirectCall=*/false, /*explicitMethodTypeArgs=*/{},
+                /*sretTarget=*/nullptr, /*transferWord=*/spawnTransferWord);
             if (innerResult) {
                 innerType = CajetaType::of(innerResult);
                 // CajetaType::of can't recover a class type from an opaque-
@@ -5538,10 +5606,16 @@ namespace cajeta {
         // scope-anchored cleanup (docs/specification/concurrent/Concurrency.md § detach semantics).
         // The Task wrapper leaks for the process lifetime; the body's
         // own locals still drop normally on the carrier-side chain.
-        if (!detachMode) {
+        if (!detachMode && !discardedMode) {
             // Pick the push variant + entry size based on the CompilerFlags
             // (docs/CompilerModes.md). Mirrors the LVD path's choice
             // so the chain has uniformly-shaped entries within a build.
+            // discardedMode skips this too: a statement-position spawn's
+            // Task is scope-owned (registered below via scope_register_owned
+            // — the runtime scope frame joins AND frees it), because a
+            // per-site drop-entry alloca cannot represent N tasks live at
+            // once from a loop, and its wait-on-drop joined at the innermost
+            // brace, serializing spawn loops the spec promises concurrent.
             bool debugTags = module->getFlags().sourceTags;
             llvm::Function* dropPush = module->getRuntimeFunction(
                 debugTags ? "__cajeta_drop_push_debug" : "__cajeta_drop_push");
@@ -5639,7 +5713,17 @@ namespace cajeta {
                     }
                 }
             }
-            if (llvm::Function* regFn = module->getRuntimeFunction(
+            if (discardedMode) {
+                // Scope-owned: the frame joins on the done flag as usual and
+                // ALSO frees the task struct at release (scope_exit /
+                // scope_exit_to / the throw unwind), replacing the drop
+                // entry skipped above.
+                if (llvm::Function* regFn = module->getRuntimeFunction(
+                        "__cajeta_scope_register_owned")) {
+                    outerBuilder->CreateCall(regFn,
+                        {doneRegSlot, excRegSlot, fiberRegSlot, taskInstance});
+                }
+            } else if (llvm::Function* regFn = module->getRuntimeFunction(
                     "__cajeta_scope_register")) {
                 outerBuilder->CreateCall(regFn,
                     {doneRegSlot, excRegSlot, fiberRegSlot});

@@ -80,4 +80,38 @@ Progress:
   (`cajeta.nucleo.autograd.{Tape,Var}` — define-by-run, runtime-bounded loops, stopGrad), and
   the eager==compiled agreement bar. Deferred: tensor tape ops, literal registry sharing
   (generate tape source from the registry), `Diff<T>`, `@Checkpoint` remat, conv/softmax rules.
-- Everything below nucleo-autograd — **draft** (specs written 2026-06-23; no plan yet).
+- **nucleo-expr** — ✅ v1 tensor increment complete (`nucleo-expr-plan.md`, 2026-07-20):
+  `Fuse` intrinsic + `@Fuse` sugar fuse an N-op elementwise tensor chain into ONE loop
+  allocating only the result (the headline bar, measured); reductions stage with the
+  elementwise tail fused; the CALL is the force point (no `.eval` — X5 narrowed it away);
+  autograd seam closed (`Grad(Fuse(f))` / `@Grad @Fuse` — one DAG, two consumers; the
+  backward is ordinary Jit-fusable IR) and the column seam pinned (`elementExpr` is the
+  single dense-buffer site, contract-tested for the [X7] null-aware variant). Deferred:
+  operator-spelled bodies (`a * b` needs a type-system decision — plan 4.2.2), the
+  relational half (§4 pushdown, §7 column sharing, X7 nulls) with nucleo-column/frame,
+  GPU lowering (X6), and the §3.4 fuse-vs-materialize heuristic.
+- **nucleo-column** — ✅ v1 complete (`nucleo-column-plan.md`, 2026-07-21): the
+  Arrow-laid-out columnar substrate. `Column<T>`/`NullableColumn<T>`/`StringColumn`/
+  `MxColumn` — tensor-bit-identical when non-null with zero-copy views both ways;
+  64-byte-aligned owned buffers (aligned start offset); matched-struct C Data Interface
+  with no `libarrow`: zero-copy export (live-buffer borrow, shells-only release) and
+  zero-copy import (foreign-backed columns, releases exactly once, `materialize()` at
+  the compute boundary); utf8 ("u") both directions; `cajeta.mxfp4` extension carry with
+  physical-bytes degradation. The package is LAZY (it pulls cajeta.math). Deferred,
+  recorded in-plan: Storage native mode (zero-copy tensor over foreign memory), boolean
+  columns, 64-bit offsets, null-carrying utf8 import, nullable narrowing, the live
+  pyarrow probe (needs the embedding seam — C-ABI conformance is consumer-tested
+  in-tree), MX scales/kernels, codec readers, device story.
+- **nucleo-nn-optim** — ✅ v1 complete (`nucleo-nn-optim-plan.md`, 2026-07-21):
+  the neural-net spine. `GradAll<K>` (one closure returning ordered grads for the
+  leading K args) + `Tensor.relu` VJP + broadcast-aware `add`/`sub` backward
+  (`Tensor.sumTo`); `Module`/`Parameter` with reflection collection (declared
+  order, dotted names, buffers); `Linear`; the optimizer protocol with
+  SGD/Adam/AdamW (explicit positional grads, fail-loud, lazy state); pure
+  `lr(step)` schedules + thin wrapper; `Losses.mse*` (Grad inlines qualified
+  statics); FiberLocal train/eval + seeded Dropout. THE BAR: a 2-layer relu MLP
+  trains end-to-end under each optimizer (TrainEndToEndTests). v1 core is
+  float32/non-generic. Deferred, recorded in-plan: crossEntropy + axis
+  reductions, BatchNorm, generic Module<T> (two compiler gaps), call sugar,
+  clip/accumulate wrappers, SSA-locals backward, serialization.
+- Everything below nucleo-nn-optim — **draft** (specs written 2026-06-23; no plan yet).

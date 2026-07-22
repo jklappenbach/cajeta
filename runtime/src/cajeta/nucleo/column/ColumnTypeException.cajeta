@@ -1,0 +1,20 @@
+package cajeta.nucleo.column;
+
+import cajeta.error.RecoverableException;
+import cajeta.lang.String;
+
+/**
+ * Thrown when a dtype outside the v1 column set is used — `boolean` (Arrow
+ * bit-packs bools; cajeta byte-backs them, so admitting one would break the
+ * §1.1 bit-identity invariant) or a 128-bit type (no canonical Arrow format) —
+ * or when a tensor cannot adopt as a column (non-contiguous or rank != 1).
+ *
+ * Recoverable: a caller-handleable condition, per {@link
+ * cajeta.math.BroadcastException}'s discipline.
+ */
+public class ColumnTypeException extends RecoverableException {
+    public ColumnTypeException(String message) {
+        this.message = message;
+        this.cause = 0;
+    }
+}

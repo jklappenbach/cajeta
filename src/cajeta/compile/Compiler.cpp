@@ -681,7 +681,23 @@ namespace cajeta {
         // cajeta.xpu.mesh (Qem / MeshSimplifier) is the ONLY eager-prelude
         // consumer of cajeta.math; making it lazy keeps cajeta.math out of the
         // eager prelude (MathLazyParse — guarded by CompilerTests).
-        return pkg == "cajeta.xpu.mesh" || pkg.rfind("cajeta.xpu.mesh.", 0) == 0;
+        if (pkg == "cajeta.xpu.mesh" || pkg.rfind("cajeta.xpu.mesh.", 0) == 0) {
+            return true;
+        }
+        // cajeta.nucleo.column (the Arrow columnar substrate) imports
+        // cajeta.math (Tensor/DType) — same shape as cajeta.xpu.mesh: lazy,
+        // so a program that never touches columns keeps math out of the
+        // eager prelude (MathLazyParse bar).
+        if (pkg == "cajeta.nucleo.column"
+                || pkg.rfind("cajeta.nucleo.column.", 0) == 0) {
+            return true;
+        }
+        // cajeta.nucleo.nn + cajeta.nucleo.optim (the neural-net core) import
+        // cajeta.math too — same lazy shape (nucleo-nn-optim plan).
+        return pkg == "cajeta.nucleo.nn"
+            || pkg.rfind("cajeta.nucleo.nn.", 0) == 0
+            || pkg == "cajeta.nucleo.optim"
+            || pkg.rfind("cajeta.nucleo.optim.", 0) == 0;
     }
 
     // compile-cache Unit 2 — the persistent stdlib-prime cache key (spec §2).
@@ -779,6 +795,18 @@ namespace cajeta {
         if (std::find(g_lazyQueue.begin(), g_lazyQueue.end(), pkg)
                 == g_lazyQueue.end()) {
             g_lazyQueue.push_back(pkg);
+        }
+        // Lazy-package DEPENDENCIES that must be concrete BEFORE the package
+        // parses (the drain pops LIFO, so a dep pushed AFTER drains FIRST):
+        // cajeta.nucleo.column declares FIELDS of cajeta.math types
+        // (`Tensor<T> root`), and field-type resolution needs the real class
+        // at parse — a mid-parse import note would drain math only after
+        // Column.cajeta already failed with UNKNOWN_TYPE. (cajeta.xpu.mesh
+        // needs no entry: it touches math only in method bodies, which
+        // resolve after the drain.)
+        if (pkg == "cajeta.nucleo.column"
+                || pkg.rfind("cajeta.nucleo.column.", 0) == 0) {
+            noteStdlibImportImpl("cajeta.math");
         }
     }
 

@@ -1,0 +1,41 @@
+package cajeta.nucleo.expr;
+
+/**
+ * Fused tensor expressions (nucleo-expr spec §2, §3, §5): the `Fuse`
+ * transform intrinsic and its `@Fuse` annotation sugar.
+ *
+ * `Fuse` is a COMPILER INTRINSIC, not a method of this class: applied to a
+ * statically-known elementwise tensor expression, it collapses N tensor
+ * operators into ONE loop over the element index at compile time — no
+ * expression-graph object at runtime, no per-operator temporaries, only the
+ * result tensor is allocated. This file is the importable home of the
+ * contract, beside the transform combinators ([[Transforms]]).
+ *
+ * - `Fuse(f)` for `f : (Tensor<E>) -> Tensor<E>` yields a REUSABLE compiled
+ *   function with f's signature whose body is one fused pass. Building it
+ *   runs nothing; the CALL is the force point (there is no `.eval`).
+ * - A reduction (`Tensor.sum` / `mean` / `std`) bounds the fusion region: it
+ *   stages as its own pass, and the elementwise tail after it fuses — the
+ *   standardize shape `(t - mean(t)) / std(t)` runs as its reduction stages
+ *   plus one fused loop. A reduction as the WHOLE expression fuses the
+ *   elementwise body INTO its accumulation (`Fuse(t -> sum(t*t))` is
+ *   scalar-valued and allocates nothing).
+ * - A shared sub-expression is computed once (the DAG dedups leaves), and a
+ *   staged reduction is hoisted once.
+ * - `@Fuse` on a static single-return method fuses its body through the SAME
+ *   recognizer — sugar only, identical results and identical allocations.
+ *
+ * THE AUTOGRAD SEAM (spec §8): `Fuse` and `Grad` are two consumers of the
+ * same forward DAG. `Grad(Fuse(f))` — or the `@Grad @Fuse` stack —
+ * differentiates the fused expression: the gradient is identical to the
+ * unfused form's, the backward is ordinary IR (`Jit` fuses it like any other
+ * function), and an expression that is never differentiated carries no
+ * autograd machinery at all.
+ *
+ * A body that cannot fuse — an op outside the elementwise set (`matmul`), or
+ * `std` as the whole expression — is the named, located compile error
+ * CAJETA_ERROR_TRANSFORM_NOT_FUSIBLE, never a silent eager fallback.
+ */
+public final class Expr {
+    private Expr() { }
+}

@@ -1,0 +1,66 @@
+package cajeta.nucleo.nn;
+
+import cajeta.math.Tensor;
+import cajeta.math.random.Generator;
+
+/**
+ * Dropout — the mode-sensitive proof layer (spec §8): in TRAIN mode
+ * (`Modes.isTraining()`), each element is zeroed with probability `p` and
+ * survivors scale by `1/(1-p)` (inverted dropout, so eval needs no
+ * rescaling); in EVAL mode the forward is the identity. Randomness comes
+ * from an EXPLICIT seeded {@link Generator} owned by the layer — same seed,
+ * same masks, no global RNG (spec §4).
+ *
+ * Dropout owns no parameters; it is mode-sensitive compute only. The
+ * backward story rides eager use (mask applied outside `Grad` bodies) — a
+ * differentiable dropout primitive is façade-era work.
+ */
+public class Dropout extends Module {
+    float32 p;
+    Generator gen;
+
+    /** @EntryPoint */
+    public Dropout(float32 p, uint64 seed) {
+        this.p = p;
+        this.gen = heap Generator(seed);
+    }
+
+    /** Identity in eval; masked-and-scaled in train. Returns a fresh tensor
+     *  either way (the input is never written). */
+    public #Tensor<float32> forward(Tensor<float32> x) {
+        if (!Modes.isTraining()) {
+            return x.copy();
+        }
+        int64[] shape = Tensor.shapeOf<float32>(x);
+        int32 nd = (int32) shape.count();
+        int64 n = Tensor.productOf(shape);
+        Tensor<float32> u = this.gen.uniform(n);
+        Tensor<float32> out = Tensor.zeros<float32>(shape);
+        float32 scale = 1.0f / (1.0f - this.p);
+        int64[] idx = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) {
+            idx[k] = 0;
+            k = k + 1;
+        }
+        int64 lin = 0;
+        while (lin < n) {
+            if (u.get1(lin) >= this.p) {
+                out.setAt(idx, x.getAt(idx) * scale);
+            }
+            lin = lin + 1;
+            int32 ax = nd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                idx[ax] = idx[ax] + 1;
+                if (idx[ax] >= shape[ax]) {
+                    idx[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        return #out;
+    }
+}

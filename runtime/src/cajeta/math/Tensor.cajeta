@@ -402,6 +402,38 @@ public class Tensor<T> {
         return d.bytes();
     }
 
+    /**
+     * Data address of this view's element 0 (storage base + scaled offset) —
+     * the Arrow interop seam (nucleo-column-spec §4/§6/§7): aligned-offset
+     * computation, alignment probes, and C-Data export read it. Additive; no
+     * existing behavior rides on it.
+     */
+    public int64 hostAddress() {
+        return this.store.hostAddress()
+             + this.offsetVal * ((int64) this.itemsize());
+    }
+
+    @Native("__cajeta_arrow_export_fixed")
+    private int64 arrowExportFixed(int64 dataAddr, int64 len, int64 nullCount,
+                                   int64 validityAddr, int32 kind, int32 bits);
+
+    /**
+     * The Tensor Arrow retrofit's export half (nucleo-column-spec §7.2,
+     * ADDITIVE beside {@link #protocol}): this contiguous tensor's flat
+     * element run as a C Data Interface bundle over the LIVE buffer — the
+     * same zero-copy borrow + shells-only release contract as the column
+     * export. The caller keeps this tensor alive for the consumer's reads
+     * (the `TensorProtocol` discipline). Contiguous C-order tensors only;
+     * the import direction lives column-side (`Column.importAsTensor` —
+     * cajeta.math cannot import the column package without a lazy-parse
+     * cycle).
+     */
+    public int64 exportArrow() {
+        DType d = DType.of<T>();
+        return this.arrowExportFixed(this.hostAddress(), this.size(), 0, 0,
+                                     d.kind(), d.bits());
+    }
+
     /** Total bytes of the elements (`size * itemsize`). */
     public int64 nbytes() {
         return this.size() * (int64) this.itemsize();
@@ -3325,6 +3357,8 @@ public class Tensor<T> {
             if (op == 5) { r = Math.floor(v); }
             if (op == 6) { r = Math.ceil(v); }
             if (op == 7) { r = Math.round(v); }
+            if (op == 8) { if (v < (E) 0) { r = (E) 0; } else { r = v; } }
+            if (op == 9) { if (v > (E) 0) { r = (E) 1; } else { r = (E) 0; } }
             st.set(lin, r);
             lin = lin + 1;
             int32 ax = nd - 1;
@@ -3402,6 +3436,68 @@ public class Tensor<T> {
     public static #Tensor<E> ceil<E extends Floating>(Tensor<E> a) { return Tensor.ufloat<E>(a, 6); }
     /** Elementwise round (floating; round-half-up per `Math.round`). */
     public static #Tensor<E> round<E extends Floating>(Tensor<E> a) { return Tensor.ufloat<E>(a, 7); }
+    /**
+     * Reduce `g` back to `like`'s shape by SUMMING over the axes broadcasting
+     * expanded (right-aligned; leading extra axes and size-1 axes of `like`
+     * both sum) — the shape-restoring backward of a broadcast forward
+     * (PyTorch's `sum_to`). Same-shape input returns a fresh copy. The
+     * widened `add`/`sub` VJP rules emit this so a broadcast bias's gradient
+     * comes back bias-shaped (nucleo-nn-optim U4).
+     */
+    public static #Tensor<E> sumTo<E extends Numeric>(Tensor<E> g, Tensor<E> like) {
+        int32 gd = (int32) g.shapeDims.count();
+        int32 ld = (int32) like.shapeDims.count();
+        int64[] ls = heap int64[ld];
+        int32 c = 0;
+        while (c < ld) {
+            ls[c] = like.shapeDims[c];
+            c = c + 1;
+        }
+        Tensor<E> acc = Tensor.zeros<E>(ls);
+        int64 n = Tensor.productOf(g.shapeDims);
+        int64[] gi = heap int64[gd];
+        int32 k = 0;
+        while (k < gd) {
+            gi[k] = 0;
+            k = k + 1;
+        }
+        int64[] li = heap int64[ld];
+        int64 lin = 0;
+        while (lin < n) {
+            E v = g.getAt(gi);
+            int32 a = 0;
+            while (a < ld) {
+                int64 gv = gi[a + (gd - ld)];
+                if (like.shapeDims[a] == 1) {
+                    li[a] = 0;
+                } else {
+                    li[a] = gv;
+                }
+                a = a + 1;
+            }
+            acc.setAt(li, acc.getAt(li) + v);
+            lin = lin + 1;
+            int32 ax = gd - 1;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                gi[ax] = gi[ax] + 1;
+                if (gi[ax] >= g.shapeDims[ax]) {
+                    gi[ax] = 0;
+                    ax = ax - 1;
+                } else {
+                    carry = false;
+                }
+            }
+        }
+        return #acc;
+    }
+
+    /** Elementwise rectified linear unit: `max(v, 0)` (floating). Differentiable
+     *  (VJP registered); its gradient is {@link #reluMask}. */
+    public static #Tensor<E> relu<E extends Floating>(Tensor<E> a) { return Tensor.ufloat<E>(a, 8); }
+    /** Elementwise relu gradient mask: `1` where `v > 0`, else `0` (floating).
+     *  The subgradient at `0` is `0`. Not itself differentiable (a.e. constant). */
+    public static #Tensor<E> reluMask<E extends Floating>(Tensor<E> a) { return Tensor.ufloat<E>(a, 9); }
     /** Elementwise negation (any numeric). */
     public static #Tensor<E> neg<E extends Numeric>(Tensor<E> a) { return Tensor.unum<E>(a, 0); }
     /** Elementwise absolute value (any numeric). */
@@ -3525,6 +3621,7 @@ public class Tensor<T> {
             E r = v + s;
             if (op == 1) { r = v - s; }
             if (op == 2) { r = v * s; }
+            if (op == 3) { r = v / s; }
             st.set(lin, r);
             lin = lin + 1;
             int32 ax = nd - 1;
@@ -3603,7 +3700,12 @@ public class Tensor<T> {
     public static #Tensor<E> mulScalar<E extends Numeric>(Tensor<E> t, E s) {
         return Tensor.scalarOp<E>(t, s, 2);
     }
-    /** Weak **float** scalar over an integer tensor `t + s` → `Tensor<float64>` (category
+    /** Elementwise `t / s` against a scalar (completes the add/sub/mul family). */
+    public static #Tensor<E> divScalar<E extends Numeric>(Tensor<E> t, E s) {
+        return Tensor.scalarOp<E>(t, s, 3);
+    }
+
+    /** Weak float scalar over an int tensor `t + s` -> `Tensor<float64>` (category
      *  bump). See {@link #scalarOpF}. */
     public static #Tensor<float64> addScalarF<E extends Integral>(Tensor<E> t, float64 s) {
         return Tensor.scalarOpF<E>(t, s, 0);
