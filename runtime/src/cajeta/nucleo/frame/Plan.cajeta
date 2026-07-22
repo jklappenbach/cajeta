@@ -43,6 +43,10 @@ public class Plan {
     int32 nScanPreds; //   the original chain (the owning handle keeps it)
     String[] scanCols;// U7 optimizer scan: referenced-column subset in
     int32 nScanCols;  //   source order; null = read every column
+    Sel keys;         // GROUP payload: key references (owned)
+    int32 nkeys;
+    Agg aggs;         // GROUP payload: named aggregates (owned)
+    int32 naggs;
 
     Plan(int32 kind) {
         this.kind = kind;
@@ -109,6 +113,40 @@ public class Plan {
         return #n;
     }
 
+    /** A group-aggregate node: `keys` group the rows, `aggs` reduce each
+     *  group into one output row (U8). The output schema is exactly the
+     *  keys followed by the aggregates. */
+    public static #Plan groupNode(#Sel keys, int32 nkeys, #Agg aggs,
+                                  int32 naggs, #Plan child) {
+        Plan n = heap Plan(5);
+        n.keys #= keys;
+        n.nkeys = nkeys;
+        n.aggs #= aggs;
+        n.naggs = naggs;
+        n.child #= child;
+        return #n;
+    }
+
+    /** GROUP payload: the head of the key-reference chain. */
+    public Sel keysOf() {
+        return this.keys;
+    }
+
+    /** GROUP payload: key count. */
+    public int32 keyCount() {
+        return this.nkeys;
+    }
+
+    /** GROUP payload: the head of the aggregate chain. */
+    public Agg aggsOf() {
+        return this.aggs;
+    }
+
+    /** GROUP payload: aggregate count. */
+    public int32 aggCount() {
+        return this.naggs;
+    }
+
     /** A drop-nulls node: rows with a missing value dropped; `col` limits
      *  the check to one column, null checks every nullable column (U6). */
     public static #Plan dropNullsNode(String col, #Plan child) {
@@ -166,6 +204,10 @@ public class Plan {
         n.fillF = orig.fillFOf();
         n.fillI = orig.fillIOf();
         n.fillIsInt = orig.fillIsIntOf();
+        n.keys = orig.keysOf();
+        n.nkeys = orig.keyCount();
+        n.aggs = orig.aggsOf();
+        n.naggs = orig.aggCount();
         n.child #= child;
         return #n;
     }

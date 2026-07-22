@@ -112,6 +112,46 @@ public class DynCol {
             "DynCol.setNF64: column is '" + this.typeName() + "'");
     }
 
+    /** A fresh zeroed int64 column — what an EXACT integer aggregate
+     *  (sum/min/max/first/last over an int64 column, and every `count`)
+     *  materializes into (U8). Lives here for the same package-resolution
+     *  reason as {@link #newF64}. */
+    public static #DynCol newI64(int64 n) {
+        return DynCol.ofI64(Column.zeros<int64>(n));
+    }
+
+    /** Write an int64 cell (plain int64 columns only). */
+    public void setI64(int64 i, int64 v) {
+        if (this.tag == 4 && !this.nullable) {
+            this.i64.set(i, v);
+            return;
+        }
+        throw heap ColumnTypeException(
+            "DynCol.setI64: column is '" + this.typeName() + "'");
+    }
+
+    /** A fresh ALL-NULL nullable int64 column — an exact integer aggregate
+     *  whose group may have no non-null cell (U8). */
+    public static #DynCol newNI64(int64 n) {
+        return DynCol.ofNI64(NullableColumn.nulls<int64>(n));
+    }
+
+    /** Write an int64 cell and mark it valid (nullable int64 only). */
+    public void setNI64(int64 i, int64 v) {
+        if (this.tag == 4 && this.nullable) {
+            this.ni64.set(i, v);
+            return;
+        }
+        throw heap ColumnTypeException(
+            "DynCol.setNI64: column is '" + this.typeName() + "'");
+    }
+
+    /** A utf8 column over already-built values — what a `first`/`last`
+     *  aggregate over a string column materializes into (U8). */
+    public static #DynCol newStr(String[] values) {
+        return DynCol.ofStr(StringColumn.of(values));
+    }
+
     /** Dense NON-NULL copy with every null replaced by `v` (float
      *  physicals; integer physicals take {@link #fillNullsInt}). The
      *  spec §7 explicit fill — never an implicit coercion. */

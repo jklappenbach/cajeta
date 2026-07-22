@@ -1,5 +1,7 @@
 package cajeta.nucleo.frame;
 
+import cajeta.hash.Hash;
+import cajeta.lang.Float64;
 import cajeta.lang.String;
 import cajeta.nucleo.column.DynCol;
 
@@ -45,6 +47,9 @@ public class Exec {
         }
         if (node.kindOf() == 4) {
             return Exec.apply(node.selsOf(), node.selCount(), #in, true);
+        }
+        if (node.kindOf() == 5) {
+            return Exec.applyGroup(node, #in);
         }
         if (node.kindOf() == 12) {
             return Exec.applyFillNull(node, #in);
@@ -456,6 +461,383 @@ public class Exec {
         DynFrame r = heap DynFrame(#names, #tags, #nulls, #cols, w, n);
         r.__adopt(#in);
         return #r;
+    }
+
+    /** The ordinal a group KEY references. Keys must be bare column
+     *  references — a computed expression has no identity to group by, so
+     *  it fails LOUD at plan build naming the fix (spec §4.7). */
+    static int32 keyOrdinal(Sel s, DynFrame in) {
+        String nm = s.outNameOf();
+        if (s.strRefOf() != null) {
+            return s.strRefOf().ordinal();
+        }
+        if (s.iRefOf() != null) {
+            return s.iRefOf().ordinal();
+        }
+        if (s.exprOf() != null && s.exprOf().kind() == 0) {
+            return s.exprOf().ordinal();
+        }
+        throw heap FrameException("groupBy: '" + nm + "' is a computed "
+            + "expression; a group key must be a column reference");
+    }
+
+    /** SCHEMA-time physical of an aggregate (4 int64, 10 float64, 11
+     *  utf8). Exact integer inputs keep int64 through sum/min/max/first/
+     *  last; `count` is always int64; `mean` and any arithmetic are
+     *  float64. */
+    static int32 aggTag(Agg a, DynFrame in) {
+        int32 k = a.kind();
+        if (k == 20) { return Exec.aggTag(a.leftAgg(), in); }
+        if (k >= 10 && k <= 13) { return 10; }
+        if (k == 5) { return 4; }
+        if (a.strRefOf() != null) { return 11; }
+        if (a.iRefOf() != null && k != 2) { return 4; }
+        return 10;
+    }
+
+    /** SCHEMA-time nullability of an aggregate — a DATA-independent fact
+     *  (the plan-build schema and the executed result must agree, since
+     *  `.as<R>()` validates against the former). `sum` and `count` always
+     *  produce a value (identity 0, and a count of zero); the value-picking
+     *  reductions produce one only when some cell in the group is
+     *  non-null, so they are nullable exactly when their input is. */
+    static boolean aggNullable(Agg a, DynFrame in) {
+        int32 k = a.kind();
+        if (k == 20) { return Exec.aggNullable(a.leftAgg(), in); }
+        if (k >= 10 && k <= 13) {
+            if (Exec.aggNullable(a.leftAgg(), in)) { return true; }
+            return Exec.aggNullable(a.rightAgg(), in);
+        }
+        if (k == 1 || k == 5) { return false; }
+        if (a.strRefOf() != null) { return false; }
+        if (a.iRefOf() != null) { return in.nullableAt(a.iRefOf().ordinal()); }
+        return Exec.exprRefsNullable(a.exprOf(), in);
+    }
+
+    /** Reduce one aggregate over the grouped rows. Nulls are SKIPPED
+     *  throughout (spec §7): `mean` divides by the non-null count,
+     *  `count` counts non-null cells, `first`/`last` take the first/last
+     *  cell that HAS a value, and a group with no non-null cell keeps the
+     *  reduction's null — except `sum`, which is the identity 0. */
+    static #AggResult evalAgg(Agg a, DynFrame in, int64[] gid, int64 n,
+                              int64 ng) {
+        int32 k = a.kind();
+        if (k == 20) {
+            return Exec.evalAgg(a.leftAgg(), in, gid, n, ng);
+        }
+        if (k >= 10 && k <= 13) {
+            AggResult l = Exec.evalAgg(a.leftAgg(), in, gid, n, ng);
+            AggResult r = Exec.evalAgg(a.rightAgg(), in, gid, n, ng);
+            AggResult out = heap AggResult(10, ng);
+            int64 g = 0;
+            while (g < ng) {
+                if (l.validAt(g) && r.validAt(g)) {
+                    float64 x = l.asF64(g);
+                    float64 y = r.asF64(g);
+                    if (k == 10) { out.setF64(g, x + y); }
+                    if (k == 11) { out.setF64(g, x - y); }
+                    if (k == 12) { out.setF64(g, x * y); }
+                    if (k == 13) { out.setF64(g, x / y); }
+                }
+                g = g + 1;
+            }
+            return #out;
+        }
+        int32 tag = Exec.aggTag(a, in);
+        AggResult out = heap AggResult(tag, ng);
+        int64 gcap = ng;
+        if (gcap < 1) { gcap = 1; }
+        int64[] cnt = heap int64[gcap];
+        // utf8: no validity in v1, so every row counts and first/last are
+        // the group's first/last row.
+        if (a.strRefOf() != null) {
+            int64 i = 0;
+            while (i < n) {
+                int64 g = gid[i];
+                cnt[g] = cnt[g] + 1;
+                if (k == 5) {
+                    out.setI64(g, cnt[g]);
+                } else if (k == 6) {
+                    if (cnt[g] == 1) { out.setStr(g, Exec.evalStr(a.strRefOf(), in, i)); }
+                } else if (k == 7) {
+                    out.setStr(g, Exec.evalStr(a.strRefOf(), in, i));
+                }
+                i = i + 1;
+            }
+            if (k == 5) {
+                int64 g2 = 0;
+                while (g2 < ng) { out.setI64(g2, cnt[g2]); g2 = g2 + 1; }
+            }
+            return #out;
+        }
+        boolean exact = a.iRefOf() != null && k != 2;
+        int32 iOrd = -1;
+        if (a.iRefOf() != null) { iOrd = a.iRefOf().ordinal(); }
+        float64[] facc = heap float64[gcap];
+        int64[] iacc = heap int64[gcap];
+        int64 i = 0;
+        while (i < n) {
+            int64 g = gid[i];
+            boolean ok = false;
+            float64 fv = 0.0;
+            int64 ivv = 0;
+            if (a.iRefOf() != null) {
+                ok = in.colAt(iOrd).validAt(i);
+                if (ok) {
+                    ivv = Exec.evalI64(a.iRefOf(), in, i);
+                    fv = (float64) ivv;
+                }
+            } else {
+                ok = Exec.exprValidF64(a.exprOf(), in, i);
+                if (ok) { fv = Exec.evalF64(a.exprOf(), in, i); }
+            }
+            if (ok) {
+                cnt[g] = cnt[g] + 1;
+                if (k == 1 || k == 2) {
+                    facc[g] = facc[g] + fv;
+                    iacc[g] = iacc[g] + ivv;
+                } else if (k == 3) {
+                    if (cnt[g] == 1 || fv < facc[g]) { facc[g] = fv; iacc[g] = ivv; }
+                } else if (k == 4) {
+                    if (cnt[g] == 1 || fv > facc[g]) { facc[g] = fv; iacc[g] = ivv; }
+                } else if (k == 6) {
+                    if (cnt[g] == 1) { facc[g] = fv; iacc[g] = ivv; }
+                } else if (k == 7) {
+                    facc[g] = fv;
+                    iacc[g] = ivv;
+                }
+            }
+            i = i + 1;
+        }
+        int64 g = 0;
+        while (g < ng) {
+            if (k == 5) {
+                out.setI64(g, cnt[g]);
+            } else if (k == 1) {
+                // sum: the identity 0 stands for a group with no value.
+                if (exact) { out.setI64(g, iacc[g]); } else { out.setF64(g, facc[g]); }
+            } else if (cnt[g] > 0) {
+                if (k == 2) {
+                    out.setF64(g, facc[g] / (float64) cnt[g]);
+                } else if (exact) {
+                    out.setI64(g, iacc[g]);
+                } else {
+                    out.setF64(g, facc[g]);
+                }
+            }
+            g = g + 1;
+        }
+        return #out;
+    }
+
+    /** Hash of row `i`'s key tuple. Correctness rests on the equality
+     *  probe, not on this — a mediocre spread only costs probes.
+     *  Combination goes through {@link Hash#combine} because cajeta's
+     *  integer arithmetic TRAPS on overflow: a hand-rolled `h * 31 + k`
+     *  mixer overflows int64 on its first multiply. */
+    static int64 keyHash(DynFrame in, int32[] kord, int32 nk, int64 i) {
+        int64 h = 0;
+        int32 j = 0;
+        while (j < nk) {
+            int32 o = kord[j];
+            int64 kh = 777767777;           // nulls hash alike, group alike
+            if (in.colAt(o).validAt(i)) {
+                if (in.tagAt(o) == 11) {
+                    kh = in.colAt(o).strAt(i).hash();
+                } else if (in.tagAt(o) > 8) {
+                    kh = stack Float64(in.colAt(o).f64At(i)).hash();
+                } else {
+                    kh = in.colAt(o).i64At(i);
+                }
+            }
+            h = Hash.combine(h, kh);
+            j = j + 1;
+        }
+        return h;
+    }
+
+    /** Do rows `x` and `y` share a key tuple? NULL EQUALS NULL here — a
+     *  null key forms its own group rather than vanishing (spec §7), which
+     *  is the one place null-equals-null holds. */
+    static boolean keysEqual(DynFrame in, int32[] kord, int32 nk, int64 x,
+                             int64 y) {
+        int32 j = 0;
+        while (j < nk) {
+            int32 o = kord[j];
+            boolean vx = in.colAt(o).validAt(x);
+            boolean vy = in.colAt(o).validAt(y);
+            if (vx != vy) { return false; }
+            if (vx) {
+                if (in.tagAt(o) == 11) {
+                    if (!in.colAt(o).strAt(x).equals(in.colAt(o).strAt(y))) {
+                        return false;
+                    }
+                } else if (in.tagAt(o) > 8) {
+                    if (in.colAt(o).f64At(x) != in.colAt(o).f64At(y)) {
+                        return false;
+                    }
+                } else {
+                    if (in.colAt(o).i64At(x) != in.colAt(o).i64At(y)) {
+                        return false;
+                    }
+                }
+            }
+            j = j + 1;
+        }
+        return true;
+    }
+
+    /** Group-aggregate (spec §4.4): hash the key tuples into groups, reduce
+     *  each aggregate within each group, and emit one row per group. The
+     *  output schema is exactly the keys (their own type and nullability,
+     *  taken from the group's first row) followed by the named aggregates.
+     *  Groups come out in FIRST-APPEARANCE order — a deterministic order
+     *  that costs nothing here and makes results testable.
+     *
+     *  Fed a schema-only frame this computes the output SCHEMA alone, which
+     *  is what `.as<R>()` and `col("...")` validate against at plan build. */
+    static #DynFrame applyGroup(Plan node, #DynFrame in) {
+        if (node.aggCount() < 1) {
+            throw heap FrameException(
+                "groupBy: no aggregates - complete it with .agg(...)");
+        }
+        boolean schemaOnly = in.isSchemaOnly();
+        int32 nk = node.keyCount();
+        int32 w = nk + node.aggCount();
+        String[] names = heap String[w];
+        int32[] tags = heap int32[w];
+        boolean[] nulls = heap boolean[w];
+        int32 kcap = nk;
+        if (kcap < 1) { kcap = 1; }
+        int32[] kord = heap int32[kcap];
+        int32 c = 0;
+        Sel s = node.keysOf();
+        while (s != null) {
+            int32 o = Exec.keyOrdinal(s, in);
+            if (o < 0 || o >= in.width()) {
+                throw heap FrameException("groupBy: key '" + s.outNameOf()
+                    + "' is not in schema " + in.schemaText());
+            }
+            kord[c] = o;
+            names[c] = s.outNameOf();
+            tags[c] = in.tagAt(o);
+            nulls[c] = in.nullableAt(o);
+            c = c + 1;
+            s = s.nextOf();
+        }
+        Agg a = node.aggsOf();
+        while (a != null) {
+            names[c] = a.outNameOf();
+            tags[c] = Exec.aggTag(a, in);
+            nulls[c] = Exec.aggNullable(a, in);
+            c = c + 1;
+            a = a.nextOf();
+        }
+        if (schemaOnly) {
+            return heap DynFrame(#names, #tags, #nulls, w);
+        }
+        // Group assignment: open addressing over the key tuples, with
+        // first-appearance ids.
+        int64 n = in.rowsOf();
+        int64 cap = 16;
+        while (cap < n * 2 + 1) { cap = cap * 2; }
+        int64[] slot = heap int64[cap];
+        int64 z = 0;
+        while (z < cap) { slot[z] = -1; z = z + 1; }
+        int64 rcap = n;
+        if (rcap < 1) { rcap = 1; }
+        int64[] gid = heap int64[rcap];
+        int64[] firstRow = heap int64[rcap];
+        int64 ng = 0;
+        int64 i = 0;
+        while (i < n) {
+            int64 h = Exec.keyHash(in, kord, nk, i);
+            int64 p = h % cap;
+            if (p < 0) { p = p + cap; }
+            boolean placed = false;
+            while (!placed) {
+                int64 g = slot[p];
+                if (g < 0) {
+                    slot[p] = ng;
+                    firstRow[ng] = i;
+                    gid[i] = ng;
+                    ng = ng + 1;
+                    placed = true;
+                } else if (Exec.keysEqual(in, kord, nk, firstRow[g], i)) {
+                    gid[i] = g;
+                    placed = true;
+                } else {
+                    p = p + 1;
+                    if (p == cap) { p = 0; }
+                }
+            }
+            i = i + 1;
+        }
+        DynCol[] cols = heap DynCol[w];
+        // Keys: gather each group's first row — the key column keeps its
+        // own physical and validity (a null key stays null).
+        int32 j = 0;
+        while (j < nk) {
+            cols[j] #= in.colAt(kord[j]).gather(firstRow, ng);
+            j = j + 1;
+        }
+        int32 ai = nk;
+        Agg a2 = node.aggsOf();
+        while (a2 != null) {
+            AggResult r = Exec.evalAgg(a2, in, gid, n, ng);
+            cols[ai] #= Exec.materialize(#r, tags[ai], nulls[ai], ng);
+            ai = ai + 1;
+            a2 = a2.nextOf();
+        }
+        return heap DynFrame(#names, #tags, #nulls, #cols, w, ng);
+    }
+
+    /** One aggregate's per-group values as a column, in the physical and
+     *  nullability the PLAN-BUILD schema already promised. */
+    static #DynCol materialize(#AggResult r, int32 tag, boolean nullable,
+                               int64 ng) {
+        if (tag == 11) {
+            int64 scap = ng;
+            if (scap < 1) { scap = 1; }
+            String[] vals = heap String[scap];
+            int64 g = 0;
+            while (g < ng) { vals[g] = r.strAt(g); g = g + 1; }
+            return DynCol.newStr(vals);
+        }
+        if (tag == 4) {
+            if (nullable) {
+                DynCol c = DynCol.newNI64(ng);
+                int64 g = 0;
+                while (g < ng) {
+                    if (r.validAt(g)) { c.setNI64(g, r.i64At(g)); }
+                    g = g + 1;
+                }
+                return #c;
+            }
+            DynCol c = DynCol.newI64(ng);
+            int64 g = 0;
+            while (g < ng) {
+                if (r.validAt(g)) { c.setI64(g, r.i64At(g)); }
+                g = g + 1;
+            }
+            return #c;
+        }
+        if (nullable) {
+            DynCol c = DynCol.newNF64(ng);
+            int64 g = 0;
+            while (g < ng) {
+                if (r.validAt(g)) { c.setNF64(g, r.f64At(g)); }
+                g = g + 1;
+            }
+            return #c;
+        }
+        DynCol c = DynCol.newF64(ng);
+        int64 g = 0;
+        while (g < ng) {
+            if (r.validAt(g)) { c.setF64(g, r.f64At(g)); }
+            g = g + 1;
+        }
+        return #c;
     }
 
     /** Fill-null: the target column's nulls become the node's value and

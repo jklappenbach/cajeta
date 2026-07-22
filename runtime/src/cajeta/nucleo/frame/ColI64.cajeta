@@ -33,6 +33,18 @@ public class ColI64 {
         return #s;
     }
 
+    /** Reductions (U8) — EXACT int64 throughout: an int64 sum/min/max/
+     *  first/last stays int64 in the result schema (no float64 round-trip,
+     *  the same reason the comparisons are exact). `mean` is the one
+     *  exception: an average is not an integer, so it yields float64. */
+    public #Agg sum()   { return Agg.overI64(1, this); }
+    public #Agg mean()  { return Agg.overI64(2, this); }
+    public #Agg min()   { return Agg.overI64(3, this); }
+    public #Agg max()   { return Agg.overI64(4, this); }
+    public #Agg count() { return Agg.overI64(5, this); }
+    public #Agg first() { return Agg.overI64(6, this); }
+    public #Agg last()  { return Agg.overI64(7, this); }
+
     public static #Pred operator>(#ColI64 a, int64 v)  { return Pred.cmpI64(40, #a, v); }
     public static #Pred operator>=(#ColI64 a, int64 v) { return Pred.cmpI64(41, #a, v); }
     public static #Pred operator<(#ColI64 a, int64 v)  { return Pred.cmpI64(42, #a, v); }

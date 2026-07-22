@@ -772,6 +772,27 @@ namespace cajeta::synth {
                 "        Sel __e = fn(__c);\n"
                 "        return this.__project(#__e, 1, true);\n"
                 "    }\n";
+            // groupBy/agg (U8): keys reuse the Sels collector — a key is a
+            // passthrough reference, which is exactly what Sels collects —
+            // so single and multi-column grouping share one signature. The
+            // handle stays typed between the two calls so `agg`'s builder
+            // resolves; the aggregated RESULT is erased.
+            frag += "    public #" + tblType + " groupBy((" + recName
+                    + "Cols, Sels) -> void fn) {\n"
+                "        " + recName + "Cols __c = heap " + recName + "Cols();\n"
+                "        Sels __s = heap Sels();\n"
+                "        fn(__c, __s);\n"
+                "        int32 __n = __s.count();\n"
+                "        return this.__groupBy(__s.take(), __n);\n"
+                "    }\n";
+            frag += "    public #Table<?> agg((" + recName
+                    + "Cols, Aggs) -> void fn) {\n"
+                "        " + recName + "Cols __c = heap " + recName + "Cols();\n"
+                "        Aggs __a = heap Aggs();\n"
+                "        fn(__c, __a);\n"
+                "        int32 __n = __a.count();\n"
+                "        return this.__agg(__a.take(), __n);\n"
+                "    }\n";
             // rowAt: one TYPED row — the record — reconstructed from the
             // physicals (Instant from epoch-nanos, Utf8 from utf8; a
             // nullable field yields its physical value, validity stays a
@@ -834,6 +855,8 @@ namespace cajeta::synth {
                          {"Pred", "cajeta.nucleo.frame"},
                          {"Sel", "cajeta.nucleo.frame"},
                          {"Sels", "cajeta.nucleo.frame"},
+                         {"Agg", "cajeta.nucleo.frame"},
+                         {"Aggs", "cajeta.nucleo.frame"},
                          {"Int64", "cajeta.lang"},
                          {"Utf8", "cajeta.lang"},
                          {"Instant", "cajeta.time"}};

@@ -60,6 +60,19 @@ public class ColF64 {
         return #s;
     }
 
+    /** Reductions (U8, spec §4.4): this expression evaluated per row, then
+     *  reduced within each group. Nulls are SKIPPED — `mean` divides by the
+     *  non-null count, `first`/`last` take the first/last cell that has a
+     *  value (spec §7). Aggregating outside `agg(...)` is meaningless, so
+     *  these build nodes rather than compute. */
+    public #Agg sum()   { return Agg.overF64(1, this); }
+    public #Agg mean()  { return Agg.overF64(2, this); }
+    public #Agg min()   { return Agg.overF64(3, this); }
+    public #Agg max()   { return Agg.overF64(4, this); }
+    public #Agg count() { return Agg.overF64(5, this); }
+    public #Agg first() { return Agg.overF64(6, this); }
+    public #Agg last()  { return Agg.overF64(7, this); }
+
     public static #ColF64 operator+(#ColF64 a, #ColF64 b) { return ColF64.arith(2, #a, #b); }
     public static #ColF64 operator-(#ColF64 a, #ColF64 b) { return ColF64.arith(3, #a, #b); }
     public static #ColF64 operator*(#ColF64 a, #ColF64 b) { return ColF64.arith(4, #a, #b); }

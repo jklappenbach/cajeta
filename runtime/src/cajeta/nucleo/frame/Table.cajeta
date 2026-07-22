@@ -62,6 +62,9 @@ public class Table<T> {
     String label;        // "Table<pkg.Rec>" or "Table<?>" (describe)
     Rebinder rebinder;   // typed rebuild: owned by materialized tables
                          // (synthesized ctors install); handles borrow
+    Sel groupKeys;       // U8: keys named by groupBy, pending its agg
+    int32 nGroupKeys;
+    boolean grouped;     // a groupBy handle awaiting .agg(...)
     boolean optOff;      // skip the U7 rewriter (the tests' baseline)
     int64 statRows;      // last execution: rows the scan materialized
     int64 statCols;      // last execution: column buffers the scan read
@@ -164,6 +167,10 @@ public class Table<T> {
             return this.cached;
         }
         this.__liveCheck();
+        if (this.grouped) {
+            throw heap FrameException("Table.collect: groupBy names the "
+                + "keys but nothing to reduce - complete it with .agg(...)");
+        }
         if (this.plan == null) {
             return this;
         }
@@ -374,6 +381,79 @@ public class Table<T> {
         h.label = this.label;
         h.rebinder = this.rebinder;
         return #h;
+    }
+
+    /** Name the group keys (internal — the synthesized `groupBy` builds the
+     *  chain from the typed lambda). Lazy and incomplete: the handle holds
+     *  the keys until `agg` completes the node, and forcing it before then
+     *  is a named error rather than a silent whole-table reduction. */
+    public #Table<T> __groupBy(#Sel keys, int32 nkeys) {
+        DynFrame sch = this.__schemaClone();
+        Plan pl = this.__takeChain();
+        DynFrame sr = this.__takeSrc();
+        Table<T> h = heap Table<T>(#pl, #sr, #sch, false);
+        h.groupKeys #= keys;
+        h.nGroupKeys = nkeys;
+        h.grouped = true;
+        h.label = this.label;
+        return #h;
+    }
+
+    /** Complete a groupBy with its aggregates (internal — the synthesized
+     *  `agg` builds the chain from the typed lambda). The output schema is
+     *  computed and VALIDATED here, at plan build: a computed key, an
+     *  unknown column, or an unnamed aggregate fails now, before anything
+     *  runs. The shape changes, so the result is erased. */
+    public #Table<?> __agg(#Agg aggs, int32 naggs) {
+        if (!this.grouped) {
+            throw heap FrameException(
+                "Table.agg: no group keys - call groupBy(...) first");
+        }
+        DynFrame inSchema = this.__schemaClone();
+        Sel k #= this.groupKeys;
+        this.grouped = false;
+        Plan node = Plan.groupNode(#k, this.nGroupKeys, #aggs, naggs,
+            this.__takeChain());
+        DynFrame outSchema = Exec.applyGroup(node, #inSchema);
+        Table<T> h = heap Table<T>(#node, this.__takeSrc(), #outSchema, false);
+        return #h;
+    }
+
+    /** Column count of a MATERIALIZED table — the schema-agnostic read
+     *  surface that works on a `Table<?>` (the synthesized `colCount` is a
+     *  per-record compile-time fact, so it needs a known schema). */
+    public int32 width() {
+        return this.__matDyn("width").width();
+    }
+
+    DynFrame __matDyn(String op) {
+        if (this.dyn == null) {
+            throw heap FrameException("Table." + op + ": this table is not "
+                + "materialized - force it with collect() first");
+        }
+        return this.dyn;
+    }
+
+    /** Dynamic cell reads on a materialized table (spec §4.3.2) — the
+     *  `Table<?>` read side, name-keyed and validated. The column access
+     *  itself lives on DynFrame so this template never names a type from
+     *  the column package (see DynFrame's note). */
+    public float64 f64At(String name, int64 row) {
+        return this.__matDyn("f64At").f64Named("f64At", name, row);
+    }
+
+    public int64 i64At(String name, int64 row) {
+        return this.__matDyn("i64At").i64Named("i64At", name, row);
+    }
+
+    public #String strAt(String name, int64 row) {
+        return this.__matDyn("strAt").strNamed("strAt", name, row);
+    }
+
+    /** Whether a cell HAS a value — false exactly where the column is
+     *  nullable and this row is null (spec §7). */
+    public boolean validAt(String name, int64 row) {
+        return this.__matDyn("validAt").validNamed("validAt", name, row);
     }
 
     /**

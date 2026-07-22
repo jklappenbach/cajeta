@@ -32,6 +32,15 @@ public class ColStr {
         return #s;
     }
 
+    /** Reductions over a string column (U8): only the ones that mean
+     *  something without an ordering — `count` (rows in the group; v1 utf8
+     *  columns carry no validity, so every cell counts) and `first`/`last`.
+     *  There is no `sum`/`mean` on utf8, which makes `c.venue().sum()` a
+     *  COMPILE error rather than a runtime surprise. */
+    public #Agg count() { return Agg.overStr(5, this); }
+    public #Agg first() { return Agg.overStr(6, this); }
+    public #Agg last()  { return Agg.overStr(7, this); }
+
     public static #Pred operator==(#ColStr a, String v) { return Pred.cmpStr(26, #a, v); }
     public static #Pred operator!=(#ColStr a, String v) { return Pred.cmpStr(27, #a, v); }
 }

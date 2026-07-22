@@ -68,6 +68,38 @@ public class DynFrame {
         this.backing #= f;
     }
 
+    /** Name-keyed cell reads (U8) — the `Table<?>` dynamic read surface.
+     *  They live HERE rather than on Table so that Table never names
+     *  {@link DynCol} in a signature: Table is instantiated per schema and
+     *  can be built while the column package is still an archive
+     *  placeholder, and a placeholder in a member signature resolves to
+     *  nothing (the U5 cross-package lesson). DynFrame is schema-agnostic
+     *  and already holds the columns, so the reference stays inside it. */
+    int32 __require(String op, String name) {
+        int32 i = this.find(name);
+        if (i < 0) {
+            throw heap FrameException("Table." + op + ": no column '" + name
+                + "' in schema " + this.schemaText());
+        }
+        return i;
+    }
+
+    public float64 f64Named(String op, String name, int64 row) {
+        return this.cols[this.__require(op, name)].f64At(row);
+    }
+
+    public int64 i64Named(String op, String name, int64 row) {
+        return this.cols[this.__require(op, name)].i64At(row);
+    }
+
+    public #String strNamed(String op, String name, int64 row) {
+        return this.cols[this.__require(op, name)].strAt(row);
+    }
+
+    public boolean validNamed(String op, String name, int64 row) {
+        return this.cols[this.__require(op, name)].validAt(row);
+    }
+
     /** Ordinal of `name`, or -1. */
     public int32 find(String name) {
         int32 i = 0;
