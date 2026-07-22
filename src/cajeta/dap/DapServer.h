@@ -21,6 +21,7 @@
 #include <functional>
 #include <istream>
 #include <map>
+#include <mutex>
 #include <memory>
 #include <ostream>
 #include <string>
@@ -78,6 +79,15 @@ namespace cajeta::dap {
         // debuggee's exit code (0 if it never launched).
         int run(std::istream& in, std::ostream& out);
 
+        // The `cajeta dap` entry (resident-debug-server Unit 8): run over
+        // REAL stdio with the debuggee's stdout isolated from the protocol.
+        // The JIT'd program writes fd 1 — the same fd the frames use — and a
+        // print landing mid-frame corrupts the channel (observed: tour's
+        // self-check output desyncs the client). POSIX: the protocol moves
+        // to a private dup of stdout, fd 1 becomes a pipe pumped back as
+        // `output` events (category "stdout"). Elsewhere: plain run().
+        int runOverStdio();
+
         // Identity handshake test seams (resident-debug-server 5.1.1):
         // pretend the startup snapshot was taken before a rebuild, and
         // expose the resolved self-exe path so a test can send a MATCHING
@@ -96,6 +106,10 @@ namespace cajeta::dap {
         bool verifyCompilerIdentity(const Json& args, const Emit& emit,
                                     int requestSeq);
         std::string selfIdentityAtStart_;   // "" until the first initialize
+        // Serializes frame writes between the request loop and the debuggee-
+        // stdout pump (Unit 8) — a frame is atomic on the wire or the client
+        // desyncs. Also guards seq_ for pump-emitted events.
+        std::mutex emitMutex_;
 
         // Drive the running program until it next stops at a breakpoint or
         // terminates; emit the matching `stopped` / `terminated` event.

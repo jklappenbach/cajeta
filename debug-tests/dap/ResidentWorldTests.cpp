@@ -183,3 +183,32 @@ TEST(ResidentWorld, VanishedCacheDegradesToFullRebuild) {
     EXPECT_EQ(exitCodeOf(s2), 42);
     EXPECT_FALSE(sawOutput(s2, "using cached build"));
 }
+
+// 4.1.2b (added after the tour probe failed) — a stdlib template over a
+// USER type under residency. Without reuseEmitModule the instantiation
+// homes in the persistent stdlib module and user call sites reference it
+// CROSS-module — per-module delivery has no merge to legalize that, and
+// verify fails ("Referencing function in another module", seen live with
+// tour's ArrayList<DemoClass>). Two sessions so the restore path runs too.
+TEST(ResidentWorld, UserTypedStdlibTemplateSurvivesResidency) {
+    static const char* kTemplProg =
+        "package demo;\n"
+        "import cajeta.collection.ArrayList;\n"
+        "public class Prog {\n"
+        "    public static int32 main() {\n"
+        "        ArrayList<Prog> list = heap ArrayList<Prog>();\n"
+        "        list.add(heap Prog());\n"
+        "        list.add(heap Prog());\n"
+        "        return list.count() + 40;\n"
+        "    }\n"
+        "}\n";
+    TempProgram p("demo", "Prog.cajeta", kTemplProg);
+    CacheDirFixture cache;
+    DapServer srv;
+
+    std::vector<Json> s1 = session(srv, p, cache.dir.string(), "demo.Prog.main");
+    ASSERT_EQ(exitCodeOf(s1), 42);
+
+    std::vector<Json> s2 = session(srv, p, cache.dir.string(), "demo.Prog.main");
+    EXPECT_EQ(exitCodeOf(s2), 42);
+}

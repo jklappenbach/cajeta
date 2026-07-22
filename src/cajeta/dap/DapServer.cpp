@@ -2,6 +2,12 @@
 
 #include <chrono>
 #include <filesystem>
+#include <iostream>
+#include <thread>
+#ifndef _WIN32
+#include <ext/stdio_filebuf.h>
+#include <unistd.h>
+#endif
 
 #include "cajeta/dap/DapProtocol.h"
 #include "cajeta/dbg/DebugLocTable.h"
@@ -705,12 +711,52 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
 }
 
 int DapServer::run(std::istream& in, std::ostream& out) {
-    Emit emit = [&out](const Json& msg) { writeMessage(out, msg); };
+    Emit emit = [this, &out](const Json& msg) {
+        std::lock_guard<std::mutex> lock(emitMutex_);
+        writeMessage(out, msg);
+    };
     Json request;
     while (readMessage(in, &request)) {
         if (!handle(request, emit)) break;
     }
     return exitCode_;
+}
+
+int DapServer::runOverStdio() {
+#ifndef _WIN32
+    int protoFd = ::dup(STDOUT_FILENO);
+    int pfd[2] = {-1, -1};
+    if (protoFd >= 0 && ::pipe(pfd) == 0) {
+        // fd 1 now feeds the pump; the protocol owns a private descriptor.
+        ::dup2(pfd[1], STDOUT_FILENO);
+        ::close(pfd[1]);
+        static __gnu_cxx::stdio_filebuf<char> protoBuf(protoFd, std::ios::out);
+        static std::ostream protoStream(&protoBuf);
+
+        // Pump: everything the debuggee (or stray host code) prints becomes
+        // a DAP output event, category "stdout" — frame-atomic under the
+        // emit lock. Detached: it blocks in read() for the process lifetime
+        // (our own fd 1 keeps the pipe writable, so no EOF before exit).
+        int rd = pfd[0];
+        std::thread([this, rd]() {
+            char buf[4096];
+            for (;;) {
+                ssize_t n = ::read(rd, buf, sizeof buf);
+                if (n <= 0) break;
+                Json body = Json::object();
+                body["category"] = "stdout";
+                body["output"] = std::string(buf, (size_t) n);
+                std::lock_guard<std::mutex> lock(emitMutex_);
+                writeMessage(protoStream, makeEvent(seq_++, "output",
+                                                    std::move(body)));
+            }
+        }).detach();
+
+        return run(std::cin, protoStream);
+    }
+    if (protoFd >= 0) ::close(protoFd);
+#endif
+    return run(std::cin, std::cout);
 }
 
 } // namespace cajeta::dap

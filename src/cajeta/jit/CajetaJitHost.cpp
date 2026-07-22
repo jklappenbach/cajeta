@@ -23,6 +23,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -53,6 +54,7 @@
 #include "llvm/ExecutionEngine/ObjectCache.h"
 #include "llvm/ExecutionEngine/Orc/CompileUtils.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
+#include "llvm/Transforms/Utils/ValueMapper.h"
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Module.h"
@@ -306,6 +308,91 @@ void assignDbgLocRanges(const std::string& cacheDir,
         m->dbgLocBase = (int32_t) base;
         m->dbgLocUsed = 0;
     }
+}
+
+// Per-module delivery requires SELF-CONTAINED module IR. Under the resident
+// reuse path, instantiation emission can leave instruction operands pointing
+// at GlobalValues homed in ANOTHER module (e.g. Optional<UserType> methods
+// emitted into the user module still referencing the stdlib module's
+// __cajeta_alloc / sibling methods / #VTable object) — the JIT test harness
+// legalized these implicitly with its whole-program merge; per-module ORC
+// delivery has none. Rewrite every foreign GlobalValue use to a same-named
+// DECLARATION in this module; ORC then resolves by name at materialization.
+// All modules share one LLVMContext in both build modes, so types carry over.
+void legalizeCrossModuleRefs(llvm::Module* m) {
+    auto localDecl = [m](llvm::GlobalValue* gv) -> llvm::Value* {
+        if (auto* fn = llvm::dyn_cast<llvm::Function>(gv)) {
+            return m->getOrInsertFunction(fn->getName(),
+                                          fn->getFunctionType()).getCallee();
+        }
+        if (auto* g = llvm::dyn_cast<llvm::GlobalVariable>(gv)) {
+            if (auto* existing = m->getGlobalVariable(g->getName(), true))
+                return existing;
+            return new llvm::GlobalVariable(
+                *m, g->getValueType(), g->isConstant(),
+                llvm::GlobalValue::ExternalLinkage, nullptr, g->getName());
+        }
+        return nullptr;
+    };
+
+    // Collect every foreign GlobalValue reachable from this module's
+    // instructions and global initializers. Constants are uniqued per
+    // context (shared across modules), so replacement must REBUILD constant
+    // trees via ValueMapper rather than mutate in place.
+    llvm::ValueToValueMapTy vm;
+    std::function<void(llvm::Constant*)> scan = [&](llvm::Constant* c) {
+        if (auto* gv = llvm::dyn_cast<llvm::GlobalValue>(c)) {
+            if (gv->getParent() != m && !vm.count(gv))
+                if (llvm::Value* repl = localDecl(gv)) vm[gv] = repl;
+            return;
+        }
+        for (unsigned i = 0; i < c->getNumOperands(); ++i)
+            if (auto* op = llvm::dyn_cast<llvm::Constant>(c->getOperand(i)))
+                scan(op);
+    };
+    for (auto& F : *m)
+        for (auto& BB : F)
+            for (auto& I : BB)
+                for (unsigned i = 0; i < I.getNumOperands(); ++i)
+                    if (auto* c = llvm::dyn_cast<llvm::Constant>(I.getOperand(i)))
+                        scan(c);
+    for (auto& g : m->globals())
+        if (g.hasInitializer()) scan(g.getInitializer());
+    if (vm.empty()) return;
+
+    for (auto& F : *m)
+        for (auto& BB : F)
+            for (auto& I : BB)
+                llvm::RemapInstruction(&I, vm,
+                    llvm::RF_IgnoreMissingLocals | llvm::RF_ReuseAndMutateDistinctMDs);
+    for (auto& g : m->globals())
+        if (g.hasInitializer())
+            g.setInitializer(llvm::cast<llvm::Constant>(
+                llvm::MapValue(g.getInitializer(), vm,
+                               llvm::RF_IgnoreMissingLocals)));
+}
+
+// Template instantiations are ODR: under residency the persistent stdlib
+// module can retain a prior session's instantiation body while the new
+// session re-emits the same symbol into the active user module (restore
+// drops REGISTRATIONS, not emitted IR), and two strong definitions in one
+// JITDylib fail addIRModule ("duplicate definition", seen on tour with
+// Sort::pdqLomCycLt<int64>). Demote every instantiation-mangled definition
+// (name carries '<') to weak_odr so ORC picks one — the drop-thunk
+// treatment. Non-template symbols keep their linkage.
+void demoteInstantiationsToWeakODR(llvm::Module* m) {
+    for (auto& F : *m)
+        if (!F.isDeclaration() && F.getName().contains("<")
+                && F.getLinkage() == llvm::GlobalValue::ExternalLinkage) {
+            F.setLinkage(llvm::GlobalValue::WeakODRLinkage);
+            F.setComdat(nullptr);
+        }
+    for (auto& g : m->globals())
+        if (g.hasInitializer() && g.getName().contains("<")
+                && g.getLinkage() == llvm::GlobalValue::ExternalLinkage) {
+            g.setLinkage(llvm::GlobalValue::WeakODRLinkage);
+            g.setComdat(nullptr);
+        }
 }
 
 // Content-addressed pools (resident-debug-server 2.2.3): every module's
@@ -795,7 +882,11 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
     // (a throw during prep) falls back to the isolated path (spec 3.1).
     struct SharedContextGuard {
         bool armed = false;
-        ~SharedContextGuard() { if (armed) Compiler::setSharedContext(nullptr); }
+        ~SharedContextGuard() {
+            if (!armed) return;
+            Compiler::setSharedContext(nullptr);
+            cajeta::CajetaModule::setReuseEmitModule(nullptr);
+        }
     } sharedCtxGuard;
     bool residentActive = false;
     cajeta::CajetaModulePtr residentStdlib;
@@ -921,8 +1012,17 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
             auto m = compiler->createModule(sourcePath.string(),
                                             sourceRoot.string(),
                                             archiveRoot.string());
+            if (!primary) {
+                primary = m;
+                // Resident reuse: MUST be set before the first user compile —
+                // stdlib-template instantiation over a user type fires during
+                // PARSE (type resolution), and one homed in the persistent
+                // stdlib module becomes a cross-module reference per-module
+                // delivery cannot legalize (no merge). Harness recipe.
+                if (residentActive)
+                    cajeta::CajetaModule::setReuseEmitModule(primary);
+            }
             compiler->compile(m);
-            if (!primary) primary = m;
         }
     } catch (cajeta::Exception& e) {
         std::cerr << "cajeta jit: [" << e.getErrorId() << "] "
@@ -935,6 +1035,7 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
         out.errorCode = 1;
         return out;
     }
+
 
     cajeta::CajetaModule::validatePlaceholders();
     cajeta::CajetaModule::resolveAdviceMatches();
@@ -971,25 +1072,38 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
     // throw from generateCode — report them like parse-phase errors instead
     // of escaping to std::terminate.
     try {
+        // Resident mode: the persistent stdlib module is NOT in this
+        // Compiler's list, but THIS session's pure-stdlib-typed
+        // instantiations (Stream<String>-shaped) home their methods there —
+        // without it in the sweep their bodies never generate and
+        // materialization fails ("Failed to materialize", seen on tour).
+        // Idempotent for everything the layer already generated.
+        auto codegenMods = [&]() {
+            auto mods = compiler->getModules();
+            std::vector<cajeta::CajetaModulePtr> v(mods.begin(), mods.end());
+            if (residentStdlib) v.push_back(residentStdlib);
+            return v;
+        };
         size_t prevMethodCount = 0;
         while (true) {
+            auto mods = codegenMods();
             size_t methodCount = 0;
-            for (auto& m : compiler->getModules()) methodCount += m->getAllMethods().size();
-            for (auto& m : compiler->getModules())
+            for (auto& m : mods) methodCount += m->getAllMethods().size();
+            for (auto& m : mods)
                 timeInto(codegenBucket(m), [&] {
                     for (auto& method : m->getAllMethods()) method->getLlvmFunctionType();
                 });
-            for (auto& m : compiler->getModules())
+            for (auto& m : mods)
                 timeInto(codegenBucket(m), [&] {
                     for (auto& method : m->getAllMethods()) method->generateCode();
                 });
             size_t after = 0;
-            for (auto& m : compiler->getModules()) after += m->getAllMethods().size();
+            for (auto& m : codegenMods()) after += m->getAllMethods().size();
             if (after == methodCount && after == prevMethodCount) break;
             prevMethodCount = after;
         }
 
-        for (auto& m : compiler->getModules())
+        for (auto& m : codegenMods())
             timeInto(codegenBucket(m), [&] {
                 for (auto& [name, klass] : m->getStructures())
                     if (klass) klass->generateStaticInitializers();
@@ -1076,6 +1190,12 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
                                                   jitModules.end());
         if (residentStdlib) mods.push_back(residentStdlib);  // delivery too
         moduleBCs.reserve(mods.size());
+        // Legalize EVERY module before verifying ANY: a use from module B
+        // into module A trips A's verifier even though the fix lives in B.
+        for (auto& m : mods) {
+            legalizeCrossModuleRefs(m->getLlvmModule());
+            demoteInstantiationsToWeakODR(m->getLlvmModule());
+        }
         for (auto& m : mods) {
             llvm::Module* lm = m->getLlvmModule();
             if (dumpIr) lm->print(llvm::errs(), nullptr);

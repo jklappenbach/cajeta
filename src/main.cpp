@@ -290,7 +290,7 @@ int main(int argc, const char* argv[]) {
     // Debugging.md). The IDE plugin spawns this and drives the debug session.
     if (argc >= 2 && std::string(argv[1]) == "dap") {
         cajeta::dap::DapServer server;
-        return server.run(std::cin, std::cout);
+        return server.runOverStdio();
     }
 
 
