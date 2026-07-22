@@ -45,7 +45,12 @@ class CajetaDebugSession(private val client: DapClient) {
     @Volatile var onStopped: ((Json) -> Unit)? = null
     @Volatile var onTerminated: (() -> Unit)? = null
     @Volatile var onExited: ((Int) -> Unit)? = null
-    @Volatile var onOutput: ((String) -> Unit)? = null
+    /**
+     * `output` event text plus its DAP category ("stdout", "stderr", or
+     * "console" for the server's own launch narration). The category drives the
+     * console color, so it has to survive the hop.
+     */
+    @Volatile var onOutput: ((String, String) -> Unit)? = null
     @Volatile var onClosed: (() -> Unit)? = null
 
     fun start() {
@@ -56,7 +61,11 @@ class CajetaDebugSession(private val client: DapClient) {
             onExited?.invoke(code)
         }
         client.onEvent("output") { ev ->
-            ev.opt("body")?.opt("output")?.let { onOutput?.invoke(it.asString()) }
+            val body = ev.opt("body")
+            body?.opt("output")?.let {
+                val category = body.opt("category")?.asString() ?: "console"
+                onOutput?.invoke(it.asString(), category)
+            }
         }
         client.onClosed = { onClosed?.invoke() }
         client.start()

@@ -1,7 +1,11 @@
 package dev.cajeta.idea.debugger
 
+import com.intellij.execution.process.ProcessOutputTypes
 import com.intellij.execution.ui.ConsoleView
+import com.intellij.execution.ui.ConsoleViewContentType
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.lang.reflect.InvocationHandler
@@ -27,11 +31,15 @@ class ConsoleAttachTest {
     private class Recorder : InvocationHandler {
         val attached = mutableListOf<Any?>()
         val printed = mutableListOf<String>()
+        val printedTypes = mutableListOf<ConsoleViewContentType>()
 
         override fun invoke(proxy: Any, method: Method, args: Array<out Any?>?): Any? {
             when (method.name) {
                 "attachToProcess" -> attached.add(args?.get(0))
-                "print" -> printed.add(args?.get(0) as String)
+                "print" -> {
+                    printed.add(args?.get(0) as String)
+                    printedTypes.add(args.get(1) as ConsoleViewContentType)
+                }
                 "hashCode" -> return System.identityHashCode(proxy)
                 "equals" -> return proxy === args?.get(0)
                 "toString" -> return "FakeConsoleView"
@@ -62,7 +70,7 @@ class ConsoleAttachTest {
         val handler = CajetaDebugProcessHandler()
         val recorder = Recorder()
 
-        handler.emitOutput("cajeta: using cached build\n")
+        handler.emitNarration("cajeta: using cached build\n")
         handler.emitOutput("=== Cajeta language tour ===\n")
         handler.emitError("warning: something\n")
 
@@ -75,6 +83,42 @@ class ConsoleAttachTest {
                 "warning: something\n",
             ),
             recorder.printed,
+        )
+    }
+
+    /**
+     * Program stdout renders green, stderr red, launch narration plain. The
+     * green key is our own: registering a color against ProcessOutputTypes
+     * .STDOUT would repaint every console in the IDE.
+     */
+    @Test
+    fun `colors stdout green, stderr red, narration plain`() {
+        val handler = CajetaDebugProcessHandler()
+        val recorder = Recorder()
+
+        handler.emitOutput("out\n")
+        handler.emitError("err\n")
+        handler.emitNarration("cajeta: compile finished\n")
+        handler.attachConsole(fakeConsole(recorder))
+
+        assertEquals(
+            listOf(
+                CajetaDebugProcessHandler.STDOUT_CONTENT,
+                ConsoleViewContentType.ERROR_OUTPUT,
+                ConsoleViewContentType.SYSTEM_OUTPUT,
+            ),
+            recorder.printedTypes,
+        )
+        assertNotEquals(
+            "stdout must not reuse the platform stdout key",
+            ProcessOutputTypes.STDOUT,
+            CajetaDebugProcessHandler.CAJETA_STDOUT,
+        )
+        val green = CajetaDebugProcessHandler.STDOUT_CONTENT.attributes.foregroundColor
+        assertNotNull("stdout needs an explicit foreground", green)
+        assertTrue(
+            "stdout foreground should be green-dominant, was $green",
+            green.green > green.red && green.green > green.blue,
         )
     }
 

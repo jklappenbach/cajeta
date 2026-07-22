@@ -4,7 +4,11 @@ import com.intellij.execution.process.ProcessHandler
 import com.intellij.execution.process.ProcessOutputTypes
 import com.intellij.execution.ui.ConsoleView
 import com.intellij.execution.ui.ConsoleViewContentType
+import com.intellij.openapi.editor.markup.TextAttributes
 import com.intellij.openapi.util.Key
+import com.intellij.ui.JBColor
+import java.awt.Color
+import java.awt.Font
 import java.io.OutputStream
 
 /**
@@ -38,9 +42,14 @@ class CajetaDebugProcessHandler : ProcessHandler() {
         if (!isProcessTerminated) notifyProcessTerminated(exitCode)
     }
 
-    fun emitOutput(text: String) = emit(text, ProcessOutputTypes.STDOUT)
+    /** Program stdout — green. */
+    fun emitOutput(text: String) = emit(text, CAJETA_STDOUT)
 
+    /** Program/server stderr — red. */
     fun emitError(text: String) = emit(text, ProcessOutputTypes.STDERR)
+
+    /** Launch narration ("cajeta: using cached build") — plain, not program output. */
+    fun emitNarration(text: String) = emit(text, ProcessOutputTypes.SYSTEM)
 
     // --- console attachment + pre-attach replay -------------------------
     //
@@ -92,5 +101,26 @@ class CajetaDebugProcessHandler : ProcessHandler() {
          * dozen lines; this bounds the case where no console ever attaches.
          */
         const val MAX_REPLAY_LINES = 2000
+
+        /**
+         * Key for program stdout. Deliberately NOT ProcessOutputTypes.STDOUT:
+         * console content types are registered per key in a global registry, so
+         * coloring the platform key would repaint stdout in every console in
+         * the IDE, not just ours.
+         */
+        val CAJETA_STDOUT: Key<Any> = Key.create("CAJETA_STDOUT")
+
+        /** Green: the debuggee's own stdout, distinct from launch narration. */
+        val STDOUT_CONTENT: ConsoleViewContentType = ConsoleViewContentType(
+            "CAJETA_STDOUT",
+            TextAttributes(
+                JBColor(Color(0x00701A), Color(0x6A8759)),
+                null, null, null, Font.PLAIN,
+            ),
+        )
+
+        init {
+            ConsoleViewContentType.registerNewConsoleViewType(CAJETA_STDOUT, STDOUT_CONTENT)
+        }
     }
 }

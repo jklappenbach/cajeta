@@ -87,7 +87,7 @@ class CajetaDebugProcess(
     override fun sessionInitialized() {
         val binary = CajetaSettings.instance.compilerPath
         if (binary.isBlank() || !File(binary).canExecute()) {
-            processHandler.emitOutput(
+            processHandler.emitError(
                 "Cajeta compiler not found at '$binary'. " +
                     "Set it in Settings | Languages & Frameworks | Cajeta.\n",
             )
@@ -184,20 +184,20 @@ class CajetaDebugProcess(
                         }
                     }.exceptionally { e2 ->
                         log.warn("cajeta dap relaunch failed", e2)
-                        processHandler.emitOutput("launch failed: ${e2.message}\n")
+                        processHandler.emitError("launch failed: ${e2.message}\n")
                         processHandler.reportTerminated(-1)
                         null
                     }
                 } catch (e2: Exception) {
                     log.warn("cajeta dap respawn failed", e2)
-                    processHandler.emitOutput("launch failed: ${e2.message}\n")
+                    processHandler.emitError("launch failed: ${e2.message}\n")
                     processHandler.reportTerminated(-1)
                 }
                 null
             }
         } catch (e: Exception) {
             log.warn("failed to start cajeta dap", e)
-            processHandler.emitOutput("failed to start cajeta dap: ${e.message}\n")
+            processHandler.emitError("failed to start cajeta dap: ${e.message}\n")
             processHandler.reportTerminated(-1)
         }
     }
@@ -332,9 +332,13 @@ class CajetaDebugProcess(
         processHandler.onDestroy = { ds.disconnect() }
         ds.onExited = { code -> clearDecorations(); processHandler.reportTerminated(code) }
         ds.onTerminated = { clearDecorations(); processHandler.reportTerminated(0) }
-        ds.onOutput = { text ->
-            log.info("cajeta-out: ${text.trimEnd().take(120)}")
-            processHandler.emitOutput(text)
+        ds.onOutput = { text, category ->
+            log.info("cajeta-out[$category]: ${text.trimEnd().take(120)}")
+            when (category) {
+                "stdout" -> processHandler.emitOutput(text)   // green
+                "stderr" -> processHandler.emitError(text)    // red
+                else -> processHandler.emitNarration(text)    // "console": plain
+            }
         }
         ds.onClosed = { clearDecorations(); processHandler.reportTerminated(0) }
         ds.onStopped = { body ->
