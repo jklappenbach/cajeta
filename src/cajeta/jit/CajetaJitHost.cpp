@@ -35,6 +35,7 @@
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/compile/DropBackfill.h"
+#include "cajeta/compile/StdlibReuseCore.h"
 #include "cajeta/compile/NativeLink.h"
 #include "cajeta/buildtool/NativeProvision.h"
 #include "cajeta/buildtool/Lockfile.h"
@@ -784,6 +785,77 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
         }
     }
 
+    // Resident world (resident-debug-server 4.2.1): between sessions the
+    // primed stdlib front-end survives; this rebuild restores the pristine
+    // post-stdlib baseline and pays for USER sources only. Discipline is
+    // warm-lint's: release the PRIOR build's transient user struct names
+    // while the canonical map still records them, restore, run this build's
+    // Compiler under the shared context, and clear the shared context on
+    // every exit so unrelated Compilers keep full isolation. Any doubt
+    // (a throw during prep) falls back to the isolated path (spec 3.1).
+    struct SharedContextGuard {
+        bool armed = false;
+        ~SharedContextGuard() { if (armed) Compiler::setSharedContext(nullptr); }
+    } sharedCtxGuard;
+    bool residentActive = false;
+    cajeta::CajetaModulePtr residentStdlib;
+    // The layer's stdlib loc entries (dense ids, < any 1<<20 user range) are
+    // wiped by each session's table clear below; snapshot once, replay each
+    // session so stdlib frames keep resolving.
+    static thread_local cajeta::dbg::DbgLocTable residentLayerLocs;
+    if (opts.resident) {
+        try {
+            auto& core = cajeta::StdlibReuseCore::instance();
+            core.ensurePrimed();
+            cajeta::CajetaType::releaseThrownTransientStructNames();
+            core.restoreBaseline();
+            core.ensureCodegenLayer([](Compiler& prime) {
+                // Debug-flavored stdlib codegen, once: every resident
+                // consumer is a debug session (startDebugSession forces
+                // debugInfo). Mirrors the buildJit quiescence loop.
+                prime.setMode(CompilerMode::Debug);
+                prime.getMutableFlags().debugInfo = true;
+                prime.getMutableFlags().debugInfoLevel = DebugInfo::Full;
+                cajeta::dbg::globalDbgLocTable().clear();
+                size_t prev = 0;
+                while (true) {
+                    size_t count = 0;
+                    for (auto& m : prime.getModules())
+                        count += m->getAllMethods().size();
+                    for (auto& m : prime.getModules())
+                        for (auto& method : m->getAllMethods())
+                            method->getLlvmFunctionType();
+                    for (auto& m : prime.getModules())
+                        for (auto& method : m->getAllMethods())
+                            method->generateCode();
+                    size_t after = 0;
+                    for (auto& m : prime.getModules())
+                        after += m->getAllMethods().size();
+                    if (after == count && after == prev) break;
+                    prev = after;
+                }
+                for (auto& m : prime.getModules())
+                    for (auto& [name, klass] : m->getStructures())
+                        if (klass) klass->generateStaticInitializers();
+                // Snapshot the layer's loc table for per-session replay.
+                residentLayerLocs.clear();
+                const auto& t = cajeta::dbg::globalDbgLocTable();
+                for (int32_t id : t.assignedIds())
+                    residentLayerLocs.setAt(id, t.at(id));
+            });
+            residentStdlib = core.getStdlibModule();
+            Compiler::setSharedContext(core.context());
+            sharedCtxGuard.armed = true;
+            residentActive = true;
+            progress("parse", "resident-world", 0, 0);
+        } catch (...) {
+            Compiler::setSharedContext(nullptr);
+            residentStdlib.reset();
+            std::cerr << "cajeta jit: resident reuse unavailable, "
+                         "falling back to a full build\n";
+        }
+    }
+
     out.compiler = std::make_unique<Compiler>();
     Compiler* compiler = out.compiler.get();
     compiler->setMode(CompilerMode::Debug);
@@ -794,7 +866,16 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
     // cache flag set and any level-driven codegen see the same world.
     compiler->getMutableFlags().debugInfoLevel =
         opts.debugInfo ? DebugInfo::Full : DebugInfo::Line;
-    if (opts.debugInfo) cajeta::dbg::globalDbgLocTable().clear();
+    if (opts.debugInfo) {
+        cajeta::dbg::globalDbgLocTable().clear();
+        if (residentActive) {
+            // Restore the stdlib's layer-time loc entries (dense ids; user
+            // module ranges start at 1<<20, so the spaces never collide).
+            auto& t = cajeta::dbg::globalDbgLocTable();
+            for (int32_t id : residentLayerLocs.assignedIds())
+                t.setAt(id, residentLayerLocs.at(id));
+        }
+    }
 
     fs::path archiveRoot = fs::temp_directory_path()
                          / ("cajeta_jitrun_" + sourceRoot.filename().string());
@@ -948,6 +1029,10 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
         auto jitModules = compiler->getModules();
         std::vector<cajeta::CajetaModulePtr> scanModules(jitModules.begin(),
                                                          jitModules.end());
+        // Resident mode: the persistent stdlib is NOT in this Compiler's
+        // list (it lives on the core's prime compiler) but its definitions
+        // must reach the pin + delivery exactly as the isolated path's do.
+        if (residentStdlib) scanModules.push_back(residentStdlib);
         cajeta::backfillDropFunctions(scanModules, scanModules);
         // Then pin every definition (incl. freshly backfilled ones) so the
         // in-process linkModules merge can't lazy-discard them.
@@ -986,7 +1071,10 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
     const bool dumpIr = std::getenv("CAJETA_DUMP_IR") != nullptr;
     std::vector<ModuleBC> moduleBCs;
     {
-        auto mods = compiler->getModules();   // ONE copy (getModules-by-value)
+        auto jitModules = compiler->getModules();  // ONE copy (by-value)
+        std::vector<cajeta::CajetaModulePtr> mods(jitModules.begin(),
+                                                  jitModules.end());
+        if (residentStdlib) mods.push_back(residentStdlib);  // delivery too
         moduleBCs.reserve(mods.size());
         for (auto& m : mods) {
             llvm::Module* lm = m->getLlvmModule();

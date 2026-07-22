@@ -33,6 +33,11 @@ namespace cajeta::jit {
         std::vector<std::string> programArgs;
         // Reserved for CP2+: emit __cajeta_dbg_safepoint polls + debug frames.
         bool debugInfo = false;
+        // Resident-world mode (resident-debug-server 4.2.1): reuse the
+        // primed stdlib front-end (StdlibReuseCore) across builds in this
+        // process. Set by the DAP server when the launch request asks;
+        // one-shot paths (jit-run) leave it off and keep full isolation.
+        bool resident = false;
         // Whole-program JIT cache root (fast-debug-launch 4.2.1). Non-empty
         // enables the cache: a slot keyed on compiler version+flags+entry+
         // source digests holds the MERGED program bitcode + sidecars, and a

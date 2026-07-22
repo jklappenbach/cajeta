@@ -267,6 +267,11 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         launchOpts_.cacheDir = args.at("cacheDir").asString();
         if (launchOpts_.cacheDir.empty())
             launchOpts_.cacheDir = args.at("cache-dir").asString();
+        // resident-debug-server 4.2.1: reuse the primed stdlib world across
+        // this server's sessions. Absence = off (one-shot behavior).
+        launchOpts_.resident = args.at("resident").isBool()
+                                   ? args.at("resident").asBool()
+                                   : false;
         stopOnEntry_ = args.at("stopOnEntry").asBool();
         // Environment (spec §4). Absence of "env" means UNSPECIFIED, not
         // "empty environment" — every launch sent before this feature existed
@@ -350,6 +355,8 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
                                                int current, int total) {
             std::string line;
             if (phase == "collect") line = "cajeta: compile started\n";
+            else if (phase == "parse" && detail == "resident-world")
+                line = "cajeta: resident world reused\n";
             else if (phase == "parse" && total > 0)
                 line = "cajeta: compiling [" + std::to_string(current) + "/"
                      + std::to_string(total) + "] " + detail + "\n";
