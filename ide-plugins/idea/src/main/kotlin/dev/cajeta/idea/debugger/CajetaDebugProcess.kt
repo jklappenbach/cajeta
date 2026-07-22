@@ -334,11 +334,10 @@ class CajetaDebugProcess(
         ds.onTerminated = { clearDecorations(); processHandler.reportTerminated(0) }
         ds.onOutput = { text, category ->
             log.info("cajeta-out[$category]: ${text.trimEnd().take(120)}")
-            when (category) {
-                "stdout" -> processHandler.emitOutput(text)   // green
-                "stderr" -> processHandler.emitError(text)    // red
-                else -> processHandler.emitNarration(text)    // "console": plain
-            }
+            // Red is reserved for stderr. Program stdout and the server's own
+            // launch narration (category "console") both render plain.
+            if (category == "stderr") processHandler.emitError(text)
+            else processHandler.emitOutput(text)
         }
         ds.onClosed = { clearDecorations(); processHandler.reportTerminated(0) }
         ds.onStopped = { body ->
