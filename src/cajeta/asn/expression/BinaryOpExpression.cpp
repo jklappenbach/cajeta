@@ -2598,10 +2598,30 @@ namespace cajeta {
                                 storedViaClassElem = true;
                             }
                         } else if (sidecar) {
+                            // An identifier RHS hands its wrapper over only
+                            // when the local actually HOLDS TITLE (it has a
+                            // drop entry the deactivation block below will
+                            // strip). A borrow-holding local (`String n =
+                            // s.outNameOf(); arr[i] = n;`) owns nothing to
+                            // hand over — taking its wrapper double-titles
+                            // the source's string and the array teardown
+                            // frees it under the real owner (the nucleo-frame
+                            // U7 Exec.apply schema UAF). Those route to the
+                            // alias/resolve-copy store instead.
                             bool takesOwnership =
-                                dynamic_pointer_cast<IdentifierExpression>(rhsAst)
-                                || dynamic_pointer_cast<MoveExpression>(rhsAst)
+                                dynamic_pointer_cast<MoveExpression>(rhsAst)
                                 || MethodCallExpression::freshOwnedStringTemp(rhsAst);
+                            if (!takesOwnership) {
+                                if (auto rid = dynamic_pointer_cast<
+                                        IdentifierExpression>(rhsAst)) {
+                                    if (auto sc2 = module->getScopeStack().peek()) {
+                                        FieldPtr srcF = sc2->getField(
+                                            rid->getTextValue());
+                                        takesOwnership = srcF
+                                            && srcF->getDropEntry() != nullptr;
+                                    }
+                                }
+                            }
                             llvm::Function* setFn = module->getRuntimeFunction(
                                 takesOwnership
                                     ? "__cajeta_string_array_elem_set_owned"
@@ -2623,10 +2643,23 @@ namespace cajeta {
                             // wrapper, violating the always-own slot
                             // contract (teardown + displacement walks free
                             // every resident wrapper — Headers.grow UAF).
+                            // Same title gate as the sidecar branch above: an
+                            // identifier hands over its wrapper only when it
+                            // holds title; borrow-holding locals alias-copy.
                             bool seTakes =
-                                dynamic_pointer_cast<IdentifierExpression>(rhsAst)
-                                || dynamic_pointer_cast<MoveExpression>(rhsAst)
+                                dynamic_pointer_cast<MoveExpression>(rhsAst)
                                 || MethodCallExpression::freshOwnedStringTemp(rhsAst);
+                            if (!seTakes) {
+                                if (auto rid = dynamic_pointer_cast<
+                                        IdentifierExpression>(rhsAst)) {
+                                    if (auto sc2 = module->getScopeStack().peek()) {
+                                        FieldPtr srcF = sc2->getField(
+                                            rid->getTextValue());
+                                        seTakes = srcF
+                                            && srcF->getDropEntry() != nullptr;
+                                    }
+                                }
+                            }
                             if (llvm::Function* seFn = module->getRuntimeFunction(
                                     "__cajeta_string_elem_store")) {
                                 builder->CreateCall(seFn,

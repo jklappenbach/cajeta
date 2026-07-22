@@ -62,6 +62,9 @@ public class Table<T> {
     String label;        // "Table<pkg.Rec>" or "Table<?>" (describe)
     Rebinder rebinder;   // typed rebuild: owned by materialized tables
                          // (synthesized ctors install); handles borrow
+    boolean optOff;      // skip the U7 rewriter (the tests' baseline)
+    int64 statRows;      // last execution: rows the scan materialized
+    int64 statCols;      // last execution: column buffers the scan read
 
     /** A plan handle: op chain + scan snapshot + result schema. Built by
      *  `lazy()` and the relational ops; columns stay unset until forced. */
@@ -73,6 +76,8 @@ public class Table<T> {
         this.rows = -1;
         this.execCount = 0;
         this.label = "Table<?>";
+        this.statRows = -1;
+        this.statCols = -1;
     }
 
     /** A schema-erased materialized table over a dynamic column bag — what
@@ -82,6 +87,8 @@ public class Table<T> {
         this.rows = this.dyn.rowsOf();
         this.erased = true;
         this.label = "Table<?>";
+        this.statRows = -1;
+        this.statCols = -1;
     }
 
     /** Number of rows — the shared length of every column. Plan handles
@@ -161,7 +168,10 @@ public class Table<T> {
             return this;
         }
         this.execCount = this.execCount + 1;
-        DynFrame out = Exec.run(this.plan, this.src);
+        ExecStats st = heap ExecStats();
+        DynFrame out = this.__execute(st);
+        this.statRows = st.scanRows();
+        this.statCols = st.scanCols();
         if (this.typed) {
             // `typed` implies a rebinder was installed/propagated at
             // handle build — the invariant every typed-handle builder
@@ -181,6 +191,38 @@ public class Table<T> {
             this.cached = (Table<T>) this.cachedOwn;
         }
         return this.cached;
+    }
+
+    /** Run the plan — through the U7 rewriter unless disabled. The
+     *  rewritten chain BORROWS this handle's payloads; the handle keeps
+     *  them alive across the run. */
+    #DynFrame __execute(ExecStats st) {
+        if (this.optOff) {
+            return Exec.run(this.plan, this.src, st);
+        }
+        Plan opt = Opt.rewrite(this.plan, this.src);
+        return Exec.run(opt, this.src, st);
+    }
+
+    /** Turn the pushdown rewriter (U7, spec §5) off/on for this handle —
+     *  default on. The result must be identical either way; the pushdown
+     *  tests pin that equality. */
+    public void optimize(boolean on) {
+        this.optOff = !on;
+    }
+
+    /** Rows the scan materialized on the last execution (-1 before any):
+     *  with predicate pushdown (U7), rows failing a pushed filter never
+     *  materialize. */
+    public int64 scanRows() {
+        return this.statRows;
+    }
+
+    /** Column buffers the scan read on the last execution (-1 before
+     *  any): with projection pushdown (U7), columns the pipeline never
+     *  references are never read. */
+    public int64 scanCols() {
+        return this.statCols;
     }
 
     /** A plan handle whose scan reads a zero-copy snapshot of this
@@ -376,5 +418,22 @@ public class Table<T> {
         String w = stack Int64((int64) this.dyn.width()).toString();
         return this.label + " [" + n + " rows x " + w + " cols] "
             + this.dyn.schemaText();
+    }
+
+    /** The plan as the U7 rewriter will run it (spec §2.5, §5): pushed
+     *  predicates and the pruned column set show on the scan leaf
+     *  (`scan[filter x2, cols: a,b]`). Printing rewrites nothing — the
+     *  rewritten chain borrows this handle's payloads and is dropped. */
+    public #String explain() {
+        if (this.spent) {
+            return "Table [spent handle - re-chain from the source table]";
+        }
+        if (this.plan == null) {
+            return this.describe();
+        }
+        Plan opt = Opt.rewrite(this.plan, this.src);
+        String pd = opt.describe();
+        return this.label + " [optimized] plan: " + pd
+            + " schema " + this.schema.schemaText();
     }
 }

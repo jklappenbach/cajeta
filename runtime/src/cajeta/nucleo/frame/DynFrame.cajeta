@@ -21,6 +21,9 @@ public class DynFrame {
     DynCol[] cols;      // null on a schema-only frame
     int32 w;
     int64 rows;
+    DynFrame backing;   // owned: a consumed input frame this frame's column
+                        // aliases borrow from (Storage is single-owner —
+                        // executors that alias must keep their input alive)
 
     public DynFrame(#String[] names, #int32[] tags, #boolean[] nulls,
                     #DynCol[] cols, int32 w, int64 rows) {
@@ -55,6 +58,14 @@ public class DynFrame {
     /** Flip column `i` non-nullable (the fillNull schema effect). */
     void clearNullable(int32 i) {
         this.nulls[i] = false;
+    }
+
+    /** Adopt a consumed input frame whose storage this frame's aliases
+     *  borrow (U7): an executor that ALIASES its input's columns must keep
+     *  that input alive exactly as long as itself — Storage is single-owner
+     *  and views borrow. Chains transitively through `backing`. */
+    void __adopt(#DynFrame f) {
+        this.backing #= f;
     }
 
     /** Ordinal of `name`, or -1. */

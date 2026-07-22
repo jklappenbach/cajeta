@@ -23,10 +23,20 @@ public class Exec {
 
     /** Execute `node`'s chain against the scan snapshot `src`. */
     public static #DynFrame run(Plan node, DynFrame src) {
+        ExecStats st = heap ExecStats();
+        return Exec.run(node, src, st);
+    }
+
+    /** Execute, recording scan counters into `st` (U7). */
+    public static #DynFrame run(Plan node, DynFrame src, ExecStats st) {
         if (node.kindOf() == 1) {
-            return src.aliasFrame();
+            if (node.scanPredCount() == 0 && !node.scanPruned()) {
+                st.note(src.rowsOf(), (int64) src.width());
+                return src.aliasFrame();
+            }
+            return Exec.applyScan(node, src, st);
         }
-        DynFrame in = Exec.run(node.childOf(), src);
+        DynFrame in = Exec.run(node.childOf(), src, st);
         if (node.kindOf() == 2) {
             return Exec.applyFilter(node.predOf(), #in);
         }
@@ -44,6 +54,71 @@ public class Exec {
         }
         throw heap FrameException(
             "plan node not executable yet: " + node.opName());
+    }
+
+    /** Optimizer scan (U7): materialize only the referenced columns and
+     *  only the rows passing every pushed predicate — failing rows and
+     *  pruned column buffers are never read. Pruned slots stay NULL
+     *  placeholders so every ordinal bound at plan build keeps meaning;
+     *  the needed-column analysis guarantees nothing above reads them. */
+    static #DynFrame applyScan(Plan node, DynFrame src, ExecStats st) {
+        int32 w = src.width();
+        boolean[] keep = heap boolean[w];
+        if (node.scanPruned()) {
+            int32 ci = 0;
+            while (ci < node.scanColCount()) {
+                int32 o = src.find(node.scanColAt(ci));
+                if (o >= 0) { keep[o] = true; }
+                ci = ci + 1;
+            }
+        } else {
+            int32 j0 = 0;
+            while (j0 < w) { keep[j0] = true; j0 = j0 + 1; }
+        }
+        int64 kc = 0;
+        int32 j1 = 0;
+        while (j1 < w) {
+            if (keep[j1]) { kc = kc + 1; }
+            j1 = j1 + 1;
+        }
+        int64 n = src.rowsOf();
+        DynCol[] out = heap DynCol[w];
+        if (node.scanPredCount() == 0) {
+            int32 j2 = 0;
+            while (j2 < w) {
+                if (keep[j2]) { out[j2] #= src.colAt(j2).alias(); }
+                j2 = j2 + 1;
+            }
+            st.note(n, kc);
+            return src.rebuild(#out, n);
+        }
+        int64 cap = n;
+        if (cap < 1) { cap = 1; }
+        int64[] idx = heap int64[cap];
+        int64 m = 0;
+        int64 i = 0;
+        while (i < n) {
+            boolean pass = true;
+            int32 pi = 0;
+            while (pi < node.scanPredCount()) {
+                if (Exec.evalPred3(node.scanPredAt(pi), src, i) != 1) {
+                    pass = false;
+                }
+                pi = pi + 1;
+            }
+            if (pass) {
+                idx[m] = i;
+                m = m + 1;
+            }
+            i = i + 1;
+        }
+        int32 j = 0;
+        while (j < w) {
+            if (keep[j]) { out[j] #= src.colAt(j).gather(idx, m); }
+            j = j + 1;
+        }
+        st.note(m, kc);
+        return src.rebuild(#out, m);
     }
 
     /** float64 expression eval at row `i` (colRef / literal / arithmetic). */
@@ -243,7 +318,10 @@ public class Exec {
         DynCol[] out = heap DynCol[in.width()];
         int32 j = 0;
         while (j < in.width()) {
-            out[j] #= in.colAt(j).gather(idx, m);
+            // A null slot is a column the U7 scan pruned — carry it.
+            if (in.colAt(j) != null) {
+                out[j] #= in.colAt(j).gather(idx, m);
+            }
             j = j + 1;
         }
         return in.rebuild(#out, m);
@@ -269,7 +347,10 @@ public class Exec {
                 names[w] = in.nameAt(w);
                 tags[w] = in.tagAt(w);
                 nulls[w] = in.nullableAt(w);
-                if (!schemaOnly) { cols[w] #= in.colAt(w).alias(); }
+                // A null slot is a column the U7 scan pruned — carry it.
+                if (!schemaOnly && in.colAt(w) != null) {
+                    cols[w] #= in.colAt(w).alias();
+                }
                 w = w + 1;
             }
         }
@@ -368,7 +449,13 @@ public class Exec {
         if (schemaOnly) {
             return heap DynFrame(#names, #tags, #nulls, w);
         }
-        return heap DynFrame(#names, #tags, #nulls, #cols, w, n);
+        // This frame's passthrough columns ALIAS `in`'s storage; adopt the
+        // consumed input so that storage lives exactly as long as the
+        // aliases (single-owner Storage — the U7-surfaced dangle: a
+        // gathered frame below a project was dropped out from under it).
+        DynFrame r = heap DynFrame(#names, #tags, #nulls, #cols, w, n);
+        r.__adopt(#in);
+        return #r;
     }
 
     /** Fill-null: the target column's nulls become the node's value and
@@ -396,13 +483,16 @@ public class Exec {
                 } else {
                     out[j] #= in.colAt(j).fillNulls(node.fillFOf());
                 }
-            } else {
+            } else if (in.colAt(j) != null) {
+                // A null slot is a column the U7 scan pruned — carry it.
                 out[j] #= in.colAt(j).alias();
             }
             j = j + 1;
         }
         DynFrame r = in.rebuild(#out, in.rowsOf());
         r.clearNullable(target);
+        // Non-target columns alias `in`'s storage — adopt it (see apply).
+        r.__adopt(#in);
         return #r;
     }
 
@@ -449,7 +539,12 @@ public class Exec {
         DynCol[] out = heap DynCol[in.width()];
         int32 j = 0;
         while (j < in.width()) {
-            out[j] #= in.colAt(j).gather(idx, m);
+            // A null slot is a column the U7 scan pruned — carry it. (The
+            // needed-column analysis never prunes a column this node's
+            // validity walk reads.)
+            if (in.colAt(j) != null) {
+                out[j] #= in.colAt(j).gather(idx, m);
+            }
             j = j + 1;
         }
         return in.rebuild(#out, m);

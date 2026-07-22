@@ -1,0 +1,35 @@
+package cajeta.nucleo.frame;
+
+/**
+ * ExecStats — per-execution scan counters (nucleo-frame U7): how many rows
+ * the scan MATERIALIZED and how many column buffers it READ. With predicate
+ * pushdown, rows failing a pushed predicate never count; with projection
+ * pushdown, pruned columns never count. `Table.scanRows()`/`scanCols()`
+ * expose the last execution's numbers — the pushdown tests read them to
+ * PROVE the rewrites did less work (plan 7.1.1–7.1.2). Diagnostics, not a
+ * performance API.
+ */
+public class ExecStats {
+    int64 rows;
+    int64 cols;
+
+    public ExecStats() {
+        this.rows = -1;
+        this.cols = -1;
+    }
+
+    void note(int64 rows, int64 cols) {
+        this.rows = rows;
+        this.cols = cols;
+    }
+
+    /** Rows the scan emitted (-1 before any execution). */
+    public int64 scanRows() {
+        return this.rows;
+    }
+
+    /** Column buffers the scan read (-1 before any execution). */
+    public int64 scanCols() {
+        return this.cols;
+    }
+}

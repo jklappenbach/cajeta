@@ -1,5 +1,6 @@
 package cajeta.nucleo.frame;
 
+import cajeta.lang.Int64;
 import cajeta.lang.String;
 
 /**
@@ -38,6 +39,10 @@ public class Plan {
     float64 fillF;    // FILLNULL value (float physicals)
     int64 fillI;      // FILLNULL value (integer physicals)
     boolean fillIsInt;
+    Pred[] scanPreds; // U7 optimizer scan: pushed predicates, BORROWED from
+    int32 nScanPreds; //   the original chain (the owning handle keeps it)
+    String[] scanCols;// U7 optimizer scan: referenced-column subset in
+    int32 nScanCols;  //   source order; null = read every column
 
     Plan(int32 kind) {
         this.kind = kind;
@@ -113,6 +118,58 @@ public class Plan {
         return #n;
     }
 
+    /** U7 optimizer: attach pushed predicates to a scan leaf. The array is
+     *  owned here; its ELEMENTS borrow the original chain's filter
+     *  payloads. */
+    void __setScanPreds(#Pred[] preds, int32 n) {
+        this.scanPreds #= preds;
+        this.nScanPreds = n;
+    }
+
+    /** U7 optimizer: attach the referenced-column subset to a scan leaf
+     *  (names borrowed from the source schema, source order). */
+    void __setScanCols(#String[] cols, int32 n) {
+        this.scanCols #= cols;
+        this.nScanCols = n;
+    }
+
+    int32 scanPredCount() {
+        return this.nScanPreds;
+    }
+
+    Pred scanPredAt(int32 i) {
+        return this.scanPreds[i];
+    }
+
+    /** True when the scan reads a column subset (projection pushdown). */
+    boolean scanPruned() {
+        return this.scanCols != null;
+    }
+
+    int32 scanColCount() {
+        return this.nScanCols;
+    }
+
+    String scanColAt(int32 i) {
+        return this.scanCols[i];
+    }
+
+    /** U7 optimizer: a copy of `orig` over a new child whose payloads
+     *  BORROW the original's — the rewritten chain never owns predicates
+     *  or selection chains; the handle's original plan keeps them alive. */
+    static #Plan borrowNode(Plan orig, #Plan child) {
+        Plan n = heap Plan(orig.kindOf());
+        n.pred = orig.predOf();
+        n.sels = orig.selsOf();
+        n.nsels = orig.selCount();
+        n.colName = orig.colNameOf();
+        n.fillF = orig.fillFOf();
+        n.fillI = orig.fillIOf();
+        n.fillIsInt = orig.fillIsIntOf();
+        n.child #= child;
+        return #n;
+    }
+
     /** FILTER payload. */
     public Pred predOf() {
         return this.pred;
@@ -176,9 +233,32 @@ public class Plan {
         return "unknown";
     }
 
-    /** The whole chain, root-first: `"sort <- filter <- scan"`. */
+    /** The whole chain, root-first: `"sort <- filter <- scan"`. An
+     *  optimizer scan leaf shows its rewrites (U7, spec §2.5):
+     *  `scan[filter x2, cols: a,b]`. */
     public #String describe() {
         String name = this.opName();
+        if (this.kind == 1 && (this.nScanPreds > 0 || this.scanCols != null)) {
+            name = name + "[";
+            if (this.nScanPreds > 0) {
+                name = name + "filter";
+                if (this.nScanPreds > 1) {
+                    name = name + " x"
+                        + stack Int64((int64) this.nScanPreds).toString();
+                }
+            }
+            if (this.scanCols != null) {
+                if (this.nScanPreds > 0) { name = name + ", "; }
+                name = name + "cols: ";
+                int32 i = 0;
+                while (i < this.nScanCols) {
+                    if (i > 0) { name = name + ","; }
+                    name = name + this.scanCols[i];
+                    i = i + 1;
+                }
+            }
+            name = name + "]";
+        }
         if (this.child == null) {
             return #name;
         }
