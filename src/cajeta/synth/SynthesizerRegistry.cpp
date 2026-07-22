@@ -66,6 +66,22 @@ namespace cajeta::synth {
         return claimed;
     }
 
+    void SynthesizerRegistry::registerCompanion(std::string label,
+                                                CompanionSynthesizer fn) {
+        companionSynths.emplace_back(std::move(label), std::move(fn));
+    }
+
+    std::vector<std::pair<std::string,
+                          SynthesizerRegistry::CompanionSynthesisResult>>
+    SynthesizerRegistry::collectCompanions(const SynthesisContext& ctx) const {
+        std::vector<std::pair<std::string, CompanionSynthesisResult>> claimed;
+        for (const auto& [label, fn] : companionSynths) {
+            std::optional<CompanionSynthesisResult> r = fn(ctx);
+            if (r) claimed.emplace_back(label, std::move(*r));
+        }
+        return claimed;
+    }
+
     namespace {
         // Wrap a `bool synthesize*MethodSource(parent, name, args, params, out&)`
         // codec entry point as a BodySynthesizer. Codecs are method-template
@@ -420,6 +436,44 @@ namespace cajeta::synth {
             frag += "}";
             MemberSynthesisResult r;
             r.classBodyFragment = std::move(frag);
+            return r;
+        });
+
+        // nucleo-frame U1 — the `<Record>Cols` companion: emitted per
+        // `Table<Record>` instantiation, it is the typed column-expression
+        // builder a relational op's lambda receives
+        // (`ticks.filter((TickCols c) -> c.price() > 0.0)`). SPIKE SHAPE:
+        // builder methods return per-field ordinals — the real expression
+        // node family replaces the bodies in U1's 1.2.2. Same gate as the
+        // `table` member synthesizer: an instantiation of a template named
+        // `Table` with one record argument.
+        reg.registerCompanion("tableCols",
+                [](const SynthesisContext& c)
+                    -> std::optional<SynthesizerRegistry::CompanionSynthesisResult> {
+            auto structure = c.parent;
+            if (!structure || !structure->isInstantiation()) return std::nullopt;
+            auto origin = structure->getTemplateOrigin();
+            if (!origin || !origin->getQName()
+                    || origin->getQName()->getTypeName() != "Table") {
+                return std::nullopt;
+            }
+            const auto& args = structure->getTypeArguments();
+            if (args.size() != 1) return std::nullopt;
+            auto record = std::dynamic_pointer_cast<CajetaClass>(args[0]);
+            if (!record || !record->isRecordType()) return std::nullopt;
+            SynthesizerRegistry::CompanionSynthesisResult r;
+            r.className = record->getQName()->getTypeName() + "Cols";
+            r.packageName = record->getQName()->getPackageName();
+            std::string src = "public class " + r.className + " {\n"
+                "    public " + r.className + "() { }\n";
+            int32_t ord = 0;
+            for (auto& prop : record->getPropertyList()) {
+                if (!prop || prop->isStatic()) continue;
+                src += "    public int32 " + prop->getName()
+                    + "() { return " + std::to_string(ord++) + "; }\n";
+            }
+            src += "}\n";
+            r.classSource = std::move(src);
             return r;
         });
         });  // std::call_once

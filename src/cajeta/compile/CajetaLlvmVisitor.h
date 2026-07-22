@@ -61,6 +61,105 @@ namespace cajeta {
         // `@Logged` is now a registered member synthesizer (see
         // registerBuiltinSynthesizers); this replaced the hard-wired
         // synthesizeLoggerField.
+        // nucleo-frame U1 — companion-CLASS synthesis: run every registered
+        // companion synthesizer that claims `structure` (an instantiation),
+        // parse each emitted class, and register it as a REAL named type
+        // (canonicalMap short+canonical, module structures) so ordinary user
+        // source can spell it (`(TickCols c) -> ...`). Methods prototype then
+        // codegen with the cursor saved/restored — the same discipline as the
+        // transform-helper synthesis, but the class is user-visible, not an
+        // anonymous mangled helper. Memoized on the canonical name: one
+        // companion per name process-wide, matching the instantiation cache.
+        void runCompanionSynthesizers(CajetaClassPtr structure) {
+            if (!structure) return;
+            cajeta::synth::registerBuiltinSynthesizers();
+            cajeta::synth::SynthesisContext cctx;
+            cctx.parent = structure;
+            cctx.module = pModule;
+            auto companions = cajeta::synth::SynthesizerRegistry::instance()
+                .collectCompanions(cctx);
+            if (companions.empty()) return;
+            auto& cmap = CajetaType::getCanonicalMap();
+            for (auto& [label, res] : companions) {
+                std::string canonical = res.packageName.empty()
+                    ? res.className
+                    : res.packageName + "." + res.className;
+                // Memoized when a REAL companion already exists. A
+                // PLACEHOLDER entry means an earlier signature/field named
+                // the companion before this instantiation fired (forward
+                // reference) — FILL that same shared_ptr, never skip it:
+                // skipping left a hollow placeholder every earlier
+                // reference pointed at (a compiler segfault at use).
+                CajetaClassPtr existing;
+                {
+                    auto it = cmap.find(canonical);
+                    if (it == cmap.end()) it = cmap.find(res.className);
+                    if (it != cmap.end()) {
+                        existing = std::dynamic_pointer_cast<CajetaClass>(
+                            it->second);
+                        if (existing && !existing->isPlaceholder()) continue;
+                        if (!existing) continue;   // non-class entry: bail
+                    }
+                }
+                std::string source = (res.packageName.empty()
+                        ? std::string()
+                        : ("package " + res.packageName + ";\n"))
+                    + res.classSource;
+                auto* unit = cajeta::synth::parseSynthesizedUnit(source);
+                CajetaParser::ClassDeclarationContext* classDecl = nullptr;
+                for (auto* td : unit->typeDeclaration()) {
+                    if (auto* cd = td->classDeclaration()) { classDecl = cd; break; }
+                }
+                if (!classDecl) {
+                    throw Exception(
+                        "companion synthesizer '" + label
+                            + "' emitted source with no class declaration",
+                        "CAJETA_ERROR_SYNTH_FAILED");
+                }
+                auto qName = QualifiedName::getOrInsert(
+                    res.className, res.packageName);
+                CajetaClassPtr klass;
+                if (existing) {
+                    existing->fillFromDeclaration(
+                        pModule, qName, std::list<QualifiedNamePtr>{},
+                        std::list<QualifiedNamePtr>{});
+                    klass = existing;
+                } else {
+                    klass = std::make_shared<CajetaClass>(
+                        pModule, qName, std::list<QualifiedNamePtr>{});
+                }
+                // Register BEFORE the body walk so self-references and the
+                // triggering unit's later name lookups resolve.
+                cmap[canonical] = klass;
+                cmap[res.className] = klass;
+                pModule->getStructures()[canonical] = klass;
+                // Registration ONLY — the codegen fixed-point loop emits the
+                // companion's prototypes/bodies like any registered class
+                // (the enum-companion precedent; running generateCode here,
+                // pre-loop, crashes on the missing cursor — the instantiation
+                // hook has NO live builder).
+                auto& stk = pModule->getStructureStack();
+                std::list<CajetaClassPtr> savedStack;
+                savedStack.swap(stk);
+                stk.push_back(klass);
+                try {
+                    auto bodyAny = visitClassBody(classDecl->classBody());
+                    auto classBody =
+                        std::any_cast<ClassBodyDeclarationPtr>(bodyAny);
+                    for (auto& decl : classBody->getDeclarations()) {
+                        decl->updateParent(klass);
+                    }
+                    klass->generatePrototype();
+                } catch (...) {
+                    stk.clear();
+                    stk.swap(savedStack);
+                    throw;
+                }
+                stk.clear();
+                stk.swap(savedStack);
+            }
+        }
+
         void runMemberSynthesizers(CajetaClassPtr structure) {
             if (!structure) return;
             cajeta::synth::registerBuiltinSynthesizers();

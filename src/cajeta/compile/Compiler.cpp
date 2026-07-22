@@ -305,6 +305,29 @@ namespace cajeta {
             registerAndRecurse(ctx->identifier()->getText(), ctx,
                                 /*markEnum=*/false, /*markValueType=*/true);
             captureTemplateMeta(ctx);
+            // nucleo-frame U1 — every record MAY become a Table<R> schema,
+            // whose instantiation synthesizes the `<R>Cols` builder
+            // companion. Archive that name now (the @GenerateMock sibling
+            // pattern) so a reference BEFORE the instantiation fires — a
+            // helper signature above the table declaration, a sibling file —
+            // resolves to a placeholder runCompanionSynthesizers later
+            // FILLS. Cost when never referenced: one archive entry. A
+            // referenced-but-never-instantiated companion is caught by
+            // validatePlaceholders with a clear unresolved-placeholder
+            // error, never a silent shell.
+            {
+                std::string colsShort =
+                    ctx->identifier()->getText() + std::string("Cols");
+                std::string canonical;
+                if (!package.empty()) canonical = package;
+                for (auto& e : enclosingStack) {
+                    if (!canonical.empty()) canonical += ".";
+                    canonical += e;
+                }
+                if (!canonical.empty()) canonical += ".";
+                canonical += colsShort;
+                CajetaType::registerArchive(canonical, colsShort);
+            }
             return defaultResult();
         }
 
