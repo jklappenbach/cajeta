@@ -96,6 +96,9 @@ namespace cajeta {
         string name;
         // Declaration name-token position; see getDeclLine(). 0 = synthesized.
         int declLine = 0;
+        // See getDbgLineDelta() — snippet-line -> file-line correction for
+        // template-instantiated bodies (9.2).
+        int dbgLineDelta = 0;
         int declColumn = 0;
         CajetaClassPtr parent;
         CajetaTypePtr returnType;
@@ -673,6 +676,15 @@ namespace cajeta {
         // Set by the visitor at each method/constructor declaration site; 0 means
         // synthesized (drop methods, mocks, template instantiations). Consumed by
         // the xref export (ide-symbol-index §2).
+        // resident-debug-server 9.2: instantiated bodies are re-parsed from a
+        // SYNTHETIC wrapper snippet, so their token lines are snippet-relative
+        // (they merely look plausible — a long preamble puts them in range of
+        // the real file). This delta maps snippet line -> true file line and
+        // is derived from the template's own declLine vs the snippet's, so it
+        // is independent of preamble size. 0 = ordinary (non-instantiated).
+        int getDbgLineDelta() const { return dbgLineDelta; }
+        void setDbgLineDelta(int d) { dbgLineDelta = d; }
+
         int getDeclLine() const { return declLine; }
         int getDeclColumn() const { return declColumn; }
 

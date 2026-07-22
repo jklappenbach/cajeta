@@ -29,7 +29,13 @@ namespace cajeta {
 
         std::string function;
         std::string file;
+        int lineDelta = 0;   // 9.2: snippet -> file line for instantiations
         if (auto method = module->getCurrentMethod()) {
+            lineDelta = method->getDbgLineDelta();
+            // Class-template instantiations carry the delta on the class.
+            if (lineDelta == 0)
+                if (auto owner = method->getParent())
+                    lineDelta = owner->getDbgLineDelta();
             function = method->getLlvmSymbolName();
             // The declaring class's file, remapped — same source as #FrameDesc
             // (external-debug §6). getSourcePath() was the raw ABSOLUTE path,
@@ -43,15 +49,16 @@ namespace cajeta {
         // Ranged modules (JIT path) claim ids from their own range so an
         // edit elsewhere never shifts this module's baked constants; the
         // dense allocator remains for AOT/lint (and range overflow).
+        const int dbgLine = statement->getSourceLine() + lineDelta;
         int32_t locId = module->takeDbgLocId();
         if (locId >= 0) {
             dbg::globalDbgLocTable().setAt(
-                locId, dbg::DbgLoc{file, statement->getSourceLine(),
+                locId, dbg::DbgLoc{file, dbgLine,
                                    statement->getSourceColumn(), function});
         } else {
             locId = dbg::globalDbgLocTable().add(
                 file,
-                statement->getSourceLine(),
+                dbgLine,
                 statement->getSourceColumn(),
                 function);
         }

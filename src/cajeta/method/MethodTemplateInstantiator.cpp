@@ -475,6 +475,17 @@ namespace cajeta {
         // (so isMethodTemplateInstantiation() returns true) and the
         // concrete methodTypeArguments. Subsequent calls with the same
         // arg list hit the cache.
+        // 9.2: the body was re-parsed from a synthetic wrapper, so its token
+        // lines are SNIPPET lines. Correct them to true file lines using this
+        // template's own declLine vs the snippet's declaration line — exact
+        // regardless of preamble size. Skipped when a synthesizer replaced the
+        // body (that text has no file position at all).
+        if (effectiveSource == methodSource && declLine > 0 && inst) {
+            // inst->declLine was set from the SNIPPET token during the
+            // re-parse; declLine (this template's) is the true file line.
+            const int snippetLine = inst->getDeclLine();
+            if (snippetLine > 0) inst->setDbgLineDelta(declLine - snippetLine);
+        }
         inst->setMethodTypeParameters(methodTypeParameters);
         inst->setMethodTypeArguments(args);
         // Reparent to the original template's parent so downstream

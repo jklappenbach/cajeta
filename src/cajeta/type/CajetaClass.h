@@ -179,6 +179,7 @@ namespace cajeta {
         vector<TypeParameter> typeParameters;
         vector<CajetaTypePtr> typeArguments;
         string templateSource;
+        int dbgLineDelta = 0;   // 9.2 — see getDbgLineDelta()
         // Back-pointer from a concrete instantiation to the template class it
         // came from. Null for templates and for plain (non-templated) classes.
         // Used by inferDiamondArgs to recognize that `List<int32>` is "a List"
@@ -1120,6 +1121,13 @@ namespace cajeta {
         const vector<CajetaTypePtr>& getTypeArguments() const { return typeArguments; }
         void setTypeParameters(vector<TypeParameter> params) { typeParameters = std::move(params); }
         void setTypeArguments(vector<CajetaTypePtr> args) { typeArguments = std::move(args); }
+        // resident-debug-server 9.2: snippet-line -> file-line correction for
+        // a template-instantiated class body (set at instantiation, before the
+        // body walk populates methods). Read by safepoint emission via the
+        // emitting method's parent.
+        int getDbgLineDelta() const { return dbgLineDelta; }
+        void setDbgLineDelta(int d) { dbgLineDelta = d; }
+
         const string& getTemplateSource() const { return templateSource; }
         void setTemplateSource(string src) { templateSource = std::move(src); }
         CajetaClassPtr getTemplateOrigin() const { return templateOrigin; }

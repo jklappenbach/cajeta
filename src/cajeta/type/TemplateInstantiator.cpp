@@ -772,6 +772,20 @@ namespace cajeta {
         // The instantiation happens at the use site, but the code lives in the
         // template's file — that is what its frames must name.
         inst->setDeclaringFile(getDeclaringFile());
+        // 9.2: this class body was re-parsed from a synthetic snippet, so every
+        // method's token lines are SNIPPET lines (they merely look plausible —
+        // the preamble puts them in the file's range; live symptom: F7 into
+        // ArrayList::add landed 10 lines off, in the doc comment). The whole
+        // snippet shifts uniformly, so one delta — the template's true class
+        // declLine minus the snippet's — corrects every method in it.
+        if (declLine > 0 && classDecl && classDecl->getStart()) {
+            const int snippetClassLine = (int) classDecl->getStart()->getLine();
+            if (snippetClassLine > 0) {
+                // Stored on the CLASS: methods do not exist yet here (the
+                // body walk runs later), and the shift is uniform anyway.
+                inst->setDbgLineDelta(declLine - snippetClassLine);
+            }
+        }
         if (recordDecl) inst->setRecordType(true);
         if (emitOwner != module) inst->setEmitModule(emitOwner);
         // Carry the template's class-level annotations onto the instantiation —
