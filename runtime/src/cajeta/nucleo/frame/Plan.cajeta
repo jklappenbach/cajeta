@@ -26,12 +26,18 @@ public class Plan {
     public static int32 WINDOW = 9;
     public static int32 PIVOT = 10;
     public static int32 MELT = 11;
+    public static int32 FILLNULL = 12;
+    public static int32 DROPNULLS = 13;
 
     int32 kind;
     Plan child;       // toward the scan; null on the scan itself
     Pred pred;        // FILTER payload (owned)
     Sel sels;         // PROJECT/WITH payload: owned selection chain
     int32 nsels;
+    String colName;   // FILLNULL target / DROPNULLS subset (null = all)
+    float64 fillF;    // FILLNULL value (float physicals)
+    int64 fillI;      // FILLNULL value (integer physicals)
+    boolean fillIsInt;
 
     Plan(int32 kind) {
         this.kind = kind;
@@ -78,9 +84,58 @@ public class Plan {
         return Plan.projectNode(#sels, nsels, #child);
     }
 
+    /** A fill-null node: `col`'s nulls replaced by a float value (U6). */
+    public static #Plan fillNullNode(String col, float64 v, #Plan child) {
+        Plan n = heap Plan(12);
+        n.colName = col;
+        n.fillF = v;
+        n.fillIsInt = false;
+        n.child #= child;
+        return #n;
+    }
+
+    /** A fill-null node, exact-integer value (U6). */
+    public static #Plan fillNullIntNode(String col, int64 v, #Plan child) {
+        Plan n = heap Plan(12);
+        n.colName = col;
+        n.fillI = v;
+        n.fillIsInt = true;
+        n.child #= child;
+        return #n;
+    }
+
+    /** A drop-nulls node: rows with a missing value dropped; `col` limits
+     *  the check to one column, null checks every nullable column (U6). */
+    public static #Plan dropNullsNode(String col, #Plan child) {
+        Plan n = heap Plan(13);
+        n.colName = col;
+        n.child #= child;
+        return #n;
+    }
+
     /** FILTER payload. */
     public Pred predOf() {
         return this.pred;
+    }
+
+    /** FILLNULL/DROPNULLS payload: the target column (null = all). */
+    public String colNameOf() {
+        return this.colName;
+    }
+
+    /** FILLNULL payload: the float fill value. */
+    public float64 fillFOf() {
+        return this.fillF;
+    }
+
+    /** FILLNULL payload: the integer fill value. */
+    public int64 fillIOf() {
+        return this.fillI;
+    }
+
+    /** FILLNULL payload: true when the integer value applies. */
+    public boolean fillIsIntOf() {
+        return this.fillIsInt;
     }
 
     /** PROJECT/WITH payload: the head of the selection chain. */
@@ -116,6 +171,8 @@ public class Plan {
         if (this.kind == 9) { return "window"; }
         if (this.kind == 10) { return "pivot"; }
         if (this.kind == 11) { return "melt"; }
+        if (this.kind == 12) { return "fillNull"; }
+        if (this.kind == 13) { return "dropNulls"; }
         return "unknown";
     }
 

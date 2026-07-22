@@ -94,6 +94,55 @@ public class DynCol {
             "DynCol.setF64: column is '" + this.typeName() + "'");
     }
 
+    /** A fresh ALL-NULL nullable float64 column — what a computed
+     *  expression over a nullable input materializes into (rows the
+     *  expression can't produce stay null). */
+    public static #DynCol newNF64(int64 n) {
+        return DynCol.ofNF64(NullableColumn.nulls<float64>(n));
+    }
+
+    /** Write a float64 cell and mark it valid (nullable float64 columns
+     *  only — the null-propagating computed-column loop). */
+    public void setNF64(int64 i, float64 v) {
+        if (this.tag == 10 && this.nullable) {
+            this.nf64.set(i, v);
+            return;
+        }
+        throw heap ColumnTypeException(
+            "DynCol.setNF64: column is '" + this.typeName() + "'");
+    }
+
+    /** Dense NON-NULL copy with every null replaced by `v` (float
+     *  physicals; integer physicals take {@link #fillNullsInt}). The
+     *  spec §7 explicit fill — never an implicit coercion. */
+    public #DynCol fillNulls(float64 v) {
+        if (this.nullable) {
+            if (this.tag == 9) { return DynCol.ofF32(this.nf32.fillNulls((float32) v)); }
+            if (this.tag == 10) { return DynCol.ofF64(this.nf64.fillNulls(v)); }
+        }
+        throw heap ColumnTypeException(
+            "DynCol.fillNulls: column is '" + this.typeName()
+                + "' (nullable float physicals only)");
+    }
+
+    /** Dense NON-NULL copy with every null replaced by `v` (integer
+     *  physicals — exact, no float64 round-trip). */
+    public #DynCol fillNullsInt(int64 v) {
+        if (this.nullable) {
+            if (this.tag == 1) { return DynCol.ofI8(this.ni8.fillNulls((int8) v)); }
+            if (this.tag == 2) { return DynCol.ofI16(this.ni16.fillNulls((int16) v)); }
+            if (this.tag == 3) { return DynCol.ofI32(this.ni32.fillNulls((int32) v)); }
+            if (this.tag == 4) { return DynCol.ofI64(this.ni64.fillNulls(v)); }
+            if (this.tag == 5) { return DynCol.ofU8(this.nu8.fillNulls((uint8) v)); }
+            if (this.tag == 6) { return DynCol.ofU16(this.nu16.fillNulls((uint16) v)); }
+            if (this.tag == 7) { return DynCol.ofU32(this.nu32.fillNulls((uint32) v)); }
+            if (this.tag == 8) { return DynCol.ofU64(this.nu64.fillNulls((uint64) v)); }
+        }
+        throw heap ColumnTypeException(
+            "DynCol.fillNullsInt: column is '" + this.typeName()
+                + "' (nullable integer physicals only)");
+    }
+
     public int32 tagOf() { return this.tag; }
     public boolean isNullable() { return this.nullable; }
 

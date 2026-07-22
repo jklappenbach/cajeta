@@ -272,6 +272,68 @@ public class Table<T> {
         return ColI64.colRef(i, name);
     }
 
+    int32 __nullableColIndex(String op, String name) {
+        DynFrame sch = this.__schemaOf();
+        int32 i = sch.find(name);
+        if (i < 0) {
+            throw heap FrameException("Table." + op + ": no column '" + name
+                + "' in schema " + sch.schemaText());
+        }
+        if (!sch.nullableAt(i)) {
+            throw heap FrameException("Table." + op + ": column '" + name
+                + "' is not nullable ('" + sch.typeNameAt(i) + "')");
+        }
+        return i;
+    }
+
+    /** Explicit null fill (spec §7.4): every null in `name` becomes `v`,
+     *  and the column goes NON-NULL in the result schema — a schema
+     *  change, so the result is erased (`Table<?>`); narrow with the
+     *  filled record. Lazy: builds a node. */
+    public #Table<?> fillNull(String name, float64 v) {
+        int32 i = this.__nullableColIndex("fillNull", name);
+        DynFrame outSchema = this.__schemaClone();
+        outSchema.clearNullable(i);
+        Plan node = Plan.fillNullNode(name, v, this.__takeChain());
+        Table<T> h = heap Table<T>(#node, this.__takeSrc(), #outSchema, false);
+        return #h;
+    }
+
+    /** Explicit null fill, exact-integer value (integer physicals). */
+    public #Table<?> fillNull(String name, int64 v) {
+        int32 i = this.__nullableColIndex("fillNull", name);
+        DynFrame outSchema = this.__schemaClone();
+        outSchema.clearNullable(i);
+        Plan node = Plan.fillNullIntNode(name, v, this.__takeChain());
+        Table<T> h = heap Table<T>(#node, this.__takeSrc(), #outSchema, false);
+        return #h;
+    }
+
+    /** Explicit row drop (spec §7.4): rows missing a value in ANY
+     *  nullable column are dropped. Schema-preserving — the result stays
+     *  typed (the columns keep their nullable TYPE; they just hold no
+     *  nulls). Lazy: builds a node. */
+    public #Table<T> dropNulls() {
+        return this.__dropNulls(null);
+    }
+
+    /** Explicit row drop limited to one column's nulls. */
+    public #Table<T> dropNulls(String name) {
+        this.__nullableColIndex("dropNulls", name);
+        return this.__dropNulls(name);
+    }
+
+    #Table<T> __dropNulls(String name) {
+        DynFrame sch = this.__schemaClone();
+        boolean ty = this.typed || this.plan == null;
+        if (this.erased) { ty = false; }
+        Plan node = Plan.dropNullsNode(name, this.__takeChain());
+        Table<T> h = heap Table<T>(#node, this.__takeSrc(), #sch, ty);
+        h.label = this.label;
+        h.rebinder = this.rebinder;
+        return #h;
+    }
+
     /**
      * The checked narrowing (spec §4.3.1): validate the real schema —
      * known at plan build, no forcing — against `R`'s fields, then rebind.

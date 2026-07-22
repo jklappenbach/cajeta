@@ -611,6 +611,37 @@ namespace cajeta {
     // promotion pass, so the binary-op site does the minimum needed for the IR verifier
     // to accept the result. Strategy: if either is FP, both go to the wider FP; else if
     // both are integers, both go to the wider integer (signed).
+    // Arithmetic on two POINTER operands: the wildcard monomorph of a class
+    // template (`Column<?>::mean`) lowers T-typed values as opaque pointers,
+    // and its body is DEAD code — a wildcard receiver never executes it
+    // (objects are always concrete monomorphs; calls are direct) — but the
+    // body still lands in the module and must pass LLVM verify. `add ptr`
+    // has historically escaped through the string-concat fallback; `-`,
+    // `*`, `/` reached CreateSub/Mul/UDiv with pointer operands, which
+    // verify rejects. Round-trip through i64 — legal IR, never executed.
+    static llvm::Value* deadPtrArith(CajetaModulePtr module, llvm::Value* l,
+            llvm::Value* r, int op) {
+        auto* builder = module->getBuilder();
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(*module->getLlvmContext());
+        llvm::Value* li = builder->CreatePtrToInt(l, i64Ty, "deadptr.l");
+        llvm::Value* ri = builder->CreatePtrToInt(r, i64Ty, "deadptr.r");
+        llvm::Value* v = nullptr;
+        if (op == BINARY_OP_SUB) {
+            v = builder->CreateSub(li, ri);
+        } else if (op == BINARY_OP_MUL) {
+            v = builder->CreateMul(li, ri);
+        } else {
+            // Division: guard the divisor so even a stray execution cannot
+            // trap the process on udiv-by-zero.
+            llvm::Value* zero = llvm::ConstantInt::get(i64Ty, 0);
+            llvm::Value* isZero = builder->CreateICmpEQ(ri, zero);
+            llvm::Value* safe = builder->CreateSelect(isZero,
+                llvm::ConstantInt::get(i64Ty, 1), ri);
+            v = builder->CreateSDiv(li, safe);
+        }
+        return builder->CreateIntToPtr(v, l->getType(), "deadptr.res");
+    }
+
     static std::pair<llvm::Value*, llvm::Value*> coerceArithPair(
             CajetaModulePtr module, llvm::Value* l, llvm::Value* r) {
         auto* builder = module->getBuilder();
@@ -1181,7 +1212,7 @@ namespace cajeta {
                             ? builder->CreateFCmpOEQ(l, r, "mat.cmp")
                             : builder->CreateICmpEQ(l, r, "mat.cmp"); break;
                         case BINARY_OP_NE: cmp = isFloat
-                            ? builder->CreateFCmpONE(l, r, "mat.cmp")
+                            ? builder->CreateFCmpUNE(l, r, "mat.cmp")
                             : builder->CreateICmpNE(l, r, "mat.cmp"); break;
                         case BINARY_OP_LT: cmp = isFloat
                             ? builder->CreateFCmpOLT(l, r, "mat.cmp")
@@ -1281,7 +1312,7 @@ namespace cajeta {
                             ? builder->CreateFCmpOEQ(l, r, "vec.cmp")
                             : builder->CreateICmpEQ(l, r, "vec.cmp"); break;
                         case BINARY_OP_NE: cmp = isFloat
-                            ? builder->CreateFCmpONE(l, r, "vec.cmp")
+                            ? builder->CreateFCmpUNE(l, r, "vec.cmp")
                             : builder->CreateICmpNE(l, r, "vec.cmp"); break;
                         case BINARY_OP_LT: cmp = isFloat
                             ? builder->CreateFCmpOLT(l, r, "vec.cmp")
@@ -3261,6 +3292,10 @@ namespace cajeta {
             }
             case BINARY_OP_SUB: {
                 auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
+                if (l->getType()->isPointerTy() && r->getType()->isPointerTy()) {
+                    result = deadPtrArith(module, l, r, BINARY_OP_SUB);
+                    break;
+                }
                 auto signedFromAst = [](ExpressionPtr a, ExpressionPtr b) -> bool {
                     return binaryOverflowIsSigned(a, b);
                 };
@@ -3278,6 +3313,10 @@ namespace cajeta {
             }
             case BINARY_OP_MUL: {
                 auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
+                if (l->getType()->isPointerTy() && r->getType()->isPointerTy()) {
+                    result = deadPtrArith(module, l, r, BINARY_OP_MUL);
+                    break;
+                }
                 auto signedFromAst = [](ExpressionPtr a, ExpressionPtr b) -> bool {
                     return binaryOverflowIsSigned(a, b);
                 };
@@ -3295,6 +3334,10 @@ namespace cajeta {
             }
             case BINARY_OP_DIV: {
                 auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
+                if (l->getType()->isPointerTy() && r->getType()->isPointerTy()) {
+                    result = deadPtrArith(module, l, r, BINARY_OP_DIV);
+                    break;
+                }
                 if (l->getType()->isFPOrFPVectorTy()) {
                     result = emitFpBinOp(module, l, r, llvm::Instruction::FDiv);
                 } else {
@@ -3593,7 +3636,7 @@ namespace cajeta {
                         case BINARY_OP_GT: result = builder->CreateFCmpOGT(l, r); break;
                         case BINARY_OP_GE: result = builder->CreateFCmpOGE(l, r); break;
                         case BINARY_OP_EQ: result = builder->CreateFCmpOEQ(l, r); break;
-                        case BINARY_OP_NE: result = builder->CreateFCmpONE(l, r); break;
+                        case BINARY_OP_NE: result = builder->CreateFCmpUNE(l, r); break;  // UNE: NaN != NaN is TRUE (IEEE; the self-compare NaN idiom)
                         default: break;
                     }
                 } else {

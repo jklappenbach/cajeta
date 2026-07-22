@@ -131,6 +131,49 @@ public class NullableColumn<T> {
         return heap NullableColumn<T>(#v, #bits, len);
     }
 
+    /** Non-null element count (spec §7: `count()` = non-null). */
+    public int64 count() {
+        int64 c = 0;
+        int64 i = 0;
+        while (i < this.len) {
+            if (this.isValid(i)) {
+                c = c + 1;
+            }
+            i = i + 1;
+        }
+        return c;
+    }
+
+    /** Total row count, missing included (`len()` = all rows). */
+    public int64 len() {
+        return this.len;
+    }
+
+    /** Arithmetic mean over the PRESENT elements — nulls are SKIPPED, not
+     *  zero-filled and not NaN-poisoning: `mean([1,2,null]) = 1.5` (spec
+     *  §7's null ≠ NaN pin; a present NaN still propagates — it's a
+     *  value). All-null columns fail loud. */
+    public T mean() {
+        // T-typed count accumulated with `(T) 1` — a `(T) intVar` cast
+        // does not lower in templates (only literal casts do).
+        T acc = (T) 0;
+        T cnt = (T) 0;
+        int64 c = 0;
+        int64 i = 0;
+        while (i < this.len) {
+            if (this.isValid(i)) {
+                acc = acc + this.values.get(i);
+                cnt = cnt + (T) 1;
+                c = c + 1;
+            }
+            i = i + 1;
+        }
+        if (c == 0) {
+            throw heap ColumnTypeException("mean of an all-null column");
+        }
+        return acc / cnt;
+    }
+
     /** Dense copy with every null replaced by `v` (spec 7.5's explicit route). */
     public #Column<T> fillNulls(T v) {
         Column<T> out = Column.zeros<T>(this.len);

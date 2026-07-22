@@ -36,6 +36,12 @@ public class Exec {
         if (node.kindOf() == 4) {
             return Exec.apply(node.selsOf(), node.selCount(), #in, true);
         }
+        if (node.kindOf() == 12) {
+            return Exec.applyFillNull(node, #in);
+        }
+        if (node.kindOf() == 13) {
+            return Exec.applyDropNulls(node, #in);
+        }
         throw heap FrameException(
             "plan node not executable yet: " + node.opName());
     }
@@ -96,45 +102,122 @@ public class Exec {
         return f.colAt(o).strAt(i);
     }
 
-    /** Predicate eval at row `i` (U6 upgrades this to three-valued). */
-    static boolean evalPred(Pred p, DynFrame f, int64 i) {
+    /** Row validity of a float64 expression: a colRef is its column's
+     *  validity, a literal is always valid, arithmetic is valid only when
+     *  BOTH children are (null propagates — spec §7). */
+    static boolean exprValidF64(ColF64 e, DynFrame f, int64 i) {
+        int32 k = e.kind();
+        if (k == 0) {
+            int32 o = e.ordinal();
+            if (o < 0 || o >= f.width()) {
+                throw heap FrameException("column '" + e.name()
+                    + "' is not in schema " + f.schemaText());
+            }
+            return f.colAt(o).validAt(i);
+        }
+        if (k == 1) {
+            return true;
+        }
+        return Exec.exprValidF64(e.leftChild(), f, i)
+            && Exec.exprValidF64(e.rightChild(), f, i);
+    }
+
+    /** SCHEMA-time nullability of a float64 expression: nullable iff it
+     *  references any nullable column (works on schema-only frames — no
+     *  data reads). A false here selects the no-validity-read fast path. */
+    static boolean exprRefsNullable(ColF64 e, DynFrame f) {
+        int32 k = e.kind();
+        if (k == 0) {
+            int32 o = e.ordinal();
+            if (o < 0 || o >= f.width()) {
+                throw heap FrameException("column '" + e.name()
+                    + "' is not in schema " + f.schemaText());
+            }
+            return f.nullableAt(o);
+        }
+        if (k == 1) {
+            return false;
+        }
+        if (Exec.exprRefsNullable(e.leftChild(), f)) {
+            return true;
+        }
+        return Exec.exprRefsNullable(e.rightChild(), f);
+    }
+
+    /** THREE-VALUED predicate eval at row `i` (spec §7): 0 false, 1 true,
+     *  2 null. A comparison over a null operand is NULL (the raw bytes
+     *  never decide); logic is Kleene (`null & false = false`,
+     *  `null | true = true`, `!null = null`). The filter keeps a row only
+     *  on 1 — a null predicate excludes. */
+    static int32 evalPred3(Pred p, DynFrame f, int64 i) {
         int32 k = p.kind();
         if (k == 30) {
-            return Exec.evalPred(p.leftPredicate(), f, i)
-                && Exec.evalPred(p.rightPredicate(), f, i);
+            int32 l = Exec.evalPred3(p.leftPredicate(), f, i);
+            if (l == 0) { return 0; }
+            int32 r = Exec.evalPred3(p.rightPredicate(), f, i);
+            if (r == 0) { return 0; }
+            if (l == 2 || r == 2) { return 2; }
+            return 1;
         }
         if (k == 31) {
-            return Exec.evalPred(p.leftPredicate(), f, i)
-                || Exec.evalPred(p.rightPredicate(), f, i);
+            int32 l = Exec.evalPred3(p.leftPredicate(), f, i);
+            if (l == 1) { return 1; }
+            int32 r = Exec.evalPred3(p.rightPredicate(), f, i);
+            if (r == 1) { return 1; }
+            if (l == 2 || r == 2) { return 2; }
+            return 0;
         }
         if (k == 32) {
-            return !Exec.evalPred(p.leftPredicate(), f, i);
+            int32 l = Exec.evalPred3(p.leftPredicate(), f, i);
+            if (l == 2) { return 2; }
+            if (l == 1) { return 0; }
+            return 1;
         }
         if (k >= 20 && k <= 25) {
+            if (!Exec.exprValidF64(p.operandExpr(), f, i)) {
+                return 2;
+            }
             float64 a = Exec.evalF64(p.operandExpr(), f, i);
             float64 b = p.value();
-            if (k == 20) { return a > b; }
-            if (k == 21) { return a >= b; }
-            if (k == 22) { return a < b; }
-            if (k == 23) { return a <= b; }
-            if (k == 24) { return a == b; }
-            return a != b;
+            boolean r = false;
+            if (k == 20) { r = a > b; }
+            if (k == 21) { r = a >= b; }
+            if (k == 22) { r = a < b; }
+            if (k == 23) { r = a <= b; }
+            if (k == 24) { r = a == b; }
+            if (k == 25) { r = a != b; }
+            if (r) { return 1; }
+            return 0;
         }
         if (k == 26 || k == 27) {
+            // utf8 columns have no nullable physical (v1) — always valid.
             String a = Exec.evalStr(p.strOperandExpr(), f, i);
             boolean eq = a.equals(p.strValue());
-            if (k == 26) { return eq; }
-            return !eq;
+            if (k == 26 && eq) { return 1; }
+            if (k == 27 && !eq) { return 1; }
+            return 0;
         }
         if (k >= 40 && k <= 45) {
-            int64 a = Exec.evalI64(p.iOperandExpr(), f, i);
+            ColI64 ie = p.iOperandExpr();
+            int32 o = ie.ordinal();
+            if (o < 0 || o >= f.width()) {
+                throw heap FrameException("column '" + ie.name()
+                    + "' is not in schema " + f.schemaText());
+            }
+            if (!f.colAt(o).validAt(i)) {
+                return 2;
+            }
+            int64 a = Exec.evalI64(ie, f, i);
             int64 b = p.iValue();
-            if (k == 40) { return a > b; }
-            if (k == 41) { return a >= b; }
-            if (k == 42) { return a < b; }
-            if (k == 43) { return a <= b; }
-            if (k == 44) { return a == b; }
-            return a != b;
+            boolean r = false;
+            if (k == 40) { r = a > b; }
+            if (k == 41) { r = a >= b; }
+            if (k == 42) { r = a < b; }
+            if (k == 43) { r = a <= b; }
+            if (k == 44) { r = a == b; }
+            if (k == 45) { r = a != b; }
+            if (r) { return 1; }
+            return 0;
         }
         throw heap FrameException("unknown predicate kind");
     }
@@ -151,7 +234,7 @@ public class Exec {
         int64 m = 0;
         int64 i = 0;
         while (i < n) {
-            if (Exec.evalPred(p, in, i)) {
+            if (Exec.evalPred3(p, in, i) == 1) {
                 idx[m] = i;
                 m = m + 1;
             }
@@ -248,14 +331,32 @@ public class Exec {
             } else {
                 // Computed float64 expression — materialized via DynCol so
                 // the column instantiation resolves in its own package.
+                // Nullability is a SCHEMA fact (spec §7.3): an expression
+                // over only non-null inputs takes the fast loop below —
+                // it never reads a validity bit (6.3.1's audit point);
+                // one referencing a nullable column materializes nullable,
+                // with null propagated per row.
+                nullable = Exec.exprRefsNullable(s.exprOf(), in);
                 if (!schemaOnly) {
-                    DynCol c = DynCol.newF64(n);
-                    int64 i = 0;
-                    while (i < n) {
-                        c.setF64(i, Exec.evalF64(s.exprOf(), in, i));
-                        i = i + 1;
+                    if (nullable) {
+                        DynCol c = DynCol.newNF64(n);
+                        int64 i = 0;
+                        while (i < n) {
+                            if (Exec.exprValidF64(s.exprOf(), in, i)) {
+                                c.setNF64(i, Exec.evalF64(s.exprOf(), in, i));
+                            }
+                            i = i + 1;
+                        }
+                        cols[at] #= c;
+                    } else {
+                        DynCol c = DynCol.newF64(n);
+                        int64 i = 0;
+                        while (i < n) {
+                            c.setF64(i, Exec.evalF64(s.exprOf(), in, i));
+                            i = i + 1;
+                        }
+                        cols[at] #= c;
                     }
-                    cols[at] #= c;
                 }
             }
             names[at] = outName;
@@ -268,5 +369,89 @@ public class Exec {
             return heap DynFrame(#names, #tags, #nulls, w);
         }
         return heap DynFrame(#names, #tags, #nulls, #cols, w, n);
+    }
+
+    /** Fill-null: the target column's nulls become the node's value and
+     *  the column goes NON-NULL; every other column aliases zero-copy.
+     *  The plan-build validation already named bad targets — a miss here
+     *  is an executor invariant break, still loud. */
+    static #DynFrame applyFillNull(Plan node, #DynFrame in) {
+        String name = node.colNameOf();
+        int32 target = in.find(name);
+        if (target < 0) {
+            throw heap FrameException("fillNull: column '" + name
+                + "' is not in schema " + in.schemaText());
+        }
+        if (in.isSchemaOnly()) {
+            DynFrame s = in.schemaOnly();
+            s.clearNullable(target);
+            return #s;
+        }
+        DynCol[] out = heap DynCol[in.width()];
+        int32 j = 0;
+        while (j < in.width()) {
+            if (j == target) {
+                if (node.fillIsIntOf()) {
+                    out[j] #= in.colAt(j).fillNullsInt(node.fillIOf());
+                } else {
+                    out[j] #= in.colAt(j).fillNulls(node.fillFOf());
+                }
+            } else {
+                out[j] #= in.colAt(j).alias();
+            }
+            j = j + 1;
+        }
+        DynFrame r = in.rebuild(#out, in.rowsOf());
+        r.clearNullable(target);
+        return #r;
+    }
+
+    /** Drop-nulls: keep only rows where the subset column (or, with no
+     *  subset, every nullable column) is valid; schema unchanged. */
+    static #DynFrame applyDropNulls(Plan node, #DynFrame in) {
+        if (in.isSchemaOnly()) {
+            return in.schemaOnly();
+        }
+        String name = node.colNameOf();
+        int32 target = -1;
+        if (name != null) {
+            target = in.find(name);
+            if (target < 0) {
+                throw heap FrameException("dropNulls: column '" + name
+                    + "' is not in schema " + in.schemaText());
+            }
+        }
+        int64 n = in.rowsOf();
+        int64 cap = n;
+        if (cap < 1) { cap = 1; }
+        int64[] idx = heap int64[cap];
+        int64 m = 0;
+        int64 i = 0;
+        while (i < n) {
+            boolean keep = true;
+            if (target >= 0) {
+                keep = in.colAt(target).validAt(i);
+            } else {
+                int32 j = 0;
+                while (j < in.width()) {
+                    if (in.nullableAt(j) && !in.colAt(j).validAt(i)) {
+                        keep = false;
+                    }
+                    j = j + 1;
+                }
+            }
+            if (keep) {
+                idx[m] = i;
+                m = m + 1;
+            }
+            i = i + 1;
+        }
+        DynCol[] out = heap DynCol[in.width()];
+        int32 j = 0;
+        while (j < in.width()) {
+            out[j] #= in.colAt(j).gather(idx, m);
+            j = j + 1;
+        }
+        return in.rebuild(#out, m);
     }
 }

@@ -286,6 +286,37 @@ public class Column<T> {
         return acc;
     }
 
+    /** Arithmetic mean — `sum / len`. A present NaN POISONS the result
+     *  (NaN is a value and propagates; contrast NullableColumn.mean,
+     *  which SKIPS true absences — spec §7's null ≠ NaN pin). */
+    public T mean() {
+        if (this.len == 0) {
+            throw heap ColumnTypeException("mean of an empty column");
+        }
+        // T-typed count accumulated with `(T) 1` — a `(T) intVar` cast
+        // does not lower in templates (only literal casts do).
+        T acc = (T) 0;
+        T cnt = (T) 0;
+        int64 i = 0;
+        while (i < this.len) {
+            acc = acc + this.get(i);
+            cnt = cnt + (T) 1;
+            i = i + 1;
+        }
+        return acc / cnt;
+    }
+
+    /** Non-null element count — every element, on a non-null column
+     *  (spec §7: `count()` = non-null, `len()` = all rows). */
+    public int64 count() {
+        return this.len;
+    }
+
+    /** Total row count, missing included (equals count() here). */
+    public int64 len() {
+        return this.len;
+    }
+
     /** Data address of element 0 (Arrow interop / alignment probes; spec §6). */
     public int64 dataAddress() {
         if (this.fData != 0) {
