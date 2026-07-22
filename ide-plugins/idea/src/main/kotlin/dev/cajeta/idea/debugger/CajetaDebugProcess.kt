@@ -186,6 +186,7 @@ class CajetaDebugProcess(
      * `threads` request fails.
      */
     private fun onStopped(ds: CajetaDebugSession, stoppedThreadId: Int) {
+        log.info("cajeta-step: onStopped tid=$stoppedThreadId")
         ds.threads().thenCompose { threadsResponse ->
             val threads = CajetaDebugSession.parseThreads(threadsResponse)
             // Preload the stopped thread's frames (active stack must answer
@@ -258,31 +259,43 @@ class CajetaDebugProcess(
 
     private fun resolvePosition(frame: DapStackFrame): XSourcePosition? {
         if (frame.path.isBlank() || frame.line <= 0) return null
-        // A library/stdlib frame reports the path the COMPILER knew — root-
-        // relative or absolute on the build machine. When it does not exist
-        // locally, the mounted twin does (ide-symbol-index 8.2.4).
-        val file = LocalFileSystem.getInstance().findFileByPath(frame.path.replace('\\', '/'))
-            ?: dev.cajeta.idea.xref.CajetaMountedSources.findMountedBySuffix(frame.path)
+        // The compiler reports REMAPPED paths: user frames are SOURCE-ROOT-
+        // RELATIVE ("tour/Tour.cajeta" — external-debug §3.1.3), stdlib
+        // frames resolve via the mounted twin (ide-symbol-index 8.2.4).
+        // Found live 2026-07-22: without the source-root join every user
+        // frame resolved to NULL, so the execution line never moved (and the
+        // facet decorations silently skipped) — stepping looked dead while
+        // the protocol stepped fine.
+        val fs = LocalFileSystem.getInstance()
+        val normalized = frame.path.replace('\\', '/')
+        val file = fs.findFileByPath(normalized)
+            ?: fs.findFileByPath(
+                configuration.sourceRoot.trimEnd('/') + "/" + normalized)
+            ?: dev.cajeta.idea.xref.CajetaMountedSources.findMountedBySuffix(normalized)
             ?: return null
         return XDebuggerUtil.getInstance().createPosition(file, frame.line - 1) // DAP line is 1-based
     }
 
     override fun resume(context: XSuspendContext?) {
+        log.info("cajeta-step: resume(context=${context?.javaClass?.simpleName}) tid=$stoppedThreadId session=${dapSession != null}")
         clearDecorations()   // CP7-3/4: stale facets vanish the moment we leave the stop.
         dapSession?.resume()
     }
 
     override fun startStepOver(context: XSuspendContext?) {
+        log.info("cajeta-step: startStepOver(context=${context?.javaClass?.simpleName}) tid=$stoppedThreadId session=${dapSession != null}")
         clearDecorations()
         dapSession?.stepOver(stoppedThreadId)
     }
 
     override fun startStepInto(context: XSuspendContext?) {
+        log.info("cajeta-step: startStepInto(context=${context?.javaClass?.simpleName}) tid=$stoppedThreadId session=${dapSession != null}")
         clearDecorations()
         dapSession?.stepInto(stoppedThreadId)
     }
 
     override fun startStepOut(context: XSuspendContext?) {
+        log.info("cajeta-step: startStepOut(context=${context?.javaClass?.simpleName}) tid=$stoppedThreadId session=${dapSession != null}")
         clearDecorations()
         dapSession?.stepOut(stoppedThreadId)
     }
