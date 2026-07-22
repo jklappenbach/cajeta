@@ -1,0 +1,78 @@
+package cajeta.nucleo.frame;
+
+import cajeta.lang.String;
+
+/**
+ * A node in the lazy relational plan (nucleo-frame spec §4): relational
+ * operations are BUILT, not run — each op composes a node onto the chain
+ * and nothing executes until a terminal forces it (`Table.collect()`,
+ * `head`/`fetch`, row iteration). The node family covers the full op set;
+ * v1 executes `SCAN` (the U4 terminal machinery), with each op's executor
+ * landing with its unit (filter/select in U5, groupBy in U8, ...).
+ *
+ * The scan's data payload lives on the OWNING `Table<T>` handle (its typed
+ * snapshot field), not here — `Plan` stays schema-agnostic; it describes
+ * the op chain and carries op payloads (predicates, expressions, keys).
+ */
+public class Plan {
+    public static int32 SCAN = 1;
+    public static int32 FILTER = 2;
+    public static int32 PROJECT = 3;
+    public static int32 WITH = 4;
+    public static int32 GROUP = 5;
+    public static int32 SORT = 6;
+    public static int32 JOIN = 7;
+    public static int32 RESAMPLE = 8;
+    public static int32 WINDOW = 9;
+    public static int32 PIVOT = 10;
+    public static int32 MELT = 11;
+
+    int32 kind;
+    Plan child;       // toward the scan; null on the scan itself
+    Pred pred;        // FILTER payload (U5)
+
+    Plan(int32 kind) {
+        this.kind = kind;
+    }
+
+    /** The leaf: read the owning handle's snapshot. */
+    public static #Plan scan() {
+        return heap Plan(1);
+    }
+
+    /** This node's op kind (the `SCAN`.. `MELT` constants). */
+    public int32 kindOf() {
+        return this.kind;
+    }
+
+    /** The input node, or null on the scan leaf. */
+    public Plan childOf() {
+        return this.child;
+    }
+
+    /** The op name of a single node. */
+    public #String opName() {
+        if (this.kind == 1) { return "scan"; }
+        if (this.kind == 2) { return "filter"; }
+        if (this.kind == 3) { return "project"; }
+        if (this.kind == 4) { return "with"; }
+        if (this.kind == 5) { return "groupBy"; }
+        if (this.kind == 6) { return "sort"; }
+        if (this.kind == 7) { return "join"; }
+        if (this.kind == 8) { return "resample"; }
+        if (this.kind == 9) { return "window"; }
+        if (this.kind == 10) { return "pivot"; }
+        if (this.kind == 11) { return "melt"; }
+        return "unknown";
+    }
+
+    /** The whole chain, root-first: `"sort <- filter <- scan"`. */
+    public #String describe() {
+        String name = this.opName();
+        if (this.child == null) {
+            return #name;
+        }
+        String rest = this.child.describe();
+        return name + " <- " + rest;
+    }
+}

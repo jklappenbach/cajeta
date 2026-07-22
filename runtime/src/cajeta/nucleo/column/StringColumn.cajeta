@@ -127,6 +127,40 @@ public class StringColumn {
         return #heap String(#buf, m);
     }
 
+    /**
+     * Whole-column view: owned mode shares offsets/data storage zero-copy
+     * (through {@link Column#alias}); a foreign-backed column snapshots an
+     * owned copy (foreign buffers cannot be refcount-shared).
+     */
+    public #StringColumn alias() {
+        if (this.fArray != 0 || this.fOffsets != 0) {
+            return this.slice(0, this.len);
+        }
+        Column<int32> offs = this.offsets.alias();
+        Column<uint8> bytes = this.data.alias();
+        return heap StringColumn(#offs, #bytes, this.len);
+    }
+
+    /**
+     * Row window `[off, off+len)` as an OWNED COPY — utf8 offsets are
+     * absolute into the byte buffer, so a true zero-copy sub-window needs
+     * offset rebasing the v1 layout doesn't model (numeric columns slice
+     * zero-copy; variable-length copies — recorded).
+     */
+    public #StringColumn slice(int64 off, int64 len) {
+        if (off < 0 || len < 0 || off + len > this.len) {
+            throw heap ColumnTypeException(
+                "slice window out of range for this string column");
+        }
+        String[] vals = heap String[(int32) len];
+        int64 i = 0;
+        while (i < len) {
+            vals[(int32) i] = this.get(off + i);
+            i = i + 1;
+        }
+        return StringColumn.of(vals);
+    }
+
     /** Offsets-buffer data address (interop/alignment; spec §6). */
     public int64 offsetsAddress() {
         if (this.fOffsets != 0) {

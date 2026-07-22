@@ -315,18 +315,20 @@ namespace cajeta {
             // referenced-but-never-instantiated companion is caught by
             // validatePlaceholders with a clear unresolved-placeholder
             // error, never a silent shell.
+            // Same pattern for the U4 `<R>Rows` typed-row cursor companion.
             {
-                std::string colsShort =
-                    ctx->identifier()->getText() + std::string("Cols");
-                std::string canonical;
-                if (!package.empty()) canonical = package;
+                std::string prefix;
+                if (!package.empty()) prefix = package;
                 for (auto& e : enclosingStack) {
-                    if (!canonical.empty()) canonical += ".";
-                    canonical += e;
+                    if (!prefix.empty()) prefix += ".";
+                    prefix += e;
                 }
-                if (!canonical.empty()) canonical += ".";
-                canonical += colsShort;
-                CajetaType::registerArchive(canonical, colsShort);
+                if (!prefix.empty()) prefix += ".";
+                for (const char* suffix : {"Cols", "Rows"}) {
+                    std::string shortName =
+                        ctx->identifier()->getText() + std::string(suffix);
+                    CajetaType::registerArchive(prefix + shortName, shortName);
+                }
             }
             return defaultResult();
         }
@@ -838,6 +840,19 @@ namespace cajeta {
             std::string pkg = g_lazyQueue.back();
             g_lazyQueue.pop_back();
             if (g_lazyParsed.count(pkg)) continue;
+            // Reuse-cache hazard gate (test-only; see setReuseHazardArmed):
+            // parsing a lazy stdlib package PER-TEST appends concrete classes
+            // to the cached stdlib module, but the reuse path's codegen loop
+            // deliberately excludes that module (it must stay byte-pristine)
+            // — the new classes' methods would remain DECLARATIONS and the
+            // JIT would fail with "Symbols not found" (frame/column classes
+            // pulled in by companion synthesis were the first to hit this).
+            // Novel lazy content is the same hazard class as a novel
+            // stdlib-template instantiation: abort BEFORE parsing so the
+            // harness retries on a fresh, fully-isolated Compiler.
+            if (Compiler::isReuseHazardArmed()) {
+                throw cajeta::ReuseHazardAbort{};
+            }
             // Mark parsed BEFORE walking the package's files: a body within the
             // package that references one of its own lazy types (e.g.
             // Matrix.transpose returns Matrix<T,C,R>) re-fires the import hook;

@@ -578,6 +578,114 @@ namespace cajeta::synth {
                 [](const Col& col) {
                     return std::string(col.nullable ? "true" : "false");
                 });
+
+            // U4 — the lazy-plan surface (plan 4.2.1). Per-column expression
+            // helpers over the schema:
+            const std::string recName = record->getQName()->getTypeName();
+            const std::string tblType = "Table<" + recName + ">";
+            auto joinCols = [&](const std::string& recv,
+                                const std::string& call) {
+                std::string s;
+                for (std::size_t i = 0; i < cols.size(); ++i) {
+                    if (i) s += ", ";
+                    s += recv + "." + cols[i].name + call;
+                }
+                return s;
+            };
+            // aliasTable: the zero-copy scan snapshot (column aliases).
+            frag += "    public #" + tblType + " aliasTable() {\n"
+                "        if (this.plan != null) {\n"
+                "            throw heap FrameException(\"Table<" + schema
+                    + ">.aliasTable: unforced plan handle - collect() first\");\n"
+                "        }\n"
+                "        return heap " + tblType + "("
+                    + joinCols("this", ".alias()") + ");\n"
+                "    }\n";
+            // lazy: a plan handle whose scan reads the snapshot.
+            frag += "    public #" + tblType + " lazy() {\n"
+                "        if (this.plan != null) {\n"
+                "            throw heap FrameException(\"Table<" + schema
+                    + ">.lazy: already a plan handle\");\n"
+                "        }\n"
+                "        return heap " + tblType
+                    + "(Plan.scan(), this.aliasTable());\n"
+                "    }\n";
+            // head/fetch: bounded terminals — force, then a zero-copy row
+            // window (numeric columns view; utf8 copies — Column.slice docs).
+            frag += "    public #" + tblType + " head(int64 n) {\n"
+                "        " + tblType + " __f = this.collect();\n"
+                "        int64 __m = n;\n"
+                "        if (__f.rowCount() < __m) { __m = __f.rowCount(); }\n"
+                "        return heap " + tblType + "("
+                    + joinCols("__f", ".slice(0, __m)") + ");\n"
+                "    }\n";
+            frag += "    public #" + tblType + " fetch(int64 n) { "
+                "return this.head(n); }\n";
+            // rowAt: one TYPED row — the record — reconstructed from the
+            // physicals (Instant from epoch-nanos, Utf8 from utf8; a
+            // nullable field yields its physical value, validity stays a
+            // column-accessor fact).
+            frag += "    public " + recName + " rowAt(int64 i) {\n"
+                "        " + tblType + " __f = this.collect();\n"
+                "        if (i < 0 || i >= __f.rowCount()) {\n"
+                "            throw heap FrameException(\"Table<" + schema
+                    + ">.rowAt: row index out of range\");\n"
+                "        }\n"
+                "        return " + recName + " { ";
+            {
+                bool firstField = true;
+                for (auto& prop : fields) {
+                    auto ft = prop->getType();
+                    const std::string tn = (ft && ft->getQName())
+                        ? ft->getQName()->getTypeName() : std::string();
+                    const std::string read =
+                        "__f." + prop->getName() + ".get(i)";
+                    std::string value;
+                    if (tn == "Instant") {
+                        value = "stack Instant(" + read + " / 1000000000, "
+                            "(int32) (" + read + " % 1000000000))";
+                    } else if (tn == "Utf8") {
+                        value = "Utf8.of(" + read + ")";
+                    } else {
+                        value = read;
+                    }
+                    if (!firstField) frag += ", ";
+                    frag += prop->getName() + ": " + value;
+                    firstField = false;
+                }
+            }
+            frag += " };\n"
+                "    }\n";
+            // rows: the iteration terminal — a typed cursor over a forced
+            // snapshot (the for-each protocol covers arrays only today; the
+            // `for (row : table)` sugar is recorded for syntax-sugar).
+            frag += "    public #" + recName + "Rows rows() {\n"
+                "        " + tblType + " __f = this.collect();\n"
+                "        return heap " + recName + "Rows(__f.aliasTable());\n"
+                "    }\n";
+            // describe: schema + plan for an unforced handle (never rows);
+            // schema + row count for a materialized table (spec §2.5).
+            {
+                std::string schemaStr = "{";
+                for (std::size_t i = 0; i < cols.size(); ++i) {
+                    if (i) schemaStr += ", ";
+                    schemaStr += cols[i].name + ": " + cols[i].phys
+                        + (cols[i].nullable ? "?" : "");
+                }
+                schemaStr += "}";
+                frag += "    public #String describe() {\n"
+                    "        if (this.cached != null) { "
+                        "return this.cached.describe(); }\n"
+                    "        if (this.plan != null) {\n"
+                    "            return \"Table<" + schema
+                        + "> [unforced] plan: \" + this.plan.describe();\n"
+                    "        }\n"
+                    "        String __n = stack Int64(this.rowCount()).toString();\n"
+                    "        return \"Table<" + schema + "> [\" + __n + \" rows x "
+                        + std::to_string(cols.size()) + " cols] " + schemaStr
+                        + "\";\n"
+                    "    }\n";
+            }
             frag += "}";
 
             MemberSynthesisResult r;
@@ -585,7 +693,61 @@ namespace cajeta::synth {
             r.imports = {{"Column", "cajeta.nucleo.column"},
                          {"NullableColumn", "cajeta.nucleo.column"},
                          {"StringColumn", "cajeta.nucleo.column"},
-                         {"FrameException", "cajeta.nucleo.frame"}};
+                         {"FrameException", "cajeta.nucleo.frame"},
+                         {"Plan", "cajeta.nucleo.frame"},
+                         {"Int64", "cajeta.lang"},
+                         {"Utf8", "cajeta.lang"},
+                         {"Instant", "cajeta.time"}};
+            return r;
+        });
+
+        // nucleo-frame U4 — the `<Record>Rows` companion: the typed row
+        // cursor `Table<Record>.rows()` returns. Holds an owned zero-copy
+        // snapshot; `next()` reconstructs typed rows via `rowAt`. Concrete
+        // instantiations only (the cursor names the concrete table type).
+        reg.registerCompanion("tableRows",
+                [](const SynthesisContext& c)
+                    -> std::optional<SynthesizerRegistry::CompanionSynthesisResult> {
+            auto structure = c.parent;
+            if (!structure || !structure->isInstantiation()) return std::nullopt;
+            if (structure->isWildcardInstantiation()) return std::nullopt;
+            auto origin = structure->getTemplateOrigin();
+            if (!origin || !origin->getQName()
+                    || origin->getQName()->toCanonical()
+                        != "cajeta.nucleo.frame.Table") {
+                return std::nullopt;
+            }
+            const auto& args = structure->getTypeArguments();
+            if (args.size() != 1) return std::nullopt;
+            auto record = std::dynamic_pointer_cast<CajetaClass>(args[0]);
+            if (!record || !record->isRecordType()) return std::nullopt;
+            SynthesizerRegistry::CompanionSynthesisResult r;
+            const std::string recName = record->getQName()->getTypeName();
+            r.className = recName + "Rows";
+            r.packageName = record->getQName()->getPackageName();
+            r.imports.emplace_back("Table", "cajeta.nucleo.frame");
+            r.imports.emplace_back("FrameException", "cajeta.nucleo.frame");
+            const std::string tblType = "Table<" + recName + ">";
+            r.classSource = "public class " + r.className + " {\n"
+                "    " + tblType + " t;\n"
+                "    int64 i;\n"
+                "    int64 n;\n"
+                "    public " + r.className + "(#" + tblType + " t) {\n"
+                "        this.t #= t;\n"
+                "        this.i = 0;\n"
+                "        this.n = this.t.rowCount();\n"
+                "    }\n"
+                "    public boolean hasNext() { return this.i < this.n; }\n"
+                "    public " + recName + " next() {\n"
+                "        if (this.i >= this.n) {\n"
+                "            throw heap FrameException(\"" + r.className
+                    + ".next: past the end\");\n"
+                "        }\n"
+                "        " + recName + " r = this.t.rowAt(this.i);\n"
+                "        this.i = this.i + 1;\n"
+                "        return r;\n"
+                "    }\n"
+                "}\n";
             return r;
         });
 

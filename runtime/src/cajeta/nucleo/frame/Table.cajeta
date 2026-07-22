@@ -32,9 +32,64 @@ package cajeta.nucleo.frame;
  */
 public class Table<T> {
     int64 rows;
+    // Lazy-plan state (spec §4, F-FORCE): ONE lazy Table type — a
+    // materialized table is a forced source (plan null, columns set); a
+    // plan HANDLE holds the op chain plus a typed zero-copy snapshot of its
+    // scan source (column aliases — building a handle reads no data), and
+    // its column fields stay null until a terminal forces it.
+    Plan plan;
+    Table<T> src;        // the scan snapshot (plan handles only)
+    Table<T> cached;     // the collected result; re-forcing returns this
+    int64 execCount;     // executions run through this handle (F-FORCE pin)
 
-    /** Number of rows — the shared length of every column. */
+    /** A plan handle over `src` (built by `lazy()` and the relational ops).
+     *  Columns stay unset until a terminal forces the plan. */
+    public Table(#Plan plan, #Table<T> src) {
+        this.plan #= plan;
+        this.src #= src;
+        this.rows = -1;
+        this.execCount = 0;
+    }
+
+    /** Number of rows — the shared length of every column. Plan handles
+     *  report -1 until forced ({@link #collect} first). */
     public int64 rowCount() {
         return this.rows;
+    }
+
+    /** How many times this handle's plan has executed: 0 until the first
+     *  terminal, and 1 after any number of re-forces (the result caches). */
+    public int64 executions() {
+        return this.execCount;
+    }
+
+    /** True when rows are materialized here (a source table, or a handle
+     *  already forced). */
+    public boolean isForced() {
+        return this.plan == null || this.cached != null;
+    }
+
+    /**
+     * THE terminal (spec §4.5–4.6): execute the whole accumulated plan,
+     * materialize the result, and cache it — re-forcing the same handle
+     * returns the cached result without re-executing. On a materialized
+     * source table this is the identity.
+     */
+    public Table<T> collect() {
+        if (this.plan == null) {
+            return this;
+        }
+        if (this.cached != null) {
+            return this.cached;
+        }
+        this.execCount = this.execCount + 1;
+        // v1 executes the SCAN chain: the result is the zero-copy snapshot.
+        // Each op node's executor lands with its unit (filter/select U5...).
+        if (this.plan.kindOf() != 1) {
+            throw heap FrameException(
+                "plan node not executable yet: " + this.plan.opName());
+        }
+        this.cached #= this.src;
+        return this.cached;
     }
 }

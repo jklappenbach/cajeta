@@ -100,6 +100,37 @@ public class NullableColumn<T> {
         this.clearBit(i);
     }
 
+    /** Whole-column view: values and validity share storage zero-copy
+     *  (through {@link Column#alias}); the frame's lazy-scan snapshot. */
+    public #NullableColumn<T> alias() {
+        Column<T> v = this.values.alias();
+        Column<uint8> b = this.validity.alias();
+        return heap NullableColumn<T>(#v, #b, this.len);
+    }
+
+    /**
+     * Row window `[off, off+len)`: the values view is zero-copy; the
+     * validity bitmap is rebuilt (bit-packed windows at non-byte offsets
+     * cannot share bytes — recorded).
+     */
+    public #NullableColumn<T> slice(int64 off, int64 len) {
+        if (off < 0 || len < 0 || off + len > this.len) {
+            throw heap ColumnTypeException(
+                "slice window out of range for this nullable column");
+        }
+        Column<T> v = this.values.slice(off, len);
+        Column<uint8> bits = Column.zeros<uint8>((len + 7) / 8);
+        int64 i = 0;
+        while (i < len) {
+            if (this.isValid(off + i)) {
+                int32 cur = (int32) bits.get(i >> 3);
+                bits.set(i >> 3, (uint8) (cur | (1 << ((int32) (i & 7)))));
+            }
+            i = i + 1;
+        }
+        return heap NullableColumn<T>(#v, #bits, len);
+    }
+
     /** Dense copy with every null replaced by `v` (spec 7.5's explicit route). */
     public #Column<T> fillNulls(T v) {
         Column<T> out = Column.zeros<T>(this.len);

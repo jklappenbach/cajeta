@@ -180,16 +180,20 @@ namespace cajeta {
             auto claimed = cajeta::synth::SynthesizerRegistry::instance()
                 .collectMembers(ctx);
             if (claimed.empty()) return;
-            // Snapshot every existing member name (fields + methods) so a
-            // synthesized member colliding with a user-declared one — or with a
-            // member injected by an earlier synthesizer — is a loud error, not
-            // last-writer-wins (spec §2 [S2]).
-            std::set<std::string> seen;
+            // Snapshot existing member names so a synthesized member colliding
+            // with a user-declared one — or with a member injected by an
+            // earlier synthesizer — is a loud error, not last-writer-wins
+            // (spec §2 [S2]). Fields and methods are SEPARATE namespaces
+            // (`ColF64` has both a `name` field and a `name()` method; the
+            // frame Table has a `rows` field and a `rows()` cursor method), so
+            // each kind collides only within its own set.
+            std::set<std::string> seenFields;
+            std::set<std::string> seenMethods;
             for (auto& p : structure->getPropertyList()) {
-                if (p) seen.insert(p->getName());
+                if (p) seenFields.insert(p->getName());
             }
             for (auto& kv : structure->getMethods()) {
-                if (kv.second) seen.insert(kv.second->getName());
+                if (kv.second) seenMethods.insert(kv.second->getName());
             }
             auto collide = [&](const string& label, const string& memberName) {
                 throw Exception(
@@ -225,7 +229,7 @@ namespace cajeta {
                         auto it = plist.begin();
                         std::advance(it, before);
                         for (; it != plist.end(); ++it) {
-                            if (*it && !seen.insert((*it)->getName()).second) {
+                            if (*it && !seenFields.insert((*it)->getName()).second) {
                                 collide(label, (*it)->getName());
                             }
                         }
@@ -235,8 +239,17 @@ namespace cajeta {
                             std::dynamic_pointer_cast<MethodDeclaration>(mem)) {
                         const string memberName = methodDecl->getMethod()
                             ? methodDecl->getMethod()->getName() : string();
+                        // Constructors OVERLOAD by design (the frame's
+                        // synthesized column ctor beside the template's plan
+                        // ctor) — the name-level collision check would ban
+                        // every synthesized ctor on a class that declares
+                        // one. A truly duplicate signature still fails in
+                        // normal method registration, not silently.
+                        const bool isCtor = methodDecl->getMethod()
+                            && methodDecl->getMethod()->isConstructor();
                         if (!memberName.empty()
-                                && !seen.insert(memberName).second) {
+                                && !seenMethods.insert(memberName).second
+                                && !isCtor) {
                             collide(label, memberName);
                         }
                         if (methodDecl->getMethod()) {

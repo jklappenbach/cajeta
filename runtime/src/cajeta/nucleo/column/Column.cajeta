@@ -206,6 +206,86 @@ public class Column<T> {
         return #out;
     }
 
+    /**
+     * ZERO-COPY whole-column view: a new column sharing this column's
+     * storage (refcounted through {@link Tensor#alias}) over the same
+     * window. The frame's lazy-plan scan snapshots columns through this —
+     * building a plan handle copies no data. A FOREIGN-backed column has no
+     * shareable root; alias falls back to {@link #materialize} (an owned
+     * snapshot — foreign buffers cannot be refcount-shared).
+     */
+    public #Column<T> alias() {
+        if (this.fData != 0) {
+            return this.materialize();
+        }
+        Tensor<T> r = this.root.alias();
+        return heap Column<T>(#r, this.off, this.len);
+    }
+
+    /**
+     * ZERO-COPY row window: elements `[off, off+len)` as a storage-sharing
+     * view (the `head(n)` terminal's substrate). Bounds are checked loud.
+     * Foreign-backed columns materialize first (see {@link #alias}).
+     */
+    public #Column<T> slice(int64 off, int64 len) {
+        if (off < 0 || len < 0 || off + len > this.len) {
+            throw heap ColumnTypeException(
+                "slice window out of range for this column");
+        }
+        if (this.fData != 0) {
+            Column<T> m = this.materialize();
+            return m.slice(off, len);
+        }
+        Tensor<T> r = this.root.alias();
+        return heap Column<T>(#r, this.off + off, len);
+    }
+
+    /** Largest element (whole-column scalar reduction — a self-evident
+     *  force, no collect() needed). Empty columns fail loud. */
+    public T max() {
+        if (this.len == 0) {
+            throw heap ColumnTypeException("max() over an empty column");
+        }
+        T best = this.get(0);
+        int64 i = 1;
+        while (i < this.len) {
+            T v = this.get(i);
+            if (v > best) {
+                best = v;
+            }
+            i = i + 1;
+        }
+        return best;
+    }
+
+    /** Smallest element. Empty columns fail loud. */
+    public T min() {
+        if (this.len == 0) {
+            throw heap ColumnTypeException("min() over an empty column");
+        }
+        T best = this.get(0);
+        int64 i = 1;
+        while (i < this.len) {
+            T v = this.get(i);
+            if (v < best) {
+                best = v;
+            }
+            i = i + 1;
+        }
+        return best;
+    }
+
+    /** Sum of all elements ((T) 0 for an empty column). */
+    public T sum() {
+        T acc = (T) 0;
+        int64 i = 0;
+        while (i < this.len) {
+            acc = acc + this.get(i);
+            i = i + 1;
+        }
+        return acc;
+    }
+
     /** Data address of element 0 (Arrow interop / alignment probes; spec §6). */
     public int64 dataAddress() {
         if (this.fData != 0) {
