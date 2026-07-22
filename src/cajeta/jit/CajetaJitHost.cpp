@@ -206,6 +206,10 @@ BuiltJit buildJit(const JitRunOptions& opts) {
             for (auto& m : compiler->getModules()) methodCount += m->getAllMethods().size();
             for (auto& m : compiler->getModules())
                 for (auto& method : m->getAllMethods()) method->getLlvmFunctionType();
+            // Vtables for classes whose implemented interface was a
+            // lazy-package placeholder at prototype time (drain order).
+            for (auto& m : compiler->getModules())
+                m->completePendingInterfaceVTables();
             for (auto& m : compiler->getModules())
                 for (auto& method : m->getAllMethods()) method->generateCode();
             size_t after = 0;

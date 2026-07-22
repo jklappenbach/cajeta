@@ -142,12 +142,27 @@ namespace cajeta {
                     module->getLlvmModule(), gv);
             }
             if (!vtableRef) {
+                // The implementer hasn't synthesized this per-(class,
+                // iface) vtable (an unresolved implements edge, or a pair
+                // never dispatched). The codegen fixed-point's flagged
+                // completion pass re-synthesizes classes whose interface
+                // was a lazy-package placeholder BEFORE body codegen runs,
+                // so by the time a real dispatch site compiles the lookup
+                // above succeeds; a null here only reaches dead slots.
                 vtableRef = llvm::ConstantPointerNull::get(
                     llvm::cast<llvm::PointerType>(ptrTy));
             }
             builder->CreateStore(vtableRef, vtSlot);
+            // `#=` / `#expr` RHS transfers ownership into the slot — the
+            // MoveExpression already deactivated the source's drop entry,
+            // so the fat body's kind must record OWNED or the instance
+            // leaks (and an owned store dropped as BORROWED would never
+            // free). Mirrors LocalVariableDeclaration's kind selection.
+            bool rhsIsMove =
+                std::dynamic_pointer_cast<MoveExpression>(rhsAst) != nullptr;
             builder->CreateStore(
-                llvm::ConstantInt::get(i64Ty, (uint64_t) IFACE_KIND_BORROWED_CLASS),
+                llvm::ConstantInt::get(i64Ty, (uint64_t) (rhsIsMove
+                    ? IFACE_KIND_OWNED_CLASS : IFACE_KIND_BORROWED_CLASS)),
                 kindSlot);
         } else if (llvm::isa<llvm::ConstantPointerNull>(rhsVal)) {
             // `arr[i] = null` (the assignment-based drop idiom): zero the
@@ -164,6 +179,23 @@ namespace cajeta {
             uint64_t bodyBytes = dl.getTypeAllocSize(bodyTy);
             builder->CreateMemCpy(slot, llvm::MaybeAlign(8),
                 rhsVal, llvm::MaybeAlign(8), bodyBytes);
+            // A plain (non-move) copy is a BORROW: copying the source's
+            // OWNED kind verbatim would make two owners of one instance —
+            // both drops would free it. Downgrade the copy's kind unless
+            // the RHS transferred (`#=`).
+            if (!std::dynamic_pointer_cast<MoveExpression>(rhsAst)) {
+                llvm::Value* kindSlot = builder->CreateStructGEP(
+                    bodyTy, slot, 2, "iface_kind");
+                llvm::Value* dataSlot0 = builder->CreateStructGEP(
+                    bodyTy, slot, 0, "iface_data");
+                llvm::Value* dataVal = builder->CreateLoad(ptrTy, dataSlot0);
+                llvm::Value* isNull = builder->CreateIsNull(dataVal);
+                llvm::Value* kindVal = builder->CreateSelect(isNull,
+                    llvm::ConstantInt::get(i64Ty, 0),
+                    llvm::ConstantInt::get(i64Ty,
+                        (uint64_t) IFACE_KIND_BORROWED_CLASS));
+                builder->CreateStore(kindVal, kindSlot);
+            }
         }
     }
 
@@ -1794,20 +1826,15 @@ namespace cajeta {
                     if (lhsCls && lhsCls->isInterface()) {
                         llvm::Type* ifaceTy = lhsAst->getResolvedType()->getLlvmType();
                         if (ifaceTy && ifaceTy->isStructTy()) {
-                            const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
-                            llvm::Value* size = llvm::ConstantInt::get(
-                                llvm::Type::getInt64Ty(*module->getLlvmContext()),
-                                dl.getTypeAllocSize(ifaceTy));
-                            llvm::Align align(dl.getABITypeAlign(ifaceTy));
-                            llvm::Value* srcBody = loadR(rhs);
-                            if (llvm::isa<llvm::ConstantPointerNull>(srcBody)) {
-                                builder->CreateMemSet(lhs,
-                                    llvm::ConstantInt::get(
-                                        llvm::Type::getInt8Ty(*module->getLlvmContext()), 0),
-                                    size, align);
-                            } else {
-                                builder->CreateMemCpy(lhs, align, srcBody, align, size);
-                            }
+                            // storeInterfaceInlineBody handles all three RHS
+                            // shapes: a concrete class instance ASSEMBLES the
+                            // fat body in place (data/vtable/kind — a memcpy
+                            // from an 8-byte class object read 16 bytes of
+                            // heap garbage as vtable+kind and dispatch
+                            // jumped into it), an interface value copies its
+                            // body, and null zeroes the field.
+                            storeInterfaceInlineBody(module, lhs, loadR(rhs),
+                                lhsCls, rhsAst);
                             result = lhs;
                             break;
                         }

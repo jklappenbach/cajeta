@@ -53,6 +53,13 @@ public class ColF64 {
     public ColF64 leftChild() { return this.left; }
     public ColF64 rightChild() { return this.right; }
 
+    /** Name this expression as a selection item (`select`/`with` output). */
+    public #Sel alias(String name) {
+        Sel s = Sel.named(name);
+        s.bindExpr(this);
+        return #s;
+    }
+
     public static #ColF64 operator+(#ColF64 a, #ColF64 b) { return ColF64.arith(2, #a, #b); }
     public static #ColF64 operator-(#ColF64 a, #ColF64 b) { return ColF64.arith(3, #a, #b); }
     public static #ColF64 operator*(#ColF64 a, #ColF64 b) { return ColF64.arith(4, #a, #b); }

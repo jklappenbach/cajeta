@@ -373,6 +373,17 @@ namespace cajeta {
         }
     }
 
+    void CajetaModule::completePendingInterfaceVTables() {
+        for (auto& [canon, structure] : structures) {
+            auto klass = std::dynamic_pointer_cast<CajetaClass>(structure);
+            if (klass && klass->hasPendingIfaceVTables()
+                    && !klass->isPlaceholder()) {
+                klass->resolveImplementedInterfaces();
+                klass->synthesizeInterfaceVTables();
+            }
+        }
+    }
+
     CajetaTypePtr CajetaModule::getInitializerType() const {
         return initializerType;
     }

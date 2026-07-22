@@ -29,7 +29,9 @@ public class Plan {
 
     int32 kind;
     Plan child;       // toward the scan; null on the scan itself
-    Pred pred;        // FILTER payload (U5)
+    Pred pred;        // FILTER payload (owned)
+    Sel sels;         // PROJECT/WITH payload: owned selection chain
+    int32 nsels;
 
     Plan(int32 kind) {
         this.kind = kind;
@@ -38,6 +40,57 @@ public class Plan {
     /** The leaf: read the owning handle's snapshot. */
     public static #Plan scan() {
         return heap Plan(1);
+    }
+
+    /** A filter node over `child` (U5). */
+    public static #Plan filterNode(#Pred p, #Plan child) {
+        Plan n = heap Plan(2);
+        n.pred #= p;
+        n.child #= child;
+        return #n;
+    }
+
+    /** A projection node: exactly the selections, in order (U5). */
+    public static #Plan projectNode(#Sel sels, int32 nsels, #Plan child) {
+        Plan n = heap Plan(3);
+        n.sels #= sels;
+        n.nsels = nsels;
+        n.child #= child;
+        return #n;
+    }
+
+    /** A with-columns node: the input schema plus/replacing the
+     *  selections (U5). */
+    public static #Plan withNode(#Sel sels, int32 nsels, #Plan child) {
+        Plan n = heap Plan(4);
+        n.sels #= sels;
+        n.nsels = nsels;
+        n.child #= child;
+        return #n;
+    }
+
+    /** Project or with, by flag (the Table builder's single call site). */
+    public static #Plan selNode(boolean keepAll, #Sel sels, int32 nsels,
+                                #Plan child) {
+        if (keepAll) {
+            return Plan.withNode(#sels, nsels, #child);
+        }
+        return Plan.projectNode(#sels, nsels, #child);
+    }
+
+    /** FILTER payload. */
+    public Pred predOf() {
+        return this.pred;
+    }
+
+    /** PROJECT/WITH payload: the head of the selection chain. */
+    public Sel selsOf() {
+        return this.sels;
+    }
+
+    /** PROJECT/WITH payload: selection count. */
+    public int32 selCount() {
+        return this.nsels;
     }
 
     /** This node's op kind (the `SCAN`.. `MELT` constants). */

@@ -1,5 +1,8 @@
 package cajeta.nucleo.frame;
 
+import cajeta.lang.Int64;
+import cajeta.lang.String;
+
 /**
  * `Table<T>` — the typed dataframe (nucleo-frame spec §2): a set of columns
  * whose names and physical types derive at compile time from the fields of
@@ -19,36 +22,66 @@ package cajeta.nucleo.frame;
  * The per-schema surface is synthesized at instantiation (source-synthesis
  * facility): one public typed accessor field per column (`ticks.price` — a
  * typo fails the compile), a constructor taking the columns in schema order
- * (adopting them zero-copy after a loud row-length check), and the schema
- * introspection methods `colCount` / `colNameAt` / `colTypeAt` /
- * `colNullableAt`.
+ * (adopting them zero-copy after a loud row-length check), schema
+ * introspection (`colCount`/`colNameAt`/`colTypeAt`/`colNullableAt`), the
+ * typed row surface (`rowAt`, `rows()`), and the typed relational ops
+ * (`filter`/`select`/`with` taking the `<Record>Cols` builder lambda).
  *
- * ```cajeta
- * record Tick { Instant ts; float64 price; float64 size; Utf8 venue; }
- * Table<Tick> ticks = heap Table<Tick>(tsCol, priceCol, sizeCol, venueCol);
- * float64 p0 = ticks.price.get(0);
- * int64 n = ticks.rowCount();
- * ```
+ * LAZINESS (spec §4, F-FORCE): one lazy `Table<T>` type. A materialized
+ * table is a forced source; `lazy()` and the relational ops build plan
+ * HANDLES that execute nothing until a terminal (`collect()` — exactly
+ * once, cached; `head`/`fetch`; row iteration). A schema-changing op
+ * (`select`/`with`) returns a visible `Table<?>`, narrowed back by the
+ * checked `.as<R>()` or accessed dynamically via `col("...")`.
+ *
+ * Handles are LINEAR: chaining an op off a handle consumes it, and reusing
+ * a chained-away handle is a named FrameException. The DATA is immutable —
+ * materialized sources are never consumed and every snapshot is a
+ * refcounted zero-copy alias.
+ *
+ * Internally every materialized table carries a schema-agnostic column bag
+ * (`DynFrame`) aliasing the same storage as the typed accessor fields; the
+ * executor and the erased `Table<?>` world run entirely on it. Typed
+ * results come back through `rebinder` — a closure installed by the
+ * synthesized constructor that rebuilds a typed table from a frame
+ * (template code cannot name synthesized members: a `Table<?>` monomorph
+ * compiles this same body).
  */
 public class Table<T> {
     int64 rows;
-    // Lazy-plan state (spec §4, F-FORCE): ONE lazy Table type — a
-    // materialized table is a forced source (plan null, columns set); a
-    // plan HANDLE holds the op chain plus a typed zero-copy snapshot of its
-    // scan source (column aliases — building a handle reads no data), and
-    // its column fields stay null until a terminal forces it.
-    Plan plan;
-    Table<T> src;        // the scan snapshot (plan handles only)
-    Table<T> cached;     // the collected result; re-forcing returns this
+    Plan plan;           // null on a materialized table
+    DynFrame src;        // plan handles: the zero-copy scan snapshot
+    DynFrame schema;     // plan handles: the RESULT schema (schema-only)
+    DynFrame dyn;        // materialized: the dynamic column bag
+    Table<?> cachedOwn;  // OWNER of the collected result
+    Table<T> cached;     // borrowed typed view of cachedOwn (capture cast)
     int64 execCount;     // executions run through this handle (F-FORCE pin)
+    boolean typed;       // result schema still matches T (rebind on collect)
+    boolean spent;       // linear handle already chained away
+    boolean erased;      // materialized WITHOUT typed accessor columns
+    String label;        // "Table<pkg.Rec>" or "Table<?>" (describe)
+    Rebinder rebinder;   // typed rebuild: owned by materialized tables
+                         // (synthesized ctors install); handles borrow
 
-    /** A plan handle over `src` (built by `lazy()` and the relational ops).
-     *  Columns stay unset until a terminal forces the plan. */
-    public Table(#Plan plan, #Table<T> src) {
+    /** A plan handle: op chain + scan snapshot + result schema. Built by
+     *  `lazy()` and the relational ops; columns stay unset until forced. */
+    public Table(#Plan plan, #DynFrame src, #DynFrame schema, boolean typed) {
         this.plan #= plan;
         this.src #= src;
+        this.schema #= schema;
+        this.typed = typed;
         this.rows = -1;
         this.execCount = 0;
+        this.label = "Table<?>";
+    }
+
+    /** A schema-erased materialized table over a dynamic column bag — what
+     *  a schema-changing plan materializes to (visible as `Table<?>`). */
+    public Table(#DynFrame d) {
+        this.dyn #= d;
+        this.rows = this.dyn.rowsOf();
+        this.erased = true;
+        this.label = "Table<?>";
     }
 
     /** Number of rows — the shared length of every column. Plan handles
@@ -69,6 +102,50 @@ public class Table<T> {
         return this.plan == null || this.cached != null;
     }
 
+    void __liveCheck() {
+        if (this.spent) {
+            throw heap FrameException(
+                "Table: handle already chained away - re-chain from the "
+                + "source table");
+        }
+    }
+
+    /** The result schema this table/handle produces (schema-only view). */
+    DynFrame __schemaOf() {
+        if (this.dyn != null) { return this.dyn; }
+        return this.schema;
+    }
+
+    #DynFrame __schemaClone() {
+        return this.__schemaOf().schemaOnly();
+    }
+
+    /** The materialized dynamic bag, aliased (zero-copy). */
+    #DynFrame __dynAlias() {
+        return this.dyn.aliasFrame();
+    }
+
+    /** Detach the op chain: a handle yields its plan (and is spent); a
+     *  materialized source yields a fresh scan leaf (and is untouched). */
+    #Plan __takeChain() {
+        this.__liveCheck();
+        if (this.plan == null) {
+            return Plan.scan();
+        }
+        this.spent = true;
+        Plan p #= this.plan;
+        return #p;
+    }
+
+    /** The scan snapshot for a new handle chained off this one. */
+    #DynFrame __takeSrc() {
+        if (this.dyn != null) {
+            return this.dyn.aliasFrame();
+        }
+        DynFrame s #= this.src;
+        return #s;
+    }
+
     /**
      * THE terminal (spec §4.5–4.6): execute the whole accumulated plan,
      * materialize the result, and cache it — re-forcing the same handle
@@ -76,20 +153,166 @@ public class Table<T> {
      * source table this is the identity.
      */
     public Table<T> collect() {
-        if (this.plan == null) {
-            return this;
-        }
         if (this.cached != null) {
             return this.cached;
         }
-        this.execCount = this.execCount + 1;
-        // v1 executes the SCAN chain: the result is the zero-copy snapshot.
-        // Each op node's executor lands with its unit (filter/select U5...).
-        if (this.plan.kindOf() != 1) {
-            throw heap FrameException(
-                "plan node not executable yet: " + this.plan.opName());
+        this.__liveCheck();
+        if (this.plan == null) {
+            return this;
         }
-        this.cached #= this.src;
+        this.execCount = this.execCount + 1;
+        DynFrame out = Exec.run(this.plan, this.src);
+        if (this.typed) {
+            // `typed` implies a rebinder was installed/propagated at
+            // handle build — the invariant every typed-handle builder
+            // keeps (lazy/filter propagate, as<R> attaches).
+            RebindSlot slot = heap RebindSlot();
+            this.rebinder.rebindInto(out, slot);
+            this.cachedOwn #= slot.take();
+            this.cached = (Table<T>) this.cachedOwn;
+            // The rebound table's columns are zero-copy VIEWS: storage is
+            // single-owner (Storage has no refcount — views borrow), and
+            // fresh executor storage (gathers, computed columns) is owned
+            // by the frame. Adopt the frame so that storage lives exactly
+            // as long as the result that aliases it.
+            this.cached.src #= out;
+        } else {
+            this.cachedOwn #= heap Table<T>(#out);
+            this.cached = (Table<T>) this.cachedOwn;
+        }
         return this.cached;
+    }
+
+    /** A plan handle whose scan reads a zero-copy snapshot of this
+     *  materialized table (building it reads no data). */
+    public #Table<T> lazy() {
+        if (this.plan != null) {
+            throw heap FrameException("Table.lazy: already a plan handle");
+        }
+        Table<T> h = heap Table<T>(Plan.scan(), this.dyn.aliasFrame(),
+            this.dyn.schemaOnly(), !this.erased);
+        h.label = this.label;
+        h.rebinder = this.rebinder;
+        return #h;
+    }
+
+    /** Filter by an already-built predicate — the dynamic form
+     *  (`t.filter(t.col("price") > 0.0)`); the typed lambda form is the
+     *  synthesized `filter((TickCols c) -> ...)`. Lazy: builds a node. */
+    public #Table<T> filter(#Pred p) {
+        DynFrame sch = this.__schemaClone();
+        boolean ty = this.typed || this.plan == null;
+        if (this.erased) { ty = false; }
+        Plan node = Plan.filterNode(#p, this.__takeChain());
+        Table<T> h = heap Table<T>(#node, this.__takeSrc(), #sch, ty);
+        h.label = this.label;
+        h.rebinder = this.rebinder;
+        return #h;
+    }
+
+    /** Projection/with-columns over a selection chain (internal — the
+     *  synthesized `select`/`with` build the chain from the typed lambda).
+     *  The result schema changes, so the handle is schema-erased. */
+    public #Table<T> __project(#Sel sels, int32 nsels, boolean keepAll) {
+        // Compute (and validate) the output schema at PLAN BUILD time
+        // against this node's input schema — nothing executes.
+        DynFrame inSchema = this.__schemaClone();
+        Plan node = Plan.selNode(keepAll, #sels, nsels, this.__takeChain());
+        DynFrame outSchema = Exec.apply(node.selsOf(), node.selCount(),
+            #inSchema, keepAll);
+        Table<T> h = heap Table<T>(#node, this.__takeSrc(), #outSchema, false);
+        return #h;
+    }
+
+    /** Dynamic column accessor (spec §4.3.2): a float64 expression node for
+     *  a numeric column, validated against the (plan-build) schema — an
+     *  unknown name fails loud naming the schema; utf8 guides to
+     *  {@link #colStr}; exact int64 comparisons via {@link #colInt}. */
+    public #ColF64 col(String name) {
+        DynFrame sch = this.__schemaOf();
+        int32 i = sch.find(name);
+        if (i < 0) {
+            throw heap FrameException("Table.col: no column '" + name
+                + "' in schema " + sch.schemaText());
+        }
+        if (sch.tagAt(i) == 11) {
+            throw heap FrameException("Table.col: column '" + name
+                + "' is utf8 - use colStr(\"...\")");
+        }
+        return ColF64.colRef(i, name);
+    }
+
+    /** Dynamic utf8 column accessor. */
+    public #ColStr colStr(String name) {
+        DynFrame sch = this.__schemaOf();
+        int32 i = sch.find(name);
+        if (i < 0) {
+            throw heap FrameException("Table.colStr: no column '" + name
+                + "' in schema " + sch.schemaText());
+        }
+        if (sch.tagAt(i) != 11) {
+            throw heap FrameException("Table.colStr: column '" + name
+                + "' is '" + sch.typeNameAt(i) + "' - use col(\"...\")");
+        }
+        return ColStr.colRef(i, name);
+    }
+
+    /** Dynamic exact-integer column accessor (no float64 round-trip). */
+    public #ColI64 colInt(String name) {
+        DynFrame sch = this.__schemaOf();
+        int32 i = sch.find(name);
+        if (i < 0) {
+            throw heap FrameException("Table.colInt: no column '" + name
+                + "' in schema " + sch.schemaText());
+        }
+        if (sch.tagAt(i) > 8) {
+            throw heap FrameException("Table.colInt: column '" + name
+                + "' is '" + sch.typeNameAt(i) + "' - use col(\"...\")");
+        }
+        return ColI64.colRef(i, name);
+    }
+
+    /**
+     * The checked narrowing (spec §4.3.1): validate the real schema —
+     * known at plan build, no forcing — against `R`'s fields, then rebind.
+     * A mismatch is a named FrameException (absent column / actual vs
+     * expected type / column count); a failed narrow neither forces nor
+     * consumes this handle. On an unforced handle the narrow stays LAZY
+     * (returns an unforced `Table<R>` handle); on a materialized table it
+     * returns the typed table directly.
+     */
+    public final #Table<R> as<R>() {
+        this.__liveCheck();
+        Table<R> probe = heap Table<R>(this.__schemaClone());
+        probe.__narrowCheck();
+        if (this.plan != null && this.cached == null) {
+            DynFrame sch = this.__schemaClone();
+            Plan pl = this.__takeChain();
+            DynFrame sr = this.__takeSrc();
+            Table<R> h = heap Table<R>(#pl, #sr, #sch, true);
+            h.__attachRebinder();
+            return #h;
+        }
+        Table<T> m = this.collect();
+        return probe.__rebindOwned(m.__dynAlias());
+    }
+
+    /** Schema + plan for an unforced handle (never rows); schema + row
+     *  count for a materialized table (spec §2.5, §4 "printing"). */
+    public #String describe() {
+        if (this.spent) {
+            return "Table [spent handle - re-chain from the source table]";
+        }
+        if (this.cached != null) {
+            return this.cached.describe();
+        }
+        if (this.plan != null) {
+            return this.label + " [unforced] plan: " + this.plan.describe()
+                + " schema " + this.schema.schemaText();
+        }
+        String n = stack Int64(this.rows).toString();
+        String w = stack Int64((int64) this.dyn.width()).toString();
+        return this.label + " [" + n + " rows x " + w + " cols] "
+            + this.dyn.schemaText();
     }
 }

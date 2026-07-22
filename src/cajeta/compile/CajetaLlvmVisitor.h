@@ -129,15 +129,51 @@ namespace cajeta {
                 }
                 auto qName = QualifiedName::getOrInsert(
                     res.className, res.packageName);
+                // Capture the companion's extends/implements clauses — a
+                // companion like `<Record>TableRebinder implements Rebinder`
+                // needs its interface edge or the per-(class, iface) vtable
+                // is silently never synthesized and every fat-pointer
+                // dispatch through it jumps nil. Mirrors
+                // visitClassDeclaration's keyword-index bucketing.
+                std::list<QualifiedNamePtr> qExt;
+                std::list<QualifiedNamePtr> qImpl;
+                {
+                    auto kwIdx = [](antlr4::tree::TerminalNode* n) -> ssize_t {
+                        return n && n->getSymbol()
+                            ? (ssize_t) n->getSymbol()->getTokenIndex() : -1;
+                    };
+                    ssize_t extKw = kwIdx(classDecl->EXTENDS());
+                    ssize_t implKw = kwIdx(classDecl->IMPLEMENTS());
+                    for (auto* tl : classDecl->typeList()) {
+                        ssize_t tlIdx = tl->getStart()
+                            ? (ssize_t) tl->getStart()->getTokenIndex() : -1;
+                        ssize_t best = -1;
+                        int which = -1;
+                        if (extKw >= 0 && extKw < tlIdx && extKw > best) {
+                            best = extKw;
+                            which = 0;
+                        }
+                        if (implKw >= 0 && implKw < tlIdx && implKw > best) {
+                            best = implKw;
+                            which = 1;
+                        }
+                        std::list<QualifiedNamePtr>* bucket =
+                            which == 0 ? &qExt : which == 1 ? &qImpl : nullptr;
+                        if (!bucket) continue;
+                        for (auto& tt : tl->typeType()) {
+                            if (auto* coi = tt->classOrInterfaceType()) {
+                                bucket->push_back(QualifiedName::fromContext(coi));
+                            }
+                        }
+                    }
+                }
                 CajetaClassPtr klass;
                 if (existing) {
-                    existing->fillFromDeclaration(
-                        pModule, qName, std::list<QualifiedNamePtr>{},
-                        std::list<QualifiedNamePtr>{});
+                    existing->fillFromDeclaration(pModule, qName, qExt, qImpl);
                     klass = existing;
                 } else {
                     klass = std::make_shared<CajetaClass>(
-                        pModule, qName, std::list<QualifiedNamePtr>{});
+                        pModule, qName, qExt, qImpl);
                 }
                 // Register BEFORE the body walk so self-references and the
                 // triggering unit's later name lookups resolve.
@@ -186,14 +222,29 @@ namespace cajeta {
             // (spec §2 [S2]). Fields and methods are SEPARATE namespaces
             // (`ColF64` has both a `name` field and a `name()` method; the
             // frame Table has a `rows` field and a `rows()` cursor method), so
-            // each kind collides only within its own set.
+            // each kind collides only within its own set. Methods key on
+            // name + parameter types, not the bare name — overloads are legal
+            // cajeta (the frame Table's synthesized `filter(lambda)` beside
+            // the template's `filter(#Pred)`); a same-signature duplicate the
+            // textual key misses still fails in normal method registration.
             std::set<std::string> seenFields;
             std::set<std::string> seenMethods;
+            auto methodKey = [](const MethodPtr& m) {
+                std::string key = m->getName() + "(";
+                bool first = true;
+                for (auto& p : m->getParameterList()) {
+                    if (!first) key += ",";
+                    first = false;
+                    key += (p && p->getType())
+                        ? p->getType()->toCanonical() : std::string("?");
+                }
+                return key + ")";
+            };
             for (auto& p : structure->getPropertyList()) {
                 if (p) seenFields.insert(p->getName());
             }
             for (auto& kv : structure->getMethods()) {
-                if (kv.second) seenMethods.insert(kv.second->getName());
+                if (kv.second) seenMethods.insert(methodKey(kv.second));
             }
             auto collide = [&](const string& label, const string& memberName) {
                 throw Exception(
@@ -241,15 +292,17 @@ namespace cajeta {
                             ? methodDecl->getMethod()->getName() : string();
                         // Constructors OVERLOAD by design (the frame's
                         // synthesized column ctor beside the template's plan
-                        // ctor) — the name-level collision check would ban
-                        // every synthesized ctor on a class that declares
-                        // one. A truly duplicate signature still fails in
-                        // normal method registration, not silently.
+                        // ctor) and are exempt even from the signature-level
+                        // key (fragment parameter types may not yet resolve
+                        // to the template ctor's canonical text). A truly
+                        // duplicate signature still fails in normal method
+                        // registration, not silently.
                         const bool isCtor = methodDecl->getMethod()
                             && methodDecl->getMethod()->isConstructor();
-                        if (!memberName.empty()
-                                && !seenMethods.insert(memberName).second
-                                && !isCtor) {
+                        if (!memberName.empty() && !isCtor
+                                && !seenMethods.insert(
+                                        methodKey(methodDecl->getMethod()))
+                                    .second) {
                             collide(label, memberName);
                         }
                         if (methodDecl->getMethod()) {

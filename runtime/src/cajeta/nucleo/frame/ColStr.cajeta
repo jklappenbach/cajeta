@@ -25,6 +25,13 @@ public class ColStr {
     public int32 ordinal() { return this.ordinal; }
     public String name() { return this.name; }
 
+    /** Name this reference as a selection item (`select` output rename). */
+    public #Sel alias(String name) {
+        Sel s = Sel.named(name);
+        s.bindStr(this);
+        return #s;
+    }
+
     public static #Pred operator==(#ColStr a, String v) { return Pred.cmpStr(26, #a, v); }
     public static #Pred operator!=(#ColStr a, String v) { return Pred.cmpStr(27, #a, v); }
 }

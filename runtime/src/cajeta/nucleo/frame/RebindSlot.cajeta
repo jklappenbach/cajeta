@@ -1,0 +1,25 @@
+package cajeta.nucleo.frame;
+
+/**
+ * RebindSlot — a one-value result slot for {@link Rebinder#rebindInto}
+ * (nucleo-frame U5). The rebinder interface method returns void and writes
+ * its result here: a class-typed slot keeps every type in the interface
+ * signature a plain pointer — no wildcard-typed RETURN crosses the
+ * interface-dispatch ABI.
+ */
+public class RebindSlot {
+    Table<?> value;
+
+    public RebindSlot() { }
+
+    /** Store the rebuilt table (the rebinder companion calls this). */
+    public void put(#Table<?> v) {
+        this.value #= v;
+    }
+
+    /** Move the rebuilt table out. */
+    public #Table<?> take() {
+        Table<?> v #= this.value;
+        return #v;
+    }
+}

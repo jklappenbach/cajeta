@@ -171,6 +171,10 @@ void runCodegenPasses(const std::list<cajeta::CajetaModulePtr>& modules) {
         for (auto& m : modules)
             for (auto& method : m->getAllMethods())
                 method->getLlvmFunctionType();
+        // Vtables for classes whose implemented interface was a
+        // lazy-package placeholder at prototype time (drain order).
+        for (auto& m : modules)
+            m->completePendingInterfaceVTables();
         for (auto& m : modules) {
             for (auto& method : m->getAllMethods()) {
                 try {

@@ -1691,6 +1691,12 @@ namespace cajeta {
                     method->getLlvmFunctionType();
                 }
             }
+            // Late interface-vtable completion for classes that prototyped
+            // while an implemented interface was still a lazy-package
+            // placeholder (flagged in synthesizeInterfaceVTables).
+            for (auto& module: codegenModules) {
+                module->completePendingInterfaceVTables();
+            }
             for (auto& module: codegenModules) {
                 // Incremental: clean modules keep Phase-1 prototypes (other
                 // modules resolve calls against them) but skip Phase-2 bodies

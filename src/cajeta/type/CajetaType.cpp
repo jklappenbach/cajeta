@@ -1070,6 +1070,19 @@ namespace cajeta {
                             placeholder->addTypeFlags(
                                 VALUE_TYPE_FLAG | BY_VALUE_FLAG);
                         }
+                        // A forward-referenced GENERIC interface takes this
+                        // class-shaped placeholder path (the fat-interface
+                        // branch above is non-generic only), but its
+                        // instantiation must route through the templated-
+                        // INTERFACE re-parse — instantiateInternal keys on
+                        // isInterface, and without the tag it re-parses the
+                        // captured interface source expecting a
+                        // classDeclaration and aborts (first hit: the frame
+                        // package's `Rebinder<T>` referenced by Table.cajeta
+                        // before Rebinder.cajeta parses).
+                        if (isArchiveInterface(canonical)) {
+                            placeholder->setIsInterface(true);
+                        }
                         // Template-metadata seeding. If the prescan
                         // captured typeParameters + source for this
                         // class, install them on the placeholder now —

@@ -1,0 +1,463 @@
+package cajeta.nucleo.column;
+
+import cajeta.lang.String;
+
+/**
+ * DynCol — the dynamically-typed column wrapper (nucleo-frame U5): one
+ * variant over every physical the frame maps (`Column<int8..float64>`,
+ * their `NullableColumn` forms, and utf8 `StringColumn`). The frame's
+ * schema-agnostic machinery — the plan executor, the erased `Table<?>`
+ * result store, the `col("...")` dynamic accessor — flows columns through
+ * this wrapper; typed tables unwrap them zero-copy through the per-physical
+ * `asXx()` accessors (refcounted aliases, never copies).
+ *
+ * Physical tags: 1 int8, 2 int16, 3 int32, 4 int64, 5 uint8, 6 uint16,
+ * 7 uint32, 8 uint64, 9 float32, 10 float64, 11 utf8. `nullable` is an
+ * orthogonal flag (utf8 is never nullable — no nullable-utf8 physical yet).
+ *
+ * Value reads: `f64At` widens any numeric to float64 (int64 values beyond
+ * 2^53 lose precision — use `i64At` for exact integer reads), `i64At` reads
+ * integer tags exactly, `strAt` reads utf8. A wrong-kind read is a named
+ * {@link ColumnTypeException}, never a reinterpretation. Nullable columns
+ * read their PHYSICAL value (validity is `validAt` — three-valued predicate
+ * semantics land with nucleo-frame U6).
+ */
+public class DynCol {
+    int32 tag;
+    boolean nullable;
+    Column<int8> i8;
+    Column<int16> i16;
+    Column<int32> i32;
+    Column<int64> i64;
+    Column<uint8> u8;
+    Column<uint16> u16;
+    Column<uint32> u32;
+    Column<uint64> u64;
+    Column<float32> f32;
+    Column<float64> f64;
+    StringColumn str;
+    NullableColumn<int8> ni8;
+    NullableColumn<int16> ni16;
+    NullableColumn<int32> ni32;
+    NullableColumn<int64> ni64;
+    NullableColumn<uint8> nu8;
+    NullableColumn<uint16> nu16;
+    NullableColumn<uint32> nu32;
+    NullableColumn<uint64> nu64;
+    NullableColumn<float32> nf32;
+    NullableColumn<float64> nf64;
+
+    DynCol(int32 tag, boolean nullable) {
+        this.tag = tag;
+        this.nullable = nullable;
+    }
+
+    public static #DynCol ofI8(#Column<int8> c)      { DynCol d = heap DynCol(1, false);  d.i8 #= c;   return #d; }
+    public static #DynCol ofI16(#Column<int16> c)    { DynCol d = heap DynCol(2, false);  d.i16 #= c;  return #d; }
+    public static #DynCol ofI32(#Column<int32> c)    { DynCol d = heap DynCol(3, false);  d.i32 #= c;  return #d; }
+    public static #DynCol ofI64(#Column<int64> c)    { DynCol d = heap DynCol(4, false);  d.i64 #= c;  return #d; }
+    public static #DynCol ofU8(#Column<uint8> c)     { DynCol d = heap DynCol(5, false);  d.u8 #= c;   return #d; }
+    public static #DynCol ofU16(#Column<uint16> c)   { DynCol d = heap DynCol(6, false);  d.u16 #= c;  return #d; }
+    public static #DynCol ofU32(#Column<uint32> c)   { DynCol d = heap DynCol(7, false);  d.u32 #= c;  return #d; }
+    public static #DynCol ofU64(#Column<uint64> c)   { DynCol d = heap DynCol(8, false);  d.u64 #= c;  return #d; }
+    public static #DynCol ofF32(#Column<float32> c)  { DynCol d = heap DynCol(9, false);  d.f32 #= c;  return #d; }
+    public static #DynCol ofF64(#Column<float64> c)  { DynCol d = heap DynCol(10, false); d.f64 #= c;  return #d; }
+    public static #DynCol ofStr(#StringColumn c)     { DynCol d = heap DynCol(11, false); d.str #= c;  return #d; }
+    public static #DynCol ofNI8(#NullableColumn<int8> c)     { DynCol d = heap DynCol(1, true);  d.ni8 #= c;  return #d; }
+    public static #DynCol ofNI16(#NullableColumn<int16> c)   { DynCol d = heap DynCol(2, true);  d.ni16 #= c; return #d; }
+    public static #DynCol ofNI32(#NullableColumn<int32> c)   { DynCol d = heap DynCol(3, true);  d.ni32 #= c; return #d; }
+    public static #DynCol ofNI64(#NullableColumn<int64> c)   { DynCol d = heap DynCol(4, true);  d.ni64 #= c; return #d; }
+    public static #DynCol ofNU8(#NullableColumn<uint8> c)    { DynCol d = heap DynCol(5, true);  d.nu8 #= c;  return #d; }
+    public static #DynCol ofNU16(#NullableColumn<uint16> c)  { DynCol d = heap DynCol(6, true);  d.nu16 #= c; return #d; }
+    public static #DynCol ofNU32(#NullableColumn<uint32> c)  { DynCol d = heap DynCol(7, true);  d.nu32 #= c; return #d; }
+    public static #DynCol ofNU64(#NullableColumn<uint64> c)  { DynCol d = heap DynCol(8, true);  d.nu64 #= c; return #d; }
+    public static #DynCol ofNF32(#NullableColumn<float32> c) { DynCol d = heap DynCol(9, true);  d.nf32 #= c; return #d; }
+    public static #DynCol ofNF64(#NullableColumn<float64> c) { DynCol d = heap DynCol(10, true); d.nf64 #= c; return #d; }
+
+    /** A fresh zero-filled float64 column — what computed expressions
+     *  materialize into. Lives here (not in the executor) so the
+     *  `Column<float64>` instantiation resolves in Column's OWN package —
+     *  a cross-lazy-package instantiation can degrade to a wildcard
+     *  handle while Column is still an archive placeholder. */
+    public static #DynCol newF64(int64 n) {
+        return DynCol.ofF64(Column.zeros<float64>(n));
+    }
+
+    /** Write a float64 cell (plain float64 columns only — the computed-
+     *  column materialization loop). */
+    public void setF64(int64 i, float64 v) {
+        if (this.tag == 10 && !this.nullable) {
+            this.f64.set(i, v);
+            return;
+        }
+        throw heap ColumnTypeException(
+            "DynCol.setF64: column is '" + this.typeName() + "'");
+    }
+
+    public int32 tagOf() { return this.tag; }
+    public boolean isNullable() { return this.nullable; }
+
+    /** The physical name — matches the frame's `colTypeAt` vocabulary. */
+    public #String typeName() {
+        if (this.tag == 1) { return "int8"; }
+        if (this.tag == 2) { return "int16"; }
+        if (this.tag == 3) { return "int32"; }
+        if (this.tag == 4) { return "int64"; }
+        if (this.tag == 5) { return "uint8"; }
+        if (this.tag == 6) { return "uint16"; }
+        if (this.tag == 7) { return "uint32"; }
+        if (this.tag == 8) { return "uint64"; }
+        if (this.tag == 9) { return "float32"; }
+        if (this.tag == 10) { return "float64"; }
+        if (this.tag == 11) { return "utf8"; }
+        return "unknown";
+    }
+
+    public int64 size() {
+        if (this.nullable) {
+            if (this.tag == 1) { return this.ni8.size(); }
+            if (this.tag == 2) { return this.ni16.size(); }
+            if (this.tag == 3) { return this.ni32.size(); }
+            if (this.tag == 4) { return this.ni64.size(); }
+            if (this.tag == 5) { return this.nu8.size(); }
+            if (this.tag == 6) { return this.nu16.size(); }
+            if (this.tag == 7) { return this.nu32.size(); }
+            if (this.tag == 8) { return this.nu64.size(); }
+            if (this.tag == 9) { return this.nf32.size(); }
+            if (this.tag == 10) { return this.nf64.size(); }
+        }
+        if (this.tag == 1) { return this.i8.size(); }
+        if (this.tag == 2) { return this.i16.size(); }
+        if (this.tag == 3) { return this.i32.size(); }
+        if (this.tag == 4) { return this.i64.size(); }
+        if (this.tag == 5) { return this.u8.size(); }
+        if (this.tag == 6) { return this.u16.size(); }
+        if (this.tag == 7) { return this.u32.size(); }
+        if (this.tag == 8) { return this.u64.size(); }
+        if (this.tag == 9) { return this.f32.size(); }
+        if (this.tag == 10) { return this.f64.size(); }
+        if (this.tag == 11) { return this.str.size(); }
+        return 0;
+    }
+
+    /** A zero-copy share of the same storage (refcounted aliases). */
+    public #DynCol alias() {
+        if (this.nullable) {
+            if (this.tag == 1) { return DynCol.ofNI8(this.ni8.alias()); }
+            if (this.tag == 2) { return DynCol.ofNI16(this.ni16.alias()); }
+            if (this.tag == 3) { return DynCol.ofNI32(this.ni32.alias()); }
+            if (this.tag == 4) { return DynCol.ofNI64(this.ni64.alias()); }
+            if (this.tag == 5) { return DynCol.ofNU8(this.nu8.alias()); }
+            if (this.tag == 6) { return DynCol.ofNU16(this.nu16.alias()); }
+            if (this.tag == 7) { return DynCol.ofNU32(this.nu32.alias()); }
+            if (this.tag == 8) { return DynCol.ofNU64(this.nu64.alias()); }
+            if (this.tag == 9) { return DynCol.ofNF32(this.nf32.alias()); }
+            if (this.tag == 10) { return DynCol.ofNF64(this.nf64.alias()); }
+        }
+        if (this.tag == 1) { return DynCol.ofI8(this.i8.alias()); }
+        if (this.tag == 2) { return DynCol.ofI16(this.i16.alias()); }
+        if (this.tag == 3) { return DynCol.ofI32(this.i32.alias()); }
+        if (this.tag == 4) { return DynCol.ofI64(this.i64.alias()); }
+        if (this.tag == 5) { return DynCol.ofU8(this.u8.alias()); }
+        if (this.tag == 6) { return DynCol.ofU16(this.u16.alias()); }
+        if (this.tag == 7) { return DynCol.ofU32(this.u32.alias()); }
+        if (this.tag == 8) { return DynCol.ofU64(this.u64.alias()); }
+        if (this.tag == 9) { return DynCol.ofF32(this.f32.alias()); }
+        if (this.tag == 10) { return DynCol.ofF64(this.f64.alias()); }
+        if (this.tag == 11) { return DynCol.ofStr(this.str.alias()); }
+        throw heap ColumnTypeException("DynCol.alias: unknown physical tag");
+    }
+
+    /** A row window — zero-copy for numeric physicals (Column.slice). */
+    public #DynCol slice(int64 off, int64 len) {
+        if (this.nullable) {
+            if (this.tag == 1) { return DynCol.ofNI8(this.ni8.slice(off, len)); }
+            if (this.tag == 2) { return DynCol.ofNI16(this.ni16.slice(off, len)); }
+            if (this.tag == 3) { return DynCol.ofNI32(this.ni32.slice(off, len)); }
+            if (this.tag == 4) { return DynCol.ofNI64(this.ni64.slice(off, len)); }
+            if (this.tag == 5) { return DynCol.ofNU8(this.nu8.slice(off, len)); }
+            if (this.tag == 6) { return DynCol.ofNU16(this.nu16.slice(off, len)); }
+            if (this.tag == 7) { return DynCol.ofNU32(this.nu32.slice(off, len)); }
+            if (this.tag == 8) { return DynCol.ofNU64(this.nu64.slice(off, len)); }
+            if (this.tag == 9) { return DynCol.ofNF32(this.nf32.slice(off, len)); }
+            if (this.tag == 10) { return DynCol.ofNF64(this.nf64.slice(off, len)); }
+        }
+        if (this.tag == 1) { return DynCol.ofI8(this.i8.slice(off, len)); }
+        if (this.tag == 2) { return DynCol.ofI16(this.i16.slice(off, len)); }
+        if (this.tag == 3) { return DynCol.ofI32(this.i32.slice(off, len)); }
+        if (this.tag == 4) { return DynCol.ofI64(this.i64.slice(off, len)); }
+        if (this.tag == 5) { return DynCol.ofU8(this.u8.slice(off, len)); }
+        if (this.tag == 6) { return DynCol.ofU16(this.u16.slice(off, len)); }
+        if (this.tag == 7) { return DynCol.ofU32(this.u32.slice(off, len)); }
+        if (this.tag == 8) { return DynCol.ofU64(this.u64.slice(off, len)); }
+        if (this.tag == 9) { return DynCol.ofF32(this.f32.slice(off, len)); }
+        if (this.tag == 10) { return DynCol.ofF64(this.f64.slice(off, len)); }
+        if (this.tag == 11) { return DynCol.ofStr(this.str.slice(off, len)); }
+        throw heap ColumnTypeException("DynCol.slice: unknown physical tag");
+    }
+
+    /** Numeric read widened to float64 (int64/uint64 beyond 2^53 lose
+     *  precision — `i64At` reads integers exactly). */
+    public float64 f64At(int64 i) {
+        if (this.nullable) {
+            if (this.tag == 1) { return (float64) this.ni8.get(i); }
+            if (this.tag == 2) { return (float64) this.ni16.get(i); }
+            if (this.tag == 3) { return (float64) this.ni32.get(i); }
+            if (this.tag == 4) { return (float64) this.ni64.get(i); }
+            if (this.tag == 5) { return (float64) this.nu8.get(i); }
+            if (this.tag == 6) { return (float64) this.nu16.get(i); }
+            if (this.tag == 7) { return (float64) this.nu32.get(i); }
+            if (this.tag == 8) { return (float64) this.nu64.get(i); }
+            if (this.tag == 9) { return (float64) this.nf32.get(i); }
+            if (this.tag == 10) { return this.nf64.get(i); }
+        }
+        if (this.tag == 1) { return (float64) this.i8.get(i); }
+        if (this.tag == 2) { return (float64) this.i16.get(i); }
+        if (this.tag == 3) { return (float64) this.i32.get(i); }
+        if (this.tag == 4) { return (float64) this.i64.get(i); }
+        if (this.tag == 5) { return (float64) this.u8.get(i); }
+        if (this.tag == 6) { return (float64) this.u16.get(i); }
+        if (this.tag == 7) { return (float64) this.u32.get(i); }
+        if (this.tag == 8) { return (float64) this.u64.get(i); }
+        if (this.tag == 9) { return (float64) this.f32.get(i); }
+        if (this.tag == 10) { return this.f64.get(i); }
+        throw heap ColumnTypeException(
+            "DynCol.f64At: utf8 column read as numeric");
+    }
+
+    /** Exact integer read (integer tags only). */
+    public int64 i64At(int64 i) {
+        if (this.nullable) {
+            if (this.tag == 1) { return (int64) this.ni8.get(i); }
+            if (this.tag == 2) { return (int64) this.ni16.get(i); }
+            if (this.tag == 3) { return (int64) this.ni32.get(i); }
+            if (this.tag == 4) { return this.ni64.get(i); }
+            if (this.tag == 5) { return (int64) this.nu8.get(i); }
+            if (this.tag == 6) { return (int64) this.nu16.get(i); }
+            if (this.tag == 7) { return (int64) this.nu32.get(i); }
+            if (this.tag == 8) { return (int64) this.nu64.get(i); }
+        }
+        if (this.tag == 1) { return (int64) this.i8.get(i); }
+        if (this.tag == 2) { return (int64) this.i16.get(i); }
+        if (this.tag == 3) { return (int64) this.i32.get(i); }
+        if (this.tag == 4) { return this.i64.get(i); }
+        if (this.tag == 5) { return (int64) this.u8.get(i); }
+        if (this.tag == 6) { return (int64) this.u16.get(i); }
+        if (this.tag == 7) { return (int64) this.u32.get(i); }
+        if (this.tag == 8) { return (int64) this.u64.get(i); }
+        throw heap ColumnTypeException(
+            "DynCol.i64At: non-integer column ('" + this.typeName()
+                + "') read as int64");
+    }
+
+    /** Utf8 read (utf8 tag only). */
+    public #String strAt(int64 i) {
+        if (this.tag == 11) { return this.str.get(i); }
+        throw heap ColumnTypeException(
+            "DynCol.strAt: numeric column ('" + this.typeName()
+                + "') read as utf8");
+    }
+
+    /** Row validity — always true on non-nullable physicals. */
+    public boolean validAt(int64 i) {
+        if (!this.nullable) { return true; }
+        if (this.tag == 1) { return this.ni8.isValid(i); }
+        if (this.tag == 2) { return this.ni16.isValid(i); }
+        if (this.tag == 3) { return this.ni32.isValid(i); }
+        if (this.tag == 4) { return this.ni64.isValid(i); }
+        if (this.tag == 5) { return this.nu8.isValid(i); }
+        if (this.tag == 6) { return this.nu16.isValid(i); }
+        if (this.tag == 7) { return this.nu32.isValid(i); }
+        if (this.tag == 8) { return this.nu64.isValid(i); }
+        if (this.tag == 9) { return this.nf32.isValid(i); }
+        if (this.tag == 10) { return this.nf64.isValid(i); }
+        return true;
+    }
+
+    /** Row gather: a NEW column of the same physical holding rows
+     *  `idx[0..m)` — the filter executor's core; validity gathers with the
+     *  values on nullable physicals. */
+    public #DynCol gather(int64[] idx, int64 m) {
+        if (this.nullable) {
+            if (this.tag == 1) {
+                NullableColumn<int8> o = NullableColumn.nulls<int8>(m);
+                int64 i = 0;
+                while (i < m) {
+                    if (this.ni8.isValid(idx[i])) { o.set(i, this.ni8.get(idx[i])); }
+                    i = i + 1;
+                }
+                return DynCol.ofNI8(#o);
+            }
+            if (this.tag == 2) {
+                NullableColumn<int16> o = NullableColumn.nulls<int16>(m);
+                int64 i = 0;
+                while (i < m) {
+                    if (this.ni16.isValid(idx[i])) { o.set(i, this.ni16.get(idx[i])); }
+                    i = i + 1;
+                }
+                return DynCol.ofNI16(#o);
+            }
+            if (this.tag == 3) {
+                NullableColumn<int32> o = NullableColumn.nulls<int32>(m);
+                int64 i = 0;
+                while (i < m) {
+                    if (this.ni32.isValid(idx[i])) { o.set(i, this.ni32.get(idx[i])); }
+                    i = i + 1;
+                }
+                return DynCol.ofNI32(#o);
+            }
+            if (this.tag == 4) {
+                NullableColumn<int64> o = NullableColumn.nulls<int64>(m);
+                int64 i = 0;
+                while (i < m) {
+                    if (this.ni64.isValid(idx[i])) { o.set(i, this.ni64.get(idx[i])); }
+                    i = i + 1;
+                }
+                return DynCol.ofNI64(#o);
+            }
+            if (this.tag == 5) {
+                NullableColumn<uint8> o = NullableColumn.nulls<uint8>(m);
+                int64 i = 0;
+                while (i < m) {
+                    if (this.nu8.isValid(idx[i])) { o.set(i, this.nu8.get(idx[i])); }
+                    i = i + 1;
+                }
+                return DynCol.ofNU8(#o);
+            }
+            if (this.tag == 6) {
+                NullableColumn<uint16> o = NullableColumn.nulls<uint16>(m);
+                int64 i = 0;
+                while (i < m) {
+                    if (this.nu16.isValid(idx[i])) { o.set(i, this.nu16.get(idx[i])); }
+                    i = i + 1;
+                }
+                return DynCol.ofNU16(#o);
+            }
+            if (this.tag == 7) {
+                NullableColumn<uint32> o = NullableColumn.nulls<uint32>(m);
+                int64 i = 0;
+                while (i < m) {
+                    if (this.nu32.isValid(idx[i])) { o.set(i, this.nu32.get(idx[i])); }
+                    i = i + 1;
+                }
+                return DynCol.ofNU32(#o);
+            }
+            if (this.tag == 8) {
+                NullableColumn<uint64> o = NullableColumn.nulls<uint64>(m);
+                int64 i = 0;
+                while (i < m) {
+                    if (this.nu64.isValid(idx[i])) { o.set(i, this.nu64.get(idx[i])); }
+                    i = i + 1;
+                }
+                return DynCol.ofNU64(#o);
+            }
+            if (this.tag == 9) {
+                NullableColumn<float32> o = NullableColumn.nulls<float32>(m);
+                int64 i = 0;
+                while (i < m) {
+                    if (this.nf32.isValid(idx[i])) { o.set(i, this.nf32.get(idx[i])); }
+                    i = i + 1;
+                }
+                return DynCol.ofNF32(#o);
+            }
+            if (this.tag == 10) {
+                NullableColumn<float64> o = NullableColumn.nulls<float64>(m);
+                int64 i = 0;
+                while (i < m) {
+                    if (this.nf64.isValid(idx[i])) { o.set(i, this.nf64.get(idx[i])); }
+                    i = i + 1;
+                }
+                return DynCol.ofNF64(#o);
+            }
+        }
+        if (this.tag == 1) {
+            Column<int8> o = Column.zeros<int8>(m);
+            int64 i = 0;
+            while (i < m) { o.set(i, this.i8.get(idx[i])); i = i + 1; }
+            return DynCol.ofI8(#o);
+        }
+        if (this.tag == 2) {
+            Column<int16> o = Column.zeros<int16>(m);
+            int64 i = 0;
+            while (i < m) { o.set(i, this.i16.get(idx[i])); i = i + 1; }
+            return DynCol.ofI16(#o);
+        }
+        if (this.tag == 3) {
+            Column<int32> o = Column.zeros<int32>(m);
+            int64 i = 0;
+            while (i < m) { o.set(i, this.i32.get(idx[i])); i = i + 1; }
+            return DynCol.ofI32(#o);
+        }
+        if (this.tag == 4) {
+            Column<int64> o = Column.zeros<int64>(m);
+            int64 i = 0;
+            while (i < m) { o.set(i, this.i64.get(idx[i])); i = i + 1; }
+            return DynCol.ofI64(#o);
+        }
+        if (this.tag == 5) {
+            Column<uint8> o = Column.zeros<uint8>(m);
+            int64 i = 0;
+            while (i < m) { o.set(i, this.u8.get(idx[i])); i = i + 1; }
+            return DynCol.ofU8(#o);
+        }
+        if (this.tag == 6) {
+            Column<uint16> o = Column.zeros<uint16>(m);
+            int64 i = 0;
+            while (i < m) { o.set(i, this.u16.get(idx[i])); i = i + 1; }
+            return DynCol.ofU16(#o);
+        }
+        if (this.tag == 7) {
+            Column<uint32> o = Column.zeros<uint32>(m);
+            int64 i = 0;
+            while (i < m) { o.set(i, this.u32.get(idx[i])); i = i + 1; }
+            return DynCol.ofU32(#o);
+        }
+        if (this.tag == 8) {
+            Column<uint64> o = Column.zeros<uint64>(m);
+            int64 i = 0;
+            while (i < m) { o.set(i, this.u64.get(idx[i])); i = i + 1; }
+            return DynCol.ofU64(#o);
+        }
+        if (this.tag == 9) {
+            Column<float32> o = Column.zeros<float32>(m);
+            int64 i = 0;
+            while (i < m) { o.set(i, this.f32.get(idx[i])); i = i + 1; }
+            return DynCol.ofF32(#o);
+        }
+        if (this.tag == 10) {
+            Column<float64> o = Column.zeros<float64>(m);
+            int64 i = 0;
+            while (i < m) { o.set(i, this.f64.get(idx[i])); i = i + 1; }
+            return DynCol.ofF64(#o);
+        }
+        if (this.tag == 11) {
+            String[] vals = heap String[m];
+            int64 i = 0;
+            while (i < m) { vals[i] = this.str.get(idx[i]); i = i + 1; }
+            return DynCol.ofStr(StringColumn.of(vals));
+        }
+        throw heap ColumnTypeException("DynCol.gather: unknown physical tag");
+    }
+
+    public #Column<int8> asI8()      { if (this.tag != 1 || this.nullable)  { throw heap ColumnTypeException("DynCol.asI8: column is '" + this.typeName() + "'"); }  return this.i8.alias(); }
+    public #Column<int16> asI16()    { if (this.tag != 2 || this.nullable)  { throw heap ColumnTypeException("DynCol.asI16: column is '" + this.typeName() + "'"); } return this.i16.alias(); }
+    public #Column<int32> asI32()    { if (this.tag != 3 || this.nullable)  { throw heap ColumnTypeException("DynCol.asI32: column is '" + this.typeName() + "'"); } return this.i32.alias(); }
+    public #Column<int64> asI64()    { if (this.tag != 4 || this.nullable)  { throw heap ColumnTypeException("DynCol.asI64: column is '" + this.typeName() + "'"); } return this.i64.alias(); }
+    public #Column<uint8> asU8()     { if (this.tag != 5 || this.nullable)  { throw heap ColumnTypeException("DynCol.asU8: column is '" + this.typeName() + "'"); }  return this.u8.alias(); }
+    public #Column<uint16> asU16()   { if (this.tag != 6 || this.nullable)  { throw heap ColumnTypeException("DynCol.asU16: column is '" + this.typeName() + "'"); } return this.u16.alias(); }
+    public #Column<uint32> asU32()   { if (this.tag != 7 || this.nullable)  { throw heap ColumnTypeException("DynCol.asU32: column is '" + this.typeName() + "'"); } return this.u32.alias(); }
+    public #Column<uint64> asU64()   { if (this.tag != 8 || this.nullable)  { throw heap ColumnTypeException("DynCol.asU64: column is '" + this.typeName() + "'"); } return this.u64.alias(); }
+    public #Column<float32> asF32()  { if (this.tag != 9 || this.nullable)  { throw heap ColumnTypeException("DynCol.asF32: column is '" + this.typeName() + "'"); } return this.f32.alias(); }
+    public #Column<float64> asF64()  { if (this.tag != 10 || this.nullable) { throw heap ColumnTypeException("DynCol.asF64: column is '" + this.typeName() + "'"); } return this.f64.alias(); }
+    public #StringColumn asStr()     { if (this.tag != 11)                  { throw heap ColumnTypeException("DynCol.asStr: column is '" + this.typeName() + "'"); } return this.str.alias(); }
+    public #NullableColumn<int8> asNI8()      { if (this.tag != 1 || !this.nullable)  { throw heap ColumnTypeException("DynCol.asNI8: column is '" + this.typeName() + "'"); }  return this.ni8.alias(); }
+    public #NullableColumn<int16> asNI16()    { if (this.tag != 2 || !this.nullable)  { throw heap ColumnTypeException("DynCol.asNI16: column is '" + this.typeName() + "'"); } return this.ni16.alias(); }
+    public #NullableColumn<int32> asNI32()    { if (this.tag != 3 || !this.nullable)  { throw heap ColumnTypeException("DynCol.asNI32: column is '" + this.typeName() + "'"); } return this.ni32.alias(); }
+    public #NullableColumn<int64> asNI64()    { if (this.tag != 4 || !this.nullable)  { throw heap ColumnTypeException("DynCol.asNI64: column is '" + this.typeName() + "'"); } return this.ni64.alias(); }
+    public #NullableColumn<uint8> asNU8()     { if (this.tag != 5 || !this.nullable)  { throw heap ColumnTypeException("DynCol.asNU8: column is '" + this.typeName() + "'"); }  return this.nu8.alias(); }
+    public #NullableColumn<uint16> asNU16()   { if (this.tag != 6 || !this.nullable)  { throw heap ColumnTypeException("DynCol.asNU16: column is '" + this.typeName() + "'"); } return this.nu16.alias(); }
+    public #NullableColumn<uint32> asNU32()   { if (this.tag != 7 || !this.nullable)  { throw heap ColumnTypeException("DynCol.asNU32: column is '" + this.typeName() + "'"); } return this.nu32.alias(); }
+    public #NullableColumn<uint64> asNU64()   { if (this.tag != 8 || !this.nullable)  { throw heap ColumnTypeException("DynCol.asNU64: column is '" + this.typeName() + "'"); } return this.nu64.alias(); }
+    public #NullableColumn<float32> asNF32()  { if (this.tag != 9 || !this.nullable)  { throw heap ColumnTypeException("DynCol.asNF32: column is '" + this.typeName() + "'"); } return this.nf32.alias(); }
+    public #NullableColumn<float64> asNF64()  { if (this.tag != 10 || !this.nullable) { throw heap ColumnTypeException("DynCol.asNF64: column is '" + this.typeName() + "'"); } return this.nf64.alias(); }
+}

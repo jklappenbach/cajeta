@@ -636,6 +636,12 @@ namespace cajeta {
         // validation sweep, between parse and Phase 1.
         static void buildPendingPrototypes();
 
+        // Re-run per-(class, iface) vtable synthesis for classes that
+        // skipped a then-placeholder interface (lazy-package drain order).
+        // Idempotent; every codegen fixed-point loop calls it per pass,
+        // before method bodies emit. Implemented in CajetaModule.cpp.
+        void completePendingInterfaceVTables();
+
         // Post-parse validation: scan canonicalMap for any
         // CajetaClass with placeholderFlag still set. A placeholder
         // marks a name that fromContext synthesized when the archive

@@ -7,16 +7,19 @@ package cajeta.nucleo.frame;
  * `|` (short-circuit `&&`/`||` cannot build nodes — the same reason Polars
  * spells them `&`/`|`), negation is {@link #not}.
  *
- * Kinds: 20 gt, 21 ge, 22 lt, 23 le, 24 eq, 25 ne (numeric, `value` holds
+ * Kinds: 20 gt, 21 ge, 22 lt, 23 le, 24 eq, 25 ne (float64, `value` holds
  * the literal); 26 eqStr, 27 neStr (string, `strValue`); 30 and, 31 or,
- * 32 not (children in `leftPred`/`rightPred`). Introspectable — the
+ * 32 not (children in `leftPred`/`rightPred`); 40 gtI, 41 geI, 42 ltI,
+ * 43 leI, 44 eqI, 45 neI (exact int64, `iValue`). Introspectable — the
  * pushdown optimizer and the zone-map router read these fields.
  */
 public class Pred {
     int32 kind;
-    ColF64 operand;      // numeric comparison child (owned)
+    ColF64 operand;      // float64 comparison child (owned)
+    ColI64 iOperand;     // int64 comparison child (owned)
     ColStr strOperand;   // string comparison child (owned)
     float64 value;
+    int64 iValue;
     String strValue;
     Pred leftPred;       // logical children (owned)
     Pred rightPred;
@@ -32,6 +35,13 @@ public class Pred {
         return #p;
     }
 
+    static #Pred cmpI64(int32 kind, #ColI64 a, int64 v) {
+        Pred p = heap Pred(kind, 0.0);
+        p.iOperand #= a;
+        p.iValue = v;
+        return #p;
+    }
+
     static #Pred cmpStr(int32 kind, #ColStr a, String v) {
         Pred p = heap Pred(kind, 0.0);
         p.strOperand #= a;
@@ -41,8 +51,10 @@ public class Pred {
 
     public int32 kind() { return this.kind; }
     public ColF64 operandExpr() { return this.operand; }
+    public ColI64 iOperandExpr() { return this.iOperand; }
     public ColStr strOperandExpr() { return this.strOperand; }
     public float64 value() { return this.value; }
+    public int64 iValue() { return this.iValue; }
     public String strValue() { return this.strValue; }
     public Pred leftPredicate() { return this.leftPred; }
     public Pred rightPredicate() { return this.rightPred; }
@@ -51,6 +63,34 @@ public class Pred {
     public #Pred not() {
         Pred p = heap Pred(32, 0.0);
         p.leftPred = this;
+        return #p;
+    }
+
+    /** Logical negation, static form: `Pred.negate(#p)`. */
+    public static #Pred negate(#Pred a) {
+        Pred p = heap Pred(32, 0.0);
+        p.leftPred #= a;
+        return #p;
+    }
+
+    /** Conjunction, static form — inside LAMBDA bodies the `&`/`|`
+     *  operator overrides don't yet resolve (operand comparisons
+     *  pre-stamp boolean and the raw integral op reaches the verifier —
+     *  compiler ledger); bind comparisons to locals and compose with
+     *  these statics there. Method-level `&`/`|` operators stay the
+     *  primary spelling (pinned by FrameDslTests). */
+    public static #Pred and(#Pred a, #Pred b) {
+        Pred p = heap Pred(30, 0.0);
+        p.leftPred #= a;
+        p.rightPred #= b;
+        return #p;
+    }
+
+    /** Disjunction, static form (see {@link #and}). */
+    public static #Pred or(#Pred a, #Pred b) {
+        Pred p = heap Pred(31, 0.0);
+        p.leftPred #= a;
+        p.rightPred #= b;
         return #p;
     }
 

@@ -1,0 +1,272 @@
+package cajeta.nucleo.frame;
+
+import cajeta.lang.String;
+import cajeta.nucleo.column.DynCol;
+
+/**
+ * Exec — the plan executor (nucleo-frame U5): walks a {@link Plan} chain
+ * scan-first over {@link DynFrame}s, schema-agnostic — the typed world ends
+ * at the handle's snapshot and resumes at the typed rebind. v1 is a
+ * row-interpreting executor (filter builds an index gather; project/with
+ * evaluate selections per row); the nucleo-expr fusion seam replaces the
+ * inner loops later without changing this contract.
+ *
+ * Executors are validity-PRESERVING (gathers carry null bitmaps with their
+ * values); three-valued predicate semantics over nulls land with U6 —
+ * until then predicates read physical values.
+ *
+ * `apply(sels, ...)` doubles as the plan-build schema computer: fed a
+ * schema-only frame it returns the output schema without touching data —
+ * `col("...")`/`.as<R>()` validate against it before anything runs.
+ */
+public class Exec {
+
+    /** Execute `node`'s chain against the scan snapshot `src`. */
+    public static #DynFrame run(Plan node, DynFrame src) {
+        if (node.kindOf() == 1) {
+            return src.aliasFrame();
+        }
+        DynFrame in = Exec.run(node.childOf(), src);
+        if (node.kindOf() == 2) {
+            return Exec.applyFilter(node.predOf(), #in);
+        }
+        if (node.kindOf() == 3) {
+            return Exec.apply(node.selsOf(), node.selCount(), #in, false);
+        }
+        if (node.kindOf() == 4) {
+            return Exec.apply(node.selsOf(), node.selCount(), #in, true);
+        }
+        throw heap FrameException(
+            "plan node not executable yet: " + node.opName());
+    }
+
+    /** float64 expression eval at row `i` (colRef / literal / arithmetic). */
+    static float64 evalF64(ColF64 e, DynFrame f, int64 i) {
+        int32 k = e.kind();
+        if (k == 0) {
+            int32 o = e.ordinal();
+            if (o < 0 || o >= f.width()) {
+                throw heap FrameException("column '" + e.name()
+                    + "' is not in schema " + f.schemaText());
+            }
+            if (f.tagAt(o) == 11) {
+                throw heap FrameException("column '" + e.name()
+                    + "' is utf8; a numeric expression expected it numeric");
+            }
+            return f.colAt(o).f64At(i);
+        }
+        if (k == 1) {
+            return e.literalValue();
+        }
+        float64 a = Exec.evalF64(e.leftChild(), f, i);
+        float64 b = Exec.evalF64(e.rightChild(), f, i);
+        if (k == 2) { return a + b; }
+        if (k == 3) { return a - b; }
+        if (k == 4) { return a * b; }
+        if (k == 5) { return a / b; }
+        throw heap FrameException("unknown expression kind");
+    }
+
+    /** Exact int64 reference eval at row `i`. */
+    static int64 evalI64(ColI64 e, DynFrame f, int64 i) {
+        int32 o = e.ordinal();
+        if (o < 0 || o >= f.width()) {
+            throw heap FrameException("column '" + e.name()
+                + "' is not in schema " + f.schemaText());
+        }
+        if (f.tagAt(o) > 8) {
+            throw heap FrameException("column '" + e.name() + "' is '"
+                + f.typeNameAt(o) + "'; an integer comparison expected an "
+                + "integer column");
+        }
+        return f.colAt(o).i64At(i);
+    }
+
+    /** Utf8 reference eval at row `i`. */
+    static #String evalStr(ColStr e, DynFrame f, int64 i) {
+        int32 o = e.ordinal();
+        if (o < 0 || o >= f.width()) {
+            throw heap FrameException("column '" + e.name()
+                + "' is not in schema " + f.schemaText());
+        }
+        if (f.tagAt(o) != 11) {
+            throw heap FrameException("column '" + e.name() + "' is '"
+                + f.typeNameAt(o) + "'; a string comparison expected utf8");
+        }
+        return f.colAt(o).strAt(i);
+    }
+
+    /** Predicate eval at row `i` (U6 upgrades this to three-valued). */
+    static boolean evalPred(Pred p, DynFrame f, int64 i) {
+        int32 k = p.kind();
+        if (k == 30) {
+            return Exec.evalPred(p.leftPredicate(), f, i)
+                && Exec.evalPred(p.rightPredicate(), f, i);
+        }
+        if (k == 31) {
+            return Exec.evalPred(p.leftPredicate(), f, i)
+                || Exec.evalPred(p.rightPredicate(), f, i);
+        }
+        if (k == 32) {
+            return !Exec.evalPred(p.leftPredicate(), f, i);
+        }
+        if (k >= 20 && k <= 25) {
+            float64 a = Exec.evalF64(p.operandExpr(), f, i);
+            float64 b = p.value();
+            if (k == 20) { return a > b; }
+            if (k == 21) { return a >= b; }
+            if (k == 22) { return a < b; }
+            if (k == 23) { return a <= b; }
+            if (k == 24) { return a == b; }
+            return a != b;
+        }
+        if (k == 26 || k == 27) {
+            String a = Exec.evalStr(p.strOperandExpr(), f, i);
+            boolean eq = a.equals(p.strValue());
+            if (k == 26) { return eq; }
+            return !eq;
+        }
+        if (k >= 40 && k <= 45) {
+            int64 a = Exec.evalI64(p.iOperandExpr(), f, i);
+            int64 b = p.iValue();
+            if (k == 40) { return a > b; }
+            if (k == 41) { return a >= b; }
+            if (k == 42) { return a < b; }
+            if (k == 43) { return a <= b; }
+            if (k == 44) { return a == b; }
+            return a != b;
+        }
+        throw heap FrameException("unknown predicate kind");
+    }
+
+    /** Filter: evaluate `p` per row, gather the passing rows per column. */
+    static #DynFrame applyFilter(Pred p, #DynFrame in) {
+        if (in.isSchemaOnly()) {
+            return in.schemaOnly();   // filter preserves the schema
+        }
+        int64 n = in.rowsOf();
+        int64 cap = n;
+        if (cap < 1) { cap = 1; }
+        int64[] idx = heap int64[cap];
+        int64 m = 0;
+        int64 i = 0;
+        while (i < n) {
+            if (Exec.evalPred(p, in, i)) {
+                idx[m] = i;
+                m = m + 1;
+            }
+            i = i + 1;
+        }
+        DynCol[] out = heap DynCol[in.width()];
+        int32 j = 0;
+        while (j < in.width()) {
+            out[j] #= in.colAt(j).gather(idx, m);
+            j = j + 1;
+        }
+        return in.rebuild(#out, m);
+    }
+
+    /** Project (`keepAll == false`) or with-columns (`keepAll == true`).
+     *  Passthrough references alias zero-copy; computed expressions
+     *  materialize float64. `with` REPLACES a same-named column in place.
+     *  Fed a schema-only frame, computes the output SCHEMA only. */
+    static #DynFrame apply(Sel sels, int32 nsels, #DynFrame in, boolean keepAll) {
+        boolean schemaOnly = in.isSchemaOnly();
+        int64 n = in.rowsOf();
+        int32 cap = nsels;
+        if (keepAll) { cap = cap + in.width(); }
+        if (cap < 1) { cap = 1; }
+        String[] names = heap String[cap];
+        int32[] tags = heap int32[cap];
+        boolean[] nulls = heap boolean[cap];
+        DynCol[] cols = heap DynCol[cap];
+        int32 w = 0;
+        if (keepAll) {
+            while (w < in.width()) {
+                names[w] = in.nameAt(w);
+                tags[w] = in.tagAt(w);
+                nulls[w] = in.nullableAt(w);
+                if (!schemaOnly) { cols[w] #= in.colAt(w).alias(); }
+                w = w + 1;
+            }
+        }
+        Sel s = sels;
+        while (s != null) {
+            String outName = s.outNameOf();
+            // `with` replaces a same-named column in place.
+            int32 at = w;
+            if (keepAll) {
+                int32 j = 0;
+                while (j < w) {
+                    if (names[j].equals(outName)) { at = j; }
+                    j = j + 1;
+                }
+            }
+            int32 tag = 10;
+            boolean nullable = false;
+            if (s.strRefOf() != null) {
+                ColStr r = s.strRefOf();
+                int32 o = r.ordinal();
+                if (o < 0 || o >= in.width()) {
+                    throw heap FrameException("column '" + r.name()
+                        + "' is not in schema " + in.schemaText());
+                }
+                if (in.tagAt(o) != 11) {
+                    throw heap FrameException("column '" + r.name() + "' is '"
+                        + in.typeNameAt(o) + "', not utf8");
+                }
+                tag = 11;
+                if (!schemaOnly) { cols[at] #= in.colAt(o).alias(); }
+            } else if (s.iRefOf() != null) {
+                ColI64 r = s.iRefOf();
+                int32 o = r.ordinal();
+                if (o < 0 || o >= in.width()) {
+                    throw heap FrameException("column '" + r.name()
+                        + "' is not in schema " + in.schemaText());
+                }
+                if (in.tagAt(o) > 8) {
+                    throw heap FrameException("column '" + r.name() + "' is '"
+                        + in.typeNameAt(o) + "', not an integer physical");
+                }
+                tag = in.tagAt(o);
+                nullable = in.nullableAt(o);
+                if (!schemaOnly) { cols[at] #= in.colAt(o).alias(); }
+            } else if (s.exprOf() != null && s.exprOf().kind() == 0) {
+                ColF64 r = s.exprOf();
+                int32 o = r.ordinal();
+                if (o < 0 || o >= in.width()) {
+                    throw heap FrameException("column '" + r.name()
+                        + "' is not in schema " + in.schemaText());
+                }
+                if (in.tagAt(o) == 11) {
+                    throw heap FrameException("column '" + r.name()
+                        + "' is utf8; reference it with a string builder");
+                }
+                tag = in.tagAt(o);
+                nullable = in.nullableAt(o);
+                if (!schemaOnly) { cols[at] #= in.colAt(o).alias(); }
+            } else {
+                // Computed float64 expression — materialized via DynCol so
+                // the column instantiation resolves in its own package.
+                if (!schemaOnly) {
+                    DynCol c = DynCol.newF64(n);
+                    int64 i = 0;
+                    while (i < n) {
+                        c.setF64(i, Exec.evalF64(s.exprOf(), in, i));
+                        i = i + 1;
+                    }
+                    cols[at] #= c;
+                }
+            }
+            names[at] = outName;
+            tags[at] = tag;
+            nulls[at] = nullable;
+            if (at == w) { w = w + 1; }
+            s = s.nextOf();
+        }
+        if (schemaOnly) {
+            return heap DynFrame(#names, #tags, #nulls, w);
+        }
+        return heap DynFrame(#names, #tags, #nulls, #cols, w, n);
+    }
+}

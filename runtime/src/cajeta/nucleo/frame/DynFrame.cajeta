@@ -1,0 +1,145 @@
+package cajeta.nucleo.frame;
+
+import cajeta.lang.String;
+import cajeta.nucleo.column.DynCol;
+
+/**
+ * DynFrame — the schema-agnostic column bag (nucleo-frame U5): parallel
+ * name/tag/nullability arrays plus {@link DynCol} columns. Every
+ * materialized `Table` carries one (typed accessors and the dyn store alias
+ * the same storage); plan handles carry a full frame as their scan snapshot
+ * and a SCHEMA-ONLY frame (`cols == null`, `rows == -1`) describing their
+ * result — the `col("...")` accessor and `.as<R>()` validate against it at
+ * plan-build, before anything executes.
+ *
+ * Physical tags are {@link DynCol}'s: 1 int8 .. 10 float64, 11 utf8.
+ */
+public class DynFrame {
+    String[] names;
+    int32[] tags;
+    boolean[] nulls;
+    DynCol[] cols;      // null on a schema-only frame
+    int32 w;
+    int64 rows;
+
+    public DynFrame(#String[] names, #int32[] tags, #boolean[] nulls,
+                    #DynCol[] cols, int32 w, int64 rows) {
+        this.names #= names;
+        this.tags #= tags;
+        this.nulls #= nulls;
+        this.cols #= cols;
+        this.w = w;
+        this.rows = rows;
+    }
+
+    /** A SCHEMA-ONLY frame: no columns, no rows — what plan handles carry
+     *  as their result description. */
+    public DynFrame(#String[] names, #int32[] tags, #boolean[] nulls,
+                    int32 w) {
+        this.names #= names;
+        this.tags #= tags;
+        this.nulls #= nulls;
+        this.w = w;
+        this.rows = -1;
+    }
+
+    public int32 width() { return this.w; }
+    public int64 rowsOf() { return this.rows; }
+    public boolean isSchemaOnly() { return this.cols == null; }
+
+    public String nameAt(int32 i) { return this.names[i]; }
+    public int32 tagAt(int32 i) { return this.tags[i]; }
+    public boolean nullableAt(int32 i) { return this.nulls[i]; }
+    public DynCol colAt(int32 i) { return this.cols[i]; }
+
+    /** Ordinal of `name`, or -1. */
+    public int32 find(String name) {
+        int32 i = 0;
+        while (i < this.w) {
+            if (this.names[i].equals(name)) { return i; }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    /** The physical name at `i` — DynCol's vocabulary. */
+    public #String typeNameAt(int32 i) {
+        int32 t = this.tags[i];
+        if (t == 1) { return "int8"; }
+        if (t == 2) { return "int16"; }
+        if (t == 3) { return "int32"; }
+        if (t == 4) { return "int64"; }
+        if (t == 5) { return "uint8"; }
+        if (t == 6) { return "uint16"; }
+        if (t == 7) { return "uint32"; }
+        if (t == 8) { return "uint64"; }
+        if (t == 9) { return "float32"; }
+        if (t == 10) { return "float64"; }
+        if (t == 11) { return "utf8"; }
+        return "unknown";
+    }
+
+    /** `{ts: int64, price: float64, lastTrade: float64?}` — diagnostics. */
+    public #String schemaText() {
+        String s = "{";
+        int32 i = 0;
+        while (i < this.w) {
+            if (i > 0) { s = s + ", "; }
+            s = s + this.names[i] + ": " + this.typeNameAt(i);
+            if (this.nulls[i]) { s = s + "?"; }
+            i = i + 1;
+        }
+        return s + "}";
+    }
+
+    #String[] namesCopy() {
+        String[] c = heap String[this.w];
+        int32 i = 0;
+        while (i < this.w) { c[i] = this.names[i]; i = i + 1; }
+        return #c;
+    }
+
+    #int32[] tagsCopy() {
+        int32[] c = heap int32[this.w];
+        int32 i = 0;
+        while (i < this.w) { c[i] = this.tags[i]; i = i + 1; }
+        return #c;
+    }
+
+    #boolean[] nullsCopy() {
+        boolean[] c = heap boolean[this.w];
+        int32 i = 0;
+        while (i < this.w) { c[i] = this.nulls[i]; i = i + 1; }
+        return #c;
+    }
+
+    /** Zero-copy share: schema arrays copied, every column aliased. */
+    public #DynFrame aliasFrame() {
+        DynCol[] c = heap DynCol[this.w];
+        int32 i = 0;
+        while (i < this.w) { c[i] #= this.cols[i].alias(); i = i + 1; }
+        return heap DynFrame(this.namesCopy(), this.tagsCopy(),
+            this.nullsCopy(), #c, this.w, this.rows);
+    }
+
+    /** Schema without data: `cols == null`, `rows == -1`. */
+    public #DynFrame schemaOnly() {
+        return heap DynFrame(this.namesCopy(), this.tagsCopy(),
+            this.nullsCopy(), this.w);
+    }
+
+    /** Same schema over new columns (the executor's result builder). */
+    public #DynFrame rebuild(#DynCol[] cols, int64 rows) {
+        return heap DynFrame(this.namesCopy(), this.tagsCopy(),
+            this.nullsCopy(), #cols, this.w, rows);
+    }
+
+    /** A row window — zero-copy per column physics (DynCol.slice). */
+    public #DynFrame sliceRows(int64 off, int64 len) {
+        DynCol[] c = heap DynCol[this.w];
+        int32 i = 0;
+        while (i < this.w) { c[i] #= this.cols[i].slice(off, len); i = i + 1; }
+        return heap DynFrame(this.namesCopy(), this.tagsCopy(),
+            this.nullsCopy(), #c, this.w, len);
+    }
+}
