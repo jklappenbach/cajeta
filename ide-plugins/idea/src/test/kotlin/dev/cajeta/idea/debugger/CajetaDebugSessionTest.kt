@@ -56,6 +56,7 @@ class CajetaDebugSessionTest {
      */
     private fun runServer(
         respondBody: (String, Json) -> Json = { _, _ -> Json.obj() },
+        stopOnDisconnect: Boolean = true,
         onCommand: (String, DapTransport) -> Unit = { _, _ -> },
     ) {
         val t = Thread({
@@ -67,7 +68,7 @@ class CajetaDebugSessionTest {
                     lastRequestByCommand[command] = req
                     serverTransport.write(ok(req, respondBody(command, req)))
                     onCommand(command, serverTransport)
-                    if (command == "disconnect") break
+                    if (command == "disconnect" && stopOnDisconnect) break
                 }
             } catch (_: Exception) {
                 // pipe closed on teardown
@@ -174,6 +175,30 @@ class CajetaDebugSessionTest {
         assertEquals(
             setOf("entry-method", "sourceRoot", "stopOnEntry"),
             args.entries.keys,
+        )
+    }
+
+    /** resident-debug-server (found live 2026-07-22): a resident session
+     *  must NOT close the shared client on disconnect — the next session
+     *  reuses it. Pin: disconnect with ownsClient=false, then a full second
+     *  handshake on the SAME client completes. */
+    @Test
+    fun residentDisconnectLeavesClientUsableForNextSession() {
+        connect()
+        runServer(stopOnDisconnect = false)   // resident: server outlives sessions
+        session.start()
+        session.ownsClient = false
+
+        session.launch(CajetaDebugSession.LaunchParams("demo.Calc.main", "/tmp/root"))
+            .get(5, TimeUnit.SECONDS)
+        session.disconnect().get(5, TimeUnit.SECONDS)
+
+        received.clear()
+        session.launch(CajetaDebugSession.LaunchParams("demo.Calc.main", "/tmp/root"))
+            .get(5, TimeUnit.SECONDS)
+        assertEquals(
+            listOf("initialize", "launch", "configurationDone"),
+            received.toList(),
         )
     }
 

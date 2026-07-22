@@ -212,10 +212,18 @@ class CajetaDebugSession(private val client: DapClient) {
         }
 
     /** DAP `disconnect`, then tear down the client transport. */
+    /** Under the resident lifecycle the DapClient belongs to the project
+     *  service and OUTLIVES this session — closing it here killed the shared
+     *  reader thread and every later session hung on unanswered requests
+     *  (found live, 2026-07-22). The owner closes it; a standalone session
+     *  (tests, one-shot use) keeps the old behavior. */
+    @Volatile
+    var ownsClient: Boolean = true
+
     fun disconnect(): CompletableFuture<Void?> =
         client.sendRequest("disconnect")
             .handle { _, _ -> null as Void? } // succeed even if the server is already gone
-            .whenComplete { _, _ -> client.close() }
+            .whenComplete { _, _ -> if (ownsClient) client.close() }
 
     /**
      * The environment fields are emitted only when they DIVERGE from the

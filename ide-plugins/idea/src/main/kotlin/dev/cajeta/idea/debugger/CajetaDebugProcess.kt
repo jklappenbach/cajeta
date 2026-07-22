@@ -96,6 +96,7 @@ class CajetaDebugProcess(
             val server = resident.acquire(binary)
             process = server.process
             val ds = CajetaDebugSession(server.client)
+            ds.ownsClient = false   // the service owns the shared client
             dapSession = ds
 
             wireSessionCallbacks(ds)
@@ -143,6 +144,7 @@ class CajetaDebugProcess(
                     val fresh = resident.acquire(binary)
                     process = fresh.process
                     val retry = CajetaDebugSession(fresh.client)
+                    retry.ownsClient = false
                     dapSession = retry
                     wireSessionCallbacks(retry)
                     retry.start()

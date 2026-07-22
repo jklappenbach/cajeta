@@ -27,7 +27,12 @@ class CajetaResidentDapService : Disposable {
             Server(proc, DapClient(DapTransport(proc.inputStream, proc.outputStream)))
         },
         isAlive = { it.process.isAlive },
-        kill = { it.process.destroyForcibly() },
+        kill = {
+            // The service owns the client: close it HERE (not per session),
+            // then drop the process.
+            runCatching { it.client.close() }
+            it.process.destroyForcibly()
+        },
     )
 
     /** The live server for [binary], spawning/respawning as needed. Event
