@@ -21,21 +21,26 @@ namespace cajeta::dbg {
         }
     }
 
-    void emitDbgFrameEnter(cajeta::CajetaModulePtr module, const std::string& func) {
+    llvm::Value* emitDbgFrameEnter(cajeta::CajetaModulePtr module,
+                                   const std::string& func) {
         llvm::IRBuilder<>* builder = emitGuard(module);
-        if (!builder) return;
+        if (!builder) return nullptr;
         llvm::Function* fn = module->getRuntimeFunction("__cajeta_dbg_frame_enter");
-        if (!fn) return;
+        if (!fn) return nullptr;
         llvm::Value* funcName = builder->CreateGlobalString(func);
-        builder->CreateCall(fn, {funcName});
+        return builder->CreateCall(fn, {funcName});
     }
 
-    void emitDbgFrameLeave(cajeta::CajetaModulePtr module) {
+    void emitDbgFrameLeave(cajeta::CajetaModulePtr module,
+                           llvm::Value* nodeSlot) {
         llvm::IRBuilder<>* builder = emitGuard(module);
-        if (!builder) return;
+        if (!builder || !nodeSlot) return;
         llvm::Function* fn = module->getRuntimeFunction("__cajeta_dbg_frame_leave");
         if (!fn) return;
-        builder->CreateCall(fn, {});
+        llvm::Value* node = builder->CreateLoad(
+            llvm::PointerType::get(builder->getContext(), 0), nodeSlot,
+            "__dbg_frame_node");
+        builder->CreateCall(fn, {node});
     }
 
     void emitDbgLocal(cajeta::CajetaModulePtr module, const std::string& name,

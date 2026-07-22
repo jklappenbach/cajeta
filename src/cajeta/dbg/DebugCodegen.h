@@ -23,11 +23,16 @@
 namespace cajeta::dbg {
 
     // Push a debug frame for `func` (the cajeta-mangled enclosing function name).
-    void emitDbgFrameEnter(cajeta::CajetaModulePtr module, const std::string& func);
+    // Returns the frame NODE (to be stored in an entry-block slot) or null
+    // when frames are off — the paired leave consumes it.
+    llvm::Value* emitDbgFrameEnter(cajeta::CajetaModulePtr module,
+                                   const std::string& func);
 
     // Pop the current debug frame. Call beside the scope/drop teardown on every
     // return path.
-    void emitDbgFrameLeave(cajeta::CajetaModulePtr module);
+    // Node-paired (9.1): leave loads the frame node the prolog's enter stored
+    // in `nodeSlot` and unlinks exactly that node from its own chain.
+    void emitDbgFrameLeave(cajeta::CajetaModulePtr module, llvm::Value* nodeSlot);
 
     // Register a named local/parameter in the current debug frame. `slot` is the
     // local's alloca (primitives: holds the value; objects: holds the heap ptr).

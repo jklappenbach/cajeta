@@ -86,7 +86,11 @@ namespace cajeta::dbg {
         bool stepStop = false;
         if (!entryStop && !breakpointStop && stepPending
             && fiberId == stepFiber && depthOfFrame && lineOfLoc
-            && lineOfLoc(locId) != stepOriginLine) {
+            && lineOfLoc(locId) != stepOriginLine
+            // 9.1: the candidate's chain must carry the origin frame — a
+            // foreign carrier's chain never does, whatever its fiber id.
+            && (!containsFrame || !stepOriginFrame
+                || containsFrame(frameTop, stepOriginFrame))) {
             const int depth = depthOfFrame(frameTop);
             switch (stepKind) {
                 case StepKind::In:   stepStop = true; break;
@@ -233,13 +237,15 @@ namespace cajeta::dbg {
     }
 
     void DebugController::resumeWithStep(StepKind kind, long fiberId,
-                                         int originDepth, int originLine) {
+                                         int originDepth, int originLine,
+                                         void* originFrame) {
         std::lock_guard<std::mutex> lock(mutex);
         stepPending = true;
         stepKind = kind;
         stepFiber = fiberId;
         stepOriginDepth = originDepth;
         stepOriginLine = originLine;
+        stepOriginFrame = originFrame;
         // Same release sequence as resume() (which we can't call here — it
         // would clear the step we just armed).
         stopped = false;
@@ -249,10 +255,12 @@ namespace cajeta::dbg {
     }
 
     void DebugController::setStepProviders(
-        std::function<int(void*)> depthFn, std::function<int(int32_t)> lineFn) {
+        std::function<int(void*)> depthFn, std::function<int(int32_t)> lineFn,
+        std::function<bool(void*, void*)> containsFn) {
         std::lock_guard<std::mutex> lock(mutex);
         depthOfFrame = std::move(depthFn);
         lineOfLoc = std::move(lineFn);
+        containsFrame = std::move(containsFn);
     }
 
     bool DebugController::isStopped() const {

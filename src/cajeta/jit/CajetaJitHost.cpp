@@ -1638,7 +1638,19 @@ std::unique_ptr<JitDebugSession> startDebugSession(
     // but the build must not have seen (the DAP launch environment).
     if (beforeRun) beforeRun();
 
-    raw->thread = std::thread([raw, entryAddr, returnsInt32, takesArgs, entryArgs]() {
+    // 9.1: capture the PROGRAM thread's identity from the program thread
+    // itself — reset_safepoint_count above ran on this SETUP thread, and a
+    // wrong marker made real program-thread safepoints report fiber -1
+    // (steps un-armable: the stopped threadId never matched the request's).
+    void* markFnAddr = nullptr;
+    if (auto sym = jit->lookup("__cajeta_dbg_mark_program_thread")) {
+        markFnAddr = reinterpret_cast<void*>(sym->getValue());
+    } else {
+        cajeta::jit::consumeError(sym.takeError());
+    }
+    raw->thread = std::thread([raw, entryAddr, returnsInt32, takesArgs,
+                               entryArgs, markFnAddr]() {
+        if (markFnAddr) reinterpret_cast<void (*)()>(markFnAddr)();
         if (returnsInt32) {
             raw->exitCode = takesArgs
                 ? reinterpret_cast<int(*)(void*)>(entryAddr)(entryArgs)

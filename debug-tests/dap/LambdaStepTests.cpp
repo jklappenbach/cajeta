@@ -393,7 +393,7 @@ TEST(LambdaStep, ResidentStepOverNestedStreamStaysOutOfStdlib) {
 // instantiation bodies carry MIS-ATTRIBUTED source lines (fold's body maps
 // into Stream.cajeta's comment block ~103-112 — Julian saw highlighted
 // comments). Re-enable when the runtime fix lands.
-TEST(LambdaStep, DISABLED_StepOverParallelPipelineLandsOnNextLine) {
+TEST(LambdaStep, StepOverParallelPipelineLandsOnNextLine) {
     static const char* kMainP =
         "package demo;\n"
         "import cajeta.collection.ArrayList;\n"

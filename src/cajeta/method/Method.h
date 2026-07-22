@@ -177,6 +177,15 @@ namespace cajeta {
         // cleared on next use. Unused (epoch never bumps) in production.
         uint64_t methodInstantiationCacheEpoch = 0;
 
+        // resident-debug-server 9.1: entry-block slot holding this
+        // method's debug-frame NODE (the prolog's frame_enter result);
+        // every frame_leave (returns + fall-through) loads it so leave
+        // unlinks exactly this invocation's frame. Reset per generateCode.
+        llvm::Value* dbgFrameSlot = nullptr;
+    public:
+        llvm::Value* getDbgFrameSlot() const { return dbgFrameSlot; }
+    protected:
+
         // Stack of drop frames. Each Block::generateCode pushes a frame
         // at entry, registers any owned locals declared inside into the
         // top frame, and fires + pops the frame's entries at the

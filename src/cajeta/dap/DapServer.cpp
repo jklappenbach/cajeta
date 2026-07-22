@@ -94,6 +94,8 @@ Json variableJson(const cajeta::dbg::DbgVar& v, const std::string& renderedValue
 // chase, cheap enough to run per candidate safepoint while a step is pending
 // (walkFrames would decode every local of every frame).
 extern "C" int __cajeta_dbg_frame_depth(void* top);
+// 9.1: chain-containment probe (same pure pointer chase family).
+extern "C" int __cajeta_dbg_frame_contains(void* top, void* node);
 
 namespace {
 // dap-stepping: the controller compares the step origin's "line" as an opaque
@@ -480,7 +482,10 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
             // and depth only once the line already differs.
             session_->controller().setStepProviders(
                 [](void* frameTop) { return __cajeta_dbg_frame_depth(frameTop); },
-                [](int32_t locId) { return lineKeyForLoc(locId); });
+                [](int32_t locId) { return lineKeyForLoc(locId); },
+                [](void* frameTop, void* origin) {
+                    return __cajeta_dbg_frame_contains(frameTop, origin) != 0;
+                });
         }
         emit(makeResponse(seq_++, requestSeq, command, ok,
                           ok ? Json::object() : Json(err)));
@@ -688,7 +693,8 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         haveStop_ = false;
         session_->controller().resumeWithStep(kind, currentStop_.fiberId,
                                               originDepth,
-                                              lineKeyForLoc(originLoc));
+                                              lineKeyForLoc(originLoc),
+                                              currentStop_.frameTop);
         runToStopOrExit(emit);
         return true;
     }

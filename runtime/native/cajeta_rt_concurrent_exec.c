@@ -629,8 +629,15 @@ struct cajeta_dbg_frame** __cajeta_dbg_top_ptr(void) {
 // in a fiber (the main thread / program entry). Forward-declared up in the
 // debug-safepoint section; defined here where __cajeta_current_fiber is in
 // scope.
+int __cajeta_dbg_on_program_thread(void);
+
 int __cajeta_dbg_current_fiber_id(void) {
-    return __cajeta_current_fiber ? __cajeta_current_fiber->dbg_id : 0;
+    if (__cajeta_current_fiber) return __cajeta_current_fiber->dbg_id;
+    // 9.1: id 0 is the PROGRAM THREAD's identity. A carrier running outside
+    // fiber context (parallel share machinery, scheduler stretches) gets a
+    // sentinel instead, so it can never satisfy a pending step armed on
+    // fiber 0 nor masquerade in stops.
+    return __cajeta_dbg_on_program_thread() ? 0 : -1;
 }
 
 // Debugger CP6f-2: stateless per-fiber accessors. Like the frame-chain

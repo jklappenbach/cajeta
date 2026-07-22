@@ -129,15 +129,21 @@ namespace cajeta::dbg {
         // (In: any; Over: <= originDepth; Out: < originDepth). Any park —
         // step, breakpoint, exception, entry — clears the pending step, so a
         // step can never wedge the controller.
+        // originFrame (9.1): the frame NODE the step was armed on. A
+        // candidate safepoint must carry it on its own chain — a foreign
+        // carrier's chain never does, so parallel-share safepoints can no
+        // longer steal the stop even if their reported fiber id lies.
         void resumeWithStep(StepKind kind, long fiberId, int originDepth,
-                            int originLine);
+                            int originLine, void* originFrame = nullptr);
 
         // Injected seams for step matching: depth of a safepoint's frame-chain
         // head and line of a locId. The controller stays free of frame-walking
         // and loc-table knowledge; the DAP layer wires the real ones. With no
         // providers set, a pending step never matches (safe default).
         void setStepProviders(std::function<int(void*)> depthOfFrame,
-                              std::function<int(int32_t)> lineOfLoc);
+                              std::function<int(int32_t)> lineOfLoc,
+                              std::function<bool(void*, void*)> containsFrame
+                                  = {});
 
         // Non-blocking: is a safepoint currently parked?
         bool isStopped() const;
@@ -159,6 +165,8 @@ namespace cajeta::dbg {
         std::condition_variable resumeCv;    // signaled by resume()
         std::unordered_set<int32_t> armed;
         std::vector<StepDecision> stepTrace;   // ring, capped at 64
+        void* stepOriginFrame = nullptr;       // 9.1 chain-identity anchor
+        std::function<bool(void*, void*)> containsFrame;
         bool exceptionArmed = false;
         bool entryArmed = false;
         bool stopped = false;

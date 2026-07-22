@@ -2088,7 +2088,17 @@ namespace cajeta {
         // Debugger CP5: push a debug frame for this method (no-op unless
         // --debug-info). Paired with __cajeta_dbg_frame_leave on every return
         // path (emitScopeExitToWatermark + the synthetic fall-through below).
-        dbg::emitDbgFrameEnter(module, getLlvmSymbolName());
+        // 9.1: node-paired — the enter's node lands in an entry slot and
+        // every leave unlinks exactly it, immune to fiber-context changes.
+        dbgFrameSlot = nullptr;
+        if (llvm::Value* dbgNode =
+                dbg::emitDbgFrameEnter(module, getLlvmSymbolName())) {
+            llvm::IRBuilder<>* b = module->getBuilder();
+            dbgFrameSlot = b->CreateAlloca(
+                llvm::PointerType::get(b->getContext(), 0), nullptr,
+                "__dbg_frame_slot");
+            b->CreateStore(dbgNode, dbgFrameSlot);
+        }
 
         // diagnostic-exceptions U3: push a line-info shadow frame carrying this
         // method's type/method/file (no-op unless --line-info). Paired with
@@ -2586,7 +2596,7 @@ namespace cajeta {
             // Debugger CP5: pop this method's debug frame on the fall-through
             // return path (mirrors the explicit-return path in
             // emitScopeExitToWatermark). No-op unless --debug-info.
-            dbg::emitDbgFrameLeave(module);
+            dbg::emitDbgFrameLeave(module, dbgFrameSlot);
             // U3: pop the line-info shadow frame on this fall-through return too
             // (else a fall-through method — e.g. a constructor — leaks its frame
             // and pollutes the next throw's trace). No-op unless --line-info.

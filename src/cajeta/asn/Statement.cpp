@@ -1496,7 +1496,10 @@ namespace cajeta {
         // first (independent of the watermark below) so it fires on every
         // explicit-return chokepoint that funnels through here. No-op unless
         // --debug-info.
-        dbg::emitDbgFrameLeave(module);
+        {
+            auto m = module->getCurrentMethod();
+            dbg::emitDbgFrameLeave(module, m ? m->getDbgFrameSlot() : nullptr);
+        }
         // diagnostic-exceptions U3: pop the line-info shadow frame on this return
         // path (no-op unless --line-info). Same every-return coverage as above.
         dbg::emitLineLeave(module);

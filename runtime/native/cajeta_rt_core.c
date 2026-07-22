@@ -337,6 +337,12 @@ struct cajeta_dbg_frame {
     int nlocals;
     struct cajeta_dbg_local locals[CAJETA_DBG_MAX_LOCALS];
     struct cajeta_dbg_frame* prev;
+    // resident-debug-server 9.1: the chain slot this frame was pushed onto.
+    // leave() unlinks the node from ITS OWN chain — a method that enters
+    // under one fiber context and leaves under another (parallel shares,
+    // scheduler hand-offs) previously popped the WRONG chain, eroding
+    // main's chain until pending steps could never land.
+    struct cajeta_dbg_frame** owner;
 };
 
 // Selector for the current dbg frame chain head — mirrors __cajeta_scope_top_ptr
@@ -344,7 +350,7 @@ struct cajeta_dbg_frame {
 // scope; forward-declared here so the enter/leave/local helpers can use it.
 struct cajeta_dbg_frame** __cajeta_dbg_top_ptr(void);
 
-void __cajeta_dbg_frame_enter(const char* func) {
+void* __cajeta_dbg_frame_enter(const char* func) {
     struct cajeta_dbg_frame* f = malloc(sizeof(*f));
     if (!f) {
         fprintf(stderr, "cajeta: __cajeta_dbg_frame_enter malloc failed\n");
@@ -355,14 +361,29 @@ void __cajeta_dbg_frame_enter(const char* func) {
     f->nlocals = 0;
     struct cajeta_dbg_frame** top = __cajeta_dbg_top_ptr();
     f->prev = *top;
+    f->owner = top;
     *top = f;
+    return f;
 }
 
-void __cajeta_dbg_frame_leave(void) {
-    struct cajeta_dbg_frame** top = __cajeta_dbg_top_ptr();
-    struct cajeta_dbg_frame* f = *top;
+// Node-paired leave (9.1): unlink EXACTLY the frame this call's matching
+// enter pushed, from the chain it was pushed onto — immune to fiber-context
+// changes between enter and leave. Not found on its owner chain (already
+// unlinked by an unwind path): leak rather than corrupt.
+void __cajeta_dbg_frame_leave(void* node) {
+    struct cajeta_dbg_frame* f = (struct cajeta_dbg_frame*) node;
     if (!f) return;
-    *top = f->prev;
+    struct cajeta_dbg_frame** ow = f->owner;
+    if (!ow) { free(f); return; }
+    if (*ow == f) {
+        *ow = f->prev;
+    } else {
+        struct cajeta_dbg_frame* p = *ow;
+        int i = 0;
+        while (p && p->prev != f && i++ < 65536) p = p->prev;
+        if (p && p->prev == f) p->prev = f->prev;
+        else return;   // not on its chain: someone unlinked it; do not free
+    }
     free(f);
 }
 
@@ -769,8 +790,53 @@ long __cajeta_dbg_safepoint_count(void) {
     return __cajeta_dbg_safepoint_total;
 }
 
+// resident-debug-server 9.1: the PROGRAM thread's identity. Captured here
+// because reset_safepoint_count runs on the program thread immediately
+// before the entry is invoked (runJit and debug sessions alike, once per
+// session). Carrier threads outside fiber context must NOT report fiber id
+// 0 — that impersonated the program thread and let parallel-share
+// safepoints steal pending steps (stepped F8 parked in stream internals).
+static pthread_t __cajeta_dbg_program_thread;
+static int __cajeta_dbg_program_thread_set = 0;
+
+int __cajeta_dbg_on_program_thread(void) {
+    return __cajeta_dbg_program_thread_set
+        && pthread_equal(pthread_self(), __cajeta_dbg_program_thread);
+}
+
 void __cajeta_dbg_reset_safepoint_count(void) {
     __cajeta_dbg_safepoint_total = 0;
+    // Fallback capture for the SAME-THREAD runner (runJit invokes the entry
+    // on this very thread). Debug sessions re-mark from their own program
+    // thread below — reset runs on the SETUP thread there and must not win.
+    if (!__cajeta_dbg_program_thread_set) {
+        __cajeta_dbg_program_thread = pthread_self();
+        __cajeta_dbg_program_thread_set = 1;
+    }
+}
+
+// resident-debug-server 9.1: called as the program thread's FIRST act, from
+// whichever thread actually runs the entry (session program thread; also
+// re-marks per session so sequential resident sessions stay correct).
+__attribute__((used, retain))
+void __cajeta_dbg_mark_program_thread(void) {
+    __cajeta_dbg_program_thread = pthread_self();
+    __cajeta_dbg_program_thread_set = 1;
+}
+
+// 9.1 chain-containment probe: is `node` on the chain headed at `top`? A
+// pure pointer chase like __cajeta_dbg_frame_depth; the pending-step gate
+// uses it so a candidate on a FOREIGN chain can never satisfy a step armed
+// on the origin chain. Bounded against cycles.
+__attribute__((used, retain))
+int __cajeta_dbg_frame_contains(void* top, void* node) {
+    if (!node) return 0;
+    const struct cajeta_dbg_frame* f = (const struct cajeta_dbg_frame*) top;
+    for (int i = 0; f && i < 65536; ++i) {
+        if ((const void*) f == node) return 1;
+        f = f->prev;
+    }
+    return 0;
 }
 
 // ============================================================================
