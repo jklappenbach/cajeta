@@ -1,0 +1,59 @@
+// Minimal repro (found 2026-07-22): intermittent SIGILL/SIGSEGV when a
+// spawned fiber OWNS a value, creates >=2 heap objects that BORROW it, and
+// PARKS while concurrent sibling fibers do the same. ~8/12 runs crash.
+//
+//   cajeta "probe.Main::main" src out --emit=exe -o out/probe.bin
+//   for k in $(seq 1 12); do ./out/probe.bin >/dev/null 2>&1; echo -n "$? "; done
+//
+// Bisected: owned-#param+park alone = clean; closure alone = clean;
+// ONE borrower = clean; TWO borrowers over the owned value + park = CRASH.
+// This is the core of the cajeta-http serve()-loop crash: the connection
+// fiber's AsyncReader AND AsyncWriter both borrow the owned #TcpStream and
+// the keep-alive loop parks on socket I/O. Runtime/codegen bug in borrow
+// or drop accounting across a fiber park (carrier hand-off), NOT the stdlib
+// `Server.serve()` `#=` line (that change is a behavioral no-op).
+package probe;
+
+import cajeta.concurrent.Tasks;
+
+public class Conn {
+    public int32 fd;
+    public int8[] buf;
+    public Conn(int32 fd) { this.fd = fd; this.buf = heap int8[64]; }
+}
+public class Reader {
+    public Conn c;
+    public Reader(Conn c) { this.c = c; }
+    public int32 read() { return this.c.fd; }
+}
+
+public final class Main {
+    static #Conn accept(int32 fd) { Conn c = heap Conn(fd); return #c; }
+
+    public static async int32 serveConn(#Conn conn) {
+        Reader r = heap Reader(conn);          // borrower 1
+        Reader w = heap Reader(conn);          // borrower 2
+        Tasks.sleepMillis((int64) 40);         // park: carrier hands off
+        int32 x = r.read() + w.read();
+        Tasks.sleepMillis((int64) 20);
+        return x;
+    }
+
+    public static void loopServe() {
+        scope {
+            int32 i = 0;
+            while (i < 4) {
+                Conn conn #= Main.accept(i);
+                if (conn == null) { break; }
+                spawn serveConn(#conn);        // concurrent, joined at scope end
+                i = i + 1;
+            }
+        }
+    }
+
+    public static int32 main(String[] args) {
+        Main.loopServe();
+        System.stdout.println("ok");
+        return 0;
+    }
+}
