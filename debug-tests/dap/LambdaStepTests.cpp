@@ -196,3 +196,266 @@ TEST(LambdaStep, StepOverForEachWithFiberSpawningBodyLands) {
             m.at("event").asString() == "exited")
             EXPECT_EQ(m.at("body").at("exitCode").asInt(), 42);
 }
+
+// Live (tour 132, exact symptom): F8 lands lit at Stream.cajeta:241 —
+// inside a DEMO's own stream use, far below the origin frame. Escalation:
+// the stepped-over lambda body itself runs a nested stream pipeline. The
+// step must skip every nested stdlib/lambda frame and land on line 9.
+TEST(LambdaStep, StepOverLambdaWithNestedStreamLands) {
+    static const char* kMainN =
+        "package demo;\n"
+        "import cajeta.collection.ArrayList;\n"
+        "public class Prog {\n"
+        "    public static int32 main() {\n"
+        "        ArrayList<Item> items = heap ArrayList<Item>();\n"
+        "        items.add(heap Item());\n"
+        "        items.add(heap Item());\n"
+        "        items.stream().forEach((it) -> it.bump());\n"    // line 8
+        "        return Item.total + 38;\n"                       // line 9
+        "    }\n"
+        "}\n";
+    static const char* kItemN =
+        "package demo;\n"
+        "import cajeta.collection.ArrayList;\n"
+        "public class Item {\n"
+        "    static int32 total = 0;\n"
+        "    public void bump() {\n"
+        "        ArrayList<Item> inner = heap ArrayList<Item>();\n"
+        "        inner.add(heap Item());\n"
+        "        boolean all = inner.stream().allMatch((x) -> true);\n"
+        "        if (all) { total = total + 1; }\n"
+        "        inner.stream().forEach((x) -> Item.tick());\n"
+        "    }\n"
+        "    public static void tick() {\n"
+        "        total = total + 1;\n"
+        "    }\n"
+        "}\n";
+    TempProgram p("demo", "Prog.cajeta", kMainN);
+    { std::ofstream out(p.root / "demo" / "Item.cajeta"); out << kItemN; }
+    DapServer srv;
+    std::vector<Json> log;
+
+    drive(srv, req(1, "initialize", Json::object()), log);
+    Json args = Json::object();
+    args["entry-method"] = "demo.Prog.main";
+    args["sourceRoot"] = p.sourceRoot();
+    drive(srv, req(2, "launch", args), log);
+    Json bpArgs = Json::object();
+    Json src = Json::object();
+    src["path"] = "Prog.cajeta";
+    bpArgs["source"] = src;
+    Json bps = Json::array();
+    Json bp = Json::object();
+    bp["line"] = 8;
+    bps.push_back(bp);
+    bpArgs["breakpoints"] = bps;
+    drive(srv, req(3, "setBreakpoints", bpArgs), log);
+    drive(srv, req(4, "configurationDone", Json::object()), log);
+    ASSERT_EQ(stoppedReason(log), "breakpoint");
+
+    log.clear();
+    Json stepArgs = Json::object();
+    stepArgs["threadId"] = 0;
+    drive(srv, req(5, "next", stepArgs), log);
+    EXPECT_EQ(stoppedReason(log), "step");
+
+    log.clear();
+    drive(srv, req(6, "stackTrace", Json::object()), log);
+    int line = -1;
+    std::string file;
+    for (const auto& m : log)
+        if (m.at("type").asString() == "response" &&
+            m.at("command").asString() == "stackTrace") {
+            const Json& fr = m.at("body").at("stackFrames");
+            if (fr.size() > 0) {
+                line = fr[0].at("line").asInt();
+                file = fr[0].at("source").at("name").asString();
+            }
+        }
+    EXPECT_EQ(file, "Prog.cajeta") << "landed in " << file << ":" << line;
+    EXPECT_EQ(line, 9);
+
+    log.clear();
+    drive(srv, req(7, "continue", Json::object()), log);
+    for (const auto& m : log)
+        if (m.at("type").asString() == "event" &&
+            m.at("event").asString() == "exited")
+            EXPECT_EQ(m.at("body").at("exitCode").asInt(), 42);
+}
+
+// The live combination (tour 132): RESIDENT session stepping THROUGH
+// stdlib frames. The resident codegen layer compiled the stdlib without the
+// per-session profile/advice setup buildJit does, so its debug-frame chain
+// can be incomplete — depths read shallow and step-over stops inside
+// Stream code (live: lit at Stream.cajeta:241).
+TEST(LambdaStep, ResidentStepOverNestedStreamStaysOutOfStdlib) {
+    static const char* kMainR =
+        "package demo;\n"
+        "import cajeta.collection.ArrayList;\n"
+        "public class Prog {\n"
+        "    public static int32 main() {\n"
+        "        ArrayList<Item> items = heap ArrayList<Item>();\n"
+        "        items.add(heap Item());\n"
+        "        items.add(heap Item());\n"
+        "        items.stream().forEach((it) -> it.bump());\n"    // line 8
+        "        return Item.total + 38;\n"                       // line 9
+        "    }\n"
+        "}\n";
+    static const char* kItemR =
+        "package demo;\n"
+        "import cajeta.collection.ArrayList;\n"
+        "public class Item {\n"
+        "    static int32 total = 0;\n"
+        "    public void bump() {\n"
+        "        ArrayList<Item> inner = heap ArrayList<Item>();\n"
+        "        inner.add(heap Item());\n"
+        "        boolean all = inner.stream().allMatch((x) -> true);\n"
+        "        if (all) { total = total + 1; }\n"
+        "        inner.stream().forEach((x) -> Item.tick());\n"
+        "    }\n"
+        "    public static void tick() {\n"
+        "        total = total + 1;\n"
+        "    }\n"
+        "}\n";
+    TempProgram p("demo", "Prog.cajeta", kMainR);
+    { std::ofstream out(p.root / "demo" / "Item.cajeta"); out << kItemR; }
+    static std::mt19937_64 rng(std::random_device{}());
+    std::filesystem::path cacheDir =
+        std::filesystem::temp_directory_path()
+        / ("cajeta_lambdastep_res_" + std::to_string(rng()));
+    std::filesystem::create_directories(cacheDir);
+
+    DapServer srv;
+    std::vector<Json> log;
+    drive(srv, req(1, "initialize", Json::object()), log);
+    Json args = Json::object();
+    args["entry-method"] = "demo.Prog.main";
+    args["sourceRoot"] = p.sourceRoot();
+    args["cacheDir"] = cacheDir.string();
+    args["resident"] = true;
+    drive(srv, req(2, "launch", args), log);
+    Json bpArgs = Json::object();
+    Json src = Json::object();
+    src["path"] = "Prog.cajeta";
+    bpArgs["source"] = src;
+    Json bps = Json::array();
+    Json bp = Json::object();
+    bp["line"] = 8;
+    bps.push_back(bp);
+    bpArgs["breakpoints"] = bps;
+    drive(srv, req(3, "setBreakpoints", bpArgs), log);
+    drive(srv, req(4, "configurationDone", Json::object()), log);
+    ASSERT_EQ(stoppedReason(log), "breakpoint");
+
+    log.clear();
+    Json stepArgs = Json::object();
+    stepArgs["threadId"] = 0;
+    drive(srv, req(5, "next", stepArgs), log);
+    EXPECT_EQ(stoppedReason(log), "step");
+
+    log.clear();
+    drive(srv, req(6, "stackTrace", Json::object()), log);
+    int line = -1;
+    std::string file;
+    for (const auto& m : log)
+        if (m.at("type").asString() == "response" &&
+            m.at("command").asString() == "stackTrace") {
+            const Json& fr = m.at("body").at("stackFrames");
+            if (fr.size() > 0) {
+                line = fr[0].at("line").asInt();
+                file = fr[0].at("source").at("name").asString();
+            }
+        }
+    EXPECT_EQ(file, "Prog.cajeta") << "landed in " << file << ":" << line;
+    EXPECT_EQ(line, 9);
+
+    log.clear();
+    drive(srv, req(7, "continue", Json::object()), log);
+    drive(srv, req(8, "disconnect", Json::object()), log);
+    std::error_code ec;
+    std::filesystem::remove_all(cacheDir, ec);
+}
+
+// The ACTUAL tour-132 mechanism (traced live): a demo pipeline uses
+// .parallel(), and ParallelDriver worker safepoints — fresh, shallow frame
+// chains — satisfied the pending step-over's depth gate (depth<=origin) and
+// parked inside stream internals. Step over a line whose body runs a
+// PARALLEL fold; the step must land on the next line of the origin frame.
+// DISABLED (resident-debug-server: parallel-step defect, 2026-07-22): this
+// DEADLOCKS — six threads parked, no progress — reproducing the live tour
+// defect in its hang form. Live (98 demos, different timing) the same
+// mechanism instead STEALS the stop: ParallelDriver share safepoints reach
+// the pending-step gate reporting fiber=0 with a detached-looking [main]
+// chain (trace: depth=1 origin=1 << STOP inside a fold instantiation), so
+// F8 parks in stream internals. Root fix is fiber-runtime-side: parallel
+// share execution must carry a true fiber identity (and/or the stop-round
+// quiesce must tolerate a pending step). Secondary defect, same hunt:
+// instantiation bodies carry MIS-ATTRIBUTED source lines (fold's body maps
+// into Stream.cajeta's comment block ~103-112 — Julian saw highlighted
+// comments). Re-enable when the runtime fix lands.
+TEST(LambdaStep, DISABLED_StepOverParallelPipelineLandsOnNextLine) {
+    static const char* kMainP =
+        "package demo;\n"
+        "import cajeta.collection.ArrayList;\n"
+        "import cajeta.collection.Collectors;\n"
+        "public class Prog {\n"
+        "    public static int32 main() {\n"
+        "        ArrayList<int32> nums = heap ArrayList<int32>();\n"
+        "        int32 i = 0;\n"
+        "        while (i < 64) { nums.add(i); i = i + 1; }\n"    // line 7
+        "        int32 s = Prog.sumParallel(nums);\n"             // line 9 <- step
+        "        return s - 1974;\n"                              // line 10 (sum 0..63 = 2016; 2016-1974=42)
+        "    }\n"
+        "    public static int32 sumParallel(ArrayList<int32> nums) {\n"
+        "        ArrayList<int32> par = nums.stream().parallel()\n"
+        "            .collect(Collectors.toList<int32>());\n"
+        "        int32 s = 0;\n"
+        "        int32 i = 0;\n"
+        "        while (i < par.count()) { s = s + par.get(i); i = i + 1; }\n"
+        "        return s;\n"
+        "    }\n"
+        "}\n";
+    TempProgram p("demo", "Prog.cajeta", kMainP);
+    DapServer srv;
+    std::vector<Json> log;
+
+    drive(srv, req(1, "initialize", Json::object()), log);
+    Json args = Json::object();
+    args["entry-method"] = "demo.Prog.main";
+    args["sourceRoot"] = p.sourceRoot();
+    drive(srv, req(2, "launch", args), log);
+    Json bpArgs = Json::object();
+    Json src = Json::object();
+    src["path"] = "Prog.cajeta";
+    bpArgs["source"] = src;
+    Json bps = Json::array();
+    Json bp = Json::object();
+    bp["line"] = 9;
+    bps.push_back(bp);
+    bpArgs["breakpoints"] = bps;
+    drive(srv, req(3, "setBreakpoints", bpArgs), log);
+    drive(srv, req(4, "configurationDone", Json::object()), log);
+    ASSERT_EQ(stoppedReason(log), "breakpoint");
+
+    log.clear();
+    Json stepArgs = Json::object();
+    stepArgs["threadId"] = 0;
+    drive(srv, req(5, "next", stepArgs), log);
+    EXPECT_EQ(stoppedReason(log), "step");
+
+    log.clear();
+    drive(srv, req(6, "stackTrace", Json::object()), log);
+    int line = -1;
+    std::string file;
+    for (const auto& m : log)
+        if (m.at("type").asString() == "response" &&
+            m.at("command").asString() == "stackTrace") {
+            const Json& fr = m.at("body").at("stackFrames");
+            if (fr.size() > 0) {
+                line = fr[0].at("line").asInt();
+                file = fr[0].at("source").at("name").asString();
+            }
+        }
+    EXPECT_EQ(file, "Prog.cajeta") << "step parked in " << file << ":" << line;
+    EXPECT_EQ(line, 10);
+}

@@ -93,6 +93,10 @@ namespace cajeta::dbg {
                 case StepKind::Over: stepStop = depth <= stepOriginDepth; break;
                 case StepKind::Out:  stepStop = depth < stepOriginDepth; break;
             }
+            if (stepTrace.size() >= 64) stepTrace.erase(stepTrace.begin());
+            stepTrace.push_back(StepDecision{locId, fiberId, depth,
+                                             stepOriginDepth, (int) stepKind,
+                                             stepStop});
         }
         if (!entryStop && !breakpointStop && !stepStop) return;
 
@@ -129,6 +133,13 @@ namespace cajeta::dbg {
         stoppedCv.notify_all();
         resumeCv.wait(lock, [this] { return resumeRequested; });
         stopped = false;
+    }
+
+    std::vector<DebugController::StepDecision> DebugController::drainStepTrace() {
+        std::lock_guard<std::mutex> lock(mutex);
+        std::vector<StepDecision> out;
+        out.swap(stepTrace);
+        return out;
     }
 
     void DebugController::onException(void* throwable, long fiberId,

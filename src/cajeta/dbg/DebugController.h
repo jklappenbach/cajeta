@@ -64,6 +64,20 @@ namespace cajeta::dbg {
     class DebugController {
     public:
         // --- arming (debugger/DAP thread) ---
+        // Step-decision trace (live line-132 hunt, 2026-07-22): the last
+        // pending-step evaluations, recorded under the existing lock at
+        // negligible cost. The DAP layer drains + prints on each step stop
+        // so a misbehaving live step explains itself in stderr.
+        struct StepDecision {
+            int32_t locId;
+            long fiberId;
+            int depth;
+            int originDepth;
+            int kind;      // StepKind as int
+            bool stopped;
+        };
+        std::vector<StepDecision> drainStepTrace();
+
         void arm(int32_t locId);
         void disarm(int32_t locId);
         void clearArmed();
@@ -144,6 +158,7 @@ namespace cajeta::dbg {
         std::condition_variable stoppedCv;   // signaled when a safepoint parks
         std::condition_variable resumeCv;    // signaled by resume()
         std::unordered_set<int32_t> armed;
+        std::vector<StepDecision> stepTrace;   // ring, capped at 64
         bool exceptionArmed = false;
         bool entryArmed = false;
         bool stopped = false;

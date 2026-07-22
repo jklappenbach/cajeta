@@ -301,8 +301,13 @@ void assignDbgLocRanges(const std::string& cacheDir,
             slots[name] = slot;
             if (append.is_open()) append << slot << '\t' << name << '\n';
         }
+        // slot+1: range 0 is RESERVED for the dense allocator (the resident
+        // layer's stdlib ids and any unranged fallback live there). slot*R
+        // put slot 0 at base 0, colliding with dense ids — live corruption:
+        // one loc id owned by two functions (tour: Stream::fold vs
+        // ParallelDriver::allMatchParallelChain, both "10634").
         const int64_t base =
-            (int64_t)(slot) * cajeta::CajetaModule::kDbgLocRange;
+            (int64_t)(slot + 1) * cajeta::CajetaModule::kDbgLocRange;
         if (base + cajeta::CajetaModule::kDbgLocRange
                 > (int64_t) INT32_MAX) continue;  // id space exhausted: dense fallback
         m->dbgLocBase = (int32_t) base;
@@ -465,8 +470,23 @@ std::string wholeProgramKey(const JitRunOptions& opts,
                             const std::vector<std::filesystem::path>& sources,
                             const std::filesystem::path& sourceRoot) {
     std::ostringstream in;
-    in << CAJETA_VERSION << '+' << CAJETA_GIT_HASH << '\n'
-       << "mode=debug\n"
+    in << CAJETA_VERSION << '+' << CAJETA_GIT_HASH << '\n';
+    // CAJETA_GIT_HASH bakes at CMake CONFIGURE time and goes stale across
+    // dev rebuilds — today that served a stale-flavored stdlib after a
+    // behavior-changing rebuild. Fold the binary's real identity (the same
+    // size:mtime the §5 handshake uses) so any rebuild invalidates.
+    {
+        std::error_code ec;
+        auto exe = std::filesystem::read_symlink("/proc/self/exe", ec);
+        if (!ec) {
+            auto size = std::filesystem::file_size(exe, ec);
+            auto mtime = std::filesystem::last_write_time(exe, ec);
+            if (!ec)
+                in << "bin=" << (unsigned long long) size << ':'
+                   << (long long) mtime.time_since_epoch().count() << '\n';
+        }
+    }
+    in << "mode=debug\n"
        << "debugInfo=" << (opts.debugInfo ? 1 : 0) << '\n'
        << "entry=" << opts.entryMethod << '\n';
     std::vector<std::pair<std::string, std::string>> entries;
@@ -907,6 +927,19 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
                 prime.setMode(CompilerMode::Debug);
                 prime.getMutableFlags().debugInfo = true;
                 prime.getMutableFlags().debugInfoLevel = DebugInfo::Full;
+                // The MODULES snapshotted their flags at creation — during
+                // ensurePrimed, BEFORE the lines above — and debug-frame
+                // emission gates on module->getFlags().debugInfo. Without
+                // this, the resident stdlib compiled with safepoints but NO
+                // frame pushes, its frames vanished from the depth chain,
+                // and live step-over stopped inside Stream code (tour 132,
+                // trace: Stream.cajeta:241 depth=1 origin=1).
+                for (auto& m : prime.getModules()) {
+                    CompilerFlags f = m->getFlags();
+                    f.debugInfo = true;
+                    f.debugInfoLevel = DebugInfo::Full;
+                    m->setFlags(f);
+                }
                 cajeta::dbg::globalDbgLocTable().clear();
                 size_t prev = 0;
                 while (true) {
@@ -1048,6 +1081,10 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
         // back to the dense allocator — correct, merely unpooled.
         auto mods = compiler->getModules();   // ONE copy (getModules-by-value)
         std::vector<cajeta::CajetaModulePtr> modList(mods.begin(), mods.end());
+        // The resident stdlib gets a range too: SESSION-time instantiations
+        // that resolve against it draw ids from ITS allocator, and without a
+        // range those are dense — colliding with the layer's dense ids.
+        if (residentStdlib) modList.push_back(residentStdlib);
         assignDbgLocRanges(opts.cacheDir, modList);
     }
     endPhase(out.phases.parseSeconds);

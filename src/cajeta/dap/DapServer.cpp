@@ -198,6 +198,30 @@ void DapServer::runToStopOrExit(const Emit& emit) {
             rebuildFrameTable(std::move(frames));
             Json body = Json::object();
             // CP6f-3: reason reflects breakpoint vs exception vs step stop.
+            // Step-decision trace: on a step stop, explain the landing in
+            // stderr (file:line, depth vs origin, verdict per candidate).
+            if (ev.reason == cajeta::dbg::StopEvent::StopReason::Step) {
+                // The stopped chain itself: length + innermost functions. A
+                // depth=1 verdict beside a deep walk = detached chain.
+                {
+                    auto walked = cajeta::dbg::walkFrames(ev.frameTop);
+                    std::cerr << "[step-trace] STOP chain len=" << walked.size();
+                    for (size_t i = 0; i < walked.size() && i < 3; ++i)
+                        std::cerr << " [" << i << "]=" << walked[i].func;
+                    std::cerr << "\n";
+                }
+                const auto& table = globalDbgLocTable();
+                for (const auto& d : session_->controller().drainStepTrace()) {
+                    const auto& loc = table.at(d.locId);
+                    std::cerr << "[step-trace] loc=" << d.locId << " "
+                              << loc.file << ":" << loc.line
+                              << " fiber=" << d.fiberId
+                              << " depth=" << d.depth
+                              << " origin=" << d.originDepth
+                              << " kind=" << d.kind
+                              << (d.stopped ? "  << STOP" : "") << "\n";
+                }
+            }
             switch (ev.reason) {
                 case cajeta::dbg::StopEvent::StopReason::Exception:
                     body["reason"] = "exception"; break;
