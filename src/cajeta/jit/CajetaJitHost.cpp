@@ -1476,6 +1476,13 @@ int JitDebugSession::join() {
     return impl_->exitCode;
 }
 
+const llvm::DataLayout& JitDebugSession::dataLayout() const {
+    // The layout the JIT'd code actually uses — the seam ValueInspector decodes
+    // against (debugger-variable-inspection §1.5), same source as
+    // deriveEntryArgsABI's String ABI.
+    return impl_->built.jit->getDataLayout();
+}
+
 std::vector<JitDebugSession::FiberSnapshot> JitDebugSession::liveFibers() {
     std::vector<FiberSnapshot> out;
     llvm::orc::LLJIT* jit = impl_->built.jit.get();

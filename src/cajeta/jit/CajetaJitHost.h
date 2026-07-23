@@ -18,6 +18,8 @@
 
 #include "cajeta/dbg/DebugController.h"
 
+namespace llvm { class DataLayout; }
+
 namespace cajeta::jit {
 
     struct JitRunOptions {
@@ -145,6 +147,11 @@ namespace cajeta::jit {
         // The controller driving stop/resume. Stable address for the program's
         // lifetime. Arm/disarm + waitForStop/resume go through here.
         cajeta::dbg::DebugController& controller();
+
+        // The JIT's DataLayout — the layout the running program's memory uses.
+        // ValueInspector decodes stopped-state values against this
+        // (debugger-variable-inspection §1.5). Valid for the session's life.
+        const llvm::DataLayout& dataLayout() const;
 
         // True once the program thread has finished.
         bool isFinished() const;

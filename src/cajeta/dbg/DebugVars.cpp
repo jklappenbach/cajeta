@@ -125,6 +125,10 @@ namespace {
     }
 }
 
+bool isPrimitiveTypeName(const std::string& type) {
+    return classify(type) != Prim::None;
+}
+
 std::string formatValue(const std::string& type, void* addr) {
     if (!addr) return "<null>";
     switch (classify(type)) {
