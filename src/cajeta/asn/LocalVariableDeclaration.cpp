@@ -1486,8 +1486,41 @@ namespace cajeta {
             // local regardless of what it holds. ReturnStatement
             // deactivates the entry when the local is returned so
             // ownership transfers to the caller without a double-free.
+            //
+            // ...but ONLY the OWNING binding may drop. A function-typed
+            // local that merely ALIASES an existing closure — `f = other`
+            // (an identifier) or `f = obj.field` (a stored handler, e.g.
+            // `h = srv.handler`) — is a BORROW: the original binding still
+            // owns the shared heap record. Registering a second drop here
+            // double-frees a CAPTURING closure's record when both fire
+            // (the escaping-closure-in-a-server crash: the server stores
+            // the handler, several locals/copies alias it, and each freed
+            // the one record). A fresh `(x) -> …` lambda OWNS; a `#move`
+            // (MoveExpression, not a bare identifier/dot) transfers
+            // ownership and OWNS; a call returning an owned `#` closure
+            // (e.g. MiddlewareChain.compose) OWNS. Only a bare
+            // identifier / dot borrow is skipped — the exact borrow rule
+            // Strings use (initIsBorrow) for the same aliasing hazard.
             if (dynamic_pointer_cast<CajetaFunctionType>(type)) {
-                emitDropEntryFor(module, field, "__cajeta_closure_drop", getSourceLine());
+                bool closureIsBorrow = false;
+                if (auto varInit =
+                        dynamic_pointer_cast<VariableInitializer>(initializer)) {
+                    auto& kids = varInit->getChildren();
+                    if (!kids.empty()) {
+                        auto rhs = kids[0];
+                        // A bare identifier or field/dot read aliases an
+                        // existing closure — borrow. `#x` parses as a
+                        // MoveExpression (not an IdentifierExpression), so a
+                        // move still OWNS and keeps its drop entry.
+                        if (dynamic_pointer_cast<IdentifierExpression>(rhs)
+                                || dynamic_pointer_cast<DotExpression>(rhs)) {
+                            closureIsBorrow = true;
+                        }
+                    }
+                }
+                if (!closureIsBorrow) {
+                    emitDropEntryFor(module, field, "__cajeta_closure_drop", getSourceLine());
+                }
             }
 
             // User-defined-drop wiring for class-instance locals.
