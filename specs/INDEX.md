@@ -43,4 +43,5 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [simd-numeric-kernels](simd-numeric-kernels-spec.md) | — | draft |
 | [quaternion-vector-stdlib](quaternion-vector-stdlib-spec.md) | [plan](../agents/quaternion-vector-stdlib-plan.md) | draft |
 | [ternary-int-codegen](ternary-int-codegen-spec.md) | — | draft |
-| [array-literals](array-literals-spec.md) | [plan](../agents/array-literals-plan.md) | active — spec approved 2026-07-23; 5 units (literal+unify+shared-lowering → target-type → placement → nested → collection ctors); Unit 1 next |
+| [array-literals](array-literals-spec.md) | [plan](../agents/array-literals-plan.md) | active — spec approved 2026-07-23; Units 1-2 delivered (literal+unify+shared-lowering; target-typed inference), 34/34 green; remaining: 3 placement → 4 nested → 5 collection ctors |
+| [collection-literals](collection-literals-spec.md) | — | draft — successor to array-literals: `[…]`=collection (list/set/map via Swift `[k:v]`), `{…}`=type-inferred aggregate, resolves the `{}`/`[]` split (§6 migration). Implement after array-literals closes |
