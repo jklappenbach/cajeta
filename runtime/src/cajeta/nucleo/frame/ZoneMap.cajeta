@@ -1,0 +1,130 @@
+package cajeta.nucleo.frame;
+
+/**
+ * ZoneMap — the first concrete index (nucleo-frame U13; spec §6, §9.5.3): a
+ * per-chunk min/max summary of ONE numeric source column. It advertises
+ * {@link Capability#CHUNK_SKIP}: a pushed range predicate over the column asks
+ * each chunk "could any row match?" and a chunk whose [min, max] lies entirely
+ * outside the predicate is SKIPPED — its cells are never read. Zone-maps PRUNE,
+ * they do not filter: an overlapping chunk is read and the predicate applied
+ * row-wise (spec §6.2), so the answer is always identical to a full scan.
+ *
+ * BULK-LOADED (spec §9.2): {@link #build} summarizes the whole column in one
+ * bottom-up pass — Arrow batches are immutable, so there is no dynamic insert.
+ * Statistics are over VALID values only; an all-null (or empty) chunk records
+ * {@code has = false}, and a range/point predicate matches nothing there, so it
+ * is skippable. The float path (tags 9/10) and the exact-int path (tags 1..8)
+ * are separate so int64 keys never round-trip through float64 (epoch-nanos
+ * exceed float64's 53-bit integer range — the {@link ColI64} reason).
+ *
+ * v1 answers the range/point comparison kinds directly ({@link Pred}'s 20..24
+ * float, 40..44 int); a kind it does not model returns {@code true} (must read)
+ * — the load-bearing fallback (spec §9.3): an index only ever accelerates a
+ * correct answer, it never changes it. Persisting a built zone-map on the
+ * source across queries is a recorded optimization; v1 builds it at the scan.
+ */
+public class ZoneMap {
+    int32 col;          // the source column ordinal this summarizes
+    boolean isInt;      // exact-int path vs float path
+    int32 nChunks;
+    float64[] fmin;     // float path: per-chunk min/max over valid values
+    float64[] fmax;
+    int64[] imin;       // int path
+    int64[] imax;
+    boolean[] has;      // chunk holds >= 1 valid value
+
+    ZoneMap(int32 col, boolean isInt, int32 nChunks) {
+        this.col = col;
+        this.isInt = isInt;
+        this.nChunks = nChunks;
+    }
+
+    public int32 capability() { return Capability.CHUNK_SKIP; }
+    public int32 column() { return this.col; }
+    public int32 chunkCount() { return this.nChunks; }
+
+    /** Bulk-load: one bottom-up pass summarizing column `col` of `src` into
+     *  `nChunks` fixed-width chunks of `chunkRows` rows each (the last chunk
+     *  short). Statistics cover valid values only. */
+    public static #ZoneMap build(DynFrame src, int32 col, int64 chunkRows,
+                                 int32 nChunks) {
+        boolean isInt = src.tagAt(col) <= 8;
+        ZoneMap z = heap ZoneMap(col, isInt, nChunks);
+        z.has #= heap boolean[nChunks];
+        if (isInt) {
+            z.imin #= heap int64[nChunks];
+            z.imax #= heap int64[nChunks];
+        } else {
+            z.fmin #= heap float64[nChunks];
+            z.fmax #= heap float64[nChunks];
+        }
+        int64 n = src.rowsOf();
+        int32 c = 0;
+        while (c < nChunks) {
+            int64 lo = ((int64) c) * chunkRows;
+            int64 hi = lo + chunkRows;
+            if (hi > n) { hi = n; }
+            boolean seen = false;
+            float64 fmn = 0.0;
+            float64 fmx = 0.0;
+            int64 imn = 0;
+            int64 imx = 0;
+            int64 i = lo;
+            while (i < hi) {
+                if (src.validAtCol(col, i)) {
+                    if (isInt) {
+                        int64 v = src.i64AtCol(col, i);
+                        if (!seen) { imn = v; imx = v; }
+                        else {
+                            if (v < imn) { imn = v; }
+                            if (v > imx) { imx = v; }
+                        }
+                    } else {
+                        float64 v = src.f64AtCol(col, i);
+                        if (!seen) { fmn = v; fmx = v; }
+                        else {
+                            if (v < fmn) { fmn = v; }
+                            if (v > fmx) { fmx = v; }
+                        }
+                    }
+                    seen = true;
+                }
+                i = i + 1;
+            }
+            z.has[c] = seen;
+            if (isInt) { z.imin[c] = imn; z.imax[c] = imx; }
+            else { z.fmin[c] = fmn; z.fmax[c] = fmx; }
+            c = c + 1;
+        }
+        return #z;
+    }
+
+    /** Could chunk `chunk` hold a row satisfying the comparison `kind` against
+     *  `fv` (float preds) / `iv` (int preds)? A range/point predicate over an
+     *  all-null chunk matches nothing (skippable). A kind this zone-map does
+     *  not model returns true — read it and let the row-wise predicate decide
+     *  (the fallback that keeps skipping sound). */
+    public boolean mustRead(int32 kind, float64 fv, int64 iv, int32 chunk) {
+        if (!this.has[chunk]) {
+            return false;
+        }
+        if (this.isInt) {
+            int64 mn = this.imin[chunk];
+            int64 mx = this.imax[chunk];
+            if (kind == 40) { return mx > iv; }    // >
+            if (kind == 41) { return mx >= iv; }   // >=
+            if (kind == 42) { return mn < iv; }    // <
+            if (kind == 43) { return mn <= iv; }   // <=
+            if (kind == 44) { return iv >= mn && iv <= mx; }  // ==
+            return true;
+        }
+        float64 fmn = this.fmin[chunk];
+        float64 fmx = this.fmax[chunk];
+        if (kind == 20) { return fmx > fv; }       // >
+        if (kind == 21) { return fmx >= fv; }      // >=
+        if (kind == 22) { return fmn < fv; }       // <
+        if (kind == 23) { return fmn <= fv; }      // <=
+        if (kind == 24) { return fv >= fmn && fv <= fmx; }  // ==
+        return true;
+    }
+}

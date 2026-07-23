@@ -12,15 +12,25 @@ package cajeta.nucleo.frame;
 public class ExecStats {
     int64 rows;
     int64 cols;
+    int64 chunks;         // U13: chunks the pushdown scan considered (0 = the
+    int64 chunksSkipped;  //   chunk path did not run); zone-map chunks skipped
 
     public ExecStats() {
         this.rows = -1;
         this.cols = -1;
+        this.chunks = 0;
+        this.chunksSkipped = 0;
     }
 
     void note(int64 rows, int64 cols) {
         this.rows = rows;
         this.cols = cols;
+    }
+
+    /** Record the zone-map chunk accounting for a pushdown scan (U13). */
+    void noteChunks(int64 chunks, int64 skipped) {
+        this.chunks = chunks;
+        this.chunksSkipped = skipped;
     }
 
     /** Rows the scan emitted (-1 before any execution). */
@@ -31,5 +41,17 @@ public class ExecStats {
     /** Column buffers the scan read (-1 before any execution). */
     public int64 scanCols() {
         return this.cols;
+    }
+
+    /** Chunks the last pushdown scan partitioned the source into (U13; 0 when
+     *  the chunk path did not run — no pushed predicate). */
+    public int64 scanChunks() {
+        return this.chunks;
+    }
+
+    /** Chunks a zone-map proved entirely outside the pushed predicate and
+     *  skipped without reading their cells (U13). */
+    public int64 scanChunksSkipped() {
+        return this.chunksSkipped;
     }
 }

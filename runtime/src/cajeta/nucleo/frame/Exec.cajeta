@@ -116,25 +116,50 @@ public class Exec {
             st.note(n, kc);
             return src.rebuild(#out, n);
         }
+        // Zone-map chunk skipping (U13, spec §6): partition the source into
+        // fixed-width chunks; a pushed range predicate whose zone-map proves a
+        // chunk entirely outside it skips that chunk's cells entirely. An
+        // overlapping chunk is READ and the predicate applied row-wise (prune
+        // != filter), so the result matches a full scan exactly.
+        int64 chunkRows = src.zoneChunkOf();
+        if (chunkRows <= 0) { chunkRows = 4096; }
+        int32 nChunks = 0;
+        if (n > 0) {
+            int64 nc = (n + chunkRows - 1) / chunkRows;
+            nChunks = (int32) nc;
+        }
+        boolean[] mask = Exec.buildChunkMask(node, src, chunkRows, nChunks);
         int64 cap = n;
         if (cap < 1) { cap = 1; }
         int64[] idx = heap int64[cap];
         int64 m = 0;
-        int64 i = 0;
-        while (i < n) {
-            boolean pass = true;
-            int32 pi = 0;
-            while (pi < node.scanPredCount()) {
-                if (Exec.evalPred3(node.scanPredAt(pi), src, i) != 1) {
-                    pass = false;
+        int64 skipped = 0;
+        int32 ck = 0;
+        while (ck < nChunks) {
+            if (mask[ck]) {
+                int64 lo = ((int64) ck) * chunkRows;
+                int64 hi = lo + chunkRows;
+                if (hi > n) { hi = n; }
+                int64 i = lo;
+                while (i < hi) {
+                    boolean pass = true;
+                    int32 pi = 0;
+                    while (pi < node.scanPredCount()) {
+                        if (Exec.evalPred3(node.scanPredAt(pi), src, i) != 1) {
+                            pass = false;
+                        }
+                        pi = pi + 1;
+                    }
+                    if (pass) {
+                        idx[m] = i;
+                        m = m + 1;
+                    }
+                    i = i + 1;
                 }
-                pi = pi + 1;
+            } else {
+                skipped = skipped + 1;
             }
-            if (pass) {
-                idx[m] = i;
-                m = m + 1;
-            }
-            i = i + 1;
+            ck = ck + 1;
         }
         int32 j = 0;
         while (j < w) {
@@ -142,7 +167,78 @@ public class Exec {
             j = j + 1;
         }
         st.note(m, kc);
+        st.noteChunks((int64) nChunks, skipped);
         return src.rebuild(#out, m);
+    }
+
+    /** Build the chunk-mask (U13): true = the chunk must be read. Every chunk
+     *  starts readable; each pushed predicate that matches a zone-map capability
+     *  clears the chunks it proves empty. A predicate that matches no index
+     *  (non-range, or over an unindexed column) contributes nothing — the
+     *  fallback that keeps skipping sound (spec §9.3). */
+    static #boolean[] buildChunkMask(Plan node, DynFrame src, int64 chunkRows,
+                                     int32 nChunks) {
+        boolean[] mask = heap boolean[nChunks];
+        int32 c = 0;
+        while (c < nChunks) { mask[c] = true; c = c + 1; }
+        int32 pi = 0;
+        while (pi < node.scanPredCount()) {
+            Exec.contributeMask(node.scanPredAt(pi), src, chunkRows, nChunks,
+                mask);
+            pi = pi + 1;
+        }
+        return #mask;
+    }
+
+    /** Fold one predicate's zone-map skips into `mask`. A conjunction applies
+     *  both children (AND = intersect the read sets). A range/point leaf over
+     *  a numeric column reference builds that column's zone-map and clears the
+     *  chunks it cannot contain a match. Anything else (a disjunction, a
+     *  negation, `!=`, a string compare, an arithmetic operand, an unindexed
+     *  column) is left alone — those chunks stay readable (fallback). */
+    static void contributeMask(Pred p, DynFrame src, int64 chunkRows,
+                               int32 nChunks, boolean[] mask) {
+        int32 k = p.kind();
+        if (k == 30) {
+            Exec.contributeMask(p.leftPredicate(), src, chunkRows, nChunks,
+                mask);
+            Exec.contributeMask(p.rightPredicate(), src, chunkRows, nChunks,
+                mask);
+            return;
+        }
+        if (k >= 20 && k <= 24) {
+            ColF64 e = p.operandExpr();
+            if (e == null) { return; }
+            if (e.kind() != 0) { return; }
+            int32 o = e.ordinal();
+            if (o < 0 || o >= src.width()) { return; }
+            if (src.tagAt(o) > 10) { return; }
+            ZoneMap z = ZoneMap.build(src, o, chunkRows, nChunks);
+            int32 ci = 0;
+            while (ci < nChunks) {
+                if (!z.mustRead(k, p.value(), p.iValue(), ci)) {
+                    mask[ci] = false;
+                }
+                ci = ci + 1;
+            }
+            return;
+        }
+        if (k >= 40 && k <= 44) {
+            ColI64 e = p.iOperandExpr();
+            if (e == null) { return; }
+            int32 o = e.ordinal();
+            if (o < 0 || o >= src.width()) { return; }
+            if (src.tagAt(o) > 8) { return; }
+            ZoneMap z = ZoneMap.build(src, o, chunkRows, nChunks);
+            int32 ci = 0;
+            while (ci < nChunks) {
+                if (!z.mustRead(k, p.value(), p.iValue(), ci)) {
+                    mask[ci] = false;
+                }
+                ci = ci + 1;
+            }
+            return;
+        }
     }
 
     /** float64 expression eval at row `i` (colRef / literal / arithmetic). */

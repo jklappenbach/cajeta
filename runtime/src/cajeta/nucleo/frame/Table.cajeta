@@ -79,6 +79,8 @@ public class Table<T> {
     boolean optOff;      // skip the U7 rewriter (the tests' baseline)
     int64 statRows;      // last execution: rows the scan materialized
     int64 statCols;      // last execution: column buffers the scan read
+    int64 statChunks;    // last execution: zone-map chunks considered (U13)
+    int64 statSkipped;   // last execution: zone-map chunks skipped
 
     /** A plan handle: op chain + scan snapshot + result schema. Built by
      *  `lazy()` and the relational ops; columns stay unset until forced. */
@@ -92,6 +94,8 @@ public class Table<T> {
         this.label = "Table<?>";
         this.statRows = -1;
         this.statCols = -1;
+        this.statChunks = -1;
+        this.statSkipped = -1;
     }
 
     /** A schema-erased materialized table over a dynamic column bag — what
@@ -103,6 +107,8 @@ public class Table<T> {
         this.label = "Table<?>";
         this.statRows = -1;
         this.statCols = -1;
+        this.statChunks = -1;
+        this.statSkipped = -1;
     }
 
     /** Number of rows — the shared length of every column. Plan handles
@@ -200,6 +206,8 @@ public class Table<T> {
         DynFrame out = this.__execute(st);
         this.statRows = st.scanRows();
         this.statCols = st.scanCols();
+        this.statChunks = st.scanChunks();
+        this.statSkipped = st.scanChunksSkipped();
         if (this.typed) {
             // `typed` implies a rebinder was installed/propagated at
             // handle build — the invariant every typed-handle builder
@@ -251,6 +259,34 @@ public class Table<T> {
      *  references are never read. */
     public int64 scanCols() {
         return this.statCols;
+    }
+
+    /** Chunks the last pushdown scan partitioned the source into (U13, spec
+     *  §6); 0 when no predicate reached the scan (the chunk path did not run),
+     *  -1 before any execution. */
+    public int64 scanChunks() {
+        return this.statChunks;
+    }
+
+    /** Chunks a zone-map proved entirely outside the pushed predicate and
+     *  skipped without reading their cells (U13). The soundness pin: skipping
+     *  never changes the result, only the work. */
+    public int64 scanChunksSkipped() {
+        return this.statSkipped;
+    }
+
+    /** Set the zone-map chunk width for scans off this SOURCE table (U13, spec
+     *  §9): the source is partitioned into fixed-width row chunks and a pushed
+     *  range predicate skips whole chunks via their per-chunk min/max. A knob,
+     *  not a correctness lever — any width gives the same rows (smaller chunks
+     *  skip more finely). Set it on the materialized source before chaining;
+     *  it carries through the scan snapshot. */
+    public void zoneChunkRows(int64 rows) {
+        if (this.dyn == null) {
+            throw heap FrameException("Table.zoneChunkRows: not a materialized "
+                + "source - set the chunk width before chaining ops");
+        }
+        this.dyn.setZoneChunk(rows);
     }
 
     /** A plan handle whose scan reads a zero-copy snapshot of this

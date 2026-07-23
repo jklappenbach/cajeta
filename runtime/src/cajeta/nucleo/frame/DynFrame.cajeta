@@ -21,6 +21,9 @@ public class DynFrame {
     DynCol[] cols;      // null on a schema-only frame
     int32 w;
     int64 rows;
+    int64 zoneChunk;    // U13: zone-map chunk width in rows (0 = the default);
+                        //   a source-table knob (`Table.zoneChunkRows`) carried
+                        //   through aliasing to the scan snapshot
     DynFrame backing;   // owned: a consumed input frame this frame's column
                         // aliases borrow from (Storage is single-owner —
                         // executors that alias must keep their input alive)
@@ -49,6 +52,24 @@ public class DynFrame {
     public int32 width() { return this.w; }
     public int64 rowsOf() { return this.rows; }
     public boolean isSchemaOnly() { return this.cols == null; }
+
+    /** The zone-map chunk width in rows (0 = use the executor default). */
+    public int64 zoneChunkOf() { return this.zoneChunk; }
+    /** Set the zone-map chunk width (the `Table.zoneChunkRows` knob, U13). */
+    public void setZoneChunk(int64 rows) { this.zoneChunk = rows; }
+
+    /** Ordinal-keyed cell reads (U13) — the zone-map builder summarizes a
+     *  column by ordinal; these return primitives so no frame class names
+     *  {@link DynCol} in a signature beyond DynFrame's own `colAt`. */
+    public float64 f64AtCol(int32 c, int64 row) {
+        return this.cols[c].f64At(row);
+    }
+    public int64 i64AtCol(int32 c, int64 row) {
+        return this.cols[c].i64At(row);
+    }
+    public boolean validAtCol(int32 c, int64 row) {
+        return this.cols[c].validAt(row);
+    }
 
     public String nameAt(int32 i) { return this.names[i]; }
     public int32 tagAt(int32 i) { return this.tags[i]; }
@@ -161,13 +182,17 @@ public class DynFrame {
         return #c;
     }
 
-    /** Zero-copy share: schema arrays copied, every column aliased. */
+    /** Zero-copy share: schema arrays copied, every column aliased. The
+     *  chunk width carries forward — an alias is the same data as its origin,
+     *  so the same zone-map chunking applies (U13). */
     public #DynFrame aliasFrame() {
         DynCol[] c = heap DynCol[this.w];
         int32 i = 0;
         while (i < this.w) { c[i] #= this.cols[i].alias(); i = i + 1; }
-        return heap DynFrame(this.namesCopy(), this.tagsCopy(),
+        DynFrame f = heap DynFrame(this.namesCopy(), this.tagsCopy(),
             this.nullsCopy(), #c, this.w, this.rows);
+        f.zoneChunk = this.zoneChunk;
+        return #f;
     }
 
     /** Schema without data: `cols == null`, `rows == -1`. */
