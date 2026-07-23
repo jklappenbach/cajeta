@@ -67,6 +67,9 @@ public class Exec {
         if (node.kindOf() == 9) {
             return Exec.applyWindow(node, #in);
         }
+        if (node.kindOf() == 11) {
+            return Exec.applyMelt(node, #in);
+        }
         if (node.kindOf() == 12) {
             return Exec.applyFillNull(node, #in);
         }
@@ -1293,6 +1296,335 @@ public class Exec {
             a2 = a2.nextOf();
         }
         return heap DynFrame(#names, #tags, #nulls, #cols, w, n);
+    }
+
+    /** A value column's physical must be one v1 melt/pivot supports: int64,
+     *  float64, or (melt only) utf8. Narrow physicals and float32 widen
+     *  later; erroring now beats a silent wrong physical. */
+    static void requireStackable(String op, String name, int32 tag) {
+        if (tag != 4 && tag != 10 && tag != 11) {
+            throw heap FrameException(op + ": column '" + name + "' has a "
+                + "physical v1 cannot stack (int64 / float64 / utf8 only)");
+        }
+    }
+
+    /** Melt (wide->long, spec §4.1): every value column is stacked into one
+     *  `variable`/`value` pair, the id columns repeated per stacked row. The
+     *  schema is STATIC (id columns + a utf8 variable column + a value
+     *  column of the value-vars' shared physical), so melt is an ordinary
+     *  lazy node. Fed a schema-only frame it computes that schema alone. */
+    static #DynFrame applyMelt(Plan node, #DynFrame in) {
+        int32 nId = node.meltIdCount();
+        int32 nVal = node.meltValCount();
+        if (nVal < 1) {
+            throw heap FrameException("melt: no value columns to stack");
+        }
+        int32 w = nId + 2;
+        String[] names = heap String[w];
+        int32[] tags = heap int32[w];
+        boolean[] nulls = heap boolean[w];
+        int32 idcap = nId;
+        if (idcap < 1) { idcap = 1; }
+        int32[] idOrd = heap int32[idcap];
+        int32 c = 0;
+        while (c < nId) {
+            int32 o = in.find(node.meltIdAt(c));
+            if (o < 0) {
+                throw heap FrameException("melt: id column '"
+                    + node.meltIdAt(c) + "' is not in schema "
+                    + in.schemaText());
+            }
+            idOrd[c] = o;
+            names[c] = in.nameAt(o);
+            tags[c] = in.tagAt(o);
+            nulls[c] = in.nullableAt(o);
+            c = c + 1;
+        }
+        // Value vars must share one stackable physical; the value column is
+        // nullable if ANY value var is.
+        int32[] valOrd = heap int32[nVal];
+        int32 valTag = -1;
+        boolean valNullable = false;
+        int32 v = 0;
+        while (v < nVal) {
+            int32 o = in.find(node.meltValAt(v));
+            if (o < 0) {
+                throw heap FrameException("melt: value column '"
+                    + node.meltValAt(v) + "' is not in schema "
+                    + in.schemaText());
+            }
+            Exec.requireStackable("melt", node.meltValAt(v), in.tagAt(o));
+            if (valTag < 0) {
+                valTag = in.tagAt(o);
+            } else if (in.tagAt(o) != valTag) {
+                throw heap FrameException("melt: value columns must share a "
+                    + "physical; '" + node.meltValAt(v) + "' is '"
+                    + in.typeNameAt(o) + "'");
+            }
+            if (in.nullableAt(o)) { valNullable = true; }
+            valOrd[v] = o;
+            v = v + 1;
+        }
+        names[nId] = node.meltVarNameOf();
+        tags[nId] = 11;
+        nulls[nId] = false;
+        names[nId + 1] = node.meltValNameOf();
+        tags[nId + 1] = valTag;
+        nulls[nId + 1] = valNullable;
+        if (in.isSchemaOnly()) {
+            return heap DynFrame(#names, #tags, #nulls, w);
+        }
+        int64 n = in.rowsOf();
+        int64 nout = n * (int64) nVal;
+        DynCol[] cols = heap DynCol[w];
+        // id columns: each input row repeated nVal times (row o -> o/nVal).
+        int64 rcap = nout;
+        if (rcap < 1) { rcap = 1; }
+        int64[] idIdx = heap int64[rcap];
+        int64 o = 0;
+        while (o < nout) { idIdx[o] = o / (int64) nVal; o = o + 1; }
+        int32 ci = 0;
+        while (ci < nId) {
+            cols[ci] #= in.colAt(idOrd[ci]).gather(idIdx, nout);
+            ci = ci + 1;
+        }
+        // variable column: the value var's NAME, cycling per output row.
+        String[] varVals = heap String[rcap];
+        int64 o2 = 0;
+        while (o2 < nout) {
+            varVals[o2] = node.meltValAt((int32) (o2 % (int64) nVal));
+            o2 = o2 + 1;
+        }
+        cols[nId] #= DynCol.newStr(varVals);
+        // value column: the stacked cell (row o/nVal, value var o%nVal).
+        cols[nId + 1] #= Exec.stackValues(in, valOrd, nVal, valTag,
+            valNullable, nout);
+        return heap DynFrame(#names, #tags, #nulls, #cols, w, nout);
+    }
+
+    /** Build the stacked `value` column of a melt: output row `o` reads the
+     *  value var `o % nVal` at input row `o / nVal`. */
+    static #DynCol stackValues(DynFrame in, int32[] valOrd, int32 nVal,
+                               int32 tag, boolean nullable, int64 nout) {
+        int64 cap = nout;
+        if (cap < 1) { cap = 1; }
+        if (tag == 11) {
+            String[] vals = heap String[cap];
+            int64 o = 0;
+            while (o < nout) {
+                int32 vi = (int32) (o % (int64) nVal);
+                int64 r = o / (int64) nVal;
+                vals[o] = in.colAt(valOrd[vi]).strAt(r);
+                o = o + 1;
+            }
+            return DynCol.newStr(vals);
+        }
+        if (tag == 10) {
+            DynCol col;
+            if (nullable) { col = DynCol.newNF64(nout); }
+            else { col = DynCol.newF64(nout); }
+            int64 o = 0;
+            while (o < nout) {
+                int32 vi = (int32) (o % (int64) nVal);
+                int64 r = o / (int64) nVal;
+                if (in.colAt(valOrd[vi]).validAt(r)) {
+                    float64 x = in.colAt(valOrd[vi]).f64At(r);
+                    if (nullable) { col.setNF64(o, x); } else { col.setF64(o, x); }
+                }
+                o = o + 1;
+            }
+            return #col;
+        }
+        DynCol col;
+        if (nullable) { col = DynCol.newNI64(nout); }
+        else { col = DynCol.newI64(nout); }
+        int64 o = 0;
+        while (o < nout) {
+            int32 vi = (int32) (o % (int64) nVal);
+            int64 r = o / (int64) nVal;
+            if (in.colAt(valOrd[vi]).validAt(r)) {
+                int64 x = in.colAt(valOrd[vi]).i64At(r);
+                if (nullable) { col.setNI64(o, x); } else { col.setI64(o, x); }
+            }
+            o = o + 1;
+        }
+        return #col;
+    }
+
+    /** Do rows `x` and `y` agree on every index column (by value)? Used to
+     *  dedup pivot index tuples in first-appearance order. */
+    static boolean indexEqual(DynFrame in, int32[] iord, int32 ni, int64 x,
+                              int64 y) {
+        int32 j = 0;
+        while (j < ni) {
+            int32 o = iord[j];
+            if (in.tagAt(o) == 11) {
+                if (!in.colAt(o).strAt(x).equals(in.colAt(o).strAt(y))) {
+                    return false;
+                }
+            } else if (in.tagAt(o) > 8) {
+                if (in.colAt(o).f64At(x) != in.colAt(o).f64At(y)) {
+                    return false;
+                }
+            } else {
+                if (in.colAt(o).i64At(x) != in.colAt(o).i64At(y)) {
+                    return false;
+                }
+            }
+            j = j + 1;
+        }
+        return true;
+    }
+
+    /** Pivot (long->wide, spec §4.1): one output row per distinct index
+     *  tuple, one output column per distinct value of `columnsKey`, filled
+     *  from `valuesKey`. Both distinct sets are in FIRST-APPEARANCE order.
+     *  EAGER — the caller has already forced its input, since the output
+     *  columns come from the data. A duplicate (index, key) cell is a LOUD
+     *  error; the pivot columns are nullable (a cell may be absent). v1:
+     *  `columnsKey` must be utf8 and `valuesKey` numeric. */
+    static #DynFrame pivot(DynFrame in, String[] index, int32 nIndex,
+                           String columnsKey, String valuesKey) {
+        int32 icap = nIndex;
+        if (icap < 1) { icap = 1; }
+        int32[] iord = heap int32[icap];
+        int32 c = 0;
+        while (c < nIndex) {
+            int32 o = in.find(index[c]);
+            if (o < 0) {
+                throw heap FrameException("pivot: index column '" + index[c]
+                    + "' is not in schema " + in.schemaText());
+            }
+            iord[c] = o;
+            c = c + 1;
+        }
+        int32 keyOrd = in.find(columnsKey);
+        if (keyOrd < 0) {
+            throw heap FrameException("pivot: columns key '" + columnsKey
+                + "' is not in schema " + in.schemaText());
+        }
+        if (in.tagAt(keyOrd) != 11) {
+            throw heap FrameException("pivot: columns key '" + columnsKey
+                + "' must be utf8 (its values become column names); it is '"
+                + in.typeNameAt(keyOrd) + "'");
+        }
+        int32 valOrd = in.find(valuesKey);
+        if (valOrd < 0) {
+            throw heap FrameException("pivot: values column '" + valuesKey
+                + "' is not in schema " + in.schemaText());
+        }
+        int32 valTag = in.tagAt(valOrd);
+        if (valTag != 4 && valTag != 10) {
+            throw heap FrameException("pivot: values column '" + valuesKey
+                + "' must be numeric (int64 / float64) in v1; it is '"
+                + in.typeNameAt(valOrd) + "'");
+        }
+        int64 n = in.rowsOf();
+        int64 rcap = n;
+        if (rcap < 1) { rcap = 1; }
+        // Distinct pivot-key values (first appearance) -> new columns.
+        String[] colNames = heap String[rcap];
+        int64[] colId = heap int64[rcap];      // per input row: its col index
+        int32 nCols = 0;
+        int64 i = 0;
+        while (i < n) {
+            String k = in.colAt(keyOrd).strAt(i);
+            int32 found = -1;
+            int32 ck = 0;
+            while (ck < nCols) {
+                if (colNames[ck].equals(k)) { found = ck; }
+                ck = ck + 1;
+            }
+            if (found < 0) {
+                colNames[nCols] = k;
+                found = nCols;
+                nCols = nCols + 1;
+            }
+            colId[i] = found;
+            i = i + 1;
+        }
+        // Distinct index tuples (first appearance) -> output rows.
+        int64[] repRow = heap int64[rcap];      // representative row per tuple
+        int64[] rowId = heap int64[rcap];        // per input row: its out row
+        int64 nRows = 0;
+        int64 r = 0;
+        while (r < n) {
+            int64 found = -1;
+            int64 ri = 0;
+            while (ri < nRows) {
+                if (Exec.indexEqual(in, iord, nIndex, repRow[ri], r)) {
+                    found = ri;
+                }
+                ri = ri + 1;
+            }
+            if (found < 0) {
+                repRow[nRows] = r;
+                found = nRows;
+                nRows = nRows + 1;
+            }
+            rowId[r] = found;
+            r = r + 1;
+        }
+        // Fill the grid, erroring on a duplicate (index, key) cell.
+        int64 cells = nRows * (int64) nCols;
+        int64 ccap = cells;
+        if (ccap < 1) { ccap = 1; }
+        boolean[] present = heap boolean[ccap];
+        float64[] gf = heap float64[ccap];
+        int64[] gi = heap int64[ccap];
+        boolean[] cellValid = heap boolean[ccap];
+        int64 r2 = 0;
+        while (r2 < n) {
+            int64 slot = rowId[r2] * (int64) nCols + colId[r2];
+            if (present[slot]) {
+                throw heap FrameException("pivot: duplicate cell for index "
+                    + "row and key '" + in.colAt(keyOrd).strAt(r2)
+                    + "' - pre-aggregate (groupBy) to collapse duplicates");
+            }
+            present[slot] = true;
+            if (in.colAt(valOrd).validAt(r2)) {
+                cellValid[slot] = true;
+                if (valTag == 4) { gi[slot] = in.colAt(valOrd).i64At(r2); }
+                else { gf[slot] = in.colAt(valOrd).f64At(r2); }
+            }
+            r2 = r2 + 1;
+        }
+        // Build the output: index columns, then one column per pivot key.
+        int32 w = nIndex + nCols;
+        String[] names = heap String[w];
+        int32[] tags = heap int32[w];
+        boolean[] nulls = heap boolean[w];
+        DynCol[] cols = heap DynCol[w];
+        int32 j = 0;
+        while (j < nIndex) {
+            names[j] = in.nameAt(iord[j]);
+            tags[j] = in.tagAt(iord[j]);
+            nulls[j] = in.nullableAt(iord[j]);
+            cols[j] #= in.colAt(iord[j]).gather(repRow, nRows);
+            j = j + 1;
+        }
+        int32 cc = 0;
+        while (cc < nCols) {
+            int32 oc = nIndex + cc;
+            names[oc] = colNames[cc];
+            tags[oc] = valTag;
+            nulls[oc] = true;      // a pivot cell may be absent
+            DynCol col;
+            if (valTag == 4) { col = DynCol.newNI64(nRows); }
+            else { col = DynCol.newNF64(nRows); }
+            int64 rr = 0;
+            while (rr < nRows) {
+                int64 slot = rr * (int64) nCols + cc;
+                if (present[slot] && cellValid[slot]) {
+                    if (valTag == 4) { col.setNI64(rr, gi[slot]); }
+                    else { col.setNF64(rr, gf[slot]); }
+                }
+                rr = rr + 1;
+            }
+            cols[oc] #= col;
+            cc = cc + 1;
+        }
+        return heap DynFrame(#names, #tags, #nulls, #cols, w, nRows);
     }
 
     /** Gather every column of `f` by the row order `idx` (length `m`) — the

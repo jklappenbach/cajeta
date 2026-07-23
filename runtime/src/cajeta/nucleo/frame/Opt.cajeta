@@ -88,7 +88,8 @@ public class Opt {
         int32 q = nSink;
         while (q < depth) {
             cap = cap + ops[q].selCount() + ops[q].keyCount()
-                + ops[q].aggCount() + ops[q].sortKeyCount();
+                + ops[q].aggCount() + ops[q].sortKeyCount()
+                + ops[q].meltIdCount() + ops[q].meltValCount();
             q = q + 1;
         }
         if (cap < 1) { cap = 1; }
@@ -135,6 +136,22 @@ public class Opt {
                     nNeed = Opt.addName(node.colNameOf(), need, nNeed);
                 }
                 nNeed = Opt.addAggRefs(node.aggsOf(), need, nNeed);
+            }
+            if (kind == 11) {
+                // A melt BOUNDS the output: the id columns and the value
+                // columns it stacks, nothing else carried through.
+                nNeed = 0;
+                all = false;
+                int32 mi = 0;
+                while (mi < node.meltIdCount()) {
+                    nNeed = Opt.addName(node.meltIdAt(mi), need, nNeed);
+                    mi = mi + 1;
+                }
+                int32 mv = 0;
+                while (mv < node.meltValCount()) {
+                    nNeed = Opt.addName(node.meltValAt(mv), need, nNeed);
+                    mv = mv + 1;
+                }
             }
             if (kind == 7) {
                 // A join draws on both inputs; the left scan below it must
@@ -300,6 +317,10 @@ public class Opt {
         if (k == 9) {
             DynFrame c9 = in.schemaOnly();
             return Exec.applyWindow(node, #c9);
+        }
+        if (k == 11) {
+            DynFrame c11 = in.schemaOnly();
+            return Exec.applyMelt(node, #c11);
         }
         if (k == 12) {
             DynFrame c12 = in.schemaOnly();

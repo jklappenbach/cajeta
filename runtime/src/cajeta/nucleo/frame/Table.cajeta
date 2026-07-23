@@ -584,6 +584,52 @@ public class Table<T> {
         return this.__join(#other, #k, 1, how);
     }
 
+    /** Melt (wide->long, spec §4.1): stack the value columns into a
+     *  `variable`/`value` pair, repeating the id columns. Schema-STATIC
+     *  (id columns + utf8 variable + the value-vars' shared physical), so
+     *  melt is LAZY and its result — a differently-shaped `Table<?>` —
+     *  narrows at plan build with `.as<R>()`. */
+    public #Table<?> melt(String[] idVars, int32 nId, String[] valVars,
+                          int32 nVal, String variableName, String valueName) {
+        DynFrame inSchema = this.__schemaClone();
+        Plan node = Plan.meltNode(idVars, nId, valVars, nVal, variableName,
+            valueName, this.__takeChain());
+        DynFrame outSchema = Exec.applyMelt(node, #inSchema);
+        Table<T> h = heap Table<T>(#node, this.__takeSrc(), #outSchema, false);
+        return #h;
+    }
+
+    /** Melt with the default `variable`/`value` output names. */
+    public #Table<?> melt(String[] idVars, int32 nId, String[] valVars,
+                          int32 nVal) {
+        return this.melt(idVars, nId, valVars, nVal, "variable", "value");
+    }
+
+    /** Pivot (long->wide, spec §4.1): one row per distinct `index` tuple,
+     *  one column per distinct value of `columnsKey`, filled from
+     *  `valuesKey`. The output COLUMNS come from the DATA, so unlike every
+     *  other op pivot cannot know its schema at plan build — it is EAGER
+     *  (like Polars): it forces this handle, reads the data, and returns a
+     *  MATERIALIZED `Table<?>` (the canonical erased case, spec §4.3),
+     *  narrowed once the value set is known. A duplicate (index, key) cell
+     *  is a loud error. */
+    public #Table<?> pivot(String[] index, int32 nIndex, String columnsKey,
+                           String valuesKey) {
+        Table<T> m = this.collect();
+        DynFrame in = m.__matDyn("pivot").aliasFrame();
+        DynFrame out = Exec.pivot(in, index, nIndex, columnsKey, valuesKey);
+        Table<?> r = heap Table<T>(#out);
+        return #r;
+    }
+
+    /** Pivot with a single index column. */
+    public #Table<?> pivot(String index, String columnsKey,
+                           String valuesKey) {
+        String[] idx = heap String[1];
+        idx[0] = index;
+        return this.pivot(idx, 1, columnsKey, valuesKey);
+    }
+
     /** Column count of a MATERIALIZED table — the schema-agnostic read
      *  surface that works on a `Table<?>` (the synthesized `colCount` is a
      *  per-record compile-time fact, so it needs a known schema). */
