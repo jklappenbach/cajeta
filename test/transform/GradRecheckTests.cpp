@@ -11,6 +11,7 @@
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
 #include "cajeta/error/Exception.h"
+#include "../PortableEnv.h"   // setenv/unsetenv shim (MinGW CRT lacks POSIX)
 
 #include <cstdlib>
 #include <string>
