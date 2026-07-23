@@ -170,6 +170,53 @@ public class DynFrame {
         return this.cols[this.__require(op, name)].validAt(row);
     }
 
+    /** Assemble an untyped frame from an external Arrow array set (U16, spec
+     *  §10.3): each column imports zero-copy through {@link DynCol#importArrow}
+     *  (the null-count airlock lives there); the physical tag and nullability
+     *  are DERIVED from the imported columns, and lengths must agree. Column
+     *  names are positional placeholders — Arrow field names are not read from
+     *  the C schema (v1); the typed rebind (`importArrow<R>`) is positional and
+     *  supplies the record's names. */
+    public static #DynFrame fromArrow(int64[] schemas, int64[] arrays, int32 n) {
+        String[] nm = heap String[n];
+        int32[] tg = heap int32[n];
+        boolean[] nl = heap boolean[n];
+        DynCol[] dc = heap DynCol[n];
+        int64 rows = -1;
+        int32 i = 0;
+        while (i < n) {
+            DynCol c #= DynCol.importArrow(schemas[i], arrays[i]);
+            int64 len = c.size();
+            if (rows < 0) { rows = len; }
+            else if (len != rows) {
+                throw heap FrameException("Table.importArrow: column lengths "
+                    + "disagree at the Arrow boundary");
+            }
+            nm[i] = "col";
+            tg[i] = c.tagOf();
+            nl[i] = c.isNullable();
+            dc[i] #= c;
+            i = i + 1;
+        }
+        if (rows < 0) { rows = 0; }
+        return heap DynFrame(#nm, #tg, #nl, #dc, n, rows);
+    }
+
+    /** Export every column across the C Data Interface (U16, spec §10.2): one
+     *  `{ArrowSchema, ArrowArray}` bundle address per column, over the live
+     *  buffers (zero-copy borrow). Lives here (not on Table) so Table never
+     *  names a column-package Arrow type in a signature — the U8 rule; the
+     *  addresses are plain int64. */
+    public #int64[] exportArrow() {
+        int64[] addrs = heap int64[this.w];
+        int32 i = 0;
+        while (i < this.w) {
+            addrs[i] = this.cols[i].exportArrow();
+            i = i + 1;
+        }
+        return #addrs;
+    }
+
     /** Ordinal of `name`, or -1. */
     public int32 find(String name) {
         int32 i = 0;

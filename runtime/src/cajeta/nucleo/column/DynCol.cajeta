@@ -653,4 +653,83 @@ public class DynCol {
     public #NullableColumn<uint64> asNU64()   { if (this.tag != 8 || !this.nullable)  { throw heap ColumnTypeException("DynCol.asNU64: column is '" + this.typeName() + "'"); } return this.nu64.alias(); }
     public #NullableColumn<float32> asNF32()  { if (this.tag != 9 || !this.nullable)  { throw heap ColumnTypeException("DynCol.asNF32: column is '" + this.typeName() + "'"); } return this.nf32.alias(); }
     public #NullableColumn<float64> asNF64()  { if (this.tag != 10 || !this.nullable) { throw heap ColumnTypeException("DynCol.asNF64: column is '" + this.typeName() + "'"); } return this.nf64.alias(); }
+
+    /** Import one Arrow array into a DynCol (nucleo-frame U16, spec §10.3):
+     *  read the schema's dtype (utf8 / physical) and the array's null-count,
+     *  route to the matching column airlock (which enforces the null-count
+     *  rule), and wrap the result. An EXTENSION type (MXFP4 etc.) whose physical
+     *  is a modeled dtype degrades to that physical column — the bytes carry
+     *  even where the extension semantics are unknown (§10.4). Zero-copy: the
+     *  imported column borrows the producer's buffers and owns its release. */
+    public static #DynCol importArrow(int64 schemaAddr, int64 arrayAddr) {
+        ArrowFfi f = stack ArrowFfi();
+        if (f.readIsUtf8(schemaAddr) == 1) {
+            return DynCol.ofStr(StringColumn.importArrow(schemaAddr, arrayAddr));
+        }
+        int64 dt = f.readDtype(schemaAddr);
+        if (dt >= 0) {
+            int64 kind = dt >> 8;
+            int64 bits = dt & 255;
+            int64 nc = f.readNullCount(arrayAddr);
+            if (nc != 0) {
+                if (kind == 1 && bits == 8)  { return DynCol.ofNI8((NullableColumn<int8>) NullableColumn.importArrow(schemaAddr, arrayAddr)); }
+                if (kind == 1 && bits == 16) { return DynCol.ofNI16((NullableColumn<int16>) NullableColumn.importArrow(schemaAddr, arrayAddr)); }
+                if (kind == 1 && bits == 32) { return DynCol.ofNI32((NullableColumn<int32>) NullableColumn.importArrow(schemaAddr, arrayAddr)); }
+                if (kind == 1 && bits == 64) { return DynCol.ofNI64((NullableColumn<int64>) NullableColumn.importArrow(schemaAddr, arrayAddr)); }
+                if (kind == 2 && bits == 8)  { return DynCol.ofNU8((NullableColumn<uint8>) NullableColumn.importArrow(schemaAddr, arrayAddr)); }
+                if (kind == 2 && bits == 16) { return DynCol.ofNU16((NullableColumn<uint16>) NullableColumn.importArrow(schemaAddr, arrayAddr)); }
+                if (kind == 2 && bits == 32) { return DynCol.ofNU32((NullableColumn<uint32>) NullableColumn.importArrow(schemaAddr, arrayAddr)); }
+                if (kind == 2 && bits == 64) { return DynCol.ofNU64((NullableColumn<uint64>) NullableColumn.importArrow(schemaAddr, arrayAddr)); }
+                if (kind == 3 && bits == 32) { return DynCol.ofNF32((NullableColumn<float32>) NullableColumn.importArrow(schemaAddr, arrayAddr)); }
+                if (kind == 3 && bits == 64) { return DynCol.ofNF64((NullableColumn<float64>) NullableColumn.importArrow(schemaAddr, arrayAddr)); }
+            } else {
+                if (kind == 1 && bits == 8)  { return DynCol.ofI8((Column<int8>) Column.importArrow(schemaAddr, arrayAddr)); }
+                if (kind == 1 && bits == 16) { return DynCol.ofI16((Column<int16>) Column.importArrow(schemaAddr, arrayAddr)); }
+                if (kind == 1 && bits == 32) { return DynCol.ofI32((Column<int32>) Column.importArrow(schemaAddr, arrayAddr)); }
+                if (kind == 1 && bits == 64) { return DynCol.ofI64((Column<int64>) Column.importArrow(schemaAddr, arrayAddr)); }
+                if (kind == 2 && bits == 8)  { return DynCol.ofU8((Column<uint8>) Column.importArrow(schemaAddr, arrayAddr)); }
+                if (kind == 2 && bits == 16) { return DynCol.ofU16((Column<uint16>) Column.importArrow(schemaAddr, arrayAddr)); }
+                if (kind == 2 && bits == 32) { return DynCol.ofU32((Column<uint32>) Column.importArrow(schemaAddr, arrayAddr)); }
+                if (kind == 2 && bits == 64) { return DynCol.ofU64((Column<uint64>) Column.importArrow(schemaAddr, arrayAddr)); }
+                if (kind == 3 && bits == 32) { return DynCol.ofF32((Column<float32>) Column.importArrow(schemaAddr, arrayAddr)); }
+                if (kind == 3 && bits == 64) { return DynCol.ofF64((Column<float64>) Column.importArrow(schemaAddr, arrayAddr)); }
+            }
+        }
+        throw heap ColumnTypeException(
+            "DynCol.importArrow: unmodeled Arrow dtype at the table boundary");
+    }
+
+    /** Export this column across the C Data Interface (nucleo-frame U16, spec
+     *  §10.2): the address of a `{ArrowSchema, ArrowArray}` bundle over this
+     *  column's LIVE buffers — a zero-copy borrow, so the table must outlive
+     *  the consumer's reads. Dispatches on `(tag, nullable)` to the underlying
+     *  column's own `exportArrow` (which owns the C shim). */
+    public int64 exportArrow() {
+        if (this.tag == 11) { return this.str.exportArrow(); }
+        if (this.nullable) {
+            if (this.tag == 1)  { return this.ni8.exportArrow(); }
+            if (this.tag == 2)  { return this.ni16.exportArrow(); }
+            if (this.tag == 3)  { return this.ni32.exportArrow(); }
+            if (this.tag == 4)  { return this.ni64.exportArrow(); }
+            if (this.tag == 5)  { return this.nu8.exportArrow(); }
+            if (this.tag == 6)  { return this.nu16.exportArrow(); }
+            if (this.tag == 7)  { return this.nu32.exportArrow(); }
+            if (this.tag == 8)  { return this.nu64.exportArrow(); }
+            if (this.tag == 9)  { return this.nf32.exportArrow(); }
+            if (this.tag == 10) { return this.nf64.exportArrow(); }
+        } else {
+            if (this.tag == 1)  { return this.i8.exportArrow(); }
+            if (this.tag == 2)  { return this.i16.exportArrow(); }
+            if (this.tag == 3)  { return this.i32.exportArrow(); }
+            if (this.tag == 4)  { return this.i64.exportArrow(); }
+            if (this.tag == 5)  { return this.u8.exportArrow(); }
+            if (this.tag == 6)  { return this.u16.exportArrow(); }
+            if (this.tag == 7)  { return this.u32.exportArrow(); }
+            if (this.tag == 8)  { return this.u64.exportArrow(); }
+            if (this.tag == 9)  { return this.f32.exportArrow(); }
+            if (this.tag == 10) { return this.f64.exportArrow(); }
+        }
+        throw heap ColumnTypeException(
+            "DynCol.exportArrow: column is '" + this.typeName() + "'");
+    }
 }

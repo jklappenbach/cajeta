@@ -677,6 +677,17 @@ public class Table<T> {
         return this.__join(#other, #k, 1, how);
     }
 
+    /** Export the table across the C Data Interface (U16, spec §10.2): forces
+     *  the plan, then returns one `{ArrowSchema, ArrowArray}` bundle ADDRESS per
+     *  column (int64), zero-copy over the live buffers — pyarrow / Polars /
+     *  DuckDB read them with no serialization and no copy. The addresses are
+     *  int64 (not a column-package type) so this template never names one in a
+     *  signature; the table must outlive the consumer's reads. */
+    public #int64[] exportArrow() {
+        Table<T> m = this.collect();
+        return m.__matDyn("exportArrow").exportArrow();
+    }
+
     /** Melt (wide->long, spec §4.1): stack the value columns into a
      *  `variable`/`value` pair, repeating the id columns. Schema-STATIC
      *  (id columns + utf8 variable + the value-vars' shared physical), so
@@ -783,6 +794,26 @@ public class Table<T> {
         }
         Table<T> m = this.collect();
         return probe.__rebindOwned(m.__dynAlias());
+    }
+
+    /** Import an external Arrow array set as a typed `Table<R>` (U16, spec
+     *  §10.3): `schemas`/`arrays` are the producer's `ArrowSchema`/`ArrowArray`
+     *  addresses (one per column), `n` the column count. Each column is adopted
+     *  zero-copy through its airlock — the null-count rule is enforced there
+     *  (§10.3) — and the frame rebinds POSITIONALLY into `Table<R>`, so each
+     *  column's derived physical/nullability is checked against R's field (a
+     *  mismatch throws), like `.as<R>()`'s materialized branch. An unknown
+     *  extension type degrades to its physical column (§10.4). A static factory
+     *  (like `Column.of<T>`); the schema is the method type parameter R. */
+    public static final #Table<R> importArrow<R>(int64[] schemas,
+                                                 int64[] arrays, int32 n) {
+        DynFrame df = DynFrame.fromArrow(schemas, arrays, n);
+        Table<R> probe = heap Table<R>(df.schemaOnly());
+        if (n != probe.colCount()) {
+            throw heap FrameException("Table.importArrow: the Arrow set has a "
+                + "different column count than the target record");
+        }
+        return probe.__rebindOwned(#df);
     }
 
     /** Schema + plan for an unforced handle (never rows); schema + row

@@ -563,6 +563,32 @@ namespace cajeta::synth {
                 return std::string("as") + (col.nullable ? "N" : "")
                     + sfxOf(col.phys);
             };
+            // The shared constructor tail: fill the schema-agnostic dyn store
+            // (DynCol aliases of the same storage) and install the rebinder,
+            // over columns already assigned into `this`. `rowsVar` names the
+            // row count local. Extracted from the fromColumns ctor (U16).
+            auto emitDynTail = [&](const std::string& rowsVar) -> std::string {
+                std::string s;
+                const std::string w = std::to_string(cols.size());
+                s += "        String[] __nm = heap String[" + w + "];\n"
+                    "        int32[] __tg = heap int32[" + w + "];\n"
+                    "        boolean[] __nl = heap boolean[" + w + "];\n"
+                    "        DynCol[] __dc = heap DynCol[" + w + "];\n";
+                for (std::size_t i = 0; i < cols.size(); ++i) {
+                    const std::string ix = std::to_string(i);
+                    s += "        __nm[" + ix + "] = \"" + cols[i].name + "\";\n"
+                        "        __tg[" + ix + "] = "
+                            + std::to_string(tagOf(cols[i].phys)) + ";\n"
+                        "        __nl[" + ix + "] = "
+                            + (cols[i].nullable ? "true" : "false") + ";\n"
+                        "        __dc[" + ix + "] #= " + dynFactory(cols[i])
+                            + "(this." + cols[i].name + ".alias());\n";
+                }
+                s += "        this.dyn #= heap DynFrame(#__nm, #__tg, "
+                        "#__nl, #__dc, " + w + ", " + rowsVar + ");\n"
+                    "        this.__attachRebinder();\n";
+                return s;
+            };
 
             std::string frag = "{\n";
             for (auto& col : cols) {
@@ -595,24 +621,7 @@ namespace cajeta::synth {
                     frag += "        this." + col.name + " #= " + col.name + ";\n";
                 }
                 frag += "        this.rows = __t_rows;\n";
-                const std::string w = std::to_string(cols.size());
-                frag += "        String[] __nm = heap String[" + w + "];\n"
-                    "        int32[] __tg = heap int32[" + w + "];\n"
-                    "        boolean[] __nl = heap boolean[" + w + "];\n"
-                    "        DynCol[] __dc = heap DynCol[" + w + "];\n";
-                for (std::size_t i = 0; i < cols.size(); ++i) {
-                    const std::string ix = std::to_string(i);
-                    frag += "        __nm[" + ix + "] = \"" + cols[i].name + "\";\n"
-                        "        __tg[" + ix + "] = "
-                            + std::to_string(tagOf(cols[i].phys)) + ";\n"
-                        "        __nl[" + ix + "] = "
-                            + (cols[i].nullable ? "true" : "false") + ";\n"
-                        "        __dc[" + ix + "] #= " + dynFactory(cols[i])
-                            + "(this." + cols[i].name + ".alias());\n";
-                }
-                frag += "        this.dyn #= heap DynFrame(#__nm, #__tg, "
-                        "#__nl, #__dc, " + w + ", __t_rows);\n"
-                    "        this.__attachRebinder();\n";
+                frag += emitDynTail("__t_rows");
                 frag += "    }\n";
             }
             frag += "    public int32 colCount() { return "
