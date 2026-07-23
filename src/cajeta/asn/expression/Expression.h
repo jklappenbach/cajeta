@@ -282,9 +282,20 @@ namespace cajeta {
         // Element expressions in source order (also mirrored into children).
         const vector<ExpressionPtr>& getElements() const { return elements; }
 
+        // Push a target element type (array-literals §3.2). When set before
+        // resolveTypes, it overrides the unify fallback. Unused until Unit 2.
+        void setElementType(CajetaTypePtr t) { elementType = t; }
+
+        void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
     private:
+        // Least-upper-bound of the element types (array-literals §3.3): numeric
+        // widest, reference nearest-common-superclass; throws on an empty
+        // literal or no common type when no target was pushed.
+        CajetaTypePtr unifyElementType(CajetaModulePtr module);
+
         vector<ExpressionPtr> elements;
+        CajetaTypePtr elementType;  // target (§3.2) or unified (§3.3)
     };
 
 

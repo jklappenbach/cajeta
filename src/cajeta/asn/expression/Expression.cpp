@@ -37,6 +37,8 @@
 #include "../VariableDeclarator.h"
 #include "../../error/Exception.h"
 #include "../../error/DiagnosticEngine.h"
+#include "../../error/Diagnostics.h"
+#include "ArrayLowering.h"
 
 namespace cajeta {
     ExpressionPtr Expression::fromContext(CajetaParser::ExpressionContext* ctx) {
@@ -562,15 +564,105 @@ namespace cajeta {
         }
     }
 
+    namespace {
+        // Numeric width from the BIT_* flags (array-literals §3.3).
+        int arrayLiteralNumericBits(CajetaTypeFlags f) {
+            if (f & BIT_128_FLAG) return 128;
+            if (f & BIT_64_FLAG) return 64;
+            if (f & BIT_32_FLAG) return 32;
+            if (f & BIT_16_FLAG) return 16;
+            return 8;
+        }
+
+        // Nearest common superclass of two reference types, or null if none
+        // (array-literals §3.3). Walks the super-class chains by canonical name.
+        CajetaTypePtr arrayLiteralCommonSuper(CajetaTypePtr a, CajetaTypePtr b) {
+            auto ca = dynamic_pointer_cast<CajetaClass>(a);
+            auto cb = dynamic_pointer_cast<CajetaClass>(b);
+            if (!ca || !cb) return nullptr;
+            // Collect a's ancestor set (including a itself).
+            vector<CajetaClassPtr> aChain;
+            vector<CajetaClassPtr> stack{ca};
+            while (!stack.empty()) {
+                auto c = stack.back(); stack.pop_back();
+                aChain.push_back(c);
+                for (auto& s : c->getSuperClasses()) if (s) stack.push_back(s);
+            }
+            // Walk b upward; the first ancestor found in a's set wins.
+            vector<CajetaClassPtr> bStack{cb};
+            while (!bStack.empty()) {
+                auto c = bStack.back(); bStack.pop_back();
+                for (auto& anc : aChain)
+                    if (anc->toCanonical() == c->toCanonical()) return anc;
+                for (auto& s : c->getSuperClasses()) if (s) bStack.push_back(s);
+            }
+            return nullptr;
+        }
+    } // namespace
+
+    CajetaTypePtr ArrayLiteralExpression::unifyElementType(CajetaModulePtr module) {
+        if (elements.empty()) {
+            throw locatedException(getSourceLine(), getSourceColumn() + 1,
+                "cannot infer the element type of an empty array literal '[]'; "
+                "give it a target type (e.g. int32[] xs = [])",
+                "CAJETA_ERROR_UNRESOLVED_EXPRESSION");
+        }
+        CajetaTypePtr result;
+        for (auto& e : elements) {
+            CajetaTypePtr t = e->getResolvedType();
+            if (!t) { e->resolveTypes(module); t = e->getResolvedType(); }
+            if (!t) {
+                throw locatedException(e->getSourceLine(), e->getSourceColumn() + 1,
+                    "array literal element has no resolved type",
+                    "CAJETA_ERROR_UNRESOLVED_EXPRESSION");
+            }
+            if (!result) { result = t; continue; }
+            if (result->toCanonical() == t->toCanonical()) continue;
+
+            CajetaTypeFlags rf = result->getTypeFlags();
+            CajetaTypeFlags tf = t->getTypeFlags();
+            if ((rf & NUMBER_FLAG) && (tf & NUMBER_FLAG)) {
+                // Widest numeric: float beats int; otherwise more bits win.
+                bool rFloat = (rf & FLOAT_FLAG) != 0;
+                bool tFloat = (tf & FLOAT_FLAG) != 0;
+                if (rFloat != tFloat) {
+                    result = rFloat ? result : t;
+                } else if (arrayLiteralNumericBits(tf) > arrayLiteralNumericBits(rf)) {
+                    result = t;
+                }
+                continue;
+            }
+            CajetaTypePtr common = arrayLiteralCommonSuper(result, t);
+            if (!common) {
+                throw locatedException(getSourceLine(), getSourceColumn() + 1,
+                    "array literal elements '" + result->toCanonical() + "' and '"
+                    + t->toCanonical() + "' have no common type; give the literal "
+                    "a target type",
+                    "CAJETA_ERROR_UNRESOLVED_EXPRESSION");
+            }
+            result = common;
+        }
+        return result;
+    }
+
+    void ArrayLiteralExpression::resolveTypes(CajetaModulePtr module) {
+        // Resolve the elements first, then infer the element type. A target
+        // type pushed by the declaration (Unit 2) pre-empts the unify fallback.
+        AbstractSyntaxNode::resolveTypes(module);
+        if (!elementType) {
+            elementType = unifyElementType(module);
+        }
+        resolvedType = make_shared<CajetaArray>(module, elementType);
+    }
+
     llvm::Value* ArrayLiteralExpression::generateCode(CajetaModulePtr module) {
-        // A list literal has no standalone value lowering yet — it exists to
-        // carry XPU launch dimensions, which the launch path reads element-by-
-        // element off the AST (see CallExpression / the launch-site lowering).
-        // Used anywhere else, reject clearly rather than emit null IR.
-        throw Exception(
-            "array literal expression (only supported today as XPU launch "
-            "grid/block dimensions)",
-            "CAJETA_ERROR_NOT_IMPLEMENTED");
+        // Allocate a heap array and populate each slot through the shared store
+        // loop (array-literals §2/§7). The XPU launch path never reaches here —
+        // it reads the elements directly off the AST.
+        if (!elementType) {
+            elementType = unifyElementType(module);
+        }
+        return emitArrayFromElements(module, elementType, children);
     }
 
     void ArrayIndexExpression::resolveTypes(CajetaModulePtr module) {

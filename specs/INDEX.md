@@ -43,3 +43,4 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [simd-numeric-kernels](simd-numeric-kernels-spec.md) | — | draft |
 | [quaternion-vector-stdlib](quaternion-vector-stdlib-spec.md) | [plan](../agents/quaternion-vector-stdlib-plan.md) | draft |
 | [ternary-int-codegen](ternary-int-codegen-spec.md) | — | draft |
+| [array-literals](array-literals-spec.md) | [plan](../agents/array-literals-plan.md) | active — spec approved 2026-07-23; 5 units (literal+unify+shared-lowering → target-type → placement → nested → collection ctors); Unit 1 next |
