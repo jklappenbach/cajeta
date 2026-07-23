@@ -832,6 +832,16 @@ namespace cajeta::synth {
                 "        return this.__resample(__t.name(), every.toNanos(),\n"
                 "            origin.toNanos(), offset.toNanos(), closedRight);\n"
                 "    }\n";
+            // rolling (U11): the typed lambda selects the time column for a
+            // time window; the count form `rolling(int64)` lives on Table
+            // directly (no companion needed).
+            frag += "    public #" + tblType + " rolling((" + recName
+                    + "Cols) -> #ColI64 fn, Duration window) {\n"
+                "        " + recName + "Cols __c = heap " + recName + "Cols();\n"
+                "        ColI64 __t = fn(__c);\n"
+                "        return this.__rolling(__t.name(), window.toNanos(),\n"
+                "            true);\n"
+                "    }\n";
             // rowAt: one TYPED row — the record — reconstructed from the
             // physicals (Instant from epoch-nanos, Utf8 from utf8; a
             // nullable field yields its physical value, validity stays a

@@ -64,6 +64,9 @@ public class Exec {
         if (node.kindOf() == 8) {
             return Exec.applyResample(node, #in);
         }
+        if (node.kindOf() == 9) {
+            return Exec.applyWindow(node, #in);
+        }
         if (node.kindOf() == 12) {
             return Exec.applyFillNull(node, #in);
         }
@@ -1047,6 +1050,249 @@ public class Exec {
             a2 = a2.nextOf();
         }
         return heap DynFrame(#names, #tags, #nulls, #cols, w, ng);
+    }
+
+    /** A stable ascending order of the row indices by an integer column —
+     *  the ts-ordering both resample and rolling establish. Bottom-up merge
+     *  sort, input index as the tie-break. */
+    static #int64[] sortIndicesByI64(DynFrame in, int32 ord, int64 n) {
+        int64 cap = n;
+        if (cap < 1) { cap = 1; }
+        int64[] order = heap int64[cap];
+        int64 z = 0;
+        while (z < n) { order[z] = z; z = z + 1; }
+        int64[] tmp = heap int64[cap];
+        int64 width = 1;
+        while (width < n) {
+            int64 lo = 0;
+            while (lo < n) {
+                int64 mid = lo + width;
+                if (mid > n) { mid = n; }
+                int64 hi = lo + width * 2;
+                if (hi > n) { hi = n; }
+                int64 x = lo;
+                int64 y = mid;
+                int64 tt = lo;
+                while (x < mid && y < hi) {
+                    if (in.colAt(ord).i64At(order[x])
+                            <= in.colAt(ord).i64At(order[y])) {
+                        tmp[tt] = order[x]; x = x + 1;
+                    } else {
+                        tmp[tt] = order[y]; y = y + 1;
+                    }
+                    tt = tt + 1;
+                }
+                while (x < mid) { tmp[tt] = order[x]; x = x + 1; tt = tt + 1; }
+                while (y < hi) { tmp[tt] = order[y]; y = y + 1; tt = tt + 1; }
+                lo = hi;
+            }
+            int64 zz = 0;
+            while (zz < n) { order[zz] = tmp[zz]; zz = zz + 1; }
+            width = width * 2;
+        }
+        return #order;
+    }
+
+    /** Reduce one aggregate over each output row's WINDOW range
+     *  `[lo[o], hi[o])` (U11): the sliding counterpart of {@link #evalAgg}.
+     *  Windows overlap, so a per-output-row scan replaces the single
+     *  group-id pass; the per-kind math is identical (nulls skipped, sum's
+     *  identity 0, count non-null). */
+    static #AggResult evalAggWindow(Agg a, DynFrame in, int64[] lo,
+                                    int64[] hi, int64 nout) {
+        int32 k = a.kind();
+        if (k == 20) {
+            return Exec.evalAggWindow(a.leftAgg(), in, lo, hi, nout);
+        }
+        if (k >= 10 && k <= 13) {
+            AggResult l = Exec.evalAggWindow(a.leftAgg(), in, lo, hi, nout);
+            AggResult r = Exec.evalAggWindow(a.rightAgg(), in, lo, hi, nout);
+            AggResult out = heap AggResult(10, nout);
+            int64 o = 0;
+            while (o < nout) {
+                if (l.validAt(o) && r.validAt(o)) {
+                    float64 x = l.asF64(o);
+                    float64 y = r.asF64(o);
+                    if (k == 10) { out.setF64(o, x + y); }
+                    if (k == 11) { out.setF64(o, x - y); }
+                    if (k == 12) { out.setF64(o, x * y); }
+                    if (k == 13) { out.setF64(o, x / y); }
+                }
+                o = o + 1;
+            }
+            return #out;
+        }
+        int32 tag = Exec.aggTag(a, in);
+        AggResult out = heap AggResult(tag, nout);
+        // utf8: no validity in v1, so first/last are the window's first/last
+        // row and count is the window size.
+        if (a.strRefOf() != null) {
+            int64 o = 0;
+            while (o < nout) {
+                int64 lct = hi[o] - lo[o];
+                if (k == 5) {
+                    out.setI64(o, lct);
+                } else if (k == 6) {
+                    if (lct > 0) { out.setStr(o, Exec.evalStr(a.strRefOf(), in, lo[o])); }
+                } else if (k == 7) {
+                    if (lct > 0) { out.setStr(o, Exec.evalStr(a.strRefOf(), in, hi[o] - 1)); }
+                }
+                o = o + 1;
+            }
+            return #out;
+        }
+        boolean exact = a.iRefOf() != null && k != 2;
+        int32 iOrd = -1;
+        if (a.iRefOf() != null) { iOrd = a.iRefOf().ordinal(); }
+        int64 o = 0;
+        while (o < nout) {
+            int64 cnt = 0;
+            float64 facc = 0.0;
+            int64 iacc = 0;
+            int64 i = lo[o];
+            while (i < hi[o]) {
+                boolean ok = false;
+                float64 fv = 0.0;
+                int64 ivv = 0;
+                if (a.iRefOf() != null) {
+                    ok = in.colAt(iOrd).validAt(i);
+                    if (ok) {
+                        ivv = Exec.evalI64(a.iRefOf(), in, i);
+                        fv = (float64) ivv;
+                    }
+                } else {
+                    ok = Exec.exprValidF64(a.exprOf(), in, i);
+                    if (ok) { fv = Exec.evalF64(a.exprOf(), in, i); }
+                }
+                if (ok) {
+                    cnt = cnt + 1;
+                    if (k == 1 || k == 2) {
+                        facc = facc + fv;
+                        iacc = iacc + ivv;
+                    } else if (k == 3) {
+                        if (cnt == 1 || fv < facc) { facc = fv; iacc = ivv; }
+                    } else if (k == 4) {
+                        if (cnt == 1 || fv > facc) { facc = fv; iacc = ivv; }
+                    } else if (k == 6) {
+                        if (cnt == 1) { facc = fv; iacc = ivv; }
+                    } else if (k == 7) {
+                        facc = fv;
+                        iacc = ivv;
+                    }
+                }
+                i = i + 1;
+            }
+            if (k == 5) {
+                out.setI64(o, cnt);
+            } else if (k == 1) {
+                if (exact) { out.setI64(o, iacc); } else { out.setF64(o, facc); }
+            } else if (cnt > 0) {
+                if (k == 2) {
+                    out.setF64(o, facc / (float64) cnt);
+                } else if (exact) {
+                    out.setI64(o, iacc);
+                } else {
+                    out.setF64(o, facc);
+                }
+            }
+            o = o + 1;
+        }
+        return #out;
+    }
+
+    /** Rolling window (U11, spec §8 resolution): one output row per input
+     *  row, each reducing that row's trailing window — the sliding sibling
+     *  of resample. A TIME window (`byTime`) establishes time order and
+     *  covers `(t - size, t]` up to the anchor; a COUNT window covers the
+     *  trailing `size` rows in input order, clamped at the start. The window
+     *  is never empty (it holds its anchor), so aggregate nullability is the
+     *  ordinary groupBy rule — not resample's always-null. Fed a schema-only
+     *  frame it computes the output SCHEMA alone. */
+    static #DynFrame applyWindow(Plan node, #DynFrame in) {
+        if (node.aggCount() < 1) {
+            throw heap FrameException("rolling: no aggregates - complete it "
+                + "with .agg(...)");
+        }
+        boolean byTime = node.winByTimeOf();
+        String tsName = node.colNameOf();
+        int32 na = node.aggCount();
+        int32 w = na;
+        if (byTime) { w = w + 1; }
+        String[] names = heap String[w];
+        int32[] tags = heap int32[w];
+        boolean[] nulls = heap boolean[w];
+        int32 tsOrd = -1;
+        int32 c = 0;
+        if (byTime) {
+            tsOrd = in.find(tsName);
+            if (tsOrd < 0) {
+                throw heap FrameException("rolling: no column '" + tsName
+                    + "' in schema " + in.schemaText());
+            }
+            if (in.tagAt(tsOrd) > 8) {
+                throw heap FrameException("rolling: time column '" + tsName
+                    + "' is '" + in.typeNameAt(tsOrd) + "', not an integer "
+                    + "epoch column");
+            }
+            names[0] = tsName;
+            tags[0] = 4;
+            nulls[0] = false;
+            c = 1;
+        }
+        Agg a = node.aggsOf();
+        while (a != null) {
+            names[c] = a.outNameOf();
+            tags[c] = Exec.aggTag(a, in);
+            nulls[c] = Exec.aggNullable(a, in);
+            c = c + 1;
+            a = a.nextOf();
+        }
+        if (in.isSchemaOnly()) {
+            return heap DynFrame(#names, #tags, #nulls, w);
+        }
+        int64 n = in.rowsOf();
+        int64 rcap = n;
+        if (rcap < 1) { rcap = 1; }
+        int64[] loArr = heap int64[rcap];
+        int64[] hiArr = heap int64[rcap];
+        DynCol[] cols = heap DynCol[w];
+        int64 size = node.winSizeOf();
+        DynFrame base = in;
+        int32 ci = 0;
+        if (byTime) {
+            int64[] order = Exec.sortIndicesByI64(in, tsOrd, n);
+            base = in.rebuild(Exec.gatherAll(in, order, n), n);
+            int64 lo = 0;
+            int64 o = 0;
+            while (o < n) {
+                int64 t = base.colAt(tsOrd).i64At(o);
+                while (base.colAt(tsOrd).i64At(lo) <= t - size) {
+                    lo = lo + 1;
+                }
+                loArr[o] = lo;
+                hiArr[o] = o + 1;
+                o = o + 1;
+            }
+            cols[0] #= base.colAt(tsOrd).alias();
+            ci = 1;
+        } else {
+            int64 i = 0;
+            while (i < n) {
+                int64 lo = i - size + 1;
+                if (lo < 0) { lo = 0; }
+                loArr[i] = lo;
+                hiArr[i] = i + 1;
+                i = i + 1;
+            }
+        }
+        Agg a2 = node.aggsOf();
+        while (a2 != null) {
+            AggResult rr = Exec.evalAggWindow(a2, base, loArr, hiArr, n);
+            cols[ci] #= Exec.materialize(#rr, tags[ci], nulls[ci], n);
+            ci = ci + 1;
+            a2 = a2.nextOf();
+        }
+        return heap DynFrame(#names, #tags, #nulls, #cols, w, n);
     }
 
     /** Gather every column of `f` by the row order `idx` (length `m`) — the

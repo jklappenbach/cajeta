@@ -125,6 +125,17 @@ public class Opt {
                 nNeed = Opt.addName(node.colNameOf(), need, nNeed);
                 nNeed = Opt.addAggRefs(node.aggsOf(), need, nNeed);
             }
+            if (kind == 9) {
+                // A rolling window BOUNDS the output like a group: the
+                // aggregates' columns, plus the anchor time column for the
+                // time form (a count window carries no key).
+                nNeed = 0;
+                all = false;
+                if (node.colNameOf() != null) {
+                    nNeed = Opt.addName(node.colNameOf(), need, nNeed);
+                }
+                nNeed = Opt.addAggRefs(node.aggsOf(), need, nNeed);
+            }
             if (kind == 7) {
                 // A join draws on both inputs; the left scan below it must
                 // read everything (the right branch is optimized on its
@@ -285,6 +296,10 @@ public class Opt {
         if (k == 8) {
             DynFrame c8 = in.schemaOnly();
             return Exec.applyResample(node, #c8);
+        }
+        if (k == 9) {
+            DynFrame c9 = in.schemaOnly();
+            return Exec.applyWindow(node, #c9);
         }
         if (k == 12) {
             DynFrame c12 = in.schemaOnly();

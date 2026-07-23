@@ -72,6 +72,10 @@ public class Table<T> {
     int64 rsOrigin;
     int64 rsOffset;
     boolean rsClosedRight;
+    boolean windowing;   // U11: a rolling handle awaiting .agg(...)
+    String winTsName;    // U11: rolling time column (null = count form)
+    int64 winSize;       // U11: window nanos (time) or row count
+    boolean winByTime;
     boolean optOff;      // skip the U7 rewriter (the tests' baseline)
     int64 statRows;      // last execution: rows the scan materialized
     int64 statCols;      // last execution: column buffers the scan read
@@ -181,6 +185,11 @@ public class Table<T> {
         if (this.resampling) {
             throw heap FrameException("Table.collect: resample names the "
                 + "time buckets but nothing to reduce - complete it with "
+                + ".agg(...)");
+        }
+        if (this.windowing) {
+            throw heap FrameException("Table.collect: rolling names the "
+                + "window but nothing to reduce - complete it with "
                 + ".agg(...)");
         }
         if (this.plan == null) {
@@ -417,6 +426,16 @@ public class Table<T> {
      *  unknown column, or an unnamed aggregate fails now, before anything
      *  runs. The shape changes, so the result is erased. */
     public #Table<?> __agg(#Agg aggs, int32 naggs) {
+        if (this.windowing) {
+            DynFrame inSchema = this.__schemaClone();
+            this.windowing = false;
+            Plan node = Plan.windowNode(this.winTsName, this.winSize,
+                this.winByTime, #aggs, naggs, this.__takeChain());
+            DynFrame outSchema = Exec.applyWindow(node, #inSchema);
+            Table<T> h = heap Table<T>(#node, this.__takeSrc(), #outSchema,
+                false);
+            return #h;
+        }
         if (this.resampling) {
             DynFrame inSchema = this.__schemaClone();
             this.resampling = false;
@@ -472,6 +491,37 @@ public class Table<T> {
      *  [, origin, offset, closedRight])`. */
     public #Table<T> resample(String tsName, Duration every) {
         return this.__resample(tsName, every.toNanos(), 0, 0, false);
+    }
+
+    /** Name the rolling window (internal — the synthesized `rolling`
+     *  supplies the time-column name via a typed lambda, or the count form
+     *  passes a null name). Like `resample`, the handle holds the window
+     *  until `agg` completes the node (spec §8 resolution). */
+    public #Table<T> __rolling(String tsName, int64 size, boolean byTime) {
+        DynFrame sch = this.__schemaClone();
+        Plan pl = this.__takeChain();
+        DynFrame sr = this.__takeSrc();
+        Table<T> h = heap Table<T>(#pl, #sr, #sch, false);
+        h.winTsName = tsName;
+        h.winSize = size;
+        h.winByTime = byTime;
+        h.windowing = true;
+        h.label = this.label;
+        return #h;
+    }
+
+    /** Dynamic time-window rolling (spec §4.3.2): a string-keyed time
+     *  column, trailing `(t - window, t]`. The typed lambda form is the
+     *  synthesized `rolling((Cols) -> ColI64, Duration)`. */
+    public #Table<T> rolling(String tsName, Duration window) {
+        return this.__rolling(tsName, window.toNanos(), true);
+    }
+
+    /** Row-count rolling (spec §8 resolution): the trailing `n` rows in
+     *  input order, clamped at the start. No time column — the result is
+     *  the aggregates alone. */
+    public #Table<T> rolling(int64 n) {
+        return this.__rolling(null, n, false);
     }
 
     /** Order the rows by a key list (internal — the synthesized `sort`

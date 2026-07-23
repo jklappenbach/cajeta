@@ -60,6 +60,8 @@ public class Plan {
     int64 rsOrigin;   //   the time column; aggs/naggs are the reductions);
     int64 rsOffset;   //   grid base is origin+offset
     boolean rsClosedRight;
+    int64 winSize;    // WINDOW payload: window nanos (time) or row count;
+    boolean winByTime;//   colName is the time column (null = count form)
 
     Plan(int32 kind) {
         this.kind = kind;
@@ -256,6 +258,30 @@ public class Plan {
     /** RESAMPLE payload: true for right-closed buckets. */
     public boolean rsClosedRightOf() { return this.rsClosedRight; }
 
+    /** A window node (U11, spec §8 resolution): a SLIDING window producing
+     *  one output row per input row. A time window (`byTime`, `tsName` set)
+     *  is the trailing `(t - size, t]` in time order; a count window
+     *  (`byTime` false, `tsName` null) is the trailing `size` rows in input
+     *  order. The aggregates reduce each window like a group. */
+    public static #Plan windowNode(String tsName, int64 size,
+                                   boolean byTime, #Agg aggs, int32 naggs,
+                                   #Plan child) {
+        Plan n = heap Plan(9);
+        n.colName = tsName;
+        n.winSize = size;
+        n.winByTime = byTime;
+        n.aggs #= aggs;
+        n.naggs = naggs;
+        n.child #= child;
+        return #n;
+    }
+
+    /** WINDOW payload: window nanos (time form) or row count (count form). */
+    public int64 winSizeOf() { return this.winSize; }
+
+    /** WINDOW payload: true for a time window, false for a count window. */
+    public boolean winByTimeOf() { return this.winByTime; }
+
     /** JOIN payload: attach the precomputed output schema (schema-only). */
     void __setJoinOut(#DynFrame out) {
         this.joinOut #= out;
@@ -339,6 +365,8 @@ public class Plan {
         n.rsOrigin = orig.rsOriginOf();
         n.rsOffset = orig.rsOffsetOf();
         n.rsClosedRight = orig.rsClosedRightOf();
+        n.winSize = orig.winSizeOf();
+        n.winByTime = orig.winByTimeOf();
         n.child #= child;
         return #n;
     }
