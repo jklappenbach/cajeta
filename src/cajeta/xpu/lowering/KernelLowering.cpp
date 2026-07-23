@@ -850,6 +850,18 @@ private:
                     continue;
                 }
             }
+            // `Shared<T> tile = shared [v0, v1, ...];` — a shared tile pre-filled
+            // with literal values (array-literals §4). `shared` is the device
+            // allocation verb; the tile is emitted like the creator form and the
+            // values are stored in at runtime (the same allocate-then-populate
+            // pattern heap/stack literals use, targeting addrspace(3)).
+            if (auto lit =
+                    std::dynamic_pointer_cast<ArrayLiteralExpression>(initExpr)) {
+                if (lit->isSharedAlloc()) {
+                    lowerSharedArrayLiteral(nm, declType, lit);
+                    continue;
+                }
+            }
             llvm::Value* v = lowerExpr(initExpr);
             if (!slotTy) slotTy = v->getType();  // infer slot type from initializer
             llvm::Value* slot = entryAlloca(slotTy, nm);
@@ -1021,6 +1033,64 @@ private:
         bufferElemSigned[nm] = elemSigned;
         if (swizStride) swizzledBaseStride[base] = swizStride;
         if (blkPeriod && blkPad) blockPadOfBase[base] = {blkPeriod, blkPad};
+    }
+
+    // `Shared<T> tile = shared [v0, v1, ...];` — a per-block shared tile of the
+    // literal's length, populated with its values (array-literals §4). Unlike the
+    // sized creator (`shared T[N]`, uninitialized scratch), the literal carries
+    // values, so after emitting the addrspace(3) global we store each in. The
+    // store loop runs on every thread — redundant but idempotent (same constants),
+    // and since each thread writes the whole tile it reads correct values without
+    // a barrier. A later pass could guard with thread-0 + barrier.
+    void lowerSharedArrayLiteral(
+            const std::string& nm, const CajetaTypePtr& declType,
+            const std::shared_ptr<ArrayLiteralExpression>& lit) {
+        // Element type + signedness from the Shared<T> LHS (creator convention).
+        llvm::Type* elemTy = nullptr;
+        bool elemSigned = true;
+        if (auto cls = std::dynamic_pointer_cast<CajetaClass>(declType)) {
+            if (!cls->getTypeArguments().empty()) {
+                elemTy = deviceScalarType(cls->getTypeArguments()[0], ctx);
+                elemSigned = typeIsSigned(cls->getTypeArguments()[0]);
+            }
+        }
+        if (!elemTy) unsupported("shared array literal '" + nm +
+                                 "' needs a scalar element type (Shared<T>)");
+        const auto& elems = lit->getElements();
+        uint64_t n = elems.size();
+        if (n == 0) unsupported("shared array literal '" + nm +
+                                "' must be non-empty");
+
+        // One internal [N x T] addrspace(3) global (per-block), like the creator.
+        llvm::ArrayType* arrTy = llvm::ArrayType::get(elemTy, n);
+        std::string gname = fn->getName().str() + "_" + nm;
+        auto* gv = new llvm::GlobalVariable(
+            mod, arrTy, /*isConstant=*/false,
+            llvm::GlobalValue::InternalLinkage,
+            (llvm::Constant*) llvm::UndefValue::get(arrTy),
+            gname, /*InsertBefore=*/nullptr,
+            llvm::GlobalValue::NotThreadLocal, kSharedAS);
+        gv->setAlignment(llvm::MaybeAlign(16));
+
+        // Decay [N x T]* -> T* (addrspace 3) and register like a buffer base so
+        // tile[i] reuses the existing GEP/load/store path (mirrors lowerSharedDecl).
+        llvm::Value* zero =
+            llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), 0);
+        llvm::Value* base = builder.CreateGEP(arrTy, gv, {zero, zero},
+                                              nm + ".base");
+        bufferBases[nm] = base;
+        bufferElems[nm] = elemTy;
+        bufferElemSigned[nm] = elemSigned;
+
+        // Populate the tile with the literal's values.
+        for (uint64_t i = 0; i < n; ++i) {
+            auto ex = std::dynamic_pointer_cast<Expression>(elems[i]);
+            llvm::Value* v = coerceTo(lowerExpr(ex), elemTy, exprSigned(ex));
+            llvm::Value* idx =
+                llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), i);
+            llvm::Value* slot = builder.CreateGEP(elemTy, base, idx);
+            builder.CreateStore(v, slot);
+        }
     }
 
     // If `base` is a Swizzled<T,S> tile, permute the element index `idx` (i64)

@@ -135,6 +135,39 @@ TEST(XpuNvptxSharedEmitTests, lowersSharedTileReduction) {
     EXPECT_NE(ptx.find("bar.sync"), std::string::npos) << ptx;
 }
 
+// array-literals §4 — `Shared<int32> tile = shared [10,20,30];` allocates a
+// per-block shared tile of the literal's length AND populates it with the
+// values. Lowers to a .shared global with st.shared populate writes; reading
+// tile[t] is a shared-space load.
+const char* kSharedLiteralSrc =
+    "package test;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelThread;\n"
+    "import cajeta.xpu.Shared;\n"
+    "public class L {\n"
+    "    @Kernel\n"
+    "    public static void useLit(KernelBuffer<int32> out) {\n"
+    "        Shared<int32> tile = shared [10, 20, 30];\n"
+    "        uint32 t = KernelThread.x();\n"
+    "        if (t < 3) {\n"
+    "            out[t] = tile[t];\n"
+    "        }\n"
+    "    }\n"
+    "}\n";
+
+TEST(XpuNvptxSharedEmitTests, lowersSharedArrayLiteral) {
+    std::string ptx = lowerToPtx(kSharedLiteralSrc, "test.L", "useLit");
+    ASSERT_FALSE(ptx.empty());
+
+    EXPECT_NE(ptx.find(".visible .entry useLit"), std::string::npos) << ptx;
+    // The literal tile lands in the .shared state space.
+    EXPECT_NE(ptx.find(".shared"), std::string::npos) << ptx;
+    // The literal's values are stored in (populate) — shared-space writes.
+    EXPECT_NE(ptx.find("st.shared"), std::string::npos) << ptx;
+    // Reading tile[t] is a shared-space load.
+    EXPECT_NE(ptx.find("ld.shared"), std::string::npos) << ptx;
+}
+
 // A runtime-sized `shared T[expr]` (expr is a kernel param, not a constant) is
 // DYNAMIC shared memory: an external, unsized .shared region sized by the
 // launch's `shared:` byte count. Distinguished in PTX by `.extern .shared`.
