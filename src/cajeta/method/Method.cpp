@@ -1756,6 +1756,50 @@ namespace cajeta {
             arenaEligibleNames.insert(cand.first);
             methodUsesArena = true;
         }
+        // array-literals §4: `stack [1,2,3]` LITERALS take the same non-escape
+        // gate as arena creators. `escaping` (built above) already covers a
+        // literal-bound name — escape is tracked by name, not by initializer
+        // kind. Collect stack-flagged primitive-element literal initializers and
+        // arena-route the ones whose local never escapes; the rest fall back to
+        // heap (generateCode reads isArenaEligible()).
+        auto arenaPrimitiveElem = [](const CajetaTypePtr& elem) -> bool {
+            return elem
+                && !std::dynamic_pointer_cast<CajetaClass>(elem)
+                && !std::dynamic_pointer_cast<CajetaArray>(elem)
+                && !std::dynamic_pointer_cast<CajetaView>(elem)
+                && !std::dynamic_pointer_cast<CajetaFunctionType>(elem);
+        };
+        std::vector<std::pair<std::string,
+            std::shared_ptr<ArrayLiteralExpression>>> literalCandidates;
+        std::function<void(const AbstractSyntaxNodePtr&)> collectStackLiterals =
+            [&](const AbstractSyntaxNodePtr& node) {
+                if (!node) return;
+                if (auto lvd =
+                        std::dynamic_pointer_cast<LocalVariableDeclaration>(node)) {
+                    auto arr = std::dynamic_pointer_cast<CajetaArray>(lvd->getType());
+                    if (arr && arenaPrimitiveElem(arr->getElementType())) {
+                        for (auto& d : lvd->getVariableDeclarators()) {
+                            if (!d || !d->getInitializer()) continue;
+                            auto& kids = d->getInitializer()->getChildren();
+                            if (kids.empty()) continue;
+                            if (auto lit = std::dynamic_pointer_cast<
+                                    ArrayLiteralExpression>(kids[0])) {
+                                if (lit->isStackAlloc())
+                                    literalCandidates.emplace_back(
+                                        d->getIdentifier(), lit);
+                            }
+                        }
+                    }
+                }
+                node->forEachSubNode(collectStackLiterals);
+            };
+        collectStackLiterals(block);
+        for (auto& cand : literalCandidates) {
+            if (escaping.find(cand.first) != escaping.end()) continue;
+            cand.second->setArenaEligible(true);
+            arenaEligibleNames.insert(cand.first);
+            methodUsesArena = true;
+        }
     }
 
     void Method::generateCode() {

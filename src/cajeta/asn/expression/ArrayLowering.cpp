@@ -32,7 +32,8 @@ namespace cajeta {
     llvm::Value* emitArrayFromElements(
             CajetaModulePtr module,
             CajetaTypePtr elementType,
-            const std::vector<AbstractSyntaxNodePtr>& elements) {
+            const std::vector<AbstractSyntaxNodePtr>& elements,
+            bool useArena) {
         if (!elementType) return nullptr;
 
         auto* builder = module->getBuilder();
@@ -47,10 +48,15 @@ namespace cajeta {
         module->getStructures()[arrayType->toCanonical()] =
             std::static_pointer_cast<CajetaClass>(arrayType);
 
-        llvm::Function* allocFn = module->getRuntimeFunction(
-            CajetaClass::arrayElementCarriesSlotBits(elementType)
+        // Arena (stack) placement is primitive-element only, so it never needs
+        // the droppable-bits allocator; heap picks bits when the element carries
+        // per-slot ownership. Same 3-arg signature for all three.
+        const char* allocSym = useArena
+            ? "__cajeta_new_array_header_arena"
+            : (CajetaClass::arrayElementCarriesSlotBits(elementType)
                 ? "__cajeta_new_array_header_bits"
                 : "__cajeta_new_array_header");
+        llvm::Function* allocFn = module->getRuntimeFunction(allocSym);
         if (!allocFn) return nullptr;
 
         llvm::Type* headerTy = arrayType->getLlvmType();

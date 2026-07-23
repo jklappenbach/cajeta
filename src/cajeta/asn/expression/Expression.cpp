@@ -114,6 +114,11 @@ namespace cajeta {
                     ctx->aggregateInitializer(), token);
                 agg->setStackAlloc(false);
                 result = agg;
+            } else if (ctx->arrayLiteral()) {
+                // `heap [1,2,3]` — explicit heap placement (the default for a
+                // bare `[...]`); array-literals §4.
+                result = make_shared<ArrayLiteralExpression>(
+                    ctx->arrayLiteral(), token);
             }
         } else if (ctx->STACK()) {
             // Unified-class allocation prefix (docs/specification/lang/UnifiedClasses.md). Phase 2a:
@@ -130,6 +135,12 @@ namespace cajeta {
                 auto newExpr = make_shared<NewExpression>(ctx->creator(), token);
                 newExpr->setStackAlloc(true);
                 result = newExpr;
+            } else if (ctx->arrayLiteral()) {
+                // `stack [1,2,3]` — frame-arena placement (array-literals §4).
+                auto lit = make_shared<ArrayLiteralExpression>(
+                    ctx->arrayLiteral(), token);
+                lit->setStackAlloc(true);
+                result = lit;
             }
         } else if (ctx->SHARED()) {
             // `shared` placement — GPU workgroup-shared memory (NV addrspace 3),
@@ -147,6 +158,13 @@ namespace cajeta {
                     ctx->aggregateInitializer(), token);
                 agg->setStackAlloc(false);
                 result = agg;  // host path rejects; v1 has no shared-aggregate
+            } else if (ctx->arrayLiteral()) {
+                // `shared [1,2,3]` — device workgroup memory (array-literals §4);
+                // device-lowered, host path rejects.
+                auto lit = make_shared<ArrayLiteralExpression>(
+                    ctx->arrayLiteral(), token);
+                lit->setSharedAlloc(true);
+                result = lit;
             }
         } else if (ctx->identifier()) {
             result = make_shared<IdentifierExpression>(ctx->identifier(), ctx->primary() != nullptr);
@@ -663,13 +681,23 @@ namespace cajeta {
     }
 
     llvm::Value* ArrayLiteralExpression::generateCode(CajetaModulePtr module) {
-        // Allocate a heap array and populate each slot through the shared store
-        // loop (array-literals §2/§7). The XPU launch path never reaches here —
-        // it reads the elements directly off the AST.
+        // `shared [...]` is device-only workgroup memory; the host codegen path
+        // rejects it (the @Kernel device lowerer handles it), mirroring the
+        // NewExpression shared guard (array-literals §4).
+        if (sharedAlloc) {
+            throw Exception(
+                "`shared` placement is only valid inside an @Kernel body "
+                "(GPU workgroup-shared memory)", "XPU-K03");
+        }
+        // Allocate the array and populate each slot through the shared store
+        // loop (array-literals §2/§7). A `stack [...]` literal proven
+        // non-escaping (arenaEligible, set by Method::computeArenaEligibility)
+        // routes through the frame arena; otherwise heap. The XPU launch path
+        // never reaches here — it reads the elements directly off the AST.
         if (!elementType) {
             elementType = unifyElementType(module);
         }
-        return emitArrayFromElements(module, elementType, children);
+        return emitArrayFromElements(module, elementType, children, arenaEligible);
     }
 
     void ArrayIndexExpression::resolveTypes(CajetaModulePtr module) {

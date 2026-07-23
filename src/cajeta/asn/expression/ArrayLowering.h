@@ -25,8 +25,15 @@ namespace cajeta {
     typedef std::shared_ptr<CajetaType> CajetaTypePtr;
     typedef std::shared_ptr<AbstractSyntaxNode> AbstractSyntaxNodePtr;
 
+    // useArena routes the header through the frame arena
+    // (__cajeta_new_array_header_arena) instead of the heap allocator —
+    // array-literals §4, for a `stack [...]` literal proven non-escaping. The
+    // arena allocator takes the identical (headerBytes, elemBytes, count)
+    // signature; only the callee differs. Arena arrays are primitive-element
+    // only, so they never combine with the droppable-bits allocator.
     llvm::Value* emitArrayFromElements(
         CajetaModulePtr module,
         CajetaTypePtr elementType,
-        const std::vector<AbstractSyntaxNodePtr>& elements);
+        const std::vector<AbstractSyntaxNodePtr>& elements,
+        bool useArena = false);
 }

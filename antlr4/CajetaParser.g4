@@ -780,13 +780,13 @@ expression
     // forms wrap either a constructor call (via `creator`) or an aggregate-
     // init expression. `heap` is the sole heap allocator; `stack` lowers to
     // a stack alloca + ctor call.
-    | HEAP  (creator | aggregateInitializer)
-    | STACK (creator | aggregateInitializer)
+    | HEAP  (creator | aggregateInitializer | arrayLiteral)
+    | STACK (creator | aggregateInitializer | arrayLiteral)
     // `shared` is a third placement (GPU workgroup-shared memory, NV addrspace
     // 3). Device-only: legal only inside an @Kernel body, where the device
     // lowerer (NvptxKernelLowering) turns `shared T[N]` into one per-block
     // addrspace(3) global. The host codegen path rejects it. See CajetaXPU.md.
-    | SHARED (creator | aggregateInitializer)
+    | SHARED (creator | aggregateInitializer | arrayLiteral)
     | '(' annotation* typeType ('&' typeType)* ')' expression
     | expression postfix=('++' | '--')
     | prefix=('+'|'-'|'++'|'--') expression

@@ -286,6 +286,23 @@ namespace cajeta {
         // resolveTypes, it overrides the unify fallback. Unused until Unit 2.
         void setElementType(CajetaTypePtr t) { elementType = t; }
 
+        // Placement (array-literals §4): heap (default), stack (frame arena),
+        // or shared (device workgroup memory). Set by Expression::fromContext
+        // from a `stack`/`shared` prefix; drives allocator selection in
+        // generateCode. At most one is true.
+        void setStackAlloc(bool v) { stackAlloc = v; }
+        void setSharedAlloc(bool v) { sharedAlloc = v; }
+        bool isStackAlloc() const { return stackAlloc; }
+        bool isSharedAlloc() const { return sharedAlloc; }
+
+        // Set by Method::computeArenaEligibility when a `stack [...]` literal's
+        // bound local proves non-escaping and primitive-element (array-literals
+        // §4). Only then does generateCode route to the frame-arena allocator;
+        // an escaping or non-primitive `stack [...]` falls back to heap, exactly
+        // as the escape-driven arena path does for creators.
+        void setArenaEligible(bool v) { arenaEligible = v; }
+        bool isArenaEligible() const { return arenaEligible; }
+
         void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
     private:
@@ -296,6 +313,9 @@ namespace cajeta {
 
         vector<ExpressionPtr> elements;
         CajetaTypePtr elementType;  // target (§3.2) or unified (§3.3)
+        bool stackAlloc = false;    // `stack [...]` — frame arena (§4)
+        bool sharedAlloc = false;   // `shared [...]` — device workgroup (§4)
+        bool arenaEligible = false; // stack + proven non-escaping (§4)
     };
 
 
