@@ -1,0 +1,98 @@
+package cajeta.nucleo.frame;
+
+/**
+ * Sorts — the ordering collector a `sort` lambda receives (nucleo-frame U9):
+ * the typed builder and the collector arrive as the lambda's two parameters,
+ * and each `add` appends one key, MOST SIGNIFICANT FIRST:
+ *
+ * ```cajeta
+ * Table<Px> s = t.lazy().sort((PxCols c, Sorts s) -> {
+ *     s.add(c.sym());                        // primary:   ascending
+ *     s.add(c.px().desc());                  // secondary: descending
+ *     s.add(c.bid(), Sorts.NULLS_FIRST);     // the null-order override
+ * });
+ * ```
+ *
+ * Defaults are ascending and {@link #NULLS_LAST} (spec §7). The two-argument
+ * overloads exist so the override reads as a NAME at the call site rather
+ * than a bare boolean.
+ *
+ * A key must be a bare column reference — a computed expression is a loud
+ * {@link FrameException} at plan build, since there is no column to order by
+ * (spec §4.7).
+ */
+public class Sorts {
+    /** Missing values sort after every present one (the default). */
+    public static int32 NULLS_LAST = 0;
+    /** Missing values sort before every present one (the override). */
+    public static int32 NULLS_FIRST = 1;
+
+    SortKey head;      // owned chain
+    SortKey tail;      // borrow of the last node
+    int32 n;
+
+    public Sorts() {
+        this.n = 0;
+    }
+
+    void append(#SortKey k, int32 nullOrder) {
+        k.setNullsFirst(nullOrder == 1);
+        if (this.head == null) {
+            this.head #= k;
+            this.tail = this.head;
+        } else {
+            this.tail.chain(#k);
+            this.tail = this.tail.nextOf();
+        }
+        this.n = this.n + 1;
+    }
+
+    /** A float64 (or nullable-float) column, ascending, nulls last. */
+    public void add(#ColF64 e) {
+        this.add(#e, 0);
+    }
+
+    public void add(#ColF64 e, int32 nullOrder) {
+        if (e.kind() != 0) {
+            throw heap FrameException("sort: a key must be a column "
+                + "reference, not a computed expression");
+        }
+        this.append(SortKey.ofF64(#e, false), nullOrder);
+    }
+
+    /** An exact-integer column, ascending, nulls last. */
+    public void add(#ColI64 e) {
+        this.add(#e, 0);
+    }
+
+    public void add(#ColI64 e, int32 nullOrder) {
+        this.append(SortKey.ofI64(#e, false), nullOrder);
+    }
+
+    /** A utf8 column, ascending (byte-lexicographic), nulls last. */
+    public void add(#ColStr e) {
+        this.add(#e, 0);
+    }
+
+    public void add(#ColStr e, int32 nullOrder) {
+        this.append(SortKey.ofStr(#e, false), nullOrder);
+    }
+
+    /** An already-directed key (`c.px().desc()`). */
+    public void add(#SortKey k) {
+        this.append(#k, 0);
+    }
+
+    public void add(#SortKey k, int32 nullOrder) {
+        this.append(#k, nullOrder);
+    }
+
+    public int32 count() { return this.n; }
+
+    /** Detach the collected chain (the collector is single-use). */
+    public #SortKey take() {
+        this.tail = null;
+        SortKey h #= this.head;
+        return #h;
+    }
+}

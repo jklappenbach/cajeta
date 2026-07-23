@@ -45,6 +45,11 @@ public class ColI64 {
     public #Agg first() { return Agg.overI64(6, this); }
     public #Agg last()  { return Agg.overI64(7, this); }
 
+    /** Sort direction (U9) — the compare is exact int64, like the
+     *  comparisons above. */
+    public #SortKey desc() { return SortKey.overI64(this, true); }
+    public #SortKey asc()  { return SortKey.overI64(this, false); }
+
     public static #Pred operator>(#ColI64 a, int64 v)  { return Pred.cmpI64(40, #a, v); }
     public static #Pred operator>=(#ColI64 a, int64 v) { return Pred.cmpI64(41, #a, v); }
     public static #Pred operator<(#ColI64 a, int64 v)  { return Pred.cmpI64(42, #a, v); }

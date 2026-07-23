@@ -419,6 +419,66 @@ public class Table<T> {
         return #h;
     }
 
+    /** Order the rows by a key list (internal — the synthesized `sort`
+     *  builds the chain from the typed lambda). Schema-PRESERVING, so the
+     *  handle stays typed: a sort of a `Table<T>` is still a `Table<T>`.
+     *  Lazy: builds a node. A computed key was already rejected by the
+     *  collector (`Sorts.add`). */
+    public #Table<T> __sort(#SortKey keys, int32 nkeys) {
+        DynFrame sch = this.__schemaClone();
+        boolean ty = this.typed || this.plan == null;
+        if (this.erased) { ty = false; }
+        Plan node = Plan.sortNode(#keys, nkeys, this.__takeChain());
+        Table<T> h = heap Table<T>(#node, this.__takeSrc(), #sch, ty);
+        h.label = this.label;
+        h.rebinder = this.rebinder;
+        return #h;
+    }
+
+    /** Join against `other` on a key list (internal — the synthesized
+     *  `join` builds the chain from the typed lambda). The keys reference
+     *  THIS (left) schema and are matched by NAME on the right. The output
+     *  schema is computed and VALIDATED here, at plan build: a key absent
+     *  from the right, or a utf8 column that a `how` would null-extend,
+     *  fails now, before anything runs. The shape changes, so the result is
+     *  erased (`Table<?>`); narrow with the joined record. */
+    public #Table<?> __join(Table<?> other, #Sel keys, int32 nkeys,
+                            int32 how) {
+        this.__liveCheck();
+        DynFrame lsch = this.__schemaClone();
+        DynFrame rsch = other.__schemaClone();
+        Plan rp = other.__takeChain();
+        DynFrame rs = other.__takeSrc();
+        Plan node = Plan.joinNode(#keys, nkeys, how, #rp, #rs,
+            this.__takeChain());
+        DynFrame outSchema = Exec.applyJoin(node, #lsch, #rsch);
+        node.__setJoinOut(outSchema.schemaOnly());
+        Table<T> h = heap Table<T>(#node, this.__takeSrc(), #outSchema, false);
+        return #h;
+    }
+
+    /** Dynamic join (spec §4.3.2): a single string-keyed join on a
+     *  `Table<?>`, the key looked up in this schema and validated at plan
+     *  build. The typed lambda form is the synthesized `join((Cols, Sels)
+     *  -> void, Join)`. */
+    public #Table<?> join(Table<?> other, String key, int32 how) {
+        DynFrame sch = this.__schemaOf();
+        int32 i = sch.find(key);
+        if (i < 0) {
+            throw heap FrameException("join: no column '" + key
+                + "' in schema " + sch.schemaText());
+        }
+        Sel k;
+        if (sch.tagAt(i) == 11) {
+            k #= Sel.ofStr(ColStr.colRef(i, key), key);
+        } else if (sch.tagAt(i) > 8) {
+            k #= Sel.of(ColF64.colRef(i, key), key);
+        } else {
+            k #= Sel.ofI64(ColI64.colRef(i, key), key);
+        }
+        return this.__join(#other, #k, 1, how);
+    }
+
     /** Column count of a MATERIALIZED table — the schema-agnostic read
      *  surface that works on a `Table<?>` (the synthesized `colCount` is a
      *  per-record compile-time fact, so it needs a known schema). */

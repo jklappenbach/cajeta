@@ -41,6 +41,11 @@ public class ColStr {
     public #Agg first() { return Agg.overStr(6, this); }
     public #Agg last()  { return Agg.overStr(7, this); }
 
+    /** Sort direction (U9): utf8 orders byte-lexicographically, which for
+     *  utf8 is code-point order. */
+    public #SortKey desc() { return SortKey.overStr(this, true); }
+    public #SortKey asc()  { return SortKey.overStr(this, false); }
+
     public static #Pred operator==(#ColStr a, String v) { return Pred.cmpStr(26, #a, v); }
     public static #Pred operator!=(#ColStr a, String v) { return Pred.cmpStr(27, #a, v); }
 }

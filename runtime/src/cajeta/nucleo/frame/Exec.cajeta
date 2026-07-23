@@ -38,6 +38,13 @@ public class Exec {
             }
             return Exec.applyScan(node, src, st);
         }
+        // A join runs its RIGHT branch as a separate plan against its own
+        // scan snapshot (the optimizer never touched it), then combines.
+        if (node.kindOf() == 7) {
+            DynFrame lin = Exec.run(node.childOf(), src, st);
+            DynFrame rin = Exec.run(node.rightPlanOf(), node.rightSrcOf(), st);
+            return Exec.applyJoin(node, #lin, #rin);
+        }
         DynFrame in = Exec.run(node.childOf(), src, st);
         if (node.kindOf() == 2) {
             return Exec.applyFilter(node.predOf(), #in);
@@ -50,6 +57,9 @@ public class Exec {
         }
         if (node.kindOf() == 5) {
             return Exec.applyGroup(node, #in);
+        }
+        if (node.kindOf() == 6) {
+            return Exec.applySort(node, #in);
         }
         if (node.kindOf() == 12) {
             return Exec.applyFillNull(node, #in);
@@ -838,6 +848,508 @@ public class Exec {
             g = g + 1;
         }
         return #c;
+    }
+
+    /** Byte-lexicographic string order (utf8 byte order IS code-point
+     *  order): <0 if a<b, >0 if a>b, 0 equal — a shorter prefix sorts
+     *  first. */
+    static int32 strCompare(String a, String b) {
+        int32 la = a.byteLength();
+        int32 lb = b.byteLength();
+        int32 n = la;
+        if (lb < n) { n = lb; }
+        int32 i = 0;
+        while (i < n) {
+            int32 ca = ((int32) a.byteAt(i)) & 255;
+            int32 cb = ((int32) b.byteAt(i)) & 255;
+            if (ca < cb) { return -1; }
+            if (ca > cb) { return 1; }
+            i = i + 1;
+        }
+        if (la < lb) { return -1; }
+        if (la > lb) { return 1; }
+        return 0;
+    }
+
+    /** Compare rows `x` and `y` under one sort key. Returns <0 if x sorts
+     *  before y, >0 after, 0 tie. Nulls are placed by `nullsFirst`, in
+     *  EITHER direction (the placement is independent of ascending/
+     *  descending — spec §7). */
+    static int32 cmpKey(SortKey key, DynFrame in, int32 ord, int64 x,
+                        int64 y) {
+        boolean vx = in.colAt(ord).validAt(x);
+        boolean vy = in.colAt(ord).validAt(y);
+        if (!vx || !vy) {
+            if (!vx && !vy) { return 0; }
+            // Exactly one is null: its placement does not depend on the
+            // direction, so decide it here and return.
+            if (!vx) {
+                if (key.isNullsFirst()) { return -1; }
+                return 1;
+            }
+            if (key.isNullsFirst()) { return 1; }
+            return -1;
+        }
+        int32 base = 0;
+        if (in.tagAt(ord) == 11) {
+            base = Exec.strCompare(in.colAt(ord).strAt(x),
+                in.colAt(ord).strAt(y));
+        } else if (in.tagAt(ord) > 8) {
+            float64 a = in.colAt(ord).f64At(x);
+            float64 b = in.colAt(ord).f64At(y);
+            if (a < b) { base = -1; } else if (a > b) { base = 1; }
+        } else {
+            int64 a = in.colAt(ord).i64At(x);
+            int64 b = in.colAt(ord).i64At(y);
+            if (a < b) { base = -1; } else if (a > b) { base = 1; }
+        }
+        if (key.isDescending()) { return -base; }
+        return base;
+    }
+
+    /** Compare two rows under the whole key list (most significant first);
+     *  ties break on the input row index so the sort is STABLE. */
+    static int32 cmpRows(Plan node, DynFrame in, int32[] ords, int64 x,
+                         int64 y) {
+        SortKey k = node.sortKeysOf();
+        int32 j = 0;
+        while (k != null) {
+            int32 c = Exec.cmpKey(k, in, ords[j], x, y);
+            if (c != 0) { return c; }
+            j = j + 1;
+            k = k.nextOf();
+        }
+        if (x < y) { return -1; }
+        if (x > y) { return 1; }
+        return 0;
+    }
+
+    /** Sort (U9, spec §4.1): a STABLE ordering by the key list, nulls placed
+     *  per key. Schema-preserving — every column is gathered by the sorted
+     *  row order. Stability comes from a bottom-up merge sort with the input
+     *  index as the final tie-break. Fed a schema-only frame this is the
+     *  identity (sort changes no schema). */
+    static #DynFrame applySort(Plan node, #DynFrame in) {
+        if (in.isSchemaOnly()) {
+            return in.schemaOnly();
+        }
+        int32 nk = node.sortKeyCount();
+        int32[] ords = heap int32[nk];
+        SortKey k = node.sortKeysOf();
+        int32 c = 0;
+        while (k != null) {
+            int32 o = in.find(k.name());
+            if (o < 0) {
+                throw heap FrameException("sort: key '" + k.name()
+                    + "' is not in schema " + in.schemaText());
+            }
+            ords[c] = o;
+            c = c + 1;
+            k = k.nextOf();
+        }
+        int64 n = in.rowsOf();
+        int64 cap = n;
+        if (cap < 1) { cap = 1; }
+        int64[] order = heap int64[cap];
+        int64 i = 0;
+        while (i < n) { order[i] = i; i = i + 1; }
+        // Bottom-up merge sort over `order` — stable, O(n log n).
+        int64[] tmp = heap int64[cap];
+        int64 width = 1;
+        while (width < n) {
+            int64 lo = 0;
+            while (lo < n) {
+                int64 mid = lo + width;
+                if (mid > n) { mid = n; }
+                int64 hi = lo + width * 2;
+                if (hi > n) { hi = n; }
+                int64 a = lo;
+                int64 b = mid;
+                int64 t = lo;
+                while (a < mid && b < hi) {
+                    if (Exec.cmpRows(node, in, ords, order[a], order[b])
+                            <= 0) {
+                        tmp[t] = order[a];
+                        a = a + 1;
+                    } else {
+                        tmp[t] = order[b];
+                        b = b + 1;
+                    }
+                    t = t + 1;
+                }
+                while (a < mid) { tmp[t] = order[a]; a = a + 1; t = t + 1; }
+                while (b < hi) { tmp[t] = order[b]; b = b + 1; t = t + 1; }
+                lo = hi;
+            }
+            int64 z = 0;
+            while (z < n) { order[z] = tmp[z]; z = z + 1; }
+            width = width * 2;
+        }
+        DynCol[] out = heap DynCol[in.width()];
+        int32 j = 0;
+        while (j < in.width()) {
+            if (in.colAt(j) != null) {
+                out[j] #= in.colAt(j).gather(order, n);
+            }
+            j = j + 1;
+        }
+        return in.rebuild(#out, n);
+    }
+
+    /** The output nullability of a join KEY column (spec §7): a null key
+     *  matches nothing, so an INNER key is always present; an outer join
+     *  takes the key from whichever side is present, so its nullability is
+     *  that side's (FULL: either). */
+    static boolean joinKeyNullable(int32 how, boolean lNull, boolean rNull) {
+        if (how == 0) { return false; }       // inner
+        if (how == 1) { return lNull; }        // left  -> key from left
+        if (how == 2) { return rNull; }        // right -> key from right
+        return lNull || rNull;                 // full
+    }
+
+    /** Row `r`'s key tuple contains a null — such a row matches NOTHING
+     *  (spec §7), so it never enters the hash table and never probes. */
+    static boolean joinKeyNull(DynFrame f, int32[] ord, int32 nk, int64 r) {
+        int32 j = 0;
+        while (j < nk) {
+            if (!f.colAt(ord[j]).validAt(r)) { return true; }
+            j = j + 1;
+        }
+        return false;
+    }
+
+    /** Do probe row `pr` (frame `pf`, ordinals `pord`) and build row `br`
+     *  (frame `bf`, ordinals `bord`) share a key tuple? Neither row is a
+     *  null-key row (those are filtered before the probe), so this is an
+     *  ordinary value equality. */
+    static boolean joinKeysEqual(DynFrame pf, int32[] pord, DynFrame bf,
+                                 int32[] bord, int32 nk, int64 pr, int64 br) {
+        int32 j = 0;
+        while (j < nk) {
+            int32 po = pord[j];
+            int32 bo = bord[j];
+            if (pf.tagAt(po) == 11) {
+                if (!pf.colAt(po).strAt(pr).equals(bf.colAt(bo).strAt(br))) {
+                    return false;
+                }
+            } else if (pf.tagAt(po) > 8) {
+                if (pf.colAt(po).f64At(pr) != bf.colAt(bo).f64At(br)) {
+                    return false;
+                }
+            } else {
+                if (pf.colAt(po).i64At(pr) != bf.colAt(bo).i64At(br)) {
+                    return false;
+                }
+            }
+            j = j + 1;
+        }
+        return true;
+    }
+
+    /** One key column of a join output, VALUE-coalesced across the two
+     *  sides: output row `i` takes the key from the left when `lpres[i]`,
+     *  otherwise from the right (an unmatched right row of an outer join).
+     *  Both sides carry the same physical; the null-key rows keep their
+     *  null. Utf8 keys never null-extend (matched keys are non-null), so
+     *  the utf8 path needs no nullable column. */
+    static #DynCol coalesceKey(DynCol lc, int64[] lidx, boolean[] lpres,
+                               DynCol rc, int64[] ridx, int32 tag,
+                               boolean nullable, int64 m) {
+        int64 cap = m;
+        if (cap < 1) { cap = 1; }
+        if (tag == 11) {
+            String[] vals = heap String[cap];
+            int64 i = 0;
+            while (i < m) {
+                if (lpres[i]) { vals[i] = lc.strAt(lidx[i]); }
+                else { vals[i] = rc.strAt(ridx[i]); }
+                i = i + 1;
+            }
+            return DynCol.newStr(vals);
+        }
+        boolean isFloat = tag == 9 || tag == 10;
+        if (nullable) {
+            if (isFloat) {
+                DynCol o = DynCol.newNF64(m);
+                int64 i = 0;
+                while (i < m) {
+                    if (lpres[i]) {
+                        if (lc.validAt(lidx[i])) { o.setNF64(i, lc.f64At(lidx[i])); }
+                    } else {
+                        if (rc.validAt(ridx[i])) { o.setNF64(i, rc.f64At(ridx[i])); }
+                    }
+                    i = i + 1;
+                }
+                return #o;
+            }
+            DynCol o = DynCol.newNI64(m);
+            int64 i = 0;
+            while (i < m) {
+                if (lpres[i]) {
+                    if (lc.validAt(lidx[i])) { o.setNI64(i, lc.i64At(lidx[i])); }
+                } else {
+                    if (rc.validAt(ridx[i])) { o.setNI64(i, rc.i64At(ridx[i])); }
+                }
+                i = i + 1;
+            }
+            return #o;
+        }
+        if (isFloat) {
+            DynCol o = DynCol.newF64(m);
+            int64 i = 0;
+            while (i < m) {
+                if (lpres[i]) { o.setF64(i, lc.f64At(lidx[i])); }
+                else { o.setF64(i, rc.f64At(ridx[i])); }
+                i = i + 1;
+            }
+            return #o;
+        }
+        DynCol o = DynCol.newI64(m);
+        int64 i = 0;
+        while (i < m) {
+            if (lpres[i]) { o.setI64(i, lc.i64At(lidx[i])); }
+            else { o.setI64(i, rc.i64At(ridx[i])); }
+            i = i + 1;
+        }
+        return #o;
+    }
+
+    /** Hash join (spec §4.1, §7): the left input is `child`, the right is a
+     *  separately-executed branch. Keys match by NAME across schemas; a NULL
+     *  key matches NOTHING. The output is the left columns then the right's
+     *  non-key columns, one shared key column valued from the present side.
+     *  Null-extension per `how` (INNER none / LEFT right / RIGHT left / FULL
+     *  both); a column that would null-extend and cannot hold null (utf8) is
+     *  a loud error, already caught at plan build. Fed schema-only frames
+     *  this computes the output SCHEMA alone. */
+    static #DynFrame applyJoin(Plan node, #DynFrame left, #DynFrame right) {
+        int32 how = node.joinHowOf();
+        int32 nk = node.joinKeyCount();
+        int32 kcap = nk;
+        if (kcap < 1) { kcap = 1; }
+        int32[] lord = heap int32[kcap];
+        int32[] rord = heap int32[kcap];
+        int32 wl = left.width();
+        int32 wr = right.width();
+        boolean[] rIsKey = heap boolean[wr];
+        Sel s = node.joinKeysOf();
+        int32 c = 0;
+        while (s != null) {
+            int32 lo = Exec.keyOrdinal(s, left);
+            if (lo < 0 || lo >= wl) {
+                throw heap FrameException("join: key '" + s.outNameOf()
+                    + "' is not in the left schema " + left.schemaText());
+            }
+            String nm = s.outNameOf();
+            int32 ro = right.find(nm);
+            if (ro < 0) {
+                throw heap FrameException("join: key '" + nm
+                    + "' is not in the right schema " + right.schemaText());
+            }
+            lord[c] = lo;
+            rord[c] = ro;
+            rIsKey[ro] = true;
+            c = c + 1;
+            s = s.nextOf();
+        }
+        boolean extendLeft = how == 2 || how == 3;    // right/full
+        boolean extendRight = how == 1 || how == 3;   // left/full
+        int32 w = wl + wr - nk;
+        String[] names = heap String[w];
+        int32[] tags = heap int32[w];
+        boolean[] nulls = heap boolean[w];
+        // Left columns (key at its left ordinal), then right non-key cols.
+        int32 oi = 0;
+        int32 j = 0;
+        while (j < wl) {
+            names[oi] = left.nameAt(j);
+            tags[oi] = left.tagAt(j);
+            boolean nn = false;
+            int32 kIdx = Exec.joinKeyIndexL(lord, nk, j);
+            if (kIdx >= 0) {
+                nn = Exec.joinKeyNullable(how, left.nullableAt(j),
+                    right.nullableAt(rord[kIdx]));
+            } else {
+                nn = left.nullableAt(j) || extendLeft;
+            }
+            if (nn && tags[oi] == 11) {
+                throw heap FrameException("join: column '" + names[oi]
+                    + "' is utf8 and cannot be null-extended by a "
+                    + Join.nameOf(how) + " join (no @Nullable Utf8)");
+            }
+            nulls[oi] = nn;
+            oi = oi + 1;
+            j = j + 1;
+        }
+        j = 0;
+        while (j < wr) {
+            if (!rIsKey[j]) {
+                names[oi] = right.nameAt(j);
+                tags[oi] = right.tagAt(j);
+                boolean nn = right.nullableAt(j) || extendRight;
+                if (nn && tags[oi] == 11) {
+                    throw heap FrameException("join: column '" + names[oi]
+                        + "' is utf8 and cannot be null-extended by a "
+                        + Join.nameOf(how) + " join (no @Nullable Utf8)");
+                }
+                nulls[oi] = nn;
+                oi = oi + 1;
+            }
+            j = j + 1;
+        }
+        if (left.isSchemaOnly() || right.isSchemaOnly()) {
+            return heap DynFrame(#names, #tags, #nulls, w);
+        }
+        // Build the hash table on the side we iterate SECOND: for
+        // inner/left/full we iterate the left and probe a right-side table;
+        // for right we iterate the right and probe a left-side table.
+        boolean buildOnRight = how != 2;
+        DynFrame bf = right;
+        int32[] bord = rord;
+        DynFrame pf = left;
+        int32[] pord = lord;
+        if (!buildOnRight) {
+            bf = left; bord = lord; pf = right; pord = rord;
+        }
+        int64 bn = bf.rowsOf();
+        int64 pn = pf.rowsOf();
+        int64 hcap = 16;
+        while (hcap < bn * 2 + 1) { hcap = hcap * 2; }
+        int64[] head = heap int64[hcap];
+        int64[] tail = heap int64[hcap];
+        int64 hz = 0;
+        while (hz < hcap) { head[hz] = -1; tail[hz] = -1; hz = hz + 1; }
+        int64 bcap = bn;
+        if (bcap < 1) { bcap = 1; }
+        int64[] nextRow = heap int64[bcap];
+        boolean[] matched = heap boolean[bcap];    // full: right rows hit
+        int64 bi = 0;
+        while (bi < bn) {
+            nextRow[bi] = -1;
+            if (!Exec.joinKeyNull(bf, bord, nk, bi)) {
+                int64 h = Exec.keyHash(bf, bord, nk, bi);
+                int64 slot = h % hcap;
+                if (slot < 0) { slot = slot + hcap; }
+                if (head[slot] < 0) {
+                    head[slot] = bi;
+                    tail[slot] = bi;
+                } else {
+                    nextRow[tail[slot]] = bi;      // append -> ascending row
+                    tail[slot] = bi;
+                }
+            }
+            bi = bi + 1;
+        }
+        // Probe: worst-case one output row per (probe, matching-build) pair
+        // plus one per unmatched probe/build row. Count first, then fill.
+        int64 mcap = pn + bn;
+        if (mcap < 1) { mcap = 1; }
+        int64[] pidx = heap int64[mcap];    // probe row per output
+        int64[] bidx = heap int64[mcap];    // build row per output
+        boolean[] ppres = heap boolean[mcap];
+        boolean[] bpres = heap boolean[mcap];
+        int64 m = 0;
+        int64 pi = 0;
+        while (pi < pn) {
+            boolean any = false;
+            if (!Exec.joinKeyNull(pf, pord, nk, pi)) {
+                int64 h = Exec.keyHash(pf, pord, nk, pi);
+                int64 slot = h % hcap;
+                if (slot < 0) { slot = slot + hcap; }
+                int64 r = head[slot];
+                while (r >= 0) {
+                    if (Exec.joinKeysEqual(pf, pord, bf, bord, nk, pi, r)) {
+                        pidx[m] = pi; bidx[m] = r;
+                        ppres[m] = true; bpres[m] = true;
+                        matched[r] = true;
+                        m = m + 1;
+                        any = true;
+                    }
+                    r = nextRow[r];
+                }
+            }
+            // Unmatched probe row: kept by an outer join that preserves the
+            // PROBE side. build-on-right => probe is left (left/full keep
+            // it); build-on-left => probe is right (right/full keep it).
+            if (!any) {
+                boolean keepProbe = false;
+                if (buildOnRight) { keepProbe = how == 1 || how == 3; }
+                else { keepProbe = true; }   // right join keeps every right
+                if (keepProbe) {
+                    pidx[m] = pi; bidx[m] = 0;
+                    ppres[m] = true; bpres[m] = false;
+                    m = m + 1;
+                }
+            }
+            pi = pi + 1;
+        }
+        // Unmatched BUILD rows: kept only by FULL (the other outer kinds
+        // preserve the probe side, which this build side is not).
+        if (how == 3) {
+            int64 br = 0;
+            while (br < bn) {
+                if (!matched[br]) {
+                    pidx[m] = 0; bidx[m] = br;
+                    ppres[m] = false; bpres[m] = true;
+                    m = m + 1;
+                }
+                br = br + 1;
+            }
+        }
+        // Map probe/build indices back to left/right index+presence arrays.
+        int64[] lidx = heap int64[mcap];
+        int64[] ridx = heap int64[mcap];
+        boolean[] lpres = heap boolean[mcap];
+        boolean[] rpres = heap boolean[mcap];
+        int64 oiRow = 0;
+        while (oiRow < m) {
+            if (buildOnRight) {
+                lidx[oiRow] = pidx[oiRow]; lpres[oiRow] = ppres[oiRow];
+                ridx[oiRow] = bidx[oiRow]; rpres[oiRow] = bpres[oiRow];
+            } else {
+                lidx[oiRow] = bidx[oiRow]; lpres[oiRow] = bpres[oiRow];
+                ridx[oiRow] = pidx[oiRow]; rpres[oiRow] = ppres[oiRow];
+            }
+            oiRow = oiRow + 1;
+        }
+        // Materialize. Left cols: key columns coalesce across the sides;
+        // non-key left cols gather from the left with left presence.
+        DynCol[] cols = heap DynCol[w];
+        int32 co = 0;
+        j = 0;
+        while (j < wl) {
+            int32 kIdx = Exec.joinKeyIndexL(lord, nk, j);
+            if (kIdx >= 0) {
+                cols[co] #= Exec.coalesceKey(left.colAt(j), lidx, lpres,
+                    right.colAt(rord[kIdx]), ridx, tags[co], nulls[co], m);
+            } else {
+                cols[co] #= left.colAt(j).joinGather(lidx, lpres, m,
+                    nulls[co]);
+            }
+            co = co + 1;
+            j = j + 1;
+        }
+        j = 0;
+        while (j < wr) {
+            if (!rIsKey[j]) {
+                cols[co] #= right.colAt(j).joinGather(ridx, rpres, m,
+                    nulls[co]);
+                co = co + 1;
+            }
+            j = j + 1;
+        }
+        return heap DynFrame(#names, #tags, #nulls, #cols, w, m);
+    }
+
+    /** If left ordinal `j` is a join key, its index in the key list; else
+     *  -1. Small linear scan — key lists are short. */
+    static int32 joinKeyIndexL(int32[] lord, int32 nk, int32 j) {
+        int32 i = 0;
+        while (i < nk) {
+            if (lord[i] == j) { return i; }
+            i = i + 1;
+        }
+        return -1;
     }
 
     /** Fill-null: the target column's nulls become the node's value and

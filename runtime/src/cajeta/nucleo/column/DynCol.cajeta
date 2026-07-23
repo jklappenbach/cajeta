@@ -528,6 +528,110 @@ public class DynCol {
         throw heap ColumnTypeException("DynCol.gather: unknown physical tag");
     }
 
+    /** Join gather (U9): output row `i` reads source row `idx[i]` when
+     *  `present[i]`, else it is NULL — the null-extension an outer join
+     *  needs. `outNullable` is the plan-build schema fact: false only when
+     *  every row is present AND the source is non-nullable (the identity
+     *  path — same physical, no validity), true otherwise (a fresh nullable
+     *  column, source nulls preserved, absent rows null). A utf8 column
+     *  cannot go nullable (no @Nullable Utf8 physical), so null-extending
+     *  one is a loud error — the frame validates this at plan build; this
+     *  is the executor backstop. */
+    public #DynCol joinGather(int64[] idx, boolean[] present, int64 m,
+                              boolean outNullable) {
+        if (!outNullable) {
+            return this.gather(idx, m);
+        }
+        if (this.tag == 11) {
+            throw heap ColumnTypeException(
+                "DynCol.joinGather: a utf8 column cannot be null-extended");
+        }
+        if (this.tag == 9 || this.tag == 10) {
+            NullableColumn<float64> of = NullableColumn.nulls<float64>(m);
+            int64 i = 0;
+            while (i < m) {
+                if (present[i] && this.validAt(idx[i])) {
+                    of.set(i, this.f64At(idx[i]));
+                }
+                i = i + 1;
+            }
+            if (this.tag == 9) {
+                NullableColumn<float32> o32 = NullableColumn.nulls<float32>(m);
+                int64 j = 0;
+                while (j < m) {
+                    if (present[j] && this.validAt(idx[j])) {
+                        o32.set(j, (float32) this.f64At(idx[j]));
+                    }
+                    j = j + 1;
+                }
+                return DynCol.ofNF32(#o32);
+            }
+            return DynCol.ofNF64(#of);
+        }
+        NullableColumn<int64> o = NullableColumn.nulls<int64>(m);
+        int64 i = 0;
+        while (i < m) {
+            if (present[i] && this.validAt(idx[i])) {
+                o.set(i, this.i64At(idx[i]));
+            }
+            i = i + 1;
+        }
+        if (this.tag == 1) { return DynCol.ofNI8(this.__narrowNI8(#o, m)); }
+        if (this.tag == 2) { return DynCol.ofNI16(this.__narrowNI16(#o, m)); }
+        if (this.tag == 3) { return DynCol.ofNI32(this.__narrowNI32(#o, m)); }
+        if (this.tag == 5) { return DynCol.ofNU8(this.__narrowNU8(#o, m)); }
+        if (this.tag == 6) { return DynCol.ofNU16(this.__narrowNU16(#o, m)); }
+        if (this.tag == 7) { return DynCol.ofNU32(this.__narrowNU32(#o, m)); }
+        if (this.tag == 8) { return DynCol.ofNU64(this.__narrowNU64(#o, m)); }
+        return DynCol.ofNI64(#o);
+    }
+
+    // Re-key an int64-carrier nullable column into a narrower integer
+    // physical, preserving validity — the join gather materializes exact
+    // integers through int64 then narrows to the source physical.
+    #NullableColumn<int8> __narrowNI8(#NullableColumn<int64> o, int64 m) {
+        NullableColumn<int8> r = NullableColumn.nulls<int8>(m);
+        int64 i = 0;
+        while (i < m) { if (o.isValid(i)) { r.set(i, (int8) o.get(i)); } i = i + 1; }
+        return #r;
+    }
+    #NullableColumn<int16> __narrowNI16(#NullableColumn<int64> o, int64 m) {
+        NullableColumn<int16> r = NullableColumn.nulls<int16>(m);
+        int64 i = 0;
+        while (i < m) { if (o.isValid(i)) { r.set(i, (int16) o.get(i)); } i = i + 1; }
+        return #r;
+    }
+    #NullableColumn<int32> __narrowNI32(#NullableColumn<int64> o, int64 m) {
+        NullableColumn<int32> r = NullableColumn.nulls<int32>(m);
+        int64 i = 0;
+        while (i < m) { if (o.isValid(i)) { r.set(i, (int32) o.get(i)); } i = i + 1; }
+        return #r;
+    }
+    #NullableColumn<uint8> __narrowNU8(#NullableColumn<int64> o, int64 m) {
+        NullableColumn<uint8> r = NullableColumn.nulls<uint8>(m);
+        int64 i = 0;
+        while (i < m) { if (o.isValid(i)) { r.set(i, (uint8) o.get(i)); } i = i + 1; }
+        return #r;
+    }
+    #NullableColumn<uint16> __narrowNU16(#NullableColumn<int64> o, int64 m) {
+        NullableColumn<uint16> r = NullableColumn.nulls<uint16>(m);
+        int64 i = 0;
+        while (i < m) { if (o.isValid(i)) { r.set(i, (uint16) o.get(i)); } i = i + 1; }
+        return #r;
+    }
+    #NullableColumn<uint32> __narrowNU32(#NullableColumn<int64> o, int64 m) {
+        NullableColumn<uint32> r = NullableColumn.nulls<uint32>(m);
+        int64 i = 0;
+        while (i < m) { if (o.isValid(i)) { r.set(i, (uint32) o.get(i)); } i = i + 1; }
+        return #r;
+    }
+    #NullableColumn<uint64> __narrowNU64(#NullableColumn<int64> o, int64 m) {
+        NullableColumn<uint64> r = NullableColumn.nulls<uint64>(m);
+        int64 i = 0;
+        while (i < m) { if (o.isValid(i)) { r.set(i, (uint64) o.get(i)); } i = i + 1; }
+        return #r;
+    }
+
     public #Column<int8> asI8()      { if (this.tag != 1 || this.nullable)  { throw heap ColumnTypeException("DynCol.asI8: column is '" + this.typeName() + "'"); }  return this.i8.alias(); }
     public #Column<int16> asI16()    { if (this.tag != 2 || this.nullable)  { throw heap ColumnTypeException("DynCol.asI16: column is '" + this.typeName() + "'"); } return this.i16.alias(); }
     public #Column<int32> asI32()    { if (this.tag != 3 || this.nullable)  { throw heap ColumnTypeException("DynCol.asI32: column is '" + this.typeName() + "'"); } return this.i32.alias(); }

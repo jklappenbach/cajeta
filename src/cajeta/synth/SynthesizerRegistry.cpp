@@ -793,6 +793,25 @@ namespace cajeta::synth {
                 "        int32 __n = __a.count();\n"
                 "        return this.__agg(__a.take(), __n);\n"
                 "    }\n";
+            // sort/join (U9): sort reuses the Sorts collector and stays
+            // typed (schema-preserving); join reuses Sels for its keys — a
+            // key is a passthrough reference — and erases (schema-changing).
+            frag += "    public #" + tblType + " sort((" + recName
+                    + "Cols, Sorts) -> void fn) {\n"
+                "        " + recName + "Cols __c = heap " + recName + "Cols();\n"
+                "        Sorts __so = heap Sorts();\n"
+                "        fn(__c, __so);\n"
+                "        int32 __n = __so.count();\n"
+                "        return this.__sort(__so.take(), __n);\n"
+                "    }\n";
+            frag += "    public #Table<?> join(Table<?> other, (" + recName
+                    + "Cols, Sels) -> void fn, int32 how) {\n"
+                "        " + recName + "Cols __c = heap " + recName + "Cols();\n"
+                "        Sels __s = heap Sels();\n"
+                "        fn(__c, __s);\n"
+                "        int32 __n = __s.count();\n"
+                "        return this.__join(#other, __s.take(), __n, how);\n"
+                "    }\n";
             // rowAt: one TYPED row — the record — reconstructed from the
             // physicals (Instant from epoch-nanos, Utf8 from utf8; a
             // nullable field yields its physical value, validity stays a
@@ -857,6 +876,9 @@ namespace cajeta::synth {
                          {"Sels", "cajeta.nucleo.frame"},
                          {"Agg", "cajeta.nucleo.frame"},
                          {"Aggs", "cajeta.nucleo.frame"},
+                         {"Sorts", "cajeta.nucleo.frame"},
+                         {"SortKey", "cajeta.nucleo.frame"},
+                         {"Join", "cajeta.nucleo.frame"},
                          {"Int64", "cajeta.lang"},
                          {"Utf8", "cajeta.lang"},
                          {"Instant", "cajeta.time"}};

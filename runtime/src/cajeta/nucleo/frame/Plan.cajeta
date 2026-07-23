@@ -47,6 +47,15 @@ public class Plan {
     int32 nkeys;
     Agg aggs;         // GROUP payload: named aggregates (owned)
     int32 naggs;
+    SortKey sortKeys; // SORT payload: ordering keys, most significant first
+    int32 nsortKeys;  //   (owned)
+    Sel joinKeys;     // JOIN payload: key references over the LEFT schema
+    int32 njoinKeys;  //   (owned)
+    int32 joinHow;    // JOIN payload: the Join.* kind
+    Plan rightPlan;   // JOIN payload: the right input's op chain (owned)
+    DynFrame rightSrc;// JOIN payload: the right input's scan snapshot (owned)
+    DynFrame joinOut; // JOIN payload: output schema, precomputed at build so
+                      //   the optimizer needn't re-run the right branch (owned)
 
     Plan(int32 kind) {
         this.kind = kind;
@@ -147,6 +156,79 @@ public class Plan {
         return this.naggs;
     }
 
+    /** A sort node: order `child`'s rows by the keys (U9). Schema-preserving
+     *  — the ordering keys reference existing columns and carry no output. */
+    public static #Plan sortNode(#SortKey keys, int32 nkeys, #Plan child) {
+        Plan n = heap Plan(6);
+        n.sortKeys #= keys;
+        n.nsortKeys = nkeys;
+        n.child #= child;
+        return #n;
+    }
+
+    /** SORT payload: the head of the key chain (most significant first). */
+    public SortKey sortKeysOf() {
+        return this.sortKeys;
+    }
+
+    /** SORT payload: key count. */
+    public int32 sortKeyCount() {
+        return this.nsortKeys;
+    }
+
+    /** A join node: `child` is the LEFT input; `right`/`rightSrc` carry the
+     *  right input's plan and scan snapshot (a separate branch — the
+     *  optimizer's single-chain walk never descends into it). The join keys
+     *  are references over the left schema, matched by NAME on the right
+     *  (U9). */
+    public static #Plan joinNode(#Sel keys, int32 nkeys, int32 how,
+                                 #Plan right, #DynFrame rightSrc,
+                                 #Plan child) {
+        Plan n = heap Plan(7);
+        n.joinKeys #= keys;
+        n.njoinKeys = nkeys;
+        n.joinHow = how;
+        n.rightPlan #= right;
+        n.rightSrc #= rightSrc;
+        n.child #= child;
+        return #n;
+    }
+
+    /** JOIN payload: the head of the key-reference chain. */
+    public Sel joinKeysOf() {
+        return this.joinKeys;
+    }
+
+    /** JOIN payload: key count. */
+    public int32 joinKeyCount() {
+        return this.njoinKeys;
+    }
+
+    /** JOIN payload: the Join.* kind. */
+    public int32 joinHowOf() {
+        return this.joinHow;
+    }
+
+    /** JOIN payload: the right input's op chain. */
+    public Plan rightPlanOf() {
+        return this.rightPlan;
+    }
+
+    /** JOIN payload: the right input's scan snapshot. */
+    public DynFrame rightSrcOf() {
+        return this.rightSrc;
+    }
+
+    /** JOIN payload: attach the precomputed output schema (schema-only). */
+    void __setJoinOut(#DynFrame out) {
+        this.joinOut #= out;
+    }
+
+    /** JOIN payload: the precomputed output schema. */
+    public DynFrame joinOutOf() {
+        return this.joinOut;
+    }
+
     /** A drop-nulls node: rows with a missing value dropped; `col` limits
      *  the check to one column, null checks every nullable column (U6). */
     public static #Plan dropNullsNode(String col, #Plan child) {
@@ -208,6 +290,14 @@ public class Plan {
         n.nkeys = orig.keyCount();
         n.aggs = orig.aggsOf();
         n.naggs = orig.aggCount();
+        n.sortKeys = orig.sortKeysOf();
+        n.nsortKeys = orig.sortKeyCount();
+        n.joinKeys = orig.joinKeysOf();
+        n.njoinKeys = orig.joinKeyCount();
+        n.joinHow = orig.joinHowOf();
+        n.rightPlan = orig.rightPlanOf();
+        n.rightSrc = orig.rightSrcOf();
+        n.joinOut = orig.joinOutOf();
         n.child #= child;
         return #n;
     }

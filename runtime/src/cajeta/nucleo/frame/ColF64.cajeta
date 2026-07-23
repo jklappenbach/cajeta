@@ -73,6 +73,13 @@ public class ColF64 {
     public #Agg first() { return Agg.overF64(6, this); }
     public #Agg last()  { return Agg.overF64(7, this); }
 
+    /** Sort direction (U9, spec §4.1): order by this column, descending or
+     *  (redundantly) ascending. Nulls stay LAST regardless of direction —
+     *  the override lives on the collector's `add`. Like the reductions,
+     *  these bind `this` as a borrow into the {@link SortKey}. */
+    public #SortKey desc() { return SortKey.overF64(this, true); }
+    public #SortKey asc()  { return SortKey.overF64(this, false); }
+
     public static #ColF64 operator+(#ColF64 a, #ColF64 b) { return ColF64.arith(2, #a, #b); }
     public static #ColF64 operator-(#ColF64 a, #ColF64 b) { return ColF64.arith(3, #a, #b); }
     public static #ColF64 operator*(#ColF64 a, #ColF64 b) { return ColF64.arith(4, #a, #b); }

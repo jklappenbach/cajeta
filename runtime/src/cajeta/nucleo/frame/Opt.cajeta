@@ -88,7 +88,7 @@ public class Opt {
         int32 q = nSink;
         while (q < depth) {
             cap = cap + ops[q].selCount() + ops[q].keyCount()
-                + ops[q].aggCount();
+                + ops[q].aggCount() + ops[q].sortKeyCount();
             q = q + 1;
         }
         if (cap < 1) { cap = 1; }
@@ -111,6 +111,18 @@ public class Opt {
                 all = false;
                 nNeed = Opt.addSelRefs(node.keysOf(), need, nNeed);
                 nNeed = Opt.addAggRefs(node.aggsOf(), need, nNeed);
+            }
+            if (kind == 6 && !all) {
+                // A sort reads its key columns; it bounds nothing, so the
+                // rest of the needed set carries through unchanged.
+                nNeed = Opt.addSortRefs(node.sortKeysOf(), need, nNeed);
+            }
+            if (kind == 7) {
+                // A join draws on both inputs; the left scan below it must
+                // read everything (the right branch is optimized on its
+                // own). Projection pushdown does not cross the join.
+                nNeed = 0;
+                all = true;
             }
             if (kind == 4 && !all) {
                 nNeed = Opt.removeSelOuts(node.selsOf(), need, nNeed);
@@ -257,11 +269,17 @@ public class Opt {
             DynFrame c5 = in.schemaOnly();
             return Exec.applyGroup(node, #c5);
         }
+        if (k == 7) {
+            // A join's output schema was precomputed at plan build (the
+            // right branch was executed there); no need to re-run it.
+            return node.joinOutOf().schemaOnly();
+        }
         if (k == 12) {
             DynFrame c12 = in.schemaOnly();
             return Exec.applyFillNull(node, #c12);
         }
-        return in.schemaOnly();   // filter / dropNulls preserve the schema
+        // filter / sort / dropNulls preserve the schema
+        return in.schemaOnly();
     }
 
     /** Is `name` a group key that passes through UNRENAMED? Only such a
@@ -334,6 +352,11 @@ public class Opt {
                 }
                 i = i + 1;
             }
+            return true;
+        }
+        if (k == 6) {
+            // A stable sort commutes with a filter: the survivors of a
+            // sorted table are the sorted survivors, in the same order.
             return true;
         }
         if (k == 13) {
@@ -419,6 +442,17 @@ public class Opt {
         }
         int32 n2 = Opt.addExprRefs(e.leftChild(), need, n);
         return Opt.addExprRefs(e.rightChild(), need, n2);
+    }
+
+    /** Add every column a sort key chain references. */
+    static int32 addSortRefs(SortKey k0, String[] need, int32 n) {
+        SortKey k = k0;
+        int32 n2 = n;
+        while (k != null) {
+            n2 = Opt.addName(k.name(), need, n2);
+            k = k.nextOf();
+        }
+        return n2;
     }
 
     /** Add every column the selection chain reads (not what it names). */

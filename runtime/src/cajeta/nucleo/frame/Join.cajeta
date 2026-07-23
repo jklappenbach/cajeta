@@ -1,0 +1,48 @@
+package cajeta.nucleo.frame;
+
+/**
+ * Join — the `how` selector for {@link Table#join} (nucleo-frame U9, spec
+ * §4.1, §7). A named constant rather than a bare int so the call site reads
+ * as `Join.LEFT`, not `2`:
+ *
+ * ```cajeta
+ * Table<?> filled = orders.join(accounts, (OrdCols c, Sels s) -> {
+ *     s.add(c.acct());
+ * }, Join.INNER);
+ * ```
+ *
+ * Semantics (SQL/Polars, spec §7): a NULL key matches NOTHING — not another
+ * null, not a present key — so a null-keyed row survives only as the
+ * unmatched side of an outer join. The output is left columns in left order,
+ * then the right's NON-key columns; the single shared key column takes its
+ * value from whichever side is present.
+ *
+ * Null-extension by kind: INNER extends nothing; LEFT null-extends the RIGHT
+ * columns (unmatched left rows); RIGHT the LEFT columns; FULL both. A column
+ * that would be null-extended must be able to hold null — a utf8 column
+ * cannot (no `@Nullable Utf8`), so such a join is a loud plan-build error.
+ *
+ * SEMI/ANTI joins are deliberately OUT of v1 scope: Polars parity does not
+ * require them for the headline, and they are a filter-shaped operation
+ * (`x in y` / `x not in y`) better expressed once the predicate DSL grows a
+ * membership test. Recorded as backlog, not silently dropped.
+ */
+public class Join {
+    /** Only matched pairs (default); nothing is null-extended. */
+    public static int32 INNER = 0;
+    /** Every left row; unmatched left rows null-extend the right columns. */
+    public static int32 LEFT = 1;
+    /** Every right row; unmatched right rows null-extend the left columns. */
+    public static int32 RIGHT = 2;
+    /** Every row of both; each unmatched side null-extends the other. */
+    public static int32 FULL = 3;
+
+    /** The kind name — diagnostics and plan printing. */
+    public static #String nameOf(int32 how) {
+        if (how == 0) { return "inner"; }
+        if (how == 1) { return "left"; }
+        if (how == 2) { return "right"; }
+        if (how == 3) { return "full"; }
+        return "unknown";
+    }
+}
