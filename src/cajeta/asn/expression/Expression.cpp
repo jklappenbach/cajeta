@@ -647,12 +647,19 @@ namespace cajeta {
 
     void ArrayLiteralExpression::resolveTypes(CajetaModulePtr module) {
         // Resolve the elements first, then infer the element type. A target
-        // type pushed by the declaration (Unit 2) pre-empts the unify fallback.
+        // type pushed before resolve (§3.2) pre-empts unify. An empty literal
+        // with no target is left unresolved here and decided at generateCode,
+        // where the target (e.g. `int32[] xs = []`) has by then been pushed;
+        // if none arrives, generateCode raises the empty diagnostic. A pushed
+        // target also overrides a non-empty unify result at generateCode
+        // (setElementType overwrites), so widening still applies.
         AbstractSyntaxNode::resolveTypes(module);
-        if (!elementType) {
+        if (!elementType && !elements.empty()) {
             elementType = unifyElementType(module);
         }
-        resolvedType = make_shared<CajetaArray>(module, elementType);
+        if (elementType) {
+            resolvedType = make_shared<CajetaArray>(module, elementType);
+        }
     }
 
     llvm::Value* ArrayLiteralExpression::generateCode(CajetaModulePtr module) {

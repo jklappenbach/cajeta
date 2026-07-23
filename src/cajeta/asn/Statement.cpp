@@ -1608,6 +1608,16 @@ namespace cajeta {
             if (auto m = module->getCurrentMethod()) m->emitOwnerDrops(module);
             return builder->CreateRetVoid();
         }
+        // array-literals §3.2 — a returned `[...]` literal is target-typed by
+        // the method's declared array return type (before any generateCode
+        // below consumes it), so `int64[] f() { return [1,2,3]; }` widens.
+        if (auto arrLit = dynamic_pointer_cast<ArrayLiteralExpression>(expression)) {
+            if (auto m = module->getCurrentMethod()) {
+                if (auto rt = dynamic_pointer_cast<CajetaArray>(m->getReturnType())) {
+                    arrLit->setElementType(rt->getElementType());
+                }
+            }
+        }
         // Value-return (sret + NRVO): the enclosing method/lambda hands back
         // a `stack`-constructed value by copy. Its LLVM signature returns
         // `void` and takes the result slot as hidden arg 0. Build the

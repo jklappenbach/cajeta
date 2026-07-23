@@ -493,6 +493,21 @@ namespace cajeta {
                     if (auto arrType = dynamic_pointer_cast<CajetaArray>(type)) {
                         arrInit->setElementType(arrType->getElementType());
                     }
+                } else if (auto varInit =
+                        dynamic_pointer_cast<VariableInitializer>(initializer)) {
+                    // `int32[] xs = [1, 2, 3]` — the `[...]` literal is wrapped
+                    // in a VariableInitializer. Push the declared element type
+                    // as the target (array-literals §3.2) so it wins over the
+                    // unify fallback (widening) and gives an empty `[]` its type.
+                    auto& kids = varInit->getChildren();
+                    if (!kids.empty()) {
+                        if (auto arrLit =
+                                dynamic_pointer_cast<ArrayLiteralExpression>(kids[0])) {
+                            if (auto arrType = dynamic_pointer_cast<CajetaArray>(type)) {
+                                arrLit->setElementType(arrType->getElementType());
+                            }
+                        }
+                    }
                 }
             }
             // Function-typed initializer with a lambda RHS: push the LHS's

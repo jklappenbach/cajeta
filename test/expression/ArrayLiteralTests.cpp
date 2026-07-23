@@ -151,3 +151,99 @@ TEST(ArrayLiteralTests, BraceFormStillWorks) {
         "}\n";
     EXPECT_EQ(runI32(src), 20);
 }
+
+// ---- Unit 2: target-typed inference ----
+
+// 2.1.1 — the declared int64[] target widens int32 literals: the array is laid
+// out with int64 slots, so reading back through the int64[] variable is
+// self-consistent and sums correctly (an int32 layout would misread at the
+// int64 stride). Spec §3.2.2.
+TEST(ArrayLiteralTests, TargetWidensDeclaration) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int64 run() {\n"
+        "        int64[] xs = [100, 200, 300];\n"  // literals int32; target int64[]
+        "        return xs[0] + xs[1] + xs[2];\n"   // 600 iff int64 layout
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI64(src), 600);
+}
+
+// 2.1.2 — return-position target: the method's int64[] return type widens the
+// returned literal. Read back through an int64[] local.
+TEST(ArrayLiteralTests, TargetFromReturn) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int64[] make() { return [1, 2, 3]; }\n"
+        "    public static int64 run() {\n"
+        "        int64[] xs = make();\n"
+        "        return xs[0] + xs[1] + xs[2];\n"  // 6 iff int64 layout
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI64(src), 6);
+}
+
+// 2.1.3 — assignment-position target: `int64[] xs; xs = [...]` widens from the
+// LHS array type.
+TEST(ArrayLiteralTests, TargetFromAssignment) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int64 run() {\n"
+        "        int64[] xs;\n"
+        "        xs = [10, 20, 30];\n"
+        "        return xs[0] + xs[1] + xs[2];\n"  // 60 iff int64 layout
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI64(src), 60);
+}
+
+// 2.1.4 — an empty literal is legal when a target type is present: `int32[] xs
+// = []` is a length-0 int32[] (spec §3.4.1 exception). resolveTypes defers the
+// empty case to codegen, where the declaration has pushed the target.
+TEST(ArrayLiteralTests, EmptyWithTargetOk) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = [];\n"
+        "        return (int32) xs.count();\n"  // 0
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 0);
+}
+
+// 2.1.5 — elements with no common type and no target fail to compile (spec
+// §3.4.2). Two unrelated classes in an argument-position literal (no target).
+TEST(ArrayLiteralTests, NoCommonTypeNoTargetErrors) {
+    auto src =
+        "package test;\n"
+        "public class A { public A() {} }\n"
+        "public class B { public B() {} }\n"
+        "public final class D {\n"
+        "    public static int32 g(A[] xs) { return (int32) xs.count(); }\n"
+        "    public static int32 run() {\n"
+        "        return g([heap A(), heap B()]);\n"
+        "    }\n"
+        "}\n";
+    EXPECT_ANY_THROW(CajetaJit::compile(src, "test.D"));
+}
+
+// 2.1.6 — argument position is never target-propagated (spec §1.4.2/§3.3.2):
+// the literal is typed by unify (int32[]) and the concrete type drives overload
+// resolution. `g` takes int32[]; the unified int32[] matches.
+TEST(ArrayLiteralTests, ArgPositionUnifyOnly) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 g(int32[] xs) {\n"
+        "        return xs[0] + xs[1] + xs[2];\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        return g([4, 5, 6]);\n"  // 15
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 15);
+}

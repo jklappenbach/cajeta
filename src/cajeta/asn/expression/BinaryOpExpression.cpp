@@ -1012,6 +1012,22 @@ namespace cajeta {
                 fwdMv->setForwardingSlotMove(true);
             }
         }
+        // array-literals §3.2 — for `lhs = [...]`, target-type the RHS literal
+        // from the LHS array element type BEFORE the operands generate below
+        // (both are generated up-front here), so `int64[] xs; xs = [1,2,3];`
+        // widens per the LHS rather than the narrower unify result.
+        if (binaryOp == BINARY_OP_ASSIGN) {
+            if (auto arrLit =
+                    dynamic_pointer_cast<ArrayLiteralExpression>(children[1])) {
+                if (auto lhsE = dynamic_pointer_cast<Expression>(children[0])) {
+                    if (!lhsE->getResolvedType()) lhsE->resolveTypes(module);
+                    if (auto at = dynamic_pointer_cast<CajetaArray>(
+                            lhsE->getResolvedType())) {
+                        arrLit->setElementType(at->getElementType());
+                    }
+                }
+            }
+        }
         llvm::Value* lhs = children[0]->generateCode(module);
         llvm::Value* rhs = children[1]->generateCode(module);
         ExpressionPtr lhsAst = dynamic_pointer_cast<Expression>(children[0]);
