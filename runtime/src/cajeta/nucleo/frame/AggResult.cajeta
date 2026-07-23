@@ -54,6 +54,13 @@ public class AggResult {
         this.valid[i] = true;
     }
 
+    /** Force group `i` to NULL — a resample's EMPTY bucket produces no
+     *  value for ANY aggregate (not even the sum identity or a zero count):
+     *  no data is missing, not zero (spec §8.4). */
+    void invalidate(int64 i) {
+        this.valid[i] = false;
+    }
+
     /** This result as a float64, whatever physical it holds — how an
      *  arithmetic aggregate reads its children (spec §4.4: the division in
      *  a vwap is float64 even when a side counted in int64). */

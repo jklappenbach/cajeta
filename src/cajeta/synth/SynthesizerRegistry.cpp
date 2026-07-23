@@ -812,6 +812,26 @@ namespace cajeta::synth {
                 "        int32 __n = __s.count();\n"
                 "        return this.__join(#other, __s.take(), __n, how);\n"
                 "    }\n";
+            // resample (U10): the typed lambda `(RecCols) -> #ColI64`
+            // selects the time column; the result is a resample handle
+            // (still the typed type so `.agg(...)` resolves) that erases
+            // once aggregated. A five-argument overload takes the
+            // origin/offset/closed grid overrides (Duration, no defaults).
+            frag += "    public #" + tblType + " resample((" + recName
+                    + "Cols) -> #ColI64 fn, Duration every) {\n"
+                "        " + recName + "Cols __c = heap " + recName + "Cols();\n"
+                "        ColI64 __t = fn(__c);\n"
+                "        return this.__resample(__t.name(), every.toNanos(),\n"
+                "            0, 0, false);\n"
+                "    }\n";
+            frag += "    public #" + tblType + " resample((" + recName
+                    + "Cols) -> #ColI64 fn, Duration every, Duration origin,\n"
+                "            Duration offset, boolean closedRight) {\n"
+                "        " + recName + "Cols __c = heap " + recName + "Cols();\n"
+                "        ColI64 __t = fn(__c);\n"
+                "        return this.__resample(__t.name(), every.toNanos(),\n"
+                "            origin.toNanos(), offset.toNanos(), closedRight);\n"
+                "    }\n";
             // rowAt: one TYPED row — the record — reconstructed from the
             // physicals (Instant from epoch-nanos, Utf8 from utf8; a
             // nullable field yields its physical value, validity stays a
@@ -879,6 +899,8 @@ namespace cajeta::synth {
                          {"Sorts", "cajeta.nucleo.frame"},
                          {"SortKey", "cajeta.nucleo.frame"},
                          {"Join", "cajeta.nucleo.frame"},
+                         {"ColI64", "cajeta.nucleo.frame"},
+                         {"Duration", "cajeta.time"},
                          {"Int64", "cajeta.lang"},
                          {"Utf8", "cajeta.lang"},
                          {"Instant", "cajeta.time"}};

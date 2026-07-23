@@ -2,6 +2,7 @@ package cajeta.nucleo.frame;
 
 import cajeta.lang.Int64;
 import cajeta.lang.String;
+import cajeta.time.Duration;
 
 /**
  * `Table<T>` — the typed dataframe (nucleo-frame spec §2): a set of columns
@@ -65,6 +66,12 @@ public class Table<T> {
     Sel groupKeys;       // U8: keys named by groupBy, pending its agg
     int32 nGroupKeys;
     boolean grouped;     // a groupBy handle awaiting .agg(...)
+    boolean resampling;  // U10: a resample handle awaiting .agg(...)
+    String rsTsName;     // U10: resample time column + bucketing params
+    int64 rsEvery;
+    int64 rsOrigin;
+    int64 rsOffset;
+    boolean rsClosedRight;
     boolean optOff;      // skip the U7 rewriter (the tests' baseline)
     int64 statRows;      // last execution: rows the scan materialized
     int64 statCols;      // last execution: column buffers the scan read
@@ -170,6 +177,11 @@ public class Table<T> {
         if (this.grouped) {
             throw heap FrameException("Table.collect: groupBy names the "
                 + "keys but nothing to reduce - complete it with .agg(...)");
+        }
+        if (this.resampling) {
+            throw heap FrameException("Table.collect: resample names the "
+                + "time buckets but nothing to reduce - complete it with "
+                + ".agg(...)");
         }
         if (this.plan == null) {
             return this;
@@ -405,9 +417,21 @@ public class Table<T> {
      *  unknown column, or an unnamed aggregate fails now, before anything
      *  runs. The shape changes, so the result is erased. */
     public #Table<?> __agg(#Agg aggs, int32 naggs) {
+        if (this.resampling) {
+            DynFrame inSchema = this.__schemaClone();
+            this.resampling = false;
+            Plan node = Plan.resampleNode(this.rsTsName, this.rsEvery,
+                this.rsOrigin, this.rsOffset, this.rsClosedRight, #aggs,
+                naggs, this.__takeChain());
+            DynFrame outSchema = Exec.applyResample(node, #inSchema);
+            Table<T> h = heap Table<T>(#node, this.__takeSrc(), #outSchema,
+                false);
+            return #h;
+        }
         if (!this.grouped) {
             throw heap FrameException(
-                "Table.agg: no group keys - call groupBy(...) first");
+                "Table.agg: no group keys - call groupBy(...) or "
+                + "resample(...) first");
         }
         DynFrame inSchema = this.__schemaClone();
         Sel k #= this.groupKeys;
@@ -417,6 +441,37 @@ public class Table<T> {
         DynFrame outSchema = Exec.applyGroup(node, #inSchema);
         Table<T> h = heap Table<T>(#node, this.__takeSrc(), #outSchema, false);
         return #h;
+    }
+
+    /** Name the resample time column and bucketing (internal — the
+     *  synthesized `resample` supplies the time-column name; the typed
+     *  lambda `(RecCols) -> ColI64` selects it). Like `groupBy`, the handle
+     *  holds the buckets until `agg` completes the node, and forcing it
+     *  before then is a named error. `origin`/`offset` are nanos; the grid
+     *  base is `origin + offset`; `closedRight` flips left- to right-closed
+     *  (spec §8). */
+    public #Table<T> __resample(String tsName, int64 every, int64 origin,
+                                int64 offset, boolean closedRight) {
+        DynFrame sch = this.__schemaClone();
+        Plan pl = this.__takeChain();
+        DynFrame sr = this.__takeSrc();
+        Table<T> h = heap Table<T>(#pl, #sr, #sch, false);
+        h.rsTsName = tsName;
+        h.rsEvery = every;
+        h.rsOrigin = origin;
+        h.rsOffset = offset;
+        h.rsClosedRight = closedRight;
+        h.resampling = true;
+        h.label = this.label;
+        return #h;
+    }
+
+    /** Dynamic resample (spec §4.3.2, §8): a string-keyed time column, the
+     *  default grid (epoch origin, no offset, left-closed). The typed
+     *  lambda form is the synthesized `resample((Cols) -> ColI64, Duration
+     *  [, origin, offset, closedRight])`. */
+    public #Table<T> resample(String tsName, Duration every) {
+        return this.__resample(tsName, every.toNanos(), 0, 0, false);
     }
 
     /** Order the rows by a key list (internal — the synthesized `sort`

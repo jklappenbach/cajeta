@@ -56,6 +56,10 @@ public class Plan {
     DynFrame rightSrc;// JOIN payload: the right input's scan snapshot (owned)
     DynFrame joinOut; // JOIN payload: output schema, precomputed at build so
                       //   the optimizer needn't re-run the right branch (owned)
+    int64 rsEvery;    // RESAMPLE payload: bucket width in nanos (colName is
+    int64 rsOrigin;   //   the time column; aggs/naggs are the reductions);
+    int64 rsOffset;   //   grid base is origin+offset
+    boolean rsClosedRight;
 
     Plan(int32 kind) {
         this.kind = kind;
@@ -219,6 +223,39 @@ public class Plan {
         return this.rightSrc;
     }
 
+    /** A resample node (U10, spec §8): rows grouped into fixed-width time
+     *  buckets over `tsName` (integer epoch column), `every` nanos wide,
+     *  the grid based at `origin + offset`, left- or right-closed. The
+     *  aggregates reduce each bucket exactly like a group; the output key is
+     *  the bucket-start time. */
+    public static #Plan resampleNode(String tsName, int64 every,
+                                     int64 origin, int64 offset,
+                                     boolean closedRight, #Agg aggs,
+                                     int32 naggs, #Plan child) {
+        Plan n = heap Plan(8);
+        n.colName = tsName;
+        n.rsEvery = every;
+        n.rsOrigin = origin;
+        n.rsOffset = offset;
+        n.rsClosedRight = closedRight;
+        n.aggs #= aggs;
+        n.naggs = naggs;
+        n.child #= child;
+        return #n;
+    }
+
+    /** RESAMPLE payload: bucket width in nanos. */
+    public int64 rsEveryOf() { return this.rsEvery; }
+
+    /** RESAMPLE payload: grid origin in nanos. */
+    public int64 rsOriginOf() { return this.rsOrigin; }
+
+    /** RESAMPLE payload: grid offset in nanos. */
+    public int64 rsOffsetOf() { return this.rsOffset; }
+
+    /** RESAMPLE payload: true for right-closed buckets. */
+    public boolean rsClosedRightOf() { return this.rsClosedRight; }
+
     /** JOIN payload: attach the precomputed output schema (schema-only). */
     void __setJoinOut(#DynFrame out) {
         this.joinOut #= out;
@@ -298,6 +335,10 @@ public class Plan {
         n.rightPlan = orig.rightPlanOf();
         n.rightSrc = orig.rightSrcOf();
         n.joinOut = orig.joinOutOf();
+        n.rsEvery = orig.rsEveryOf();
+        n.rsOrigin = orig.rsOriginOf();
+        n.rsOffset = orig.rsOffsetOf();
+        n.rsClosedRight = orig.rsClosedRightOf();
         n.child #= child;
         return #n;
     }

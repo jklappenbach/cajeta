@@ -117,6 +117,14 @@ public class Opt {
                 // rest of the needed set carries through unchanged.
                 nNeed = Opt.addSortRefs(node.sortKeysOf(), need, nNeed);
             }
+            if (kind == 8) {
+                // A resample BOUNDS the output like a group: the time column
+                // plus the aggregates' columns, nothing carried through.
+                nNeed = 0;
+                all = false;
+                nNeed = Opt.addName(node.colNameOf(), need, nNeed);
+                nNeed = Opt.addAggRefs(node.aggsOf(), need, nNeed);
+            }
             if (kind == 7) {
                 // A join draws on both inputs; the left scan below it must
                 // read everything (the right branch is optimized on its
@@ -273,6 +281,10 @@ public class Opt {
             // A join's output schema was precomputed at plan build (the
             // right branch was executed there); no need to re-run it.
             return node.joinOutOf().schemaOnly();
+        }
+        if (k == 8) {
+            DynFrame c8 = in.schemaOnly();
+            return Exec.applyResample(node, #c8);
         }
         if (k == 12) {
             DynFrame c12 = in.schemaOnly();

@@ -61,6 +61,9 @@ public class Exec {
         if (node.kindOf() == 6) {
             return Exec.applySort(node, #in);
         }
+        if (node.kindOf() == 8) {
+            return Exec.applyResample(node, #in);
+        }
         if (node.kindOf() == 12) {
             return Exec.applyFillNull(node, #in);
         }
@@ -869,6 +872,193 @@ public class Exec {
         if (la < lb) { return -1; }
         if (la > lb) { return 1; }
         return 0;
+    }
+
+    /** Floor division (cajeta `/` truncates toward zero): the bucket index
+     *  must round DOWN so negative epochs bucket correctly. `b` > 0. */
+    static int64 floorDiv(int64 a, int64 b) {
+        int64 q = a / b;
+        if (a % b != 0 && (a < 0) != (b < 0)) { q = q - 1; }
+        return q;
+    }
+
+    /** The bucket index of an epoch value: which fixed-width interval it
+     *  falls in, relative to the grid base. Left-closed `[start, start+w)`
+     *  floors; right-closed `(start, start+w]` shifts a boundary value to
+     *  the previous bucket. */
+    static int64 bucketIndex(int64 ts, int64 base, int64 every,
+                             boolean closedRight) {
+        if (closedRight) {
+            return Exec.floorDiv(ts - base - 1, every);
+        }
+        return Exec.floorDiv(ts - base, every);
+    }
+
+    /** Resample (spec §8): rows grouped into fixed-width time buckets and
+     *  reduced per bucket, keyed by the bucket-start time. Distinct from
+     *  `groupBy` in three ways it MUST honor: it ESTABLISHES time order
+     *  (sorts by the time column) so `first`/`last` are earliest/latest by
+     *  TIME (spec §8.3); it emits EVERY bucket across the data's range, so a
+     *  gap becomes an empty NULL row rather than a missing key (spec §8.4);
+     *  and every aggregate output is nullable for exactly that reason. Fed a
+     *  schema-only frame it computes the output SCHEMA alone. */
+    static #DynFrame applyResample(Plan node, #DynFrame in) {
+        if (node.aggCount() < 1) {
+            throw heap FrameException("resample: no aggregates - complete it "
+                + "with .agg(...)");
+        }
+        String tsName = node.colNameOf();
+        int32 na = node.aggCount();
+        int32 w = 1 + na;
+        String[] names = heap String[w];
+        int32[] tags = heap int32[w];
+        boolean[] nulls = heap boolean[w];
+        names[0] = tsName;
+        tags[0] = 4;              // epoch-nanos int64, the bucket start
+        nulls[0] = false;         // every bucket has a defined start
+        int32 c = 1;
+        Agg a = node.aggsOf();
+        while (a != null) {
+            names[c] = a.outNameOf();
+            tags[c] = Exec.aggTag(a, in);
+            nulls[c] = true;      // an empty bucket nulls EVERY aggregate
+            c = c + 1;
+            a = a.nextOf();
+        }
+        boolean schemaOnly = in.isSchemaOnly();
+        int32 tsOrd = -1;
+        if (!schemaOnly) {
+            tsOrd = in.find(tsName);
+            if (tsOrd < 0) {
+                throw heap FrameException("resample: no column '" + tsName
+                    + "' in schema " + in.schemaText());
+            }
+            if (in.tagAt(tsOrd) > 8) {
+                throw heap FrameException("resample: time column '" + tsName
+                    + "' is '" + in.typeNameAt(tsOrd) + "', not an integer "
+                    + "epoch column");
+            }
+        } else {
+            // Validate at plan build too, so a bad time column fails before
+            // anything runs.
+            tsOrd = in.find(tsName);
+            if (tsOrd < 0) {
+                throw heap FrameException("resample: no column '" + tsName
+                    + "' in schema " + in.schemaText());
+            }
+            if (in.tagAt(tsOrd) > 8) {
+                throw heap FrameException("resample: time column '" + tsName
+                    + "' is '" + in.typeNameAt(tsOrd) + "', not an integer "
+                    + "epoch column");
+            }
+            return heap DynFrame(#names, #tags, #nulls, w);
+        }
+        int64 every = node.rsEveryOf();
+        int64 base = node.rsOriginOf() + node.rsOffsetOf();
+        boolean closedRight = node.rsClosedRightOf();
+        int64 n = in.rowsOf();
+        if (n == 0) {
+            DynCol[] empty = heap DynCol[w];
+            empty[0] #= DynCol.newI64(0);
+            int32 ei = 1;
+            while (ei < w) {
+                if (tags[ei] == 4) { empty[ei] #= DynCol.newNI64(0); }
+                else { empty[ei] #= DynCol.newNF64(0); }
+                ei = ei + 1;
+            }
+            return heap DynFrame(#names, #tags, #nulls, #empty, w, 0);
+        }
+        // Establish time order: a stable sort of the row indices by the ts
+        // column, so first/last within a bucket are earliest/latest by
+        // time. Reuse a simple insertion of a sorted gather of the frame.
+        int64[] order = heap int64[n];
+        int64 z = 0;
+        while (z < n) { order[z] = z; z = z + 1; }
+        int64[] tmp = heap int64[n];
+        int64 width = 1;
+        while (width < n) {
+            int64 lo = 0;
+            while (lo < n) {
+                int64 mid = lo + width;
+                if (mid > n) { mid = n; }
+                int64 hi = lo + width * 2;
+                if (hi > n) { hi = n; }
+                int64 x = lo;
+                int64 y = mid;
+                int64 tt = lo;
+                while (x < mid && y < hi) {
+                    if (in.colAt(tsOrd).i64At(order[x])
+                            <= in.colAt(tsOrd).i64At(order[y])) {
+                        tmp[tt] = order[x]; x = x + 1;
+                    } else {
+                        tmp[tt] = order[y]; y = y + 1;
+                    }
+                    tt = tt + 1;
+                }
+                while (x < mid) { tmp[tt] = order[x]; x = x + 1; tt = tt + 1; }
+                while (y < hi) { tmp[tt] = order[y]; y = y + 1; tt = tt + 1; }
+                lo = hi;
+            }
+            int64 zz = 0;
+            while (zz < n) { order[zz] = tmp[zz]; zz = zz + 1; }
+            width = width * 2;
+        }
+        DynFrame sorted = in.rebuild(Exec.gatherAll(in, order, n), n);
+        // Bucket range across the (now sorted) data — every bucket in
+        // [bmin, bmax] is emitted, empty ones included.
+        int64 tsMin = sorted.colAt(tsOrd).i64At(0);
+        int64 tsMax = sorted.colAt(tsOrd).i64At(n - 1);
+        int64 bmin = Exec.bucketIndex(tsMin, base, every, closedRight);
+        int64 bmax = Exec.bucketIndex(tsMax, base, every, closedRight);
+        int64 ng = bmax - bmin + 1;
+        int64[] gid = heap int64[n];
+        int64 gcap = ng;
+        if (gcap < 1) { gcap = 1; }
+        int64[] bucketRows = heap int64[gcap];
+        int64 i = 0;
+        while (i < n) {
+            int64 b = Exec.bucketIndex(sorted.colAt(tsOrd).i64At(i), base,
+                every, closedRight) - bmin;
+            gid[i] = b;
+            bucketRows[b] = bucketRows[b] + 1;
+            i = i + 1;
+        }
+        DynCol[] cols = heap DynCol[w];
+        // Bucket-start key column.
+        DynCol keyCol = DynCol.newI64(ng);
+        int64 g = 0;
+        while (g < ng) {
+            keyCol.setI64(g, base + (bmin + g) * every);
+            g = g + 1;
+        }
+        cols[0] #= keyCol;
+        int32 ci = 1;
+        Agg a2 = node.aggsOf();
+        while (a2 != null) {
+            AggResult rr = Exec.evalAgg(a2, sorted, gid, n, ng);
+            // Empty buckets: null EVERY aggregate cell (no data, not zero).
+            int64 gg = 0;
+            while (gg < ng) {
+                if (bucketRows[gg] == 0) { rr.invalidate(gg); }
+                gg = gg + 1;
+            }
+            cols[ci] #= Exec.materialize(#rr, tags[ci], true, ng);
+            ci = ci + 1;
+            a2 = a2.nextOf();
+        }
+        return heap DynFrame(#names, #tags, #nulls, #cols, w, ng);
+    }
+
+    /** Gather every column of `f` by the row order `idx` (length `m`) — the
+     *  frame-level counterpart of {@link DynCol#gather}. */
+    static #DynCol[] gatherAll(DynFrame f, int64[] idx, int64 m) {
+        DynCol[] out = heap DynCol[f.width()];
+        int32 j = 0;
+        while (j < f.width()) {
+            if (f.colAt(j) != null) { out[j] #= f.colAt(j).gather(idx, m); }
+            j = j + 1;
+        }
+        return #out;
     }
 
     /** Compare rows `x` and `y` under one sort key. Returns <0 if x sorts
