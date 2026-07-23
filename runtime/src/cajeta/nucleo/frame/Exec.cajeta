@@ -118,6 +118,12 @@ public class Exec {
             st.noteProbed(0);
             return src.rebuild(#out, n);
         }
+        // Z-order spatial routing (U15, spec §9.5.2): a closed 2-D box over the
+        // spatial pair is answered by the SAME B+ on a morton key — takes
+        // precedence over the single-column paths when it applies.
+        if (Exec.canSpatial(node, src)) {
+            return Exec.scanViaSpatial(node, src, keep, kc, #out, st);
+        }
         // B+ index routing (U14, spec §9.5.1): if an indexed column carries a
         // usable range/point predicate, the B+ locates the candidate rows
         // directly — the position-set result, more precise than a chunk-mask.
@@ -275,6 +281,90 @@ public class Exec {
             cc = bx.rangeFloatInto(cand, b.hasLo, b.loInc, b.loF,
                 b.hasHi, b.hiInc, b.hiF);
         }
+        Exec.sortI64Asc(cand, cc);
+        int64 icap = cc;
+        if (icap < 1) { icap = 1; }
+        int64[] idx = heap int64[icap];
+        int64 m = 0;
+        int64 t = 0;
+        while (t < cc) {
+            int64 i = cand[t];
+            boolean pass = true;
+            int32 pi = 0;
+            while (pi < node.scanPredCount()) {
+                if (Exec.evalPred3(node.scanPredAt(pi), src, i) != 1) {
+                    pass = false;
+                }
+                pi = pi + 1;
+            }
+            if (pass) { idx[m] = i; m = m + 1; }
+            t = t + 1;
+        }
+        int32 j = 0;
+        while (j < w) {
+            if (keep[j]) { out[j] #= src.colAt(j).gather(idx, m); }
+            j = j + 1;
+        }
+        st.note(m, kc);
+        st.noteChunks(0, 0);
+        st.noteProbed(cc);
+        return src.rebuild(#out, m);
+    }
+
+    /** Is a Z-order spatial probe applicable (U15)? A spatial pair is declared,
+     *  both columns are present, and the pushed predicates CLOSE a box on both
+     *  (a lower AND an upper bound each) — a half-open box has no finite morton
+     *  corner, so it falls back to the ordinary scan. */
+    static boolean canSpatial(Plan node, DynFrame src) {
+        String sx = src.spatialXOf();
+        String sy = src.spatialYOf();
+        if (sx == null) { return false; }
+        if (sy == null) { return false; }
+        int32 xo = src.find(sx);
+        int32 yo = src.find(sy);
+        if (xo < 0 || yo < 0) { return false; }
+        IdxBounds xb = heap IdxBounds();
+        IdxBounds yb = heap IdxBounds();
+        Exec.collectBounds(node, xo, true, xb);
+        Exec.collectBounds(node, yo, true, yb);
+        return xb.hasLo && xb.hasHi && yb.hasLo && yb.hasHi;
+    }
+
+    /** Scan via the Z-order-over-B+ index (U15, spec §9.5.2): derive morton keys
+     *  for every row, bulk-load the SAME {@link BPlusIndex} on them (no second
+     *  tree), probe the box's corner range `[Z(x0,y0), Z(x1,y1)]` — which
+     *  over-covers the rectangle — sort the candidates, and row-filter by the
+     *  box predicates for the exact answer. `scanProbed` = the morton-range
+     *  candidates, below the table size for a selective box. */
+    static #DynFrame scanViaSpatial(Plan node, DynFrame src, boolean[] keep,
+                                    int64 kc, #DynCol[] out, ExecStats st) {
+        int32 w = src.width();
+        int64 n = src.rowsOf();
+        int32 xo = src.find(src.spatialXOf());
+        int32 yo = src.find(src.spatialYOf());
+        int64 kcap = n;
+        if (kcap < 1) { kcap = 1; }
+        int64[] keys = heap int64[kcap];
+        int64[] pos = heap int64[kcap];
+        int64 r = 0;
+        while (r < n) {
+            int64 xv = src.i64AtCol(xo, r);
+            int64 yv = src.i64AtCol(yo, r);
+            keys[r] = Morton.encode(xv, yv);
+            pos[r] = r;
+            r = r + 1;
+        }
+        BPlusIndex bx = BPlusIndex.buildFromKeys(keys, pos, n);
+        IdxBounds xb = heap IdxBounds();
+        IdxBounds yb = heap IdxBounds();
+        Exec.collectBounds(node, xo, true, xb);
+        Exec.collectBounds(node, yo, true, yb);
+        int64 zlo = Morton.encode(xb.loI, yb.loI);
+        int64 zhi = Morton.encode(xb.hiI, yb.hiI);
+        int64 ecap = bx.entryCount();
+        if (ecap < 1) { ecap = 1; }
+        int64[] cand = heap int64[ecap];
+        int64 cc = bx.rangeIntInto(cand, true, true, zlo, true, true, zhi);
         Exec.sortI64Asc(cand, cc);
         int64 icap = cc;
         if (icap < 1) { icap = 1; }

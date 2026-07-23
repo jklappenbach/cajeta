@@ -68,12 +68,33 @@ public class BPlusIndex {
             r = r + 1;
         }
         BPlusIndex b = heap BPlusIndex(isInt, ne);
+        b.__load(isInt, kI, kF, p, ne);
+        return #b;
+    }
+
+    /** Bulk-load a B+ over a PRECOMPUTED int64 key array (U15): the Z-order
+     *  path derives morton keys column-independently, so the same tree loads
+     *  from a key/position array with no source column. All `n` entries are
+     *  valid (a derived key has no nulls). This is the reuse that means "no
+     *  second tree type" (spec §9.5.2) — the identical structure, keyed
+     *  differently. */
+    public static #BPlusIndex buildFromKeys(int64[] keys, int64[] pos, int64 n) {
+        BPlusIndex b = heap BPlusIndex(true, n);
+        float64[] noF = heap float64[1];
+        b.__load(true, keys, noF, pos, n);
+        return #b;
+    }
+
+    /** Sort the (key, position) pairs by key (stable bottom-up merge sort) and
+     *  lay them out as the sorted leaf sequence + separator index. Reads the
+     *  pair arrays (borrowed); allocates and fills this index's owned buffers.
+     *  The one bulk-load both entry points share. */
+    void __load(boolean isInt, int64[] kI, float64[] kF, int64[] p, int64 ne) {
         int64 acap = ne;
         if (acap < 1) { acap = 1; }
-        b.epos #= heap int64[acap];
-        if (isInt) { b.ikeys #= heap int64[acap]; }
-        else { b.fkeys #= heap float64[acap]; }
-        // stable bottom-up merge sort of [0, ne) by key, carrying positions
+        this.epos #= heap int64[acap];
+        if (isInt) { this.ikeys #= heap int64[acap]; }
+        else { this.fkeys #= heap float64[acap]; }
         int64[] order = heap int64[acap];
         int64 z = 0;
         while (z < ne) { order[z] = z; z = z + 1; }
@@ -108,34 +129,31 @@ public class BPlusIndex {
             while (zz < ne) { order[zz] = tmp[zz]; zz = zz + 1; }
             width = width * 2;
         }
-        // materialize the sorted leaf sequence
         int64 i = 0;
         while (i < ne) {
             int64 o = order[i];
-            b.epos[i] = p[o];
-            if (isInt) { b.ikeys[i] = kI[o]; }
-            else { b.fkeys[i] = kF[o]; }
+            this.epos[i] = p[o];
+            if (isInt) { this.ikeys[i] = kI[o]; }
+            else { this.fkeys[i] = kF[o]; }
             i = i + 1;
         }
-        // build the separator layer (first key of each leaf)
         int32 nl = 0;
         if (ne > 0) {
-            int64 nll = (ne + b.leafCap - 1) / b.leafCap;
+            int64 nll = (ne + this.leafCap - 1) / this.leafCap;
             nl = (int32) nll;
         }
-        b.nLeaves = nl;
+        this.nLeaves = nl;
         int32 scap = nl;
         if (scap < 1) { scap = 1; }
-        if (isInt) { b.sepI #= heap int64[scap]; }
-        else { b.sepF #= heap float64[scap]; }
+        if (isInt) { this.sepI #= heap int64[scap]; }
+        else { this.sepF #= heap float64[scap]; }
         int32 L = 0;
         while (L < nl) {
-            int64 st = ((int64) L) * b.leafCap;
-            if (isInt) { b.sepI[L] = b.ikeys[st]; }
-            else { b.sepF[L] = b.fkeys[st]; }
+            int64 st = ((int64) L) * this.leafCap;
+            if (isInt) { this.sepI[L] = this.ikeys[st]; }
+            else { this.sepF[L] = this.fkeys[st]; }
             L = L + 1;
         }
-        return #b;
     }
 
     /** Entry index of the first sorted entry whose int key is >= `key`: descend

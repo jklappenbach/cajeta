@@ -305,6 +305,33 @@ public class Table<T> {
         this.dyn.addIndexed(name);
     }
 
+    /** Declare a Z-ORDER spatial index over the integer column pair
+     *  `(xName, yName)` on this SOURCE table (U15, spec §9.5.2): a 2-D range
+     *  (a box: bounds on both columns) is answered by REUSING the B+
+     *  ({@link cajeta.nucleo.frame.BPlusIndex}) on a morton-interleaved key —
+     *  no second tree type. The morton range over-covers the box; the row-wise
+     *  box predicate makes the answer exact. A knob, not a correctness lever;
+     *  absence degrades to the ordinary scan. */
+    public void indexSpatial(String xName, String yName) {
+        if (this.dyn == null) {
+            throw heap FrameException("Table.indexSpatial: not a materialized "
+                + "source - declare the index before chaining ops");
+        }
+        int32 xo = this.dyn.find(xName);
+        int32 yo = this.dyn.find(yName);
+        if (xo < 0 || yo < 0) {
+            throw heap FrameException("Table.indexSpatial: columns '" + xName
+                + "', '" + yName + "' must both be in schema "
+                + this.dyn.schemaText());
+        }
+        if (this.dyn.tagAt(xo) > 8 || this.dyn.tagAt(yo) > 8) {
+            throw heap FrameException("Table.indexSpatial: '" + xName + "', '"
+                + yName + "' must be integer columns (Z-order interleaves "
+                + "integer coordinates)");
+        }
+        this.dyn.setSpatial(xName, yName);
+    }
+
     /** Set the zone-map chunk width for scans off this SOURCE table (U13, spec
      *  §9): the source is partitioned into fixed-width row chunks and a pushed
      *  range predicate skips whole chunks via their per-chunk min/max. A knob,

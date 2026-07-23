@@ -26,6 +26,8 @@ public class DynFrame {
                         //   through aliasing to the scan snapshot
     String[] indexed;   // U14: names of columns carrying a B+ index (the
     int32 nIndexed;     //   `Table.indexColumn` knob), owned, carried on alias
+    String spatialX;    // U15: the Z-order spatial pair (`Table.indexSpatial`);
+    String spatialY;    //   null = no spatial index. Carried on alias.
     DynFrame backing;   // owned: a consumed input frame this frame's column
                         // aliases borrow from (Storage is single-owner —
                         // executors that alias must keep their input alive)
@@ -83,8 +85,20 @@ public class DynFrame {
         }
     }
 
-    /** Copy `o`'s indexed-column declarations into this frame (alias carry). */
+    /** The Z-order spatial pair (U15), or null if none. */
+    public String spatialXOf() { return this.spatialX; }
+    public String spatialYOf() { return this.spatialY; }
+
+    /** Declare the Z-order spatial index over columns `x`, `y` (U15). */
+    public void setSpatial(String x, String y) {
+        this.spatialX = x;
+        this.spatialY = y;
+    }
+
+    /** Copy `o`'s index declarations into this frame (alias carry). */
     void __copyIndexed(DynFrame o) {
+        this.spatialX = o.spatialX;
+        this.spatialY = o.spatialY;
         if (o.indexed == null) { return; }
         String[] c = heap String[o.w];
         int32 i = 0;
