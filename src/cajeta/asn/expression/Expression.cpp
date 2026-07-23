@@ -702,6 +702,19 @@ namespace cajeta {
         if (!elementType) {
             elementType = unifyElementType(module);
         }
+        // Nested literals (array-literals §5): when the element type is itself
+        // an array, push its element type into each inner `[...]` before it
+        // generates, so a target-typed outer (`int64[][]`) lays out the inner
+        // arrays at the right width rather than the narrower unify result. This
+        // recurses one level per nesting depth (each inner does the same).
+        if (auto innerArr = dynamic_pointer_cast<CajetaArray>(elementType)) {
+            for (auto& e : elements) {
+                if (auto innerLit =
+                        dynamic_pointer_cast<ArrayLiteralExpression>(e)) {
+                    innerLit->setElementType(innerArr->getElementType());
+                }
+            }
+        }
         return emitArrayFromElements(module, elementType, children, arenaEligible);
     }
 

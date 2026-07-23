@@ -247,3 +247,62 @@ TEST(ArrayLiteralTests, ArgPositionUnifyOnly) {
         "}\n";
     EXPECT_EQ(runI32(src), 15);
 }
+
+// ---- Unit 4: nested literals ----
+
+// 4.1.1 — nested rectangular: `int32[][]` holds inner `int32[]` arrays; double
+// indexing reads the right element.
+TEST(ArrayLiteralTests, NestedRectangular) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[][] g = [[1, 2], [3, 4]];\n"
+        "        return g[1][0];\n"  // 3
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 3);
+}
+
+// 4.1.2 — jagged: inner arrays of differing lengths, each sized to its own literal.
+TEST(ArrayLiteralTests, NestedJagged) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[][] g = [[1], [2, 3]];\n"
+        "        return (int32)(g[0].count() * 100 + g[1].count() * 10 + g[1][1]);\n"
+        "    }\n"                                     // 1*100 + 2*10 + 3 = 123
+        "}\n";
+    EXPECT_EQ(runI32(src), 123);
+}
+
+// 4.1.3 — nested WIDENING via target (the review C2 fix): `int64[][]` must push
+// int64 into each inner literal, else the inner arrays stay int32-laid-out and
+// reads at the int64 stride are OOB/garbage.
+TEST(ArrayLiteralTests, NestedTargetWidens) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int64 run() {\n"
+        "        int64[][] g = [[1, 2], [3, 4]];\n"
+        "        return g[1][0] + g[1][1];\n"  // 7 iff inner arrays are int64
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI64(src), 7);
+}
+
+// 4.1.4 — no-target nested unify: `[[..],[..]]` in argument position (never
+// target-propagated) unifies to int32[][] from the inner array types and
+// matches the int32[][] parameter.
+TEST(ArrayLiteralTests, NestedUnifyNoTarget) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 g(int32[][] m) { return m[1][0] + m[0][1]; }\n"
+        "    public static int32 run() {\n"
+        "        return g([[10, 20], [30, 40]]);\n"  // 30 + 20 = 50
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 50);
+}
