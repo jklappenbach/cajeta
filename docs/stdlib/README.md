@@ -236,6 +236,8 @@ The ML spine: compile-time function transforms and the runtime eager tape.
 | [GradResult](nucleo/Transforms.md) | The typed `{value, grads}` return bag of a differentiated function |
 | [Tape](nucleo/Tape.md) | Define-by-run autograd: records ops eagerly, replays gradients in reverse |
 | [Var](nucleo/Tape.md) | Handle to one tape node (value + gradient readback) |
+| [Table](nucleo/Table.md) | The lazy, record-typed dataframe: relational plan, gradual typing, pushdown + index interface, Arrow/Parquet boundaries |
+| [Column](nucleo/Column.md) | The Arrow-laid-out columnar substrate: `Column<T>` / `NullableColumn<T>` / `StringColumn`, tensor-bit-identical, the frozen Arrow C ABI seam |
 
 ## cajeta.gfx
 
