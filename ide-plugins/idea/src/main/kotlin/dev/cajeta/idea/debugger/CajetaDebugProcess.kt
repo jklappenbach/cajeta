@@ -211,7 +211,7 @@ class CajetaDebugProcess(
      * `threads` request fails.
      */
     private fun onStopped(ds: CajetaDebugSession, stoppedThreadId: Int) {
-        log.info("cajeta-step: onStopped tid=$stoppedThreadId")
+        log.debug("cajeta-step: onStopped tid=$stoppedThreadId")
         ds.threads().thenCompose { threadsResponse ->
             val threads = CajetaDebugSession.parseThreads(threadsResponse)
             // Preload the stopped thread's frames (active stack must answer
@@ -302,25 +302,25 @@ class CajetaDebugProcess(
     }
 
     override fun resume(context: XSuspendContext?) {
-        log.info("cajeta-step: resume(context=${context?.javaClass?.simpleName}) tid=$stoppedThreadId session=${dapSession != null}")
+        log.debug("cajeta-step: resume(context=${context?.javaClass?.simpleName}) tid=$stoppedThreadId session=${dapSession != null}")
         clearDecorations()   // CP7-3/4: stale facets vanish the moment we leave the stop.
         dapSession?.resume()
     }
 
     override fun startStepOver(context: XSuspendContext?) {
-        log.info("cajeta-step: startStepOver(context=${context?.javaClass?.simpleName}) tid=$stoppedThreadId session=${dapSession != null}")
+        log.debug("cajeta-step: startStepOver(context=${context?.javaClass?.simpleName}) tid=$stoppedThreadId session=${dapSession != null}")
         clearDecorations()
         dapSession?.stepOver(stoppedThreadId)
     }
 
     override fun startStepInto(context: XSuspendContext?) {
-        log.info("cajeta-step: startStepInto(context=${context?.javaClass?.simpleName}) tid=$stoppedThreadId session=${dapSession != null}")
+        log.debug("cajeta-step: startStepInto(context=${context?.javaClass?.simpleName}) tid=$stoppedThreadId session=${dapSession != null}")
         clearDecorations()
         dapSession?.stepInto(stoppedThreadId)
     }
 
     override fun startStepOut(context: XSuspendContext?) {
-        log.info("cajeta-step: startStepOut(context=${context?.javaClass?.simpleName}) tid=$stoppedThreadId session=${dapSession != null}")
+        log.debug("cajeta-step: startStepOut(context=${context?.javaClass?.simpleName}) tid=$stoppedThreadId session=${dapSession != null}")
         clearDecorations()
         dapSession?.stepOut(stoppedThreadId)
     }
@@ -333,7 +333,7 @@ class CajetaDebugProcess(
         ds.onExited = { code -> clearDecorations(); processHandler.reportTerminated(code) }
         ds.onTerminated = { clearDecorations(); processHandler.reportTerminated(0) }
         ds.onOutput = { text, category ->
-            log.info("cajeta-out[$category]: ${text.trimEnd().take(120)}")
+            log.debug("cajeta-out[$category]: ${text.trimEnd().take(120)}")
             // Red is reserved for stderr. Program stdout and the server's own
             // launch narration (category "console") both render plain.
             if (category == "stderr") processHandler.emitError(text)

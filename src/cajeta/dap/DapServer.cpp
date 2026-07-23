@@ -135,6 +135,44 @@ std::string diskIdentity(const std::string& path) {
          + std::to_string(
                (long long) mtime.time_since_epoch().count());
 }
+
+// Step-decision trace: for each safepoint reached while a step was pending,
+// why it was accepted or rejected. Invaluable when stepping lands somewhere
+// unexpected — it is what settled the four-bug parallel step-over stack and
+// the template line attribution.
+//
+// OFF unless CAJETA_STEP_TRACE is set to something other than 0/empty. It
+// writes to stderr, which the IDE console paints red, so leaving it on buries
+// the user's own output under a flood of red diagnostics (reported live
+// 2026-07-22). The recording ring in DebugController is always armed — it is
+// bounded at 64 entries and drained here — so enabling the variable is enough
+// to get a trace, with no rebuild.
+bool stepTraceEnabled() {
+    static const bool on = [] {
+        const char* v = ::getenv("CAJETA_STEP_TRACE");
+        return v != nullptr && *v != '\0' && std::string(v) != "0";
+    }();
+    return on;
+}
+
+void dumpStepTrace(
+    const std::vector<cajeta::dbg::DebugController::StepDecision>& trace) {
+    const auto& table = globalDbgLocTable();
+    for (const auto& d : trace) {
+        const auto& loc = table.at(d.locId);
+        std::cerr << "[step-trace] loc=" << d.locId << " "
+                  << loc.file << ":" << loc.line
+                  << " fiber=" << d.fiberId
+                  << " depth=" << d.depth
+                  << " origin=" << d.originDepth
+                  << " kind=" << d.kind
+                  << " why=" << (d.reason == 0 ? "eval"
+                               : d.reason == 1 ? "FIBER-MISMATCH"
+                               : d.reason == 2 ? "same-line"
+                                               : "CHAIN-MISMATCH")
+                  << (d.stopped ? "  << STOP" : "") << "\n";
+    }
+}
 } // namespace
 
 std::string DapServer::selfExePathForTest() { return selfExePath(); }
@@ -200,35 +238,18 @@ void DapServer::runToStopOrExit(const Emit& emit) {
             // CP6f-2b-ii: build the cross-thread frame table for this stop.
             rebuildFrameTable(std::move(frames));
             Json body = Json::object();
-            // CP6f-3: reason reflects breakpoint vs exception vs step stop.
-            // Step-decision trace: on a step stop, explain the landing in
-            // stderr (file:line, depth vs origin, verdict per candidate).
-            if (ev.reason == cajeta::dbg::StopEvent::StopReason::Step) {
+            if (stepTraceEnabled()
+                && ev.reason == cajeta::dbg::StopEvent::StopReason::Step) {
                 // The stopped chain itself: length + innermost functions. A
                 // depth=1 verdict beside a deep walk = detached chain.
-                {
-                    auto walked = cajeta::dbg::walkFrames(ev.frameTop);
-                    std::cerr << "[step-trace] STOP chain len=" << walked.size();
-                    for (size_t i = 0; i < walked.size() && i < 3; ++i)
-                        std::cerr << " [" << i << "]=" << walked[i].func;
-                    std::cerr << "\n";
-                }
-                const auto& table = globalDbgLocTable();
-                for (const auto& d : session_->controller().drainStepTrace()) {
-                    const auto& loc = table.at(d.locId);
-                    std::cerr << "[step-trace] loc=" << d.locId << " "
-                              << loc.file << ":" << loc.line
-                              << " fiber=" << d.fiberId
-                              << " depth=" << d.depth
-                              << " origin=" << d.originDepth
-                              << " kind=" << d.kind
-                              << " why=" << (d.reason == 0 ? "eval"
-                                           : d.reason == 1 ? "FIBER-MISMATCH"
-                                           : d.reason == 2 ? "same-line"
-                                                           : "CHAIN-MISMATCH")
-                              << (d.stopped ? "  << STOP" : "") << "\n";
-                }
+                auto walked = cajeta::dbg::walkFrames(ev.frameTop);
+                std::cerr << "[step-trace] STOP chain len=" << walked.size();
+                for (size_t i = 0; i < walked.size() && i < 3; ++i)
+                    std::cerr << " [" << i << "]=" << walked[i].func;
+                std::cerr << "\n";
+                dumpStepTrace(session_->controller().drainStepTrace());
             }
+            // CP6f-3: reason reflects breakpoint vs exception vs step stop.
             switch (ev.reason) {
                 case cajeta::dbg::StopEvent::StopReason::Exception:
                     body["reason"] = "exception"; break;
@@ -251,27 +272,15 @@ void DapServer::runToStopOrExit(const Emit& emit) {
             return;
         }
         if (session_->isFinished()) {
-            // A step that never landed leaves its evidence here — the
-            // step-stop dump below never runs when the program runs away.
-            {
-                const auto& table = globalDbgLocTable();
+            // A step that never landed leaves its evidence here — the step-stop
+            // dump above never runs when the program runs away instead.
+            if (stepTraceEnabled()) {
                 auto trace = session_->controller().drainStepTrace();
-                if (!trace.empty())
+                if (!trace.empty()) {
                     std::cerr << "[step-trace] program EXITED with a pending "
                                  "step; last " << trace.size()
                               << " candidates:\n";
-                for (const auto& d : trace) {
-                    const auto& loc = table.at(d.locId);
-                    std::cerr << "[step-trace] loc=" << d.locId << " "
-                              << loc.file << ":" << loc.line
-                              << " fiber=" << d.fiberId
-                              << " depth=" << d.depth
-                              << " origin=" << d.originDepth
-                              << " why=" << (d.reason == 0 ? "eval"
-                                           : d.reason == 1 ? "FIBER-MISMATCH"
-                                           : d.reason == 2 ? "same-line"
-                                                           : "CHAIN-MISMATCH")
-                              << "\n";
+                    dumpStepTrace(trace);
                 }
             }
             exitCode_ = session_->join();
