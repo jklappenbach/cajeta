@@ -24,6 +24,8 @@ public class DynFrame {
     int64 zoneChunk;    // U13: zone-map chunk width in rows (0 = the default);
                         //   a source-table knob (`Table.zoneChunkRows`) carried
                         //   through aliasing to the scan snapshot
+    String[] indexed;   // U14: names of columns carrying a B+ index (the
+    int32 nIndexed;     //   `Table.indexColumn` knob), owned, carried on alias
     DynFrame backing;   // owned: a consumed input frame this frame's column
                         // aliases borrow from (Storage is single-owner —
                         // executors that alias must keep their input alive)
@@ -57,6 +59,39 @@ public class DynFrame {
     public int64 zoneChunkOf() { return this.zoneChunk; }
     /** Set the zone-map chunk width (the `Table.zoneChunkRows` knob, U13). */
     public void setZoneChunk(int64 rows) { this.zoneChunk = rows; }
+
+    /** Columns declared for a B+ index (U14). */
+    public int32 indexedCount() { return this.nIndexed; }
+    public String indexedAt(int32 i) { return this.indexed[i]; }
+
+    /** Declare column `name` indexed (the `Table.indexColumn` knob, U14).
+     *  Owned array, borrow-copied names — the meltNode convention; the source
+     *  name strings outlive the query. Idempotent per name. */
+    public void addIndexed(String name) {
+        if (this.indexed == null) {
+            this.indexed #= heap String[this.w];
+            this.nIndexed = 0;
+        }
+        int32 i = 0;
+        while (i < this.nIndexed) {
+            if (this.indexed[i].equals(name)) { return; }
+            i = i + 1;
+        }
+        if (this.nIndexed < this.w) {
+            this.indexed[this.nIndexed] = name;
+            this.nIndexed = this.nIndexed + 1;
+        }
+    }
+
+    /** Copy `o`'s indexed-column declarations into this frame (alias carry). */
+    void __copyIndexed(DynFrame o) {
+        if (o.indexed == null) { return; }
+        String[] c = heap String[o.w];
+        int32 i = 0;
+        while (i < o.nIndexed) { c[i] = o.indexed[i]; i = i + 1; }
+        this.indexed #= c;
+        this.nIndexed = o.nIndexed;
+    }
 
     /** Ordinal-keyed cell reads (U13) — the zone-map builder summarizes a
      *  column by ordinal; these return primitives so no frame class names
@@ -192,6 +227,7 @@ public class DynFrame {
         DynFrame f = heap DynFrame(this.namesCopy(), this.tagsCopy(),
             this.nullsCopy(), #c, this.w, this.rows);
         f.zoneChunk = this.zoneChunk;
+        f.__copyIndexed(this);
         return #f;
     }
 

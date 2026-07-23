@@ -1,0 +1,71 @@
+package cajeta.nucleo.frame;
+
+/**
+ * IdxBounds — the range request an index probe is built from (nucleo-frame
+ * U14): the tightest lower/upper key bounds gathered from the pushed predicates
+ * on an indexed column, plus their inclusivity. A point lookup (`k == v`) is the
+ * degenerate closed range `[v, v]`; a half-open predicate leaves one side
+ * absent. `usable` records whether any range/point predicate contributed — if
+ * not, the optimizer does not route to the index (fallback to the scan). Two
+ * physical paths (int64 / float64) mirror {@link BPlusIndex}. Reused by U15's
+ * Z-order probe over the same B+.
+ */
+public class IdxBounds {
+    boolean hasLo;
+    boolean loInc;
+    int64 loI;
+    float64 loF;
+    boolean hasHi;
+    boolean hiInc;
+    int64 hiI;
+    float64 hiF;
+    boolean usable;
+
+    public IdxBounds() {
+        this.hasLo = false;
+        this.hasHi = false;
+        this.usable = false;
+    }
+
+    /** Tighten the lower bound with an int predicate (keeps the higher / the
+     *  stricter inclusivity at an equal value). */
+    public void lowerI(boolean inc, int64 v) {
+        if (!this.hasLo || v > this.loI
+                || (v == this.loI && this.loInc && !inc)) {
+            this.hasLo = true;
+            this.loInc = inc;
+            this.loI = v;
+        }
+        this.usable = true;
+    }
+
+    public void upperI(boolean inc, int64 v) {
+        if (!this.hasHi || v < this.hiI
+                || (v == this.hiI && this.hiInc && !inc)) {
+            this.hasHi = true;
+            this.hiInc = inc;
+            this.hiI = v;
+        }
+        this.usable = true;
+    }
+
+    public void lowerF(boolean inc, float64 v) {
+        if (!this.hasLo || v > this.loF
+                || (v == this.loF && this.loInc && !inc)) {
+            this.hasLo = true;
+            this.loInc = inc;
+            this.loF = v;
+        }
+        this.usable = true;
+    }
+
+    public void upperF(boolean inc, float64 v) {
+        if (!this.hasHi || v < this.hiF
+                || (v == this.hiF && this.hiInc && !inc)) {
+            this.hasHi = true;
+            this.hiInc = inc;
+            this.hiF = v;
+        }
+        this.usable = true;
+    }
+}

@@ -81,6 +81,7 @@ public class Table<T> {
     int64 statCols;      // last execution: column buffers the scan read
     int64 statChunks;    // last execution: zone-map chunks considered (U13)
     int64 statSkipped;   // last execution: zone-map chunks skipped
+    int64 statProbed;    // last execution: rows examined vs the predicate (U14)
 
     /** A plan handle: op chain + scan snapshot + result schema. Built by
      *  `lazy()` and the relational ops; columns stay unset until forced. */
@@ -96,6 +97,7 @@ public class Table<T> {
         this.statCols = -1;
         this.statChunks = -1;
         this.statSkipped = -1;
+        this.statProbed = -1;
     }
 
     /** A schema-erased materialized table over a dynamic column bag — what
@@ -109,6 +111,7 @@ public class Table<T> {
         this.statCols = -1;
         this.statChunks = -1;
         this.statSkipped = -1;
+        this.statProbed = -1;
     }
 
     /** Number of rows — the shared length of every column. Plan handles
@@ -208,6 +211,7 @@ public class Table<T> {
         this.statCols = st.scanCols();
         this.statChunks = st.scanChunks();
         this.statSkipped = st.scanChunksSkipped();
+        this.statProbed = st.scanProbed();
         if (this.typed) {
             // `typed` implies a rebinder was installed/propagated at
             // handle build — the invariant every typed-handle builder
@@ -273,6 +277,32 @@ public class Table<T> {
      *  never changes the result, only the work. */
     public int64 scanChunksSkipped() {
         return this.statSkipped;
+    }
+
+    /** Rows the last pushdown scan examined against the predicate (U14): with a
+     *  B+ index a point/range lookup examines only the located candidates
+     *  (probed == matches), proving the index jumped to the rows rather than
+     *  scanning the table; -1 before any execution. */
+    public int64 scanProbed() {
+        return this.statProbed;
+    }
+
+    /** Declare column `name` a B+-indexed key on this SOURCE table (U14, spec
+     *  §9.5.1): a pushed point/range predicate on it is answered by a
+     *  bulk-loaded in-memory B+ (position-set result) rather than a chunk scan.
+     *  A knob, not a correctness lever — the answer is identical either way;
+     *  the index only accelerates. Set it on the materialized source before
+     *  chaining; it carries through the scan snapshot. */
+    public void indexColumn(String name) {
+        if (this.dyn == null) {
+            throw heap FrameException("Table.indexColumn: not a materialized "
+                + "source - declare the index before chaining ops");
+        }
+        if (this.dyn.find(name) < 0) {
+            throw heap FrameException("Table.indexColumn: no column '" + name
+                + "' in schema " + this.dyn.schemaText());
+        }
+        this.dyn.addIndexed(name);
     }
 
     /** Set the zone-map chunk width for scans off this SOURCE table (U13, spec

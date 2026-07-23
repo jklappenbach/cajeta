@@ -34,6 +34,7 @@ public class Exec {
         if (node.kindOf() == 1) {
             if (node.scanPredCount() == 0 && !node.scanPruned()) {
                 st.note(src.rowsOf(), (int64) src.width());
+                st.noteProbed(0);
                 return src.aliasFrame();
             }
             return Exec.applyScan(node, src, st);
@@ -114,7 +115,15 @@ public class Exec {
                 j2 = j2 + 1;
             }
             st.note(n, kc);
+            st.noteProbed(0);
             return src.rebuild(#out, n);
+        }
+        // B+ index routing (U14, spec §9.5.1): if an indexed column carries a
+        // usable range/point predicate, the B+ locates the candidate rows
+        // directly — the position-set result, more precise than a chunk-mask.
+        int32 idxCol = Exec.pickIndexColumn(node, src);
+        if (idxCol >= 0) {
+            return Exec.scanViaIndex(node, src, idxCol, keep, kc, #out, st);
         }
         // Zone-map chunk skipping (U13, spec §6): partition the source into
         // fixed-width chunks; a pushed range predicate whose zone-map proves a
@@ -134,12 +143,14 @@ public class Exec {
         int64[] idx = heap int64[cap];
         int64 m = 0;
         int64 skipped = 0;
+        int64 probed = 0;
         int32 ck = 0;
         while (ck < nChunks) {
             if (mask[ck]) {
                 int64 lo = ((int64) ck) * chunkRows;
                 int64 hi = lo + chunkRows;
                 if (hi > n) { hi = n; }
+                probed = probed + (hi - lo);
                 int64 i = lo;
                 while (i < hi) {
                     boolean pass = true;
@@ -168,7 +179,162 @@ public class Exec {
         }
         st.note(m, kc);
         st.noteChunks((int64) nChunks, skipped);
+        st.noteProbed(probed);
         return src.rebuild(#out, m);
+    }
+
+    /** The ordinal of a declared-indexed column with a usable range/point
+     *  predicate pushed against it (U14), or -1 — the routing decision. */
+    static int32 pickIndexColumn(Plan node, DynFrame src) {
+        int32 ii = 0;
+        while (ii < src.indexedCount()) {
+            int32 o = src.find(src.indexedAt(ii));
+            if (o >= 0 && src.tagAt(o) <= 10) {
+                boolean isInt = src.tagAt(o) <= 8;
+                IdxBounds b = heap IdxBounds();
+                Exec.collectBounds(node, o, isInt, b);
+                if (b.usable) { return o; }
+            }
+            ii = ii + 1;
+        }
+        return -1;
+    }
+
+    /** Gather the tightest range bounds on `idxCol` from every pushed
+     *  predicate (a conjunction routes both children). */
+    static void collectBounds(Plan node, int32 idxCol, boolean isInt,
+                              IdxBounds b) {
+        int32 pi = 0;
+        while (pi < node.scanPredCount()) {
+            Exec.tightenBounds(node.scanPredAt(pi), idxCol, isInt, b);
+            pi = pi + 1;
+        }
+    }
+
+    /** Fold one predicate's contribution to `idxCol`'s range bounds. A leaf
+     *  range/point comparison over the column reference tightens a bound; a
+     *  conjunction recurses; anything else (other column, `!=`, disjunction,
+     *  arithmetic operand) contributes nothing (the row-filter still applies
+     *  it after the probe). */
+    static void tightenBounds(Pred p, int32 idxCol, boolean isInt,
+                              IdxBounds b) {
+        int32 k = p.kind();
+        if (k == 30) {
+            Exec.tightenBounds(p.leftPredicate(), idxCol, isInt, b);
+            Exec.tightenBounds(p.rightPredicate(), idxCol, isInt, b);
+            return;
+        }
+        if (isInt && k >= 40 && k <= 44) {
+            ColI64 e = p.iOperandExpr();
+            if (e == null) { return; }
+            if (e.ordinal() != idxCol) { return; }
+            int64 v = p.iValue();
+            if (k == 40) { b.lowerI(false, v); }
+            if (k == 41) { b.lowerI(true, v); }
+            if (k == 42) { b.upperI(false, v); }
+            if (k == 43) { b.upperI(true, v); }
+            if (k == 44) { b.lowerI(true, v); b.upperI(true, v); }
+            return;
+        }
+        if (!isInt && k >= 20 && k <= 24) {
+            ColF64 e = p.operandExpr();
+            if (e == null) { return; }
+            if (e.kind() != 0) { return; }
+            if (e.ordinal() != idxCol) { return; }
+            float64 v = p.value();
+            if (k == 20) { b.lowerF(false, v); }
+            if (k == 21) { b.lowerF(true, v); }
+            if (k == 22) { b.upperF(false, v); }
+            if (k == 23) { b.upperF(true, v); }
+            if (k == 24) { b.lowerF(true, v); b.upperF(true, v); }
+            return;
+        }
+    }
+
+    /** Scan via a B+ index (U14): bulk-load the index on `idxCol`, probe the
+     *  gathered range for candidate positions, sort them ascending (order
+     *  preservation — the index returns key order), then apply ALL pushed
+     *  predicates row-wise and gather. `scanProbed` = the candidates examined,
+     *  proving the index jumped to the rows rather than scanning the table. */
+    static #DynFrame scanViaIndex(Plan node, DynFrame src, int32 idxCol,
+                                  boolean[] keep, int64 kc, #DynCol[] out,
+                                  ExecStats st) {
+        int32 w = src.width();
+        boolean isInt = src.tagAt(idxCol) <= 8;
+        BPlusIndex bx = BPlusIndex.buildFromColumn(src, idxCol);
+        IdxBounds b = heap IdxBounds();
+        Exec.collectBounds(node, idxCol, isInt, b);
+        int64 ecap = bx.entryCount();
+        if (ecap < 1) { ecap = 1; }
+        int64[] cand = heap int64[ecap];
+        int64 cc = 0;
+        if (isInt) {
+            cc = bx.rangeIntInto(cand, b.hasLo, b.loInc, b.loI,
+                b.hasHi, b.hiInc, b.hiI);
+        } else {
+            cc = bx.rangeFloatInto(cand, b.hasLo, b.loInc, b.loF,
+                b.hasHi, b.hiInc, b.hiF);
+        }
+        Exec.sortI64Asc(cand, cc);
+        int64 icap = cc;
+        if (icap < 1) { icap = 1; }
+        int64[] idx = heap int64[icap];
+        int64 m = 0;
+        int64 t = 0;
+        while (t < cc) {
+            int64 i = cand[t];
+            boolean pass = true;
+            int32 pi = 0;
+            while (pi < node.scanPredCount()) {
+                if (Exec.evalPred3(node.scanPredAt(pi), src, i) != 1) {
+                    pass = false;
+                }
+                pi = pi + 1;
+            }
+            if (pass) { idx[m] = i; m = m + 1; }
+            t = t + 1;
+        }
+        int32 j = 0;
+        while (j < w) {
+            if (keep[j]) { out[j] #= src.colAt(j).gather(idx, m); }
+            j = j + 1;
+        }
+        st.note(m, kc);
+        st.noteChunks(0, 0);
+        st.noteProbed(cc);
+        return src.rebuild(#out, m);
+    }
+
+    /** In-place ascending sort of the first `n` positions (U14) — bottom-up
+     *  merge sort, so the index's key-ordered candidates gather in storage
+     *  order and a filter preserves row order. */
+    static void sortI64Asc(int64[] a, int64 n) {
+        if (n < 2) { return; }
+        int64[] tmp = heap int64[n];
+        int64 width = 1;
+        while (width < n) {
+            int64 lo = 0;
+            while (lo < n) {
+                int64 mid = lo + width;
+                if (mid > n) { mid = n; }
+                int64 hi = lo + width * 2;
+                if (hi > n) { hi = n; }
+                int64 x = lo;
+                int64 y = mid;
+                int64 tt = lo;
+                while (x < mid && y < hi) {
+                    if (a[x] <= a[y]) { tmp[tt] = a[x]; x = x + 1; }
+                    else { tmp[tt] = a[y]; y = y + 1; }
+                    tt = tt + 1;
+                }
+                while (x < mid) { tmp[tt] = a[x]; x = x + 1; tt = tt + 1; }
+                while (y < hi) { tmp[tt] = a[y]; y = y + 1; tt = tt + 1; }
+                lo = hi;
+            }
+            int64 zz = 0;
+            while (zz < n) { a[zz] = tmp[zz]; zz = zz + 1; }
+            width = width * 2;
+        }
     }
 
     /** Build the chunk-mask (U13): true = the chunk must be read. Every chunk
