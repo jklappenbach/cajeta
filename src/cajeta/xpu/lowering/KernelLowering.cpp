@@ -1082,10 +1082,21 @@ private:
         bufferElems[nm] = elemTy;
         bufferElemSigned[nm] = elemSigned;
 
-        // Populate the tile with the literal's values.
+        // Populate the tile with the literal's values. Every thread runs this,
+        // so the values MUST be compile-time constants: a per-thread (non-
+        // constant) element would have every thread write a different value to
+        // the same shared slots with no barrier — a data race. Reject it and
+        // point at the sized creator for runtime fills.
         for (uint64_t i = 0; i < n; ++i) {
             auto ex = std::dynamic_pointer_cast<Expression>(elems[i]);
             llvm::Value* v = coerceTo(lowerExpr(ex), elemTy, exprSigned(ex));
+            if (!llvm::isa<llvm::Constant>(v)) {
+                unsupported("shared array literal '" + nm + "' element " +
+                    std::to_string(i) + " is not a compile-time constant; a "
+                    "shared literal fills a per-block tile with constant values "
+                    "— use `shared T[N]` and assign at runtime for computed "
+                    "values");
+            }
             llvm::Value* idx =
                 llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), i);
             llvm::Value* slot = builder.CreateGEP(elemTy, base, idx);

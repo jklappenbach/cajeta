@@ -206,6 +206,27 @@ TEST(XpuNvptxSharedEmitTests, lowersDynamicSharedExtern) {
     EXPECT_NE(ptx.find("bar.sync"), std::string::npos) << ptx;
 }
 
+// Review fix D1 — a shared literal with a NON-constant (per-thread) element is
+// rejected. Every thread runs the populate stores with no barrier, so a
+// thread-varying value would race on the shared slots; only compile-time
+// constants are allowed (use `shared T[N]` + runtime assignment otherwise).
+TEST(XpuNvptxSharedEmitTests, sharedLiteralRejectsNonConstantElement) {
+    const char* src =
+        "package test;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "import cajeta.xpu.Shared;\n"
+        "public class N {\n"
+        "    @Kernel\n"
+        "    public static void bad(KernelBuffer<int32> out) {\n"
+        "        uint32 t = KernelThread.x();\n"
+        "        Shared<int32> tile = shared [t, 1];\n"  // t is per-thread
+        "        out[0] = tile[0];\n"
+        "    }\n"
+        "}\n";
+    EXPECT_THROW(lowerToPtx(src, "test.N", "bad"), cajeta::Exception);
+}
+
 // `shared` is device-only: used outside an @Kernel (i.e. on the host codegen
 // path), it must be rejected (XPU-K03), not mis-lowered as a host allocation.
 // compile(module) only parses + builds prototypes, so drive host body codegen

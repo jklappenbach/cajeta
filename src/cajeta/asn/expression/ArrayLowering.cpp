@@ -15,6 +15,10 @@ namespace cajeta {
         // prior int->int behavior of the `{...}` path and adds int->float and
         // float->float so a unified/target float element type stores cleanly.
         // Pointers and reference elements store directly (no coercion).
+        // NOTE: unsigned integer WIDENING is sign-extended upstream (a general
+        // compiler-wide coercion bug — `int64 y = someUint32` sexts too, not
+        // just arrays), so the source arrives here already widened; fixing that
+        // belongs in the shared numeric-coercion path, not this helper.
         llvm::Value* coerceToElement(llvm::IRBuilder<>* b, llvm::Value* v,
                                      llvm::Type* elemTy) {
             llvm::Type* vt = v->getType();

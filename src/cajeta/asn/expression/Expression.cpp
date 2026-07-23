@@ -598,18 +598,23 @@ namespace cajeta {
             auto ca = dynamic_pointer_cast<CajetaClass>(a);
             auto cb = dynamic_pointer_cast<CajetaClass>(b);
             if (!ca || !cb) return nullptr;
-            // Collect a's ancestor set (including a itself).
+            // Collect a's ancestor set (including a itself). The `seen` guards
+            // keep a pathological cyclic/diamond hierarchy from looping forever.
             vector<CajetaClassPtr> aChain;
+            std::set<std::string> aSeen;
             vector<CajetaClassPtr> stack{ca};
             while (!stack.empty()) {
                 auto c = stack.back(); stack.pop_back();
+                if (!c || !aSeen.insert(c->toCanonical()).second) continue;
                 aChain.push_back(c);
                 for (auto& s : c->getSuperClasses()) if (s) stack.push_back(s);
             }
             // Walk b upward; the first ancestor found in a's set wins.
+            std::set<std::string> bSeen;
             vector<CajetaClassPtr> bStack{cb};
             while (!bStack.empty()) {
                 auto c = bStack.back(); bStack.pop_back();
+                if (!c || !bSeen.insert(c->toCanonical()).second) continue;
                 for (auto& anc : aChain)
                     if (anc->toCanonical() == c->toCanonical()) return anc;
                 for (auto& s : c->getSuperClasses()) if (s) bStack.push_back(s);
