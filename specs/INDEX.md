@@ -43,4 +43,5 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [simd-numeric-kernels](simd-numeric-kernels-spec.md) | — | draft |
 | [quaternion-vector-stdlib](quaternion-vector-stdlib-spec.md) | [plan](../agents/quaternion-vector-stdlib-plan.md) | draft |
 | [ternary-int-codegen](ternary-int-codegen-spec.md) | — | draft |
-| [collection-literals](collection-literals-spec.md) | [plan](../agents/collection-literals-plan.md) | active — successor to array-literals (archived 2026-07-23): `[…]`=collection (list/set/map via Swift `[k:v]`), `{…}`=type-inferred aggregate, resolves the `{}`/`[]` split (§6 migration). Spec approved; plan authored |
+| [collection-literals](collection-literals-spec.md) | [plan](../agents/collection-literals-plan.md) | active — `[…]`=collection (list/set/map), `{…}`=type-inferred aggregate. Units 1–4 delivered + green; Unit 5 (retire array-`{…}`) remains |
+| [value-type-generic-collections](value-type-generic-collections-spec.md) | [plan](../agents/value-type-generic-collections-plan.md) | draft — value-type T in ArrayList/HashSet/… ; 3 facets delivered (inline reads 85cd0ab8, ordering+borrow 334d1f6f), remaining: value-type param field-access ABI (GEP-on-value) + chain sweep. Spec+plan authored, awaiting approval |

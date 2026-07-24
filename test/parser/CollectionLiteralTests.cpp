@@ -287,3 +287,59 @@ TEST(CollectionLiteralTests, MapToAggregate) {
     auto jit = CajetaJit::compile(src, "test.D");
     EXPECT_EQ((jit->lookup<int32_t (*)()>("run"))(), 34);
 }
+
+// ---------------------------------------------------------------------------
+// Unit 4 — composition (spec §5). The three forms nest by their bracket rules;
+// the target type must thread through each nesting boundary.
+// ---------------------------------------------------------------------------
+
+// 4.1.1 — collection of aggregates: `ArrayList<Box> ps = [{…}, {…}]`. Each
+// element's aggregate infers Box and, as a reference-class collection element,
+// is heap-allocated (it escapes into the list). Uses a REFERENCE class: the
+// spec's value-type `ArrayList<Point>` (§5.2.1) is blocked by a separate
+// value-type-in-generic-collections effort (see that spec) — the composition
+// machinery here is identical either way.
+TEST(CollectionLiteralTests, ListOfAggregates) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.collection.ArrayList;\n"
+        "public class Box { public int32 x; public int32 y; }\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        ArrayList<Box> ps = [ {x:1, y:2}, {x:3, y:4} ];\n"
+        "        return ps.get(0).x * 1000 + ps.get(0).y * 100\n"
+        "             + ps.get(1).x * 10 + ps.get(1).y;\n"      // 1234
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    EXPECT_EQ((jit->lookup<int32_t (*)()>("run"))(), 1234);
+}
+
+// 4.1.2 — map to collections: `HashMap<String,int32[]> g = ["a":[1,2], …]`.
+TEST(CollectionLiteralTests, MapToList) {
+    int32_t r = runI32(
+        "import cajeta.collection.HashMap;\n",
+        "    public static int32 run() {\n"
+        "        HashMap<String, int32[]> g = [\"a\": [1, 2], \"b\": [3, 4]];\n"
+        "        int32[] av = g.get(\"a\");\n"
+        "        int32[] bv = g.get(\"b\");\n"
+        "        return av[0] * 1000 + av[1] * 100 + bv[0] * 10 + bv[1];\n"  // 1234
+        "    }\n");
+    EXPECT_EQ(r, 1234);
+}
+
+// 4.1.3 — nesting through an aggregate: `Point[][] grid = [[{…}], [{…}]]`.
+TEST(CollectionLiteralTests, NestedThroughAggregate) {
+    std::string src =
+        "package test;\n"
+        "public record Point { int32 x; int32 y; }\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Point[][] grid = [ [ {x:2, y:3} ], [ {x:4, y:5} ] ];\n"
+        "        return grid[0][0].x * 1000 + grid[0][0].y * 100\n"
+        "             + grid[1][0].x * 10 + grid[1][0].y;\n"     // 2345
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    EXPECT_EQ((jit->lookup<int32_t (*)()>("run"))(), 2345);
+}

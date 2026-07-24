@@ -815,10 +815,16 @@ namespace cajeta {
             // it into each prefixless `{…}` element so `Point[] pts = [{x:1,
             // y:2}, …]` infers each aggregate's type from the array. (CajetaArray
             // is a CajetaClass subtype, so this is the else of the array case.)
+            // A reference-class element escapes into the array (stored as a
+            // pointer), so its aggregate must be heap-allocated — a bare `{…}`
+            // defaults to stack, which would dangle. A value-type element is
+            // copied inline, so it stays (no escape).
+            bool elemIsValueType = elemClass->isValueType();
             for (auto& e : elements) {
                 if (auto aggLit =
                         dynamic_pointer_cast<AggregateInitializerExpression>(e)) {
                     aggLit->setExpectedType(elemClass);
+                    if (!elemIsValueType) aggLit->setStackAlloc(false);
                 }
             }
         }
