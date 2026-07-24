@@ -246,6 +246,82 @@ namespace cajeta {
             }
         }
 
+        // Flatten a record's instance fields (ancestors first, declared order)
+        // into (a.path, b.path) access-path pairs. Sets `orderable=false` if any
+        // field can't take a natural `<` — only primitive and value-type scalar
+        // fields are orderable (a value-type field dispatches to its own
+        // synthesized `operator<`); arrays / class refs / views / interfaces are
+        // not. Mirrors appendRecordFieldCompares's walk.
+        void collectRecordFieldPaths(const string& pathA, const string& pathB,
+                const CajetaClassPtr& cls,
+                std::vector<std::pair<string, string>>& out, bool& orderable) {
+            for (auto& sup : resolvedParentsOf(cls)) {
+                collectRecordFieldPaths(pathA, pathB, sup, out, orderable);
+            }
+            for (auto& prop : cls->getPropertyList()) {
+                if (!prop || prop->isStatic()) continue;
+                auto ft = prop->getType();
+                // Only PRIMITIVE fields (numeric / bool / char / float — all with
+                // a builtin `<`) count as orderable. A value-type field would
+                // need its OWN `operator<`, which only records get synthesized
+                // (and order-of-synthesis makes that fragile) — a `@ValueType`
+                // like Utf8 has none, so `a.f < b.f` there crashes. Keep the
+                // default order to all-primitive-field records (the common case:
+                // Point); records with a value-type/String/array field get no
+                // default `<` (nested value-type ordering is future work).
+                bool isPrim = ft && (ft->getTypeFlags() & PRIMITIVE_FLAG) != 0;
+                if (!isPrim) orderable = false;
+                out.emplace_back(pathA + "." + prop->getName(),
+                                 pathB + "." + prop->getName());
+            }
+        }
+
+        // Default field-wise ordering for a record (collection-literals — the
+        // value-type-in-collections fix): synthesize a lexicographic
+        // `operator<` (compare fields in declared order; the first differing
+        // field decides) so a value type is sortable / usable as `ArrayList<T>`
+        // whose eagerly-instantiated `sort()` needs `<`. Skipped when the record
+        // declares its own `operator<`, or when any field isn't orderable (the
+        // record simply has no default order then). `>`, `<=`, `>=` derive from
+        // this via OperatorDispatch; `==`/`!=` from synthesizeRecordEquality.
+        void synthesizeRecordOrdering(CajetaClassPtr structure) {
+            for (auto& kv : structure->getMethods()) {
+                if (kv.second && kv.second->getName() == "operator<") return;
+            }
+            std::vector<std::pair<string, string>> fields;
+            bool orderable = true;
+            collectRecordFieldPaths("a", "b", structure, fields, orderable);
+            if (!orderable || fields.empty()) return;
+            // Lexicographic: f1< || (f1== && f2<) || (f1== && f2== && f3<) ...
+            string expr, eqPrefix;
+            for (auto& f : fields) {
+                string lessF = f.first + " < " + f.second;
+                string eqF = f.first + " == " + f.second;
+                string term = eqPrefix.empty()
+                    ? lessF : ("(" + eqPrefix + " && " + lessF + ")");
+                expr = expr.empty() ? term : (expr + " || " + term);
+                eqPrefix = eqPrefix.empty() ? eqF : (eqPrefix + " && " + eqF);
+            }
+            string typeName = structure->getQName()->getTypeName();
+            string src = "{ public static boolean operator< (" + typeName
+                + " a, " + typeName + " b) { return " + expr + "; } }";
+            xref::SyntheticSourceScope xrefMask;
+            auto* body = cajeta::synth::parseClassBodyFragment(src);
+            for (auto* cbd : body->classBodyDeclaration()) {
+                MemberDeclarationPtr mem;
+                try {
+                    mem = std::any_cast<MemberDeclarationPtr>(
+                        visitClassBodyDeclaration(cbd));
+                } catch (ReuseHazardAbort&) {
+                    throw;
+                } catch (...) { continue; }
+                if (auto methodDecl =
+                        std::dynamic_pointer_cast<MethodDeclaration>(mem)) {
+                    methodDecl->updateParent(structure);
+                }
+            }
+        }
+
         virtual std::any visitCompilationUnit(CajetaParser::CompilationUnitContext* ctx) override {
             pModule->onPackageDeclaration(ctx->packageDeclaration());
             for (auto& importDeclarationContext: ctx->importDeclaration()) {
@@ -1018,6 +1094,7 @@ namespace cajeta {
             // the template body walk is skipped so there are no fields here.
             if (isRecord && !structure->isTemplate()) {
                 synthesizeRecordEquality(structure);
+                synthesizeRecordOrdering(structure);
             }
             // tryGeneratePrototype is the deferred-aware variant: if any
             // superclass / implemented interface is still a placeholder

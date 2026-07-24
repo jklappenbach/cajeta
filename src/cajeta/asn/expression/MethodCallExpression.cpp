@@ -9734,7 +9734,16 @@ namespace cajeta {
                                 bool runtimeOwner = klass && !klass->isInterface()
                                     && (field->getDropEntry() != nullptr
                                         || (cmw && cmw->getTransferWordArg()));
+                                // Value types are Copy (like primitives): `#v` on
+                                // a value-type param is a no-op copy, never a
+                                // heap ownership transfer, so it can't escape a
+                                // borrow. Exempt them so a generic body that
+                                // spells `#v` (ArrayList/HashMap.set) instantiates
+                                // for a value-type T. (Primitives are already
+                                // exempt: klass is null.)
+                                bool isValueTypeParam = klass && klass->isValueType();
                                 if (klass && !klass->isInterface()
+                                        && !isValueTypeParam
                                         && !runtimeOwner) {
                                     throw Exception(
                                         "cannot transfer borrowed parameter `"

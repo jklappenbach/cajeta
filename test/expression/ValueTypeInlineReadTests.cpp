@@ -81,3 +81,25 @@ TEST(ValueTypeInlineReadTests, hashMapValueTypeVPutGet) {
         "  Point a = m.get(\"o\"); Point b = m.get(\"p\");\n"
         "  return a.x*1000 + a.y*100 + b.x*10 + b.y; } }\n"), 3456);
 }
+
+// A generic container that forwards a value-type param with `#v` (the
+// ArrayList.set / operator[]= shape). Value types are Copy, so `#v` on a
+// value-type param is a no-op copy, not a heap ownership transfer — it must not
+// trip the borrow-escape check that fires for reference params.
+TEST(ValueTypeInlineReadTests, genericValueTypeMoveForward) {
+    EXPECT_EQ(runSrc(
+        "package test;\n"
+        "public record Point { int32 x; int32 y; }\n"
+        "public final class Fwd<T> {\n"
+        "  private T slot;\n"
+        "  public Fwd(T v) { this.slot = v; }\n"
+        "  public void put(T v) { this.reset(#v); }\n"
+        "  public void reset(T v) { this.slot = v; }\n"
+        "  public T get() { return this.slot; }\n"
+        "}\n"
+        "public final class D { public static int32 run() {\n"
+        "  Fwd<Point> f = heap Fwd<Point>(Point{x:0,y:0});\n"
+        "  f.put(Point{x:3,y:4});\n"
+        "  Point p = f.get();\n"
+        "  return p.x*10 + p.y; } }\n"), 34);
+}
