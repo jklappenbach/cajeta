@@ -43,5 +43,4 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [simd-numeric-kernels](simd-numeric-kernels-spec.md) | — | draft |
 | [quaternion-vector-stdlib](quaternion-vector-stdlib-spec.md) | [plan](../agents/quaternion-vector-stdlib-plan.md) | draft |
 | [ternary-int-codegen](ternary-int-codegen-spec.md) | — | draft |
-| [array-literals](array-literals-spec.md) | [plan](../agents/array-literals-plan.md) | active — ALL 5 units delivered + code-reviewed 2026-07-23 (literal+unify+shared-lowering; target-typed; placement stack-arena/shared-device; nested+C2; collection from-array ctors). Ready to close/archive. Deferred (own specs): upstream unsigned-widen sext, static-field array-init corruption |
-| [collection-literals](collection-literals-spec.md) | — | draft — successor to array-literals: `[…]`=collection (list/set/map via Swift `[k:v]`), `{…}`=type-inferred aggregate, resolves the `{}`/`[]` split (§6 migration). Implement after array-literals closes |
+| [collection-literals](collection-literals-spec.md) | [plan](../agents/collection-literals-plan.md) | active — successor to array-literals (archived 2026-07-23): `[…]`=collection (list/set/map via Swift `[k:v]`), `{…}`=type-inferred aggregate, resolves the `{}`/`[]` split (§6 migration). Spec approved; plan authored |
