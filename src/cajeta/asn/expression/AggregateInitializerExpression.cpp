@@ -29,7 +29,12 @@ namespace cajeta {
             // consulting the initializer's type to size its slot) get the
             // right CajetaType. Falls through to nullptr if the name doesn't
             // resolve — generateCode will surface a clean error below.
-            resolvedType = CajetaType::of(typeName);
+            // collection-literals §4 — the prefixless `{…}` form takes its type
+            // from the context-pushed expectedType (may still be null here if
+            // the push happens at generateCode time, e.g. a nested array
+            // element; generateCode re-resolves then).
+            resolvedType = !typeName.empty() ? CajetaType::of(typeName)
+                                             : expectedType;
         }
     }
 
@@ -37,9 +42,21 @@ namespace cajeta {
         auto* builder = module->getBuilder();
         auto& ctx = *module->getLlvmContext();
 
-        // Resolve typeName → CajetaClass. View / interface receivers are
-        // rejected with specific messages so users get a useful error.
-        CajetaTypePtr type = CajetaType::of(typeName);
+        // Resolve the target type. An explicit `typeName` prefix wins; the
+        // prefixless `{…}` form (collection-literals §4) takes the type pushed
+        // by context (expectedType). View / interface receivers are rejected
+        // with specific messages so users get a useful error.
+        CajetaTypePtr type = !typeName.empty() ? CajetaType::of(typeName)
+                                               : expectedType;
+        if (!type && typeName.empty()) {
+            // Prefixless with nothing to infer from — name the missing type.
+            throw locatedException(getSourceLine(), getSourceColumn() + 1,
+                "aggregate literal `{ ... }` has no inferable type here; give "
+                "it a type prefix (e.g. `Point { ... }`) or use it where a "
+                "class type is expected (a typed declaration, assignment, "
+                "return, or array element)",
+                "CAJETA_ERROR_AGGREGATE_INIT_NO_TYPE");
+        }
         if (!type) {
             char buf[256];
             snprintf(buf, sizeof(buf),
@@ -47,6 +64,11 @@ namespace cajeta {
                 typeName.c_str());
             throw locatedException(getSourceLine(), getSourceColumn() + 1, buf,
                 "CAJETA_ERROR_AGGREGATE_INIT_UNKNOWN_TYPE");
+        }
+        // Backfill typeName from the inferred type so the per-field diagnostics
+        // below name the target instead of an empty string.
+        if (typeName.empty() && type->getQName()) {
+            typeName = type->getQName()->getTypeName();
         }
         if (dynamic_pointer_cast<CajetaView>(type)) {
             char buf[256];

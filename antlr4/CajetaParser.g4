@@ -887,6 +887,12 @@ primary
 // back to the identifier alternative cleanly.
 aggregateInitializer
     : identifier '{' parameterList? '}'
+    // collection-literals §4 — the prefixless, type-inferred form `{ x: 1,
+    // y: 2 }`: the aggregate type comes from context (declared / assigned /
+    // returned type, or an enclosing array's element type). A parameterList is
+    // required so a bare `{}` never shadows an empty block in the (unreached-
+    // by-primary) statement position.
+    | '{' parameterList '}'
     ;
 
 // Java17

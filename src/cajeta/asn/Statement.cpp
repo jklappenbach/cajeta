@@ -1622,6 +1622,18 @@ namespace cajeta {
                     expression = ctor;
                 }
             }
+        } else if (auto agg = dynamic_pointer_cast<
+                       AggregateInitializerExpression>(expression)) {
+            // collection-literals §4 — a returned prefixless `{…}` infers the
+            // method's declared return type (only when it's a class; a
+            // primitive return leaves it uninferred → clean NO_TYPE error).
+            if (auto m = module->getCurrentMethod()) {
+                CajetaTypePtr rt = m->getReturnType();
+                if (dynamic_pointer_cast<CajetaClass>(rt)
+                        && !dynamic_pointer_cast<CajetaArray>(rt)) {
+                    agg->setExpectedType(rt);
+                }
+            }
         }
         // Value-return (sret + NRVO): the enclosing method/lambda hands back
         // a `stack`-constructed value by copy. Its LLVM signature returns

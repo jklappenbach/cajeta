@@ -525,6 +525,15 @@ namespace cajeta {
                             if (auto ctor =
                                     collectionLiteralFromArray(type, expr)) {
                                 kids[0] = ctor;
+                            } else if (auto agg = dynamic_pointer_cast<
+                                    AggregateInitializerExpression>(expr)) {
+                                // collection-literals §4 — prefixless `{…}`
+                                // infers the declared type (only a class target
+                                // can back an aggregate; a primitive target
+                                // leaves it uninferred → clean NO_TYPE error).
+                                if (dynamic_pointer_cast<CajetaClass>(type)) {
+                                    agg->setExpectedType(type);
+                                }
                             }
                         }
                     }

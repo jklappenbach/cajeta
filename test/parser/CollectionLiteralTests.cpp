@@ -123,3 +123,89 @@ TEST(CollectionLiteralTests, NoCollectionCtorErrors) {
         "}\n";
     EXPECT_ANY_THROW(CajetaJit::compile(src, "test.D"));
 }
+
+// ---------------------------------------------------------------------------
+// Unit 2 — type-inferred aggregate literals `{x: 1, y: 2}` (spec §4).
+// The `{…}` builds an aggregate of the type demanded by context (declared /
+// assigned / returned type, or an enclosing array's element type); the
+// explicit `Type{…}` form is unchanged. A `{…}` with no inferable type errors.
+// ---------------------------------------------------------------------------
+
+namespace {
+const char* kPointRec =
+    "package test;\n"
+    "public record Point {\n"
+    "    int32 x;\n"
+    "    int32 y;\n"
+    "}\n";
+} // namespace
+
+// 2.1.1 — a bare `{…}` in a declaration infers the declared type (value-inline).
+TEST(CollectionLiteralTests, AggregateFromDeclaration) {
+    std::string src = std::string(kPointRec) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Point p = { x: 3, y: 4 };\n"
+        "        return p.x * 10 + p.y;\n"                  // 34
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    EXPECT_EQ((jit->lookup<int32_t (*)()>("run"))(), 34);
+}
+
+// 2.1.2 — each element's aggregate type is the array's element type
+// (the headline composition: `Point[] pts = [{…}, {…}]`).
+TEST(CollectionLiteralTests, AggregateArrayElements) {
+    std::string src = std::string(kPointRec) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Point[] pts = [ {x: 1, y: 2}, {x: 3, y: 4} ];\n"
+        "        return pts[0].x * 1000 + pts[0].y * 100\n"
+        "             + pts[1].x * 10 + pts[1].y;\n"        // 1234
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    EXPECT_EQ((jit->lookup<int32_t (*)()>("run"))(), 1234);
+}
+
+// 2.1.3 — `heap {…}` against a reference (non-value) class heap-allocates.
+TEST(CollectionLiteralTests, HeapAggregate) {
+    std::string src =
+        "package test;\n"
+        "public class RefBox {\n"
+        "    public int32 x;\n"
+        "    public int32 y;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        RefBox b = heap { x: 5, y: 7 };\n"
+        "        return b.x * 10 + b.y;\n"                  // 57
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    EXPECT_EQ((jit->lookup<int32_t (*)()>("run"))(), 57);
+}
+
+// 2.1.4 — the explicit `Type{…}` prefix still works, unchanged.
+TEST(CollectionLiteralTests, ExplicitPrefixUnchanged) {
+    std::string src = std::string(kPointRec) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Point p = Point { x: 8, y: 9 };\n"
+        "        return p.x * 10 + p.y;\n"                  // 89
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    EXPECT_EQ((jit->lookup<int32_t (*)()>("run"))(), 89);
+}
+
+// 2.1.5 — a `{…}` with no inferable target type is a compile error.
+TEST(CollectionLiteralTests, NoInferableTypeErrors) {
+    std::string src = std::string(kPointRec) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        return { x: 1, y: 2 };\n"   // return type int32 — not a class
+        "    }\n"
+        "}\n";
+    EXPECT_ANY_THROW(CajetaJit::compile(src, "test.D"));
+}

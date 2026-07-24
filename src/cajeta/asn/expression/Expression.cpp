@@ -764,6 +764,18 @@ namespace cajeta {
                     innerLit->setElementType(innerArr->getElementType());
                 }
             }
+        } else if (auto elemClass =
+                       dynamic_pointer_cast<CajetaClass>(elementType)) {
+            // collection-literals §4/§5 — when the element type is a class, push
+            // it into each prefixless `{…}` element so `Point[] pts = [{x:1,
+            // y:2}, …]` infers each aggregate's type from the array. (CajetaArray
+            // is a CajetaClass subtype, so this is the else of the array case.)
+            for (auto& e : elements) {
+                if (auto aggLit =
+                        dynamic_pointer_cast<AggregateInitializerExpression>(e)) {
+                    aggLit->setExpectedType(elemClass);
+                }
+            }
         }
         return emitArrayFromElements(module, elementType, children, arenaEligible);
     }

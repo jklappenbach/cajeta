@@ -1031,6 +1031,18 @@ namespace cajeta {
                         children[1] = ctor;
                     }
                 }
+            } else if (auto agg = dynamic_pointer_cast<
+                           AggregateInitializerExpression>(children[1])) {
+                // collection-literals §4 — `p = {…}` infers the LHS type (only
+                // a class LHS; a primitive leaves it uninferred → NO_TYPE).
+                if (auto lhsE = dynamic_pointer_cast<Expression>(children[0])) {
+                    if (!lhsE->getResolvedType()) lhsE->resolveTypes(module);
+                    CajetaTypePtr lt = lhsE->getResolvedType();
+                    if (dynamic_pointer_cast<CajetaClass>(lt)
+                            && !dynamic_pointer_cast<CajetaArray>(lt)) {
+                        agg->setExpectedType(lt);
+                    }
+                }
             }
         }
         llvm::Value* lhs = children[0]->generateCode(module);
