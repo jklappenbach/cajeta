@@ -1634,6 +1634,17 @@ namespace cajeta {
                     agg->setExpectedType(rt);
                 }
             }
+        } else if (auto mapLit = dynamic_pointer_cast<
+                       MapLiteralExpression>(expression)) {
+            // collection-literals §3 — a returned `[k: v]` infers the declared
+            // map return type.
+            if (auto m = module->getCurrentMethod()) {
+                CajetaTypePtr rt = m->getReturnType();
+                if (dynamic_pointer_cast<CajetaClass>(rt)
+                        && !dynamic_pointer_cast<CajetaArray>(rt)) {
+                    mapLit->setExpectedType(rt);
+                }
+            }
         }
         // Value-return (sret + NRVO): the enclosing method/lambda hands back
         // a `stack`-constructed value by copy. Its LLVM signature returns

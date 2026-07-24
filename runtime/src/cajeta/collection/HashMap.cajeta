@@ -111,6 +111,28 @@ public final class HashMap<K, V> {
         this.fillCtrlEmpty();
     }
 
+    /**
+     * Build a map from an array of `Pair<K,V>` entries — the lowering target
+     * of a map literal `["a": 1, "b": 2]` (collection-literals §3). Each pair's
+     * `first()` is the key and `second()` the value; later duplicates of a key
+     * replace earlier ones, matching `put`. The default capacity (64) is used;
+     * the table grows if the entry count crosses 0.75 load.
+     */
+    public HashMap(Pair<K, V>[] entries) {
+        this.cap = 64;
+        this.slots = heap MapEntry<K, V>[64];
+        this.ctrl = heap int8[80];
+        this.sizeCount = 0;
+        this.usedSlots = 0;
+        this.fillCtrlEmpty();
+        int32 n = (int32) entries.count();
+        int32 i = 0;
+        while (i < n) {
+            this.put(entries[i].first(), entries[i].second());
+            i = i + 1;
+        }
+    }
+
     // Fill the whole ctrl array (slots + mirror) with EMPTY (0x80). The 8-byte
     // word store handles the bulk; cap+16 is a multiple of 8 so the tail rarely
     // runs, but it stays for safety.

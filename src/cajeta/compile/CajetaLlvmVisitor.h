@@ -2814,6 +2814,20 @@ namespace cajeta {
             return visitChildren(ctx);
         }
 
+        // collection-literals §3 — the entry list and each entry are consumed
+        // directly by arrayOrMapLiteralFromContext (map-vs-sequence
+        // discrimination), not through visitor dispatch; these keep the visitor
+        // concrete.
+        virtual std::any visitArrayLiteralEntries(
+                CajetaParser::ArrayLiteralEntriesContext* ctx) override {
+            return visitChildren(ctx);
+        }
+
+        virtual std::any visitArrayLiteralEntry(
+                CajetaParser::ArrayLiteralEntryContext* ctx) override {
+            return visitChildren(ctx);
+        }
+
         virtual std::any visitExpression(CajetaParser::ExpressionContext* ctx) override {
             // Expression::fromContext builds the full sub-tree (including children) via
             // its own recursive descent; no further visitor-driven addChild loop is

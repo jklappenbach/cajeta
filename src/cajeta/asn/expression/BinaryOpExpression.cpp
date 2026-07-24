@@ -1043,6 +1043,17 @@ namespace cajeta {
                         agg->setExpectedType(lt);
                     }
                 }
+            } else if (auto mapLit = dynamic_pointer_cast<
+                           MapLiteralExpression>(children[1])) {
+                // collection-literals §3 — `m = [k: v]` infers the LHS map type.
+                if (auto lhsE = dynamic_pointer_cast<Expression>(children[0])) {
+                    if (!lhsE->getResolvedType()) lhsE->resolveTypes(module);
+                    CajetaTypePtr lt = lhsE->getResolvedType();
+                    if (dynamic_pointer_cast<CajetaClass>(lt)
+                            && !dynamic_pointer_cast<CajetaArray>(lt)) {
+                        mapLit->setExpectedType(lt);
+                    }
+                }
             }
         }
         llvm::Value* lhs = children[0]->generateCode(module);

@@ -165,10 +165,10 @@ namespace cajeta {
                 agg->setStackAlloc(false);
                 result = agg;
             } else if (ctx->arrayLiteral()) {
-                // `heap [1,2,3]` — explicit heap placement (the default for a
-                // bare `[...]`); array-literals §4.
-                result = make_shared<ArrayLiteralExpression>(
-                    ctx->arrayLiteral(), token);
+                // `heap [1,2,3]` / `heap ["a":1]` — explicit heap placement (the
+                // default for a bare `[...]`); array/collection/map (§3/§4).
+                result = arrayOrMapLiteralFromContext(
+                    ctx->arrayLiteral(), token, /*stack=*/false, /*shared=*/false);
             }
         } else if (ctx->STACK()) {
             // Unified-class allocation prefix (docs/specification/lang/UnifiedClasses.md). Phase 2a:
@@ -186,11 +186,10 @@ namespace cajeta {
                 newExpr->setStackAlloc(true);
                 result = newExpr;
             } else if (ctx->arrayLiteral()) {
-                // `stack [1,2,3]` — frame-arena placement (array-literals §4).
-                auto lit = make_shared<ArrayLiteralExpression>(
-                    ctx->arrayLiteral(), token);
-                lit->setStackAlloc(true);
-                result = lit;
+                // `stack [1,2,3]` — frame-arena placement (array-literals §4);
+                // a `stack [...]` map carries the prefix to the HashMap instance.
+                result = arrayOrMapLiteralFromContext(
+                    ctx->arrayLiteral(), token, /*stack=*/true, /*shared=*/false);
             }
         } else if (ctx->SHARED()) {
             // `shared` placement — GPU workgroup-shared memory (NV addrspace 3),
@@ -211,10 +210,8 @@ namespace cajeta {
             } else if (ctx->arrayLiteral()) {
                 // `shared [1,2,3]` — device workgroup memory (array-literals §4);
                 // device-lowered, host path rejects.
-                auto lit = make_shared<ArrayLiteralExpression>(
-                    ctx->arrayLiteral(), token);
-                lit->setSharedAlloc(true);
-                result = lit;
+                result = arrayOrMapLiteralFromContext(
+                    ctx->arrayLiteral(), token, /*stack=*/false, /*shared=*/true);
             }
         } else if (ctx->identifier()) {
             result = make_shared<IdentifierExpression>(ctx->identifier(), ctx->primary() != nullptr);
@@ -619,17 +616,65 @@ namespace cajeta {
     }
 
     ArrayLiteralExpression::ArrayLiteralExpression(
-        CajetaParser::ArrayLiteralContext* ctx, antlr4::Token* token)
-        : Expression(token) {
-        if (auto* list = ctx->expressionList()) {
-            for (auto* e : list->expression()) {
-                auto elem = Expression::fromContext(e);
-                elements.push_back(elem);
-                // Mirror into children so generic AST walks (free-variable
-                // scans, type resolution) reach the elements too.
-                addChild(elem);
-            }
+        vector<ExpressionPtr> elems, antlr4::Token* token)
+        : Expression(token), elements(std::move(elems)) {
+        // Mirror into children so generic AST walks (free-variable scans, type
+        // resolution) reach the elements too.
+        for (auto& e : elements) addChild(e);
+    }
+
+    // collection-literals §3 — parse a bracket list into a sequence or a map.
+    ExpressionPtr arrayOrMapLiteralFromContext(
+            CajetaParser::ArrayLiteralContext* ctx, antlr4::Token* token,
+            bool stackAlloc, bool sharedAlloc) {
+        auto* entriesCtx = ctx->arrayLiteralEntries();
+        // `[]` — empty sequence.
+        if (!entriesCtx) {
+            auto lit = make_shared<ArrayLiteralExpression>(
+                vector<ExpressionPtr>{}, token);
+            lit->setStackAlloc(stackAlloc);
+            lit->setSharedAlloc(sharedAlloc);
+            return lit;
         }
+        auto entryCtxs = entriesCtx->arrayLiteralEntry();
+        // `[:]` — empty map (a lone COLON, no entries).
+        bool emptyMap = entriesCtx->COLON() != nullptr && entryCtxs.empty();
+        // Classify: an entry with its own COLON is a `key: value` map entry.
+        bool anyMap = emptyMap, anySeq = false;
+        for (auto* e : entryCtxs) {
+            (e->COLON() != nullptr ? anyMap : anySeq) = true;
+        }
+        if (anyMap && anySeq) {
+            throw locatedException(
+                token ? token->getLine() : 0,
+                (token ? token->getCharPositionInLine() : 0) + 1,
+                "bracket literal mixes `key: value` map entries with plain "
+                "sequence elements; use one form (all `k: v`, or all values)",
+                "CAJETA_ERROR_MIXED_MAP_SEQUENCE");
+        }
+        if (anyMap) {
+            vector<pair<ExpressionPtr, ExpressionPtr>> mapEntries;
+            for (auto* e : entryCtxs) {
+                auto exprs = e->expression();
+                mapEntries.emplace_back(
+                    Expression::fromContext(exprs[0]),
+                    Expression::fromContext(exprs[1]));
+            }
+            auto lit = make_shared<MapLiteralExpression>(
+                std::move(mapEntries), token);
+            lit->setStackAlloc(stackAlloc);
+            lit->setSharedAlloc(sharedAlloc);
+            return lit;
+        }
+        // Sequence.
+        vector<ExpressionPtr> elems;
+        for (auto* e : entryCtxs) {
+            elems.push_back(Expression::fromContext(e->expression()[0]));
+        }
+        auto lit = make_shared<ArrayLiteralExpression>(std::move(elems), token);
+        lit->setStackAlloc(stackAlloc);
+        lit->setSharedAlloc(sharedAlloc);
+        return lit;
     }
 
     namespace {
@@ -778,6 +823,150 @@ namespace cajeta {
             }
         }
         return emitArrayFromElements(module, elementType, children, arenaEligible);
+    }
+
+    // ---- MapLiteralExpression (collection-literals §3) ----------------------
+
+    MapLiteralExpression::MapLiteralExpression(
+        vector<pair<ExpressionPtr, ExpressionPtr>> entries, antlr4::Token* token)
+        : Expression(token), entries(std::move(entries)) {
+        // Mirror key/value expressions into children so AST walks reach them.
+        for (auto& e : this->entries) {
+            if (e.first) addChild(e.first);
+            if (e.second) addChild(e.second);
+        }
+    }
+
+    void MapLiteralExpression::resolveTypes(CajetaModulePtr module) {
+        AbstractSyntaxNode::resolveTypes(module);
+        // The concrete map type is decided at generateCode (it needs the pushed
+        // target or a unify over entries); expose the pushed target if any so a
+        // slot-sizing consumer sees `HashMap<K,V>`.
+        if (!resolvedType) resolvedType = expectedType;
+    }
+
+    namespace {
+        // Unify a set of expressions to a single element type by reusing the
+        // sequence literal's least-upper-bound logic (numeric widest / nearest
+        // common superclass). Throws on empty / no-common, like the array path.
+        CajetaTypePtr unifyExprs(CajetaModulePtr module,
+                                 const vector<ExpressionPtr>& exprs,
+                                 antlr4::Token* token) {
+            auto tmp = make_shared<ArrayLiteralExpression>(exprs, token);
+            tmp->resolveTypes(module);
+            if (auto arr = dynamic_pointer_cast<CajetaArray>(
+                    tmp->getResolvedType())) {
+                return arr->getElementType();
+            }
+            return nullptr;
+        }
+    } // namespace
+
+    llvm::Value* MapLiteralExpression::generateCode(CajetaModulePtr module) {
+        if (sharedAlloc) {
+            throw Exception(
+                "`shared` placement is only valid inside an @Kernel body "
+                "(GPU workgroup-shared memory)", "XPU-K03");
+        }
+        // Resolve K, V and the target map's short name. A pushed target
+        // (`HashMap<K,V> m = [...]`) wins; otherwise unify over the entries and
+        // default to HashMap (§3.4).
+        CajetaTypePtr keyType, valType;
+        string mapName = "HashMap";
+        if (auto cls = dynamic_pointer_cast<CajetaClass>(expectedType)) {
+            const auto& targs = cls->getTypeArguments();
+            if (targs.size() >= 2) {
+                keyType = targs[0];
+                valType = targs[1];
+                mapName = cls->getQName()->getTypeName();
+                auto lt = mapName.find('<');
+                if (lt != string::npos) mapName = mapName.substr(0, lt);
+            }
+        }
+        if (!keyType || !valType) {
+            // No target — unify (empty `[:]` with no target cannot infer).
+            if (entries.empty()) {
+                throw locatedException(getSourceLine(), getSourceColumn() + 1,
+                    "cannot infer the type of an empty map literal `[:]`; give "
+                    "it a target type (e.g. HashMap<String,int32> m = [:])",
+                    "CAJETA_ERROR_UNRESOLVED_EXPRESSION");
+            }
+            vector<ExpressionPtr> keys, vals;
+            for (auto& e : entries) { keys.push_back(e.first); vals.push_back(e.second); }
+            keyType = unifyExprs(module, keys, nullptr);
+            valType = unifyExprs(module, vals, nullptr);
+            if (!keyType || !valType) {
+                throw locatedException(getSourceLine(), getSourceColumn() + 1,
+                    "cannot infer the key/value type of this map literal; give "
+                    "it a target type (e.g. HashMap<K,V> m = [...])",
+                    "CAJETA_ERROR_UNRESOLVED_EXPRESSION");
+            }
+        }
+
+        // Instantiate Pair<K,V> for the array's element type (the ctor arg type
+        // HashMap<K,V>(Pair<K,V>[]) expects).
+        CajetaTypePtr pairBase = CajetaType::of("Pair");
+        auto pairClass = dynamic_pointer_cast<CajetaClass>(pairBase);
+        if (!pairClass || !pairClass->isTemplate()) {
+            if (auto t = CajetaType::findTemplateByShortName("Pair"))
+                pairClass = dynamic_pointer_cast<CajetaClass>(t);
+        }
+        if (!pairClass) {
+            throw Exception("map literal lowering: cajeta.lang.Pair is unavailable",
+                            "CAJETA_ERROR_UNRESOLVED_EXPRESSION");
+        }
+        CajetaTypePtr pairType = pairClass->instantiate({keyType, valType});
+
+        // Build one `heap Pair<K,V>(k, v)` per entry. Aggregate keys/values
+        // (`["o": {x:0,y:0}]`) infer their type from K / V (composes with §4).
+        vector<ExpressionPtr> pairCreators;
+        // A prefixless `{…}` key/value infers its type from K / V (composes with
+        // §4). A reference-class aggregate escapes into the map, so it must be
+        // heap-allocated — a bare `{…}` defaults to stack, which would dangle.
+        // A value-type aggregate is copied inline (no escape), so it stays.
+        auto pushAgg = [](const ExpressionPtr& e, const CajetaTypePtr& t) {
+            if (auto agg = dynamic_pointer_cast<AggregateInitializerExpression>(e)) {
+                if (auto cls = dynamic_pointer_cast<CajetaClass>(t)) {
+                    agg->setExpectedType(t);
+                    if (!cls->isValueType()) agg->setStackAlloc(false);
+                }
+            }
+        };
+        for (auto& e : entries) {
+            pushAgg(e.first, keyType);
+            pushAgg(e.second, valType);
+            vector<MethodCallParameter> pairArgs;
+            MethodCallParameter kp; kp.expression = e.first; pairArgs.push_back(kp);
+            MethodCallParameter vp; vp.expression = e.second; pairArgs.push_back(vp);
+            auto pairRest = make_shared<ClassCreatorRest>(std::move(pairArgs), nullptr);
+            auto pairNew = make_shared<NewExpression>(nullptr);
+            pairNew->setTypeName("Pair");
+            pairNew->setTypeArguments({keyType, valType});
+            pairNew->setCreatorRest(pairRest);
+            pairNew->setSourceSpan(getSourceLine(), getSourceColumn());
+            pairCreators.push_back(pairNew);
+        }
+
+        // Assemble the `Pair<K,V>[]` and the `HashMap<K,V>(Pair<K,V>[])` call.
+        auto pairArray = make_shared<ArrayLiteralExpression>(
+            std::move(pairCreators), nullptr);
+        pairArray->setElementType(pairType);
+        pairArray->setSourceSpan(getSourceLine(), getSourceColumn());
+
+        vector<MethodCallParameter> mapArgs;
+        MethodCallParameter mapArg; mapArg.expression = pairArray;
+        mapArgs.push_back(mapArg);
+        auto mapRest = make_shared<ClassCreatorRest>(std::move(mapArgs), nullptr);
+        auto mapNew = make_shared<NewExpression>(nullptr);
+        mapNew->setTypeName(mapName);
+        mapNew->setTypeArguments({keyType, valType});
+        mapNew->setCreatorRest(mapRest);
+        if (stackAlloc) mapNew->setStackAlloc(true);
+        mapNew->setSourceSpan(getSourceLine(), getSourceColumn());
+
+        mapNew->resolveTypes(module);
+        resolvedType = mapNew->getResolvedType();
+        return mapNew->generateCode(module);
     }
 
     void ArrayIndexExpression::resolveTypes(CajetaModulePtr module) {
@@ -2128,9 +2317,10 @@ namespace cajeta {
             result = make_shared<AggregateInitializerExpression>(
                 ctx->aggregateInitializer(), ctx->getStart());
         } else if (ctx->arrayLiteral()) {
-            // `[e1, e2, ...]` list literal (XPU launch dims; general-purpose).
-            result = make_shared<ArrayLiteralExpression>(
-                ctx->arrayLiteral(), ctx->getStart());
+            // `[e1, e2, ...]` sequence or `["k": v, ...]` / `[:]` map literal
+            // (collection-literals §3; XPU launch dims are colon-free sequences).
+            result = arrayOrMapLiteralFromContext(
+                ctx->arrayLiteral(), ctx->getStart(), /*stack=*/false, /*shared=*/false);
         } else if (ctx->typeTypeOrVoid() && ctx->CLASS()) {
             // REFL-1.5: `T.class` — the statically-known type's reflective Class.
             // Capture the type's text now (the ANTLR context is freed before

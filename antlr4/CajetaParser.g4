@@ -704,7 +704,23 @@ parameterList
 // never colliding with the postfix index form `expression '[' expression ']'`,
 // which requires a preceding expression. See CajetaXPU.md §3.1.3 (`grid: [...]`).
 arrayLiteral
-    : '[' expressionList? ']'
+    : '[' arrayLiteralEntries? ']'
+    ;
+
+// collection-literals §3 — the bracket list is either a sequence (`[1, 2, 3]`)
+// or a map (`[k1: v1, k2: v2]`, and the empty `[:]`). A single leading COLON is
+// the empty map; otherwise each entry is an expression optionally followed by
+// `: value`. The colon inside a ternary (`[cond ? a : b]`) is consumed by the
+// ternary expression, so that stays a one-element sequence (the visitor decides
+// map-vs-sequence per entry). The postfix slice `arr[a:b]` never reaches here —
+// it has a preceding expression (`expression '[' expression COLON expression ']'`).
+arrayLiteralEntries
+    : COLON                                             // empty map `[:]`
+    | arrayLiteralEntry (',' arrayLiteralEntry)* ','?
+    ;
+
+arrayLiteralEntry
+    : expression (COLON expression)?
     ;
 
 // Method-level template call-site form: `identifier<TypeArgs>(args)`.

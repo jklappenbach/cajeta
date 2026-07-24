@@ -534,6 +534,13 @@ namespace cajeta {
                                 if (dynamic_pointer_cast<CajetaClass>(type)) {
                                     agg->setExpectedType(type);
                                 }
+                            } else if (auto mapLit = dynamic_pointer_cast<
+                                    MapLiteralExpression>(expr)) {
+                                // collection-literals §3 — `[k: v]` infers the
+                                // declared map type (K,V from HashMap<K,V>).
+                                if (dynamic_pointer_cast<CajetaClass>(type)) {
+                                    mapLit->setExpectedType(type);
+                                }
                             }
                         }
                     }

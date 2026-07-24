@@ -209,3 +209,82 @@ TEST(CollectionLiteralTests, NoInferableTypeErrors) {
         "}\n";
     EXPECT_ANY_THROW(CajetaJit::compile(src, "test.D"));
 }
+
+// ---------------------------------------------------------------------------
+// Unit 3 — map literals `[k: v]` and `[:]` (spec §3). Lowered via `Pair<K,V>[]`
+// → `HashMap<K,V>(Pair<K,V>[])`. The colon is the map/sequence signal; it must
+// not shadow the ternary `?:` inside an element.
+// ---------------------------------------------------------------------------
+
+// 3.1.1 — a HashMap from a map literal: the two mappings read back by key.
+TEST(CollectionLiteralTests, HashMapFromLiteral) {
+    int32_t r = runI32(
+        "import cajeta.collection.HashMap;\n",
+        "    public static int32 run() {\n"
+        "        HashMap<String, int32> m = [\"blah\": 123, \"x\": 4];\n"
+        "        return (int32) m.count() * 1000 + m.get(\"blah\") - m.get(\"x\");\n"
+        "    }\n");                                    // 2*1000 + 123 - 4 = 2119
+    EXPECT_EQ(r, 2119);
+}
+
+// 3.1.2 — `[:]` is the empty map.
+TEST(CollectionLiteralTests, EmptyMap) {
+    int32_t r = runI32(
+        "import cajeta.collection.HashMap;\n",
+        "    public static int32 run() {\n"
+        "        HashMap<String, int32> e = [:];\n"
+        "        return (int32) e.count();\n"          // 0
+        "    }\n");
+    EXPECT_EQ(r, 0);
+}
+
+// 3.1.3 — the colon is the signal: `["a": 1]` is a map, `[1,2,3]` a sequence,
+// in map- and array-typed contexts respectively.
+TEST(CollectionLiteralTests, MapVsSequence) {
+    int32_t r = runI32(
+        "import cajeta.collection.HashMap;\n",
+        "    public static int32 run() {\n"
+        "        HashMap<String, int32> m = [\"a\": 5];\n"
+        "        int32[] xs = [1, 2, 3];\n"
+        "        return (int32) m.count() * 1000 + m.get(\"a\") * 100\n"
+        "             + xs[0] * 10 + xs[2];\n"         // 1000 + 500 + 10 + 3 = 1513
+        "    }\n");
+    EXPECT_EQ(r, 1513);
+}
+
+// 3.1.4 — a ternary inside an element stays a one-element sequence; the
+// ternary's colon is NOT a map separator.
+TEST(CollectionLiteralTests, TernaryElementNotMap) {
+    int32_t r = runI32(
+        "",
+        "    public static int32 run() {\n"
+        "        int32 a = 7; int32 b = 9; boolean c = true;\n"
+        "        int32[] xs = [c ? a : b, 100];\n"
+        "        return xs[0] + xs[1];\n"              // 7 + 100 = 107
+        "    }\n");
+    EXPECT_EQ(r, 107);
+}
+
+// 3.1.5 — the value type is inferred from the map's V, composing with Unit 2:
+// `HashMap<String,Box> m = ["o": {x:3, y:4}]` — the aggregate infers Box and,
+// as a reference-class map value, is heap-allocated so it survives in the map.
+// (A value-type V here would hit a pre-existing HashMap value-type-V bug,
+// unrelated to map literals — see the plan note; reference V is the coverage.)
+TEST(CollectionLiteralTests, MapToAggregate) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.collection.HashMap;\n"
+        "public class Box {\n"
+        "    public int32 x;\n"
+        "    public int32 y;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        HashMap<String, Box> m = [\"o\": {x: 3, y: 4}];\n"
+        "        Box b = m.get(\"o\");\n"
+        "        return b.x * 10 + b.y;\n"             // 34
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    EXPECT_EQ((jit->lookup<int32_t (*)()>("run"))(), 34);
+}

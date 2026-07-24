@@ -291,7 +291,11 @@ namespace cajeta {
     // standalone use for now.
     class ArrayLiteralExpression : public Expression {
     public:
-        ArrayLiteralExpression(CajetaParser::ArrayLiteralContext* ctx, antlr4::Token* token);
+        // Sequence literal built from pre-parsed element expressions. The
+        // bracket-list parse (sequence-vs-map discrimination) lives in
+        // arrayOrMapLiteralFromContext; the map lowering also builds one of
+        // these to hold its `Pair<K,V>[]`.
+        ArrayLiteralExpression(vector<ExpressionPtr> elems, antlr4::Token* token);
 
         // Element expressions in source order (also mirrored into children).
         const vector<ExpressionPtr>& getElements() const { return elements; }
@@ -332,6 +336,40 @@ namespace cajeta {
         bool arenaEligible = false; // stack + proven non-escaping (§4)
     };
 
+    // Map literal: `[k1: v1, k2: v2]` (and the empty `[:]`) — collection-
+    // literals §3. Each entry is a (key, value) expression pair. Lowers, at
+    // generateCode, to a `Pair<K,V>[]` (one `heap Pair<K,V>(k, v)` per entry)
+    // passed to `HashMap<K,V>(Pair<K,V>[])`. K and V come from a pushed target
+    // map type (`HashMap<String,int32> m = [...]`) or, with no target, unify
+    // over the entries defaulting to `HashMap` (§3.4). The parser routes a
+    // bracket list here when any entry carries a `:` (else it's a sequence
+    // ArrayLiteralExpression).
+    class MapLiteralExpression : public Expression {
+    public:
+        MapLiteralExpression(vector<pair<ExpressionPtr, ExpressionPtr>> entries,
+                             antlr4::Token* token);
+
+        // Target map type pushed by context (a `HashMap<K,V>` instantiation).
+        void setExpectedType(CajetaTypePtr t) { expectedType = std::move(t); }
+        void setStackAlloc(bool v) { stackAlloc = v; }
+        void setSharedAlloc(bool v) { sharedAlloc = v; }
+
+        void resolveTypes(CajetaModulePtr module) override;
+        llvm::Value* generateCode(CajetaModulePtr module) override;
+    private:
+        vector<pair<ExpressionPtr, ExpressionPtr>> entries;
+        CajetaTypePtr expectedType;  // pushed target `HashMap<K,V>` (§3.1)
+        bool stackAlloc = false;
+        bool sharedAlloc = false;
+    };
+
+    // collection-literals §3 — parse an `arrayLiteral` bracket list into either
+    // a sequence (ArrayLiteralExpression) or a map (MapLiteralExpression) by the
+    // per-entry colon, applying any `stack`/`shared` placement prefix. Shared by
+    // the four bracket-literal construction sites (bare + heap/stack/shared).
+    ExpressionPtr arrayOrMapLiteralFromContext(
+        CajetaParser::ArrayLiteralContext* ctx, antlr4::Token* token,
+        bool stackAlloc, bool sharedAlloc);
 
     /**
      * '(' annotation* typeType ('&' typeType)* ')' expression
