@@ -86,6 +86,23 @@ public final class ImmutableList<T> {
     }
 
     /**
+     * Build an immutable list directly from an array literal
+     * (array-literals §6): `ImmutableList<int32> xs = heap ImmutableList<int32>([1,2,3])`.
+     * Copies the elements into a right-sized owned array, in order.
+     */
+    public ImmutableList(T[] items) {
+        int32 n = (int32) items.count();
+        T[] copy = heap T[n];
+        int32 i = 0;
+        while (i < n) {
+            copy[i] = items[i];
+            i = i + 1;
+        }
+        this.data #= copy;
+        this.sizeCount = n;
+    }
+
+    /**
      * @returns the number of elements.
      */
     @Inline

@@ -66,6 +66,22 @@ public final class LinkedList<T> {
     }
 
     /**
+     * Build a list holding every element of `items`, in order
+     * (array-literals §6): `LinkedList<int32> xs = heap LinkedList<int32>([1,2,3])`.
+     */
+    public LinkedList(T[] items) {
+        this.headNode = null;
+        this.tailNode = null;
+        this.sizeCount = 0;
+        int32 n = (int32) items.count();
+        int32 i = 0;
+        while (i < n) {
+            this.add(items[i]);
+            i = i + 1;
+        }
+    }
+
+    /**
      * Append `value` to the tail of the list. O(1).
      */
     public void add(T value) {

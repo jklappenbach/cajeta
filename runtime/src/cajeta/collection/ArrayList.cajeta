@@ -65,6 +65,28 @@ public final class ArrayList<T> {
         this.sizeCount = 0;
     }
 
+    /**
+     * Create a list holding every element of `items`, in order. Backs the
+     * collection-literal form `ArrayList<int32> xs = heap ArrayList<int32>([1,2,3])`
+     * (array-literals §6): the `[...]` lowers to a `T[]` and this constructor
+     * copies it in.
+     *
+     * ```cajeta
+     * ArrayList<int32> xs = heap ArrayList<int32>([1, 2, 3]);   // count() == 3
+     * ```
+     */
+    public ArrayList(T[] items) {
+        this.capacity = 16;
+        this.data = heap T[16];
+        this.sizeCount = 0;
+        int32 n = (int32) items.count();
+        int32 i = 0;
+        while (i < n) {
+            this.add(items[i]);
+            i = i + 1;
+        }
+    }
+
     public int32 count() {
         return this.sizeCount;
     }
