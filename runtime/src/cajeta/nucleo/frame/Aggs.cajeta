@@ -1,0 +1,56 @@
+package cajeta.nucleo.frame;
+
+/**
+ * Aggs — the aggregate collector an `agg` lambda receives (nucleo-frame
+ * U8): the typed builder and the collector arrive as the lambda's two
+ * parameters, and each `add` appends one output column, in order:
+ *
+ * ```cajeta
+ * Table<?> r = ticks.groupBy((TickCols c, Sels s) -> { s.add(c.venue()); })
+ *                   .agg((TickCols c, Aggs a) -> {
+ *                       a.add(c.price().sum().alias("psum"));
+ *                       Agg num = (c.price() * c.size()).sum();
+ *                       Agg den = c.size().sum();
+ *                       a.add((num / den).alias("vwap"));
+ *                   });
+ * ```
+ *
+ * Every aggregate must be `.alias("...")`-named: a reduction has no name of
+ * its own, and two reductions of one column would collide. An unnamed one
+ * is a loud {@link FrameException} pointing at `.alias(...)` — the same
+ * rule `select` applies to computed columns.
+ */
+public class Aggs {
+    Agg head;      // owned chain
+    Agg tail;      // borrow of the last node
+    int32 n;
+
+    public Aggs() {
+        this.n = 0;
+    }
+
+    /** Append one named aggregate. */
+    public void add(#Agg a) {
+        if (a.kind() != 20) {
+            throw heap FrameException("agg: an aggregate needs a name - use "
+                + a.opName() + "(...).alias(\"...\")");
+        }
+        if (this.head == null) {
+            this.head #= a;
+            this.tail = this.head;
+        } else {
+            this.tail.chain(#a);
+            this.tail = this.tail.nextOf();
+        }
+        this.n = this.n + 1;
+    }
+
+    public int32 count() { return this.n; }
+
+    /** Detach the collected chain (the collector is single-use). */
+    public #Agg take() {
+        this.tail = null;
+        Agg h #= this.head;
+        return #h;
+    }
+}

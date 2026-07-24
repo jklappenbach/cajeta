@@ -422,6 +422,26 @@ namespace cajeta {
             // `p.vee` compile to nothing.
             std::string msg = "no member '" + identifier + "' on '"
                 + klass->getQName()->toCanonical() + "'";
+            // The frame's schema-erased table (spec §4.3.2 wording
+            // contract): typed accessors don't exist on `Table<?>` — say
+            // exactly how to proceed instead of offering a spelling hint.
+            {
+                auto origin = klass->isInstantiation()
+                    ? klass->getTemplateOrigin() : nullptr;
+                const auto& targs = klass->getTypeArguments();
+                if (origin && origin->getQName()
+                        && origin->getQName()->toCanonical()
+                            == "cajeta.nucleo.frame.Table"
+                        && targs.size() == 1 && targs[0]
+                        && targs[0]->isWildcard()
+                        && !targs[0]->wildcardBound()) {
+                    throw locatedException(
+                        getSourceLine(), getSourceColumn() + 1,
+                        msg + " — schema not statically known here; narrow "
+                        "with `.as<R>()` or use `col(\"...\")`",
+                        "CAJETA_ERROR_MEMBER_NOT_FOUND");
+                }
+            }
             std::string hint = klass->suggestMemberName(identifier);
             if (!hint.empty()) msg += " — did you mean '" + hint + "'?";
             throw locatedException(

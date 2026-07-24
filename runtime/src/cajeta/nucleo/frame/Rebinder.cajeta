@@ -1,0 +1,30 @@
+package cajeta.nucleo.frame;
+
+/**
+ * Rebinder — the typed-rebuild seam (nucleo-frame U5): allocates the typed
+ * `Table<Record>` for an executor frame, unwrapping its columns zero-copy.
+ * Template code cannot name synthesized members (a `Table<?>` monomorph
+ * compiles the same bodies), so each `Table<Record>` instantiation
+ * synthesizes a `<Record>TableRebinder` implementing this interface and
+ * installs it on its instances; the template's `collect` dispatches through
+ * it — a hand-rolled vtable with exactly one slot.
+ *
+ * NON-generic by design: interface-typed fields lay out as fat pointers,
+ * and the non-generic born-fat path is the one the layout machinery
+ * guarantees across every `Table` monomorph. The return is the erased
+ * `#Table<?>`; the runtime object is the concrete typed table, and typed
+ * access comes back via the capture cast at the storing site.
+ *
+ * Ownership: a materialized table OWNS its rebinder; plan handles chained
+ * off it BORROW the same instance, so an unforced handle must not outlive
+ * its source table (collected results install their own — they are
+ * self-sufficient).
+ */
+public interface Rebinder {
+    /** Allocate + fill the typed table for `d` (columns unwrapped
+     *  zero-copy) and store it in `slot`. The runtime object is the
+     *  concrete `Table<Record>`; the signature stays all-pointer, void —
+     *  a wildcard-typed RETURN would cross the interface-dispatch ABI as
+     *  a by-value struct. */
+    void rebindInto(DynFrame d, RebindSlot slot);
+}

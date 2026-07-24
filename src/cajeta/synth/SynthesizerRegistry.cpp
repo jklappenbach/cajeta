@@ -66,6 +66,22 @@ namespace cajeta::synth {
         return claimed;
     }
 
+    void SynthesizerRegistry::registerCompanion(std::string label,
+                                                CompanionSynthesizer fn) {
+        companionSynths.emplace_back(std::move(label), std::move(fn));
+    }
+
+    std::vector<std::pair<std::string,
+                          SynthesizerRegistry::CompanionSynthesisResult>>
+    SynthesizerRegistry::collectCompanions(const SynthesisContext& ctx) const {
+        std::vector<std::pair<std::string, CompanionSynthesisResult>> claimed;
+        for (const auto& [label, fn] : companionSynths) {
+            std::optional<CompanionSynthesisResult> r = fn(ctx);
+            if (r) claimed.emplace_back(label, std::move(*r));
+        }
+        return claimed;
+    }
+
     namespace {
         // Wrap a `bool synthesize*MethodSource(parent, name, args, params, out&)`
         // codec entry point as a BodySynthesizer. Codecs are method-template
@@ -382,20 +398,682 @@ namespace cajeta::synth {
             return r;
         });
 
-        // Table<T>: a member, instantiation-time synthesizer (spec §3.4, the
-        // 2x2's member/instantiation-time cell). On a concrete `Table<Tick>`,
-        // reflect the record type argument's fields and inject one typed column
-        // accessor per field — the direct downstream consumer of the
-        // T.class-in-template fix (records 7.1.2). Self-selects on the
-        // instantiation of a template named `Table` with a single record arg;
-        // the production binding is `dev.cajeta.nucleo.frame.Table`, but the
-        // Unit-5 shell is a test-local stand-in (a reference class holding one
-        // `T sample` row), so the gate is name + record-arg, package-agnostic.
-        // Each accessor projects its field off `sample`; a non-record arg (no
-        // fields to reflect) or a wrong arity declines. Determinism/memoization
-        // rides the instantiation cache — this fires once per monomorphization.
+        // nucleo-frame U3 — the PRODUCTION Table<T> member synthesizer
+        // (frame spec §2, §3.1; plan 3.2.2 — the U5 test-shell retarget).
+        // Keyed on `cajeta.nucleo.frame.Table` instantiations only. Per
+        // schema-record field it injects, in layout order (inherited fields
+        // first — the prefix `Table<? extends T>` relies on):
+        //   - a public typed accessor FIELD with the mapped physical column
+        //     type (`ticks.price` — a typo fails the compile);
+        //   - a constructor taking the columns in schema order (`#` owned —
+        //     zero-copy adoption) with a loud row-length check;
+        //   - the introspection methods colCount/colNameAt/colTypeAt/
+        //     colNullableAt over compile-time schema facts.
+        // Physical mapping (plan 3.2.3): primitives -> Column<that>;
+        // Instant -> Column<int64> (epoch-nanos); Utf8 -> StringColumn
+        // (utf8); @Nullable on a mappable primitive -> NullableColumn.
+        // A non-record schema arg is CAJETA_ERROR_FRAME_SCHEMA; a field
+        // with no mapping is CAJETA_ERROR_FRAME_UNMAPPED_FIELD.
+        // `Table<? extends R>` handles synthesize the accessor surface FROM
+        // THE BOUND `R` (fields + introspection, no constructor): every
+        // `Table<R' extends R>` lays out `R`'s columns as its field prefix
+        // (inherited-first enumeration below), so the covariant reads are
+        // sound. Unbounded `Table<?>` declines — no schema, no accessors.
+        // Determinism/memoization rides the instantiation cache — this
+        // fires once per monomorphization.
         reg.registerMember("table",
                 [](const SynthesisContext& c) -> std::optional<MemberSynthesisResult> {
+            auto structure = c.parent;
+            if (!structure || !structure->isInstantiation()) return std::nullopt;
+            auto origin = structure->getTemplateOrigin();
+            if (!origin || !origin->getQName()
+                    || origin->getQName()->toCanonical()
+                        != "cajeta.nucleo.frame.Table") {
+                return std::nullopt;
+            }
+            const auto& args = structure->getTypeArguments();
+            if (args.size() != 1 || !args[0]) return std::nullopt;
+            auto arg = args[0];
+            bool boundedHandle = false;
+            if (arg->isWildcard()) {
+                if (arg->wildcardKind() != CajetaType::WildcardKind::Extends) {
+                    return std::nullopt;   // Table<?> / super-bound: no schema
+                }
+                arg = arg->wildcardBound();
+                if (!arg) return std::nullopt;
+                boundedHandle = true;
+            }
+            auto record = std::dynamic_pointer_cast<CajetaClass>(arg);
+            if ((arg->getTypeFlags() & PRIMITIVE_FLAG) != 0
+                    || (record && !record->isRecordType())) {
+                throw Exception(
+                    "Table<T>'s schema argument must be a record (the "
+                    "type-level column descriptor); '" + arg->toCanonical()
+                        + "' is not a record",
+                    "CAJETA_ERROR_FRAME_SCHEMA");
+            }
+            if (!record) return std::nullopt;  // type variable / opaque handle
+
+            // Schema fields in LAYOUT order: inherited (supers-first,
+            // recursively) then own — `Table<? extends T>` reads the shared
+            // column-field prefix, so accessor order must mirror it.
+            std::vector<StructurePropertyPtr> fields;
+            std::function<void(CajetaClassPtr)> collect =
+                [&](CajetaClassPtr k) {
+                    if (!k) return;
+                    for (auto& s : k->getSuperClasses()) collect(s);
+                    for (auto& p : k->getPropertyList()) {
+                        if (p && !p->isStatic()) fields.push_back(p);
+                    }
+                };
+            collect(record);
+
+            const std::string schema = record->getQName()->toCanonical();
+            struct Col {
+                std::string name;      // record field / accessor name
+                std::string colType;   // Column<float64> / StringColumn / ...
+                std::string phys;      // physical name for colTypeAt
+                bool nullable;
+            };
+            std::vector<Col> cols;
+            for (auto& prop : fields) {
+                const std::string fieldName = prop->getName();
+                if (fieldName == "rows") {
+                    throw Exception(
+                        "Table<" + schema + ">: schema field 'rows' collides "
+                        "with Table's row-count member — rename the field",
+                        "CAJETA_ERROR_FRAME_SCHEMA");
+                }
+                auto ft = prop->getType();
+                const std::string tn = (ft && ft->getQName())
+                    ? ft->getQName()->getTypeName() : std::string();
+                const bool nullable = prop->findAnnotation("Nullable") != nullptr;
+                static const std::set<std::string> mappedPrims = {
+                    "int8", "int16", "int32", "int64",
+                    "uint8", "uint16", "uint32", "uint64",
+                    "float32", "float64"};
+                std::string phys;
+                if (mappedPrims.count(tn)) {
+                    phys = tn;
+                } else if (tn == "Instant") {
+                    phys = "int64";     // epoch-nanos
+                } else if (tn == "Utf8") {
+                    phys = "utf8";
+                } else {
+                    throw Exception(
+                        "Table<" + schema + "> field '" + fieldName
+                            + "': type '"
+                            + (ft ? ft->toCanonical() : std::string("<unresolved>"))
+                            + "' has no column mapping (mappable: numeric "
+                              "primitives, Instant, Utf8)",
+                        "CAJETA_ERROR_FRAME_UNMAPPED_FIELD");
+                }
+                if (phys == "utf8") {
+                    if (nullable) {
+                        throw Exception(
+                            "Table<" + schema + "> field '" + fieldName
+                                + "': @Nullable Utf8 columns are not supported "
+                                  "yet (no nullable utf8 physical)",
+                            "CAJETA_ERROR_FRAME_UNMAPPED_FIELD");
+                    }
+                    cols.push_back({fieldName, "StringColumn", phys, false});
+                } else if (nullable) {
+                    cols.push_back({fieldName,
+                        "NullableColumn<" + phys + ">", phys, true});
+                } else {
+                    cols.push_back({fieldName,
+                        "Column<" + phys + ">", phys, false});
+                }
+            }
+
+            // Physical mapping helpers: DynCol tag + factory/unwrap suffix.
+            auto tagOf = [](const std::string& phys) -> int {
+                if (phys == "int8") return 1;
+                if (phys == "int16") return 2;
+                if (phys == "int32") return 3;
+                if (phys == "int64") return 4;
+                if (phys == "uint8") return 5;
+                if (phys == "uint16") return 6;
+                if (phys == "uint32") return 7;
+                if (phys == "uint64") return 8;
+                if (phys == "float32") return 9;
+                if (phys == "float64") return 10;
+                return 11;  // utf8
+            };
+            auto sfxOf = [](const std::string& phys) -> std::string {
+                if (phys == "int8") return "I8";
+                if (phys == "int16") return "I16";
+                if (phys == "int32") return "I32";
+                if (phys == "int64") return "I64";
+                if (phys == "uint8") return "U8";
+                if (phys == "uint16") return "U16";
+                if (phys == "uint32") return "U32";
+                if (phys == "uint64") return "U64";
+                if (phys == "float32") return "F32";
+                if (phys == "float64") return "F64";
+                return "Str";  // utf8
+            };
+            auto dynFactory = [&](const Col& col) -> std::string {
+                if (col.phys == "utf8") return "DynCol.ofStr";
+                return std::string("DynCol.of") + (col.nullable ? "N" : "")
+                    + sfxOf(col.phys);
+            };
+            auto dynUnwrap = [&](const Col& col) -> std::string {
+                if (col.phys == "utf8") return "asStr";
+                return std::string("as") + (col.nullable ? "N" : "")
+                    + sfxOf(col.phys);
+            };
+            // The shared constructor tail: fill the schema-agnostic dyn store
+            // (DynCol aliases of the same storage) and install the rebinder,
+            // over columns already assigned into `this`. `rowsVar` names the
+            // row count local. Extracted from the fromColumns ctor (U16).
+            auto emitDynTail = [&](const std::string& rowsVar) -> std::string {
+                std::string s;
+                const std::string w = std::to_string(cols.size());
+                s += "        String[] __nm = heap String[" + w + "];\n"
+                    "        int32[] __tg = heap int32[" + w + "];\n"
+                    "        boolean[] __nl = heap boolean[" + w + "];\n"
+                    "        DynCol[] __dc = heap DynCol[" + w + "];\n";
+                for (std::size_t i = 0; i < cols.size(); ++i) {
+                    const std::string ix = std::to_string(i);
+                    s += "        __nm[" + ix + "] = \"" + cols[i].name + "\";\n"
+                        "        __tg[" + ix + "] = "
+                            + std::to_string(tagOf(cols[i].phys)) + ";\n"
+                        "        __nl[" + ix + "] = "
+                            + (cols[i].nullable ? "true" : "false") + ";\n"
+                        "        __dc[" + ix + "] #= " + dynFactory(cols[i])
+                            + "(this." + cols[i].name + ".alias());\n";
+                }
+                s += "        this.dyn #= heap DynFrame(#__nm, #__tg, "
+                        "#__nl, #__dc, " + w + ", " + rowsVar + ");\n"
+                    "        this.__attachRebinder();\n";
+                return s;
+            };
+
+            std::string frag = "{\n";
+            for (auto& col : cols) {
+                frag += "    public " + col.colType + " " + col.name + ";\n";
+            }
+            // The synthesized constructor IS the fromColumns schema check:
+            // arity/type mismatches fail overload resolution at the call
+            // site; the row-length check fails loud; `#=` adopts zero-copy.
+            // It also fills the schema-agnostic dyn store (aliases of the
+            // same storage — the executor's world) and installs the typed
+            // rebinder closure. Bounded-wildcard handles get no constructor
+            // — a `? extends` handle is read-only over the bound's column
+            // prefix, never constructed directly.
+            if (!boundedHandle) {
+                frag += "    public Table(";
+                for (std::size_t i = 0; i < cols.size(); ++i) {
+                    if (i) frag += ", ";
+                    frag += "#" + cols[i].colType + " " + cols[i].name;
+                }
+                frag += ") {\n";
+                frag += "        int64 __t_rows = " + cols[0].name + ".size();\n";
+                for (std::size_t i = 1; i < cols.size(); ++i) {
+                    frag += "        if (" + cols[i].name + ".size() != __t_rows) {\n"
+                        "            throw heap FrameException(\"Table<" + schema
+                        + ">: column '" + cols[i].name
+                        + "' row length does not match '" + cols[0].name + "'\");\n"
+                        "        }\n";
+                }
+                for (auto& col : cols) {
+                    frag += "        this." + col.name + " #= " + col.name + ";\n";
+                }
+                frag += "        this.rows = __t_rows;\n";
+                frag += emitDynTail("__t_rows");
+                frag += "    }\n";
+            }
+            frag += "    public int32 colCount() { return "
+                + std::to_string(cols.size()) + "; }\n";
+            auto emitAt = [&](const std::string& mname, const std::string& retType,
+                             auto valueOf) {
+                frag += "    public " + retType + " " + mname + "(int32 i) {\n";
+                for (std::size_t i = 0; i < cols.size(); ++i) {
+                    frag += "        if (i == " + std::to_string(i)
+                        + ") { return " + valueOf(cols[i]) + "; }\n";
+                }
+                frag += "        throw heap FrameException(\"Table<" + schema
+                    + ">." + mname + ": column ordinal out of range\");\n"
+                    "    }\n";
+            };
+            emitAt("colNameAt", "String",
+                [](const Col& col) { return "\"" + col.name + "\""; });
+            emitAt("colTypeAt", "String",
+                [](const Col& col) { return "\"" + col.phys + "\""; });
+            emitAt("colNullableAt", "boolean",
+                [](const Col& col) {
+                    return std::string(col.nullable ? "true" : "false");
+                });
+
+            // U4/U5 — the typed lazy surface. The lazy machinery itself
+            // (collect/lazy/head/filter(#Pred)/col/as<R>/describe) is
+            // TEMPLATE code over the dyn store; synthesized here are only
+            // the schema-typed seams: the zero-copy typed snapshot, the
+            // rebinder closure, the `.as<R>()` schema check, the typed row
+            // surface, and the lambda-builder relational ops.
+            const std::string recName = record->getQName()->getTypeName();
+            const std::string tblType = "Table<" + recName + ">";
+            auto joinCols = [&](const std::string& recv,
+                                const std::string& call) {
+                std::string s;
+                for (std::size_t i = 0; i < cols.size(); ++i) {
+                    if (i) s += ", ";
+                    s += recv + "." + cols[i].name + call;
+                }
+                return s;
+            };
+            if (!boundedHandle) {
+            // aliasTable: the zero-copy typed snapshot (column aliases).
+            frag += "    public #" + tblType + " aliasTable() {\n"
+                "        if (this.plan != null) {\n"
+                "            throw heap FrameException(\"Table<" + schema
+                    + ">.aliasTable: unforced plan handle - collect() first\");\n"
+                "        }\n"
+                "        return heap " + tblType + "("
+                    + joinCols("this", ".alias()") + ");\n"
+                "    }\n";
+            // __attachRebinder: install the display label and an OWNED
+            // `<Record>TableRebinder` companion instance — how TEMPLATE
+            // code (collect/head/as<R>) turns an executor frame back into
+            // a typed table without naming synthesized members (a
+            // `Table<?>` monomorph compiles those same template bodies).
+            // An object, not a closure: closures are frame-owned and
+            // cannot be stored past their creating frame; the companion is
+            // an ordinary owned instance.
+            frag += "    public void __attachRebinder() {\n"
+                "        this.label = \"Table<" + schema + ">\";\n"
+                "        this.rebinder #= heap " + recName
+                    + "TableRebinder();\n"
+                "    }\n";
+            // __rebindOwned: the OWNED typed rebuild — same unwrap as the
+            // rebinder companion but with a concrete return type, for call
+            // sites that know the schema statically (`as<R>`'s materialized
+            // branch calls it on the probe instance).
+            {
+                std::string unwraps;
+                for (std::size_t i = 0; i < cols.size(); ++i) {
+                    if (i) unwraps += ", ";
+                    unwraps += "d.colAt(" + std::to_string(i) + ")."
+                        + dynUnwrap(cols[i]) + "()";
+                }
+                frag += "    public #" + tblType
+                        + " __rebindOwned(#DynFrame d) {\n"
+                    "        return heap " + tblType + "(" + unwraps + ");\n"
+                    "    }\n";
+            }
+            // head/fetch: bounded terminals — force, then a zero-copy row
+            // window (numeric column slices are views; utf8 copies —
+            // Column.slice docs). Synthesized (not template): the typed
+            // result must be allocated by schema-aware code.
+            frag += "    public #" + tblType + " head(int64 n) {\n"
+                "        " + tblType + " __f = this.collect();\n"
+                "        int64 __m = n;\n"
+                "        if (__f.rowCount() < __m) { __m = __f.rowCount(); }\n"
+                "        return heap " + tblType + "("
+                    + joinCols("__f", ".slice(0, __m)") + ");\n"
+                "    }\n";
+            frag += "    public #" + tblType + " fetch(int64 n) { "
+                "return this.head(n); }\n";
+            // __narrowCheck: `.as<R>()`'s schema validation (spec §4.3.1)
+            // against this record — strict: same column count, every field
+            // present with its exact physical and nullability. Runs on a
+            // schema-only frame at plan build; never forces.
+            {
+                frag += "    public void __narrowCheck() {\n"
+                    "        DynFrame __d = this.__schemaOf();\n"
+                    "        if (__d.width() != "
+                        + std::to_string(cols.size()) + ") {\n"
+                    "            throw heap FrameException(\"Table.as<" + schema
+                        + ">: schema \" + __d.schemaText() + \" has \" + "
+                        "stack Int64((int64) __d.width()).toString() + "
+                        "\" columns; " + schema + " declares "
+                        + std::to_string(cols.size()) + "\");\n"
+                    "        }\n";
+                for (std::size_t i = 0; i < cols.size(); ++i) {
+                    const std::string ix = std::to_string(i);
+                    const std::string expected = cols[i].phys
+                        + (cols[i].nullable ? "?" : "");
+                    frag += "        int32 __i" + ix + " = __d.find(\""
+                            + cols[i].name + "\");\n"
+                        "        if (__i" + ix + " < 0) {\n"
+                        "            throw heap FrameException(\"Table.as<"
+                            + schema + ">: column '" + cols[i].name
+                            + "' absent from schema \" + __d.schemaText() + \"; "
+                            + schema + "." + cols[i].name + " is '" + expected
+                            + "'\");\n"
+                        "        }\n"
+                        "        String __t" + ix + " = __d.typeNameAt(__i"
+                            + ix + ");\n"
+                        "        if (__d.nullableAt(__i" + ix + ")) { __t" + ix
+                            + " = __t" + ix + " + \"?\"; }\n"
+                        "        if (!__t" + ix + ".equals(\"" + expected
+                            + "\")) {\n"
+                        "            throw heap FrameException(\"Table.as<"
+                            + schema + ">: column '" + cols[i].name
+                            + "' has type '\" + __t" + ix + " + \"'; " + schema
+                            + "." + cols[i].name + " is '" + expected + "'\");\n"
+                        "        }\n";
+                }
+                frag += "    }\n";
+            }
+            // The typed relational ops — the U1-decided lambda-param DSL:
+            // the builder companion is the lambda's typed parameter, so a
+            // schema typo or type mismatch is a COMPILE error. All three
+            // are lazy (they build nodes via the template machinery).
+            frag += "    public #" + tblType + " filter((" + recName
+                    + "Cols) -> #Pred fn) {\n"
+                "        " + recName + "Cols __c = heap " + recName + "Cols();\n"
+                "        Pred __p = fn(__c);\n"
+                "        return this.filter(#__p);\n"
+                "    }\n";
+            frag += "    public #Table<?> select((" + recName
+                    + "Cols, Sels) -> void fn) {\n"
+                "        " + recName + "Cols __c = heap " + recName + "Cols();\n"
+                "        Sels __s = heap Sels();\n"
+                "        fn(__c, __s);\n"
+                "        int32 __n = __s.count();\n"
+                "        return this.__project(__s.take(), __n, false);\n"
+                "    }\n";
+            frag += "    public #Table<?> with((" + recName
+                    + "Cols) -> #Sel fn) {\n"
+                "        " + recName + "Cols __c = heap " + recName + "Cols();\n"
+                "        Sel __e = fn(__c);\n"
+                "        return this.__project(#__e, 1, true);\n"
+                "    }\n";
+            // groupBy/agg (U8): keys reuse the Sels collector — a key is a
+            // passthrough reference, which is exactly what Sels collects —
+            // so single and multi-column grouping share one signature. The
+            // handle stays typed between the two calls so `agg`'s builder
+            // resolves; the aggregated RESULT is erased.
+            frag += "    public #" + tblType + " groupBy((" + recName
+                    + "Cols, Sels) -> void fn) {\n"
+                "        " + recName + "Cols __c = heap " + recName + "Cols();\n"
+                "        Sels __s = heap Sels();\n"
+                "        fn(__c, __s);\n"
+                "        int32 __n = __s.count();\n"
+                "        return this.__groupBy(__s.take(), __n);\n"
+                "    }\n";
+            frag += "    public #Table<?> agg((" + recName
+                    + "Cols, Aggs) -> void fn) {\n"
+                "        " + recName + "Cols __c = heap " + recName + "Cols();\n"
+                "        Aggs __a = heap Aggs();\n"
+                "        fn(__c, __a);\n"
+                "        int32 __n = __a.count();\n"
+                "        return this.__agg(__a.take(), __n);\n"
+                "    }\n";
+            // sort/join (U9): sort reuses the Sorts collector and stays
+            // typed (schema-preserving); join reuses Sels for its keys — a
+            // key is a passthrough reference — and erases (schema-changing).
+            frag += "    public #" + tblType + " sort((" + recName
+                    + "Cols, Sorts) -> void fn) {\n"
+                "        " + recName + "Cols __c = heap " + recName + "Cols();\n"
+                "        Sorts __so = heap Sorts();\n"
+                "        fn(__c, __so);\n"
+                "        int32 __n = __so.count();\n"
+                "        return this.__sort(__so.take(), __n);\n"
+                "    }\n";
+            frag += "    public #Table<?> join(Table<?> other, (" + recName
+                    + "Cols, Sels) -> void fn, int32 how) {\n"
+                "        " + recName + "Cols __c = heap " + recName + "Cols();\n"
+                "        Sels __s = heap Sels();\n"
+                "        fn(__c, __s);\n"
+                "        int32 __n = __s.count();\n"
+                "        return this.__join(#other, __s.take(), __n, how);\n"
+                "    }\n";
+            // resample (U10): the typed lambda `(RecCols) -> #ColI64`
+            // selects the time column; the result is a resample handle
+            // (still the typed type so `.agg(...)` resolves) that erases
+            // once aggregated. A five-argument overload takes the
+            // origin/offset/closed grid overrides (Duration, no defaults).
+            frag += "    public #" + tblType + " resample((" + recName
+                    + "Cols) -> #ColI64 fn, Duration every) {\n"
+                "        " + recName + "Cols __c = heap " + recName + "Cols();\n"
+                "        ColI64 __t = fn(__c);\n"
+                "        return this.__resample(__t.name(), every.toNanos(),\n"
+                "            0, 0, false);\n"
+                "    }\n";
+            frag += "    public #" + tblType + " resample((" + recName
+                    + "Cols) -> #ColI64 fn, Duration every, Duration origin,\n"
+                "            Duration offset, boolean closedRight) {\n"
+                "        " + recName + "Cols __c = heap " + recName + "Cols();\n"
+                "        ColI64 __t = fn(__c);\n"
+                "        return this.__resample(__t.name(), every.toNanos(),\n"
+                "            origin.toNanos(), offset.toNanos(), closedRight);\n"
+                "    }\n";
+            // rolling (U11): the typed lambda selects the time column for a
+            // time window; the count form `rolling(int64)` lives on Table
+            // directly (no companion needed).
+            frag += "    public #" + tblType + " rolling((" + recName
+                    + "Cols) -> #ColI64 fn, Duration window) {\n"
+                "        " + recName + "Cols __c = heap " + recName + "Cols();\n"
+                "        ColI64 __t = fn(__c);\n"
+                "        return this.__rolling(__t.name(), window.toNanos(),\n"
+                "            true);\n"
+                "    }\n";
+            // rowAt: one TYPED row — the record — reconstructed from the
+            // physicals (Instant from epoch-nanos, Utf8 from utf8; a
+            // nullable field yields its physical value, validity stays a
+            // column-accessor fact).
+            frag += "    public " + recName + " rowAt(int64 i) {\n"
+                "        " + tblType + " __f = this.collect();\n"
+                "        if (__f.erased) {\n"
+                "            throw heap FrameException(\"Table<" + schema
+                    + ">.rowAt: schema-erased result - narrow with as<R>() "
+                    "first\");\n"
+                "        }\n"
+                "        if (i < 0 || i >= __f.rowCount()) {\n"
+                "            throw heap FrameException(\"Table<" + schema
+                    + ">.rowAt: row index out of range\");\n"
+                "        }\n"
+                "        return " + recName + " { ";
+            {
+                bool firstField = true;
+                for (auto& prop : fields) {
+                    auto ft = prop->getType();
+                    const std::string tn = (ft && ft->getQName())
+                        ? ft->getQName()->getTypeName() : std::string();
+                    const std::string read =
+                        "__f." + prop->getName() + ".get(i)";
+                    std::string value;
+                    if (tn == "Instant") {
+                        value = "stack Instant(" + read + " / 1000000000, "
+                            "(int32) (" + read + " % 1000000000))";
+                    } else if (tn == "Utf8") {
+                        value = "Utf8.of(" + read + ")";
+                    } else {
+                        value = read;
+                    }
+                    if (!firstField) frag += ", ";
+                    frag += prop->getName() + ": " + value;
+                    firstField = false;
+                }
+            }
+            frag += " };\n"
+                "    }\n";
+            // rows: the iteration terminal — a typed cursor over a forced
+            // snapshot (the for-each protocol covers arrays only today; the
+            // `for (row : table)` sugar is recorded for syntax-sugar).
+            frag += "    public #" + recName + "Rows rows() {\n"
+                "        " + tblType + " __f = this.collect();\n"
+                "        return heap " + recName + "Rows(__f.aliasTable());\n"
+                "    }\n";
+            }  // !boundedHandle
+            frag += "}";
+
+            MemberSynthesisResult r;
+            r.classBodyFragment = std::move(frag);
+            r.imports = {{"Column", "cajeta.nucleo.column"},
+                         {"NullableColumn", "cajeta.nucleo.column"},
+                         {"StringColumn", "cajeta.nucleo.column"},
+                         {"DynCol", "cajeta.nucleo.column"},
+                         {"FrameException", "cajeta.nucleo.frame"},
+                         {"Plan", "cajeta.nucleo.frame"},
+                         {"DynFrame", "cajeta.nucleo.frame"},
+                         {"Pred", "cajeta.nucleo.frame"},
+                         {"Sel", "cajeta.nucleo.frame"},
+                         {"Sels", "cajeta.nucleo.frame"},
+                         {"Agg", "cajeta.nucleo.frame"},
+                         {"Aggs", "cajeta.nucleo.frame"},
+                         {"Sorts", "cajeta.nucleo.frame"},
+                         {"SortKey", "cajeta.nucleo.frame"},
+                         {"Join", "cajeta.nucleo.frame"},
+                         {"ColI64", "cajeta.nucleo.frame"},
+                         {"Duration", "cajeta.time"},
+                         {"Int64", "cajeta.lang"},
+                         {"Utf8", "cajeta.lang"},
+                         {"Instant", "cajeta.time"}};
+            if (!boundedHandle) {
+                r.imports.emplace_back(recName + "Cols",
+                    record->getQName()->getPackageName());
+                r.imports.emplace_back(recName + "Rows",
+                    record->getQName()->getPackageName());
+                r.imports.emplace_back(recName + "TableRebinder",
+                    record->getQName()->getPackageName());
+            }
+            return r;
+        });
+
+        // nucleo-frame U5 — the `<Record>TableRebinder` companion: the
+        // typed-rebuild seam behind the frame `Rebinder<T>` interface.
+        // Template code dispatches `rebinder.rebind(frame)` (it cannot name
+        // synthesized members — a `Table<?>` monomorph compiles the same
+        // bodies); this companion unwraps the frame's columns zero-copy in
+        // schema order and calls the synthesized column constructor.
+        // Concrete instantiations only.
+        reg.registerCompanion("tableRebinder",
+                [](const SynthesisContext& c)
+                    -> std::optional<SynthesizerRegistry::CompanionSynthesisResult> {
+            auto structure = c.parent;
+            if (!structure || !structure->isInstantiation()) return std::nullopt;
+            if (structure->isWildcardInstantiation()) return std::nullopt;
+            auto origin = structure->getTemplateOrigin();
+            if (!origin || !origin->getQName()
+                    || origin->getQName()->toCanonical()
+                        != "cajeta.nucleo.frame.Table") {
+                return std::nullopt;
+            }
+            const auto& args = structure->getTypeArguments();
+            if (args.size() != 1) return std::nullopt;
+            auto record = std::dynamic_pointer_cast<CajetaClass>(args[0]);
+            if (!record || !record->isRecordType()) return std::nullopt;
+
+            std::vector<StructurePropertyPtr> fields;
+            std::function<void(CajetaClassPtr)> collect =
+                [&](CajetaClassPtr k) {
+                    if (!k) return;
+                    for (auto& s : k->getSuperClasses()) collect(s);
+                    for (auto& p : k->getPropertyList()) {
+                        if (p && !p->isStatic()) fields.push_back(p);
+                    }
+                };
+            collect(record);
+
+            SynthesizerRegistry::CompanionSynthesisResult r;
+            const std::string recName = record->getQName()->getTypeName();
+            r.className = recName + "TableRebinder";
+            r.packageName = record->getQName()->getPackageName();
+            r.imports.emplace_back("Table", "cajeta.nucleo.frame");
+            r.imports.emplace_back("Rebinder", "cajeta.nucleo.frame");
+            r.imports.emplace_back("DynFrame", "cajeta.nucleo.frame");
+            const std::string tblType = "Table<" + recName + ">";
+            std::string unwraps;
+            for (std::size_t i = 0; i < fields.size(); ++i) {
+                auto ft = fields[i]->getType();
+                const std::string tn = (ft && ft->getQName())
+                    ? ft->getQName()->getTypeName() : std::string();
+                const bool nullable =
+                    fields[i]->findAnnotation("Nullable") != nullptr;
+                std::string acc;
+                if (tn == "Instant") acc = "asI64";
+                else if (tn == "Utf8") acc = "asStr";
+                else {
+                    static const std::map<std::string, std::string> sfx = {
+                        {"int8", "I8"}, {"int16", "I16"}, {"int32", "I32"},
+                        {"int64", "I64"}, {"uint8", "U8"}, {"uint16", "U16"},
+                        {"uint32", "U32"}, {"uint64", "U64"},
+                        {"float32", "F32"}, {"float64", "F64"}};
+                    auto it = sfx.find(tn);
+                    if (it == sfx.end()) return std::nullopt;  // unmapped: the
+                        // member synthesizer already threw the named error
+                    acc = std::string("as") + (nullable ? "N" : "")
+                        + it->second;
+                }
+                if (i) unwraps += ", ";
+                unwraps += "d.colAt(" + std::to_string(i) + ")." + acc + "()";
+            }
+            r.imports.emplace_back("RebindSlot", "cajeta.nucleo.frame");
+            r.classSource = "public class " + r.className
+                + " implements Rebinder {\n"
+                "    public " + r.className + "() { }\n"
+                "    public void rebindInto(DynFrame d, RebindSlot slot) {\n"
+                "        slot.put(heap " + tblType + "(" + unwraps + "));\n"
+                "    }\n"
+                "}\n";
+            return r;
+        });
+
+        // nucleo-frame U4 — the `<Record>Rows` companion: the typed row
+        // cursor `Table<Record>.rows()` returns. Holds an owned zero-copy
+        // snapshot; `next()` reconstructs typed rows via `rowAt`. Concrete
+        // instantiations only (the cursor names the concrete table type).
+        reg.registerCompanion("tableRows",
+                [](const SynthesisContext& c)
+                    -> std::optional<SynthesizerRegistry::CompanionSynthesisResult> {
+            auto structure = c.parent;
+            if (!structure || !structure->isInstantiation()) return std::nullopt;
+            if (structure->isWildcardInstantiation()) return std::nullopt;
+            auto origin = structure->getTemplateOrigin();
+            if (!origin || !origin->getQName()
+                    || origin->getQName()->toCanonical()
+                        != "cajeta.nucleo.frame.Table") {
+                return std::nullopt;
+            }
+            const auto& args = structure->getTypeArguments();
+            if (args.size() != 1) return std::nullopt;
+            auto record = std::dynamic_pointer_cast<CajetaClass>(args[0]);
+            if (!record || !record->isRecordType()) return std::nullopt;
+            SynthesizerRegistry::CompanionSynthesisResult r;
+            const std::string recName = record->getQName()->getTypeName();
+            r.className = recName + "Rows";
+            r.packageName = record->getQName()->getPackageName();
+            r.imports.emplace_back("Table", "cajeta.nucleo.frame");
+            r.imports.emplace_back("FrameException", "cajeta.nucleo.frame");
+            const std::string tblType = "Table<" + recName + ">";
+            r.classSource = "public class " + r.className + " {\n"
+                "    " + tblType + " t;\n"
+                "    int64 i;\n"
+                "    int64 n;\n"
+                "    public " + r.className + "(#" + tblType + " t) {\n"
+                "        this.t #= t;\n"
+                "        this.i = 0;\n"
+                "        this.n = this.t.rowCount();\n"
+                "    }\n"
+                "    public boolean hasNext() { return this.i < this.n; }\n"
+                "    public " + recName + " next() {\n"
+                "        if (this.i >= this.n) {\n"
+                "            throw heap FrameException(\"" + r.className
+                    + ".next: past the end\");\n"
+                "        }\n"
+                "        " + recName + " r = this.t.rowAt(this.i);\n"
+                "        this.i = this.i + 1;\n"
+                "        return r;\n"
+                "    }\n"
+                "}\n";
+            return r;
+        });
+
+        // nucleo-frame U1 — the `<Record>Cols` companion: emitted per
+        // `Table<Record>` instantiation, it is the typed column-expression
+        // builder a relational op's lambda receives
+        // (`ticks.filter((TickCols c) -> c.price() > 0.0)`). SPIKE SHAPE:
+        // builder methods return per-field ordinals — the real expression
+        // node family replaces the bodies in U1's 1.2.2. Same gate as the
+        // `table` member synthesizer: an instantiation of a template named
+        // `Table` with one record argument.
+        reg.registerCompanion("tableCols",
+                [](const SynthesisContext& c)
+                    -> std::optional<SynthesizerRegistry::CompanionSynthesisResult> {
             auto structure = c.parent;
             if (!structure || !structure->isInstantiation()) return std::nullopt;
             auto origin = structure->getTemplateOrigin();
@@ -407,19 +1085,61 @@ namespace cajeta::synth {
             if (args.size() != 1) return std::nullopt;
             auto record = std::dynamic_pointer_cast<CajetaClass>(args[0]);
             if (!record || !record->isRecordType()) return std::nullopt;
-            std::string frag = "{ ";
-            for (auto& prop : record->getPropertyList()) {
-                if (!prop || prop->isStatic()) continue;
+            SynthesizerRegistry::CompanionSynthesisResult r;
+            r.className = record->getQName()->getTypeName() + "Cols";
+            r.packageName = record->getQName()->getPackageName();
+            // Typed builders: each field becomes a method returning the
+            // field-typed column-reference NODE (the U1 1.2.2 node family).
+            // float64/float32 -> ColF64; integers + Instant (epoch-nanos)
+            // -> ColI64 (EXACT comparisons, no float64 round-trip); Utf8
+            // (the record-legal text field; `String` kept for the U1 test
+            // shells) -> ColStr; any other field type synthesizes NO
+            // builder (the member-accessor synthesizer still covers direct
+            // access). Fields enumerate supers-first recursively — the SAME
+            // layout order the table synthesizer derives columns in, so
+            // builder ordinals always match column ordinals.
+            r.imports.emplace_back("ColF64", "cajeta.nucleo.frame");
+            r.imports.emplace_back("ColI64", "cajeta.nucleo.frame");
+            r.imports.emplace_back("ColStr", "cajeta.nucleo.frame");
+            r.imports.emplace_back("Pred", "cajeta.nucleo.frame");
+            std::vector<StructurePropertyPtr> colsFields;
+            std::function<void(CajetaClassPtr)> collectFields =
+                [&](CajetaClassPtr k) {
+                    if (!k) return;
+                    for (auto& s : k->getSuperClasses()) collectFields(s);
+                    for (auto& p : k->getPropertyList()) {
+                        if (p && !p->isStatic()) colsFields.push_back(p);
+                    }
+                };
+            collectFields(record);
+            std::string src = "public class " + r.className + " {\n"
+                "    public " + r.className + "() { }\n";
+            int32_t ord = 0;
+            for (auto& prop : colsFields) {
                 auto ft = prop->getType();
-                if (!ft || !ft->getQName()) continue;
-                const std::string typeName = ft->getQName()->getTypeName();
+                std::string tn = (ft && ft->getQName())
+                    ? ft->getQName()->getTypeName() : std::string();
                 const std::string fieldName = prop->getName();
-                frag += "public " + typeName + " " + fieldName
-                    + "() { return this.sample." + fieldName + "; } ";
+                if (tn == "float64" || tn == "float32") {
+                    src += "    public #ColF64 " + fieldName
+                        + "() { return ColF64.colRef(" + std::to_string(ord)
+                        + ", \"" + fieldName + "\"); }\n";
+                } else if (tn == "int8" || tn == "int16" || tn == "int32"
+                        || tn == "int64" || tn == "uint8" || tn == "uint16"
+                        || tn == "uint32" || tn == "uint64"
+                        || tn == "Instant") {
+                    src += "    public #ColI64 " + fieldName
+                        + "() { return ColI64.colRef(" + std::to_string(ord)
+                        + ", \"" + fieldName + "\"); }\n";
+                } else if (tn == "String" || tn == "Utf8") {
+                    src += "    public #ColStr " + fieldName
+                        + "() { return ColStr.colRef(" + std::to_string(ord)
+                        + ", \"" + fieldName + "\"); }\n";
+                }
+                ord = ord + 1;
             }
-            frag += "}";
-            MemberSynthesisResult r;
-            r.classBodyFragment = std::move(frag);
+            src += "}\n";
+            r.classSource = std::move(src);
             return r;
         });
         });  // std::call_once

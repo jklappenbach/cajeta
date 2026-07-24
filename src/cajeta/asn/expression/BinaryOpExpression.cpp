@@ -142,12 +142,27 @@ namespace cajeta {
                     module->getLlvmModule(), gv);
             }
             if (!vtableRef) {
+                // The implementer hasn't synthesized this per-(class,
+                // iface) vtable (an unresolved implements edge, or a pair
+                // never dispatched). The codegen fixed-point's flagged
+                // completion pass re-synthesizes classes whose interface
+                // was a lazy-package placeholder BEFORE body codegen runs,
+                // so by the time a real dispatch site compiles the lookup
+                // above succeeds; a null here only reaches dead slots.
                 vtableRef = llvm::ConstantPointerNull::get(
                     llvm::cast<llvm::PointerType>(ptrTy));
             }
             builder->CreateStore(vtableRef, vtSlot);
+            // `#=` / `#expr` RHS transfers ownership into the slot — the
+            // MoveExpression already deactivated the source's drop entry,
+            // so the fat body's kind must record OWNED or the instance
+            // leaks (and an owned store dropped as BORROWED would never
+            // free). Mirrors LocalVariableDeclaration's kind selection.
+            bool rhsIsMove =
+                std::dynamic_pointer_cast<MoveExpression>(rhsAst) != nullptr;
             builder->CreateStore(
-                llvm::ConstantInt::get(i64Ty, (uint64_t) IFACE_KIND_BORROWED_CLASS),
+                llvm::ConstantInt::get(i64Ty, (uint64_t) (rhsIsMove
+                    ? IFACE_KIND_OWNED_CLASS : IFACE_KIND_BORROWED_CLASS)),
                 kindSlot);
         } else if (llvm::isa<llvm::ConstantPointerNull>(rhsVal)) {
             // `arr[i] = null` (the assignment-based drop idiom): zero the
@@ -164,6 +179,23 @@ namespace cajeta {
             uint64_t bodyBytes = dl.getTypeAllocSize(bodyTy);
             builder->CreateMemCpy(slot, llvm::MaybeAlign(8),
                 rhsVal, llvm::MaybeAlign(8), bodyBytes);
+            // A plain (non-move) copy is a BORROW: copying the source's
+            // OWNED kind verbatim would make two owners of one instance —
+            // both drops would free it. Downgrade the copy's kind unless
+            // the RHS transferred (`#=`).
+            if (!std::dynamic_pointer_cast<MoveExpression>(rhsAst)) {
+                llvm::Value* kindSlot = builder->CreateStructGEP(
+                    bodyTy, slot, 2, "iface_kind");
+                llvm::Value* dataSlot0 = builder->CreateStructGEP(
+                    bodyTy, slot, 0, "iface_data");
+                llvm::Value* dataVal = builder->CreateLoad(ptrTy, dataSlot0);
+                llvm::Value* isNull = builder->CreateIsNull(dataVal);
+                llvm::Value* kindVal = builder->CreateSelect(isNull,
+                    llvm::ConstantInt::get(i64Ty, 0),
+                    llvm::ConstantInt::get(i64Ty,
+                        (uint64_t) IFACE_KIND_BORROWED_CLASS));
+                builder->CreateStore(kindVal, kindSlot);
+            }
         }
     }
 
@@ -599,6 +631,37 @@ namespace cajeta {
     // promotion pass, so the binary-op site does the minimum needed for the IR verifier
     // to accept the result. Strategy: if either is FP, both go to the wider FP; else if
     // both are integers, both go to the wider integer (signed).
+    // Arithmetic on two POINTER operands: the wildcard monomorph of a class
+    // template (`Column<?>::mean`) lowers T-typed values as opaque pointers,
+    // and its body is DEAD code — a wildcard receiver never executes it
+    // (objects are always concrete monomorphs; calls are direct) — but the
+    // body still lands in the module and must pass LLVM verify. `add ptr`
+    // has historically escaped through the string-concat fallback; `-`,
+    // `*`, `/` reached CreateSub/Mul/UDiv with pointer operands, which
+    // verify rejects. Round-trip through i64 — legal IR, never executed.
+    static llvm::Value* deadPtrArith(CajetaModulePtr module, llvm::Value* l,
+            llvm::Value* r, int op) {
+        auto* builder = module->getBuilder();
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(*module->getLlvmContext());
+        llvm::Value* li = builder->CreatePtrToInt(l, i64Ty, "deadptr.l");
+        llvm::Value* ri = builder->CreatePtrToInt(r, i64Ty, "deadptr.r");
+        llvm::Value* v = nullptr;
+        if (op == BINARY_OP_SUB) {
+            v = builder->CreateSub(li, ri);
+        } else if (op == BINARY_OP_MUL) {
+            v = builder->CreateMul(li, ri);
+        } else {
+            // Division: guard the divisor so even a stray execution cannot
+            // trap the process on udiv-by-zero.
+            llvm::Value* zero = llvm::ConstantInt::get(i64Ty, 0);
+            llvm::Value* isZero = builder->CreateICmpEQ(ri, zero);
+            llvm::Value* safe = builder->CreateSelect(isZero,
+                llvm::ConstantInt::get(i64Ty, 1), ri);
+            v = builder->CreateSDiv(li, safe);
+        }
+        return builder->CreateIntToPtr(v, l->getType(), "deadptr.res");
+    }
+
     static std::pair<llvm::Value*, llvm::Value*> coerceArithPair(
             CajetaModulePtr module, llvm::Value* l, llvm::Value* r) {
         auto* builder = module->getBuilder();
@@ -723,6 +786,45 @@ namespace cajeta {
             return matops::scale(*builder, l, r, isFloat);
         }
         return nullptr;
+    }
+
+    CajetaTypePtr BinaryOpExpression::comparisonResultType(CajetaModulePtr module) {
+        CajetaTypePtr boolTy = CajetaType::of("boolean");
+        if (children.size() < 2) return boolTy;
+        auto lhs = dynamic_pointer_cast<Expression>(children[0]);
+        auto rhs = dynamic_pointer_cast<Expression>(children[1]);
+        if (!lhs || !rhs) return boolTy;
+        CajetaTypePtr lt = lhs->getResolvedType();
+        CajetaTypePtr rt = rhs->getResolvedType();
+        // Pre-pass: operand types not yet known — do not stamp; the caller's
+        // later `if (!resolvedType) resolveTypes(...)` recomputes with them.
+        if (!lt && !rt) return nullptr;
+        const char* sym = nullptr;
+        switch (binaryOp) {
+            case BINARY_OP_LT: sym = "<";  break;
+            case BINARY_OP_LE: sym = "<="; break;
+            case BINARY_OP_GT: sym = ">";  break;
+            case BINARY_OP_GE: sym = ">="; break;
+            case BINARY_OP_EQ: sym = "=="; break;
+            case BINARY_OP_NE: sym = "!="; break;
+            default: return boolTy;
+        }
+        std::string name = std::string("operator") + sym;
+        for (const CajetaTypePtr& side : {lt, rt}) {
+            auto cls = dynamic_pointer_cast<CajetaClass>(side);
+            if (!cls || cls->isInterface()
+                    || (cls->getTypeFlags() & PRIMITIVE_FLAG)) {
+                continue;
+            }
+            vector<ParameterEntry> entries;
+            entries.push_back(ParameterEntry(lt ? lt : side, "", nullptr));
+            entries.push_back(ParameterEntry(rt ? rt : side, "", nullptr));
+            if (MethodPtr m = cls->resolveMethod(name, entries,
+                    /*isConstructor=*/false, /*floatingParams=*/false)) {
+                if (m->getReturnType()) return m->getReturnType();
+            }
+        }
+        return boolTy;
     }
 
     llvm::Value* BinaryOpExpression::generateCode(CajetaModulePtr module) {
@@ -1174,7 +1276,7 @@ namespace cajeta {
                             ? builder->CreateFCmpOEQ(l, r, "mat.cmp")
                             : builder->CreateICmpEQ(l, r, "mat.cmp"); break;
                         case BINARY_OP_NE: cmp = isFloat
-                            ? builder->CreateFCmpONE(l, r, "mat.cmp")
+                            ? builder->CreateFCmpUNE(l, r, "mat.cmp")
                             : builder->CreateICmpNE(l, r, "mat.cmp"); break;
                         case BINARY_OP_LT: cmp = isFloat
                             ? builder->CreateFCmpOLT(l, r, "mat.cmp")
@@ -1274,7 +1376,7 @@ namespace cajeta {
                             ? builder->CreateFCmpOEQ(l, r, "vec.cmp")
                             : builder->CreateICmpEQ(l, r, "vec.cmp"); break;
                         case BINARY_OP_NE: cmp = isFloat
-                            ? builder->CreateFCmpONE(l, r, "vec.cmp")
+                            ? builder->CreateFCmpUNE(l, r, "vec.cmp")
                             : builder->CreateICmpNE(l, r, "vec.cmp"); break;
                         case BINARY_OP_LT: cmp = isFloat
                             ? builder->CreateFCmpOLT(l, r, "vec.cmp")
@@ -1427,6 +1529,32 @@ namespace cajeta {
                             binaryOp, tryInvoke, negate);
                     if (disp.first) {
                         return disp.second;
+                    }
+                    // nucleo-frame U1 — an ORDERING comparison between a
+                    // CLASS and a NUMERIC primitive with no matching operator
+                    // override has no meaning: the builtin path would
+                    // silently compare a POINTER against the number. Fail
+                    // loud, naming the type and operator (`ColStr > 0.0` is
+                    // the canonical mis-typed-DSL case). Class-vs-class
+                    // ordering (String < String rides a downstream builtin)
+                    // and EQ/NE (pointer identity) fall through unchanged.
+                    if ((binaryOp == BINARY_OP_LT || binaryOp == BINARY_OP_LE
+                            || binaryOp == BINARY_OP_GT
+                            || binaryOp == BINARY_OP_GE)
+                            && rhsType
+                            && (rhsType->getTypeFlags() & PRIMITIVE_FLAG)
+                            && (rhsType->getTypeFlags() & NUMBER_FLAG)) {
+                        throw Exception(
+                            "no 'operator" + std::string(opSym) + "' on '"
+                                + lhsClass->getQName()->toCanonical()
+                                + "' accepts a '"
+                                + (rhsType ? rhsType->toCanonical()
+                                           : std::string("?"))
+                                + "' operand — ordering comparisons on class "
+                                  "types require an operator override "
+                                  "(pointer ordering is not a comparison)",
+                            "CAJETA_ERROR_NO_MATCHING_OVERLOAD",
+                            "", getSourceLine(), getSourceColumn());
                     }
                 }
             }
@@ -1793,20 +1921,15 @@ namespace cajeta {
                     if (lhsCls && lhsCls->isInterface()) {
                         llvm::Type* ifaceTy = lhsAst->getResolvedType()->getLlvmType();
                         if (ifaceTy && ifaceTy->isStructTy()) {
-                            const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
-                            llvm::Value* size = llvm::ConstantInt::get(
-                                llvm::Type::getInt64Ty(*module->getLlvmContext()),
-                                dl.getTypeAllocSize(ifaceTy));
-                            llvm::Align align(dl.getABITypeAlign(ifaceTy));
-                            llvm::Value* srcBody = loadR(rhs);
-                            if (llvm::isa<llvm::ConstantPointerNull>(srcBody)) {
-                                builder->CreateMemSet(lhs,
-                                    llvm::ConstantInt::get(
-                                        llvm::Type::getInt8Ty(*module->getLlvmContext()), 0),
-                                    size, align);
-                            } else {
-                                builder->CreateMemCpy(lhs, align, srcBody, align, size);
-                            }
+                            // storeInterfaceInlineBody handles all three RHS
+                            // shapes: a concrete class instance ASSEMBLES the
+                            // fat body in place (data/vtable/kind — a memcpy
+                            // from an 8-byte class object read 16 bytes of
+                            // heap garbage as vtable+kind and dispatch
+                            // jumped into it), an interface value copies its
+                            // body, and null zeroes the field.
+                            storeInterfaceInlineBody(module, lhs, loadR(rhs),
+                                lhsCls, rhsAst);
                             result = lhs;
                             break;
                         }
@@ -2539,10 +2662,30 @@ namespace cajeta {
                                 storedViaClassElem = true;
                             }
                         } else if (sidecar) {
+                            // An identifier RHS hands its wrapper over only
+                            // when the local actually HOLDS TITLE (it has a
+                            // drop entry the deactivation block below will
+                            // strip). A borrow-holding local (`String n =
+                            // s.outNameOf(); arr[i] = n;`) owns nothing to
+                            // hand over — taking its wrapper double-titles
+                            // the source's string and the array teardown
+                            // frees it under the real owner (the nucleo-frame
+                            // U7 Exec.apply schema UAF). Those route to the
+                            // alias/resolve-copy store instead.
                             bool takesOwnership =
-                                dynamic_pointer_cast<IdentifierExpression>(rhsAst)
-                                || dynamic_pointer_cast<MoveExpression>(rhsAst)
+                                dynamic_pointer_cast<MoveExpression>(rhsAst)
                                 || MethodCallExpression::freshOwnedStringTemp(rhsAst);
+                            if (!takesOwnership) {
+                                if (auto rid = dynamic_pointer_cast<
+                                        IdentifierExpression>(rhsAst)) {
+                                    if (auto sc2 = module->getScopeStack().peek()) {
+                                        FieldPtr srcF = sc2->getField(
+                                            rid->getTextValue());
+                                        takesOwnership = srcF
+                                            && srcF->getDropEntry() != nullptr;
+                                    }
+                                }
+                            }
                             llvm::Function* setFn = module->getRuntimeFunction(
                                 takesOwnership
                                     ? "__cajeta_string_array_elem_set_owned"
@@ -2564,10 +2707,23 @@ namespace cajeta {
                             // wrapper, violating the always-own slot
                             // contract (teardown + displacement walks free
                             // every resident wrapper — Headers.grow UAF).
+                            // Same title gate as the sidecar branch above: an
+                            // identifier hands over its wrapper only when it
+                            // holds title; borrow-holding locals alias-copy.
                             bool seTakes =
-                                dynamic_pointer_cast<IdentifierExpression>(rhsAst)
-                                || dynamic_pointer_cast<MoveExpression>(rhsAst)
+                                dynamic_pointer_cast<MoveExpression>(rhsAst)
                                 || MethodCallExpression::freshOwnedStringTemp(rhsAst);
+                            if (!seTakes) {
+                                if (auto rid = dynamic_pointer_cast<
+                                        IdentifierExpression>(rhsAst)) {
+                                    if (auto sc2 = module->getScopeStack().peek()) {
+                                        FieldPtr srcF = sc2->getField(
+                                            rid->getTextValue());
+                                        seTakes = srcF
+                                            && srcF->getDropEntry() != nullptr;
+                                    }
+                                }
+                            }
                             if (llvm::Function* seFn = module->getRuntimeFunction(
                                     "__cajeta_string_elem_store")) {
                                 builder->CreateCall(seFn,
@@ -3233,6 +3389,10 @@ namespace cajeta {
             }
             case BINARY_OP_SUB: {
                 auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
+                if (l->getType()->isPointerTy() && r->getType()->isPointerTy()) {
+                    result = deadPtrArith(module, l, r, BINARY_OP_SUB);
+                    break;
+                }
                 auto signedFromAst = [](ExpressionPtr a, ExpressionPtr b) -> bool {
                     return binaryOverflowIsSigned(a, b);
                 };
@@ -3250,6 +3410,10 @@ namespace cajeta {
             }
             case BINARY_OP_MUL: {
                 auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
+                if (l->getType()->isPointerTy() && r->getType()->isPointerTy()) {
+                    result = deadPtrArith(module, l, r, BINARY_OP_MUL);
+                    break;
+                }
                 auto signedFromAst = [](ExpressionPtr a, ExpressionPtr b) -> bool {
                     return binaryOverflowIsSigned(a, b);
                 };
@@ -3267,6 +3431,10 @@ namespace cajeta {
             }
             case BINARY_OP_DIV: {
                 auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
+                if (l->getType()->isPointerTy() && r->getType()->isPointerTy()) {
+                    result = deadPtrArith(module, l, r, BINARY_OP_DIV);
+                    break;
+                }
                 if (l->getType()->isFPOrFPVectorTy()) {
                     result = emitFpBinOp(module, l, r, llvm::Instruction::FDiv);
                 } else {
@@ -3565,7 +3733,7 @@ namespace cajeta {
                         case BINARY_OP_GT: result = builder->CreateFCmpOGT(l, r); break;
                         case BINARY_OP_GE: result = builder->CreateFCmpOGE(l, r); break;
                         case BINARY_OP_EQ: result = builder->CreateFCmpOEQ(l, r); break;
-                        case BINARY_OP_NE: result = builder->CreateFCmpONE(l, r); break;
+                        case BINARY_OP_NE: result = builder->CreateFCmpUNE(l, r); break;  // UNE: NaN != NaN is TRUE (IEEE; the self-compare NaN idiom)
                         default: break;
                     }
                 } else {

@@ -1,0 +1,47 @@
+package cajeta.nucleo.frame;
+
+import cajeta.lang.String;
+
+/**
+ * Capability — the index-interface vocabulary (nucleo-frame U13; spec §9
+ * [F-INDEX]). The pluggable index interface is the single retrofit-expensive
+ * commitment of the indexing story; every concrete structure is a swappable
+ * implementation behind it. A column ADVERTISES a capability; a query ASKS for
+ * one; matching is EXACT (capability-kind + column). The contract is minimal
+ * and PROVISIONAL — the first implementation (zone-maps, {@link ZoneMap})
+ * finalizes the exact shape rather than a rich contract being designed before
+ * any index exists.
+ *
+ * The minimal v1 contract this unit finalizes:
+ *  - CAPABILITY VOCABULARY — three kinds for the three near-term structures:
+ *      {@link #CHUNK_SKIP} — per-chunk min/max (zone-maps, U13), served here;
+ *      {@link #RANGE}      — sorted-key range lookup (in-memory B+, U14);
+ *      {@link #POINT}      — sorted-key point lookup (in-memory B+, U14).
+ *    Spatial / nearest-neighbour capabilities are NOT defined until an R-tree /
+ *    HNSW workload arrives (spec §9.4) — no speculative vocabulary.
+ *  - REQUEST — a predicate SHAPE on a column (a range/point comparison over a
+ *    column reference; see {@link ZoneMap#mustRead}).
+ *  - RESULT — a CHUNK-MASK (which chunks a scan must read); richer results
+ *    (row-set / bitmap / position range) are added when a structure needs them.
+ *  - LIFECYCLE — bulk-load (bottom-up, never dynamic-insert: Arrow batches are
+ *    immutable), attach to the source column, discovered by the optimizer at
+ *    the scan.
+ *  - FALLBACK (load-bearing) — a missing or unmatched capability degrades to a
+ *    CORRECT full scan, never a wrong answer. An index only ever accelerates a
+ *    correct answer; it never changes it (spec §9.3).
+ */
+public class Capability {
+    /** Per-chunk min/max — a range predicate skips whole chunks (zone-maps). */
+    public static int32 CHUNK_SKIP = 1;
+    /** Sorted-key range lookup — an in-memory B+ answers a range (U14). */
+    public static int32 RANGE = 2;
+    /** Sorted-key point lookup — an in-memory B+ answers a point (U14). */
+    public static int32 POINT = 3;
+
+    public static #String nameOf(int32 cap) {
+        if (cap == 1) { return "ChunkSkip"; }
+        if (cap == 2) { return "RangePredicate"; }
+        if (cap == 3) { return "PointLookup"; }
+        return "unknown";
+    }
+}

@@ -309,6 +309,31 @@ namespace cajeta {
             registerAndRecurse(ctx->identifier()->getText(), ctx,
                                 /*markEnum=*/false, /*markValueType=*/true);
             captureTemplateMeta(ctx);
+            // nucleo-frame U1 — every record MAY become a Table<R> schema,
+            // whose instantiation synthesizes the `<R>Cols` builder
+            // companion. Archive that name now (the @GenerateMock sibling
+            // pattern) so a reference BEFORE the instantiation fires — a
+            // helper signature above the table declaration, a sibling file —
+            // resolves to a placeholder runCompanionSynthesizers later
+            // FILLS. Cost when never referenced: one archive entry. A
+            // referenced-but-never-instantiated companion is caught by
+            // validatePlaceholders with a clear unresolved-placeholder
+            // error, never a silent shell.
+            // Same pattern for the U4 `<R>Rows` typed-row cursor companion.
+            {
+                std::string prefix;
+                if (!package.empty()) prefix = package;
+                for (auto& e : enclosingStack) {
+                    if (!prefix.empty()) prefix += ".";
+                    prefix += e;
+                }
+                if (!prefix.empty()) prefix += ".";
+                for (const char* suffix : {"Cols", "Rows"}) {
+                    std::string shortName =
+                        ctx->identifier()->getText() + std::string(suffix);
+                    CajetaType::registerArchive(prefix + shortName, shortName);
+                }
+            }
             return defaultResult();
         }
 
@@ -694,10 +719,16 @@ namespace cajeta {
         }
         // cajeta.nucleo.nn + cajeta.nucleo.optim (the neural-net core) import
         // cajeta.math too — same lazy shape (nucleo-nn-optim plan).
-        return pkg == "cajeta.nucleo.nn"
-            || pkg.rfind("cajeta.nucleo.nn.", 0) == 0
-            || pkg == "cajeta.nucleo.optim"
-            || pkg.rfind("cajeta.nucleo.optim.", 0) == 0;
+        if (pkg == "cajeta.nucleo.nn"
+                || pkg.rfind("cajeta.nucleo.nn.", 0) == 0
+                || pkg == "cajeta.nucleo.optim"
+                || pkg.rfind("cajeta.nucleo.optim.", 0) == 0) {
+            return true;
+        }
+        // cajeta.nucleo.frame (the typed dataframe + DSL nodes) — lazy for
+        // the same reason (pulls columns/math when used).
+        return pkg == "cajeta.nucleo.frame"
+            || pkg.rfind("cajeta.nucleo.frame.", 0) == 0;
     }
 
     // compile-cache Unit 2 — the persistent stdlib-prime cache key (spec §2).
@@ -825,6 +856,19 @@ namespace cajeta {
             std::string pkg = g_lazyQueue.back();
             g_lazyQueue.pop_back();
             if (g_lazyParsed.count(pkg)) continue;
+            // Reuse-cache hazard gate (test-only; see setReuseHazardArmed):
+            // parsing a lazy stdlib package PER-TEST appends concrete classes
+            // to the cached stdlib module, but the reuse path's codegen loop
+            // deliberately excludes that module (it must stay byte-pristine)
+            // — the new classes' methods would remain DECLARATIONS and the
+            // JIT would fail with "Symbols not found" (frame/column classes
+            // pulled in by companion synthesis were the first to hit this).
+            // Novel lazy content is the same hazard class as a novel
+            // stdlib-template instantiation: abort BEFORE parsing so the
+            // harness retries on a fresh, fully-isolated Compiler.
+            if (Compiler::isReuseHazardArmed()) {
+                throw cajeta::ReuseHazardAbort{};
+            }
             // Mark parsed BEFORE walking the package's files: a body within the
             // package that references one of its own lazy types (e.g.
             // Matrix.transpose returns Matrix<T,C,R>) re-fires the import hook;
@@ -1998,6 +2042,12 @@ namespace cajeta {
                 for (auto& method: module->getAllMethods()) {
                     method->getLlvmFunctionType();
                 }
+            }
+            // Late interface-vtable completion for classes that prototyped
+            // while an implemented interface was still a lazy-package
+            // placeholder (flagged in synthesizeInterfaceVTables).
+            for (auto& module: codegenModules) {
+                module->completePendingInterfaceVTables();
             }
             for (auto& module: codegenModules) {
                 // Incremental: clean modules keep Phase-1 prototypes (other

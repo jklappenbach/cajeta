@@ -142,6 +142,10 @@ namespace cajeta {
         // fixed-point marker: a class with all-non-placeholder parents
         // and !prototypeBuilt is the next candidate to lay out.
         bool prototypeBuilt = false;
+        // synthesizeInterfaceVTables skipped a still-placeholder interface
+        // (lazy package not yet drained) — the codegen fixed-point re-runs
+        // synthesis for exactly these classes once per pass.
+        bool pendingIfaceVTables = false;
         bool recordType = false;
         CajetaModulePtr module;
 
@@ -999,6 +1003,8 @@ namespace cajeta {
 
         // Lookup for the synthesized global by interface canonical name.
         // Returns nullptr if this class doesn't implement that interface.
+        bool hasPendingIfaceVTables() const { return pendingIfaceVTables; }
+
         llvm::GlobalVariable* getInterfaceVTable(const std::string& interfaceCanonical) const {
             const auto& m = interfaceVTablesRef();
             auto it = m.find(interfaceCanonical);

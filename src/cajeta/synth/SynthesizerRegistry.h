@@ -76,6 +76,27 @@ namespace cajeta::synth {
         // Register a member synthesizer under a stable label.
         void registerMember(std::string label, MemberSynthesizer fn);
 
+        // nucleo-frame U1 — COMPANION-CLASS synthesis: a synthesizer that
+        // emits a whole sibling CLASS keyed on a trigger (the `<Record>Cols`
+        // builder emitted per `Table<Record>` instantiation). The class
+        // registers under `className` in the trigger's user-visible package
+        // so ordinary source can NAME it (a lambda param type). Distinct
+        // from member synthesis (fragments into the triggering class) and
+        // from the transform helpers (anonymous, name-mangled, never
+        // user-spelled).
+        struct CompanionSynthesisResult {
+            std::string className;    // short name, e.g. "TickCols"
+            std::string packageName;  // registration package (the record's)
+            std::string classSource;  // full `public class X { ... }` source
+            std::vector<std::pair<std::string, std::string>> imports;
+        };
+        using CompanionSynthesizer = std::function<
+            std::optional<CompanionSynthesisResult>(const SynthesisContext&)>;
+        void registerCompanion(std::string label, CompanionSynthesizer fn);
+        std::vector<std::pair<std::string, CompanionSynthesisResult>>
+            collectCompanions(const SynthesisContext& ctx) const;
+        std::size_t companionCount() const { return companionSynths.size(); }
+
         // Collect the fragments of every member synthesizer that claims the
         // target (composition — several may inject into one declaration). A
         // synthesizer that throws (validate-first rejection) propagates. The
@@ -96,6 +117,7 @@ namespace cajeta::synth {
     private:
         std::vector<std::pair<std::string, BodySynthesizer>> bodySynths;
         std::vector<std::pair<std::string, MemberSynthesizer>> memberSynths;
+        std::vector<std::pair<std::string, CompanionSynthesizer>> companionSynths;
     };
 
     // Register the compiler's built-in body synthesizers (the codecs) into the

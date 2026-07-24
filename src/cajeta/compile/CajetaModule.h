@@ -652,6 +652,12 @@ namespace cajeta {
         // validation sweep, between parse and Phase 1.
         static void buildPendingPrototypes();
 
+        // Re-run per-(class, iface) vtable synthesis for classes that
+        // skipped a then-placeholder interface (lazy-package drain order).
+        // Idempotent; every codegen fixed-point loop calls it per pass,
+        // before method bodies emit. Implemented in CajetaModule.cpp.
+        void completePendingInterfaceVTables();
+
         // Post-parse validation: scan canonicalMap for any
         // CajetaClass with placeholderFlag still set. A placeholder
         // marks a name that fromContext synthesized when the archive
@@ -949,6 +955,41 @@ namespace cajeta {
         }
         void restoreTryFinally(std::vector<std::shared_ptr<void>> saved) {
             tryFinallyStack = std::move(saved);
+        }
+
+        // Full per-function codegen-stack detach: tryFinally + tryCatch (lint)
+        // + loop contexts + the pending loop label. Method bodies can be
+        // generated NESTED inside another method's codegen (a method-template
+        // instantiated on-reference at its call site — Method::generateCode),
+        // and none of the enclosing function's control-flow stacks may bleed
+        // into the nested body: a `return` there would otherwise emit the
+        // CALLER's try-frame unwind (__cajeta_exc_pop with no matching push —
+        // the popped frame is the caller's live try, so its later throw is
+        // "uncaught"). The lambda path isolates tryFinally via takeTryFinally;
+        // this is the same discipline for every per-function stack at once.
+        struct FunctionCodegenStacks {
+            std::vector<std::shared_ptr<void>> tryFinally;
+            std::vector<std::vector<CajetaTypePtr>> tryCatch;
+            std::vector<LoopContext> loops;
+            std::string pendingLabel;
+        };
+        FunctionCodegenStacks takeFunctionCodegenStacks() {
+            FunctionCodegenStacks saved;
+            saved.tryFinally = std::move(tryFinallyStack);
+            saved.tryCatch = std::move(tryCatchStack);
+            saved.loops = std::move(loopContextStack);
+            saved.pendingLabel = std::move(pendingLoopLabel);
+            tryFinallyStack.clear();
+            tryCatchStack.clear();
+            loopContextStack.clear();
+            pendingLoopLabel.clear();
+            return saved;
+        }
+        void restoreFunctionCodegenStacks(FunctionCodegenStacks saved) {
+            tryFinallyStack = std::move(saved.tryFinally);
+            tryCatchStack = std::move(saved.tryCatch);
+            loopContextStack = std::move(saved.loops);
+            pendingLoopLabel = std::move(saved.pendingLabel);
         }
 
         void processMetadata(CajetaClassPtr structure);

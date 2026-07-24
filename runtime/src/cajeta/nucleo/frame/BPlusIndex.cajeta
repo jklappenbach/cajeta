@@ -1,0 +1,254 @@
+package cajeta.nucleo.frame;
+
+/**
+ * BPlusIndex — the in-memory B+ index (nucleo-frame U14; spec §9.5.1). The
+ * second near-term structure after zone-maps: a BULK-LOADED B+ over one numeric
+ * key column that answers POINT and RANGE lookups exactly. It advertises
+ * {@link Capability#RANGE} and {@link Capability#POINT}; the optimizer routes a
+ * matching pushed predicate to it, and its result EXTENDS the index contract
+ * past U13's chunk-mask to a POSITION SET — the row positions a key predicate
+ * selects (spec F-INDEX: "richer results added when a structure needs them").
+ *
+ * BULK-LOADED (spec §9.2), never dynamic-insert: {@link #buildFromColumn} reads
+ * the (valid) key/position pairs in one pass, SORTS them by key (bottom-up
+ * merge sort, stable), and lays them out as a sorted leaf sequence with a
+ * one-level separator index (the first key of each fixed-capacity leaf). Deeper
+ * internal levels are a mechanical extension of the same separator layer over
+ * itself — the behaviour (point/range) is identical, so v1 stops at two levels.
+ * Because the load sorts internally, an UNSORTED key column is handled
+ * (sort-first, never refuse — the resample precedent): key order is ESTABLISHED
+ * here, so lookups stay exact regardless of storage order (plan 14.1.2).
+ *
+ * Separate int64 and float64 key paths (an int64 key never round-trips through
+ * float64 — the {@link ColI64} reason; also what lets U15 reuse the int path
+ * for Z-order morton keys with NO second tree type). A null key indexes nothing
+ * — a range/point matches no null, exactly as the row-wise three-valued
+ * predicate would.
+ */
+public class BPlusIndex {
+    boolean isInt;
+    int64 nEntries;      // valid key/position pairs (nulls excluded)
+    int64[] ikeys;       // sorted keys — int path
+    float64[] fkeys;     // sorted keys — float path
+    int64[] epos;        // row position for each sorted entry
+    int64 leafCap;       // entries per leaf (the fanout)
+    int32 nLeaves;
+    int64[] sepI;        // first key of each leaf — int path (the separators)
+    float64[] sepF;      // first key of each leaf — float path
+
+    BPlusIndex(boolean isInt, int64 nEntries) {
+        this.isInt = isInt;
+        this.nEntries = nEntries;
+        this.leafCap = 8;
+    }
+
+    public boolean advertisesRange() { return true; }   // Capability.RANGE
+    public boolean advertisesPoint() { return true; }   // Capability.POINT
+    public int64 entryCount() { return this.nEntries; }
+
+    /** Bulk-load a B+ over column `col` of `src` (valid rows only). */
+    public static #BPlusIndex buildFromColumn(DynFrame src, int32 col) {
+        boolean isInt = src.tagAt(col) <= 8;
+        int64 n = src.rowsOf();
+        // gather valid (key, pos) pairs
+        int64 cap = n;
+        if (cap < 1) { cap = 1; }
+        int64[] kI = heap int64[cap];
+        float64[] kF = heap float64[cap];
+        int64[] p = heap int64[cap];
+        int64 ne = 0;
+        int64 r = 0;
+        while (r < n) {
+            if (src.validAtCol(col, r)) {
+                if (isInt) { kI[ne] = src.i64AtCol(col, r); }
+                else { kF[ne] = src.f64AtCol(col, r); }
+                p[ne] = r;
+                ne = ne + 1;
+            }
+            r = r + 1;
+        }
+        BPlusIndex b = heap BPlusIndex(isInt, ne);
+        b.__load(isInt, kI, kF, p, ne);
+        return #b;
+    }
+
+    /** Bulk-load a B+ over a PRECOMPUTED int64 key array (U15): the Z-order
+     *  path derives morton keys column-independently, so the same tree loads
+     *  from a key/position array with no source column. All `n` entries are
+     *  valid (a derived key has no nulls). This is the reuse that means "no
+     *  second tree type" (spec §9.5.2) — the identical structure, keyed
+     *  differently. */
+    public static #BPlusIndex buildFromKeys(int64[] keys, int64[] pos, int64 n) {
+        BPlusIndex b = heap BPlusIndex(true, n);
+        float64[] noF = heap float64[1];
+        b.__load(true, keys, noF, pos, n);
+        return #b;
+    }
+
+    /** Sort the (key, position) pairs by key (stable bottom-up merge sort) and
+     *  lay them out as the sorted leaf sequence + separator index. Reads the
+     *  pair arrays (borrowed); allocates and fills this index's owned buffers.
+     *  The one bulk-load both entry points share. */
+    void __load(boolean isInt, int64[] kI, float64[] kF, int64[] p, int64 ne) {
+        int64 acap = ne;
+        if (acap < 1) { acap = 1; }
+        this.epos #= heap int64[acap];
+        if (isInt) { this.ikeys #= heap int64[acap]; }
+        else { this.fkeys #= heap float64[acap]; }
+        int64[] order = heap int64[acap];
+        int64 z = 0;
+        while (z < ne) { order[z] = z; z = z + 1; }
+        int64[] tmp = heap int64[acap];
+        int64 width = 1;
+        while (width < ne) {
+            int64 lo = 0;
+            while (lo < ne) {
+                int64 mid = lo + width;
+                if (mid > ne) { mid = ne; }
+                int64 hi = lo + width * 2;
+                if (hi > ne) { hi = ne; }
+                int64 x = lo;
+                int64 y = mid;
+                int64 tt = lo;
+                while (x < mid && y < hi) {
+                    boolean take = true;
+                    if (isInt) {
+                        take = kI[order[x]] <= kI[order[y]];
+                    } else {
+                        take = kF[order[x]] <= kF[order[y]];
+                    }
+                    if (take) { tmp[tt] = order[x]; x = x + 1; }
+                    else { tmp[tt] = order[y]; y = y + 1; }
+                    tt = tt + 1;
+                }
+                while (x < mid) { tmp[tt] = order[x]; x = x + 1; tt = tt + 1; }
+                while (y < hi) { tmp[tt] = order[y]; y = y + 1; tt = tt + 1; }
+                lo = hi;
+            }
+            int64 zz = 0;
+            while (zz < ne) { order[zz] = tmp[zz]; zz = zz + 1; }
+            width = width * 2;
+        }
+        int64 i = 0;
+        while (i < ne) {
+            int64 o = order[i];
+            this.epos[i] = p[o];
+            if (isInt) { this.ikeys[i] = kI[o]; }
+            else { this.fkeys[i] = kF[o]; }
+            i = i + 1;
+        }
+        int32 nl = 0;
+        if (ne > 0) {
+            int64 nll = (ne + this.leafCap - 1) / this.leafCap;
+            nl = (int32) nll;
+        }
+        this.nLeaves = nl;
+        int32 scap = nl;
+        if (scap < 1) { scap = 1; }
+        if (isInt) { this.sepI #= heap int64[scap]; }
+        else { this.sepF #= heap float64[scap]; }
+        int32 L = 0;
+        while (L < nl) {
+            int64 st = ((int64) L) * this.leafCap;
+            if (isInt) { this.sepI[L] = this.ikeys[st]; }
+            else { this.sepF[L] = this.fkeys[st]; }
+            L = L + 1;
+        }
+    }
+
+    /** Entry index of the first sorted entry whose int key is >= `key`: descend
+     *  the separators to the candidate leaf, then linear-scan within it (and on
+     *  into the next leaf if the key spills over — the flat array IS the leaf
+     *  chain). Returns nEntries when every key is < `key`. */
+    int64 firstGEint(int64 key) {
+        int32 lo = 0;
+        int32 hi = this.nLeaves;      // first leaf with sep > key, by bisection
+        while (lo < hi) {
+            int32 mid = lo + (hi - lo) / 2;
+            if (this.sepI[mid] <= key) { lo = mid + 1; }
+            else { hi = mid; }
+        }
+        int32 leaf = lo - 1;
+        if (leaf < 0) { leaf = 0; }
+        int64 i = ((int64) leaf) * this.leafCap;
+        while (i < this.nEntries && this.ikeys[i] < key) { i = i + 1; }
+        return i;
+    }
+
+    /** Float analogue of {@link #firstGEint}. */
+    int64 firstGEfloat(float64 key) {
+        int32 lo = 0;
+        int32 hi = this.nLeaves;
+        while (lo < hi) {
+            int32 mid = lo + (hi - lo) / 2;
+            if (this.sepF[mid] <= key) { lo = mid + 1; }
+            else { hi = mid; }
+        }
+        int32 leaf = lo - 1;
+        if (leaf < 0) { leaf = 0; }
+        int64 i = ((int64) leaf) * this.leafCap;
+        while (i < this.nEntries && this.fkeys[i] < key) { i = i + 1; }
+        return i;
+    }
+
+    /** Positions whose int key lies in the requested range, in key order, into
+     *  `out`; returns the count. An absent bound is open on that side; a point
+     *  lookup is the degenerate closed range `[v, v]`. */
+    public int64 rangeIntInto(int64[] out, boolean hasLo, boolean loInc,
+                              int64 loKey, boolean hasHi, boolean hiInc,
+                              int64 hiKey) {
+        int64 i = 0;
+        if (hasLo) {
+            i = this.firstGEint(loKey);
+            if (!loInc) {
+                while (i < this.nEntries && this.ikeys[i] == loKey) {
+                    i = i + 1;
+                }
+            }
+        }
+        int64 m = 0;
+        while (i < this.nEntries) {
+            int64 k = this.ikeys[i];
+            if (hasHi) {
+                if (k > hiKey) { i = this.nEntries; }
+                else if (k == hiKey && !hiInc) { i = this.nEntries; }
+                else { out[m] = this.epos[i]; m = m + 1; i = i + 1; }
+            } else {
+                out[m] = this.epos[i];
+                m = m + 1;
+                i = i + 1;
+            }
+        }
+        return m;
+    }
+
+    /** Float analogue of {@link #rangeIntInto} (positions are int64; only the
+     *  keys are float). */
+    public int64 rangeFloatInto(int64[] out, boolean hasLo, boolean loInc,
+                                float64 loKey, boolean hasHi, boolean hiInc,
+                                float64 hiKey) {
+        int64 i = 0;
+        if (hasLo) {
+            i = this.firstGEfloat(loKey);
+            if (!loInc) {
+                while (i < this.nEntries && this.fkeys[i] == loKey) {
+                    i = i + 1;
+                }
+            }
+        }
+        int64 m = 0;
+        while (i < this.nEntries) {
+            float64 k = this.fkeys[i];
+            if (hasHi) {
+                if (k > hiKey) { i = this.nEntries; }
+                else if (k == hiKey && !hiInc) { i = this.nEntries; }
+                else { out[m] = this.epos[i]; m = m + 1; i = i + 1; }
+            } else {
+                out[m] = this.epos[i];
+                m = m + 1;
+                i = i + 1;
+            }
+        }
+        return m;
+    }
+}

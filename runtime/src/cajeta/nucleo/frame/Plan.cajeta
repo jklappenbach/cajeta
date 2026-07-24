@@ -1,0 +1,522 @@
+package cajeta.nucleo.frame;
+
+import cajeta.lang.Int64;
+import cajeta.lang.String;
+
+/**
+ * A node in the lazy relational plan (nucleo-frame spec §4): relational
+ * operations are BUILT, not run — each op composes a node onto the chain
+ * and nothing executes until a terminal forces it (`Table.collect()`,
+ * `head`/`fetch`, row iteration). The node family covers the full op set;
+ * v1 executes `SCAN` (the U4 terminal machinery), with each op's executor
+ * landing with its unit (filter/select in U5, groupBy in U8, ...).
+ *
+ * The scan's data payload lives on the OWNING `Table<T>` handle (its typed
+ * snapshot field), not here — `Plan` stays schema-agnostic; it describes
+ * the op chain and carries op payloads (predicates, expressions, keys).
+ */
+public class Plan {
+    public static int32 SCAN = 1;
+    public static int32 FILTER = 2;
+    public static int32 PROJECT = 3;
+    public static int32 WITH = 4;
+    public static int32 GROUP = 5;
+    public static int32 SORT = 6;
+    public static int32 JOIN = 7;
+    public static int32 RESAMPLE = 8;
+    public static int32 WINDOW = 9;
+    public static int32 PIVOT = 10;
+    public static int32 MELT = 11;
+    public static int32 FILLNULL = 12;
+    public static int32 DROPNULLS = 13;
+
+    int32 kind;
+    Plan child;       // toward the scan; null on the scan itself
+    Pred pred;        // FILTER payload (owned)
+    Sel sels;         // PROJECT/WITH payload: owned selection chain
+    int32 nsels;
+    String colName;   // FILLNULL target / DROPNULLS subset (null = all)
+    float64 fillF;    // FILLNULL value (float physicals)
+    int64 fillI;      // FILLNULL value (integer physicals)
+    boolean fillIsInt;
+    Pred[] scanPreds; // U7 optimizer scan: pushed predicates, BORROWED from
+    int32 nScanPreds; //   the original chain (the owning handle keeps it)
+    String[] scanCols;// U7 optimizer scan: referenced-column subset in
+    int32 nScanCols;  //   source order; null = read every column
+    Sel keys;         // GROUP payload: key references (owned)
+    int32 nkeys;
+    Agg aggs;         // GROUP payload: named aggregates (owned)
+    int32 naggs;
+    SortKey sortKeys; // SORT payload: ordering keys, most significant first
+    int32 nsortKeys;  //   (owned)
+    Sel joinKeys;     // JOIN payload: key references over the LEFT schema
+    int32 njoinKeys;  //   (owned)
+    int32 joinHow;    // JOIN payload: the Join.* kind
+    Plan rightPlan;   // JOIN payload: the right input's op chain (owned)
+    DynFrame rightSrc;// JOIN payload: the right input's scan snapshot (owned)
+    DynFrame joinOut; // JOIN payload: output schema, precomputed at build so
+                      //   the optimizer needn't re-run the right branch (owned)
+    int64 rsEvery;    // RESAMPLE payload: bucket width in nanos (colName is
+    int64 rsOrigin;   //   the time column; aggs/naggs are the reductions);
+    int64 rsOffset;   //   grid base is origin+offset
+    boolean rsClosedRight;
+    int64 winSize;    // WINDOW payload: window nanos (time) or row count;
+    boolean winByTime;//   colName is the time column (null = count form)
+    String[] meltId;  // MELT payload: id columns (kept), value columns
+    int32 nMeltId;    //   (stacked), and the output variable/value names
+    String[] meltVal; //   (all owned copies)
+    int32 nMeltVal;
+    String meltVarName;
+    String meltValName;
+
+    Plan(int32 kind) {
+        this.kind = kind;
+    }
+
+    /** The leaf: read the owning handle's snapshot. */
+    public static #Plan scan() {
+        return heap Plan(1);
+    }
+
+    /** A filter node over `child` (U5). */
+    public static #Plan filterNode(#Pred p, #Plan child) {
+        Plan n = heap Plan(2);
+        n.pred #= p;
+        n.child #= child;
+        return #n;
+    }
+
+    /** A projection node: exactly the selections, in order (U5). */
+    public static #Plan projectNode(#Sel sels, int32 nsels, #Plan child) {
+        Plan n = heap Plan(3);
+        n.sels #= sels;
+        n.nsels = nsels;
+        n.child #= child;
+        return #n;
+    }
+
+    /** A with-columns node: the input schema plus/replacing the
+     *  selections (U5). */
+    public static #Plan withNode(#Sel sels, int32 nsels, #Plan child) {
+        Plan n = heap Plan(4);
+        n.sels #= sels;
+        n.nsels = nsels;
+        n.child #= child;
+        return #n;
+    }
+
+    /** Project or with, by flag (the Table builder's single call site). */
+    public static #Plan selNode(boolean keepAll, #Sel sels, int32 nsels,
+                                #Plan child) {
+        if (keepAll) {
+            return Plan.withNode(#sels, nsels, #child);
+        }
+        return Plan.projectNode(#sels, nsels, #child);
+    }
+
+    /** A fill-null node: `col`'s nulls replaced by a float value (U6). */
+    public static #Plan fillNullNode(String col, float64 v, #Plan child) {
+        Plan n = heap Plan(12);
+        n.colName = col;
+        n.fillF = v;
+        n.fillIsInt = false;
+        n.child #= child;
+        return #n;
+    }
+
+    /** A fill-null node, exact-integer value (U6). */
+    public static #Plan fillNullIntNode(String col, int64 v, #Plan child) {
+        Plan n = heap Plan(12);
+        n.colName = col;
+        n.fillI = v;
+        n.fillIsInt = true;
+        n.child #= child;
+        return #n;
+    }
+
+    /** A group-aggregate node: `keys` group the rows, `aggs` reduce each
+     *  group into one output row (U8). The output schema is exactly the
+     *  keys followed by the aggregates. */
+    public static #Plan groupNode(#Sel keys, int32 nkeys, #Agg aggs,
+                                  int32 naggs, #Plan child) {
+        Plan n = heap Plan(5);
+        n.keys #= keys;
+        n.nkeys = nkeys;
+        n.aggs #= aggs;
+        n.naggs = naggs;
+        n.child #= child;
+        return #n;
+    }
+
+    /** GROUP payload: the head of the key-reference chain. */
+    public Sel keysOf() {
+        return this.keys;
+    }
+
+    /** GROUP payload: key count. */
+    public int32 keyCount() {
+        return this.nkeys;
+    }
+
+    /** GROUP payload: the head of the aggregate chain. */
+    public Agg aggsOf() {
+        return this.aggs;
+    }
+
+    /** GROUP payload: aggregate count. */
+    public int32 aggCount() {
+        return this.naggs;
+    }
+
+    /** A sort node: order `child`'s rows by the keys (U9). Schema-preserving
+     *  — the ordering keys reference existing columns and carry no output. */
+    public static #Plan sortNode(#SortKey keys, int32 nkeys, #Plan child) {
+        Plan n = heap Plan(6);
+        n.sortKeys #= keys;
+        n.nsortKeys = nkeys;
+        n.child #= child;
+        return #n;
+    }
+
+    /** SORT payload: the head of the key chain (most significant first). */
+    public SortKey sortKeysOf() {
+        return this.sortKeys;
+    }
+
+    /** SORT payload: key count. */
+    public int32 sortKeyCount() {
+        return this.nsortKeys;
+    }
+
+    /** A join node: `child` is the LEFT input; `right`/`rightSrc` carry the
+     *  right input's plan and scan snapshot (a separate branch — the
+     *  optimizer's single-chain walk never descends into it). The join keys
+     *  are references over the left schema, matched by NAME on the right
+     *  (U9). */
+    public static #Plan joinNode(#Sel keys, int32 nkeys, int32 how,
+                                 #Plan right, #DynFrame rightSrc,
+                                 #Plan child) {
+        Plan n = heap Plan(7);
+        n.joinKeys #= keys;
+        n.njoinKeys = nkeys;
+        n.joinHow = how;
+        n.rightPlan #= right;
+        n.rightSrc #= rightSrc;
+        n.child #= child;
+        return #n;
+    }
+
+    /** JOIN payload: the head of the key-reference chain. */
+    public Sel joinKeysOf() {
+        return this.joinKeys;
+    }
+
+    /** JOIN payload: key count. */
+    public int32 joinKeyCount() {
+        return this.njoinKeys;
+    }
+
+    /** JOIN payload: the Join.* kind. */
+    public int32 joinHowOf() {
+        return this.joinHow;
+    }
+
+    /** JOIN payload: the right input's op chain. */
+    public Plan rightPlanOf() {
+        return this.rightPlan;
+    }
+
+    /** JOIN payload: the right input's scan snapshot. */
+    public DynFrame rightSrcOf() {
+        return this.rightSrc;
+    }
+
+    /** A resample node (U10, spec §8): rows grouped into fixed-width time
+     *  buckets over `tsName` (integer epoch column), `every` nanos wide,
+     *  the grid based at `origin + offset`, left- or right-closed. The
+     *  aggregates reduce each bucket exactly like a group; the output key is
+     *  the bucket-start time. */
+    public static #Plan resampleNode(String tsName, int64 every,
+                                     int64 origin, int64 offset,
+                                     boolean closedRight, #Agg aggs,
+                                     int32 naggs, #Plan child) {
+        Plan n = heap Plan(8);
+        n.colName = tsName;
+        n.rsEvery = every;
+        n.rsOrigin = origin;
+        n.rsOffset = offset;
+        n.rsClosedRight = closedRight;
+        n.aggs #= aggs;
+        n.naggs = naggs;
+        n.child #= child;
+        return #n;
+    }
+
+    /** RESAMPLE payload: bucket width in nanos. */
+    public int64 rsEveryOf() { return this.rsEvery; }
+
+    /** RESAMPLE payload: grid origin in nanos. */
+    public int64 rsOriginOf() { return this.rsOrigin; }
+
+    /** RESAMPLE payload: grid offset in nanos. */
+    public int64 rsOffsetOf() { return this.rsOffset; }
+
+    /** RESAMPLE payload: true for right-closed buckets. */
+    public boolean rsClosedRightOf() { return this.rsClosedRight; }
+
+    /** A window node (U11, spec §8 resolution): a SLIDING window producing
+     *  one output row per input row. A time window (`byTime`, `tsName` set)
+     *  is the trailing `(t - size, t]` in time order; a count window
+     *  (`byTime` false, `tsName` null) is the trailing `size` rows in input
+     *  order. The aggregates reduce each window like a group. */
+    public static #Plan windowNode(String tsName, int64 size,
+                                   boolean byTime, #Agg aggs, int32 naggs,
+                                   #Plan child) {
+        Plan n = heap Plan(9);
+        n.colName = tsName;
+        n.winSize = size;
+        n.winByTime = byTime;
+        n.aggs #= aggs;
+        n.naggs = naggs;
+        n.child #= child;
+        return #n;
+    }
+
+    /** WINDOW payload: window nanos (time form) or row count (count form). */
+    public int64 winSizeOf() { return this.winSize; }
+
+    /** WINDOW payload: true for a time window, false for a count window. */
+    public boolean winByTimeOf() { return this.winByTime; }
+
+    /** A melt node (U11.. U12, wide->long, spec §4.1): each row's value
+     *  columns are stacked into a `variable`/`value` pair, the id columns
+     *  repeated. The string arrays are COPIED so the node owns them (the
+     *  builder's arrays are the caller's). Schema-static, so this stays an
+     *  ordinary lazy node. */
+    public static #Plan meltNode(String[] idVars, int32 nId, String[] valVars,
+                                 int32 nVal, String varName, String valName,
+                                 #Plan child) {
+        Plan n = heap Plan(11);
+        int32 icap = nId;
+        if (icap < 1) { icap = 1; }
+        String[] ic = heap String[icap];
+        int32 i = 0;
+        while (i < nId) { ic[i] = idVars[i]; i = i + 1; }
+        int32 vcap = nVal;
+        if (vcap < 1) { vcap = 1; }
+        String[] vc = heap String[vcap];
+        int32 j = 0;
+        while (j < nVal) { vc[j] = valVars[j]; j = j + 1; }
+        n.meltId #= ic;
+        n.nMeltId = nId;
+        n.meltVal #= vc;
+        n.nMeltVal = nVal;
+        n.meltVarName = varName;
+        n.meltValName = valName;
+        n.child #= child;
+        return #n;
+    }
+
+    /** MELT payload: id-column count / name. */
+    public int32 meltIdCount() { return this.nMeltId; }
+    public String meltIdAt(int32 i) { return this.meltId[i]; }
+
+    /** MELT payload: value-column count / name. */
+    public int32 meltValCount() { return this.nMeltVal; }
+    public String meltValAt(int32 i) { return this.meltVal[i]; }
+
+    /** MELT payload: the output variable/value column names. */
+    public String meltVarNameOf() { return this.meltVarName; }
+    public String meltValNameOf() { return this.meltValName; }
+
+    /** JOIN payload: attach the precomputed output schema (schema-only). */
+    void __setJoinOut(#DynFrame out) {
+        this.joinOut #= out;
+    }
+
+    /** JOIN payload: the precomputed output schema. */
+    public DynFrame joinOutOf() {
+        return this.joinOut;
+    }
+
+    /** A drop-nulls node: rows with a missing value dropped; `col` limits
+     *  the check to one column, null checks every nullable column (U6). */
+    public static #Plan dropNullsNode(String col, #Plan child) {
+        Plan n = heap Plan(13);
+        n.colName = col;
+        n.child #= child;
+        return #n;
+    }
+
+    /** U7 optimizer: attach pushed predicates to a scan leaf. The array is
+     *  owned here; its ELEMENTS borrow the original chain's filter
+     *  payloads. */
+    void __setScanPreds(#Pred[] preds, int32 n) {
+        this.scanPreds #= preds;
+        this.nScanPreds = n;
+    }
+
+    /** U7 optimizer: attach the referenced-column subset to a scan leaf
+     *  (names borrowed from the source schema, source order). */
+    void __setScanCols(#String[] cols, int32 n) {
+        this.scanCols #= cols;
+        this.nScanCols = n;
+    }
+
+    int32 scanPredCount() {
+        return this.nScanPreds;
+    }
+
+    Pred scanPredAt(int32 i) {
+        return this.scanPreds[i];
+    }
+
+    /** True when the scan reads a column subset (projection pushdown). */
+    boolean scanPruned() {
+        return this.scanCols != null;
+    }
+
+    int32 scanColCount() {
+        return this.nScanCols;
+    }
+
+    String scanColAt(int32 i) {
+        return this.scanCols[i];
+    }
+
+    /** U7 optimizer: a copy of `orig` over a new child whose payloads
+     *  BORROW the original's — the rewritten chain never owns predicates
+     *  or selection chains; the handle's original plan keeps them alive. */
+    static #Plan borrowNode(Plan orig, #Plan child) {
+        Plan n = heap Plan(orig.kindOf());
+        n.pred = orig.predOf();
+        n.sels = orig.selsOf();
+        n.nsels = orig.selCount();
+        n.colName = orig.colNameOf();
+        n.fillF = orig.fillFOf();
+        n.fillI = orig.fillIOf();
+        n.fillIsInt = orig.fillIsIntOf();
+        n.keys = orig.keysOf();
+        n.nkeys = orig.keyCount();
+        n.aggs = orig.aggsOf();
+        n.naggs = orig.aggCount();
+        n.sortKeys = orig.sortKeysOf();
+        n.nsortKeys = orig.sortKeyCount();
+        n.joinKeys = orig.joinKeysOf();
+        n.njoinKeys = orig.joinKeyCount();
+        n.joinHow = orig.joinHowOf();
+        n.rightPlan = orig.rightPlanOf();
+        n.rightSrc = orig.rightSrcOf();
+        n.joinOut = orig.joinOutOf();
+        n.rsEvery = orig.rsEveryOf();
+        n.rsOrigin = orig.rsOriginOf();
+        n.rsOffset = orig.rsOffsetOf();
+        n.rsClosedRight = orig.rsClosedRightOf();
+        n.winSize = orig.winSizeOf();
+        n.winByTime = orig.winByTimeOf();
+        n.meltId = orig.meltId;
+        n.nMeltId = orig.nMeltId;
+        n.meltVal = orig.meltVal;
+        n.nMeltVal = orig.nMeltVal;
+        n.meltVarName = orig.meltVarName;
+        n.meltValName = orig.meltValName;
+        n.child #= child;
+        return #n;
+    }
+
+    /** FILTER payload. */
+    public Pred predOf() {
+        return this.pred;
+    }
+
+    /** FILLNULL/DROPNULLS payload: the target column (null = all). */
+    public String colNameOf() {
+        return this.colName;
+    }
+
+    /** FILLNULL payload: the float fill value. */
+    public float64 fillFOf() {
+        return this.fillF;
+    }
+
+    /** FILLNULL payload: the integer fill value. */
+    public int64 fillIOf() {
+        return this.fillI;
+    }
+
+    /** FILLNULL payload: true when the integer value applies. */
+    public boolean fillIsIntOf() {
+        return this.fillIsInt;
+    }
+
+    /** PROJECT/WITH payload: the head of the selection chain. */
+    public Sel selsOf() {
+        return this.sels;
+    }
+
+    /** PROJECT/WITH payload: selection count. */
+    public int32 selCount() {
+        return this.nsels;
+    }
+
+    /** This node's op kind (the `SCAN`.. `MELT` constants). */
+    public int32 kindOf() {
+        return this.kind;
+    }
+
+    /** The input node, or null on the scan leaf. */
+    public Plan childOf() {
+        return this.child;
+    }
+
+    /** The op name of a single node. */
+    public #String opName() {
+        if (this.kind == 1) { return "scan"; }
+        if (this.kind == 2) { return "filter"; }
+        if (this.kind == 3) { return "project"; }
+        if (this.kind == 4) { return "with"; }
+        if (this.kind == 5) { return "groupBy"; }
+        if (this.kind == 6) { return "sort"; }
+        if (this.kind == 7) { return "join"; }
+        if (this.kind == 8) { return "resample"; }
+        if (this.kind == 9) { return "window"; }
+        if (this.kind == 10) { return "pivot"; }
+        if (this.kind == 11) { return "melt"; }
+        if (this.kind == 12) { return "fillNull"; }
+        if (this.kind == 13) { return "dropNulls"; }
+        return "unknown";
+    }
+
+    /** The whole chain, root-first: `"sort <- filter <- scan"`. An
+     *  optimizer scan leaf shows its rewrites (U7, spec §2.5):
+     *  `scan[filter x2, cols: a,b]`. */
+    public #String describe() {
+        String name = this.opName();
+        if (this.kind == 1 && (this.nScanPreds > 0 || this.scanCols != null)) {
+            name = name + "[";
+            if (this.nScanPreds > 0) {
+                name = name + "filter";
+                if (this.nScanPreds > 1) {
+                    name = name + " x"
+                        + stack Int64((int64) this.nScanPreds).toString();
+                }
+            }
+            if (this.scanCols != null) {
+                if (this.nScanPreds > 0) { name = name + ", "; }
+                name = name + "cols: ";
+                int32 i = 0;
+                while (i < this.nScanCols) {
+                    if (i > 0) { name = name + ","; }
+                    name = name + this.scanCols[i];
+                    i = i + 1;
+                }
+            }
+            name = name + "]";
+        }
+        if (this.child == null) {
+            return #name;
+        }
+        String rest = this.child.describe();
+        return name + " <- " + rest;
+    }
+}

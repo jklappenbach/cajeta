@@ -1,0 +1,51 @@
+package cajeta.nucleo.frame;
+
+/**
+ * ColStr — a utf8-typed column reference node (nucleo-frame U1). String
+ * columns compare with `==`/`!=` against string literals, producing
+ * {@link Pred} nodes; there is NO numeric comparison on a string column —
+ * `c.venue() > 0.0` is a COMPILE error (no such operator), which is the
+ * typed DSL's §3.2 claim doing its job.
+ */
+@AutoHash
+public class ColStr {
+    int32 ordinal;
+    String name;
+
+    ColStr(int32 ordinal, String name) {
+        this.ordinal = ordinal;
+        this.name = name;
+    }
+
+    /** A column reference (the synthesized builders call this). */
+    public static #ColStr colRef(int32 ordinal, String name) {
+        return heap ColStr(ordinal, name);
+    }
+
+    public int32 ordinal() { return this.ordinal; }
+    public String name() { return this.name; }
+
+    /** Name this reference as a selection item (`select` output rename). */
+    public #Sel alias(String name) {
+        Sel s = Sel.named(name);
+        s.bindStr(this);
+        return #s;
+    }
+
+    /** Reductions over a string column (U8): only the ones that mean
+     *  something without an ordering — `count` (rows in the group; v1 utf8
+     *  columns carry no validity, so every cell counts) and `first`/`last`.
+     *  There is no `sum`/`mean` on utf8, which makes `c.venue().sum()` a
+     *  COMPILE error rather than a runtime surprise. */
+    public #Agg count() { return Agg.overStr(5, this); }
+    public #Agg first() { return Agg.overStr(6, this); }
+    public #Agg last()  { return Agg.overStr(7, this); }
+
+    /** Sort direction (U9): utf8 orders byte-lexicographically, which for
+     *  utf8 is code-point order. */
+    public #SortKey desc() { return SortKey.overStr(this, true); }
+    public #SortKey asc()  { return SortKey.overStr(this, false); }
+
+    public static #Pred operator==(#ColStr a, String v) { return Pred.cmpStr(26, #a, v); }
+    public static #Pred operator!=(#ColStr a, String v) { return Pred.cmpStr(27, #a, v); }
+}

@@ -8,8 +8,10 @@ import cajeta.lang.Comparable;
  * 1970-01-01T00:00:00Z, may be negative) plus `int32 nano` (0..999999999), the
  * canonical normalized form so equal instants compare and hash equally.
  *
- * A pure stack value type: every factory and transform returns a fresh `stack`
- * value by copy. Arithmetic is via `Duration`; calendar breakdown is done by
+ * A true `@ValueType`: flat POD (16 bytes), copied by value, legal as a
+ * `record` field (nucleo-frame schemas store it as an int64 epoch-nanos
+ * column). Every factory and transform returns a fresh `stack` value by
+ * copy. Arithmetic is via `Duration`; calendar breakdown is done by
  * projecting through `LocalDateTime` at a `ZoneOffset`. Implements
  * `Comparable`, so instants sort chronologically.
  *
@@ -20,6 +22,7 @@ import cajeta.lang.Comparable;
  * boolean earlier = t0.isBefore(t1);                  // true
  * ```
  */
+@ValueType
 public final class Instant implements Comparable<Instant> {
     int64 epochSecond;
     int32 nano;

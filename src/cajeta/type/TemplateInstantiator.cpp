@@ -919,6 +919,9 @@ namespace cajeta {
         // instantiation cache above makes this fire once per monomorphization,
         // which is the memoization the accessor set needs (spec §8.3).
         visitor.runMemberSynthesizers(inst);
+        // Companion classes ride the same instantiation-time hook (the
+        // `<Record>Cols` builder a Table<Record>'s lambdas receive).
+        visitor.runCompanionSynthesizers(inst);
 
         // Emit target was set on `inst` before the walk and propagated to each
         // method at construction (Method ctor reads parent->getEmitModule()), so

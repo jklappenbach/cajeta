@@ -1,0 +1,59 @@
+package cajeta.nucleo.frame;
+
+/**
+ * ColI64 — an int64-typed column reference node (nucleo-frame U5). Integer
+ * and `Instant` (epoch-nanos) schema fields build these, so their
+ * comparisons are EXACT int64 compares — no float64 round-trip (epoch-nanos
+ * exceed float64's 53-bit integer range). Comparisons produce {@link Pred}
+ * nodes (kinds 40..45); there is no integer arithmetic node family yet —
+ * computed columns are float64 expressions ({@link ColF64}).
+ */
+@AutoHash
+public class ColI64 {
+    int32 ordinal;
+    String name;
+
+    ColI64(int32 ordinal, String name) {
+        this.ordinal = ordinal;
+        this.name = name;
+    }
+
+    /** A column reference (the synthesized builders call this). */
+    public static #ColI64 colRef(int32 ordinal, String name) {
+        return heap ColI64(ordinal, name);
+    }
+
+    public int32 ordinal() { return this.ordinal; }
+    public String name() { return this.name; }
+
+    /** Name this reference as a selection item (`select` output rename). */
+    public #Sel alias(String name) {
+        Sel s = Sel.named(name);
+        s.bindI(this);
+        return #s;
+    }
+
+    /** Reductions (U8) — EXACT int64 throughout: an int64 sum/min/max/
+     *  first/last stays int64 in the result schema (no float64 round-trip,
+     *  the same reason the comparisons are exact). `mean` is the one
+     *  exception: an average is not an integer, so it yields float64. */
+    public #Agg sum()   { return Agg.overI64(1, this); }
+    public #Agg mean()  { return Agg.overI64(2, this); }
+    public #Agg min()   { return Agg.overI64(3, this); }
+    public #Agg max()   { return Agg.overI64(4, this); }
+    public #Agg count() { return Agg.overI64(5, this); }
+    public #Agg first() { return Agg.overI64(6, this); }
+    public #Agg last()  { return Agg.overI64(7, this); }
+
+    /** Sort direction (U9) — the compare is exact int64, like the
+     *  comparisons above. */
+    public #SortKey desc() { return SortKey.overI64(this, true); }
+    public #SortKey asc()  { return SortKey.overI64(this, false); }
+
+    public static #Pred operator>(#ColI64 a, int64 v)  { return Pred.cmpI64(40, #a, v); }
+    public static #Pred operator>=(#ColI64 a, int64 v) { return Pred.cmpI64(41, #a, v); }
+    public static #Pred operator<(#ColI64 a, int64 v)  { return Pred.cmpI64(42, #a, v); }
+    public static #Pred operator<=(#ColI64 a, int64 v) { return Pred.cmpI64(43, #a, v); }
+    public static #Pred operator==(#ColI64 a, int64 v) { return Pred.cmpI64(44, #a, v); }
+    public static #Pred operator!=(#ColI64 a, int64 v) { return Pred.cmpI64(45, #a, v); }
+}

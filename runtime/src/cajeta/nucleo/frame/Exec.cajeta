@@ -1,0 +1,2566 @@
+package cajeta.nucleo.frame;
+
+import cajeta.hash.Hash;
+import cajeta.lang.Float64;
+import cajeta.lang.String;
+import cajeta.nucleo.column.DynCol;
+
+/**
+ * Exec — the plan executor (nucleo-frame U5): walks a {@link Plan} chain
+ * scan-first over {@link DynFrame}s, schema-agnostic — the typed world ends
+ * at the handle's snapshot and resumes at the typed rebind. v1 is a
+ * row-interpreting executor (filter builds an index gather; project/with
+ * evaluate selections per row); the nucleo-expr fusion seam replaces the
+ * inner loops later without changing this contract.
+ *
+ * Executors are validity-PRESERVING (gathers carry null bitmaps with their
+ * values); three-valued predicate semantics over nulls land with U6 —
+ * until then predicates read physical values.
+ *
+ * `apply(sels, ...)` doubles as the plan-build schema computer: fed a
+ * schema-only frame it returns the output schema without touching data —
+ * `col("...")`/`.as<R>()` validate against it before anything runs.
+ */
+public class Exec {
+
+    /** Execute `node`'s chain against the scan snapshot `src`. */
+    public static #DynFrame run(Plan node, DynFrame src) {
+        ExecStats st = heap ExecStats();
+        return Exec.run(node, src, st);
+    }
+
+    /** Execute, recording scan counters into `st` (U7). */
+    public static #DynFrame run(Plan node, DynFrame src, ExecStats st) {
+        if (node.kindOf() == 1) {
+            if (node.scanPredCount() == 0 && !node.scanPruned()) {
+                st.note(src.rowsOf(), (int64) src.width());
+                st.noteProbed(0);
+                return src.aliasFrame();
+            }
+            return Exec.applyScan(node, src, st);
+        }
+        // A join runs its RIGHT branch as a separate plan against its own
+        // scan snapshot (the optimizer never touched it), then combines.
+        if (node.kindOf() == 7) {
+            DynFrame lin = Exec.run(node.childOf(), src, st);
+            DynFrame rin = Exec.run(node.rightPlanOf(), node.rightSrcOf(), st);
+            return Exec.applyJoin(node, #lin, #rin);
+        }
+        DynFrame in = Exec.run(node.childOf(), src, st);
+        if (node.kindOf() == 2) {
+            return Exec.applyFilter(node.predOf(), #in);
+        }
+        if (node.kindOf() == 3) {
+            return Exec.apply(node.selsOf(), node.selCount(), #in, false);
+        }
+        if (node.kindOf() == 4) {
+            return Exec.apply(node.selsOf(), node.selCount(), #in, true);
+        }
+        if (node.kindOf() == 5) {
+            return Exec.applyGroup(node, #in);
+        }
+        if (node.kindOf() == 6) {
+            return Exec.applySort(node, #in);
+        }
+        if (node.kindOf() == 8) {
+            return Exec.applyResample(node, #in);
+        }
+        if (node.kindOf() == 9) {
+            return Exec.applyWindow(node, #in);
+        }
+        if (node.kindOf() == 11) {
+            return Exec.applyMelt(node, #in);
+        }
+        if (node.kindOf() == 12) {
+            return Exec.applyFillNull(node, #in);
+        }
+        if (node.kindOf() == 13) {
+            return Exec.applyDropNulls(node, #in);
+        }
+        throw heap FrameException(
+            "plan node not executable yet: " + node.opName());
+    }
+
+    /** Optimizer scan (U7): materialize only the referenced columns and
+     *  only the rows passing every pushed predicate — failing rows and
+     *  pruned column buffers are never read. Pruned slots stay NULL
+     *  placeholders so every ordinal bound at plan build keeps meaning;
+     *  the needed-column analysis guarantees nothing above reads them. */
+    static #DynFrame applyScan(Plan node, DynFrame src, ExecStats st) {
+        int32 w = src.width();
+        boolean[] keep = heap boolean[w];
+        if (node.scanPruned()) {
+            int32 ci = 0;
+            while (ci < node.scanColCount()) {
+                int32 o = src.find(node.scanColAt(ci));
+                if (o >= 0) { keep[o] = true; }
+                ci = ci + 1;
+            }
+        } else {
+            int32 j0 = 0;
+            while (j0 < w) { keep[j0] = true; j0 = j0 + 1; }
+        }
+        int64 kc = 0;
+        int32 j1 = 0;
+        while (j1 < w) {
+            if (keep[j1]) { kc = kc + 1; }
+            j1 = j1 + 1;
+        }
+        int64 n = src.rowsOf();
+        DynCol[] out = heap DynCol[w];
+        if (node.scanPredCount() == 0) {
+            int32 j2 = 0;
+            while (j2 < w) {
+                if (keep[j2]) { out[j2] #= src.colAt(j2).alias(); }
+                j2 = j2 + 1;
+            }
+            st.note(n, kc);
+            st.noteProbed(0);
+            return src.rebuild(#out, n);
+        }
+        // Z-order spatial routing (U15, spec §9.5.2): a closed 2-D box over the
+        // spatial pair is answered by the SAME B+ on a morton key — takes
+        // precedence over the single-column paths when it applies.
+        if (Exec.canSpatial(node, src)) {
+            return Exec.scanViaSpatial(node, src, keep, kc, #out, st);
+        }
+        // B+ index routing (U14, spec §9.5.1): if an indexed column carries a
+        // usable range/point predicate, the B+ locates the candidate rows
+        // directly — the position-set result, more precise than a chunk-mask.
+        int32 idxCol = Exec.pickIndexColumn(node, src);
+        if (idxCol >= 0) {
+            return Exec.scanViaIndex(node, src, idxCol, keep, kc, #out, st);
+        }
+        // Zone-map chunk skipping (U13, spec §6): partition the source into
+        // fixed-width chunks; a pushed range predicate whose zone-map proves a
+        // chunk entirely outside it skips that chunk's cells entirely. An
+        // overlapping chunk is READ and the predicate applied row-wise (prune
+        // != filter), so the result matches a full scan exactly.
+        int64 chunkRows = src.zoneChunkOf();
+        if (chunkRows <= 0) { chunkRows = 4096; }
+        int32 nChunks = 0;
+        if (n > 0) {
+            int64 nc = (n + chunkRows - 1) / chunkRows;
+            nChunks = (int32) nc;
+        }
+        boolean[] mask = Exec.buildChunkMask(node, src, chunkRows, nChunks);
+        int64 cap = n;
+        if (cap < 1) { cap = 1; }
+        int64[] idx = heap int64[cap];
+        int64 m = 0;
+        int64 skipped = 0;
+        int64 probed = 0;
+        int32 ck = 0;
+        while (ck < nChunks) {
+            if (mask[ck]) {
+                int64 lo = ((int64) ck) * chunkRows;
+                int64 hi = lo + chunkRows;
+                if (hi > n) { hi = n; }
+                probed = probed + (hi - lo);
+                int64 i = lo;
+                while (i < hi) {
+                    boolean pass = true;
+                    int32 pi = 0;
+                    while (pi < node.scanPredCount()) {
+                        if (Exec.evalPred3(node.scanPredAt(pi), src, i) != 1) {
+                            pass = false;
+                        }
+                        pi = pi + 1;
+                    }
+                    if (pass) {
+                        idx[m] = i;
+                        m = m + 1;
+                    }
+                    i = i + 1;
+                }
+            } else {
+                skipped = skipped + 1;
+            }
+            ck = ck + 1;
+        }
+        int32 j = 0;
+        while (j < w) {
+            if (keep[j]) { out[j] #= src.colAt(j).gather(idx, m); }
+            j = j + 1;
+        }
+        st.note(m, kc);
+        st.noteChunks((int64) nChunks, skipped);
+        st.noteProbed(probed);
+        return src.rebuild(#out, m);
+    }
+
+    /** The ordinal of a declared-indexed column with a usable range/point
+     *  predicate pushed against it (U14), or -1 — the routing decision. */
+    static int32 pickIndexColumn(Plan node, DynFrame src) {
+        int32 ii = 0;
+        while (ii < src.indexedCount()) {
+            int32 o = src.find(src.indexedAt(ii));
+            if (o >= 0 && src.tagAt(o) <= 10) {
+                boolean isInt = src.tagAt(o) <= 8;
+                IdxBounds b = heap IdxBounds();
+                Exec.collectBounds(node, o, isInt, b);
+                if (b.usable) { return o; }
+            }
+            ii = ii + 1;
+        }
+        return -1;
+    }
+
+    /** Gather the tightest range bounds on `idxCol` from every pushed
+     *  predicate (a conjunction routes both children). */
+    static void collectBounds(Plan node, int32 idxCol, boolean isInt,
+                              IdxBounds b) {
+        int32 pi = 0;
+        while (pi < node.scanPredCount()) {
+            Exec.tightenBounds(node.scanPredAt(pi), idxCol, isInt, b);
+            pi = pi + 1;
+        }
+    }
+
+    /** Fold one predicate's contribution to `idxCol`'s range bounds. A leaf
+     *  range/point comparison over the column reference tightens a bound; a
+     *  conjunction recurses; anything else (other column, `!=`, disjunction,
+     *  arithmetic operand) contributes nothing (the row-filter still applies
+     *  it after the probe). */
+    static void tightenBounds(Pred p, int32 idxCol, boolean isInt,
+                              IdxBounds b) {
+        int32 k = p.kind();
+        if (k == 30) {
+            Exec.tightenBounds(p.leftPredicate(), idxCol, isInt, b);
+            Exec.tightenBounds(p.rightPredicate(), idxCol, isInt, b);
+            return;
+        }
+        if (isInt && k >= 40 && k <= 44) {
+            ColI64 e = p.iOperandExpr();
+            if (e == null) { return; }
+            if (e.ordinal() != idxCol) { return; }
+            int64 v = p.iValue();
+            if (k == 40) { b.lowerI(false, v); }
+            if (k == 41) { b.lowerI(true, v); }
+            if (k == 42) { b.upperI(false, v); }
+            if (k == 43) { b.upperI(true, v); }
+            if (k == 44) { b.lowerI(true, v); b.upperI(true, v); }
+            return;
+        }
+        if (!isInt && k >= 20 && k <= 24) {
+            ColF64 e = p.operandExpr();
+            if (e == null) { return; }
+            if (e.kind() != 0) { return; }
+            if (e.ordinal() != idxCol) { return; }
+            float64 v = p.value();
+            if (k == 20) { b.lowerF(false, v); }
+            if (k == 21) { b.lowerF(true, v); }
+            if (k == 22) { b.upperF(false, v); }
+            if (k == 23) { b.upperF(true, v); }
+            if (k == 24) { b.lowerF(true, v); b.upperF(true, v); }
+            return;
+        }
+    }
+
+    /** Scan via a B+ index (U14): bulk-load the index on `idxCol`, probe the
+     *  gathered range for candidate positions, sort them ascending (order
+     *  preservation — the index returns key order), then apply ALL pushed
+     *  predicates row-wise and gather. `scanProbed` = the candidates examined,
+     *  proving the index jumped to the rows rather than scanning the table. */
+    static #DynFrame scanViaIndex(Plan node, DynFrame src, int32 idxCol,
+                                  boolean[] keep, int64 kc, #DynCol[] out,
+                                  ExecStats st) {
+        int32 w = src.width();
+        boolean isInt = src.tagAt(idxCol) <= 8;
+        BPlusIndex bx = BPlusIndex.buildFromColumn(src, idxCol);
+        IdxBounds b = heap IdxBounds();
+        Exec.collectBounds(node, idxCol, isInt, b);
+        int64 ecap = bx.entryCount();
+        if (ecap < 1) { ecap = 1; }
+        int64[] cand = heap int64[ecap];
+        int64 cc = 0;
+        if (isInt) {
+            cc = bx.rangeIntInto(cand, b.hasLo, b.loInc, b.loI,
+                b.hasHi, b.hiInc, b.hiI);
+        } else {
+            cc = bx.rangeFloatInto(cand, b.hasLo, b.loInc, b.loF,
+                b.hasHi, b.hiInc, b.hiF);
+        }
+        Exec.sortI64Asc(cand, cc);
+        int64 icap = cc;
+        if (icap < 1) { icap = 1; }
+        int64[] idx = heap int64[icap];
+        int64 m = 0;
+        int64 t = 0;
+        while (t < cc) {
+            int64 i = cand[t];
+            boolean pass = true;
+            int32 pi = 0;
+            while (pi < node.scanPredCount()) {
+                if (Exec.evalPred3(node.scanPredAt(pi), src, i) != 1) {
+                    pass = false;
+                }
+                pi = pi + 1;
+            }
+            if (pass) { idx[m] = i; m = m + 1; }
+            t = t + 1;
+        }
+        int32 j = 0;
+        while (j < w) {
+            if (keep[j]) { out[j] #= src.colAt(j).gather(idx, m); }
+            j = j + 1;
+        }
+        st.note(m, kc);
+        st.noteChunks(0, 0);
+        st.noteProbed(cc);
+        return src.rebuild(#out, m);
+    }
+
+    /** Is a Z-order spatial probe applicable (U15)? A spatial pair is declared,
+     *  both columns are present, and the pushed predicates CLOSE a box on both
+     *  (a lower AND an upper bound each) — a half-open box has no finite morton
+     *  corner, so it falls back to the ordinary scan. */
+    static boolean canSpatial(Plan node, DynFrame src) {
+        String sx = src.spatialXOf();
+        String sy = src.spatialYOf();
+        if (sx == null) { return false; }
+        if (sy == null) { return false; }
+        int32 xo = src.find(sx);
+        int32 yo = src.find(sy);
+        if (xo < 0 || yo < 0) { return false; }
+        IdxBounds xb = heap IdxBounds();
+        IdxBounds yb = heap IdxBounds();
+        Exec.collectBounds(node, xo, true, xb);
+        Exec.collectBounds(node, yo, true, yb);
+        return xb.hasLo && xb.hasHi && yb.hasLo && yb.hasHi;
+    }
+
+    /** Scan via the Z-order-over-B+ index (U15, spec §9.5.2): derive morton keys
+     *  for every row, bulk-load the SAME {@link BPlusIndex} on them (no second
+     *  tree), probe the box's corner range `[Z(x0,y0), Z(x1,y1)]` — which
+     *  over-covers the rectangle — sort the candidates, and row-filter by the
+     *  box predicates for the exact answer. `scanProbed` = the morton-range
+     *  candidates, below the table size for a selective box. */
+    static #DynFrame scanViaSpatial(Plan node, DynFrame src, boolean[] keep,
+                                    int64 kc, #DynCol[] out, ExecStats st) {
+        int32 w = src.width();
+        int64 n = src.rowsOf();
+        int32 xo = src.find(src.spatialXOf());
+        int32 yo = src.find(src.spatialYOf());
+        int64 kcap = n;
+        if (kcap < 1) { kcap = 1; }
+        int64[] keys = heap int64[kcap];
+        int64[] pos = heap int64[kcap];
+        int64 r = 0;
+        while (r < n) {
+            int64 xv = src.i64AtCol(xo, r);
+            int64 yv = src.i64AtCol(yo, r);
+            keys[r] = Morton.encode(xv, yv);
+            pos[r] = r;
+            r = r + 1;
+        }
+        BPlusIndex bx = BPlusIndex.buildFromKeys(keys, pos, n);
+        IdxBounds xb = heap IdxBounds();
+        IdxBounds yb = heap IdxBounds();
+        Exec.collectBounds(node, xo, true, xb);
+        Exec.collectBounds(node, yo, true, yb);
+        int64 zlo = Morton.encode(xb.loI, yb.loI);
+        int64 zhi = Morton.encode(xb.hiI, yb.hiI);
+        int64 ecap = bx.entryCount();
+        if (ecap < 1) { ecap = 1; }
+        int64[] cand = heap int64[ecap];
+        int64 cc = bx.rangeIntInto(cand, true, true, zlo, true, true, zhi);
+        Exec.sortI64Asc(cand, cc);
+        int64 icap = cc;
+        if (icap < 1) { icap = 1; }
+        int64[] idx = heap int64[icap];
+        int64 m = 0;
+        int64 t = 0;
+        while (t < cc) {
+            int64 i = cand[t];
+            boolean pass = true;
+            int32 pi = 0;
+            while (pi < node.scanPredCount()) {
+                if (Exec.evalPred3(node.scanPredAt(pi), src, i) != 1) {
+                    pass = false;
+                }
+                pi = pi + 1;
+            }
+            if (pass) { idx[m] = i; m = m + 1; }
+            t = t + 1;
+        }
+        int32 j = 0;
+        while (j < w) {
+            if (keep[j]) { out[j] #= src.colAt(j).gather(idx, m); }
+            j = j + 1;
+        }
+        st.note(m, kc);
+        st.noteChunks(0, 0);
+        st.noteProbed(cc);
+        return src.rebuild(#out, m);
+    }
+
+    /** In-place ascending sort of the first `n` positions (U14) — bottom-up
+     *  merge sort, so the index's key-ordered candidates gather in storage
+     *  order and a filter preserves row order. */
+    static void sortI64Asc(int64[] a, int64 n) {
+        if (n < 2) { return; }
+        int64[] tmp = heap int64[n];
+        int64 width = 1;
+        while (width < n) {
+            int64 lo = 0;
+            while (lo < n) {
+                int64 mid = lo + width;
+                if (mid > n) { mid = n; }
+                int64 hi = lo + width * 2;
+                if (hi > n) { hi = n; }
+                int64 x = lo;
+                int64 y = mid;
+                int64 tt = lo;
+                while (x < mid && y < hi) {
+                    if (a[x] <= a[y]) { tmp[tt] = a[x]; x = x + 1; }
+                    else { tmp[tt] = a[y]; y = y + 1; }
+                    tt = tt + 1;
+                }
+                while (x < mid) { tmp[tt] = a[x]; x = x + 1; tt = tt + 1; }
+                while (y < hi) { tmp[tt] = a[y]; y = y + 1; tt = tt + 1; }
+                lo = hi;
+            }
+            int64 zz = 0;
+            while (zz < n) { a[zz] = tmp[zz]; zz = zz + 1; }
+            width = width * 2;
+        }
+    }
+
+    /** Build the chunk-mask (U13): true = the chunk must be read. Every chunk
+     *  starts readable; each pushed predicate that matches a zone-map capability
+     *  clears the chunks it proves empty. A predicate that matches no index
+     *  (non-range, or over an unindexed column) contributes nothing — the
+     *  fallback that keeps skipping sound (spec §9.3). */
+    static #boolean[] buildChunkMask(Plan node, DynFrame src, int64 chunkRows,
+                                     int32 nChunks) {
+        boolean[] mask = heap boolean[nChunks];
+        int32 c = 0;
+        while (c < nChunks) { mask[c] = true; c = c + 1; }
+        int32 pi = 0;
+        while (pi < node.scanPredCount()) {
+            Exec.contributeMask(node.scanPredAt(pi), src, chunkRows, nChunks,
+                mask);
+            pi = pi + 1;
+        }
+        return #mask;
+    }
+
+    /** Fold one predicate's zone-map skips into `mask`. A conjunction applies
+     *  both children (AND = intersect the read sets). A range/point leaf over
+     *  a numeric column reference builds that column's zone-map and clears the
+     *  chunks it cannot contain a match. Anything else (a disjunction, a
+     *  negation, `!=`, a string compare, an arithmetic operand, an unindexed
+     *  column) is left alone — those chunks stay readable (fallback). */
+    static void contributeMask(Pred p, DynFrame src, int64 chunkRows,
+                               int32 nChunks, boolean[] mask) {
+        int32 k = p.kind();
+        if (k == 30) {
+            Exec.contributeMask(p.leftPredicate(), src, chunkRows, nChunks,
+                mask);
+            Exec.contributeMask(p.rightPredicate(), src, chunkRows, nChunks,
+                mask);
+            return;
+        }
+        if (k >= 20 && k <= 24) {
+            ColF64 e = p.operandExpr();
+            if (e == null) { return; }
+            if (e.kind() != 0) { return; }
+            int32 o = e.ordinal();
+            if (o < 0 || o >= src.width()) { return; }
+            if (src.tagAt(o) > 10) { return; }
+            ZoneMap z = ZoneMap.build(src, o, chunkRows, nChunks);
+            int32 ci = 0;
+            while (ci < nChunks) {
+                if (!z.mustRead(k, p.value(), p.iValue(), ci)) {
+                    mask[ci] = false;
+                }
+                ci = ci + 1;
+            }
+            return;
+        }
+        if (k >= 40 && k <= 44) {
+            ColI64 e = p.iOperandExpr();
+            if (e == null) { return; }
+            int32 o = e.ordinal();
+            if (o < 0 || o >= src.width()) { return; }
+            if (src.tagAt(o) > 8) { return; }
+            ZoneMap z = ZoneMap.build(src, o, chunkRows, nChunks);
+            int32 ci = 0;
+            while (ci < nChunks) {
+                if (!z.mustRead(k, p.value(), p.iValue(), ci)) {
+                    mask[ci] = false;
+                }
+                ci = ci + 1;
+            }
+            return;
+        }
+    }
+
+    /** float64 expression eval at row `i` (colRef / literal / arithmetic). */
+    static float64 evalF64(ColF64 e, DynFrame f, int64 i) {
+        int32 k = e.kind();
+        if (k == 0) {
+            int32 o = e.ordinal();
+            if (o < 0 || o >= f.width()) {
+                throw heap FrameException("column '" + e.name()
+                    + "' is not in schema " + f.schemaText());
+            }
+            if (f.tagAt(o) == 11) {
+                throw heap FrameException("column '" + e.name()
+                    + "' is utf8; a numeric expression expected it numeric");
+            }
+            return f.colAt(o).f64At(i);
+        }
+        if (k == 1) {
+            return e.literalValue();
+        }
+        float64 a = Exec.evalF64(e.leftChild(), f, i);
+        float64 b = Exec.evalF64(e.rightChild(), f, i);
+        if (k == 2) { return a + b; }
+        if (k == 3) { return a - b; }
+        if (k == 4) { return a * b; }
+        if (k == 5) { return a / b; }
+        throw heap FrameException("unknown expression kind");
+    }
+
+    /** Exact int64 reference eval at row `i`. */
+    static int64 evalI64(ColI64 e, DynFrame f, int64 i) {
+        int32 o = e.ordinal();
+        if (o < 0 || o >= f.width()) {
+            throw heap FrameException("column '" + e.name()
+                + "' is not in schema " + f.schemaText());
+        }
+        if (f.tagAt(o) > 8) {
+            throw heap FrameException("column '" + e.name() + "' is '"
+                + f.typeNameAt(o) + "'; an integer comparison expected an "
+                + "integer column");
+        }
+        return f.colAt(o).i64At(i);
+    }
+
+    /** Utf8 reference eval at row `i`. */
+    static #String evalStr(ColStr e, DynFrame f, int64 i) {
+        int32 o = e.ordinal();
+        if (o < 0 || o >= f.width()) {
+            throw heap FrameException("column '" + e.name()
+                + "' is not in schema " + f.schemaText());
+        }
+        if (f.tagAt(o) != 11) {
+            throw heap FrameException("column '" + e.name() + "' is '"
+                + f.typeNameAt(o) + "'; a string comparison expected utf8");
+        }
+        return f.colAt(o).strAt(i);
+    }
+
+    /** Row validity of a float64 expression: a colRef is its column's
+     *  validity, a literal is always valid, arithmetic is valid only when
+     *  BOTH children are (null propagates — spec §7). */
+    static boolean exprValidF64(ColF64 e, DynFrame f, int64 i) {
+        int32 k = e.kind();
+        if (k == 0) {
+            int32 o = e.ordinal();
+            if (o < 0 || o >= f.width()) {
+                throw heap FrameException("column '" + e.name()
+                    + "' is not in schema " + f.schemaText());
+            }
+            return f.colAt(o).validAt(i);
+        }
+        if (k == 1) {
+            return true;
+        }
+        return Exec.exprValidF64(e.leftChild(), f, i)
+            && Exec.exprValidF64(e.rightChild(), f, i);
+    }
+
+    /** SCHEMA-time nullability of a float64 expression: nullable iff it
+     *  references any nullable column (works on schema-only frames — no
+     *  data reads). A false here selects the no-validity-read fast path. */
+    static boolean exprRefsNullable(ColF64 e, DynFrame f) {
+        int32 k = e.kind();
+        if (k == 0) {
+            int32 o = e.ordinal();
+            if (o < 0 || o >= f.width()) {
+                throw heap FrameException("column '" + e.name()
+                    + "' is not in schema " + f.schemaText());
+            }
+            return f.nullableAt(o);
+        }
+        if (k == 1) {
+            return false;
+        }
+        if (Exec.exprRefsNullable(e.leftChild(), f)) {
+            return true;
+        }
+        return Exec.exprRefsNullable(e.rightChild(), f);
+    }
+
+    /** THREE-VALUED predicate eval at row `i` (spec §7): 0 false, 1 true,
+     *  2 null. A comparison over a null operand is NULL (the raw bytes
+     *  never decide); logic is Kleene (`null & false = false`,
+     *  `null | true = true`, `!null = null`). The filter keeps a row only
+     *  on 1 — a null predicate excludes. */
+    static int32 evalPred3(Pred p, DynFrame f, int64 i) {
+        int32 k = p.kind();
+        if (k == 30) {
+            int32 l = Exec.evalPred3(p.leftPredicate(), f, i);
+            if (l == 0) { return 0; }
+            int32 r = Exec.evalPred3(p.rightPredicate(), f, i);
+            if (r == 0) { return 0; }
+            if (l == 2 || r == 2) { return 2; }
+            return 1;
+        }
+        if (k == 31) {
+            int32 l = Exec.evalPred3(p.leftPredicate(), f, i);
+            if (l == 1) { return 1; }
+            int32 r = Exec.evalPred3(p.rightPredicate(), f, i);
+            if (r == 1) { return 1; }
+            if (l == 2 || r == 2) { return 2; }
+            return 0;
+        }
+        if (k == 32) {
+            int32 l = Exec.evalPred3(p.leftPredicate(), f, i);
+            if (l == 2) { return 2; }
+            if (l == 1) { return 0; }
+            return 1;
+        }
+        if (k >= 20 && k <= 25) {
+            if (!Exec.exprValidF64(p.operandExpr(), f, i)) {
+                return 2;
+            }
+            float64 a = Exec.evalF64(p.operandExpr(), f, i);
+            float64 b = p.value();
+            boolean r = false;
+            if (k == 20) { r = a > b; }
+            if (k == 21) { r = a >= b; }
+            if (k == 22) { r = a < b; }
+            if (k == 23) { r = a <= b; }
+            if (k == 24) { r = a == b; }
+            if (k == 25) { r = a != b; }
+            if (r) { return 1; }
+            return 0;
+        }
+        if (k == 26 || k == 27) {
+            // utf8 columns have no nullable physical (v1) — always valid.
+            String a = Exec.evalStr(p.strOperandExpr(), f, i);
+            boolean eq = a.equals(p.strValue());
+            if (k == 26 && eq) { return 1; }
+            if (k == 27 && !eq) { return 1; }
+            return 0;
+        }
+        if (k >= 40 && k <= 45) {
+            ColI64 ie = p.iOperandExpr();
+            int32 o = ie.ordinal();
+            if (o < 0 || o >= f.width()) {
+                throw heap FrameException("column '" + ie.name()
+                    + "' is not in schema " + f.schemaText());
+            }
+            if (!f.colAt(o).validAt(i)) {
+                return 2;
+            }
+            int64 a = Exec.evalI64(ie, f, i);
+            int64 b = p.iValue();
+            boolean r = false;
+            if (k == 40) { r = a > b; }
+            if (k == 41) { r = a >= b; }
+            if (k == 42) { r = a < b; }
+            if (k == 43) { r = a <= b; }
+            if (k == 44) { r = a == b; }
+            if (k == 45) { r = a != b; }
+            if (r) { return 1; }
+            return 0;
+        }
+        throw heap FrameException("unknown predicate kind");
+    }
+
+    /** Filter: evaluate `p` per row, gather the passing rows per column. */
+    static #DynFrame applyFilter(Pred p, #DynFrame in) {
+        if (in.isSchemaOnly()) {
+            return in.schemaOnly();   // filter preserves the schema
+        }
+        int64 n = in.rowsOf();
+        int64 cap = n;
+        if (cap < 1) { cap = 1; }
+        int64[] idx = heap int64[cap];
+        int64 m = 0;
+        int64 i = 0;
+        while (i < n) {
+            if (Exec.evalPred3(p, in, i) == 1) {
+                idx[m] = i;
+                m = m + 1;
+            }
+            i = i + 1;
+        }
+        DynCol[] out = heap DynCol[in.width()];
+        int32 j = 0;
+        while (j < in.width()) {
+            // A null slot is a column the U7 scan pruned — carry it.
+            if (in.colAt(j) != null) {
+                out[j] #= in.colAt(j).gather(idx, m);
+            }
+            j = j + 1;
+        }
+        return in.rebuild(#out, m);
+    }
+
+    /** Project (`keepAll == false`) or with-columns (`keepAll == true`).
+     *  Passthrough references alias zero-copy; computed expressions
+     *  materialize float64. `with` REPLACES a same-named column in place.
+     *  Fed a schema-only frame, computes the output SCHEMA only. */
+    static #DynFrame apply(Sel sels, int32 nsels, #DynFrame in, boolean keepAll) {
+        boolean schemaOnly = in.isSchemaOnly();
+        int64 n = in.rowsOf();
+        int32 cap = nsels;
+        if (keepAll) { cap = cap + in.width(); }
+        if (cap < 1) { cap = 1; }
+        String[] names = heap String[cap];
+        int32[] tags = heap int32[cap];
+        boolean[] nulls = heap boolean[cap];
+        DynCol[] cols = heap DynCol[cap];
+        int32 w = 0;
+        if (keepAll) {
+            while (w < in.width()) {
+                names[w] = in.nameAt(w);
+                tags[w] = in.tagAt(w);
+                nulls[w] = in.nullableAt(w);
+                // A null slot is a column the U7 scan pruned — carry it.
+                if (!schemaOnly && in.colAt(w) != null) {
+                    cols[w] #= in.colAt(w).alias();
+                }
+                w = w + 1;
+            }
+        }
+        Sel s = sels;
+        while (s != null) {
+            String outName = s.outNameOf();
+            // `with` replaces a same-named column in place.
+            int32 at = w;
+            if (keepAll) {
+                int32 j = 0;
+                while (j < w) {
+                    if (names[j].equals(outName)) { at = j; }
+                    j = j + 1;
+                }
+            }
+            int32 tag = 10;
+            boolean nullable = false;
+            if (s.strRefOf() != null) {
+                ColStr r = s.strRefOf();
+                int32 o = r.ordinal();
+                if (o < 0 || o >= in.width()) {
+                    throw heap FrameException("column '" + r.name()
+                        + "' is not in schema " + in.schemaText());
+                }
+                if (in.tagAt(o) != 11) {
+                    throw heap FrameException("column '" + r.name() + "' is '"
+                        + in.typeNameAt(o) + "', not utf8");
+                }
+                tag = 11;
+                if (!schemaOnly) { cols[at] #= in.colAt(o).alias(); }
+            } else if (s.iRefOf() != null) {
+                ColI64 r = s.iRefOf();
+                int32 o = r.ordinal();
+                if (o < 0 || o >= in.width()) {
+                    throw heap FrameException("column '" + r.name()
+                        + "' is not in schema " + in.schemaText());
+                }
+                if (in.tagAt(o) > 8) {
+                    throw heap FrameException("column '" + r.name() + "' is '"
+                        + in.typeNameAt(o) + "', not an integer physical");
+                }
+                tag = in.tagAt(o);
+                nullable = in.nullableAt(o);
+                if (!schemaOnly) { cols[at] #= in.colAt(o).alias(); }
+            } else if (s.exprOf() != null && s.exprOf().kind() == 0) {
+                ColF64 r = s.exprOf();
+                int32 o = r.ordinal();
+                if (o < 0 || o >= in.width()) {
+                    throw heap FrameException("column '" + r.name()
+                        + "' is not in schema " + in.schemaText());
+                }
+                if (in.tagAt(o) == 11) {
+                    throw heap FrameException("column '" + r.name()
+                        + "' is utf8; reference it with a string builder");
+                }
+                tag = in.tagAt(o);
+                nullable = in.nullableAt(o);
+                if (!schemaOnly) { cols[at] #= in.colAt(o).alias(); }
+            } else {
+                // Computed float64 expression — materialized via DynCol so
+                // the column instantiation resolves in its own package.
+                // Nullability is a SCHEMA fact (spec §7.3): an expression
+                // over only non-null inputs takes the fast loop below —
+                // it never reads a validity bit (6.3.1's audit point);
+                // one referencing a nullable column materializes nullable,
+                // with null propagated per row.
+                nullable = Exec.exprRefsNullable(s.exprOf(), in);
+                if (!schemaOnly) {
+                    if (nullable) {
+                        DynCol c = DynCol.newNF64(n);
+                        int64 i = 0;
+                        while (i < n) {
+                            if (Exec.exprValidF64(s.exprOf(), in, i)) {
+                                c.setNF64(i, Exec.evalF64(s.exprOf(), in, i));
+                            }
+                            i = i + 1;
+                        }
+                        cols[at] #= c;
+                    } else {
+                        DynCol c = DynCol.newF64(n);
+                        int64 i = 0;
+                        while (i < n) {
+                            c.setF64(i, Exec.evalF64(s.exprOf(), in, i));
+                            i = i + 1;
+                        }
+                        cols[at] #= c;
+                    }
+                }
+            }
+            names[at] = outName;
+            tags[at] = tag;
+            nulls[at] = nullable;
+            if (at == w) { w = w + 1; }
+            s = s.nextOf();
+        }
+        if (schemaOnly) {
+            return heap DynFrame(#names, #tags, #nulls, w);
+        }
+        // This frame's passthrough columns ALIAS `in`'s storage; adopt the
+        // consumed input so that storage lives exactly as long as the
+        // aliases (single-owner Storage — the U7-surfaced dangle: a
+        // gathered frame below a project was dropped out from under it).
+        DynFrame r = heap DynFrame(#names, #tags, #nulls, #cols, w, n);
+        r.__adopt(#in);
+        return #r;
+    }
+
+    /** The ordinal a group KEY references. Keys must be bare column
+     *  references — a computed expression has no identity to group by, so
+     *  it fails LOUD at plan build naming the fix (spec §4.7). */
+    static int32 keyOrdinal(Sel s, DynFrame in) {
+        String nm = s.outNameOf();
+        if (s.strRefOf() != null) {
+            return s.strRefOf().ordinal();
+        }
+        if (s.iRefOf() != null) {
+            return s.iRefOf().ordinal();
+        }
+        if (s.exprOf() != null && s.exprOf().kind() == 0) {
+            return s.exprOf().ordinal();
+        }
+        throw heap FrameException("groupBy: '" + nm + "' is a computed "
+            + "expression; a group key must be a column reference");
+    }
+
+    /** SCHEMA-time physical of an aggregate (4 int64, 10 float64, 11
+     *  utf8). Exact integer inputs keep int64 through sum/min/max/first/
+     *  last; `count` is always int64; `mean` and any arithmetic are
+     *  float64. */
+    static int32 aggTag(Agg a, DynFrame in) {
+        int32 k = a.kind();
+        if (k == 20) { return Exec.aggTag(a.leftAgg(), in); }
+        if (k >= 10 && k <= 13) { return 10; }
+        if (k == 5) { return 4; }
+        if (a.strRefOf() != null) { return 11; }
+        if (a.iRefOf() != null && k != 2) { return 4; }
+        return 10;
+    }
+
+    /** SCHEMA-time nullability of an aggregate — a DATA-independent fact
+     *  (the plan-build schema and the executed result must agree, since
+     *  `.as<R>()` validates against the former). `sum` and `count` always
+     *  produce a value (identity 0, and a count of zero); the value-picking
+     *  reductions produce one only when some cell in the group is
+     *  non-null, so they are nullable exactly when their input is. */
+    static boolean aggNullable(Agg a, DynFrame in) {
+        int32 k = a.kind();
+        if (k == 20) { return Exec.aggNullable(a.leftAgg(), in); }
+        if (k >= 10 && k <= 13) {
+            if (Exec.aggNullable(a.leftAgg(), in)) { return true; }
+            return Exec.aggNullable(a.rightAgg(), in);
+        }
+        if (k == 1 || k == 5) { return false; }
+        if (a.strRefOf() != null) { return false; }
+        if (a.iRefOf() != null) { return in.nullableAt(a.iRefOf().ordinal()); }
+        return Exec.exprRefsNullable(a.exprOf(), in);
+    }
+
+    /** Reduce one aggregate over the grouped rows. Nulls are SKIPPED
+     *  throughout (spec §7): `mean` divides by the non-null count,
+     *  `count` counts non-null cells, `first`/`last` take the first/last
+     *  cell that HAS a value, and a group with no non-null cell keeps the
+     *  reduction's null — except `sum`, which is the identity 0. */
+    static #AggResult evalAgg(Agg a, DynFrame in, int64[] gid, int64 n,
+                              int64 ng) {
+        int32 k = a.kind();
+        if (k == 20) {
+            return Exec.evalAgg(a.leftAgg(), in, gid, n, ng);
+        }
+        if (k >= 10 && k <= 13) {
+            AggResult l = Exec.evalAgg(a.leftAgg(), in, gid, n, ng);
+            AggResult r = Exec.evalAgg(a.rightAgg(), in, gid, n, ng);
+            AggResult out = heap AggResult(10, ng);
+            int64 g = 0;
+            while (g < ng) {
+                if (l.validAt(g) && r.validAt(g)) {
+                    float64 x = l.asF64(g);
+                    float64 y = r.asF64(g);
+                    if (k == 10) { out.setF64(g, x + y); }
+                    if (k == 11) { out.setF64(g, x - y); }
+                    if (k == 12) { out.setF64(g, x * y); }
+                    if (k == 13) { out.setF64(g, x / y); }
+                }
+                g = g + 1;
+            }
+            return #out;
+        }
+        int32 tag = Exec.aggTag(a, in);
+        AggResult out = heap AggResult(tag, ng);
+        int64 gcap = ng;
+        if (gcap < 1) { gcap = 1; }
+        int64[] cnt = heap int64[gcap];
+        // utf8: no validity in v1, so every row counts and first/last are
+        // the group's first/last row.
+        if (a.strRefOf() != null) {
+            int64 i = 0;
+            while (i < n) {
+                int64 g = gid[i];
+                cnt[g] = cnt[g] + 1;
+                if (k == 5) {
+                    out.setI64(g, cnt[g]);
+                } else if (k == 6) {
+                    if (cnt[g] == 1) { out.setStr(g, Exec.evalStr(a.strRefOf(), in, i)); }
+                } else if (k == 7) {
+                    out.setStr(g, Exec.evalStr(a.strRefOf(), in, i));
+                }
+                i = i + 1;
+            }
+            if (k == 5) {
+                int64 g2 = 0;
+                while (g2 < ng) { out.setI64(g2, cnt[g2]); g2 = g2 + 1; }
+            }
+            return #out;
+        }
+        boolean exact = a.iRefOf() != null && k != 2;
+        int32 iOrd = -1;
+        if (a.iRefOf() != null) { iOrd = a.iRefOf().ordinal(); }
+        float64[] facc = heap float64[gcap];
+        int64[] iacc = heap int64[gcap];
+        int64 i = 0;
+        while (i < n) {
+            int64 g = gid[i];
+            boolean ok = false;
+            float64 fv = 0.0;
+            int64 ivv = 0;
+            if (a.iRefOf() != null) {
+                ok = in.colAt(iOrd).validAt(i);
+                if (ok) {
+                    ivv = Exec.evalI64(a.iRefOf(), in, i);
+                    fv = (float64) ivv;
+                }
+            } else {
+                ok = Exec.exprValidF64(a.exprOf(), in, i);
+                if (ok) { fv = Exec.evalF64(a.exprOf(), in, i); }
+            }
+            if (ok) {
+                cnt[g] = cnt[g] + 1;
+                if (k == 1 || k == 2) {
+                    facc[g] = facc[g] + fv;
+                    iacc[g] = iacc[g] + ivv;
+                } else if (k == 3) {
+                    if (cnt[g] == 1 || fv < facc[g]) { facc[g] = fv; iacc[g] = ivv; }
+                } else if (k == 4) {
+                    if (cnt[g] == 1 || fv > facc[g]) { facc[g] = fv; iacc[g] = ivv; }
+                } else if (k == 6) {
+                    if (cnt[g] == 1) { facc[g] = fv; iacc[g] = ivv; }
+                } else if (k == 7) {
+                    facc[g] = fv;
+                    iacc[g] = ivv;
+                }
+            }
+            i = i + 1;
+        }
+        int64 g = 0;
+        while (g < ng) {
+            if (k == 5) {
+                out.setI64(g, cnt[g]);
+            } else if (k == 1) {
+                // sum: the identity 0 stands for a group with no value.
+                if (exact) { out.setI64(g, iacc[g]); } else { out.setF64(g, facc[g]); }
+            } else if (cnt[g] > 0) {
+                if (k == 2) {
+                    out.setF64(g, facc[g] / (float64) cnt[g]);
+                } else if (exact) {
+                    out.setI64(g, iacc[g]);
+                } else {
+                    out.setF64(g, facc[g]);
+                }
+            }
+            g = g + 1;
+        }
+        return #out;
+    }
+
+    /** Hash of row `i`'s key tuple. Correctness rests on the equality
+     *  probe, not on this — a mediocre spread only costs probes.
+     *  Combination goes through {@link Hash#combine} because cajeta's
+     *  integer arithmetic TRAPS on overflow: a hand-rolled `h * 31 + k`
+     *  mixer overflows int64 on its first multiply. */
+    static int64 keyHash(DynFrame in, int32[] kord, int32 nk, int64 i) {
+        int64 h = 0;
+        int32 j = 0;
+        while (j < nk) {
+            int32 o = kord[j];
+            int64 kh = 777767777;           // nulls hash alike, group alike
+            if (in.colAt(o).validAt(i)) {
+                if (in.tagAt(o) == 11) {
+                    kh = in.colAt(o).strAt(i).hash();
+                } else if (in.tagAt(o) > 8) {
+                    kh = stack Float64(in.colAt(o).f64At(i)).hash();
+                } else {
+                    kh = in.colAt(o).i64At(i);
+                }
+            }
+            h = Hash.combine(h, kh);
+            j = j + 1;
+        }
+        return h;
+    }
+
+    /** Do rows `x` and `y` share a key tuple? NULL EQUALS NULL here — a
+     *  null key forms its own group rather than vanishing (spec §7), which
+     *  is the one place null-equals-null holds. */
+    static boolean keysEqual(DynFrame in, int32[] kord, int32 nk, int64 x,
+                             int64 y) {
+        int32 j = 0;
+        while (j < nk) {
+            int32 o = kord[j];
+            boolean vx = in.colAt(o).validAt(x);
+            boolean vy = in.colAt(o).validAt(y);
+            if (vx != vy) { return false; }
+            if (vx) {
+                if (in.tagAt(o) == 11) {
+                    if (!in.colAt(o).strAt(x).equals(in.colAt(o).strAt(y))) {
+                        return false;
+                    }
+                } else if (in.tagAt(o) > 8) {
+                    if (in.colAt(o).f64At(x) != in.colAt(o).f64At(y)) {
+                        return false;
+                    }
+                } else {
+                    if (in.colAt(o).i64At(x) != in.colAt(o).i64At(y)) {
+                        return false;
+                    }
+                }
+            }
+            j = j + 1;
+        }
+        return true;
+    }
+
+    /** Group-aggregate (spec §4.4): hash the key tuples into groups, reduce
+     *  each aggregate within each group, and emit one row per group. The
+     *  output schema is exactly the keys (their own type and nullability,
+     *  taken from the group's first row) followed by the named aggregates.
+     *  Groups come out in FIRST-APPEARANCE order — a deterministic order
+     *  that costs nothing here and makes results testable.
+     *
+     *  Fed a schema-only frame this computes the output SCHEMA alone, which
+     *  is what `.as<R>()` and `col("...")` validate against at plan build. */
+    static #DynFrame applyGroup(Plan node, #DynFrame in) {
+        if (node.aggCount() < 1) {
+            throw heap FrameException(
+                "groupBy: no aggregates - complete it with .agg(...)");
+        }
+        boolean schemaOnly = in.isSchemaOnly();
+        int32 nk = node.keyCount();
+        int32 w = nk + node.aggCount();
+        String[] names = heap String[w];
+        int32[] tags = heap int32[w];
+        boolean[] nulls = heap boolean[w];
+        int32 kcap = nk;
+        if (kcap < 1) { kcap = 1; }
+        int32[] kord = heap int32[kcap];
+        int32 c = 0;
+        Sel s = node.keysOf();
+        while (s != null) {
+            int32 o = Exec.keyOrdinal(s, in);
+            if (o < 0 || o >= in.width()) {
+                throw heap FrameException("groupBy: key '" + s.outNameOf()
+                    + "' is not in schema " + in.schemaText());
+            }
+            kord[c] = o;
+            names[c] = s.outNameOf();
+            tags[c] = in.tagAt(o);
+            nulls[c] = in.nullableAt(o);
+            c = c + 1;
+            s = s.nextOf();
+        }
+        Agg a = node.aggsOf();
+        while (a != null) {
+            names[c] = a.outNameOf();
+            tags[c] = Exec.aggTag(a, in);
+            nulls[c] = Exec.aggNullable(a, in);
+            c = c + 1;
+            a = a.nextOf();
+        }
+        if (schemaOnly) {
+            return heap DynFrame(#names, #tags, #nulls, w);
+        }
+        // Group assignment: open addressing over the key tuples, with
+        // first-appearance ids.
+        int64 n = in.rowsOf();
+        int64 cap = 16;
+        while (cap < n * 2 + 1) { cap = cap * 2; }
+        int64[] slot = heap int64[cap];
+        int64 z = 0;
+        while (z < cap) { slot[z] = -1; z = z + 1; }
+        int64 rcap = n;
+        if (rcap < 1) { rcap = 1; }
+        int64[] gid = heap int64[rcap];
+        int64[] firstRow = heap int64[rcap];
+        int64 ng = 0;
+        int64 i = 0;
+        while (i < n) {
+            int64 h = Exec.keyHash(in, kord, nk, i);
+            int64 p = h % cap;
+            if (p < 0) { p = p + cap; }
+            boolean placed = false;
+            while (!placed) {
+                int64 g = slot[p];
+                if (g < 0) {
+                    slot[p] = ng;
+                    firstRow[ng] = i;
+                    gid[i] = ng;
+                    ng = ng + 1;
+                    placed = true;
+                } else if (Exec.keysEqual(in, kord, nk, firstRow[g], i)) {
+                    gid[i] = g;
+                    placed = true;
+                } else {
+                    p = p + 1;
+                    if (p == cap) { p = 0; }
+                }
+            }
+            i = i + 1;
+        }
+        DynCol[] cols = heap DynCol[w];
+        // Keys: gather each group's first row — the key column keeps its
+        // own physical and validity (a null key stays null).
+        int32 j = 0;
+        while (j < nk) {
+            cols[j] #= in.colAt(kord[j]).gather(firstRow, ng);
+            j = j + 1;
+        }
+        int32 ai = nk;
+        Agg a2 = node.aggsOf();
+        while (a2 != null) {
+            AggResult r = Exec.evalAgg(a2, in, gid, n, ng);
+            cols[ai] #= Exec.materialize(#r, tags[ai], nulls[ai], ng);
+            ai = ai + 1;
+            a2 = a2.nextOf();
+        }
+        return heap DynFrame(#names, #tags, #nulls, #cols, w, ng);
+    }
+
+    /** One aggregate's per-group values as a column, in the physical and
+     *  nullability the PLAN-BUILD schema already promised. */
+    static #DynCol materialize(#AggResult r, int32 tag, boolean nullable,
+                               int64 ng) {
+        if (tag == 11) {
+            int64 scap = ng;
+            if (scap < 1) { scap = 1; }
+            String[] vals = heap String[scap];
+            int64 g = 0;
+            while (g < ng) { vals[g] = r.strAt(g); g = g + 1; }
+            return DynCol.newStr(vals);
+        }
+        if (tag == 4) {
+            if (nullable) {
+                DynCol c = DynCol.newNI64(ng);
+                int64 g = 0;
+                while (g < ng) {
+                    if (r.validAt(g)) { c.setNI64(g, r.i64At(g)); }
+                    g = g + 1;
+                }
+                return #c;
+            }
+            DynCol c = DynCol.newI64(ng);
+            int64 g = 0;
+            while (g < ng) {
+                if (r.validAt(g)) { c.setI64(g, r.i64At(g)); }
+                g = g + 1;
+            }
+            return #c;
+        }
+        if (nullable) {
+            DynCol c = DynCol.newNF64(ng);
+            int64 g = 0;
+            while (g < ng) {
+                if (r.validAt(g)) { c.setNF64(g, r.f64At(g)); }
+                g = g + 1;
+            }
+            return #c;
+        }
+        DynCol c = DynCol.newF64(ng);
+        int64 g = 0;
+        while (g < ng) {
+            if (r.validAt(g)) { c.setF64(g, r.f64At(g)); }
+            g = g + 1;
+        }
+        return #c;
+    }
+
+    /** Byte-lexicographic string order (utf8 byte order IS code-point
+     *  order): <0 if a<b, >0 if a>b, 0 equal — a shorter prefix sorts
+     *  first. */
+    static int32 strCompare(String a, String b) {
+        int32 la = a.byteLength();
+        int32 lb = b.byteLength();
+        int32 n = la;
+        if (lb < n) { n = lb; }
+        int32 i = 0;
+        while (i < n) {
+            int32 ca = ((int32) a.byteAt(i)) & 255;
+            int32 cb = ((int32) b.byteAt(i)) & 255;
+            if (ca < cb) { return -1; }
+            if (ca > cb) { return 1; }
+            i = i + 1;
+        }
+        if (la < lb) { return -1; }
+        if (la > lb) { return 1; }
+        return 0;
+    }
+
+    /** Floor division (cajeta `/` truncates toward zero): the bucket index
+     *  must round DOWN so negative epochs bucket correctly. `b` > 0. */
+    static int64 floorDiv(int64 a, int64 b) {
+        int64 q = a / b;
+        if (a % b != 0 && (a < 0) != (b < 0)) { q = q - 1; }
+        return q;
+    }
+
+    /** The bucket index of an epoch value: which fixed-width interval it
+     *  falls in, relative to the grid base. Left-closed `[start, start+w)`
+     *  floors; right-closed `(start, start+w]` shifts a boundary value to
+     *  the previous bucket. */
+    static int64 bucketIndex(int64 ts, int64 base, int64 every,
+                             boolean closedRight) {
+        if (closedRight) {
+            return Exec.floorDiv(ts - base - 1, every);
+        }
+        return Exec.floorDiv(ts - base, every);
+    }
+
+    /** Resample (spec §8): rows grouped into fixed-width time buckets and
+     *  reduced per bucket, keyed by the bucket-start time. Distinct from
+     *  `groupBy` in three ways it MUST honor: it ESTABLISHES time order
+     *  (sorts by the time column) so `first`/`last` are earliest/latest by
+     *  TIME (spec §8.3); it emits EVERY bucket across the data's range, so a
+     *  gap becomes an empty NULL row rather than a missing key (spec §8.4);
+     *  and every aggregate output is nullable for exactly that reason. Fed a
+     *  schema-only frame it computes the output SCHEMA alone. */
+    static #DynFrame applyResample(Plan node, #DynFrame in) {
+        if (node.aggCount() < 1) {
+            throw heap FrameException("resample: no aggregates - complete it "
+                + "with .agg(...)");
+        }
+        String tsName = node.colNameOf();
+        int32 na = node.aggCount();
+        int32 w = 1 + na;
+        String[] names = heap String[w];
+        int32[] tags = heap int32[w];
+        boolean[] nulls = heap boolean[w];
+        names[0] = tsName;
+        tags[0] = 4;              // epoch-nanos int64, the bucket start
+        nulls[0] = false;         // every bucket has a defined start
+        int32 c = 1;
+        Agg a = node.aggsOf();
+        while (a != null) {
+            names[c] = a.outNameOf();
+            tags[c] = Exec.aggTag(a, in);
+            nulls[c] = true;      // an empty bucket nulls EVERY aggregate
+            c = c + 1;
+            a = a.nextOf();
+        }
+        boolean schemaOnly = in.isSchemaOnly();
+        int32 tsOrd = -1;
+        if (!schemaOnly) {
+            tsOrd = in.find(tsName);
+            if (tsOrd < 0) {
+                throw heap FrameException("resample: no column '" + tsName
+                    + "' in schema " + in.schemaText());
+            }
+            if (in.tagAt(tsOrd) > 8) {
+                throw heap FrameException("resample: time column '" + tsName
+                    + "' is '" + in.typeNameAt(tsOrd) + "', not an integer "
+                    + "epoch column");
+            }
+        } else {
+            // Validate at plan build too, so a bad time column fails before
+            // anything runs.
+            tsOrd = in.find(tsName);
+            if (tsOrd < 0) {
+                throw heap FrameException("resample: no column '" + tsName
+                    + "' in schema " + in.schemaText());
+            }
+            if (in.tagAt(tsOrd) > 8) {
+                throw heap FrameException("resample: time column '" + tsName
+                    + "' is '" + in.typeNameAt(tsOrd) + "', not an integer "
+                    + "epoch column");
+            }
+            return heap DynFrame(#names, #tags, #nulls, w);
+        }
+        int64 every = node.rsEveryOf();
+        int64 base = node.rsOriginOf() + node.rsOffsetOf();
+        boolean closedRight = node.rsClosedRightOf();
+        int64 n = in.rowsOf();
+        if (n == 0) {
+            DynCol[] empty = heap DynCol[w];
+            empty[0] #= DynCol.newI64(0);
+            int32 ei = 1;
+            while (ei < w) {
+                if (tags[ei] == 4) { empty[ei] #= DynCol.newNI64(0); }
+                else { empty[ei] #= DynCol.newNF64(0); }
+                ei = ei + 1;
+            }
+            return heap DynFrame(#names, #tags, #nulls, #empty, w, 0);
+        }
+        // Establish time order: a stable sort of the row indices by the ts
+        // column, so first/last within a bucket are earliest/latest by
+        // time. Reuse a simple insertion of a sorted gather of the frame.
+        int64[] order = heap int64[n];
+        int64 z = 0;
+        while (z < n) { order[z] = z; z = z + 1; }
+        int64[] tmp = heap int64[n];
+        int64 width = 1;
+        while (width < n) {
+            int64 lo = 0;
+            while (lo < n) {
+                int64 mid = lo + width;
+                if (mid > n) { mid = n; }
+                int64 hi = lo + width * 2;
+                if (hi > n) { hi = n; }
+                int64 x = lo;
+                int64 y = mid;
+                int64 tt = lo;
+                while (x < mid && y < hi) {
+                    if (in.colAt(tsOrd).i64At(order[x])
+                            <= in.colAt(tsOrd).i64At(order[y])) {
+                        tmp[tt] = order[x]; x = x + 1;
+                    } else {
+                        tmp[tt] = order[y]; y = y + 1;
+                    }
+                    tt = tt + 1;
+                }
+                while (x < mid) { tmp[tt] = order[x]; x = x + 1; tt = tt + 1; }
+                while (y < hi) { tmp[tt] = order[y]; y = y + 1; tt = tt + 1; }
+                lo = hi;
+            }
+            int64 zz = 0;
+            while (zz < n) { order[zz] = tmp[zz]; zz = zz + 1; }
+            width = width * 2;
+        }
+        DynFrame sorted = in.rebuild(Exec.gatherAll(in, order, n), n);
+        // Bucket range across the (now sorted) data — every bucket in
+        // [bmin, bmax] is emitted, empty ones included.
+        int64 tsMin = sorted.colAt(tsOrd).i64At(0);
+        int64 tsMax = sorted.colAt(tsOrd).i64At(n - 1);
+        int64 bmin = Exec.bucketIndex(tsMin, base, every, closedRight);
+        int64 bmax = Exec.bucketIndex(tsMax, base, every, closedRight);
+        int64 ng = bmax - bmin + 1;
+        int64[] gid = heap int64[n];
+        int64 gcap = ng;
+        if (gcap < 1) { gcap = 1; }
+        int64[] bucketRows = heap int64[gcap];
+        int64 i = 0;
+        while (i < n) {
+            int64 b = Exec.bucketIndex(sorted.colAt(tsOrd).i64At(i), base,
+                every, closedRight) - bmin;
+            gid[i] = b;
+            bucketRows[b] = bucketRows[b] + 1;
+            i = i + 1;
+        }
+        DynCol[] cols = heap DynCol[w];
+        // Bucket-start key column.
+        DynCol keyCol = DynCol.newI64(ng);
+        int64 g = 0;
+        while (g < ng) {
+            keyCol.setI64(g, base + (bmin + g) * every);
+            g = g + 1;
+        }
+        cols[0] #= keyCol;
+        int32 ci = 1;
+        Agg a2 = node.aggsOf();
+        while (a2 != null) {
+            AggResult rr = Exec.evalAgg(a2, sorted, gid, n, ng);
+            // Empty buckets: null EVERY aggregate cell (no data, not zero).
+            int64 gg = 0;
+            while (gg < ng) {
+                if (bucketRows[gg] == 0) { rr.invalidate(gg); }
+                gg = gg + 1;
+            }
+            cols[ci] #= Exec.materialize(#rr, tags[ci], true, ng);
+            ci = ci + 1;
+            a2 = a2.nextOf();
+        }
+        return heap DynFrame(#names, #tags, #nulls, #cols, w, ng);
+    }
+
+    /** A stable ascending order of the row indices by an integer column —
+     *  the ts-ordering both resample and rolling establish. Bottom-up merge
+     *  sort, input index as the tie-break. */
+    static #int64[] sortIndicesByI64(DynFrame in, int32 ord, int64 n) {
+        int64 cap = n;
+        if (cap < 1) { cap = 1; }
+        int64[] order = heap int64[cap];
+        int64 z = 0;
+        while (z < n) { order[z] = z; z = z + 1; }
+        int64[] tmp = heap int64[cap];
+        int64 width = 1;
+        while (width < n) {
+            int64 lo = 0;
+            while (lo < n) {
+                int64 mid = lo + width;
+                if (mid > n) { mid = n; }
+                int64 hi = lo + width * 2;
+                if (hi > n) { hi = n; }
+                int64 x = lo;
+                int64 y = mid;
+                int64 tt = lo;
+                while (x < mid && y < hi) {
+                    if (in.colAt(ord).i64At(order[x])
+                            <= in.colAt(ord).i64At(order[y])) {
+                        tmp[tt] = order[x]; x = x + 1;
+                    } else {
+                        tmp[tt] = order[y]; y = y + 1;
+                    }
+                    tt = tt + 1;
+                }
+                while (x < mid) { tmp[tt] = order[x]; x = x + 1; tt = tt + 1; }
+                while (y < hi) { tmp[tt] = order[y]; y = y + 1; tt = tt + 1; }
+                lo = hi;
+            }
+            int64 zz = 0;
+            while (zz < n) { order[zz] = tmp[zz]; zz = zz + 1; }
+            width = width * 2;
+        }
+        return #order;
+    }
+
+    /** Reduce one aggregate over each output row's WINDOW range
+     *  `[lo[o], hi[o])` (U11): the sliding counterpart of {@link #evalAgg}.
+     *  Windows overlap, so a per-output-row scan replaces the single
+     *  group-id pass; the per-kind math is identical (nulls skipped, sum's
+     *  identity 0, count non-null). */
+    static #AggResult evalAggWindow(Agg a, DynFrame in, int64[] lo,
+                                    int64[] hi, int64 nout) {
+        int32 k = a.kind();
+        if (k == 20) {
+            return Exec.evalAggWindow(a.leftAgg(), in, lo, hi, nout);
+        }
+        if (k >= 10 && k <= 13) {
+            AggResult l = Exec.evalAggWindow(a.leftAgg(), in, lo, hi, nout);
+            AggResult r = Exec.evalAggWindow(a.rightAgg(), in, lo, hi, nout);
+            AggResult out = heap AggResult(10, nout);
+            int64 o = 0;
+            while (o < nout) {
+                if (l.validAt(o) && r.validAt(o)) {
+                    float64 x = l.asF64(o);
+                    float64 y = r.asF64(o);
+                    if (k == 10) { out.setF64(o, x + y); }
+                    if (k == 11) { out.setF64(o, x - y); }
+                    if (k == 12) { out.setF64(o, x * y); }
+                    if (k == 13) { out.setF64(o, x / y); }
+                }
+                o = o + 1;
+            }
+            return #out;
+        }
+        int32 tag = Exec.aggTag(a, in);
+        AggResult out = heap AggResult(tag, nout);
+        // utf8: no validity in v1, so first/last are the window's first/last
+        // row and count is the window size.
+        if (a.strRefOf() != null) {
+            int64 o = 0;
+            while (o < nout) {
+                int64 lct = hi[o] - lo[o];
+                if (k == 5) {
+                    out.setI64(o, lct);
+                } else if (k == 6) {
+                    if (lct > 0) { out.setStr(o, Exec.evalStr(a.strRefOf(), in, lo[o])); }
+                } else if (k == 7) {
+                    if (lct > 0) { out.setStr(o, Exec.evalStr(a.strRefOf(), in, hi[o] - 1)); }
+                }
+                o = o + 1;
+            }
+            return #out;
+        }
+        boolean exact = a.iRefOf() != null && k != 2;
+        int32 iOrd = -1;
+        if (a.iRefOf() != null) { iOrd = a.iRefOf().ordinal(); }
+        int64 o = 0;
+        while (o < nout) {
+            int64 cnt = 0;
+            float64 facc = 0.0;
+            int64 iacc = 0;
+            int64 i = lo[o];
+            while (i < hi[o]) {
+                boolean ok = false;
+                float64 fv = 0.0;
+                int64 ivv = 0;
+                if (a.iRefOf() != null) {
+                    ok = in.colAt(iOrd).validAt(i);
+                    if (ok) {
+                        ivv = Exec.evalI64(a.iRefOf(), in, i);
+                        fv = (float64) ivv;
+                    }
+                } else {
+                    ok = Exec.exprValidF64(a.exprOf(), in, i);
+                    if (ok) { fv = Exec.evalF64(a.exprOf(), in, i); }
+                }
+                if (ok) {
+                    cnt = cnt + 1;
+                    if (k == 1 || k == 2) {
+                        facc = facc + fv;
+                        iacc = iacc + ivv;
+                    } else if (k == 3) {
+                        if (cnt == 1 || fv < facc) { facc = fv; iacc = ivv; }
+                    } else if (k == 4) {
+                        if (cnt == 1 || fv > facc) { facc = fv; iacc = ivv; }
+                    } else if (k == 6) {
+                        if (cnt == 1) { facc = fv; iacc = ivv; }
+                    } else if (k == 7) {
+                        facc = fv;
+                        iacc = ivv;
+                    }
+                }
+                i = i + 1;
+            }
+            if (k == 5) {
+                out.setI64(o, cnt);
+            } else if (k == 1) {
+                if (exact) { out.setI64(o, iacc); } else { out.setF64(o, facc); }
+            } else if (cnt > 0) {
+                if (k == 2) {
+                    out.setF64(o, facc / (float64) cnt);
+                } else if (exact) {
+                    out.setI64(o, iacc);
+                } else {
+                    out.setF64(o, facc);
+                }
+            }
+            o = o + 1;
+        }
+        return #out;
+    }
+
+    /** Rolling window (U11, spec §8 resolution): one output row per input
+     *  row, each reducing that row's trailing window — the sliding sibling
+     *  of resample. A TIME window (`byTime`) establishes time order and
+     *  covers `(t - size, t]` up to the anchor; a COUNT window covers the
+     *  trailing `size` rows in input order, clamped at the start. The window
+     *  is never empty (it holds its anchor), so aggregate nullability is the
+     *  ordinary groupBy rule — not resample's always-null. Fed a schema-only
+     *  frame it computes the output SCHEMA alone. */
+    static #DynFrame applyWindow(Plan node, #DynFrame in) {
+        if (node.aggCount() < 1) {
+            throw heap FrameException("rolling: no aggregates - complete it "
+                + "with .agg(...)");
+        }
+        boolean byTime = node.winByTimeOf();
+        String tsName = node.colNameOf();
+        int32 na = node.aggCount();
+        int32 w = na;
+        if (byTime) { w = w + 1; }
+        String[] names = heap String[w];
+        int32[] tags = heap int32[w];
+        boolean[] nulls = heap boolean[w];
+        int32 tsOrd = -1;
+        int32 c = 0;
+        if (byTime) {
+            tsOrd = in.find(tsName);
+            if (tsOrd < 0) {
+                throw heap FrameException("rolling: no column '" + tsName
+                    + "' in schema " + in.schemaText());
+            }
+            if (in.tagAt(tsOrd) > 8) {
+                throw heap FrameException("rolling: time column '" + tsName
+                    + "' is '" + in.typeNameAt(tsOrd) + "', not an integer "
+                    + "epoch column");
+            }
+            names[0] = tsName;
+            tags[0] = 4;
+            nulls[0] = false;
+            c = 1;
+        }
+        Agg a = node.aggsOf();
+        while (a != null) {
+            names[c] = a.outNameOf();
+            tags[c] = Exec.aggTag(a, in);
+            nulls[c] = Exec.aggNullable(a, in);
+            c = c + 1;
+            a = a.nextOf();
+        }
+        if (in.isSchemaOnly()) {
+            return heap DynFrame(#names, #tags, #nulls, w);
+        }
+        int64 n = in.rowsOf();
+        int64 rcap = n;
+        if (rcap < 1) { rcap = 1; }
+        int64[] loArr = heap int64[rcap];
+        int64[] hiArr = heap int64[rcap];
+        DynCol[] cols = heap DynCol[w];
+        int64 size = node.winSizeOf();
+        DynFrame base = in;
+        int32 ci = 0;
+        if (byTime) {
+            int64[] order = Exec.sortIndicesByI64(in, tsOrd, n);
+            base = in.rebuild(Exec.gatherAll(in, order, n), n);
+            int64 lo = 0;
+            int64 o = 0;
+            while (o < n) {
+                int64 t = base.colAt(tsOrd).i64At(o);
+                while (base.colAt(tsOrd).i64At(lo) <= t - size) {
+                    lo = lo + 1;
+                }
+                loArr[o] = lo;
+                hiArr[o] = o + 1;
+                o = o + 1;
+            }
+            cols[0] #= base.colAt(tsOrd).alias();
+            ci = 1;
+        } else {
+            int64 i = 0;
+            while (i < n) {
+                int64 lo = i - size + 1;
+                if (lo < 0) { lo = 0; }
+                loArr[i] = lo;
+                hiArr[i] = i + 1;
+                i = i + 1;
+            }
+        }
+        Agg a2 = node.aggsOf();
+        while (a2 != null) {
+            AggResult rr = Exec.evalAggWindow(a2, base, loArr, hiArr, n);
+            cols[ci] #= Exec.materialize(#rr, tags[ci], nulls[ci], n);
+            ci = ci + 1;
+            a2 = a2.nextOf();
+        }
+        return heap DynFrame(#names, #tags, #nulls, #cols, w, n);
+    }
+
+    /** A value column's physical must be one v1 melt/pivot supports: int64,
+     *  float64, or (melt only) utf8. Narrow physicals and float32 widen
+     *  later; erroring now beats a silent wrong physical. */
+    static void requireStackable(String op, String name, int32 tag) {
+        if (tag != 4 && tag != 10 && tag != 11) {
+            throw heap FrameException(op + ": column '" + name + "' has a "
+                + "physical v1 cannot stack (int64 / float64 / utf8 only)");
+        }
+    }
+
+    /** Melt (wide->long, spec §4.1): every value column is stacked into one
+     *  `variable`/`value` pair, the id columns repeated per stacked row. The
+     *  schema is STATIC (id columns + a utf8 variable column + a value
+     *  column of the value-vars' shared physical), so melt is an ordinary
+     *  lazy node. Fed a schema-only frame it computes that schema alone. */
+    static #DynFrame applyMelt(Plan node, #DynFrame in) {
+        int32 nId = node.meltIdCount();
+        int32 nVal = node.meltValCount();
+        if (nVal < 1) {
+            throw heap FrameException("melt: no value columns to stack");
+        }
+        int32 w = nId + 2;
+        String[] names = heap String[w];
+        int32[] tags = heap int32[w];
+        boolean[] nulls = heap boolean[w];
+        int32 idcap = nId;
+        if (idcap < 1) { idcap = 1; }
+        int32[] idOrd = heap int32[idcap];
+        int32 c = 0;
+        while (c < nId) {
+            int32 o = in.find(node.meltIdAt(c));
+            if (o < 0) {
+                throw heap FrameException("melt: id column '"
+                    + node.meltIdAt(c) + "' is not in schema "
+                    + in.schemaText());
+            }
+            idOrd[c] = o;
+            names[c] = in.nameAt(o);
+            tags[c] = in.tagAt(o);
+            nulls[c] = in.nullableAt(o);
+            c = c + 1;
+        }
+        // Value vars must share one stackable physical; the value column is
+        // nullable if ANY value var is.
+        int32[] valOrd = heap int32[nVal];
+        int32 valTag = -1;
+        boolean valNullable = false;
+        int32 v = 0;
+        while (v < nVal) {
+            int32 o = in.find(node.meltValAt(v));
+            if (o < 0) {
+                throw heap FrameException("melt: value column '"
+                    + node.meltValAt(v) + "' is not in schema "
+                    + in.schemaText());
+            }
+            Exec.requireStackable("melt", node.meltValAt(v), in.tagAt(o));
+            if (valTag < 0) {
+                valTag = in.tagAt(o);
+            } else if (in.tagAt(o) != valTag) {
+                throw heap FrameException("melt: value columns must share a "
+                    + "physical; '" + node.meltValAt(v) + "' is '"
+                    + in.typeNameAt(o) + "'");
+            }
+            if (in.nullableAt(o)) { valNullable = true; }
+            valOrd[v] = o;
+            v = v + 1;
+        }
+        names[nId] = node.meltVarNameOf();
+        tags[nId] = 11;
+        nulls[nId] = false;
+        names[nId + 1] = node.meltValNameOf();
+        tags[nId + 1] = valTag;
+        nulls[nId + 1] = valNullable;
+        if (in.isSchemaOnly()) {
+            return heap DynFrame(#names, #tags, #nulls, w);
+        }
+        int64 n = in.rowsOf();
+        int64 nout = n * (int64) nVal;
+        DynCol[] cols = heap DynCol[w];
+        // id columns: each input row repeated nVal times (row o -> o/nVal).
+        int64 rcap = nout;
+        if (rcap < 1) { rcap = 1; }
+        int64[] idIdx = heap int64[rcap];
+        int64 o = 0;
+        while (o < nout) { idIdx[o] = o / (int64) nVal; o = o + 1; }
+        int32 ci = 0;
+        while (ci < nId) {
+            cols[ci] #= in.colAt(idOrd[ci]).gather(idIdx, nout);
+            ci = ci + 1;
+        }
+        // variable column: the value var's NAME, cycling per output row.
+        String[] varVals = heap String[rcap];
+        int64 o2 = 0;
+        while (o2 < nout) {
+            varVals[o2] = node.meltValAt((int32) (o2 % (int64) nVal));
+            o2 = o2 + 1;
+        }
+        cols[nId] #= DynCol.newStr(varVals);
+        // value column: the stacked cell (row o/nVal, value var o%nVal).
+        cols[nId + 1] #= Exec.stackValues(in, valOrd, nVal, valTag,
+            valNullable, nout);
+        return heap DynFrame(#names, #tags, #nulls, #cols, w, nout);
+    }
+
+    /** Build the stacked `value` column of a melt: output row `o` reads the
+     *  value var `o % nVal` at input row `o / nVal`. */
+    static #DynCol stackValues(DynFrame in, int32[] valOrd, int32 nVal,
+                               int32 tag, boolean nullable, int64 nout) {
+        int64 cap = nout;
+        if (cap < 1) { cap = 1; }
+        if (tag == 11) {
+            String[] vals = heap String[cap];
+            int64 o = 0;
+            while (o < nout) {
+                int32 vi = (int32) (o % (int64) nVal);
+                int64 r = o / (int64) nVal;
+                vals[o] = in.colAt(valOrd[vi]).strAt(r);
+                o = o + 1;
+            }
+            return DynCol.newStr(vals);
+        }
+        if (tag == 10) {
+            DynCol col;
+            if (nullable) { col = DynCol.newNF64(nout); }
+            else { col = DynCol.newF64(nout); }
+            int64 o = 0;
+            while (o < nout) {
+                int32 vi = (int32) (o % (int64) nVal);
+                int64 r = o / (int64) nVal;
+                if (in.colAt(valOrd[vi]).validAt(r)) {
+                    float64 x = in.colAt(valOrd[vi]).f64At(r);
+                    if (nullable) { col.setNF64(o, x); } else { col.setF64(o, x); }
+                }
+                o = o + 1;
+            }
+            return #col;
+        }
+        DynCol col;
+        if (nullable) { col = DynCol.newNI64(nout); }
+        else { col = DynCol.newI64(nout); }
+        int64 o = 0;
+        while (o < nout) {
+            int32 vi = (int32) (o % (int64) nVal);
+            int64 r = o / (int64) nVal;
+            if (in.colAt(valOrd[vi]).validAt(r)) {
+                int64 x = in.colAt(valOrd[vi]).i64At(r);
+                if (nullable) { col.setNI64(o, x); } else { col.setI64(o, x); }
+            }
+            o = o + 1;
+        }
+        return #col;
+    }
+
+    /** Do rows `x` and `y` agree on every index column (by value)? Used to
+     *  dedup pivot index tuples in first-appearance order. */
+    static boolean indexEqual(DynFrame in, int32[] iord, int32 ni, int64 x,
+                              int64 y) {
+        int32 j = 0;
+        while (j < ni) {
+            int32 o = iord[j];
+            if (in.tagAt(o) == 11) {
+                if (!in.colAt(o).strAt(x).equals(in.colAt(o).strAt(y))) {
+                    return false;
+                }
+            } else if (in.tagAt(o) > 8) {
+                if (in.colAt(o).f64At(x) != in.colAt(o).f64At(y)) {
+                    return false;
+                }
+            } else {
+                if (in.colAt(o).i64At(x) != in.colAt(o).i64At(y)) {
+                    return false;
+                }
+            }
+            j = j + 1;
+        }
+        return true;
+    }
+
+    /** Pivot (long->wide, spec §4.1): one output row per distinct index
+     *  tuple, one output column per distinct value of `columnsKey`, filled
+     *  from `valuesKey`. Both distinct sets are in FIRST-APPEARANCE order.
+     *  EAGER — the caller has already forced its input, since the output
+     *  columns come from the data. A duplicate (index, key) cell is a LOUD
+     *  error; the pivot columns are nullable (a cell may be absent). v1:
+     *  `columnsKey` must be utf8 and `valuesKey` numeric. */
+    static #DynFrame pivot(DynFrame in, String[] index, int32 nIndex,
+                           String columnsKey, String valuesKey) {
+        int32 icap = nIndex;
+        if (icap < 1) { icap = 1; }
+        int32[] iord = heap int32[icap];
+        int32 c = 0;
+        while (c < nIndex) {
+            int32 o = in.find(index[c]);
+            if (o < 0) {
+                throw heap FrameException("pivot: index column '" + index[c]
+                    + "' is not in schema " + in.schemaText());
+            }
+            iord[c] = o;
+            c = c + 1;
+        }
+        int32 keyOrd = in.find(columnsKey);
+        if (keyOrd < 0) {
+            throw heap FrameException("pivot: columns key '" + columnsKey
+                + "' is not in schema " + in.schemaText());
+        }
+        if (in.tagAt(keyOrd) != 11) {
+            throw heap FrameException("pivot: columns key '" + columnsKey
+                + "' must be utf8 (its values become column names); it is '"
+                + in.typeNameAt(keyOrd) + "'");
+        }
+        int32 valOrd = in.find(valuesKey);
+        if (valOrd < 0) {
+            throw heap FrameException("pivot: values column '" + valuesKey
+                + "' is not in schema " + in.schemaText());
+        }
+        int32 valTag = in.tagAt(valOrd);
+        if (valTag != 4 && valTag != 10) {
+            throw heap FrameException("pivot: values column '" + valuesKey
+                + "' must be numeric (int64 / float64) in v1; it is '"
+                + in.typeNameAt(valOrd) + "'");
+        }
+        int64 n = in.rowsOf();
+        int64 rcap = n;
+        if (rcap < 1) { rcap = 1; }
+        // Distinct pivot-key values (first appearance) -> new columns.
+        String[] colNames = heap String[rcap];
+        int64[] colId = heap int64[rcap];      // per input row: its col index
+        int32 nCols = 0;
+        int64 i = 0;
+        while (i < n) {
+            String k = in.colAt(keyOrd).strAt(i);
+            int32 found = -1;
+            int32 ck = 0;
+            while (ck < nCols) {
+                if (colNames[ck].equals(k)) { found = ck; }
+                ck = ck + 1;
+            }
+            if (found < 0) {
+                colNames[nCols] = k;
+                found = nCols;
+                nCols = nCols + 1;
+            }
+            colId[i] = found;
+            i = i + 1;
+        }
+        // Distinct index tuples (first appearance) -> output rows.
+        int64[] repRow = heap int64[rcap];      // representative row per tuple
+        int64[] rowId = heap int64[rcap];        // per input row: its out row
+        int64 nRows = 0;
+        int64 r = 0;
+        while (r < n) {
+            int64 found = -1;
+            int64 ri = 0;
+            while (ri < nRows) {
+                if (Exec.indexEqual(in, iord, nIndex, repRow[ri], r)) {
+                    found = ri;
+                }
+                ri = ri + 1;
+            }
+            if (found < 0) {
+                repRow[nRows] = r;
+                found = nRows;
+                nRows = nRows + 1;
+            }
+            rowId[r] = found;
+            r = r + 1;
+        }
+        // Fill the grid, erroring on a duplicate (index, key) cell.
+        int64 cells = nRows * (int64) nCols;
+        int64 ccap = cells;
+        if (ccap < 1) { ccap = 1; }
+        boolean[] present = heap boolean[ccap];
+        float64[] gf = heap float64[ccap];
+        int64[] gi = heap int64[ccap];
+        boolean[] cellValid = heap boolean[ccap];
+        int64 r2 = 0;
+        while (r2 < n) {
+            int64 slot = rowId[r2] * (int64) nCols + colId[r2];
+            if (present[slot]) {
+                throw heap FrameException("pivot: duplicate cell for index "
+                    + "row and key '" + in.colAt(keyOrd).strAt(r2)
+                    + "' - pre-aggregate (groupBy) to collapse duplicates");
+            }
+            present[slot] = true;
+            if (in.colAt(valOrd).validAt(r2)) {
+                cellValid[slot] = true;
+                if (valTag == 4) { gi[slot] = in.colAt(valOrd).i64At(r2); }
+                else { gf[slot] = in.colAt(valOrd).f64At(r2); }
+            }
+            r2 = r2 + 1;
+        }
+        // Build the output: index columns, then one column per pivot key.
+        int32 w = nIndex + nCols;
+        String[] names = heap String[w];
+        int32[] tags = heap int32[w];
+        boolean[] nulls = heap boolean[w];
+        DynCol[] cols = heap DynCol[w];
+        int32 j = 0;
+        while (j < nIndex) {
+            names[j] = in.nameAt(iord[j]);
+            tags[j] = in.tagAt(iord[j]);
+            nulls[j] = in.nullableAt(iord[j]);
+            cols[j] #= in.colAt(iord[j]).gather(repRow, nRows);
+            j = j + 1;
+        }
+        int32 cc = 0;
+        while (cc < nCols) {
+            int32 oc = nIndex + cc;
+            names[oc] = colNames[cc];
+            tags[oc] = valTag;
+            nulls[oc] = true;      // a pivot cell may be absent
+            DynCol col;
+            if (valTag == 4) { col = DynCol.newNI64(nRows); }
+            else { col = DynCol.newNF64(nRows); }
+            int64 rr = 0;
+            while (rr < nRows) {
+                int64 slot = rr * (int64) nCols + cc;
+                if (present[slot] && cellValid[slot]) {
+                    if (valTag == 4) { col.setNI64(rr, gi[slot]); }
+                    else { col.setNF64(rr, gf[slot]); }
+                }
+                rr = rr + 1;
+            }
+            cols[oc] #= col;
+            cc = cc + 1;
+        }
+        return heap DynFrame(#names, #tags, #nulls, #cols, w, nRows);
+    }
+
+    /** Gather every column of `f` by the row order `idx` (length `m`) — the
+     *  frame-level counterpart of {@link DynCol#gather}. */
+    static #DynCol[] gatherAll(DynFrame f, int64[] idx, int64 m) {
+        DynCol[] out = heap DynCol[f.width()];
+        int32 j = 0;
+        while (j < f.width()) {
+            if (f.colAt(j) != null) { out[j] #= f.colAt(j).gather(idx, m); }
+            j = j + 1;
+        }
+        return #out;
+    }
+
+    /** Compare rows `x` and `y` under one sort key. Returns <0 if x sorts
+     *  before y, >0 after, 0 tie. Nulls are placed by `nullsFirst`, in
+     *  EITHER direction (the placement is independent of ascending/
+     *  descending — spec §7). */
+    static int32 cmpKey(SortKey key, DynFrame in, int32 ord, int64 x,
+                        int64 y) {
+        boolean vx = in.colAt(ord).validAt(x);
+        boolean vy = in.colAt(ord).validAt(y);
+        if (!vx || !vy) {
+            if (!vx && !vy) { return 0; }
+            // Exactly one is null: its placement does not depend on the
+            // direction, so decide it here and return.
+            if (!vx) {
+                if (key.isNullsFirst()) { return -1; }
+                return 1;
+            }
+            if (key.isNullsFirst()) { return 1; }
+            return -1;
+        }
+        int32 base = 0;
+        if (in.tagAt(ord) == 11) {
+            base = Exec.strCompare(in.colAt(ord).strAt(x),
+                in.colAt(ord).strAt(y));
+        } else if (in.tagAt(ord) > 8) {
+            float64 a = in.colAt(ord).f64At(x);
+            float64 b = in.colAt(ord).f64At(y);
+            if (a < b) { base = -1; } else if (a > b) { base = 1; }
+        } else {
+            int64 a = in.colAt(ord).i64At(x);
+            int64 b = in.colAt(ord).i64At(y);
+            if (a < b) { base = -1; } else if (a > b) { base = 1; }
+        }
+        if (key.isDescending()) { return -base; }
+        return base;
+    }
+
+    /** Compare two rows under the whole key list (most significant first);
+     *  ties break on the input row index so the sort is STABLE. */
+    static int32 cmpRows(Plan node, DynFrame in, int32[] ords, int64 x,
+                         int64 y) {
+        SortKey k = node.sortKeysOf();
+        int32 j = 0;
+        while (k != null) {
+            int32 c = Exec.cmpKey(k, in, ords[j], x, y);
+            if (c != 0) { return c; }
+            j = j + 1;
+            k = k.nextOf();
+        }
+        if (x < y) { return -1; }
+        if (x > y) { return 1; }
+        return 0;
+    }
+
+    /** Sort (U9, spec §4.1): a STABLE ordering by the key list, nulls placed
+     *  per key. Schema-preserving — every column is gathered by the sorted
+     *  row order. Stability comes from a bottom-up merge sort with the input
+     *  index as the final tie-break. Fed a schema-only frame this is the
+     *  identity (sort changes no schema). */
+    static #DynFrame applySort(Plan node, #DynFrame in) {
+        if (in.isSchemaOnly()) {
+            return in.schemaOnly();
+        }
+        int32 nk = node.sortKeyCount();
+        int32[] ords = heap int32[nk];
+        SortKey k = node.sortKeysOf();
+        int32 c = 0;
+        while (k != null) {
+            int32 o = in.find(k.name());
+            if (o < 0) {
+                throw heap FrameException("sort: key '" + k.name()
+                    + "' is not in schema " + in.schemaText());
+            }
+            ords[c] = o;
+            c = c + 1;
+            k = k.nextOf();
+        }
+        int64 n = in.rowsOf();
+        int64 cap = n;
+        if (cap < 1) { cap = 1; }
+        int64[] order = heap int64[cap];
+        int64 i = 0;
+        while (i < n) { order[i] = i; i = i + 1; }
+        // Bottom-up merge sort over `order` — stable, O(n log n).
+        int64[] tmp = heap int64[cap];
+        int64 width = 1;
+        while (width < n) {
+            int64 lo = 0;
+            while (lo < n) {
+                int64 mid = lo + width;
+                if (mid > n) { mid = n; }
+                int64 hi = lo + width * 2;
+                if (hi > n) { hi = n; }
+                int64 a = lo;
+                int64 b = mid;
+                int64 t = lo;
+                while (a < mid && b < hi) {
+                    if (Exec.cmpRows(node, in, ords, order[a], order[b])
+                            <= 0) {
+                        tmp[t] = order[a];
+                        a = a + 1;
+                    } else {
+                        tmp[t] = order[b];
+                        b = b + 1;
+                    }
+                    t = t + 1;
+                }
+                while (a < mid) { tmp[t] = order[a]; a = a + 1; t = t + 1; }
+                while (b < hi) { tmp[t] = order[b]; b = b + 1; t = t + 1; }
+                lo = hi;
+            }
+            int64 z = 0;
+            while (z < n) { order[z] = tmp[z]; z = z + 1; }
+            width = width * 2;
+        }
+        DynCol[] out = heap DynCol[in.width()];
+        int32 j = 0;
+        while (j < in.width()) {
+            if (in.colAt(j) != null) {
+                out[j] #= in.colAt(j).gather(order, n);
+            }
+            j = j + 1;
+        }
+        return in.rebuild(#out, n);
+    }
+
+    /** The output nullability of a join KEY column (spec §7): a null key
+     *  matches nothing, so an INNER key is always present; an outer join
+     *  takes the key from whichever side is present, so its nullability is
+     *  that side's (FULL: either). */
+    static boolean joinKeyNullable(int32 how, boolean lNull, boolean rNull) {
+        if (how == 0) { return false; }       // inner
+        if (how == 1) { return lNull; }        // left  -> key from left
+        if (how == 2) { return rNull; }        // right -> key from right
+        return lNull || rNull;                 // full
+    }
+
+    /** Row `r`'s key tuple contains a null — such a row matches NOTHING
+     *  (spec §7), so it never enters the hash table and never probes. */
+    static boolean joinKeyNull(DynFrame f, int32[] ord, int32 nk, int64 r) {
+        int32 j = 0;
+        while (j < nk) {
+            if (!f.colAt(ord[j]).validAt(r)) { return true; }
+            j = j + 1;
+        }
+        return false;
+    }
+
+    /** Do probe row `pr` (frame `pf`, ordinals `pord`) and build row `br`
+     *  (frame `bf`, ordinals `bord`) share a key tuple? Neither row is a
+     *  null-key row (those are filtered before the probe), so this is an
+     *  ordinary value equality. */
+    static boolean joinKeysEqual(DynFrame pf, int32[] pord, DynFrame bf,
+                                 int32[] bord, int32 nk, int64 pr, int64 br) {
+        int32 j = 0;
+        while (j < nk) {
+            int32 po = pord[j];
+            int32 bo = bord[j];
+            if (pf.tagAt(po) == 11) {
+                if (!pf.colAt(po).strAt(pr).equals(bf.colAt(bo).strAt(br))) {
+                    return false;
+                }
+            } else if (pf.tagAt(po) > 8) {
+                if (pf.colAt(po).f64At(pr) != bf.colAt(bo).f64At(br)) {
+                    return false;
+                }
+            } else {
+                if (pf.colAt(po).i64At(pr) != bf.colAt(bo).i64At(br)) {
+                    return false;
+                }
+            }
+            j = j + 1;
+        }
+        return true;
+    }
+
+    /** One key column of a join output, VALUE-coalesced across the two
+     *  sides: output row `i` takes the key from the left when `lpres[i]`,
+     *  otherwise from the right (an unmatched right row of an outer join).
+     *  Both sides carry the same physical; the null-key rows keep their
+     *  null. Utf8 keys never null-extend (matched keys are non-null), so
+     *  the utf8 path needs no nullable column. */
+    static #DynCol coalesceKey(DynCol lc, int64[] lidx, boolean[] lpres,
+                               DynCol rc, int64[] ridx, int32 tag,
+                               boolean nullable, int64 m) {
+        int64 cap = m;
+        if (cap < 1) { cap = 1; }
+        if (tag == 11) {
+            String[] vals = heap String[cap];
+            int64 i = 0;
+            while (i < m) {
+                if (lpres[i]) { vals[i] = lc.strAt(lidx[i]); }
+                else { vals[i] = rc.strAt(ridx[i]); }
+                i = i + 1;
+            }
+            return DynCol.newStr(vals);
+        }
+        boolean isFloat = tag == 9 || tag == 10;
+        if (nullable) {
+            if (isFloat) {
+                DynCol o = DynCol.newNF64(m);
+                int64 i = 0;
+                while (i < m) {
+                    if (lpres[i]) {
+                        if (lc.validAt(lidx[i])) { o.setNF64(i, lc.f64At(lidx[i])); }
+                    } else {
+                        if (rc.validAt(ridx[i])) { o.setNF64(i, rc.f64At(ridx[i])); }
+                    }
+                    i = i + 1;
+                }
+                return #o;
+            }
+            DynCol o = DynCol.newNI64(m);
+            int64 i = 0;
+            while (i < m) {
+                if (lpres[i]) {
+                    if (lc.validAt(lidx[i])) { o.setNI64(i, lc.i64At(lidx[i])); }
+                } else {
+                    if (rc.validAt(ridx[i])) { o.setNI64(i, rc.i64At(ridx[i])); }
+                }
+                i = i + 1;
+            }
+            return #o;
+        }
+        if (isFloat) {
+            DynCol o = DynCol.newF64(m);
+            int64 i = 0;
+            while (i < m) {
+                if (lpres[i]) { o.setF64(i, lc.f64At(lidx[i])); }
+                else { o.setF64(i, rc.f64At(ridx[i])); }
+                i = i + 1;
+            }
+            return #o;
+        }
+        DynCol o = DynCol.newI64(m);
+        int64 i = 0;
+        while (i < m) {
+            if (lpres[i]) { o.setI64(i, lc.i64At(lidx[i])); }
+            else { o.setI64(i, rc.i64At(ridx[i])); }
+            i = i + 1;
+        }
+        return #o;
+    }
+
+    /** Hash join (spec §4.1, §7): the left input is `child`, the right is a
+     *  separately-executed branch. Keys match by NAME across schemas; a NULL
+     *  key matches NOTHING. The output is the left columns then the right's
+     *  non-key columns, one shared key column valued from the present side.
+     *  Null-extension per `how` (INNER none / LEFT right / RIGHT left / FULL
+     *  both); a column that would null-extend and cannot hold null (utf8) is
+     *  a loud error, already caught at plan build. Fed schema-only frames
+     *  this computes the output SCHEMA alone. */
+    static #DynFrame applyJoin(Plan node, #DynFrame left, #DynFrame right) {
+        int32 how = node.joinHowOf();
+        int32 nk = node.joinKeyCount();
+        int32 kcap = nk;
+        if (kcap < 1) { kcap = 1; }
+        int32[] lord = heap int32[kcap];
+        int32[] rord = heap int32[kcap];
+        int32 wl = left.width();
+        int32 wr = right.width();
+        boolean[] rIsKey = heap boolean[wr];
+        Sel s = node.joinKeysOf();
+        int32 c = 0;
+        while (s != null) {
+            int32 lo = Exec.keyOrdinal(s, left);
+            if (lo < 0 || lo >= wl) {
+                throw heap FrameException("join: key '" + s.outNameOf()
+                    + "' is not in the left schema " + left.schemaText());
+            }
+            String nm = s.outNameOf();
+            int32 ro = right.find(nm);
+            if (ro < 0) {
+                throw heap FrameException("join: key '" + nm
+                    + "' is not in the right schema " + right.schemaText());
+            }
+            lord[c] = lo;
+            rord[c] = ro;
+            rIsKey[ro] = true;
+            c = c + 1;
+            s = s.nextOf();
+        }
+        boolean extendLeft = how == 2 || how == 3;    // right/full
+        boolean extendRight = how == 1 || how == 3;   // left/full
+        int32 w = wl + wr - nk;
+        String[] names = heap String[w];
+        int32[] tags = heap int32[w];
+        boolean[] nulls = heap boolean[w];
+        // Left columns (key at its left ordinal), then right non-key cols.
+        int32 oi = 0;
+        int32 j = 0;
+        while (j < wl) {
+            names[oi] = left.nameAt(j);
+            tags[oi] = left.tagAt(j);
+            boolean nn = false;
+            int32 kIdx = Exec.joinKeyIndexL(lord, nk, j);
+            if (kIdx >= 0) {
+                nn = Exec.joinKeyNullable(how, left.nullableAt(j),
+                    right.nullableAt(rord[kIdx]));
+            } else {
+                nn = left.nullableAt(j) || extendLeft;
+            }
+            if (nn && tags[oi] == 11) {
+                throw heap FrameException("join: column '" + names[oi]
+                    + "' is utf8 and cannot be null-extended by a "
+                    + Join.nameOf(how) + " join (no @Nullable Utf8)");
+            }
+            nulls[oi] = nn;
+            oi = oi + 1;
+            j = j + 1;
+        }
+        j = 0;
+        while (j < wr) {
+            if (!rIsKey[j]) {
+                names[oi] = right.nameAt(j);
+                tags[oi] = right.tagAt(j);
+                boolean nn = right.nullableAt(j) || extendRight;
+                if (nn && tags[oi] == 11) {
+                    throw heap FrameException("join: column '" + names[oi]
+                        + "' is utf8 and cannot be null-extended by a "
+                        + Join.nameOf(how) + " join (no @Nullable Utf8)");
+                }
+                nulls[oi] = nn;
+                oi = oi + 1;
+            }
+            j = j + 1;
+        }
+        if (left.isSchemaOnly() || right.isSchemaOnly()) {
+            return heap DynFrame(#names, #tags, #nulls, w);
+        }
+        // Build the hash table on the side we iterate SECOND: for
+        // inner/left/full we iterate the left and probe a right-side table;
+        // for right we iterate the right and probe a left-side table.
+        boolean buildOnRight = how != 2;
+        DynFrame bf = right;
+        int32[] bord = rord;
+        DynFrame pf = left;
+        int32[] pord = lord;
+        if (!buildOnRight) {
+            bf = left; bord = lord; pf = right; pord = rord;
+        }
+        int64 bn = bf.rowsOf();
+        int64 pn = pf.rowsOf();
+        int64 hcap = 16;
+        while (hcap < bn * 2 + 1) { hcap = hcap * 2; }
+        int64[] head = heap int64[hcap];
+        int64[] tail = heap int64[hcap];
+        int64 hz = 0;
+        while (hz < hcap) { head[hz] = -1; tail[hz] = -1; hz = hz + 1; }
+        int64 bcap = bn;
+        if (bcap < 1) { bcap = 1; }
+        int64[] nextRow = heap int64[bcap];
+        boolean[] matched = heap boolean[bcap];    // full: right rows hit
+        int64 bi = 0;
+        while (bi < bn) {
+            nextRow[bi] = -1;
+            if (!Exec.joinKeyNull(bf, bord, nk, bi)) {
+                int64 h = Exec.keyHash(bf, bord, nk, bi);
+                int64 slot = h % hcap;
+                if (slot < 0) { slot = slot + hcap; }
+                if (head[slot] < 0) {
+                    head[slot] = bi;
+                    tail[slot] = bi;
+                } else {
+                    nextRow[tail[slot]] = bi;      // append -> ascending row
+                    tail[slot] = bi;
+                }
+            }
+            bi = bi + 1;
+        }
+        // Probe: worst-case one output row per (probe, matching-build) pair
+        // plus one per unmatched probe/build row. Count first, then fill.
+        int64 mcap = pn + bn;
+        if (mcap < 1) { mcap = 1; }
+        int64[] pidx = heap int64[mcap];    // probe row per output
+        int64[] bidx = heap int64[mcap];    // build row per output
+        boolean[] ppres = heap boolean[mcap];
+        boolean[] bpres = heap boolean[mcap];
+        int64 m = 0;
+        int64 pi = 0;
+        while (pi < pn) {
+            boolean any = false;
+            if (!Exec.joinKeyNull(pf, pord, nk, pi)) {
+                int64 h = Exec.keyHash(pf, pord, nk, pi);
+                int64 slot = h % hcap;
+                if (slot < 0) { slot = slot + hcap; }
+                int64 r = head[slot];
+                while (r >= 0) {
+                    if (Exec.joinKeysEqual(pf, pord, bf, bord, nk, pi, r)) {
+                        pidx[m] = pi; bidx[m] = r;
+                        ppres[m] = true; bpres[m] = true;
+                        matched[r] = true;
+                        m = m + 1;
+                        any = true;
+                    }
+                    r = nextRow[r];
+                }
+            }
+            // Unmatched probe row: kept by an outer join that preserves the
+            // PROBE side. build-on-right => probe is left (left/full keep
+            // it); build-on-left => probe is right (right/full keep it).
+            if (!any) {
+                boolean keepProbe = false;
+                if (buildOnRight) { keepProbe = how == 1 || how == 3; }
+                else { keepProbe = true; }   // right join keeps every right
+                if (keepProbe) {
+                    pidx[m] = pi; bidx[m] = 0;
+                    ppres[m] = true; bpres[m] = false;
+                    m = m + 1;
+                }
+            }
+            pi = pi + 1;
+        }
+        // Unmatched BUILD rows: kept only by FULL (the other outer kinds
+        // preserve the probe side, which this build side is not).
+        if (how == 3) {
+            int64 br = 0;
+            while (br < bn) {
+                if (!matched[br]) {
+                    pidx[m] = 0; bidx[m] = br;
+                    ppres[m] = false; bpres[m] = true;
+                    m = m + 1;
+                }
+                br = br + 1;
+            }
+        }
+        // Map probe/build indices back to left/right index+presence arrays.
+        int64[] lidx = heap int64[mcap];
+        int64[] ridx = heap int64[mcap];
+        boolean[] lpres = heap boolean[mcap];
+        boolean[] rpres = heap boolean[mcap];
+        int64 oiRow = 0;
+        while (oiRow < m) {
+            if (buildOnRight) {
+                lidx[oiRow] = pidx[oiRow]; lpres[oiRow] = ppres[oiRow];
+                ridx[oiRow] = bidx[oiRow]; rpres[oiRow] = bpres[oiRow];
+            } else {
+                lidx[oiRow] = bidx[oiRow]; lpres[oiRow] = bpres[oiRow];
+                ridx[oiRow] = pidx[oiRow]; rpres[oiRow] = ppres[oiRow];
+            }
+            oiRow = oiRow + 1;
+        }
+        // Materialize. Left cols: key columns coalesce across the sides;
+        // non-key left cols gather from the left with left presence.
+        DynCol[] cols = heap DynCol[w];
+        int32 co = 0;
+        j = 0;
+        while (j < wl) {
+            int32 kIdx = Exec.joinKeyIndexL(lord, nk, j);
+            if (kIdx >= 0) {
+                cols[co] #= Exec.coalesceKey(left.colAt(j), lidx, lpres,
+                    right.colAt(rord[kIdx]), ridx, tags[co], nulls[co], m);
+            } else {
+                cols[co] #= left.colAt(j).joinGather(lidx, lpres, m,
+                    nulls[co]);
+            }
+            co = co + 1;
+            j = j + 1;
+        }
+        j = 0;
+        while (j < wr) {
+            if (!rIsKey[j]) {
+                cols[co] #= right.colAt(j).joinGather(ridx, rpres, m,
+                    nulls[co]);
+                co = co + 1;
+            }
+            j = j + 1;
+        }
+        return heap DynFrame(#names, #tags, #nulls, #cols, w, m);
+    }
+
+    /** If left ordinal `j` is a join key, its index in the key list; else
+     *  -1. Small linear scan — key lists are short. */
+    static int32 joinKeyIndexL(int32[] lord, int32 nk, int32 j) {
+        int32 i = 0;
+        while (i < nk) {
+            if (lord[i] == j) { return i; }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    /** Fill-null: the target column's nulls become the node's value and
+     *  the column goes NON-NULL; every other column aliases zero-copy.
+     *  The plan-build validation already named bad targets — a miss here
+     *  is an executor invariant break, still loud. */
+    static #DynFrame applyFillNull(Plan node, #DynFrame in) {
+        String name = node.colNameOf();
+        int32 target = in.find(name);
+        if (target < 0) {
+            throw heap FrameException("fillNull: column '" + name
+                + "' is not in schema " + in.schemaText());
+        }
+        if (in.isSchemaOnly()) {
+            DynFrame s = in.schemaOnly();
+            s.clearNullable(target);
+            return #s;
+        }
+        DynCol[] out = heap DynCol[in.width()];
+        int32 j = 0;
+        while (j < in.width()) {
+            if (j == target) {
+                if (node.fillIsIntOf()) {
+                    out[j] #= in.colAt(j).fillNullsInt(node.fillIOf());
+                } else {
+                    out[j] #= in.colAt(j).fillNulls(node.fillFOf());
+                }
+            } else if (in.colAt(j) != null) {
+                // A null slot is a column the U7 scan pruned — carry it.
+                out[j] #= in.colAt(j).alias();
+            }
+            j = j + 1;
+        }
+        DynFrame r = in.rebuild(#out, in.rowsOf());
+        r.clearNullable(target);
+        // Non-target columns alias `in`'s storage — adopt it (see apply).
+        r.__adopt(#in);
+        return #r;
+    }
+
+    /** Drop-nulls: keep only rows where the subset column (or, with no
+     *  subset, every nullable column) is valid; schema unchanged. */
+    static #DynFrame applyDropNulls(Plan node, #DynFrame in) {
+        if (in.isSchemaOnly()) {
+            return in.schemaOnly();
+        }
+        String name = node.colNameOf();
+        int32 target = -1;
+        if (name != null) {
+            target = in.find(name);
+            if (target < 0) {
+                throw heap FrameException("dropNulls: column '" + name
+                    + "' is not in schema " + in.schemaText());
+            }
+        }
+        int64 n = in.rowsOf();
+        int64 cap = n;
+        if (cap < 1) { cap = 1; }
+        int64[] idx = heap int64[cap];
+        int64 m = 0;
+        int64 i = 0;
+        while (i < n) {
+            boolean keep = true;
+            if (target >= 0) {
+                keep = in.colAt(target).validAt(i);
+            } else {
+                int32 j = 0;
+                while (j < in.width()) {
+                    if (in.nullableAt(j) && !in.colAt(j).validAt(i)) {
+                        keep = false;
+                    }
+                    j = j + 1;
+                }
+            }
+            if (keep) {
+                idx[m] = i;
+                m = m + 1;
+            }
+            i = i + 1;
+        }
+        DynCol[] out = heap DynCol[in.width()];
+        int32 j = 0;
+        while (j < in.width()) {
+            // A null slot is a column the U7 scan pruned — carry it. (The
+            // needed-column analysis never prunes a column this node's
+            // validity walk reads.)
+            if (in.colAt(j) != null) {
+                out[j] #= in.colAt(j).gather(idx, m);
+            }
+            j = j + 1;
+        }
+        return in.rebuild(#out, m);
+    }
+}

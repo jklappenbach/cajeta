@@ -1,0 +1,103 @@
+package cajeta.nucleo.frame;
+
+/**
+ * SortKey — one ordering key of a `sort` (nucleo-frame U9, spec §4.1): a
+ * column reference plus its direction and its null placement. Built by
+ * `asc()` / `desc()` on the typed column builders, or implicitly by handing
+ * a bare reference to {@link Sorts#add} (ascending, nulls last):
+ *
+ * ```cajeta
+ * Table<Px> s = t.lazy().sort((PxCols c, Sorts s) -> {
+ *     s.add(c.sym());                        // ascending, nulls last
+ *     s.add(c.px().desc());                  // descending
+ *     s.add(c.bid(), Sorts.NULLS_FIRST);     // the null-order override
+ * });
+ * ```
+ *
+ * A sort key must be a bare column REFERENCE: ordering by a computed
+ * expression would have to materialize a column that is not in the result,
+ * so it fails loud at plan build (spec §4.7). Keys chain (`next`) —
+ * {@link Sorts} collects them in priority order, first key most significant.
+ *
+ * NULLS (spec §7): nulls sort LAST by default, in EITHER direction — null
+ * placement is deliberately independent of the direction, so reversing a
+ * sort does not silently move the missing values to the top.
+ */
+public class SortKey {
+    ColF64 expr;        // owned: float64 column reference
+    ColI64 iRef;        // owned: exact-integer reference
+    ColStr strRef;      // owned: utf8 reference
+    boolean descending;
+    boolean nullsFirst;
+    SortKey next;       // owned chain link (Sorts appends)
+
+    SortKey(boolean descending) {
+        this.descending = descending;
+    }
+
+    // The direction builders are INSTANCE methods on the expression types,
+    // so the reference arrives as a borrow of `this` and binds exactly like
+    // Agg's reduction builders — the expression temp lives in the caller's
+    // statement.
+    static #SortKey overF64(ColF64 e, boolean descending) {
+        SortKey k = heap SortKey(descending);
+        k.expr = e;
+        return #k;
+    }
+
+    static #SortKey overI64(ColI64 e, boolean descending) {
+        SortKey k = heap SortKey(descending);
+        k.iRef = e;
+        return #k;
+    }
+
+    static #SortKey overStr(ColStr e, boolean descending) {
+        SortKey k = heap SortKey(descending);
+        k.strRef = e;
+        return #k;
+    }
+
+    // The OWNING factories — what {@link Sorts} calls when a bare reference
+    // is handed straight to `add` (the Sel.of / Sel.bindExpr split).
+    static #SortKey ofF64(#ColF64 e, boolean descending) {
+        SortKey k = heap SortKey(descending);
+        k.expr #= e;
+        return #k;
+    }
+
+    static #SortKey ofI64(#ColI64 e, boolean descending) {
+        SortKey k = heap SortKey(descending);
+        k.iRef #= e;
+        return #k;
+    }
+
+    static #SortKey ofStr(#ColStr e, boolean descending) {
+        SortKey k = heap SortKey(descending);
+        k.strRef #= e;
+        return #k;
+    }
+
+    /** Append `k` after this node (the Sorts collector calls this). */
+    void chain(#SortKey k) {
+        this.next #= k;
+    }
+
+    void setNullsFirst(boolean v) {
+        this.nullsFirst = v;
+    }
+
+    public ColF64 exprOf() { return this.expr; }
+    public ColI64 iRefOf() { return this.iRef; }
+    public ColStr strRefOf() { return this.strRef; }
+    public boolean isDescending() { return this.descending; }
+    public boolean isNullsFirst() { return this.nullsFirst; }
+    public SortKey nextOf() { return this.next; }
+
+    /** The referenced column's name — diagnostics and plan printing. */
+    public String name() {
+        if (this.strRef != null) { return this.strRef.name(); }
+        if (this.iRef != null) { return this.iRef.name(); }
+        if (this.expr != null) { return this.expr.name(); }
+        return "";
+    }
+}

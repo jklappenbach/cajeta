@@ -7156,6 +7156,32 @@ namespace cajeta {
                         int declared = (int) m->getParameterList().size()
                             - (isStaticM ? 0 : 1);
                         if (declared != (int) parameters.size()) continue;
+                        // A lambda literal can only bind a function-typed
+                        // formal. When the call passes a lambda at position
+                        // i, a same-arity overload whose i-th formal is NOT
+                        // function-typed is no candidate — this is what
+                        // lets `filter((TickCols c) -> ...)` coexist with
+                        // `filter(#Pred)` (overloads are legal cajeta; the
+                        // propagator needs the unique lambda-shaped one).
+                        {
+                            auto pList = m->getParameterList();
+                            std::size_t base = isStaticM ? 0 : 1;
+                            bool shapeOk = true;
+                            for (std::size_t ai = 0; ai < parameters.size()
+                                    && base + ai < pList.size(); ++ai) {
+                                if (!std::dynamic_pointer_cast<LambdaExpression>(
+                                        parameters[ai].expression)) {
+                                    continue;
+                                }
+                                auto ft = pList[base + ai]
+                                    ? pList[base + ai]->getType() : nullptr;
+                                if (!std::dynamic_pointer_cast<CajetaFunctionType>(ft)) {
+                                    shapeOk = false;
+                                    break;
+                                }
+                            }
+                            if (!shapeOk) continue;
+                        }
                         candidate = m;
                         ++matches;
                     }

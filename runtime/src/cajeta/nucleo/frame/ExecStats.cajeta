@@ -1,0 +1,73 @@
+package cajeta.nucleo.frame;
+
+/**
+ * ExecStats — per-execution scan counters (nucleo-frame U7): how many rows
+ * the scan MATERIALIZED and how many column buffers it READ. With predicate
+ * pushdown, rows failing a pushed predicate never count; with projection
+ * pushdown, pruned columns never count. `Table.scanRows()`/`scanCols()`
+ * expose the last execution's numbers — the pushdown tests read them to
+ * PROVE the rewrites did less work (plan 7.1.1–7.1.2). Diagnostics, not a
+ * performance API.
+ */
+public class ExecStats {
+    int64 rows;
+    int64 cols;
+    int64 chunks;         // U13: chunks the pushdown scan considered (0 = the
+    int64 chunksSkipped;  //   chunk path did not run); zone-map chunks skipped
+    int64 probed;         // U14: rows the scan examined against the predicate
+                          //   (index path = candidates located; zone-map path =
+                          //   rows in read chunks); -1 before any execution
+
+    public ExecStats() {
+        this.rows = -1;
+        this.cols = -1;
+        this.chunks = 0;
+        this.chunksSkipped = 0;
+        this.probed = -1;
+    }
+
+    void note(int64 rows, int64 cols) {
+        this.rows = rows;
+        this.cols = cols;
+    }
+
+    /** Record the zone-map chunk accounting for a pushdown scan (U13). */
+    void noteChunks(int64 chunks, int64 skipped) {
+        this.chunks = chunks;
+        this.chunksSkipped = skipped;
+    }
+
+    /** Record rows the scan examined against the predicate (U14). */
+    void noteProbed(int64 rows) {
+        this.probed = rows;
+    }
+
+    /** Rows the last pushdown scan examined against the predicate (U14): with a
+     *  B+ index, the candidate rows the index located; with zone-maps, the rows
+     *  in the chunks that were read; -1 before any execution. */
+    public int64 scanProbed() {
+        return this.probed;
+    }
+
+    /** Rows the scan emitted (-1 before any execution). */
+    public int64 scanRows() {
+        return this.rows;
+    }
+
+    /** Column buffers the scan read (-1 before any execution). */
+    public int64 scanCols() {
+        return this.cols;
+    }
+
+    /** Chunks the last pushdown scan partitioned the source into (U13; 0 when
+     *  the chunk path did not run — no pushed predicate). */
+    public int64 scanChunks() {
+        return this.chunks;
+    }
+
+    /** Chunks a zone-map proved entirely outside the pushed predicate and
+     *  skipped without reading their cells (U13). */
+    public int64 scanChunksSkipped() {
+        return this.chunksSkipped;
+    }
+}

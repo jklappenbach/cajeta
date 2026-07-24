@@ -62,6 +62,152 @@ namespace cajeta {
         // `@Logged` is now a registered member synthesizer (see
         // registerBuiltinSynthesizers); this replaced the hard-wired
         // synthesizeLoggerField.
+        // nucleo-frame U1 — companion-CLASS synthesis: run every registered
+        // companion synthesizer that claims `structure` (an instantiation),
+        // parse each emitted class, and register it as a REAL named type
+        // (canonicalMap short+canonical, module structures) so ordinary user
+        // source can spell it (`(TickCols c) -> ...`). Methods prototype then
+        // codegen with the cursor saved/restored — the same discipline as the
+        // transform-helper synthesis, but the class is user-visible, not an
+        // anonymous mangled helper. Memoized on the canonical name: one
+        // companion per name process-wide, matching the instantiation cache.
+        void runCompanionSynthesizers(CajetaClassPtr structure) {
+            if (!structure) return;
+            cajeta::synth::registerBuiltinSynthesizers();
+            cajeta::synth::SynthesisContext cctx;
+            cctx.parent = structure;
+            cctx.module = pModule;
+            auto companions = cajeta::synth::SynthesizerRegistry::instance()
+                .collectCompanions(cctx);
+            if (companions.empty()) return;
+            auto& cmap = CajetaType::getCanonicalMap();
+            for (auto& [label, res] : companions) {
+                std::string canonical = res.packageName.empty()
+                    ? res.className
+                    : res.packageName + "." + res.className;
+                // Memoized when a REAL companion already exists. A
+                // PLACEHOLDER entry means an earlier signature/field named
+                // the companion before this instantiation fired (forward
+                // reference) — FILL that same shared_ptr, never skip it:
+                // skipping left a hollow placeholder every earlier
+                // reference pointed at (a compiler segfault at use).
+                CajetaClassPtr existing;
+                {
+                    auto it = cmap.find(canonical);
+                    if (it == cmap.end()) it = cmap.find(res.className);
+                    if (it != cmap.end()) {
+                        existing = std::dynamic_pointer_cast<CajetaClass>(
+                            it->second);
+                        if (existing && !existing->isPlaceholder()) continue;
+                        if (!existing) continue;   // non-class entry: bail
+                    }
+                }
+                // The companion's type dependencies: trigger the lazy-stdlib
+                // prescan for each import's package (the user's own source
+                // may never import it) and bind the short name in the module
+                // (only-when-unbound — the member-synthesis discipline).
+                for (auto& imp : res.imports) {
+                    if (CajetaModule::stdlibImportHook) {
+                        CajetaModule::stdlibImportHook(imp.second);
+                    }
+                    cajeta::synth::injectImportIfUnbound(
+                        pModule, imp.first, imp.second);
+                }
+                std::string source = (res.packageName.empty()
+                        ? std::string()
+                        : ("package " + res.packageName + ";\n"))
+                    + res.classSource;
+                auto* unit = cajeta::synth::parseSynthesizedUnit(source);
+                CajetaParser::ClassDeclarationContext* classDecl = nullptr;
+                for (auto* td : unit->typeDeclaration()) {
+                    if (auto* cd = td->classDeclaration()) { classDecl = cd; break; }
+                }
+                if (!classDecl) {
+                    throw Exception(
+                        "companion synthesizer '" + label
+                            + "' emitted source with no class declaration",
+                        "CAJETA_ERROR_SYNTH_FAILED");
+                }
+                auto qName = QualifiedName::getOrInsert(
+                    res.className, res.packageName);
+                // Capture the companion's extends/implements clauses — a
+                // companion like `<Record>TableRebinder implements Rebinder`
+                // needs its interface edge or the per-(class, iface) vtable
+                // is silently never synthesized and every fat-pointer
+                // dispatch through it jumps nil. Mirrors
+                // visitClassDeclaration's keyword-index bucketing.
+                std::list<QualifiedNamePtr> qExt;
+                std::list<QualifiedNamePtr> qImpl;
+                {
+                    auto kwIdx = [](antlr4::tree::TerminalNode* n) -> ssize_t {
+                        return n && n->getSymbol()
+                            ? (ssize_t) n->getSymbol()->getTokenIndex() : -1;
+                    };
+                    ssize_t extKw = kwIdx(classDecl->EXTENDS());
+                    ssize_t implKw = kwIdx(classDecl->IMPLEMENTS());
+                    for (auto* tl : classDecl->typeList()) {
+                        ssize_t tlIdx = tl->getStart()
+                            ? (ssize_t) tl->getStart()->getTokenIndex() : -1;
+                        ssize_t best = -1;
+                        int which = -1;
+                        if (extKw >= 0 && extKw < tlIdx && extKw > best) {
+                            best = extKw;
+                            which = 0;
+                        }
+                        if (implKw >= 0 && implKw < tlIdx && implKw > best) {
+                            best = implKw;
+                            which = 1;
+                        }
+                        std::list<QualifiedNamePtr>* bucket =
+                            which == 0 ? &qExt : which == 1 ? &qImpl : nullptr;
+                        if (!bucket) continue;
+                        for (auto& tt : tl->typeType()) {
+                            if (auto* coi = tt->classOrInterfaceType()) {
+                                bucket->push_back(QualifiedName::fromContext(coi));
+                            }
+                        }
+                    }
+                }
+                CajetaClassPtr klass;
+                if (existing) {
+                    existing->fillFromDeclaration(pModule, qName, qExt, qImpl);
+                    klass = existing;
+                } else {
+                    klass = std::make_shared<CajetaClass>(
+                        pModule, qName, qExt, qImpl);
+                }
+                // Register BEFORE the body walk so self-references and the
+                // triggering unit's later name lookups resolve.
+                cmap[canonical] = klass;
+                cmap[res.className] = klass;
+                pModule->getStructures()[canonical] = klass;
+                // Registration ONLY — the codegen fixed-point loop emits the
+                // companion's prototypes/bodies like any registered class
+                // (the enum-companion precedent; running generateCode here,
+                // pre-loop, crashes on the missing cursor — the instantiation
+                // hook has NO live builder).
+                auto& stk = pModule->getStructureStack();
+                std::list<CajetaClassPtr> savedStack;
+                savedStack.swap(stk);
+                stk.push_back(klass);
+                try {
+                    auto bodyAny = visitClassBody(classDecl->classBody());
+                    auto classBody =
+                        std::any_cast<ClassBodyDeclarationPtr>(bodyAny);
+                    for (auto& decl : classBody->getDeclarations()) {
+                        decl->updateParent(klass);
+                    }
+                    klass->generatePrototype();
+                } catch (...) {
+                    stk.clear();
+                    stk.swap(savedStack);
+                    throw;
+                }
+                stk.clear();
+                stk.swap(savedStack);
+            }
+        }
+
         void runMemberSynthesizers(CajetaClassPtr structure) {
             if (!structure) return;
             cajeta::synth::registerBuiltinSynthesizers();
@@ -71,16 +217,35 @@ namespace cajeta {
             auto claimed = cajeta::synth::SynthesizerRegistry::instance()
                 .collectMembers(ctx);
             if (claimed.empty()) return;
-            // Snapshot every existing member name (fields + methods) so a
-            // synthesized member colliding with a user-declared one — or with a
-            // member injected by an earlier synthesizer — is a loud error, not
-            // last-writer-wins (spec §2 [S2]).
-            std::set<std::string> seen;
+            // Snapshot existing member names so a synthesized member colliding
+            // with a user-declared one — or with a member injected by an
+            // earlier synthesizer — is a loud error, not last-writer-wins
+            // (spec §2 [S2]). Fields and methods are SEPARATE namespaces
+            // (`ColF64` has both a `name` field and a `name()` method; the
+            // frame Table has a `rows` field and a `rows()` cursor method), so
+            // each kind collides only within its own set. Methods key on
+            // name + parameter types, not the bare name — overloads are legal
+            // cajeta (the frame Table's synthesized `filter(lambda)` beside
+            // the template's `filter(#Pred)`); a same-signature duplicate the
+            // textual key misses still fails in normal method registration.
+            std::set<std::string> seenFields;
+            std::set<std::string> seenMethods;
+            auto methodKey = [](const MethodPtr& m) {
+                std::string key = m->getName() + "(";
+                bool first = true;
+                for (auto& p : m->getParameterList()) {
+                    if (!first) key += ",";
+                    first = false;
+                    key += (p && p->getType())
+                        ? p->getType()->toCanonical() : std::string("?");
+                }
+                return key + ")";
+            };
             for (auto& p : structure->getPropertyList()) {
-                if (p) seen.insert(p->getName());
+                if (p) seenFields.insert(p->getName());
             }
             for (auto& kv : structure->getMethods()) {
-                if (kv.second) seen.insert(kv.second->getName());
+                if (kv.second) seenMethods.insert(methodKey(kv.second));
             }
             auto collide = [&](const string& label, const string& memberName) {
                 throw Exception(
@@ -120,7 +285,7 @@ namespace cajeta {
                         auto it = plist.begin();
                         std::advance(it, before);
                         for (; it != plist.end(); ++it) {
-                            if (*it && !seen.insert((*it)->getName()).second) {
+                            if (*it && !seenFields.insert((*it)->getName()).second) {
                                 collide(label, (*it)->getName());
                             }
                         }
@@ -130,8 +295,19 @@ namespace cajeta {
                             std::dynamic_pointer_cast<MethodDeclaration>(mem)) {
                         const string memberName = methodDecl->getMethod()
                             ? methodDecl->getMethod()->getName() : string();
-                        if (!memberName.empty()
-                                && !seen.insert(memberName).second) {
+                        // Constructors OVERLOAD by design (the frame's
+                        // synthesized column ctor beside the template's plan
+                        // ctor) and are exempt even from the signature-level
+                        // key (fragment parameter types may not yet resolve
+                        // to the template ctor's canonical text). A truly
+                        // duplicate signature still fails in normal method
+                        // registration, not silently.
+                        const bool isCtor = methodDecl->getMethod()
+                            && methodDecl->getMethod()->isConstructor();
+                        if (!memberName.empty() && !isCtor
+                                && !seenMethods.insert(
+                                        methodKey(methodDecl->getMethod()))
+                                    .second) {
                             collide(label, memberName);
                         }
                         if (methodDecl->getMethod()) {

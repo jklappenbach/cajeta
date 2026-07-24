@@ -1,0 +1,71 @@
+package cajeta.nucleo.frame;
+
+import cajeta.lang.String;
+
+/**
+ * AggResult — one aggregate's value PER GROUP (nucleo-frame U8): the
+ * executor's intermediate between reducing rows and materializing a column.
+ * Carries the physical it will become (4 int64, 10 float64, 11 utf8), the
+ * per-group values in the matching array, and per-group validity — so an
+ * arithmetic aggregate can consume two child results without either having
+ * been materialized into a column first.
+ */
+public class AggResult {
+    int32 tag;
+    int64 n;
+    float64[] fv;
+    int64[] iv;
+    String[] sv;
+    boolean[] valid;
+
+    AggResult(int32 tag, int64 n) {
+        this.tag = tag;
+        this.n = n;
+        int64 cap = n;
+        if (cap < 1) { cap = 1; }
+        this.valid #= heap boolean[cap];
+        if (tag == 10) {
+            this.fv #= heap float64[cap];
+        } else if (tag == 11) {
+            this.sv #= heap String[cap];
+        } else {
+            this.iv #= heap int64[cap];
+        }
+    }
+
+    int32 tagOf() { return this.tag; }
+    boolean validAt(int64 i) { return this.valid[i]; }
+    float64 f64At(int64 i) { return this.fv[i]; }
+    int64 i64At(int64 i) { return this.iv[i]; }
+    String strAt(int64 i) { return this.sv[i]; }
+
+    void setF64(int64 i, float64 v) {
+        this.fv[i] = v;
+        this.valid[i] = true;
+    }
+
+    void setI64(int64 i, int64 v) {
+        this.iv[i] = v;
+        this.valid[i] = true;
+    }
+
+    void setStr(int64 i, String v) {
+        this.sv[i] = v;
+        this.valid[i] = true;
+    }
+
+    /** Force group `i` to NULL — a resample's EMPTY bucket produces no
+     *  value for ANY aggregate (not even the sum identity or a zero count):
+     *  no data is missing, not zero (spec §8.4). */
+    void invalidate(int64 i) {
+        this.valid[i] = false;
+    }
+
+    /** This result as a float64, whatever physical it holds — how an
+     *  arithmetic aggregate reads its children (spec §4.4: the division in
+     *  a vwap is float64 even when a side counted in int64). */
+    float64 asF64(int64 i) {
+        if (this.tag == 10) { return this.fv[i]; }
+        return (float64) this.iv[i];
+    }
+}

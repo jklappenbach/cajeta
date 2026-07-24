@@ -949,6 +949,9 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
                     for (auto& m : prime.getModules())
                         for (auto& method : m->getAllMethods())
                             method->getLlvmFunctionType();
+                    // Mirror buildJit: drain pending interface vtables (nucleo).
+                    for (auto& m : prime.getModules())
+                        m->completePendingInterfaceVTables();
                     for (auto& m : prime.getModules())
                         for (auto& method : m->getAllMethods())
                             method->generateCode();
@@ -1130,6 +1133,11 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
                 timeInto(codegenBucket(m), [&] {
                     for (auto& method : m->getAllMethods()) method->getLlvmFunctionType();
                 });
+            // Vtables for classes whose implemented interface was a
+            // lazy-package placeholder at prototype time (drain order).
+            // From nucleo (origin/main); spliced into this loop's structure.
+            for (auto& m : mods)
+                m->completePendingInterfaceVTables();
             for (auto& m : mods)
                 timeInto(codegenBucket(m), [&] {
                     for (auto& method : m->getAllMethods()) method->generateCode();

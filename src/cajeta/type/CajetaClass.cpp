@@ -1775,7 +1775,19 @@ namespace cajeta {
         };
         for (auto& direct : implementedInterfaces) collect(direct);
 
+        pendingIfaceVTables = false;
         for (auto& iface : allIfaces) {
+            // An interface still in PLACEHOLDER state has no method list
+            // yet (its declaration lives in a lazily-drained package that
+            // hasn't parsed) — synthesizing now would bake a method-less
+            // vtable under the deterministic name and every later
+            // dispatch through it reads out of bounds. Skip and flag; the
+            // codegen fixed-point re-invokes synthesis for flagged classes
+            // each pass, so the vtable lands once the interface fills in.
+            if (iface->isPlaceholder()) {
+                pendingIfaceVTables = true;
+                continue;
+            }
             std::string ifaceCanonical = iface->getQName()->toCanonical();
 
             // Walk interface methods in declaration order; for each one
@@ -1841,6 +1853,16 @@ namespace cajeta {
                 + sanitize(classCanonical) + "_iface_"
                 + sanitize(ifaceCanonical) + "_VTable";
             if (llvm::GlobalVariable* existing = lmod->getNamedGlobal(globalName)) {
+                // A dispatch site may have referenced the deterministic
+                // name before this definition ran (extern declaration, no
+                // initializer) — fill it in place rather than skipping,
+                // or the symbol never materializes.
+                if (!existing->hasInitializer()
+                        && existing->getValueType() == arrTy) {
+                    existing->setInitializer(
+                        llvm::ConstantArray::get(arrTy, entries));
+                    existing->setConstant(true);
+                }
                 interfaceVTables[ifaceCanonical] = existing;
                 continue;
             }
@@ -5852,6 +5874,24 @@ namespace cajeta {
         string recv = getQName() ? getQName()->toCanonical() : "<unknown>";
         if (candidates.empty()) {
             string msg = "no member '" + methodName + "' on '" + recv + "'";
+            // The frame's schema-erased table (spec §4.3.2 wording
+            // contract): typed members don't exist on `Table<?>` — guide
+            // to the two sanctioned paths instead of a spelling hint.
+            {
+                auto origin = isInstantiation() ? getTemplateOrigin() : nullptr;
+                const auto& targs = getTypeArguments();
+                if (origin && origin->getQName()
+                        && origin->getQName()->toCanonical()
+                            == "cajeta.nucleo.frame.Table"
+                        && targs.size() == 1 && targs[0]
+                        && targs[0]->isWildcard()
+                        && !targs[0]->wildcardBound()) {
+                    return locatedException(line, column,
+                        msg + " — schema not statically known here; narrow "
+                        "with `.as<R>()` or use `col(\"...\")`",
+                        "CAJETA_ERROR_MEMBER_NOT_FOUND");
+                }
+            }
             string hint = suggestMemberName(methodName);
             if (!hint.empty()) msg += " — did you mean '" + hint + "'?";
             return locatedException(line, column, msg,

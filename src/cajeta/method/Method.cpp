@@ -1883,6 +1883,26 @@ namespace cajeta {
         // lazily at codegen (ClassLiteralExpression consults
         // module->lookupTypeParameter) see the concrete argument. RAII-popped
         // on every exit path. No-op for non-instantiated methods.
+        // Per-function control-flow stack isolation. This body may be lowered
+        // NESTED inside another method's codegen (a method-template
+        // instantiated on-reference at its call site, e.g. `Column.of<int64>`
+        // referenced inside a caller's try body). The module's tryFinally/
+        // tryCatch/loop stacks are per-FUNCTION state: without detaching them,
+        // a `return` in this body sees the CALLER's open try frames and emits
+        // their unwind (__cajeta_exc_pop with no matching push in this
+        // function) — popping the caller's live try frame, so its next throw
+        // reports "uncaught" despite the enclosing catch. Same discipline as
+        // the lambda body's takeTryFinally in Expression.cpp, for all stacks.
+        struct FunctionStacksGuard {
+            CajetaModulePtr mod;
+            CajetaModule::FunctionCodegenStacks saved;
+            explicit FunctionStacksGuard(CajetaModulePtr m)
+                : mod(std::move(m)), saved(mod->takeFunctionCodegenStacks()) {}
+            ~FunctionStacksGuard() {
+                mod->restoreFunctionCodegenStacks(std::move(saved));
+            }
+        } functionStacksGuard{module};
+
         struct SubstFrameGuard {
             CajetaModulePtr mod; bool pushed = false;
             ~SubstFrameGuard() { if (pushed) mod->popTypeSubstitution(); }

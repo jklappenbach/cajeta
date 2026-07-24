@@ -100,6 +100,80 @@ public class NullableColumn<T> {
         this.clearBit(i);
     }
 
+    /** Whole-column view: values and validity share storage zero-copy
+     *  (through {@link Column#alias}); the frame's lazy-scan snapshot. */
+    public #NullableColumn<T> alias() {
+        Column<T> v = this.values.alias();
+        Column<uint8> b = this.validity.alias();
+        return heap NullableColumn<T>(#v, #b, this.len);
+    }
+
+    /**
+     * Row window `[off, off+len)`: the values view is zero-copy; the
+     * validity bitmap is rebuilt (bit-packed windows at non-byte offsets
+     * cannot share bytes — recorded).
+     */
+    public #NullableColumn<T> slice(int64 off, int64 len) {
+        if (off < 0 || len < 0 || off + len > this.len) {
+            throw heap ColumnTypeException(
+                "slice window out of range for this nullable column");
+        }
+        Column<T> v = this.values.slice(off, len);
+        Column<uint8> bits = Column.zeros<uint8>((len + 7) / 8);
+        int64 i = 0;
+        while (i < len) {
+            if (this.isValid(off + i)) {
+                int32 cur = (int32) bits.get(i >> 3);
+                bits.set(i >> 3, (uint8) (cur | (1 << ((int32) (i & 7)))));
+            }
+            i = i + 1;
+        }
+        return heap NullableColumn<T>(#v, #bits, len);
+    }
+
+    /** Non-null element count (spec §7: `count()` = non-null). */
+    public int64 count() {
+        int64 c = 0;
+        int64 i = 0;
+        while (i < this.len) {
+            if (this.isValid(i)) {
+                c = c + 1;
+            }
+            i = i + 1;
+        }
+        return c;
+    }
+
+    /** Total row count, missing included (`len()` = all rows). */
+    public int64 len() {
+        return this.len;
+    }
+
+    /** Arithmetic mean over the PRESENT elements — nulls are SKIPPED, not
+     *  zero-filled and not NaN-poisoning: `mean([1,2,null]) = 1.5` (spec
+     *  §7's null ≠ NaN pin; a present NaN still propagates — it's a
+     *  value). All-null columns fail loud. */
+    public T mean() {
+        // T-typed count accumulated with `(T) 1` — a `(T) intVar` cast
+        // does not lower in templates (only literal casts do).
+        T acc = (T) 0;
+        T cnt = (T) 0;
+        int64 c = 0;
+        int64 i = 0;
+        while (i < this.len) {
+            if (this.isValid(i)) {
+                acc = acc + this.values.get(i);
+                cnt = cnt + (T) 1;
+                c = c + 1;
+            }
+            i = i + 1;
+        }
+        if (c == 0) {
+            throw heap ColumnTypeException("mean of an all-null column");
+        }
+        return acc / cnt;
+    }
+
     /** Dense copy with every null replaced by `v` (spec 7.5's explicit route). */
     public #Column<T> fillNulls(T v) {
         Column<T> out = Column.zeros<T>(this.len);

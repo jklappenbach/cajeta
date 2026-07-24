@@ -68,6 +68,16 @@ typedef struct CajArrowExportBundle {
 static void caj_arrow_bundle_unref(CajArrowExportBundle* b) {
     if (--b->refs == 0) free(b);
 }
+
+// The ARRAY struct's address within an export bundle whose head address is
+// `bundleAddr` (the head { schema, array } is identical across all bundle
+// variants). The schema address is `bundleAddr` itself. Lets a consumer that
+// received a bundle address split it into the (schema, array) address pair the
+// import airlocks expect — used by the table round-trip (nucleo-frame U16).
+int64_t __cajeta_arrow_bundle_array(void* self, int64_t bundleAddr) {
+    (void) self;
+    return bundleAddr + (int64_t) offsetof(CajArrowExportBundle, array);
+}
 static void caj_arrow_schema_release(CajArrowSchema* s) {
     if (!s || !s->release) return;          // already-released: no-op
     CajArrowExportBundle* b = (CajArrowExportBundle*) s->private_data;
