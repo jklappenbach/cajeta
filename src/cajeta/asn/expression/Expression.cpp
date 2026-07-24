@@ -41,6 +41,56 @@
 #include "ArrayLowering.h"
 
 namespace cajeta {
+    // collection-literals §2 (Unit 1) — see the declaration in Expression.h.
+    ExpressionPtr collectionLiteralFromArray(CajetaTypePtr target,
+                                             const ExpressionPtr& literal) {
+        auto lit = dynamic_pointer_cast<ArrayLiteralExpression>(literal);
+        if (!lit) return nullptr;
+        // Array targets keep the array path (their element type is pushed by
+        // the caller); only a reference class — a collection — is rewritten to
+        // a from-array constructor call.
+        if (dynamic_pointer_cast<CajetaArray>(target)) return nullptr;
+        auto cls = dynamic_pointer_cast<CajetaClass>(target);
+        if (!cls) return nullptr;
+
+        // 1.2.2 — the element type T is the target's first type argument, so the
+        // inner literal builds the `T[]` the ctor expects (e.g. `ArrayList<int64>
+        // = [1,2,3]` builds int64[], widening past the int32 unify would give).
+        const auto& targs = cls->getTypeArguments();
+        if (!targs.empty()) {
+            lit->setElementType(targs[0]);
+        }
+        // Carry the literal's placement prefix to the instance construction; the
+        // inner array becomes a plain heap ctor argument. Bare `[...]` → heap.
+        bool stackAlloc = lit->isStackAlloc();
+        bool sharedAlloc = lit->isSharedAlloc();
+        lit->setStackAlloc(false);
+        lit->setSharedAlloc(false);
+
+        // Rebuild what the parser produces for the spelled `heap
+        // ArrayList<int32>([...])`: the template SHORT name (strip any `<...>`
+        // off the instantiation's name) + the resolved type arguments, so
+        // resolveTypes re-resolves the base template and re-instantiates.
+        string shortName = cls->getQName()->getTypeName();
+        auto lt = shortName.find('<');
+        if (lt != string::npos) shortName = shortName.substr(0, lt);
+
+        vector<MethodCallParameter> params;
+        MethodCallParameter entry;
+        entry.expression = lit;
+        params.push_back(std::move(entry));
+
+        auto rest = make_shared<ClassCreatorRest>(std::move(params), nullptr);
+        auto neu = make_shared<NewExpression>(nullptr);
+        neu->setTypeName(shortName);
+        neu->setTypeArguments(targs);
+        neu->setCreatorRest(rest);
+        if (stackAlloc) neu->setStackAlloc(true);
+        if (sharedAlloc) neu->setSharedAlloc(true);
+        neu->setSourceSpan(lit->getSourceLine(), lit->getSourceColumn());
+        return neu;
+    }
+
     ExpressionPtr Expression::fromContext(CajetaParser::ExpressionContext* ctx) {
         antlr4::Token* token = ctx->getStart();
         ExpressionPtr result = nullptr;

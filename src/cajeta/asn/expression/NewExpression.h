@@ -204,6 +204,16 @@ namespace cajeta {
         const vector<CajetaTypePtr>& getTypeArguments() const { return typeArguments; }
         bool getIsDiamond() const { return isDiamond; }
 
+        // Synthetic construction (collection-literals §2): populate the fields a
+        // parsed `heap Name<args>(...)` would carry, so a target-typed
+        // collection literal can be rewritten into a real creator without a
+        // parse context. resolveTypes/generateCode then re-resolve `Name` and
+        // re-instantiate against `typeArguments` exactly as for the spelled form.
+        void setTypeName(string name) { typeName = std::move(name); }
+        void setPackage(string pkg) { package = std::move(pkg); }
+        void setTypeArguments(vector<CajetaTypePtr> args) { typeArguments = std::move(args); }
+        void setCreatorRest(CreatorRestPtr rest) { creatorRest = std::move(rest); }
+
         void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
 

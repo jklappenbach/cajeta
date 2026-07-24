@@ -39,6 +39,12 @@ namespace cajeta {
         bool stackAlloc = false;
     public:
         void setStackAlloc(bool v) { stackAlloc = v; }
+        // Synthetic construction (collection-literals §2): build a ctor-call
+        // rest from a pre-assembled argument list, no parse context. Used to
+        // lower a target-typed collection literal `ArrayList<int32> xs =
+        // [1,2,3]` into `heap ArrayList<int32>([1,2,3])`.
+        ClassCreatorRest(vector<MethodCallParameter> params, antlr4::Token* token)
+            : CreatorRest(token), parameters(std::move(params)) { }
         ClassCreatorRest(CajetaParser::ClassCreatorRestContext* ctx, antlr4::Token* token) : CreatorRest(token) {
             if (ctx->arguments()->parameterList()) {
                 for (auto& ctxParameterEntry: ctx->arguments()->parameterList()->parameterEntry()) {

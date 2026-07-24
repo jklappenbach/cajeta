@@ -1611,10 +1611,15 @@ namespace cajeta {
         // array-literals §3.2 — a returned `[...]` literal is target-typed by
         // the method's declared array return type (before any generateCode
         // below consumes it), so `int64[] f() { return [1,2,3]; }` widens.
+        // collection-literals §2 — a class (collection) return type instead
+        // rewrites the literal to a from-array ctor call `heap Target([...])`.
         if (auto arrLit = dynamic_pointer_cast<ArrayLiteralExpression>(expression)) {
             if (auto m = module->getCurrentMethod()) {
-                if (auto rt = dynamic_pointer_cast<CajetaArray>(m->getReturnType())) {
-                    arrLit->setElementType(rt->getElementType());
+                CajetaTypePtr rt = m->getReturnType();
+                if (auto at = dynamic_pointer_cast<CajetaArray>(rt)) {
+                    arrLit->setElementType(at->getElementType());
+                } else if (auto ctor = collectionLiteralFromArray(rt, expression)) {
+                    expression = ctor;
                 }
             }
         }

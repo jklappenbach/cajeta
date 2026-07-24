@@ -97,6 +97,20 @@ namespace cajeta {
         llvm::Value* cstr, const char* namePrefix,
         bool freeAfterWrap = true);
 
+    // collection-literals §2 (Unit 1) — target-typed collection literal.
+    // When a class target (e.g. `ArrayList<int32>`) is initialized/assigned/
+    // returned with a bare `[...]` literal, rewrite the literal as a from-array
+    // constructor call `heap Target([...])`: the literal's element type is set
+    // from the target's first type argument (so it builds the `T[]` the ctor
+    // expects), and any `stack`/`shared` prefix on the literal carries to the
+    // instance construction. Returns the synthesized creator, or nullptr when
+    // `target` is not a rewritable class target (an array/primitive/value type
+    // — the caller keeps the literal on its existing path). The three
+    // target-type push sites (LocalVariableDeclaration, ReturnStatement,
+    // BinaryOpExpression ASSIGN) share this one helper.
+    ExpressionPtr collectionLiteralFromArray(CajetaTypePtr target,
+                                             const ExpressionPtr& literal);
+
     // Expression is a sibling of Statement under AbstractSyntaxNode. When an expression
     // appears in statement position (e.g. `foo();`), wrap it in ExpressionStatement
     // rather than relying on inheritance — see Statement::fromContext.

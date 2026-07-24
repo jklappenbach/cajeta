@@ -1021,9 +1021,14 @@ namespace cajeta {
                     dynamic_pointer_cast<ArrayLiteralExpression>(children[1])) {
                 if (auto lhsE = dynamic_pointer_cast<Expression>(children[0])) {
                     if (!lhsE->getResolvedType()) lhsE->resolveTypes(module);
-                    if (auto at = dynamic_pointer_cast<CajetaArray>(
-                            lhsE->getResolvedType())) {
+                    CajetaTypePtr lt = lhsE->getResolvedType();
+                    if (auto at = dynamic_pointer_cast<CajetaArray>(lt)) {
                         arrLit->setElementType(at->getElementType());
+                    } else if (auto ctor =
+                                   collectionLiteralFromArray(lt, arrLit)) {
+                        // collection-literals §2 — `xs = [...]` on a collection
+                        // local rewrites to a from-array ctor call.
+                        children[1] = ctor;
                     }
                 }
             }

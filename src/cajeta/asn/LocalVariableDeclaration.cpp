@@ -510,6 +510,26 @@ namespace cajeta {
                     }
                 }
             }
+            // collection-literals §2 (Unit 1) — a bare `[...]` literal against a
+            // class target (a collection) rewrites to a from-array constructor
+            // call `heap Target([...])`, so `ArrayList<int32> xs = [1,2,3]`
+            // builds the list. Runs before getOrCreateAllocation generates the
+            // initializer. Array targets are handled by the isArray block above.
+            if (!isArray) {
+                if (auto varInit =
+                        dynamic_pointer_cast<VariableInitializer>(initializer)) {
+                    auto& kids = varInit->getChildren();
+                    if (!kids.empty()) {
+                        if (auto expr =
+                                dynamic_pointer_cast<Expression>(kids[0])) {
+                            if (auto ctor =
+                                    collectionLiteralFromArray(type, expr)) {
+                                kids[0] = ctor;
+                            }
+                        }
+                    }
+                }
+            }
             // Function-typed initializer with a lambda RHS: push the LHS's
             // function type down to the lambda so it can use the declared
             // return type (and, eventually, expected param types) rather
