@@ -249,13 +249,22 @@ namespace cajeta {
                     return v;
                 }
                 llvm::Type* loadTy;
+                // Value-type (record / @ValueType) elements are stored INLINE in
+                // the array's data slot (their body sub-aggregate), so load the
+                // body struct by value — NOT as a pointer. Value types carry
+                // STRUCT_FLAG, so this must precede the class-ref/STRUCT_FLAG
+                // rule below or `Point p = pts[i]` loads {x,y} as a pointer and
+                // the caller dereferences it.
+                bool elemIsValueType = elemClass && elemClass->isValueType();
                 // Class-typed elements (CajetaArray, plain CajetaClass)
                 // are stored as pointers in the array's data slot.
                 // Loading the slot yields the heap reference, not the
                 // instance contents. CajetaArray inherits from CajetaClass,
                 // so the dynamic_cast catches both. Primitives load as
                 // their value type.
-                if (dynamic_pointer_cast<CajetaClass>(elemType) ||
+                if (elemIsValueType) {
+                    loadTy = elemType->getLlvmType();
+                } else if (dynamic_pointer_cast<CajetaClass>(elemType) ||
                     (elemType->getTypeFlags() & STRUCT_FLAG)) {
                     loadTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
                 } else {
@@ -304,9 +313,20 @@ namespace cajeta {
                 // type — handled by the catch-all `loadTy =
                 // resolved->getLlvmType()` after the explicit rejects.
                 llvm::Type* loadTy;
-                bool fieldIsClassRef = dynamic_pointer_cast<CajetaClass>(resolved) != nullptr
+                // A value-type (record / @ValueType) field is stored INLINE in
+                // the parent struct (its body sub-aggregate), NOT as a `ptr` to
+                // a heap instance — same as a view/interface field. So it is not
+                // a class-ref: load it as its body type (a struct-value load,
+                // matching how a value-type identifier is read), never as a
+                // pointer. Without this exclusion the first 8 bytes of the inline
+                // value get loaded AS a pointer and the caller dereferences them
+                // (e.g. `HashMap<K, value-type V>.get` returning `slots[i].val`).
+                auto resolvedValCls = dynamic_pointer_cast<CajetaClass>(resolved);
+                bool fieldIsValueType = resolvedValCls && resolvedValCls->isValueType();
+                bool fieldIsClassRef = resolvedValCls != nullptr
                     && !dynamic_pointer_cast<CajetaView>(resolved)
-                    && !dynamic_pointer_cast<CajetaArray>(resolved);
+                    && !dynamic_pointer_cast<CajetaArray>(resolved)
+                    && !fieldIsValueType;
                 bool fieldIsInterface = false;
                 if (auto rc = dynamic_pointer_cast<CajetaClass>(resolved)) {
                     fieldIsInterface = rc->isInterface();

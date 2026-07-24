@@ -2249,8 +2249,13 @@ namespace cajeta {
             if (elemType) {
                 auto elemClass = dynamic_pointer_cast<CajetaClass>(elemType);
                 bool elemIsInterface = elemClass && elemClass->isInterface();
+                // A value-type (record / @ValueType) element is stored INLINE;
+                // return it by copy (load the body struct), never as a pointer.
+                // Value types carry STRUCT_FLAG, so check before that rule (the
+                // `return pts[i]` shape for a value-type element array).
+                bool elemIsValueType = elemClass && elemClass->isValueType();
                 llvm::Type* loadTy;
-                if (elemIsInterface) {
+                if (elemIsInterface || elemIsValueType) {
                     // Interface element: the GEP points AT the inline 24-byte
                     // fat-pointer body, and the by-value return ABI wants that
                     // body STRUCT. Load it directly (a single load). The
@@ -2258,6 +2263,7 @@ namespace cajeta {
                     // data word, and the return coercion below would then deref
                     // that as a body → garbage vtable → crash. (`return
                     // this.data[i]` in ArrayList<SomeInterface>.get is the case.)
+                    // A value-type element loads its inline body the same way.
                     loadTy = elemType->getLlvmType();
                 } else if (dynamic_pointer_cast<CajetaArray>(elemType) ||
                     (elemType->getTypeFlags() & STRUCT_FLAG)) {
@@ -2313,9 +2319,19 @@ namespace cajeta {
                             bool foundIsView = dynamic_pointer_cast<CajetaView>(found->getType()) != nullptr;
                             bool foundIsArray = dynamic_pointer_cast<CajetaArray>(found->getType()) != nullptr;
                             bool foundIsInterface = foundCls && foundCls->isInterface();
+                            // A value-type (record / @ValueType) field is stored
+                            // INLINE (its body sub-aggregate), not as a `ptr` — so
+                            // load it as its body type and return the struct value
+                            // by copy (the isValueTypeR ABI). Loading it as a
+                            // pointer would return the first 8 bytes of the value
+                            // and the caller would dereference them (the
+                            // HashMap<K, value-type V>.get `return slots[i].val`
+                            // crash).
+                            bool foundIsValueType = foundCls && foundCls->isValueType();
                             llvm::Type* lt;
                             if (foundIsArray
-                                    || (foundCls && !foundIsView && !foundIsInterface)) {
+                                    || (foundCls && !foundIsView && !foundIsInterface
+                                        && !foundIsValueType)) {
                                 lt = llvm::PointerType::get(
                                     *module->getLlvmContext(), 0);
                             } else {

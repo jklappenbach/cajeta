@@ -266,23 +266,22 @@ TEST(CollectionLiteralTests, TernaryElementNotMap) {
 }
 
 // 3.1.5 — the value type is inferred from the map's V, composing with Unit 2:
-// `HashMap<String,Box> m = ["o": {x:3, y:4}]` — the aggregate infers Box and,
-// as a reference-class map value, is heap-allocated so it survives in the map.
-// (A value-type V here would hit a pre-existing HashMap value-type-V bug,
-// unrelated to map literals — see the plan note; reference V is the coverage.)
+// `HashMap<String,Point> m = ["o": {x:3, y:4}]` builds a Point (value-type V)
+// from the aggregate. (Value-type V works after the inline-value-read fix —
+// see ValueTypeInlineReadTests.)
 TEST(CollectionLiteralTests, MapToAggregate) {
     std::string src =
         "package test;\n"
         "import cajeta.collection.HashMap;\n"
-        "public class Box {\n"
-        "    public int32 x;\n"
-        "    public int32 y;\n"
+        "public record Point {\n"
+        "    int32 x;\n"
+        "    int32 y;\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        HashMap<String, Box> m = [\"o\": {x: 3, y: 4}];\n"
-        "        Box b = m.get(\"o\");\n"
-        "        return b.x * 10 + b.y;\n"             // 34
+        "        HashMap<String, Point> m = [\"o\": {x: 3, y: 4}];\n"
+        "        Point p = m.get(\"o\");\n"
+        "        return p.x * 10 + p.y;\n"             // 34
         "    }\n"
         "}\n";
     auto jit = CajetaJit::compile(src, "test.D");
