@@ -2204,8 +2204,18 @@ namespace cajeta {
                 dbg::FieldFacetInputs facetIn;
                 facetIn.isStackField = isPrim;
                 facetIn.isHeapField  = !isPrim;
-                facetIn.ownsDrop     = parameter->isTransferred()
-                                       || pf->getDropEntry() != nullptr;
+                // A parameter's STATIC ownership role is set by the calling
+                // form: `#`-transfer takes ownership (Owner); any other
+                // non-primitive param is a borrow the caller still owns. Under
+                // the runtime-bits ownership model a borrowed reference param
+                // now also carries a GATED drop entry (it fires only if the
+                // param dynamically received the title), so a non-null drop
+                // entry is NOT a static-ownership signal — keying `ownsDrop` off
+                // it misclassifies every borrow as an Owner (and thence, with an
+                // inactive entry, moved-out). Key off the transfer form alone;
+                // the dynamic side is reflected by the live drop-active flag in
+                // the lifetime facet.
+                facetIn.ownsDrop     = parameter->isTransferred();
                 facetIn.isReference  = !isPrim && !parameter->isTransferred();
                 dbg::emitDbgLocal(module, pf->getName(),
                                   pt->toCanonical(),
