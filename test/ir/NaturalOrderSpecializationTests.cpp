@@ -21,7 +21,7 @@ const char* kSrc =
     "import cajeta.collection.Sort;\n"
     "public final class D {\n"
     "    public static int32 run() {\n"
-    "        int32[] a = { 5, 3, 8, 1, 9, 2, 7 };\n"
+    "        int32[] a = [ 5, 3, 8, 1, 9, 2, 7 ];\n"
     "        Sort.sort<int32>(a, 7);\n"
     "        int32 i = 1;\n"
     "        while (i < 7) {\n"

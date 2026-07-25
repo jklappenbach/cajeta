@@ -25,7 +25,7 @@ public class OptionalDemo extends DemoClass {
     // plain (non-#) return type the `stack` instance is copied into
     // the caller's slot on return (sret), no heap traffic at all.
     public Optional<int32> indexOf(int32 needle) {
-        int32[] data = { 10, 20, 30 };
+        int32[] data = [ 10, 20, 30 ];
         int32 i = 0;
         while (i < 3) {
             if (data[i] == needle) {

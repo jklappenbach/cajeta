@@ -40,9 +40,9 @@ public class ExcludeParser {
      * fails at parse time. (The CLI is defense-in-depth; this is
      * the spec.)
      */
-    static final String[] GENERIC_REASONS = {
+    static final String[] GENERIC_REASONS = [
         "wip", "todo", "skip", "fixme", "tbd"
-    };
+    ];
 
     /**
      * Parse the array. `ctx` is used only for warning emission (the

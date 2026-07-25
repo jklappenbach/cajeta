@@ -46,7 +46,7 @@ int64_t runI64(const std::string& body) {
 // is the element count. {1.5, 2.5, 3.5} probed positionally.
 TEST(Column, ofStoresAndReadsValues) {
     EXPECT_FLOAT_EQ(runF32(
-        "float32[] fa = { 1.5f, 2.5f, 3.5f };\n"
+        "float32[] fa = [ 1.5f, 2.5f, 3.5f ];\n"
         "        Column<float32> c = Column.of<float32>(fa);\n"
         "        return c.get(0) + c.get(1) * 10.0f + c.get(2) * 100.0f\n"
         "             + ((float32) c.size()) * 1000.0f;"),
@@ -58,7 +58,7 @@ TEST(Column, ofStoresAndReadsValues) {
 // through the tensor. Shared bytes, not a copy (spec 7.4, §1.1).
 TEST(Column, asTensorIsZeroCopyView) {
     EXPECT_FLOAT_EQ(runF32(
-        "float32[] fa = { 1.0f, 2.0f, 4.0f };\n"
+        "float32[] fa = [ 1.0f, 2.0f, 4.0f ];\n"
         "        Column<float32> c = Column.of<float32>(fa);\n"
         "        Tensor<float32> t = c.asTensor();\n"
         "        t.set1(0, 7.0f);\n"
@@ -71,7 +71,7 @@ TEST(Column, asTensorIsZeroCopyView) {
 // and round-trips: writes through the column reach the source tensor.
 TEST(Column, fromTensorSharesTheBuffer) {
     EXPECT_FLOAT_EQ(runF32(
-        "float32[] fa = { 1.0f, 2.0f, 4.0f };\n"
+        "float32[] fa = [ 1.0f, 2.0f, 4.0f ];\n"
         "        int64[] s = heap int64[1]; s[0] = 3;\n"
         "        Tensor<float32> x = Tensor.of<float32>(fa, s);\n"
         "        Column<float32> c = Column.fromTensor<float32>(x);\n"

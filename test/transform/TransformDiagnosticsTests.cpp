@@ -61,7 +61,7 @@ TEST(TransformDiagnostics, unsupportedOpNamedAndLocated) {
 // generic "this body" text is not pointing at anything).
 TEST(TransformDiagnostics, noBatchRuleNamedAndLocated) {
     Diag d = diagOf(
-        "float32[] xs = {1.0f, 2.0f};\n"
+        "float32[] xs = [1.0f, 2.0f];\n"
         "        (float32[]) -> #float32[] g = Vmap((float32 x) -> x % x);\n"
         "        float32[] ys = g(xs);\n"
         "        return ys[0];");
@@ -95,7 +95,7 @@ TEST(TransformDiagnostics, notSpecializableLocated) {
 // (scalar-valued requirement) and located.
 TEST(TransformDiagnostics, wrongReturnTypeLocated) {
     Diag d = diagOf(
-        "float32[] fa = { 1.0f, 2.0f };\n"
+        "float32[] fa = [ 1.0f, 2.0f ];\n"
         "        int64[] s = heap int64[1]; s[0] = 2;\n"
         "        Tensor<float32> x = Tensor.of<float32>(fa, s);\n"
         "        (Tensor<float32>) -> GradResult<float32, Tensor<float32>> g =\n"
@@ -111,7 +111,7 @@ TEST(TransformDiagnostics, wrongReturnTypeLocated) {
 // statically-known ranks and dtype: matmul over a tensor and a scalar.
 TEST(TransformDiagnostics, rankMismatchReportsRanksAndDtype) {
     Diag d = diagOf(
-        "float32[] fa = { 1.0f, 2.0f };\n"
+        "float32[] fa = [ 1.0f, 2.0f ];\n"
         "        int64[] s = heap int64[1]; s[0] = 2;\n"
         "        Tensor<float32> x = Tensor.of<float32>(fa, s);\n"
         "        (Tensor<float32>, float32) -> GradResult<float32, Tensor<float32>> g =\n"

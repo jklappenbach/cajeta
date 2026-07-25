@@ -43,8 +43,8 @@ int64_t runI64(const std::string& body) {
 
 // values {10,20,30,40}, valid {t,f,t,f} — the shared fixture shape.
 const char* kMasked =
-    "float32[] va = { 10.0f, 20.0f, 30.0f, 40.0f };\n"
-    "        boolean[] ok = { true, false, true, false };\n"
+    "float32[] va = [ 10.0f, 20.0f, 30.0f, 40.0f ];\n"
+    "        boolean[] ok = [ true, false, true, false ];\n"
     "        NullableColumn<float32> c = NullableColumn.of<float32>(va, ok);\n";
 } // namespace
 

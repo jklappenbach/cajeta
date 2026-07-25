@@ -12,6 +12,9 @@
 #include "../jit/JitTestHelper.h"
 #include <cstdint>
 #include <string>
+#include <filesystem>
+#include <fstream>
+#include <regex>
 
 using cajeta_test::CajetaJit;
 
@@ -342,4 +345,75 @@ TEST(CollectionLiteralTests, NestedThroughAggregate) {
         "}\n";
     auto jit = CajetaJit::compile(src, "test.D");
     EXPECT_EQ((jit->lookup<int32_t (*)()>("run"))(), 2345);
+}
+
+// ---- Unit 5: retire array-`{…}` (full-retirement carve-out) ----
+
+// 5.1.1 — the array brace-initializer `{…}` is retired for value/data arrays:
+// `int32[] xs = {1,2,3}` no longer compiles (positional `{…}` resolves to the
+// prefixless aggregate form, which rejects a non-class array target; the
+// dedicated retirement diagnostic fires from ArrayInitializer::generateCode).
+// The bracket form is the replacement. Spec §6.2; plan 5.1.1.
+TEST(CollectionLiteralTests, BraceArrayIsAggregateOnly) {
+    std::string braced =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = {1, 2, 3};\n"
+        "        return xs[1];\n"
+        "    }\n"
+        "}\n";
+    EXPECT_ANY_THROW(CajetaJit::compile(braced, "test.D"));
+
+    // The `[…]` replacement compiles and runs.
+    std::string bracketed =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = [1, 2, 3];\n"
+        "        return xs[1];\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(bracketed, "test.D");
+    EXPECT_EQ((jit->lookup<int32_t (*)()>("run"))(), 2);
+}
+
+// 5.1.2 — no in-tree `.cajeta` uses the retired array-`{…}` form. Self-locating
+// via __FILE__ (…/test/parser/CollectionLiteralTests.cpp → repo root), scans the
+// shipped source (runtime/src, samples) for the declarator brace pattern
+// `…]  name = {`. Function-typed dispatch tables (`((T)->R)[] ops = {…}`, carved
+// out) are the only legal brace-array and never appear in these trees. Spec
+// §6.2.1; plan 5.1.2.
+TEST(CollectionLiteralTests, NoBraceArraysInTree) {
+    namespace fs = std::filesystem;
+    fs::path repoRoot = fs::path(__FILE__).parent_path()  // test/parser
+                            .parent_path()                 // test
+                            .parent_path();                // repo root
+    ASSERT_TRUE(fs::exists(repoRoot / "runtime" / "src"))
+        << "repo root not resolved from __FILE__: " << repoRoot;
+
+    // `<...>]  name = {`  — an array declarator initialized with braces. Exclude
+    // the function-typed dispatch-table carve-out (any line mentioning `->`).
+    std::regex braceArray(R"(\]\s*[A-Za-z_][A-Za-z0-9_]*\s*=\s*\{)");
+    std::vector<std::string> offenders;
+    for (const char* sub : {"runtime/src", "samples"}) {
+        fs::path root = repoRoot / sub;
+        if (!fs::exists(root)) continue;
+        for (auto& e : fs::recursive_directory_iterator(root)) {
+            if (!e.is_regular_file() || e.path().extension() != ".cajeta") continue;
+            std::ifstream in(e.path());
+            std::string line;
+            int n = 0;
+            while (std::getline(in, line)) {
+                ++n;
+                if (line.find("->") != std::string::npos) continue;  // dispatch table
+                if (std::regex_search(line, braceArray))
+                    offenders.push_back(e.path().string() + ":" + std::to_string(n)
+                                        + "  " + line);
+            }
+        }
+    }
+    EXPECT_TRUE(offenders.empty())
+        << "retired array-`{…}` still in tree:\n"
+        << [&] { std::string s; for (auto& o : offenders) s += "  " + o + "\n"; return s; }();
 }

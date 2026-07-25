@@ -72,7 +72,7 @@ TEST(GradWidenedRules, chainLogOfSquare) {
 // 1.1.2 — tensor mean: d/dt mean(t*t) = 2t/n; at {1,2,3} the grads sum to 4.
 TEST(GradWidenedRules, tensorMeanOfSquare) {
     EXPECT_NEAR(runTensor(
-        "float32[] fa = { 1.0f, 2.0f, 3.0f };\n"
+        "float32[] fa = [ 1.0f, 2.0f, 3.0f ];\n"
         "        int64[] s = heap int64[1]; s[0] = 3;\n"
         "        Tensor<float32> x = Tensor.of<float32>(fa, s);\n"
         "        (Tensor<float32>) -> GradResult<float32, Tensor<float32>> g =\n"
@@ -84,7 +84,7 @@ TEST(GradWidenedRules, tensorMeanOfSquare) {
 // 1.1.2 — tensor log under sum: d/dt sum(log t) = 1/t; at {1,2,4} sums to 1.75.
 TEST(GradWidenedRules, tensorLogUnderSum) {
     EXPECT_NEAR(runTensor(
-        "float32[] fa = { 1.0f, 2.0f, 4.0f };\n"
+        "float32[] fa = [ 1.0f, 2.0f, 4.0f ];\n"
         "        int64[] s = heap int64[1]; s[0] = 3;\n"
         "        Tensor<float32> x = Tensor.of<float32>(fa, s);\n"
         "        (Tensor<float32>) -> GradResult<float32, Tensor<float32>> g =\n"

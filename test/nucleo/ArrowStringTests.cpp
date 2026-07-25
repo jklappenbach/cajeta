@@ -65,7 +65,7 @@ const char* kProgram =
     "public final class T {\n"
     "    static StringColumn held;\n"
     "    public static int64 build() {\n"
-    "        String[] vs = { \"hola\", \"x\", \"columnas\" };\n"
+    "        String[] vs = [ \"hola\", \"x\", \"columnas\" ];\n"
     "        StringColumn c = StringColumn.of(vs);\n"
     "        T.held = c;\n"
     "        return T.held.size();\n"

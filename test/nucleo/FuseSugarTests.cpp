@@ -27,7 +27,7 @@ float runF32(const std::string& members, const std::string& body) {
         "public final class T {\n"
         + members +
         "    public static float32 run() {\n"
-        "        float32[] fa = { 1.0f, 2.0f, 3.0f, 4.0f };\n"
+        "        float32[] fa = [ 1.0f, 2.0f, 3.0f, 4.0f ];\n"
         "        int64[] s = heap int64[1]; s[0] = 4;\n"
         "        Tensor<float32> x = Tensor.of<float32>(fa, s);\n"
         "        " + body + "\n"
@@ -45,7 +45,7 @@ int64_t runI64(const std::string& members, const std::string& body) {
         "public final class T {\n"
         + members +
         "    public static int64 run() {\n"
-        "        float32[] fa = { 1.0f, 2.0f, 3.0f, 4.0f };\n"
+        "        float32[] fa = [ 1.0f, 2.0f, 3.0f, 4.0f ];\n"
         "        int64[] s = heap int64[1]; s[0] = 4;\n"
         "        Tensor<float32> x = Tensor.of<float32>(fa, s);\n"
         "        " + body + "\n"
@@ -128,7 +128,7 @@ TEST(FuseSugar, unfusableAnnotatedBodyIsTheSameNamedError) {
         "        return Tensor.matmul<float32>(t, t);\n"
         "    }\n"
         "    public static float32 run() {\n"
-        "        float32[] fa = { 1.0f, 2.0f };\n"
+        "        float32[] fa = [ 1.0f, 2.0f ];\n"
         "        int64[] s = heap int64[1]; s[0] = 2;\n"
         "        Tensor<float32> x = Tensor.of<float32>(fa, s);\n"
         "        Tensor<float32> r = T.bad(x);\n"

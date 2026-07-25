@@ -56,7 +56,7 @@ TEST(ConstGenericVectorTests, vectorLocalWithConstParamWidthRuns) {
         "}\n"
         "public final class D {\n"
         "    public static float32 run() {\n"
-        "        float32[] a = { 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f };\n"
+        "        float32[] a = [ 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f ];\n"
         "        return W.firstDoubled<4>(a) + W.firstDoubled<8>(a);\n"
         "    }\n"
         "}\n";
@@ -111,7 +111,7 @@ TEST(ConstGenericVectorTests, literalWidthStillResolves) {
         "package test;\n"
         "public final class D {\n"
         "    public static float32 run() {\n"
-        "        float32[] a = { 1.0f, 2.0f, 3.0f, 4.0f };\n"
+        "        float32[] a = [ 1.0f, 2.0f, 3.0f, 4.0f ];\n"
         "        Vector<float32,4> v = a.vload<4>(0);\n"
         "        return v.x + v.y + v.z + v.w;\n"
         "    }\n"

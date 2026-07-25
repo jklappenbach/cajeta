@@ -39,25 +39,25 @@ public class MarchingTetrahedra {
                                         int32 nx, int32 ny, int32 nz,
                                         float32 cellSize, float32 iso) {
         // Cube-corner offsets: corner c has (dx,dy,dz) = (c&1, (c>>1)&1, (c>>2)&1).
-        int32[] cornerDX = {0, 1, 0, 1, 0, 1, 0, 1};
-        int32[] cornerDY = {0, 0, 1, 1, 0, 0, 1, 1};
-        int32[] cornerDZ = {0, 0, 0, 0, 1, 1, 1, 1};
+        int32[] cornerDX = [0, 1, 0, 1, 0, 1, 0, 1];
+        int32[] cornerDY = [0, 0, 1, 1, 0, 0, 1, 1];
+        int32[] cornerDZ = [0, 0, 0, 0, 1, 1, 1, 1];
         // Six tetrahedra (Kuhn split around the 0–7 diagonal), 4 cube corners each.
-        int32[] tetCorner = {
+        int32[] tetCorner = [
             0, 1, 3, 7,
             0, 3, 2, 7,
             0, 2, 6, 7,
             0, 6, 4, 7,
             0, 4, 5, 7,
-            0, 5, 1, 7};
+            0, 5, 1, 7];
         // The six tet edges, by local tet-corner endpoints (0..3):
         // e0=(0,1) e1=(0,2) e2=(0,3) e3=(1,2) e4=(1,3) e5=(2,3).
-        int32[] tetEdgeA = {0, 0, 0, 1, 1, 2};
-        int32[] tetEdgeB = {1, 2, 3, 2, 3, 3};
+        int32[] tetEdgeA = [0, 0, 0, 1, 1, 2];
+        int32[] tetEdgeB = [1, 2, 3, 2, 3, 3];
         // 16-case triangle table: for each 4-bit inside-mask (bit L = local
         // corner L inside), up to two triangles as tet-edge indices, -1 padded
         // to width 7. Complementary cases carry reversed winding.
-        int32[] triTable = {
+        int32[] triTable = [
             -1, -1, -1, -1, -1, -1, -1,
              0,  1,  2, -1, -1, -1, -1,
              0,  3,  4, -1, -1, -1, -1,
@@ -73,7 +73,7 @@ public class MarchingTetrahedra {
              1,  4,  2,  1,  3,  4, -1,
              0,  4,  3, -1, -1, -1, -1,
              0,  2,  1, -1, -1, -1, -1,
-            -1, -1, -1, -1, -1, -1, -1};
+            -1, -1, -1, -1, -1, -1, -1];
 
         int32 cellsX = nx - 1;
         int32 cellsY = ny - 1;

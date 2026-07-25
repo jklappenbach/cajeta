@@ -62,7 +62,7 @@ const char* kProgram =
     "public final class T {\n"
     "    static Tensor<float32> held;\n"
     "    public static int64 exportTensor() {\n"
-    "        float32[] fa = { 2.5f, 3.5f, 4.5f };\n"
+    "        float32[] fa = [ 2.5f, 3.5f, 4.5f ];\n"
     "        int64[] s = heap int64[1]; s[0] = 3;\n"
     "        Tensor<float32> t = Tensor.of<float32>(fa, s);\n"
     "        T.held = t;\n"

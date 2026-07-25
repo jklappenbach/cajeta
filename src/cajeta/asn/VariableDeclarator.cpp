@@ -6,6 +6,7 @@
 #include "../compile/CajetaModule.h"
 #include "../error/Diagnostics.h"
 #include "../type/CajetaArray.h"
+#include "../type/CajetaFunctionType.h"
 #include "expression/ArrayLowering.h"
 
 namespace cajeta {
@@ -47,6 +48,22 @@ namespace cajeta {
         // §7) so the two forms cannot drift.
         if (!elementType) {
             return nullptr;
+        }
+        // collection-literals Unit 5 — the array brace-initializer `{ ... }` is
+        // retired for value/data arrays: `int32[] xs = {1, 2, 3}` must now be
+        // written `int32[] xs = [1, 2, 3]`. Braces build aggregates and the one
+        // carved-out exception: function-typed device dispatch tables
+        // (`((T) -> R)[] ops = { A::f, B::g }`), whose element type is a function
+        // type. Those lower through KernelLowering on device and through here on
+        // host, and must keep working, so only reject non-function element types.
+        if (!dynamic_pointer_cast<CajetaFunctionType>(elementType)) {
+            throw locatedException(
+                getSourceLine(), getSourceColumn() + 1,
+                "array brace-initializer `{ ... }` is retired; use a bracket "
+                "literal `[ ... ]` instead (e.g. `[1, 2, 3]`). Braces build "
+                "aggregates (`Point { x: 1 }`) and function-typed dispatch "
+                "tables only.",
+                "CAJETA_ERROR_ARRAY_BRACE_INIT_RETIRED");
         }
         return emitArrayFromElements(module, elementType, children);
     }

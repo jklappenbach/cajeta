@@ -43,7 +43,7 @@ public class AutogradDemo extends DemoClass {
 
         // The sugar: @Jit @Vmap @Grad == Jit(Vmap(Grad(f))) — batch in,
         // per-example gradients out.
-        float32[] xs = {1.0f, 2.0f, 3.0f};
+        float32[] xs = [1.0f, 2.0f, 3.0f];
         GradResult<float32,float32>[] rs = AutogradDemo.dsq(xs);
         System.stdout.println("  @Jit @Vmap @Grad over {1,2,3}: grads = {"
             + rs[0].grads + ", " + rs[1].grads + ", " + rs[2].grads + "}");

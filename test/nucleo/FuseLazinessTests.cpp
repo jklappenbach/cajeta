@@ -37,7 +37,7 @@ int64_t runI64(const std::string& body) {
 // building is free.
 TEST(FuseLaziness, buildingAllocatesNothing) {
     EXPECT_EQ(runI64(
-        "float32[] fa = { 1.0f, 2.0f, 3.0f };\n"
+        "float32[] fa = [ 1.0f, 2.0f, 3.0f ];\n"
         "        int64[] s = heap int64[1]; s[0] = 3;\n"
         "        Tensor<float32> x = Tensor.of<float32>(fa, s);\n"
         "        int64 base = Cajeta.liveCount();\n"
@@ -51,7 +51,7 @@ TEST(FuseLaziness, buildingAllocatesNothing) {
 // is the contrast that makes the zero above meaningful rather than vacuous.
 TEST(FuseLaziness, callingAllocatesTheResult) {
     EXPECT_GT(runI64(
-        "float32[] fa = { 1.0f, 2.0f, 3.0f };\n"
+        "float32[] fa = [ 1.0f, 2.0f, 3.0f ];\n"
         "        int64[] s = heap int64[1]; s[0] = 3;\n"
         "        Tensor<float32> x = Tensor.of<float32>(fa, s);\n"
         "        (Tensor<float32>) -> #Tensor<float32> g =\n"
@@ -74,7 +74,7 @@ TEST(FuseLaziness, reductionOperandStagesAndBroadcasts) {
         "import cajeta.math.Tensor;\n"
         "public final class T {\n"
         "    public static float32 run() {\n"
-        "        float32[] fa = { 1.0f, 2.0f };\n"
+        "        float32[] fa = [ 1.0f, 2.0f ];\n"
         "        int64[] s = heap int64[1]; s[0] = 2;\n"
         "        Tensor<float32> x = Tensor.of<float32>(fa, s);\n"
         "        (Tensor<float32>) -> #Tensor<float32> g =\n"

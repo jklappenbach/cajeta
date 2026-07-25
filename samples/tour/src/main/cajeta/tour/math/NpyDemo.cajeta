@@ -20,7 +20,7 @@ public class NpyDemo extends DemoClass {
         String path = "/tmp/tour-npy-demo.npy";
 
         // A (2,3) float32 tensor with awkward (exactly representable) values.
-        float32[] data = {1.5f, -2.25f, 3.0f, 0.5f, 7.75f, -0.125f};
+        float32[] data = [1.5f, -2.25f, 3.0f, 0.5f, 7.75f, -0.125f];
         int64[] s23 = heap int64[2];
         s23[0] = 2;
         s23[1] = 3;

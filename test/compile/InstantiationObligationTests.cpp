@@ -94,7 +94,7 @@ TEST(InstantiationObligation, ArrayStreamUseRecordsCrossModuleObligation) {
         "import cajeta.lang.stream.ArrayStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
-        "        int32[] xs = {10, 20, 30, 40};\n"
+        "        int32[] xs = [10, 20, 30, 40];\n"
         "        ArrayStream<int32> s = xs.stream();\n"
         "        return s.count();\n"
         "    }\n"
@@ -118,7 +118,7 @@ TEST(InstantiationObligation, MethodTemplateUseRecordsCrossModuleObligation) {
         "package test;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
-        "        int32[] xs = {10, 20, 30, 40};\n"
+        "        int32[] xs = [10, 20, 30, 40];\n"
         "        return xs.stream().map<int32>((x) -> x * 10).count();\n"
         "    }\n"
         "}\n");

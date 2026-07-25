@@ -116,7 +116,7 @@ struct Project {
             s << "package t;\n"
                  "public final class Util {\n"
                  "    public static int32 streamed() {\n"
-                 "        int32[] xs = {1, 2, 3};\n"
+                 "        int32[] xs = [1, 2, 3];\n"
                  "        return xs.stream().count();\n"
                  "    }\n"
                  "}\n";
@@ -255,7 +255,7 @@ TEST(IncrementalBuild, TouchedImportDirtiesDependents) {
              "public final class Util {\n"
              "    public static int32 pad() { return 0; }\n"
              "    public static int32 streamed() {\n"
-             "        int32[] xs = {1, 2, 3};\n"
+             "        int32[] xs = [1, 2, 3];\n"
              "        return xs.stream().count();\n"
              "    }\n"
              "}\n";

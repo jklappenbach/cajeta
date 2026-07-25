@@ -44,7 +44,7 @@ std::string compileErrorId(const std::string& body) {
 // 1 + 4*10 + 9*100 = 941 (so a mis-ordered batch cannot pass).
 TEST(Vmap, batchEqualsMap) {
     EXPECT_FLOAT_EQ(runF32(
-        "float32[] xs = {1.0f, 2.0f, 3.0f};\n"
+        "float32[] xs = [1.0f, 2.0f, 3.0f];\n"
         "        (float32[]) -> #float32[] g = Vmap((float32 x) -> x * x);\n"
         "        float32[] ys = g(xs);\n"
         "        return ys[0] + ys[1] * 10.0f + ys[2] * 100.0f;"), 941.0f);
@@ -55,7 +55,7 @@ TEST(Vmap, batchEqualsMap) {
 // f = x+x over {2,5} -> {4,10}; 4 + 10*10 = 104.
 TEST(Vmap, batchLengthIsTheArgumentAxis) {
     EXPECT_FLOAT_EQ(runF32(
-        "float32[] xs = {2.0f, 5.0f};\n"
+        "float32[] xs = [2.0f, 5.0f];\n"
         "        (float32[]) -> #float32[] g = Vmap((float32 x) -> x + x);\n"
         "        float32[] ys = g(xs);\n"
         "        return ys[0] + ys[1] * 10.0f;"), 104.0f);
@@ -65,7 +65,7 @@ TEST(Vmap, batchLengthIsTheArgumentAxis) {
 // silently wrong batch. Modulo has no batching rule (div joined the set in nucleo-autograd U1).
 TEST(Vmap, unbatchableOpNamedError) {
     EXPECT_EQ(compileErrorId(
-        "float32[] xs = {1.0f, 2.0f};\n"
+        "float32[] xs = [1.0f, 2.0f];\n"
         "        (float32[]) -> #float32[] g = Vmap((float32 x) -> x % x);\n"
         "        float32[] ys = g(xs);\n"
         "        return ys[0];"), "CAJETA_ERROR_TRANSFORM_NO_BATCH_RULE");
@@ -76,7 +76,7 @@ TEST(Vmap, unbatchableOpNamedError) {
 // grads are {2,4,6} -> 2 + 4*10 + 6*100 = 642.
 TEST(Vmap, vmapOfGradGivesPerExampleGradients) {
     EXPECT_FLOAT_EQ(runF32(
-        "float32[] xs = {1.0f, 2.0f, 3.0f};\n"
+        "float32[] xs = [1.0f, 2.0f, 3.0f];\n"
         "        (float32[]) -> #GradResult<float32,float32>[] g =\n"
         "            Vmap(Grad((float32 x) -> x * x));\n"
         "        GradResult<float32,float32>[] rs = g(xs);\n"

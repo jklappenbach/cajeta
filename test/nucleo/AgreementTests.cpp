@@ -122,7 +122,7 @@ TEST(Agreement, compiledExclusiveVmapBatching) {
         "import cajeta.nucleo.transform.GradResult;\n"
         "public final class T {\n"
         "    public static float32 run() {\n"
-        "        float32[] xs = {1.0f, 2.0f, 3.0f};\n"
+        "        float32[] xs = [1.0f, 2.0f, 3.0f];\n"
         "        (float32[]) -> #GradResult<float32,float32>[] g =\n"
         "            Vmap(Grad((float32 x) -> x * x));\n"
         "        GradResult<float32,float32>[] rs = g(xs);\n"

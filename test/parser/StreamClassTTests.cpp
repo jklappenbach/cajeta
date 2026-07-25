@@ -54,7 +54,7 @@ TEST(StreamClassTTests, forEachInlineLambdaExpressionBody) {
         "public class Total { public static int32 sum = 0; }\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Counter[] xs = { heap Counter(1), heap Counter(2), heap Counter(3) };\n"
+        "        Counter[] xs = [ heap Counter(1), heap Counter(2), heap Counter(3) ];\n"
         "        ArrayStream<Counter> s = heap ArrayStream<Counter>(xs, 3);\n"
         "        s.forEach((Counter c) -> Total.sum = Total.sum + c.v);\n"
         "        return Total.sum;\n"  // 6
@@ -68,7 +68,7 @@ TEST(StreamClassTTests, forEachInlineLambdaBlockBody) {
         "public class Total { public static int32 sum = 0; }\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Counter[] xs = { heap Counter(1), heap Counter(2), heap Counter(3) };\n"
+        "        Counter[] xs = [ heap Counter(1), heap Counter(2), heap Counter(3) ];\n"
         "        ArrayStream<Counter> s = heap ArrayStream<Counter>(xs, 3);\n"
         "        s.forEach((Counter c) -> { Total.sum = Total.sum + c.v; });\n"
         "        return Total.sum;\n"
@@ -82,7 +82,7 @@ TEST(StreamClassTTests, forEachPreDeclaredLambda) {
         "public class Total { public static int32 sum = 0; }\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Counter[] xs = { heap Counter(1), heap Counter(2), heap Counter(3) };\n"
+        "        Counter[] xs = [ heap Counter(1), heap Counter(2), heap Counter(3) ];\n"
         "        ArrayStream<Counter> s = heap ArrayStream<Counter>(xs, 3);\n"
         "        (Counter) -> void addv = (Counter c) -> { Total.sum = Total.sum + c.v; };\n"
         "        s.forEach(addv);\n"
@@ -98,7 +98,7 @@ TEST(StreamClassTTests, findFirstFindsMatch) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Counter[] xs = { heap Counter(1), heap Counter(2), heap Counter(3) };\n"
+        "        Counter[] xs = [ heap Counter(1), heap Counter(2), heap Counter(3) ];\n"
         "        ArrayStream<Counter> s = heap ArrayStream<Counter>(xs, 3);\n"
         "        Optional<Counter> result = s.findFirst((Counter c) -> { return c.v == 2; });\n"
         "        if (result.isPresent()) { return result.get().v; }\n"
@@ -112,7 +112,7 @@ TEST(StreamClassTTests, findFirstReturnsEmptyWhenNoMatch) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Counter[] xs = { heap Counter(1), heap Counter(2), heap Counter(3) };\n"
+        "        Counter[] xs = [ heap Counter(1), heap Counter(2), heap Counter(3) ];\n"
         "        ArrayStream<Counter> s = heap ArrayStream<Counter>(xs, 3);\n"
         "        Optional<Counter> result = s.findFirst((Counter c) -> { return c.v > 99; });\n"
         "        if (result.isPresent()) { return 99; }\n"
@@ -128,7 +128,7 @@ TEST(StreamClassTTests, anyMatchTrueWhenOneMatches) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Counter[] xs = { heap Counter(1), heap Counter(2), heap Counter(3) };\n"
+        "        Counter[] xs = [ heap Counter(1), heap Counter(2), heap Counter(3) ];\n"
         "        ArrayStream<Counter> s = heap ArrayStream<Counter>(xs, 3);\n"
         "        if (s.anyMatch((Counter c) -> { return c.v == 2; })) { return 1; }\n"
         "        return 0;\n"
@@ -141,7 +141,7 @@ TEST(StreamClassTTests, allMatchFalseWhenOneFails) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Counter[] xs = { heap Counter(1), heap Counter(2), heap Counter(3) };\n"
+        "        Counter[] xs = [ heap Counter(1), heap Counter(2), heap Counter(3) ];\n"
         "        ArrayStream<Counter> s = heap ArrayStream<Counter>(xs, 3);\n"
         "        if (s.allMatch((Counter c) -> { return c.v < 3; })) { return 99; }\n"
         "        return 0;\n"
@@ -154,7 +154,7 @@ TEST(StreamClassTTests, noneMatchTrueWhenNoneMatches) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Counter[] xs = { heap Counter(1), heap Counter(2), heap Counter(3) };\n"
+        "        Counter[] xs = [ heap Counter(1), heap Counter(2), heap Counter(3) ];\n"
         "        ArrayStream<Counter> s = heap ArrayStream<Counter>(xs, 3);\n"
         "        if (s.noneMatch((Counter c) -> { return c.v > 99; })) { return 1; }\n"
         "        return 0;\n"
@@ -173,7 +173,7 @@ TEST(StreamClassTTests, reduceReturnsBNoNew) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Counter[] xs = { heap Counter(1), heap Counter(2), heap Counter(3) };\n"
+        "        Counter[] xs = [ heap Counter(1), heap Counter(2), heap Counter(3) ];\n"
         "        ArrayStream<Counter> s = heap ArrayStream<Counter>(xs, 3);\n"
         "        Counter seed = heap Counter(0);\n"
         "        Counter result = s.reduce(seed, (Counter a, Counter b) -> {\n"
@@ -189,7 +189,7 @@ TEST(StreamClassTTests, reduceAccumulatesViaNew) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Counter[] xs = { heap Counter(1), heap Counter(2), heap Counter(3) };\n"
+        "        Counter[] xs = [ heap Counter(1), heap Counter(2), heap Counter(3) ];\n"
         "        ArrayStream<Counter> s = heap ArrayStream<Counter>(xs, 3);\n"
         "        Counter seed = heap Counter(0);\n"
         "        Counter result = s.reduce(seed, (Counter a, Counter b) -> {\n"

@@ -134,7 +134,7 @@ struct Fixture {
             "public final class Util {\n"
             "    public static int32 compute() { return Base.val() + 3; }\n"
             "    public static int32 streamed() {\n"
-            "        int32[] xs = {1, 2, 3};\n"
+            "        int32[] xs = [1, 2, 3];\n"
             "        return xs.stream().count();\n"
             "    }\n"
             "}\n");

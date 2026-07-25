@@ -21,7 +21,7 @@ const char* kProbe =
     "public final class T {\n"
     "    static Column<float32> held;\n"
     "    public static int64 diff() {\n"
-    "        float32[] fa = { 1.5f, 2.5f, 3.5f };\n"
+    "        float32[] fa = [ 1.5f, 2.5f, 3.5f ];\n"
     "        Column<float32> c = Column.of<float32>(fa);\n"
     "        T.held = c;\n"
     "        int64 a1 = T.held.dataAddress();\n"

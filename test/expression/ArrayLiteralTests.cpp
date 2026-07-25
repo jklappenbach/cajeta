@@ -138,9 +138,11 @@ TEST(ArrayLiteralTests, EmptyLiteralNoTargetErrors) {
     EXPECT_ANY_THROW(CajetaJit::compile(src, "test.D"));
 }
 
-// 1.1.8 — the existing `{...}` brace form still works after being routed
-// through the shared store loop (§7 regression guard).
-TEST(ArrayLiteralTests, BraceFormStillWorks) {
+// collection-literals Unit 5 — the `{...}` array brace form is retired for
+// value arrays (was 1.1.8's "brace form still works"). It now fails to compile;
+// `[...]` is the replacement. The dispatch-table carve-out (`((T)->R)[] ops =
+// {A::f}`) keeps braces and is covered by FunctionArrayTypeTests.
+TEST(ArrayLiteralTests, BraceFormRetired) {
     auto src =
         "package test;\n"
         "public final class D {\n"
@@ -149,7 +151,7 @@ TEST(ArrayLiteralTests, BraceFormStillWorks) {
         "        return xs[1];\n"
         "    }\n"
         "}\n";
-    EXPECT_EQ(runI32(src), 20);
+    EXPECT_ANY_THROW(CajetaJit::compile(src, "test.D"));
 }
 
 // ---- Unit 2: target-typed inference ----

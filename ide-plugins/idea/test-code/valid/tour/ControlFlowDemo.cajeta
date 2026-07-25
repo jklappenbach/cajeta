@@ -30,7 +30,7 @@ public class ControlFlowDemo extends DemoClass {
         System.stdout.println("  for:   5! = " + fact);
 
         // Enhanced-for over an int32[]: sum of squares.
-        int32[] xs = {1, 2, 3, 4};
+        int32[] xs = [1, 2, 3, 4];
         int32 sqSum = 0;
         for (int32 x : xs) {
             sqSum = sqSum + x * x;

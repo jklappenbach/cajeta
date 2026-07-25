@@ -39,7 +39,7 @@ float runL(const std::string& body, const std::string& helpers = "") {
 // errors² = [1,4]; mean 2.5, sum 5, none elementwise.
 TEST(LossModeTests, mseReductionsMatchHand) {
     float r = runL(
-        "int64[] s = {2};\n"
+        "int64[] s = [2];\n"
         "        Tensor<float32> p = Tensor.zeros<float32>(s);\n"
         "        p.set1(0, 1.0f); p.set1(1, 3.0f);\n"
         "        Tensor<float32> t = Tensor.zeros<float32>(s);\n"
@@ -62,7 +62,7 @@ TEST(LossModeTests, gradThroughLossFunctions) {
         "                                Tensor.sub<float32>(p, t)));\n"
         "    }\n";
     float r = runL(
-        "int64[] s = {2};\n"
+        "int64[] s = [2];\n"
         "        Tensor<float32> p = Tensor.zeros<float32>(s);\n"
         "        p.set1(0, 1.0f); p.set1(1, 3.0f);\n"
         "        Tensor<float32> t = Tensor.zeros<float32>(s);\n"
@@ -160,7 +160,7 @@ TEST(LossModeTests, dropoutMaskAndIdentity) {
         "        }\n"
         "    }\n";
     float r = runL(
-        "int64[] s = {100};\n"
+        "int64[] s = [100];\n"
         "        Tensor<float32> x = Tensor.full<float32>(s, 1.0f);\n"
         "        Dropout d = heap Dropout(0.5f, 42);\n"
         "        Tensor<float32> ye = d.forward(x);\n"          // eval: identity

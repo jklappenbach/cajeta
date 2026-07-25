@@ -125,8 +125,8 @@ TEST(JsonWriterTests, objectWithStringValue) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int8[] k = {(int8) 97};\n"   // "a"
-        "        int8[] v = {(int8) 98};\n"   // "b"
+        "        int8[] k = [(int8) 97];\n"   // "a"
+        "        int8[] v = [(int8) 98];\n"   // "b"
         "        JsonWriter w = heap JsonWriter();\n"
         "        w.beginObject()\n"
         "            .key(k, 1).writeString(v, 1)\n"
@@ -173,7 +173,7 @@ TEST(JsonReaderNumberTests, parseNegativeInt) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int8[] buf = {(int8) 45, (int8) 52, (int8) 50};\n"  // -42
+        "        int8[] buf = [(int8) 45, (int8) 52, (int8) 50];\n"  // -42
         "        JsonReader r = heap JsonReader(buf, (int64) 3);\n"
         "        r.next();\n"
         "        return (int32) r.currentNumberAsInt64();\n"
@@ -190,13 +190,13 @@ TEST(JsonReaderNumberTests, parseTooLargeInt64ThrowsParseException) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         // "9223372036854775808" — INT64_MAX + 1
-        "        int8[] buf = {\n"
+        "        int8[] buf = [\n"
         "            (int8) 57, (int8) 50, (int8) 50, (int8) 51,\n"
         "            (int8) 51, (int8) 55, (int8) 50, (int8) 48,\n"
         "            (int8) 51, (int8) 54, (int8) 56, (int8) 53,\n"
         "            (int8) 52, (int8) 55, (int8) 55, (int8) 53,\n"
         "            (int8) 56, (int8) 48, (int8) 56\n"
-        "        };\n"
+        "        ];\n"
         "        JsonReader r = heap JsonReader(buf, (int64) 19);\n"
         "        r.next();\n"
         "        try {\n"
@@ -218,14 +218,14 @@ TEST(JsonReaderNumberTests, parseInt64Min) {
         "public final class D {\n"
         "    public static int64 run() {\n"
         // "-9223372036854775808" — INT64_MIN
-        "        int8[] buf = {\n"
+        "        int8[] buf = [\n"
         "            (int8) 45,\n"  // '-'
         "            (int8) 57, (int8) 50, (int8) 50, (int8) 51,\n"
         "            (int8) 51, (int8) 55, (int8) 50, (int8) 48,\n"
         "            (int8) 51, (int8) 54, (int8) 56, (int8) 53,\n"
         "            (int8) 52, (int8) 55, (int8) 55, (int8) 53,\n"
         "            (int8) 56, (int8) 48, (int8) 56\n"
-        "        };\n"
+        "        ];\n"
         "        JsonReader r = heap JsonReader(buf, (int64) 20);\n"
         "        r.next();\n"
         "        return r.currentNumberAsInt64();\n"
@@ -242,8 +242,8 @@ TEST(JsonReaderBytesTests, currentBytesCopiesKeySpan) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         // {"ab":1}
-        "        int8[] buf = {(int8) 123, (int8) 34, (int8) 97, (int8) 98,\n"
-        "                      (int8) 34, (int8) 58, (int8) 49, (int8) 125};\n"
+        "        int8[] buf = [(int8) 123, (int8) 34, (int8) 97, (int8) 98,\n"
+        "                      (int8) 34, (int8) 58, (int8) 49, (int8) 125];\n"
         "        JsonReader r = heap JsonReader(buf, (int64) 8);\n"
         "        r.next();\n"  // START_OBJECT
         "        r.next();\n"  // KEY

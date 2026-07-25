@@ -39,7 +39,7 @@ TEST(StreamFoldTests, foldSameTypeMatchesReduce) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] xs = { 1, 2, 3, 4 };\n"
+        "        int32[] xs = [ 1, 2, 3, 4 ];\n"
         "        ArrayStream<int32> s = heap ArrayStream<int32>(xs, 4);\n"
         "        return s.fold(0, (int32 acc, int32 x) -> acc + x);\n"
         "    }\n"
@@ -54,7 +54,7 @@ TEST(StreamFoldTests, foldI32StreamToI64) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int64 run() {\n"
-        "        int32[] xs = { 1, 2, 3 };\n"
+        "        int32[] xs = [ 1, 2, 3 ];\n"
         "        ArrayStream<int32> s = heap ArrayStream<int32>(xs, 3);\n"
         "        return s.fold(100L, (int64 acc, int32 x) -> acc + 1L);\n"
         "    }\n"
@@ -68,7 +68,7 @@ TEST(StreamFoldTests, reduceStillWorks) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] xs = { 2, 3, 5 };\n"
+        "        int32[] xs = [ 2, 3, 5 ];\n"
         "        ArrayStream<int32> s = heap ArrayStream<int32>(xs, 3);\n"
         "        return s.reduce(1, (int32 a, int32 b) -> a * b);\n"
         "    }\n"
@@ -90,7 +90,7 @@ TEST(StreamFoldTests, foldClassTToPrimitiveR) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Counter[] cs = { heap Counter(1), heap Counter(2), heap Counter(3) };\n"
+        "        Counter[] cs = [ heap Counter(1), heap Counter(2), heap Counter(3) ];\n"
         "        ArrayStream<Counter> s = heap ArrayStream<Counter>(cs, 3);\n"
         "        return s.fold(0, (int32 acc, Counter c) -> acc + c.v);\n"
         "    }\n"

@@ -66,7 +66,7 @@ TEST(CodecTierInterfacesTests, schemaEncoderRoundTrip) {
         "    }\n"
         "}\n";
     const std::string body =
-        "int8[] def = {(int8) 1};\n"
+        "int8[] def = [(int8) 1];\n"
         "Schema s = heap Schema(#def);\n"
         "SchemaEncoder<Box> codec = heap BoxCodec();\n"
         "Box b = heap Box(12345);\n"
@@ -81,7 +81,7 @@ TEST(CodecTierInterfacesTests, schemaEncoderRoundTrip) {
 TEST(CodecTierInterfacesTests, schemaCarriesDefinition) {
     const std::string imports = "import cajeta.wire.Schema;\n";
     const std::string body =
-        "int8[] def = {(int8) 7, (int8) 9, (int8) 11};\n"
+        "int8[] def = [(int8) 7, (int8) 9, (int8) 11];\n"
         "Schema s = heap Schema(#def);\n"
         "int8[] d = s.definition();\n"
         "return ((int32) d.count()) * 100 + (int32) d[2];";   // len 3, d[2]==11
@@ -115,7 +115,7 @@ TEST(CodecTierInterfacesTests, compressorDecompressorRoundTrip) {
         "    }\n"
         "}\n";
     const std::string body =
-        "int8[] raw = {(int8) 4, (int8) 8, (int8) 15, (int8) 16, (int8) 23};\n"
+        "int8[] raw = [(int8) 4, (int8) 8, (int8) 15, (int8) 16, (int8) 23];\n"
         "Compressor c = heap IdCompressor();\n"
         "Decompressor d = heap IdDecompressor();\n"
         "int8[] packed = c.compress(raw);\n"

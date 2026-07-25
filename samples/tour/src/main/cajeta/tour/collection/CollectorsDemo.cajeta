@@ -24,7 +24,7 @@ public class CollectorsDemo extends DemoClass {
         System.stdout.println("");
         System.stdout.println("-- Collectors --");
 
-        int32[] data = {5, 1, 4, 2, 3, 6};
+        int32[] data = [5, 1, 4, 2, 3, 6];
 
         // toList at the end of a filter pipeline: the accumulator
         // appends in stream order, so encounter order is preserved.

@@ -136,7 +136,7 @@ TEST(XpuRngTests, quartileUniformity) {
 // streams. -1 must never be returned.
 TEST(XpuRngTests, weightedReservoirConverges) {
     EXPECT_EQ(runI32(IMP,
-        "        float32[] w = {1.0f, 2.0f, 3.0f};\n"
+        "        float32[] w = [1.0f, 2.0f, 3.0f];\n"
         "        int32 c0 = 0;\n"
         "        int32 c1 = 0;\n"
         "        int32 c2 = 0;\n"

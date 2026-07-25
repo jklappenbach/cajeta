@@ -28,7 +28,7 @@ TEST(JsonFactoryTests, parseNumber) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int8[] buf = {(int8) 52, (int8) 50};\n"
+        "        int8[] buf = [(int8) 52, (int8) 50];\n"
         "        JsonValue v = Json.parse(buf, (int64) 2);\n"
         "        return v.asInt32();\n"
         "    }\n"
@@ -42,9 +42,9 @@ TEST(JsonFactoryTests, parseArraySum) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         // [10,20,30]
-        "        int8[] buf = {(int8) 91, (int8) 49, (int8) 48, (int8) 44,\n"
+        "        int8[] buf = [(int8) 91, (int8) 49, (int8) 48, (int8) 44,\n"
         "                      (int8) 50, (int8) 48, (int8) 44, (int8) 51,\n"
-        "                      (int8) 48, (int8) 93};\n"
+        "                      (int8) 48, (int8) 93];\n"
         "        JsonValue v = Json.parse(buf, (int64) 10);\n"
         "        JsonArray a = v.asArray();\n"
         "        int32 sum = 0;\n"
@@ -94,7 +94,7 @@ TEST(JsonFactoryTests, parseNullLiteral) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         // 'n','u','l','l'
-        "        int8[] buf = {(int8) 110, (int8) 117, (int8) 108, (int8) 108};\n"
+        "        int8[] buf = [(int8) 110, (int8) 117, (int8) 108, (int8) 108];\n"
         "        JsonValue v = Json.parse(buf, (int64) 4);\n"
         "        if (v.isNull()) { return 1; }\n"
         "        return -1;\n"

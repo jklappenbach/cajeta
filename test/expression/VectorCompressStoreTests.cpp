@@ -26,8 +26,8 @@ const char* head =
     "package test;\n"
     "public final class D {\n"
     "    public static int64 run() {\n"
-    "        int64[] a = { 5, 1, 8, 2, 7, 3, 6, 4 };\n"
-    "        int64[] out = { 0, 0, 0, 0, 0, 0, 0, 0 };\n"
+    "        int64[] a = [ 5, 1, 8, 2, 7, 3, 6, 4 ];\n"
+    "        int64[] out = [ 0, 0, 0, 0, 0, 0, 0, 0 ];\n"
     "        Vector<int64,8> v = a.vload<8>(0);\n";
 const char* tail = "    }\n}\n";
 

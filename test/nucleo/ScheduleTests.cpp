@@ -23,7 +23,7 @@ float runSched(const std::string& body) {
         "public class Net extends Module {\n"
         "    Parameter w;\n"
         "    public Net() {\n"
-        "        int64[] s = {1};\n"
+        "        int64[] s = [1];\n"
         "        this.w = heap Parameter(Tensor.full<float32>(s, 1.0f));\n"
         "    }\n"
         "}\n"

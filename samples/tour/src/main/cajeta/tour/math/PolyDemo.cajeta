@@ -16,7 +16,7 @@ public class PolyDemo extends DemoClass {
 
         // polyval via Horner: p(x) = 2x^2 + 3x + 1 at x = 2 is 8+6+1 = 15,
         // and p(0) is the constant term.
-        int32[] pc = {2, 3, 1};
+        int32[] pc = [2, 3, 1];
         int64[] s3 = heap int64[1];
         s3[0] = 3;
         Tensor<int32> p = Tensor.of<int32>(pc, s3);
@@ -29,9 +29,9 @@ public class PolyDemo extends DemoClass {
 
         // polyadd aligns by DEGREE (the shorter is padded on the high end):
         // (x^2 + 2x + 3) + (x + 1) = x^2 + 3x + 4.
-        int32[] ac = {1, 2, 3};
+        int32[] ac = [1, 2, 3];
         Tensor<int32> a = Tensor.of<int32>(ac, s3);
-        int32[] bc = {1, 1};
+        int32[] bc = [1, 1];
         int64[] s2 = heap int64[1];
         s2[0] = 2;
         Tensor<int32> b = Tensor.of<int32>(bc, s2);
@@ -41,9 +41,9 @@ public class PolyDemo extends DemoClass {
             "(x^2+2x+3) + (x+1) == x^2+3x+4");
 
         // polymul is convolution: (x + 1)(x - 1) = x^2 - 1.
-        int32[] cc = {1, 1};
+        int32[] cc = [1, 1];
         Tensor<int32> c = Tensor.of<int32>(cc, s2);
-        int32[] dc = {1, -1};
+        int32[] dc = [1, -1];
         Tensor<int32> d = Tensor.of<int32>(dc, s2);
         Tensor<int32> prod = Poly.polymul<int32>(c, d);
         this.check(prod.size() == 3, "polymul result length == la + lb - 1");

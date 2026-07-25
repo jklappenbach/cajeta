@@ -31,7 +31,7 @@ TEST(JsonReaderTests, emptyObject) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int8[] buf = {(int8) 123, (int8) 125};\n"  // '{', '}'
+        "        int8[] buf = [(int8) 123, (int8) 125];\n"  // '{', '}'
         "        JsonReader r = heap JsonReader(buf, (int64) 2);\n"
         "        int32 t1 = r.next();\n"
         "        int32 t2 = r.next();\n"
@@ -48,7 +48,7 @@ TEST(JsonReaderTests, emptyArray) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int8[] buf = {(int8) 91, (int8) 93};\n"  // '[', ']'
+        "        int8[] buf = [(int8) 91, (int8) 93];\n"  // '[', ']'
         "        JsonReader r = heap JsonReader(buf, (int64) 2);\n"
         "        int32 t1 = r.next();\n"
         "        int32 t2 = r.next();\n"
@@ -66,7 +66,7 @@ TEST(JsonReaderTests, literalTrue) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         // 't','r','u','e'
-        "        int8[] buf = {(int8) 116, (int8) 114, (int8) 117, (int8) 101};\n"
+        "        int8[] buf = [(int8) 116, (int8) 114, (int8) 117, (int8) 101];\n"
         "        JsonReader r = heap JsonReader(buf, (int64) 4);\n"
         "        int32 t = r.next();\n"
         "        if (t != 7) { return -1; }\n"
@@ -84,7 +84,7 @@ TEST(JsonReaderTests, literalFalse) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         // 'f','a','l','s','e'
-        "        int8[] buf = {(int8) 102, (int8) 97, (int8) 108, (int8) 115, (int8) 101};\n"
+        "        int8[] buf = [(int8) 102, (int8) 97, (int8) 108, (int8) 115, (int8) 101];\n"
         "        JsonReader r = heap JsonReader(buf, (int64) 5);\n"
         "        int32 t = r.next();\n"
         "        if (t != 7) { return -1; }\n"
@@ -101,7 +101,7 @@ TEST(JsonReaderTests, literalNull) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         // 'n','u','l','l'
-        "        int8[] buf = {(int8) 110, (int8) 117, (int8) 108, (int8) 108};\n"
+        "        int8[] buf = [(int8) 110, (int8) 117, (int8) 108, (int8) 108];\n"
         "        JsonReader r = heap JsonReader(buf, (int64) 4);\n"
         "        return r.next();\n"
         "    }\n"
@@ -115,7 +115,7 @@ TEST(JsonReaderTests, nakedNumberSpan) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         // '4','2'
-        "        int8[] buf = {(int8) 52, (int8) 50};\n"
+        "        int8[] buf = [(int8) 52, (int8) 50];\n"
         "        JsonReader r = heap JsonReader(buf, (int64) 2);\n"
         "        int32 t = r.next();\n"
         "        if (t != 6) { return -1; }\n"
@@ -133,8 +133,8 @@ TEST(JsonReaderTests, arrayOfThreeNumbers) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         // '[','1',',','2',',','3',']'
-        "        int8[] buf = {(int8) 91, (int8) 49, (int8) 44,\n"
-        "                      (int8) 50, (int8) 44, (int8) 51, (int8) 93};\n"
+        "        int8[] buf = [(int8) 91, (int8) 49, (int8) 44,\n"
+        "                      (int8) 50, (int8) 44, (int8) 51, (int8) 93];\n"
         "        JsonReader r = heap JsonReader(buf, (int64) 7);\n"
         "        int32 sum = 0;\n"
         "        sum = sum + r.next();\n"  // 2 START_ARRAY
@@ -156,8 +156,8 @@ TEST(JsonReaderTests, objectWithOneNumericValue) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         // '{','"','a','"',':','1','}'
-        "        int8[] buf = {(int8) 123, (int8) 34, (int8) 97, (int8) 34,\n"
-        "                      (int8) 58, (int8) 49, (int8) 125};\n"
+        "        int8[] buf = [(int8) 123, (int8) 34, (int8) 97, (int8) 34,\n"
+        "                      (int8) 58, (int8) 49, (int8) 125];\n"
         "        JsonReader r = heap JsonReader(buf, (int64) 7);\n"
         "        int32 t1 = r.next();\n"  // 0 START_OBJECT
         "        int32 t2 = r.next();\n"  // 4 KEY
@@ -176,7 +176,7 @@ TEST(JsonReaderTests, nestedEmptyArray) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         // '[','[',']',']'
-        "        int8[] buf = {(int8) 91, (int8) 91, (int8) 93, (int8) 93};\n"
+        "        int8[] buf = [(int8) 91, (int8) 91, (int8) 93, (int8) 93];\n"
         "        JsonReader r = heap JsonReader(buf, (int64) 4);\n"
         "        int32 t1 = r.next();\n"  // 2 START_ARRAY
         "        int32 t2 = r.next();\n"  // 2 START_ARRAY
@@ -196,8 +196,8 @@ TEST(JsonReaderTests, whitespaceSkipped) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         // ' ',' ','{',' ','}',' '
-        "        int8[] buf = {(int8) 32, (int8) 32, (int8) 123,\n"
-        "                      (int8) 32, (int8) 125, (int8) 32};\n"
+        "        int8[] buf = [(int8) 32, (int8) 32, (int8) 123,\n"
+        "                      (int8) 32, (int8) 125, (int8) 32];\n"
         "        JsonReader r = heap JsonReader(buf, (int64) 6);\n"
         "        int32 t1 = r.next();\n"
         "        int32 t2 = r.next();\n"

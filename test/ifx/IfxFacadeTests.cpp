@@ -350,7 +350,7 @@ TEST(IfxFacadeTests, lifecycleSurfaceEventsAreDeliverable) {
         "    public #WindowEvent[] poll(Window w) { return null; }\n"
         "    public void destroy(Window w) { }\n"
         "    public #LifecyclePhase[] pollLifecycle(Window w) {\n"
-        "        LifecyclePhase[] evs = {LifecyclePhase.SurfaceLost, LifecyclePhase.SurfaceRecreated};\n"
+        "        LifecyclePhase[] evs = [LifecyclePhase.SurfaceLost, LifecyclePhase.SurfaceRecreated];\n"
         "        return evs;\n"
         "    }\n"
         "}\n"

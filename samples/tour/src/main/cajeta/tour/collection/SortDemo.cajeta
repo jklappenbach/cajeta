@@ -22,7 +22,7 @@ public class SortDemo extends DemoClass {
         System.stdout.println("-- Sort --");
 
         // Natural-order unstable sort of a raw array.
-        int32[] a = {5, 3, 8, 1, 9, 2, 7};
+        int32[] a = [5, 3, 8, 1, 9, 2, 7];
         Sort.sort<int32>(a, 7);
         boolean ascending = true;
         for (int32 i = 1; i < 7; i = i + 1) {
@@ -41,7 +41,7 @@ public class SortDemo extends DemoClass {
 
         // lowerBound / upperBound bracket a run of duplicates
         // (numpy searchsorted side='left' / side='right').
-        int32[] dups = {1, 2, 2, 2, 3};
+        int32[] dups = [1, 2, 2, 2, 3];
         int32 lo = Sort.lowerBound<int32>(dups, 5, 2);
         int32 hi = Sort.upperBound<int32>(dups, 5, 2);
         this.check(lo == 1 && hi == 4, "lowerBound/upperBound bracket the run of 2s");

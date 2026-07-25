@@ -22,7 +22,7 @@ const char* kSrc =
     "public final class D {\n"
     // drops incurred sorting a 10-element primitive array (natural order).
     "    public static int64 sortDrops() {\n"
-    "        int64[] a = { 9, 3, 7, 1, 5, 2, 8, 4, 6, 0 };\n"
+    "        int64[] a = [ 9, 3, 7, 1, 5, 2, 8, 4, 6, 0 ];\n"
     "        Cajeta.dropCountReset();\n"
     "        Sort.sort<int64>(a, 10);\n"
     "        return Cajeta.dropCount();\n"

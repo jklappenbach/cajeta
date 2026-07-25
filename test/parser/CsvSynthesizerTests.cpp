@@ -40,7 +40,7 @@ int32_t runCsv(const std::string& classDecls,
         + classDecls +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int8[] buf = {" + bytes + "};\n"
+        "        int8[] buf = [" + bytes + "];\n"
         "        int64 n = (int64) " + len + ";\n"
         "        " + body + "\n"
         "    }\n"

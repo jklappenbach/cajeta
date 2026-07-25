@@ -37,7 +37,7 @@ std::string bodyOf(const std::string& ir, const std::string& fnNeedle) {
 
 // x = {1,2,3}; loss(x) = sum(x*x) = 14; grad = 2x -> sum = 12; value+sum = 26.
 const char* kPrelude =
-    "        float32[] fa = { 1.0f, 2.0f, 3.0f };\n"
+    "        float32[] fa = [ 1.0f, 2.0f, 3.0f ];\n"
     "        int64[] s = heap int64[1]; s[0] = 3;\n"
     "        Tensor<float32> x = Tensor.of<float32>(fa, s);\n";
 

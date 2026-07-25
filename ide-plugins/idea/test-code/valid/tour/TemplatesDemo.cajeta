@@ -14,8 +14,8 @@ public class TemplatesDemo extends DemoClass {
         // Stream-level monomorphization across two element types in
         // the same scope — Stream<int32> and Stream<float64> end up
         // as genuinely different functions with their own vtables.
-        int32[]   ints = {1, 2, 3, 4, 5};
-        float64[] dbls = {1.5, 2.5, 3.5};
+        int32[]   ints = [1, 2, 3, 4, 5];
+        float64[] dbls = [1.5, 2.5, 3.5];
         int32 intSum  = ints.stream().reduce(0, (a, b) -> a + b);
         int32 dblSumI = (int32) dbls.stream().reduce(0.0, (a, b) -> a + b);
         System.stdout.println("  Stream<int32>  sum = " + intSum);

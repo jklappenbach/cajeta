@@ -33,7 +33,7 @@ package cajeta.collection;
  * histogram-edge lookup — one implementation, no duplication (§4c).
  *
  * ```cajeta
- * int32[] a = { 5, 3, 8, 1, 9, 2, 7 };
+ * int32[] a = [ 5, 3, 8, 1, 9, 2, 7 ];
  * Sort.sort<int32>(a, 7);                 // [1,2,3,5,7,8,9] ascending
  * int32 at = Sort.binarySearch<int32>(a, 7, 8);   // 5
  * // descending via a comparator:

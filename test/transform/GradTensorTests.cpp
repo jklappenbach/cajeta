@@ -58,7 +58,7 @@ TEST(GradTensor, valueTypeRecordOwnedTensorFieldReturn) {
         "            Tensor.mulScalar<float32>(Tensor.onesLike<float32>(xx), 1.0f));\n"
         "    }\n"
         "    public static float32 run() {\n"
-        "        float32[] fa = { 1.0f, 2.0f, 3.0f };\n"
+        "        float32[] fa = [ 1.0f, 2.0f, 3.0f ];\n"
         "        int64[] s3 = heap int64[1]; s3[0] = 3;\n"
         "        Tensor<float32> x = Tensor.of<float32>(fa, s3);\n"
         "        GradResult<float32, Tensor<float32>> r = mk(x);\n"
@@ -71,7 +71,7 @@ TEST(GradTensor, valueTypeRecordOwnedTensorFieldReturn) {
 // cross-frame return, so no arena-escape). value 5 + sum(x [1,2,3])=6 → 11.
 TEST(GradTensor, gradResultHoldsTensorField) {
     EXPECT_FLOAT_EQ(runTensorGrad(
-        "float32[] fa = { 1.0f, 2.0f, 3.0f };\n"
+        "float32[] fa = [ 1.0f, 2.0f, 3.0f ];\n"
         "        int64[] s3 = heap int64[1]; s3[0] = 3;\n"
         "        Tensor<float32> x = Tensor.of<float32>(fa, s3);\n"
         "        GradResult<float32, Tensor<float32>> r =\n"
@@ -84,7 +84,7 @@ TEST(GradTensor, gradResultHoldsTensorField) {
 // the cross-frame RETURN of the allocated tensor dangles. value 6 + 3 → 9.
 TEST(GradTensor, arenaAllocAfterSum) {
     EXPECT_FLOAT_EQ(runTensorGrad(
-        "float32[] fa = { 1.0f, 2.0f, 3.0f };\n"
+        "float32[] fa = [ 1.0f, 2.0f, 3.0f ];\n"
         "        int64[] s3 = heap int64[1]; s3[0] = 3;\n"
         "        Tensor<float32> x = Tensor.of<float32>(fa, s3);\n"
         "        float32 s = Tensor.sum<float32,float32>(x);\n"
@@ -96,7 +96,7 @@ TEST(GradTensor, arenaAllocAfterSum) {
 // autodiff logic and closure/param handling are sound. value 6.
 TEST(GradTensor, plainLambdaTensorParamSum) {
     EXPECT_FLOAT_EQ(runTensorGrad(
-        "float32[] fa = { 1.0f, 2.0f, 3.0f };\n"
+        "float32[] fa = [ 1.0f, 2.0f, 3.0f ];\n"
         "        int64[] s3 = heap int64[1]; s3[0] = 3;\n"
         "        Tensor<float32> x = Tensor.of<float32>(fa, s3);\n"
         "        (Tensor<float32>) -> float32 f =\n"
@@ -108,7 +108,7 @@ TEST(GradTensor, plainLambdaTensorParamSum) {
 // does NOT escape (consumed by sum) — works. sum([1,1,1]) = 3.
 TEST(GradTensor, plainLambdaOnesLikeGrad) {
     EXPECT_FLOAT_EQ(runTensorGrad(
-        "float32[] fa = { 1.0f, 2.0f, 3.0f };\n"
+        "float32[] fa = [ 1.0f, 2.0f, 3.0f ];\n"
         "        int64[] s3 = heap int64[1]; s3[0] = 3;\n"
         "        Tensor<float32> x = Tensor.of<float32>(fa, s3);\n"
         "        (Tensor<float32>) -> float32 f =\n"
@@ -120,7 +120,7 @@ TEST(GradTensor, plainLambdaOnesLikeGrad) {
 // 3.1.1 (simplest tensor Grad) — loss(x) = sum(x), grad = ones. value 6 + 3 → 9.
 TEST(GradTensor, sumIdentityGrad) {
     EXPECT_FLOAT_EQ(runTensorGrad(
-        "float32[] fa = { 1.0f, 2.0f, 3.0f };\n"
+        "float32[] fa = [ 1.0f, 2.0f, 3.0f ];\n"
         "        int64[] s3 = heap int64[1]; s3[0] = 3;\n"
         "        Tensor<float32> x = Tensor.of<float32>(fa, s3);\n"
         "        (Tensor<float32>) -> GradResult<float32, Tensor<float32>> g =\n"
@@ -133,7 +133,7 @@ TEST(GradTensor, sumIdentityGrad) {
 // value 14 + sum([2,4,6])=12 → 26.
 TEST(GradTensor, sumOfSquaresValueAndGrad) {
     EXPECT_FLOAT_EQ(runTensorGrad(
-        "float32[] fa = { 1.0f, 2.0f, 3.0f };\n"
+        "float32[] fa = [ 1.0f, 2.0f, 3.0f ];\n"
         "        int64[] s3 = heap int64[1]; s3[0] = 3;\n"
         "        Tensor<float32> x = Tensor.of<float32>(fa, s3);\n"
         "        (Tensor<float32>) -> GradResult<float32, Tensor<float32>> g =\n"

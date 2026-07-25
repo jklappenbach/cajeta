@@ -24,7 +24,7 @@ const char* head =
     "package test;\n"
     "public final class D {\n"
     "    public static float64 run() {\n"
-    "        float64[] a = { 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0 };\n";
+    "        float64[] a = [ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0 ];\n";
 const char* tail = "    }\n}\n";
 
 } // namespace

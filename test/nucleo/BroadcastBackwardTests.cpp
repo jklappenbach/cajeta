@@ -40,12 +40,12 @@ float runT(const std::string& body) {
 // same-shape sumTo is the identity (as a fresh tensor).
 TEST(BroadcastBackwardTests, sumToReducesBroadcastAxes) {
     float r = runT(
-        "int64[] gs = {3, 2};\n"
+        "int64[] gs = [3, 2];\n"
         "        Tensor<float32> g = Tensor.zeros<float32>(gs);\n"
         "        g.set2(0, 0, 1.0f); g.set2(0, 1, 2.0f);\n"
         "        g.set2(1, 0, 10.0f); g.set2(1, 1, 20.0f);\n"
         "        g.set2(2, 0, 100.0f); g.set2(2, 1, 200.0f);\n"
-        "        int64[] ls = {2};\n"
+        "        int64[] ls = [2];\n"
         "        Tensor<float32> like = Tensor.zeros<float32>(ls);\n"
         "        Tensor<float32> red = Tensor.sumTo<float32>(g, like);\n"
         "        Tensor<float32> same = Tensor.sumTo<float32>(g, g);\n"
@@ -59,9 +59,9 @@ TEST(BroadcastBackwardTests, sumToReducesBroadcastAxes) {
 // sum (here B=3, upstream = ones from sum -> bias grad = [3, 3]).
 TEST(BroadcastBackwardTests, biasGradIsBatchSum) {
     float r = runT(
-        "int64[] xs = {3, 2};\n"
+        "int64[] xs = [3, 2];\n"
         "        Tensor<float32> x = Tensor.full<float32>(xs, 1.0f);\n"
-        "        int64[] bs = {2};\n"
+        "        int64[] bs = [2];\n"
         "        Tensor<float32> b = Tensor.full<float32>(bs, 0.5f);\n"
         "        (Tensor<float32>, Tensor<float32>)\n"
         "                -> GradResult<float32, Tensor<float32>> g1 =\n"
@@ -79,11 +79,11 @@ TEST(BroadcastBackwardTests, biasGradIsBatchSum) {
 // grad stays [in,out]-shaped, the bias grad is [out] batch-summed.
 TEST(BroadcastBackwardTests, gradAllLinearShapeBatchThree) {
     float r = runT(
-        "int64[] ws = {2, 2};\n"
+        "int64[] ws = [2, 2];\n"
         "        Tensor<float32> w = Tensor.full<float32>(ws, 0.5f);\n"
-        "        int64[] bs = {2};\n"
+        "        int64[] bs = [2];\n"
         "        Tensor<float32> b = Tensor.full<float32>(bs, 0.1f);\n"
-        "        int64[] xs = {3, 2};\n"
+        "        int64[] xs = [3, 2];\n"
         "        Tensor<float32> x = Tensor.full<float32>(xs, 2.0f);\n"
         "        (Tensor<float32>, Tensor<float32>, Tensor<float32>)\n"
         "                -> GradResult<float32, Tensor<float32>[]> step =\n"

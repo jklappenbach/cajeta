@@ -25,7 +25,7 @@ float runOpt(const std::string& body, const std::string& extraClasses = "") {
         "public class Net extends Module {\n"
         "    Parameter w;\n"
         "    public Net(float32 init) {\n"
-        "        int64[] s = {2};\n"
+        "        int64[] s = [2];\n"
         "        this.w = heap Parameter(Tensor.full<float32>(s, init));\n"
         "    }\n"
         "}\n"
@@ -45,7 +45,7 @@ float runOpt(const std::string& body, const std::string& extraClasses = "") {
 
 // One grads bag: a single [2] tensor of `g`.
 const char* kGrads =
-    "int64[] gs = {2};\n"
+    "int64[] gs = [2];\n"
     "        Tensor<float32>[] grads = heap Tensor<float32>[1];\n"
     "        grads[0] = Tensor.full<float32>(gs, 1.0f);\n";
 } // namespace
@@ -110,7 +110,7 @@ TEST(OptimizerTests, mismatchThrowsNoPartialUpdate) {
         "Net net = heap Net(1.0f);\n"
         "        Optimizer opt = heap SGD(net.parameters(), 0.1f, 0.0f);\n"
         "        Tensor<float32>[] wrongCount = heap Tensor<float32>[2];\n"
-        "        int64[] gs = {2};\n"
+        "        int64[] gs = [2];\n"
         "        wrongCount[0] = Tensor.full<float32>(gs, 1.0f);\n"
         "        wrongCount[1] = Tensor.full<float32>(gs, 1.0f);\n"
         "        float32 acc = 0.0f;\n"
@@ -119,7 +119,7 @@ TEST(OptimizerTests, mismatchThrowsNoPartialUpdate) {
         "        } catch (OptimizerException e) {\n"
         "            acc = acc + 1.0f;\n"
         "        }\n"
-        "        int64[] bad = {3};\n"
+        "        int64[] bad = [3];\n"
         "        Tensor<float32>[] wrongShape = heap Tensor<float32>[1];\n"
         "        wrongShape[0] = Tensor.full<float32>(bad, 1.0f);\n"
         "        try {\n"

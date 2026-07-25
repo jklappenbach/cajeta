@@ -33,7 +33,7 @@ float runTensor(const std::string& body) {
 // t = {1,2,3}; add(t,t) = {2,4,6}; sum = 12.
 TEST(FuseSpike, singleElementwiseOpEvaluates) {
     EXPECT_FLOAT_EQ(runTensor(
-        "float32[] fa = { 1.0f, 2.0f, 3.0f };\n"
+        "float32[] fa = [ 1.0f, 2.0f, 3.0f ];\n"
         "        int64[] s = heap int64[1]; s[0] = 3;\n"
         "        Tensor<float32> x = Tensor.of<float32>(fa, s);\n"
         "        (Tensor<float32>) -> #Tensor<float32> g =\n"
@@ -46,7 +46,7 @@ TEST(FuseSpike, singleElementwiseOpEvaluates) {
 // t = {1,2,3} -> {1,4,9}; sum = 14.
 TEST(FuseSpike, threeOpChainEvaluates) {
     EXPECT_FLOAT_EQ(runTensor(
-        "float32[] fa = { 1.0f, 2.0f, 3.0f };\n"
+        "float32[] fa = [ 1.0f, 2.0f, 3.0f ];\n"
         "        int64[] s = heap int64[1]; s[0] = 3;\n"
         "        Tensor<float32> x = Tensor.of<float32>(fa, s);\n"
         "        (Tensor<float32>) -> #Tensor<float32> g = Fuse((Tensor<float32> t) ->\n"
