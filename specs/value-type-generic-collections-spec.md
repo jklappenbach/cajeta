@@ -43,6 +43,13 @@ Three facets of this were fixed while it surfaced under collection-literals:
 - **1.4.3** `#v` on a value-type param wrongly tripped the borrow-escape check
   (value types are Copy, so `#v` is a no-op copy). Exempted. Commit 334d1f6f.
   Guard: `ValueTypeInlineReadTests.genericValueTypeMoveForward`.
+- **1.4.4** Value-type param field-access ABI (§2.2, the GEP-on-value verify
+  failure): resolved upstream by the nucleo merge's Method.cpp parameter-ABI
+  rework plus the existing DotExpression value-type-receiver alloca spill — the
+  by-value param is materialized before its field GEP. Verified 2026-07-24; no
+  further code change needed. Guard: `ValueTypeCollectionTests` (3/3:
+  `arrayListValueTypeAddGet`, `arrayListValueTypeSort`,
+  `staticValueTypeParamFieldAccess`).
 
 ## 2. The remaining defect(s)
 
@@ -50,7 +57,7 @@ Three facets of this were fixed while it surfaced under collection-literals:
 Instantiating `ArrayList<Point>` (value-type `Point`) must compile and run its
 basic operations, and `sort()` must order by the default `operator<`.
 
-### 2.2 Known facet — value-type param field access under by-value ABI
+### 2.2 Known facet — value-type param field access under by-value ABI — RESOLVED (§1.4.4)
 - **2.2.1** After 1.4.x, `ArrayList<Point>` reaches a `JIT verify failed: GEP
   base pointer is not a vector` — the instantiated `operator<` / `operator==`
   body GEPs a BY-VALUE `Point` struct (`getelementptr %Point %v, 0, 0` on an
