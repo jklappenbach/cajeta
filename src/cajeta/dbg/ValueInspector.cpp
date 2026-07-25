@@ -103,6 +103,103 @@ std::string ValueInspector::decodeString(void* slot) {
     return quoted;
 }
 
+// Geometry of one array element, mirroring CajetaArray::getElementLlvmType so
+// the stride the bridge walks is the stride the JIT'd code stores at. Resolved
+// from the element type name only (array types are not interned in the name
+// map, so `CajetaType::of("int32[]")` is null — we strip and resolve the
+// element). No CajetaArray is constructed: that would mutate the live type
+// registry mid-stop.
+ValueInspector::ArrayInfo
+ValueInspector::resolveArrayElement(const std::string& arrayType) {
+    ArrayInfo info;
+    if (arrayType.empty() || arrayType.back() != ']') return info;
+    auto lb = arrayType.find_last_of('[');
+    if (lb == std::string::npos) return info;
+    std::string elemName = arrayType.substr(0, lb);
+    if (elemName.empty()) return info;
+
+    // A nested array element (`int32[][]` → `int32[]`) is itself a heap
+    // reference: a pointer slot.
+    if (elemName.back() == ']') {
+        info.ok = true;
+        info.elemType = elemName;
+        info.storage = Storage::Pointer;
+        info.stride = dl_.getPointerSize();
+        return info;
+    }
+
+    auto elem = cajeta::CajetaType::of(elemName);
+    if (!elem) {
+        // Unresolved user type: assume a pointer slot so we only ever read a
+        // pointer, never fabricate an inline width.
+        info.ok = true;
+        info.elemType = elemName;
+        info.storage = Storage::Pointer;
+        info.stride = dl_.getPointerSize();
+        return info;
+    }
+    info.elemType = elem->toCanonical();
+
+    if (auto klass = std::dynamic_pointer_cast<cajeta::CajetaClass>(elem)) {
+        CajetaTypeFlags flags = klass->getTypeFlags();
+        bool pointerSlot =
+            klass->isWildcardInstantiation() ||
+            (!klass->isInterface() && (flags & STRUCT_FLAG) == 0 &&
+             (flags & PRIMITIVE_FLAG) == 0);
+        if (pointerSlot) {
+            info.storage = Storage::Pointer;
+            info.stride = dl_.getPointerSize();
+        } else {
+            // STRUCT_FLAG classes keep their own struct slot. A value type is
+            // stored inline; String (a reference class with a struct slot)
+            // keeps the String* at the slot base — a pointer read.
+            llvm::Type* elemLlvm = klass->getLlvmType();
+            if (!elemLlvm) return info;  // ok stays false
+            info.storage = klass->isValueType() ? Storage::Inline
+                                                : Storage::Pointer;
+            info.stride = dl_.getTypeAllocSize(elemLlvm);
+        }
+    } else {
+        // Primitive: inline bytes.
+        llvm::Type* elemLlvm = elem->getLlvmType();
+        if (!elemLlvm) return info;  // ok stays false
+        info.storage = Storage::Inline;
+        info.stride = dl_.getTypeAllocSize(elemLlvm);
+    }
+    info.ok = info.stride > 0;
+    return info;
+}
+
+bool ValueInspector::openArray(void* addr, char** data, int64_t* length) {
+    if (!addr) return false;
+    // The slot holds the array header pointer (`T[]` is a heap reference).
+    void* header = *reinterpret_cast<void**>(addr);
+    if (!header) return false;
+    // Header: { i64 size, [0 x T] data }; length at offset 0, data past it.
+    int64_t len = *reinterpret_cast<int64_t*>(header);
+    if (len < 0) len = 0;
+    *length = len;
+    *data = reinterpret_cast<char*>(header) + 8;
+    return true;
+}
+
+std::string ValueInspector::arraySummary(const ArrayInfo& info, char* data,
+                                          int64_t length) {
+    // >5 elements collapse to a count (§4.1.3).
+    if (length > 5) return "{" + std::to_string(length) + " elements}";
+    constexpr size_t kMaxInline = 60;
+    std::string out = "[";
+    for (int64_t i = 0; i < length; i++) {
+        if (i) out += ", ";
+        void* slot = data + static_cast<uint64_t>(i) * info.stride;
+        out += inspect(info.elemType, slot).summary;
+        if (out.size() > kMaxInline)  // fall back to the count past the cap.
+            return "{" + std::to_string(length) + " elements}";
+    }
+    out += "]";
+    return out;
+}
+
 InspectedValue ValueInspector::inspect(const std::string& type, void* addr) {
     InspectedValue r;
 
@@ -114,10 +211,17 @@ InspectedValue ValueInspector::inspect(const std::string& type, void* addr) {
     }
 
     // An array is an aggregate regardless of whether its name resolves in the
-    // registry — the `[]` suffix is authoritative (children in Unit 2).
+    // registry — the `[]` suffix is authoritative.
     if (!type.empty() && type.back() == ']') {
         r.kind = ValueKind::Aggregate;
-        r.summary = "{…}";  // refined by array summary in §2.2.3.
+        char* data = nullptr;
+        int64_t length = 0;
+        ArrayInfo info = resolveArrayElement(type);
+        if (!info.ok || !openArray(addr, &data, &length)) {
+            r.summary = "<null>";
+        } else {
+            r.summary = arraySummary(info, data, length);
+        }
         return r;
     }
 
@@ -139,6 +243,41 @@ InspectedValue ValueInspector::inspect(const std::string& type, void* addr) {
     r.kind = ValueKind::Aggregate;
     r.summary = "{…}";
     return r;
+}
+
+ChildPage ValueInspector::children(const std::string& type, void* addr,
+                                   size_t start, size_t pageSize) {
+    ChildPage page;
+    page.nextStart = start;
+
+    // Arrays only in Unit 2 (object/collection children are Units 3/7).
+    if (type.empty() || type.back() != ']') return page;
+
+    ArrayInfo info = resolveArrayElement(type);
+    char* data = nullptr;
+    int64_t length = 0;
+    if (!info.ok || !openArray(addr, &data, &length)) return page;
+
+    if (pageSize == 0) pageSize = kDefaultPageSize;
+    uint64_t begin = static_cast<uint64_t>(start);
+    if (begin >= static_cast<uint64_t>(length)) return page;
+    uint64_t end = begin + pageSize;
+    if (end > static_cast<uint64_t>(length)) end = static_cast<uint64_t>(length);
+
+    for (uint64_t i = begin; i < end; i++) {
+        InspectedChild child;
+        child.name = "[" + std::to_string(i) + "]";
+        child.type = info.elemType;
+        child.storage = info.storage;
+        // The child address is always the slot (data + i*stride); a Pointer
+        // slot holds the instance pointer, an Inline slot holds the bytes.
+        // inspect(child.type, child.addr) decodes either uniformly.
+        child.addr = data + i * info.stride;
+        page.children.push_back(std::move(child));
+    }
+    page.nextStart = static_cast<size_t>(end);
+    page.remaining = static_cast<size_t>(length) - static_cast<size_t>(end);
+    return page;
 }
 
 } // namespace cajeta::dbg

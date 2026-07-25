@@ -27,6 +27,7 @@ using cajeta::jit::startDebugSession;
 using cajeta::dbg::StopEvent;
 using cajeta::dbg::ValueInspector;
 using cajeta::dbg::ValueKind;
+using cajeta::dbg::Storage;
 using cajeta::debugtest::TempProgram;
 
 // ---- pure escape/quote (no JIT) ----
@@ -169,5 +170,166 @@ TEST_F(ValueInspectorStop, NullStringIsSafe) {
     void* nullSlot = nullptr;
     auto r = insp.inspect("cajeta.lang.String", &nullSlot);
     EXPECT_EQ(r.kind, ValueKind::Leaf);
+    EXPECT_EQ(r.summary, "<null>");
+}
+
+// ---- Unit 2: array decode over the three storage forms ----
+
+namespace {
+// Lines:               1               2                 3
+const char* kArrProg =
+    "package demo;\n"                                            // 1
+    "public class Point {\n"                                     // 2
+    "    int32 x;\n"                                             // 3
+    "    int32 y;\n"                                             // 4
+    "    Point(int32 a, int32 b) { this.x = a; this.y = b; }\n" // 5
+    "}\n"                                                        // 6
+    "public class Probe {\n"                                     // 7
+    "    public static int32 main() {\n"                         // 8
+    "        int32[] nums = [3, 7, 9];\n"                        // 9  primitive inline
+    "        String[] strs = [\"a\", \"bb\", \"ccc\"];\n"        // 10 64-byte slots
+    "        Point[] pts = [heap Point(1, 2), heap Point(3, 4)];\n" // 11 ptr slots
+    "        int32[] big = [0,1,2,3,4,5,6,7,8,9];\n"             // 12 paging
+    "        int32 done = 0;\n"                                  // 13
+    "        return done;\n"                                     // 14 <-- breakpoint
+    "    }\n"                                                    // 15
+    "}\n";                                                       // 16
+} // namespace
+
+class ValueInspectorArrayStop : public ::testing::Test {
+protected:
+    TempProgram prog{"demo", "Probe.cajeta", kArrProg};
+    Probe p;
+
+    void SetUp() override {
+        JitRunOptions opts;
+        opts.sourceRoot = prog.sourceRoot();
+        opts.entryMethod = "demo.Probe.main";
+        std::vector<Breakpoint> bps{ Breakpoint{"Probe.cajeta", 14} };
+        std::string err;
+        p.session = startDebugSession(opts, bps, &err);
+        ASSERT_NE(p.session, nullptr) << err;
+        StopEvent ev;
+        ASSERT_TRUE(p.session->controller().waitForStop(
+            ev, std::chrono::seconds(30))) << "never hit the breakpoint";
+        ASSERT_NE(ev.frameTop, nullptr);
+        p.dl = &p.session->dataLayout();
+        p.frames = cajeta::dbg::walkFrames(ev.frameTop);
+        ASSERT_FALSE(p.frames.empty());
+    }
+
+    void TearDown() override {
+        if (p.session) {
+            p.session->controller().resume();
+            p.session->join();
+        }
+    }
+};
+
+TEST_F(ValueInspectorArrayStop, DecodesPrimitiveArray) {
+    ValueInspector insp(*p.dl);
+    const auto* v = p.local("nums");
+    ASSERT_NE(v, nullptr);
+    auto page = insp.children(v->type, v->addr);
+    ASSERT_EQ(page.children.size(), 3u);
+    EXPECT_EQ(page.remaining, 0u);
+    EXPECT_EQ(page.children[0].name, "[0]");
+    EXPECT_EQ(page.children[1].name, "[1]");
+    EXPECT_EQ(page.children[0].storage, Storage::Inline);
+    // values read from data + i*stride
+    EXPECT_EQ(insp.inspect(page.children[0].type, page.children[0].addr).summary, "3");
+    EXPECT_EQ(insp.inspect(page.children[1].type, page.children[1].addr).summary, "7");
+    EXPECT_EQ(insp.inspect(page.children[2].type, page.children[2].addr).summary, "9");
+    // int32 stride is 4 bytes, inline
+    auto d0 = reinterpret_cast<char*>(page.children[0].addr);
+    auto d1 = reinterpret_cast<char*>(page.children[1].addr);
+    EXPECT_EQ(d1 - d0, 4);
+}
+
+TEST_F(ValueInspectorArrayStop, DecodesStringArray) {
+    ValueInspector insp(*p.dl);
+    const auto* v = p.local("strs");
+    ASSERT_NE(v, nullptr);
+    auto page = insp.children(v->type, v->addr);
+    ASSERT_EQ(page.children.size(), 3u);
+    EXPECT_EQ(page.children[0].type, "cajeta.lang.String");
+    EXPECT_EQ(page.children[0].storage, Storage::Pointer);
+    // each element decodes to its text (the String* lives at the slot base)
+    EXPECT_EQ(insp.inspect(page.children[0].type, page.children[0].addr).summary, "\"a\"");
+    EXPECT_EQ(insp.inspect(page.children[1].type, page.children[1].addr).summary, "\"bb\"");
+    EXPECT_EQ(insp.inspect(page.children[2].type, page.children[2].addr).summary, "\"ccc\"");
+    // slot stride is the full String struct (64-byte inline slot), not a bare ptr
+    auto d0 = reinterpret_cast<char*>(page.children[0].addr);
+    auto d1 = reinterpret_cast<char*>(page.children[1].addr);
+    EXPECT_GT(d1 - d0, 8);
+}
+
+TEST_F(ValueInspectorArrayStop, DecodesRefClassArray) {
+    ValueInspector insp(*p.dl);
+    const auto* v = p.local("pts");
+    ASSERT_NE(v, nullptr);
+    auto page = insp.children(v->type, v->addr);
+    ASSERT_EQ(page.children.size(), 2u);
+    EXPECT_EQ(page.children[0].type, "demo.Point");
+    EXPECT_EQ(page.children[0].storage, Storage::Pointer);
+    // A reference class carries STRUCT_FLAG, so — like String's 64-byte slots —
+    // its array elements are struct-sized inline slots with the instance
+    // pointer at the slot base (stride from DataLayout, not a bare 8-byte ptr).
+    auto d0 = reinterpret_cast<char*>(page.children[0].addr);
+    auto d1 = reinterpret_cast<char*>(page.children[1].addr);
+    EXPECT_GT(d1 - d0, 8);
+    // Each slot base holds a real Point* — two DISTINCT heap pointers (an inline
+    // struct would instead show the SAME vtable word in both slots).
+    void* p0 = *reinterpret_cast<void**>(page.children[0].addr);
+    void* p1 = *reinterpret_cast<void**>(page.children[1].addr);
+    EXPECT_NE(p0, nullptr);
+    EXPECT_NE(p1, nullptr);
+    EXPECT_NE(p0, p1);
+    EXPECT_GT(reinterpret_cast<uintptr_t>(p0), 0x10000u);
+    // fields are Unit 3; here it just classifies as an aggregate
+    EXPECT_EQ(insp.inspect(page.children[0].type, page.children[0].addr).kind,
+              ValueKind::Aggregate);
+}
+
+TEST_F(ValueInspectorArrayStop, ReadsLengthFromHeader) {
+    ValueInspector insp(*p.dl);
+    const auto* v = p.local("nums");
+    ASSERT_NE(v, nullptr);
+    auto page = insp.children(v->type, v->addr, 0, 100);
+    EXPECT_EQ(page.children.size() + page.remaining, 3u);
+    // ≤5 elements inline in the summary
+    EXPECT_EQ(insp.inspect(v->type, v->addr).summary, "[3, 7, 9]");
+}
+
+TEST_F(ValueInspectorArrayStop, PagesLargeArray) {
+    ValueInspector insp(*p.dl);
+    const auto* v = p.local("big");   // 10 elements
+    ASSERT_NE(v, nullptr);
+    auto p0 = insp.children(v->type, v->addr, 0, 4);
+    ASSERT_EQ(p0.children.size(), 4u);
+    EXPECT_EQ(p0.remaining, 6u);
+    EXPECT_EQ(p0.nextStart, 4u);
+    EXPECT_EQ(p0.children[0].name, "[0]");
+    auto p1 = insp.children(v->type, v->addr, p0.nextStart, 4);
+    ASSERT_EQ(p1.children.size(), 4u);
+    EXPECT_EQ(p1.children[0].name, "[4]");
+    EXPECT_EQ(p1.remaining, 2u);
+    auto p2 = insp.children(v->type, v->addr, p1.nextStart, 4);
+    ASSERT_EQ(p2.children.size(), 2u);
+    EXPECT_EQ(p2.remaining, 0u);
+    EXPECT_EQ(p2.children[0].name, "[8]");
+    // >5 elements → count summary
+    EXPECT_EQ(insp.inspect(v->type, v->addr).summary, "{10 elements}");
+}
+
+TEST_F(ValueInspectorArrayStop, NullArrayIsSafe) {
+    ValueInspector insp(*p.dl);
+    // A slot holding a null array pointer yields zero children and never derefs.
+    void* nullSlot = nullptr;
+    auto page = insp.children("int32[]", &nullSlot);
+    EXPECT_TRUE(page.children.empty());
+    EXPECT_EQ(page.remaining, 0u);
+    auto r = insp.inspect("int32[]", &nullSlot);
+    EXPECT_EQ(r.kind, ValueKind::Aggregate);
     EXPECT_EQ(r.summary, "<null>");
 }
