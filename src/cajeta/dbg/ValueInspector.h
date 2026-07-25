@@ -112,6 +112,17 @@ namespace cajeta::dbg {
         // by its own leaf value), else "{N elements}"; length-capped.
         std::string arraySummary(const ArrayInfo& info, char* data,
                                  int64_t length);
+
+        // Object field decode (Unit 3): enumerate `type`'s non-static fields
+        // (inherited then own) at their DataLayout byte offsets, addressed off
+        // the instance. `addr` is the object's slot — dereferenced for a
+        // reference class, used as-is for a value type. Null-safe.
+        std::vector<InspectedChild> objectChildren(const std::string& type,
+                                                   void* addr);
+
+        // Brief field peek for an object value (§4.1.4): the first few scalar
+        // fields as "{x=3, y=4}", length-capped; "{…}" when it has none.
+        std::string objectSummary(const std::string& type, void* addr);
     };
 
     // Render `text` as a quoted, escaped debugger value: "a\nb" -> "\"a\\nb\"".

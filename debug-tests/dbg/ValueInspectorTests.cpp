@@ -333,3 +333,152 @@ TEST_F(ValueInspectorArrayStop, NullArrayIsSafe) {
     EXPECT_EQ(r.kind, ValueKind::Aggregate);
     EXPECT_EQ(r.summary, "<null>");
 }
+
+// ---- Unit 3: object field decode ----
+
+namespace {
+// Lines:               1                   2                    3
+const char* kObjProg =
+    "package demo;\n"                                            // 1
+    "public class Point { public int32 x; public int32 y; "
+        "public Point(int32 a, int32 b) { this.x = a; this.y = b; } }\n" // 2
+    "public record Vec2 { int32 a; int32 b; }\n"                // 3  value type
+    "public class Base { public int32 b0; public Base() { this.b0 = 5; } }\n" // 4
+    "public class Derived extends Base { public int32 d0; "
+        "public Derived() { this.d0 = 6; } }\n"                 // 5  inherited+own
+    "public class A { public int32 a; public A() { return; } }\n"   // 6
+    "public class B { public int32 b; public B() { return; } }\n"   // 7
+    "public class C extends A, B { "
+        "public C() { this.a = 7; this.b = 11; } }\n"           // 8  secondary vtable
+    "public class Holder { public Point p; public int32 n; "
+        "public Holder() { this.p = heap Point(1, 2); this.n = 99; } }\n" // 9 nested
+    "public class Probe {\n"                                    // 10
+    "    public static int32 main() {\n"                        // 11
+    "        Point pt = heap Point(3, 4);\n"                     // 12
+    "        Vec2 v = {a:8, b:9};\n"                             // 13
+    "        Derived dr = heap Derived();\n"                     // 14
+    "        C c = heap C();\n"                                  // 15
+    "        Holder h = heap Holder();\n"                        // 16
+    "        int32 done = 0;\n"                                  // 17
+    "        return done;\n"                                     // 18 <-- breakpoint
+    "    }\n"                                                    // 19
+    "}\n";                                                       // 20
+
+// Find a child row by declared name.
+const cajeta::dbg::InspectedChild* childNamed(
+        const cajeta::dbg::ChildPage& page, const std::string& name) {
+    for (const auto& c : page.children) if (c.name == name) return &c;
+    return nullptr;
+}
+} // namespace
+
+class ValueInspectorObjectStop : public ::testing::Test {
+protected:
+    TempProgram prog{"demo", "Probe.cajeta", kObjProg};
+    Probe p;
+
+    void SetUp() override {
+        JitRunOptions opts;
+        opts.sourceRoot = prog.sourceRoot();
+        opts.entryMethod = "demo.Probe.main";
+        std::vector<Breakpoint> bps{ Breakpoint{"Probe.cajeta", 18} };
+        std::string err;
+        p.session = startDebugSession(opts, bps, &err);
+        ASSERT_NE(p.session, nullptr) << err;
+        StopEvent ev;
+        ASSERT_TRUE(p.session->controller().waitForStop(
+            ev, std::chrono::seconds(30))) << "never hit the breakpoint";
+        ASSERT_NE(ev.frameTop, nullptr);
+        p.dl = &p.session->dataLayout();
+        p.frames = cajeta::dbg::walkFrames(ev.frameTop);
+        ASSERT_FALSE(p.frames.empty());
+    }
+
+    void TearDown() override {
+        if (p.session) {
+            p.session->controller().resume();
+            p.session->join();
+        }
+    }
+};
+
+TEST_F(ValueInspectorObjectStop, DecodesClassFields) {
+    ValueInspector insp(*p.dl);
+    const auto* v = p.local("pt");
+    ASSERT_NE(v, nullptr);
+    auto page = insp.children(v->type, v->addr);
+    ASSERT_EQ(page.children.size(), 2u);
+    // declared names, in layout order, past the slot-0 vtable word
+    EXPECT_EQ(page.children[0].name, "x");
+    EXPECT_EQ(page.children[1].name, "y");
+    EXPECT_EQ(page.children[0].type, "int32");
+    EXPECT_EQ(page.children[0].storage, Storage::Inline);
+    EXPECT_EQ(insp.inspect(page.children[0].type, page.children[0].addr).summary, "3");
+    EXPECT_EQ(insp.inspect(page.children[1].type, page.children[1].addr).summary, "4");
+    // object summary is a field peek (§4.1.4)
+    EXPECT_EQ(insp.inspect(v->type, v->addr).summary, "{x=3, y=4}");
+}
+
+TEST_F(ValueInspectorObjectStop, DecodesValueTypeFields) {
+    ValueInspector insp(*p.dl);
+    const auto* v = p.local("v");
+    ASSERT_NE(v, nullptr);
+    auto page = insp.children(v->type, v->addr);
+    ASSERT_EQ(page.children.size(), 2u);
+    EXPECT_EQ(page.children[0].name, "a");
+    EXPECT_EQ(page.children[1].name, "b");
+    // a @ValueType POD has no slot-0 vtable: the first field sits at offset 0
+    EXPECT_EQ(page.children[0].addr, v->addr);
+    EXPECT_EQ(insp.inspect(page.children[0].type, page.children[0].addr).summary, "8");
+    EXPECT_EQ(insp.inspect(page.children[1].type, page.children[1].addr).summary, "9");
+}
+
+TEST_F(ValueInspectorObjectStop, DecodesInheritedThenOwnFields) {
+    ValueInspector insp(*p.dl);
+    const auto* v = p.local("dr");
+    ASSERT_NE(v, nullptr);
+    auto page = insp.children(v->type, v->addr);
+    ASSERT_EQ(page.children.size(), 2u);
+    // inherited field first, then own, in layout order
+    EXPECT_EQ(page.children[0].name, "b0");
+    EXPECT_EQ(page.children[1].name, "d0");
+    EXPECT_EQ(insp.inspect(page.children[0].type, page.children[0].addr).summary, "5");
+    EXPECT_EQ(insp.inspect(page.children[1].type, page.children[1].addr).summary, "6");
+}
+
+// The test that catches an offset bug: `b` lives in the non-first parent B, so
+// it sits after B's INTERIOR secondary-vtable word. Its address must come from
+// the DataLayout offset, never index*8 — else it reads a neighbour or a vptr.
+TEST_F(ValueInspectorObjectStop, DecodesMultiParentFieldOffsets) {
+    ValueInspector insp(*p.dl);
+    const auto* v = p.local("c");
+    ASSERT_NE(v, nullptr);
+    auto page = insp.children(v->type, v->addr);
+    const auto* fa = childNamed(page, "a");
+    const auto* fb = childNamed(page, "b");
+    ASSERT_NE(fa, nullptr);
+    ASSERT_NE(fb, nullptr);
+    EXPECT_EQ(insp.inspect(fa->type, fa->addr).summary, "7");
+    EXPECT_EQ(insp.inspect(fb->type, fb->addr).summary, "11");
+}
+
+TEST_F(ValueInspectorObjectStop, NestedAggregateFieldIsExpandable) {
+    ValueInspector insp(*p.dl);
+    const auto* v = p.local("h");
+    ASSERT_NE(v, nullptr);
+    auto page = insp.children(v->type, v->addr);
+    const auto* fp = childNamed(page, "p");   // Point field
+    const auto* fn = childNamed(page, "n");   // int32 field
+    ASSERT_NE(fp, nullptr);
+    ASSERT_NE(fn, nullptr);
+    // the object field is returned as an aggregate child, not decoded deep
+    EXPECT_EQ(fp->type, "demo.Point");
+    EXPECT_EQ(fp->storage, Storage::Pointer);
+    EXPECT_EQ(insp.inspect(fp->type, fp->addr).kind, ValueKind::Aggregate);
+    EXPECT_EQ(insp.inspect(fn->type, fn->addr).summary, "99");
+    // and it expands one level down
+    auto inner = insp.children(fp->type, fp->addr);
+    ASSERT_EQ(inner.children.size(), 2u);
+    EXPECT_EQ(insp.inspect(inner.children[0].type, inner.children[0].addr).summary, "1");
+    EXPECT_EQ(insp.inspect(inner.children[1].type, inner.children[1].addr).summary, "2");
+}

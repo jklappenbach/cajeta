@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <set>
 
 #include "cajeta/dbg/DebugVars.h"
 #include "cajeta/type/CajetaArray.h"
@@ -200,6 +201,84 @@ std::string ValueInspector::arraySummary(const ArrayInfo& info, char* data,
     return out;
 }
 
+// Inline-vs-pointer storage of a field/element by its declared type, mirroring
+// how the layout stores it: a value type and a primitive are inline bytes; a
+// String, reference class, or array holds the instance/header pointer at the
+// slot base. inspect(type, addr) decodes either uniformly.
+static Storage storageOfType(const cajeta::CajetaTypePtr& t) {
+    if (auto klass = std::dynamic_pointer_cast<cajeta::CajetaClass>(t))
+        return klass->isValueType() ? Storage::Inline : Storage::Pointer;
+    return Storage::Inline;  // primitive
+}
+
+// Collect a class's non-static fields in layout order — inherited (ancestors,
+// recursively) before own — deduped so a shared vbase field appears once.
+static void collectFields(cajeta::CajetaClass* cls,
+                          std::vector<cajeta::StructurePropertyPtr>& out,
+                          std::set<void*>& seen) {
+    if (!cls) return;
+    for (auto& parent : cls->getSuperClasses())
+        collectFields(parent.get(), out, seen);
+    for (auto& prop : cls->getPropertyList()) {
+        if (prop->isStatic()) continue;
+        if (seen.insert(prop.get()).second) out.push_back(prop);
+    }
+}
+
+std::vector<InspectedChild>
+ValueInspector::objectChildren(const std::string& type, void* addr) {
+    std::vector<InspectedChild> out;
+    auto klass = std::dynamic_pointer_cast<cajeta::CajetaClass>(
+        cajeta::CajetaType::of(type));
+    if (!klass || !addr) return out;
+
+    // A reference class slot holds the instance pointer; a value type is stored
+    // inline (the slot IS the instance). Null pointer → no children, no deref.
+    void* inst = klass->isValueType() ? addr : *reinterpret_cast<void**>(addr);
+    if (!inst) return out;
+
+    auto* st = llvm::dyn_cast_or_null<llvm::StructType>(klass->getLlvmType());
+    if (!st || st->isOpaque()) return out;
+    const llvm::StructLayout* sl = dl_.getStructLayout(st);
+
+    std::vector<cajeta::StructurePropertyPtr> fields;
+    std::set<void*> seen;
+    collectFields(klass.get(), fields, seen);
+
+    for (const auto& f : fields) {
+        int slot = klass->getFieldLlvmIndex(f);
+        if (slot < 0 || slot >= static_cast<int>(st->getNumElements())) continue;
+        InspectedChild child;
+        child.name = f->getName();
+        child.type = f->getType() ? f->getType()->toCanonical() : "";
+        child.storage = storageOfType(f->getType());
+        // Address from the DataLayout offset end-to-end — never index*8 — so a
+        // field after an interior secondary-vtable word lands on its own bytes.
+        child.addr = reinterpret_cast<char*>(inst) + sl->getElementOffset(slot);
+        out.push_back(std::move(child));
+    }
+    return out;
+}
+
+std::string ValueInspector::objectSummary(const std::string& type, void* addr) {
+    // A brief field peek: the first few scalar (primitive) fields as {x=3, y=4},
+    // length-capped; {…} when there is no cheap scalar (§4.1.4).
+    auto fields = objectChildren(type, addr);
+    constexpr size_t kMaxFields = 4;
+    constexpr size_t kMaxLen = 60;
+    std::string out = "{";
+    size_t shown = 0;
+    for (const auto& f : fields) {
+        if (!isPrimitiveTypeName(f.type)) continue;  // cheap scalars only
+        if (shown) out += ", ";
+        out += f.name + "=" + inspect(f.type, f.addr).summary;
+        if (++shown >= kMaxFields || out.size() > kMaxLen) break;
+    }
+    if (shown == 0) return "{…}";
+    out += "}";
+    return out;
+}
+
 InspectedValue ValueInspector::inspect(const std::string& type, void* addr) {
     InspectedValue r;
 
@@ -239,9 +318,9 @@ InspectedValue ValueInspector::inspect(const std::string& type, void* addr) {
         return r;
     }
 
-    // Any other class/interface is an aggregate (fields in Unit 3).
+    // Any other class/interface is an aggregate; its value is a field peek.
     r.kind = ValueKind::Aggregate;
-    r.summary = "{…}";
+    r.summary = objectSummary(type, addr);
     return r;
 }
 
@@ -250,8 +329,15 @@ ChildPage ValueInspector::children(const std::string& type, void* addr,
     ChildPage page;
     page.nextStart = start;
 
-    // Arrays only in Unit 2 (object/collection children are Units 3/7).
-    if (type.empty() || type.back() != ']') return page;
+    // Objects: fields decoded in one shot (a class has few fields, no paging).
+    if (type.empty() || type.back() != ']') {
+        if (isPrimitiveTypeName(type)) return page;  // leaf, no children
+        auto ct = cajeta::CajetaType::of(type);
+        // String is a leaf (its value is its text), not an expandable object.
+        if (ct && ct->toCanonical() != "cajeta.lang.String" && start == 0)
+            page.children = objectChildren(type, addr);
+        return page;
+    }
 
     ArrayInfo info = resolveArrayElement(type);
     char* data = nullptr;
