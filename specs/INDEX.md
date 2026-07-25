@@ -8,7 +8,7 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | Spec | Plan | Status |
 |------|------|--------|
 | [cajeta-xgboost](cajeta-xgboost-spec.md) | [plan](../agents/cajeta-xgboost-plan.md) | active |
-| [gpu-numeric-fidelity](gpu-numeric-fidelity-spec.md) | [plan](../agents/gpu-numeric-fidelity-plan.md) | draft |
+| [gpu-numeric-fidelity](gpu-numeric-fidelity-spec.md) | [plan](../agents/gpu-numeric-fidelity-plan.md) | active (U1 expf blocked on an NVIDIA capture) |
 | [apple-targets](apple-targets-spec.md) | — (plan after spec approval) | draft |
 | [silent-resolution-diagnostics](silent-resolution-diagnostics-spec.md) | [plan](../agents/silent-resolution-diagnostics-plan.md) | active |
 | [docs-refactor](docs-refactor-spec.md) | [plan](../agents/docs-refactor-plan.md) | active |
