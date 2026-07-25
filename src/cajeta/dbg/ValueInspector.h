@@ -16,6 +16,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -123,6 +124,22 @@ namespace cajeta::dbg {
         // Brief field peek for an object value (§4.1.4): the first few scalar
         // fields as "{x=3, y=4}", length-capped; "{…}" when it has none.
         std::string objectSummary(const std::string& type, void* addr);
+
+        // Unit 7: the logical view for a registered collection (ArrayList shows
+        // its `sizeCount` elements from the `data` backing, not the capacity;
+        // HashMap walks live `ctrl` slots to one entry per key). Returns nullopt
+        // to fall back to the object-field view — for an unregistered type, or
+        // when a backing field the view needs (by declared name) is missing, so
+        // a stdlib layout shift fails safe rather than misreading (§8.3).
+        std::optional<ChildPage> collectionChildren(const std::string& type,
+                                                    void* addr, size_t start,
+                                                    size_t pageSize);
+        std::optional<ChildPage> arrayListChildren(const std::string& type,
+                                                   void* addr, size_t start,
+                                                   size_t pageSize);
+        std::optional<ChildPage> hashMapChildren(const std::string& type,
+                                                 void* addr, size_t start,
+                                                 size_t pageSize);
     };
 
     // Render `text` as a quoted, escaped debugger value: "a\nb" -> "\"a\\nb\"".

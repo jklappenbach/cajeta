@@ -462,6 +462,104 @@ TEST_F(ValueInspectorObjectStop, DecodesMultiParentFieldOffsets) {
     EXPECT_EQ(insp.inspect(fb->type, fb->addr).summary, "11");
 }
 
+// ---- Unit 7: collection logical views (ArrayList, HashMap) ----
+
+namespace {
+const char* kCollProg =
+    "package demo;\n"                                            // 1
+    "public class Bag { public int32 n; "
+        "public Bag(int32 x) { this.n = x; } }\n"               // 2
+    "public class Probe {\n"                                     // 3
+    "    public static int32 main() {\n"                         // 4
+    "        ArrayList<int32> xs = [10, 20, 30];\n"              // 5
+    "        HashMap<int32,int32> m = [1:100, 2:200];\n"         // 6
+    "        Bag bag = heap Bag(7);\n"                           // 7
+    "        int32 done = 0;\n"                                  // 8
+    "        return done;\n"                                     // 9 <-- breakpoint
+    "    }\n"                                                    // 10
+    "}\n";                                                       // 11
+
+const cajeta::dbg::InspectedChild* find(const std::vector<cajeta::dbg::InspectedChild>& cs,
+                                        const std::string& name) {
+    for (const auto& c : cs) if (c.name == name) return &c;
+    return nullptr;
+}
+} // namespace
+
+class ValueInspectorCollectionStop : public ::testing::Test {
+protected:
+    TempProgram prog{"demo", "Probe.cajeta", kCollProg};
+    Probe p;
+
+    void SetUp() override {
+        JitRunOptions opts;
+        opts.sourceRoot = prog.sourceRoot();
+        opts.entryMethod = "demo.Probe.main";
+        std::vector<Breakpoint> bps{ Breakpoint{"Probe.cajeta", 9} };
+        std::string err;
+        p.session = startDebugSession(opts, bps, &err);
+        ASSERT_NE(p.session, nullptr) << err;
+        StopEvent ev;
+        ASSERT_TRUE(p.session->controller().waitForStop(
+            ev, std::chrono::seconds(30))) << "never hit the breakpoint";
+        ASSERT_NE(ev.frameTop, nullptr);
+        p.dl = &p.session->dataLayout();
+        p.frames = cajeta::dbg::walkFrames(ev.frameTop);
+        ASSERT_FALSE(p.frames.empty());
+    }
+    void TearDown() override {
+        if (p.session) { p.session->controller().resume(); p.session->join(); }
+    }
+};
+
+TEST_F(ValueInspectorCollectionStop, ArrayListShowsElements) {
+    ValueInspector insp(*p.dl);
+    const auto* v = p.local("xs");
+    ASSERT_NE(v, nullptr);
+    auto page = insp.children(v->type, v->addr);
+    // logical size 3, NOT the 16-element backing capacity.
+    ASSERT_EQ(page.children.size(), 3u);
+    EXPECT_EQ(page.children[0].name, "[0]");
+    EXPECT_EQ(insp.inspect(page.children[0].type, page.children[0].addr).summary, "10");
+    EXPECT_EQ(insp.inspect(page.children[1].type, page.children[1].addr).summary, "20");
+    EXPECT_EQ(insp.inspect(page.children[2].type, page.children[2].addr).summary, "30");
+}
+
+TEST_F(ValueInspectorCollectionStop, HashMapShowsEntries) {
+    ValueInspector insp(*p.dl);
+    const auto* v = p.local("m");
+    ASSERT_NE(v, nullptr);
+    auto page = insp.children(v->type, v->addr);
+    // one child per live entry, labelled by key — NOT the 64-slot table.
+    ASSERT_EQ(page.children.size(), 2u);
+    const auto* e1 = find(page.children, "1");
+    const auto* e2 = find(page.children, "2");
+    ASSERT_NE(e1, nullptr);
+    ASSERT_NE(e2, nullptr);
+    EXPECT_EQ(insp.inspect(e1->type, e1->addr).summary, "100");
+    EXPECT_EQ(insp.inspect(e2->type, e2->addr).summary, "200");
+}
+
+TEST_F(ValueInspectorCollectionStop, UnknownCollectionFallsBackToFields) {
+    ValueInspector insp(*p.dl);
+    const auto* v = p.local("bag");
+    ASSERT_NE(v, nullptr);
+    auto page = insp.children(v->type, v->addr);
+    // no registered view → the object's declared fields, not element rows.
+    const auto* n = find(page.children, "n");
+    ASSERT_NE(n, nullptr);
+    EXPECT_EQ(insp.inspect(n->type, n->addr).summary, "7");
+}
+
+TEST_F(ValueInspectorCollectionStop, CollectionViewByDeclaredName) {
+    ValueInspector insp(*p.dl);
+    // The views read the logical-size backing field by name: the ArrayList
+    // shows sizeCount (3) not the 16 capacity, and the HashMap shows sizeCount
+    // (2) not the 64 raw slots — a positional guess would show the raw lengths.
+    EXPECT_EQ(insp.children(p.local("xs")->type, p.local("xs")->addr).children.size(), 3u);
+    EXPECT_EQ(insp.children(p.local("m")->type, p.local("m")->addr).children.size(), 2u);
+}
+
 TEST_F(ValueInspectorObjectStop, NestedAggregateFieldIsExpandable) {
     ValueInspector insp(*p.dl);
     const auto* v = p.local("h");

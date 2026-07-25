@@ -260,6 +260,144 @@ ValueInspector::objectChildren(const std::string& type, void* addr) {
     return out;
 }
 
+namespace {
+    // Fully-qualified stdlib collection types with a logical debug view.
+    const char* kArrayListFqn = "cajeta.collection.ArrayList";
+    const char* kHashMapFqn = "cajeta.collection.HashMap";
+
+    // The base type name with any generic arguments stripped:
+    // "cajeta.collection.ArrayList<int32>" → "cajeta.collection.ArrayList".
+    std::string typeBase(const std::string& t) {
+        auto lt = t.find('<');
+        return lt == std::string::npos ? t : t.substr(0, lt);
+    }
+
+    // Read a small integer field (a backing size/capacity) by primitive type.
+    // -1 for a non-integer (a fail-safe signal the view checks).
+    int64_t readIntByType(const std::string& t, void* addr) {
+        if (!addr) return -1;
+        if (t == "int32")  return *reinterpret_cast<int32_t*>(addr);
+        if (t == "int64")  return *reinterpret_cast<int64_t*>(addr);
+        if (t == "int16")  return *reinterpret_cast<int16_t*>(addr);
+        if (t == "int8")   return *reinterpret_cast<int8_t*>(addr);
+        if (t == "uint32") return *reinterpret_cast<uint32_t*>(addr);
+        if (t == "uint64") return static_cast<int64_t>(*reinterpret_cast<uint64_t*>(addr));
+        if (t == "uint16") return *reinterpret_cast<uint16_t*>(addr);
+        if (t == "uint8")  return *reinterpret_cast<uint8_t*>(addr);
+        return -1;
+    }
+
+    const InspectedChild* findChild(const std::vector<InspectedChild>& cs,
+                                    const std::string& name) {
+        for (const auto& c : cs) if (c.name == name) return &c;
+        return nullptr;
+    }
+} // namespace
+
+std::optional<ChildPage>
+ValueInspector::collectionChildren(const std::string& type, void* addr,
+                                   size_t start, size_t pageSize) {
+    const std::string base = typeBase(type);
+    if (base == kArrayListFqn) return arrayListChildren(type, addr, start, pageSize);
+    if (base == kHashMapFqn)   return hashMapChildren(type, addr, start, pageSize);
+    return std::nullopt;
+}
+
+std::optional<ChildPage>
+ValueInspector::arrayListChildren(const std::string& type, void* addr,
+                                  size_t start, size_t pageSize) {
+    // Read the backing store BY DECLARED NAME (§8.3): `data` (the T[]) and
+    // `sizeCount` (the logical length). Any missing field → fail safe.
+    auto fields = objectChildren(type, addr);
+    const auto* dataF = findChild(fields, "data");
+    const auto* sizeF = findChild(fields, "sizeCount");
+    if (!dataF || !sizeF || !isPrimitiveTypeName(sizeF->type)) return std::nullopt;
+
+    int64_t size = readIntByType(sizeF->type, sizeF->addr);
+    if (size < 0) return std::nullopt;
+
+    ArrayInfo info = resolveArrayElement(dataF->type);
+    char* dataBase = nullptr;
+    int64_t headerLen = 0;
+    if (!info.ok || !openArray(dataF->addr, &dataBase, &headerLen))
+        return std::nullopt;
+
+    // Enumerate data[0..sizeCount) — the logical elements, not the capacity —
+    // clamped to the real backing length for safety.
+    int64_t count = std::min<int64_t>(size, headerLen);
+    if (pageSize == 0) pageSize = kDefaultPageSize;
+
+    ChildPage page;
+    page.nextStart = start;
+    if (static_cast<int64_t>(start) >= count) return page;
+    uint64_t end = std::min<uint64_t>(start + pageSize, static_cast<uint64_t>(count));
+    for (uint64_t i = start; i < end; i++) {
+        InspectedChild child;
+        child.name = "[" + std::to_string(i) + "]";
+        child.type = info.elemType;
+        child.storage = info.storage;
+        child.addr = dataBase + i * info.stride;
+        page.children.push_back(std::move(child));
+    }
+    page.nextStart = static_cast<size_t>(end);
+    page.remaining = static_cast<size_t>(count) - static_cast<size_t>(end);
+    return page;
+}
+
+std::optional<ChildPage>
+ValueInspector::hashMapChildren(const std::string& type, void* addr,
+                                size_t start, size_t pageSize) {
+    // Backing by declared name: `slots` (MapEntry<K,V>[] inline), `ctrl` (the
+    // SwissTable control bytes, one per slot), `cap` (slot count). Missing any
+    // → fail safe to the object-field view.
+    auto fields = objectChildren(type, addr);
+    const auto* slotsF = findChild(fields, "slots");
+    const auto* ctrlF = findChild(fields, "ctrl");
+    const auto* capF = findChild(fields, "cap");
+    if (!slotsF || !ctrlF || !capF) return std::nullopt;
+
+    int64_t cap = readIntByType(capF->type, capF->addr);
+    char* ctrlBase = nullptr;
+    int64_t ctrlLen = 0;
+    if (!openArray(ctrlF->addr, &ctrlBase, &ctrlLen)) return std::nullopt;
+    ArrayInfo slotsInfo = resolveArrayElement(slotsF->type);
+    char* slotsBase = nullptr;
+    int64_t slotsLen = 0;
+    if (!slotsInfo.ok || !openArray(slotsF->addr, &slotsBase, &slotsLen))
+        return std::nullopt;
+
+    // A slot is live when its control byte has the high bit clear (FULL); EMPTY
+    // (0x80) and DELETED (0xFE) both have it set. Only the first `cap` ctrl
+    // bytes are real slots (the tail 16 mirror the head).
+    int64_t n = std::min<int64_t>(cap, std::min<int64_t>(ctrlLen, slotsLen));
+    std::vector<int64_t> live;
+    for (int64_t i = 0; i < n; i++)
+        if ((static_cast<uint8_t>(ctrlBase[i]) & 0x80u) == 0) live.push_back(i);
+
+    if (pageSize == 0) pageSize = kDefaultPageSize;
+    ChildPage page;
+    page.nextStart = start;
+    if (start >= live.size()) return page;
+    size_t end = std::min<size_t>(start + pageSize, live.size());
+    for (size_t idx = start; idx < end; idx++) {
+        char* slotAddr = slotsBase + live[idx] * slotsInfo.stride;
+        // slots[i] is an inline @ValueType MapEntry {key, val}.
+        auto entry = objectChildren(slotsInfo.elemType, slotAddr);
+        const auto* keyF = findChild(entry, "key");
+        const auto* valF = findChild(entry, "val");
+        if (!keyF || !valF) continue;   // layout drift → skip, never misread.
+        InspectedChild child;
+        child.name = inspect(keyF->type, keyF->addr).summary;  // labelled by key
+        child.type = valF->type;
+        child.addr = valF->addr;
+        child.storage = valF->storage;
+        page.children.push_back(std::move(child));
+    }
+    page.nextStart = end;
+    page.remaining = live.size() - end;
+    return page;
+}
+
 std::string ValueInspector::objectSummary(const std::string& type, void* addr) {
     // A brief field peek: the first few scalar (primitive) fields as {x=3, y=4},
     // length-capped; {…} when there is no cheap scalar (§4.1.4).
@@ -318,8 +456,35 @@ InspectedValue ValueInspector::inspect(const std::string& type, void* addr) {
         return r;
     }
 
-    // Any other class/interface is an aggregate; its value is a field peek.
+    // Any other class/interface is an aggregate.
     r.kind = ValueKind::Aggregate;
+
+    // A registered collection summarizes by its logical contents: an ArrayList
+    // inline-or-counts its elements like an array; a HashMap counts its entries.
+    const std::string base = typeBase(type);
+    if (base == kArrayListFqn || base == kHashMapFqn) {
+        if (auto page = collectionChildren(type, addr, 0, 6)) {
+            int64_t count = static_cast<int64_t>(page->children.size()) +
+                            static_cast<int64_t>(page->remaining);
+            if (base == kHashMapFqn) {
+                r.summary = "{" + std::to_string(count) + " entries}";
+            } else if (count > 5) {
+                r.summary = "{" + std::to_string(count) + " elements}";
+            } else {
+                std::string out = "[";
+                for (size_t i = 0; i < page->children.size(); i++) {
+                    if (i) out += ", ";
+                    out += inspect(page->children[i].type,
+                                   page->children[i].addr).summary;
+                }
+                out += "]";
+                r.summary = out;
+            }
+            return r;
+        }
+    }
+
+    // Otherwise a brief object field peek.
     r.summary = objectSummary(type, addr);
     return r;
 }
@@ -334,8 +499,12 @@ ChildPage ValueInspector::children(const std::string& type, void* addr,
         if (isPrimitiveTypeName(type)) return page;  // leaf, no children
         auto ct = cajeta::CajetaType::of(type);
         // String is a leaf (its value is its text), not an expandable object.
-        if (ct && ct->toCanonical() != "cajeta.lang.String" && start == 0)
-            page.children = objectChildren(type, addr);
+        if (!ct || ct->toCanonical() == "cajeta.lang.String") return page;
+        // A registered collection gets its logical, paged view; otherwise (or
+        // on a layout mismatch) fall back to the raw object fields.
+        if (auto coll = collectionChildren(type, addr, start, pageSize))
+            return *coll;
+        if (start == 0) page.children = objectChildren(type, addr);
         return page;
     }
 
