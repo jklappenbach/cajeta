@@ -43,4 +43,3 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [simd-numeric-kernels](simd-numeric-kernels-spec.md) | — | draft |
 | [quaternion-vector-stdlib](quaternion-vector-stdlib-spec.md) | [plan](../agents/quaternion-vector-stdlib-plan.md) | draft |
 | [ternary-int-codegen](ternary-int-codegen-spec.md) | — | draft |
-| [value-type-generic-collections](value-type-generic-collections-spec.md) | [plan](../agents/value-type-generic-collections-plan.md) | active — approved 2026-07-24; value-type T in ArrayList/HashSet/… ; 3 facets delivered (inline reads 85cd0ab8, ordering+borrow 334d1f6f); Unit 1 (value-type param field-access ABI, GEP-on-value) next |
