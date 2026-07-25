@@ -152,10 +152,18 @@ object CajetacRunner {
             val pb = ProcessBuilder(args).redirectErrorStream(false)
             val process = pb.start()
             process.outputStream.close()
-            val finished = process.waitFor(10, TimeUnit.SECONDS)
+            // A one-shot `--lint` cold-compiles the stdlib every invocation
+            // (~19s on a quiet machine, measured on samples/tour Tour.cajeta), so
+            // the old 10s cap force-killed it before it produced ANY diagnostics —
+            // linting silently never worked and the log filled with timeouts. Give
+            // the cold path headroom to complete. The durable fix is the warm
+            // `--lint-server` daemon (lint-server Unit 4), after which lints are
+            // sub-second and this ceiling only guards a genuine hang.
+            val timeoutSec = 30L
+            val finished = process.waitFor(timeoutSec, TimeUnit.SECONDS)
             if (!finished) {
                 process.destroyForcibly()
-                log.warn("cajetac timed out after 10s on ${file.fileName}")
+                log.warn("cajetac timed out after ${timeoutSec}s on ${file.fileName}")
                 return null
             }
             process.errorStream.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
