@@ -144,3 +144,25 @@ TEST(ValueTypeCollectionTests, immutableListSetValueType) {
         "}\n";
     EXPECT_EQ(runI32(src), 32);
 }
+
+// ---- Unit 3: collection-literals over value types (spec §3.5 / §5.2.1) ----
+
+// 3.1.1 — the original blocked case: a collection literal of value-type
+// aggregates target-typed to ArrayList<Point>. Combines the collection-literal
+// lowering, prefixless-aggregate inference (element type from Point), and
+// value-type storage/read-back.
+TEST(ValueTypeCollectionTests, listOfValueAggregates) {
+    auto src =
+        "package test;\n"
+        "import cajeta.collection.ArrayList;\n"
+        "public record Point { int32 x; int32 y; }\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        ArrayList<Point> ps = [ {x:1, y:2}, {x:3, y:4} ];\n"
+        "        Point a = ps.get(0);\n"
+        "        Point b = ps.get(1);\n"
+        "        return a.x*1000 + a.y*100 + b.x*10 + b.y;\n"  // 1234
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1234);
+}
