@@ -12,6 +12,7 @@
 
 #include "cajeta/dap/DapProtocol.h"
 #include "cajeta/dbg/DebugLocTable.h"
+#include "cajeta/dbg/ValueInspector.h"
 
 namespace cajeta::dap {
 
@@ -88,6 +89,20 @@ Json variableJson(const cajeta::dbg::DbgVar& v, const std::string& renderedValue
         hint["attributes"] = std::move(attrs);
         var["presentationHint"] = std::move(hint);
     }
+    return var;
+}
+
+// variable-inspection Unit 4: a child row (array element / object field). Unlike
+// a frame local it carries no facets — those are a property of a declared
+// binding, not of a slot reached by drilling. `ref` is 0 for a leaf, or a minted
+// aggregate handle for an expandable child.
+static Json childVariableJson(const std::string& name, const std::string& type,
+                              const std::string& value, int ref) {
+    Json var = Json::object();
+    var["name"] = name;
+    var["value"] = value;
+    var["type"] = type;
+    var["variablesReference"] = ref;
     return var;
 }
 
@@ -288,6 +303,7 @@ void DapServer::runToStopOrExit(const Emit& emit) {
             haveStop_ = false;
             frameTable_.clear();
             varRefToFrame_.clear();
+            varRefToAggregate_.clear();
             Json body = Json::object();
             body["exitCode"] = exitCode_;
             emit(makeEvent(seq_++, "exited", body));
@@ -316,10 +332,18 @@ bool DapServer::shouldStopAt(const StopEvent& stop,
                                           &err);
 }
 
+int DapServer::mintAggregateRef(const std::string& type, void* addr,
+                                size_t start) {
+    int ref = nextVarRef_++;
+    varRefToAggregate_[ref] = AggregateRef{type, addr, start};
+    return ref;
+}
+
 void DapServer::rebuildFrameTable(
         std::vector<cajeta::dbg::DbgFrameInfo> stoppedFrames) {
     frameTable_.clear();
     varRefToFrame_.clear();
+    varRefToAggregate_.clear();
     nextVarRef_ = 1;
     const int stoppedTid = static_cast<int>(currentStop_.fiberId);
 
@@ -414,6 +438,12 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         inheritSystemEnv_ = args.at("inheritSystemEnv").isBool()
                                 ? args.at("inheritSystemEnv").asBool()
                                 : true;
+        // variable-inspection §3.1.4: elements per page when expanding an array.
+        // A missing or non-positive value keeps the built-in default, so every
+        // pre-feature launch behaves unchanged.
+        int reqPage = args.at("pageSize").asInt();
+        if (reqPage <= 0) reqPage = args.at("page-size").asInt();
+        if (reqPage > 0) pageSize_ = static_cast<size_t>(reqPage);
         emit(makeResponse(seq_++, requestSeq, command, true, Json::object()));
         return true;
     }
@@ -635,14 +665,60 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
     if (command == "variables") {
         int ref = args.at("variablesReference").asInt();
         Json vars = Json::array();
+        // The bridge needs the live DataLayout; it only exists while stopped.
+        const bool haveDl = session_ != nullptr;
+
+        // Case A: a frame's Locals scope. Each local is rendered through the
+        // bridge (String text, array/object summaries — replacing the old
+        // <type@ptr>), and an aggregate local carries a fresh expansion handle.
         auto it = varRefToFrame_.find(ref);
         if (it != varRefToFrame_.end() &&
                 static_cast<size_t>(it->second) < frameTable_.size()) {
             for (const auto& v : frameTable_[it->second].info.locals) {
-                vars.push_back(variableJson(
-                    v, cajeta::dbg::formatValue(v.type, v.addr)));
+                std::string rendered = cajeta::dbg::formatValue(v.type, v.addr);
+                int childRef = 0;
+                // A moved-out binding is consumed: never deep-decode it (the
+                // instance may be gone). Keep the shallow render and no children.
+                const bool consumed =
+                    v.lifetime == cajeta::dbg::LifetimeState::MovedOut;
+                if (haveDl && !consumed) {
+                    cajeta::dbg::ValueInspector insp(session_->dataLayout());
+                    auto dec = insp.inspect(v.type, v.addr);
+                    rendered = dec.summary;
+                    if (dec.kind == cajeta::dbg::ValueKind::Aggregate)
+                        childRef = mintAggregateRef(v.type, v.addr);
+                }
+                Json var = variableJson(v, rendered);
+                var["variablesReference"] = childRef;
+                vars.push_back(std::move(var));
             }
         }
+
+        // Case B: an aggregate-expansion handle — array elements or object
+        // fields, one page at a time. A remaining count becomes a "more" node
+        // that carries a handle resuming at the next offset.
+        auto ait = varRefToAggregate_.find(ref);
+        if (haveDl && ait != varRefToAggregate_.end()) {
+            const AggregateRef ag = ait->second;  // copy: the map may re-hash.
+            cajeta::dbg::ValueInspector insp(session_->dataLayout());
+            auto page = insp.children(ag.typeName, ag.addr, ag.start, pageSize_);
+            for (const auto& child : page.children) {
+                auto dec = insp.inspect(child.type, child.addr);
+                int childRef = 0;
+                if (dec.kind == cajeta::dbg::ValueKind::Aggregate)
+                    childRef = mintAggregateRef(child.type, child.addr);
+                vars.push_back(childVariableJson(child.name, child.type,
+                                                 dec.summary, childRef));
+            }
+            if (page.remaining > 0) {
+                int moreRef = mintAggregateRef(ag.typeName, ag.addr,
+                                               page.nextStart);
+                vars.push_back(childVariableJson(
+                    "[" + std::to_string(page.remaining) + " more…]", "", "",
+                    moreRef));
+            }
+        }
+
         Json body = Json::object();
         body["variables"] = std::move(vars);
         emit(makeResponse(seq_++, requestSeq, command, true, std::move(body)));
@@ -763,6 +839,7 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         currentStop_ = {};
         frameTable_.clear();
         varRefToFrame_.clear();
+        varRefToAggregate_.clear();
         nextVarRef_ = 1;
         haveStop_ = false;
         terminated_ = false;

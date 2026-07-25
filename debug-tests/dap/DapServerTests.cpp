@@ -324,6 +324,315 @@ TEST(DapServerSession, ScopesVariablesAndSetVariable) {
     }
 }
 
+// ---- variable-inspection Unit 4: aggregate expansion + rendering ----
+
+namespace {
+// Lines:                  1                     2                   3
+const char* kExpandProg =
+    "package demo;\n"                                            // 1
+    "public class Point { public int32 x; public int32 y; "
+        "public Point(int32 a, int32 b) { this.x = a; this.y = b; } }\n" // 2
+    "public class Holder { public Point p; public int32 m; "
+        "public Holder() { this.p = heap Point(1, 2); this.m = 99; } }\n" // 3
+    "public class Calc {\n"                                      // 4
+    "    public static int32 main() {\n"                         // 5
+    "        int32 n = 5;\n"                                     // 6
+    "        String s = \"hi\";\n"                               // 7
+    "        int32[] nums = [3, 7, 9];\n"                        // 8
+    "        Holder h = heap Holder();\n"                        // 9
+    "        int32[] big = [0,1,2,3,4,5,6,7,8,9];\n"             // 10
+    "        return n;\n"                                        // 11 <-- breakpoint
+    "    }\n"                                                    // 12
+    "}\n";                                                       // 13
+
+const Json* byName(const Json& arr, const std::string& n) {
+    for (size_t i = 0; i < arr.size(); ++i)
+        if (arr[i].at("name").asString() == n) return &arr[i];
+    return nullptr;
+}
+} // namespace
+
+class DapExpandSession : public ::testing::Test {
+protected:
+    TempProgram prog{"demo", "Calc.cajeta", kExpandProg};
+    DapServer srv;
+    int localsRef = 0;
+
+    // initialize -> launch -> setBreakpoints -> configurationDone -> stopped,
+    // then stackTrace -> scopes, leaving `localsRef` pointing at the Locals.
+    void driveToStop(Json launchExtra) {
+        std::vector<Json> log;
+        drive(srv, req(1, "initialize", Json::object()), log);
+        Json la = Json::object();
+        la["entry-method"] = "demo.Calc.main";
+        la["sourceRoot"] = prog.sourceRoot();
+        for (const auto& kv : launchExtra.items()) la[kv.first] = kv.second;
+        drive(srv, req(2, "launch", la), log);
+        Json bpArgs = Json::object();
+        Json src = Json::object();
+        src["path"] = "Calc.cajeta";
+        bpArgs["source"] = src;
+        Json bps = Json::array();
+        Json bp = Json::object();
+        bp["line"] = 11;
+        bps.push_back(bp);
+        bpArgs["breakpoints"] = bps;
+        drive(srv, req(3, "setBreakpoints", bpArgs), log);
+        log.clear();
+        drive(srv, req(4, "configurationDone", Json::object()), log);
+        ASSERT_EQ(countEvent(log, "stopped"), 1);
+        std::vector<Json> l2;
+        drive(srv, req(5, "stackTrace", Json::object()), l2);
+        int frameId = findResponse(l2, "stackTrace")->at("body")
+            .at("stackFrames")[0].at("id").asInt();
+        std::vector<Json> l3;
+        Json sa = Json::object();
+        sa["frameId"] = frameId;
+        drive(srv, req(6, "scopes", sa), l3);
+        localsRef = findResponse(l3, "scopes")->at("body").at("scopes")[0]
+            .at("variablesReference").asInt();
+    }
+
+    void SetUp() override { driveToStop(Json::object()); }
+
+    void TearDown() override {
+        std::vector<Json> l;
+        drive(srv, req(98, "disconnect", Json::object()), l);
+    }
+
+    // Issue variables(ref) and return the resulting array.
+    Json varsOf(int ref) {
+        std::vector<Json> l;
+        Json a = Json::object();
+        a["variablesReference"] = ref;
+        drive(srv, req(50, "variables", a), l);
+        return findResponse(l, "variables")->at("body").at("variables");
+    }
+};
+
+TEST_F(DapExpandSession, AggregateGetsNonZeroReference) {
+    Json locals = varsOf(localsRef);
+    // a primitive leaf carries ref 0; an array and an object each carry a ref.
+    ASSERT_NE(byName(locals, "n"), nullptr);
+    EXPECT_EQ(byName(locals, "n")->at("variablesReference").asInt(), 0);
+    EXPECT_NE(byName(locals, "nums")->at("variablesReference").asInt(), 0);
+    EXPECT_NE(byName(locals, "h")->at("variablesReference").asInt(), 0);
+    // a String is a leaf — no children.
+    EXPECT_EQ(byName(locals, "s")->at("variablesReference").asInt(), 0);
+}
+
+TEST_F(DapExpandSession, VariablesExpandsArray) {
+    Json locals = varsOf(localsRef);
+    int numsRef = byName(locals, "nums")->at("variablesReference").asInt();
+    const Json elems = varsOf(numsRef);
+    ASSERT_EQ(elems.size(), 3u);
+    EXPECT_EQ(elems[0].at("name").asString(), "[0]");
+    EXPECT_EQ(elems[0].at("value").asString(), "3");
+    EXPECT_EQ(elems[1].at("value").asString(), "7");
+    EXPECT_EQ(elems[2].at("value").asString(), "9");
+}
+
+TEST_F(DapExpandSession, VariablesExpandsObjectFields) {
+    Json locals = varsOf(localsRef);
+    int hRef = byName(locals, "h")->at("variablesReference").asInt();
+    Json fields = varsOf(hRef);
+    // declared-name field rows; the nested Point field carries its own ref.
+    const Json* fp = byName(fields, "p");
+    const Json* fm = byName(fields, "m");
+    ASSERT_NE(fp, nullptr);
+    ASSERT_NE(fm, nullptr);
+    EXPECT_EQ(fm->at("value").asString(), "99");
+    EXPECT_EQ(fm->at("variablesReference").asInt(), 0);
+    int pRef = fp->at("variablesReference").asInt();
+    EXPECT_NE(pRef, 0);
+    // and the nested field expands one level down
+    Json inner = varsOf(pRef);
+    EXPECT_EQ(byName(inner, "x")->at("value").asString(), "1");
+    EXPECT_EQ(byName(inner, "y")->at("value").asString(), "2");
+}
+
+TEST_F(DapExpandSession, RendersStringAndSummaries) {
+    Json locals = varsOf(localsRef);
+    // String value is its quoted text; array value is the inline collapse;
+    // object value is the scalar-field peek.
+    EXPECT_EQ(byName(locals, "s")->at("value").asString(), "\"hi\"");
+    EXPECT_EQ(byName(locals, "nums")->at("value").asString(), "[3, 7, 9]");
+    EXPECT_EQ(byName(locals, "h")->at("value").asString(), "{m=99}");
+    // facet tags are still present on every local (§4.1.6).
+    EXPECT_TRUE(byName(locals, "n")->at("cajeta").has("ownership"));
+    EXPECT_TRUE(byName(locals, "n")->at("cajeta").has("lifetime"));
+}
+
+// A standalone session: page size honored, and a bogus value falls back.
+TEST(DapServerSession, VariablesPagesLargeArrayByLaunchParam) {
+    TempProgram p("demo", "Calc.cajeta", kExpandProg);
+
+    auto localsRefFor = [&](DapServer& srv, Json launchExtra,
+                            std::vector<Json>& scratch) -> int {
+        drive(srv, req(1, "initialize", Json::object()), scratch);
+        Json la = Json::object();
+        la["entry-method"] = "demo.Calc.main";
+        la["sourceRoot"] = p.sourceRoot();
+        for (const auto& kv : launchExtra.items()) la[kv.first] = kv.second;
+        drive(srv, req(2, "launch", la), scratch);
+        Json bpArgs = Json::object();
+        Json src = Json::object();
+        src["path"] = "Calc.cajeta";
+        bpArgs["source"] = src;
+        Json bps = Json::array();
+        Json bp = Json::object();
+        bp["line"] = 11;
+        bps.push_back(bp);
+        bpArgs["breakpoints"] = bps;
+        drive(srv, req(3, "setBreakpoints", bpArgs), scratch);
+        drive(srv, req(4, "configurationDone", Json::object()), scratch);
+        std::vector<Json> l2;
+        drive(srv, req(5, "stackTrace", Json::object()), l2);
+        int frameId = findResponse(l2, "stackTrace")->at("body")
+            .at("stackFrames")[0].at("id").asInt();
+        std::vector<Json> l3;
+        Json sa = Json::object();
+        sa["frameId"] = frameId;
+        drive(srv, req(6, "scopes", sa), l3);
+        return findResponse(l3, "scopes")->at("body").at("scopes")[0]
+            .at("variablesReference").asInt();
+    };
+    auto varsOf = [](DapServer& srv, int ref) -> Json {
+        std::vector<Json> l;
+        Json a = Json::object();
+        a["variablesReference"] = ref;
+        drive(srv, req(50, "variables", a), l);
+        return findResponse(l, "variables")->at("body").at("variables");
+    };
+
+    // pageSize = 4 over a 10-element array -> 4 element rows + 1 "more" node.
+    {
+        DapServer srv;
+        std::vector<Json> scratch;
+        Json extra = Json::object();
+        extra["pageSize"] = 4;
+        int lref = localsRefFor(srv, extra, scratch);
+        Json locals = varsOf(srv, lref);
+        int bigRef = byName(locals, "big")->at("variablesReference").asInt();
+        ASSERT_NE(bigRef, 0);
+        const Json page0 = varsOf(srv, bigRef);
+        ASSERT_EQ(page0.size(), 5u);  // 4 elements + a remainder node
+        EXPECT_EQ(page0[0].at("name").asString(), "[0]");
+        EXPECT_EQ(page0[3].at("name").asString(), "[3]");
+        const Json& more = page0[4];
+        EXPECT_NE(more.at("variablesReference").asInt(), 0);  // expandable
+        // expanding the remainder node continues where the page left off.
+        const Json page1 = varsOf(srv, more.at("variablesReference").asInt());
+        EXPECT_EQ(page1[0].at("name").asString(), "[4]");
+        std::vector<Json> l;
+        drive(srv, req(98, "disconnect", Json::object()), l);
+    }
+    // A nonsensical page size falls back to the default -> all 10, no "more".
+    {
+        DapServer srv;
+        std::vector<Json> scratch;
+        Json extra = Json::object();
+        extra["pageSize"] = 0;
+        int lref = localsRefFor(srv, extra, scratch);
+        Json locals = varsOf(srv, lref);
+        int bigRef = byName(locals, "big")->at("variablesReference").asInt();
+        Json page = varsOf(srv, bigRef);
+        EXPECT_EQ(page.size(), 10u);
+        std::vector<Json> l;
+        drive(srv, req(98, "disconnect", Json::object()), l);
+    }
+}
+
+// References minted at one stop are invalid after resume; a fresh stop mints
+// new ones (§3.1.1, §3.2.4).
+TEST(DapServerSession, ReferencesDroppedOnResume) {
+    const char* prog =
+        "package demo;\n"
+        "public class Calc {\n"
+        "    public static int32 main() {\n"
+        "        int32[] a1 = [1, 2];\n"    // 4
+        "        int32 x = 10;\n"           // 5 <-- bp #1
+        "        int32 y = 20;\n"           // 6 <-- bp #2
+        "        return x + y;\n"           // 7
+        "    }\n"
+        "}\n";
+    TempProgram p("demo", "Calc.cajeta", prog);
+    DapServer srv;
+    std::vector<Json> log;
+
+    drive(srv, req(1, "initialize", Json::object()), log);
+    Json la = Json::object();
+    la["entry-method"] = "demo.Calc.main";
+    la["sourceRoot"] = p.sourceRoot();
+    drive(srv, req(2, "launch", la), log);
+    Json bpArgs = Json::object();
+    Json src = Json::object();
+    src["path"] = "Calc.cajeta";
+    bpArgs["source"] = src;
+    Json bps = Json::array();
+    for (int line : {5, 6}) {
+        Json bp = Json::object();
+        bp["line"] = line;
+        bps.push_back(bp);
+    }
+    bpArgs["breakpoints"] = bps;
+    drive(srv, req(3, "setBreakpoints", bpArgs), log);
+
+    auto localsRefNow = [&]() -> int {
+        std::vector<Json> l2;
+        drive(srv, req(20, "stackTrace", Json::object()), l2);
+        int frameId = findResponse(l2, "stackTrace")->at("body")
+            .at("stackFrames")[0].at("id").asInt();
+        std::vector<Json> l3;
+        Json sa = Json::object();
+        sa["frameId"] = frameId;
+        drive(srv, req(21, "scopes", sa), l3);
+        return findResponse(l3, "scopes")->at("body").at("scopes")[0]
+            .at("variablesReference").asInt();
+    };
+    auto varsOf = [&](int ref) -> Json {
+        std::vector<Json> l;
+        Json a = Json::object();
+        a["variablesReference"] = ref;
+        drive(srv, req(22, "variables", a), l);
+        return findResponse(l, "variables")->at("body").at("variables");
+    };
+
+    log.clear();
+    drive(srv, req(4, "configurationDone", Json::object()), log);
+    ASSERT_EQ(countEvent(log, "stopped"), 1);
+    int ref1 = localsRefNow();
+    Json locals1 = varsOf(ref1);
+    int agg1 = byName(locals1, "a1")->at("variablesReference").asInt();
+    ASSERT_NE(agg1, 0);
+
+    // resume to the second breakpoint.
+    log.clear();
+    drive(srv, req(5, "continue", Json::object()), log);
+    ASSERT_EQ(countEvent(log, "stopped"), 1);
+
+    // Resume drops every handle from the prior stop: expanding the old
+    // aggregate handle before refreshing scopes resolves to nothing (never to
+    // stale or wrong data). Handle IDs themselves recycle — nextVarRef_ resets
+    // each stop — which is fine; the contract is that a client refreshes scopes
+    // on each stop, and a not-yet-reminted ref carries no data.
+    EXPECT_EQ(varsOf(agg1).size(), 0u);
+
+    // A fresh stop re-mints working handles: scopes -> locals -> a1's new
+    // aggregate handle expands to its live elements.
+    int ref2 = localsRefNow();
+    Json locals2 = varsOf(ref2);
+    int agg2 = byName(locals2, "a1")->at("variablesReference").asInt();
+    ASSERT_NE(agg2, 0);
+    const Json elems2 = varsOf(agg2);
+    ASSERT_EQ(elems2.size(), 2u);
+    EXPECT_EQ(elems2[0].at("value").asString(), "1");
+    EXPECT_EQ(elems2[1].at("value").asString(), "2");
+
+    log.clear();
+    drive(srv, req(9, "continue", Json::object()), log);
+}
+
 // CP6f: a conditional breakpoint whose condition holds stops; one whose
 // condition is false runs straight through to termination.
 TEST(DapServerSession, ConditionalBreakpointStopsOnlyWhenConditionHolds) {
