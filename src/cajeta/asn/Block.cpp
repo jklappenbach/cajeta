@@ -49,7 +49,15 @@ namespace cajeta {
         // Ranged modules (JIT path) claim ids from their own range so an
         // edit elsewhere never shifts this module's baked constants; the
         // dense allocator remains for AOT/lint (and range overflow).
-        const int dbgLine = statement->getSourceLine() + lineDelta;
+        // A synthesized method (e.g. a @ValueType `clone`) or a deeply-nested
+        // template instantiation can carry a snippet->file line correction
+        // (lineDelta, TemplateInstantiator §9.2) that overshoots, yielding a
+        // NEGATIVE absolute line. Source lines are 1-based; a negative one is
+        // meaningless to a debugger (it would map a real safepoint to a bogus
+        // location) and is un-matchable by the loc-table's entry shape, which
+        // breaks the safepoint<->entry invariant. Clamp to a valid line.
+        int dbgLine = statement->getSourceLine() + lineDelta;
+        if (dbgLine < 1) dbgLine = 1;
         int32_t locId = module->takeDbgLocId();
         if (locId >= 0) {
             dbg::globalDbgLocTable().setAt(
