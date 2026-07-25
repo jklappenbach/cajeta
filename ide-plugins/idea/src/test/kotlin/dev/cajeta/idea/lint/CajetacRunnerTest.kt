@@ -62,6 +62,43 @@ class CajetacRunnerTest {
         )
     }
 
+    // lint-server 4.1.4: the routing decision — warm server when it yields a
+    // payload, else the one-shot subprocess — same text either way.
+    @Test
+    fun routeLintPrefersServerPayloadAndSkipsOneShot() {
+        var oneShotRan = false
+        val out = CajetacRunner.routeLint(
+            useServer = true,
+            serverPayload = { "SERVER" },
+            oneShot = { oneShotRan = true; "ONESHOT" },
+        )
+        assertEquals("SERVER", out)
+        assertEquals(false, oneShotRan)   // the server answered; no subprocess
+    }
+
+    @Test
+    fun routeLintFallsBackToOneShotWhenServerYieldsNull() {
+        // Unsupported/dead/back-off server → the client returns null → one-shot.
+        val out = CajetacRunner.routeLint(
+            useServer = true,
+            serverPayload = { null },
+            oneShot = { "ONESHOT" },
+        )
+        assertEquals("ONESHOT", out)
+    }
+
+    @Test
+    fun routeLintUsesOneShotWhenServerDisabled() {
+        var serverConsulted = false
+        val out = CajetacRunner.routeLint(
+            useServer = false,
+            serverPayload = { serverConsulted = true; "SERVER" },
+            oneShot = { "ONESHOT" },
+        )
+        assertEquals("ONESHOT", out)
+        assertEquals(false, serverConsulted)
+    }
+
     @Test
     fun lintArgvWithSourceRootAndShadow() {
         // lint-source-root U2: project-context resolution forwards --source-root

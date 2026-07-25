@@ -35,6 +35,8 @@ class CajetaConfigurable : Configurable {
     private var jsonlStructuredCheck: JBCheckBox? = null
     private var jsonlLevelField: JBTextField? = null
     private var buildInBuildWindowCheck: JBCheckBox? = null
+    // lint-server §5: route per-edit lint through the warm daemon.
+    private var lintServerCheck: JBCheckBox? = null
     private var panel: JPanel? = null
 
     override fun getDisplayName(): String = "Cajeta"
@@ -98,6 +100,10 @@ class CajetaConfigurable : Configurable {
             "Run build tasks in the Build tool window (off = Run window)",
             settings.buildTasksInBuildWindow,
         ).also { buildInBuildWindowCheck = it }
+        val lintServer = JBCheckBox(
+            "Use the warm lint server (off = a fresh compile per edit; much slower)",
+            settings.useLintServer,
+        ).also { lintServerCheck = it }
 
         panel = FormBuilder.createFormBuilder()
             .addLabeledComponent(JBLabel("cajetac binary:"), pathField, 1, false)
@@ -113,6 +119,7 @@ class CajetaConfigurable : Configurable {
             .addSeparator()
             .addLabeledComponent(JBLabel("Test fixtures path:"), fixturesField, 1, false)
             .addLabeledComponent(JBLabel("Typing-harness delay (ms):"), delayField, 1, false)
+            .addComponent(lintServer, 1)
             .addSeparator()
             .addComponent(JBLabel("Build tool:"), 1)
             .addLabeledComponent(JBLabel("Build-tool path:"), btPath, 1, false)
@@ -144,7 +151,8 @@ class CajetaConfigurable : Configurable {
             (defaultFlavorField?.text ?: "") != s.defaultFlavor ||
             (jsonlStructuredCheck?.isSelected ?: true) != s.jsonlDefaultStructured ||
             (jsonlLevelField?.text ?: "") != s.jsonlDefaultLevel ||
-            (buildInBuildWindowCheck?.isSelected ?: true) != s.buildTasksInBuildWindow
+            (buildInBuildWindowCheck?.isSelected ?: true) != s.buildTasksInBuildWindow ||
+            (lintServerCheck?.isSelected ?: true) != s.useLintServer
     }
 
     override fun apply() {
@@ -166,6 +174,7 @@ class CajetaConfigurable : Configurable {
         s.jsonlDefaultStructured = jsonlStructuredCheck?.isSelected ?: true
         s.jsonlDefaultLevel = jsonlLevelField?.text?.trim().orEmpty()
         s.buildTasksInBuildWindow = buildInBuildWindowCheck?.isSelected ?: true
+        s.useLintServer = lintServerCheck?.isSelected ?: true
     }
 
     override fun reset() {
@@ -185,6 +194,7 @@ class CajetaConfigurable : Configurable {
         jsonlStructuredCheck?.isSelected = s.jsonlDefaultStructured
         jsonlLevelField?.text = s.jsonlDefaultLevel
         buildInBuildWindowCheck?.isSelected = s.buildTasksInBuildWindow
+        lintServerCheck?.isSelected = s.useLintServer
     }
 
     override fun disposeUIResources() {
@@ -204,6 +214,7 @@ class CajetaConfigurable : Configurable {
         jsonlStructuredCheck = null
         jsonlLevelField = null
         buildInBuildWindowCheck = null
+        lintServerCheck = null
         panel = null
     }
 }
