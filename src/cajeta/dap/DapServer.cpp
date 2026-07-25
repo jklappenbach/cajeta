@@ -737,11 +737,34 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
                 static_cast<size_t>(it->second) < frameTable_.size()) {
             for (const auto& v : frameTable_[it->second].info.locals) {
                 if (v.name != name) continue;
+                // A moved-out binding is consumed — read-only (§6.1.3).
+                if (v.lifetime == cajeta::dbg::LifetimeState::MovedOut) {
+                    err = "cannot edit a moved-out value: " + name;
+                    break;
+                }
                 ok = cajeta::dbg::writeValue(v.type, v.addr, value, &err);
                 if (ok) rendered = cajeta::dbg::formatValue(v.type, v.addr);
                 break;
             }
         }
+
+        // variable-inspection Unit 5: a child reached by expansion — an array
+        // element ("[i]") or object field — resolved through the aggregate
+        // handle. Only a primitive leaf is writable; writeValue itself refuses a
+        // non-primitive target, so a String/object/array child is read-only.
+        auto ait = varRefToAggregate_.find(ref);
+        if (!ok && session_ && ait != varRefToAggregate_.end()) {
+            const AggregateRef ag = ait->second;
+            cajeta::dbg::ValueInspector insp(session_->dataLayout());
+            auto page = insp.children(ag.typeName, ag.addr, ag.start, pageSize_);
+            for (const auto& child : page.children) {
+                if (child.name != name) continue;
+                ok = cajeta::dbg::writeValue(child.type, child.addr, value, &err);
+                if (ok) rendered = cajeta::dbg::formatValue(child.type, child.addr);
+                break;
+            }
+        }
+
         if (ok) {
             Json body = Json::object();
             body["value"] = rendered;

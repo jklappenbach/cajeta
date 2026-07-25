@@ -408,7 +408,125 @@ protected:
         drive(srv, req(50, "variables", a), l);
         return findResponse(l, "variables")->at("body").at("variables");
     }
+
+    // Issue setVariable(ref, name := value) and return the whole response.
+    Json setVar(int ref, const std::string& name, const std::string& value) {
+        std::vector<Json> l;
+        Json a = Json::object();
+        a["variablesReference"] = ref;
+        a["name"] = name;
+        a["value"] = value;
+        drive(srv, req(60, "setVariable", a), l);
+        return *findResponse(l, "setVariable");
+    }
 };
+
+// ---- variable-inspection Unit 5: editing scalar leaves through references ----
+
+TEST_F(DapExpandSession, SetFieldThroughReference) {
+    int hRef = byName(varsOf(localsRef), "h")->at("variablesReference").asInt();
+    // set the scalar field m := 42 through the object handle
+    Json resp = setVar(hRef, "m", "42");
+    ASSERT_TRUE(resp.at("success").asBool());
+    EXPECT_EQ(resp.at("body").at("value").asString(), "42");
+    // the write landed: the object's field-peek summary reflects it
+    EXPECT_EQ(byName(varsOf(localsRef), "h")->at("value").asString(), "{m=42}");
+}
+
+TEST_F(DapExpandSession, SetArrayElementThroughReference) {
+    int numsRef = byName(varsOf(localsRef), "nums")->at("variablesReference").asInt();
+    Json resp = setVar(numsRef, "[1]", "99");
+    ASSERT_TRUE(resp.at("success").asBool());
+    EXPECT_EQ(resp.at("body").at("value").asString(), "99");
+    // re-expand: element [1] now reads 99, in place.
+    Json elems = varsOf(numsRef);
+    EXPECT_EQ(byName(elems, "[1]")->at("value").asString(), "99");
+    EXPECT_EQ(byName(elems, "[0]")->at("value").asString(), "3");  // neighbour intact
+}
+
+TEST_F(DapExpandSession, NonPrimitiveTargetReadOnly) {
+    int hRef = byName(varsOf(localsRef), "h")->at("variablesReference").asInt();
+    // the Point field p is non-primitive — writing it must fail, not corrupt.
+    Json resp = setVar(hRef, "p", "0");
+    EXPECT_FALSE(resp.at("success").asBool());
+    // p is unchanged and still expandable
+    int pRef = byName(varsOf(hRef), "p")->at("variablesReference").asInt();
+    EXPECT_NE(pRef, 0);
+}
+
+// A moved-out binding stays read-only (§6.1.3): `gone`'s ownership is
+// transferred via `#gone`, so it is consumed and must never be written.
+TEST(DapServerSession, MovedOutLeafReadOnly) {
+    const char* prog =
+        "package demo;\n"
+        "public class Box { public int32 v; public Box(int32 x) { this.v = x; } }\n"
+        "public class Demo {\n"
+        "    public static int32 main() {\n"
+        "        Box gone = heap Box(2);\n"     // 5
+        "        Box taken = #gone;\n"          // 6  gone is now moved-out
+        "        int32 n = 1;\n"                // 7
+        "        return n + taken.v;\n"         // 8 <-- breakpoint
+        "    }\n"
+        "}\n";
+    TempProgram p("demo", "Demo.cajeta", prog);
+    DapServer srv;
+    std::vector<Json> log;
+
+    drive(srv, req(1, "initialize", Json::object()), log);
+    Json la = Json::object();
+    la["entry-method"] = "demo.Demo.main";
+    la["sourceRoot"] = p.sourceRoot();
+    drive(srv, req(2, "launch", la), log);
+    Json bpArgs = Json::object();
+    Json src = Json::object();
+    src["path"] = "Demo.cajeta";
+    bpArgs["source"] = src;
+    Json bps = Json::array();
+    Json bp = Json::object();
+    bp["line"] = 8;
+    bps.push_back(bp);
+    bpArgs["breakpoints"] = bps;
+    drive(srv, req(3, "setBreakpoints", bpArgs), log);
+    drive(srv, req(4, "configurationDone", Json::object()), log);
+
+    std::vector<Json> l2;
+    drive(srv, req(5, "stackTrace", Json::object()), l2);
+    int frameId = findResponse(l2, "stackTrace")->at("body")
+        .at("stackFrames")[0].at("id").asInt();
+    std::vector<Json> l3;
+    Json sa = Json::object();
+    sa["frameId"] = frameId;
+    drive(srv, req(6, "scopes", sa), l3);
+    int localsRef = findResponse(l3, "scopes")->at("body").at("scopes")[0]
+        .at("variablesReference").asInt();
+
+    // `gone` must be reported read-only in the variables view...
+    Json locals;
+    {
+        std::vector<Json> l;
+        Json a = Json::object();
+        a["variablesReference"] = localsRef;
+        drive(srv, req(7, "variables", a), l);
+        locals = findResponse(l, "variables")->at("body").at("variables");
+    }
+    const Json* gone = nullptr;
+    for (size_t i = 0; i < locals.size(); ++i)
+        if (locals[i].at("name").asString() == "gone") gone = &locals[i];
+    ASSERT_NE(gone, nullptr);
+    EXPECT_EQ(gone->at("cajeta").at("lifetime").asString(), "moved-out");
+
+    // ...and writing it is refused.
+    std::vector<Json> l;
+    Json a = Json::object();
+    a["variablesReference"] = localsRef;
+    a["name"] = "gone";
+    a["value"] = "5";
+    drive(srv, req(8, "setVariable", a), l);
+    EXPECT_FALSE(findResponse(l, "setVariable")->at("success").asBool());
+
+    std::vector<Json> l4;
+    drive(srv, req(9, "disconnect", Json::object()), l4);
+}
 
 TEST_F(DapExpandSession, AggregateGetsNonZeroReference) {
     Json locals = varsOf(localsRef);
