@@ -83,3 +83,64 @@ TEST(ValueTypeCollectionTests, arrayListValueTypeSort) {
         "}\n";
     EXPECT_EQ(runI32(src), 121931);
 }
+
+// ---- Unit 2: sequence collections sweep (spec §3.1–3.3) ----
+
+// 2.1.1 — HashSet<Point>: dedup by structural hash/==, contains.
+TEST(ValueTypeCollectionTests, hashSetValueType) {
+    auto src =
+        "package test;\n"
+        "import cajeta.collection.HashSet;\n"
+        "@AutoHash public record Point { int32 x; int32 y; }\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        HashSet<Point> s = heap HashSet<Point>(16);\n"
+        "        s.add(Point{x:1, y:2});\n"
+        "        s.add(Point{x:1, y:2});\n"                 // dup
+        "        s.add(Point{x:3, y:4});\n"
+        "        int32 c = (int32) s.count();\n"            // 2
+        "        boolean has = s.contains(Point{x:3, y:4});\n"  // true
+        "        return c * 10 + (has ? 1 : 0);\n"          // 21
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 21);
+}
+
+// 2.1.2 — LinkedList<Point>: ordered store + get.
+TEST(ValueTypeCollectionTests, linkedListValueType) {
+    auto src =
+        "package test;\n"
+        "import cajeta.collection.LinkedList;\n"
+        "public record Point { int32 x; int32 y; }\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        LinkedList<Point> l = heap LinkedList<Point>();\n"
+        "        l.add(Point{x:1, y:2});\n"
+        "        l.add(Point{x:3, y:4});\n"
+        "        Point a = l.get(0);\n"
+        "        Point b = l.get(1);\n"
+        "        return a.x*1000 + a.y*100 + b.x*10 + b.y;\n"  // 1234
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1234);
+}
+
+// 2.1.3 — ImmutableList<Point> keeps dups; ImmutableSet<Point> dedups.
+TEST(ValueTypeCollectionTests, immutableListSetValueType) {
+    auto src =
+        "package test;\n"
+        "import cajeta.collection.ImmutableList;\n"
+        "import cajeta.collection.ImmutableSet;\n"
+        "@AutoHash public record Point { int32 x; int32 y; }\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Point[] src = [ Point{x:1,y:2}, Point{x:3,y:4}, Point{x:1,y:2} ];\n"
+        "        ImmutableList<Point> il = heap ImmutableList<Point>(src);\n"
+        "        ImmutableSet<Point> is = heap ImmutableSet<Point>(src);\n"
+        "        int32 lc = (int32) il.count();\n"   // 3 (list keeps dups)
+        "        int32 sc = (int32) is.count();\n"   // 2 (set dedups)
+        "        return lc * 10 + sc;\n"             // 32
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 32);
+}

@@ -329,7 +329,15 @@ namespace cajeta {
                                         && !runtimeOwner) {
                                     auto klassParam = std::dynamic_pointer_cast<CajetaClass>(
                                         field->getType());
-                                    if (klassParam && !klassParam->isInterface()) {
+                                    // Value types are Copy (like primitives): `#v` on
+                                    // a value-type param is a no-op copy, never a heap
+                                    // ownership transfer, so it can't escape a borrow.
+                                    // Exempt them so a generic body that spells `#v` as
+                                    // a CTOR arg (LinkedList.add -> LinkedListNode<T>(
+                                    // #value)) instantiates for a value-type T. Mirrors
+                                    // the MethodCallExpression exemption (334d1f6f).
+                                    if (klassParam && !klassParam->isInterface()
+                                            && !klassParam->isValueType()) {
                                         throw Exception(
                                             "cannot transfer borrowed parameter `"
                                                 + idExpr->getTextValue() + "` via "
