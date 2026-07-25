@@ -1,5 +1,6 @@
 #include "cajeta/dap/DapServer.h"
 
+#include <cctype>
 #include <chrono>
 #include <filesystem>
 #include <cstdio>
@@ -105,6 +106,59 @@ static Json childVariableJson(const std::string& name, const std::string& type,
     var["variablesReference"] = ref;
     return var;
 }
+
+// variable-inspection Unit 6: one step of a simple evaluate path — a `.field`
+// or a `[index]`.
+namespace {
+    struct PathStep {
+        bool isField;
+        std::string field;
+        size_t index = 0;
+    };
+
+    bool isIdentStart(char c) {
+        return std::isalpha(static_cast<unsigned char>(c)) || c == '_';
+    }
+    bool isIdentChar(char c) {
+        return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+    }
+
+    // Parse a bare identifier followed only by `.field` / `[digits]` segments
+    // (spec §7.2). Anything else — an operator, a call, whitespace inside, an
+    // assignment — returns false so the caller reports "unsupported" rather than
+    // guessing. Read-only by construction: it never evaluates, only navigates.
+    bool parseSimplePath(const std::string& in, std::string& root,
+                         std::vector<PathStep>& steps) {
+        size_t a = 0, b = in.size();
+        while (a < b && std::isspace(static_cast<unsigned char>(in[a]))) a++;
+        while (b > a && std::isspace(static_cast<unsigned char>(in[b - 1]))) b--;
+        const std::string s = in.substr(a, b - a);
+        if (s.empty() || !isIdentStart(s[0])) return false;
+        size_t i = 0;
+        while (i < s.size() && isIdentChar(s[i])) i++;
+        root = s.substr(0, i);
+        while (i < s.size()) {
+            if (s[i] == '.') {
+                i++;
+                if (i >= s.size() || !isIdentStart(s[i])) return false;
+                size_t fs = i;
+                while (i < s.size() && isIdentChar(s[i])) i++;
+                steps.push_back(PathStep{true, s.substr(fs, i - fs), 0});
+            } else if (s[i] == '[') {
+                i++;
+                size_t ds = i;
+                while (i < s.size() && std::isdigit(static_cast<unsigned char>(s[i]))) i++;
+                if (i == ds || i >= s.size() || s[i] != ']') return false;
+                PathStep step{false, "", static_cast<size_t>(std::stoull(s.substr(ds, i - ds)))};
+                i++;   // consume ']'
+                steps.push_back(step);
+            } else {
+                return false;   // operator / call / stray char → unsupported
+            }
+        }
+        return true;
+    }
+} // namespace
 
 // dap-stepping: chain-length accessor from the C runtime — a pure pointer
 // chase, cheap enough to run per candidate safepoint while a step is pending
@@ -386,6 +440,8 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         Json caps = Json::object();
         caps["supportsConfigurationDoneRequest"] = true;
         caps["supportsSetVariable"] = true;
+        // variable-inspection Unit 6: identifier/path evaluation, incl. hover.
+        caps["supportsEvaluateForHovers"] = true;
         // CP6f-3: advertise an "all throws" exception filter so the client can
         // offer break-on-throw. Single filter for now (no type filtering yet).
         Json filter = Json::object();
@@ -773,6 +829,85 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         } else {
             emit(makeResponse(seq_++, requestSeq, command, false, Json(err)));
         }
+        return true;
+    }
+
+    if (command == "evaluate") {
+        // variable-inspection Unit 6 (spec §7): resolve a bare identifier or a
+        // simple `.field`/`[i]` path against the frame's locals, decode it
+        // through the bridge, and return its value plus an expansion reference
+        // when it is an aggregate. Read-only — it navigates, never evaluates a
+        // call or operator. An unparsable expression is "unsupported"; a name
+        // that doesn't resolve is "not available" — both handled, never a crash.
+        const std::string expr = args.at("expression").asString();
+        const int fid = args.has("frameId") ? args.at("frameId").asInt() : 0;
+
+        if (!session_) {
+            emit(makeResponse(seq_++, requestSeq, command, false,
+                              Json(std::string("not available: no stopped frame"))));
+            return true;
+        }
+        if (fid < 0 || static_cast<size_t>(fid) >= frameTable_.size()) {
+            emit(makeResponse(seq_++, requestSeq, command, false,
+                              Json(std::string("not available: no such frame"))));
+            return true;
+        }
+
+        std::string root;
+        std::vector<PathStep> steps;
+        if (!parseSimplePath(expr, root, steps)) {
+            emit(makeResponse(seq_++, requestSeq, command, false,
+                              Json("unsupported expression: " + expr)));
+            return true;
+        }
+
+        std::string curType;
+        void* curAddr = nullptr;
+        bool found = false;
+        for (const auto& v : frameTable_[fid].info.locals) {
+            if (v.name == root) { curType = v.type; curAddr = v.addr; found = true; break; }
+        }
+        if (!found) {
+            emit(makeResponse(seq_++, requestSeq, command, false,
+                              Json("not available: " + root)));
+            return true;
+        }
+
+        cajeta::dbg::ValueInspector insp(session_->dataLayout());
+        for (const auto& step : steps) {
+            bool stepOk = false;
+            if (step.isField) {
+                auto page = insp.children(curType, curAddr, 0, pageSize_);
+                for (const auto& c : page.children) {
+                    if (c.name == step.field) {
+                        curType = c.type; curAddr = c.addr; stepOk = true; break;
+                    }
+                }
+            } else {
+                // One element window at the requested index.
+                auto page = insp.children(curType, curAddr, step.index, 1);
+                const std::string want = "[" + std::to_string(step.index) + "]";
+                for (const auto& c : page.children) {
+                    if (c.name == want) {
+                        curType = c.type; curAddr = c.addr; stepOk = true; break;
+                    }
+                }
+            }
+            if (!stepOk) {
+                emit(makeResponse(seq_++, requestSeq, command, false,
+                                  Json("not available: " + expr)));
+                return true;
+            }
+        }
+
+        auto dec = insp.inspect(curType, curAddr);
+        int ref = (dec.kind == cajeta::dbg::ValueKind::Aggregate)
+                      ? mintAggregateRef(curType, curAddr) : 0;
+        Json body = Json::object();
+        body["result"] = dec.summary;
+        body["type"] = curType;
+        body["variablesReference"] = ref;
+        emit(makeResponse(seq_++, requestSeq, command, true, std::move(body)));
         return true;
     }
 

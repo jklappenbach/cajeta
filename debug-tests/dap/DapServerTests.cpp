@@ -357,6 +357,7 @@ protected:
     TempProgram prog{"demo", "Calc.cajeta", kExpandProg};
     DapServer srv;
     int localsRef = 0;
+    int frameId = 0;
 
     // initialize -> launch -> setBreakpoints -> configurationDone -> stopped,
     // then stackTrace -> scopes, leaving `localsRef` pointing at the Locals.
@@ -383,7 +384,7 @@ protected:
         ASSERT_EQ(countEvent(log, "stopped"), 1);
         std::vector<Json> l2;
         drive(srv, req(5, "stackTrace", Json::object()), l2);
-        int frameId = findResponse(l2, "stackTrace")->at("body")
+        frameId = findResponse(l2, "stackTrace")->at("body")
             .at("stackFrames")[0].at("id").asInt();
         std::vector<Json> l3;
         Json sa = Json::object();
@@ -391,6 +392,16 @@ protected:
         drive(srv, req(6, "scopes", sa), l3);
         localsRef = findResponse(l3, "scopes")->at("body").at("scopes")[0]
             .at("variablesReference").asInt();
+    }
+
+    // Issue an evaluate request against the stopped frame and return the response.
+    Json evaluate(const std::string& expr) {
+        std::vector<Json> l;
+        Json a = Json::object();
+        a["expression"] = expr;
+        a["frameId"] = frameId;
+        drive(srv, req(70, "evaluate", a), l);
+        return *findResponse(l, "evaluate");
     }
 
     void SetUp() override { driveToStop(Json::object()); }
@@ -452,6 +463,58 @@ TEST_F(DapExpandSession, NonPrimitiveTargetReadOnly) {
     // p is unchanged and still expandable
     int pRef = byName(varsOf(hRef), "p")->at("variablesReference").asInt();
     EXPECT_NE(pRef, 0);
+}
+
+// ---- variable-inspection Unit 6: editor hover evaluation ----
+
+TEST_F(DapExpandSession, EvaluateBareIdentifier) {
+    // a primitive local: value, no reference.
+    Json r1 = evaluate("n");
+    ASSERT_TRUE(r1.at("success").asBool());
+    EXPECT_EQ(r1.at("body").at("result").asString(), "5");
+    EXPECT_EQ(r1.at("body").at("variablesReference").asInt(), 0);
+    // an aggregate local: summary + an expandable reference.
+    Json r2 = evaluate("nums");
+    ASSERT_TRUE(r2.at("success").asBool());
+    EXPECT_EQ(r2.at("body").at("result").asString(), "[3, 7, 9]");
+    EXPECT_NE(r2.at("body").at("variablesReference").asInt(), 0);
+    // a String local renders its text.
+    EXPECT_EQ(evaluate("s").at("body").at("result").asString(), "\"hi\"");
+}
+
+TEST_F(DapExpandSession, EvaluateSimplePath) {
+    // field path, index path, and a nested combination.
+    EXPECT_EQ(evaluate("h.m").at("body").at("result").asString(), "99");
+    EXPECT_EQ(evaluate("nums[0]").at("body").at("result").asString(), "3");
+    EXPECT_EQ(evaluate("nums[2]").at("body").at("result").asString(), "9");
+    EXPECT_EQ(evaluate("h.p.x").at("body").at("result").asString(), "1");
+    EXPECT_EQ(evaluate("h.p.y").at("body").at("result").asString(), "2");
+    // an aggregate reached by a path is still expandable.
+    Json rp = evaluate("h.p");
+    ASSERT_TRUE(rp.at("success").asBool());
+    EXPECT_NE(rp.at("body").at("variablesReference").asInt(), 0);
+}
+
+TEST_F(DapExpandSession, EvaluateRejectsUnsupported) {
+    // an operator expression and a call are refused cleanly, never guessed.
+    EXPECT_FALSE(evaluate("n + 1").at("success").asBool());
+    EXPECT_FALSE(evaluate("foo()").at("success").asBool());
+    EXPECT_FALSE(evaluate("h.m = 3").at("success").asBool());
+}
+
+TEST_F(DapExpandSession, EvaluateUnknownIdentifier) {
+    // a name not in the frame is "not available", handled — not a crash.
+    Json r = evaluate("nope");
+    EXPECT_FALSE(r.at("success").asBool());
+    // an out-of-range index / missing field is likewise not-available.
+    EXPECT_FALSE(evaluate("nums[99]").at("success").asBool());
+    EXPECT_FALSE(evaluate("h.nosuch").at("success").asBool());
+}
+
+TEST_F(DapExpandSession, EvaluateNeverMutates) {
+    // evaluate is read-only (§6.3.2): reading h.m leaves it unchanged.
+    EXPECT_EQ(evaluate("h.m").at("body").at("result").asString(), "99");
+    EXPECT_EQ(byName(varsOf(localsRef), "h")->at("value").asString(), "{m=99}");
 }
 
 // A moved-out binding stays read-only (§6.1.3): `gone`'s ownership is
