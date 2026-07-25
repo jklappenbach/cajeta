@@ -5,6 +5,8 @@ import com.intellij.openapi.editor.DefaultLanguageHighlighterColors
 import com.intellij.openapi.editor.colors.TextAttributesKey
 import com.intellij.xdebugger.XExpression
 import com.intellij.xdebugger.frame.XValue
+import com.intellij.xdebugger.frame.XCompositeNode
+import com.intellij.xdebugger.frame.XValueChildrenList
 import com.intellij.xdebugger.frame.XValueModifier
 import com.intellij.xdebugger.frame.XValueNode
 import com.intellij.xdebugger.frame.XValuePlace
@@ -64,6 +66,35 @@ class CajetaValue(
                 }
             }
         }, hasChildren)
+    }
+
+    /**
+     * Expand an aggregate (array element rows, object fields, or a collection's
+     * logical elements/entries) by fetching `variables(variablesReference)` from
+     * the server — the same call the frame scope uses, just keyed by this value's
+     * reference instead of a scope's. Each child is tagged with THIS value's
+     * reference as its container so editing a scalar leaf targets it via
+     * setVariable. A leaf (reference 0) or a detached value (no session) has no
+     * children. Paging arrives as a synthetic "[N more…]" child that is itself
+     * expandable, so it needs no special handling here.
+     */
+    override fun computeChildren(node: XCompositeNode) {
+        val ds = session
+        val ref = variable.variablesReference
+        if (ds == null || ref == 0) {
+            node.addChildren(XValueChildrenList.EMPTY, true)
+            return
+        }
+        ds.variables(ref).thenAccept { response ->
+            val children = XValueChildrenList()
+            for (v in CajetaDebugSession.parseVariables(response)) {
+                children.add(v.name, CajetaValue(v.copy(containerReference = ref), ds))
+            }
+            node.addChildren(children, true)
+        }.exceptionally {
+            node.setErrorMessage("Failed to load children: ${it.message}")
+            null
+        }
     }
 
     /**
