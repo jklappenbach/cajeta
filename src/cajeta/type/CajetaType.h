@@ -328,16 +328,18 @@ class CajetaType : public Modifiable, public Annotatable,
 
         string toGeneric();
 
+        // Registry lookups NEVER insert on a miss. They once read canonicalMap
+        // with operator[], and a missed probe left a null entry behind — later
+        // "already registered?" checks saw a present-but-null type and the
+        // generic-instantiation machinery skipped generating it (the failure
+        // mode was `Symbols not found: Foo<Bar>#ClassObject` in a later
+        // session sharing the type world). A miss now returns null and leaves
+        // the registry untouched.
         static CajetaTypePtr of(string typeName);
 
-        // Read-only lookup: like of(), but NEVER touches the registry on a
-        // miss. of() indexes canonicalMap with operator[], so probing a name
-        // that does not exist INSERTS a null entry under it — after which
-        // "already registered?" checks see a present-but-null type and the
-        // generic-instantiation machinery skips generating it (the failure
-        // mode is `Symbols not found: Foo<Bar>#ClassObject` in a later
-        // session sharing the type world). Use this anywhere a name may
-        // legitimately not resolve — probing, introspection, diagnostics.
+        // Cheaper probe than of(): tries the raw string before canonicalizing,
+        // so a name that is already canonical costs one lookup and no
+        // QualifiedName interning. Same non-inserting contract.
         static CajetaTypePtr find(const string& typeName);
 
         // The name-keyed core of declared-type resolution: substitution,

@@ -684,13 +684,20 @@ namespace cajeta {
         return false;
     }
 
+    // Every of() overload reads the registry with map::find, NEVER operator[]:
+    // an operator[] miss INSERTS a null entry under the probed name, which
+    // "already registered?" checks then read as present — and the generic-
+    // instantiation machinery skips generating a type it believes exists
+    // (`Symbols not found: Foo<Bar>#ClassObject` in a sharing session). A
+    // resolution miss must leave the registry untouched.
     CajetaTypePtr CajetaType::of(string typeName) {
         QualifiedNamePtr qName = QualifiedName::getOrCreate(typeName);
-        return CajetaType::canonicalMap[qName->toCanonical()];
+        auto it = canonicalMap.find(qName->toCanonical());
+        return it == canonicalMap.end() ? nullptr : it->second;
     }
 
-    // Non-inserting counterpart of of(). Tries the raw string first so a name
-    // that is already canonical costs one lookup and no QualifiedName churn.
+    // Cheaper probe than of(): tries the raw string first, so a name that is
+    // already canonical costs one lookup and no QualifiedName interning.
     CajetaTypePtr CajetaType::find(const string& typeName) {
         auto it = canonicalMap.find(typeName);
         if (it != canonicalMap.end()) return it->second;
@@ -796,11 +803,13 @@ namespace cajeta {
 
     CajetaTypePtr CajetaType::of(string typeName, string package) {
         QualifiedNamePtr qName = QualifiedName::getOrInsert(typeName, package);
-        return CajetaType::canonicalMap[qName->toCanonical()];
+        auto it = canonicalMap.find(qName->toCanonical());
+        return it == canonicalMap.end() ? nullptr : it->second;
     }
 
     CajetaTypePtr CajetaType::of(QualifiedNamePtr qName) {
-        return CajetaType::canonicalMap[qName->toCanonical()];
+        auto it = canonicalMap.find(qName->toCanonical());
+        return it == canonicalMap.end() ? nullptr : it->second;
     }
 
     CajetaTypePtr CajetaType::findTemplateByShortName(const string& shortName) {
@@ -816,7 +825,8 @@ namespace cajeta {
 
     CajetaTypePtr CajetaType::fromContext(CajetaParser::PrimitiveTypeContext* ctx, CajetaModulePtr module) {
         QualifiedNamePtr qName = QualifiedName::getOrInsert(ctx->getText(), "code");
-        return CajetaType::canonicalMap[qName->toCanonical()];
+        auto it = canonicalMap.find(qName->toCanonical());
+        return it == canonicalMap.end() ? nullptr : it->second;
     }
 
     cajeta::CajetaTypePtr cajeta::CajetaType::fromContext(CajetaParser::TypeTypeOrVoidContext* ctx, CajetaModulePtr module) {
@@ -824,7 +834,8 @@ namespace cajeta {
         if (ctx != nullptr) {
             if (ctx->VOID() != nullptr) {
                 QualifiedNamePtr qName = QualifiedName::getOrCreate(ctx->getText());
-                type = CajetaType::canonicalMap[qName->toCanonical()];
+                auto it = canonicalMap.find(qName->toCanonical());
+                type = it == canonicalMap.end() ? nullptr : it->second;
             } else {
                 type = fromContext(ctx->typeType(), module);
             }
@@ -1238,7 +1249,8 @@ namespace cajeta {
                     // primitive-bootstrap path).
                     QualifiedNamePtr voidQ = QualifiedName::getOrInsert(
                         "void", CAJETA_NATIVE_PACKAGE);
-                    ret = canonicalMap[voidQ->toCanonical()];
+                    auto vIt = canonicalMap.find(voidQ->toCanonical());
+                    if (vIt != canonicalMap.end()) ret = vIt->second;
                 } else if (rt->typeType()) {
                     ret = fromContext(rt->typeType(), module);
                     returnsOwn = (rt->REFERENCE() != nullptr);
@@ -1282,7 +1294,8 @@ namespace cajeta {
         CajetaParser::PrimitiveTypeContext* ctxPrimitiveType = ctx->primitiveType();
         if (ctxPrimitiveType != nullptr) {
             qName = QualifiedName::getOrInsert(ctxPrimitiveType->getText(), CAJETA_NATIVE_PACKAGE);
-            type = canonicalMap[qName->toCanonical()];
+            auto pIt = canonicalMap.find(qName->toCanonical());
+            type = pIt == canonicalMap.end() ? nullptr : pIt->second;
         } else {
             CajetaParser::ClassOrInterfaceTypeContext* ctxClassOrInterface = ctx->classOrInterfaceType();
             if (ctxClassOrInterface != nullptr) {
@@ -1621,11 +1634,14 @@ namespace cajeta {
             if (type->isStructTy()) {
                 llvm::StringRef ref = type->getStructName();
                 if (!ref.empty()) {
-                    string name = ref.str();
-                    result = canonicalMap[name];
+                    // find, not operator[]: a miss must not insert a null
+                    // entry (see the of() overloads above) — typeMap included.
+                    auto it = canonicalMap.find(ref.str());
+                    if (it != canonicalMap.end()) result = it->second;
                 }
             } else {
-                result = typeMap[TypeKey(type)];
+                auto it = typeMap.find(TypeKey(type));
+                if (it != typeMap.end()) result = it->second;
             }
         } catch (exception) {
             throw "Exception while mapping value to type";
