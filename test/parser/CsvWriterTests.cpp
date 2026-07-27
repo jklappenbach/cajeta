@@ -11,14 +11,15 @@
 using cajeta_test::CajetaJit;
 
 namespace {
-// int8[] literal initializer for a field value, e.g. lit("a,b").
+// int8[] literal initializer for a field value, e.g. lit("a,b"). Bracket form —
+// the array-`{…}` initializer was retired by collection-literals 5.
 std::string lit(const std::string& s) {
-    std::string r = "{";
+    std::string r = "[";
     for (size_t i = 0; i < s.size(); ++i) {
         if (i) r += ", ";
         r += "(int8) " + std::to_string((int)(unsigned char)s[i]);
     }
-    r += "}";
+    r += "]";
     return r;
 }
 

@@ -399,7 +399,13 @@ TEST(CollectionLiteralTests, NoBraceArraysInTree) {
     for (const char* sub : {"runtime/src", "samples"}) {
         fs::path root = repoRoot / sub;
         if (!fs::exists(root)) continue;
-        for (auto& e : fs::recursive_directory_iterator(root)) {
+        // Never follow symlinks. `is_regular_file()` stats *through* a link, so a
+        // self-referential one (e.g. local profiling output under
+        // samples/profile/results/) raises ELOOP and aborts the whole scan. A
+        // source scan has no reason to traverse links, so skip them outright.
+        fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied);
+        for (auto& e : it) {
+            if (e.is_symlink()) continue;
             if (!e.is_regular_file() || e.path().extension() != ".cajeta") continue;
             std::ifstream in(e.path());
             std::string line;

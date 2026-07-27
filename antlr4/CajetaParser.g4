@@ -486,10 +486,17 @@ elementValuePair
     : identifier ('=' | ':') elementValue
     ;
 
+// The array form is listed FIRST, ahead of `expression`. collection-literals 2
+// gave `aggregateInitializer` a prefixless `'{' parameterList '}'` alternative,
+// and `parameterEntry`'s label is optional — so `{"a", "b"}` also matches an
+// aggregate expression. With `expression` first, every annotation array argument
+// (`@SuppressLint({"a","b"})`, `@JsonAlias({...})`, `@Profile({...})`) parsed as
+// an aggregate and silently lost its elements — no diagnostic, just an empty
+// list. Ordering the specific form ahead of the general one restores it.
 elementValue
-    : expression
+    : elementValueArrayInitializer
     | annotation
-    | elementValueArrayInitializer
+    | expression
     ;
 
 elementValueArrayInitializer
