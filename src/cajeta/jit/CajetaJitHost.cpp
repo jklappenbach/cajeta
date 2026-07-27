@@ -459,6 +459,7 @@ struct WholeProgramSlot {
     std::filesystem::path dir;   // <cacheDir>/jit/<program-key>/
     std::filesystem::path meta() const { return dir / "program.meta"; }
     std::filesystem::path dbgloc() const { return dir / "program.dbgloc"; }
+    std::filesystem::path typeinfo() const { return dir / "program.typeinfo"; }
     std::filesystem::path bcPool() const {
         return dir.parent_path() / "bcpool";
     }
@@ -557,12 +558,20 @@ void writeWholeProgramSlot(const WholeProgramSlot& slot, const BuiltJit& built,
             return cajeta::dbg::writeDbgLocSidecar(
                 p.string(), cajeta::dbg::globalDbgLocTable());
         });
+        // The type-layout sidecar rides beside dbgloc for the same reason it
+        // exists (a hit has no type world) under the same all-or-nothing rule
+        // (debug-type-sidecar 4.2.1).
+        ok = ok && place(slot.typeinfo(), [&](const fs::path& p) {
+            return cajeta::dbg::writeTypeSidecar(
+                p.string(), cajeta::dbg::globalDebugTypeTable());
+        });
     }
     if (!ok) {
         // No half-manifest: without meta the slot MISSES; pooled files are
         // content-addressed and harmless to leave.
         fs::remove(slot.meta(), ec);
         fs::remove(slot.dbgloc(), ec);
+        fs::remove(slot.typeinfo(), ec);
     }
 }
 
@@ -795,6 +804,14 @@ bool tryLoadWholeProgramSlot(const WholeProgramSlot& slot,
             table.clear();
             return false;
         }
+        // Type-layout sidecar (debug-type-sidecar 4.2.2): the hit decodes
+        // variables through this table alone. Missing or unreadable — a slot
+        // written before the feature, or torn — is a MISS, so the slot heals
+        // by recompiling once. loadTypeSidecar leaves the table EMPTY on
+        // failure, never partial.
+        if (!cajeta::dbg::loadTypeSidecar(slot.typeinfo().string(),
+                                          cajeta::dbg::globalDebugTypeTable()))
+            return false;
     }
     std::vector<ModuleBC> modules;
     modules.reserve(digests.size());
