@@ -47,9 +47,19 @@ target_include_directories(${BINARY} PRIVATE ${PROJECT_SOURCE_DIR}/src)
 # always linked (eager clinit ctors root every class, so --gc-sections cannot drop
 # the unused net subsystem). One forced undefined reference pulls the object in,
 # and with it every __cajeta_tls_* symbol.
+#
+# `-u` takes a LINKER-level symbol name, and Mach-O prefixes every C symbol with
+# an underscore that ELF does not. The C identifier is `__cajeta_tls_ctx_new`, so
+# the name to force is `__cajeta_tls_ctx_new` on ELF but `___cajeta_tls_ctx_new`
+# (three) on Apple — passing the ELF spelling there fails the link outright with
+# "Undefined symbols ... __cajeta_tls_ctx_new, referenced from <initial-undefines>".
 if(NOT WIN32)
     set_target_properties(${BINARY} PROPERTIES ENABLE_EXPORTS ON)
-    target_link_options(${BINARY} PRIVATE -rdynamic -Wl,-u,__cajeta_tls_ctx_new)
+    if(APPLE)
+        target_link_options(${BINARY} PRIVATE -rdynamic -Wl,-u,___cajeta_tls_ctx_new)
+    else()
+        target_link_options(${BINARY} PRIVATE -rdynamic -Wl,-u,__cajeta_tls_ctx_new)
+    endif()
 endif()
 
 # Bake the project source root so tests can locate the in-tree sample fixtures
