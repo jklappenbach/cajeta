@@ -2,15 +2,18 @@
 // debugger-variable-inspection: the type-introspection bridge.
 //
 // Given a canonical cajeta type name (e.g. "cajeta.lang.String", "int32",
-// "tour.Point[]"), a live address, and the JIT's DataLayout, decode the value:
-// classify it leaf vs aggregate, render a collapsed summary, and (Units 2-3)
-// enumerate typed children. This is the ONLY place that bridges a debug-time
-// type-name string to the compiler's live type world (CajetaType) + LLVM
-// DataLayout; DebugVars and DapServer consume it and never reach into
-// CajetaType themselves (spec §2.1.2).
+// "tour.Point[]") and a live address, decode the value: classify it leaf vs
+// aggregate, render a collapsed summary, and enumerate typed children.
+// DebugVars and DapServer consume this bridge and never reach into type
+// information themselves (spec §2.1.2).
 //
-// Layout comes from the live LLJIT DataLayout, exactly as deriveEntryArgsABI
-// derives the String ABI — nothing about a type's layout is hardcoded here.
+// Every layout fact comes from the DebugTypeTable (debug-type-sidecar §4.1):
+// field byte offsets, element strides, inline-vs-pointer storage and the String
+// ABI, all resolved from the live DataLayout when the table was built. The
+// bridge itself never touches CajetaType, so it decodes identically on a cold
+// launch (table built from the type world) and a warm cache-hit launch (table
+// loaded from the slot sidecar, no type world at all). Nothing here is
+// hardcoded: an empty table decodes to `<unknown>`, never to a guessed width.
 //
 #pragma once
 
@@ -60,7 +63,17 @@ namespace cajeta::dbg {
 
     class ValueInspector {
     public:
+        // Decode against the process-global table — the one the cold build
+        // populated from the type world, or the one a cache hit loaded from the
+        // sidecar. `dl` names the session whose target the table was built for;
+        // the layout facts themselves come from the table, so every existing
+        // call site (DapServer, tests) is unchanged.
         explicit ValueInspector(const llvm::DataLayout& dl);
+
+        // Decode against a caller-supplied table. Used by tests to decode
+        // through a table whose type names DO NOT exist in the live type world
+        // — the warm path, simulated while the world is still up.
+        ValueInspector(const llvm::DataLayout& dl, const DebugTypeTable& table);
 
         // Default elements per page when a caller does not supply one (§3.1.4
         // threads the launch param; the bridge only needs a sane fallback).
@@ -81,25 +94,28 @@ namespace cajeta::dbg {
         ChildPage children(const std::string& type, void* addr,
                            size_t start = 0, size_t pageSize = kDefaultPageSize);
 
-        // True if `type` resolves in the live type world (FQ or short name).
+        // True if `type` is decodable: a primitive, or carried by the table.
         bool canResolve(const std::string& type) const;
 
     private:
         const llvm::DataLayout& dl_;
+        const DebugTypeTable& table_;
 
         // Decode a cajeta.lang.String instance reachable from `slot` (which
         // holds the String pointer) into its text, quoted+escaped. Returns
-        // "<null>" for a null pointer. Units 1.
+        // "<null>" for a null pointer, "<string?>" with no String ABI.
         std::string decodeString(void* slot);
 
-        // Resolved storage geometry of one array element (Unit 2). Mirrors
-        // CajetaArray::getElementLlvmType: a reference-class/array element is a
-        // pointer slot; String keeps its full 64-byte struct slot with the
-        // String* at the base; primitives and value structs are inline.
+        // Storage geometry of one array element, read from the array's table
+        // record: a reference-class element keeps its own struct slot with the
+        // instance pointer at the base, a nested array is a pointer slot, and
+        // primitives and value structs are inline. ok=false when the table
+        // carries no record — the decoder then shows no children rather than
+        // walking a guessed stride.
         struct ArrayInfo {
             bool ok = false;
             std::string elemType;   // canonical element type name
-            uint64_t stride = 0;    // per-element slot stride, from DataLayout
+            uint64_t stride = 0;    // per-element slot stride
             Storage storage = Storage::Inline;
         };
         ArrayInfo resolveArrayElement(const std::string& arrayType);

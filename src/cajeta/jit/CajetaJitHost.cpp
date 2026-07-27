@@ -43,6 +43,7 @@
 #include "cajeta/type/CajetaClass.h"
 #include "cajeta/type/CajetaType.h"
 #include "cajeta/dbg/DebugLocTable.h"
+#include "cajeta/dbg/DebugTypeTable.h"
 #include "cajeta/error/Exception.h"
 #include "cajeta/method/Method.h"
 
@@ -914,6 +915,10 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
     // wiped by each session's table clear below; snapshot once, replay each
     // session so stdlib frames keep resolving.
     static thread_local cajeta::dbg::DbgLocTable residentLayerLocs;
+    // Same story for the debug type roots the layer's locals registered: the
+    // per-session clear drops them, so a stop inside a stdlib frame would have
+    // no record for its locals' types. Snapshot once, replay each session.
+    static thread_local std::vector<std::string> residentLayerTypeRoots;
     if (opts.resident) {
         try {
             auto& core = cajeta::StdlibReuseCore::instance();
@@ -941,6 +946,7 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
                     m->setFlags(f);
                 }
                 cajeta::dbg::globalDbgLocTable().clear();
+                cajeta::dbg::globalDebugTypeTable().clear();
                 size_t prev = 0;
                 while (true) {
                     size_t count = 0;
@@ -969,6 +975,8 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
                 const auto& t = cajeta::dbg::globalDbgLocTable();
                 for (int32_t id : t.assignedIds())
                     residentLayerLocs.setAt(id, t.at(id));
+                residentLayerTypeRoots =
+                    cajeta::dbg::globalDebugTypeTable().roots();
             });
             residentStdlib = core.getStdlibModule();
             Compiler::setSharedContext(core.context());
@@ -995,12 +1003,17 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
         opts.debugInfo ? DebugInfo::Full : DebugInfo::Line;
     if (opts.debugInfo) {
         cajeta::dbg::globalDbgLocTable().clear();
+        // The type table is per-program too: records resolved against a
+        // previous run's world must never answer this one's lookups.
+        cajeta::dbg::globalDebugTypeTable().clear();
         if (residentActive) {
             // Restore the stdlib's layer-time loc entries (dense ids; user
             // module ranges start at 1<<20, so the spaces never collide).
             auto& t = cajeta::dbg::globalDbgLocTable();
             for (int32_t id : residentLayerLocs.assignedIds())
                 t.setAt(id, residentLayerLocs.at(id));
+            for (const auto& root : residentLayerTypeRoots)
+                cajeta::dbg::globalDebugTypeTable().addRoot(root);
         }
     }
 
@@ -1274,6 +1287,16 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
     // ABI for makeEntryArgs, derived while the type world is still alive; it
     // rides the slot meta so a HIT launch never needs CajetaType (4.2.4).
     out.entryArgsABI = deriveEntryArgsABI(out.jit.get());
+
+    // Same window, same reason, for variable inspection: resolve every
+    // debug-reachable type's layout (roots registered by emitDbgLocal during
+    // the codegen above) while the world is still up. ValueInspector decodes
+    // ONLY through this table, so a cold stop exercises the identical path a
+    // cache hit will take once the sidecar loads it (debug-type-sidecar §4.1).
+    if (opts.debugInfo && out.jit) {
+        cajeta::dbg::globalDebugTypeTable().buildFromTypeWorld(
+            out.jit->getDataLayout());
+    }
 
     // Persist the manifest + any pool bitcodes not already present; objects
     // were persisted by PoolObjectCache as they compiled.

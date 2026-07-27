@@ -159,6 +159,12 @@ TEST_F(DebugTypeTableStop, BuildsLeafAndStringRecords) {
     EXPECT_EQ(str->kind, TypeKind::Leaf);
     EXPECT_TRUE(str->fields.empty());
     EXPECT_FALSE(str->isValueType);   // a reference class: a pointer slot
+    // The String-ness is a carried fact, so a decoder never has to match the
+    // stdlib name; its decode ABI rides the table too.
+    EXPECT_TRUE(str->isString);
+    EXPECT_FALSE(i32->isString);
+    EXPECT_TRUE(table.stringAbi().valid);
+    EXPECT_GT(table.stringAbi().offBase, table.stringAbi().offLenTag);
 }
 
 // 1.1.2 — a class yields an Object record with ordered fields carrying declared
@@ -176,6 +182,14 @@ TEST_F(DebugTypeTableStop, BuildsObjectFieldRecords) {
     EXPECT_EQ(pt->fields[0].storage, Storage::Inline);
     EXPECT_GT(pt->fields[0].offset, 0u);      // past the vtable pointer
     EXPECT_GT(pt->fields[1].offset, pt->fields[0].offset);
+
+    // A plain class is reachable by its short name too — everything
+    // CajetaType::of resolved, the table resolves.
+    const auto* ptShort = table.find("Point");
+    ASSERT_NE(ptShort, nullptr);
+    EXPECT_EQ(ptShort->canonical, "demo.Point");
+    EXPECT_EQ(ptShort->fields.size(), pt->fields.size());
+    EXPECT_EQ(ptShort->fields[0].offset, pt->fields[0].offset);
 
     const auto* v2 = table.find("demo.Vec2");
     ASSERT_NE(v2, nullptr);

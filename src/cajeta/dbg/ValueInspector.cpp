@@ -5,12 +5,9 @@
 
 #include <cstdint>
 #include <cstdio>
-#include <set>
 
+#include "cajeta/dbg/DebugTypeTable.h"
 #include "cajeta/dbg/DebugVars.h"
-#include "cajeta/type/CajetaArray.h"
-#include "cajeta/type/CajetaClass.h"
-#include "cajeta/type/CajetaType.h"
 
 namespace cajeta::dbg {
 
@@ -38,41 +35,25 @@ std::string escapeAndQuote(const std::string& text) {
     return out;
 }
 
-ValueInspector::ValueInspector(const llvm::DataLayout& dl) : dl_(dl) {}
+ValueInspector::ValueInspector(const llvm::DataLayout& dl)
+    : ValueInspector(dl, globalDebugTypeTable()) {}
+
+ValueInspector::ValueInspector(const llvm::DataLayout& dl,
+                               const DebugTypeTable& table)
+    : dl_(dl), table_(table) {}
 
 bool ValueInspector::canResolve(const std::string& type) const {
-    return cajeta::CajetaType::of(type) != nullptr;
+    return isPrimitiveTypeName(type) || table_.find(type) != nullptr;
 }
-
-namespace {
-    // String field byte offsets from the live layout (spec §2.4), derived
-    // exactly as deriveEntryArgsABI does — nothing hardcoded.
-    struct StrABI {
-        bool valid = false;
-        int64_t offLenTag = 0, offAux = 0, offBase = 0;
-    };
-    StrABI stringABI(const llvm::DataLayout& dl) {
-        StrABI abi;
-        auto klass = std::dynamic_pointer_cast<cajeta::CajetaClass>(
-            cajeta::CajetaType::of("cajeta.lang.String"));
-        if (!klass) return abi;
-        auto* st = llvm::dyn_cast_or_null<llvm::StructType>(klass->getLlvmType());
-        if (!st || st->isOpaque() || st->getNumElements() < 4) return abi;
-        const llvm::StructLayout* sl = dl.getStructLayout(st);
-        abi.offLenTag = static_cast<int64_t>(sl->getElementOffset(1));
-        abi.offAux    = static_cast<int64_t>(sl->getElementOffset(2));
-        abi.offBase   = static_cast<int64_t>(sl->getElementOffset(3));
-        abi.valid = true;
-        return abi;
-    }
-} // namespace
 
 std::string ValueInspector::decodeString(void* slot) {
     if (!slot) return "<null>";
     // The slot holds the String pointer; the instance carries the fields.
     void* inst = *reinterpret_cast<void**>(slot);
     if (!inst) return "<null>";
-    StrABI abi = stringABI(dl_);
+    // The String ABI rides the table (spec §2.1.4), so the decode survives a
+    // cache hit where no type world exists to re-derive it from.
+    const StringAbi& abi = table_.stringAbi();
     if (!abi.valid) return "<string?>";
 
     char* base = reinterpret_cast<char*>(inst);
@@ -104,70 +85,21 @@ std::string ValueInspector::decodeString(void* slot) {
     return quoted;
 }
 
-// Geometry of one array element, mirroring CajetaArray::getElementLlvmType so
-// the stride the bridge walks is the stride the JIT'd code stores at. Resolved
-// from the element type name only (array types are not interned in the name
-// map, so `CajetaType::of("int32[]")` is null — we strip and resolve the
-// element). No CajetaArray is constructed: that would mutate the live type
-// registry mid-stop.
+// Element geometry straight off the array's table record — the stride stored
+// there was resolved from the element's LLVM type when the table was built, so
+// it is the stride the JIT'd code stores at. A type the table does not carry
+// yields ok=false: the decoder shows no children rather than walking a guessed
+// stride over live memory.
 ValueInspector::ArrayInfo
 ValueInspector::resolveArrayElement(const std::string& arrayType) {
     ArrayInfo info;
-    if (arrayType.empty() || arrayType.back() != ']') return info;
-    auto lb = arrayType.find_last_of('[');
-    if (lb == std::string::npos) return info;
-    std::string elemName = arrayType.substr(0, lb);
-    if (elemName.empty()) return info;
-
-    // A nested array element (`int32[][]` → `int32[]`) is itself a heap
-    // reference: a pointer slot.
-    if (elemName.back() == ']') {
-        info.ok = true;
-        info.elemType = elemName;
-        info.storage = Storage::Pointer;
-        info.stride = dl_.getPointerSize();
+    const TypeRecord* rec = table_.find(arrayType);
+    if (!rec || rec->kind != TypeKind::Array || rec->elem.stride == 0)
         return info;
-    }
-
-    auto elem = cajeta::CajetaType::of(elemName);
-    if (!elem) {
-        // Unresolved user type: assume a pointer slot so we only ever read a
-        // pointer, never fabricate an inline width.
-        info.ok = true;
-        info.elemType = elemName;
-        info.storage = Storage::Pointer;
-        info.stride = dl_.getPointerSize();
-        return info;
-    }
-    info.elemType = elem->toCanonical();
-
-    if (auto klass = std::dynamic_pointer_cast<cajeta::CajetaClass>(elem)) {
-        CajetaTypeFlags flags = klass->getTypeFlags();
-        bool pointerSlot =
-            klass->isWildcardInstantiation() ||
-            (!klass->isInterface() && (flags & STRUCT_FLAG) == 0 &&
-             (flags & PRIMITIVE_FLAG) == 0);
-        if (pointerSlot) {
-            info.storage = Storage::Pointer;
-            info.stride = dl_.getPointerSize();
-        } else {
-            // STRUCT_FLAG classes keep their own struct slot. A value type is
-            // stored inline; String (a reference class with a struct slot)
-            // keeps the String* at the slot base — a pointer read.
-            llvm::Type* elemLlvm = klass->getLlvmType();
-            if (!elemLlvm) return info;  // ok stays false
-            info.storage = klass->isValueType() ? Storage::Inline
-                                                : Storage::Pointer;
-            info.stride = dl_.getTypeAllocSize(elemLlvm);
-        }
-    } else {
-        // Primitive: inline bytes.
-        llvm::Type* elemLlvm = elem->getLlvmType();
-        if (!elemLlvm) return info;  // ok stays false
-        info.storage = Storage::Inline;
-        info.stride = dl_.getTypeAllocSize(elemLlvm);
-    }
-    info.ok = info.stride > 0;
+    info.ok = true;
+    info.elemType = rec->elem.type;
+    info.stride = rec->elem.stride;
+    info.storage = rec->elem.storage;
     return info;
 }
 
@@ -201,77 +133,34 @@ std::string ValueInspector::arraySummary(const ArrayInfo& info, char* data,
     return out;
 }
 
-// Inline-vs-pointer storage of a field/element by its declared type, mirroring
-// how the layout stores it: a value type and a primitive are inline bytes; a
-// String, reference class, or array holds the instance/header pointer at the
-// slot base. inspect(type, addr) decodes either uniformly.
-static Storage storageOfType(const cajeta::CajetaTypePtr& t) {
-    if (auto klass = std::dynamic_pointer_cast<cajeta::CajetaClass>(t))
-        return klass->isValueType() ? Storage::Inline : Storage::Pointer;
-    return Storage::Inline;  // primitive
-}
-
-// Collect a class's non-static fields in layout order — inherited (ancestors,
-// recursively) before own — deduped so a shared vbase field appears once.
-static void collectFields(cajeta::CajetaClass* cls,
-                          std::vector<cajeta::StructurePropertyPtr>& out,
-                          std::set<void*>& seen) {
-    if (!cls) return;
-    for (auto& parent : cls->getSuperClasses())
-        collectFields(parent.get(), out, seen);
-    for (auto& prop : cls->getPropertyList()) {
-        if (prop->isStatic()) continue;
-        if (seen.insert(prop.get()).second) out.push_back(prop);
-    }
-}
-
 std::vector<InspectedChild>
 ValueInspector::objectChildren(const std::string& type, void* addr) {
     std::vector<InspectedChild> out;
-    auto klass = std::dynamic_pointer_cast<cajeta::CajetaClass>(
-        cajeta::CajetaType::of(type));
-    if (!klass || !addr) return out;
+    const TypeRecord* rec = table_.find(type);
+    if (!rec || !addr) return out;
+    if (rec->kind != TypeKind::Object && rec->kind != TypeKind::Collection)
+        return out;
 
     // A reference class slot holds the instance pointer; a value type is stored
     // inline (the slot IS the instance). Null pointer → no children, no deref.
-    void* inst = klass->isValueType() ? addr : *reinterpret_cast<void**>(addr);
+    void* inst = rec->isValueType ? addr : *reinterpret_cast<void**>(addr);
     if (!inst) return out;
 
-    auto* st = llvm::dyn_cast_or_null<llvm::StructType>(klass->getLlvmType());
-    if (!st || st->isOpaque()) return out;
-    const llvm::StructLayout* sl = dl_.getStructLayout(st);
-
-    std::vector<cajeta::StructurePropertyPtr> fields;
-    std::set<void*> seen;
-    collectFields(klass.get(), fields, seen);
-
-    for (const auto& f : fields) {
-        int slot = klass->getFieldLlvmIndex(f);
-        if (slot < 0 || slot >= static_cast<int>(st->getNumElements())) continue;
+    for (const auto& f : rec->fields) {
         InspectedChild child;
-        child.name = f->getName();
-        child.type = f->getType() ? f->getType()->toCanonical() : "";
-        child.storage = storageOfType(f->getType());
-        // Address from the DataLayout offset end-to-end — never index*8 — so a
-        // field after an interior secondary-vtable word lands on its own bytes.
-        child.addr = reinterpret_cast<char*>(inst) + sl->getElementOffset(slot);
+        child.name = f.name;
+        child.type = f.type;
+        child.storage = f.storage;
+        // The record's offset came from the DataLayout when the table was
+        // built — never index*8 — so a field after an interior secondary-vtable
+        // word lands on its own bytes.
+        child.addr = reinterpret_cast<char*>(inst) + f.offset;
         out.push_back(std::move(child));
     }
     return out;
 }
 
 namespace {
-    // Fully-qualified stdlib collection types with a logical debug view.
-    const char* kArrayListFqn = "cajeta.collection.ArrayList";
-    const char* kHashMapFqn = "cajeta.collection.HashMap";
-
-    // The base type name with any generic arguments stripped:
-    // "cajeta.collection.ArrayList<int32>" → "cajeta.collection.ArrayList".
-    std::string typeBase(const std::string& t) {
-        auto lt = t.find('<');
-        return lt == std::string::npos ? t : t.substr(0, lt);
-    }
-
     // Read a small integer field (a backing size/capacity) by primitive type.
     // -1 for a non-integer (a fail-safe signal the view checks).
     int64_t readIntByType(const std::string& t, void* addr) {
@@ -297,9 +186,14 @@ namespace {
 std::optional<ChildPage>
 ValueInspector::collectionChildren(const std::string& type, void* addr,
                                    size_t start, size_t pageSize) {
-    const std::string base = typeBase(type);
-    if (base == kArrayListFqn) return arrayListChildren(type, addr, start, pageSize);
-    if (base == kHashMapFqn)   return hashMapChildren(type, addr, start, pageSize);
+    // The record carries the collection kind — the logical view is selected
+    // from the table, not by matching the type name at a stop.
+    const TypeRecord* rec = table_.find(type);
+    if (!rec) return std::nullopt;
+    if (rec->collectionKind == CollectionKind::ArrayList)
+        return arrayListChildren(type, addr, start, pageSize);
+    if (rec->collectionKind == CollectionKind::HashMap)
+        return hashMapChildren(type, addr, start, pageSize);
     return std::nullopt;
 }
 
@@ -442,17 +336,20 @@ InspectedValue ValueInspector::inspect(const std::string& type, void* addr) {
         return r;
     }
 
-    auto ct = cajeta::CajetaType::of(type);
-    if (!ct) {
+    const TypeRecord* rec = table_.find(type);
+    if (!rec) {
+        // Not carried by the table: an honest unknown, never a guessed layout.
         r.kind = ValueKind::Unknown;
         r.summary = "<unknown>";
         return r;
     }
 
-    // String is a leaf that renders its text (§2.4).
-    if (ct->toCanonical() == "cajeta.lang.String") {
+    // String is a leaf that renders its text (§2.4) — identified by the record's
+    // own flag, not by matching a stdlib type name at a stop.
+    if (rec->kind == TypeKind::Leaf) {
         r.kind = ValueKind::Leaf;
-        r.summary = decodeString(addr);
+        r.summary = rec->isString ? decodeString(addr)
+                                  : formatValue(rec->canonical, addr);
         return r;
     }
 
@@ -461,12 +358,11 @@ InspectedValue ValueInspector::inspect(const std::string& type, void* addr) {
 
     // A registered collection summarizes by its logical contents: an ArrayList
     // inline-or-counts its elements like an array; a HashMap counts its entries.
-    const std::string base = typeBase(type);
-    if (base == kArrayListFqn || base == kHashMapFqn) {
+    if (rec->collectionKind != CollectionKind::None) {
         if (auto page = collectionChildren(type, addr, 0, 6)) {
             int64_t count = static_cast<int64_t>(page->children.size()) +
                             static_cast<int64_t>(page->remaining);
-            if (base == kHashMapFqn) {
+            if (rec->collectionKind == CollectionKind::HashMap) {
                 r.summary = "{" + std::to_string(count) + " entries}";
             } else if (count > 5) {
                 r.summary = "{" + std::to_string(count) + " elements}";
@@ -497,9 +393,10 @@ ChildPage ValueInspector::children(const std::string& type, void* addr,
     // Objects: fields decoded in one shot (a class has few fields, no paging).
     if (type.empty() || type.back() != ']') {
         if (isPrimitiveTypeName(type)) return page;  // leaf, no children
-        auto ct = cajeta::CajetaType::of(type);
-        // String is a leaf (its value is its text), not an expandable object.
-        if (!ct || ct->toCanonical() == "cajeta.lang.String") return page;
+        const TypeRecord* rec = table_.find(type);
+        // A leaf (String renders its text) and an uncarried type both have no
+        // children to enumerate.
+        if (!rec || rec->kind == TypeKind::Leaf) return page;
         // A registered collection gets its logical, paged view; otherwise (or
         // on a layout mismatch) fall back to the raw object fields.
         if (auto coll = collectionChildren(type, addr, start, pageSize))

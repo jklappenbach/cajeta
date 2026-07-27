@@ -62,9 +62,26 @@ namespace cajeta::dbg {
         std::string canonical;
         TypeKind kind = TypeKind::Leaf;
         bool isValueType = false;   // inline vs pointer at the top level
+        // A Leaf that is cajeta.lang.String — decoded by the table's String ABI
+        // rather than by width. Carried as a FACT, not matched by name at a
+        // stop: the decoder never string-compares against a stdlib FQN.
+        bool isString = false;
         std::vector<FieldRecord> fields;   // Object/Collection, layout order
         ElemRecord elem;                   // Array
         CollectionKind collectionKind = CollectionKind::None;
+    };
+
+    // The String decode ABI: byte offsets within a cajeta.lang.String instance
+    // of the length/tag word and the two payload fields, derived exactly as
+    // deriveEntryArgsABI derives them (spec §2.1.4 — String keeps a Leaf record
+    // and is decoded by these facts, not by field walking). Carried on the table
+    // so the decode survives a cache hit, where the type world is gone.
+    struct StringAbi {
+        bool valid = false;
+        uint64_t size = 0;
+        uint64_t offLenTag = 0;
+        uint64_t offAux = 0;
+        uint64_t offBase = 0;
     };
 
     // Bounds on the closure walk (spec §5.1.3). Whatever a bound drops is
@@ -105,6 +122,12 @@ namespace cajeta::dbg {
         // Every carried type name, ascending — the serialization surface.
         std::vector<std::string> names() const;
 
+        // The String decode ABI (filled by buildFromTypeWorld, carried by the
+        // sidecar). `valid` is false when String was not resolvable, in which
+        // case a String renders as `<string?>` rather than reading garbage.
+        const StringAbi& stringAbi() const { return stringAbi_; }
+        void setStringAbi(StringAbi abi) { stringAbi_ = abi; }
+
         // Reachable types a bound dropped, in discovery order (spec §5.1.3).
         const std::vector<std::string>& bounded() const { return bounded_; }
 
@@ -112,6 +135,7 @@ namespace cajeta::dbg {
         std::unordered_map<std::string, TypeRecord> records_;
         std::vector<std::string> roots_;
         std::vector<std::string> bounded_;
+        StringAbi stringAbi_;
     };
 
     // Process-global table for the active debug compile / debug session:

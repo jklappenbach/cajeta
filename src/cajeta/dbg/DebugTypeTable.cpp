@@ -140,6 +140,7 @@ void DebugTypeTable::clear() {
     records_.clear();
     roots_.clear();
     bounded_.clear();
+    stringAbi_ = StringAbi{};
 }
 
 std::vector<std::string> DebugTypeTable::names() const {
@@ -150,8 +151,30 @@ std::vector<std::string> DebugTypeTable::names() const {
     return out;
 }
 
+namespace {
+    // The String decode ABI from the live layout, derived exactly as
+    // deriveEntryArgsABI derives it for makeEntryArgs — nothing hardcoded.
+    StringAbi deriveStringAbi(const llvm::DataLayout& dl) {
+        StringAbi abi;
+        auto klass = std::dynamic_pointer_cast<cajeta::CajetaClass>(
+            cajeta::CajetaType::of(kStringFqn));
+        if (!klass) return abi;
+        auto* st = llvm::dyn_cast_or_null<llvm::StructType>(klass->getLlvmType());
+        if (!st || st->isOpaque() || st->getNumElements() < 4) return abi;
+        const llvm::StructLayout* sl = dl.getStructLayout(st);
+        abi.size = dl.getTypeAllocSize(st);
+        abi.offLenTag = sl->getElementOffset(1);
+        abi.offAux = sl->getElementOffset(2);
+        abi.offBase = sl->getElementOffset(3);
+        abi.valid = true;
+        return abi;
+    }
+} // namespace
+
 void DebugTypeTable::buildFromTypeWorld(const llvm::DataLayout& dl,
                                         const BuildOptions& opts) {
+    if (!stringAbi_.valid) stringAbi_ = deriveStringAbi(dl);
+
     struct Pending { std::string name; size_t depth; };
     std::deque<Pending> work;
     std::set<std::string> queued;
@@ -161,14 +184,22 @@ void DebugTypeTable::buildFromTypeWorld(const llvm::DataLayout& dl,
 
     // A record is filed under the name it was ASKED for as well as its canonical
     // name: a debug local's declared type string is the warm lookup key, and it
-    // need not already be canonical.
+    // need not already be canonical. A plain class is filed under its SHORT name
+    // too — `CajetaType::of` resolved short names, and the bridge must keep
+    // resolving everything it resolved before (§4.1.3). First writer wins, so a
+    // short name shared across packages never overwrites another's layout.
     auto file = [&](const std::string& asked, TypeRecord rec) {
         const std::string canonical = rec.canonical;
-        records_[canonical] = rec;
-        if (asked != canonical) {
-            rec.canonical = canonical;
-            records_[asked] = std::move(rec);
-        }
+        auto shortName = [&]() -> std::string {
+            if (canonical.find('<') != std::string::npos) return "";
+            if (!canonical.empty() && canonical.back() == ']') return "";
+            auto dot = canonical.find_last_of('.');
+            return dot == std::string::npos ? "" : canonical.substr(dot + 1);
+        }();
+        if (!shortName.empty() && !records_.count(shortName))
+            records_[shortName] = rec;
+        if (asked != canonical) records_[asked] = rec;
+        records_[canonical] = std::move(rec);
     };
     auto note = [&](const std::string& name, size_t depth) {
         if (name.empty()) return;
@@ -226,16 +257,19 @@ void DebugTypeTable::buildFromTypeWorld(const llvm::DataLayout& dl,
             rec.canonical = canonical;
             rec.kind = TypeKind::Leaf;
             rec.isValueType = false;
+            rec.isString = true;
             file(name, std::move(rec));
             continue;
         }
 
         auto klass = std::dynamic_pointer_cast<cajeta::CajetaClass>(ct);
         if (!klass) {
-            // A non-class, non-primitive type has no expandable layout.
+            // A non-class, non-primitive type has no walkable layout: an empty
+            // Object record, which renders as `{…}` — what the live decode
+            // already does for one.
             TypeRecord rec;
             rec.canonical = canonical;
-            rec.kind = TypeKind::Leaf;
+            rec.kind = TypeKind::Object;
             file(name, std::move(rec));
             continue;
         }
