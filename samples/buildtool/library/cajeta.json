@@ -35,7 +35,7 @@
         },
 
         "repositories": [
-            { "name": "central", "url": "https://repo.cajeta.org",
+            { "name": "central", "url": "https://olla.cajeta.dev",
               "priority": 0 }
         ],
 
