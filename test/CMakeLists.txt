@@ -158,6 +158,24 @@ if(WIN32 AND LLVM_DIR)
         target_link_options(${BINARY} PRIVATE -Wl,--strip-debug)
         message(STATUS "cajeta_test: static LLVM toolchain on Windows — stripping debug from test exe link (PE size limit)")
     endif()
+
+    # The prebuilt LLVM/lld archives are built with a different GCC than the
+    # MSYS2 g++ on the runner (MSYS2 rolls forward; the fork is rebuilt rarely).
+    # Where both sides instantiate the same libstdc++ inline template, the two
+    # GCCs can place its function-local statics in DIFFERENT COMDAT sections —
+    # e.g. `std::__detail::_AnyMatcher<...>::operator()(char) const::__nul`
+    # landing in `.bss$sym` in liblldCommon.a but `.data$sym` here — and ld
+    # reports "multiple definition" instead of folding them. The definitions are
+    # the same entity from the same header, so letting the linker keep one is
+    # sound; it only bites TUs that pull in <regex>, which several tests do.
+    #
+    # This does NOT paper over an ODR bug in our code: cajeta.exe links the same
+    # archives cleanly, and the colliding symbols are libstdc++'s, not ours. The
+    # real fix is rebuilding the LLVM fork against the current toolchain (or
+    # pinning the MSYS2 gcc), both of which live outside this repo.
+    if(MINGW)
+        target_link_options(${BINARY} PRIVATE -Wl,--allow-multiple-definition)
+    endif()
 endif()
 
 # Bake the project source root into the test binary so the disk-reading

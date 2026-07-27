@@ -62,6 +62,15 @@ if(NOT WIN32)
     endif()
 endif()
 
+# Same COMDAT-placement mismatch cajeta_test hits on MinGW: the prebuilt LLVM/lld
+# archives come from a different GCC than the runner's MSYS2 g++, so a shared
+# libstdc++ inline template's function-local statics can land in different
+# sections and ld calls it a multiple definition rather than folding it. See the
+# longer note in test/CMakeLists.txt.
+if(MINGW)
+    target_link_options(${BINARY} PRIVATE -Wl,--allow-multiple-definition)
+endif()
+
 # Bake the project source root so tests can locate the in-tree sample fixtures
 # (samples/jit-smoke/...) without an env var.
 target_compile_definitions(${BINARY} PRIVATE
