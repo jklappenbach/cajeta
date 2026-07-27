@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <deque>
+#include <fstream>
 #include <set>
 
 #include "cajeta/dbg/DebugVars.h"
@@ -128,6 +129,11 @@ void DebugTypeTable::addRoot(const std::string& canonical) {
 void DebugTypeTable::put(TypeRecord rec) {
     if (rec.canonical.empty()) return;
     std::string key = rec.canonical;
+    records_[key] = std::move(rec);
+}
+
+void DebugTypeTable::putAs(const std::string& key, TypeRecord rec) {
+    if (key.empty() || rec.canonical.empty()) return;
     records_[key] = std::move(rec);
 }
 
@@ -318,6 +324,190 @@ void DebugTypeTable::buildFromTypeWorld(const llvm::DataLayout& dl,
 DebugTypeTable& globalDebugTypeTable() {
     static DebugTypeTable table;
     return table;
+}
+
+// ---- sidecar (spec §3.1) ------------------------------------------------
+//
+// Line-oriented, versioned, tab-separated — the dbgloc sidecar's style:
+//
+//   cajeta-typeinfo-v1
+//   abi\t<valid>\t<size>\t<offLenTag>\t<offAux>\t<offBase>
+//   rec\t<key>\t<canonical>\t<kind>\t<isValueType>\t<isString>\t<collKind>
+//      \t<elemType>\t<elemStride>\t<elemStorage>\t<nFields>
+//      [\t<fName>\t<fType>\t<fOffset>\t<fStorage>]*
+//
+// One `rec` line per MAP ENTRY (alias keys included), so a load reproduces the
+// exact lookup surface the cold build had. Strings are escaped for tab/newline/
+// backslash. The major rides the header: a reader that does not know it
+// refuses the whole table rather than misreading (§3.1.2).
+
+namespace {
+    const char* kSidecarMagic = "cajeta-typeinfo-v1";
+
+    std::string escapeField(const std::string& s) {
+        std::string out;
+        out.reserve(s.size());
+        for (char c : s) {
+            switch (c) {
+                case '\\': out += "\\\\"; break;
+                case '\t': out += "\\t"; break;
+                case '\n': out += "\\n"; break;
+                default: out += c;
+            }
+        }
+        return out;
+    }
+
+    bool unescapeField(const std::string& s, std::string& out) {
+        out.clear();
+        out.reserve(s.size());
+        for (size_t i = 0; i < s.size(); ++i) {
+            if (s[i] != '\\') { out += s[i]; continue; }
+            if (++i >= s.size()) return false;  // dangling escape
+            switch (s[i]) {
+                case '\\': out += '\\'; break;
+                case 't': out += '\t'; break;
+                case 'n': out += '\n'; break;
+                default: return false;
+            }
+        }
+        return true;
+    }
+
+    // Parse a non-negative integer field strictly (whole field, no sign).
+    bool parseU64(const std::string& s, uint64_t& out) {
+        if (s.empty()) return false;
+        out = 0;
+        for (char c : s) {
+            if (c < '0' || c > '9') return false;
+            out = out * 10 + static_cast<uint64_t>(c - '0');
+        }
+        return true;
+    }
+
+    bool parseEnum(const std::string& s, uint64_t maxInclusive, uint64_t& out) {
+        return parseU64(s, out) && out <= maxInclusive;
+    }
+} // namespace
+
+bool writeTypeSidecar(const std::string& path, const DebugTypeTable& table) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) return false;
+    out << kSidecarMagic << '\n';
+
+    const StringAbi& abi = table.stringAbi();
+    out << "abi\t" << (abi.valid ? 1 : 0) << '\t' << abi.size << '\t'
+        << abi.offLenTag << '\t' << abi.offAux << '\t' << abi.offBase << '\n';
+
+    // names() is sorted, so the byte stream is deterministic for a given table.
+    for (const auto& name : table.names()) {
+        const TypeRecord* rec = table.find(name);
+        if (!rec) continue;
+        out << "rec\t" << escapeField(name)
+            << '\t' << escapeField(rec->canonical)
+            << '\t' << static_cast<int>(rec->kind)
+            << '\t' << (rec->isValueType ? 1 : 0)
+            << '\t' << (rec->isString ? 1 : 0)
+            << '\t' << static_cast<int>(rec->collectionKind)
+            << '\t' << escapeField(rec->elem.type)
+            << '\t' << rec->elem.stride
+            << '\t' << static_cast<int>(rec->elem.storage)
+            << '\t' << rec->fields.size();
+        for (const auto& f : rec->fields) {
+            out << '\t' << escapeField(f.name)
+                << '\t' << escapeField(f.type)
+                << '\t' << f.offset
+                << '\t' << static_cast<int>(f.storage);
+        }
+        out << '\n';
+    }
+    return out.good();
+}
+
+bool loadTypeSidecar(const std::string& path, DebugTypeTable& into) {
+    // All-or-nothing: parse into a scratch table and only then swap it in, so
+    // a failure at ANY line leaves `into` empty — never a partial misread.
+    into.clear();
+
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return false;
+    std::string line;
+    if (!std::getline(in, line) || line != kSidecarMagic) return false;
+
+    DebugTypeTable scratch;
+    bool sawAbi = false;
+
+    while (std::getline(in, line)) {
+        if (line.empty()) continue;
+        std::vector<std::string> f;
+        size_t start = 0;
+        while (true) {
+            size_t tab = line.find('\t', start);
+            f.push_back(line.substr(start, tab - start));
+            if (tab == std::string::npos) break;
+            start = tab + 1;
+        }
+
+        if (f[0] == "abi") {
+            if (f.size() != 6) return false;
+            uint64_t valid;
+            StringAbi abi;
+            if (!parseEnum(f[1], 1, valid) || !parseU64(f[2], abi.size) ||
+                !parseU64(f[3], abi.offLenTag) || !parseU64(f[4], abi.offAux) ||
+                !parseU64(f[5], abi.offBase))
+                return false;
+            abi.valid = valid == 1;
+            scratch.setStringAbi(abi);
+            sawAbi = true;
+            continue;
+        }
+
+        if (f[0] == "rec") {
+            if (f.size() < 11) return false;
+            std::string key;
+            TypeRecord rec;
+            uint64_t kind, isVal, isStr, collKind, elemStorage, nFields;
+            if (!unescapeField(f[1], key) ||
+                !unescapeField(f[2], rec.canonical) ||
+                !parseEnum(f[3], static_cast<uint64_t>(TypeKind::Collection), kind) ||
+                !parseEnum(f[4], 1, isVal) ||
+                !parseEnum(f[5], 1, isStr) ||
+                !parseEnum(f[6], static_cast<uint64_t>(CollectionKind::HashMap), collKind) ||
+                !unescapeField(f[7], rec.elem.type) ||
+                !parseU64(f[8], rec.elem.stride) ||
+                !parseEnum(f[9], 1, elemStorage) ||
+                !parseU64(f[10], nFields))
+                return false;
+            rec.kind = static_cast<TypeKind>(kind);
+            rec.isValueType = isVal == 1;
+            rec.isString = isStr == 1;
+            rec.collectionKind = static_cast<CollectionKind>(collKind);
+            rec.elem.storage = static_cast<Storage>(elemStorage);
+
+            if (f.size() != 11 + nFields * 4) return false;  // truncated line
+            for (uint64_t i = 0; i < nFields; i++) {
+                size_t base = 11 + i * 4;
+                FieldRecord fr;
+                uint64_t storage;
+                if (!unescapeField(f[base], fr.name) ||
+                    !unescapeField(f[base + 1], fr.type) ||
+                    !parseU64(f[base + 2], fr.offset) ||
+                    !parseEnum(f[base + 3], 1, storage))
+                    return false;
+                fr.storage = static_cast<Storage>(storage);
+                rec.fields.push_back(std::move(fr));
+            }
+            if (key.empty() || rec.canonical.empty()) return false;
+            scratch.putAs(key, std::move(rec));
+            continue;
+        }
+
+        return false;  // unknown line kind: refuse, don't guess
+    }
+
+    if (!sawAbi) return false;
+    into = std::move(scratch);
+    return true;
 }
 
 } // namespace cajeta::dbg

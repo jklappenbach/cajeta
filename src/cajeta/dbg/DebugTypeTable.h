@@ -111,6 +111,12 @@ namespace cajeta::dbg {
 
         void put(TypeRecord rec);
 
+        // File `rec` under an explicit lookup key (an alias: the asked-for
+        // name or a short name, where key != rec.canonical). put() files under
+        // the canonical name; the sidecar loader restores alias entries with
+        // this.
+        void putAs(const std::string& key, TypeRecord rec);
+
         // Look up by canonical name. NEVER faults: a miss is nullptr, which the
         // decoder renders as `<unknown>`/no children (spec §2.2.3, §5.1.1).
         const TypeRecord* find(const std::string& canonical) const;
@@ -142,5 +148,15 @@ namespace cajeta::dbg {
     // populated from the type world cold, from the sidecar warm, read by the
     // inspection bridge either way. Single-threaded codegen, no synchronization.
     DebugTypeTable& globalDebugTypeTable();
+
+    // Type-table sidecar (debug-type-sidecar §3.1) — the persistence pair for
+    // the whole-program cache slot, in the dbgloc sidecar's serializer style
+    // (versioned header line, one tab-separated record per line, tab/newline/
+    // backslash escaped). write returns false on I/O failure. load returns
+    // false — and leaves `into` EMPTY, never partial (§3.1.2/3.1.3) — on a
+    // missing file, an unknown schema major, or any truncation/corruption;
+    // callers treat false as "no sidecar" (a slot miss under -g, Unit 4).
+    bool writeTypeSidecar(const std::string& path, const DebugTypeTable& table);
+    bool loadTypeSidecar(const std::string& path, DebugTypeTable& into);
 
 } // namespace cajeta::dbg

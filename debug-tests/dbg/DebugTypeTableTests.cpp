@@ -12,6 +12,8 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <string>
 
 #include "cajeta/dbg/DebugTypeTable.h"
@@ -52,6 +54,164 @@ TEST(DebugTypeTableModel, MissingRecordIsNullNotAFault) {
     EXPECT_EQ(t.find("int64"), nullptr);   // still a clean miss
     t.clear();
     EXPECT_EQ(t.find("int32"), nullptr);
+}
+
+// ---- Unit 3: sidecar serialize / deserialize (pure, no JIT) ----
+
+namespace {
+// A small hand-built table exercising every record shape and the alias filing
+// (a record stored under a non-canonical key), plus the String ABI.
+cajeta::dbg::DebugTypeTable makeSampleTable() {
+    using namespace cajeta::dbg;
+    DebugTypeTable t;
+
+    StringAbi abi;
+    abi.valid = true;
+    abi.size = 64;
+    abi.offLenTag = 8;
+    abi.offAux = 12;
+    abi.offBase = 16;
+    t.setStringAbi(abi);
+
+    TypeRecord i32;
+    i32.canonical = "int32";
+    i32.kind = TypeKind::Leaf;
+    i32.isValueType = true;
+    t.put(i32);
+
+    TypeRecord str;
+    str.canonical = "cajeta.lang.String";
+    str.kind = TypeKind::Leaf;
+    str.isString = true;
+    t.put(str);
+
+    TypeRecord pt;
+    pt.canonical = "demo.Point";
+    pt.kind = TypeKind::Object;
+    pt.fields.push_back({"x", "int32", 8, Storage::Inline});
+    pt.fields.push_back({"y", "int32", 12, Storage::Inline});
+    t.put(pt);
+    // Alias filing: the short name maps to the same record body.
+    t.putAs("Point", pt);
+
+    TypeRecord arr;
+    arr.canonical = "demo.Point[]";
+    arr.kind = TypeKind::Array;
+    arr.elem = {"demo.Point", 16, Storage::Pointer};
+    t.put(arr);
+
+    TypeRecord list;
+    list.canonical = "cajeta.collection.ArrayList<int32>";
+    list.kind = TypeKind::Collection;
+    list.collectionKind = CollectionKind::ArrayList;
+    list.fields.push_back({"data", "int32[]", 8, Storage::Pointer});
+    list.fields.push_back({"sizeCount", "int32", 16, Storage::Inline});
+    t.put(list);
+
+    return t;
+}
+
+std::string sidecarPath(const char* tag) {
+    return (std::filesystem::temp_directory_path() /
+            (std::string("cajeta_typeinfo_test_") + tag + ".tsv")).string();
+}
+
+void expectTablesEqual(const cajeta::dbg::DebugTypeTable& a,
+                       const cajeta::dbg::DebugTypeTable& b) {
+    using namespace cajeta::dbg;
+    ASSERT_EQ(a.size(), b.size());
+    EXPECT_EQ(a.stringAbi().valid, b.stringAbi().valid);
+    EXPECT_EQ(a.stringAbi().size, b.stringAbi().size);
+    EXPECT_EQ(a.stringAbi().offLenTag, b.stringAbi().offLenTag);
+    EXPECT_EQ(a.stringAbi().offAux, b.stringAbi().offAux);
+    EXPECT_EQ(a.stringAbi().offBase, b.stringAbi().offBase);
+    for (const auto& name : a.names()) {
+        const TypeRecord* ra = a.find(name);
+        const TypeRecord* rb = b.find(name);
+        ASSERT_NE(rb, nullptr) << "missing after round-trip: " << name;
+        EXPECT_EQ(ra->canonical, rb->canonical) << name;
+        EXPECT_EQ(ra->kind, rb->kind) << name;
+        EXPECT_EQ(ra->isValueType, rb->isValueType) << name;
+        EXPECT_EQ(ra->isString, rb->isString) << name;
+        EXPECT_EQ(ra->collectionKind, rb->collectionKind) << name;
+        EXPECT_EQ(ra->elem.type, rb->elem.type) << name;
+        EXPECT_EQ(ra->elem.stride, rb->elem.stride) << name;
+        EXPECT_EQ(ra->elem.storage, rb->elem.storage) << name;
+        ASSERT_EQ(ra->fields.size(), rb->fields.size()) << name;
+        for (size_t i = 0; i < ra->fields.size(); i++) {
+            EXPECT_EQ(ra->fields[i].name, rb->fields[i].name) << name;
+            EXPECT_EQ(ra->fields[i].type, rb->fields[i].type) << name;
+            EXPECT_EQ(ra->fields[i].offset, rb->fields[i].offset) << name;
+            EXPECT_EQ(ra->fields[i].storage, rb->fields[i].storage) << name;
+        }
+    }
+}
+} // namespace
+
+// 3.1.1 — write to bytes, read into a fresh table, record-for-record equal
+// (alias keys and the String ABI included).
+TEST(DebugTypeTableSidecar, RoundTrips) {
+    auto t = makeSampleTable();
+    const std::string path = sidecarPath("roundtrip");
+    ASSERT_TRUE(cajeta::dbg::writeTypeSidecar(path, t));
+
+    cajeta::dbg::DebugTypeTable back;
+    ASSERT_TRUE(cajeta::dbg::loadTypeSidecar(path, back));
+    expectTablesEqual(t, back);
+    std::filesystem::remove(path);
+}
+
+// 3.1.2 — an unknown schema major loads as an EMPTY table, never a misread.
+TEST(DebugTypeTableSidecar, RefusesUnknownMajor) {
+    auto t = makeSampleTable();
+    const std::string path = sidecarPath("major");
+    ASSERT_TRUE(cajeta::dbg::writeTypeSidecar(path, t));
+    // Bump the version line to a major this reader does not know.
+    {
+        std::ifstream in(path);
+        std::string all((std::istreambuf_iterator<char>(in)),
+                        std::istreambuf_iterator<char>());
+        in.close();
+        auto nl = all.find('\n');
+        ASSERT_NE(nl, std::string::npos);
+        std::ofstream out(path, std::ios::trunc);
+        out << "cajeta-typeinfo-v999" << all.substr(nl);
+    }
+    cajeta::dbg::DebugTypeTable back;
+    // Poison it first to prove a refused load leaves it EMPTY, not partial.
+    back.put([]{ cajeta::dbg::TypeRecord r; r.canonical = "stale.Type"; return r; }());
+    EXPECT_FALSE(cajeta::dbg::loadTypeSidecar(path, back));
+    EXPECT_TRUE(back.empty());
+    std::filesystem::remove(path);
+}
+
+// 3.1.3 — truncation/corruption yields an empty table, not a crash or misread.
+TEST(DebugTypeTableSidecar, ToleratesTruncation) {
+    auto t = makeSampleTable();
+    const std::string path = sidecarPath("trunc");
+    ASSERT_TRUE(cajeta::dbg::writeTypeSidecar(path, t));
+
+    // Truncate mid-record.
+    std::error_code ec;
+    auto full = std::filesystem::file_size(path, ec);
+    ASSERT_FALSE(ec);
+    std::filesystem::resize_file(path, full / 2, ec);
+    ASSERT_FALSE(ec);
+
+    cajeta::dbg::DebugTypeTable back;
+    back.put([]{ cajeta::dbg::TypeRecord r; r.canonical = "stale.Type"; return r; }());
+    EXPECT_FALSE(cajeta::dbg::loadTypeSidecar(path, back));
+    EXPECT_TRUE(back.empty());
+
+    // Garbage bytes: same clean refusal.
+    { std::ofstream out(path, std::ios::trunc); out << "\x7f\x03garbage\tnot\ta\ttable\n"; }
+    EXPECT_FALSE(cajeta::dbg::loadTypeSidecar(path, back));
+    EXPECT_TRUE(back.empty());
+
+    // A missing file is false + empty, never a throw.
+    std::filesystem::remove(path);
+    EXPECT_FALSE(cajeta::dbg::loadTypeSidecar(path, back));
+    EXPECT_TRUE(back.empty());
 }
 
 // ---- built from a real compiled program at a stop ----
@@ -316,6 +476,18 @@ TEST_F(DebugTypeTableStop, OffsetsMatchLiveLayout) {
         EXPECT_EQ(rec->elem.storage, page.children[0].storage) << a.type;
         EXPECT_EQ(rec->elem.type, page.children[0].type) << a.type;
     }
+}
+
+// 3.1.1 (authentic form) — the table built from the live program round-trips
+// through the sidecar byte-for-byte in every record, so a warm load decodes
+// from exactly the facts the cold build resolved.
+TEST_F(DebugTypeTableStop, BuiltTableRoundTrips) {
+    const std::string path = sidecarPath("built");
+    ASSERT_TRUE(cajeta::dbg::writeTypeSidecar(path, table));
+    cajeta::dbg::DebugTypeTable back;
+    ASSERT_TRUE(cajeta::dbg::loadTypeSidecar(path, back));
+    expectTablesEqual(table, back);
+    std::filesystem::remove(path);
 }
 
 // 1.1.6 — the closure covers a local's type, its fields' types transitively and
