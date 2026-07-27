@@ -14,6 +14,7 @@
 #include "cajeta/dap/DapServer.h"
 #include "cajeta/dap/Json.h"
 #include "../TempProgram.h"
+#include "../../test/PortableEnv.h"   // setenv/unsetenv — absent from the MinGW CRT
 
 using cajeta::dap::DapServer;
 using cajeta::dap::Json;

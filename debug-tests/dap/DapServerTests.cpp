@@ -18,6 +18,7 @@
 #include "cajeta/dbg/DebugController.h"
 #include "cajeta/dbg/DebugLocTable.h"
 #include "../TempProgram.h"
+#include "../../test/PortableEnv.h"   // setenv/unsetenv — absent from the MinGW CRT
 
 using cajeta::dap::DapServer;
 using cajeta::dap::Json;
