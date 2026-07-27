@@ -474,8 +474,9 @@ const char* kCollProg =
     "        ArrayList<int32> xs = [10, 20, 30];\n"              // 5
     "        HashMap<int32,int32> m = [1:100, 2:200];\n"         // 6
     "        Bag bag = heap Bag(7);\n"                           // 7
-    "        int32 done = 0;\n"                                  // 8
-    "        return done;\n"                                     // 9 <-- breakpoint
+    "        ArrayList<Bag> ys = [heap Bag(1), heap Bag(2)];\n"  // 8
+    "        int32 done = 0;\n"                                  // 9
+    "        return done;\n"                                     // 10 <-- breakpoint
     "    }\n"                                                    // 10
     "}\n";                                                       // 11
 
@@ -495,7 +496,7 @@ protected:
         JitRunOptions opts;
         opts.sourceRoot = prog.sourceRoot();
         opts.entryMethod = "demo.Probe.main";
-        std::vector<Breakpoint> bps{ Breakpoint{"Probe.cajeta", 9} };
+        std::vector<Breakpoint> bps{ Breakpoint{"Probe.cajeta", 10} };
         std::string err;
         p.session = startDebugSession(opts, bps, &err);
         ASSERT_NE(p.session, nullptr) << err;
@@ -558,6 +559,33 @@ TEST_F(ValueInspectorCollectionStop, CollectionViewByDeclaredName) {
     // (2) not the 64 raw slots — a positional guess would show the raw lengths.
     EXPECT_EQ(insp.children(p.local("xs")->type, p.local("xs")->addr).children.size(), 3u);
     EXPECT_EQ(insp.children(p.local("m")->type, p.local("m")->addr).children.size(), 2u);
+}
+
+// Julian's live report (2026-07-27, warm acceptance): an ArrayList of CLASS
+// elements listed its rows, but expanding a row revealed nothing. Every prior
+// collection test used primitive elements — this is the class-element case:
+// each element row must expand to the class's fields.
+TEST_F(ValueInspectorCollectionStop, ClassElementRowsExpandToFields) {
+    ValueInspector insp(*p.dl);
+    const auto* v = p.local("ys");
+    ASSERT_NE(v, nullptr);
+    auto page = insp.children(v->type, v->addr);
+    ASSERT_EQ(page.children.size(), 2u);
+    // The row is an aggregate…
+    const auto& row = page.children[0];
+    auto rv = insp.inspect(row.type, row.addr);
+    EXPECT_EQ(rv.kind, ValueKind::Aggregate) << "row type: " << row.type;
+    // …and expanding it reveals Bag's declared field with its value.
+    auto inner = insp.children(row.type, row.addr);
+    ASSERT_FALSE(inner.children.empty())
+        << "class element row expanded to nothing (type '" << row.type << "')";
+    const auto* n = find(inner.children, "n");
+    ASSERT_NE(n, nullptr);
+    EXPECT_EQ(insp.inspect(n->type, n->addr).summary, "1");
+    auto inner2 = insp.children(page.children[1].type, page.children[1].addr);
+    const auto* n2 = find(inner2.children, "n");
+    ASSERT_NE(n2, nullptr);
+    EXPECT_EQ(insp.inspect(n2->type, n2->addr).summary, "2");
 }
 
 TEST_F(ValueInspectorObjectStop, NestedAggregateFieldIsExpandable) {

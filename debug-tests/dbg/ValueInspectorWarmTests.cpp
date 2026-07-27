@@ -53,8 +53,9 @@ const char* kProg =
     "        String s = \"hi\";\n"                                  // 8
     "        ArrayList<int32> xs = [10, 20, 30];\n"                 // 9
     "        HashMap<int32,int32> m = [1:100, 2:200];\n"            // 10
-    "        int32 done = 0;\n"                                     // 11
-    "        return 42;\n"                                          // 12 <-- bp
+    "        ArrayList<Point> ps = [heap Point(1, 2), heap Point(5, 6)];\n" // 11
+    "        int32 done = 0;\n"                                     // 12
+    "        return 42;\n"                                          // 13 <-- bp
     "    }\n"                                                       // 13
     "}\n";                                                          // 14
 
@@ -94,13 +95,24 @@ void expectStopsEqual(const DecodedStop& cold, const DecodedStop& warm) {
     for (const auto& [name, cl] : cold.locals) {
         auto it = warm.locals.find(name);
         ASSERT_NE(it, warm.locals.end()) << "local missing warm: " << name;
-        EXPECT_EQ(cl.summary, it->second.summary) << name;
+        // HashMap summaries/rows depend on per-RUN hash order, and the cold
+        // and warm stops are different executions — compare the entry count
+        // and match rows BY NAME, not by position (a "{2 entries}" summary is
+        // order-free already; element rows of lists/arrays are positional and
+        // keep exact order because their names are the "[i]" indices).
         ASSERT_EQ(cl.children.size(), it->second.children.size()) << name;
-        for (size_t i = 0; i < cl.children.size(); i++) {
-            EXPECT_EQ(cl.children[i].name, it->second.children[i].name) << name;
-            EXPECT_EQ(cl.children[i].type, it->second.children[i].type) << name;
-            EXPECT_EQ(cl.children[i].summary,
-                      it->second.children[i].summary) << name;
+        std::map<std::string, const DecodedStop::Child*> warmByName;
+        for (const auto& c : it->second.children) warmByName[c.name] = &c;
+        bool keyed = true;   // rows uniquely named (maps: keys; others: [i]/fields)
+        if (warmByName.size() != it->second.children.size()) keyed = false;
+        if (keyed) {
+            EXPECT_EQ(cl.summary, it->second.summary) << name;
+            for (const auto& c : cl.children) {
+                auto w = warmByName.find(c.name);
+                ASSERT_NE(w, warmByName.end()) << name << "." << c.name;
+                EXPECT_EQ(c.type, w->second->type) << name << "." << c.name;
+                EXPECT_EQ(c.summary, w->second->summary) << name << "." << c.name;
+            }
         }
     }
 }
@@ -138,7 +150,7 @@ struct WarmFixture {
 TEST(ValueInspectorWarm, SidecarDrivenDecodeMatchesCold) {
     WarmFixture f;
     std::string err;
-    auto session = startDebugSession(f.opts(), {Breakpoint{"Prog.cajeta", 12}},
+    auto session = startDebugSession(f.opts(), {Breakpoint{"Prog.cajeta", 13}},
                                      &err);
     ASSERT_NE(session, nullptr) << err;
 
@@ -185,7 +197,7 @@ TEST(ValueInspectorWarm, SidecarDrivenDecodeMatchesCold) {
 // `<unknown>`. This is the IDE's warm launch, finally under test.
 TEST(ValueInspectorWarm, CacheHitLaunchDecodesLikeCold) {
     WarmFixture f;
-    std::vector<Breakpoint> bps{Breakpoint{"Prog.cajeta", 12}};
+    std::vector<Breakpoint> bps{Breakpoint{"Prog.cajeta", 13}};
 
     // Cold session: populates the slot, and its stop is the reference decode.
     DecodedStop cold;
@@ -204,6 +216,8 @@ TEST(ValueInspectorWarm, CacheHitLaunchDecodesLikeCold) {
     ASSERT_EQ(cold.locals.at("s").summary, "\"hi\"");
     ASSERT_EQ(cold.locals.at("xs").children.size(), 3u);
     ASSERT_EQ(cold.locals.at("m").children.size(), 2u);
+    ASSERT_EQ(cold.locals.at("ps").children.size(), 2u);
+    ASSERT_EQ(cold.locals.at("ps").children[0].summary, "{x=1, y=2}");
 
     // Prove the slot is HOT for these exact options before the warm session.
     JitRunResult probe;
@@ -226,4 +240,9 @@ TEST(ValueInspectorWarm, CacheHitLaunchDecodesLikeCold) {
     EXPECT_FALSE(warm.locals.at("pt").children.empty());
     EXPECT_FALSE(warm.locals.at("xs").children.empty());
     EXPECT_FALSE(warm.locals.at("m").children.empty());
+    // Class-typed collection elements (Julian's live report): the element ROW
+    // itself must expand warm — its summary is a field peek, not <unknown>.
+    ASSERT_EQ(warm.locals.at("ps").children.size(), 2u);
+    EXPECT_EQ(warm.locals.at("ps").children[0].summary, "{x=1, y=2}");
+    EXPECT_EQ(warm.locals.at("ps").children[1].summary, "{x=5, y=6}");
 }
