@@ -11,8 +11,8 @@
     "settings": {
         "capabilities": ["filesystem", "network"],
         "dependencies": {
-            "dev.cajeta.codec": "0.5.0",
-            "dev.cajeta.http":  "0.1.1"
+            "dev.cajeta.codec": "0.7.1",
+            "dev.cajeta.http":  "0.1.2"
         },
         "build": {
             "source-root":  "src/main/cajeta",
