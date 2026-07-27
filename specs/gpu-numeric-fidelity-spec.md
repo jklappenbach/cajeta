@@ -93,23 +93,30 @@ Binary `sigmoid` and multiclass `softmax` gradients past round 0 evaluate device
 `expf`. cajeta uses the libm intrinsic (`Math.exp`); they differ ~1 ULP, and the
 gradient quantiser does not always absorb it, so later-round trees diverge.
 
-Structure is confirmed (`tools/expf/README.md`, 2026-07-24): Cody–Waite reduction
-`j = rint(x·log2e)`, `f = x − j·ln2`; `e^f` via a **degree-6 minimax polynomial**
-(tuned float32 coefficients, not Taylor); scale by `2^j`. Fit residual ~1 ULP — the
-shape is right; the exact float32 coefficients + `ln2` split + FMA order remain.
+The algorithm is **known exactly** (`tools/expf/README.md`, "RESOLVED (2026-07-27)"),
+transcribed from the `__nv_expf` libdevice IR. It is *not* a minimax polynomial — the
+SFU `ex2.approx` is the core: `saturate` + round-toward-−inf FMA split off the exponent
+`n`, a two-part `log2 e` reduction lands `f` in `[0,1)`, `ex2.approx` is indexed by the
+**truncated** 23-bit fraction, and `2^n` is reapplied as a separate float multiply.
 
-- **3.1** As a parity author, when I recover the exact float32 minimax coefficients,
-  the two-part `ln2` split, and the FMA evaluation order, then a CPU `FastMath.expf`
-  reproduces `expf_sweep.npy` bit-for-bit over the domain XGBoost uses (`x ≤ 88.7`).
+- **3.1** As a parity author, when `FastMath.expf` implements that IR sequence in
+  emulated float32 over the captured `ex2.approx` table, then it reproduces
+  `expf_sweep.npy` bit-for-bit over the domain XGBoost uses (`x ≤ 88.7`) for every
+  normal result — established: 8,310,140 / 8,310,140 points.
+- **3.1a** As a parity author, I accept the denormal tail (`x < -87.34`) as out of
+  scope: the `saturate` clamp pushes the reduced argument outside the captured
+  `ex2.approx` domain, and `Sigmoid` is exactly `1.0f` in float32 once `expf` falls
+  below ~3e-8 — thirty orders of magnitude above that tail — so no gradient can
+  distinguish it. Bounded at ≤2 ULP.
 - **3.2** As a parity author, when `Logistic`/`Softmax` route their `expf` through
   that model, then binary and multiclass gradients are bit-identical to the device
   dump every round.
 - **3.3** As a maintainer, when `expf` fidelity lands, then `BinaryTreeTest`
   (rounds 1+), `LogisticObjectiveTest::multiRoundGradHess…`, and the multiclass
   softmax parity tests are re-enabled and green.
-- **3.4** As a parity author, if the minimax coefficients cannot be recovered by fit,
-  then I capture device `expf` over the reduced domain and table it (the `ex2.approx`
-  path), the `__fdividef` fallback pattern.
+- **3.4** As a maintainer, the `ex2.approx` capture ships the way the `MUFU.RCP` one
+  does — `.gitignore`d, loaded at runtime from an env path, accurate-math placeholder
+  when absent — so the model stays testable off-GPU without committing the table.
 
 ## 4. Pruned-sketch interior *(float-scan fidelity)*
 
