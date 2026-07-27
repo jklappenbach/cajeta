@@ -4083,6 +4083,7 @@ namespace cajeta {
                     {"log",   llvm::Intrinsic::log},     // natural log
                     {"log10", llvm::Intrinsic::log10},
                     {"exp",   llvm::Intrinsic::exp},
+                    {"exp2",  llvm::Intrinsic::exp2},
                 };
                 for (const auto& u : unaryFns) {
                     if (methodCallName == u.name && parameters.size() == 1) {

@@ -15,6 +15,8 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [fast-debug-launch](fast-debug-launch-spec.md) | [plan](../agents/fast-debug-launch-plan.md) | active — Units 1-7 delivered 2026-07-21, tour warm launch 42.6s→0.45s; edit loop spun off to resident-debug-server; remaining: live passes 2.3.1/10.3.x |
 | [resident-debug-server](resident-debug-server-spec.md) | [plan](../agents/resident-debug-server-plan.md) | active — Units 1-5+8 delivered 2026-07-21 (tour via one resident server: cold 41.3s / no-edit 0.65s / one-edit 34.8s); next: Unit 6 design review (stdlib digest churn first), Unit 7 live pass |
 | [debugger-variable-inspection](debugger-variable-inspection-spec.md) | [plan](../agents/debugger-variable-inspection-plan.md) | active — spec+plan approved 2026-07-22; 7 units (bridge → arrays → objects → DAP/render → edit → hover → collections); Unit 1 next |
+| [cajeta-xgboost](cajeta-xgboost-spec.md) | [plan](../agents/cajeta-xgboost-plan.md) | active |
+| [gpu-numeric-fidelity](gpu-numeric-fidelity-spec.md) | [plan](../agents/gpu-numeric-fidelity-plan.md) | active (U1 expf model solved + bit-exact 2026-07-27; U1.2.2–1.2.4 implement it) |
 | [silent-resolution-diagnostics](silent-resolution-diagnostics-spec.md) | [plan](../agents/silent-resolution-diagnostics-plan.md) | active |
 | [docs-refactor](docs-refactor-spec.md) | [plan](../agents/docs-refactor-plan.md) | active |
 | [cja-source-view](cja-source-view-spec.md) | [plan](../agents/cja-source-view-plan.md) | active |
