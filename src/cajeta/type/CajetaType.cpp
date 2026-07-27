@@ -689,6 +689,16 @@ namespace cajeta {
         return CajetaType::canonicalMap[qName->toCanonical()];
     }
 
+    // Non-inserting counterpart of of(). Tries the raw string first so a name
+    // that is already canonical costs one lookup and no QualifiedName churn.
+    CajetaTypePtr CajetaType::find(const string& typeName) {
+        auto it = canonicalMap.find(typeName);
+        if (it != canonicalMap.end()) return it->second;
+        QualifiedNamePtr qName = QualifiedName::getOrCreate(typeName);
+        it = canonicalMap.find(qName->toCanonical());
+        return it == canonicalMap.end() ? nullptr : it->second;
+    }
+
     // The package that scopes a bare name written in the code currently
     // being processed. During codegen the declaring class of the current
     // method is authoritative — the stdlib parses many packages into ONE

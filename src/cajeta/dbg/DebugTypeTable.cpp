@@ -79,7 +79,7 @@ namespace {
             return true;
         }
 
-        auto elem = cajeta::CajetaType::of(elemName);
+        auto elem = cajeta::CajetaType::find(elemName);
         if (!elem) {
             // Unresolved user type: assume a pointer slot so a decoder only ever
             // reads a pointer, never a fabricated inline width.
@@ -157,7 +157,7 @@ namespace {
     StringAbi deriveStringAbi(const llvm::DataLayout& dl) {
         StringAbi abi;
         auto klass = std::dynamic_pointer_cast<cajeta::CajetaClass>(
-            cajeta::CajetaType::of(kStringFqn));
+            cajeta::CajetaType::find(kStringFqn));
         if (!klass) return abi;
         auto* st = llvm::dyn_cast_or_null<llvm::StructType>(klass->getLlvmType());
         if (!st || st->isOpaque() || st->getNumElements() < 4) return abi;
@@ -247,7 +247,7 @@ void DebugTypeTable::buildFromTypeWorld(const llvm::DataLayout& dl,
             continue;
         }
 
-        auto ct = cajeta::CajetaType::of(name);
+        auto ct = cajeta::CajetaType::find(name);
         if (!ct) continue;   // unresolved: absent, never faked
         const std::string canonical = ct->toCanonical();
 

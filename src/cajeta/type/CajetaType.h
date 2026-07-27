@@ -330,6 +330,16 @@ class CajetaType : public Modifiable, public Annotatable,
 
         static CajetaTypePtr of(string typeName);
 
+        // Read-only lookup: like of(), but NEVER touches the registry on a
+        // miss. of() indexes canonicalMap with operator[], so probing a name
+        // that does not exist INSERTS a null entry under it — after which
+        // "already registered?" checks see a present-but-null type and the
+        // generic-instantiation machinery skips generating it (the failure
+        // mode is `Symbols not found: Foo<Bar>#ClassObject` in a later
+        // session sharing the type world). Use this anywhere a name may
+        // legitimately not resolve — probing, introspection, diagnostics.
+        static CajetaTypePtr find(const string& typeName);
+
         // The name-keyed core of declared-type resolution: substitution,
         // scoped tiers (own package -> imports -> global), archive-vouched
         // placeholder synthesis. For resolution sites that hold only a NAME
