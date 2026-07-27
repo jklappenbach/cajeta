@@ -21,8 +21,11 @@ using cajeta::dbg::FieldFacetInputs;
 using cajeta::dbg::classifyField;
 
 extern "C" {
-    void __cajeta_dbg_frame_enter(const char* func);
-    void __cajeta_dbg_frame_leave(void);
+    // enter RETURNS the frame node; leave takes that node back (node-paired
+    // unlink). The old (void) declarations made leave read a garbage register
+    // — the same stale-ABI crash repaired in DebugVarsTests (aabc62a8).
+    void* __cajeta_dbg_frame_enter(const char* func);
+    void __cajeta_dbg_frame_leave(void* node);
     void __cajeta_dbg_local(const char* name, const char* type, void* addr,
                             uint8_t alloc, uint8_t ownership, void* drop_entry);
     void** __cajeta_dbg_top_ptr(void);
@@ -55,7 +58,7 @@ namespace {
 // allocation but Unknown ownership (a plain value isn't owner or borrow).
 TEST(DbgLocalFacets, StackPrimitiveIsStackUnknown) {
     ASSERT_EQ(*__cajeta_dbg_top_ptr(), nullptr) << "chain not clean at start";
-    __cajeta_dbg_frame_enter("demo.F::m");
+    void* node = __cajeta_dbg_frame_enter("demo.F::m");
     int32_t v = 1;
     FieldFacetInputs in; in.isStackField = true;
     registerLocal("v", "int32", &v, in);
@@ -68,14 +71,14 @@ TEST(DbgLocalFacets, StackPrimitiveIsStackUnknown) {
     EXPECT_EQ(__cajeta_dbg_local_ownership(top, 0),
               static_cast<uint8_t>(OwnershipRole::Unknown));
 
-    __cajeta_dbg_frame_leave();
+    __cajeta_dbg_frame_leave(node);
     EXPECT_EQ(*__cajeta_dbg_top_ptr(), nullptr);
 }
 
 // An owned heap object: heap slot + a live drop entry -> Heap + Owner.
 TEST(DbgLocalFacets, OwnedHeapObjectIsHeapOwner) {
     ASSERT_EQ(*__cajeta_dbg_top_ptr(), nullptr);
-    __cajeta_dbg_frame_enter("demo.F::m");
+    void* node = __cajeta_dbg_frame_enter("demo.F::m");
     void* slot = nullptr;
     FieldFacetInputs in; in.isHeapField = true; in.ownsDrop = true;
     registerLocal("o", "demo.Foo", &slot, in);
@@ -86,14 +89,14 @@ TEST(DbgLocalFacets, OwnedHeapObjectIsHeapOwner) {
     EXPECT_EQ(__cajeta_dbg_local_ownership(top, 0),
               static_cast<uint8_t>(OwnershipRole::Owner));
 
-    __cajeta_dbg_frame_leave();
+    __cajeta_dbg_frame_leave(node);
     EXPECT_EQ(*__cajeta_dbg_top_ptr(), nullptr);
 }
 
 // A borrow: heap slot, reference, no drop entry -> Heap + Borrow.
 TEST(DbgLocalFacets, BorrowIsHeapBorrow) {
     ASSERT_EQ(*__cajeta_dbg_top_ptr(), nullptr);
-    __cajeta_dbg_frame_enter("demo.F::m");
+    void* node = __cajeta_dbg_frame_enter("demo.F::m");
     void* slot = nullptr;
     FieldFacetInputs in; in.isHeapField = true; in.isReference = true;
     registerLocal("b", "demo.Foo", &slot, in);
@@ -104,7 +107,7 @@ TEST(DbgLocalFacets, BorrowIsHeapBorrow) {
     EXPECT_EQ(__cajeta_dbg_local_ownership(top, 0),
               static_cast<uint8_t>(OwnershipRole::Borrow));
 
-    __cajeta_dbg_frame_leave();
+    __cajeta_dbg_frame_leave(node);
     EXPECT_EQ(*__cajeta_dbg_top_ptr(), nullptr);
 }
 
@@ -112,7 +115,7 @@ TEST(DbgLocalFacets, BorrowIsHeapBorrow) {
 // reads as Owner, not Borrow — the distinction CP7 must preserve.
 TEST(DbgLocalFacets, OwningViewIsOwnerNotBorrow) {
     ASSERT_EQ(*__cajeta_dbg_top_ptr(), nullptr);
-    __cajeta_dbg_frame_enter("demo.F::m");
+    void* node = __cajeta_dbg_frame_enter("demo.F::m");
     void* slot = nullptr;
     FieldFacetInputs in;
     in.isHeapField = true; in.isReference = true; in.ownsDrop = true;
@@ -122,14 +125,14 @@ TEST(DbgLocalFacets, OwningViewIsOwnerNotBorrow) {
     EXPECT_EQ(__cajeta_dbg_local_ownership(top, 0),
               static_cast<uint8_t>(OwnershipRole::Owner));
 
-    __cajeta_dbg_frame_leave();
+    __cajeta_dbg_frame_leave(node);
     EXPECT_EQ(*__cajeta_dbg_top_ptr(), nullptr);
 }
 
 // Multiple locals keep their own facets, indexed independently.
 TEST(DbgLocalFacets, PerLocalFacetsAreIndependent) {
     ASSERT_EQ(*__cajeta_dbg_top_ptr(), nullptr);
-    __cajeta_dbg_frame_enter("demo.F::m");
+    void* node = __cajeta_dbg_frame_enter("demo.F::m");
     int32_t prim = 0; void* owned = nullptr;
     FieldFacetInputs pin; pin.isStackField = true;
     FieldFacetInputs oin; oin.isHeapField = true; oin.ownsDrop = true;
@@ -147,7 +150,7 @@ TEST(DbgLocalFacets, PerLocalFacetsAreIndependent) {
     EXPECT_EQ(__cajeta_dbg_local_ownership(top, 1),
               static_cast<uint8_t>(OwnershipRole::Owner));
 
-    __cajeta_dbg_frame_leave();
+    __cajeta_dbg_frame_leave(node);
     EXPECT_EQ(*__cajeta_dbg_top_ptr(), nullptr);
 }
 
@@ -157,11 +160,11 @@ TEST(DbgLocalFacets, OutOfRangeReadsUnknown) {
     EXPECT_EQ(__cajeta_dbg_local_ownership(nullptr, 0), 0);
 
     ASSERT_EQ(*__cajeta_dbg_top_ptr(), nullptr);
-    __cajeta_dbg_frame_enter("demo.F::m");
+    void* node = __cajeta_dbg_frame_enter("demo.F::m");
     void* top = *__cajeta_dbg_top_ptr();
     EXPECT_EQ(__cajeta_dbg_local_alloc(top, 5), 0);
     EXPECT_EQ(__cajeta_dbg_local_ownership(top, -1), 0);
-    __cajeta_dbg_frame_leave();
+    __cajeta_dbg_frame_leave(node);
 }
 
 // CP7-1c: the drop-active accessor reports -1 for a local with no drop entry
@@ -170,7 +173,7 @@ TEST(DbgLocalFacets, DropActiveReflectsEntryState) {
     EXPECT_EQ(__cajeta_dbg_local_drop_active(nullptr, 0), -1);
 
     ASSERT_EQ(*__cajeta_dbg_top_ptr(), nullptr);
-    __cajeta_dbg_frame_enter("demo.F::m");
+    void* node = __cajeta_dbg_frame_enter("demo.F::m");
 
     int32_t prim = 0;
     FieldFacetInputs pin; pin.isStackField = true;
@@ -191,6 +194,6 @@ TEST(DbgLocalFacets, DropActiveReflectsEntryState) {
 
     __cajeta_drop_pop_run(e);
     std::free(e);
-    __cajeta_dbg_frame_leave();
+    __cajeta_dbg_frame_leave(node);
     EXPECT_EQ(*__cajeta_dbg_top_ptr(), nullptr);
 }
