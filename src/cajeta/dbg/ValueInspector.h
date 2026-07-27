@@ -20,14 +20,14 @@
 #include <string>
 #include <vector>
 
+// `Storage` (how a child's bytes sit relative to its address) lives with the
+// type table — it is a layout fact the table carries, and the bridge reads it
+// from there (debug-type-sidecar §2.1.2).
+#include "cajeta/dbg/DebugTypeTable.h"
+
 namespace llvm { class DataLayout; }
 
 namespace cajeta::dbg {
-
-    // How a child's bytes sit relative to its address (spec §2.1.3). A pointer
-    // slot holds a pointer to a heap instance (reference classes, String); an
-    // inline slot holds the value's bytes directly (primitives, value structs).
-    enum class Storage { Inline, Pointer };
 
     enum class ValueKind { Unknown, Leaf, Aggregate };
 
