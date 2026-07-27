@@ -6,7 +6,8 @@
 #include <iostream>
 #include <thread>
 #ifndef _WIN32
-#include <ext/stdio_filebuf.h>
+#include <cerrno>
+#include <streambuf>
 #include <unistd.h>
 #endif
 
@@ -789,6 +790,41 @@ int DapServer::run(std::istream& in, std::ostream& out) {
     return exitCode_;
 }
 
+#ifndef _WIN32
+namespace {
+// Write-only streambuf over a raw fd. Replaces __gnu_cxx::stdio_filebuf, which
+// is a libstdc++ extension: libc++ (macOS) has no <ext/stdio_filebuf.h>, so the
+// old include broke the aarch64-apple-darwin build outright.
+class FdOutBuf : public std::streambuf {
+public:
+    explicit FdOutBuf(int fd) : fd_(fd) {}
+
+protected:
+    std::streamsize xsputn(const char* s, std::streamsize n) override {
+        std::streamsize done = 0;
+        while (done < n) {
+            ssize_t w = ::write(fd_, s + done, (size_t) (n - done));
+            if (w <= 0) {
+                if (w < 0 && errno == EINTR) { continue; }
+                break;
+            }
+            done += w;
+        }
+        return done;
+    }
+
+    int_type overflow(int_type c) override {
+        if (c == traits_type::eof()) { return traits_type::not_eof(c); }
+        char ch = traits_type::to_char_type(c);
+        return xsputn(&ch, 1) == 1 ? c : traits_type::eof();
+    }
+
+private:
+    int fd_;
+};
+}  // namespace
+#endif
+
 int DapServer::runOverStdio() {
 #ifndef _WIN32
     int protoFd = ::dup(STDOUT_FILENO);
@@ -806,7 +842,7 @@ int DapServer::runOverStdio() {
         // buffering before any I/O touches the stream — the JIT runs
         // in-process, so this is the same stdout the debuggee uses.
         ::setvbuf(stdout, nullptr, _IOLBF, 0);
-        static __gnu_cxx::stdio_filebuf<char> protoBuf(protoFd, std::ios::out);
+        static FdOutBuf protoBuf(protoFd);
         static std::ostream protoStream(&protoBuf);
 
         // Pump: everything the debuggee (or stray host code) prints becomes

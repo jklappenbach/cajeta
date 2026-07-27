@@ -10,6 +10,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>   // std::replace — the _WIN32 path separator fixup below
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
