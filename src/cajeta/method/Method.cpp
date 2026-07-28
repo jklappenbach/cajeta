@@ -2217,8 +2217,21 @@ namespace cajeta {
                 // the lifetime facet.
                 facetIn.ownsDrop     = parameter->isTransferred();
                 facetIn.isReference  = !isPrim && !parameter->isTransferred();
+                // `this` is typed `pointer` in the ABI, which the inspector
+                // cannot decode (no record for "pointer" — live tour showed
+                // `this` with zero children). Register the OWNING class so the
+                // slot decodes like any reference local: slot holds the
+                // instance pointer, fields at their offsets. Reference classes
+                // only — a value-type `this` is pointer-to-VALUE, and the
+                // record's inline storage would misread the slot (covered by
+                // debugger-runtime-type-inspection).
+                std::string dbgType = pt->toCanonical();
+                if (parameter->getName() == "this" && parent
+                        && parent->getQName() && !parent->isValueType()) {
+                    dbgType = parent->getQName()->toCanonical();
+                }
                 dbg::emitDbgLocal(module, pf->getName(),
-                                  pt->toCanonical(),
+                                  dbgType,
                                   pf->getOrCreateAllocation(),
                                   dbg::classifyField(facetIn),
                                   pf->getDropEntry());

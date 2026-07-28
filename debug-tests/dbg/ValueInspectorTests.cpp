@@ -561,6 +561,69 @@ TEST_F(ValueInspectorCollectionStop, CollectionViewByDeclaredName) {
     EXPECT_EQ(insp.children(p.local("m")->type, p.local("m")->addr).children.size(), 2u);
 }
 
+// Live tour finding (2026-07-27): `this` was registered with its ABI type
+// string "pointer", so the inspector had no record for it and it expanded to
+// nothing. It must decode as the owning class.
+namespace {
+const char* kThisProg =
+    "package demo;\n"                                            // 1
+    "public class Counter {\n"                                   // 2
+    "    public int32 hits; public int32 max;\n"                 // 3
+    "    public Counter(int32 m) { this.hits = 0; this.max = m; }\n" // 4
+    "    public int32 bump() {\n"                                // 5
+    "        this.hits = this.hits + 1;\n"                       // 6
+    "        return this.hits;\n"                                // 7 <-- bp
+    "    }\n"                                                    // 8
+    "}\n"                                                        // 9
+    "public class Probe {\n"                                     // 10
+    "    public static int32 main() {\n"                         // 11
+    "        Counter c = heap Counter(9);\n"                     // 12
+    "        return c.bump();\n"                                 // 13
+    "    }\n"                                                    // 14
+    "}\n";                                                       // 15
+} // namespace
+
+class ValueInspectorThisStop : public ::testing::Test {
+protected:
+    TempProgram prog{"demo", "Probe.cajeta", kThisProg};
+    Probe p;
+
+    void SetUp() override {
+        JitRunOptions opts;
+        opts.sourceRoot = prog.sourceRoot();
+        opts.entryMethod = "demo.Probe.main";
+        std::vector<Breakpoint> bps{ Breakpoint{"Probe.cajeta", 7} };
+        std::string err;
+        p.session = startDebugSession(opts, bps, &err);
+        ASSERT_NE(p.session, nullptr) << err;
+        StopEvent ev;
+        ASSERT_TRUE(p.session->controller().waitForStop(
+            ev, std::chrono::seconds(30))) << "never hit the breakpoint";
+        ASSERT_NE(ev.frameTop, nullptr);
+        p.dl = &p.session->dataLayout();
+        p.frames = cajeta::dbg::walkFrames(ev.frameTop);
+        ASSERT_FALSE(p.frames.empty());
+    }
+    void TearDown() override {
+        if (p.session) { p.session->controller().resume(); p.session->join(); }
+    }
+};
+
+TEST_F(ValueInspectorThisStop, ThisDecodesAsOwningClass) {
+    ValueInspector insp(*p.dl);
+    const auto* v = p.local("this");
+    ASSERT_NE(v, nullptr) << "`this` not registered in the frame";
+    // The declared type is the owning class, never the ABI's "pointer".
+    EXPECT_EQ(v->type, "demo.Counter");
+    auto r = insp.inspect(v->type, v->addr);
+    EXPECT_EQ(r.kind, ValueKind::Aggregate);
+    EXPECT_EQ(r.summary, "{hits=1, max=9}");
+    auto page = insp.children(v->type, v->addr);
+    ASSERT_EQ(page.children.size(), 2u);
+    EXPECT_EQ(insp.inspect(page.children[0].type, page.children[0].addr).summary, "1");
+    EXPECT_EQ(insp.inspect(page.children[1].type, page.children[1].addr).summary, "9");
+}
+
 // Julian's live report (2026-07-27, warm acceptance): an ArrayList of CLASS
 // elements listed its rows, but expanding a row revealed nothing. Every prior
 // collection test used primitive elements — this is the class-element case:
