@@ -63,8 +63,31 @@ jobs:
           cja="$(ls build/archive/*.cja 2>/dev/null | head -1 || true)"
           if [ -z "$cja" ]; then echo "no .cja under build/archive"; ls -R build || true; exit 1; fi
           echo "cja=$cja" >> "$GITHUB_OUTPUT"
-          # Version from the tag (refs/tags/vX.Y.Z); only used on tag runs.
-          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          # cajeta.json is the single source of truth for the version: it is what
+          # named the .cja `cajeta build` just produced, and what dependency
+          # resolution keys off. Taking the version from the TAG instead let the
+          # two disagree — tag v0.1.3 over a manifest saying 0.1.2 would publish
+          # the 0.1.2 archive to Olla as 0.1.3.
+          #
+          # Read it through the toolchain rather than parsing here: cajeta.json is
+          # JSONC, so jq cannot read it and naive comment-stripping corrupts the
+          # `//` inside https:// URLs.
+          VERSION="$(cajeta info | awk '/^[[:space:]]*version:/{print $2; exit}')"
+          if [ -z "$VERSION" ]; then
+            echo "::error::could not read version from cajeta.json via 'cajeta info'" >&2
+            exit 1
+          fi
+          # On a tag run the two MUST agree. Fail loudly rather than publish an
+          # archive under a version it was not built as.
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            tag_version="${GITHUB_REF_NAME#v}"
+            if [ "$tag_version" != "$VERSION" ]; then
+              echo "::error::tag v${tag_version} disagrees with cajeta.json version ${VERSION} — bump the manifest or retag" >&2
+              exit 1
+            fi
+          fi
+          echo "version from cajeta.json: $VERSION"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
