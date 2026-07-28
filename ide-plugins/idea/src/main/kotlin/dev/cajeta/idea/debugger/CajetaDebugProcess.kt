@@ -83,6 +83,8 @@ class CajetaDebugProcess(
             TextConsoleBuilderFactory.getInstance()
                 .createBuilder(session.project)
                 .console,
+            project = session.project,
+            navigationRoots = listOfNotNull(session.project.basePath, configuration.sourceRoot.ifBlank { null }),
         )
         processHandler.attachConsole(console)
         return console

@@ -6,13 +6,20 @@ import com.intellij.execution.process.ProcessListener
 import com.intellij.execution.ui.ConsoleView
 import com.intellij.execution.ui.ConsoleViewContentType
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.fileEditor.OpenFileDescriptor
+import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Key
+import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.table.JBTable
 import java.awt.BorderLayout
 import java.awt.CardLayout
 import java.awt.Component
+import java.awt.Cursor
+import java.awt.event.MouseAdapter
+import java.awt.event.MouseEvent
+import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.swing.JComboBox
 import javax.swing.JComponent
@@ -42,6 +49,8 @@ import javax.swing.table.DefaultTableCellRenderer
 class JsonConsoleWrapper(
     private val delegate: ConsoleView,
     structuredByDefault: Boolean = true,
+    private val project: Project? = null,
+    private val navigationRoots: List<String> = emptyList(),
 ) : ConsoleView by delegate {
 
     private val controller = JsonlConsoleController(structuredByDefault)
@@ -50,6 +59,7 @@ class JsonConsoleWrapper(
     private val table = JBTable(tableModel).apply {
         setDefaultRenderer(Any::class.java, TintRenderer(tableModel))
         autoResizeMode = JTable.AUTO_RESIZE_LAST_COLUMN
+        installRowNavigation(this)
     }
 
     private val cards = CardLayout()
@@ -157,6 +167,43 @@ class JsonConsoleWrapper(
 
     private fun showCard() =
         cards.show(cardPanel, if (controller.isStructured) STRUCTURED else RAW)
+
+    // --- diagnostic row navigation (§3.1.6): a row with resolvable source
+    //     coordinates is clickable and jumps to the location; hovering one
+    //     shows a hand cursor. Extraction/resolution are the pure
+    //     JsonlRowNavigation; only the jump itself touches the platform. ---
+
+    private fun installRowNavigation(table: JBTable) {
+        table.addMouseListener(object : MouseAdapter() {
+            override fun mouseClicked(e: MouseEvent) {
+                if (e.clickCount != 1) return
+                resolvedLocationAt(table.rowAtPoint(e.point))?.let { (path, loc) -> navigateTo(path, loc) }
+            }
+        })
+        table.addMouseMotionListener(object : MouseAdapter() {
+            override fun mouseMoved(e: MouseEvent) {
+                val navigable = resolvedLocationAt(table.rowAtPoint(e.point)) != null
+                table.cursor =
+                    if (navigable) Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+                    else Cursor.getDefaultCursor()
+            }
+        })
+    }
+
+    private fun resolvedLocationAt(viewRow: Int): Pair<String, RowLocation>? {
+        if (viewRow < 0 || project == null) return null
+        val row = tableModel.rowAt(table.convertRowIndexToModel(viewRow)) ?: return null
+        val loc = JsonlRowNavigation.locationOf(row) ?: return null
+        val roots = navigationRoots.ifEmpty { listOfNotNull(project.basePath) }
+        val path = JsonlRowNavigation.resolve(loc, roots) { File(it).isFile } ?: return null
+        return path to loc
+    }
+
+    private fun navigateTo(path: String, loc: RowLocation) {
+        val proj = project ?: return
+        val vf = LocalFileSystem.getInstance().refreshAndFindFileByIoFile(File(path)) ?: return
+        OpenFileDescriptor(proj, vf, loc.line - 1, loc.column - 1).navigate(true)
+    }
 
     /** Level-based row coloring (§3.1.3) over the shared tint mapping. */
     private class TintRenderer(private val model: JsonlRowsTableModel) : DefaultTableCellRenderer() {

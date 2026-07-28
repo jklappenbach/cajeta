@@ -93,7 +93,16 @@ class CajetaTaskRunConfiguration(
             // console is the raw card; --diag-format=json NDJSON and program
             // JSONL render structured.
             override fun createConsole(executor: Executor): ConsoleView? =
-                super.createConsole(executor)?.let { JsonConsoleWrapper(it) }
+                super.createConsole(executor)?.let {
+                    JsonConsoleWrapper(
+                        it,
+                        project = project,
+                        navigationRoots = listOfNotNull(
+                            manifestPath.ifBlank { null }?.let { m -> File(m).parent },
+                            project.basePath,
+                        ),
+                    )
+                }
 
             override fun startProcess(): ProcessHandler {
                 val settings = CajetaSettings.instance
