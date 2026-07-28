@@ -74,9 +74,11 @@ item (buildtool-widget 9.3, structured-during-run) is absorbed here.
   First codecs: MessagePack, CBOR. Registration is data-driven so a future
   cajeta wire format plugs in without viewer changes.
 - **2.1.6** Mixed console lines: a line that is not pure JSON but contains a
-  trailing JSON object/array after a plain-text prefix (a logger prefix, ANSI
+  trailing JSON object after a plain-text prefix (a logger prefix, ANSI
   color codes) renders the prefix verbatim and the JSON part structured.
-  ANSI escapes are tolerated anywhere.
+  ANSI escapes are tolerated anywhere. A trailing array stays a raw
+  passthrough — the record row model is object-shaped; revisit if a real
+  feed emits array tails.
 
 ### 2.2 Use cases
 - **2.2.1** As a developer, when my program logs JSONL to stdout, each line

@@ -76,4 +76,39 @@ class JsonlEngineTest {
         assertEquals("warn", rec.level)
         assertEquals(Json.Str("x"), rec.fields["message"])
     }
+
+    // --- json-viewer unit 1 (spec §2.1.6): mixed prefix/ANSI-tolerant lines ---
+
+    @Test
+    fun prefixedLineRendersPrefixVerbatimAndStructuredTail() {
+        val line = """2026-07-28 12:00:01 INFO {"level":"info","message":"listening"}"""
+        val row = JsonlEngine.parseLine(1, line) as JsonlRow.Record
+        assertEquals("2026-07-28 12:00:01 INFO ", row.prefix)
+        assertEquals("listening", JsonlEngine.cell(row, "message"))
+        assertEquals(line, row.raw)   // the original line is preserved untouched
+    }
+
+    @Test
+    fun ansiEscapesAreToleratedAnywhere() {
+        val green = "\u001B[32m"
+        val reset = "\u001B[0m"
+        val row = JsonlEngine.parseLine(1, """$green{"level":"info",$reset"message":"ok"}$reset""")
+        assertTrue(row is JsonlRow.Record)
+        assertEquals("ok", JsonlEngine.cell(row as JsonlRow.Record, "message"))
+        // an ANSI-colored prefix before a JSON tail: prefix keeps its text, not the escapes
+        val mixed = JsonlEngine.parseLine(2, "${green}INFO$reset {\"a\":1}") as JsonlRow.Record
+        assertEquals("INFO ", mixed.prefix)
+    }
+
+    @Test
+    fun plainTextWithBracesButNoJsonStaysRaw() {
+        assertTrue(JsonlEngine.parseLine(1, "if (x) { launch(); }") is JsonlRow.Raw)
+        assertTrue(JsonlEngine.parseLine(2, "no braces at all") is JsonlRow.Raw)
+    }
+
+    @Test
+    fun pureJsonRecordHasEmptyPrefix() {
+        val row = JsonlEngine.parseLine(1, """{"level":"info"}""") as JsonlRow.Record
+        assertEquals("", row.prefix)
+    }
 }

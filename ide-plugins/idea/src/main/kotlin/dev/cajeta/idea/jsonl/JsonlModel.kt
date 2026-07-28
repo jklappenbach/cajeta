@@ -14,6 +14,9 @@ sealed class JsonlRow {
         override val lineNumber: Int,
         val fields: Map<String, Json>,
         val raw: String,
+        /** Plain-text logger prefix preceding the JSON tail on a mixed line
+         *  (spec §2.1.6), ANSI escapes removed; "" for a pure JSON line. */
+        val prefix: String = "",
     ) : JsonlRow() {
         /** The record's level (level/severity field), lowercased, or null. */
         val level: String?
