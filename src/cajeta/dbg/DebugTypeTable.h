@@ -22,6 +22,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -51,6 +52,24 @@ namespace cajeta::dbg {
         Storage storage = Storage::Inline;
     };
 
+    // A static field: decoded via its GLOBAL, not an instance offset. The
+    // symbol (`<canonical>.<fieldName>`) is stable across runs; the session
+    // resolves it to an address once at launch (runtime-type-inspection §4).
+    struct StaticFieldRecord {
+        std::string name;
+        std::string type;
+        std::string symbol;
+    };
+
+    // One vtable global: reading an instance's slot-0 word and matching it to
+    // an entry names the RUNTIME type. A secondary (`$as$`) vtable's entry
+    // carries its sub-object byte offset so a base-view interior pointer can
+    // be rebased to the object base (runtime-type-inspection §2.1.1/2.1.3).
+    struct VtableEntry {
+        std::string canonical;
+        uint64_t subObjectByteOffset = 0;
+    };
+
     // An array's element geometry: the slot stride the JIT'd code stores at.
     struct ElemRecord {
         std::string type;
@@ -67,6 +86,9 @@ namespace cajeta::dbg {
         // stop: the decoder never string-compares against a stdlib FQN.
         bool isString = false;
         std::vector<FieldRecord> fields;   // Object/Collection, layout order
+        // Static fields, inherited-then-own (matching the instance-field
+        // convention); displayed inline after instance fields.
+        std::vector<StaticFieldRecord> statics;
         ElemRecord elem;                   // Array
         CollectionKind collectionKind = CollectionKind::None;
     };
@@ -88,7 +110,7 @@ namespace cajeta::dbg {
     // recorded in bounded() and logged — a reachable type is never silently
     // truncated into a `<unknown>` with no explanation.
     struct BuildOptions {
-        size_t maxRecords = 4096;
+        size_t maxRecords = 65536;   // fits the whole compiled world (§3.1.2)
         size_t maxDepth = 64;
     };
 
@@ -137,10 +159,19 @@ namespace cajeta::dbg {
         // Reachable types a bound dropped, in discovery order (spec §5.1.3).
         const std::vector<std::string>& bounded() const { return bounded_; }
 
+        // The vtable map: symbol -> {runtime canonical, sub-object offset}.
+        // Filled by buildFromTypeWorld from the REAL globals' names; restored
+        // warm by the sidecar loader via putVtable.
+        const std::map<std::string, VtableEntry>& vtables() const {
+            return vtables_;
+        }
+        void putVtable(const std::string& symbol, VtableEntry entry);
+
     private:
         std::unordered_map<std::string, TypeRecord> records_;
         std::vector<std::string> roots_;
         std::vector<std::string> bounded_;
+        std::map<std::string, VtableEntry> vtables_;
         StringAbi stringAbi_;
     };
 

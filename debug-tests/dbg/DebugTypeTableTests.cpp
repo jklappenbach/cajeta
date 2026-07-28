@@ -22,6 +22,7 @@
 #include "cajeta/dbg/DebugController.h"
 #include "cajeta/jit/CajetaJitHost.h"
 #include "cajeta/type/CajetaType.h"
+#include "cajeta/type/CajetaClass.h"
 #include "../TempProgram.h"
 
 using cajeta::jit::Breakpoint;
@@ -90,7 +91,10 @@ cajeta::dbg::DebugTypeTable makeSampleTable() {
     pt.kind = TypeKind::Object;
     pt.fields.push_back({"x", "int32", 8, Storage::Inline});
     pt.fields.push_back({"y", "int32", 12, Storage::Inline});
+    pt.statics.push_back({"tally", "int32", "demo.Point.tally"});
     t.put(pt);
+    t.putVtable("demo.Point#VTable", {"demo.Point", 0});
+    t.putVtable("demo.C$as$demo.B#VTable", {"demo.C", 16});
     // Alias filing: the short name maps to the same record body.
     t.putAs("Point", pt);
 
@@ -144,6 +148,19 @@ void expectTablesEqual(const cajeta::dbg::DebugTypeTable& a,
             EXPECT_EQ(ra->fields[i].offset, rb->fields[i].offset) << name;
             EXPECT_EQ(ra->fields[i].storage, rb->fields[i].storage) << name;
         }
+        ASSERT_EQ(ra->statics.size(), rb->statics.size()) << name;
+        for (size_t i = 0; i < ra->statics.size(); i++) {
+            EXPECT_EQ(ra->statics[i].name, rb->statics[i].name) << name;
+            EXPECT_EQ(ra->statics[i].type, rb->statics[i].type) << name;
+            EXPECT_EQ(ra->statics[i].symbol, rb->statics[i].symbol) << name;
+        }
+    }
+    ASSERT_EQ(a.vtables().size(), b.vtables().size());
+    for (const auto& [sym, e] : a.vtables()) {
+        auto it = b.vtables().find(sym);
+        ASSERT_NE(it, b.vtables().end()) << sym;
+        EXPECT_EQ(e.canonical, it->second.canonical) << sym;
+        EXPECT_EQ(e.subObjectByteOffset, it->second.subObjectByteOffset) << sym;
     }
 }
 } // namespace
@@ -185,6 +202,24 @@ TEST(DebugTypeTableSidecar, RefusesUnknownMajor) {
     std::filesystem::remove(path);
 }
 
+// runtime-type-inspection 1.1.4 — a v1 sidecar (pre-vtable/statics) is refused
+// whole: the v1 reader design already rejects unknown line kinds, so v2 facts
+// under a v1 header would be unrepresentable — the header must gate it.
+TEST(DebugTypeTableSidecar, RefusesV1) {
+    const std::string path = sidecarPath("v1");
+    {
+        std::ofstream out(path, std::ios::trunc);
+        out << "cajeta-typeinfo-v1\n"
+            << "abi\t1\t64\t8\t12\t16\n"
+            << "rec\tint32\tint32\t0\t1\t0\t0\t\t0\t0\t0\n";
+    }
+    cajeta::dbg::DebugTypeTable back;
+    back.put([]{ cajeta::dbg::TypeRecord r; r.canonical = "stale.Type"; return r; }());
+    EXPECT_FALSE(cajeta::dbg::loadTypeSidecar(path, back));
+    EXPECT_TRUE(back.empty());
+    std::filesystem::remove(path);
+}
+
 // 3.1.3 — truncation/corruption yields an empty table, not a crash or misread.
 TEST(DebugTypeTableSidecar, ToleratesTruncation) {
     auto t = makeSampleTable();
@@ -220,10 +255,10 @@ namespace {
 // Lines:                1                 2                  3
 const char* kProg =
     "package demo;\n"                                              // 1
-    "public class Point { public int32 x; public int32 y;\n"        // 2
+    "public class Point { public int32 x; public int32 y; public static int32 tally;\n"        // 2
     "    public Point(int32 a, int32 b) { this.x = a; this.y = b; } }\n" // 3
     "public record Vec2 { int32 a; int32 b; }\n"                    // 4 value type
-    "public class A { public int32 a; public A() { return; } }\n"   // 5
+    "public class A { public int32 a; public static int32 stamp; public A() { return; } }\n"   // 5
     "public class B { public int32 b; public B() { return; } }\n"   // 6
     "public class C extends A, B {\n"                               // 7
     "    public C() { this.a = 7; this.b = 11; } }\n"               // 8 2nd vtable
@@ -478,6 +513,68 @@ TEST_F(DebugTypeTableStop, OffsetsMatchLiveLayout) {
     }
 }
 
+// runtime-type-inspection 1.1.1 — the vtable map: primary vtables at offset 0,
+// multi-parent secondary ($as$) vtables carrying the live sub-object offset,
+// every symbol taken from the REAL global (never reconstructed).
+TEST_F(DebugTypeTableStop, BuildsVtableMap) {
+    const auto& vt = table.vtables();
+    ASSERT_FALSE(vt.empty());
+
+    auto klassOf = [](const char* n) {
+        return std::dynamic_pointer_cast<cajeta::CajetaClass>(
+            cajeta::CajetaType::find(n));
+    };
+    auto point = klassOf("demo.Point");
+    ASSERT_NE(point, nullptr);
+    auto* pg = point->getVirtualTableGlobal();
+    ASSERT_NE(pg, nullptr);
+    auto pit = vt.find(pg->getName().str());
+    ASSERT_NE(pit, vt.end()) << "primary vtable symbol not mapped";
+    EXPECT_EQ(pit->second.canonical, "demo.Point");
+    EXPECT_EQ(pit->second.subObjectByteOffset, 0u);
+
+    // demo.C extends A, B: B's view is a secondary vtable at an interior
+    // offset; the map entry must carry the live sub-object offset so decode
+    // can rebase a B-typed pointer to the C base.
+    auto c = klassOf("demo.C");
+    auto b = klassOf("demo.B");
+    ASSERT_NE(c, nullptr);
+    ASSERT_NE(b, nullptr);
+    uint64_t liveOff = c->getSubObjectByteOffset(b.get());
+    ASSERT_GT(liveOff, 0u);
+    bool found = false;
+    for (const auto& [sym, e] : vt) {
+        if (e.canonical == "demo.C" && e.subObjectByteOffset == liveOff) {
+            EXPECT_NE(sym.find("$as$"), std::string::npos) << sym;
+            found = true;
+        }
+    }
+    EXPECT_TRUE(found) << "no secondary vtable entry for demo.C as demo.B";
+}
+
+// runtime-type-inspection 1.1.2 — static fields ride the record: {name, type,
+// symbol}, inherited-then-own on the subclass's view; instance lists unchanged.
+TEST_F(DebugTypeTableStop, CarriesStaticFields) {
+    const auto* pt = table.find("demo.Point");
+    ASSERT_NE(pt, nullptr);
+    ASSERT_EQ(pt->statics.size(), 1u);
+    EXPECT_EQ(pt->statics[0].name, "tally");
+    EXPECT_EQ(pt->statics[0].type, "int32");
+    EXPECT_EQ(pt->statics[0].symbol, "demo.Point.tally");
+    ASSERT_EQ(pt->fields.size(), 2u);   // instance list unchanged
+
+    // demo.C inherits A's static (ancestors first). A's own record has it too.
+    const auto* a = table.find("demo.A");
+    ASSERT_NE(a, nullptr);
+    ASSERT_EQ(a->statics.size(), 1u);
+    EXPECT_EQ(a->statics[0].symbol, "demo.A.stamp");
+    const auto* c = table.find("demo.C");
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->statics.size(), 1u);   // inherited from A; B has none
+    EXPECT_EQ(c->statics[0].name, "stamp");
+    EXPECT_EQ(c->statics[0].symbol, "demo.A.stamp");
+}
+
 // 3.1.1 (authentic form) — the table built from the live program round-trips
 // through the sidecar byte-for-byte in every record, so a warm load decodes
 // from exactly the facts the cold build resolved.
@@ -501,11 +598,15 @@ TEST_F(DebugTypeTableStop, ReachableClosure) {
     EXPECT_NE(table.find("cajeta.lang.String"), nullptr);  // an element type
     EXPECT_TRUE(table.bounded().empty());              // nothing was dropped
 
-    // `Unused` is a live type in this program but no debug value can be one,
-    // so it is not carried.
+    // Whole-world closure (runtime-type-inspection 1.1.3 / spec 3.1.1): a
+    // class never named by any local is CARRIED — a base-typed row can hold
+    // any subtype at runtime, and the table must answer for it warm.
     EXPECT_NE(cajeta::CajetaType::of("demo.Unused"), nullptr)
         << "fixture drift: Unused should exist in the type world";
-    EXPECT_EQ(table.find("demo.Unused"), nullptr);
+    const auto* unused = table.find("demo.Unused");
+    ASSERT_NE(unused, nullptr) << "world dump missing an un-named class";
+    ASSERT_EQ(unused->fields.size(), 1u);
+    EXPECT_EQ(unused->fields[0].name, "z");
 
     // A bounded walk reports what it dropped rather than silently truncating.
     DebugTypeTable small;

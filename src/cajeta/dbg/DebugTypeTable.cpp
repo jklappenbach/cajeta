@@ -44,6 +44,28 @@ namespace {
         return Storage::Inline;  // primitive
     }
 
+    // A class's STATIC fields, inherited-then-own, deduped. The symbol is the
+    // declaring class's canonical + "." + name — the exact global
+    // getOrCreateStaticFieldGlobal emits — so the DECLARING class names the
+    // symbol even on a subclass's inherited view.
+    void collectStatics(cajeta::CajetaClass* cls,
+                        std::vector<StaticFieldRecord>& out,
+                        std::set<void*>& seen) {
+        if (!cls) return;
+        for (auto& parent : cls->getSuperClasses())
+            collectStatics(parent.get(), out, seen);
+        for (auto& prop : cls->getPropertyList()) {
+            if (!prop->isStatic()) continue;
+            if (!seen.insert(prop.get()).second) continue;
+            StaticFieldRecord sr;
+            sr.name = prop->getName();
+            sr.type = prop->getType() ? prop->getType()->toCanonical() : "";
+            sr.symbol = cls->getQName()
+                ? cls->getQName()->toCanonical() + "." + prop->getName() : "";
+            if (!sr.symbol.empty()) out.push_back(std::move(sr));
+        }
+    }
+
     // A class's non-static fields in layout order — inherited (ancestors,
     // recursively) before own — deduped so a shared vbase field appears once.
     void collectFields(cajeta::CajetaClass* cls,
@@ -137,6 +159,11 @@ void DebugTypeTable::putAs(const std::string& key, TypeRecord rec) {
     records_[key] = std::move(rec);
 }
 
+void DebugTypeTable::putVtable(const std::string& symbol, VtableEntry entry) {
+    if (symbol.empty() || entry.canonical.empty()) return;
+    vtables_[symbol] = std::move(entry);
+}
+
 const TypeRecord* DebugTypeTable::find(const std::string& canonical) const {
     auto it = records_.find(canonical);
     return it == records_.end() ? nullptr : &it->second;
@@ -146,6 +173,7 @@ void DebugTypeTable::clear() {
     records_.clear();
     roots_.clear();
     bounded_.clear();
+    vtables_.clear();
     stringAbi_ = StringAbi{};
 }
 
@@ -186,6 +214,16 @@ void DebugTypeTable::buildFromTypeWorld(const llvm::DataLayout& dl,
     std::set<std::string> queued;
     for (const auto& r : roots_) {
         if (queued.insert(r).second) work.push_back({r, 0});
+    }
+    // Whole-world closure (runtime-type-inspection §3.1.1): a base- or
+    // Object-typed row can hold ANY subtype at runtime, so every compiled
+    // class is carried, not just the declared-local closure. Enqueued after
+    // the roots so root-reachable records keep discovery priority under the
+    // bound; the existing bound + logged-drop machinery still applies.
+    for (const auto& [name, t] : cajeta::CajetaType::getCanonicalMap()) {
+        if (!t) continue;
+        if (!std::dynamic_pointer_cast<cajeta::CajetaClass>(t)) continue;
+        if (queued.insert(name).second) work.push_back({name, 0});
     }
 
     // A record is filed under the name it was ASKED for as well as its canonical
@@ -287,6 +325,29 @@ void DebugTypeTable::buildFromTypeWorld(const llvm::DataLayout& dl,
         rec.kind = rec.collectionKind == CollectionKind::None
             ? TypeKind::Object : TypeKind::Collection;
 
+        // Static fields (runtime-type-inspection §4.1.1): inherited-then-own,
+        // symbol-addressed, resolved per session.
+        {
+            std::set<void*> seenStatics;
+            collectStatics(klass.get(), rec.statics, seenStatics);
+            for (const auto& sr : rec.statics) note(sr.type, item.depth + 1);
+        }
+
+        // Vtable map (runtime-type-inspection §2.1.1): symbols from the REAL
+        // globals. Primary at offset 0; each secondary ($as$) vtable carries
+        // its sub-object offset so a base-view pointer can be rebased.
+        if (auto* vg = klass->getVirtualTableGlobal()) {
+            putVtable(vg->getName().str(), {canonical, 0});
+        }
+        for (auto& [parentCanon, sg] : klass->secondaryVTablesRef()) {
+            if (!sg) continue;
+            uint64_t off = 0;
+            if (auto parent = std::dynamic_pointer_cast<cajeta::CajetaClass>(
+                    cajeta::CajetaType::find(parentCanon)))
+                off = klass->getSubObjectByteOffset(parent.get());
+            putVtable(sg->getName().str(), {canonical, off});
+        }
+
         auto* st = llvm::dyn_cast_or_null<llvm::StructType>(klass->getLlvmType());
         if (st && !st->isOpaque()) {
             const llvm::StructLayout* sl = dl.getStructLayout(st);
@@ -342,7 +403,11 @@ DebugTypeTable& globalDebugTypeTable() {
 // refuses the whole table rather than misreading (§3.1.2).
 
 namespace {
-    const char* kSidecarMagic = "cajeta-typeinfo-v1";
+    // v2 (runtime-type-inspection 1.2.3): rec lines gained a statics tail and
+    // the vtab line kind. The v1 reader refuses unknown line kinds by design,
+    // so the header major gates the whole format; a v1 slot misses under -g
+    // and heals by recompiling once.
+    const char* kSidecarMagic = "cajeta-typeinfo-v2";
 
     std::string escapeField(const std::string& s) {
         std::string out;
@@ -419,7 +484,20 @@ bool writeTypeSidecar(const std::string& path, const DebugTypeTable& table) {
                 << '\t' << f.offset
                 << '\t' << static_cast<int>(f.storage);
         }
+        // v2: the statics tail — count + {name, type, symbol} triples.
+        out << '\t' << rec->statics.size();
+        for (const auto& sf : rec->statics) {
+            out << '\t' << escapeField(sf.name)
+                << '\t' << escapeField(sf.type)
+                << '\t' << escapeField(sf.symbol);
+        }
         out << '\n';
+    }
+    // v2: the vtable map — one line per vtable global.
+    for (const auto& [sym, e] : table.vtables()) {
+        out << "vtab\t" << escapeField(sym)
+            << '\t' << escapeField(e.canonical)
+            << '\t' << e.subObjectByteOffset << '\n';
     }
     return out.good();
 }
@@ -484,21 +562,49 @@ bool loadTypeSidecar(const std::string& path, DebugTypeTable& into) {
             rec.collectionKind = static_cast<CollectionKind>(collKind);
             rec.elem.storage = static_cast<Storage>(elemStorage);
 
-            if (f.size() != 11 + nFields * 4) return false;  // truncated line
+            size_t base = 11;
+            if (f.size() < base + nFields * 4 + 1) return false;  // truncated
             for (uint64_t i = 0; i < nFields; i++) {
-                size_t base = 11 + i * 4;
+                size_t at = base + i * 4;
                 FieldRecord fr;
                 uint64_t storage;
-                if (!unescapeField(f[base], fr.name) ||
-                    !unescapeField(f[base + 1], fr.type) ||
-                    !parseU64(f[base + 2], fr.offset) ||
-                    !parseEnum(f[base + 3], 1, storage))
+                if (!unescapeField(f[at], fr.name) ||
+                    !unescapeField(f[at + 1], fr.type) ||
+                    !parseU64(f[at + 2], fr.offset) ||
+                    !parseEnum(f[at + 3], 1, storage))
                     return false;
                 fr.storage = static_cast<Storage>(storage);
                 rec.fields.push_back(std::move(fr));
             }
+            base += nFields * 4;
+            // v2: the statics tail — count + {name, type, symbol} triples.
+            uint64_t nStatics;
+            if (!parseU64(f[base], nStatics)) return false;
+            base += 1;
+            if (f.size() != base + nStatics * 3) return false;  // truncated
+            for (uint64_t i = 0; i < nStatics; i++) {
+                size_t at = base + i * 3;
+                StaticFieldRecord sr;
+                if (!unescapeField(f[at], sr.name) ||
+                    !unescapeField(f[at + 1], sr.type) ||
+                    !unescapeField(f[at + 2], sr.symbol))
+                    return false;
+                rec.statics.push_back(std::move(sr));
+            }
             if (key.empty() || rec.canonical.empty()) return false;
             scratch.putAs(key, std::move(rec));
+            continue;
+        }
+
+        if (f[0] == "vtab") {
+            if (f.size() != 4) return false;
+            std::string sym;
+            VtableEntry e;
+            if (!unescapeField(f[1], sym) ||
+                !unescapeField(f[2], e.canonical) ||
+                !parseU64(f[3], e.subObjectByteOffset))
+                return false;
+            scratch.putVtable(sym, std::move(e));
             continue;
         }
 
