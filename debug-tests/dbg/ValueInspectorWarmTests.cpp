@@ -44,18 +44,21 @@ namespace {
 // Array/object/ArrayList/HashMap/String locals — one of every decode shape.
 const char* kProg =
     "package demo;\n"                                              // 1
-    "public class Point { public int32 x; public int32 y;\n"        // 2
+    "public class Point { public int32 x; public int32 y; public static int32 made;\n" // 2
     "    public Point(int32 a, int32 b) { this.x = a; this.y = b; } }\n" // 3
-    "public class Prog {\n"                                         // 4
-    "    public static int32 main() {\n"                            // 5
-    "        Point pt = heap Point(3, 4);\n"                        // 6
-    "        int32[] nums = [3, 7, 9];\n"                           // 7
-    "        String s = \"hi\";\n"                                  // 8
-    "        ArrayList<int32> xs = [10, 20, 30];\n"                 // 9
-    "        HashMap<int32,int32> m = [1:100, 2:200];\n"            // 10
-    "        ArrayList<Point> ps = [heap Point(1, 2), heap Point(5, 6)];\n" // 11
-    "        int32 done = 0;\n"                                     // 12
-    "        return 42;\n"                                          // 13 <-- bp
+    "public class Point3 extends Point { public int32 z;\n"         // 4
+    "    public Point3(int32 a, int32 b, int32 c) { this.x = a; this.y = b; this.z = c; } }\n" // 5
+    "public class Prog {\n"                                         // 6
+    "    public static int32 main() {\n"                            // 7
+    "        Point pt = heap Point(3, 4);\n"                        // 8
+    "        int32[] nums = [3, 7, 9];\n"                           // 9
+    "        String s = \"hi\";\n"                                  // 10
+    "        ArrayList<int32> xs = [10, 20, 30];\n"                 // 11
+    "        HashMap<int32,int32> m = [1:100, 2:200];\n"            // 12
+    "        ArrayList<Point> ps = [heap Point(1, 2), heap Point(5, 6)];\n" // 13
+    "        Point up = heap Point3(1, 2, 3); Point.made = 6;\n"    // 14
+    "        int32 done = 0;\n"                                     // 15
+    "        return 42;\n"                                          // 16 <-- bp
     "    }\n"                                                       // 13
     "}\n";                                                          // 14
 
@@ -150,7 +153,7 @@ struct WarmFixture {
 TEST(ValueInspectorWarm, SidecarDrivenDecodeMatchesCold) {
     WarmFixture f;
     std::string err;
-    auto session = startDebugSession(f.opts(), {Breakpoint{"Prog.cajeta", 13}},
+    auto session = startDebugSession(f.opts(), {Breakpoint{"Prog.cajeta", 16}},
                                      &err);
     ASSERT_NE(session, nullptr) << err;
 
@@ -197,7 +200,7 @@ TEST(ValueInspectorWarm, SidecarDrivenDecodeMatchesCold) {
 // `<unknown>`. This is the IDE's warm launch, finally under test.
 TEST(ValueInspectorWarm, CacheHitLaunchDecodesLikeCold) {
     WarmFixture f;
-    std::vector<Breakpoint> bps{Breakpoint{"Prog.cajeta", 13}};
+    std::vector<Breakpoint> bps{Breakpoint{"Prog.cajeta", 16}};
 
     // Cold session: populates the slot, and its stop is the reference decode.
     DecodedStop cold;
@@ -205,7 +208,8 @@ TEST(ValueInspectorWarm, CacheHitLaunchDecodesLikeCold) {
         std::string err;
         auto session = startDebugSession(f.opts(), bps, &err);
         ASSERT_NE(session, nullptr) << err;
-        ValueInspector insp(session->dataLayout());
+        ValueInspector insp(session->dataLayout(),
+                            &session->resolvedTypeSymbols());
         cold = decodeAtStop(*session, insp);
         EXPECT_EQ(session->join(), 42);
     }
@@ -218,6 +222,18 @@ TEST(ValueInspectorWarm, CacheHitLaunchDecodesLikeCold) {
     ASSERT_EQ(cold.locals.at("m").children.size(), 2u);
     ASSERT_EQ(cold.locals.at("ps").children.size(), 2u);
     ASSERT_EQ(cold.locals.at("ps").children[0].summary, "{x=1, y=2}");
+    // runtime-type-inspection 5.1.1: the Point-declared local holds a Point3 —
+    // COLD must already narrow (subclass summary, z + static `made` present).
+    ASSERT_EQ(cold.locals.at("up").summary, "{x=1, y=2, z=3}");
+    {
+        bool sawZ = false, sawMade = false;
+        for (const auto& c : cold.locals.at("up").children) {
+            if (c.name == "z") sawZ = true;
+            if (c.name == "made" && c.summary == "6") sawMade = true;
+        }
+        ASSERT_TRUE(sawZ) << "cold narrowing missing subclass field";
+        ASSERT_TRUE(sawMade) << "cold statics missing";
+    }
 
     // Prove the slot is HOT for these exact options before the warm session.
     JitRunResult probe;
@@ -241,7 +257,8 @@ TEST(ValueInspectorWarm, CacheHitLaunchDecodesLikeCold) {
             if (e.canonical == "demo.Point") sawPoint = true;
         EXPECT_TRUE(sawPoint);
     }
-    ValueInspector insp(session->dataLayout());
+    ValueInspector insp(session->dataLayout(),
+                        &session->resolvedTypeSymbols());
     DecodedStop warm = decodeAtStop(*session, insp);
     EXPECT_EQ(session->join(), 42);
 
@@ -256,4 +273,16 @@ TEST(ValueInspectorWarm, CacheHitLaunchDecodesLikeCold) {
     ASSERT_EQ(warm.locals.at("ps").children.size(), 2u);
     EXPECT_EQ(warm.locals.at("ps").children[0].summary, "{x=1, y=2}");
     EXPECT_EQ(warm.locals.at("ps").children[1].summary, "{x=5, y=6}");
+    // runtime-type-inspection 5.1.1 / 4.1.4 / 3.3.1: narrowing and statics
+    // identical on the hit (expectStopsEqual compared them; pin the shape).
+    EXPECT_EQ(warm.locals.at("up").summary, "{x=1, y=2, z=3}");
+    {
+        bool sawZ = false, sawMade = false;
+        for (const auto& c : warm.locals.at("up").children) {
+            if (c.name == "z") sawZ = true;
+            if (c.name == "made" && c.summary == "6") sawMade = true;
+        }
+        EXPECT_TRUE(sawZ) << "warm narrowing missing subclass field";
+        EXPECT_TRUE(sawMade) << "warm statics missing";
+    }
 }
