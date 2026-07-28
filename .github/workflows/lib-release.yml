@@ -26,6 +26,16 @@ on:
         # three minor versions old, which could parse neither its annotation
         # declarations nor its bracket array literals. Bump this with each release.
         default: 'v0.10.1'
+      test-command:
+        description: >
+          Command running the library's test suite (e.g. `cajeta test`,
+          `./run-tests.sh`). Empty means NO TESTS RUN.
+        type: string
+        required: false
+        # Empty by default only so existing callers keep working. A library that
+        # leaves it empty gets a green tag without one test having executed —
+        # this workflow built and published, and never ran anything. Set it.
+        default: ''
     secrets:
       OLLA_TOKEN:
         required: true
@@ -60,6 +70,18 @@ jobs:
 
       - name: Build library .cja
         run: cajeta build
+
+      # Before the artifact is located, uploaded, released or published — a
+      # failing suite must stop the tag, not annotate it after the fact.
+      - name: Run the test suite
+        if: inputs.test-command != ''
+        run: ${{ inputs.test-command }}
+
+      - name: No test suite configured
+        if: inputs.test-command == ''
+        run: |
+          echo "::warning::this library ran NO tests — it was built and will be \
+          published unverified. Pass `test-command` to lib-release.yml."
 
       - name: Locate artifact
         id: art
