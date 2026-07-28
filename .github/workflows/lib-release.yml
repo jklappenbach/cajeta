@@ -20,7 +20,12 @@ on:
         description: 'cajeta toolchain release tag to build against'
         type: string
         required: false
-        default: 'v0.7.1'
+        # Callers SHOULD pin this themselves. The default exists only so a new
+        # library builds at all, and a stale one is actively dangerous: it sat at
+        # v0.7.1 long enough that cajeta-unit silently built against a toolchain
+        # three minor versions old, which could parse neither its annotation
+        # declarations nor its bracket array literals. Bump this with each release.
+        default: 'v0.10.1'
     secrets:
       OLLA_TOKEN:
         required: true
