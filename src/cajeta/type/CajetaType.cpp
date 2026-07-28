@@ -1425,9 +1425,10 @@ namespace cajeta {
                     }
                     if (templateClass && templateClass->isTemplate()) {
                         vector<CajetaTypePtr> args;
-                        // element-ownership §2 — parallel to args: a `#`-prefixed
-                        // class-typed argument (`HashMap<#String,V>`) marks that
-                        // position owning. Only the typeType branch can carry it.
+                        // title-tracking §8.1 — a `#`-prefixed class-typed
+                        // argument (`HashMap<#String,V>`) is RETIRED; the loop
+                        // below rejects it with TYPE_TRANSFER_RETIRED. Ownership
+                        // is per-call, spelled at the call/store site.
                         for (auto* targ : targs->typeArgument()) {
                             // Wildcard branch — `?`, `? extends T`, or
                             // `? super T`. Grammar

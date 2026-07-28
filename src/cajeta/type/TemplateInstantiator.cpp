@@ -350,6 +350,8 @@ namespace cajeta {
         }
 
         // Cache key: full canonical name with args, e.g. `pkg.Box<cajeta.int32>`.
+        // HISTORICAL — superseded by the title-tracking note below, kept only
+        // because it describes the shape of the gate that was removed:
         // element-ownership §8.1 (plan 2.1.4) — the value-semantics gate. `#`
         // demands a separable ownership story from the argument: a primitive
         // carries none (§8.1.1); a value type owns heap payload only when

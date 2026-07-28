@@ -43,14 +43,12 @@ namespace {
     // exactly so compile-time and runtime hashes of the same canonical
     // signature agree.
     //
-    // `#` is skipped (mode-erased dispatch, element-ownership §5.1.4): a
-    // mode-agnostic method template compiles once against the plain
-    // spelling (`Vault<T>` → `Vault<Elem>`) yet must virtually dispatch on
-    // a `Vault<#Elem>` receiver. Ownership mode is a compile-time property
-    // — the two instantiations have identical layout and slot order — so
-    // dispatch identity ignores it. `#`-only overloads within one class
-    // cannot exist (borrow-mode dissolution would collide them), so the
-    // erasure cannot alias two distinct methods in one vtable.
+    // `#` is skipped (mode-erased dispatch, element-ownership §5.1.4). This
+    // predates title-tracking §8.1, which retired the `Vault<#Elem>` spelling
+    // outright — there is only one instantiation now, so the erasure is trivially
+    // safe rather than merely sound. Kept because the rule still holds for the
+    // `#` positions that survive, and `#`-only overloads within one class cannot
+    // exist, so the erasure cannot alias two distinct methods in one vtable.
     // EXCEPTION to the erasure (title-tracking 6.2.1): a `#` that is part of
     // an OPERATOR NAME (`operator#[]`) is identity, not mode — erasing it
     // aliased operator#[](K) with operator[](K) in the vtable, and which one
@@ -3301,9 +3299,11 @@ namespace cajeta {
             if (property->isStatic()) continue;
             auto fieldType = property->getType();
             if (!fieldType) continue;
-            // optional-borrow-ownership 2.2.3.b — a scalar `P`-typed field in a
-            // BORROW-mode instantiation (`Optional<T>`, not `Optional<#T>`) is a
-            // view: the caller still owns it, so this teardown must not drop it.
+            // optional-borrow-ownership 2.2.3.b — a scalar `P`-typed field whose
+            // payload was LENT (the caller passed it plainly, not `#x`) is a view:
+            // the caller still owns it, so this teardown must not drop it. The mode
+            // used to be spelled in the type (`Optional<T>` vs `Optional<#T>`);
+            // title-tracking §8.1 retired that, and it is a per-call fact now.
             // Monomorphization erased the came-from-a-type-parameter fact;
             // TemplateInstantiator restores it as originTypeParamIndex.
             // title-tracking §5 (rev 2) EXCEPTION: a vtable-class T-origin

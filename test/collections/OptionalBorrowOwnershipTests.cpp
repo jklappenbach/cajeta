@@ -1,7 +1,10 @@
 // optional-borrow-ownership Unit 2 — `Optional<T>`'s `#T` ctor parameter must be
 // MODE-DEPENDENT. In a plain (borrow-mode) `Optional<T>` instantiation it must
-// accept a borrow and must not drop the payload; in `Optional<#T>` it must still
-// demand the transfer and still drop.
+// accept a borrow and must not drop the payload; when the caller surrenders at
+// the call site (`#heap Exception(...)`) it must still take the title and drop.
+// NB: this predates title-tracking §8.1, which retired `Optional<#T>` as a
+// spelling — the mode distinction survives, but it is per-call now, which is
+// exactly what the test bodies below exercise.
 //
 // Before this: element-ownership Unit 3B wired the owned-element drop walk for
 // `P[]` fields only ("scalar `P`-typed fields already ride the class-ref drop
@@ -65,9 +68,9 @@ TEST(OptionalBorrowOwnership, plainOptionalAcceptsBorrowedArgument) {
     EXPECT_EQ(fn(), 8) << "\"borrowed\".count() == 8";
 }
 
-// 2.1.1 — the owned mode is untouched: `Optional<#T>` still takes ownership and
-// still drops at scope exit. Regression guard on the fix for 2.1.2, using the
-// same liveCount oracle as OwnershipLeakProbe.
+// 2.1.1 — the owned mode is untouched: surrendering the payload at the call site
+// still takes ownership and still drops at scope exit. Regression guard on the
+// fix for 2.1.2, using the same liveCount oracle as OwnershipLeakProbe.
 TEST(OptionalBorrowOwnership, ownedOptionalStillDropsPayload) {
     auto jit = jitOf(
         "    public static void spin(int32 n) {\n"
@@ -83,7 +86,7 @@ TEST(OptionalBorrowOwnership, ownedOptionalStillDropsPayload) {
         "        return Cajeta.liveCount() - base;\n"
         "    }\n");
     auto fn = jit->lookup<int64_t (*)(int32_t)>("run");
-    EXPECT_LT(fn(2000), 50) << "owned Optional<#Throwable> leaked its payload at scope exit";
+    EXPECT_LT(fn(2000), 50) << "owned Optional<Throwable> leaked its payload at scope exit";
 }
 
 // 2.1.5 — primitives carry no ownership; unchanged by all of the above.

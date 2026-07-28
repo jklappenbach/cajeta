@@ -57,10 +57,11 @@ public class Exception extends Throwable {
     /**
      * The underlying cause carried with this exception; empty when none.
      * Wraps the borrowed field (no transfer) — the exception keeps ownership of
-     * its cause chain. `Optional<Throwable>` (no `#` on the type argument) is a
-     * borrow-mode instantiation, so its drop leaves `cause` alone; only
-     * `Optional<#Throwable>` would take ownership. See
-     * `specs/optional-borrow-ownership-spec.md`.
+     * its cause chain. Passing `this.cause` plainly (rather than `#this.cause`)
+     * is what makes this a borrow, so the Optional's drop leaves `cause` alone;
+     * surrendering at the call site (`#`) is what would hand ownership over.
+     * Ownership is per-call — it is NOT `Optional<#Throwable>`, which was retired
+     * in title-tracking §8.1. See `specs/optional-borrow-ownership-spec.md`.
      */
     public Optional<Throwable> getCause() {
         if (this.cause == null) {

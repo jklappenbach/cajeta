@@ -97,7 +97,7 @@ yet and the I/O API ships sync-only.
 
 ```cajeta
 // Planned shape, not yet available:
-Task<#int8[]>  t1 = File.readAllBytesAsync(path);
+Task<int8[]>   t1 = File.readAllBytesAsync(path);
 Task<void>     t2 = File.writeAllBytesAsync(path, data, len);
 Task<FileInfo> t3 = p.infoAsync();
 ```

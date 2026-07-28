@@ -79,10 +79,13 @@ Stream<Tick> recent = ticks.filter(t -> t.live).map(parse).window(Duration.ofSec
   underneath: a full channel parks the producer fiber. No request-`n` protocol.
 - **Operators** compose: `map` / `filter` / `flatMap` / `window` / `merge` / `zip`
   / `fold`. Each is an ordinary function over the upstream stream.
-- **Element ownership** is explicit: `Stream<#T>` *moves* owned elements through
-  the pipeline; `Stream<View<T>>` yields **borrows valid only for that iteration
-  step** (zero-copy streaming of large data; the borrow can't escape the step).
-  This owned-vs-borrowed distinction is the linchpin of the model.
+- **Element ownership** is explicit, but spelled per-call rather than in the type:
+  a `Stream<T>` *moves* an owned element when the producer surrenders it at the
+  store site (`s.emit(#x)`); `Stream<View<T>>` yields **borrows valid only for that
+  iteration step** (zero-copy streaming of large data; the borrow can't escape the
+  step). This owned-vs-borrowed distinction is the linchpin of the model.
+  (`Stream<#T>` is not valid syntax: `#` in a type argument was retired in
+  title-tracking §8.1 and errors with `CAJETA_ERROR_TYPE_TRANSFER_RETIRED`.)
 - **Relationship to neighbours:** `Stream<T>` is the high-level composable layer
   over `Channel<T>` (the raw fiber-to-fiber conduit) and pairs with byte-level
   `InputStream`/`OutputStream` (a byte stream is `Stream<View<bytes>>` after framing).

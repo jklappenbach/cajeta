@@ -104,14 +104,12 @@ namespace cajeta {
                         auto* lastTad = tads.back();
                         if (auto* targs = lastTad->typeArguments()) {
                             for (auto* targ : targs->typeArgument()) {
-                                // element-ownership §2 (plan 2.4) — capture the
-                                // use-site `#` per argument, kept parallel to
-                                // typeArguments (non-type/wildcard args are
-                                // never owning). Threaded into instantiate()
-                                // in resolveTypes so `heap ArrayList<#String>()`
-                                // builds the OWNING monomorph, matching what
-                                // CajetaType::fromContext resolves for the
-                                // declared type.
+                                // title-tracking §8.1 — the use-site `#` per
+                                // argument (`heap ArrayList<#String>()`) is
+                                // RETIRED and rejected below with
+                                // TYPE_TRANSFER_RETIRED. There is no owning
+                                // monomorph any more: one instantiation serves
+                                // both, and ownership is decided per call.
                                 if (targ->integerLiteral() != nullptr) {
                                     // Non-type (integer) template argument —
                                     // the `N` in `new Vector<float32, 4>(...)`.

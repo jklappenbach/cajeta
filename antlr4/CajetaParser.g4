@@ -114,10 +114,12 @@ typeParameters
     : '<' typeParameter (',' typeParameter)* '>'
     ;
 
-// element-ownership §8.4.2 — an optional REFERENCE ('#') prefix on the parameter
-// identifier declares it owning-required (`class Cache<#K, V>`): every
-// instantiation must supply `#`, and the requirement is contagious through
-// inheritance (§8.6). Distinct from the type-argument `#` above.
+// RETIRED — title-tracking §8.1, same retirement as the type-argument `#` below.
+// This prefix once declared a parameter owning-required (`class Cache<#K, V>`;
+// element-ownership §8.4.2). A must-own edge is spelled on the FORMAL now —
+// `f(#K x)` — which is the one `#` position that survives, alongside `#T`
+// returns. Still PARSED only so the compiler can reject it with
+// CAJETA_ERROR_TYPE_TRANSFER_RETIRED and name that fix.
 typeParameter
     : annotation* REFERENCE? identifier (EXTENDS annotation* typeBound)? (ASSIGN typeType)?
     | primitiveType identifier
@@ -392,10 +394,14 @@ classOrInterfaceType
     : identifier typeArguments? ('.' identifier typeArguments?)*
     ;
 
-// element-ownership §8.4.1 — an optional REFERENCE ('#') prefix on a
-// class-typed argument marks this instantiation position as owning
-// (`HashMap<#String, V>`). Semantic checks (value-type args, gating) are later
-// units. The `#` is never infix, so this stays unambiguous.
+// RETIRED — title-tracking §8.1. A REFERENCE ('#') prefix here once marked an
+// instantiation position as owning (`HashMap<#String, V>`; element-ownership
+// §8.4.1). Ownership is per-call now, spelled at the call or store site
+// (`m.put(#k, #v)`, `xs.add(#x)`). The prefix is still PARSED so the compiler can
+// reject it with CAJETA_ERROR_TYPE_TRANSFER_RETIRED and name the fix, instead of
+// failing with "no viable alternative". Do not reintroduce the semantics: an
+// instance declared owning could still transfer OUT, which is what retired it.
+// The `#` is never infix, so this stays unambiguous.
 typeArgument
     : REFERENCE? typeType
     | primitiveType
