@@ -267,7 +267,7 @@ const char* kProg =
     "public class Unused { public int32 z; public Unused() { this.z = 1; } }\n" // 11
     "public class Probe {\n"                                        // 12
     "    public static int32 main() {\n"                            // 13
-    "        Point pt = heap Point(3, 4);\n"                        // 14
+    "        Point pt = heap Point(3, 4); Point.tally = 3;\n"       // 14
     "        Vec2 v = {a:8, b:9};\n"                                // 15
     "        C c = heap C();\n"                                     // 16
     "        Holder h = heap Holder();\n"                           // 17
@@ -573,6 +573,36 @@ TEST_F(DebugTypeTableStop, CarriesStaticFields) {
     ASSERT_EQ(c->statics.size(), 1u);   // inherited from A; B has none
     EXPECT_EQ(c->statics[0].name, "stamp");
     EXPECT_EQ(c->statics[0].symbol, "demo.A.stamp");
+}
+
+// runtime-type-inspection 2.1.1 — the session resolves every carried vtable
+// symbol to its per-run address at init: a live instance's slot-0 word keys
+// straight to its runtime type, no per-stop lookups.
+TEST_F(DebugTypeTableStop, SessionResolvesVtableAddresses) {
+    const auto& rs = session->resolvedTypeSymbols();
+    ASSERT_FALSE(rs.vtableByAddr.empty());
+
+    const auto* v = local("pt");
+    ASSERT_NE(v, nullptr);
+    void* inst = *reinterpret_cast<void**>(v->addr);
+    ASSERT_NE(inst, nullptr);
+    uint64_t slot0 = *reinterpret_cast<uint64_t*>(inst);
+    auto it = rs.vtableByAddr.find(slot0);
+    ASSERT_NE(it, rs.vtableByAddr.end())
+        << "live instance's vtable word not in the resolved map";
+    EXPECT_EQ(it->second.canonical, "demo.Point");
+    EXPECT_EQ(it->second.subObjectByteOffset, 0u);
+}
+
+// runtime-type-inspection 2.1.2 — a resolved static address reads the
+// program's live value.
+TEST_F(DebugTypeTableStop, SessionResolvesStaticAddresses) {
+    const auto& rs = session->resolvedTypeSymbols();
+    auto it = rs.staticAddrs.find("demo.Point.tally");
+    ASSERT_NE(it, rs.staticAddrs.end()) << "static symbol unresolved";
+    ASSERT_NE(it->second, nullptr);
+    // main set Point.tally = 3 before the breakpoint.
+    EXPECT_EQ(*reinterpret_cast<int32_t*>(it->second), 3);
 }
 
 // 3.1.1 (authentic form) — the table built from the live program round-trips

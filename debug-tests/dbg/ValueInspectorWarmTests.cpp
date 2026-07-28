@@ -230,6 +230,17 @@ TEST(ValueInspectorWarm, CacheHitLaunchDecodesLikeCold) {
     std::string err;
     auto session = startDebugSession(f.opts(), bps, &err);
     ASSERT_NE(session, nullptr) << err;
+    // runtime-type-inspection 2.1.3 — warm resolution: the symbols came from
+    // the sidecar-loaded table, the addresses from THIS run's LLJIT.
+    {
+        const auto& rs = session->resolvedTypeSymbols();
+        ASSERT_FALSE(rs.vtableByAddr.empty())
+            << "warm session resolved no vtable symbols";
+        bool sawPoint = false;
+        for (const auto& [addr, e] : rs.vtableByAddr)
+            if (e.canonical == "demo.Point") sawPoint = true;
+        EXPECT_TRUE(sawPoint);
+    }
     ValueInspector insp(session->dataLayout());
     DecodedStop warm = decodeAtStop(*session, insp);
     EXPECT_EQ(session->join(), 42);

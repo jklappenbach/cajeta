@@ -106,6 +106,21 @@ namespace cajeta::dbg {
         uint64_t offBase = 0;
     };
 
+    // Per-session resolution of the table's symbols (runtime-type-inspection
+    // §2.1.2, §4.1.2). Addresses are per-run; the debug host resolves each
+    // carried symbol ONCE at session init — cold and warm — so decode does no
+    // lookups at a stop. vtableByAddr keys an instance's slot-0 word directly
+    // to its runtime type; staticAddrs keys a static's symbol to its global.
+    // An unresolvable symbol is simply absent (degrades to declared-type /
+    // no-row, never a launch failure).
+    struct ResolvedTypeSymbols {
+        std::map<uint64_t, VtableEntry> vtableByAddr;
+        std::unordered_map<std::string, void*> staticAddrs;
+        bool empty() const {
+            return vtableByAddr.empty() && staticAddrs.empty();
+        }
+    };
+
     // Bounds on the closure walk (spec §5.1.3). Whatever a bound drops is
     // recorded in bounded() and logged — a reachable type is never silently
     // truncated into a `<unknown>` with no explanation.

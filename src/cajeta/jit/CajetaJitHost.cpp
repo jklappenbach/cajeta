@@ -1486,6 +1486,7 @@ int runJit(const JitRunOptions& opts, JitRunResult* result) {
 
 struct JitDebugSession::Impl {
     BuiltJit built;
+    cajeta::dbg::ResolvedTypeSymbols resolvedTypeSymbols;
     cajeta::dbg::DebugController controller;
     std::thread thread;
     std::atomic<bool> finished{false};
@@ -1522,6 +1523,11 @@ int JitDebugSession::join() {
         installExceptionHandler(impl_->built.jit.get(), nullptr);
     }
     return impl_->exitCode;
+}
+
+const cajeta::dbg::ResolvedTypeSymbols&
+JitDebugSession::resolvedTypeSymbols() const {
+    return impl_->resolvedTypeSymbols;
 }
 
 const llvm::DataLayout& JitDebugSession::dataLayout() const {
@@ -1670,6 +1676,38 @@ std::unique_ptr<JitDebugSession> startDebugSession(
     void* entryAddr = reinterpret_cast<void*>(entrySym->getValue());
     bool returnsInt32 = impl->built.returnsInt32;
     bool takesArgs = impl->built.entryTakesArgs;
+
+    // runtime-type-inspection Unit 2: resolve the debug type table's symbols
+    // to this run's addresses, ONCE — the same seam as the entry/vtable
+    // lookups above, identical cold (table from the world) and warm (table
+    // from the sidecar). A symbol that does not resolve is skipped: the row
+    // it served degrades to declared-type decode / no static row, never a
+    // launch failure (spec 2.1.2, 4.1.2).
+    {
+        const auto& table = cajeta::dbg::globalDebugTypeTable();
+        auto& rs = impl->resolvedTypeSymbols;
+        for (const auto& [sym, entry] : table.vtables()) {
+            if (auto a = jit->lookup(sym)) {
+                rs.vtableByAddr[a->getValue()] = entry;
+            } else {
+                cajeta::jit::consumeError(a.takeError());
+            }
+        }
+        std::set<std::string> seenStatics;
+        for (const auto& name : table.names()) {
+            const auto* rec = table.find(name);
+            if (!rec) continue;
+            for (const auto& sf : rec->statics) {
+                if (!seenStatics.insert(sf.symbol).second) continue;
+                if (auto a = jit->lookup(sf.symbol)) {
+                    rs.staticAddrs[sf.symbol] =
+                        reinterpret_cast<void*>(a->getValue());
+                } else {
+                    cajeta::jit::consumeError(a.takeError());
+                }
+            }
+        }
+    }
 
     // Materialize args BEFORE the program thread starts, so a failure here is a
     // clean launch failure rather than a crash inside the debuggee.

@@ -20,6 +20,8 @@
 
 namespace llvm { class DataLayout; }
 
+#include "cajeta/dbg/DebugTypeTable.h"
+
 namespace cajeta::jit {
 
     struct JitRunOptions {
@@ -152,6 +154,12 @@ namespace cajeta::jit {
         // ValueInspector decodes stopped-state values against this
         // (debugger-variable-inspection §1.5). Valid for the session's life.
         const llvm::DataLayout& dataLayout() const;
+
+        // Per-session symbol resolution for the debug type table
+        // (runtime-type-inspection Unit 2): every vtable/static symbol the
+        // table carries, resolved to this run's addresses once at launch.
+        // Empty when the table is (e.g. -g off). Valid for the session's life.
+        const cajeta::dbg::ResolvedTypeSymbols& resolvedTypeSymbols() const;
 
         // True once the program thread has finished.
         bool isFinished() const;
