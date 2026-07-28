@@ -39,15 +39,19 @@ item (buildtool-widget 9.3, structured-during-run) is absorbed here.
   (Kotlin). A cajeta-side binary emitter is separate future work.
 
 ### 1.3 Open items for Julian's review
-- **1.3.1** "jsonb": no binary JSON codec exists in the stdlib today
-  (`cajeta/codec` has json/csv/base64; `cajeta/wire` names MessagePack/CBOR/
-  Protobuf as example formats only). The spec provides a pluggable decoder
-  seam with **MessagePack and CBOR** as the first two decoders; confirm which
-  concrete format(s) the build will actually emit, and its file extension.
+- **1.3.1** RESOLVED (Julian, 2026-07-28): binary JSON ("jsonb") can wait —
+  it is the plan's FINAL unit. The codec seam + MessagePack/CBOR land there;
+  the concrete build-emitted format is confirmed when that unit starts. The
+  console's role in run/debug sessions is the focus.
 - **1.3.2** JSON5 full support vs JSONC-only (comments + trailing commas).
   Drafted: JSONC-level leniency reading; full JSON5 deferred.
-- **1.3.3** Console auto-detection default: ON for cajeta run configurations,
-  opt-in toggle for arbitrary ones. Confirm.
+- **1.3.3** RESOLVED (Julian, 2026-07-28): the JSON view is an IN-PLACE
+  toggle on the session console (default ON for cajeta configurations,
+  available elsewhere). Implementation note: a card wrapper AROUND the real
+  platform ConsoleView — raw view IS the platform console, untouched;
+  structured is the table; the toggle flips cards (the shipped
+  JsonlConsolePanel's exact discipline), so platform console behaviors are
+  never reproduced by hand.
 
 ---
 
@@ -90,9 +94,10 @@ item (buildtool-widget 9.3, structured-during-run) is absorbed here.
 ## 3. Console surface
 
 ### 3.1 Requirements
-- **3.1.1** The structured view attaches to any run/debug console: a console
-  toggle ("JSON view") switches between the platform console and the
-  structured surface, fed live from the same process stream (the existing
+- **3.1.1** The structured view attaches to any run/debug console as an
+  IN-PLACE toggle: one console surface whose toolbar button flips between
+  the untouched platform ConsoleView and the structured table (card
+  wrapper), both fed live from the same process stream (the existing
   controller's incremental line assembly).
 - **3.1.2** On for cajeta run/debug/build configurations by default;
   available via the toggle elsewhere (1.3.3).
@@ -105,11 +110,18 @@ item (buildtool-widget 9.3, structured-during-run) is absorbed here.
 - **3.1.5** Throughput: a build spraying tens of thousands of lines must not
   freeze the EDT (batched appends; the table virtualizes).
 
+- **3.1.6** **Diagnostic row navigation**: a structured row carrying source
+  coordinates (file/line fields, as the compiler's NDJSON diagnostics and
+  lint output emit) is clickable and navigates to the location, like a
+  console file link — the payoff of tools encoding output as JSONL.
+
 ### 3.2 Use cases
 - **3.2.1** As a developer debugging the tour, I flip the running console to
   JSON view and watch structured rows stream; flipping back loses nothing.
 - **3.2.2** As a developer, I filter to `level >= warn` during a noisy run
   and clear the filter afterwards; raw rows reappear.
+- **3.2.3** As a developer whose build fails, I click the structured
+  diagnostic row and land on the offending line.
 
 ---
 
