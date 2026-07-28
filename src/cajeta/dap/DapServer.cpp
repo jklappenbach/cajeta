@@ -737,14 +737,22 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
                 // instance may be gone). Keep the shallow render and no children.
                 const bool consumed =
                     v.lifetime == cajeta::dbg::LifetimeState::MovedOut;
+                std::string shownType = v.type;
                 if (haveDl && !consumed) {
-                    cajeta::dbg::ValueInspector insp(session_->dataLayout());
+                    cajeta::dbg::ValueInspector insp(session_->dataLayout(),
+                                            &session_->resolvedTypeSymbols());
                     auto dec = insp.inspect(v.type, v.addr);
                     rendered = dec.summary;
+                    // The type COLUMN shows the runtime type (runtime-type-
+                    // inspection §2.1.5); expansion handles keep the declared
+                    // name — the bridge re-narrows on every decode, so a
+                    // mutated slot never serves a stale narrowing.
+                    shownType = insp.runtimeType(v.type, v.addr);
                     if (dec.kind == cajeta::dbg::ValueKind::Aggregate)
                         childRef = mintAggregateRef(v.type, v.addr);
                 }
                 Json var = variableJson(v, rendered);
+                var["type"] = shownType;
                 var["variablesReference"] = childRef;
                 vars.push_back(std::move(var));
             }
@@ -756,7 +764,8 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         auto ait = varRefToAggregate_.find(ref);
         if (haveDl && ait != varRefToAggregate_.end()) {
             const AggregateRef ag = ait->second;  // copy: the map may re-hash.
-            cajeta::dbg::ValueInspector insp(session_->dataLayout());
+            cajeta::dbg::ValueInspector insp(session_->dataLayout(),
+                                            &session_->resolvedTypeSymbols());
             auto page = insp.children(ag.typeName, ag.addr, ag.start, pageSize_);
             for (const auto& child : page.children) {
                 auto dec = insp.inspect(child.type, child.addr);
@@ -811,7 +820,8 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         auto ait = varRefToAggregate_.find(ref);
         if (!ok && session_ && ait != varRefToAggregate_.end()) {
             const AggregateRef ag = ait->second;
-            cajeta::dbg::ValueInspector insp(session_->dataLayout());
+            cajeta::dbg::ValueInspector insp(session_->dataLayout(),
+                                            &session_->resolvedTypeSymbols());
             auto page = insp.children(ag.typeName, ag.addr, ag.start, pageSize_);
             for (const auto& child : page.children) {
                 if (child.name != name) continue;
@@ -873,7 +883,8 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
             return true;
         }
 
-        cajeta::dbg::ValueInspector insp(session_->dataLayout());
+        cajeta::dbg::ValueInspector insp(session_->dataLayout(),
+                                            &session_->resolvedTypeSymbols());
         for (const auto& step : steps) {
             bool stepOk = false;
             if (step.isField) {

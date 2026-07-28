@@ -68,12 +68,17 @@ namespace cajeta::dbg {
         // sidecar. `dl` names the session whose target the table was built for;
         // the layout facts themselves come from the table, so every existing
         // call site (DapServer, tests) is unchanged.
-        explicit ValueInspector(const llvm::DataLayout& dl);
+        explicit ValueInspector(const llvm::DataLayout& dl,
+                                const ResolvedTypeSymbols* symbols = nullptr);
 
         // Decode against a caller-supplied table. Used by tests to decode
         // through a table whose type names DO NOT exist in the live type world
         // — the warm path, simulated while the world is still up.
-        ValueInspector(const llvm::DataLayout& dl, const DebugTypeTable& table);
+        // `symbols` (runtime-type-inspection Unit 3) is the session's resolved
+        // symbol maps; with it, a reference row's slot-0 word narrows the row
+        // to its RUNTIME type. Null = declared-type decode only.
+        ValueInspector(const llvm::DataLayout& dl, const DebugTypeTable& table,
+                       const ResolvedTypeSymbols* symbols = nullptr);
 
         // Default elements per page when a caller does not supply one (§3.1.4
         // threads the launch param; the bridge only needs a sane fallback).
@@ -97,9 +102,30 @@ namespace cajeta::dbg {
         // True if `type` is decodable: a primitive, or carried by the table.
         bool canResolve(const std::string& type) const;
 
+        // The row's RUNTIME type: the declared name, narrowed through the
+        // instance's slot-0 vtable word when the session's symbol map knows it
+        // (runtime-type-inspection §2.1.3). Falls back to `declared` for value
+        // types, leaves, unmatched words, null, or when no symbols were given
+        // — never a fault, never a guess (§2.1.4).
+        std::string runtimeType(const std::string& declared, void* addr);
+
     private:
         const llvm::DataLayout& dl_;
         const DebugTypeTable& table_;
+        const ResolvedTypeSymbols* symbols_ = nullptr;
+
+        // The one narrowing seam (§2.1.5): resolve a reference row to its
+        // runtime record and REBASED instance base. Falls back to the declared
+        // record and the plain deref when narrowing does not apply.
+        struct ResolvedObject {
+            const TypeRecord* rec = nullptr;  // effective record (may be null)
+            void* inst = nullptr;             // instance base, rebased
+            std::string type;                 // effective canonical name
+        };
+        ResolvedObject resolveObject(const std::string& declared, void* addr);
+
+        // Narrow one child row's reported type (Pointer-storage rows only).
+        void narrowRow(InspectedChild& child);
 
         // Decode a cajeta.lang.String instance reachable from `slot` (which
         // holds the String pointer) into its text, quoted+escaped. Returns

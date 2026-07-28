@@ -35,12 +35,58 @@ std::string escapeAndQuote(const std::string& text) {
     return out;
 }
 
-ValueInspector::ValueInspector(const llvm::DataLayout& dl)
-    : ValueInspector(dl, globalDebugTypeTable()) {}
+ValueInspector::ValueInspector(const llvm::DataLayout& dl,
+                               const ResolvedTypeSymbols* symbols)
+    : ValueInspector(dl, globalDebugTypeTable(), symbols) {}
 
 ValueInspector::ValueInspector(const llvm::DataLayout& dl,
-                               const DebugTypeTable& table)
-    : dl_(dl), table_(table) {}
+                               const DebugTypeTable& table,
+                               const ResolvedTypeSymbols* symbols)
+    : dl_(dl), table_(table), symbols_(symbols) {}
+
+// The one narrowing seam (§2.1.3/2.1.5). Applies only to Pointer-storage
+// object/collection rows: value types have no vtable word and their declared
+// type is exact; leaves (String included) never narrow. The slot deref is the
+// SAME one objectChildren always did — no new memory is trusted, only the
+// already-read instance's first word is consulted, and an unmatched word
+// changes nothing (§2.1.4).
+ValueInspector::ResolvedObject
+ValueInspector::resolveObject(const std::string& declared, void* addr) {
+    ResolvedObject out;
+    out.type = declared;
+    out.rec = table_.find(declared);
+    if (!out.rec || !addr) return out;
+    if (out.rec->kind != TypeKind::Object &&
+        out.rec->kind != TypeKind::Collection) return out;
+
+    out.inst = out.rec->isValueType ? addr : *reinterpret_cast<void**>(addr);
+    if (!out.inst || out.rec->isValueType || !symbols_) return out;
+
+    uint64_t slot0 = *reinterpret_cast<uint64_t*>(out.inst);
+    auto it = symbols_->vtableByAddr.find(slot0);
+    if (it == symbols_->vtableByAddr.end()) return out;   // silent fallback
+    const TypeRecord* runtime = table_.find(it->second.canonical);
+    if (!runtime || (runtime->kind != TypeKind::Object &&
+                     runtime->kind != TypeKind::Collection)) return out;
+
+    // A secondary ($as$) vtable means this is a base-view interior pointer:
+    // rebase to the object base so the runtime type's offsets apply.
+    out.rec = runtime;
+    out.type = it->second.canonical;
+    out.inst = reinterpret_cast<char*>(out.inst)
+             - it->second.subObjectByteOffset;
+    return out;
+}
+
+std::string ValueInspector::runtimeType(const std::string& declared,
+                                        void* addr) {
+    return resolveObject(declared, addr).type;
+}
+
+void ValueInspector::narrowRow(InspectedChild& child) {
+    if (child.storage != Storage::Pointer || !child.addr) return;
+    child.type = runtimeType(child.type, child.addr);
+}
 
 bool ValueInspector::canResolve(const std::string& type) const {
     return isPrimitiveTypeName(type) || table_.find(type) != nullptr;
@@ -136,17 +182,12 @@ std::string ValueInspector::arraySummary(const ArrayInfo& info, char* data,
 std::vector<InspectedChild>
 ValueInspector::objectChildren(const std::string& type, void* addr) {
     std::vector<InspectedChild> out;
-    const TypeRecord* rec = table_.find(type);
-    if (!rec || !addr) return out;
-    if (rec->kind != TypeKind::Object && rec->kind != TypeKind::Collection)
-        return out;
+    // Runtime narrowing (§2.1.5): the effective record is the RUNTIME type's,
+    // and `inst` is already rebased for a base-view interior pointer.
+    ResolvedObject ro = resolveObject(type, addr);
+    if (!ro.rec || !ro.inst) return out;
 
-    // A reference class slot holds the instance pointer; a value type is stored
-    // inline (the slot IS the instance). Null pointer → no children, no deref.
-    void* inst = rec->isValueType ? addr : *reinterpret_cast<void**>(addr);
-    if (!inst) return out;
-
-    for (const auto& f : rec->fields) {
+    for (const auto& f : ro.rec->fields) {
         InspectedChild child;
         child.name = f.name;
         child.type = f.type;
@@ -154,7 +195,8 @@ ValueInspector::objectChildren(const std::string& type, void* addr) {
         // The record's offset came from the DataLayout when the table was
         // built — never index*8 — so a field after an interior secondary-vtable
         // word lands on its own bytes.
-        child.addr = reinterpret_cast<char*>(inst) + f.offset;
+        child.addr = reinterpret_cast<char*>(ro.inst) + f.offset;
+        narrowRow(child);
         out.push_back(std::move(child));
     }
     return out;
@@ -231,6 +273,7 @@ ValueInspector::arrayListChildren(const std::string& type, void* addr,
         child.type = info.elemType;
         child.storage = info.storage;
         child.addr = dataBase + i * info.stride;
+        narrowRow(child);   // element rows report their RUNTIME type (§2.1.5)
         page.children.push_back(std::move(child));
     }
     page.nextStart = static_cast<size_t>(end);
@@ -285,6 +328,7 @@ ValueInspector::hashMapChildren(const std::string& type, void* addr,
         child.type = valF->type;
         child.addr = valF->addr;
         child.storage = valF->storage;
+        narrowRow(child);   // value rows report their RUNTIME type (§2.1.5)
         page.children.push_back(std::move(child));
     }
     page.nextStart = end;
@@ -425,6 +469,7 @@ ChildPage ValueInspector::children(const std::string& type, void* addr,
         // slot holds the instance pointer, an Inline slot holds the bytes.
         // inspect(child.type, child.addr) decodes either uniformly.
         child.addr = data + i * info.stride;
+        narrowRow(child);   // element rows report their RUNTIME type (§2.1.5)
         page.children.push_back(std::move(child));
     }
     page.nextStart = static_cast<size_t>(end);
