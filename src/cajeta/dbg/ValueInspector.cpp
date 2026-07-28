@@ -199,6 +199,31 @@ ValueInspector::objectChildren(const std::string& type, void* addr) {
         narrowRow(child);
         out.push_back(std::move(child));
     }
+
+    // Static rows, inline after the instance fields (§4.1.3), under the
+    // RUNTIME type's view (§4.1.5) — ro.rec is already narrowed. The address
+    // is the session-resolved global; an unresolved symbol drops the row.
+    if (symbols_) {
+        for (const auto& sf : ro.rec->statics) {
+            auto it = symbols_->staticAddrs.find(sf.symbol);
+            if (it == symbols_->staticAddrs.end() || !it->second) continue;
+            // The static global stores primitives inline and everything else
+            // as a pointer slot (getOrCreateStaticFieldGlobal). A @ValueType
+            // static would need a deref-first shape the row model lacks —
+            // skipped rather than misread.
+            const TypeRecord* tr = table_.find(sf.type);
+            bool isPrim = isPrimitiveTypeName(sf.type);
+            if (!isPrim && tr && tr->isValueType) continue;
+            InspectedChild child;
+            child.name = sf.name;
+            child.type = sf.type;
+            child.addr = it->second;
+            child.storage = isPrim ? Storage::Inline : Storage::Pointer;
+            child.isStatic = true;
+            narrowRow(child);
+            out.push_back(std::move(child));
+        }
+    }
     return out;
 }
 
@@ -345,6 +370,7 @@ std::string ValueInspector::objectSummary(const std::string& type, void* addr) {
     std::string out = "{";
     size_t shown = 0;
     for (const auto& f : fields) {
+        if (f.isStatic) continue;   // the peek is the INSTANCE's state (§4.1.3)
         if (!isPrimitiveTypeName(f.type)) continue;  // cheap scalars only
         if (shown) out += ", ";
         out += f.name + "=" + inspect(f.type, f.addr).summary;

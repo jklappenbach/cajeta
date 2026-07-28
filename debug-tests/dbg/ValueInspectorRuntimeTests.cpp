@@ -33,7 +33,7 @@ using cajeta::debugtest::TempProgram;
 namespace {
 const char* kProg =
     "package demo;\n"                                              // 1
-    "public class Shape { public int32 id;\n"                       // 2
+    "public class Shape { public int32 id; public static int32 count;\n" // 2
     "    public Shape() { this.id = 0; }\n"                         // 3
     "    public int32 area() { return 0; } }\n"                     // 4
     "public class Square extends Shape { public int32 side;\n"      // 5
@@ -47,19 +47,21 @@ const char* kProg =
     "public class C extends A, B {\n"                               // 13
     "    public C() { this.a = 7; this.b = 11; } }\n"               // 14
     "public record Vec2 { int32 a; int32 b; }\n"                    // 15
-    "public class Probe {\n"                                        // 16
-    "    public static int32 main() {\n"                            // 17
-    "        Shape s1 = heap Square(5);\n"                          // 18
-    "        Shape s2 = heap Circle(3);\n"                          // 19
-    "        C c = heap C();\n"                                     // 20
-    "        B bref = c;\n"                                         // 21
-    "        ArrayList<Shape> shapes = [heap Square(2), heap Circle(9)];\n" // 22
-    "        Vec2 v = {a:8, b:9};\n"                                // 23
-    "        String str = \"hi\";\n"                                // 24
-    "        int32 done = 0;\n"                                     // 25
-    "        return done;\n"                                        // 26 <-- bp
-    "    }\n"                                                       // 27
-    "}\n";                                                          // 28
+    "public class Tracker { public static int32 hits; public Tracker() { return; } }\n" // 16
+    "public class Probe {\n"                                        // 17
+    "    public static int32 main() {\n"                            // 18
+    "        Shape s1 = heap Square(5);\n"                          // 19
+    "        Shape s2 = heap Circle(3);\n"                          // 20
+    "        C c = heap C();\n"                                     // 21
+    "        B bref = c;\n"                                         // 22
+    "        ArrayList<Shape> shapes = [heap Square(2), heap Circle(9)];\n" // 23
+    "        Vec2 v = {a:8, b:9};\n"                                // 24
+    "        String str = \"hi\";\n"                                // 25
+    "        Tracker t = heap Tracker(); Tracker.hits = 5; Shape.count = 4;\n" // 26
+    "        int32 done = 0;\n"                                     // 27
+    "        return done;\n"                                        // 28 <-- bp
+    "    }\n"                                                       // 29
+    "}\n";                                                          // 30
 
 const cajeta::dbg::InspectedChild* childNamed(
         const cajeta::dbg::ChildPage& page, const std::string& name) {
@@ -90,7 +92,7 @@ protected:
         JitRunOptions opts;
         opts.sourceRoot = prog.sourceRoot();
         opts.entryMethod = "demo.Probe.main";
-        std::vector<Breakpoint> bps{ Breakpoint{"Probe.cajeta", 26} };
+        std::vector<Breakpoint> bps{ Breakpoint{"Probe.cajeta", 28} };
         std::string err;
         session = startDebugSession(opts, bps, &err);
         ASSERT_NE(session, nullptr) << err;
@@ -121,7 +123,7 @@ TEST_F(ValueInspectorRuntimeTest, SubclassBehindBaseRow) {
     EXPECT_EQ(r.summary, "{id=1, side=5}");   // inherited then own
 
     auto page = insp.children(v->type, v->addr);
-    ASSERT_EQ(page.children.size(), 2u);
+    ASSERT_GE(page.children.size(), 2u);
     EXPECT_EQ(page.children[0].name, "id");
     EXPECT_EQ(page.children[1].name, "side");
     EXPECT_EQ(insp.inspect(page.children[1].type, page.children[1].addr).summary, "5");
@@ -165,7 +167,11 @@ TEST_F(ValueInspectorRuntimeTest, UnmatchedVtableFallsBack) {
     auto r = insp.inspect("demo.Shape", &fakeSlot);
     EXPECT_EQ(r.kind, ValueKind::Aggregate);   // declared record still drives
     auto page = insp.children("demo.Shape", &fakeSlot);
-    EXPECT_EQ(page.children.size(), 1u);       // Shape's declared field only
+    // Shape's declared instance field + its static (statics ride the
+    // declared-record fallback too — their global is instance-independent).
+    ASSERT_EQ(page.children.size(), 2u);
+    EXPECT_EQ(page.children[0].name, "id");
+    EXPECT_TRUE(page.children[1].isStatic);
     // Null slot / null instance: unchanged.
     void* nullSlot = nullptr;
     EXPECT_EQ(insp.runtimeType("demo.Shape", &nullSlot), "demo.Shape");
@@ -186,6 +192,45 @@ TEST_F(ValueInspectorRuntimeTest, CollectionElementRowsNarrow) {
     const auto* side = childNamed(inner, "side");
     ASSERT_NE(side, nullptr);
     EXPECT_EQ(insp.inspect(side->type, side->addr).summary, "2");
+}
+
+// runtime-type-inspection 4.1.1 — instance fields first, then statics; a
+// field-less class with statics (the DemoClass shape) yields EXACTLY its
+// static rows — the empty-expansion Julian hit is gone.
+TEST_F(ValueInspectorRuntimeTest, StaticsRideObjectRows) {
+    auto insp = inspector();
+    const auto* t = local("t");
+    ASSERT_NE(t, nullptr);
+    auto page = insp.children(t->type, t->addr);
+    ASSERT_EQ(page.children.size(), 1u) << "field-less class shows its statics";
+    EXPECT_EQ(page.children[0].name, "hits");
+    EXPECT_TRUE(page.children[0].isStatic);
+    EXPECT_EQ(insp.inspect(page.children[0].type, page.children[0].addr).summary, "5");
+
+    // Instance fields precede statics on a fielded class.
+    const auto* s1 = local("s1");
+    ASSERT_NE(s1, nullptr);
+    auto sp = insp.children(s1->type, s1->addr);
+    ASSERT_EQ(sp.children.size(), 3u);   // id, side, then static count
+    EXPECT_EQ(sp.children[0].name, "id");
+    EXPECT_FALSE(sp.children[0].isStatic);
+    EXPECT_EQ(sp.children[1].name, "side");
+    EXPECT_EQ(sp.children[2].name, "count");
+    EXPECT_TRUE(sp.children[2].isStatic);
+    EXPECT_EQ(insp.inspect(sp.children[2].type, sp.children[2].addr).summary, "4");
+}
+
+// runtime-type-inspection 4.1.3 — statics appear under the RUNTIME type: the
+// base-typed row shows the subclass view's statics (inherited from Shape).
+TEST_F(ValueInspectorRuntimeTest, StaticsUnderRuntimeType) {
+    auto insp = inspector();
+    const auto* s2 = local("s2");   // declared Shape, holds Circle
+    ASSERT_NE(s2, nullptr);
+    auto page = insp.children(s2->type, s2->addr);
+    bool sawCount = false;
+    for (const auto& c : page.children)
+        if (c.name == "count" && c.isStatic) sawCount = true;
+    EXPECT_TRUE(sawCount) << "inherited static missing on the runtime view";
 }
 
 // 3.1.5 — value types and String are untouched by narrowing.

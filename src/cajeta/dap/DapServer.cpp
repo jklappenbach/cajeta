@@ -98,12 +98,23 @@ Json variableJson(const cajeta::dbg::DbgVar& v, const std::string& renderedValue
 // binding, not of a slot reached by drilling. `ref` is 0 for a leaf, or a minted
 // aggregate handle for an expandable child.
 static Json childVariableJson(const std::string& name, const std::string& type,
-                              const std::string& value, int ref) {
+                              const std::string& value, int ref,
+                              bool isStatic = false) {
     Json var = Json::object();
     var["name"] = name;
     var["value"] = value;
     var["type"] = type;
     var["variablesReference"] = ref;
+    if (isStatic) {
+        // runtime-type-inspection 4.1.2: the DAP presentation hint the plugin
+        // styles static rows by (italics etc.). Additive — a client that
+        // ignores presentationHint renders the row like any other.
+        Json hint = Json::object();
+        Json attrs = Json::array();
+        attrs.push_back(Json("static"));
+        hint["attributes"] = std::move(attrs);
+        var["presentationHint"] = std::move(hint);
+    }
     return var;
 }
 
@@ -773,7 +784,8 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
                 if (dec.kind == cajeta::dbg::ValueKind::Aggregate)
                     childRef = mintAggregateRef(child.type, child.addr);
                 vars.push_back(childVariableJson(child.name, child.type,
-                                                 dec.summary, childRef));
+                                                 dec.summary, childRef,
+                                                 child.isStatic));
             }
             if (page.remaining > 0) {
                 int moreRef = mintAggregateRef(ag.typeName, ag.addr,

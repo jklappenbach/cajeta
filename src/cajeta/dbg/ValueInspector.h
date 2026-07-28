@@ -50,6 +50,11 @@ namespace cajeta::dbg {
         std::string type;   // canonical type name
         void* addr = nullptr;
         Storage storage = Storage::Inline;
+        // A static field row (runtime-type-inspection §4): `addr` is the
+        // session-resolved GLOBAL, not an instance offset. Rendered inline
+        // after instance fields; the DAP layer maps this to the "static"
+        // presentation hint.
+        bool isStatic = false;
     };
 
     // One page of an aggregate's children (spec §2.2.4). A large array is never

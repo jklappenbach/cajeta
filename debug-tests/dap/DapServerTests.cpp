@@ -332,14 +332,14 @@ const char* kExpandProg =
     "package demo;\n"                                            // 1
     "public class Point { public int32 x; public int32 y; "
         "public Point(int32 a, int32 b) { this.x = a; this.y = b; } }\n" // 2
-    "public class Holder { public Point p; public int32 m; "
+    "public class Holder { public Point p; public int32 m; public static int32 seen; "
         "public Holder() { this.p = heap Point(1, 2); this.m = 99; } }\n" // 3
     "public class Calc {\n"                                      // 4
     "    public static int32 main() {\n"                         // 5
     "        int32 n = 5;\n"                                     // 6
     "        String s = \"hi\";\n"                               // 7
     "        int32[] nums = [3, 7, 9];\n"                        // 8
-    "        Holder h = heap Holder();\n"                        // 9
+    "        Holder h = heap Holder(); Holder.seen = 8;\n"       // 9
     "        int32[] big = [0,1,2,3,4,5,6,7,8,9];\n"             // 10
     "        return n;\n"                                        // 11 <-- breakpoint
     "    }\n"                                                    // 12
@@ -453,6 +453,26 @@ TEST_F(DapExpandSession, SetArrayElementThroughReference) {
     Json elems = varsOf(numsRef);
     EXPECT_EQ(byName(elems, "[1]")->at("value").asString(), "99");
     EXPECT_EQ(byName(elems, "[0]")->at("value").asString(), "3");  // neighbour intact
+}
+
+// runtime-type-inspection 4.1.2 — a static row rides the variables response
+// with the "static" presentation hint, and setVariable writes it through the
+// session-resolved global.
+TEST_F(DapExpandSession, StaticRowsHintedAndEditable) {
+    int hRef = byName(varsOf(localsRef), "h")->at("variablesReference").asInt();
+    Json rows = varsOf(hRef);
+    const Json* st = byName(rows, "seen");
+    ASSERT_NE(st, nullptr) << "static row missing from the object expansion";
+    EXPECT_EQ(st->at("value").asString(), "8");
+    EXPECT_EQ(st->at("presentationHint").at("attributes")[0].asString(),
+              "static");
+    // Instance rows carry no hint.
+    EXPECT_TRUE(byName(rows, "m")->at("presentationHint").isNull());
+
+    Json resp = setVar(hRef, "seen", "21");
+    ASSERT_TRUE(resp.at("success").asBool());
+    EXPECT_EQ(resp.at("body").at("value").asString(), "21");
+    EXPECT_EQ(byName(varsOf(hRef), "seen")->at("value").asString(), "21");
 }
 
 TEST_F(DapExpandSession, NonPrimitiveTargetReadOnly) {
