@@ -592,6 +592,12 @@ public final class Class<T> {
      * compiled class today; once AOT class-stripping lands it holds the
      * statically-reachable set plus every `@Retained` class.
      */
+    // The registry is heterogeneous by construction — registryAt is @Native
+    // returning Class<?> — so "downcast to the concrete type at the loop
+    // boundary" is not available here: enumerating classes of statically
+    // unknown type IS this API's contract. The lint is aimed at callers who
+    // can narrow; at the definition there is nothing to narrow to.
+    @SuppressLint("wildcard-crosses-hot-boundary")
     public static #Class<?>[] allClasses() {
         int32 n = registryCount();
         Class<?>[] arr = heap Class<?>[n];
@@ -608,6 +614,12 @@ public final class Class<T> {
      * the segment before the last `.` of the canonical name). Two-pass: count
      * the matches, then fill a right-sized array.
      */
+    // The registry is heterogeneous by construction — registryAt is @Native
+    // returning Class<?> — so "downcast to the concrete type at the loop
+    // boundary" is not available here: enumerating classes of statically
+    // unknown type IS this API's contract. The lint is aimed at callers who
+    // can narrow; at the definition there is nothing to narrow to.
+    @SuppressLint("wildcard-crosses-hot-boundary")
     public static #Class<?>[] classesInPackage(String packageName) {
         int32 n = registryCount();
         int32 matches = 0;
@@ -637,6 +649,12 @@ public final class Class<T> {
      * equals `annotationName` (e.g. `"code.Component"` for a bare `@Component`).
      * Two-pass over the registry, reusing {@link #hasAnnotation}.
      */
+    // The registry is heterogeneous by construction — registryAt is @Native
+    // returning Class<?> — so "downcast to the concrete type at the loop
+    // boundary" is not available here: enumerating classes of statically
+    // unknown type IS this API's contract. The lint is aimed at callers who
+    // can narrow; at the definition there is nothing to narrow to.
+    @SuppressLint("wildcard-crosses-hot-boundary")
     public static #Class<?>[] classesAnnotated(String annotationName) {
         int32 n = registryCount();
         int32 matches = 0;
@@ -678,6 +696,12 @@ public final class Class<T> {
      * #Class<?>[] kinds = Class.subtypes<Shape>();
      * ```
      */
+    // The registry is heterogeneous by construction — registryAt is @Native
+    // returning Class<?> — so "downcast to the concrete type at the loop
+    // boundary" is not available here: enumerating classes of statically
+    // unknown type IS this API's contract. The lint is aimed at callers who
+    // can narrow; at the definition there is nothing to narrow to.
+    @SuppressLint("wildcard-crosses-hot-boundary")
     public static #Class<?>[] subtypes(Class<?> bound) {
         int32 n = registryCount();
         int32 matches = 0;
