@@ -128,6 +128,18 @@ object JsonlEngine {
         }
     }
 
+    /** Row tint for level-based coloring (json-viewer spec §3.1.3): error/fatal
+     *  and warn/warning records tint like the platform console; everything else —
+     *  including raw passthrough — renders normally. */
+    fun tintOf(row: JsonlRow): RowTint = when (row) {
+        is JsonlRow.Raw -> RowTint.NORMAL
+        is JsonlRow.Record -> when (row.level) {
+            "error", "fatal" -> RowTint.ERROR
+            "warn", "warning" -> RowTint.WARN
+            else -> RowTint.NORMAL
+        }
+    }
+
     /** Render a record's cell for [column] as display text ("" when absent). */
     fun cell(record: JsonlRow.Record, column: String): String =
         when (val v = record.fields[column]) {

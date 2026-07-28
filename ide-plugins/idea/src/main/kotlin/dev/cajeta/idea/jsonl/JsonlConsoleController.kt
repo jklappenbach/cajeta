@@ -17,6 +17,12 @@ class JsonlConsoleController(structuredByDefault: Boolean = true) {
     private val completed = StringBuilder()   // all newline-terminated text seen
     private val pending = StringBuilder()      // the not-yet-terminated trailing line
 
+    // Rows parsed incrementally as lines complete (json-viewer §3.1.5): a 10k-line
+    // burst refreshed per batch costs one parse per line, not a whole-buffer
+    // reparse per refresh. Blank lines advance the counter but yield no row.
+    private val rows = ArrayList<JsonlRow>()
+    private var lineNumber = 0
+
     var isStructured: Boolean = structuredByDefault
         private set
 
@@ -29,8 +35,11 @@ class JsonlConsoleController(structuredByDefault: Boolean = true) {
         pending.append(chunk)
         var nl = pending.indexOf("\n")
         while (nl >= 0) {
+            val line = pending.substring(0, nl)
             completed.append(pending, 0, nl + 1)   // include the newline
             pending.delete(0, nl + 1)
+            lineNumber++
+            JsonlEngine.parseLine(lineNumber, line)?.let { rows += it }
             nl = pending.indexOf("\n")
         }
     }
@@ -44,15 +53,21 @@ class JsonlConsoleController(structuredByDefault: Boolean = true) {
     fun clearFilter() { filter = null }
 
     /** The full render model over everything completed so far (structured view). */
-    fun model(): JsonlModel = JsonlEngine.parse(completed.toString())
+    fun model(): JsonlModel = JsonlModel(rows.toList(), JsonlEngine.columnsOf(rows))
 
     /** Rows to display in structured mode, after the active filter. */
-    fun visibleRows(): List<JsonlRow> {
-        val rows = model().rows
-        return filter?.let { rows.filter(it) } ?: rows
-    }
+    fun visibleRows(): List<JsonlRow> =
+        filter?.let { rows.filter(it) } ?: rows.toList()
 
     /** The verbatim stream for raw mode (completed lines only; a partial trailing
      *  line is shown once it completes). */
     fun rawText(): String = completed.toString()
+
+    /** Reset to empty (console Clear): both cards start over. */
+    fun clear() {
+        completed.setLength(0)
+        pending.setLength(0)
+        rows.clear()
+        lineNumber = 0
+    }
 }

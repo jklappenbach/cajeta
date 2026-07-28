@@ -11,9 +11,11 @@ import com.intellij.execution.process.ProcessHandler
 import com.intellij.execution.process.ProcessTerminatedListener
 import com.intellij.execution.runners.ExecutionEnvironment
 import com.intellij.execution.configurations.CommandLineState
+import com.intellij.execution.ui.ConsoleView
 import com.intellij.openapi.options.SettingsEditor
 import com.intellij.openapi.project.Project
 import dev.cajeta.idea.debugger.CajetaDebugLaunchSpec
+import dev.cajeta.idea.jsonl.JsonConsoleWrapper
 import dev.cajeta.idea.settings.CajetaSettings
 import java.io.File
 
@@ -86,6 +88,13 @@ class CajetaTaskRunConfiguration(
 
     override fun getState(executor: Executor, environment: ExecutionEnvironment): RunProfileState =
         object : CommandLineState(environment) {
+            // In-place JSON view on the run/build console (json-viewer §3.1.1,
+            // default ON for cajeta configurations §3.1.2): the platform's own
+            // console is the raw card; --diag-format=json NDJSON and program
+            // JSONL render structured.
+            override fun createConsole(executor: Executor): ConsoleView? =
+                super.createConsole(executor)?.let { JsonConsoleWrapper(it) }
+
             override fun startProcess(): ProcessHandler {
                 val settings = CajetaSettings.instance
                 val cmd = GeneralCommandLine(settings.buildToolPath)

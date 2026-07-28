@@ -32,3 +32,6 @@ sealed class JsonlRow {
  * the rows plus the derived, deterministic column order.
  */
 data class JsonlModel(val rows: List<JsonlRow>, val columns: List<String>)
+
+/** Level-based row coloring class (json-viewer spec §3.1.3). */
+enum class RowTint { NORMAL, WARN, ERROR }
