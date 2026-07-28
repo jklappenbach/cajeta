@@ -78,6 +78,10 @@
             extensions="jsonl;ndjson;jsonlines"/>
         <fileEditorProvider
             implementation="dev.cajeta.idea.jsonl.JsonlFileEditorProvider"/>
+        <!-- json-viewer unit 4: structured document tab for .json/.jsonc,
+             beside the platform text editor (spec 4.1.1). -->
+        <fileEditorProvider
+            implementation="dev.cajeta.idea.jsonl.JsonDocFileEditorProvider"/>
 
         <!-- ide-symbol-index Unit 6: compiler-authoritative xref cache. Shards
              (.cjxref, one per source file, written under .cajeta/xref/) feed a
