@@ -114,11 +114,9 @@ typeParameters
     : '<' typeParameter (',' typeParameter)* '>'
     ;
 
-// RETIRED — title-tracking §8.1, same retirement as the type-argument `#` below.
-// This prefix once declared a parameter owning-required (`class Cache<#K, V>`;
-// element-ownership §8.4.2). A must-own edge is spelled on the FORMAL now —
-// `f(#K x)` — which is the one `#` position that survives, alongside `#T`
-// returns. Still PARSED only so the compiler can reject it with
+// As with the type-argument `#` below, this prefix carries no meaning: a must-own
+// edge is spelled on the FORMAL (`f(#K x)`), which with `#T` returns is where `#`
+// legitimately appears. Parsed only so the compiler can reject it with
 // CAJETA_ERROR_TYPE_TRANSFER_RETIRED and name that fix.
 typeParameter
     : annotation* REFERENCE? identifier (EXTENDS annotation* typeBound)? (ASSIGN typeType)?
@@ -394,13 +392,12 @@ classOrInterfaceType
     : identifier typeArguments? ('.' identifier typeArguments?)*
     ;
 
-// RETIRED — title-tracking §8.1. A REFERENCE ('#') prefix here once marked an
-// instantiation position as owning (`HashMap<#String, V>`; element-ownership
-// §8.4.1). Ownership is per-call now, spelled at the call or store site
-// (`m.put(#k, #v)`, `xs.add(#x)`). The prefix is still PARSED so the compiler can
-// reject it with CAJETA_ERROR_TYPE_TRANSFER_RETIRED and name the fix, instead of
-// failing with "no viable alternative". Do not reintroduce the semantics: an
-// instance declared owning could still transfer OUT, which is what retired it.
+// The optional REFERENCE ('#') prefix is NOT a feature — ownership is per-call in
+// Cajeta, spelled at the call or store site (`m.put(#k, #v)`, `xs.add(#x)`), never
+// in a type. It is parsed here for one reason: so the compiler can reject it with
+// CAJETA_ERROR_TYPE_TRANSFER_RETIRED and point at the fix, instead of failing with
+// "no viable alternative". Do not give it meaning — a type that declares ownership
+// still permits transfer OUT of the instance, which is why it does not exist.
 // The `#` is never infix, so this stays unambiguous.
 typeArgument
     : REFERENCE? typeType

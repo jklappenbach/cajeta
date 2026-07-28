@@ -436,9 +436,8 @@ namespace cajeta {
             std::vector<cajeta::TypeParameter> params;
             for (auto* tp : tps->typeParameter()) {
                 cajeta::TypeParameter param(tp->identifier()->getText());
-                // title-tracking §8.1 (plan 7.2.1) — declaration-`#` on a type
-                // parameter (`class Vault<#K>`) is retired with the
-                // type-argument sigil; ownership is per-call.
+                // A `#` on a type-parameter declaration carries no meaning, as on
+                // a type argument: ownership is per-call. Reject it by name.
                 if (tp->REFERENCE() != nullptr) {
                     throw Exception(
                         "`#` on a type parameter declaration is retired: "

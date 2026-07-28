@@ -43,11 +43,10 @@ namespace {
     // exactly so compile-time and runtime hashes of the same canonical
     // signature agree.
     //
-    // `#` is skipped (mode-erased dispatch, element-ownership §5.1.4). This
-    // predates title-tracking §8.1, which retired the `Vault<#Elem>` spelling
-    // outright — there is only one instantiation now, so the erasure is trivially
-    // safe rather than merely sound. Kept because the rule still holds for the
-    // `#` positions that survive, and `#`-only overloads within one class cannot
+    // `#` is skipped (mode-erased dispatch, element-ownership §5.1.4). A type
+    // cannot vary by ownership, so there is one instantiation per type and the
+    // erasure is trivially safe. It still holds for the `#` positions that do
+    // exist (formals, returns): `#`-only overloads within one class cannot
     // exist, so the erasure cannot alias two distinct methods in one vtable.
     // EXCEPTION to the erasure (title-tracking 6.2.1): a `#` that is part of
     // an OPERATOR NAME (`operator#[]`) is identity, not mode — erasing it
@@ -3301,9 +3300,9 @@ namespace cajeta {
             if (!fieldType) continue;
             // optional-borrow-ownership 2.2.3.b — a scalar `P`-typed field whose
             // payload was LENT (the caller passed it plainly, not `#x`) is a view:
-            // the caller still owns it, so this teardown must not drop it. The mode
-            // used to be spelled in the type (`Optional<T>` vs `Optional<#T>`);
-            // title-tracking §8.1 retired that, and it is a per-call fact now.
+            // the caller still owns it, so this teardown must not drop it.
+            // Whether the payload was lent or surrendered is a per-call fact,
+            // carried at runtime — a type cannot declare it.
             // Monomorphization erased the came-from-a-type-parameter fact;
             // TemplateInstantiator restores it as originTypeParamIndex.
             // title-tracking §5 (rev 2) EXCEPTION: a vtable-class T-origin

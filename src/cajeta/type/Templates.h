@@ -40,11 +40,10 @@ namespace cajeta {
         bool isNonType = false;
         string nonTypePrimitive;         // declared primitive name when isNonType
 
-        // VESTIGIAL — always false. Declaration-`#` (`class Cache<#K, V>`,
-        // element-ownership §4.1.5) was retired in title-tracking §8.1: every
-        // site that once set this now throws TYPE_TRANSFER_RETIRED and then
-        // assigns false. Kept only so those assignments still compile; the field
-        // and its writers can go together in a follow-up.
+        // VESTIGIAL — always false. A `#` on a type-parameter declaration has no
+        // meaning: every site that once set this now throws TYPE_TRANSFER_RETIRED
+        // and then assigns false. Kept only so those assignments still compile;
+        // the field and its writers can go together in a follow-up.
         bool owningRequired = false;
 
         // Default type argument — `<T = float32>`. The text of the default

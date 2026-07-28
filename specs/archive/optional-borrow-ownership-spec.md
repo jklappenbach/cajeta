@@ -66,8 +66,8 @@ The chain depth is incidental. Four probes separate the causes:
 - **D — no exceptions involved.** `stack Optional<Throwable>(true, ex)` over a borrowed
   local `ex` does not even compile: **`CAJETA_ERROR_TRANSFER_REQUIRED`**. User code cannot
   express a borrowing Optional at all.
-- **E — the owned spelling already works.** `Optional<#Throwable>` parses, runs, and
-  returns its payload today.
+- **E — the owned form already works.** An Optional constructed by surrendering the
+  payload at the call site parses, runs, and returns its payload today.
 
 So the real statement of the bug is **not** "deep cause chains crash". It is:
 
@@ -84,7 +84,7 @@ Optionals completes cleanly at depth 3 — their drops land after last use.
 
 Note the asymmetry D exposes: the checker is strict enough to reject the borrow at a
 user call site, and permissive enough to accept it from a field. Both halves are wrong
-for a borrow-mode instantiation.
+when the payload was merely lent.
 
 ### 1.5 Severity
 `Throwable.toJson()` is **shipped and reachable from user code** (`@EntryPoint`). It is
@@ -116,9 +116,9 @@ a view of a field without claiming it.
   (`stack Optional<T>(true, x)`, no `#`), then it compiles. Today this is rejected with
   `CAJETA_ERROR_TRANSFER_REQUIRED` (spec 1.4.1 probe D), which is why no user code can
   express the borrowing Optional that `getCause()` needs.
-- **2.2.6** As a caller, when I construct an owning `Optional<#T>`, then the compiler
-  still demands a `#`-transfer and the Optional still drops at scope exit — i.e. the
-  fix for 2.2.5 must not relax the owned mode.
+- **2.2.6** As a caller, when I construct an Optional by surrendering the payload,
+  then the compiler still demands the `#`-transfer and the Optional still drops at
+  scope exit — i.e. the fix for 2.2.5 must not relax the owned path.
 
 ---
 

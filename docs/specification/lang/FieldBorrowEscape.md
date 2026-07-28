@@ -86,7 +86,7 @@ CAJETA_ERROR_TYPE_TRANSFER_RETIRED  // `#` in a TYPE position (type argument, `#
 ```
 
 > **Retired with title-tracking rev 2 (Unit 7).** The element-ownership
-> type-argument layer — owning/borrow-mode instantiations, the 4B
+> type-argument layer — per-instantiation ownership modes, the 4B
 > call-agreement and extractor gates (`ELEMENT_TRANSFER_MODE` /
 > `ELEMENT_EXTRACT_MODE`), borrow-mode confinement
 > (`BORROW_MODE_CONFINED` / `BORROW_MODE_OWNED`), and the §4.2 formal

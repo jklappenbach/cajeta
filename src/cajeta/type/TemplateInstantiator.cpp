@@ -357,8 +357,8 @@ namespace cajeta {
         // carries none (§8.1.1); a value type owns heap payload only when
         // shared-capable — Utf8/Slice or a transitive embedder (§8.1.2).
         // Checked after default-fill normalization and before the cache key so
-        // both source-level threading (`Box<#int32>` via fromContext /
-        // NewExpression) and direct instantiate() callers hit it. Wildcards
+        // both source-level threading (via fromContext / NewExpression) and
+        // direct instantiate() callers hit it. Wildcards
         // and still-unfilled forward-ref placeholders skip — their shape isn't
         // known yet; arrays own their elements and pass.
         // title-tracking §8.1 (plan 7.2.1) — the declaration-`#`

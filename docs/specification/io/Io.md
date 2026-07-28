@@ -83,9 +83,8 @@ Stream<Tick> recent = ticks.filter(t -> t.live).map(parse).window(Duration.ofSec
   a `Stream<T>` *moves* an owned element when the producer surrenders it at the
   store site (`s.emit(#x)`); `Stream<View<T>>` yields **borrows valid only for that
   iteration step** (zero-copy streaming of large data; the borrow can't escape the
-  step). This owned-vs-borrowed distinction is the linchpin of the model.
-  (`Stream<#T>` is not valid syntax: `#` in a type argument was retired in
-  title-tracking §8.1 and errors with `CAJETA_ERROR_TYPE_TRANSFER_RETIRED`.)
+  step). This owned-vs-borrowed distinction is the linchpin of the model, and it
+  is a property of the call, never of the stream's type.
 - **Relationship to neighbours:** `Stream<T>` is the high-level composable layer
   over `Channel<T>` (the raw fiber-to-fiber conduit) and pairs with byte-level
   `InputStream`/`OutputStream` (a byte stream is `Stream<View<bytes>>` after framing).

@@ -2,9 +2,8 @@
 // MODE-DEPENDENT. In a plain (borrow-mode) `Optional<T>` instantiation it must
 // accept a borrow and must not drop the payload; when the caller surrenders at
 // the call site (`#heap Exception(...)`) it must still take the title and drop.
-// NB: this predates title-tracking §8.1, which retired `Optional<#T>` as a
-// spelling — the mode distinction survives, but it is per-call now, which is
-// exactly what the test bodies below exercise.
+// The distinction is per-call — the Optional's type is the same either way,
+// which is exactly what the test bodies below exercise.
 //
 // Before this: element-ownership Unit 3B wired the owned-element drop walk for
 // `P[]` fields only ("scalar `P`-typed fields already ride the class-ref drop

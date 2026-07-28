@@ -104,12 +104,10 @@ namespace cajeta {
                         auto* lastTad = tads.back();
                         if (auto* targs = lastTad->typeArguments()) {
                             for (auto* targ : targs->typeArgument()) {
-                                // title-tracking §8.1 — the use-site `#` per
-                                // argument (`heap ArrayList<#String>()`) is
-                                // RETIRED and rejected below with
-                                // TYPE_TRANSFER_RETIRED. There is no owning
-                                // monomorph any more: one instantiation serves
-                                // both, and ownership is decided per call.
+                                // A use-site `#` on a type argument carries no
+                                // meaning and is rejected below with
+                                // TYPE_TRANSFER_RETIRED. There is one monomorph
+                                // per type; ownership is decided per call.
                                 if (targ->integerLiteral() != nullptr) {
                                     // Non-type (integer) template argument —
                                     // the `N` in `new Vector<float32, 4>(...)`.

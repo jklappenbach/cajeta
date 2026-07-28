@@ -106,9 +106,9 @@ rather than the default.
 
 ## Borrow-checker rules
 
-> **Title-tracking Unit 7 amendments.** (a) `#` is retired from every TYPE
-> position — type arguments (`ArrayList<#T>`), local declarations
-> (`#Type x`), and type parameters (`class C<#V>`) all error with
+> **Title-tracking Unit 7 amendments.** (a) `#` is valid only on a FORMAL and
+> on a RETURN type. It carries no meaning in any other type position — type
+> arguments, local declarations and type parameters all error with
 > `CAJETA_ERROR_TYPE_TRANSFER_RETIRED`; ownership is per-call, spelled at
 > call/store sites. (b) An authored `#T` formal is a hard must-own edge in
 > EVERY instantiation — the old borrow-mode dissolution is gone. (c) Rule 2

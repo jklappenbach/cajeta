@@ -60,8 +60,8 @@ public class Exception extends Throwable {
      * its cause chain. Passing `this.cause` plainly (rather than `#this.cause`)
      * is what makes this a borrow, so the Optional's drop leaves `cause` alone;
      * surrendering at the call site (`#`) is what would hand ownership over.
-     * Ownership is per-call — it is NOT `Optional<#Throwable>`, which was retired
-     * in title-tracking §8.1. See `specs/optional-borrow-ownership-spec.md`.
+     * Ownership is decided per call, never by the Optional's type. See
+     * `specs/optional-borrow-ownership-spec.md`.
      */
     public Optional<Throwable> getCause() {
         if (this.cause == null) {
