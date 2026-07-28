@@ -36,6 +36,11 @@ on:
         # leaves it empty gets a green tag without one test having executed —
         # this workflow built and published, and never ran anything. Set it.
         default: ''
+      test-timeout-minutes:
+        description: 'Hard cap on the test step, so a hung server test fails instead of hanging.'
+        type: string
+        required: false
+        default: '30'
     secrets:
       OLLA_TOKEN:
         required: true
@@ -73,8 +78,14 @@ jobs:
 
       # Before the artifact is located, uploaded, released or published — a
       # failing suite must stop the tag, not annotate it after the fact.
+      #
+      # timeout-minutes matters here specifically: these suites bind loopback
+      # sockets and run live servers, and a server test that never returns hangs
+      # rather than fails. Without a bound that burns the job's full default
+      # allowance and reports nothing useful.
       - name: Run the test suite
         if: inputs.test-command != ''
+        timeout-minutes: ${{ fromJSON(inputs.test-timeout-minutes) }}
         run: ${{ inputs.test-command }}
 
       - name: No test suite configured
