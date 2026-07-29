@@ -5,12 +5,22 @@ import com.intellij.execution.process.ProcessHandler
 import com.intellij.execution.process.ProcessListener
 import com.intellij.execution.ui.ConsoleView
 import com.intellij.execution.ui.ConsoleViewContentType
+import com.intellij.icons.AllIcons
+import com.intellij.openapi.actionSystem.ActionManager
+import com.intellij.openapi.actionSystem.ActionUpdateThread
+import com.intellij.openapi.actionSystem.AnAction
+import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.DefaultActionGroup
+import com.intellij.openapi.actionSystem.Separator
+import com.intellij.openapi.actionSystem.ToggleAction
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
+import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Key
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.ui.JBColor
+import com.intellij.ui.SearchTextField
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.table.JBTable
 import java.awt.BorderLayout
@@ -21,13 +31,9 @@ import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
-import javax.swing.JComboBox
 import javax.swing.JComponent
 import javax.swing.JPanel
 import javax.swing.JTable
-import javax.swing.JTextField
-import javax.swing.JToggleButton
-import javax.swing.JToolBar
 import javax.swing.table.DefaultTableCellRenderer
 
 /**
@@ -126,43 +132,78 @@ class JsonConsoleWrapper(
         tableModel.update(columns, visible)
     }
 
-    private fun buildToolbar(): JToolBar = JToolBar().apply {
-        isFloatable = false
-        add(JToggleButton("JSON", controller.isStructured).apply {
-            toolTipText = "Toggle structured JSON view / platform console"
-            addActionListener {
-                synchronized(controller) { controller.setStructured(isSelected) }
-                showCard()
-                if (isSelected) refresh()
-            }
-        })
-        add(levelFilter.apply {
-            addActionListener {
-                val sel = selectedItem as String
-                synchronized(controller) {
-                    if (sel == "all") controller.clearFilter() else controller.setLevelFilter(sel)
-                }
-                refresh()
-            }
-        })
-        add(fieldFilter)
-        add(JToggleButton("Filter field").apply {
-            addActionListener { applyFieldFilter(); refresh() }
-        })
+    // --- toolbar: platform ActionToolbar so the flip reads like any other
+    //     console control (plan 2.2.4) — an icon ToggleAction for JSON/text, a
+    //     funnel popup for the level floor, a SearchTextField for `key=value`. ---
+
+    private var minLevel: String = "all"
+
+    private fun buildToolbar(): JComponent {
+        val group = DefaultActionGroup(JsonToggleAction(), Separator.getInstance(), LevelFilterGroup())
+        val toolbar = ActionManager.getInstance()
+            .createActionToolbar("CajetaJsonConsole", group, true)
+        toolbar.targetComponent = cardPanel
+        return JPanel(BorderLayout()).apply {
+            add(toolbar.component, BorderLayout.WEST)
+            add(fieldSearch, BorderLayout.EAST)
+        }
     }
 
-    private val levelFilter =
-        JComboBox(arrayOf("all", "trace", "debug", "info", "warn", "error", "fatal"))
-    private val fieldFilter = JTextField(12)
+    private inner class JsonToggleAction : ToggleAction(
+        "Structured JSON View",
+        "Flip between the structured JSON table and the platform console",
+        AllIcons.FileTypes.Json,
+    ), DumbAware {
+        override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
+        override fun isSelected(e: AnActionEvent): Boolean = controller.isStructured
+        override fun setSelected(e: AnActionEvent, state: Boolean) {
+            synchronized(controller) { controller.setStructured(state) }
+            showCard()
+            if (state) refresh()
+        }
+    }
 
-    /** Field filter as `key=value`; blank clears it (level filter takes over). */
-    private fun applyFieldFilter() {
-        val raw = fieldFilter.text.trim()
+    private inner class LevelFilterGroup : DefaultActionGroup(
+        "Filter by Level", listOf<AnAction>(),
+    ), DumbAware {
+        init {
+            templatePresentation.icon = AllIcons.General.Filter
+            templatePresentation.description = "Show records at or above a level"
+            isPopup = true
+            for (level in listOf("all", "trace", "debug", "info", "warn", "error", "fatal")) {
+                add(object : ToggleAction(level), DumbAware {
+                    override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
+                    override fun isSelected(e: AnActionEvent): Boolean = minLevel == level
+                    override fun setSelected(e: AnActionEvent, state: Boolean) {
+                        if (!state) return
+                        minLevel = level
+                        applyFilters()
+                    }
+                })
+            }
+        }
+        override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
+    }
+
+    private val fieldSearch = SearchTextField(false).apply {
+        textEditor.emptyText.text = "field=value"
+        textEditor.columns = 14
+        textEditor.addActionListener { applyFilters() }
+    }
+
+    /** One place combines both controls: `key=value` narrows fields; otherwise
+     *  the level floor applies; both empty clears the filter. */
+    private fun applyFilters() {
+        val raw = fieldSearch.text.trim()
         val eq = raw.indexOf('=')
         synchronized(controller) {
-            if (eq > 0) controller.setFieldFilter(raw.substring(0, eq), raw.substring(eq + 1))
-            else if (raw.isEmpty() && (levelFilter.selectedItem as String) == "all") controller.clearFilter()
+            when {
+                eq > 0 -> controller.setFieldFilter(raw.substring(0, eq), raw.substring(eq + 1))
+                minLevel != "all" -> controller.setLevelFilter(minLevel)
+                else -> controller.clearFilter()
+            }
         }
+        refresh()
     }
 
     private fun showCard() =
