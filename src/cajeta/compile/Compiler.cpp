@@ -1948,6 +1948,22 @@ namespace cajeta {
             if (eng->hasErrors()) return;
         }
 
+        // The engine's scope ends here: it collects the RESOLUTION passes above
+        // (spec §2); codegen is not yet in collect mode, and codegen-time
+        // advisory reporters (e.g. the last-use-transfer warning) gate on
+        // DiagnosticEngine::active() — with the full-compile engine left active
+        // they would surface stdlib-internal advisories on a clean compile
+        // (1.3.1 requires it byte-for-byte unchanged). Deactivate for the
+        // codegen/emit remainder; RAII so a throwing emit path still restores
+        // the caller's engine. Codegen-in-collect-mode is the named follow-up.
+        struct CodegenEngineOff {
+            DiagnosticEngine* prev;
+            CodegenEngineOff() : prev(DiagnosticEngine::active()) {
+                DiagnosticEngine::setActive(nullptr);
+            }
+            ~CodegenEngineOff() { DiagnosticEngine::setActive(prev); }
+        } codegenEngineOff;
+
         // REFL-1.7: cajeta.reflect.Class is a template Class<T>. Force-build the
         // canonical wildcard instantiation Class<?> here — after all modules are
         // parsed/prototyped, before Phase 1/2 codegen — so (a) its method bodies
