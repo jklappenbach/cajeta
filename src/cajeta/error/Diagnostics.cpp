@@ -13,12 +13,23 @@
 
 namespace cajeta {
 
+    // The file a located diagnostic belongs to. `activeModule` is set only
+    // inside synthesis / template-instantiation re-entry (where it names the
+    // TRIGGER's file, which is what such an error must be attributed to), so
+    // it wins. Ordinary codegen leaves it null and sets currentCodegenModule
+    // instead (Method.cpp's CodegenFrame) — without that fallback every
+    // codegen-time located error reports an empty file.
+    static std::string diagnosticFile() {
+        if (auto m = CajetaModule::getActiveModule()) return m->getSourcePath();
+        if (auto m = CajetaModule::getCurrentCodegenModule()) return m->getSourcePath();
+        return {};
+    }
+
     void reportOrThrow(int line, int column,
                        const std::string& errorId, const std::string& message) {
-        if (DiagnosticEngine* eng = DiagnosticEngine::active()) {
-            std::string file;
-            if (auto m = CajetaModule::getActiveModule()) file = m->getSourcePath();
-            eng->report("error", errorId, message, file, line, column);
+        DiagnosticEngine* eng = DiagnosticEngine::active();
+        if (eng && eng->collectsErrors()) {
+            eng->report("error", errorId, message, diagnosticFile(), line, column);
         } else {
             throw locatedException(line, column, message, errorId);
         }
@@ -34,20 +45,16 @@ namespace cajeta {
     Exception locatedException(antlr4::Token* token,
                                const std::string& message,
                                const std::string& errorId) {
-        std::string file;
-        if (auto m = CajetaModule::getActiveModule()) file = m->getSourcePath();
         // ANTLR lines are 1-based; columns are 0-based — normalize to 1-based.
         int line = token ? static_cast<int>(token->getLine()) : -1;
         int column = token ? static_cast<int>(token->getCharPositionInLine()) + 1 : -1;
-        return Exception(message, errorId, file, line, column);
+        return Exception(message, errorId, diagnosticFile(), line, column);
     }
 
     Exception locatedException(int line, int column,
                                const std::string& message,
                                const std::string& errorId) {
-        std::string file;
-        if (auto m = CajetaModule::getActiveModule()) file = m->getSourcePath();
-        return Exception(message, errorId, file, line, column);
+        return Exception(message, errorId, diagnosticFile(), line, column);
     }
 
     namespace {
@@ -104,6 +111,58 @@ namespace cajeta {
         // stderr, unbuffered-friendly: one write per line so consumers reading
         // the pipe see each diagnostic as it is produced.
         std::cerr << o << std::flush;
+    }
+
+    namespace {
+        bool g_jsonProgress = false;
+    }
+
+    void setJsonProgressEnabled(bool enabled) { g_jsonProgress = enabled; }
+    bool jsonProgressEnabled() { return g_jsonProgress; }
+
+    void emitJsonProgress(const std::string& phase,
+                          const std::string& state,
+                          const std::string& label,
+                          long long elapsedMs) {
+        std::string o = "{\"kind\":\"progress\",";
+        strOrNull(o, "phase", phase); o += ",";
+        strOrNull(o, "state", state); o += ",";
+        strOrNull(o, "label", label);
+        if (elapsedMs >= 0) {
+            o += ",\"elapsedMs\":";
+            o += std::to_string(elapsedMs);
+        }
+        o += "}\n";
+        // Same stream + flush discipline as emitJsonDiagnostic: one write per
+        // line so the IDE's pipe reader sees a phase the moment it starts,
+        // instead of when the process exits.
+        std::cerr << o << std::flush;
+    }
+
+    void emitJsonCacheHit(const std::string& artifact) {
+        std::string o = "{\"kind\":\"cache\",";
+        strOrNull(o, "state", "hit");     o += ",";
+        strOrNull(o, "artifact", artifact);
+        o += "}\n";
+        std::cerr << o << std::flush;
+    }
+
+    ProgressPhase::ProgressPhase(std::string phase, std::string label)
+        : phase(std::move(phase)),
+          label(std::move(label)),
+          active(jsonProgressEnabled()),
+          startedAt(std::chrono::steady_clock::now()) {
+        if (active) emitJsonProgress(this->phase, "start", this->label);
+    }
+
+    ProgressPhase::~ProgressPhase() {
+        if (!active) return;
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - startedAt).count();
+        // Destructor may run while an exception (a fatal diagnostic) unwinds —
+        // the phase still gets closed, so the IDE never leaves a phase node
+        // spinning forever. emitJsonProgress does not throw.
+        emitJsonProgress(phase, "finish", label, static_cast<long long>(ms));
     }
 
     int levenshteinDistance(const std::string& a, const std::string& b) {

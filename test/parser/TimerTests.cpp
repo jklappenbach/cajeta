@@ -27,10 +27,21 @@ using cajeta_test::CajetaJit;
 
 namespace {
 
-int32_t runI32(const std::string& src) {
+// Run `src` and report how long the CALL took, with the JIT compile excluded.
+// These tests assert on wall-clock, and the compile is both far larger than
+// what they measure (seconds vs ~50ms) and load-dependent — under a 32-shard
+// sweep it has reached 30s on its own. Timing the whole of runI32 therefore
+// measured machine load, which both blew the upper bounds on a busy box and
+// made "returned immediately" indistinguishable from "waited". Compile first,
+// then start the clock.
+int32_t runI32Timed(const std::string& src, int64_t& elapsedMs) {
     auto jit = CajetaJit::compile(src, "test.D");
     auto fn = jit->lookup<int32_t (*)()>("run");
-    return fn();
+    auto t0 = std::chrono::steady_clock::now();
+    int32_t result = fn();
+    elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t0).count();
+    return result;
 }
 
 } // namespace
@@ -51,19 +62,16 @@ TEST(TimerTests, mainThreadTimeoutWhenDoneNeverFlips) {
         "        return result;\n"
         "    }\n"
         "}\n";
-    auto t0 = std::chrono::steady_clock::now();
-    int32_t result = runI32(src);
-    auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - t0).count();
+    int64_t elapsed_ms = 0;
+    int32_t result = runI32Timed(src, elapsed_ms);
     EXPECT_EQ(result, 0);
     // Slack on both sides: must wait at least ~40ms (allow 10ms scheduler
-    // jitter under the 50ms target); upper bound is loose to tolerate
-    // CI noise.
+    // jitter under the 50ms target). This is what catches "didn't wait".
     EXPECT_GE(elapsed_ms, 40);
-    // Loose upper bound: the JIT compile dominates wall time (~2s on dev
-    // hardware). The lower bound above is what catches "didn't wait";
-    // this just guards against runaway hangs.
-    EXPECT_LE(elapsed_ms, 30000);
+    // Upper bound: with the compile excluded this measures the wait itself,
+    // so it can be generous and still mean something — a 50ms deadline that
+    // overruns by 100x is broken, not busy.
+    EXPECT_LE(elapsed_ms, 5000);
 }
 
 // Done flag pre-set → returns 1 without ever sleeping. The intrinsic's
@@ -81,13 +89,12 @@ TEST(TimerTests, mainThreadCompletesImmediatelyWhenDoneAlreadySet) {
         "        return result;\n"
         "    }\n"
         "}\n";
-    auto t0 = std::chrono::steady_clock::now();
-    int32_t result = runI32(src);
-    auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - t0).count();
+    int64_t elapsed_ms = 0;
+    int32_t result = runI32Timed(src, elapsed_ms);
     EXPECT_EQ(result, 1);
-    // Should be near-instantaneous; the JIT compile dominates the wall
-    // time. Use a 60s deadline above so even substantial JIT overhead
-    // can't accidentally make this look like a successful timeout.
-    EXPECT_LE(elapsed_ms, 30000);
+    // The fast path must not sleep. With the compile excluded this is a real
+    // assertion: the deadline above is 60s, so a bound well under it fails
+    // if the flag check is skipped and the call actually waits. (Timing the
+    // compile too made this vacuous — it passed either way.)
+    EXPECT_LE(elapsed_ms, 5000);
 }

@@ -89,21 +89,27 @@ namespace cajeta {
                     os << "    " << objVar << "." << b.name << " = "
                        << cur << ".readBoolean();\n";
                     break;
-                case Decode::Str:
-                    os << "    " << objVar << "." << b.name << " = "
-                       << cur << ".readString();\n";
+                case Decode::Str: {
+                    // Owned #String return: hoist, then surrender into the
+                    // field with '#' (a plain store lends a dying temp).
+                    const std::string sv = "v" + path + "_" + b.name;
+                    os << "    String " << sv << " = " << cur << ".readString();\n";
+                    os << "    " << objVar << "." << b.name << " = #" << sv << ";\n";
                     break;
-                case Decode::Bytes:
-                    os << "    " << objVar << "." << b.name << " = "
-                       << cur << ".readBytes();\n";
+                }
+                case Decode::Bytes: {
+                    const std::string bv = "v" + path + "_" + b.name;
+                    os << "    int8[] " << bv << " = " << cur << ".readBytes();\n";
+                    os << "    " << objVar << "." << b.name << " = #" << bv << ";\n";
                     break;
+                }
                 case Decode::Record: {
                     const std::string childPath = path + "_" + b.name;
                     const std::string childObj = "o" + childPath;
                     os << "    " << b.canon << " " << childObj << " = heap "
                        << b.canon << "();\n";
                     emitRecordDecode(os, b.nested, cur, childObj, childPath);
-                    os << "    " << objVar << "." << b.name << " = "
+                    os << "    " << objVar << "." << b.name << " = #"
                        << childObj << ";\n";
                     break;
                 }
@@ -151,13 +157,13 @@ namespace cajeta {
         os << "        while (j < cnt) {\n";
         os << "            " << Ec << " e = heap " << Ec << "();\n";
         emitRecordDecode(os, E, "cur", "e", "");
-        os << "            outv[i] = e;\n";
+        os << "            outv[i] = #e;\n";
         os << "            i = i + 1;\n";
         os << "            j = j + 1;\n";
         os << "        }\n";
         os << "        more = ct.nextBlock();\n";
         os << "    }\n";
-        os << "    return outv;\n";
+        os << "    return #outv;\n";
         os << "}\n";
         return os.str();
     }

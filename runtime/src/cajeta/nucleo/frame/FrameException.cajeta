@@ -1,0 +1,21 @@
+package cajeta.nucleo.frame;
+
+import cajeta.error.RecoverableException;
+import cajeta.lang.String;
+
+/**
+ * Thrown for runtime dataframe contract violations — column row-length
+ * mismatches at `Table` construction, out-of-range column ordinals in the
+ * introspection methods. Compile-time schema violations (non-record schema
+ * arg, unmapped field types, wrong column types at a constructor call) are
+ * named compile errors instead, never this.
+ *
+ * Recoverable: a caller-handleable condition, per {@link
+ * cajeta.nucleo.column.ColumnTypeException}'s discipline.
+ */
+public class FrameException extends RecoverableException {
+    public FrameException(String message) {
+        this.message = message;
+        this.cause = 0;
+    }
+}

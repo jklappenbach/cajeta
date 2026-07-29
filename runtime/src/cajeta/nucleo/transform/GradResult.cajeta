@@ -1,0 +1,26 @@
+package cajeta.nucleo.transform;
+
+/**
+ * GradResult<V, G> — the typed return bag of `Grad(f)`: the forward `value` and
+ * the `grads` with respect to the differentiated argument(s). A value type
+ * (stack by default), returned by value from the differentiated function.
+ *
+ * This is the `value_and_grad` shape (transform-intrinsics spec §5): grads are
+ * explicit return values, never a global `.grad` accumulator. `Grad(f)` always
+ * returns both — the value comes free with the backward and avoids a second
+ * forward pass.
+ *
+ * ```cajeta
+ * (float32) -> GradResult<float32,float32> dfx = Grad((float32 x) -> x * x);
+ * GradResult<float32,float32> r = dfx(3.0f);   // r.value = 9.0, r.grads = 6.0
+ * ```
+ */
+public record GradResult<V, G> {
+    V value;
+    G grads;
+
+    public GradResult(V value, G grads) {
+        this.value #= value;
+        this.grads #= grads;
+    }
+}

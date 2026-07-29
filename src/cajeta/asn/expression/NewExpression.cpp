@@ -6,6 +6,7 @@
 #include "CreatorRest.h"
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/type/CajetaClass.h"
+#include "cajeta/xref/XrefIndex.h"
 #include "cajeta/type/CajetaArray.h"
 #include "cajeta/type/CajetaVector.h"
 #include "cajeta/type/CajetaMatrix.h"
@@ -97,6 +98,42 @@ namespace cajeta {
         return klass->instantiate({});
     }
 
+    void NewExpression::recordCreatedTypeXref(antlr4::Token* tok) {
+        if (!xref::captureEnabled() || typeName.empty() || !tok) return;
+        if (!tok->getInputStream()) return;
+        const std::string* file =
+            xref::internSourceFile(tok->getInputStream()->getSourceName());
+        if (!file) return;   // synthesized source (template/mock): no position
+        try {
+            // Resolve the created type NAME to its declaration's canonical FQN,
+            // scoped like resolveTypes (own package → imports → global) and
+            // tolerant of a forward reference — the whole-root export parses in
+            // directory order and routinely reaches `heap Square(...)` before
+            // Square.cajeta is built. A qualified `heap pkg.Point()` carries a
+            // (dot-less-concatenated) package; try it first, else resolve the
+            // leaf name scoped. A miss records nothing.
+            CajetaModulePtr module = CajetaModule::getActiveModule();
+            std::string target;
+            if (!package.empty()) {
+                std::string qualified = package + "." + typeName;
+                if (CajetaType::getArchive().count(qualified)) target = qualified;
+            }
+            if (target.empty())
+                target = CajetaType::canonicalNameScoped(typeName, module);
+            if (target.empty()) return;
+            // An instantiation (`ArrayList<int32>`) navigates to the TEMPLATE's
+            // declaration — strip any argument list, mirroring fromContext.
+            auto lt = target.find('<');
+            if (lt != std::string::npos) target = target.substr(0, lt);
+            xref::noteTypeReference(target, *file, (int) tok->getLine(),
+                                    (int) tok->getCharPositionInLine());
+        } catch (...) {
+            // Reference capture is best-effort: a resolution that throws here
+            // (it would throw again, reported, in the codegen pass) must never
+            // turn into a lint/compile failure.
+        }
+    }
+
     void NewExpression::resolveTypes(CajetaModulePtr module) {
         AbstractSyntaxNode::resolveTypes(module);
         if (typeName.empty()) return;
@@ -117,8 +154,22 @@ namespace cajeta {
         // already reflects T → concrete-arg even though the stack is
         // long gone by the time resolveTypes runs.
         CajetaTypePtr type = boundElementType;
+        // Bare names resolve SCOPED FIRST (own package → imports → global),
+        // mirroring generateCode below. The old ordering ran the raw
+        // `of(name, "")` global short-name key first — last-writer-wins
+        // across packages — and its non-null hit SHORT-CIRCUITED the scoped
+        // lookup entirely: resolvedType then carried the wrong same-named
+        // class into overload resolution even though generateCode would
+        // later re-resolve correctly. `heap HttpParserLimits()` inside the
+        // embedded stdlib stamped the USER'S HttpParserLimits (or vice
+        // versa), and the call's ParameterEntry mismatched every candidate —
+        // the cajeta-http NO_MATCHING_OVERLOAD regression, a silent miss
+        // until silent-resolution-diagnostics made it fatal.
+        if (!type && package.empty()) {
+            type = CajetaType::ofScoped(typeName, module);
+        }
         if (!type) type = CajetaType::of(typeName, package);
-        if (!type) type = CajetaType::of(typeName);
+        if (!type) type = CajetaType::ofScoped(typeName, module);
         if (!type) return;
         if (!typeArguments.empty()) {
             auto klass = dynamic_pointer_cast<CajetaClass>(type);
@@ -131,6 +182,12 @@ namespace cajeta {
             }
             if (klass && klass->isTemplate()) {
                 type = klass->instantiate(typeArguments);
+            } else {
+                // Type arguments given to a non-template type — reject instead
+                // of silently discarding them (compiling an ill-formed program).
+                throw Exception(
+                    "type '" + typeName + "' is not a template but was given "
+                    "type arguments", "CAJETA_ERROR_TYPE_ARGS_ON_NON_TEMPLATE");
             }
         } else if (!isDiamond) {
             // Bare `heap Box(args)` of a default-bearing template → Box<defaults>.
@@ -290,11 +347,23 @@ namespace cajeta {
         // boundElementType was captured at parse-walk time when the
         // substitution stack was live; prefer it. See NewExpression.h.
         CajetaTypePtr type = boundElementType;
-        if (!type) type = CajetaType::of(typeName, package);
-        if (!type) {
-            // Fallback to canonical lookup by bare typeName for primitives.
-            type = CajetaType::of(typeName);
+        // Bare names resolve SCOPED FIRST (own package → imports → global):
+        // `of(name, "")` hits the raw global short-name key, which is
+        // last-writer-wins across packages — a user class named `Event`
+        // would hijack `heap Event(...)` inside cajeta.xpu.Event.create()
+        // during lazy stdlib codegen. ofScoped's tier 3 is that same global
+        // key, so this is strictly more precise. Qualified names keep the
+        // direct canonical lookup. (Subsumes main f086c73e's scoped
+        // fallback — same shadowing fix, stronger ordering.)
+        if (!type && package.empty()) {
+            type = CajetaType::ofScoped(typeName, module);
         }
+        if (!type) type = CajetaType::of(typeName, package);
+        // Qualified-miss rescue (pre-existing): the qualified-creator parse
+        // can mangle the package (`cajeta.lang.String` arrives as package
+        // "cajetalang"), which the legacy global short-name fallback silently
+        // absorbed. Keep that rescue as the last tier.
+        if (!type) type = CajetaType::ofScoped(typeName, module);
         // Templated `new Box<int32>(...)`: typeArguments were resolved at
         // parse time (in our constructor). Route through the template's
         // instantiation cache so the concrete `Box<int32>` is what we
@@ -307,6 +376,12 @@ namespace cajeta {
             }
             if (klass && klass->isTemplate()) {
                 type = klass->instantiate(typeArguments);
+            } else {
+                // Type arguments given to a non-template type — reject instead
+                // of silently discarding them (compiling an ill-formed program).
+                throw Exception(
+                    "type '" + typeName + "' is not a template but was given "
+                    "type arguments", "CAJETA_ERROR_TYPE_ARGS_ON_NON_TEMPLATE");
             }
         }
         // Diamond form (`new Box<>(args)`): infer type arguments from the

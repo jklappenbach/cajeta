@@ -113,6 +113,9 @@ typedef void (*cajeta_ctor_fn)(void* self);
 // grouped behind the cajeta_xpu.c module aggregator.
 // ===========================================================================
 #include "cajeta_rt_core.c"
+#include "cajeta_rt_shared.c"
+#include "cajeta_rt_utf8.c"
+#include "cajeta_rt_string.c"
 #include "cajeta_rt_concurrent_exec.c"
 #include "cajeta_rt_concurrent_sync.c"
 #include "cajeta_rt_vtable_reflect.c"
@@ -122,6 +125,7 @@ typedef void (*cajeta_ctor_fn)(void* self);
 #include "cajeta_rt_hash.c"
 #include "cajeta_rt_lang.c"
 #include "cajeta_rt_process.c"
+#include "cajeta_arrow.c"   // nucleo-column Arrow C Data Interface shims
 #include "cajeta_xpu.c"   // XPU/GPU module
 
 // ---------------------------------------------------------------------------

@@ -1,0 +1,128 @@
+package cajeta.nucleo.frame;
+
+/**
+ * Agg — an AGGREGATION node (nucleo-frame U8, spec §4.4): a reduction over
+ * a column expression, or arithmetic combining two reductions. Built by the
+ * reduction methods on {@link ColF64} / {@link ColI64} / {@link ColStr} and
+ * composed with ordinary operators, so the spec's headline reads as one
+ * expression:
+ *
+ * ```cajeta
+ * Agg num = (c.price() * c.size()).sum();   // fused elementwise -> reduce
+ * Agg den = c.size().sum();
+ * ag.add((num / den).alias("vwap"));
+ * ```
+ *
+ * The elementwise input is an ordinary expression tree, so the same
+ * introspection the optimizer already uses for predicates and projections
+ * applies here — an aggregate's column references are visible, never opaque.
+ *
+ * Kinds: 1 sum, 2 mean, 3 min, 4 max, 5 count, 6 first, 7 last (leaves,
+ * over `expr`/`iRef`/`strRef`); 10 add, 11 sub, 12 mul, 13 div (arithmetic
+ * over two aggregate results, evaluated in float64); 20 named (the
+ * {@link #alias} wrapper the collector requires).
+ *
+ * Nulls (spec §7): every reduction SKIPS nulls — `mean` divides by the
+ * non-null count, `count` counts non-null cells, and `first`/`last` take
+ * the first/last cell that HAS a value. A group with no non-null cell
+ * yields NULL for mean/min/max/first/last and the identity 0 for sum.
+ */
+public class Agg {
+    int32 kind;
+    ColF64 expr;      // owned: float64 elementwise input (leaf aggregates)
+    ColI64 iRef;      // owned: exact-integer reference
+    ColStr strRef;    // owned: utf8 reference
+    Agg left;         // arithmetic children (owned); kind 20 borrows `left`
+    Agg right;
+    String outName;   // set by alias(); the collector requires it
+    Agg next;         // owned chain link (Aggs appends)
+
+    Agg(int32 kind) {
+        this.kind = kind;
+    }
+
+    // The reduction builders are INSTANCE methods on the expression types,
+    // so the input arrives as a borrow of `this` and binds like
+    // Sel.bindExpr — the expression temp lives in the caller's statement.
+    static #Agg overF64(int32 kind, ColF64 e) {
+        Agg a = heap Agg(kind);
+        a.expr = e;
+        return #a;
+    }
+
+    static #Agg overI64(int32 kind, ColI64 e) {
+        Agg a = heap Agg(kind);
+        a.iRef = e;
+        return #a;
+    }
+
+    static #Agg overStr(int32 kind, ColStr e) {
+        Agg a = heap Agg(kind);
+        a.strRef = e;
+        return #a;
+    }
+
+    static #Agg arith(int32 kind, #Agg a, #Agg b) {
+        Agg n = heap Agg(kind);
+        n.left #= a;
+        n.right #= b;
+        return #n;
+    }
+
+    /**
+     * Name this aggregate as an output column. A reduction has no name of
+     * its own (two reductions of one column would collide), so the
+     * collector requires the name — mirroring the `select` rule for
+     * computed columns. The wrapper BORROWS the aggregate, exactly as
+     * {@link ColF64#alias} borrows its expression into a {@link Sel}.
+     */
+    public #Agg alias(String name) {
+        Agg a = heap Agg(20);
+        a.left = this;
+        a.outName = name;
+        return #a;
+    }
+
+    /** Append `a` after this node (the Aggs collector calls this). */
+    void chain(#Agg a) {
+        this.next #= a;
+    }
+
+    public int32 kind() { return this.kind; }
+    public ColF64 exprOf() { return this.expr; }
+    public ColI64 iRefOf() { return this.iRef; }
+    public ColStr strRefOf() { return this.strRef; }
+    public Agg leftAgg() { return this.left; }
+    public Agg rightAgg() { return this.right; }
+    public String outNameOf() { return this.outName; }
+    public Agg nextOf() { return this.next; }
+
+    /** The reduction's name, for diagnostics and plan printing. */
+    public #String opName() {
+        if (this.kind == 1) { return "sum"; }
+        if (this.kind == 2) { return "mean"; }
+        if (this.kind == 3) { return "min"; }
+        if (this.kind == 4) { return "max"; }
+        if (this.kind == 5) { return "count"; }
+        if (this.kind == 6) { return "first"; }
+        if (this.kind == 7) { return "last"; }
+        if (this.kind == 10) { return "add"; }
+        if (this.kind == 11) { return "sub"; }
+        if (this.kind == 12) { return "mul"; }
+        if (this.kind == 13) { return "div"; }
+        if (this.kind == 20) { return "named"; }
+        return "unknown";
+    }
+
+    public static #Agg operator+(#Agg a, #Agg b) { return Agg.arith(10, #a, #b); }
+    public static #Agg operator-(#Agg a, #Agg b) { return Agg.arith(11, #a, #b); }
+    public static #Agg operator*(#Agg a, #Agg b) { return Agg.arith(12, #a, #b); }
+    public static #Agg operator/(#Agg a, #Agg b) { return Agg.arith(13, #a, #b); }
+
+    /** Arithmetic in static form — the U5 precedent for positions where an
+     *  operator-typed result doesn't resolve (see {@link Pred#and}). */
+    public static #Agg add(#Agg a, #Agg b) { return Agg.arith(10, #a, #b); }
+    public static #Agg sub(#Agg a, #Agg b) { return Agg.arith(11, #a, #b); }
+    public static #Agg mul(#Agg a, #Agg b) { return Agg.arith(12, #a, #b); }
+    public static #Agg div(#Agg a, #Agg b) { return Agg.arith(13, #a, #b); }
+}

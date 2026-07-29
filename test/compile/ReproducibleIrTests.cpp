@@ -197,10 +197,17 @@ std::string emitIrUnderRoot(const fs::path& root) {
     auto build = root / "build";
     fs::create_directories(src);
     fs::create_directories(build);
+    // The body deliberately owns a local String: its drop entry carries a
+    // source tag (`.cajeta.src.*`), and the method emits a line-info frame
+    // descriptor — both embed the source path and must round-trip through
+    // --debug-prefix-map like source_filename does (docs-refactor 15.12.2).
     { std::ofstream out(src / "Hello.cajeta");
       out << "package demo;\n"
              "public final class Hello {\n"
-             "    public static int32 run() { return 0; }\n"
+             "    public static int32 run() {\n"
+             "        String s = \"hey\" + 1;\n"
+             "        return (int32) s.count();\n"
+             "    }\n"
              "}\n"; }
     auto srcRoot = (root / "src");
     std::string cmd = compilerBinary()

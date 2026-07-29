@@ -14,6 +14,8 @@
 #include "../../error/Exception.h"
 #include "../../util/MemoryManager.h"
 
+#include <set>
+
 namespace cajeta {
 
     void AggregateInitializerExpression::resolveTypes(CajetaModulePtr module) {
@@ -27,7 +29,12 @@ namespace cajeta {
             // consulting the initializer's type to size its slot) get the
             // right CajetaType. Falls through to nullptr if the name doesn't
             // resolve — generateCode will surface a clean error below.
-            resolvedType = CajetaType::of(typeName);
+            // collection-literals §4 — the prefixless `{…}` form takes its type
+            // from the context-pushed expectedType (may still be null here if
+            // the push happens at generateCode time, e.g. a nested array
+            // element; generateCode re-resolves then).
+            resolvedType = !typeName.empty() ? CajetaType::of(typeName)
+                                             : expectedType;
         }
     }
 
@@ -35,9 +42,21 @@ namespace cajeta {
         auto* builder = module->getBuilder();
         auto& ctx = *module->getLlvmContext();
 
-        // Resolve typeName → CajetaClass. View / interface receivers are
-        // rejected with specific messages so users get a useful error.
-        CajetaTypePtr type = CajetaType::of(typeName);
+        // Resolve the target type. An explicit `typeName` prefix wins; the
+        // prefixless `{…}` form (collection-literals §4) takes the type pushed
+        // by context (expectedType). View / interface receivers are rejected
+        // with specific messages so users get a useful error.
+        CajetaTypePtr type = !typeName.empty() ? CajetaType::of(typeName)
+                                               : expectedType;
+        if (!type && typeName.empty()) {
+            // Prefixless with nothing to infer from — name the missing type.
+            throw locatedException(getSourceLine(), getSourceColumn() + 1,
+                "aggregate literal `{ ... }` has no inferable type here; give "
+                "it a type prefix (e.g. `Point { ... }`) or use it where a "
+                "class type is expected (a typed declaration, assignment, "
+                "return, or array element)",
+                "CAJETA_ERROR_AGGREGATE_INIT_NO_TYPE");
+        }
         if (!type) {
             char buf[256];
             snprintf(buf, sizeof(buf),
@@ -45,6 +64,11 @@ namespace cajeta {
                 typeName.c_str());
             throw locatedException(getSourceLine(), getSourceColumn() + 1, buf,
                 "CAJETA_ERROR_AGGREGATE_INIT_UNKNOWN_TYPE");
+        }
+        // Backfill typeName from the inferred type so the per-field diagnostics
+        // below name the target instead of an empty string.
+        if (typeName.empty() && type->getQName()) {
+            typeName = type->getQName()->getTypeName();
         }
         if (dynamic_pointer_cast<CajetaView>(type)) {
             char buf[256];
@@ -91,7 +115,14 @@ namespace cajeta {
             llvm::Type::getInt64Ty(ctx),
             dl.getTypeAllocSize(bodyTy));
         if (stackAlloc) {
-            bodyPtr = builder->CreateAlloca(bodyTy);
+            // Emit the alloca in the function ENTRY block (not the current,
+            // possibly in-loop, insert point) so an aggregate initializer in a
+            // loop body reuses one stack slot instead of leaking a fresh alloca
+            // per iteration (stack overflow at high iteration counts).
+            llvm::Function* curFn = builder->GetInsertBlock()->getParent();
+            llvm::BasicBlock& entryBB = curFn->getEntryBlock();
+            llvm::IRBuilder<> entryB(&entryBB, entryBB.getFirstInsertionPt());
+            bodyPtr = entryB.CreateAlloca(bodyTy);
             builder->CreateStore(llvm::Constant::getNullValue(bodyTy), bodyPtr);
         } else {
             bodyPtr = MemoryManager::createMallocInstruction(
@@ -103,52 +134,91 @@ namespace cajeta {
         // Initialize vtable pointer at slot 0 — matches the ClassCreatorRest
         // heap path. Applied uniformly to both stack and heap paths so
         // dispatch on an aggregate-init'd class works regardless of storage.
-        if (llvm::GlobalVariable* vt = classType->getVirtualTableGlobal()) {
-            llvm::Constant* vtRef = CajetaModule::ensureGlobalInModule(
-                module->getLlvmModule(), vt);
-            llvm::Value* vtableSlot = builder->CreateStructGEP(
-                bodyTy, bodyPtr, /*idx=*/0, "vtable_slot");
-            builder->CreateStore(vtRef, vtableSlot);
+        // Value types (record / @ValueType) have NO slot-0 vtable — writing
+        // one would clobber the first field's bytes.
+        if (classType->hasVtablePointerAtSlotZero()) {
+            if (llvm::GlobalVariable* vt = classType->getVirtualTableGlobal()) {
+                llvm::Constant* vtRef = CajetaModule::ensureGlobalInModule(
+                    module->getLlvmModule(), vt);
+                llvm::Value* vtableSlot = builder->CreateStructGEP(
+                    bodyTy, bodyPtr, /*idx=*/0, "vtable_slot");
+                builder->CreateStore(vtRef, vtableSlot);
+            }
         }
         llvm::Value* bodyAlloca = bodyPtr;  // keep the downstream name
 
-        // Per-binding field stores. v1 requires labels; positional init is
-        // out of scope (docs/specification/lang/Views.md uses the labeled form too, and label-less
-        // init would silently couple field order to declaration order).
+        // Per-binding field stores. Two styles, never mixed (records-spec
+        // §4.4): labeled `f: v` binds by name; un-labeled exprs bind
+        // POSITIONALLY in declared order (records only — ancestors first,
+        // matching the flat layout). Records additionally fill omitted
+        // fields from declared defaults and reject omissions without one.
         llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+        bool isRecord = classType->isRecordType();
+        bool anyLabeled = false;
+        bool anyPositional = false;
         for (auto& b : bindings) {
-            if (b.label.empty()) {
-                char buf[256];
-                snprintf(buf, sizeof(buf),
-                    "aggregate initializer for '%s' uses a positional binding; "
-                    "labeled fields are required (e.g. `field: value`)",
-                    typeName.c_str());
-                throw Exception(buf, "CAJETA_ERROR_AGGREGATE_INIT_UNLABELED");
-            }
-            // getFieldLlvmIndex dispatches via the virtual override:
-            // CajetaView skips the vtable header; CajetaClass adds it.
-            auto& props = classType->getProperties();
-            auto it = props.find(b.label);
-            if (it == props.end()) {
+            (b.label.empty() ? anyPositional : anyLabeled) = true;
+        }
+        if (anyLabeled && anyPositional) {
+            char buf[256];
+            snprintf(buf, sizeof(buf),
+                "aggregate initializer for '%s' mixes labeled and positional "
+                "bindings; use one style per initializer",
+                typeName.c_str());
+            throw Exception(buf, "CAJETA_ERROR_AGGREGATE_INIT_MIXED");
+        }
+        if (anyPositional && !isRecord) {
+            char buf[256];
+            snprintf(buf, sizeof(buf),
+                "aggregate initializer for '%s' uses a positional binding; "
+                "labeled fields are required (e.g. `field: value`)",
+                typeName.c_str());
+            throw Exception(buf, "CAJETA_ERROR_AGGREGATE_INIT_UNLABELED");
+        }
+
+        // Declared-order instance fields, ancestors first (flat layout order).
+        vector<StructurePropertyPtr> orderedFields;
+        std::function<void(const CajetaClassPtr&)> collectFields =
+            [&](const CajetaClassPtr& cls) {
+                if (!cls) return;
+                for (auto& sup : cls->getSuperClasses()) collectFields(sup);
+                for (auto& pr : cls->getPropertyList()) {
+                    if (pr && !pr->isStatic()) orderedFields.push_back(pr);
+                }
+            };
+        collectFields(classType);
+
+        // Evaluate + coerce + store one field. `srcExpr` non-null for user
+        // bindings (drives the ownership move-marking); null for defaults.
+        auto storeField = [&](const StructurePropertyPtr& prop,
+                              llvm::Value* value,
+                              const ExpressionPtr& srcExpr) {
+            unsigned fieldIdx = (unsigned) classType->getFieldLlvmIndex(prop);
+            // generateCode can legitimately yield nullptr (a void / no-value
+            // expression); the user-binding call sites pass it straight in.
+            // Fail loud instead of dereferencing it below (SIGSEGV).
+            if (!value) {
                 char buf[512];
                 snprintf(buf, sizeof(buf),
-                    "aggregate initializer for '%s' names field '%s' that the "
-                    "type does not declare",
-                    typeName.c_str(), b.label.c_str());
-                throw Exception(buf, "CAJETA_ERROR_AGGREGATE_INIT_UNKNOWN_FIELD");
+                    "aggregate initializer for '%s': the expression bound to "
+                    "field '%s' produces no value",
+                    typeName.c_str(), prop->getName().c_str());
+                throw Exception(buf, "CAJETA_ERROR_AGGREGATE_INIT_TYPE");
             }
-            StructurePropertyPtr prop = it->second;
-            unsigned fieldIdx = (unsigned) classType->getFieldLlvmIndex(prop);
-
-            // Evaluate the binding expression; load through if it's still
-            // an alloca slot (same coercion the StackField initializer
-            // path runs for primitives).
-            if (!b.expression->getResolvedType()) {
-                b.expression->resolveTypes(module);
-            }
-            llvm::Value* value = b.expression->generateCode(module);
             if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(value)) {
                 value = builder->CreateLoad(a->getAllocatedType(), a);
+            }
+            // Value-type source reached by address (e.g. a field-read GEP):
+            // load the aggregate so the store below copies the body, not
+            // the pointer, into the inline field slot.
+            auto propClass = dynamic_pointer_cast<CajetaClass>(prop->getType());
+            llvm::Type* propLlvm = prop->getType()
+                ? prop->getType()->getLlvmType() : nullptr;
+            if (propClass && propClass->isValueType()
+                    && !dynamic_pointer_cast<CajetaView>(prop->getType())
+                    && propLlvm && propLlvm->isStructTy()
+                    && value && value->getType()->isPointerTy()) {
+                value = builder->CreateLoad(propLlvm, value);
             }
 
             // Coerce the value's LLVM type to the field's declared type
@@ -165,6 +235,13 @@ namespace cajeta {
                     value = builder->CreateSIToFP(value, fieldTy);
                 } else if (fieldTy->isIntegerTy() && srcTy->isFloatingPointTy()) {
                     value = builder->CreateFPToSI(value, fieldTy);
+                } else if (fieldTy->isAggregateType()) {
+                    char buf[512];
+                    snprintf(buf, sizeof(buf),
+                        "aggregate initializer for '%s': value bound to field "
+                        "'%s' does not match the field's type",
+                        typeName.c_str(), prop->getName().c_str());
+                    throw Exception(buf, "CAJETA_ERROR_AGGREGATE_INIT_TYPE");
                 }
             }
 
@@ -173,37 +250,21 @@ namespace cajeta {
                 llvm::ConstantInt::get(i32Ty, fieldIdx),
             };
             llvm::Value* slot = builder->CreateInBoundsGEP(
-                bodyTy, bodyAlloca, gepIndices, "agg_field_" + b.label);
+                bodyTy, bodyAlloca, gepIndices, "agg_field_" + prop->getName());
             builder->CreateStore(value, slot);
 
-            // S6.4 + S6.5 ownership transfer for class-ref bindings.
-            // When the binding sources a class instance from a local
-            // identifier, the struct now owns it — two side effects:
-            //
-            //   (S6.4) Deactivate the source's drop entry so only the
-            //          struct's drop fn frees the instance; without this
-            //          both the source local and the struct would call
-            //          drop, double-freeing at scope exit.
-            //
-            //   (S6.5) Mark the source identifier as moved in the current
-            //          scope. Subsequent reads (e.g. `tag.n` after `Holder
-            //          { t: tag }`) trip CAJETA_ERROR_USE_AFTER_MOVE,
-            //          closing the soundness gap from S6.4 limitation #1:
-            //          the struct now owns the instance and may free it
-            //          via its drop chain at any point past this line.
-            //
-            // v1 simplification: every class-ref binding is treated as a
-            // move regardless of whether the user wrote `#` on the RHS.
-            // Borrow-form bindings (struct field holding a borrowed class
-            // ref whose drop the struct must skip) still need per-instance
-            // ownership tracking and remain deferred.
-            auto fieldClass = dynamic_pointer_cast<CajetaClass>(prop->getType());
-            bool fieldIsClassRef = fieldClass != nullptr
+            // S6.4 + S6.5 ownership transfer for class-ref bindings: the
+            // struct now owns the instance — deactivate the source local's
+            // drop entry and mark it moved (use-after-move protection).
+            // Value-type bindings COPY (inline aggregate, no drop entry) —
+            // the source stays live; defaults have no source at all.
+            bool fieldIsClassRef = propClass != nullptr
                 && !dynamic_pointer_cast<CajetaView>(prop->getType())
                 && !dynamic_pointer_cast<CajetaArray>(prop->getType())
-                && !fieldClass->isInterface();
-            if (fieldIsClassRef) {
-                if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(b.expression)) {
+                && !propClass->isInterface()
+                && !propClass->isValueType();
+            if (fieldIsClassRef && srcExpr) {
+                if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(srcExpr)) {
                     auto scope = module->getScopeStack().peek();
                     if (scope) {
                         FieldPtr srcField = scope->getField(idExpr->getTextValue());
@@ -218,6 +279,93 @@ namespace cajeta {
                         scope->markMoved(idExpr->getTextValue());
                     }
                 }
+            }
+        };
+
+        std::set<const StructureProperty*> boundProps;
+        if (anyPositional) {
+            // Positional mode (5.2.1): entry i binds orderedFields[i].
+            if (bindings.size() > orderedFields.size()) {
+                char buf[512];
+                snprintf(buf, sizeof(buf),
+                    "aggregate initializer for '%s' has %zu positional values "
+                    "but the record declares %zu field(s)",
+                    typeName.c_str(), bindings.size(), orderedFields.size());
+                throw Exception(buf, "CAJETA_ERROR_AGGREGATE_INIT_ARITY");
+            }
+            for (size_t i = 0; i < bindings.size(); ++i) {
+                auto& b = bindings[i];
+                auto& prop = orderedFields[i];
+                if (!b.expression->getResolvedType()) {
+                    b.expression->resolveTypes(module);
+                }
+                llvm::Value* value = b.expression->generateCode(module);
+                storeField(prop, value, b.expression);
+                boundProps.insert(prop.get());
+            }
+        } else {
+            for (auto& b : bindings) {
+                // Inherited fields (record static inheritance) live on
+                // ancestor property maps — walk supers like field access.
+                StructurePropertyPtr prop;
+                std::function<bool(const CajetaClassPtr&)> findProp =
+                    [&](const CajetaClassPtr& cls) -> bool {
+                        if (!cls) return false;
+                        auto pit = cls->getProperties().find(b.label);
+                        if (pit != cls->getProperties().end()) {
+                            prop = pit->second;
+                            return true;
+                        }
+                        for (auto& sup : cls->getSuperClasses()) {
+                            if (findProp(sup)) return true;
+                        }
+                        return false;
+                    };
+                findProp(classType);
+                if (!prop) {
+                    char buf[512];
+                    snprintf(buf, sizeof(buf),
+                        "aggregate initializer for '%s' names field '%s' that the "
+                        "type does not declare",
+                        typeName.c_str(), b.label.c_str());
+                    throw Exception(buf, "CAJETA_ERROR_AGGREGATE_INIT_UNKNOWN_FIELD");
+                }
+                if (!b.expression->getResolvedType()) {
+                    b.expression->resolveTypes(module);
+                }
+                llvm::Value* value = b.expression->generateCode(module);
+                storeField(prop, value, b.expression);
+                boundProps.insert(prop.get());
+            }
+        }
+
+        // Records: unbound fields fill from their declared default; a field
+        // with neither binding nor default is a compile error (5.1.2).
+        // Classes keep the historical zero-fill for omitted fields.
+        if (isRecord) {
+            for (auto& prop : orderedFields) {
+                if (boundProps.count(prop.get())) continue;
+                auto init = prop->getInitializer();
+                if (!init) {
+                    char buf[512];
+                    snprintf(buf, sizeof(buf),
+                        "aggregate initializer for '%s' omits field '%s', "
+                        "which has no declared default",
+                        typeName.c_str(), prop->getName().c_str());
+                    throw Exception(buf,
+                        "CAJETA_ERROR_AGGREGATE_INIT_MISSING_FIELD");
+                }
+                llvm::Value* value = init->generateCode(module);
+                if (!value) {
+                    char buf[512];
+                    snprintf(buf, sizeof(buf),
+                        "aggregate initializer for '%s': default for field "
+                        "'%s' produced no value",
+                        typeName.c_str(), prop->getName().c_str());
+                    throw Exception(buf,
+                        "CAJETA_ERROR_AGGREGATE_INIT_MISSING_FIELD");
+                }
+                storeField(prop, value, nullptr);
             }
         }
 

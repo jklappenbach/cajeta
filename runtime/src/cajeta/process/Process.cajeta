@@ -75,6 +75,8 @@ public class Process {
     /**
      * Block until the child exits and return its result. Intrinsic-lowered to
      * `__cajeta_proc_wait`; this stub body exists only for the parser.
+     *
+     * @EntryPoint
      */
     public #ProcessResult waitFor() {
         return heap ProcessResult();

@@ -221,26 +221,18 @@ TEST(Phase8AcceptanceTests, resolvedFlavorProducesCompilerFlagArgv) {
     // Only properties that map to a compiler frontend flag are lowered, using
     // the MAPPED name (bounds-check -> --bounds). lto lowers to the real
     // --lto frontend flag (ThinLTO for --emit=exe; vocab entry's mapped name
-    // is "lto"). debug-info / strip-symbols / analytics have no frontend flag
-    // — they're honored at the emit/link stage — so they do not appear.
+    // is "lto"). debug-info lowers as of external-debug Unit 1 (it used to map
+    // to an empty flag and be dropped). strip-symbols / analytics still have no
+    // frontend flag — they're honored at the emit/link stage — so they do not
+    // appear.
     EXPECT_TRUE(contains(flags, "--opt=O2"));
     EXPECT_TRUE(contains(flags, "--bounds=off"));
     EXPECT_TRUE(contains(flags, "--lto=thin"));
-    EXPECT_FALSE(contains(flags, "--debug-info=full"));
+    EXPECT_TRUE(contains(flags, "--debug-info=full"));
     EXPECT_FALSE(contains(flags, "--strip-symbols=true"));
     EXPECT_FALSE(contains(flags, "--analytics=true"));
 
     // Determinism — same map, same order:
     auto flags2 = toCompilerFlags(*eff);
     EXPECT_EQ(flags, flags2);
-}
-
-TEST(Phase8AcceptanceTests, profileParamFlagPassThroughShape) {
-    // The BuildAction emits `--profile=<name>` immediately after
-    // --mode/--emit; we can't fork the compiler here, but the same
-    // string is what propagates downstream. Mirror the wiring so
-    // a regression in that code surfaces.
-    std::string flag = "--profile=test";
-    EXPECT_EQ(flag.substr(0, 10), "--profile=");
-    EXPECT_EQ(flag.substr(10), "test");
 }

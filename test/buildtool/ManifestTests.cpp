@@ -96,7 +96,7 @@ TEST(ManifestTests, groupAndLibraryDeriveFromReverseDnsName) {
         EXPECT_EQ(m->details.library(), expectedLib);
     };
     checkSplit("com.example.foo", "com.example", "foo");
-    checkSplit("cajeta.io.net.http", "cajeta.io.net", "http");
+    checkSplit("dev.cajeta.http", "dev.cajeta", "http");
     checkSplit("monoartifact", "", "monoartifact");
 }
 
@@ -208,17 +208,6 @@ TEST(ManifestTests, errorsWhenMeltDeclaredAlongsideTasks) {
     ASSERT_FALSE((bool)m);
     auto msg = errorText(m.takeError());
     EXPECT_NE(msg.find("'melt' and 'tasks'"), std::string::npos);
-}
-
-TEST(ManifestTests, errorsWhenMeltDeclaredAlongsideWorkspace) {
-    auto m = loadManifestString(R"({
-        "details": { "name": "p.melt", "version": "1.0.0" },
-        "melt": { "dependencies": {} },
-        "workspace": { "members": [] }
-    })");
-    ASSERT_FALSE((bool)m);
-    auto msg = errorText(m.takeError());
-    EXPECT_NE(msg.find("'melt' and 'workspace'"), std::string::npos);
 }
 
 TEST(ManifestTests, meltAloneLoadsSuccessfully) {

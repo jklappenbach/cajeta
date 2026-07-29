@@ -17,6 +17,14 @@ namespace cajeta {
         CajetaTypePtr type;
         list<VariableDeclaratorPtr> variableDeclarators;
     public:
+        // Drop-chain wiring for an owner local, callable from OTHER emission
+        // sites that create ownership after declaration (e.g. a `d = #t`
+        // move-assign into a bare-declared local — slices plan 9.3.1). Binds
+        // the CURRENT slot value as the entry's obj, so call it after the
+        // store.
+        static void emitOwnerDropEntry(CajetaModulePtr module, FieldPtr field,
+            const std::string& dropFnName, int allocLine);
+
         LocalVariableDeclaration(set<Modifier>& modifiers,
             CajetaTypePtr type,
             list<VariableDeclaratorPtr> variableDeclarators,
@@ -39,6 +47,16 @@ namespace cajeta {
         // Used by lambda return-type inference to pre-register body
         // locals in the lambda's resolve-time scope.
         CajetaTypePtr getType() const { return type; }
+
+        // 7.2.4 — declarators are private; each declarator's own children
+        // carry its initializer.
+        void forEachSubNode(
+                const std::function<void(const AbstractSyntaxNodePtr&)>& fn) override {
+            for (auto& d : variableDeclarators) {
+                if (d) fn(d);
+            }
+            AbstractSyntaxNode::forEachSubNode(fn);
+        }
 
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };

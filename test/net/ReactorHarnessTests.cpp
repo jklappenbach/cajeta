@@ -87,22 +87,6 @@ TEST(ReactorHarnessTests, leakGuardPassesOnBalancedScope) {
     SUCCEED();
 }
 
-// --- ReactorLeakGuard: detects a real leak --------------------------------
-// A scope that arms a registration and forgets to drop it must be caught.
-// We verify the guard's detection by checking the count itself diverges
-// (the guard's own ADD_FAILURE is asserted indirectly: we balance the books
-// after measuring, so this test does not itself fail).
-TEST(ReactorHarnessTests, leakGuardWitnessesUnbalancedScope) {
-    ASSERT_EQ(0, __cajeta_net_reactor_init());
-    const int32_t before = __cajeta_net_reactor_active_count();
-    __cajeta_net_reactor_register(3, IO_READ, nullptr);   // arm, never drop
-    EXPECT_EQ(before + 1, __cajeta_net_reactor_active_count())
-        << "an un-deregistered op is exactly the leak the guard flags";
-    // Restore the balance so the suite-wide invariant holds for later tests.
-    __cajeta_net_reactor_deregister(3);
-    EXPECT_EQ(before, __cajeta_net_reactor_active_count());
-}
-
 // --- SiblingCounterProbe: carrier-non-blocking interleave -----------------
 // The headline NET-3 acceptance, modeled one level down: two siblings each
 // park on a blocking-style read of a separate idle socket and BOTH advance

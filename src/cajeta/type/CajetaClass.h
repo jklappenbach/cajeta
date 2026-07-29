@@ -7,6 +7,7 @@
 #include "CajetaType.h"
 #include "StructureProperty.h"
 #include "../method/Method.h"
+#include "../error/Exception.h"
 #include "Scope.h"
 #include "Templates.h"
 
@@ -72,6 +73,10 @@ namespace cajeta {
     protected:
         // Methods maintains the methods declared / overridden in this particular method
         map<string, MethodPtr> methods;
+        // 5.2.4 — mode-erased signature -> the raw key that claimed it. A
+        // second declaration whose erased key matches but whose raw key
+        // differs is a mode-only overload (CAJETA_ERROR_TRANSFER_MODE_OVERLOAD).
+        map<string, string> modeErasedMethodKeys;
         map<string, MethodPtr> staticMethods;
 
         // Constructors
@@ -137,7 +142,21 @@ namespace cajeta {
         // fixed-point marker: a class with all-non-placeholder parents
         // and !prototypeBuilt is the next candidate to lay out.
         bool prototypeBuilt = false;
+        // synthesizeInterfaceVTables skipped a still-placeholder interface
+        // (lazy package not yet drained) — the codegen fixed-point re-runs
+        // synthesis for exactly these classes once per pass.
+        bool pendingIfaceVTables = false;
+        bool recordType = false;
         CajetaModulePtr module;
+
+        // `declaringFile` / `declLine` / `declColumn` now live on CajetaType — an
+        // ENUM is a CajetaType and not a CajetaClass, so a class-only field left
+        // every enum unlocatable (ide-symbol-index plan 1.4). Accessors are
+        // inherited; only the capture helper stays here.
+
+        // Read the module's current parse file into declaringFile. Out-of-line:
+        // CajetaModule is only forward-declared here.
+        void captureDeclaringFile();
         // Emit target for this class's own IR (vtable / RTTI / clinit / static
         // fields). Null → getEmitModule() falls back to `module` (production /
         // non-reuse: resolution and emission coincide). Set only in the stdlib
@@ -164,6 +183,7 @@ namespace cajeta {
         vector<TypeParameter> typeParameters;
         vector<CajetaTypePtr> typeArguments;
         string templateSource;
+        int dbgLineDelta = 0;   // 9.2 — see getDbgLineDelta()
         // Back-pointer from a concrete instantiation to the template class it
         // came from. Null for templates and for plain (non-templated) classes.
         // Used by inferDiamondArgs to recognize that `List<int32>` is "a List"
@@ -315,10 +335,21 @@ namespace cajeta {
         CajetaClass(CajetaModulePtr module) {
             this->module = module;
             scope = nullptr;
+            captureDeclaringFile();
         }
         CajetaClass(CajetaModulePtr module, QualifiedNamePtr qName, list<QualifiedNamePtr> qImplemented);
 
         CajetaClass(CajetaModulePtr module, QualifiedNamePtr qName, list<QualifiedNamePtr> qExtended, list<QualifiedNamePtr> qImplemented);
+
+        // The source file this class was DECLARED in, remapped (build-root
+        // independent). Recorded at construction from the module's current parse
+        // file, because the module cannot answer it later: the stdlib parses
+        // every file into one module (external-debug §6). A template
+        // instantiation inherits it from its template — the instantiation
+        // happens wherever the use site is, but the code still lives in the
+        // template's file.
+        // getDeclaringFile / setDeclaringFile / getDeclLine / getDeclColumn /
+        // setDeclPosition are inherited from CajetaType.
 
         /**
          * Create a structure that provides for a boolean type for whether the reference owns the instance and should delete at scope-end,
@@ -381,9 +412,15 @@ namespace cajeta {
             this->qExtended = std::move(ext);
             this->qImplemented = std::move(impl);
             this->placeholderFlag = false;
+            // A placeholder was constructed at its first REFERENCE, so it
+            // captured whatever file that reference sat in (String, referenced
+            // from BFloat16.cajeta, reported BFloat16.cajeta). This is the
+            // declaration — recapture.
+            captureDeclaringFile();
         }
         list<CajetaClassPtr>& getImplementedInterfaces() { return implementedInterfaces; }
         const list<QualifiedNamePtr>& getQImplemented() const { return qImplemented; }
+        const list<QualifiedNamePtr>& getQExtended() const { return qExtended; }
         void setQImplemented(list<QualifiedNamePtr> q) { qImplemented = std::move(q); }
         const list<vector<QualifiedNamePtr>>& getQImplementedTypeArgs() const {
             return qImplementedTypeArgs;
@@ -514,6 +551,93 @@ namespace cajeta {
             return it->second;
         }
 
+        // title-tracking §5 — per-instance field ownership bits. A class-
+        // reference or heap-array own field gets one bit in a hidden i64
+        // appended after the class's own fields (before its vbase slots);
+        // the store's spelling sets it, teardown consults it. Shared-
+        // capable classes (String/Utf8/Slice) are excluded — their fields
+        // transfer by share/COW and stay always-owned (§5.1.6). Views,
+        // interfaces, value types, and inline arrays store inline and
+        // carry no separable title.
+        static bool fieldHasOwnershipBit(const StructurePropertyPtr& p);
+
+        // title-tracking §5 (Unit 4) — per-slot ownership bits for a
+        // reference array's ELEMENTS. True when `elem` is a plain vtable
+        // class: the slot's store spelling marks a bit in the array local's
+        // sidecar bitmap and the element walk releases marked slots via
+        // __cajeta_class_virtual_drop. String keeps its own family (§5.1.6
+        // share path); nested arrays, views, interfaces, and value types
+        // carry no per-slot title.
+        static bool arrayElementCarriesSlotBits(const CajetaTypePtr& elem);
+
+        // title-stores §3.3.2 (Unit 4) — per-MEMBER ownership bits for an
+        // inline value-struct element (the MapEntry shape). True when
+        // `elem` is a value-type class whose layout already appends the
+        // hidden ownership word (needsOwnershipWord): each inline slot
+        // replicates that word, so member stores/detaches address it at
+        // the same fixed delta a heap instance would, and teardown walks
+        // slots × members. Distinct from arrayElementCarriesSlotBits —
+        // these elements have NO tail bitmap.
+        static bool arrayElementCarriesMemberBits(const CajetaTypePtr& elem);
+
+        // title-stores §3.3.2 (Unit 4) — synthesize (or fetch) the
+        // per-element-class member walk for value-struct-element array
+        // teardown: `void <fn>(ptr hdr)` loops slots (count from the
+        // header word), and for each bit set in a slot's inline ownership
+        // word releases that member (heap arrays via __cajeta_free_array,
+        // class refs via __cajeta_class_virtual_drop), then zeroes the
+        // word. `withFree` appends __cajeta_free_array(hdr) — the fused
+        // walk+free shape local drop entries need (a split pair
+        // desynchronizes on move-out; the Unit-3 lesson). Member offsets
+        // and bit indices are compile-time facts of `elemCls`, so the fn
+        // is per-instantiation, interned by name in `targetModule`.
+        static llvm::Function* getOrCreateMemberWalk(
+            const CajetaModulePtr& module, llvm::Module* targetModule,
+            const shared_ptr<CajetaClass>& elemCls, uint64_t headerBytes,
+            uint64_t elemStride, bool withFree);
+
+        // transform-intrinsics U1 — pull the target llvm::Function out of a
+        // closure argument IFF it is a directly-supplied (or once-forwarded)
+        // non-capturing lambda; null for a captured / stored / runtime closure.
+        // Public shim over the closure-specialization helper (cajeta-ir Unit 4c)
+        // so the combinator recognizer can gate on specializability.
+        static llvm::Function* extractClosureTarget(
+            llvm::Value* closureArg, llvm::Constant** outRecord = nullptr);
+
+        // Dense bit index of `p` among this class's OWN bit-carrying
+        // fields (declaration order), or -1.
+        int ownershipBitIndexOf(const StructurePropertyPtr& p) const {
+            if (!p || p->isStatic()) return -1;
+            int idx = 0;
+            for (const auto& q : propertyList) {
+                if (q->isStatic() || !fieldHasOwnershipBit(q)) continue;
+                if (q.get() == p.get()) return idx;
+                idx++;
+            }
+            return -1;
+        }
+
+        bool needsOwnershipWord() const {
+            for (const auto& q : propertyList) {
+                if (!q->isStatic() && fieldHasOwnershipBit(q)) return true;
+            }
+            return false;
+        }
+
+        // LLVM struct slot of this class's hidden ownership word within its
+        // own layout (also valid inside a descendant's embedding, relative
+        // to this class's sub-object). -1 when the class has none.
+        int getOwnershipWordLlvmIndex() const {
+            if (!needsOwnershipWord()) return -1;
+            StructurePropertyPtr last;
+            for (const auto& q : propertyList) {
+                if (!q->isStatic()) last = q;
+            }
+            if (!last) return -1;
+            int lastIdx = getFieldLlvmIndex(last);
+            return lastIdx < 0 ? -1 : lastIdx + 1;
+        }
+
         virtual int getFieldLlvmIndex(const StructurePropertyPtr& prop) const {
             // Static properties have no slot in the instance struct —
             // they live in dedicated globals. Return -1 so a caller
@@ -536,6 +660,12 @@ namespace cajeta {
                         if (result >= 0) return;
                         if (p->isStatic()) continue;
                         if (p.get() == prop.get()) { result = slot; return; }
+                        slot++;
+                    }
+                    // title-tracking §5: skip cls's hidden ownership word
+                    // (inserted after own properties, before vbases — must
+                    // mirror embedSubObject exactly).
+                    if (result < 0 && cls->needsOwnershipWord()) {
                         slot++;
                     }
                     // MultiClassing Phase 3 v4: skip cls's vbase pointer
@@ -728,6 +858,23 @@ namespace cajeta {
         // getOrCreateStackDropFunction.
         bool hasTrivialStackDrop();
 
+        // slice-spec §6.1 (slices Unit 6b) — the synthesized value-copy/drop
+        // hook family. A VALUE type is shared-capable when it is Utf8 itself
+        // or transitively embeds a shared-capable value field; such values
+        // are non-trivial: copies retain, drops release, per Shared stake.
+        bool isSharedCapableValue();
+
+        // Emit the recursive per-field retain (copy hook) or release (drop
+        // hook) walk over a value of this type at `valuePtr`. O(shared
+        // fields); never traverses heap edges (spec §6.1 bounded copy).
+        void emitValueSharedOp(llvm::IRBuilder<>& b, llvm::Value* valuePtr,
+                               CajetaModulePtr cajModule,
+                               llvm::Module* bodyModule, bool retain);
+
+        // Synthesized `void(ptr)` release wrapper for drop-chain entries on
+        // shared-capable value locals (obj = the value's stack slot).
+        llvm::Function* getOrCreateValueReleaseFunction();
+
         // REFL-2: return (creating on first call) the DECLARATION of this
         // class's reflective invoke adapter — `void(ptr obj, i32 methodIndex,
         // ptr args, ptr ret)`. No body is emitted here; the #Rtti constant
@@ -829,6 +976,12 @@ namespace cajeta {
         // vtable, so fields live at indices 0,1,… — register-friendly POD.
         virtual bool hasVtablePointerAtSlotZero() const { return !isValueType(); }
 
+        // `record` declarations only (subset of value types): immutable
+        // fields, intrinsic with(...). Set by the visitor / template
+        // instantiator; plain @ValueType classes stay mutable.
+        void setRecordType(bool v) { recordType = v; }
+        bool isRecordType() const { return recordType; }
+
         // Synthesize a per-(class, interface) vtable global for every
         // interface this class implements. Called from generatePrototype
         // after method prototypes exist. Emission shape: flat `[N x ptr]`
@@ -850,6 +1003,8 @@ namespace cajeta {
 
         // Lookup for the synthesized global by interface canonical name.
         // Returns nullptr if this class doesn't implement that interface.
+        bool hasPendingIfaceVTables() const { return pendingIfaceVTables; }
+
         llvm::GlobalVariable* getInterfaceVTable(const std::string& interfaceCanonical) const {
             const auto& m = interfaceVTablesRef();
             auto it = m.find(interfaceCanonical);
@@ -972,6 +1127,13 @@ namespace cajeta {
         const vector<CajetaTypePtr>& getTypeArguments() const { return typeArguments; }
         void setTypeParameters(vector<TypeParameter> params) { typeParameters = std::move(params); }
         void setTypeArguments(vector<CajetaTypePtr> args) { typeArguments = std::move(args); }
+        // resident-debug-server 9.2: snippet-line -> file-line correction for
+        // a template-instantiated class body (set at instantiation, before the
+        // body walk populates methods). Read by safepoint emission via the
+        // emitting method's parent.
+        int getDbgLineDelta() const { return dbgLineDelta; }
+        void setDbgLineDelta(int d) { dbgLineDelta = d; }
+
         const string& getTemplateSource() const { return templateSource; }
         void setTemplateSource(string src) { templateSource = std::move(src); }
         CajetaClassPtr getTemplateOrigin() const { return templateOrigin; }
@@ -982,11 +1144,34 @@ namespace cajeta {
         // method returns a stack value, invokeMethod materializes a temp slot
         // in the caller's frame and returns a pointer to it — so the result
         // behaves like any class-instance pointer. See ValueReturns.md.
+        // `errorIfUnresolved` (default false) makes an unresolvable method a
+        // located compile error rather than a silent null. It is OPT-IN because
+        // several callers probe speculatively and rely on the null:
+        // BinaryOpExpression asks for `operator+` and falls back to the built-in
+        // when the class has none. Only an explicit `recv.name(args)` call site
+        // — where the user named a member that must exist — passes true.
+        // Constructors stay exempt even then (see the note at the throw site).
         llvm::Value* invokeMethod(string& methodName, vector<ParameterEntry> parameters, bool isConstructor, llvm::Value* thisInstance = nullptr,
                                    CajetaModulePtr callerModule = nullptr,
                                    bool forceDirectCall = false,
                                    const vector<CajetaTypePtr>& explicitMethodTypeArgs = {},
-                                   llvm::Value* sretTarget = nullptr);
+                                   llvm::Value* sretTarget = nullptr,
+                                   llvm::Value* transferWord = nullptr,
+                                   bool errorIfUnresolved = false,
+                                   int callLine = -1, int callColumn = -1);
+
+        // Diagnostic for a named member that did not resolve. Distinguishes
+        // "no member of that name" (CAJETA_ERROR_MEMBER_NOT_FOUND) from
+        // "name exists, no matching overload" (CAJETA_ERROR_NO_MATCHING_OVERLOAD,
+        // which lists the candidate signatures).
+        Exception memberNotFoundException(const string& methodName,
+            const vector<ParameterEntry>& parameters, int line, int column);
+
+        // silent-resolution 4.2.1 — the nearest real member name to `typo`
+        // (methods + properties, this class and its ancestors), or "" when
+        // nothing is close enough. Compiler-internal `__` members are never
+        // offered (spec 4.3).
+        string suggestMemberName(const string& typo);
 
         // Construction helpers, factored out of ClassCreatorRest::generateCode
         // so synthesized codegen sites (a throwing capture cast, tryAs, ...)
@@ -1023,10 +1208,30 @@ namespace cajeta {
         // the ACTIVE module's builder, not the instantiation's emit module (which
         // can differ — and yield a freed insert block — when the template lives in
         // a classpath .cja). resolveTypes-phase callers leave it null.
+        //
+        // This is the ONE choke point every callee resolution passes through, so it
+        // is where the xref export records call edges (ide-symbol-index §2). It is a
+        // thin wrapper: `resolveMethodImpl` does the work (and has many return
+        // paths), the wrapper notes the result exactly once. No-op unless
+        // --emit-xref.
         MethodPtr resolveMethod(string& methodName, vector<ParameterEntry>& parameters,
             bool isConstructor, bool floatingParams,
             const vector<CajetaTypePtr>& explicitMethodTypeArgs = {},
             CajetaModulePtr activeModule = nullptr);
+
+    private:
+        MethodPtr resolveMethodImpl(string& methodName, vector<ParameterEntry>& parameters,
+            bool isConstructor, bool floatingParams,
+            const vector<CajetaTypePtr>& explicitMethodTypeArgs,
+            CajetaModulePtr activeModule);
+    public:
+
+        // Register + prototype + generate a method-template instantiation
+        // exactly as a call site would (bringMethodTemplateInstantiationToLife).
+        // Incremental-compilation obligation replay uses this: a skipped
+        // module's call sites never fire, so the replayed instantiation must
+        // be brought to life explicitly or its body never emits. Idempotent.
+        void ensureMethodInstantiationAlive(MethodPtr inst);
 
         // Named arguments — option C (positional prefix + named suffix). When a
         // call mixes positional and named args (`f(a, b, x: 1, y: 2)`), reorder
@@ -1154,7 +1359,7 @@ namespace cajeta {
 
         // @GenerateMock — generate a compile-time mock subclass `Mock<Name>`
         // of this (target) type for cajeta-unit's AoT mocking (no runtime
-        // proxy). See docs/specs/mock-codegen-spec.md. Mirrors synthesizeBuilder.
+        // proxy). See specs/archive/mock-codegen-spec.md. Mirrors synthesizeBuilder.
         void synthesizeMock();
 
         // Field-level @Mock (M6) — for each `@Mock T field;` on this class,

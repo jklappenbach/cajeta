@@ -8,7 +8,7 @@
 # Env: PROFILE_RUN_ID, PROFILE_RUN_TS, PROFILE_LANGS (space-list filter),
 #      PROFILE_GPU_PY (a python with a WORKING ROCm torch; the shared
 #      ml/venv-rocm7.x is too old and segfaults on gfx1151 — use the pinned
-#      ml/venv-rocm-gfx1151, see docs/specs/gpu-vulkan-f64-spec / memory).
+#      ml/venv-rocm-gfx1151, see specs/gpu-vulkan-f64-spec / memory).
 set -uo pipefail
 
 DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
@@ -35,7 +35,7 @@ if want python; then
 fi
 
 # ---- cpp: rocBLAS (rocblas_dgemm) — second GPU peer (plan U4 4.2.b) ----
-# gfx1151 needs a NEWER rocBLAS than the system 7.2.2 (which segfaults); run
+# gfx1151 needs a newer rocBLAS than older system builds (which segfault on this arch); run
 # against the gfx1151 venv's rocm libs (the same stack PyTorch uses) via
 # LD_LIBRARY_PATH. Override with PROFILE_GPU_ROCM_LIB.
 if want cpp; then

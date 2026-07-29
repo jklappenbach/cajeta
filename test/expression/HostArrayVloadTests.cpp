@@ -32,7 +32,7 @@ const char* f64Head =
     "package test;\n"
     "public final class D {\n"
     "    public static float64 run() {\n"
-    "        float64[] a = { 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0 };\n";
+    "        float64[] a = [ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0 ];\n";
 const char* tail = "    }\n}\n";
 
 } // namespace
@@ -63,7 +63,7 @@ TEST(HostArrayVloadTests, vload4Float32) {
         "package test;\n"
         "public final class D {\n"
         "    public static float64 run() {\n"
-        "        float32[] a = { 1.0f, 2.0f, 3.0f, 4.0f };\n"
+        "        float32[] a = [ 1.0f, 2.0f, 3.0f, 4.0f ];\n"
         "        Vector<float32,4> v = a.vload<4>(0);\n"
         "        a.vstore(0, v + v);\n"
         "        Vector<float32,4> r = a.vload<4>(0);\n"
@@ -79,7 +79,7 @@ TEST(HostArrayVloadTests, vload4Int64) {
         "package test;\n"
         "public final class D {\n"
         "    public static int64 run() {\n"
-        "        int64[] a = { 10, 20, 30, 40 };\n"
+        "        int64[] a = [ 10, 20, 30, 40 ];\n"
         "        Vector<int64,4> v = a.vload<4>(0);\n"
         "        a.vstore(0, v + v);\n"
         "        return a[0] + a[1] + a[2] + a[3];\n"

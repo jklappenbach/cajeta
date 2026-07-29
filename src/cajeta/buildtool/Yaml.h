@@ -1,7 +1,7 @@
 //
 // YAML-header parser for front-matter Markdown. Covers the frontmatter-relevant
 // subset only (comments, mappings, scalars, sequences, indentation nesting) —
-// NOT a general YAML 1.2 engine. See docs/specs/yaml-frontmatter-spec.md §3.
+// NOT a general YAML 1.2 engine. See specs/archive/yaml-frontmatter-spec.md §3.
 //
 #pragma once
 

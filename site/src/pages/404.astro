@@ -1,24 +1,25 @@
 ---
-import Layout from '~/layouts/Layout.astro';
-import { getHomePermalink } from '~/utils/permalinks';
+import Base from '../layouts/Base.astro';
+import manifest from '../data/manifest.json';
 
-const title = `Error 404`;
+const guideStart =
+  manifest.docs.find((d) => d.slug === 'guide/readme')?.url ??
+  manifest.docs.find((d) => d.slug === 'languageguide')?.url ??
+  '/';
 ---
 
-<Layout metadata={{ title }}>
-  <section class="flex items-center h-full p-16">
-    <div class="container flex flex-col items-center justify-center px-5 mx-auto my-8">
-      <div class="max-w-md text-center">
-        <h2 class="mb-8 font-bold text-9xl">
-          <span class="sr-only">Error</span>
-          <span class="text-primary">404</span>
-        </h2>
-        <p class="text-3xl font-semibold md:text-3xl">Sorry, we couldn't find this page.</p>
-        <p class="mt-4 mb-8 text-lg text-muted dark:text-slate-400">
-          But don't worry, you can find plenty of other things on our homepage.
-        </p>
-        <a rel="noopener noreferrer" href={getHomePermalink()} class="btn ml-4">Back to homepage</a>
-      </div>
+<Base title="Not found — Cajeta documentation">
+  <div class="page-narrow" style="text-align: center;">
+    <p class="kicker">404</p>
+    <h1 style="font-family: var(--font-display); font-size: clamp(2.2rem, 6vw, 3.4rem); font-weight: 550; margin: 0 0 1rem;">
+      Nothing simmering here.
+    </h1>
+    <p style="color: var(--ink-soft); margin-bottom: 2rem;">
+      This page doesn't exist — the document may have moved when <code>docs/</code> was reorganized.
+    </p>
+    <div class="hero-ctas" style="justify-content: center;">
+      <a class="button primary" href="/">Back to the docs</a>
+      <a class="button ghost" href={guideStart}>The guide</a>
     </div>
-  </section>
-</Layout>
+  </div>
+</Base>

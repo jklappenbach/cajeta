@@ -41,7 +41,10 @@ namespace cajeta {
         // future stripping pass keys off this bit. Recorded as a class modifier
         // so it rides into the RTTI header's `modifiers` word for free. Derived
         // from the `@Retained` annotation in visitClassDeclaration (no keyword).
-        REFLECT_RETAINED = 0x200
+        REFLECT_RETAINED = 0x200,
+        // Record per-field mutation opt-in (records-spec §3.4): a `mut`
+        // field accepts in-place writes; the record default stays immutable.
+        MUT = 0x400
     };
 
     class Modifiable {
@@ -92,6 +95,8 @@ namespace cajeta {
                 return PACKAGE;
             } else if (value == "async") {
                 return ASYNC;
+            } else if (value == "mut") {
+                return MUT;
             }
 
             return NONE;

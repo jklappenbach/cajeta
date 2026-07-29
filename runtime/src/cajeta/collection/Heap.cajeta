@@ -51,6 +51,8 @@ package cajeta.collection;
 public final class Heap<T> {
 
     private T[] data;
+    // title-stores Unit 5 — ownership lives in data's tail bitmap; bits
+    // ride every sift swap via the forwarding moves. owned[] gone.
     private int32 sizeCount;
     private int32 capacity;
 
@@ -61,6 +63,8 @@ public final class Heap<T> {
      * ```cajeta
      * Heap<int32> h = heap Heap<int32>();
      * ```
+     *
+     * @EntryPoint
      */
     public Heap() {
         this.capacity = 16;
@@ -96,21 +100,30 @@ public final class Heap<T> {
      * ```
      */
     public void push(T v) {
+        boolean vOwned = Cajeta.owned(v);
         if (this.sizeCount >= this.capacity) {
             int32 newCap = this.capacity * 2;
             T[] grown = heap T[newCap];
             int32 i = 0;
             while (i < this.sizeCount) {
-                grown[i] = this.data[i];
+                // title-stores §2.1 — forwarding move keeps tail bits honest.
+                grown[i] #= #this.data[i];
                 i = i + 1;
             }
             // Ownership transfer of the fresh storage into the field
             // (see ArrayList.add for why `#` is required here).
-            this.data = #grown;
+            this.data #= grown;
             this.capacity = newCap;
         }
-        this.data[this.sizeCount] = v;
-        // Sift up from the new leaf toward the root.
+        // Dual-capable store (title-tracking §6.1) — spelling matches the
+        // caller's transfer, same as HashMap.put / ArrayList.add.
+        if (vOwned) {
+            this.data[this.sizeCount] #= v;
+        } else {
+            this.data[this.sizeCount] = v;
+        }
+        // Sift up from the new leaf toward the root. Ownership bits travel
+        // with their elements through every swap.
         int32 child = this.sizeCount;
         boolean sifting = true;
         while (sifting) {
@@ -119,9 +132,11 @@ public final class Heap<T> {
             } else {
                 int32 parent = (child - 1) / 2;
                 if (this.data[child] < this.data[parent]) {
-                    T tmp = this.data[child];
-                    this.data[child] = this.data[parent];
-                    this.data[parent] = tmp;
+                    // title-stores §2.1 — forwarding swap: claim, forward,
+                    // restore; every bit rides, no displaced drop fires.
+                    T tmp #= #this.data[child];
+                    this.data[child] #= #this.data[parent];
+                    this.data[parent] #= tmp;
                     child = parent;
                 } else {
                     sifting = false;
@@ -148,16 +163,23 @@ public final class Heap<T> {
      * Remove and return the smallest element, restoring the heap
      * invariant by sifting the moved last element down. O(log n).
      * Returns the type's zero value if the heap is empty.
+     *
+     * Remove-shaped (title-tracking §6.4): membership ends and the value
+     * comes back in whatever mode the heap held it — the FLAGGED return.
+     * An owned element hands its title to the caller (whose receiving
+     * local drops it); a borrowed element hands back a borrow.
      */
     public T pop() {
         if (this.sizeCount == 0) {
             T[] missDefault = heap T[1];
-            return missDefault[0];
+            return Cajeta.flagged(missDefault[0], false);
         }
-        T top = this.data[0];
+        // Fused claim: the root's bit rides into `top` verbatim; the
+        // `return #top` below carries it to the caller (flagged return).
+        T top #= #this.data[0];
         this.sizeCount = this.sizeCount - 1;
-        // Move the last element to the root and sift it down.
-        this.data[0] = this.data[this.sizeCount];
+        // Move the last element (and its bit) to the root and sift down.
+        this.data[0] #= #this.data[this.sizeCount];
         int32 i = 0;
         boolean sifting = true;
         while (sifting) {
@@ -177,12 +199,15 @@ public final class Heap<T> {
             if (smallest == i) {
                 sifting = false;
             } else {
-                T tmp = this.data[i];
-                this.data[i] = this.data[smallest];
-                this.data[smallest] = tmp;
+                T tmp #= #this.data[i];
+                this.data[i] #= #this.data[smallest];
+                this.data[smallest] #= tmp;
                 i = smallest;
             }
         }
-        return top;
+        return #top;
     }
+
+    // title-stores Unit 5 — no bespoke destructor: data's tail-bit field
+    // walk drops exactly the owned slots.
 }

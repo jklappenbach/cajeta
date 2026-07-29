@@ -34,7 +34,7 @@ TEST(GenericOptionalProbe, genericClassWithTypedArrayField) {
         "}\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
-        "        int32[] arr = {10, 20, 30};\n"
+        "        int32[] arr = [10, 20, 30];\n"
         "        Holder<int32> h = heap Holder<int32>(arr);\n"
         "        return 0;\n"
         "    }\n"

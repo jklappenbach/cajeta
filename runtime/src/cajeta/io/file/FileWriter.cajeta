@@ -57,23 +57,27 @@ public class FileWriter {
      * ```cajeta
      * w.write(bytes, len);
      * ```
+     *
+     * @EntryPoint
      */
     public void write(int8[] data, int32 len) {
         return;
     }
 
     /**
-     * Write a `String`'s UTF-8 bytes to the file. The String's
-     * `bytes` field is the source of truth (mode-0 owned or
-     * mode-1 view — doesn't matter; we just read the bytes).
+     * Write a `String`'s UTF-8 window to the file — mode-aware: a
+     * mode-2 windowed view writes its window, not the root's prefix
+     * (slices plan 10.3.1 / 6.1.4 intrinsic audit).
      *
      * Intrinsic-lowered to
-     * `__cajeta_file_write(this.fd, &s.bytes[8], s.byteLength)`.
-     * `this.pos` advances by `s.byteLength`.
+     * `__cajeta_file_write(this.fd, &s.bytes[8 + s.byteOffset()], s.byteLength())`.
+     * `this.pos` advances by `s.byteLength()`.
      *
      * ```cajeta
      * w.writeString("line one\n");
      * ```
+     *
+     * @EntryPoint
      */
     public void writeString(String s) {
         return;

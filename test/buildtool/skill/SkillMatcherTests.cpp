@@ -1,6 +1,6 @@
 // Tests for the fuzzy skill matcher.
 // See src/cajeta/buildtool/skill/SkillMatcher.h and
-// docs/specs/skill-discovery-spec.md §3.5 (plan unit D.4a).
+// specs/archive/skill-discovery-spec.md §3.5 (plan unit D.4a).
 
 #include "cajeta/buildtool/skill/SkillMatcher.h"
 

@@ -5,7 +5,7 @@ package cajeta.xpu;
  * that steer how the backend interleaves matrix-core, LDS, and global-memory
  * instructions (the WMMA/memory schedule rocBLAS / Composable Kernel hand-tune).
  * Only meaningful inside @Kernel / @Device functions. See
- * docs/specs/xpu-kernel-scheduling-hints-spec.md.
+ * specs/archive/xpu-kernel-scheduling-hints-spec.md.
  *
  * These are OPTIMIZATION DIRECTIVES: a hint never changes a kernel's result — it
  * only changes the instruction schedule, so output is identical with or without

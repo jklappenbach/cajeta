@@ -1,0 +1,51 @@
+package cajeta.lang;
+
+/**
+ * `Slice<T>` — the array-window value type (slice-spec §2, §7.2; slices plan
+ * Unit 7). Three machine words passed and copied by value — no per-slice heap
+ * object:
+ *
+ *   { T[] store; int64 off; int64 len }
+ *
+ * `arr[a:b]` lowers to one of these (compiler-built; see
+ * ArraySliceExpression), windowing the array's root buffer zero-copy.
+ * Sub-slicing (`s[a:b]`) composes offsets against the ROOT in O(1). Indexing
+ * reads `store[off + i]` — `i` is checked against the WINDOW (`[0, len)`)
+ * here, and the root array's own bounds check still guards the buffer.
+ *
+ * Escape behavior follows the string table (spec §4.2): a local slice is a
+ * borrow (zero rc — the window dies with its scope, before its root); stored
+ * slices resolve per the copy/share/arena rows (plan 7.1.2/7.1.3).
+ */
+@ValueType
+public final class Slice<T> {
+    T[] store;
+    int64 off;
+    int64 len;
+
+    /**
+     * Window length — independent of the backing buffer's capacity.
+     *
+     * @EntryPoint
+     */
+    public int64 count() {
+        return this.len;
+    }
+
+    /** True when the window is empty. */
+    public boolean isEmpty() {
+        return this.len == (int64) 0;
+    }
+
+    /**
+     * Window-relative element read; out-of-window aborts (spec 2.2).
+     *
+     * @EntryPoint
+     */
+    public T operator[] (int64 idx) {
+        if (idx < (int64) 0 || idx >= this.len) {
+            Cajeta.boundsFail(idx, this.len);
+        }
+        return this.store[this.off + idx];
+    }
+}

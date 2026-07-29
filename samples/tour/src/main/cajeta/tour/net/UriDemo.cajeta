@@ -1,0 +1,83 @@
+package tour.net;
+
+import tour.DemoClass;
+
+// cajeta.io.net.uri — RFC 3986 URIs as data. Uri.parse decomposes a
+// string into the seven generic-syntax components (scheme, userinfo,
+// host, port, path, query, fragment); each optional component carries
+// a has* flag so "absent" and "present-but-empty" stay distinct. The
+// scheme is lowercased at parse time (schemes are case-insensitive);
+// everything else keeps its bytes verbatim — no percent-decoding
+// happens during parse.
+//
+//   Uri.parse(s)                — string -> components
+//   u.queryParams()             — raw query -> decoded multi-map
+//   Uri.percentEncode / Decode  — per-component RFC 3986 escaping
+//   Uri.builder()...build()     — components -> Uri, toString() -> string
+//
+// Everything here is pure computation over bytes — no sockets, no
+// resolver — so the walk is fully deterministic.
+
+import cajeta.io.net.uri.QueryParams;
+import cajeta.io.net.uri.Uri;
+import cajeta.io.net.uri.UriComponent;
+
+public class UriDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Networking: URIs (cajeta.io.net.uri) --");
+
+        // 1. Parse a full URI. The scheme is written in caps to show
+        // the parse-time lowercasing; the rest survives byte-for-byte.
+        Uri u = Uri.parse("HTTPS://user@example.test:8443/a/b?x=1&y=two#frag");
+        this.check(u.getScheme().equals("https")
+            && u.getHost().equals("example.test"),
+            "parse: scheme lowercased, host extracted");
+        boolean explicitPort = u.hasExplicitPort;
+        this.check(u.getPort() == 8443 && explicitPort,
+            "parse: explicit :8443 recorded as an explicit port");
+        this.check(u.getPath().equals("/a/b")
+            && u.getQuery().equals("x=1&y=two")
+            && u.getFragment().equals("frag"),
+            "parse: path, raw query, and fragment split apart");
+        System.stdout.println("  parsed " + u.getScheme() + "://"
+            + u.getHost() + ":" + u.getPort() + u.getPath());
+
+        // 2. The raw query string decodes into an order-preserving
+        // multi-map on demand (getQuery() keeps the raw slice).
+        QueryParams qp = u.queryParams();
+        String y = qp.getFirst("y");
+        this.check(qp.size() == 2 && y != null && y.equals("two"),
+            "queryParams(): 2 pairs, y = \"two\"");
+
+        // 3. No explicit port -> the scheme default applies (http=80,
+        // https=443, ws=80, wss=443, ftp=21), flagged as non-explicit.
+        Uri d = Uri.parse("http://example.test/docs");
+        boolean dExplicit = d.hasExplicitPort;
+        this.check(d.getPort() == 80 && !dExplicit,
+            "no explicit port -> scheme default 80, hasExplicitPort false");
+
+        // 4. Percent-encoding is component-aware: '/' is safe inside a
+        // PATH so it passes through, while the space must escape.
+        // Decoding is component-independent and inverts exactly.
+        String raw = "a b/c";
+        String enc = Uri.percentEncode(raw, UriComponent.PATH);
+        this.check(enc.equals("a%20b/c"),
+            "percentEncode(PATH): space -> %20, '/' stays raw");
+        String dec = Uri.percentDecode(enc);
+        this.check(dec.equals(raw), "percentDecode inverts the encoding");
+        System.stdout.println("  \"" + raw + "\" -> \"" + enc
+            + "\" -> \"" + dec + "\"");
+
+        // 5. The builder is parse's complement: accumulate components,
+        // build(), and toString() recomposes per RFC 3986 section 5.3.
+        Uri built = Uri.builder()
+            .scheme("https").host("h.test").port(8443)
+            .path("/a/b").query("x=1").fragment("frag")
+            .build();
+        String s = built.toString();
+        this.check(s.equals("https://h.test:8443/a/b?x=1#frag"),
+            "builder -> toString round-trips the components");
+        System.stdout.println("  builder -> " + s);
+    }
+}

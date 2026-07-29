@@ -1,0 +1,83 @@
+package tour.lang;
+
+import tour.DemoClass;
+
+// @Encoding(EncoderClass) — compiler-synthesized serialization.
+// Point the annotation at a class with two static methods:
+//
+//     public static #int8[] encode(T v)      // object -> bytes
+//     public static #T      decode(int8[] b) // bytes  -> object
+//
+// and the compiler synthesizes onto T:
+//
+//     T(int8[] bytes)      // ctor that calls EncoderClass.decode
+//     #int8[] toBytes()    // method that calls EncoderClass.encode
+//
+// You own the wire format (here: two raw bytes); the compiler owns
+// the plumbing. A user-declared T(int8[]) ctor always wins over the
+// synthesized one. Compare Int32Encoder in tour.collection, which
+// implements the cajeta.wire.Encoder<T> *interface* for containers
+// that take an encoder as a value — @Encoding instead bakes the
+// codec into the type itself.
+
+// The encoder: static encode/decode, one byte per channel.
+public class RgbEncoder {
+    public static #int8[] encode(Rgb v) {
+        int8[] out = heap int8[2];
+        out[0] = (int8) v.red;
+        out[1] = (int8) v.green;
+        return out;
+    }
+    public static #Rgb decode(int8[] b) {
+        Rgb c = heap Rgb();
+        c.red = ((int32) b[0]) & 0xFF;
+        c.green = ((int32) b[1]) & 0xFF;
+        return c;
+    }
+}
+
+// The annotated type. It declares only its fields and a default
+// ctor; Rgb(int8[]) and toBytes() are synthesized from RgbEncoder.
+@Encoding(RgbEncoder.class)
+public class Rgb {
+    public int32 red;
+    public int32 green;
+    public Rgb() {
+        this.red = 0;
+        this.green = 0;
+    }
+}
+
+public class EncodingDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- @Encoding: synthesized toBytes() / T(bytes) --");
+
+        // Outbound: toBytes() was never written by hand — the
+        // synthesizer routed it to RgbEncoder.encode(this).
+        Rgb c = heap Rgb();
+        c.red = 200;
+        c.green = 45;
+        int8[] bytes = c.toBytes();
+        System.stdout.println("  Rgb(200, 45).toBytes() -> ["
+            + (((int32) bytes[0]) & 0xFF) + ", "
+            + (((int32) bytes[1]) & 0xFF) + "]");
+        this.check((((int32) bytes[0]) & 0xFF) == 200, "toBytes() byte 0 carries red");
+        this.check((((int32) bytes[1]) & 0xFF) == 45, "toBytes() byte 1 carries green");
+
+        // Inbound: the synthesized Rgb(int8[]) ctor calls
+        // RgbEncoder.decode(bytes) and adopts the decoded body.
+        Rgb back = heap Rgb(bytes);
+        System.stdout.println("  heap Rgb(bytes)        -> red=" + back.red
+            + " green=" + back.green);
+        this.check(back.red == 200, "decode ctor restores red");
+        this.check(back.green == 45, "decode ctor restores green");
+
+        // Round trip: encode then decode is the identity for any
+        // value the format can carry.
+        back.green = back.green + 1;
+        Rgb third = heap Rgb(back.toBytes());
+        this.check(third.red == 200 && third.green == 46,
+            "encode -> decode round trip preserves both fields");
+    }
+}

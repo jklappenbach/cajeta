@@ -6,7 +6,9 @@
 #include "LocalVariableDeclaration.h"
 #include "../method/Method.h"
 #include "../compile/CajetaModule.h"
+#include "../type/Scope.h"
 #include "cajeta/dbg/DebugLocTable.h"
+#include "cajeta/dbg/LineInfoCodegen.h"
 
 namespace cajeta {
 
@@ -26,14 +28,48 @@ namespace cajeta {
         if (!fn) return;
 
         std::string function;
+        std::string file;
+        int lineDelta = 0;   // 9.2: snippet -> file line for instantiations
         if (auto method = module->getCurrentMethod()) {
+            lineDelta = method->getDbgLineDelta();
+            // Class-template instantiations carry the delta on the class.
+            if (lineDelta == 0)
+                if (auto owner = method->getParent())
+                    lineDelta = owner->getDbgLineDelta();
             function = method->getLlvmSymbolName();
+            // The declaring class's file, remapped — same source as #FrameDesc
+            // (external-debug §6). getSourcePath() was the raw ABSOLUTE path,
+            // which is not reproducible across build roots (§3.1.3) and is
+            // EMPTY for every stdlib statement (one module, no source path).
+            if (auto parent = method->getParent()) {
+                file = parent->getDeclaringFile();
+            }
         }
-        int32_t locId = dbg::globalDbgLocTable().add(
-            module->getSourcePath(),
-            statement->getSourceLine(),
-            statement->getSourceColumn(),
-            function);
+        if (file.empty()) file = module->remappedSourcePath();
+        // Ranged modules (JIT path) claim ids from their own range so an
+        // edit elsewhere never shifts this module's baked constants; the
+        // dense allocator remains for AOT/lint (and range overflow).
+        // A synthesized method (e.g. a @ValueType `clone`) or a deeply-nested
+        // template instantiation can carry a snippet->file line correction
+        // (lineDelta, TemplateInstantiator §9.2) that overshoots, yielding a
+        // NEGATIVE absolute line. Source lines are 1-based; a negative one is
+        // meaningless to a debugger (it would map a real safepoint to a bogus
+        // location) and is un-matchable by the loc-table's entry shape, which
+        // breaks the safepoint<->entry invariant. Clamp to a valid line.
+        int dbgLine = statement->getSourceLine() + lineDelta;
+        if (dbgLine < 1) dbgLine = 1;
+        int32_t locId = module->takeDbgLocId();
+        if (locId >= 0) {
+            dbg::globalDbgLocTable().setAt(
+                locId, dbg::DbgLoc{file, dbgLine,
+                                   statement->getSourceColumn(), function});
+        } else {
+            locId = dbg::globalDbgLocTable().add(
+                file,
+                dbgLine,
+                statement->getSourceColumn(),
+                function);
+        }
 
         llvm::Value* arg = llvm::ConstantInt::get(
             llvm::Type::getInt32Ty(*module->getLlvmContext()),
@@ -94,6 +130,16 @@ namespace cajeta {
             }
         }
         bool debugInfo = module->getFlags().debugInfo;
+        bool lineInfo = module->getFlags().lineInfo;
+        // title-tracking §3.1.5 — checkpoint the move log: a block whose
+        // codegen ends in a return/throw never reaches the join, so the
+        // moves it introduced retract (`try { put(#key); return r; } ...
+        // put(#key)` — dynamically exclusive paths). A fallthrough block
+        // keeps them: moved on any joining path = moved after the join.
+        // break/continue emit plain branches and deliberately do NOT
+        // retract (their moves can reach post-loop code).
+        auto linScope = module->getScopeStack().peek();
+        size_t moveMark = linScope ? linScope->moveLogSize() : 0;
         for (auto child: children) {
             // Stop emitting once the current BB has a terminator —
             // anything after a return / throw / break / continue is
@@ -107,9 +153,37 @@ namespace cajeta {
             llvm::BasicBlock* insertBB = builder
                 ? builder->GetInsertBlock() : nullptr;
             if (insertBB && insertBB->hasTerminator()) break;
+            // U3: mark the current shadow frame's line at each statement
+            // boundary. BEFORE the safepoint, not after: a debugger stopped AT a
+            // safepoint reads the shadow stack to render the frame, and if the
+            // mark had not run yet the frame would still carry the PREVIOUS
+            // statement's line — `cjbreak F.cajeta:14` would stop and `cjstack`
+            // would report :13 (external-debug §5.1).
+            if (lineInfo) dbg::emitLineMark(module, child->getSourceLine());
             // CP2: statement-boundary safepoint before each statement.
             if (debugInfo) emitDebugSafepoint(module, child);
             child->generateCode(module);
+        }
+
+        if (linScope) {
+            llvm::BasicBlock* bb = builder ? builder->GetInsertBlock() : nullptr;
+            llvm::Instruction* term = (bb && bb->hasTerminator())
+                ? bb->getTerminator() : nullptr;
+            bool exited = term && (llvm::isa<llvm::ReturnInst>(term)
+                                   || llvm::isa<llvm::UnreachableInst>(term));
+            // ThrowStatement ends its BB with `unreachable` then parks the
+            // insert point in a fresh predecessor-less `after_throw` BB (so
+            // trailing dead code still has a home). An empty, unreached,
+            // non-entry insert BB at block end is that same "this path never
+            // joins" signal.
+            if (!exited && bb && term == nullptr && bb->empty()
+                    && bb->hasNPredecessors(0)
+                    && bb != &bb->getParent()->getEntryBlock()) {
+                exited = true;
+            }
+            if (exited) {
+                linScope->retractMovesSince(moveMark);
+            }
         }
 
         if (m) {

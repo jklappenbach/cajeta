@@ -36,7 +36,7 @@ TEST(CollectorTests, handRolledCounter) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] xs = { 10, 20, 30, 40 };\n"
+        "        int32[] xs = [ 10, 20, 30, 40 ];\n"
         "        ArrayStream<int32> s = heap ArrayStream<int32>(xs, 4);\n"
         "        Collector<int32, int32> c = heap Collector<int32, int32>(\n"
         "            () -> 0, (int32 acc, int32 x) -> acc + 1,\n"
@@ -52,7 +52,7 @@ TEST(CollectorTests, handRolledSummer) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] xs = { 1, 2, 3, 4, 5 };\n"
+        "        int32[] xs = [ 1, 2, 3, 4, 5 ];\n"
         "        ArrayStream<int32> s = heap ArrayStream<int32>(xs, 5);\n"
         "        Collector<int32, int32> c = heap Collector<int32, int32>(\n"
         "            () -> 0, (int32 acc, int32 x) -> acc + x,\n"
@@ -75,7 +75,7 @@ TEST(CollectorTests, collectorsToListSize) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] xs = { 1, 2, 3, 4, 5 };\n"
+        "        int32[] xs = [ 1, 2, 3, 4, 5 ];\n"
         "        ArrayStream<int32> s = heap ArrayStream<int32>(xs, 5);\n"
         "        Collector<int32, ArrayList<int32>> c = Collectors.toList<int32>();\n"
         "        ArrayList<int32> out = s.collect(c);\n"
@@ -90,7 +90,7 @@ TEST(CollectorTests, collectorsToListPreservesOrder) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] xs = { 7, 9, 11 };\n"
+        "        int32[] xs = [ 7, 9, 11 ];\n"
         "        ArrayStream<int32> s = heap ArrayStream<int32>(xs, 3);\n"
         "        Collector<int32, ArrayList<int32>> c = Collectors.toList<int32>();\n"
         "        ArrayList<int32> out = s.collect(c);\n"
@@ -106,7 +106,7 @@ TEST(CollectorTests, twoSpecializationsCoexist) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] xs = { 1, 2, 3 };\n"
+        "        int32[] xs = [ 1, 2, 3 ];\n"
         "        ArrayStream<int32> sa = heap ArrayStream<int32>(xs, 3);\n"
         "        Collector<int32, int32> sum =\n"
         "            heap Collector<int32, int32>(\n"

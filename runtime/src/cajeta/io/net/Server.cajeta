@@ -103,7 +103,7 @@ public class Server {
      * a zero in-flight count.
      */
     public Server(TcpListener listener, (TcpStream) -> void handler) {
-        this.listener = listener;
+        this.listener #= listener;
         this.handler = handler;
         this.state = heap AtomicInt32(ServerState.NEW);
         this.inflight = heap AtomicInt32(0);
@@ -133,6 +133,8 @@ public class Server {
      * [`SharedPoolServer.bind`](SharedPoolServer.cajeta#bind). See
      * [`docs/Net.md` §Server accept models](../../../../../docs/Net.md#server-accept-models)
      * for the when-to-use-which tradeoff.
+     *
+     * @EntryPoint
      */
     public static #ServerBuilder builder() {
         return heap ServerBuilder();
@@ -156,10 +158,14 @@ public class Server {
      *                [`localAddress`](#localAddress)).
      * @param handler the per-connection handler, `(TcpStream) -> void`.
      * @return an owned, bound — but not yet serving — `Server`.
+     * @EntryPoint
      */
     public static #Server bind(SocketAddress addr, (TcpStream) -> void handler) {
         TcpListener l = TcpListener.bind(addr);
-        return heap Server(l, handler);
+        // `#l` moves the listener into the new Server: without the move the
+        // local is dropped when this factory returns and the server's
+        // `listener` field dangles (closed fd + freed object).
+        return heap Server(#l, handler);
     }
 
     /**
@@ -168,11 +174,13 @@ public class Server {
      * Otherwise identical to [`bind`](#bind). The backlog is the NET-4.4
      * config knob the spec surfaces; the core honors it here so a server
      * built before NET-4.4 lands already gets a tunable accept queue.
+     *
+     * @EntryPoint
      */
     public static #Server bindWithBacklog(SocketAddress addr, int32 backlog,
                                           (TcpStream) -> void handler) {
         TcpListener l = TcpListener.bindWithBacklog(addr, backlog);
-        return heap Server(l, handler);
+        return heap Server(#l, handler);
     }
 
     // ----- accept loop (NET-3.3 / NET-4.1) ---------------------------------
@@ -209,7 +217,16 @@ public class Server {
                 if (conn == null) {
                     break;   // listener closed by shutdown — stop accepting
                 }
-                this.dispatch(#conn);
+                // Spawn INLINE, not via dispatch(): a statement-position
+                // spawn is joined by the nearest enclosing scope frame —
+                // for this loop, the `scope { }` above, so connections
+                // run concurrently and the scope's `}` joins the stragglers
+                // at teardown. Routed through dispatch() the join would
+                // land at dispatch's OWN function-implicit scope instead,
+                // serializing the accept loop (one connection at a time —
+                // the pre-2026-07-20 behavior).
+                this.inflight.fetchAdd(1);
+                spawn serveConnection(this.handler, this.inflight, #conn);
             }
         }
         // The scope's `}` has joined every connection fiber. If a
@@ -269,18 +286,25 @@ public class Server {
      * connection onto a worker `Channel` instead, leaving the rest of the
      * core (lifecycle, accept loop, drain) untouched.
      *
-     * The `spawn` is issued from within `serve`'s `scope`, so every
-     * connection fiber is owned + joined by that scope — the
-     * structured-concurrency property the spec requires. The spawned body
-     * is the **static** [`serveConnection`](#serveConnection) worker (the
-     * per-fiber state — handler + in-flight counter + the connection — is
+     * **This method JOINS the connection fiber before returning** — a
+     * statement-position spawn is owned by the enclosing function's
+     * implicit scope, and dispatch's ends right here. That makes it a
+     * harness/manual surface: drive one connection to completion (the
+     * accept-loop tests do exactly this — but from a helper FIBER when
+     * the handler may park mid-request, or the dispatching thread wedges
+     * until the connection ends). [`serve`](#serve) does NOT route
+     * through this method: it spawns inline inside its own `scope { }`
+     * so connections overlap and the scope joins at teardown.
+     *
+     * The spawned body is the **static**
+     * [`serveConnection`](#serveConnection) worker (per-fiber state
      * passed explicitly, the
      * [`ParallelDriver`](../lang/stream/ParallelDriver.cajeta) spawn
      * convention) so the connection fiber captures no `this`.
      */
     public void dispatch(#TcpStream conn) {
         this.inflight.fetchAdd(1);
-        spawn serveConnection(this.handler, this.inflight, conn);
+        spawn serveConnection(this.handler, this.inflight, #conn);
     }
 
     /**

@@ -12,6 +12,12 @@ package cajeta.ifx;
 public final class Window {
     int64 backendHandle;
 
+    /**
+     * Wrap a backend-issued window handle (backends construct these; apps get
+     * one from the registry-bound `WindowBackend`).
+     *
+     * @EntryPoint
+     */
     public Window(int64 backendHandle) {
         this.backendHandle = backendHandle;
     }

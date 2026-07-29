@@ -30,7 +30,7 @@ TEST(MoveUserDropFieldProbe, moveUserDropClassIntoFieldThenDrop) {
         "}\n"
         "public class Holder {\n"
         "    public Res r;\n"
-        "    public Holder(#Res r) { this.r = #r; }\n"
+        "    public Holder(#Res r) { this.r #= r; }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"

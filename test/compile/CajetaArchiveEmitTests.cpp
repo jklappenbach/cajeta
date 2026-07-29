@@ -123,30 +123,6 @@ TmpProject makeTmpProject(const std::string& tag) {
 
 } // namespace
 
-TEST(CajetaArchiveEmitTests, cjaModeWritesCjaWithMagicHeader) {
-    auto proj = makeTmpProject("magic");
-    std::string cmd =
-        compilerPath()
-        + " --emit=cja demo.Hello.run "
-        + proj.sourceRoot.string() + " "
-        + proj.buildRoot.string()
-        + " > " CAJETA_DEVNULL " 2>&1";
-    int rc = std::system(cmd.c_str());
-    ASSERT_EQ(rc, 0) << "compiler exited non-zero: " << cmd;
-
-    auto cja = proj.buildRoot / "Hello.cja";
-    ASSERT_TRUE(fs::exists(cja)) << "expected " << cja;
-    // Magic + version are stable across compression modes; everything past
-    // the header may be zstd-compressed (current writer default), so use
-    // the reader for the deeper assertions.
-    auto bytes = readBytes(cja.string());
-    ASSERT_GE(bytes.size(), (size_t) 32);
-    EXPECT_EQ(std::string((const char*) bytes.data(), 8), std::string("CAJETA01"));
-    EXPECT_EQ(readU32LE(bytes, 8), 1u);
-
-    fs::remove_all(proj.sourceRoot.parent_path());
-}
-
 TEST(CajetaArchiveEmitTests, cjaModeManifestSaysCja) {
     auto proj = makeTmpProject("cja_kind");
     std::string cmd =

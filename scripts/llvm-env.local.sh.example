@@ -1,0 +1,24 @@
+# TEMPLATE — copy to scripts/llvm-env.local.sh (gitignored) ONLY if the
+# cajeta-llvm fork is NOT a sibling clone at ../cajeta-llvm/llvm-install.
+#
+# You usually DON'T need this file: setup.sh auto-detects the fork at the
+# conventional sibling location (../cajeta-llvm/llvm-install, or the CMake tree
+# ../cajeta-llvm/build) and puts it ahead of any vendor LLVM automatically.
+# Create a real scripts/llvm-env.local.sh from this template only when the fork
+# lives somewhere non-standard, or set CAJETA_LLVM_FORK in your environment.
+#
+# Why the fork matters: cajeta uses C++ RTTI against LLVM types, so it must link
+# an LLVM_ENABLE_RTTI=YES build. Vendor LLVMs — notably ROCm's /opt/rocm*/llvm —
+# are RTTI=OFF and link-fail on llvm::ErrorInfoBase. setup.sh now guards against
+# an RTTI=OFF LLVM with a clear error, but the point of this pin is to resolve
+# the RTTI-enabled cajeta-llvm fork (LLVM 23) in the first place.
+
+# Point at your fork's install (or build) directory:
+CAJETA_LLVM_FORK="/absolute/path/to/cajeta-llvm/llvm-install"
+
+# Drive cmake's find_package(LLVM) straight at the fork, and put its bin ahead
+# of everything (esp. any vendor LLVM on PATH) so bare llvm-config/clang resolve
+# to the fork.
+export LLVM_DIR="${CAJETA_LLVM_FORK}/lib/cmake/llvm"
+export CMAKE_PREFIX_PATH="${CAJETA_LLVM_FORK}${CMAKE_PREFIX_PATH:+:${CMAKE_PREFIX_PATH}}"
+export PATH="${CAJETA_LLVM_FORK}/bin:${PATH}"

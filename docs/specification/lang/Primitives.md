@@ -22,7 +22,7 @@ a codepoint, not a byte.
 
 This doc covers the boxed wrapper types and the static parse/format intrinsics
 that operate on primitives. For the broader language tour, see
-[`../LanguageGuide.md`](../LanguageGuide.md).
+[`../LanguageGuide.md`](../../guide/drafts/LanguageGuide.md).
 
 ## Status
 
@@ -126,7 +126,7 @@ Pinned by `test/expression/ConversionIntrinsicTests.cpp`,
 
 ## Open items
 
-Tracked in Features.md:
+Tracked in specs/Features.md:
 
 - Arithmetic/conversion helpers for the low-precision float formats
   (`float4*`/`float6*`/`float8*` are storage-only today)

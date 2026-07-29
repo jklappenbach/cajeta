@@ -27,12 +27,14 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
 #include <vector>
 #include "ParserRuleContext.h"
 #include "CajetaParser.h"
+#include "cajeta/xref/XrefIndex.h"
 
 using namespace std;
 
@@ -47,6 +49,15 @@ namespace cajeta {
     protected:
         int sourceLine;
         int sourceColumn;
+        // The file these tokens were parsed FROM — interned, so this costs a
+        // pointer and only when --emit-xref is on. Null for a node built from a
+        // synthesized re-parse (template instantiation, mock synthesis), whose
+        // line numbers refer to a snippet rather than to any file. See
+        // xref::internSourceFile.
+        //
+        // Not the same thing as "the module being compiled": a stdlib body is
+        // generated while a user module is active.
+        const string* sourceFile = nullptr;
         string sourceText;
         vector<AbstractSyntaxNodePtr> children;
     public:
@@ -55,7 +66,26 @@ namespace cajeta {
                 sourceLine = token->getLine();
                 sourceText = token->getText();
                 sourceColumn = token->getCharPositionInLine();
+                // Gated BEFORE getSourceName(), which returns a std::string by
+                // value: without this a normal build would pay a string allocation
+                // per AST node for an index it never asked for.
+                if (xref::captureEnabled()) {
+                    if (auto* stream = token->getInputStream()) {
+                        sourceFile = xref::internSourceFile(stream->getSourceName());
+                    }
+                }
+            } else {
+                sourceLine = 0;
+                sourceColumn = 0;
             }
+        }
+
+        // transform-intrinsics U7 — synthetic (parser-less) nodes carry the
+        // span of the construct they desugar, so their diagnostics locate at
+        // the source the user actually wrote.
+        void setSourceSpan(int line, int column) {
+            sourceLine = line;
+            sourceColumn = column;
         }
 
         void addChild(AbstractSyntaxNodePtr child) {
@@ -70,11 +100,35 @@ namespace cajeta {
             return sourceColumn;
         }
 
+        // "" when this node came from synthesized source (or xref capture is off).
+        // An empty file is the signal to record NOTHING for this node: a position
+        // with no file behind it cannot be navigated to, and guessing at one sends
+        // the developer somewhere real and wrong.
+        const string& getSourceFile() const {
+            static const string kNone;
+            return sourceFile ? *sourceFile : kNone;
+        }
+
         const string& getSourceText() const {
             return sourceText;
         }
 
         vector<AbstractSyntaxNodePtr>& getChildren() { return children; }
+
+        // Analysis-walk descent (title-tracking 7.2.4). `children` is the
+        // CODEGEN child list; statements and calls keep their payloads in
+        // private fields (if/loop/try bodies, return expressions, call and
+        // ctor arguments), so a getChildren() walk misses whole subtrees
+        // silently. Overrides visit those payloads AND the children — this
+        // is the single descent primitive for analysis passes (retainsFormal,
+        // computeLastUses, arenaWalk). Codegen must never use it: generating
+        // "every sub-node" would emit call arguments twice.
+        virtual void forEachSubNode(
+                const std::function<void(const AbstractSyntaxNodePtr&)>& fn) {
+            for (auto& child : children) {
+                if (child) fn(child);
+            }
+        }
 
         // Pre-codegen pass: registers class/method signatures. See Compiler.cpp.
         virtual void generateSignature(CajetaModulePtr module) { }

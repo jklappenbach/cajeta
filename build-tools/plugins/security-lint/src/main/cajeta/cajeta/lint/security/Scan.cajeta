@@ -58,7 +58,7 @@ public class Scan {
         // Resolve source roots relative to the project workdir so
         // the consumer's `"source-roots": ["src/main"]` works
         // without `ctx.workdir()` prefix repetition.
-        ArrayList<String> resolvedRoots = #heap ArrayList<String>();
+        ArrayList<String> resolvedRoots #= heap ArrayList<String>();
         int32 ri = 0;
         while (ri < sourceRoots.count()) {
             String r = sourceRoots.get(ri);
@@ -71,10 +71,10 @@ public class Scan {
         }
 
         // ── Walk + scan ──────────────────────────────────────────
-        SourceWalker walker = #heap SourceWalker(excludeFiles);
+        SourceWalker walker #= heap SourceWalker(excludeFiles);
         ArrayList<Path> files = walker.walk(resolvedRoots);
 
-        ArrayList<Finding> findings = #heap ArrayList<Finding>();
+        ArrayList<Finding> findings #= heap ArrayList<Finding>();
         int32 fi = 0;
         while (fi < files.count()) {
             Path file = files.get(fi);
@@ -85,7 +85,7 @@ public class Scan {
         }
 
         // ── Result ───────────────────────────────────────────────
-        ActionResult r = #heap ActionResult();
+        ActionResult r #= heap ActionResult();
         r.output("files-scanned",   String.valueOf(files.count()));
         r.output("findings-count",  String.valueOf(findings.count()));
         r.findings(#findings);

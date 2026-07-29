@@ -25,7 +25,7 @@ subclass (e.g. `ArrayStream`) or you *write* one.
 
 ```cajeta
 public Optional<T> next() {            // base default — yields nothing
-    return stack Optional<T>(false, null);
+    return stack Optional<T>(false);
 }
 ```
 

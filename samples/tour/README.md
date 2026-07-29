@@ -3,14 +3,20 @@
 A walkthrough of every load-bearing language feature, one class per feature. Each demo class extends `DemoClass` and overrides `execute()`; `Tour.run()` puts one instance of each demo into an array and walks the array calling `execute()` — so adding a feature means dropping a new `.cajeta` file alongside the others and bumping the `demos[]` initializer in `Tour.cajeta`.
 
 > The tour sources (`src/main/cajeta/tour/`) are the **stdlib / language-feature**
-> tour. The **XPU tour** — portable `@Kernel` programs run through the runtime
-> backend dispatcher (GPU or CPU fallback) — lives in its own subfolder
-> [`xpu/`](xpu/README.md), because XPU programs need the `--xpu-backend` flag
-> and a device-or-CPU-fallback to run. Build + run it with `xpu/run-gpu.sh`.
+> tour. Environment-dependent areas live in their own entry points under this
+> folder, each a self-checking program with its own README and run script:
+>
+> - [`xpu/`](xpu/README.md) — portable `@Kernel` programs through the runtime
+>   backend dispatcher (GPU or CPU fallback; needs the `--xpu-backend` flag).
+>   `xpu/run-xpu.sh`.
+> - [`ifx/`](ifx/README.md) — the window/input/audio backend contract, driven
+>   headlessly against the Null backend floor. `ifx/run-ifx.sh`.
+> - [`tls/`](tls/README.md) — a TLS handshake + echo over loopback with a
+>   run-time-generated self-signed cert. `tls/run-tls.sh`.
 
 This is a standard cajeta project: a `cajeta.json` manifest at the root and
 sources under `src/main/cajeta/<package>/` (see
-[`docs/BuildTool.md`](../../docs/BuildTool.md) and
+[`docs/BuildTool.md`](../../docs/specification/buildtool/BuildTool.md) and
 [`samples/buildtool/basic`](../buildtool/basic)). It builds with the **cajeta
 build tool** — no hand-rolled compile/link scripts.
 
@@ -22,8 +28,16 @@ samples/tour/
 ├── run.sh   / run.cmd    ← `cajeta run`   → build + execute
 ├── xpu/                  ← the XPU tour (@Kernel + the runtime dispatcher)
 │   ├── README.md
-│   ├── run-gpu.sh        ← compile + run for any backend (default cpu)
-│   └── src/tourxpu/XpuTour.cajeta
+│   ├── run-xpu.sh        ← compile + run for any backend (default cpu)
+│   └── src/tour/xpu/XpuTour.cajeta
+├── ifx/                  ← the ifx tour (Null-backend windowing, headless)
+│   ├── README.md
+│   ├── cajeta.json / run-ifx.sh
+│   └── src/tour/ifx/IfxTour.cajeta
+├── tls/                  ← the TLS tour (loopback handshake + echo)
+│   ├── README.md
+│   ├── cajeta.json / run-tls.sh
+│   └── src/tour/tls/TlsTour.cajeta
 └── src/main/cajeta/tour/
     │  Demos are grouped into topic subpackages that mirror the stdlib
     │  layout (cajeta.lang, cajeta.collection, cajeta.concurrent, …).
@@ -128,8 +142,8 @@ cajeta tasks        # list the tasks defined in cajeta.json
 | `release` | `cajeta release`         | optimized `build/tour` |
 | `clean`   | `cajeta clean`           | removes `build/` |
 
-See [`docs/BuildTool.md`](../../docs/BuildTool.md) for the manifest/task
-reference and [`docs/Compilation.md`](../../docs/Compilation.md) for the
+See [`docs/BuildTool.md`](../../docs/specification/buildtool/BuildTool.md) for the manifest/task
+reference and [`docs/Compilation.md`](../../docs/specification/buildtool/Compilation.md) for the
 compiler output modes.
 
 ## What you'll see
@@ -330,7 +344,9 @@ compiler output modes.
   streamingWriter: wrote 2 lines, total bytes = 23
   streamingReader: read 23 bytes; position after read = 23
 
-=== tour complete ===
+=== tour complete: <n> self-checks passed ===   (count shrank when the
+    Http/Ws demos moved out with dev.cajeta.http; illustrative output)
+separate tours: samples/tour/xpu (GPU kernels), samples/tour/ifx (windowing, headless), samples/tour/tls (TLS loopback)
 ```
 
 ## Adding a new demo
@@ -364,9 +380,37 @@ compiler output modes.
 
 ## What's NOT in this tour
 
-These features work but aren't exercised here because they'd either expand the demo significantly, depend on environment setup, or hit JIT-tested paths that the binary emit isn't yet smoke-pinned for:
+Features that work but are exercised elsewhere:
 
-- **Networking** — covered by the test suite; deferred from the tour to keep the surface manageable.
+- **GPU kernels, windowing, TLS** — each has its own entry point (see the
+  `xpu/`, `ifx/`, `tls/` subfolders above); they need environment-dependent
+  build flags, a display-or-headless decision, or generated certificates.
+- **HTTP / WebSocket** — application protocols, not stdlib: they live in the
+  external `dev.cajeta.http` library (with its own tour); the stdlib tour
+  shows the TCP server (`ServerDemo`), DNS (`DnsDemo`), and TLS (`tls/`).
+
+## Pending
+
+Designed (spec or placeholder in the stdlib) but with no runnable demo yet —
+listed so the tour's coverage reads honestly:
+
+- **`cajeta.io.file.Watcher`** — a deferred placeholder: it opens, holds a
+  backing handle, and closes. The inotify/FSEvents backing, fiber-park
+  integration, and `Stream<FileEvent>` wiring are not in v1.
+- **`cajeta.xpu.Sdf` inside `@Kernel` bodies** — `Sdf` ships as a host-side
+  static math utility (the xpu tour checks it host-side). It is not
+  `@Device`-annotated yet, so calling it from a kernel body does not register
+  the kernel.
+- **Real ifx platform backends** — only the Null floor ships; Wayland/X11/
+  Win32 window backends are design references in the ifx skills docs. The ifx
+  tour therefore runs the contract headlessly.
+- **`display` / `audio` capabilities** — reserved names in the build-tool
+  capability list (`docs/specification/buildtool/BuildTool.md`), planned for
+  when `cajeta.ui` and audio I/O land; not parsed or enforced today.
+- **Hardware ray tracing beyond Vulkan** — native `SPV_KHR_ray_query` is
+  Vulkan-only; AMD/NVIDIA/CPU run the portable software-BVH walk (what the
+  xpu tour exercises), and triangle acceleration structures are software-tier
+  on every backend in v1.
 
 ## Known wrinkles
 

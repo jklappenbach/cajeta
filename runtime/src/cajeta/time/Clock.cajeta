@@ -27,7 +27,11 @@ package cajeta.time;
  * and `Duration` for the spans you compute from `nanoTime()` deltas.
  */
 public final class Clock {
-    /** Monotonic nanosecond counter for interval measurement (CLOCK_MONOTONIC). */
+    /**
+     * Monotonic nanosecond counter for interval measurement (CLOCK_MONOTONIC).
+     *
+     * @EntryPoint
+     */
     @Native("__cajeta_currentTimeNanos")
     public static int64 nanoTime();
 
@@ -41,6 +45,8 @@ public final class Clock {
      * ```cajeta
      * stack Instant t = Clock.now();
      * ```
+     *
+     * @EntryPoint
      */
     @Inline
     public static Instant now() {

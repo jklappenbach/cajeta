@@ -67,6 +67,7 @@ public final class ImmutableList<T> {
      * ```
      *
      * @Param src the list whose elements to snapshot.
+     * @EntryPoint
      */
     public ImmutableList(ArrayList<T> src) {
         int32 n = src.count();
@@ -80,7 +81,24 @@ public final class ImmutableList<T> {
         // field — without it, the local's scope-exit drop would free
         // the storage we just installed. Same pattern as
         // ArrayList.add / HashMap.resize.
-        this.data = #copy;
+        this.data #= copy;
+        this.sizeCount = n;
+    }
+
+    /**
+     * Build an immutable list directly from an array literal
+     * (array-literals §6): `ImmutableList<int32> xs = heap ImmutableList<int32>([1,2,3])`.
+     * Copies the elements into a right-sized owned array, in order.
+     */
+    public ImmutableList(T[] items) {
+        int32 n = (int32) items.count();
+        T[] copy = heap T[n];
+        int32 i = 0;
+        while (i < n) {
+            copy[i] = items[i];
+            i = i + 1;
+        }
+        this.data #= copy;
         this.sizeCount = n;
     }
 

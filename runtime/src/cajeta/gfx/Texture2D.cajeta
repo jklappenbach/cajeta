@@ -61,6 +61,8 @@ public final class Texture2D<T = float32> {
      *     kernel.launch(s, ...)(tex, samp, ...);
      *     s.sync();
      *     // device image freed automatically at scope exit
+     *
+     * @EntryPoint
      */
     public Texture2D(uint32 width, uint32 height) {
         this.width = width;
@@ -74,6 +76,8 @@ public final class Texture2D<T = float32> {
      * RAII constructor with an explicit storage {@link TextureFormat}, e.g.
      * `heap Texture2D(w, h, TextureFormat.RGBA8_UNORM)`. `format` is a
      * `TextureFormat` ordinal (the enum constant resolves to its i32 ordinal).
+     *
+     * @EntryPoint
      */
     public Texture2D(uint32 width, uint32 height, int32 format) {
         this.width = width;
@@ -91,6 +95,8 @@ public final class Texture2D<T = float32> {
      *
      *     Texture2D tex = heap Texture2D(w, h, TextureFormat.R32F, 3);
      *     tex.uploadLevel(0, level0);  tex.uploadLevel(1, level1); ...
+     *
+     * @EntryPoint
      */
     public Texture2D(uint32 width, uint32 height, int32 format, uint32 levels) {
         this.width = width;

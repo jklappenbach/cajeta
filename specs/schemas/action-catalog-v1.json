@@ -1,0 +1,225 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cajeta.org/specs/action-catalog-v1.json",
+  "title": "Cajeta native action catalog — v1",
+  "description": "Wire-shape contract for native actions invoked from cajeta.json task definitions. Each action declares its params, its required capability set (capabilities-v1.json), and the typed output fields it publishes for ${id.<field>} threading. Plugin-provided actions extend this catalog at task-runner load time; their shape is owned by the plugin manifest, not this spec. Authoritative implementations live under src/cajeta/buildtool/actions/.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "catalog-version": { "const": 1 },
+    "actions": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/action" }
+    }
+  },
+  "$defs": {
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capabilities", "params", "outputs"],
+      "properties": {
+        "description": { "type": "string" },
+        "capabilities": {
+          "type": "array",
+          "items": { "$ref": "manifest-v1.json#/$defs/capabilityName" }
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/paramSpec" }
+        },
+        "outputs": {
+          "type": "object",
+          "additionalProperties": { "type": "string", "description": "Field's value type. v1 catalog: 'string' (all outputs are strings; threading via ${id.field} interpolates them as text)." }
+        }
+      }
+    },
+    "paramSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["string", "boolean", "integer", "array", "object"] },
+        "required": { "type": "boolean", "default": false },
+        "default": {},
+        "description": { "type": "string" },
+        "enum": { "type": "array" }
+      }
+    }
+  },
+  "examples": [
+    {
+      "catalog-version": 1,
+      "actions": {
+        "copy": {
+          "description": "std::filesystem::copy; recursive + mkdir-parent + multi-source via `also`.",
+          "capabilities": ["filesystem"],
+          "params": {
+            "from": { "type": "string", "required": true },
+            "to":   { "type": "string", "required": true },
+            "also": { "type": "array",  "description": "Additional source paths copied into `to`." },
+            "recursive": { "type": "boolean", "default": true }
+          },
+          "outputs": { "copied-count": "string" }
+        },
+        "delete": {
+          "description": "std::filesystem::remove_all; missing path is silent OK when `if-exists` is true.",
+          "capabilities": ["filesystem"],
+          "params": {
+            "path": { "type": "string", "required": true },
+            "if-exists": { "type": "boolean", "default": true }
+          },
+          "outputs": { "removed-count": "string" }
+        },
+        "mkdir": {
+          "capabilities": ["filesystem"],
+          "params": {
+            "path": { "type": "string", "required": true },
+            "recursive": { "type": "boolean", "default": true }
+          },
+          "outputs": { "path": "string" }
+        },
+        "sign": {
+          "description": "libcrypto ed25519 detached signature. Writes <input>.sig + <input>.sig.keyid.",
+          "capabilities": ["filesystem"],
+          "params": {
+            "input": { "type": "string", "required": true },
+            "key-env": { "type": "string", "description": "Name of env var holding PEM private key." },
+            "key-path": { "type": "string" },
+            "key-id": { "type": "string", "required": true },
+            "out": { "type": "string" }
+          },
+          "outputs": {
+            "signature-path": "string",
+            "key-id": "string"
+          }
+        },
+        "verify-sig": {
+          "description": "ed25519 verify; result surfaced as `valid` output (no exception on bad sig).",
+          "capabilities": ["filesystem"],
+          "params": {
+            "input": { "type": "string", "required": true },
+            "signature": { "type": "string", "required": true },
+            "public-key-path": { "type": "string", "required": true }
+          },
+          "outputs": { "valid": "string" }
+        },
+        "version": {
+          "description": "Semver bump or explicit set. Mutates manifest in place (regex replacement preserves JSONC).",
+          "capabilities": ["filesystem"],
+          "params": {
+            "bump": { "type": "string", "enum": ["major", "minor", "patch"] },
+            "set":  { "type": "string" }
+          },
+          "outputs": { "old": "string", "new": "string" }
+        },
+        "download": {
+          "capabilities": ["filesystem", "network"],
+          "params": {
+            "url": { "type": "string", "required": true },
+            "to":  { "type": "string", "required": true },
+            "sha256": { "type": "string", "description": "Optional integrity check." }
+          },
+          "outputs": { "path": "string", "sha256": "string" }
+        },
+        "build": {
+          "description": "Wraps the compiler binary. emit ∈ {executable, archived-ir, exploded-ir}; default chosen by entry-method presence.",
+          "capabilities": ["filesystem", "process"],
+          "params": {
+            "emit": { "type": "string", "enum": ["executable", "archived-ir", "exploded-ir"] },
+            "entry-method": { "type": "string" },
+            "binary": { "type": "string" },
+            "flavor": { "type": "string", "description": "string name or inline composition object — see manifest-v1.json#/$defs/flavorObject." },
+            "profile": { "type": "string" },
+            "target":  { "type": "string" },
+            "output-path": { "type": "string" }
+          },
+          "outputs": { "path": "string", "format": "string" }
+        },
+        "clean": {
+          "capabilities": ["filesystem"],
+          "params": {
+            "keep-cache": { "type": "boolean", "default": false, "description": "Preserve .cajeta/cache/ (IR + artifact caches). By default clean wipes them too, so the next build recompiles instead of re-publishing a cached artifact." }
+          },
+          "outputs": { "removed-entries": "string", "removed-bytes": "string", "cache-cleaned": "string" }
+        },
+        "package": {
+          "description": "Universal format-conversion verb. Format vocabulary mixes shipped (uber-archive, tarball, zip, container) + deferred slices (obj-tree, uber-ir, static-lib, shared-lib, deb, rpm, msi, app-bundle, pkg, dmg, appimage/flatpak/snap).",
+          "capabilities": ["filesystem"],
+          "params": {
+            "input":  { "type": "string", "required": true },
+            "format": { "type": "string", "required": true },
+            "spec":   { "type": "string" }
+          },
+          "outputs": {
+            "path": "string",
+            "cache": "string",
+            "manifest": "string",
+            "config": "string",
+            "layer": "string"
+          }
+        },
+        "upload": {
+          "capabilities": ["filesystem", "network"],
+          "params": {
+            "target": { "type": "string", "required": true, "enum": ["s3", "azure", "gcs", "http", "sftp"] },
+            "file": { "type": "string" },
+            "url":  { "type": "string" },
+            "method": { "type": "string", "enum": ["PUT", "POST"] },
+            "field-name": { "type": "string" },
+            "form-fields": { "type": "object" },
+            "key-path": { "type": "string" },
+            "also": { "type": "array" }
+          },
+          "outputs": { "url": "string", "urls": "string", "count": "string" }
+        },
+        "publish": {
+          "description": "Speaks the cajeta repository protocol's /v2/publish endpoint. Multiparts archive + metadata + optional signature + attestation.",
+          "capabilities": ["filesystem", "network"],
+          "params": {
+            "archive": { "type": "string", "required": true },
+            "url":     { "type": "string", "required": true },
+            "name":    { "type": "string" },
+            "version": { "type": "string" },
+            "sha256":  { "type": "string" },
+            "signature": { "type": "string" },
+            "key-id":  { "type": "string" },
+            "attestation": { "type": "boolean", "default": false }
+          },
+          "outputs": { "url": "string", "status": "string" }
+        },
+        "test": {
+          "capabilities": ["filesystem", "process"],
+          "params": {
+            "coverage": { "type": "object" },
+            "report":   { "type": "object" }
+          },
+          "outputs": {
+            "pass-count": "string",
+            "fail-count": "string",
+            "crashed-count": "string",
+            "html-path": "string",
+            "sarif-path": "string",
+            "lcov-path": "string"
+          }
+        },
+        "exec": {
+          "description": "Escape hatch for arbitrary subprocesses. Auto-sandboxing is opt-in via `sandbox: true` to preserve long-standing behaviour.",
+          "capabilities": ["process"],
+          "params": {
+            "command": { "type": "string", "required": true },
+            "args":    { "type": "array" },
+            "working-dir": { "type": "string" },
+            "env":     { "type": "object" },
+            "sandbox": { "type": "boolean", "default": false },
+            "network": { "type": "boolean", "default": false }
+          },
+          "outputs": {
+            "stdout": "string",
+            "stderr": "string",
+            "exit-code": "string"
+          }
+        }
+      }
+    }
+  ]
+}

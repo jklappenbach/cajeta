@@ -16,7 +16,7 @@ package cajeta.io.net;
  *     pump (encrypt-on-write, decrypt-on-read) over the socket underneath.
  *
  * Because both satisfy this one interface, the **same** buffered reader/
- * writer — and therefore the **same** [`HttpServer`](http/HttpServer.cajeta)
+ * writer — and therefore the **same** `dev.cajeta.http` `HttpServer`
  * connection loop and [`HttpClient`](http/HttpClient.cajeta) request path —
  * run unchanged over a cleartext or an encrypted transport (plan items
  * **NET-8.1** client / **NET-9.5** HTTPS server). This is the keystone seam

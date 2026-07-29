@@ -10,10 +10,14 @@ package cajeta.wire;
  *
  * ```cajeta
  * Compressor c = Snappy();
- * #int8[] block = c.compress(plain);
+ * int8[] block = c.compress(plain);
  * ```
  */
 public interface Compressor {
-    /** Compresses `src` into a fresh, caller-owned block buffer. */
+    /**
+     * Compresses `src` into a fresh, caller-owned block buffer.
+     *
+     * @EntryPoint
+     */
     #int8[] compress(int8[] src);
 }

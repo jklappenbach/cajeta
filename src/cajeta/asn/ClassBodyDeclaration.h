@@ -70,6 +70,11 @@ namespace cajeta {
                     modifiers,
                     set<QualifiedNamePtr>(),
                     i++);
+                // VariableDeclarator IS an AbstractSyntaxNode, so its position is
+                // already here — carry it onto the property so the xref export can
+                // map the field back to an editor offset (ide-symbol-index §2).
+                property->setDeclPosition(variableDeclarator->getSourceLine(),
+                                          variableDeclarator->getSourceColumn());
                 for (auto& inst : annotationInstances) {
                     property->addAnnotationInstance(inst);
                 }

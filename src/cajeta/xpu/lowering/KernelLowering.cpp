@@ -719,7 +719,8 @@ private:
                 builder.CreateRetVoid();
             } else {
                 llvm::Value* v = lowerExpr(rs->getExpression());
-                builder.CreateRet(coerceTo(v, fn->getReturnType()));
+                builder.CreateRet(coerceTo(v, fn->getReturnType(),
+                                           exprSigned(rs->getExpression())));
             }
             return;
         }
@@ -849,10 +850,22 @@ private:
                     continue;
                 }
             }
+            // `Shared<T> tile = shared [v0, v1, ...];` — a shared tile pre-filled
+            // with literal values (array-literals §4). `shared` is the device
+            // allocation verb; the tile is emitted like the creator form and the
+            // values are stored in at runtime (the same allocate-then-populate
+            // pattern heap/stack literals use, targeting addrspace(3)).
+            if (auto lit =
+                    std::dynamic_pointer_cast<ArrayLiteralExpression>(initExpr)) {
+                if (lit->isSharedAlloc()) {
+                    lowerSharedArrayLiteral(nm, declType, lit);
+                    continue;
+                }
+            }
             llvm::Value* v = lowerExpr(initExpr);
             if (!slotTy) slotTy = v->getType();  // infer slot type from initializer
             llvm::Value* slot = entryAlloca(slotTy, nm);
-            builder.CreateStore(coerceTo(v, slotTy), slot);
+            builder.CreateStore(coerceTo(v, slotTy, exprSigned(initExpr)), slot);
             values[nm] = slot;
             slotTypes[nm] = slotTy;
             signedness[nm] = typeIsSigned(declType);
@@ -1020,6 +1033,75 @@ private:
         bufferElemSigned[nm] = elemSigned;
         if (swizStride) swizzledBaseStride[base] = swizStride;
         if (blkPeriod && blkPad) blockPadOfBase[base] = {blkPeriod, blkPad};
+    }
+
+    // `Shared<T> tile = shared [v0, v1, ...];` — a per-block shared tile of the
+    // literal's length, populated with its values (array-literals §4). Unlike the
+    // sized creator (`shared T[N]`, uninitialized scratch), the literal carries
+    // values, so after emitting the addrspace(3) global we store each in. The
+    // store loop runs on every thread — redundant but idempotent (same constants),
+    // and since each thread writes the whole tile it reads correct values without
+    // a barrier. A later pass could guard with thread-0 + barrier.
+    void lowerSharedArrayLiteral(
+            const std::string& nm, const CajetaTypePtr& declType,
+            const std::shared_ptr<ArrayLiteralExpression>& lit) {
+        // Element type + signedness from the Shared<T> LHS (creator convention).
+        llvm::Type* elemTy = nullptr;
+        bool elemSigned = true;
+        if (auto cls = std::dynamic_pointer_cast<CajetaClass>(declType)) {
+            if (!cls->getTypeArguments().empty()) {
+                elemTy = deviceScalarType(cls->getTypeArguments()[0], ctx);
+                elemSigned = typeIsSigned(cls->getTypeArguments()[0]);
+            }
+        }
+        if (!elemTy) unsupported("shared array literal '" + nm +
+                                 "' needs a scalar element type (Shared<T>)");
+        const auto& elems = lit->getElements();
+        uint64_t n = elems.size();
+        if (n == 0) unsupported("shared array literal '" + nm +
+                                "' must be non-empty");
+
+        // One internal [N x T] addrspace(3) global (per-block), like the creator.
+        llvm::ArrayType* arrTy = llvm::ArrayType::get(elemTy, n);
+        std::string gname = fn->getName().str() + "_" + nm;
+        auto* gv = new llvm::GlobalVariable(
+            mod, arrTy, /*isConstant=*/false,
+            llvm::GlobalValue::InternalLinkage,
+            (llvm::Constant*) llvm::UndefValue::get(arrTy),
+            gname, /*InsertBefore=*/nullptr,
+            llvm::GlobalValue::NotThreadLocal, kSharedAS);
+        gv->setAlignment(llvm::MaybeAlign(16));
+
+        // Decay [N x T]* -> T* (addrspace 3) and register like a buffer base so
+        // tile[i] reuses the existing GEP/load/store path (mirrors lowerSharedDecl).
+        llvm::Value* zero =
+            llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), 0);
+        llvm::Value* base = builder.CreateGEP(arrTy, gv, {zero, zero},
+                                              nm + ".base");
+        bufferBases[nm] = base;
+        bufferElems[nm] = elemTy;
+        bufferElemSigned[nm] = elemSigned;
+
+        // Populate the tile with the literal's values. Every thread runs this,
+        // so the values MUST be compile-time constants: a per-thread (non-
+        // constant) element would have every thread write a different value to
+        // the same shared slots with no barrier — a data race. Reject it and
+        // point at the sized creator for runtime fills.
+        for (uint64_t i = 0; i < n; ++i) {
+            auto ex = std::dynamic_pointer_cast<Expression>(elems[i]);
+            llvm::Value* v = coerceTo(lowerExpr(ex), elemTy, exprSigned(ex));
+            if (!llvm::isa<llvm::Constant>(v)) {
+                unsupported("shared array literal '" + nm + "' element " +
+                    std::to_string(i) + " is not a compile-time constant; a "
+                    "shared literal fills a per-block tile with constant values "
+                    "— use `shared T[N]` and assign at runtime for computed "
+                    "values");
+            }
+            llvm::Value* idx =
+                llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), i);
+            llvm::Value* slot = builder.CreateGEP(elemTy, base, idx);
+            builder.CreateStore(v, slot);
+        }
     }
 
     // If `base` is a Swizzled<T,S> tile, permute the element index `idx` (i64)
@@ -1292,12 +1374,14 @@ private:
         auto [addr, elemTy] = lowerLValueAddr(lhs);
         llvm::Value* rv = lowerExpr(rhs);
         BinaryOp op = bin->getBinaryOp();
+        bool rvSigned = exprSigned(rhs);
         if (op != BINARY_OP_ASSIGN) {
             llvm::Value* cur = builder.CreateLoad(elemTy, addr, "cur");
             rv = applyBinOp(compoundBase(op), cur, rv, lvalueSigned(lhs),
                             elemTy->isFloatingPointTy());
+            rvSigned = lvalueSigned(lhs);
         }
-        builder.CreateStore(coerceTo(rv, elemTy), addr);
+        builder.CreateStore(coerceTo(rv, elemTy, rvSigned), addr);
     }
 
     static BinaryOp compoundBase(BinaryOp op) {
@@ -4573,7 +4657,12 @@ private:
             }
             return;
         }
-        bool lFp = lt->isFloatingPointTy(), rFp = rt->isFloatingPointTy();
+        // Same-shape here (scalar↔scalar or same-length vector↔vector); test
+        // FP-ness and integer width on the SCALAR/element type so same-length
+        // vectors with differing element types are unified element-wise rather
+        // than tripping getIntegerBitWidth() on a vector type.
+        bool lFp = lt->getScalarType()->isFloatingPointTy();
+        bool rFp = rt->getScalarType()->isFloatingPointTy();
         if (lFp || rFp) {
             llvm::Type* fT = lFp ? lt : rt;
             if (!lFp)        l = sign ? builder.CreateSIToFP(l, fT) : builder.CreateUIToFP(l, fT);
@@ -4582,7 +4671,8 @@ private:
             else if (rt != fT) r = builder.CreateFPCast(r, fT);
             return;
         }
-        llvm::Type* wide = lt->getIntegerBitWidth() >= rt->getIntegerBitWidth() ? lt : rt;
+        llvm::Type* wide =
+            lt->getScalarSizeInBits() >= rt->getScalarSizeInBits() ? lt : rt;
         l = builder.CreateIntCast(l, wide, sign);
         r = builder.CreateIntCast(r, wide, sign);
     }
@@ -4595,6 +4685,7 @@ private:
     }
 
     bool exprSigned(const ExpressionPtr& e) {
+        if (!e) return true;
         if (auto* f = structFieldOf(e)) return f->isSigned;
         if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(e)) {
             auto it = signedness.find(id->getTextValue());
@@ -4609,15 +4700,32 @@ private:
             return true;
         }
         if (std::dynamic_pointer_cast<IntegerLiteralExpression>(e)) return true;
-        return false;
+        // Composite forms: kernel bodies aren't host-type-resolved, so a nested
+        // expression has no signedness map key. Recurse — a computed value is
+        // signed if either operand is (else `(a-b) < 0` lowers to ICmpULT, an
+        // always-false unsigned compare, and `(a+b)/2` / `sum >> k` pick UDiv /
+        // LShr). Unary forms carry their operand's signedness (`-x` is signed).
+        if (auto bin = std::dynamic_pointer_cast<BinaryOpExpression>(e))
+            return exprSigned(exprChild(bin, 0)) || exprSigned(exprChild(bin, 1));
+        if (auto pre = std::dynamic_pointer_cast<PrefixExpression>(e))
+            return exprSigned(exprChild(pre, 0));
+        // Unknown leaf (cast, call, ternary): signed is the language default.
+        return true;
     }
 
-    llvm::Value* coerceTo(llvm::Value* v, llvm::Type* ty) {
+    // `isSigned` governs integer WIDENING only (sign- vs zero-extend); it is
+    // the signedness of the SOURCE value, since `uint64 h = <i32 expr>` must
+    // zero-extend an unsigned i32 (e.g. Bits.reverse yielding 0x80000000) but
+    // sign-extend a signed one. Narrowing and same-width casts ignore it. The
+    // default (signed) suits the index/config coercions that dominate the
+    // callers; value-carrying sites (return, decl-init, assign) pass the real
+    // source signedness.
+    llvm::Value* coerceTo(llvm::Value* v, llvm::Type* ty, bool isSigned = true) {
         if (v->getType() == ty) return v;
         if (v->getType()->isFloatingPointTy() && ty->isFloatingPointTy())
             return builder.CreateFPCast(v, ty);
         if (v->getType()->isIntegerTy() && ty->isIntegerTy())
-            return builder.CreateIntCast(v, ty, /*signed=*/true);
+            return builder.CreateIntCast(v, ty, isSigned);
         return v;  // best effort; shape mismatches surface in the verifier
     }
 

@@ -360,28 +360,3 @@ printf '{"kind":"result","status":"ok"}\n'
 }
 
 // ─── Acceptance #4 — capability denial ───────────────────────
-
-// Pinned by PluginTests.resolvePluginsRejectsCapabilityOutsideAllowlist
-// (test/buildtool/PluginTests.cpp). Plan citation lives there.
-// We add a complementary check that the error mentions the
-// offending capability + the rejecting plugin name, since that's
-// what makes the failure actionable.
-TEST(Phase7AcceptanceTests, capabilityDenialErrorIsActionable) {
-    // This test exercises the *shape* of the error string: rule
-    // name, plugin name, and a hint about the allowlist. The
-    // enforcement is at resolvePlugins time — we re-use the same
-    // assertion shape as the canonical test (PluginTests.resolve
-    // PluginsRejectsCapabilityOutsideAllowlist) at the data-path
-    // level. Reproduce the error wording so a future error-message
-    // refactor surfaces a regression here too.
-    std::string msg = "plugins.evil.plugin: declares capability "
-                      "'network' which is not in the consumer's "
-                      "plugins-allowed-capabilities allowlist";
-    // The acceptance asks for "fails to load with a clear error".
-    // "Clear" = mentions the capability, the plugin, and steers
-    // the user toward where to fix it.
-    EXPECT_NE(msg.find("'network'"), std::string::npos);
-    EXPECT_NE(msg.find("evil.plugin"), std::string::npos);
-    EXPECT_NE(msg.find("plugins-allowed-capabilities"),
-              std::string::npos);
-}

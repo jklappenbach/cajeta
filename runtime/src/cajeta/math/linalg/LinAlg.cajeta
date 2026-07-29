@@ -20,6 +20,8 @@ public final class LinAlg {
      * elimination with partial pivoting + back-substitution. `A` is `(n,n)`, `b` is
      * `(n,)`; returns the solution vector `x` `(n,)`. The inputs are not modified
      * (works on copies).
+     *
+     * @EntryPoint
      */
     public static #Tensor<E> solve<E extends Floating>(Tensor<E> a, Tensor<E> b) {
         int64 n = a.shapeAt(0);
@@ -79,6 +81,8 @@ public final class LinAlg {
      * Determinant of a square `A` (numpy `linalg.det`) — the product of the pivots from
      * LU with partial pivoting, with the sign flipped once per row swap. Returns a
      * scalar `E`.
+     *
+     * @EntryPoint
      */
     public static E det<E extends Floating>(Tensor<E> a) {
         int64 n = a.shapeAt(0);
@@ -124,6 +128,8 @@ public final class LinAlg {
     /**
      * Inverse of a square `A` (numpy `linalg.inv`) — solve `A·X = I` column by column.
      * Returns the `(n,n)` inverse.
+     *
+     * @EntryPoint
      */
     public static #Tensor<E> inv<E extends Floating>(Tensor<E> a) {
         int64 n = a.shapeAt(0);
@@ -453,6 +459,8 @@ public final class LinAlg {
      * values in **descending** order. Computed natively from the symmetric eigenproblem
      * of `AᵀA` (right vectors `V` and σ²), then `U = A·V/σ`. (General nonsymmetric `eig`
      * — complex spectra — is deferred; it needs the interleaved-complex tier.)
+     *
+     * @EntryPoint
      */
     public static #Tensor<E>[] svd<E extends Floating>(Tensor<E> a) {
         int64 n = a.shapeAt(0);
@@ -646,5 +654,259 @@ public final class LinAlg {
             m.flatSet(r1 * n + c, a);
             c = c + 1;
         }
+    }
+
+    // ---- nonsymmetric eigenvalues (Phase 11 — general eig, complex spectra) ------
+    // Francis double-shift QR (EISPACK/Numerical-Recipes `elmhes`+`hqr`). Complex
+    // eigenvalues of a REAL matrix emerge as conjugate pairs from 2x2 Schur blocks using
+    // only REAL arithmetic — so no complex-number tier is needed. Work matrix `h` is a
+    // 1-indexed `float64[]` with row stride `s = n+1` (row 0 / col 0 unused), mirroring the
+    // reference's 1-based indexing to avoid off-by-one translation bugs.
+
+    static float64 fabsD(float64 x) {
+        if (x < 0.0) { return 0.0 - x; }
+        return x;
+    }
+
+    /** `|a|` with the sign of `b` (Numerical-Recipes `SIGN`). */
+    static float64 signD(float64 a, float64 b) {
+        float64 m = LinAlg.fabsD(a);
+        if (b >= 0.0) { return m; }
+        return 0.0 - m;
+    }
+
+    /** Reduce `h` (1-indexed, stride `s`, order `n`) to upper Hessenberg form in place. */
+    static void elmhesD(float64[] h, int64 n, int64 s) {
+        int64 m = 2;
+        while (m < n) {
+            float64 x = 0.0;
+            int64 ip = m;
+            int64 j = m;
+            while (j <= n) {
+                float64 hjm = h[j * s + (m - 1)];
+                if (LinAlg.fabsD(hjm) > LinAlg.fabsD(x)) { x = hjm; ip = j; }
+                j = j + 1;
+            }
+            if (ip != m) {
+                j = m - 1;
+                while (j <= n) {
+                    float64 a = h[ip * s + j];
+                    float64 b = h[m * s + j];
+                    h[ip * s + j] = b;
+                    h[m * s + j] = a;
+                    j = j + 1;
+                }
+                j = 1;
+                while (j <= n) {
+                    float64 a = h[j * s + ip];
+                    float64 b = h[j * s + m];
+                    h[j * s + ip] = b;
+                    h[j * s + m] = a;
+                    j = j + 1;
+                }
+            }
+            if (x != 0.0) {
+                int64 i = m + 1;
+                while (i <= n) {
+                    float64 y = h[i * s + (m - 1)];
+                    if (y != 0.0) {
+                        y = y / x;
+                        h[i * s + (m - 1)] = y;
+                        j = m;
+                        while (j <= n) {
+                            h[i * s + j] = h[i * s + j] - y * h[m * s + j];
+                            j = j + 1;
+                        }
+                        j = 1;
+                        while (j <= n) {
+                            h[j * s + m] = h[j * s + m] + y * h[j * s + i];
+                            j = j + 1;
+                        }
+                    }
+                    i = i + 1;
+                }
+            }
+            m = m + 1;
+        }
+    }
+
+    /** Francis double-shift QR eigenvalues of the Hessenberg `h` → `wr`/`wi` (1-indexed). */
+    static void hqrD(float64[] h, int64 n, int64 s, float64[] wr, float64[] wi) {
+        float64 anorm = 0.0;
+        int64 i = 1;
+        while (i <= n) {
+            int64 jlo = i - 1;
+            if (jlo < 1) { jlo = 1; }
+            int64 j = jlo;
+            while (j <= n) { anorm = anorm + LinAlg.fabsD(h[i * s + j]); j = j + 1; }
+            i = i + 1;
+        }
+        int64 nn = n;
+        float64 t = 0.0;
+        float64 z = 0.0;  float64 y = 0.0;  float64 x = 0.0;  float64 w = 0.0;
+        float64 v = 0.0;  float64 u = 0.0;  float64 p = 0.0;  float64 q = 0.0;  float64 rr = 0.0;
+        while (nn >= 1) {
+            int64 its = 0;
+            boolean iterate = true;
+            while (iterate) {
+                int64 l = nn;                          // scan for a negligible subdiagonal
+                while (l >= 2) {
+                    float64 sd = LinAlg.fabsD(h[(l - 1) * s + (l - 1)]) + LinAlg.fabsD(h[l * s + l]);
+                    if (sd == 0.0) { sd = anorm; }
+                    if (LinAlg.fabsD(h[l * s + (l - 1)]) + sd == sd) { h[l * s + (l - 1)] = 0.0; break; }
+                    l = l - 1;
+                }
+                x = h[nn * s + nn];
+                if (l == nn) {                          // one real root
+                    wr[nn] = x + t;
+                    wi[nn] = 0.0;
+                    nn = nn - 1;
+                } else {
+                    y = h[(nn - 1) * s + (nn - 1)];
+                    w = h[nn * s + (nn - 1)] * h[(nn - 1) * s + nn];
+                    if (l == nn - 1) {                  // two roots (a 2x2 block)
+                        p = 0.5 * (y - x);
+                        q = p * p + w;
+                        z = Math.sqrt(LinAlg.fabsD(q));
+                        x = x + t;
+                        if (q >= 0.0) {                 // real pair
+                            z = p + LinAlg.signD(z, p);
+                            wr[nn - 1] = x + z;
+                            wr[nn] = x + z;
+                            if (z != 0.0) { wr[nn] = x - w / z; }
+                            wi[nn - 1] = 0.0;
+                            wi[nn] = 0.0;
+                        } else {                        // complex conjugate pair
+                            wr[nn - 1] = x + p;
+                            wr[nn] = x + p;
+                            wi[nn] = z;
+                            wi[nn - 1] = 0.0 - z;
+                        }
+                        nn = nn - 2;
+                    } else {                            // no roots yet — a QR sweep
+                        if (its == 10 || its == 20) {   // exceptional shift
+                            t = t + x;
+                            int64 ii = 1;
+                            while (ii <= nn) { h[ii * s + ii] = h[ii * s + ii] - x; ii = ii + 1; }
+                            float64 se = LinAlg.fabsD(h[nn * s + (nn - 1)]) + LinAlg.fabsD(h[(nn - 1) * s + (nn - 2)]);
+                            x = 0.75 * se;
+                            y = x;
+                            w = -0.4375 * se * se;
+                        }
+                        its = its + 1;
+                        int64 m = nn - 2;               // find the start of the sweep
+                        while (m >= l) {
+                            z = h[m * s + m];
+                            rr = x - z;
+                            float64 sq = y - z;
+                            p = (rr * sq - w) / h[(m + 1) * s + m] + h[m * s + (m + 1)];
+                            q = h[(m + 1) * s + (m + 1)] - z - rr - sq;
+                            rr = h[(m + 2) * s + (m + 1)];
+                            float64 sm = LinAlg.fabsD(p) + LinAlg.fabsD(q) + LinAlg.fabsD(rr);
+                            p = p / sm;
+                            q = q / sm;
+                            rr = rr / sm;
+                            if (m == l) { break; }
+                            u = LinAlg.fabsD(h[m * s + (m - 1)]) * (LinAlg.fabsD(q) + LinAlg.fabsD(rr));
+                            v = LinAlg.fabsD(p) * (LinAlg.fabsD(h[(m - 1) * s + (m - 1)]) + LinAlg.fabsD(z) + LinAlg.fabsD(h[(m + 1) * s + (m + 1)]));
+                            if (u + v == v) { break; }
+                            m = m - 1;
+                        }
+                        int64 ic = m + 2;
+                        while (ic <= nn) {
+                            h[ic * s + (ic - 2)] = 0.0;
+                            if (ic != m + 2) { h[ic * s + (ic - 3)] = 0.0; }
+                            ic = ic + 1;
+                        }
+                        int64 k = m;                    // the double-QR sweep
+                        while (k <= nn - 1) {
+                            if (k != m) {
+                                p = h[k * s + (k - 1)];
+                                q = h[(k + 1) * s + (k - 1)];
+                                rr = 0.0;
+                                if (k != nn - 1) { rr = h[(k + 2) * s + (k - 1)]; }
+                                x = LinAlg.fabsD(p) + LinAlg.fabsD(q) + LinAlg.fabsD(rr);
+                                if (x != 0.0) { p = p / x; q = q / x; rr = rr / x; }
+                            }
+                            float64 sx = LinAlg.signD(Math.sqrt(p * p + q * q + rr * rr), p);
+                            if (sx != 0.0) {
+                                if (k == m) {
+                                    if (l != m) { h[k * s + (k - 1)] = 0.0 - h[k * s + (k - 1)]; }
+                                } else {
+                                    h[k * s + (k - 1)] = 0.0 - sx * x;
+                                }
+                                p = p + sx;
+                                x = p / sx;
+                                y = q / sx;
+                                z = rr / sx;
+                                q = q / p;
+                                rr = rr / p;
+                                int64 j2 = k;           // row modification
+                                while (j2 <= nn) {
+                                    p = h[k * s + j2] + q * h[(k + 1) * s + j2];
+                                    if (k != nn - 1) {
+                                        p = p + rr * h[(k + 2) * s + j2];
+                                        h[(k + 2) * s + j2] = h[(k + 2) * s + j2] - p * z;
+                                    }
+                                    h[(k + 1) * s + j2] = h[(k + 1) * s + j2] - p * y;
+                                    h[k * s + j2] = h[k * s + j2] - p * x;
+                                    j2 = j2 + 1;
+                                }
+                                int64 mmin = k + 3;     // column modification
+                                if (nn < k + 3) { mmin = nn; }
+                                int64 i2 = l;
+                                while (i2 <= mmin) {
+                                    p = x * h[i2 * s + k] + y * h[i2 * s + (k + 1)];
+                                    if (k != nn - 1) {
+                                        p = p + z * h[i2 * s + (k + 2)];
+                                        h[i2 * s + (k + 2)] = h[i2 * s + (k + 2)] - p * rr;
+                                    }
+                                    h[i2 * s + (k + 1)] = h[i2 * s + (k + 1)] - p * q;
+                                    h[i2 * s + k] = h[i2 * s + k] - p;
+                                    i2 = i2 + 1;
+                                }
+                            }
+                            k = k + 1;
+                        }
+                    }
+                }
+                iterate = (l < nn - 1);
+                if (its > 100) { iterate = false; nn = 0; }   // anti-hang net (never hit for well-conditioned input)
+            }
+        }
+    }
+
+    /**
+     * Eigenvalues of a general (non-symmetric) real square matrix (numpy `linalg.eigvals`),
+     * as interleaved complex `float64`: a length-`2n` tensor with `[2k]` = real part and
+     * `[2k+1]` = imaginary part of eigenvalue `k`. Complex eigenvalues appear as conjugate
+     * pairs. Computed by Hessenberg reduction ({@link #elmhesD}) then the Francis
+     * double-shift QR ({@link #hqrD}) — all real arithmetic, no complex-number tier needed.
+     * Eigenvalue order is the QR deflation order (not sorted; compare as a set vs numpy).
+     */
+    public static #Tensor<float64> eigvals(Tensor<float64> a) {
+        int64 n = a.shapeAt(0);
+        int64 s = n + 1;
+        float64[] h = heap float64[s * s];
+        int64 r = 1;
+        while (r <= n) {
+            int64 c = 1;
+            while (c <= n) { h[r * s + c] = a.get2(r - 1, c - 1); c = c + 1; }
+            r = r + 1;
+        }
+        float64[] wr = heap float64[s];
+        float64[] wi = heap float64[s];
+        LinAlg.elmhesD(h, n, s);
+        LinAlg.hqrD(h, n, s, wr, wi);
+        int64[] osh = heap int64[1];
+        osh[0] = 2 * n;
+        Tensor<float64> out = Tensor.zeros<float64>(osh);
+        int64 k = 1;
+        while (k <= n) {
+            out.flatSet(2 * (k - 1), wr[k]);
+            out.flatSet(2 * (k - 1) + 1, wi[k]);
+            k = k + 1;
+        }
+        return #out;
     }
 }

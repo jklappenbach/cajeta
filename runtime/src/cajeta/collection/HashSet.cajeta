@@ -5,8 +5,8 @@ import cajeta.collection.HashMap;
 /**
  * Hash-based set of unique class-typed values.
  *
- * Thin wrapper around `HashMap<T, T>` — each member is stored as
- * both the map's key and value. `add` writes; `contains` reads via
+ * Thin wrapper around `HashMap<T, int8>` — each member is the map's
+ * key; the value side is a presence sentinel. `add` writes; `contains` reads via
  * `containsKey`; `remove` deletes; `count` reports the live entry
  * count. Inherits HashMap's open-addressing storage, linear probing,
  * power-of-2 capacity, 0.75 load factor auto-grow, and tombstone
@@ -64,9 +64,25 @@ public final class HashSet<T> {
      * @Param initialCapacity number of buckets to allocate; **must
      *        be a power of 2** (passed through to `HashMap`, which
      *        mask-indexes on the value).
+     * @EntryPoint
      */
     public HashSet(int64 initialCapacity) {
         this.map = heap HashMap<T, int8>(initialCapacity);
+    }
+
+    /**
+     * Build a set from every element of `items`, in first-seen order
+     * (array-literals §6): `HashSet<int32> s = heap HashSet<int32>([1,2,2,3])`.
+     * Duplicates collapse — the set holds {1, 2, 3}.
+     */
+    public HashSet(T[] items) {
+        this.map = heap HashMap<T, int8>(16);
+        int32 n = (int32) items.count();
+        int32 i = 0;
+        while (i < n) {
+            this.add(items[i]);
+            i = i + 1;
+        }
     }
 
     /**
@@ -77,7 +93,12 @@ public final class HashSet<T> {
      * @Param value the member to add.
      */
     public void add(T value) {
-        this.map.put(value, 1);
+        // `#value` forwards the CALLER's transfer (title-tracking 6.2.3): a
+        // droppable class formal forwards its entry flag, an entry-less
+        // String/primitive formal its incoming word bit. A plain forward
+        // read all-borrow in put while THIS formal's armed entry dropped
+        // the member at exit — the set held a dangling pointer.
+        this.map.put(#value, 1);
     }
 
     /**
@@ -99,7 +120,13 @@ public final class HashSet<T> {
      *          it wasn't a member.
      */
     public boolean remove(T value) {
-        return this.map.remove(value);
+        // HashMap.remove returns the VALUE flagged (title-tracking §6.4),
+        // not a boolean — probe membership first, then discard the flagged
+        // sentinel. An owned member (the map's key) is reclaimed inside
+        // remove either way.
+        boolean had = this.map.containsKey(value);
+        this.map.remove(value);
+        return had;
     }
 
     /**

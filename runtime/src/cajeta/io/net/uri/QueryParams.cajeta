@@ -125,15 +125,14 @@ public class QueryParams {
         // fall-through path too, so the whole walk is guarded under one
         // conditional instead (same workaround as BPlusTree.keysInOrder).
         if (query != null) {
-            int32 n = query.byteLength;
-            int8[] b = query.bytes;
+            int32 n = query.byteLength();
 
             int32 segStart = 0;
             int32 i = 0;
             while (i <= n) {
                 // A segment ends at '&' (38) or at end-of-input.
                 boolean atEnd = (i == n);
-                boolean sep = (!atEnd) && (QueryParams.byteAt(b, i) == 38);
+                boolean sep = (!atEnd) && (QueryParams.byteAt(query, i) == 38);
                 if (atEnd || sep) {
                     if (i > segStart) {
                         QueryParams.addSegment(q, query, segStart, i, form);
@@ -154,11 +153,10 @@ public class QueryParams {
      */
     private static void addSegment(QueryParams q, String query,
                                    int32 start, int32 end, boolean form) {
-        int8[] b = query.bytes;
         int32 eq = -1;
         int32 i = start;
         while (i < end && eq < 0) {
-            if (QueryParams.byteAt(b, i) == 61) {   // '='
+            if (QueryParams.byteAt(query, i) == 61) {   // '='
                 eq = i;
             }
             i = i + 1;
@@ -201,13 +199,13 @@ public class QueryParams {
     /** Decoded key at slot `i`, in parse/insertion order. */
     public #String keyAt(int32 i) {
         String k = this.keys[i];
-        return heap String(k.bytes, k.byteLength);
+        return k.substring(0, k.byteLength());
     }
 
     /** Decoded value at slot `i`, in parse/insertion order. */
     public #String valueAt(int32 i) {
         String v = this.values[i];
-        return heap String(v.bytes, v.byteLength);
+        return v.substring(0, v.byteLength());
     }
 
     /** True iff at least one slot carries `key`. */
@@ -248,7 +246,7 @@ public class QueryParams {
         while (i < this.sizeCount) {
             if (this.keys[i].equals(key)) {
                 String v = this.values[i];
-                return heap String(v.bytes, v.byteLength);
+                return v.substring(0, v.byteLength());
             }
             i = i + 1;
         }
@@ -271,7 +269,7 @@ public class QueryParams {
         while (i < this.sizeCount) {
             if (this.keys[i].equals(key)) {
                 String v = this.values[i];
-                out[w] = heap String(v.bytes, v.byteLength);
+                out[w] = v.substring(0, v.byteLength());
                 w = w + 1;
             }
             i = i + 1;
@@ -288,8 +286,8 @@ public class QueryParams {
      * only on [`toString`](#toString).
      */
     public void add(String key, String value) {
-        this.append(key.substring(0, key.byteLength),
-                    value.substring(0, value.byteLength));
+        this.append(key.substring(0, key.byteLength()),
+                    value.substring(0, value.byteLength()));
     }
 
     /**
@@ -381,7 +379,7 @@ public class QueryParams {
             String ek = this.encodeComponent(rk);
             String ev = this.encodeComponent(rv);
             // "key" + "=" + "val"; plus a '&' before every pair but the first.
-            total = total + ek.byteLength + ev.byteLength + 1;
+            total = total + ek.byteLength() + ev.byteLength() + 1;
             if (i > 0) {
                 total = total + 1;                              // '&'
             }
@@ -428,9 +426,9 @@ public class QueryParams {
 
     // -- byte helpers -------------------------------------------------------
 
-    /** Read byte `i` of `b` as an unsigned 0..255 int32. */
-    private static int32 byteAt(int8[] b, int32 i) {
-        return ((int32) b[i]) & 0xff;
+    /** Read byte `i` of `s` as an unsigned 0..255 int32 (view-aware). */
+    private static int32 byteAt(String s, int32 i) {
+        return ((int32) s.byteAt(i)) & 0xff;
     }
 
     /**
@@ -438,11 +436,10 @@ public class QueryParams {
      * next write offset.
      */
     private static int32 copyBytes(int8[] out, int32 at, String s) {
-        int32 n = s.byteLength;
-        int8[] b = s.bytes;
+        int32 n = s.byteLength();
         int32 j = 0;
         while (j < n) {
-            out[at] = b[j];
+            out[at] = s.byteAt(j);
             at = at + 1;
             j = j + 1;
         }
@@ -456,12 +453,11 @@ public class QueryParams {
      * raw byte scan is correct).
      */
     private static #String plusToSpace(String s) {
-        int32 n = s.byteLength;
-        int8[] in = s.bytes;
+        int32 n = s.byteLength();
         int8[] out = heap int8[n];
         int32 i = 0;
         while (i < n) {
-            int32 c = QueryParams.byteAt(in, i);
+            int32 c = QueryParams.byteAt(s, i);
             if (c == 43) {                  // '+'
                 out[i] = (int8) 32;         // ' '
             } else {
@@ -483,16 +479,15 @@ public class QueryParams {
      * (`%20`/`%2 0` n/a — only exact `2`,`0`).
      */
     private static #String percent20ToPlus(String s) {
-        int32 n = s.byteLength;
-        int8[] in = s.bytes;
+        int32 n = s.byteLength();
         int8[] out = heap int8[n];
         int32 w = 0;
         int32 i = 0;
         while (i < n) {
-            int32 c = QueryParams.byteAt(in, i);
+            int32 c = QueryParams.byteAt(s, i);
             if (c == 37 && i + 2 < n
-                && QueryParams.byteAt(in, i + 1) == 50      // '2'
-                && QueryParams.byteAt(in, i + 2) == 48) {   // '0'
+                && QueryParams.byteAt(s, i + 1) == 50      // '2'
+                && QueryParams.byteAt(s, i + 2) == 48) {   // '0'
                 out[w] = (int8) 43;                         // '+'
                 w = w + 1;
                 i = i + 3;
@@ -528,8 +523,8 @@ public class QueryParams {
             dstV[i] = this.values[i];
             i = i + 1;
         }
-        this.keys = #dstK;
-        this.values = #dstV;
+        this.keys #= dstK;
+        this.values #= dstV;
         this.cap = newCap;
     }
 }

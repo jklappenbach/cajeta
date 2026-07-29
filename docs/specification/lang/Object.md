@@ -28,7 +28,7 @@ declared with native stubs — `__cajeta_object_to_string` and
 `runtime/native/cajeta_runtime.c`). Structural synthesis ships via
 the `@AutoHash` and `@ToString` annotations (v1, primitive fields
 only — see below). `clone` synthesis is tracked in
-[Features.md](../../../Features.md).
+specs/Features.md.
 
 > **Note on `operator==`.** It is declared as a **static** two-arg
 > operator (`operator==(Object a, Object b)`), not an instance
@@ -45,7 +45,7 @@ only — see below). `clone` synthesis is tracked in
 Two distinct instances with the same field values compare unequal
 and hash differently by default — same shape as Java's
 `Object.equals` / `Object.hashCode`. Structural value-equality is
-opt-in via `@AutoHash` (see [Hashing.md](../Hashing.md)) or by
+opt-in via `@AutoHash` (see [Hashing.md](../hash/Hashing.md)) or by
 overriding `operator==` and `hash()` manually.
 
 ```cajeta
@@ -85,7 +85,7 @@ violating it means an inserted key becomes un-findable.
 **The lint pass surfaces unpaired overrides.** A class that
 declares one of `operator==` / `hash()` but inherits the other from
 `Object` triggers the `equals-hash-pair` lint warning (see
-[LintRules.md](../../LintRules.md) § `equals-hash-pair`). Build
+[LintRules.md](LintRules.md) § `equals-hash-pair`). Build
 proceeds; the warning makes the likely bug visible at compile time
 without blocking iteration. Suppress via
 `@SuppressLint("equals-hash-pair")` for the rare case where the
@@ -256,26 +256,28 @@ default is intentionally debug-shaped, not presentation-quality —
 production user-facing strings are localization concerns and
 shouldn't fall out of `toString` automatically.
 
-Tracked in Features.md.
+Tracked in specs/Features.md.
 
 ---
 
-## `clone()` — deferred
+## `clone()` — LIVE (2026-07-03, slice-spec §6.4)
 
-Default returns `null` until the synthesizer pass can walk field
-layouts and emit:
+`__cajeta_object_clone` performs a shallow copy via the RTTI field
+walk (`allocationSize` memcpy + per-field fixup); returns ownership
+(`#Object`):
 
 - **value-typed fields** (primitives, structs, enums) — copied by
   `memcpy` of the bits
-- **class-typed fields** — copied by reference (both originals then
-  point at the same heap instance — Java-shallow semantics)
+- **String fields** — a fresh stake on the same immutable byte buffer
+  (wrapper-per-stake; no GC means aliasing one wrapper would
+  use-after-free when either owner drops)
+- **other class-typed fields** — copied by reference (Java-shallow);
+  override `clone()` to deep-copy when shallow isn't right
+- a **String receiver** DETACHES — the (possibly windowed) text
+  materializes into a fresh owned buffer (the retention-amplification
+  valve, slice-spec §4.4)
 
-Override `clone()` manually to deep-copy class-typed fields when
-shallow isn't right. The base return type is `Object`; subclass
-overrides narrow it to the declaring class at every site, so
-call-site code doesn't need a cast (covariant return).
-
-Tracked in Features.md.
+User overrides replace the native default and dispatch normally.
 
 ---
 
@@ -322,7 +324,7 @@ Tracked in Features.md.
 
 - **equal/hash override pair check** — lint warning, not compile
   error. Rule ID `equals-hash-pair` in
-  [LintRules.md](../../LintRules.md). User can suppress per-class.
+  [LintRules.md](LintRules.md). User can suppress per-class.
 
 ## Open questions
 
@@ -339,16 +341,16 @@ Only one genuinely open follow-up:
 
 ## Cross-references
 
-- [Lang.md](../Lang.md) — the broader `cajeta.lang` overview
+- [Lang.md](Lang.md) — the broader `cajeta.lang` overview
   (Object historically lived inline there; this doc is the
   authoritative spec going forward, Lang.md trimmed to a pointer).
 - [String.md](./String.md) — String's `hash()` override (FNV-1a)
   and its value-equality via `hash()` (it does not override
   `operator==`).
-- [Hashing.md](../Hashing.md) — the broader hashing doctrine,
+- [Hashing.md](../hash/Hashing.md) — the broader hashing doctrine,
   `cajeta.hash.Hash` namespace, `@AutoHash` synthesizer design,
   per-process seed lifecycle.
-- [MultiClassing.md](../MultiClassing.md) — how multi-parent
+- [MultiClassing.md](MultiClassing.md) — how multi-parent
   hierarchies resolve the implicit `extends Object` (every class
   extends Object; multiple-inheritance shares the single Object
   sub-object).

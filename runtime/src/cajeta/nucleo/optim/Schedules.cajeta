@@ -1,0 +1,59 @@
+package cajeta.nucleo.optim;
+
+/**
+ * Schedules — LR schedules as PURE functions `lr(step) -> float32` (spec §6;
+ * resolution N7): the training loop computes the value for an explicit step
+ * count and applies it (`opt.setLr(...)`) — no hidden counter, no
+ * scheduler→optimizer back-edge in the core. {@link LrSchedule} is the thin
+ * mutating wrapper for façade familiarity (`sched.step()`), holding its OWN
+ * explicit step count.
+ *
+ * Composition is function composition (§6.4): warmup-then-cosine is a
+ * conditional over two pure evaluations — see {@link #warmupCosineLr}.
+ */
+public final class Schedules {
+
+    /** Step decay: `base · gamma^(step / stepSize)` (integer division). */
+    public static float32 stepLr(float32 base, int64 stepSize, float32 gamma,
+                                 int64 step) {
+        int64 k = step / stepSize;
+        float32 f = 1.0f;
+        int64 i = 0;
+        while (i < k) {
+            f = f * gamma;
+            i = i + 1;
+        }
+        return base * f;
+    }
+
+    /** Exponential decay: `base · gamma^step`. */
+    public static float32 exponentialLr(float32 base, float32 gamma,
+                                        int64 step) {
+        float32 f = 1.0f;
+        int64 i = 0;
+        while (i < step) {
+            f = f * gamma;
+            i = i + 1;
+        }
+        return base * f;
+    }
+
+    /** Cosine annealing to zero over `tMax` steps:
+     *  `base · (1 + cos(π·step/tMax)) / 2` (clamped past `tMax`). */
+    public static float32 cosineLr(float32 base, int64 tMax, int64 step) {
+        if (step >= tMax) { return 0.0f; }
+        float32 x = (float32) step / (float32) tMax;
+        return base * (1.0f + Math.cos(3.14159265358979f * x)) * 0.5f;
+    }
+
+    /** Linear warmup over `warmupSteps`, then cosine over the remainder —
+     *  the composed shape (§6.4), itself just a pure function. */
+    public static float32 warmupCosineLr(float32 base, int64 warmupSteps,
+                                         int64 tMax, int64 step) {
+        if (step < warmupSteps) {
+            return base * ((float32) (step + 1) / (float32) warmupSteps);
+        }
+        return Schedules.cosineLr(base, tMax - warmupSteps,
+                                  step - warmupSteps);
+    }
+}

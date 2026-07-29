@@ -4,12 +4,28 @@
 
 #include "Compiler.h"
 #include "CajetaArchive.h"
+#include "cajeta/buildtool/IrCache.h"
+#include "cajeta/buildtool/Lockfile.h"   // sha256Hex
+#include "cajeta/buildtool/PrimeCache.h"
 #include "cajeta/buildtool/skill/SkillPackager.h"
+#include "DropBackfill.h"
+#include "ObligationReplay.h"
+
+// Stamped by CMake add_compile_definitions; fallbacks for editors/tools.
+#ifndef CAJETA_VERSION
+#define CAJETA_VERSION "0.0.0-unknown"
+#endif
+#ifndef CAJETA_GIT_HASH
+#define CAJETA_GIT_HASH "unknown"
+#endif
 #include "CajetaModule.h"
 #include "NativeLink.h"
 #include "CajetaLlvmVisitor.h"
 #include "Optimizer.h"
 #include "StdlibEmbedded.h"
+#include "cajeta/dbg/DebugCodegen.h"
+#include "cajeta/xref/XrefIndex.h"
+#include "cajeta/xref/StaticReceiverCapture.h"
 #include "cajeta/runtime/EmbeddedTls.h"
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
@@ -139,9 +155,9 @@ namespace cajeta {
     // Null in production: every Compiler owns its context and resets globals.
     // The test StdlibCache installs a shared context here so a primed stdlib
     // survives across Compiler instances (see Compiler ctor).
-    llvm::LLVMContext* Compiler::s_sharedContext = nullptr;
-    bool Compiler::s_sharedInitialized = false;
-    bool Compiler::s_reuseHazardArmed = false;
+    thread_local llvm::LLVMContext* Compiler::s_sharedContext = nullptr;
+    thread_local bool Compiler::s_sharedInitialized = false;
+    thread_local bool Compiler::s_reuseHazardArmed = false;
 
     void Compiler::rebuildTargetMachine() {
         string error;
@@ -278,7 +294,46 @@ namespace cajeta {
 
         std::any visitViewDeclaration(
                 CajetaParser::ViewDeclarationContext* ctx) override {
-            registerAndRecurse(ctx->identifier()->getText(), ctx);
+            // markView=true so a cross-file forward reference synthesizes a
+            // CajetaView placeholder (see fromContext), not a class shell.
+            registerAndRecurse(ctx->identifier()->getText(), ctx,
+                                /*markEnum=*/false, /*markValueType=*/false,
+                                /*markInterface=*/false, /*markView=*/true);
+            return defaultResult();
+        }
+
+        std::any visitRecordDeclaration(
+                CajetaParser::RecordDeclarationContext* ctx) override {
+            // Records are value types from birth — cross-file placeholders
+            // must carry VALUE_TYPE_FLAG | BY_VALUE_FLAG (same as @ValueType).
+            registerAndRecurse(ctx->identifier()->getText(), ctx,
+                                /*markEnum=*/false, /*markValueType=*/true);
+            captureTemplateMeta(ctx);
+            // nucleo-frame U1 — every record MAY become a Table<R> schema,
+            // whose instantiation synthesizes the `<R>Cols` builder
+            // companion. Archive that name now (the @GenerateMock sibling
+            // pattern) so a reference BEFORE the instantiation fires — a
+            // helper signature above the table declaration, a sibling file —
+            // resolves to a placeholder runCompanionSynthesizers later
+            // FILLS. Cost when never referenced: one archive entry. A
+            // referenced-but-never-instantiated companion is caught by
+            // validatePlaceholders with a clear unresolved-placeholder
+            // error, never a silent shell.
+            // Same pattern for the U4 `<R>Rows` typed-row cursor companion.
+            {
+                std::string prefix;
+                if (!package.empty()) prefix = package;
+                for (auto& e : enclosingStack) {
+                    if (!prefix.empty()) prefix += ".";
+                    prefix += e;
+                }
+                if (!prefix.empty()) prefix += ".";
+                for (const char* suffix : {"Cols", "Rows"}) {
+                    std::string shortName =
+                        ctx->identifier()->getText() + std::string(suffix);
+                    CajetaType::registerArchive(prefix + shortName, shortName);
+                }
+            }
             return defaultResult();
         }
 
@@ -343,7 +398,8 @@ namespace cajeta {
                                  antlr4::tree::ParseTree* tree,
                                  bool markEnum = false,
                                  bool markValueType = false,
-                                 bool markInterface = false) {
+                                 bool markInterface = false,
+                                 bool markView = false) {
             // Compose canonical from package + enclosing class
             // stack + this short name. Mirrors CajetaLlvmVisitor's
             // visitClassDeclaration package-adjustment for nested
@@ -360,6 +416,7 @@ namespace cajeta {
             if (markEnum) CajetaType::markArchiveEnum(canonical);
             if (markValueType) CajetaType::markArchiveValueType(canonical);
             if (markInterface) CajetaType::markArchiveInterface(canonical);
+            if (markView) CajetaType::markArchiveView(canonical);
             lastCanonical = canonical;
             enclosingStack.push_back(shortName);
             visitChildren(tree);
@@ -379,6 +436,18 @@ namespace cajeta {
             std::vector<cajeta::TypeParameter> params;
             for (auto* tp : tps->typeParameter()) {
                 cajeta::TypeParameter param(tp->identifier()->getText());
+                // A `#` on a type-parameter declaration carries no meaning, as on
+                // a type argument: ownership is per-call. Reject it by name.
+                if (tp->REFERENCE() != nullptr) {
+                    throw Exception(
+                        "`#` on a type parameter declaration is retired: "
+                        "ownership is per-call under title-tracking "
+                        "(specs/title-tracking-spec.md §8.1) — drop the `#` "
+                        "from `<#" + param.name + ">` (a must-own edge is "
+                        "spelled on the FORMAL, `f(#" + param.name + " x)`)",
+                        "CAJETA_ERROR_TYPE_TRANSFER_RETIRED");
+                }
+                param.owningRequired = false;
                 if (auto* pt = tp->primitiveType()) {
                     // Non-type (integer-constant) parameter: `primitiveType identifier`.
                     param.isNonType = true;
@@ -509,6 +578,18 @@ namespace cajeta {
                             antlr4::ANTLRInputStream& input,
                             const char* label,
                             bool quiet = false) {
+        // Stamp the stream with the file these tokens come from, so every AST node
+        // built from them records its TRUE origin rather than "whatever module was
+        // active when codegen reached it" (ide-symbol-index 2.2.8).
+        //
+        // Every real-source parse — user, stdlib, dependency archive, lint sibling —
+        // arrives here. The SYNTHETIC re-parses (template instantiation, mock
+        // synthesis, source synthesis) build their own streams and never pass
+        // through, so their tokens carry no source name at all. That is the point:
+        // a snippet's line numbers are relative to the snippet, and a node that
+        // cannot name its file is a node whose position must never be exported.
+        input.name = module->currentSourceFile();
+
         CajetaLexer lexer(&input);
         CommonTokenStream tokens(&lexer);
         tokens.fill();
@@ -543,8 +624,17 @@ namespace cajeta {
         }
         auto prevActive = CajetaModule::getActiveModule();
         CajetaModule::setActiveModule(module);
-        auto visitor = new CajetaLlvmVisitor(module);
-        parseTree->accept(visitor);
+        // RAII: the semantic visitor throws on many inputs, so restore the
+        // active-module global and free the visitor on ALL exits (throw or
+        // normal) — the old trailing delete/restore leaked and corrupted the
+        // active-module global on a thrown semantic error.
+        struct ActiveModuleRestore {
+            decltype(prevActive) prev;
+            ~ActiveModuleRestore() { CajetaModule::setActiveModule(prev); }
+        } activeRestore{prevActive};
+        std::unique_ptr<CajetaLlvmVisitor> visitor(
+            new CajetaLlvmVisitor(module));
+        parseTree->accept(visitor.get());
         // Skip the noisy tree dump for the stdlib parse — already-known
         // content, would drown out the user's parse tree in test logs.
         // For user code, the dump is **off by default** and gated behind
@@ -560,8 +650,7 @@ namespace cajeta {
                 std::cout << parseTree->toStringTree(&parser, true) << std::endl;
             }
         }
-        delete visitor;
-        CajetaModule::setActiveModule(prevActive);
+        // visitor freed + active module restored by RAII above.
     }
 
     // ───────────────────────────────────────────────────────────────────
@@ -616,7 +705,85 @@ namespace cajeta {
         // cajeta.xpu.mesh (Qem / MeshSimplifier) is the ONLY eager-prelude
         // consumer of cajeta.math; making it lazy keeps cajeta.math out of the
         // eager prelude (MathLazyParse — guarded by CompilerTests).
-        return pkg == "cajeta.xpu.mesh" || pkg.rfind("cajeta.xpu.mesh.", 0) == 0;
+        if (pkg == "cajeta.xpu.mesh" || pkg.rfind("cajeta.xpu.mesh.", 0) == 0) {
+            return true;
+        }
+        // cajeta.nucleo.column (the Arrow columnar substrate) imports
+        // cajeta.math (Tensor/DType) — same shape as cajeta.xpu.mesh: lazy,
+        // so a program that never touches columns keeps math out of the
+        // eager prelude (MathLazyParse bar).
+        if (pkg == "cajeta.nucleo.column"
+                || pkg.rfind("cajeta.nucleo.column.", 0) == 0) {
+            return true;
+        }
+        // cajeta.nucleo.nn + cajeta.nucleo.optim (the neural-net core) import
+        // cajeta.math too — same lazy shape (nucleo-nn-optim plan).
+        if (pkg == "cajeta.nucleo.nn"
+                || pkg.rfind("cajeta.nucleo.nn.", 0) == 0
+                || pkg == "cajeta.nucleo.optim"
+                || pkg.rfind("cajeta.nucleo.optim.", 0) == 0) {
+            return true;
+        }
+        // cajeta.nucleo.frame (the typed dataframe + DSL nodes) — lazy for
+        // the same reason (pulls columns/math when used).
+        return pkg == "cajeta.nucleo.frame"
+            || pkg.rfind("cajeta.nucleo.frame.", 0) == 0;
+    }
+
+    // compile-cache Unit 2 — the persistent stdlib-prime cache key (spec §2).
+    // Digest folds every embedded stdlib file (path + bytes; the table IS the
+    // transitive closure) plus the eager/lazy prelude split derived from the
+    // predicate above — so editing a stdlib source, adding a file, or moving
+    // a package between eager and lazy all re-key. The discriminator folds
+    // the compiler version AND git hash (a dev rebuild with unchanged VERSION
+    // still re-keys; a dirty same-hash tree is the accepted exposure, same as
+    // the build-tool IrCache) plus the stdlib-codegen-affecting flag set.
+    Compiler::PrimeCacheKey Compiler::stdlibPrimeCacheKey(
+            const CompilerFlags& flags) {
+        std::vector<std::pair<std::string, std::string>> files;
+        files.reserve(cajeta::stdlib::g_fileCount);
+        std::vector<std::string> lazyPkgs;
+        for (size_t i = 0; i < cajeta::stdlib::g_fileCount; ++i) {
+            const auto& f = cajeta::stdlib::g_files[i];
+            files.emplace_back(f.relativePath,
+                               std::string(f.content, f.contentBytes));
+            std::string rel = f.relativePath;
+            auto slash = rel.find_last_of('/');
+            std::string pkg = (slash == std::string::npos)
+                ? std::string() : rel.substr(0, slash);
+            std::replace(pkg.begin(), pkg.end(), '/', '.');
+            if (isLazyStdlibPackage(pkg)) lazyPkgs.push_back(pkg);
+        }
+        std::sort(lazyPkgs.begin(), lazyPkgs.end());
+        lazyPkgs.erase(std::unique(lazyPkgs.begin(), lazyPkgs.end()),
+                       lazyPkgs.end());
+        std::string preludeTag = "lazy:";
+        for (auto& p : lazyPkgs) { preludeTag += p; preludeTag += ','; }
+
+        // The flag subset that changes the stdlib module's IR. Runtime-only
+        // toggles (poisonFree / dropChainValidate / stackTraceCapture) are
+        // deliberately excluded — same set stdlibReusable() ignores.
+        std::vector<std::pair<std::string, std::string>> flagSet = {
+            {"bounds", std::to_string((int) flags.bounds)},
+            {"nullChecks", std::to_string((int) flags.nullChecks)},
+            {"overflowChecks", std::to_string((int) flags.overflowChecks)},
+            {"sourceTags", flags.sourceTags ? "1" : "0"},
+            {"liveSet", std::to_string((int) flags.liveSet)},
+            {"ubTraps", flags.ubTraps ? "1" : "0"},
+            {"useAfterMoveRt", flags.useAfterMoveRt ? "1" : "0"},
+            {"opt", std::to_string((int) flags.opt)},
+            {"debugInfo", flags.debugInfo ? "1" : "0"},
+            {"lineInfo", flags.lineInfo ? "1" : "0"},
+            {"lazyScope", flags.lazyScope ? "1" : "0"},
+            {"profileCounters", flags.profileCounters ? "1" : "0"},
+        };
+        PrimeCacheKey key;
+        key.discriminator = std::string("jitprime-")
+            + buildtool::computeCacheDiscriminator(
+                  std::string(CAJETA_VERSION) + "+" + CAJETA_GIT_HASH,
+                  std::move(flagSet));
+        key.digest = buildtool::primeDigestOver(std::move(files), preludeTag);
+        return key;
     }
 
     // Instrumentation + lazy bookkeeping. thread_local (threadsafe U4): each
@@ -659,6 +826,18 @@ namespace cajeta {
                 == g_lazyQueue.end()) {
             g_lazyQueue.push_back(pkg);
         }
+        // Lazy-package DEPENDENCIES that must be concrete BEFORE the package
+        // parses (the drain pops LIFO, so a dep pushed AFTER drains FIRST):
+        // cajeta.nucleo.column declares FIELDS of cajeta.math types
+        // (`Tensor<T> root`), and field-type resolution needs the real class
+        // at parse — a mid-parse import note would drain math only after
+        // Column.cajeta already failed with UNKNOWN_TYPE. (cajeta.xpu.mesh
+        // needs no entry: it touches math only in method bodies, which
+        // resolve after the drain.)
+        if (pkg == "cajeta.nucleo.column"
+                || pkg.rfind("cajeta.nucleo.column.", 0) == 0) {
+            noteStdlibImportImpl("cajeta.math");
+        }
     }
 
     // Fully parse every enqueued lazy package into the stdlib module, then
@@ -676,6 +855,19 @@ namespace cajeta {
             std::string pkg = g_lazyQueue.back();
             g_lazyQueue.pop_back();
             if (g_lazyParsed.count(pkg)) continue;
+            // Reuse-cache hazard gate (test-only; see setReuseHazardArmed):
+            // parsing a lazy stdlib package PER-TEST appends concrete classes
+            // to the cached stdlib module, but the reuse path's codegen loop
+            // deliberately excludes that module (it must stay byte-pristine)
+            // — the new classes' methods would remain DECLARATIONS and the
+            // JIT would fail with "Symbols not found" (frame/column classes
+            // pulled in by companion synthesis were the first to hit this).
+            // Novel lazy content is the same hazard class as a novel
+            // stdlib-template instantiation: abort BEFORE parsing so the
+            // harness retries on a fresh, fully-isolated Compiler.
+            if (Compiler::isReuseHazardArmed()) {
+                throw cajeta::ReuseHazardAbort{};
+            }
             // Mark parsed BEFORE walking the package's files: a body within the
             // package that references one of its own lazy types (e.g.
             // Matrix.transpose returns Matrix<T,C,R>) re-fires the import hook;
@@ -693,6 +885,7 @@ namespace cajeta {
                 auto dot = fileName.find_last_of('.');
                 if (dot != std::string::npos) fileName = fileName.substr(0, dot);
                 stdlib->setQName(QualifiedName::getOrInsert(fileName, pkg));
+                stdlib->setCurrentSourceFile(rel);   // see parseStdlibInto
                 antlr4::ANTLRInputStream in(
                     std::string(f.content, f.contentBytes));
                 parseSource(stdlib, in, /*label=*/"");
@@ -700,6 +893,7 @@ namespace cajeta {
             g_stdlibParsedPackages.insert(pkg);
             parsedAny = true;
         }
+        stdlib->setCurrentSourceFile("");
         stdlib->setQName(originalQName);
         if (parsedAny) {
             CajetaModule::buildPendingPrototypes();
@@ -764,11 +958,17 @@ namespace cajeta {
                 fileName = fileName.substr(0, dotIdx);
             }
             module->setQName(QualifiedName::getOrInsert(fileName, pkg));
+            // Each class records the file it is declared in (external-debug §6).
+            // The module's source path is empty here — the whole stdlib is one
+            // module — so without this every stdlib frame renders as `(:268)`.
+            // relativePath is already build-root independent.
+            module->setCurrentSourceFile(relPath);
             antlr4::ANTLRInputStream stdlibInput(
                 std::string(f.content, f.contentBytes));
             parseSource(module, stdlibInput, /*label=*/"");
             g_stdlibParsedPackages.insert(pkg);
         }
+        module->setCurrentSourceFile("");
         module->setQName(originalQName);
 
         // Snapshot the eager set: these packages stay parsed-and-available in the
@@ -862,6 +1062,36 @@ namespace cajeta {
         return (stat(sourcePath.c_str(), &buffer) == 0);
     }
 
+    // Emitted per user module, not into the stdlib module: ensureStdlibModule
+    // early-returns on the reuse path, so a flag-dependent ctor there would
+    // bake in the first compile's value (ExceptionReview 3.7).
+    void emitStackTraceCaptureInit(CajetaModulePtr module) {
+        llvm::Module* lmod = module->getLlvmModule();
+        if (!lmod) return;
+        const char* ctorName = "__cajeta_init_stack_trace_capture";
+        if (lmod->getFunction(ctorName)) return;   // re-entry guard
+
+        auto& llvmCtx = *module->getLlvmContext();
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(llvmCtx);
+        // Setter is defined by the linked runtime bitcode.
+        llvm::FunctionType* setterTy = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(llvmCtx), {i32Ty}, /*isVarArg=*/false);
+        llvm::FunctionCallee setter = lmod->getOrInsertFunction(
+            "__cajeta_set_stack_trace_capture", setterTy);
+
+        llvm::FunctionType* ctorTy = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(llvmCtx), /*isVarArg=*/false);
+        llvm::Function* ctor = llvm::Function::Create(
+            ctorTy, llvm::Function::PrivateLinkage, ctorName, lmod);
+        llvm::BasicBlock* bb = llvm::BasicBlock::Create(llvmCtx, "entry", ctor);
+        llvm::IRBuilder<> b(bb);
+        b.CreateCall(setter, {llvm::ConstantInt::get(
+            i32Ty, module->getFlags().stackTraceCapture ? 1 : 0)});
+        b.CreateRetVoid();
+
+        llvm::appendToGlobalCtors(*lmod, ctor, /*Priority=*/65535);
+    }
+
     CajetaModulePtr Compiler::createModule(string sourcePath, string sourceRootPath, string targetRootPath) {
         if (!fileExists(sourcePath))
             throw FileNotFoundException(sourcePath);
@@ -878,6 +1108,7 @@ namespace cajeta {
         // set, scrub the absolute source path the constructor embedded so the
         // emitted IR is byte-identical across hosts.
         module->canonicalizeSourceFileName();
+        emitStackTraceCaptureInit(module);
         return module;
     }
 
@@ -955,6 +1186,11 @@ namespace cajeta {
                 auto extMod = std::make_shared<CajetaModule>(
                     activeContext, qName, targetTriple, targetMachine);
                 extMod->setFlags(flags);
+                // Synthetic module: no source path, so its classes would record
+                // no declaring file and every dependency frame would render as
+                // `Type.method(:NN)`. entry.name is already the archive-relative
+                // path (`<pkg>/<Class>.cajeta`) — exactly the remapped form.
+                extMod->setCurrentSourceFile(entryName);
                 externalModules.push_back(extMod);
 
                 auto prevActive = CajetaModule::getActiveModule();
@@ -1022,6 +1258,19 @@ namespace cajeta {
         CajetaModule::buildPendingPrototypes();
         CajetaModule::setActiveModule(prevActive);
 
+        // An EAGER stdlib class (e.g. cajeta.xpu.Qem / CooperativeMatrix) can
+        // reference a LAZY type (Matrix → cajeta.math), which the import hook
+        // only PRESCANS + enqueues (noteStdlibImportImpl). The non-reuse path
+        // drains on the next user-source parse (drainLazyStdlib), but the
+        // stdlib-reuse prime goes straight from here to codegen — so drain
+        // here to fully parse any lazy package the eager prime enqueued,
+        // filling its placeholders. Else runCodegenPasses'
+        // validatePlaceholders throws CAJETA_ERROR_UNRESOLVED_PLACEHOLDER
+        // (e.g. bare "Matrix"). Idempotent / no-op when the queue is empty,
+        // so the non-reuse path is unaffected. (compile-cache 0.1, ported
+        // from feature/compile-cache 03764c17.)
+        drainLazyStdlib();
+
         emitUnrecoverableMarker(stdlib);
         return stdlib;
     }
@@ -1046,6 +1295,27 @@ namespace cajeta {
         g_stdlibParsedPackages = g_stdlibEagerBaseline;
     }
 
+    // lint-server sibling-context reuse (spec §4): the sibling sweep may parse
+    // a lazy stdlib package (a `cajeta.math` importer), mutating the four lazy
+    // registries above. The context baseline must snapshot them post-sweep so a
+    // warm restore reinstates "already parsed" exactly, rather than resetLazy's
+    // roll-back-to-eager-floor. Opaque handle so callers don't touch the sets.
+    Compiler::LazyStdlibState Compiler::captureLazyStdlibState() {
+        LazyStdlibState s;
+        s.parsedPackages = g_stdlibParsedPackages;
+        s.prescanned = g_lazyPrescanned;
+        s.parsed = g_lazyParsed;
+        s.queue = g_lazyQueue;
+        return s;
+    }
+
+    void Compiler::restoreLazyStdlibState(const LazyStdlibState& s) {
+        g_stdlibParsedPackages = s.parsedPackages;
+        g_lazyPrescanned = s.prescanned;
+        g_lazyParsed = s.parsed;
+        g_lazyQueue = s.queue;
+    }
+
     void Compiler::compile(CajetaModulePtr module) {
         ensureStdlibModule();
         modules.push_back(module);
@@ -1064,7 +1334,8 @@ namespace cajeta {
     }
 
     void Compiler::lint(const string& file, const string& sourceRoot,
-                        const string& shadow) {
+                        const string& shadow, bool skipContextRegistration,
+                        const std::function<void()>& afterContextRegistration) {
         // Single-file diagnostics: reuse the compile pipeline's parse +
         // semantic/validation/DI passes, then STOP before the Phase-1/2 codegen
         // loop and any emit (compiler-lint-mode-spec §3). With --source-root,
@@ -1073,7 +1344,30 @@ namespace cajeta {
         // emit, not in the validated `modules` set) so cross-file references
         // resolve while diagnostics stay scoped to the target
         // (lint-source-root-spec §3/§4).
+
+        // xref (ide-symbol-index §2.0.2): armed BEFORE the stdlib parse so every
+        // AST node interns its source and template members are captured. What
+        // lint-mode capture yields, honestly: declarations, inheritance, enums,
+        // template members, and parse-time type references. NOT calls or field
+        // accesses — body resolveTypes runs only inside Method::generateCode,
+        // the codegen phase lint deliberately stops before. Per-edit, the
+        // buffer's own declarations are what must stay fresh; edges refresh on
+        // build or whole-root export.
+        xref::resetCapture();
+        xref::setCaptureEnabled(!flags.emitXref.empty());
+
         ensureStdlibModule();
+
+        // Ingest --classpath dependency archives (no-op when none given), so a
+        // single-file lint resolves dependency types exactly as the whole-root
+        // export does. Without this, a reference to a dependency type (e.g.
+        // `Gzip.decompress(...)` against a codec `.cja`) has no declaration to
+        // vouch it and pruneDanglingEdges drops the edge — the per-edit stream
+        // would then CLOBBER the good whole-root shard with one missing every
+        // dependency reference. Armed after capture is on so the dependency
+        // declarations are emitted as xref targets too.
+        ingestClasspath();
+
         const bool json = getFlags().diagFormat == DiagFormat::Json;
 
         std::filesystem::path targetPath(file);
@@ -1081,8 +1375,12 @@ namespace cajeta {
             ? targetPath.parent_path().string() : ".";
         if (dir.empty() || dir.back() != '/') dir.append("/");
 
-        if (!sourceRoot.empty()) {
+        if (!sourceRoot.empty() && !skipContextRegistration) {
             registerLintContext(sourceRoot, file, shadow, json);
+            // lint-server §4: with the sibling sweep just done and the target
+            // not yet parsed, this is the point to snapshot the sibling context
+            // baseline (warm-lint resweep path) — it excludes the target.
+            if (afterContextRegistration) afterContextRegistration();
         }
 
         // Prescan the target file so its own (possibly forward) declarations
@@ -1096,6 +1394,31 @@ namespace cajeta {
         }
 
         CajetaModulePtr module = createModule(file, dir, dir);
+
+        // FQNs derive from the module's PATH-derived package — the `package`
+        // declaration is validated against it, never adopted (onPackageDeclaration,
+        // and under lint even the check is skipped). Rooted at its own directory,
+        // this module would declare `Target`, while the whole-root export and a
+        // real compile declare `demo.Target` — and an index ingesting both would
+        // fracture a file's symbols on every edit. Re-derive the identity from the
+        // ORIGINAL path (--shadow for a staged buffer, else the file) relative to
+        // --source-root, exactly as a compile rooted there would.
+        if (!sourceRoot.empty()) {
+            string rootSlash = sourceRoot;
+            if (rootSlash.back() != '/') rootSlash.append("/");
+            string original = !shadow.empty() ? shadow : file;
+            if (original.rfind(rootSlash, 0) == 0) {
+                string rel = original.substr(rootSlash.size());
+                auto dot = rel.rfind(CAJETA_EXTENSION);
+                if (dot != string::npos) rel = rel.substr(0, dot);
+                auto slash = rel.find_last_of('/');
+                string cls = slash == string::npos ? rel : rel.substr(slash + 1);
+                string pkg = slash == string::npos ? "" : rel.substr(0, slash);
+                std::replace(pkg.begin(), pkg.end(), '/', '.');
+                module->setQName(QualifiedName::getOrInsert(cls, pkg));
+            }
+        }
+
         compile(module);  // parse (target diagnostics) + buildPendingPrototypes
 
         // The remaining diagnostic passes the multi-file compile() runs after
@@ -1105,6 +1428,11 @@ namespace cajeta {
         CajetaModule::buildPendingPrototypes();
         CajetaModule::resolveAdviceMatches();
         CajetaModule::resolveDependencyGraph();
+
+        // Static-receiver type references (see lintRoot) for the target's own
+        // body — so per-edit navigation on `Gzip.decompress(...)` matches the
+        // whole-root export.
+        xref::captureStaticReceivers(module);
     }
 
     // --source-root: register every sibling `.cajeta` under `root` (except the
@@ -1168,16 +1496,277 @@ namespace cajeta {
         CajetaModule::buildPendingPrototypes();
     }
 
+    string Compiler::computeOwnCacheDiscriminator() const {
+        const char* emitName =
+            emitMode == EmitMode::IR ? "ir"
+            : emitMode == EmitMode::Obj ? "obj"
+            : emitMode == EmitMode::Cja ? "cja"
+            : emitMode == EmitMode::Uber ? "uber" : "exe";
+        auto pairs = cacheFlagPairs(flags, emitName, targetTriple);
+        // @Profile gating changes which components codegen at all.
+        pairs.emplace_back("profile", CajetaModule::getActiveProfile());
+        // Subtarget selection changes native-object output (Phase 6-alt
+        // caches .o files under this same key).
+        pairs.emplace_back("cpu", cpu);
+        pairs.emplace_back("features", features);
+        // A changed classpath archive changes user-module IR (signatures,
+        // inlined dep declarations) without touching any source digest —
+        // fold each archive's CONTENT into the key so a dep bump re-keys
+        // the whole cache tree (coarse, sound).
+        for (const auto& cp : classpath) {
+            std::ifstream in(cp, std::ios::binary);
+            std::stringstream ss;
+            ss << in.rdbuf();
+            pairs.emplace_back("classpath:" + cp,
+                               buildtool::sha256Hex(ss.str()));
+        }
+        // Fold the git hash in: two dev builds of the same VERSION can differ
+        // in codegen, and reusing IR across them would be a silent miscompile.
+        return buildtool::computeCacheDiscriminator(
+            CAJETA_VERSION "+" CAJETA_GIT_HASH, pairs);
+    }
+
+    bool Compiler::setupCacheManifest() {
+        cacheManifest.reset();
+        if (cacheManifestPath.empty()) return true;
+
+        auto loaded = CacheManifest::load(cacheManifestPath);
+        if (!loaded) {
+            // Malformed manifest = the caller's contract is broken; silently
+            // proceeding would produce an artifact the caller mis-keys.
+            throw std::runtime_error(llvm::toString(loaded.takeError()));
+        }
+
+        // v1 interaction guards (plan Phase 3): tree-shake RTA and the lean
+        // keep-set both derive from LIVE codegen, which clean modules don't
+        // produce — a skipped module's stdlib references would be pruned and
+        // its reflection usage missed. Forced values feed the discriminator,
+        // so manifest builds key their own consistent cache tree.
+        flags.treeShake = TreeShake::Off;
+        flags.linkMode = LinkMode::Full;
+
+        string own = computeOwnCacheDiscriminator();
+        cout << "[incremental] discriminator " << own << "\n";
+
+        if (!loaded->populateMode() && loaded->discriminator != own) {
+            cerr << "cajeta: [incremental] cache-manifest discriminator "
+                    "mismatch (manifest " << loaded->discriminator
+                 << " != compiler " << own
+                 << ") — ignoring cache, full rebuild\n";
+            return true;   // manifest dropped; plain full build
+        }
+        cacheManifest = std::move(*loaded);
+        return true;
+    }
+
+    // Collect everything the compiler currently holds resolved and write it out.
+    //
+    // Emitted BEFORE tree-shaking, deliberately: reachability is a property of one
+    // entry point, and a developer still navigates to — and renames — code that this
+    // build happens not to call. An index that dropped unreachable declarations
+    // would make Ctrl-click fail on live source.
+    static void writeXrefIndex(const std::string& path, const std::string& sourceRootPath) {
+        xref::XrefIndex index;
+        xref::collectDeclarationsAndInheritance(index, sourceRootPath);
+        // Call edges were recorded as each callee was resolved; type and field
+        // references as each name was resolved.
+        xref::drainCalls(index, sourceRootPath);
+        xref::drainReferences(index, sourceRootPath);
+        // Invariant: every edge endpoint names a declaration this index carries.
+        // Anything else is a Ctrl-click into the void.
+        index.pruneDanglingEdges();
+        if (!index.writeToFile(path)) {
+            std::cerr << "cajeta: warning — could not write xref index to "
+                      << path << std::endl;
+        }
+    }
+
+    int Compiler::lintRoot(const string& root) {
+        // Whole-root export (§2.0.3): cold indexing. No entry method exists for
+        // a library or the stdlib, so this parses everything and stops where
+        // lint stops — declarations, inheritance, enums, template members, and
+        // parse-time type references, for EVERY file under the root. Call and
+        // field-access edges need body resolution (codegen) and come from a
+        // real build's --emit-xref instead.
+        xref::resetCapture();
+        xref::setCaptureEnabled(!flags.emitXref.empty());
+
+        ensureStdlibModule();
+        // Classpath dependencies (§8.3.1): ingest each `.cja`'s ClassSource
+        // entries so the export carries the dependency's declarations AND the
+        // project's references into it resolve — otherwise Ctrl-click on a
+        // `dev.cajeta.codec` type has no target. Signature-only (no codegen),
+        // like the stdlib parse; no-op when no --classpath was given.
+        ingestClasspath();
+        const bool json = getFlags().diagFormat == DiagFormat::Json;
+        prescanSourceRoot(root, json);
+
+        string rootSlash = root;
+        if (rootSlash.empty() || rootSlash.back() != '/') rootSlash.append("/");
+
+        // Sorted, for determinism (§2.0.7): directory enumeration order is
+        // filesystem-dependent, and the parse order decides synthesized-name
+        // tie-breaks. The writer sorts records, but same input must mean same
+        // PARSE, not just same sort.
+        namespace fs = std::filesystem;
+        std::vector<std::string> files;
+        std::error_code ec;
+        for (fs::recursive_directory_iterator it(root, ec), end; it != end;
+             it.increment(ec)) {
+            if (ec) break;
+            if (!it->is_regular_file()) continue;
+            if (it->path().extension() != CAJETA_EXTENSION) continue;
+            files.push_back(it->path().string());
+        }
+        std::sort(files.begin(), files.end());
+
+        // One broken file must not sink the other N-1 (the same guarantee the
+        // compile path holds — ide-symbol-index 2.1.8). Errors still surface on
+        // the diagnostic channel; the export just is not hostage to them.
+        int failed = 0;
+        for (const auto& path : files) {
+            try {
+                CajetaModulePtr module = createModule(path, rootSlash, rootSlash);
+                compile(module);
+            } catch (SyntaxErrorException&) {
+                ++failed;              // diagnostics already emitted by the parse
+            } catch (cajeta::Exception& e) {
+                ++failed;
+                if (json) emitJsonDiagnostic("error", e.getErrorId(),
+                                             e.getMessage(), path);
+                else std::cerr << "cajeta: " << path << ": " << e.getMessage()
+                               << "\n";
+            } catch (const std::exception& e) {
+                ++failed;
+                if (json) emitJsonDiagnostic("error", "", e.what(), path);
+                else std::cerr << "cajeta: " << path << ": " << e.what() << "\n";
+            }
+        }
+
+        // The resolution passes lint runs. Best-effort each: a failure here is
+        // one project's semantic problem, not a reason to withhold the index of
+        // everything that DID resolve — but it is reported, never swallowed.
+        auto guarded = [&](const char* pass, auto fn) {
+            try {
+                fn();
+            } catch (cajeta::Exception& e) {
+                ++failed;
+                if (json) emitJsonDiagnostic("error", e.getErrorId(), e.getMessage());
+                else std::cerr << "cajeta: " << pass << ": " << e.getMessage() << "\n";
+            } catch (const std::exception& e) {
+                ++failed;
+                if (json) emitJsonDiagnostic("error", "", e.what());
+                else std::cerr << "cajeta: " << pass << ": " << e.what() << "\n";
+            }
+        };
+        guarded("validate", [] { CajetaModule::validatePlaceholders(); });
+        guarded("prototypes", [] { CajetaModule::buildPendingPrototypes(); });
+        guarded("advice", [] { CajetaModule::resolveAdviceMatches(); });
+        guarded("dependencies", [] { CajetaModule::resolveDependencyGraph(); });
+
+        // Static method-call / field-access receivers (`Gzip.decompress(...)`)
+        // resolve in codegen, which the export stops before — walk the parsed
+        // bodies here to record the receiver's TYPE reference (scope-aware, so
+        // a local/field of the same name is never mistaken for a type). Skip
+        // the stdlib module: the project's own files are what a developer
+        // navigates.
+        auto stdlib = CajetaModule::getStdlibModule();
+        for (auto& m : modules) {
+            if (m && m != stdlib) guarded("static-receivers",
+                [&] { xref::captureStaticReceivers(m); });
+        }
+
+        writeXrefIndex(flags.emitXref, rootSlash);
+        return failed;
+    }
+
+    void Compiler::emitLintXrefStream(const string& file, const string& sourceRoot,
+                                      const string& shadow) {
+        if (flags.emitXref != "-") return;   // stream not requested
+
+        // The linted file's records carry the name its MODULE gave them —
+        // computed here exactly as lint()'s createModule did, so the filter can
+        // never drift from the capture. For a staged buffer that is the temp
+        // file's basename; for an in-root file, its name relative to its own
+        // directory.
+        std::filesystem::path targetPath(file);
+        string dir = targetPath.has_parent_path()
+            ? targetPath.parent_path().string() : ".";
+        if (dir.empty() || dir.back() != '/') dir.append("/");
+        const string targetKey = CajetaModule::remapSourcePath(
+            file, dir, flags.debugPrefixMap);
+
+        // Report against the ORIGINAL path (--shadow), root-relative when it is
+        // under the source root — the form the whole-root document uses, so the
+        // consumer's index keys agree across both feeds. A record reported
+        // against the staged temp path would be ingested under a key no editor
+        // buffer will ever ask about.
+        string reportAs = shadow.empty() ? file : shadow;
+        if (!sourceRoot.empty()) {
+            string rootSlash = sourceRoot;
+            if (rootSlash.back() != '/') rootSlash.append("/");
+            if (reportAs.rfind(rootSlash, 0) == 0) {
+                reportAs = reportAs.substr(rootSlash.size());
+            }
+        }
+
+        xref::XrefIndex index;
+        xref::collectDeclarationsAndInheritance(index, sourceRoot);
+        xref::drainCalls(index, sourceRoot);
+        xref::drainReferences(index, sourceRoot);
+        // The prune runs against the FULL index — a target-file reference to a
+        // sibling or stdlib declaration survives because that declaration is in
+        // the index, even though only the target's records are streamed.
+        index.pruneDanglingEdges();
+        std::cerr << index.toNdjson(targetKey, reportAs) << std::flush;
+    }
+
     void Compiler::compile(string entryMethod, string sourceRootPath, string archiveRootPath) {
         // Stash on the instance so the post-Phase-2 emitCMainShim call can
         // see what the user passed without threading it through Phase 1/2.
         this->entryMethod = entryMethod;
+
+        // ide-symbol-index 1.5: a template's body walk is skipped, so it holds no
+        // Method objects — the visitor must capture its members declaratively as it
+        // parses, before that skip. Arm it here and clear last compile's capture.
+        // Off unless --emit-xref, so a normal build captures nothing.
+        xref::resetCapture();
+        xref::setCaptureEnabled(!flags.emitXref.empty());
+
+        // Emit the index on the way OUT — normal return or exception unwind alike
+        // (ide-symbol-index 2.1.8). A syntax error throws SyntaxErrorException from
+        // deep inside the walk, so an export written at the end of this function
+        // never ran for a broken file. That is the case that matters most: the
+        // plugin re-runs the compiler on the user's buffer as they type, and a
+        // buffer mid-edit is broken most of the time. Failing to export there
+        // freezes navigation exactly while the developer is working.
+        //
+        // Partial, never wrong: the file that failed to parse contributes fewer
+        // records (or none), and the ones that did resolve are as correct as ever.
+        struct XrefEmitGuard {
+            const std::string& path;
+            const std::string& root;
+            ~XrefEmitGuard() {
+                if (path.empty()) return;
+                // A throwing destructor during unwind is std::terminate. The index
+                // is a convenience; it must never take the compile down with it.
+                try {
+                    writeXrefIndex(path, root);
+                } catch (...) {
+                }
+            }
+        } xrefGuard{flags.emitXref, sourceRootPath};
 
         // DCE Tier-0b: clear the compile-scoped reflection-usage accumulator.
         // The compiler process is reused across compiles (the stdlib-prime
         // cache), so a flag left set by a prior reflection-using build would
         // wrongly force keep-all here. Repopulated during the codegen loop.
         CajetaModule::resetReflectionKeep();
+
+        // Incremental compilation: load + gate the cache manifest BEFORE any
+        // module (incl. stdlib) is created, so the v1 flag guards it forces
+        // are what every module's codegen sees. Throws on a malformed file.
+        setupCacheManifest();
 
         if (sourceRootPath[sourceRootPath.size() - 1] != '/') {
             sourceRootPath.append("/");
@@ -1226,20 +1815,93 @@ namespace cajeta {
         // anywhere under sourceRootPath into the archive registry.
         // Lets fromContext's miss path vouch for forward references
         // before deciding placeholder vs unknown-type error.
-        prescanSourceRoot(sourceRootPath, getFlags().diagFormat == DiagFormat::Json);
+        {
+            ProgressPhase phase("prescan", "Scanning sources");
+            prescanSourceRoot(sourceRootPath, getFlags().diagFormat == DiagFormat::Json);
+        }
 
-        list<string>* modulePaths = listModulePaths(sourceRootPath);
+        // unique_ptr: the many emit/link calls below throw, and the trailing
+        // `delete` never ran on those paths — leaking the list.
+        std::unique_ptr<list<string>> modulePaths(listModulePaths(sourceRootPath));
 
-        for (string sourcePath: *modulePaths) {
-            CajetaModulePtr module = createModule(sourcePath, sourceRootPath, archiveRootPath);
-            compile(module);
-            cout << "\n";
+        {
+            ProgressPhase phase("parse", "Parsing");
+
+            // One file's syntax error must not stop the files after it
+            // (ide-symbol-index 2.1.8). It used to: the exception propagated
+            // straight out of this loop, so every source enumerated after the
+            // broken one went unparsed — and since `listModulePaths` walks the
+            // directory, WHICH files those were depended on filesystem ordering.
+            // The same project indexed all of its declarations or none of them
+            // depending on where the broken file happened to land in readdir.
+            //
+            // That matters because the IDE plugin re-runs the compiler on the
+            // user's buffer as they type, and a buffer mid-edit is broken most of
+            // the time. Navigation across the REST of the project should not
+            // blink out because the file under the cursor is momentarily invalid.
+            //
+            // Parse everything we can, then rethrow the first error once the sweep
+            // is done. The build still fails, and fails with the same diagnostic it
+            // always did — no later phase ever runs on a partial parse. Safe to
+            // continue because parseSource throws BEFORE visiting (a syntactically
+            // broken tree segfaults the semantic visitor), so a file that fails
+            // leaves nothing half-registered behind it.
+            std::exception_ptr firstSyntaxError;
+            for (string sourcePath: *modulePaths) {
+                try {
+                    CajetaModulePtr module =
+                        createModule(sourcePath, sourceRootPath, archiveRootPath);
+                    compile(module);
+                } catch (SyntaxErrorException&) {
+                    // Diagnostics for this file are already on the error listener's
+                    // channel; all we keep is the failure itself.
+                    if (!firstSyntaxError) {
+                        firstSyntaxError = std::current_exception();
+                    }
+                }
+                cout << "\n";
+            }
+            if (firstSyntaxError) {
+                std::rethrow_exception(firstSyntaxError);
+            }
+        }
+
+        // Incremental compilation: bind manifest entries to their parsed
+        // modules. Clean designation is honored only when both cache slots
+        // actually exist (eviction between manifest authoring and now
+        // degrades that source to dirty — never a build failure).
+        if (cacheManifest) {
+            for (auto& module : modules) {
+                const string& sp = module->getSourcePath();
+                string rel = sp.rfind(sourceRootPath, 0) == 0
+                    ? sp.substr(sourceRootPath.size()) : sp;
+                const CacheManifestEntry* entry = cacheManifest->find(rel);
+                if (!entry) continue;
+                module->setCacheSlots(entry->bcPath, entry->obligationsPath,
+                                      entry->objPath);
+                if (!entry->clean) continue;
+                if (!std::filesystem::exists(entry->bcPath)
+                    || !std::filesystem::exists(entry->obligationsPath)) {
+                    cerr << "cajeta: [incremental] cache slot missing for "
+                         << rel << " — recompiling\n";
+                    continue;
+                }
+                // The `skip` line prints after obligation replay — a failed
+                // replay degrades the module back to dirty.
+                module->setIncrementalClean(true);
+            }
         }
 
 //        Method* method = Method::getArchive()[entryMethod];
 //        if (method == nullptr) {
 //            return;
 //        }
+
+        // Type/aspect/DI resolution: everything between "all sources parsed"
+        // and "codegen may begin". Scoped so the phase closes before the
+        // Phase 1/2 loop opens its own.
+        std::unique_ptr<ProgressPhase> resolvePhase =
+            std::make_unique<ProgressPhase>("resolve", "Resolving types");
 
         // Forward-reference validation. Catches any placeholder
         // CajetaClass created during the parse passes that no
@@ -1296,6 +1958,56 @@ namespace cajeta {
         // reflected type's #ClassObject regardless of the static T.
         CajetaClass::ensureClassWildcardInstantiated();
 
+        // Incremental: replay clean modules' recorded obligations so this
+        // build (re)contains every instantiation their cached .bc references
+        // — stdlib is re-primed fresh each compile, so a skipped module's
+        // template uses would otherwise never be instantiated. Runs BEFORE
+        // the codegen loop (bodies then generate normally); outside any
+        // codegen frame, so replay itself records no new obligations. Any
+        // failure degrades that module to dirty — sound, just slower.
+        if (cacheManifest) {
+            for (auto& module : modules) {
+                if (!module->isIncrementalClean()) continue;
+                std::ifstream obligations(module->getCacheObligationsSlot());
+                std::string line;
+                while (module->isIncrementalClean()
+                       && std::getline(obligations, line)) {
+                    // Replay must NEVER abort the build — recompiling the
+                    // module is always the sound fallback, so anything an
+                    // instantiation throws degrades to dirty too.
+                    std::string err;
+                    bool ok = false;
+                    try {
+                        ok = replayObligation(line, err);
+                    } catch (const std::exception& e) {
+                        err = e.what();
+                    } catch (...) {
+                        err = "instantiation threw during replay";
+                    }
+                    if (!ok) {
+                        cerr << "cajeta: [incremental] obligation replay"
+                                " failed for " << module->getSourcePath()
+                             << ": " << err << " — recompiling\n";
+                        module->setIncrementalClean(false);
+                    }
+                }
+            }
+            for (auto& module : modules) {
+                if (!module->isIncrementalClean()) continue;
+                const string& sp = module->getSourcePath();
+                cout << "[incremental] skip "
+                     << (sp.rfind(sourceRootPath, 0) == 0
+                         ? sp.substr(sourceRootPath.size()) : sp)
+                     << "\n";
+            }
+        }
+
+        // Resolution (incl. the incremental obligation replay above) is done;
+        // close its phase before codegen opens the next one.
+        resolvePhase.reset();
+        std::unique_ptr<ProgressPhase> codegenPhase =
+            std::make_unique<ProgressPhase>("codegen", "Generating code");
+
         // Phase 1 (signatures) + Phase 2 (bodies), looped until quiescent.
         // A user method body can trigger a stdlib template instantiation
         // mid-codegen (e.g. `xs.stream()` → ArrayStream<int32>); the new
@@ -1338,7 +2050,17 @@ namespace cajeta {
                     method->getLlvmFunctionType();
                 }
             }
+            // Late interface-vtable completion for classes that prototyped
+            // while an implemented interface was still a lazy-package
+            // placeholder (flagged in synthesizeInterfaceVTables).
             for (auto& module: codegenModules) {
+                module->completePendingInterfaceVTables();
+            }
+            for (auto& module: codegenModules) {
+                // Incremental: clean modules keep Phase-1 prototypes (other
+                // modules resolve calls against them) but skip Phase-2 bodies
+                // — their IR arrives wholesale from the cached .bc at emit.
+                if (module->isIncrementalClean()) continue;
                 for (auto& method: module->getAllMethods()) {
                     method->generateCode();
                 }
@@ -1350,6 +2072,15 @@ namespace cajeta {
             if (after == methodCount && after == prevMethodCount) break;
             prevMethodCount = after;
         }
+        // external-debug §4.1.1: a debugger must decode ANY local's dynamic type
+        // from its field metadata, including types the program never reflects on.
+        // RTTI emission is demand-driven (ReflectionKeep), so without this a
+        // --debug-info=full build could carry no field metadata at all and
+        // `cjlocals` would have nothing to read.
+        if (flags.debugInfo) {
+            CajetaModule::noteForceAll("--debug-info=full");
+        }
+
         // DCE Tier-0b-2a — keep-set (see lean-linker-dce.md §3.2). Codegen has
         // quiesced (reflectionKeep() is final) and finalizeClassObject below
         // reads keepsClass(). No non-reflect reflection ⇒ keep only @Retained;
@@ -1358,8 +2089,10 @@ namespace cajeta {
             auto& rk = CajetaModule::reflectionKeep();
             // 0c classifier: warn on every forces-ALL site. The build still
             // succeeds and is sound (conservative keep-all); the warning just
-            // points at the selector to tighten.
+            // points at the selector to tighten. --debug-info=full is exempt:
+            // there, keeping everything IS the point, not a selector to tighten.
             for (auto& reason : rk.forceAllReasons) {
+                if (reason == "--debug-info=full") continue;
                 std::cerr << "warning: [reflection-forces-keep-all] " << reason
                           << " — the lean linker retains the whole class registry"
                              " for this build.\n";
@@ -1465,6 +2198,12 @@ namespace cajeta {
         // without a decl are a no-op. Runs once, before clinit/emit.
         for (auto& [key, type] : CajetaType::getCanonicalMap()) {
             if (auto klass = std::dynamic_pointer_cast<CajetaClass>(type)) {
+                // Incremental: a clean module's cached .bc already carries its
+                // reflect bodies + finalized #ClassObjects; re-emitting here
+                // would mutate the parse-module that the emit-time swap
+                // discards (at best) or double-define (at worst).
+                if (auto mod = klass->getModule();
+                    mod && mod->isIncrementalClean()) continue;
                 klass->emitReflectInvokeBody();
                 klass->emitReflectNewBody();
                 // REFL-8/10: patch + register #ClassObjects deferred at populate
@@ -1482,6 +2221,7 @@ namespace cajeta {
         // with llvm.global_ctors so the JIT (and AOT) module-load
         // step executes it before any user code.
         for (auto& module: modules) {
+            if (module->isIncrementalClean()) continue;  // clinits ride the cached .bc
             for (auto& [name, klass] : module->getStructures()) {
                 if (klass) klass->generateStaticInitializers();
             }
@@ -1514,6 +2254,30 @@ namespace cajeta {
             emitCMainShim(entryMethod);
         }
 
+        // ide-symbol-index §2: export the compiler's RESOLVED view — declarations
+        // and inheritance edges carrying canonical parent FQNs — so the IDE can
+        // navigate, build hierarchies, and refactor without reimplementing Cajeta's
+        // name resolution in Kotlin (which would drift, with no oracle to catch it:
+        // cajetadoc parses but does not resolve).
+        //
+        // BEFORE tree-shaking, deliberately. Reachability is a property of THIS
+        // entry point; a developer still navigates to, and renames, code that this
+        // build happens not to call. An index that dropped unreachable declarations
+        // would make Ctrl-click fail on live source.
+        // (Emitted by the scope guard armed at the top of this function, so a
+        // compile that FAILS still exports what did resolve — see writeXrefIndex.)
+
+        // external-debug §3: every safepoint has claimed its loc_id by now, so
+        // the table is final. Serialize it into the stdlib module (always linked,
+        // same module the main shim goes into) with a ctor that registers it with
+        // the runtime — that is the ONLY way an external debugger, which has no
+        // compiler process, can map a loc_id to a source line. No-op unless
+        // --debug-info=full. Before tree-shaking, so the table + its ctor are
+        // present when reachability runs.
+        if (auto stdlibMod = CajetaModule::getStdlibModule()) {
+            dbg::emitDbgLocTable(stdlibMod);
+        }
+
         // Tier-1 RTA — after the main shim + all ctors exist, before per-module
         // emit. Report (Phase A) only prints; On (Phase B) prunes unreachable
         // cajeta method bodies so their native deps are never linked.
@@ -1526,20 +2290,129 @@ namespace cajeta {
             }
         }
 
+        // Codegen (incl. clinits, XPU kernels, the main shim, tree-shaking) is
+        // done; from here on it is IR settling, optimization/lowering and
+        // writing artifacts out.
+        codegenPhase.reset();
+        std::unique_ptr<ProgressPhase> emitPhase =
+            std::make_unique<ProgressPhase>("emit", "Emitting objects");
+
+        // Incremental: settle every module's IR before the emit branch.
+        // Clean modules swap in their cached .bc wholesale (the parse-module
+        // holds only declarations; codegen never ran, so a load failure is
+        // unrecoverable — fail loud, the caller retries manifest-less).
+        // Dirty modules snapshot post-codegen, pre-target-lowering IR +
+        // obligations into their slots (emitForModule's opt/lowering may
+        // mutate the module, and the clean path re-enters emit at exactly
+        // this point). Hoisted above the branch so archive emit (cja/uber)
+        // serializes the swapped modules too.
+        if (cacheManifest) {
+            for (auto& module: modules) {
+                if (module->isIncrementalClean()) {
+                    if (!module->loadBitcodeFromSlot()) {
+                        throw std::runtime_error(
+                            "[incremental] unusable cached bitcode "
+                            + module->getCacheBcSlot()
+                            + " — rebuild without --cache-manifest");
+                    }
+                } else {
+                    if (!module->writeBitcodeToSlot()) {
+                        cerr << "cajeta: [incremental] failed writing .bc"
+                                " slot " << module->getCacheBcSlot() << "\n";
+                    }
+                    if (!module->writeObligationsToSlot()) {
+                        cerr << "cajeta: [incremental] failed writing"
+                                " obligations slot "
+                             << module->getCacheObligationsSlot() << "\n";
+                    }
+                }
+            }
+            // Drop-function backfill (shared with the JIT — DropBackfill.h).
+            // A skipped consumer's cached .bc arrives with dangling extern
+            // drop declarations (incl. for instantiations created only
+            // INDIRECTLY during stdlib codegen — the obligation set can't
+            // enumerate these); scan the cache-loaded modules and synthesize
+            // exactly those.
+            std::vector<CajetaModulePtr> cacheLoaded;
+            for (auto& module: modules) {
+                if (module->isIncrementalClean()) cacheLoaded.push_back(module);
+            }
+            backfillDropFunctions(cacheLoaded,
+                std::vector<CajetaModulePtr>(modules.begin(), modules.end()));
+        }
+
         // Archive emit bundles every parsed module's bitcode into one
         // `.cja` file. The exploded per-module loop below is skipped —
         // a single artifact is the whole point.
         if (emitMode == EmitMode::Cja || emitMode == EmitMode::Uber) {
             emitArchive(archiveRootPath, emitMode == EmitMode::Uber);
         } else {
+            // Phase 6-alt: a clean module whose native object is cached
+            // skips target lowering entirely — copy the cached .o to its
+            // archive path and register it for the link. (Its .bc was still
+            // loaded above: the drop-fn backfill scan and cja emit need it.)
+            const bool objEmit =
+                emitMode == EmitMode::Obj || emitMode == EmitMode::Exe;
+            auto objPathFor = [](const CajetaModulePtr& m) {
+                string p = m->getArchiveRoot() + m->getArchivePath();
+                if (p.size() >= 3 && p.substr(p.size() - 3) == ".ll") {
+                    p.replace(p.size() - 3, 3, ".o");
+                }
+                return p;
+            };
+            int reusedObjects = 0;
             for (auto& module: modules) {
+                if (objEmit && module->isIncrementalClean()
+                    && !module->getCacheObjSlot().empty()
+                    && std::filesystem::exists(module->getCacheObjSlot())) {
+                    string objPath = objPathFor(module);
+                    std::error_code ec;
+                    std::filesystem::create_directories(
+                        std::filesystem::path(objPath).parent_path(), ec);
+                    std::filesystem::copy_file(
+                        module->getCacheObjSlot(), objPath,
+                        std::filesystem::copy_options::overwrite_existing,
+                        ec);
+                    if (!ec) {
+                        objectFiles.push_back(objPath);
+                        reusedObjects++;
+                        continue;
+                    }
+                    // Unreadable slot → fall through to a real lowering.
+                }
                 // Runtime is linked once into the stdlib module (see
                 // parseStdlibInto); user modules carry only extern decls
                 // for runtime helpers, resolved by the JIT/AOT link step.
                 emitForModule(module);
                 // Incremental compilation (Phase 2): emit the per-module
-                // instantiation-obligation sidecar alongside its IR.
-                module->writeObligationsSidecar();
+                // instantiation-obligation sidecar alongside its IR. A clean
+                // module keeps its recorded sidecar (its set was never
+                // re-derived this build).
+                if (!module->isIncrementalClean()) {
+                    module->writeObligationsSidecar();
+                    // Phase 6-alt: store the freshly lowered object for the
+                    // next build's skip (atomic temp+rename).
+                    if (objEmit && cacheManifest
+                        && !module->getCacheObjSlot().empty()) {
+                        string objPath = objPathFor(module);
+                        std::error_code ec;
+                        if (std::filesystem::exists(objPath, ec)) {
+                            const string& slot = module->getCacheObjSlot();
+                            std::filesystem::create_directories(
+                                std::filesystem::path(slot).parent_path(),
+                                ec);
+                            string tmp = slot + ".tmp";
+                            std::filesystem::copy_file(objPath, tmp,
+                                std::filesystem::copy_options::
+                                    overwrite_existing, ec);
+                            if (!ec) std::filesystem::rename(tmp, slot, ec);
+                        }
+                    }
+                }
+            }
+            if (reusedObjects > 0) {
+                cout << "[incremental] reused " << reusedObjects
+                     << " cached object(s)\n";
             }
             // Classpath deps for binary emit: emit each (now body-generated)
             // external module's object so its symbols are defined at link. The
@@ -1553,11 +2426,12 @@ namespace cajeta {
             }
         }
 
+        emitPhase.reset();
         if (emitMode == EmitMode::Exe) {
+            ProgressPhase phase("link", "Linking");
             linkExecutable(archiveRootPath);
         }
-
-        delete modulePaths;
+        // modulePaths freed by unique_ptr.
     }
 
     // Per-module emission driven by --emit. IR (default) writes the .ll file the
@@ -2174,6 +3048,9 @@ namespace cajeta {
         if (res.code() != 0) {
             cerr << "cajeta: link failed — '" << usedDriver << "' exited "
                  << res.code() << std::endl;
+            // A failed link must fail the build: a stale executable at the
+            // output path otherwise masquerades as a successful compile.
+            throw std::runtime_error("--emit=exe link failed");
         }
     }
 
@@ -2385,12 +3262,13 @@ namespace cajeta {
             auto i64c = [&](uint64_t v) {
                 return llvm::ConstantInt::get(i64Ty, v);
             };
-            // Field order matches the literal materialization: 0 vtable,
-            // 1 bytes, 2 byteLength, 3 mode, 4 cachedCpLength.
+            // Field order matches the literal materialization (6.2.2
+            // tagged core): 0 vtable, 1 lenTag, 2 aux, 3 base,
+            // 4 cachedCpLength.
             llvm::Value* strSize    = i64c(dl.getTypeAllocSize(strStructTy));
-            llvm::Value* offBytes   = i64c(sl->getElementOffset(1));
-            llvm::Value* offByteLen = i64c(sl->getElementOffset(2));
-            llvm::Value* offMode    = i64c(sl->getElementOffset(3));
+            llvm::Value* offBytes   = i64c(sl->getElementOffset(1));   // lenTag
+            llvm::Value* offByteLen = i64c(sl->getElementOffset(2));   // aux
+            llvm::Value* offMode    = i64c(sl->getElementOffset(3));   // base
             llvm::Value* offCpLen   = i64c(sl->getElementOffset(4));
 
             llvm::Constant* vtableRef =

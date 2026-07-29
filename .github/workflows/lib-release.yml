@@ -20,14 +20,39 @@ on:
         description: 'cajeta toolchain release tag to build against'
         type: string
         required: false
-        default: 'v0.7.1'
+        # Callers SHOULD pin this themselves. The default exists only so a new
+        # library builds at all, and a stale one is actively dangerous: it sat at
+        # v0.7.1 long enough that cajeta-unit silently built against a toolchain
+        # three minor versions old, which could parse neither its annotation
+        # declarations nor its bracket array literals. Bump this with each release.
+        default: 'v0.10.1'
+      test-command:
+        description: >
+          Command running the library's test suite (e.g. `cajeta test`,
+          `./run-tests.sh`). Empty means NO TESTS RUN.
+        type: string
+        required: false
+        # Empty by default only so existing callers keep working. A library that
+        # leaves it empty gets a green tag without one test having executed —
+        # this workflow built and published, and never ran anything. Set it.
+        default: ''
+      test-timeout-minutes:
+        description: 'Hard cap on the test step, so a hung server test fails instead of hanging.'
+        type: string
+        required: false
+        default: '30'
+    # NOT required: only the two tag-gated publish steps use these, and
+    # `required: true` fails the call at EVALUATION time — so a repo without
+    # publish credentials couldn't even build+test on a main push (cajeta-gossip
+    # died exactly this way). A tag push without them still fails, correctly and
+    # loudly, in the Publish to Olla step itself.
     secrets:
       OLLA_TOKEN:
-        required: true
+        required: false
       OLLA_SIGNING_KEY_PEM:
-        required: true
+        required: false
       OLLA_SIGNING_KEY_ID:
-        required: true
+        required: false
 
 permissions:
   contents: write
@@ -56,6 +81,24 @@ jobs:
       - name: Build library .cja
         run: cajeta build
 
+      # Before the artifact is located, uploaded, released or published — a
+      # failing suite must stop the tag, not annotate it after the fact.
+      #
+      # timeout-minutes matters here specifically: these suites bind loopback
+      # sockets and run live servers, and a server test that never returns hangs
+      # rather than fails. Without a bound that burns the job's full default
+      # allowance and reports nothing useful.
+      - name: Run the test suite
+        if: inputs.test-command != ''
+        timeout-minutes: ${{ fromJSON(inputs.test-timeout-minutes) }}
+        run: ${{ inputs.test-command }}
+
+      - name: No test suite configured
+        if: inputs.test-command == ''
+        run: |
+          echo "::warning::this library ran NO tests — it was built and will be \
+          published unverified. Pass `test-command` to lib-release.yml."
+
       - name: Locate artifact
         id: art
         run: |
@@ -63,8 +106,31 @@ jobs:
           cja="$(ls build/archive/*.cja 2>/dev/null | head -1 || true)"
           if [ -z "$cja" ]; then echo "no .cja under build/archive"; ls -R build || true; exit 1; fi
           echo "cja=$cja" >> "$GITHUB_OUTPUT"
-          # Version from the tag (refs/tags/vX.Y.Z); only used on tag runs.
-          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          # cajeta.json is the single source of truth for the version: it is what
+          # named the .cja `cajeta build` just produced, and what dependency
+          # resolution keys off. Taking the version from the TAG instead let the
+          # two disagree — tag v0.1.3 over a manifest saying 0.1.2 would publish
+          # the 0.1.2 archive to Olla as 0.1.3.
+          #
+          # Read it through the toolchain rather than parsing here: cajeta.json is
+          # JSONC, so jq cannot read it and naive comment-stripping corrupts the
+          # `//` inside https:// URLs.
+          VERSION="$(cajeta info | awk '/^[[:space:]]*version:/{print $2; exit}')"
+          if [ -z "$VERSION" ]; then
+            echo "::error::could not read version from cajeta.json via 'cajeta info'" >&2
+            exit 1
+          fi
+          # On a tag run the two MUST agree. Fail loudly rather than publish an
+          # archive under a version it was not built as.
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            tag_version="${GITHUB_REF_NAME#v}"
+            if [ "$tag_version" != "$VERSION" ]; then
+              echo "::error::tag v${tag_version} disagrees with cajeta.json version ${VERSION} — bump the manifest or retag" >&2
+              exit 1
+            fi
+          fi
+          echo "version from cajeta.json: $VERSION"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4

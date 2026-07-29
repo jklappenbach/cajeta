@@ -54,6 +54,14 @@ class DapClient(private val transport: DapTransport) {
         eventHandlers.computeIfAbsent(event) { CopyOnWriteArrayList() }.add(handler)
     }
 
+    /** Drop every registered event handler. The resident lifecycle reuses one
+     *  client across sequential debug sessions (resident-debug-server 5.2.2);
+     *  without this, session N+1's events would also fire session N's stale
+     *  callbacks. */
+    fun resetEventHandlers() {
+        eventHandlers.clear()
+    }
+
     /**
      * Send a request and return a future for its response. The future
      * completes with the full response message on `success:true`, or completes

@@ -1,0 +1,219 @@
+package cajeta.nucleo.column;
+
+import cajeta.lang.String;
+
+/**
+ * `StringColumn` — the variable-length utf8 column (nucleo-column-spec §2.2,
+ * Arrow format "u"): an offsets buffer (int32, length+1 entries, element `i`
+ * spans [off[i], off[i+1]) ) over one contiguous utf8 data buffer.
+ *
+ * Spelled as its own type: the generic `Column<T>` rides `Storage<T>`/`DType`,
+ * which `String` has no seat in — the same spelling honesty as
+ * `NullableColumn` (plan Q-null-spelling). Composed of two aligned columns
+ * (offsets `Column<int32>`, data `Column<uint8>`), so 64-byte alignment and
+ * buffer addresses are the one machinery all columns share. Strings are
+ * READ-ONLY per the language's string model; {@link #get} materializes a
+ * fresh owned `String` copy of the element's bytes.
+ *
+ * There is no tensor view of a string column (the tensor seam is
+ * numeric-only, spec 5.3.1) — the method simply does not exist, the §7.5
+ * absent-by-type discipline.
+ */
+public class StringColumn {
+    Column<int32> offsets;   // length + 1 entries; owned mode
+    Column<uint8> data;      // utf8 bytes; owned mode
+    int64 len;
+    // Foreign mode (spec 4.2): borrowed producer buffers + release handles.
+    int64 fOffsets;
+    int64 fData;
+    int64 fSchema;
+    int64 fArray;
+
+    /** Owned wrap. Internal — use {@link #of}. */
+    public StringColumn(Column<int32> offsets, Column<uint8> data, int64 len) {
+        this.offsets #= offsets;
+        this.data #= data;
+        this.len = len;
+        this.fOffsets = 0;
+        this.fData = 0;
+        this.fSchema = 0;
+        this.fArray = 0;
+    }
+
+    /** Foreign wrap over a producer's utf8 array. Internal — use
+     *  {@link #importArrow}. */
+    public StringColumn(int64 fOffsets, int64 fData, int64 fSchema,
+                        int64 fArray, int64 len) {
+        this.offsets = null;
+        this.data = null;
+        this.len = len;
+        this.fOffsets = fOffsets;
+        this.fData = fData;
+        this.fSchema = fSchema;
+        this.fArray = fArray;
+    }
+
+    /** Foreign release contract: producer releases fire exactly once. */
+    ~StringColumn() {
+        if (this.fArray != 0) {
+            ArrowFfi f = stack ArrowFfi();
+            f.callReleases(this.fSchema, this.fArray);
+        }
+    }
+
+    /** Build from `values` — offsets/data laid out per Arrow "u". */
+    public static #StringColumn of(String[] values) {
+        int64 n = (int64) values.count();
+        int64 total = 0;
+        int64 i = 0;
+        while (i < n) {
+            total = total + (int64) values[(int32) i].count();
+            i = i + 1;
+        }
+        Column<int32> offs = Column.zeros<int32>(n + 1);
+        Column<uint8> bytes = Column.zeros<uint8>(total);
+        int64 pos = 0;
+        i = 0;
+        while (i < n) {
+            offs.set(i, (int32) pos);
+            String s = values[(int32) i];
+            int32 m = s.count();
+            int32 j = 0;
+            while (j < m) {
+                bytes.set(pos + (int64) j, (uint8) s.byteAt(j));
+                j = j + 1;
+            }
+            pos = pos + (int64) m;
+            i = i + 1;
+        }
+        offs.set(n, (int32) pos);
+        return heap StringColumn(#offs, #bytes, n);
+    }
+
+    /** Logical element count. */
+    public int64 size() {
+        return this.len;
+    }
+
+    int32 offsetAt(int64 i) {
+        if (this.fOffsets != 0) {
+            ArrowFfi f = stack ArrowFfi();
+            return f.peekI32(this.fOffsets, i);
+        }
+        return this.offsets.get(i);
+    }
+
+    int32 byteAtAbs(int64 k) {
+        if (this.fData != 0) {
+            ArrowFfi f = stack ArrowFfi();
+            return f.peekU8(this.fData, k);
+        }
+        return (int32) this.data.get(k);
+    }
+
+    /** A fresh owned `String` copy of element `i`'s utf8 bytes. */
+    public #String get(int64 i) {
+        int32 b = this.offsetAt(i);
+        int32 e = this.offsetAt(i + 1);
+        int32 m = e - b;
+        // +1 so a zero-length element still allocates a real buffer for the
+        // consuming String ctor (which frees it on the short-inline arm).
+        int8[] buf = heap int8[m + 1];
+        int32 j = 0;
+        while (j < m) {
+            buf[j] = (int8) this.byteAtAbs((int64) b + (int64) j);
+            j = j + 1;
+        }
+        return #heap String(#buf, m);
+    }
+
+    /**
+     * Whole-column view: owned mode shares offsets/data storage zero-copy
+     * (through {@link Column#alias}); a foreign-backed column snapshots an
+     * owned copy (foreign buffers cannot be refcount-shared).
+     */
+    public #StringColumn alias() {
+        if (this.fArray != 0 || this.fOffsets != 0) {
+            return this.slice(0, this.len);
+        }
+        Column<int32> offs = this.offsets.alias();
+        Column<uint8> bytes = this.data.alias();
+        return heap StringColumn(#offs, #bytes, this.len);
+    }
+
+    /**
+     * Row window `[off, off+len)` as an OWNED COPY — utf8 offsets are
+     * absolute into the byte buffer, so a true zero-copy sub-window needs
+     * offset rebasing the v1 layout doesn't model (numeric columns slice
+     * zero-copy; variable-length copies — recorded).
+     */
+    public #StringColumn slice(int64 off, int64 len) {
+        if (off < 0 || len < 0 || off + len > this.len) {
+            throw heap ColumnTypeException(
+                "slice window out of range for this string column");
+        }
+        String[] vals = heap String[(int32) len];
+        int64 i = 0;
+        while (i < len) {
+            vals[(int32) i] = this.get(off + i);
+            i = i + 1;
+        }
+        return StringColumn.of(vals);
+    }
+
+    /** Offsets-buffer data address (interop/alignment; spec §6). */
+    public int64 offsetsAddress() {
+        if (this.fOffsets != 0) {
+            return this.fOffsets;
+        }
+        return this.offsets.dataAddress();
+    }
+
+    /** Data-buffer address (interop/alignment; spec §6). */
+    public int64 dataAddress() {
+        if (this.fData != 0) {
+            return this.fData;
+        }
+        return this.data.dataAddress();
+    }
+
+    @Native("__cajeta_arrow_export_varlen")
+    private int64 exportVarlen(int64 offsetsAddr, int64 dataAddr, int64 len);
+
+    /**
+     * C Data Interface export (spec 4.1): format "u", 3 buffers
+     * [null, offsets, data] over LIVE buffers — the same zero-copy borrow +
+     * shells-only release contract as the fixed-width export.
+     */
+    public int64 exportArrow() {
+        return this.exportVarlen(this.offsetsAddress(), this.dataAddress(),
+                                 this.len);
+    }
+
+    /**
+     * Import airlock for utf8 arrays (spec 4.2): zero-copy foreign wrap;
+     * producer releases fire exactly once at drop. Null-carrying utf8
+     * arrays are a named v1 refusal; non-utf8 formats belong to the
+     * fixed-width airlocks.
+     */
+    public static #StringColumn importArrow(int64 schemaAddr, int64 arrayAddr) {
+        ArrowFfi f = stack ArrowFfi();
+        if (f.readIsUtf8(schemaAddr) == 0) {
+            throw heap ColumnTypeException(
+                "not a utf8 array - use Column.importArrow / "
+                + "NullableColumn.importArrow for fixed-width formats");
+        }
+        if (f.readNullCount(arrayAddr) != 0) {
+            throw heap ColumnTypeException(
+                "null-carrying utf8 arrays are not supported in v1");
+        }
+        if (f.readOffset(arrayAddr) != 0) {
+            throw heap ColumnTypeException(
+                "nonzero ArrowArray.offset is not supported in v1");
+        }
+        int64 offs = f.readBuffer(arrayAddr, 1);
+        int64 data = f.readBuffer(arrayAddr, 2);
+        int64 n = f.readLength(arrayAddr);
+        return heap StringColumn(offs, data, schemaAddr, arrayAddr, n);
+    }
+}

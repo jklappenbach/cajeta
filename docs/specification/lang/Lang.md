@@ -7,11 +7,20 @@ return them.
 
 `System` is a sibling namespace (not a class) that exposes process-
 level I/O, env-var access, and tunable string properties via compiler
-intrinsics — see **[`lang/System.md`](./lang/System.md)**.
+intrinsics — see **[`lang/System.md`](System.md)**.
+
+`Cajeta` is a second such namespace. Its one surface a program is
+likely to reach for is **`Cajeta.owned(formal)`** — whether *this*
+call surrendered the formal's title — for algorithms that genuinely
+branch on ownership, such as an interning pool that adopts what it is
+given and copies what it is only lent. Correctness never requires it:
+stores spell `#=` and let the field or slot bit record what the caller
+did. See **[`lang/MemoryModel.md`](MemoryModel.md)**. (`Cajeta.moveMask()`,
+the positional transfer-word read this replaced, is retired.)
 
 ## `Object` — universal root
 
-See **[`lang/Object.md`](./lang/Object.md)** for the full spec
+See **[`lang/Object.md`](Object.md)** for the full spec
 (implicit-extends invariant, the four methods, override-pair
 enforcement, `@Hash` algorithm-class registry, equal-implies-same-
 hash contract, pending design questions on `Hasher` interface +
@@ -19,7 +28,7 @@ security-level enforcement).
 
 ## `String` — immutable, encoding-aware
 
-See **[`lang/String.md`](./lang/String.md)** for the full spec and
+See **[`lang/String.md`](String.md)** for the full spec and
 roadmap. `String` is a **class** (`cajeta.lang.String`), not a
 primitive. Internal storage is a UTF-8 `int8[]` plus a byte count, a
 mode discriminator, and a cached code-point count:
@@ -40,7 +49,7 @@ String literals lower directly to view-mode instances over `.rodata`.
 
 ### Shipped surface
 
-Verified in [`runtime/src/cajeta/lang/String.cajeta`](../../runtime/src/cajeta/lang/String.cajeta)
+Verified in [`runtime/src/cajeta/lang/String.cajeta`](../../../runtime/src/cajeta/lang/String.cajeta)
 and pinned by `test/expression/StringMethodsTests.cpp`:
 
 ```cajeta
@@ -89,8 +98,12 @@ not yet implemented** — the type system collapses the two, so
 helper-produced Strings currently leak at scope exit
 (`test/parser/OwnedStringDropTests.cpp`). The named view API
 (`viewOf` / `toOwned` / `cString`) from earlier drafts does **not**
-exist; the only view entry point today is the `String(#int8[],
-int32)` constructor. See [`lang/String.md` § Memory model](./lang/String.md#memory-model).
+exist and is disavowed — explicit duplication is the reserved `clone()`
+method (clone semantics — spec lineage: element-ownership §6, whose
+type-argument layer is superseded by title-tracking while clone's
+contract is unchanged: reference types shallow-copy via the
+RTTI walk; value types copy through the COW value hooks). The only view
+entry point today is the `String(#int8[], int32)` constructor. See [`lang/String.md` § Memory model](String.md#memory-model).
 
 ### Examples
 
@@ -120,7 +133,7 @@ codepoint/byte iteration streams, and the codepoint-indexed view
 ## `Encoding` enum
 
 The enum **ships** as
-[`cajeta.lang.Encoding`](../../runtime/src/cajeta/lang/Encoding.cajeta)
+[`cajeta.lang.Encoding`](../../../runtime/src/cajeta/lang/Encoding.cajeta)
 with 12 members. The byte ↔ text conversion methods that *consume* it
 (`String.fromBytes` / `String.getBytes`) are not yet implemented, so
 today an `Encoding` value is just selected by name; the runtime
@@ -142,10 +155,10 @@ public enum Encoding {
 ```
 
 Conversion error behavior is governed by the companion
-[`EncodingErrorPolicy`](../../runtime/src/cajeta/lang/EncodingErrorPolicy.cajeta)
+[`EncodingErrorPolicy`](../../../runtime/src/cajeta/lang/EncodingErrorPolicy.cajeta)
 enum (`{ FAIL, REPAIR }`, FAIL default — both shipped). Operations
 that can't represent a code point under `FAIL` throw
-[`EncodingException`](../../runtime/src/cajeta/lang/EncodingException.cajeta)
+[`EncodingException`](../../../runtime/src/cajeta/lang/EncodingException.cajeta)
 (a `RecoverableException` subtype, shipped).
 
 ## `Optional<T>` — value-typed sum
@@ -186,7 +199,7 @@ Optional<int32> hit = xs.stream().findFirst((int32 v) -> { return v > 3; });
 
 Construction, `isPresent`/`isEmpty`/`get`/`orElse` — shipped.
 `get()` on empty throws `CAJETA_ERROR_NONE_UNWRAP`.
-Multiple-inherits-Stream — not yet, tracked in Features.md.
+Multiple-inherits-Stream — not yet, tracked in specs/Features.md.
 Pinned by `test/parser/OptionalTests.cpp` (6 tests) and
 `test/parser/OptionalAndAllocateTests.cpp` (6 tests).
 

@@ -24,7 +24,7 @@
         "dependencies": {
             "cajeta.lang":         "1.0.7",
             "cajeta.lang.io":      "1.0.7",
-            "cajeta.io.net.http":  "1.2.5",
+            "dev.cajeta.http":  "1.2.5",
             "cajeta.concurrent":    "1.4.3"
         },
 

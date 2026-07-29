@@ -1,6 +1,6 @@
 // Tests for the Get core.
 // See src/cajeta/buildtool/skill/SkillGet.h and
-// docs/specs/skill-discovery-spec.md §2.1 (plan unit D.6).
+// specs/archive/skill-discovery-spec.md §2.1 (plan unit D.6).
 
 #include "cajeta/buildtool/skill/SkillGet.h"
 

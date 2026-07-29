@@ -1,0 +1,18 @@
+// Cloudflare deployment for the Cajeta docs site — an assets-only Worker
+// (same model as cajeta-olla, which owns olla.cajeta.dev on this account).
+// Deploy with: npm run deploy   (regen + wrangler deploy)
+{
+  "name": "cajeta-site",
+  "compatibility_date": "2026-07-01",
+  // static site only — no Worker script
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "404-page"
+  },
+  // apex + www custom domains; wrangler provisions DNS + TLS in the cajeta.dev zone
+  "routes": [
+    { "pattern": "cajeta.dev", "custom_domain": true },
+    { "pattern": "www.cajeta.dev", "custom_domain": true }
+  ],
+  "workers_dev": false
+}

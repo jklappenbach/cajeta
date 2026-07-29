@@ -465,9 +465,19 @@ namespace cajeta {
         os << "            int32 ii_" << fieldName << " = 0;\n";
         os << "            while (ii_" << fieldName << " < sz_"
            << fieldName << ") {\n";
-        os << "                out." << fieldName << "[ii_"
-           << fieldName << "] = tmp_" << fieldName
-           << ".get(ii_" << fieldName << ");\n";
+        // Class elements were add(#elem)'d — the list slots OWN them, so a
+        // plain get would leave the list dtor freeing what out.<field> now
+        // points at. Extract the title with `#tmp[i]`; primitives/Strings
+        // copy by value / dual-role resolve and keep the plain get.
+        if (elementIsClass) {
+            os << "                out." << fieldName << "[ii_"
+               << fieldName << "] = #tmp_" << fieldName
+               << "[ii_" << fieldName << "];\n";
+        } else {
+            os << "                out." << fieldName << "[ii_"
+               << fieldName << "] = tmp_" << fieldName
+               << ".get(ii_" << fieldName << ");\n";
+        }
         os << "                ii_" << fieldName << " = ii_"
            << fieldName << " + 1;\n";
         os << "            }\n";
@@ -791,7 +801,13 @@ namespace cajeta {
         os << "            out." << f << " = heap " << et << "[sz_" << f << "];\n";
         os << "            int32 ii_" << f << " = 0;\n";
         os << "            while (ii_" << f << " < sz_" << f << ") {\n";
-        os << "                out." << f << "[ii_" << f << "] = " << list << ".get(ii_" << f << ");\n";
+        // Same ownership rule as the reader path above: class elements are
+        // owned by the list slots (add(#e)) — extract the title out.
+        if (elementIsClass) {
+            os << "                out." << f << "[ii_" << f << "] = #" << list << "[ii_" << f << "];\n";
+        } else {
+            os << "                out." << f << "[ii_" << f << "] = " << list << ".get(ii_" << f << ");\n";
+        }
         os << "                ii_" << f << " = ii_" << f << " + 1;\n";
         os << "            }\n";
         return os.str();
@@ -1113,8 +1129,7 @@ namespace cajeta {
         } else if (etcanon == "cajeta.lang.String") {
             writeOne = "cajeta.lang.String " + elemVar + " = value." +
                        fieldName + "[wi_" + fieldName + "]; "
-                       "w.writeString(" + elemVar + ".bytes, " +
-                       elemVar + ".byteLength);";
+                       "w.writeString(" + elemVar + ");";
         } else if (elementIsClass) {
             writeOne = etcanon + " " + elemVar + " = value." +
                        fieldName + "[wi_" + fieldName + "]; "
@@ -1182,7 +1197,7 @@ namespace cajeta {
             } else if (innerCanon == "cajeta.lang.String") {
                 innerWrite =
                     "cajeta.lang.String os = value." + fieldName + ".get();\n"
-                    "            w.writeString(os.bytes, os.byteLength);";
+                    "            w.writeString(os);";
             } else {
                 return "";
             }
@@ -1207,10 +1222,9 @@ namespace cajeta {
             } else if (tcanon == "float64") {
                 value << "w.writeNumber(value." << fieldName << ");\n";
             } else if (tcanon == "cajeta.lang.String") {
-                // Read String's bytes and byteLength fields directly; the
-                // writer copies bytes through with quote/escape handling.
-                value << "w.writeString(value." << fieldName
-                      << ".bytes, value." << fieldName << ".byteLength);\n";
+                // String overload: view-safe (a mode-2 field would make raw
+                // .bytes reads window-blind — 10.3.1 audit).
+                value << "w.writeString(value." << fieldName << ");\n";
             } else if (std::dynamic_pointer_cast<CajetaClass>(ty)) {
                 // Nested class field — recurse via toBytesObjectInto.
                 // Short name `Json` for same-package reasons as the read side.

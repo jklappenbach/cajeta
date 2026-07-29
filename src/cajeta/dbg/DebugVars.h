@@ -42,6 +42,11 @@ namespace cajeta::dbg {
     // innermost-first order. `top` is the StopEvent::frameTop value; null -> {}.
     std::vector<DbgFrameInfo> walkFrames(void* top);
 
+    // True if `type` is a cajeta primitive (int/uint widths, char, boolean,
+    // float32/64) — the set formatValue/writeValue read by width. The single
+    // source of truth for "is this a scalar leaf" shared with ValueInspector.
+    bool isPrimitiveTypeName(const std::string& type);
+
     // Render the value at `addr` interpreted as cajeta type `type`. Primitives
     // are read by width; other types render `<type@0xADDR>` (reading the heap
     // pointer the slot holds).

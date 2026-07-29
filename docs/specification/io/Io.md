@@ -5,7 +5,7 @@ members are the shared abstractions — **buffers**, **views**, **streams** — 
 files, pipes, network, and subprocess alike; concrete I/O kinds live in nested
 subpackages so a file-only program doesn't drag in a TLS stack.
 
-Status: **designed, not implemented**. Tracked in Features.md.
+Status: **designed, not implemented**. Tracked in specs/Features.md.
 
 ## Subpackages
 
@@ -15,7 +15,7 @@ Status: **designed, not implemented**. Tracked in Features.md.
 - network — see the **`cajeta.io.net`** transport stack
   ([`net/Networking.md`](net/Networking.md)). HTTP/WS/SSE are *not* stdlib — they
   live in the [cajeta-http](https://github.com/jklappenbach/cajeta-http) library.
-- subprocess — see [`cajeta.process`](../Process.md).
+- subprocess — see [`cajeta.process`](../process/Process-design.md).
 
 ## `Buffer` + `BufferChain` — the byte substrate
 
@@ -79,10 +79,12 @@ Stream<Tick> recent = ticks.filter(t -> t.live).map(parse).window(Duration.ofSec
   underneath: a full channel parks the producer fiber. No request-`n` protocol.
 - **Operators** compose: `map` / `filter` / `flatMap` / `window` / `merge` / `zip`
   / `fold`. Each is an ordinary function over the upstream stream.
-- **Element ownership** is explicit: `Stream<#T>` *moves* owned elements through
-  the pipeline; `Stream<View<T>>` yields **borrows valid only for that iteration
-  step** (zero-copy streaming of large data; the borrow can't escape the step).
-  This owned-vs-borrowed distinction is the linchpin of the model.
+- **Element ownership** is explicit, but spelled per-call rather than in the type:
+  a `Stream<T>` *moves* an owned element when the producer surrenders it at the
+  store site (`s.emit(#x)`); `Stream<View<T>>` yields **borrows valid only for that
+  iteration step** (zero-copy streaming of large data; the borrow can't escape the
+  step). This owned-vs-borrowed distinction is the linchpin of the model, and it
+  is a property of the call, never of the stream's type.
 - **Relationship to neighbours:** `Stream<T>` is the high-level composable layer
   over `Channel<T>` (the raw fiber-to-fiber conduit) and pairs with byte-level
   `InputStream`/`OutputStream` (a byte stream is `Stream<View<bytes>>` after framing).
@@ -109,7 +111,7 @@ while (src.read(buf) > 0) { dst.write(buf); }
 
 All of `cajeta.io` (Buffer, BufferChain, views, `Stream<T>`, InputStream/
 OutputStream/Reader/Writer) is unimplemented. Lands with the fiber reactor and the
-first concrete I/O subpackage that needs it. Tracked in Features.md.
+first concrete I/O subpackage that needs it. Tracked in specs/Features.md.
 
 ## See also
 
@@ -120,4 +122,4 @@ first concrete I/O subpackage that needs it. Tracked in Features.md.
   See [`net/Networking.md`](net/Networking.md). The HTTP/WebSocket/SSE *application*
   layer is the separate [cajeta-http](https://github.com/jklappenbach/cajeta-http)
   library over it.
-- `cajeta.process` — subprocess management ([`Process.md`](../Process.md)).
+- `cajeta.process` — subprocess management ([`Process.md`](../process/Process-design.md)).

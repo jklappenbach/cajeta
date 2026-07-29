@@ -21,9 +21,11 @@ from other APIs. It is an everyday value type, not a "start-here" service object
 Two real constructors:
 
 - `String()` — empty string (`bytes` null, `byteLength` 0). Equivalent to the `""` literal.
-- `String(#int8[] bytes, int32 byteLength)` — **view mode**: borrows the caller's
-  buffer (`#` transfers the array). The String does NOT free `bytes` on drop; the
-  buffer's lifetime is the caller's responsibility. This is the literal/static-storage path.
+- `String(#int8[] bytes, int32 byteLength)` — **ownership transfer**: takes the
+  caller's freshly built HEAP buffer (`#` transfers the array) and OWNS it — the
+  String's drop frees `bytes`. This is the builder path (`return heap
+  String(#out, n)`); never pass a static or borrowed buffer. Literals do NOT
+  route here (literal codegen materializes its own mode-1 view instances).
 
 For owned data you normally get a `String` from a transform method (below) or a literal,
 not by hand. There is **no** `String(int8[])` copying constructor and **no**
@@ -66,7 +68,7 @@ Transforms (return owned `#String`, allocate a fresh buffer):
 ```cajeta
 import cajeta.lang.String;
 
-heap String s = "  Hello, Cajeta!  ";
+String s = "  Hello, Cajeta!  ";            // a literal is a static view
 #String trimmed = s.trim();                 // owned: "Hello, Cajeta!"
 if (trimmed.contains("Cajeta")) {
     #String sub  = trimmed.substring(7, 13);     // "Cajeta" (byte-indexed)

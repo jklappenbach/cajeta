@@ -45,6 +45,25 @@ int32_t runI32(const std::string& src) {
     return fn();
 }
 
+// A read through an unprojected wildcard cannot resolve, so the compile must
+// FAIL rather than lower the call to null and return 0.
+//
+// KNOWN WART (filed, silent-resolution-diagnostics 2.2.4): the message names the
+// receiver as the ENCLOSING class (`no member 'tag' on 'test.D'`) rather than the
+// wildcard receiver. `b.get()` yields the unprojected sentinel, and the chained
+// `.tag()` falls back to the enclosing class as its target. The rejection is
+// right; the receiver name in the text is not. Asserted on the id, not the
+// receiver, so this test pins the SEMANTICS and does not cement the wart.
+void expectUnresolved(const std::string& src) {
+    try {
+        runI32(src);
+        FAIL() << "expected the unresolvable wildcard read to fail the compile";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_MEMBER_NOT_FOUND")
+            << "got: " << e.getErrorId() << " — " << e.getMessage();
+    }
+}
+
 } // namespace
 
 // `Box<? extends Animal>::get()` returns the bound Animal. The call's
@@ -315,11 +334,16 @@ TEST(TemplateWildcardP7Tests, pecsForeignWriteToExtendsRejected) {
 }
 
 // V1 scope guard: unbounded wildcard `Box<?>::get()` does NOT project
-// (no bound to project to). The chained `.tag()` lookup against the
-// raw wildcard sentinel returns nothing meaningful and codegen falls
-// through to the null-return path. The test pins that the JIT compiles
-// and the runtime returns 0 (rather than 2 from Dog::tag, which would
-// indicate the projection misfired and ran without a bound).
+// (no bound to project to), so the chained `.tag()` cannot resolve against
+// the raw wildcard sentinel.
+//
+// This USED to pin `runI32(src) == 0` — i.e. it asserted that the
+// unresolvable `.tag()` silently lowered to null and the method returned 0.
+// That was pinning a miscompile as the contract. Since
+// silent-resolution-diagnostics Unit 1 the null-in-value-position backstop
+// rejects it, which is what "does not project" should always have meant:
+// a compile error, not a zero. The scope guard is unchanged — only its
+// observable form is (silent 0 -> located diagnostic).
 TEST(TemplateWildcardP7Tests, unboundedDoesNotProject) {
     auto src =
         "package test;\n"
@@ -342,13 +366,15 @@ TEST(TemplateWildcardP7Tests, unboundedDoesNotProject) {
         "        return b.get().tag();\n"
         "    }\n"
         "}\n";
-    EXPECT_EQ(runI32(src), 0);
+    expectUnresolved(src);
 }
 
 // V1 scope guard: `? super B` is contravariant (write-only direction
 // from the consumer's perspective; reads project to the top type, not
 // to B). We leave it unprojected in v1 — a `Box<? super Animal>` read
 // position keeps the wildcard sentinel and `.tag()` fails to resolve.
+// As with unboundedDoesNotProject, "fails to resolve" is now a compile
+// error rather than a silent 0.
 TEST(TemplateWildcardP7Tests, superDoesNotProject) {
     auto src =
         "package test;\n"
@@ -371,7 +397,7 @@ TEST(TemplateWildcardP7Tests, superDoesNotProject) {
         "        return b.get().tag();\n"
         "    }\n"
         "}\n";
-    EXPECT_EQ(runI32(src), 0);
+    expectUnresolved(src);
 }
 
 // Unit test on the static helper. Confirms the projection rule

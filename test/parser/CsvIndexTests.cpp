@@ -26,7 +26,7 @@ int32_t runIndex(const std::string& csv) {
         "import cajeta.codec.csv.CsvIndex;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int8[] buf = {" + bytes + "};\n"
+        "        int8[] buf = [" + bytes + "];\n"
         "        int32[] idx = heap int32[" + n + "];\n"
         "        int32 cnt = CsvIndex.build(buf, (int64) " + n + ", idx);\n"
         "        int32 i0 = 0; if (cnt > 0) { i0 = idx[0]; }\n"

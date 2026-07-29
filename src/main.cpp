@@ -7,6 +7,7 @@
 #include <llvm/TargetParser/Host.h>
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CompilerMode.h"
+#include "cajeta/compile/LintService.h"
 #include "cajeta/error/Exception.h"
 #include "cajeta/error/Diagnostics.h"
 #include "cajeta/error/DiagnosticEngine.h"
@@ -14,6 +15,7 @@
 #include "cajeta/cli/DocCommand.h"
 #include "cajeta/cli/IdeCommands.h"
 #include "cajeta/cli/NativeCommands.h"
+#include "cajeta/cli/StdlibCommands.h"
 #include "cajeta/cli/XpuProfileCommand.h"
 #include "cajeta/jit/CajetaJitHost.h"
 #include "cajeta/dap/DapServer.h"
@@ -56,14 +58,33 @@ void printUsage(const char* progname) {
               << " [options] <entry-method> <source-root-path> <archive-root-path>\n"
               << "       " << progname << " <subcommand> [args...]\n"
               << "\n"
-              << "Subcommands:\n"
+              << "Subcommands (build tool):\n"
+              << "  init [type] [dir]  Scaffold a project (init --list shows archetypes).\n"
+              << "  build              Build the current project (task from cajeta.json).\n"
+              << "  test               Run the project's tests.\n"
+              << "  tasks              List the project's tasks with descriptions.\n"
+              << "  add | remove | upgrade | pin   Manage manifest dependencies.\n"
+              << "  install            Publish this project's library into the local repository.\n"
+              << "  publish            Publish to a remote repository.\n"
+              << "  info | show        Inspect the project / a dependency.\n"
+              << "  doc <root>         Generate API documentation (doc --help).\n"
+              << "  search-skill | list-skills | get-skills   Skill discovery in dependencies.\n"
+              << "  coverage | verify | verify-reproducible | trust   Quality and provenance.\n"
+              << "  workspace | members | toolchain | which | sandbox-info   Environment.\n"
+              << "  Any other name runs the matching cajeta.json task (e.g. `cajeta run`\n"
+              << "  when the manifest defines a run task).\n"
+              << "\n"
+              << "Subcommands (tooling):\n"
               << "  archive <cmd>      Create / inspect / sign .cja archives (archive --help).\n"
               << "  ide <cmd>          Manage the bundled IntelliJ IDEA plugin\n"
               << "                     (ide install | uninstall | list).\n"
               << "  jit-run <root> <package.Class.method>   Compile + run an entry point via the JIT.\n"
               << "  dap                Debug Adapter Protocol server over stdio (for IDE debugging).\n"
+              << "  stdlib <cmd>       Embedded stdlib source access (stdlib list |\n"
+              << "                     stdlib extract <dir>) — extraction preserves package\n"
+              << "                     paths and writes a .cajeta-stdlib.json identity marker.\n"
               << "\n"
-              << "Mode (docs/CompilerModes.md):\n"
+              << "Mode (docs/specification/buildtool/CompilerModes.md):\n"
               << "  --mode=debug|debug-release|release|fast|minimal\n"
               << "  --debug, --debug-release, --release, --fast, --minimal   (flavor aliases)\n"
               << "\n"
@@ -88,6 +109,24 @@ void printUsage(const char* progname) {
               << "  --diag-format=text|json              Diagnostic output format. json = one NDJSON\n"
               << "                                       object per line on stderr for tools/IDEs (default text).\n"
               << "  --profile-counters=on|off            Per-method PGO-collection instrumentation.\n"
+              << "  --debug-info=off|line|full           Debug records in the binary (default line).\n"
+              << "                                       line = shadow stack, so traces resolve to\n"
+              << "                                       Type.method(File.cajeta:NN). full = adds\n"
+              << "                                       safepoints + locals for an external debugger.\n"
+              << "\n"
+              << "Lint / IDE (compiler-lint-mode-spec, lint-server-spec):\n"
+              << "  --lint <file>                        Diagnostics-only: run the semantic passes over one\n"
+              << "                                       file and stop before codegen. Pair with --emit-xref\n"
+              << "                                       (bare) for xref records on the diagnostic channel.\n"
+              << "  --lint <dir> --emit-xref=<path>      Whole-root xref export: one document over every file.\n"
+              << "  --source-root <dir>                  Project context for --lint: sibling files are parsed\n"
+              << "                                       for their signatures so cross-file references resolve.\n"
+              << "  --shadow <path>                      On-disk file the linted (staged) buffer stands in for;\n"
+              << "                                       records report against this original path.\n"
+              << "  --lint-server                        Warm lint daemon: prime the stdlib once, then read\n"
+              << "                                       NDJSON lint requests on stdin and answer warm on stdout\n"
+              << "                                       (proto 1.0). Honors --source-root / --diag-format;\n"
+              << "                                       emitXref is a per-request field. See lint-server-spec.\n"
               << "\n"
               << "Output:\n"
               << "  --emit=ir|obj|cja|uber|exe           Output mode. Default ir.\n"
@@ -98,6 +137,14 @@ void printUsage(const char* progname) {
               << "                                       named (canonical) class in the keep-set.\n"
               << "  --keepset-json=<path>                Lean DCE: write the generated keep-set + provenance\n"
               << "                                       to <path> as JSON.\n"
+              << "  --emit-xref=<path>                   Write the resolved cross-reference index\n"
+              << "                                       (declarations, inheritance, references, overrides,\n"
+              << "                                       calls) to <path> as JSON, for IDE symbol lookup.\n"
+              << "                                       With --lint <root>: whole-root export, one document.\n"
+              << "  --emit-xref                          (bare, with --lint <file>) Emit the linted file's\n"
+              << "                                       xref records as NDJSON on the diagnostic channel,\n"
+              << "                                       kind:\"xref\" — one subprocess returns diagnostics\n"
+              << "                                       and xref per edit.\n"
               << "  --tree-shake=off|report|on           Tier-1 RTA (--emit=exe). on (DEFAULT): prune\n"
               << "                                       unreachable method bodies + dead clinits (drops e.g.\n"
               << "                                       OpenSSL). report: print the strip analysis. off: opt out.\n"
@@ -105,6 +152,9 @@ void printUsage(const char* progname) {
               << "                                       (repeatable; comma-separates inside each occurrence).\n"
               << "  --skill-root=<dir>                   Package root holding skills/ to embed in the .cja\n"
               << "                                       (defaults to the source root; build tool passes project root).\n"
+              << "  --cache-manifest=<path>              Incremental-compilation manifest (cache-manifest-v1):\n"
+              << "                                       per-source clean/dirty + .bc/obligation cache slots.\n"
+              << "                                       Generated by `cajeta build`, not hand-authored.\n"
               << "  --prune-uber=on|off                  When --emit=uber, only bundle classpath entries\n"
               << "                                       transitively referenced by user / stdlib bitcode.\n"
               << "                                       Default on; --prune-uber=off bundles everything.\n"
@@ -240,7 +290,7 @@ int main(int argc, const char* argv[]) {
     // Debugging.md). The IDE plugin spawns this and drives the debug session.
     if (argc >= 2 && std::string(argv[1]) == "dap") {
         cajeta::dap::DapServer server;
-        return server.run(std::cin, std::cout);
+        return server.runOverStdio();
     }
 
 
@@ -255,6 +305,13 @@ int main(int argc, const char* argv[]) {
     // plugin embedded in this binary (cross-platform install path, D8).
     if (argc >= 2 && std::string(argv[1]) == "ide") {
         return cajeta::dispatchIde(argc, argv);
+    }
+
+    // `cajeta stdlib <list|extract <dir>>` — embedded stdlib source access
+    // (ide-symbol-index §6.0.3): the IDE plugin extracts + mounts the stdlib
+    // source so navigation and debug stops land in real files.
+    if (argc >= 2 && std::string(argv[1]) == "stdlib") {
+        return cajeta::dispatchStdlib(argc, argv);
     }
 
     // --version / -V short-circuit. Handled before Compiler construction
@@ -282,6 +339,7 @@ int main(int argc, const char* argv[]) {
     // file is the sole positional; handled after the arg loop, before the
     // three-positional compile path (compiler-lint-mode-spec §2).
     bool lintMode = false;
+    bool lintServerMode = false; // --lint-server: warm NDJSON lint daemon (lint-server-spec)
     std::string lintSourceRoot;  // --source-root: project context (lint-source-root-spec)
     std::string lintShadow;      // --shadow: on-disk twin the linted buffer replaces
     // Track whether --xpu-arch was given explicitly so the amdgpu backend can
@@ -292,6 +350,11 @@ int main(int argc, const char* argv[]) {
     // for --emit=exe (below) only applies when the user didn't pin a mode.
     bool linkModeExplicit = false;
     bool treeShakeExplicit = false;
+    // --print-cache-discriminator: print the incremental-compilation cache
+    // discriminator for exactly this flag set and exit (no compile). The
+    // build tool probes this before authoring a cache manifest so flag
+    // resolution stays single-sourced here.
+    bool printCacheDiscriminator = false;
 
     auto parseModeName = [&](const std::string& name) -> bool {
         if (name == "debug")            { compiler.setMode(CompilerMode::Debug); return true; }
@@ -363,12 +426,23 @@ int main(int argc, const char* argv[]) {
                     compiler.getMutableFlags().diagVerbosity)) {
                 printUsage(argv[0]); return 1;
             }
+        } else if (match(arg, "debug-info", value)) {
+            std::string diErr;
+            if (!cajeta::applyDebugInfo(value, compiler.getMutableFlags(), &diErr)) {
+                std::cerr << "cajeta: " << diErr << "\n";
+                printUsage(argv[0]); return 1;
+            }
         } else if (match(arg, "diag-format", value)) {
             if (!setEnumFlag<DiagFormat>("diag-format", value,
                     { {"text", DiagFormat::Text}, {"json", DiagFormat::Json} },
                     compiler.getMutableFlags().diagFormat)) {
                 printUsage(argv[0]); return 1;
             }
+            // Phase-progress records ride the same NDJSON stream as the
+            // diagnostics, so they turn on with it (and only with it — text
+            // mode stays byte-for-byte as it was).
+            cajeta::setJsonProgressEnabled(
+                compiler.getFlags().diagFormat == DiagFormat::Json);
         } else if (match(arg, "source-tags",         value)) { if (!setBoolFlag("source-tags",         value, compiler.getMutableFlags().sourceTags))         { printUsage(argv[0]); return 1; } }
           else if (match(arg, "poison-free",         value)) { if (!setBoolFlag("poison-free",         value, compiler.getMutableFlags().poisonFree))         { printUsage(argv[0]); return 1; } }
           else if (match(arg, "drop-chain-validate", value)) { if (!setBoolFlag("drop-chain-validate", value, compiler.getMutableFlags().dropChainValidate))  { printUsage(argv[0]); return 1; } }
@@ -378,6 +452,7 @@ int main(int argc, const char* argv[]) {
           else if (match(arg, "diag-hints",          value)) { if (!setBoolFlag("diag-hints",          value, compiler.getMutableFlags().diagHints))          { printUsage(argv[0]); return 1; } }
           else if (match(arg, "profile-counters",    value)) { if (!setBoolFlag("profile-counters",    value, compiler.getMutableFlags().profileCounters))    { printUsage(argv[0]); return 1; } }
           else if (match(arg, "lazy-scope",          value)) { if (!setBoolFlag("lazy-scope",          value, compiler.getMutableFlags().lazyScope))          { printUsage(argv[0]); return 1; } }
+          else if (match(arg, "line-info",           value)) { if (!setBoolFlag("line-info",           value, compiler.getMutableFlags().lineInfo))           { printUsage(argv[0]); return 1; } }
 
         // Output / target.
         else if (match(arg, "emit", value)) {
@@ -424,6 +499,13 @@ int main(int argc, const char* argv[]) {
                 if (comma == std::string::npos) break;
                 start = comma + 1;
             }
+        } else if (match(arg, "cache-manifest", value)) {
+            // Incremental compilation: the build tool's clean/dirty
+            // designation + cache slots (cache-manifest-v1). See
+            // docs/specification/buildtool/IncrementalCompilation.md.
+            compiler.setCacheManifestPath(value);
+        } else if (arg == "--print-cache-discriminator") {
+            printCacheDiscriminator = true;
         } else if (match(arg, "skill-root", value)) {
             // Where the package's hand-authored skills/ dir lives (skill-
             // discovery D.3). The build tool passes the PROJECT root here so
@@ -476,6 +558,16 @@ int main(int argc, const char* argv[]) {
             // Lean DCE diagnostic: write the generated keep-set + provenance to
             // this path as JSON (lean builds only).
             compiler.getMutableFlags().keepsetJson = value;
+        } else if (match(arg, "emit-xref", value)) {
+            // Write the RESOLVED cross-reference index to this path as JSON, for
+            // an IDE to consume rather than reimplementing Cajeta's name
+            // resolution (specs/ide-symbol-index-spec.md §2).
+            compiler.getMutableFlags().emitXref = value;
+        } else if (arg == "--emit-xref") {
+            // Bare form, lint mode only: emit xref records as NDJSON on the
+            // diagnostic channel — one subprocess per edit returns diagnostics
+            // AND xref (ide-symbol-index §1.5.2). "-" is the stream sentinel.
+            compiler.getMutableFlags().emitXref = "-";
         } else if (match(arg, "tree-shake", value)) {
             // Tier-1 RTA (plans/compiler/stdlib-tree-shaking.md). `report`
             // (Phase A) computes IR reachability from the entry + roots and
@@ -531,6 +623,8 @@ int main(int argc, const char* argv[]) {
             compiler.setOutputPath(argv[++i]);
         } else if (arg == "--lint") {
             lintMode = true;
+        } else if (arg == "--lint-server") {
+            lintServerMode = true;
         } else if (arg == "--source-root") {
             if (i + 1 >= argc) {
                 std::cerr << "cajeta: --source-root requires a path\n";
@@ -555,6 +649,49 @@ int main(int argc, const char* argv[]) {
         }
     }
 
+    // --lint-server: the warm NDJSON lint daemon (lint-server-spec §2).
+    // Distinct mode — reads requests on stdin, never a positional file; the
+    // xref stream is a per-REQUEST toggle, so a CLI --emit-xref here is a
+    // category error. Refuse the nonsensical combos before priming so the
+    // plugin never sees a half-started server.
+    if (lintServerMode) {
+        bool jsonDiag = compiler.getFlags().diagFormat == DiagFormat::Json;
+        if (!compiler.getFlags().emitXref.empty()) {
+            if (jsonDiag)
+                cajeta::emitJsonDiagnostic("error", "xref-server",
+                    "--emit-xref is a per-request field in server mode "
+                    "(\"emitXref\":true), not a CLI flag");
+            else
+                std::cerr << "cajeta: --lint-server takes emitXref as a "
+                             "per-request field, not a CLI --emit-xref flag\n";
+            return 1;
+        }
+        if (!positional.empty()) {
+            if (jsonDiag)
+                cajeta::emitJsonDiagnostic("error", "server-positional",
+                    "--lint-server reads requests on stdin; it takes no "
+                    "positional file", positional[0]);
+            else
+                std::cerr << "cajeta: --lint-server takes no positional file "
+                             "(requests arrive on stdin)\n";
+            return 1;
+        }
+        if (!lintSourceRoot.empty()
+                && !std::filesystem::is_directory(lintSourceRoot)) {
+            if (jsonDiag)
+                cajeta::emitJsonDiagnostic("error", "source-root",
+                                           "not a directory: " + lintSourceRoot);
+            else
+                std::cerr << "cajeta: --source-root not a directory: "
+                          << lintSourceRoot << "\n";
+            return 1;
+        }
+        cajeta::lintservice::ServerOptions opts;
+        opts.sourceRoot = lintSourceRoot;
+        opts.jsonDiagnostics = jsonDiag;
+        return cajeta::lintservice::runLintServer(opts);
+    }
+
     // --lint <file>: run the diagnostic passes over one file and stop before
     // codegen (compiler-lint-mode-spec). Distinct mode — takes the single
     // positional as the file, never the three-positional compile path.
@@ -565,6 +702,44 @@ int main(int argc, const char* argv[]) {
             return 1;
         }
         const std::string& lintFile = positional[0];
+
+        // --lint <directory> is the whole-root xref export (ide-symbol-index
+        // §2.0.3): parse every file under the root, write one document. It
+        // REQUIRES --emit-xref=<path> — "lint a directory, diagnostics only" is
+        // not a mode, and guessing one file to lint would be a wrong answer
+        // dressed as a right one.
+        if (std::filesystem::is_directory(lintFile)) {
+            const std::string& xrefOut = compiler.getFlags().emitXref;
+            if (xrefOut.empty() || xrefOut == "-") {
+                if (jsonDiag)
+                    cajeta::emitJsonDiagnostic("error", "xref-root",
+                        "linting a directory is the whole-root xref export; "
+                        "it requires --emit-xref=<path>", lintFile);
+                else
+                    std::cerr << "cajeta: --lint <directory> requires "
+                                 "--emit-xref=<path> (whole-root xref export)\n";
+                return 1;
+            }
+            return compiler.lintRoot(lintFile) > 0 ? 1 : 0;
+        }
+
+        // Single-file lint emits xref on the DIAGNOSTIC channel (bare
+        // --emit-xref). A path here would silently write a document scoped to
+        // one file — refusing beats an expectation silently half-met.
+        if (!compiler.getFlags().emitXref.empty()
+                && compiler.getFlags().emitXref != "-") {
+            if (jsonDiag)
+                cajeta::emitJsonDiagnostic("error", "xref-lint",
+                    "single-file lint emits xref on the diagnostic channel; "
+                    "use bare --emit-xref, or --lint <root> --emit-xref=<path>",
+                    lintFile);
+            else
+                std::cerr << "cajeta: with --lint <file>, use bare --emit-xref "
+                             "(records ride the diagnostic stream); "
+                             "--emit-xref=<path> is for --lint <root>\n";
+            return 1;
+        }
+
         if (!std::filesystem::exists(lintFile)) {
             if (jsonDiag)
                 cajeta::emitJsonDiagnostic("error", "file-not-found",
@@ -582,25 +757,28 @@ int main(int argc, const char* argv[]) {
                           << lintSourceRoot << "\n";
             return 1;
         }
-        // Collect-and-continue: recoverable semantic errors report to the engine
-        // (multiple, located) instead of aborting; un-migrated throw sites are
-        // caught and folded in. All emitted at the end (diagnostic-engine-spec).
-        cajeta::DiagnosticEngine engine;
-        cajeta::DiagnosticEngine::setActive(&engine);
-        try {
-            compiler.lint(lintFile, lintSourceRoot, lintShadow);
-        } catch (cajeta::SyntaxErrorException&) {
-            cajeta::DiagnosticEngine::setActive(nullptr);
-            return 1;  // syntax diagnostics already emitted during parsing
-        } catch (cajeta::Exception& e) {
-            engine.report("error", e.getErrorId(), e.getMessage(),
-                          e.getFile(), e.getLine(), e.getColumn());
-        } catch (const std::exception& e) {
-            engine.report("error", "", e.what());
-        }
-        cajeta::DiagnosticEngine::setActive(nullptr);
-        engine.emit(jsonDiag);
-        return engine.hasErrors() ? 1 : 0;
+        // Engine lifecycle, exception folding, and emit order live in
+        // runLintDriver, shared verbatim with the warm-lint path
+        // (lint-server spec 1.4.1: parity by construction).
+        return cajeta::lintservice::runLintDriver(
+            compiler, lintFile, lintSourceRoot, lintShadow);
+    }
+
+    // Manifest builds force tree-shake off + link-mode full
+    // (Compiler::setupCacheManifest); mirror that so the probed value keys
+    // the same cache tree the actual manifest build will use.
+    if (printCacheDiscriminator) {
+        compiler.getMutableFlags().treeShake = TreeShake::Off;
+        compiler.getMutableFlags().linkMode = LinkMode::Full;
+        std::cout << compiler.computeOwnCacheDiscriminator() << "\n";
+        return 0;
+    }
+
+    if (compiler.getFlags().emitXref == "-") {
+        std::cerr << "cajeta: bare --emit-xref is lint-mode only "
+                     "(records ride the diagnostic stream); a compile takes "
+                     "--emit-xref=<path>\n";
+        return 1;
     }
 
     if (positional.size() < 3) {

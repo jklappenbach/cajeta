@@ -1,6 +1,6 @@
 //
 // Build-time skill packaging. See SkillPackager.h and
-// docs/specs/skill-discovery-spec.md §4.2.
+// specs/archive/skill-discovery-spec.md §4.2.
 //
 #include "cajeta/buildtool/skill/SkillPackager.h"
 

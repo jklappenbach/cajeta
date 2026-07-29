@@ -60,6 +60,30 @@ class MarkdownZoomScalingTest : BasePlatformTestCase() {
         )
     }
 
+    /**
+     * Zoom sets a *fractional* font size. Reading the deprecated Int
+     * `editorFontSize` truncated it, so a sub-point zoom step produced an
+     * identical render — and, because the cache keys compared equal, no
+     * re-measure at all. The palette must carry the fraction through to the CSS.
+     */
+    fun testPaletteCarriesFractionalZoomIntoCss() {
+        myFixture.configureByText("Demo.cajeta", "// # Heading\nint32 x = 1;\n")
+        val editor = myFixture.editor as EditorEx
+        PlatformTestUtil.dispatchAllInvocationEventsInIdeEventQueue()
+
+        editor.colorsScheme.setEditorFontSize(13.5f)
+
+        val palette = EditorMarkdownPalette.forEditor(editor, withBackground = false)
+        assertEquals(
+            "palette must read the fractional (2D) editor font size, not the truncated Int",
+            13.5f, palette.fontSizePt, 0.01f,
+        )
+        assertTrue(
+            "the fraction must survive into the stylesheet",
+            MarkdownHtmlTheme.wrap("<p>x</p>", palette).contains("13.5pt"),
+        )
+    }
+
     override fun tearDown() {
         try {
             MarkdownFoldEditorListener.uninstall(myFixture.editor)

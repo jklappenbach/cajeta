@@ -48,11 +48,27 @@ namespace cajeta {
         // The element type for one level of indexing. For `T[][]` this returns the
         // CajetaArray for `T[]`; the next level of unwrapping happens via that.
         CajetaTypePtr getElementType() { return elementType; }
+        // title-stores §3.1 (plan 2.2.2) — address of the element-ownership
+        // tail bitmap: hdr + headerBytes + count*elemBytes, with count loaded
+        // from the header word at runtime. Single shared emitter for the
+        // Unit-3/4 slot-store, move-out, and teardown codegen.
+        static llvm::Value* emitElementBitsBase(llvm::IRBuilder<>& builder,
+            llvm::Value* hdrPtr, uint64_t headerBytes, uint64_t elemBytes);
 
         // The LLVM type used inside the header's `[0 x T]`. Equal to elementType's
         // llvm type for value-type elements, or `ptr` when elementType is itself an
         // array or other reference type.
         llvm::Type* getElementLlvmType(llvm::LLVMContext* ctx) const;
+
+        // title-stores §3.2 — the SLOT STRIDE in bytes, read from the BUILT
+        // `{ i64, [0 x T] }` type (the layout every element GEP follows).
+        // getElementLlvmType() re-answers with the element's now-complete
+        // struct, but a self-referential element (BPlusTreeNode.children)
+        // was opaque when the array type was built and its data degraded to
+        // `ptr` — stride 8, not the struct size. Every tail-bitmap es (alloc,
+        // store, take, drop walks) must use THIS, or indexes collapse.
+        uint64_t elementStrideBytes(const llvm::DataLayout& dl,
+                                    llvm::LLVMContext* ctx);
 
         // U6.4.1 — build (intern) the array's `{ i64 size, [0 x T] data }` struct
         // in `ctx` from the (immutable) element type + fixed length. Context-

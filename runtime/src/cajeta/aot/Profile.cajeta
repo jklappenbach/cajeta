@@ -1,0 +1,17 @@
+package cajeta.aot;
+
+/**
+ * Scopes a @Component to one or more deployment profiles (AspectModel.md §
+ * "Profiles and test-component masking"). The resolver includes the component
+ * only when `--profile=<name>` matches one of the listed profiles (any-of); a
+ * @Component with no @Profile is profile-neutral and always included.
+ *
+ * Three spellings: single `@Profile("prod")`, array-literal
+ * `@Profile({"dev", "test"})`, and repeated `@Profile("dev") @Profile("test")`.
+ *
+ * Core: recognized and lowered by the compiler — profile filtering runs during
+ * DI graph resolution.
+ */
+annotation Profile {
+    String[] value() default {};
+}

@@ -142,7 +142,7 @@ public class SharedPoolServer extends Server {
      */
     public SharedPoolServer(TcpListener listener, int32 poolSize,
                             (TcpStream) -> void handler) {
-        this.listener = listener;
+        this.listener #= listener;
         this.handler = handler;
         this.state = heap AtomicInt32(ServerState.NEW);
         this.inflight = heap AtomicInt32(0);
@@ -178,7 +178,9 @@ public class SharedPoolServer extends Server {
     public static #SharedPoolServer bind(SocketAddress addr, int32 poolSize,
                                          (TcpStream) -> void handler) {
         TcpListener l = TcpListener.bind(addr);
-        return heap SharedPoolServer(l, poolSize, handler);
+        // `#l` moves the listener in (see Server.bind) so the factory's
+        // scope-exit drop can't leave the field dangling.
+        return heap SharedPoolServer(#l, poolSize, handler);
     }
 
     /**
@@ -193,7 +195,7 @@ public class SharedPoolServer extends Server {
                                                     int32 backlog, int32 poolSize,
                                                     (TcpStream) -> void handler) {
         TcpListener l = TcpListener.bindWithBacklog(addr, backlog);
-        return heap SharedPoolServer(l, poolSize, handler);
+        return heap SharedPoolServer(#l, poolSize, handler);
     }
 
     // ----- accept loop + worker pool (the Model-B serve) -------------------

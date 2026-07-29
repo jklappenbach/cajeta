@@ -1,0 +1,25 @@
+---
+import manifest from '../data/manifest.json';
+import ThemeToggle from './react/ThemeToggle.tsx';
+
+interface Props {
+  activeSection?: string;
+}
+const { activeSection } = Astro.props;
+---
+
+<header class="site-header">
+  <nav class="bar" aria-label="Primary">
+    <a class="brand" href="/">cajeta<span class="spark">.</span></a>
+    <div class="tabs">
+      {
+        manifest.tabs.map((t) => (
+          <a class="tab" href={t.url} aria-current={t.section === activeSection ? 'true' : undefined}>
+            {t.label}
+          </a>
+        ))
+      }
+    </div>
+    <ThemeToggle client:load />
+  </nav>
+</header>

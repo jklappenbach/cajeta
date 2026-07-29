@@ -50,6 +50,8 @@ public class SocketAddress {
      * Build a `SocketAddress` from an existing `IpAddress` and a port.
      * Takes ownership of `addr`. A port outside `0..65535` raises a
      * citing exception.
+     *
+     * @EntryPoint
      */
     public static #SocketAddress of(#IpAddress addr, int32 port) {
         if (port < 0 || port > 65535) {
@@ -57,7 +59,7 @@ public class SocketAddress {
                 "port out of range (0..65535)", (int64) -1);
         }
         SocketAddress s = heap SocketAddress();
-        s.ip = addr;
+        s.ip #= addr;
         s.port = port;
         return #s;
     }
@@ -151,18 +153,20 @@ public class SocketAddress {
      * on bad input — an unbracketed IPv6 host (ambiguous colons), a
      * missing/extra bracket, a missing port, or a host the
      * [`IpAddress`](IpAddress.cajeta) parser rejects.
+     *
+     * @EntryPoint
      */
     public static #SocketAddress parse(String input) {
         if (input == null) {
             throw heap MalformedAddressException(
                 "null socket address input", (int64) -1);
         }
-        int32 n = input.byteLength;
+        int32 n = input.byteLength();
         if (n == 0) {
             throw heap MalformedAddressException(
                 "empty socket address", (int64) -1);
         }
-        int8[] b = input.bytes;
+        int8[] b = input.toBytes();
 
         if (SocketAddress.byteAt(b, 0) == 91) {     // '[' → bracketed IPv6
             // Find the closing ']'.
@@ -196,7 +200,7 @@ public class SocketAddress {
             int32 port = SocketAddress.parsePort(b, afterBracket + 1, n);
 
             SocketAddress s = heap SocketAddress();
-            s.ip = #addr;
+            s.ip #= addr;
             s.port = port;
             return #s;
         }
@@ -232,7 +236,7 @@ public class SocketAddress {
         int32 port2 = SocketAddress.parsePort(b, colonIdx + 1, n);
 
         SocketAddress s2 = heap SocketAddress();
-        s2.ip = #addr2;
+        s2.ip #= addr2;
         s2.port = port2;
         return #s2;
     }
@@ -270,8 +274,8 @@ public class SocketAddress {
      */
     public #String toString() {
         String ipStr = this.ip.toString();
-        int32 ipLen = ipStr.byteLength;
-        int8[] ipBytes = ipStr.bytes;
+        int32 ipLen = ipStr.byteLength();
+        int8[] ipBytes = ipStr.toBytes();
         boolean v6 = this.ip.isV6();
 
         // Size the output: ip text, optional 2 brackets, ':' + up to 5

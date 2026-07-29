@@ -337,6 +337,12 @@ struct cajeta_dbg_frame {
     int nlocals;
     struct cajeta_dbg_local locals[CAJETA_DBG_MAX_LOCALS];
     struct cajeta_dbg_frame* prev;
+    // resident-debug-server 9.1: the chain slot this frame was pushed onto.
+    // leave() unlinks the node from ITS OWN chain — a method that enters
+    // under one fiber context and leaves under another (parallel shares,
+    // scheduler hand-offs) previously popped the WRONG chain, eroding
+    // main's chain until pending steps could never land.
+    struct cajeta_dbg_frame** owner;
 };
 
 // Selector for the current dbg frame chain head — mirrors __cajeta_scope_top_ptr
@@ -344,7 +350,7 @@ struct cajeta_dbg_frame {
 // scope; forward-declared here so the enter/leave/local helpers can use it.
 struct cajeta_dbg_frame** __cajeta_dbg_top_ptr(void);
 
-void __cajeta_dbg_frame_enter(const char* func) {
+void* __cajeta_dbg_frame_enter(const char* func) {
     struct cajeta_dbg_frame* f = malloc(sizeof(*f));
     if (!f) {
         fprintf(stderr, "cajeta: __cajeta_dbg_frame_enter malloc failed\n");
@@ -355,15 +361,283 @@ void __cajeta_dbg_frame_enter(const char* func) {
     f->nlocals = 0;
     struct cajeta_dbg_frame** top = __cajeta_dbg_top_ptr();
     f->prev = *top;
+    f->owner = top;
     *top = f;
+    return f;
 }
 
-void __cajeta_dbg_frame_leave(void) {
-    struct cajeta_dbg_frame** top = __cajeta_dbg_top_ptr();
-    struct cajeta_dbg_frame* f = *top;
+// Node-paired leave (9.1): unlink EXACTLY the frame this call's matching
+// enter pushed, from the chain it was pushed onto — immune to fiber-context
+// changes between enter and leave. Not found on its owner chain (already
+// unlinked by an unwind path): leak rather than corrupt.
+void __cajeta_dbg_frame_leave(void* node) {
+    struct cajeta_dbg_frame* f = (struct cajeta_dbg_frame*) node;
     if (!f) return;
-    *top = f->prev;
+    struct cajeta_dbg_frame** ow = f->owner;
+    if (!ow) { free(f); return; }
+    if (*ow == f) {
+        *ow = f->prev;
+    } else {
+        struct cajeta_dbg_frame* p = *ow;
+        int i = 0;
+        while (p && p->prev != f && i++ < 65536) p = p->prev;
+        if (p && p->prev == f) p->prev = f->prev;
+        else return;   // not on its chain: someone unlinked it; do not free
+    }
     free(f);
+}
+
+// --- diagnostic-exceptions Unit 3: line-info shadow stack --------------------
+//
+// A lightweight per-thread stack mirroring the active Cajeta call frames, used
+// to attach exact `file:line` to captured stack traces WITHOUT DWARF. Codegen
+// (gated `--line-info`) emits `__cajeta_line_enter(desc)` at each method
+// prologue, `__cajeta_line_mark(line)` at each statement boundary, and
+// `__cajeta_line_leave()` on every normal return path. `desc` is a codegen-
+// emitted `{typeName, methodName, fileName}` constant (program lifetime). On a
+// throw the runtime snapshots this stack into the trace side table (see
+// `__cajeta_trace_record`), and `getStackTrace()` resolves each frame from it.
+//
+// Unlike the debugger frame chain above, this never mallocs (fixed array) and
+// stores the line directly (no compiler-side loc table), so it resolves fully
+// in an AOT exe. `leave` fires only on normal returns; an exception unwind is
+// handled by restoring `__cajeta_shadow_top` to the catching try-frame's
+// watermark in `__cajeta_throw` (see cajeta_rt_io.c) — so a throw-across-frames
+// leaves no stale entries. Fiber line-info is deferred (spec §1.5): a fiber's
+// enter/mark/leave run on the carrier thread's TLS stack, which can leave stale
+// entries across a yield — bounded + memory-safe (fixed array), never resolved
+// for in-fiber throws (trace capture already skips fibers).
+typedef struct {
+    const char* typeName;    // "test.App"
+    const char* methodName;  // "run"
+    const char* fileName;    // "App.cajeta"
+} CajetaFrameDesc;
+
+typedef struct {
+    const CajetaFrameDesc* desc;
+    int32_t line;
+} CajetaShadowFrame;
+
+#define CAJETA_SHADOW_MAX 512
+static __thread CajetaShadowFrame __cajeta_shadow[CAJETA_SHADOW_MAX];
+static __thread int32_t __cajeta_shadow_top = 0;
+
+void __cajeta_line_enter(const void* desc) {
+    int32_t t = __cajeta_shadow_top;
+    if (t >= 0 && t < CAJETA_SHADOW_MAX) {
+        __cajeta_shadow[t].desc = (const CajetaFrameDesc*) desc;
+        __cajeta_shadow[t].line = 0;
+    }
+    __cajeta_shadow_top = t + 1;   // count past the cap so leave stays balanced
+}
+void __cajeta_line_mark(int32_t line) {
+    int32_t t = __cajeta_shadow_top;
+    if (t > 0 && t <= CAJETA_SHADOW_MAX) __cajeta_shadow[t - 1].line = line;
+}
+void __cajeta_line_leave(void) {
+    if (__cajeta_shadow_top > 0) __cajeta_shadow_top--;
+}
+int32_t __cajeta_shadow_get_top(void) { return __cajeta_shadow_top; }
+void __cajeta_shadow_set_top(int32_t watermark) {
+    if (watermark >= 0) __cajeta_shadow_top = watermark;
+}
+// Snapshot the live shadow frames innermost-first into `out` (caller-sized to
+// `max`), returning the number copied. `out[0]` is the throw-site frame.
+int32_t __cajeta_shadow_snapshot(CajetaShadowFrame* out, int32_t max) {
+    int32_t n = __cajeta_shadow_top;
+    if (n > CAJETA_SHADOW_MAX) n = CAJETA_SHADOW_MAX;  // deepest-past-cap unstored
+    int32_t w = 0;
+    for (int32_t i = n - 1; i >= 0 && w < max; i--) out[w++] = __cajeta_shadow[i];
+    return w;
+}
+
+// Print the LIVE shadow stack — the frames on this thread right now, innermost
+// first — as `at Type.method(File.cajeta:NN)` lines to `fd` (1 stdout, 2 stderr).
+//
+// The shadow stack already resolves a *captured* trace (a throwable's, via
+// __cajeta_print_trace), which is the semantic alternative to DWARF across the
+// whole product matrix: it works identically in the JIT, in an AOT binary, and
+// on device targets, none of which carry debug sections. What was missing is the
+// live view a DEBUGGER needs. An external debugger stopped at a breakpoint has a
+// native backtrace of mangled symbols and nothing else; from gdb,
+//
+//     (gdb) call (void) __cajeta_print_stack(2)
+//
+// renders the Cajeta call stack with source files and line numbers, with no
+// debug info in the binary. Also the natural source for a `cajeta dap`
+// stackTrace request and for a panic handler.
+//
+// Reads only thread-local state written by __cajeta_line_enter/mark/leave, so it
+// is safe to call from a stopped thread. No allocation, no locks.
+//
+// `used, retain` on this and the accessors below: NOTHING in generated code calls
+// them — a debugger does, from outside — so the IR-level DCE (lean link) and the
+// linker's --gc-sections would both drop them, and the symbol would simply not be
+// in the binary when you need it. `used` pins the definition through GlobalDCE
+// (@llvm.used); `retain` marks the section SHF_GNU_RETAIN so the linker keeps it
+// too. Cost is a few hundred bytes.
+__attribute__((used, retain))
+void __cajeta_print_stack(int32_t fd) {
+    FILE* out = (fd == 1) ? stdout : stderr;
+    int32_t n = __cajeta_shadow_top;
+    if (n > CAJETA_SHADOW_MAX) n = CAJETA_SHADOW_MAX;
+    if (n <= 0) {
+        fprintf(out, "  <no cajeta frames: line-info off, or not in cajeta code>\n");
+        fflush(out);
+        return;
+    }
+    for (int32_t i = n - 1; i >= 0; i--) {
+        const CajetaFrameDesc* d = __cajeta_shadow[i].desc;
+        const char* t = (d && d->typeName)   ? d->typeName   : "?";
+        const char* m = (d && d->methodName) ? d->methodName : "?";
+        const char* f = (d && d->fileName)   ? d->fileName   : "?";
+        // Basename only, matching the captured-trace format.
+        const char* base = f;
+        for (const char* q = f; *q; q++) if (*q == '/' || *q == '\\') base = q + 1;
+        fprintf(out, "  at %s.%s(%s:%d)\n", t, m, base, __cajeta_shadow[i].line);
+    }
+    fflush(out);
+}
+
+// Depth of the live shadow stack, and one frame by index (0 = innermost).
+// Field accessors rather than a struct return, so a debugger — or any consumer
+// that cannot see this file's types without debug info — can walk frames
+// through plain calls.
+__attribute__((used, retain))
+int32_t __cajeta_stack_depth(void) {
+    int32_t n = __cajeta_shadow_top;
+    return n > CAJETA_SHADOW_MAX ? CAJETA_SHADOW_MAX : (n < 0 ? 0 : n);
+}
+__attribute__((used, retain))
+const char* __cajeta_stack_type(int32_t i) {
+    int32_t n = __cajeta_stack_depth();
+    if (i < 0 || i >= n) return "";
+    const CajetaFrameDesc* d = __cajeta_shadow[n - 1 - i].desc;
+    return (d && d->typeName) ? d->typeName : "?";
+}
+__attribute__((used, retain))
+const char* __cajeta_stack_method(int32_t i) {
+    int32_t n = __cajeta_stack_depth();
+    if (i < 0 || i >= n) return "";
+    const CajetaFrameDesc* d = __cajeta_shadow[n - 1 - i].desc;
+    return (d && d->methodName) ? d->methodName : "?";
+}
+__attribute__((used, retain))
+const char* __cajeta_stack_file(int32_t i) {
+    int32_t n = __cajeta_stack_depth();
+    if (i < 0 || i >= n) return "";
+    const CajetaFrameDesc* d = __cajeta_shadow[n - 1 - i].desc;
+    return (d && d->fileName) ? d->fileName : "?";
+}
+__attribute__((used, retain))
+int32_t __cajeta_stack_line(int32_t i) {
+    int32_t n = __cajeta_stack_depth();
+    if (i < 0 || i >= n) return 0;
+    return __cajeta_shadow[n - 1 - i].line;
+}
+
+// ============================================================================
+// The embedded location table (external-debug §3).
+//
+// The compiler's DbgLocTable maps loc_id -> {file, line, col, function}. It is
+// a compiler-PROCESS global: `cajeta dap` can read it only because the DAP
+// compiles and runs in one process. An external debugger attached to a built
+// binary has no compiler, so under --debug-info=full codegen serializes the
+// table into the binary as a constant array and emits a global ctor that
+// registers it here. These accessors are then the debugger's whole view:
+// loc_id -> source position, and (file, line) -> the ids to arm.
+//
+// Registration rather than a weak extern: the table's definition is emitted at
+// end of codegen, but the runtime bitcode is linked into each module long
+// before that, so a weak default here and a strong definition there would
+// collide in one module (LLVM renames the second, silently). A ctor call is
+// the same shape the XPU kernel registry already uses, and it behaves
+// identically under LLJIT and a native link.
+//
+// A `line` or `off` build registers nothing: the table stays empty and every
+// accessor answers benignly (§3.1.4). `used, retain` because nothing in
+// generated code calls these — DCE and --gc-sections would otherwise drop
+// them, which is exactly how __cajeta_print_stack was lost on its first cut.
+// ============================================================================
+typedef struct {
+    const char* file;
+    int32_t     line;
+    int32_t     col;
+    const char* func;
+} CajetaDbgLocEntry;
+
+static const CajetaDbgLocEntry* __cajeta_dbg_loc_entries = 0;
+static int32_t __cajeta_dbg_loc_n = 0;
+
+// Called from the ctor codegen emits under --debug-info=full. A null/empty
+// registration CLEARS the table (an `off`/`line` binary registers nothing at
+// all, and this keeps "no table" reachable for tests).
+__attribute__((used, retain))
+void __cajeta_dbg_register_loc_table(const CajetaDbgLocEntry* entries,
+                                     int32_t count) {
+    if (!entries || count <= 0) {
+        __cajeta_dbg_loc_entries = 0;
+        __cajeta_dbg_loc_n = 0;
+        return;
+    }
+    __cajeta_dbg_loc_entries = entries;
+    __cajeta_dbg_loc_n = count;
+}
+
+__attribute__((used, retain))
+int32_t __cajeta_dbg_loc_count(void) {
+    return __cajeta_dbg_loc_entries ? __cajeta_dbg_loc_n : 0;
+}
+
+__attribute__((used, retain))
+const char* __cajeta_dbg_loc_file(int32_t id) {
+    if (!__cajeta_dbg_loc_entries || id < 0 || id >= __cajeta_dbg_loc_n) return "";
+    const char* f = __cajeta_dbg_loc_entries[id].file;
+    return f ? f : "";
+}
+
+__attribute__((used, retain))
+int32_t __cajeta_dbg_loc_line(int32_t id) {
+    if (!__cajeta_dbg_loc_entries || id < 0 || id >= __cajeta_dbg_loc_n) return 0;
+    return __cajeta_dbg_loc_entries[id].line;
+}
+
+__attribute__((used, retain))
+int32_t __cajeta_dbg_loc_col(int32_t id) {
+    if (!__cajeta_dbg_loc_entries || id < 0 || id >= __cajeta_dbg_loc_n) return 0;
+    return __cajeta_dbg_loc_entries[id].col;
+}
+
+__attribute__((used, retain))
+const char* __cajeta_dbg_loc_func(int32_t id) {
+    if (!__cajeta_dbg_loc_entries || id < 0 || id >= __cajeta_dbg_loc_n) return "";
+    const char* f = __cajeta_dbg_loc_entries[id].func;
+    return f ? f : "";
+}
+
+// The ids a line breakpoint on (file, line) must arm. `file` matches by suffix
+// on a path boundary, so a debugger may pass either the table's stored path
+// ("cajeta/lang/Guid.cajeta") or just the basename ("Guid.cajeta"). Writes up
+// to `max` ids into `out` and returns the number written; pass out=0 to count.
+__attribute__((used, retain))
+int32_t __cajeta_dbg_ids_for_line(const char* file, int32_t line,
+                                  int32_t* out, int32_t max) {
+    if (!__cajeta_dbg_loc_entries || !file) return 0;
+    size_t flen = strlen(file);
+    int32_t found = 0;
+    for (int32_t i = 0; i < __cajeta_dbg_loc_n; ++i) {
+        const CajetaDbgLocEntry* e = &__cajeta_dbg_loc_entries[i];
+        if (e->line != line || !e->file) continue;
+        size_t elen = strlen(e->file);
+        if (elen < flen) continue;
+        if (strcmp(e->file + (elen - flen), file) != 0) continue;
+        // Suffix must start at a path boundary: "Guid.cajeta" must not match
+        // "MyGuid.cajeta".
+        if (elen > flen && e->file[elen - flen - 1] != '/') continue;
+        if (out && found < max) out[found] = i;
+        found++;
+    }
+    return found;
 }
 
 void __cajeta_dbg_local(const char* name, const char* type, void* addr,
@@ -385,35 +659,59 @@ void __cajeta_dbg_local(const char* name, const char* type, void* addr,
 // reads it through the NATIVE copy. Pure pointer arithmetic on a passed-in
 // void* means both copies resolve a chain node identically, so the host can
 // dereference a pointer the JIT side produced. Used by DebugVars::walkFrames.
+//
+// external-debug §4: `used, retain` on all of them. In-process (the DAP) they are
+// called from C++ and survive; in an AOT binary NOTHING calls them, so DCE and
+// --gc-sections drop them — leaving an external debugger unable to read the very
+// locals the program is busy recording.
+
+// The chain head, for a debugger that has no frame pointer to start from. The DAP
+// is HANDED frame_top by the safepoint handler; gdb is not, so it needs its own
+// way in. Sound for an AOT binary, where the runtime is a single copy and there is
+// no JIT/native TLS split.
+__attribute__((used, retain))
+void* __cajeta_dbg_frame_top(void) {
+    struct cajeta_dbg_frame** top = __cajeta_dbg_top_ptr();
+    return top ? *top : NULL;
+}
+
+__attribute__((used, retain))
 int __cajeta_dbg_frame_depth(void* top) {
     int n = 0;
     for (struct cajeta_dbg_frame* f = top; f; f = f->prev) n++;
     return n;
 }
+__attribute__((used, retain))
 void* __cajeta_dbg_frame_prev(void* frame) {
     return frame ? ((struct cajeta_dbg_frame*) frame)->prev : NULL;
 }
+__attribute__((used, retain))
 const char* __cajeta_dbg_frame_func(void* frame) {
     return frame ? ((struct cajeta_dbg_frame*) frame)->func : NULL;
 }
+__attribute__((used, retain))
 int32_t __cajeta_dbg_frame_loc(void* frame) {
     return frame ? ((struct cajeta_dbg_frame*) frame)->current_loc : -1;
 }
+__attribute__((used, retain))
 int __cajeta_dbg_frame_nlocals(void* frame) {
     return frame ? ((struct cajeta_dbg_frame*) frame)->nlocals : 0;
 }
+__attribute__((used, retain))
 const char* __cajeta_dbg_local_name(void* frame, int i) {
     if (!frame) return NULL;
     struct cajeta_dbg_frame* f = frame;
     if (i < 0 || i >= f->nlocals) return NULL;
     return f->locals[i].name;
 }
+__attribute__((used, retain))
 const char* __cajeta_dbg_local_type(void* frame, int i) {
     if (!frame) return NULL;
     struct cajeta_dbg_frame* f = frame;
     if (i < 0 || i >= f->nlocals) return NULL;
     return f->locals[i].type;
 }
+__attribute__((used, retain))
 void* __cajeta_dbg_local_addr(void* frame, int i) {
     if (!frame) return NULL;
     struct cajeta_dbg_frame* f = frame;
@@ -422,12 +720,14 @@ void* __cajeta_dbg_local_addr(void* frame, int i) {
 }
 // CP7-1b: the two memory facets. Out-of-range reads back 0 (== Unknown), the
 // same neutral fallback codegen uses when a facet isn't statically known.
+__attribute__((used, retain))
 uint8_t __cajeta_dbg_local_alloc(void* frame, int i) {
     if (!frame) return 0;
     struct cajeta_dbg_frame* f = frame;
     if (i < 0 || i >= f->nlocals) return 0;
     return f->locals[i].alloc;
 }
+__attribute__((used, retain))
 uint8_t __cajeta_dbg_local_ownership(void* frame, int i) {
     if (!frame) return 0;
     struct cajeta_dbg_frame* f = frame;
@@ -490,8 +790,53 @@ long __cajeta_dbg_safepoint_count(void) {
     return __cajeta_dbg_safepoint_total;
 }
 
+// resident-debug-server 9.1: the PROGRAM thread's identity. Captured here
+// because reset_safepoint_count runs on the program thread immediately
+// before the entry is invoked (runJit and debug sessions alike, once per
+// session). Carrier threads outside fiber context must NOT report fiber id
+// 0 — that impersonated the program thread and let parallel-share
+// safepoints steal pending steps (stepped F8 parked in stream internals).
+static pthread_t __cajeta_dbg_program_thread;
+static int __cajeta_dbg_program_thread_set = 0;
+
+int __cajeta_dbg_on_program_thread(void) {
+    return __cajeta_dbg_program_thread_set
+        && pthread_equal(pthread_self(), __cajeta_dbg_program_thread);
+}
+
 void __cajeta_dbg_reset_safepoint_count(void) {
     __cajeta_dbg_safepoint_total = 0;
+    // Fallback capture for the SAME-THREAD runner (runJit invokes the entry
+    // on this very thread). Debug sessions re-mark from their own program
+    // thread below — reset runs on the SETUP thread there and must not win.
+    if (!__cajeta_dbg_program_thread_set) {
+        __cajeta_dbg_program_thread = pthread_self();
+        __cajeta_dbg_program_thread_set = 1;
+    }
+}
+
+// resident-debug-server 9.1: called as the program thread's FIRST act, from
+// whichever thread actually runs the entry (session program thread; also
+// re-marks per session so sequential resident sessions stay correct).
+__attribute__((used, retain))
+void __cajeta_dbg_mark_program_thread(void) {
+    __cajeta_dbg_program_thread = pthread_self();
+    __cajeta_dbg_program_thread_set = 1;
+}
+
+// 9.1 chain-containment probe: is `node` on the chain headed at `top`? A
+// pure pointer chase like __cajeta_dbg_frame_depth; the pending-step gate
+// uses it so a candidate on a FOREIGN chain can never satisfy a step armed
+// on the origin chain. Bounded against cycles.
+__attribute__((used, retain))
+int __cajeta_dbg_frame_contains(void* top, void* node) {
+    if (!node) return 0;
+    const struct cajeta_dbg_frame* f = (const struct cajeta_dbg_frame*) top;
+    for (int i = 0; f && i < 65536; ++i) {
+        if ((const void*) f == node) return 1;
+        f = f->prev;
+    }
+    return 0;
 }
 
 // ============================================================================
@@ -640,9 +985,16 @@ int __cajeta_live_set_claim(void* p) {
 // of its parameters it OWNS (and must drop) vs merely borrows. Thread-local so
 // concurrent callers don't clobber each other; 0 between calls, so a call with
 // no `#` args correctly reads 0.
-static __thread int64_t __cajeta_move_mask_tls = 0;
-int64_t __cajeta_move_mask_get(void) { return __cajeta_move_mask_tls; }
-void __cajeta_move_mask_set(int64_t m) { __cajeta_move_mask_tls = m; }
+
+// Per-thread paired RETURN flag (title-tracking spec §4.2/§4.4): a
+// class-pointer-returning method stores 1 (title travels to the caller) or 0
+// (borrow) immediately before its `ret` — after all scope-exit drops — and
+// the caller reads it immediately after the call instruction. Nothing can
+// execute between those two points (no call, no fiber suspension), so unlike
+// the deprecated arg-side mask there is no forwarding chain to lose it.
+static __thread int64_t __cajeta_return_flag_tls = 0;
+int64_t __cajeta_return_flag_get(void) { return __cajeta_return_flag_tls; }
+void __cajeta_return_flag_set(int64_t f) { __cajeta_return_flag_tls = f; }
 
 // Allocate and zero-fill a buffer holding total_count elements of elem_size bytes.
 // Used for primitive-element arrays.
@@ -714,6 +1066,45 @@ void* __cajeta_new_array_header(uint64_t header_size, uint64_t elem_size, uint64
     return hdr;
 }
 
+// title-stores §3.1 — droppable-element arrays carry a per-slot ownership
+// bitmap in a TAIL after the data region: { i64 count | data[count*elem] |
+// bits[ceil(count/8)] }, one contiguous zeroed block. The tail address is
+// computed from the count word (header layout unchanged, no extra pointer).
+// Unit 2: allocation + accounting only; the bits are written by the Unit-3
+// store/teardown codegen.
+void* __cajeta_new_array_header_bits(uint64_t header_size, uint64_t elem_size, uint64_t count) {
+    // Bits math is safe well below this; the elem guard below does the rest.
+    if (count > (UINT64_MAX / 8) - 8) {
+        fprintf(stderr, "cajeta: __cajeta_new_array_header_bits overflow (count=%llu)\n",
+                (unsigned long long) count);
+        abort();
+    }
+    uint64_t bits = (count + 7) / 8;
+    if (elem_size != 0 && count > (UINT64_MAX - header_size - bits) / elem_size) {
+        fprintf(stderr, "cajeta: __cajeta_new_array_header_bits overflow (header=%llu elem=%llu count=%llu)\n",
+                (unsigned long long) header_size,
+                (unsigned long long) elem_size,
+                (unsigned long long) count);
+        abort();
+    }
+    uint64_t total = header_size + count * elem_size + bits;
+    if (total == 0) {
+        return NULL;
+    }
+    void* hdr = calloc(1, (size_t) total);
+    if (hdr == NULL) {
+        fprintf(stderr, "cajeta: __cajeta_new_array_header_bits failed (header=%llu elem=%llu count=%llu)\n",
+                (unsigned long long) header_size,
+                (unsigned long long) elem_size,
+                (unsigned long long) count);
+        abort();
+    }
+    *((int64_t*) hdr) = (int64_t) count;
+    __cajeta_note_alloc(total);
+    __cajeta_live_set_add(hdr);
+    return hdr;
+}
+
 // Same as __cajeta_new_array_header but the data region is left UNINITIALIZED
 // (malloc, not calloc). For buffers the caller fully overwrites before reading
 // — e.g. StringBuilder grow/toString, String concat payloads — the calloc
@@ -756,32 +1147,37 @@ void* __cajeta_alloc(uint64_t size);  // defined below; used by __cajeta_args_ma
 // of owned (mode=0) String instances, each holding a heap copy of an argv slot.
 void* __cajeta_args_make(int64_t argc, char** argv,
                          void* string_vtable, int64_t str_size,
-                         int64_t off_bytes, int64_t off_byte_len,
-                         int64_t off_mode, int64_t off_cplen) {
+                         int64_t off_lentag, int64_t off_aux,
+                         int64_t off_base, int64_t off_cplen) {
     if (argc < 0) argc = 0;
     // cajeta `String[]` has array LLVM type `{ i64, [0 x %String] }`, so the
     // element STRIDE is the full String struct size — but each slot holds a
     // `String*` POINTER in its first 8 bytes (the codegen stores/loads a
     // pointer per element; see the aggregate-init lowering). So: allocate the
     // backing with `str_size` stride, then store one heap String* per slot.
+    // 6.2.2 tagged core: the offsets are (lenTag, aux, base, cachedCpLength);
+    // aux+base are contiguous, so Inline text writes span both.
     void* arr = __cajeta_new_array_header(8, (uint64_t) str_size, (uint64_t) argc);
     char* base = (char*) arr + 8;
     for (int64_t i = 0; i < argc; i++) {
         const char* s = (argv && argv[i]) ? argv[i] : "";
         int64_t len = (int64_t) strlen(s);
-        // bytes payload: CajetaArray { i64 count=len, [len+1 x i8] } — the
-        // trailing NUL keeps any legacy strlen reader happy (matches the
-        // string-literal materialization in LiteralExpression.cpp).
-        void* bytes = __cajeta_new_array_header(8, 1, (uint64_t) (len + 1));
-        *((int64_t*) bytes) = len;                       // count excludes the NUL
-        memcpy((char*) bytes + 8, s, (size_t) len + 1);  // copy incl. the NUL
-        // Heap String instance (vtable is field 0, offset 0 by construction).
         void* str = __cajeta_alloc((uint64_t) str_size);
-        *(void**)   ((char*) str)                = string_vtable;
-        *(void**)   ((char*) str + off_bytes)    = bytes;
-        *(int32_t*) ((char*) str + off_byte_len) = (int32_t) len;
-        *(int32_t*) ((char*) str + off_mode)     = 0;    // owned: drop reclaims bytes
-        *(int32_t*) ((char*) str + off_cplen)    = -1;   // codepoint length uncomputed
+        *(void**)   ((char*) str)             = string_vtable;
+        *(int32_t*) ((char*) str + off_cplen) = -1;
+        if (len <= 12) {
+            *(int32_t*) ((char*) str + off_lentag) = (int32_t) len;
+            memset((char*) str + off_aux, 0, 12);
+            memcpy((char*) str + off_aux, s, (size_t) len);
+        } else {
+            // Owned root: CajetaArray { i64 count=len, text, NUL }.
+            void* bytes = __cajeta_new_array_header(8, 1, (uint64_t) (len + 1));
+            *((int64_t*) bytes) = len;
+            memcpy((char*) bytes + 8, s, (size_t) len + 1);
+            *(int32_t*) ((char*) str + off_lentag) = (int32_t) len;
+            *(int32_t*) ((char*) str + off_aux)    = 0;
+            *(void**)   ((char*) str + off_base)   = bytes;
+        }
         // Store the pointer at the (str_size-strided) element slot.
         *(void**) (base + (size_t) i * (size_t) str_size) = str;
     }
@@ -792,11 +1188,37 @@ void* __cajeta_args_make(int64_t argc, char** argv,
 // owning local's chain pop both call this for the same array address; the
 // first one wins the live-set claim and actually frees, the second sees
 // the address is gone and returns silently.
+int __cajeta_shared_owner_drop(void* base);   // cajeta_rt_shared.c (same TU)
+
 void __cajeta_free_array(void* ptr) {
     if (!ptr) return;
-    if (!__cajeta_live_set_claim(ptr)) return;
+    // Shared-state seam (slice-spec §3.6): sign bit clear -> plain claim as
+    // today; set -> the owner's stake releases, free only at the last stake.
+    if (!__cajeta_shared_owner_drop(ptr)) return;
     __cajeta_poison_buffer(ptr);
     free(ptr);
+}
+
+// element-ownership §7.1.4 — drop the live elements of an OWNING container's
+// backing array, ahead of __cajeta_free_array on the buffer itself. `count`
+// is the container's @ElementCount-designated live count, NOT the header
+// word (which stores allocated capacity — slots past the live count are
+// uninitialized and must not be touched). `header` and `stride` mirror the
+// __cajeta_new_array_header allocation exactly (both DataLayout sizes
+// computed by the compiler): String elements occupy inline 64-byte value
+// slots, class refs 8-byte ptr slots — in both layouts the reference
+// pointer sits at the SLOT BASE (the element-store codegen writes it
+// there). `drop_fn` is compiler-chosen per the monomorphized element type
+// (__cajeta_string_drop / __cajeta_class_virtual_drop), both idempotent via
+// the live-set claim, so an element also owned elsewhere frees exactly once.
+void __cajeta_drop_array_elements(void* arr, int64_t count, int64_t header,
+                                  int64_t stride, void (*drop_fn)(void*)) {
+    if (arr == NULL || drop_fn == NULL || stride <= 0) return;
+    char* data = (char*) arr + header;
+    for (int64_t i = 0; i < count; i++) {
+        void* elem = *(void**) (data + i * stride);
+        if (elem != NULL) drop_fn(elem);
+    }
 }
 
 // Drop helper for OWNING views (Views.md § Construction).
@@ -809,7 +1231,7 @@ void __cajeta_free_array(void* ptr) {
 void __cajeta_view_drop_owned(void* data_ptr) {
     if (data_ptr == NULL) return;
     void* header = (void*) ((char*) data_ptr - 8);
-    if (!__cajeta_live_set_claim(header)) return;
+    if (!__cajeta_shared_owner_drop(header)) return;
     __cajeta_poison_buffer(header);
     free(header);
 }
@@ -935,14 +1357,59 @@ typedef struct {
                                // POSIX: set to RESERVE (the kernel commits on fault)
 } cajeta_arena;
 
+// The NON-FIBER arena: main thread + any native helper thread. Carrier-hosted
+// fibers each own a `cajeta_arena` inside their `struct cajeta_fiber` instead —
+// the LIFO mark/reset discipline the arena depends on holds per LOGICAL stack,
+// and a carrier interleaves many fiber stacks. With a single per-thread arena a
+// fiber that PARKED mid-frame (await, readAsync, …) left its live allocations
+// above marks that co-hosted fibers would reset right through: the resumed
+// fiber then read/wrote recycled bytes (http:0.11 — the client-loopback
+// index-0-of-empty SIGABRT; kin to the double-close and lambda-capture
+// double-free reports). Same per-fiber rationale — and the same accessor
+// pattern — as scope_top/drop_top/exc_top/fl_top.
 static __thread cajeta_arena __cajeta_arena = { NULL, 0, 0, 0, 0 };
+
+// Selects the current context's arena: the running fiber's own, else the
+// thread's. Defined in cajeta_rt_concurrent_exec.c (same TU — see
+// cajeta_runtime.c's include order) where __cajeta_current_fiber lives.
+static cajeta_arena* __cajeta_arena_ptr(void);
+
+// --- arena-mapping pool ------------------------------------------------------
+// Fibers are born and die constantly; mmap/munmap per fiber would churn. A
+// completed fiber's mapping goes on this free-list and the next arena init
+// (any thread, any fiber) reuses it. Entries are tiny malloc'd nodes; the
+// mappings themselves are uniform CAJETA_ARENA_RESERVE reservations. Depth is
+// bounded by peak concurrent arena-USING contexts (lazy init means fibers that
+// never arena-allocate never hold a mapping). Process-lifetime, like the
+// per-thread arenas — never unmapped at shutdown.
+struct cajeta_arena_pooled {
+    unsigned char* base;
+    size_t retained;
+    size_t committed;
+    struct cajeta_arena_pooled* next;
+};
+static struct cajeta_arena_pooled* __cajeta_arena_pool = NULL;
+static pthread_mutex_t __cajeta_arena_pool_mu = PTHREAD_MUTEX_INITIALIZER;
 
 // Defined in cajeta_rt_concurrent_sync.c (included later in this TU). Adds a batch
 // of drops to the test drop-count — used by the arena reset to account for the
 // non-escaping primitive arrays it reclaims in bulk.
 void __cajeta_drop_count_add(int64_t n);
 
-static void __cajeta_arena_init(void) {
+static void __cajeta_arena_init(cajeta_arena* a) {
+    // Reuse a pooled mapping from a completed fiber when one is available.
+    pthread_mutex_lock(&__cajeta_arena_pool_mu);
+    struct cajeta_arena_pooled* pooled = __cajeta_arena_pool;
+    if (pooled) __cajeta_arena_pool = pooled->next;
+    pthread_mutex_unlock(&__cajeta_arena_pool_mu);
+    if (pooled) {
+        a->base = pooled->base;
+        a->retained = pooled->retained;
+        a->committed = pooled->committed;
+        a->bump = 0;
+        free(pooled);
+        return;
+    }
 #if defined(_WIN32)
     // No MAP_NORESERVE on Windows: reserve the address range now, commit pages
     // lazily as the bump advances (__cajeta_arena_bump). Reserved-but-uncommitted
@@ -952,7 +1419,7 @@ static void __cajeta_arena_init(void) {
         fprintf(stderr, "cajeta: arena VirtualAlloc(MEM_RESERVE) failed\n");
         abort();
     }
-    __cajeta_arena.committed = 0;
+    a->committed = 0;
 #else
     void* p = mmap(NULL, CAJETA_ARENA_RESERVE, PROT_READ | PROT_WRITE,
                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
@@ -960,11 +1427,51 @@ static void __cajeta_arena_init(void) {
         fprintf(stderr, "cajeta: arena mmap failed\n");
         abort();
     }
-    __cajeta_arena.committed = CAJETA_ARENA_RESERVE;   // kernel commits on first touch
+    a->committed = CAJETA_ARENA_RESERVE;   // kernel commits on first touch
 #endif
-    __cajeta_arena.base = (unsigned char*) p;
-    __cajeta_arena.bump = 0;
-    __cajeta_arena.retained = 0;
+    a->base = (unsigned char*) p;
+    a->bump = 0;
+    a->retained = 0;
+}
+
+// Return a dead fiber's mapping to the pool (no-op if it never allocated).
+// Called from the fiber teardown paths in cajeta_rt_concurrent_exec.c. When
+// the fiber retained real memory, hand the pages back to the OS first so a
+// deep-recursion outlier doesn't pin RSS from inside the pool.
+static void __cajeta_arena_release_mapping(cajeta_arena* a) {
+    if (!a->base) return;
+    if (a->retained > CAJETA_ARENA_TRIM_THRESHOLD) {
+#if defined(_WIN32)
+        VirtualFree(a->base, a->retained, MEM_DECOMMIT);
+        a->committed = 0;
+#else
+        madvise(a->base, a->retained, MADV_DONTNEED);
+#endif
+        a->retained = 0;
+    }
+    struct cajeta_arena_pooled* node = malloc(sizeof(*node));
+    if (!node) {
+        // Can't track it — unmap rather than leak the reservation.
+#if defined(_WIN32)
+        VirtualFree(a->base, 0, MEM_RELEASE);
+#else
+        munmap(a->base, CAJETA_ARENA_RESERVE);
+#endif
+        a->base = NULL;
+        return;
+    }
+    node->base = a->base;
+    node->retained = a->retained;
+    node->committed = a->committed;
+    pthread_mutex_lock(&__cajeta_arena_pool_mu);
+    node->next = __cajeta_arena_pool;
+    __cajeta_arena_pool = node;
+    pthread_mutex_unlock(&__cajeta_arena_pool_mu);
+    a->base = NULL;
+    a->bump = 0;
+    a->retained = 0;
+    a->count = 0;
+    a->committed = 0;
 }
 
 static inline size_t __cajeta_arena_align8(size_t n) {
@@ -980,31 +1487,32 @@ static inline size_t __cajeta_arena_align8(size_t n) {
 // code when frame-arena U3 began routing primitive arrays here. malloc restores
 // the noalias the malloc path gets for free, and propagates through inlining.
 __attribute__((malloc)) static inline void* __cajeta_arena_bump(uint64_t size) {
-    if (!__cajeta_arena.base) __cajeta_arena_init();
+    cajeta_arena* a = __cajeta_arena_ptr();
+    if (!a->base) __cajeta_arena_init(a);
     size_t n = __cajeta_arena_align8((size_t) size);
-    if (__cajeta_arena.bump + n > CAJETA_ARENA_RESERVE) {
+    if (a->bump + n > CAJETA_ARENA_RESERVE) {
         fprintf(stderr, "cajeta: arena exhausted (request=%zu, reserve=%zu)\n",
                 (size_t) size, (size_t) CAJETA_ARENA_RESERVE);
         abort();
     }
-    unsigned char* p = __cajeta_arena.base + __cajeta_arena.bump;
-    __cajeta_arena.bump += n;
-    if (__cajeta_arena.bump > __cajeta_arena.retained) {
-        __cajeta_arena.retained = __cajeta_arena.bump;
+    unsigned char* p = a->base + a->bump;
+    a->bump += n;
+    if (a->bump > a->retained) {
+        a->retained = a->bump;
     }
 #if defined(_WIN32)
     // Commit the page(s) the new [p, p+n) region spans before returning it.
-    if (__cajeta_arena.bump > __cajeta_arena.committed) {
+    if (a->bump > a->committed) {
         size_t pg = 4096;                                   // x64 Windows page
-        size_t need = (__cajeta_arena.bump + (pg - 1)) & ~(pg - 1);
+        size_t need = (a->bump + (pg - 1)) & ~(pg - 1);
         if (need > CAJETA_ARENA_RESERVE) need = CAJETA_ARENA_RESERVE;
-        if (!VirtualAlloc(__cajeta_arena.base + __cajeta_arena.committed,
-                          need - __cajeta_arena.committed,
+        if (!VirtualAlloc(a->base + a->committed,
+                          need - a->committed,
                           MEM_COMMIT, PAGE_READWRITE)) {
             fprintf(stderr, "cajeta: arena VirtualAlloc(MEM_COMMIT) failed\n");
             abort();
         }
-        __cajeta_arena.committed = need;
+        a->committed = need;
     }
 #endif
     return p;
@@ -1044,8 +1552,21 @@ __attribute__((malloc)) void* __cajeta_new_array_header_arena(uint64_t header_si
     }
     void* hdr = __cajeta_arena_alloc((uint64_t) total);   // zeroed
     *((int64_t*) hdr) = (int64_t) count;
-    __cajeta_arena.count++;   // reclaimed (and drop-counted) at the next scope reset
+    __cajeta_arena_ptr()->count++;   // reclaimed (and drop-counted) at the next scope reset
     return hdr;
+}
+
+// Frame-arena membership probe (slice-spec §4 arena row). A pointer inside
+// the calling thread's arena reservation is frame-transient: it is recycled
+// by the scope-exit reset, so it can never back a Shared stake — escaping
+// slices of arena-backed buffers must COPY. Checks the full reservation
+// (not just the live bump) so stale pointers into reset regions also answer
+// true (they're equally unshareable).
+int __cajeta_arena_owns(const void* p) {
+    cajeta_arena* a = __cajeta_arena_ptr();
+    return a->base
+        && (const unsigned char*) p >= a->base
+        && (const unsigned char*) p < a->base + CAJETA_ARENA_RESERVE;
 }
 
 // Capture the current bump offset AND the live array count. Stash at scope entry;
@@ -1054,13 +1575,15 @@ __attribute__((malloc)) void* __cajeta_new_array_header_arena(uint64_t header_si
 // live-array count (millions). The token is opaque to the compiler (Block.cpp only
 // stashes it and hands it back to reset), so packing changes nothing for codegen.
 uint64_t __cajeta_arena_mark(void) {
-    return ((uint64_t) __cajeta_arena.count << 40) | (uint64_t) __cajeta_arena.bump;
+    cajeta_arena* a = __cajeta_arena_ptr();
+    return ((uint64_t) a->count << 40) | (uint64_t) a->bump;
 }
 
 // O(1) reclaim: restore the bump to `mark`. All objects allocated since the mark
 // are abandoned in place (their bytes reused on the next bump). Trim backstop:
 // when retained pages run well past the new mark, hand them back to the OS.
 void __cajeta_arena_reset(uint64_t mark) {
+    cajeta_arena* a = __cajeta_arena_ptr();
     size_t m       = (size_t) (mark & (((uint64_t) 1 << 40) - 1));
     size_t count_m = (size_t) (mark >> 40);
     // Each non-escaping primitive array reclaimed here used to free() at scope exit
@@ -1068,13 +1591,13 @@ void __cajeta_arena_reset(uint64_t mark) {
     // arena reclaims them in one O(1) bump-reset — no per-array free, no live-set —
     // so account for the delta here in bulk. Keeps drop-count probes accurate
     // without re-adding any per-array cost. Test-only instrumentation.
-    if (__cajeta_arena.count > count_m) {
-        __cajeta_drop_count_add((int64_t) (__cajeta_arena.count - count_m));
+    if (a->count > count_m) {
+        __cajeta_drop_count_add((int64_t) (a->count - count_m));
     }
-    __cajeta_arena.count = count_m;
-    __cajeta_arena.bump = m;
-    if (__cajeta_arena.base
-            && __cajeta_arena.retained > m + CAJETA_ARENA_TRIM_THRESHOLD) {
+    a->count = count_m;
+    a->bump = m;
+    if (a->base
+            && a->retained > m + CAJETA_ARENA_TRIM_THRESHOLD) {
 #if defined(_WIN32)
         size_t pg = 4096;
 #else
@@ -1082,37 +1605,95 @@ void __cajeta_arena_reset(uint64_t mark) {
         if (pg == 0) pg = 4096;
 #endif
         size_t from = (m + pg - 1) & ~(pg - 1);                       // round up
-        size_t to   = (__cajeta_arena.retained + pg - 1) & ~(pg - 1);
+        size_t to   = (a->retained + pg - 1) & ~(pg - 1);
         if (to > from) {
 #if defined(_WIN32)
             // Hand the pages back to the OS; a later bump re-commits them.
-            VirtualFree(__cajeta_arena.base + from, to - from, MEM_DECOMMIT);
-            if (__cajeta_arena.committed > from) __cajeta_arena.committed = from;
+            VirtualFree(a->base + from, to - from, MEM_DECOMMIT);
+            if (a->committed > from) a->committed = from;
 #else
-            madvise(__cajeta_arena.base + from, to - from, MADV_DONTNEED);
+            madvise(a->base + from, to - from, MADV_DONTNEED);
 #endif
         }
-        __cajeta_arena.retained = m;
+        a->retained = m;
     }
 }
 
 // Test/introspection: current bytes in use, and high-water retained bytes.
-int64_t __cajeta_arena_bytes(void)    { return (int64_t) __cajeta_arena.bump; }
-int64_t __cajeta_arena_retained(void) { return (int64_t) __cajeta_arena.retained; }
+int64_t __cajeta_arena_bytes(void)    { return (int64_t) __cajeta_arena_ptr()->bump; }
+int64_t __cajeta_arena_retained(void) { return (int64_t) __cajeta_arena_ptr()->retained; }
 
-// cajeta.lang.String wrapper layout (generatePrototype embed order, mirrored by
-// the concat lowering in BinaryOpExpression). mode: 0 = owned (bytes is a heap
-// array header this String owns), 1 = view (bytes borrowed from static/shared
-// storage — string literals, slices).
+// cajeta.lang.String wrapper layout (generatePrototype embed order, mirrored
+// by the literal/concat lowerings) — slices plan 6.2.2: the storage is the
+// 16-byte tagged Utf8 core (slice-spec §8), `mode` collapsed into the tag.
+//   len <= 12            Inline — text lives in `data`; self-contained.
+//   len >  12            pointer form: data overlays {i32 off, char* base};
+//                        base is always a ROOT CajetaArray header, text at
+//                        base + 8 + off. Tag bits:
+//     CAJ_STR_SHARED_BIT  wrapper holds one rc stake on base (drop releases,
+//                         copies retain — the count-word sign convention).
+//     CAJ_STR_BORROW_BIT  stakeless view of a heap root (slices plan 4.2.2;
+//                         drop must not touch the root).
+//     CAJ_STR_STATIC_BIT  static root (literals + views of them); no rc ever.
+//     no bits             OWNED sole root — drop frees via the owner-drop
+//                         seam; never enters the shared table unless a slice
+//                         escapes (zero rc traffic for never-shared strings).
+// Pointer forms always carry len > 12 (the §8 normalization rule: every
+// <= 12 B result is built Inline), so the discrimination is total.
+#define CAJ_STR_LEN_MASK   0x1FFFFFFF
+#define CAJ_STR_SHARED_BIT ((int32_t) 1 << 31)
+#define CAJ_STR_BORROW_BIT ((int32_t) 1 << 30)
+#define CAJ_STR_STATIC_BIT ((int32_t) 1 << 29)
+#define CAJ_STR_INLINE_CAP 12
+
 typedef struct {
     void*   vtable;
-    void*   bytes;        // CajetaArray header: 8-byte count word + data
-    int32_t byteLength;
-    int32_t mode;
+    int32_t lenTag;
+    char    data[12];     // Inline text, or the {off, base} pointer overlay
     int32_t cachedCpLength;
-    int64_t ssoCount;     // inline SSO region: count word (CajetaArray header)
-    int8_t  ssoData[24];  // inline SSO data — bytes points here for short owned strings
 } cajeta_string_layout;
+
+static inline int32_t caj_str_len(const cajeta_string_layout* s) {
+    return s->lenTag & CAJ_STR_LEN_MASK;
+}
+static inline int caj_str_is_pointer(const cajeta_string_layout* s) {
+    return caj_str_len(s) > CAJ_STR_INLINE_CAP;
+}
+static inline int32_t caj_str_off(const cajeta_string_layout* s) {
+    int32_t o;
+    memcpy(&o, s->data, 4);
+    return o;
+}
+static inline char* caj_str_base(const cajeta_string_layout* s) {
+    char* b;
+    memcpy(&b, s->data + 4, 8);
+    return b;
+}
+static inline const char* caj_str_ptr(const cajeta_string_layout* s) {
+    if (!caj_str_is_pointer(s)) return s->data;
+    return caj_str_base(s) + 8 + caj_str_off(s);
+}
+static inline void caj_str_set_inline(cajeta_string_layout* s,
+        const char* src, int32_t len) {
+    s->lenTag = len;
+    memset(s->data, 0, sizeof s->data);
+    if (len > 0) memcpy(s->data, src, (size_t) len);
+}
+static inline void caj_str_set_window(cajeta_string_layout* s,
+        int32_t lenTag, int32_t off, void* base) {
+    s->lenTag = lenTag;
+    memcpy(s->data, &off, 4);
+    memcpy(s->data + 4, &base, 8);
+}
+// Build a fresh owned root (count word + text + NUL) holding src[0..len);
+// returns the header. Callers wrap it as {len, 0, buf} with no tag bits.
+static inline void* caj_str_new_root(const char* src, int32_t len) {
+    void* buf = __cajeta_new_array_header(8, 1, (uint64_t) len + 1);
+    *((int64_t*) buf) = len;
+    if (len > 0) memcpy((char*) buf + 8, src, (size_t) len);
+    ((char*) buf)[8 + len] = 0;
+    return buf;
+}
 
 // Mode-aware drop for cajeta.lang.String locals/owned values
 // (docs/specification/lang/String.md § Memory model — the owned/view distinction
@@ -1120,20 +1701,38 @@ typedef struct {
 // strings (mode 0); view strings borrow their bytes and must never free them.
 // The live-set claim makes this idempotent and a no-op on static literal
 // wrappers (which aren't tracked). Drop-fn shape: void(*)(void*).
-void __cajeta_string_drop(void* s) {
-    if (!s) return;
+// Claim-assumed variant: the CALLER already won this wrapper's live-set
+// claim (__cajeta_class_virtual_drop claims before dispatching the vtable
+// drop_fn — FieldOwnership.md § Solution B). Runs the tag-dispatched root
+// work and frees the wrapper. Never call without holding the claim.
+void __cajeta_string_drop_claimed(void* s) {
     cajeta_string_layout* str = (cajeta_string_layout*) s;
-    int32_t mode = str->mode;
-    void* bytes = str->bytes;
-    if (!__cajeta_live_set_claim(s)) return;   // static literal / already freed
-    // Free the byte buffer only for owned strings whose bytes live in a separate
-    // heap block. SSO strings point bytes at the wrapper's own inline region
-    // (freed with the wrapper); view strings (mode 1) borrow their bytes.
-    if (mode == 0 && bytes != NULL && bytes != (void*) &str->ssoCount) {
-        __cajeta_free_array(bytes);
+    int32_t tag = str->lenTag;
+    char* base = caj_str_is_pointer(str) ? caj_str_base(str) : NULL;
+    // Tag dispatch (slice-spec §8.2). Inline is self-contained; BORROW views
+    // hold no stake; STATIC roots are never freed. SHARED releases this
+    // wrapper's stake (the last stake frees the root). OWNED (no bits)
+    // routes through the array owner-drop seam: claim-and-free the sole
+    // root, or release the owner's stake if a slice escape promoted it.
+    if (base != NULL && !(tag & (CAJ_STR_BORROW_BIT | CAJ_STR_STATIC_BIT))) {
+        if (tag & CAJ_STR_SHARED_BIT) {
+            int __cajeta_shared_release(void* b);
+            if (__cajeta_shared_release(base)) {
+                __cajeta_poison_buffer(base);
+                free(base);
+            }
+        } else {
+            __cajeta_free_array(base);
+        }
     }
     __cajeta_poison_buffer(s);
     free(s);
+}
+
+void __cajeta_string_drop(void* s) {
+    if (!s) return;
+    if (!__cajeta_live_set_claim(s)) return;   // static wrapper / already freed
+    __cajeta_string_drop_claimed(s);
 }
 
 // Drop dispatcher for function-typed locals. The drop chain registers

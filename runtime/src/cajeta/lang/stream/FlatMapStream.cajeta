@@ -22,7 +22,7 @@ package cajeta.lang.stream;
  * ## Usage
  * ```cajeta
  * // Flatten an array-of-rows into a single stream of ints:
- * int32[][] rows = { { 1, 2 }, { }, { 3 } };
+ * int32[][] rows = [ [ 1, 2 ], [ ], [ 3 ] ];
  * #Stream<int32[]> outer = heap ArrayStream<int32[]>(rows, 3);
  *
  * #Stream<int32> flat = outer.flatMap<int32>(
@@ -53,7 +53,7 @@ public class FlatMapStream<T, R> extends Stream<R> {
      * ```
      */
     public FlatMapStream(#Stream<T> source, (T) -> #Stream<R> fn) {
-        this.source = source;
+        this.source #= source;
         this.fn = fn;
         this.primed = false;
     }
@@ -75,12 +75,12 @@ public class FlatMapStream<T, R> extends Stream<R> {
             }
             Optional<T> o = this.source.next();
             if (o.isEmpty()) {
-                return stack Optional<R>(false, null);
+                return stack Optional<R>(false);
             }
             this.current = this.fn(o.get());
             this.primed = true;
         }
-        return stack Optional<R>(false, null);
+        return stack Optional<R>(false);
     }
 
     /**

@@ -230,12 +230,13 @@ CAJETA_DUMP_IR=1 CAJETA_SOURCE_ROOT="$PWD" \
 
 ## Language reference
 
-This section is a feature tour. For a ground-up introduction that starts with the primitives, operators, and keywords and builds upward, see the [Cajeta Language Guide](docs/LanguageGuide.md).
+This section is a feature tour. For a ground-up introduction that starts with the primitives, operators, and keywords and builds upward, see the [Cajeta Language Guide](docs/guide/drafts/LanguageGuide.md).
 
 ### Allocation: `stack` and `heap`
 
 Every class instance is created with one of two explicit allocation prefixes:
 
+<!-- snippet: skip -->
 ```cajeta
 MyClass a = stack MyClass(42);                  // stack frame; dropped on scope exit
 MyClass b = heap  MyClass(7);                   // malloc'd; freed on scope exit
@@ -251,6 +252,7 @@ MyClass f;                                       // null reference; rejected on 
 
 Every owned value has exactly one owner. Plain assignment is a borrow; `#name` transfers ownership.
 
+<!-- snippet: skip -->
 ```cajeta
 public void demo() {
     MyClass a = heap MyClass();
@@ -301,7 +303,9 @@ public class Square extends Shape {
     public Square(int32 s) { this.side = s; }
     public int32 area() { return this.side * this.side; }
 }
+```
 
+```cajeta
 Shape s1 = stack Square(5);   // 25 via vtable
 Shape s2 = heap  Square(7);   // 49 via vtable
 ```
@@ -328,8 +332,9 @@ public class Algo {
 }
 ```
 
-**Bounded templates** (`<T extends Foo>`), **template wildcards** (`?`, `? extends Bound`, `? super Bound`), and **capture conversion** are all supported. See [`TemplateWildcard.md`](docs/TemplateWildcard.md) and [`CaptureConversion.md`](docs/CaptureConversion.md), and a runnable PECS + capture-read-back walk in [`samples/tour/src/main/cajeta/tour/lang/WildcardsDemo.cajeta`](samples/tour/src/main/cajeta/tour/lang/WildcardsDemo.cajeta).
+**Bounded templates** (`<T extends Foo>`), **template wildcards** (`?`, `? extends Bound`, `? super Bound`), and **capture conversion** are all supported. See [`TemplateWildcard.md`](docs/specification/lang/templates/TemplateWildcard.md) and [`CaptureConversion.md`](docs/specification/lang/templates/reified-capture-spec.md), and a runnable PECS + capture-read-back walk in [`samples/tour/src/main/cajeta/tour/lang/WildcardsDemo.cajeta`](samples/tour/src/main/cajeta/tour/lang/WildcardsDemo.cajeta).
 
+<!-- snippet: skip -->
 ```cajeta
 public void inspect(Box<? extends Animal> b) {
     Animal a = b.get();   // capture projects through the extends bound
@@ -346,6 +351,7 @@ Method-template inference is at least Java-strength: `fold<R>(seed, fn)` infers 
 
 A `view` is a typed window over a `byte[]` — no copy, layout dictated by endianness annotations. Useful for binary protocols, file headers, and shared-memory wire formats:
 
+<!-- snippet: skip -->
 ```cajeta
 @LittleEndian
 public view PacketHeader {
@@ -366,6 +372,7 @@ Views support `@BigEndian`, `@LittleEndian`, `@HostEndian`, inline nested views,
 
 ### Lambdas and method references
 
+<!-- snippet: skip -->
 ```cajeta
 // Bare-identifier params infer from context.
 xs.stream().filter((x) -> x > 0).map<int64>((x) -> (int64) x).reduce(0L, (a, b) -> a + b);
@@ -384,6 +391,7 @@ Block-body lambdas, return-type inference, capture-by-borrow with lifetime track
 
 A pull-protocol `Stream<T>` base in `cajeta.lang.stream` with the standard intermediate ops (`filter`, `map`, `flatMap`, `peek`, `take`, `skip`, `mapOrSkip`, `mapOrFallback`, `mapOrLog`) and terminals (`count`, `forEach`, `reduce`, `fold`, `collect`, `anyMatch`, `allMatch`, `noneMatch`, `findFirst`):
 
+<!-- snippet: skip -->
 ```cajeta
 int32 total = xs.stream()
     .filter((x) -> x > 0)
@@ -393,6 +401,7 @@ int32 total = xs.stream()
 
 **Parallel terminals** via `.parallel()`. The driver walks the wrapper chain to find a `Splittable<T>` root (ArrayStream, HashMap.{keys,values,entries}), splits via `trySplit`, spawns workers in a `scope { ... }`, and combines per-terminal:
 
+<!-- snippet: skip -->
 ```cajeta
 int64 sum = xs.stream().parallel()
     .fold<int64>(0L,
@@ -431,7 +440,9 @@ public class Connection {
     public String host;
     public int32 port;
 }
+```
 
+```cajeta
 Connection c = Connection.builder()
     .host("api.example.com")
     .port(443)
@@ -442,6 +453,7 @@ Connection c = Connection.builder()
 
 Spring-style dependency injection plus AspectJ-style advice, woven at compile time through the LLVM IR. `@Aspect`, `@Component`, `@Inject` for DI; `@Pointcut`, `@Around`, `@Before`, `@AfterReturning`, `@AfterThrowing` for advice. See [`AspectModel.md`](docs/specification/lang/AspectModel.md) and a runnable walk through `@Before` / `@After` / `@Around` plus DI singleton identity and transitive resolution in [`samples/tour/src/main/cajeta/tour/lang/AspectsDiDemo.cajeta`](samples/tour/src/main/cajeta/tour/lang/AspectsDiDemo.cajeta).
 
+<!-- snippet: skip -->
 ```cajeta
 @Aspect
 public class TimingAspect {
@@ -459,6 +471,7 @@ public class TimingAspect {
 
 Structured concurrency in the style of Rust's `tokio::scope` / Kotlin's `coroutineScope`. `async fn` declares a suspendable function; `scope { ... }` is a join-on-exit block; `spawn` launches a child fiber inside a scope. The runtime schedules fibers over a work-stealing carrier pool — `min(cpus, 4)` OS-thread carriers by default, so spawned tasks run with real wall-clock parallelism (`CAJETA_CARRIERS=1` forces deterministic single-carrier execution for debugging). A fiber is pinned to the carrier that first ran it (cross-carrier resume isn't solved yet), so parallelism comes from fan-out across spawned tasks rather than migrating a single task. See [`Concurrency.md`](docs/specification/concurrent/Concurrency.md).
 
+<!-- snippet: skip -->
 ```cajeta
 public static async int32 fetchAll(String[] urls) {
     int32[] sizes = heap int32[urls.count()];
@@ -481,6 +494,7 @@ A runnable walk through `async` / `await` / `spawn` / `scope` / `detach` — inc
 
 `throw` / `try` / `catch` / `finally` with `Exception` hierarchy. Recoverable vs unrecoverable distinguishes "expected, catchable" from "alarm" — unrecoverable abort the process with a SIGABRT and a stderr dump. Every throw site captures a native stack trace via `backtrace(3)` (gated by `--stack-trace-capture=on`), and the uncaught-throw handler dumps the message + trace + drop chain on exit.
 
+<!-- snippet: skip -->
 ```cajeta
 try {
     Connection c = Connection.builder().host(null).build();
@@ -495,6 +509,7 @@ The error model is in [`ErrorModel.md`](docs/specification/error/ErrorModel.md).
 
 Symmetric tier-1 `Json.parse<T>` / `Json.toBytes<T>` synthesizers for any class shape:
 
+<!-- snippet: skip -->
 ```cajeta
 public class User {
     public int64 id;
@@ -530,7 +545,7 @@ Cajeta supports `--debug`, `--release`, and `--debug-release` mode preselects th
 | `--emit=ir/exe`               | ir      | Output format: LLVM IR text or native binary. |
 | `--archive=archive/exploded`  | exploded | Output layout: 7z archive or flat directory tree. |
 
-See [`CompilerModes.md`](docs/CompilerModes.md) for the full table and per-mode defaults.
+See [`CompilerModes.md`](docs/specification/buildtool/CompilerModes.md) for the full table and per-mode defaults.
 
 ---
 
@@ -549,24 +564,24 @@ boolean   char (a 32-bit Unicode codepoint)
 
 There is no `byte` type — the canonical byte buffer is `int8[]` (or `uint8[]`). `pointer` is a low-level raw address; `uchar` is a deprecated alias for `uint8`.
 
-Literals follow Java-ish syntax: `42`, `42L`, `0xFF`, `0b1010`, `017` (octal), `1_000_000`, `3.14`, `3.14f`, `'A'`, `"hello"`, `true`, `false`, `null`. See the [Cajeta Language Guide](docs/LanguageGuide.md), [`Primitives.md`](docs/specification/lang/Primitives.md), and [`FloatingPointModel.md`](docs/specification/lang/FloatingPointModel.md).
+Literals follow Java-ish syntax: `42`, `42L`, `0xFF`, `0b1010`, `017` (octal), `1_000_000`, `3.14`, `3.14f`, `'A'`, `"hello"`, `true`, `false`, `null`. See the [Cajeta Language Guide](docs/guide/drafts/LanguageGuide.md), [`Primitives.md`](docs/specification/lang/Primitives.md), and [`FloatingPointModel.md`](docs/specification/lang/FloatingPointModel.md).
 
 ---
 
 ## Documentation map
 
-**New to the language? Start with the [Cajeta Language Guide](docs/LanguageGuide.md)** — a ground-up tour from primitives, operators, and keywords through the larger features, linking out to each deep-dive spec.
+**New to the language? Start with the [Cajeta Language Guide](docs/guide/drafts/LanguageGuide.md)** — a ground-up tour from primitives, operators, and keywords through the larger features, linking out to each deep-dive spec.
 
 The deep-dive specs live in `docs/`:
 
 | Topic                       | Doc |
 |-----------------------------|-----|
-| **Language guide (start here)** | [`LanguageGuide.md`](docs/LanguageGuide.md) |
+| **Language guide (start here)** | [`LanguageGuide.md`](docs/guide/drafts/LanguageGuide.md) |
 | Class model + allocation    | [`UnifiedClasses.md`](docs/specification/lang/UnifiedClasses.md) |
 | System I/O + env + properties | [`lang/System.md`](docs/specification/lang/System.md) |
 | Memory + ownership          | [`MemoryModel.md`](docs/specification/lang/MemoryModel.md) |
 | Field ownership / auto-drop | [`FieldOwnership.md`](docs/specification/lang/FieldOwnership.md) |
-| Templates + wildcards       | [`TemplateWildcard.md`](docs/TemplateWildcard.md), [`CaptureConversion.md`](docs/CaptureConversion.md) |
+| Templates + wildcards       | [`TemplateWildcard.md`](docs/specification/lang/templates/TemplateWildcard.md), [`CaptureConversion.md`](docs/specification/lang/templates/reified-capture-spec.md) |
 | Lambdas + method refs       | [`Lambdas.md`](docs/specification/lang/Lambdas.md) |
 | Streams                     | [`Streams.md`](docs/specification/lang/stream/Streams.md), [`StreamParallelism.md`](docs/specification/lang/stream/StreamParallelism.md) |
 | Annotations (Lombok-style)  | [`Annotations.md`](docs/specification/reflect/Annotations.md) |
@@ -574,18 +589,18 @@ The deep-dive specs live in `docs/`:
 | Aspects + DI                | [`AspectModel.md`](docs/specification/lang/AspectModel.md) |
 | Concurrency                 | [`Concurrency.md`](docs/specification/concurrent/Concurrency.md), [`AsyncStatus.md`](docs/specification/concurrent/AsyncStatus.md) |
 | Errors                      | [`ErrorModel.md`](docs/specification/error/ErrorModel.md) |
-| Lints                       | [`LintRules.md`](docs/LintRules.md) |
-| Compiler modes              | [`CompilerModes.md`](docs/CompilerModes.md) |
-| Embedded targets (roadmap)  | [`Embedded.md`](docs/Embedded.md) |
+| Lints                       | [`LintRules.md`](docs/specification/lang/LintRules.md) |
+| Compiler modes              | [`CompilerModes.md`](docs/specification/buildtool/CompilerModes.md) |
+| Embedded targets (roadmap)  | [`Embedded.md`](docs/specification/embedded/Embedded.md) |
 | JSON codec                  | [`specification/codec/json/Json.md`](docs/specification/codec/json/Json.md) |
-| Method-level templates      | [`MethodLevelTemplate.md`](docs/specification/lang/MethodLevelTemplate.md) |
+| Method-level templates      | [`MethodLevelTemplate.md`](docs/specification/lang/templates/MethodLevelTemplate.md) |
 | Multi-classing              | [`MultiClassing.md`](docs/specification/lang/MultiClassing.md) |
 | Reflection                  | [`Reflection.md`](docs/specification/reflect/Reflection.md) |
 | Hashing                     | [`Hashing.md`](docs/specification/hash/Hashing.md) |
 | I/O                         | [`stdlib/io/`](docs/specification/io/) |
 | Time                        | [`Time.md`](docs/specification/time/Time.md) |
 
-Open work is tracked in [`todo.md`](todo.md). Historical implementation milestones are under [`docs/history/`](docs/history/).
+Open work is tracked in `todo.md`. Historical implementation milestones are under `docs/history/`.
 
 ## License
 

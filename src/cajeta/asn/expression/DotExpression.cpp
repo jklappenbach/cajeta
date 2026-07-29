@@ -2,6 +2,8 @@
 // Created by James Klappenbach on 4/14/23.
 //
 
+#include "cajeta/xref/XrefIndex.h"
+#include "../../error/Diagnostics.h"
 #include "DotExpression.h"
 #include "../../compile/CajetaModule.h"
 #include "../../type/CajetaClass.h"
@@ -25,6 +27,10 @@ namespace cajeta {
         // empty name and rely on the lhs's codegen to surface the right error.
         if (ctx->identifier()) {
             identifier = ctx->identifier()->getText();
+            if (auto* idTok = ctx->identifier()->getStart()) {
+                idLine   = (int) idTok->getLine();
+                idColumn = (int) idTok->getCharPositionInLine();
+            }
         }
     }
 
@@ -58,18 +64,16 @@ namespace cajeta {
             // Static field reference: `Counter.total`. LHS names a class
             // (it isn't a local variable). Pin LHS's resolvedType to the
             // class and our own resolvedType to the field's declared
-            // type. The class-name lookup tries the canonical map (which
-            // is keyed by both short name and fully-qualified canonical).
-            // Falling through to the instance-path below would set
-            // klass=null because IdentifierExpression doesn't resolve
+            // type. Resolved through ofScoped (own package → imports →
+            // global) — the raw short-name key is last-writer-wins across
+            // packages, so a same-named class elsewhere would hijack the
+            // reference. Falling through to the instance-path below would
+            // set klass=null because IdentifierExpression doesn't resolve
             // class names by default.
             if (!lhs->getResolvedType()) {
-                auto& cmap = CajetaType::getCanonicalMap();
-                auto cit = cmap.find(ns);
-                if (cit != cmap.end()) {
-                    if (auto staticKlass = dynamic_pointer_cast<CajetaClass>(cit->second)) {
-                        lhs->setResolvedType(staticKlass);
-                    }
+                auto scoped = CajetaType::ofScoped(ns, module);
+                if (auto staticKlass = dynamic_pointer_cast<CajetaClass>(scoped)) {
+                    lhs->setResolvedType(staticKlass);
                 }
             }
         }
@@ -109,6 +113,11 @@ namespace cajeta {
                     // return-type pin).
                     resolvedType = CajetaType::captureProject(
                         pit->second->getType());
+                    // xref (2.1.6): `cls` — not `klass` — is the class that actually
+                    // DECLARES this field. For an inherited field the two differ, and
+                    // naming the receiver's class would point Ctrl-click at a type
+                    // that declares nothing of the sort.
+                    recordFieldXref(cls);
                     return true;
                 }
                 for (auto& parent : cls->getSuperClasses()) {
@@ -117,6 +126,23 @@ namespace cajeta {
                 return false;
             };
         findProp(klass);
+    }
+
+    // Record `receiver.field` as a reference to the field's declaration. No-op
+    // unless --emit-xref, and skipped entirely when this node came from synthesized
+    // source (getSourceFile() empty) — a snippet's positions are not anywhere.
+    void DotExpression::recordFieldXref(const CajetaClassPtr& owner) {
+        if (!xref::captureEnabled() || !owner || idLine <= 0) return;
+        const string& file = getSourceFile();
+        if (file.empty()) return;
+
+        // An instantiation (`Box<int32>`) has no source; its field is declared on
+        // the template, which is what the index carries.
+        string ownerFqn = owner->getQName()->toCanonical();
+        auto lt = ownerFqn.find('<');
+        if (lt != string::npos) ownerFqn = ownerFqn.substr(0, lt);
+
+        xref::noteFieldReference(ownerFqn + "." + identifier, file, idLine, idColumn);
     }
 
     // `a.b` lowers to a struct GEP. lhs may be the alloca holding the struct (stack-local)
@@ -148,6 +174,24 @@ namespace cajeta {
         llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
             module->getLlvmModule(), llvm::Intrinsic::bswap, {t});
         return module->getBuilder()->CreateCall(fn, {v});
+    }
+
+    StructurePropertyPtr DotExpression::resolveViewElementArrayProperty(
+            CajetaModulePtr module) {
+        if (children.empty()) return nullptr;
+        auto recv = dynamic_pointer_cast<Expression>(children[0]);
+        if (!recv) return nullptr;
+        if (!recv->getResolvedType()) recv->resolveTypes(module);
+        auto viewType = dynamic_pointer_cast<CajetaView>(recv->getResolvedType());
+        if (!viewType) return nullptr;
+        for (auto& p : viewType->getPropertyList()) {
+            if (p->getName() == identifier) {
+                if (!CajetaView::isElementArray(p)) return nullptr;
+                earrViewType = viewType;
+                return p;
+            }
+        }
+        return nullptr;
     }
 
     string DotExpression::buildPath(const ExpressionPtr& expr) {
@@ -220,6 +264,15 @@ namespace cajeta {
             // enum type is registered in canonicalMap; the constant table is
             // a separate side-map populated by visitEnumDeclaration.
             if (auto v = CajetaType::lookupEnumConstant(ns, identifier)) {
+                // Type the constant as the ENUM rather than raw int32, so a
+                // method invoked directly on it (`Verb.POST.weight()`) can
+                // reach the enum's companion class. The VALUE is unchanged —
+                // still the ordinal.
+                auto& cmap = CajetaType::getCanonicalMap();
+                auto et = cmap.find(ns);
+                if (et != cmap.end()) {
+                    resolvedType = et->second;
+                }
                 return llvm::ConstantInt::get(
                     llvm::Type::getInt32Ty(ctx), *v, /*isSigned=*/true);
             }
@@ -234,10 +287,10 @@ namespace cajeta {
         // loadIfLValue handles reads and BinaryOpExpression's assign
         // path handles writes.
         if (auto idLhs = dynamic_pointer_cast<IdentifierExpression>(children[0])) {
-            auto& cmap = CajetaType::getCanonicalMap();
-            auto cit = cmap.find(idLhs->getTextValue());
-            if (cit != cmap.end()) {
-                if (auto staticKlass = dynamic_pointer_cast<CajetaClass>(cit->second)) {
+            // ofScoped, not the raw short-name key (see resolveTypes above).
+            auto scoped = CajetaType::ofScoped(idLhs->getTextValue(), module);
+            {
+                if (auto staticKlass = dynamic_pointer_cast<CajetaClass>(scoped)) {
                     // Walk the hierarchy: a static declared on a base
                     // class is visible through derived-class names too.
                     StructurePropertyPtr staticProp;
@@ -350,7 +403,50 @@ namespace cajeta {
             };
         gatherProps(klass);
         if (allMatches.empty()) {
-            return nullptr;
+            // A value-type (record / @ValueType) receiver has no static/
+            // package/late-bound member surface — an unmatched name is a
+            // field typo, not something a later resolution pass can claim
+            // (records-spec §5.2). Reference classes keep the silent
+            // fall-through their qualified-name resolution relies on.
+            if (klass->isValueType()) {
+                throw cajeta::Exception(
+                    "'" + klass->getQName()->toCanonical()
+                        + "' has no field '" + identifier + "'",
+                    "CAJETA_ERROR_UNKNOWN_FIELD");
+            }
+            // Reference class (2.2.3). We reach here only with a real instance
+            // (`base` is non-null, guarded above), so the receiver is not a bare
+            // type name — statics / enum constants / qualified names bail out
+            // earlier and keep their fall-through. An unmatched name on an
+            // INSTANCE is a field typo, and returning null here is what let
+            // `p.vee` compile to nothing.
+            std::string msg = "no member '" + identifier + "' on '"
+                + klass->getQName()->toCanonical() + "'";
+            // The frame's schema-erased table (spec §4.3.2 wording
+            // contract): typed accessors don't exist on `Table<?>` — say
+            // exactly how to proceed instead of offering a spelling hint.
+            {
+                auto origin = klass->isInstantiation()
+                    ? klass->getTemplateOrigin() : nullptr;
+                const auto& targs = klass->getTypeArguments();
+                if (origin && origin->getQName()
+                        && origin->getQName()->toCanonical()
+                            == "cajeta.nucleo.frame.Table"
+                        && targs.size() == 1 && targs[0]
+                        && targs[0]->isWildcard()
+                        && !targs[0]->wildcardBound()) {
+                    throw locatedException(
+                        getSourceLine(), getSourceColumn() + 1,
+                        msg + " — schema not statically known here; narrow "
+                        "with `.as<R>()` or use `col(\"...\")`",
+                        "CAJETA_ERROR_MEMBER_NOT_FOUND");
+                }
+            }
+            std::string hint = klass->suggestMemberName(identifier);
+            if (!hint.empty()) msg += " — did you mean '" + hint + "'?";
+            throw locatedException(
+                getSourceLine(), getSourceColumn() + 1, msg,
+                "CAJETA_ERROR_MEMBER_NOT_FOUND");
         }
         // Self-shadow resolves ambiguity. Take the receiver class's
         // own property if it declared one.
@@ -548,6 +644,27 @@ namespace cajeta {
             }
         }
 
+        // view v1.1 descriptor unwrap: a view with element-array fields
+        // carries its value as a pointer to an arena {i8* data, i64* table}
+        // pair. Unwrap once — every access below (fixed StructGEP, var-size,
+        // post-var) then works on the real data pointer, and var-size
+        // offsets come from the table (O(1), no walk).
+        llvm::Value* veaTable = nullptr;
+        if (auto descView = dynamic_pointer_cast<CajetaView>(klass)) {
+            if (descView->getHasElementArrayField() && base) {
+                auto* b = module->getBuilder();
+                auto& c = *module->getLlvmContext();
+                llvm::PointerType* pTy = llvm::PointerType::get(c, 0);
+                llvm::Value* descPtr = base;
+                base = b->CreateLoad(pTy, descPtr, "vea_data");
+                llvm::Value* tSlot = b->CreateInBoundsGEP(
+                    llvm::Type::getInt8Ty(c), descPtr,
+                    llvm::ConstantInt::get(llvm::Type::getInt64Ty(c), 8),
+                    "vea_tslot");
+                veaTable = b->CreateLoad(pTy, tSlot, "vea_table");
+            }
+        }
+
         // Field index depends on the receiver type. CajetaClass instances
         // reserve LLVM slot 0 for the vtable pointer, so user fields land at
         // index getOrder()+1. CajetaView (no vtable) uses getOrder() directly.
@@ -571,33 +688,62 @@ namespace cajeta {
             llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
             llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
 
-            // Count how many var-size fields precede this one in declaration
-            // order — that's the number of length-prefixes the walk skips.
-            int priorVarSize = 0;
-            for (auto& p : viewType->getPropertyList()) {
-                if (p == property) break;
-                if (CajetaView::isVariableSize(p)) priorVarSize += 1;
+            // Field start offset. Descriptor views (element-array fields
+            // present) read it from the offset table in O(1); plain views
+            // walk every property before this one in declaration order —
+            // emitAccessAdvance handles each kind: String (4+len),
+            // primitive T[] (4+count*sizeof(T) — the old 4+count walk was
+            // correct only for int8[]), and fixed-between-var fields
+            // (+static size).
+            uint64_t fixedPrefixSize = viewType->getFixedSize();
+            llvm::Value* offset;
+            if (veaTable) {
+                int slot = viewType->tableSlotOf(property);
+                offset = builder->CreateLoad(i64Ty,
+                    builder->CreateInBoundsGEP(i64Ty, veaTable,
+                        llvm::ConstantInt::get(i64Ty, slot),
+                        identifier + "_tbl_slot"),
+                    identifier + "_tbl_off");
+            } else {
+                offset = llvm::ConstantInt::get(i64Ty, fixedPrefixSize);
+                bool sawVar = false;
+                for (auto& p : viewType->getPropertyList()) {
+                    if (p == property) break;
+                    bool pVar = CajetaView::isVariableSize(p);
+                    if (!sawVar && !pVar) continue;  // in the fixed prefix
+                    if (pVar) sawVar = true;
+                    offset = CajetaView::emitAccessAdvance(
+                        module, p, base, offset, viewType->getEndianness());
+                }
             }
 
-            uint64_t fixedPrefixSize = viewType->getFixedSize();
-            llvm::Value* offset = llvm::ConstantInt::get(i64Ty, fixedPrefixSize);
-            for (int i = 0; i < priorVarSize; i++) {
-                llvm::Value* priorPrefixPtr = builder->CreateInBoundsGEP(
-                    i8Ty, base, offset, identifier + "_prior_prefix_ptr");
-                llvm::Value* priorLen32 = builder->CreateLoad(
-                    i32Ty, priorPrefixPtr, identifier + "_prior_prefix");
-                llvm::Value* priorLen64 = builder->CreateIntCast(
-                    priorLen32, i64Ty, /*isSigned=*/true);
-                llvm::Value* advance = builder->CreateAdd(
-                    priorLen64, llvm::ConstantInt::get(i64Ty, 4),
-                    identifier + "_advance");
-                offset = builder->CreateAdd(offset, advance, identifier + "_offset");
+            // Element-array field (view v1.1): whole-field reads have no
+            // materialization (elements are views into the buffer, not
+            // copyable values). The two legitimate consumers — f[i]
+            // (ArrayIndexExpression) and f.count() (MethodCallExpression) —
+            // set the one-shot prefix mode and take the raw prefix pointer.
+            if (CajetaView::isElementArray(property)) {
+                if (elementArrayPrefixMode) {
+                    elementArrayPrefixMode = false;
+                    earrDataBase = base;
+                    earrTable = veaTable;
+                    earrSlot = veaTable ? viewType->tableSlotOf(property) : -1;
+                    return builder->CreateInBoundsGEP(
+                        i8Ty, base, offset, identifier + "_earr_prefix");
+                }
+                throw Exception(
+                    "view element-array field '" + identifier + "' cannot be "
+                    "read whole — index it (" + identifier + "[i]) or take "
+                    + identifier + ".count() "
+                    "(specs/view-element-arrays-spec.md)",
+                    "CAJETA_ERROR_VIEW_ELEMENT_ARRAY_BARE_READ");
             }
 
             llvm::Value* prefixPtr = builder->CreateInBoundsGEP(
                 i8Ty, base, offset, identifier + "_len_ptr");
-            llvm::Value* length = builder->CreateLoad(
-                i32Ty, prefixPtr, identifier + "_len");
+            llvm::Value* length = CajetaView::emitSwapIfNeeded(
+                module, viewType->getEndianness(),
+                builder->CreateLoad(i32Ty, prefixPtr, identifier + "_len"));
             llvm::Value* length64 = builder->CreateIntCast(
                 length, i64Ty, /*isSigned=*/true);
             llvm::Value* dataOffset = builder->CreateAdd(
@@ -673,40 +819,38 @@ namespace cajeta {
                 llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
                 llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
 
+                // Descriptor view: the field's absolute offset is in the
+                // table — O(1), no walk over preceding var-size fields.
+                if (veaTable) {
+                    int slot = viewType->tableSlotOf(property);
+                    llvm::Value* tOff = builder->CreateLoad(i64Ty,
+                        builder->CreateInBoundsGEP(i64Ty, veaTable,
+                            llvm::ConstantInt::get(i64Ty, slot),
+                            identifier + "_tbl_slot"),
+                        identifier + "_tbl_off");
+                    return builder->CreateInBoundsGEP(
+                        i8Ty, base, tOff, identifier + "_ptr");
+                }
+
                 uint64_t fixedPrefixSize = viewType->getFixedSize();
                 llvm::Value* offset = llvm::ConstantInt::get(i64Ty, fixedPrefixSize);
 
                 // Walk every property up to (not including) THIS field,
-                // tracking the running offset. var-size fields advance by
-                // (4 + prefix-value); post-var fixed fields advance by
-                // their own static size.
-                const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
+                // tracking the running offset. emitAccessAdvance handles
+                // every kind — String, primitive T[] (count*sizeof(T)),
+                // fixed-between-var, and element arrays (runtime loop) —
+                // so post-var fixed fields are reachable across all of
+                // them (view v1.1).
                 bool sawVar = false;
                 for (auto& p : viewType->getPropertyList()) {
                     if (p == property) break;
-                    if (CajetaView::isVariableSize(p)) {
-                        sawVar = true;
-                        llvm::Value* priorPrefixPtr = builder->CreateInBoundsGEP(
-                            i8Ty, base, offset, identifier + "_walk_prefix_ptr");
-                        llvm::Value* priorLen32 = builder->CreateLoad(
-                            i32Ty, priorPrefixPtr, identifier + "_walk_prefix");
-                        llvm::Value* priorLen64 = builder->CreateIntCast(
-                            priorLen32, i64Ty, /*isSigned=*/true);
-                        llvm::Value* advance = builder->CreateAdd(
-                            priorLen64, llvm::ConstantInt::get(i64Ty, 4),
-                            identifier + "_walk_advance");
-                        offset = builder->CreateAdd(offset, advance, identifier + "_walk_offset");
-                    } else if (sawVar) {
-                        // Post-var fixed field BEFORE our target. Advance
-                        // by its static size.
-                        uint64_t skipBytes = dl.getTypeAllocSize(
-                            p->getType()->getLlvmType());
-                        offset = builder->CreateAdd(
-                            offset, llvm::ConstantInt::get(i64Ty, skipBytes),
-                            identifier + "_walk_skipfixed");
-                    }
+                    bool pVar = CajetaView::isVariableSize(p);
+                    if (!sawVar && !pVar) continue;
                     // Pre-var fixed fields contribute to fixedPrefixSize
                     // already (handled by the starting offset).
+                    if (pVar) sawVar = true;
+                    offset = CajetaView::emitAccessAdvance(
+                        module, p, base, offset, viewType->getEndianness());
                 }
 
                 llvm::Value* fieldPtr = builder->CreateInBoundsGEP(

@@ -44,13 +44,61 @@ class CajetaProgramRunner : AsyncProgramRunner<RunnerSettings>() {
     ): Promise<RunContentDescriptor?> {
         FileDocumentManager.getInstance().saveAllDocuments()
         val configuration = environment.runProfile as CajetaDebugLaunchSpec
-        val session = XDebuggerManager.getInstance(environment.project).startSession(
-            environment,
-            object : XDebugProcessStarter() {
-                override fun start(session: XDebugSession): XDebugProcess =
-                    CajetaDebugProcess(session, configuration)
-            },
-        )
-        return resolvedPromise(session.runContentDescriptor)
+        val starter = object : XDebugProcessStarter() {
+            override fun start(session: XDebugSession): XDebugProcess =
+                CajetaDebugProcess(session, configuration)
+        }
+        return resolvedPromise(startSessionForDescriptor(environment, starter))
+    }
+
+    /**
+     * Start the XDebugSession and return the [RunContentDescriptor] the
+     * platform expects back from [execute].
+     *
+     * Since 2026.1 the debugger runs split (frontend/backend), and reading the
+     * descriptor off the session logs a platform error dialog: the session's
+     * descriptor there is a backend-side mock, not the UI descriptor. The
+     * documented replacement (XDebugSession.getRunContentDescriptor's javadoc)
+     * is `XDebuggerManager.newSessionBuilder(...).startSession()`, whose
+     * XSessionStartedResult carries the right descriptor for the mode. That
+     * API does not exist in the 2025.2 SDK this plugin compiles against, so it
+     * is reached by reflection; a platform without it takes the old path,
+     * where the session's descriptor is the real one and reading it is silent.
+     *
+     * The API-present probe is separated from the invocation on purpose: a
+     * launch that fails through the builder must SURFACE, not fall back and
+     * start a second session through the legacy path.
+     */
+    private fun startSessionForDescriptor(
+        environment: ExecutionEnvironment,
+        starter: XDebugProcessStarter,
+    ): RunContentDescriptor? {
+        val manager = XDebuggerManager.getInstance(environment.project)
+        val newSessionBuilder = try {
+            XDebuggerManager::class.java
+                .getMethod("newSessionBuilder", XDebugProcessStarter::class.java)
+        } catch (_: NoSuchMethodException) {
+            null
+        }
+        if (newSessionBuilder == null) {
+            // Pre-split platform (2025.x and earlier).
+            return manager.startSession(environment, starter).runContentDescriptor
+        }
+        try {
+            val builderClass = newSessionBuilder.returnType // XDebugSessionBuilder
+            val builder = newSessionBuilder.invoke(manager, starter)
+            val configured = builderClass
+                .getMethod("environment", ExecutionEnvironment::class.java)
+                .invoke(builder, environment)
+            val startSession = builderClass.getMethod("startSession")
+            val result = startSession.invoke(configured) // XSessionStartedResult
+            return startSession.returnType
+                .getMethod("getRunContentDescriptor")
+                .invoke(result) as RunContentDescriptor?
+        } catch (e: java.lang.reflect.InvocationTargetException) {
+            // Unwrap so an ExecutionException from the launch reads as itself,
+            // not as a reflection artifact.
+            throw e.cause ?: e
+        }
     }
 }

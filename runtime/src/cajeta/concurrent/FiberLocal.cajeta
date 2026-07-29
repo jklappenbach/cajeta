@@ -46,7 +46,11 @@ public class FiberLocal<T> {
     // reference field that is legitimately null trips the drop chain.)
     int64 marker;
 
-    /** A FiberLocal key. `get()` on an unbound fiber throws; use `orElse`/`isBound`. */
+    /**
+     * A FiberLocal key. `get()` on an unbound fiber throws; use `orElse`/`isBound`.
+     *
+     * @EntryPoint
+     */
     public FiberLocal() {
         this.marker = 0;
     }
@@ -61,7 +65,7 @@ public class FiberLocal<T> {
      * ctx.where(requestContext, () -> dispatch(request));
      * ```
      */
-    public void where(#T value, () -> void body) {
+    public void where(T value, () -> void body) {
         // Box the value (a reference) so the runtime stores a uniform pointer
         // regardless of T. `box` is owned by this scope and drops — freeing the
         // box and its value — after the finally pops the binding. The scope's

@@ -12,14 +12,30 @@ import com.intellij.navigation.ItemPresentation
 import com.intellij.openapi.editor.Editor
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
-import com.intellij.psi.tree.IElementType
 import dev.cajeta.idea.CajetaIcons
-import dev.cajeta.idea.CajetaLanguage
 import dev.cajeta.idea.parser.CajetaPsiFile
-import org.antlr.intellij.adaptor.lexer.RuleIElementType
-import org.antlr.intellij.adaptor.lexer.PSIElementTypeFactory
+import dev.cajeta.idea.parser.antlr.CajetaParser
+import dev.cajeta.idea.psi.CajetaEnumConstantDeclaration
+import dev.cajeta.idea.psi.CajetaMemberDeclaration
+import dev.cajeta.idea.psi.CajetaNamedElement
+import dev.cajeta.idea.psi.CajetaOperatorDeclaration
+import dev.cajeta.idea.psi.CajetaTypeDeclaration
+import dev.cajeta.idea.psi.CajetaVariableDeclaration
+import dev.cajeta.idea.psi.directChildRule
+import dev.cajeta.idea.psi.dottedName
+import dev.cajeta.idea.psi.ruleIndexOf
 import javax.swing.Icon
 
+/**
+ * Structure view over the typed named elements (ide-symbol-index Unit 5,
+ * plan 5.2.4). The previous implementation string-matched ANTLR rule names on
+ * DIRECT children and BFS-ed for the first IDENTIFIER leaf — which stopped at
+ * `classBody` (not in its interesting set), so members never actually appeared,
+ * and a declaration's label could be any identifier that happened to lex first.
+ * Named elements carry their own names; structure children are found by
+ * descending through untyped wrapper rules until a structure-worthy element
+ * appears, then letting that element own its subtree.
+ */
 class CajetaStructureViewFactory : PsiStructureViewFactory {
     override fun getStructureViewBuilder(psiFile: PsiFile): StructureViewBuilder =
         object : TreeBasedStructureViewBuilder() {
@@ -40,12 +56,6 @@ private class CajetaStructureViewModel(file: CajetaPsiFile) :
     override fun isAlwaysLeaf(element: StructureViewTreeElement): Boolean = false
 }
 
-/**
- * Wraps an ANTLR PSI node into a structure-view tree element. The
- * children of a node are filtered down to declaration-shaped rule
- * nodes — package, class, interface, structure, enum, method,
- * constructor, field, enum-constant. Everything else is skipped.
- */
 private class CajetaStructureElement(private val element: PsiElement) :
     StructureViewTreeElement, SortableTreeElement {
 
@@ -68,76 +78,61 @@ private class CajetaStructureElement(private val element: PsiElement) :
         override fun getIcon(unused: Boolean): Icon? = iconFor(element)
     }
 
-    override fun getChildren(): Array<TreeElement> {
-        return element.children
-            .filter { isInteresting(it) }
+    override fun getChildren(): Array<TreeElement> =
+        structureChildrenOf(element)
             .map { CajetaStructureElement(it) }
-            .toTypedArray()
-    }
+            .toTypedArray<TreeElement>()
 
     companion object {
-        private fun ruleType(element: PsiElement): String? {
-            val type: IElementType = element.node?.elementType ?: return null
-            return (type as? RuleIElementType)?.toString()
-        }
 
-        private fun isInteresting(element: PsiElement): Boolean =
-            ruleType(element) in INTERESTING_RULES
-
-        private fun textFor(element: PsiElement): String {
-            val type = ruleType(element)
-            val rawText = element.text
-            // Show the first identifier we find in the declaration as
-            // the label. Falls back to the rule kind if there's no
-            // identifier (eg. anonymous constructs).
-            val firstIdentifier = firstIdentifierIn(element)
-            return when (type) {
-                null -> rawText.lineSequence().firstOrNull() ?: rawText
-                "compilationUnit" -> element.containingFile?.name ?: "compilationUnit"
-                "packageDeclaration" -> "package " + (firstIdentifier ?: "")
-                else -> firstIdentifier ?: (type + " (anonymous)")
+        private fun textFor(element: PsiElement): String = when {
+            element is PsiFile -> element.name
+            ruleIndexOf(element) == CajetaParser.RULE_packageDeclaration -> {
+                val qn = directChildRule(element, CajetaParser.RULE_qualifiedName)
+                "package " + (qn?.let { dottedName(it) } ?: "")
             }
+            element is CajetaNamedElement ->
+                element.name ?: "(anonymous)"
+            else -> element.text.lineSequence().firstOrNull() ?: ""
         }
 
-        private fun firstIdentifierIn(element: PsiElement): String? {
-            // BFS for the first leaf whose ANTLR token name is IDENTIFIER.
-            val queue = ArrayDeque<PsiElement>()
-            queue += element
-            while (queue.isNotEmpty()) {
-                val node = queue.removeFirst()
-                val nodeType = node.node?.elementType
-                if (nodeType != null && nodeType.toString() == "IDENTIFIER") {
-                    return node.text
+        private fun iconFor(element: PsiElement): Icon? =
+            CajetaIcons.FILE.takeIf { element !is PsiFile }
+
+        /**
+         * Structure-worthy elements beneath `root`, in source order: descend
+         * through untyped wrappers (typeDeclaration, classBody,
+         * classBodyDeclaration, ...), stop at each structure element. A
+         * multi-name field contributes one entry PER declared name.
+         */
+        private fun structureChildrenOf(root: PsiElement): List<PsiElement> {
+            val out = mutableListOf<PsiElement>()
+            fun descend(e: PsiElement) {
+                for (child in e.children) {
+                    when {
+                        child is CajetaTypeDeclaration ||
+                        child is CajetaMemberDeclaration ||
+                        child is CajetaOperatorDeclaration ||
+                        child is CajetaEnumConstantDeclaration -> out += child
+
+                        child is CajetaVariableDeclaration &&
+                        ruleIndexOf(child as PsiElement) ==
+                            CajetaParser.RULE_fieldDeclaration ->
+                            out += child.declarators
+
+                        root is PsiFile && ruleIndexOf(child) ==
+                            CajetaParser.RULE_packageDeclaration -> out += child
+
+                        // Locals and their scopes: a method's subtree is its
+                        // own; do not descend past another named element.
+                        child is CajetaNamedElement -> { /* stop */ }
+
+                        else -> descend(child)
+                    }
                 }
-                queue += node.children
             }
-            return null
-        }
-
-        private fun iconFor(element: PsiElement): Icon? {
-            // Single icon for now — refine when we add per-kind icons.
-            return CajetaIcons.FILE.takeIf { ruleType(element) != null }
-        }
-
-        private val INTERESTING_RULES: Set<String> = setOf(
-            "compilationUnit",
-            "packageDeclaration",
-            "typeDeclaration",
-            "classDeclaration",
-            "interfaceDeclaration",
-            "enumDeclaration",
-            "memberDeclaration",
-            "methodDeclaration",
-            "constructorDeclaration",
-            "fieldDeclaration",
-            "interfaceMethodDeclaration",
-            "enumConstant",
-        )
-
-        init {
-            // Touch the registry once so RuleIElementType.toString() is
-            // populated when the structure view first asks.
-            PSIElementTypeFactory.getRuleIElementTypes(CajetaLanguage)
+            descend(root)
+            return out
         }
     }
 }

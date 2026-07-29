@@ -52,9 +52,10 @@ import cajeta.lang.String;
  * later-phase family too: DNS (`UnknownHost` / `ResolutionFailed`),
  * TLS (`TlsHandshakeFailed` / `CertificateInvalid` / `TlsProtocolError`),
  * URI ([`MalformedUriException`](uri/MalformedUriException.cajeta)),
- * the HTTP family under an intermediate `HttpException`, and the
- * WebSocket family under `WebSocketException`. That is what lets a
- * façade method (`HttpClient.send`, `WebSocket.connect`) declare one
+ * and — outside the stdlib — the external `dev.cajeta.http` library's
+ * HTTP family (under an intermediate `HttpException`) and WebSocket
+ * family (under `WebSocketException`). That is what lets a
+ * façade method (an HTTP client `send`, a WebSocket `connect`) declare one
  * `throws NetException` clause that covers every fault its transport,
  * TLS, DNS, and protocol layers can raise, and lets a request-boundary
  * `catch (NetException e)` be the universal net-out. The complete

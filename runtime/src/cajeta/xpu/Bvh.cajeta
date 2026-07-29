@@ -5,7 +5,7 @@ import cajeta.xpu.Strategy;
 
 /**
  * Bvh — the strategy-based acceleration-structure facade (cajeta-accel; spec
- * docs/specs/cajeta-accel-spec.md §2). One logical handle over a frozen BVH block,
+ * specs/archive/cajeta-accel-spec.md §2). One logical handle over a frozen BVH block,
  * tagged with the encoding {@link Strategy} (Exact / Quantized) and the branching
  * WIDTH that produced it, so query code is identical regardless of how the
  * structure was built or which backend runs it. The strategy/width tag travels on
@@ -36,7 +36,7 @@ public final class Bvh {
         // in (`#block`). Without ownership transfer, the build-site local drops
         // at scope exit and frees the array `this.block` still references — a
         // use-after-free on every later header/node read.
-        this.block = block;
+        this.block #= block;
         this.strat = strat;
         this.widthVal = widthVal;
         this.prims = prims;

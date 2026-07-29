@@ -1,0 +1,39 @@
+package cajeta.nucleo.frame;
+
+/**
+ * Morton — Z-order (Morton) key derivation (nucleo-frame U15; spec §9.5.2). A
+ * low-dimensional spatial table query reuses the SAME B+ ({@link BPlusIndex},
+ * int path) on a Z-ordered composite key — NO second tree type. Two integer
+ * coordinates interleave their low 32 bits into one int64 key: bit i of x lands
+ * at position 2i, bit i of y at 2i+1.
+ *
+ * The Z-curve is MONOTONE in each coordinate — increasing x or y (with the other
+ * fixed) only sets higher key bits — so a 2-D box `[x0,x1] x [y0,y1]` is bounded
+ * by its corner keys: every interior point's key lies in
+ * `[encode(x0,y0), encode(x1,y1)]`. That single contiguous range OVER-COVERS the
+ * box (the Z-curve also visits points outside it), so a B+ range probe on the
+ * morton key returns CANDIDATES that the row-wise box predicate filters to the
+ * exact answer (prune, not filter — the zone-map discipline in 2-D).
+ *
+ * v1 encodes non-negative coordinates (the common spatial-bucket case); signed
+ * or >32-bit coordinates are a recorded extension (a wider interleave / a
+ * sign-flip transform), not needed for the near-term workload.
+ */
+public class Morton {
+    /** Spread the low 32 bits of `v` to the even bit positions (0,2,4,...). */
+    public static int64 part1by1(int64 v) {
+        int64 r = 0;
+        int64 i = 0;
+        while (i < 32) {
+            int64 bit = (v >> i) & 1;
+            r = r | (bit << (i * 2));
+            i = i + 1;
+        }
+        return r;
+    }
+
+    /** The Z-order key of `(x, y)` — x on even bits, y on odd bits. */
+    public static int64 encode(int64 x, int64 y) {
+        return Morton.part1by1(x) | (Morton.part1by1(y) << 1);
+    }
+}

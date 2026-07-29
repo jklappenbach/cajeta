@@ -41,6 +41,16 @@ namespace cajeta {
         // been moved out via `#`. Read paths consult this set and reject
         // accesses for moved identifiers — see Identifier.cpp.
         set<string> movedNames;
+        // Optional per-name transfer-site notes for movedNames, appended to
+        // use-after-move diagnostics. Lives/clears with the name's entry.
+        map<string, string> movedNotes;
+        // Ordered log of moves recorded through THIS scope (target scope may
+        // be an ancestor). Blocks checkpoint it and retract their slice when
+        // their codegen ends in a return/throw terminator — a path that never
+        // reaches the join contributes no moved state to it (title-tracking
+        // §3.1.5). Entries are appended only for genuinely NEW marks, so a
+        // retraction exactly undoes its slice.
+        vector<pair<Scope*, string>> moveLog;
         // Field-access paths (e.g. "person.name" or "a.b.c") that have been
         // moved out. Read paths through DotExpression check this set with
         // prefix semantics — see DotExpression.cpp.
@@ -83,6 +93,17 @@ namespace cajeta {
         // still references).
         set<string> launchBorrows;
 
+        // title-tracking 5.2.7 (spec §7.4, sub-fork B) — single-hop dangling
+        // lend. Maps a holder local to the LOCAL owners it holds a LEND of
+        // (a plain, non-`#` store/arg: `h.c = s`, `h.keep(s)`). If the holder
+        // later escapes the method, those sources die at scope exit and the
+        // escapee carries dangling pointers — rejected with
+        // CAJETA_ERROR_DANGLING_LEND. Recorded at the holder's declaring
+        // scope, like markMoved. Conservative: an extraction does NOT clear
+        // the edge (no intra-procedural entry-level tracking); the `#s`
+        // spelling at the lend is the suppression.
+        map<string, set<string>> lendEdges;
+
         void putField(FieldPtr field, string propertyPath);
 
     public:
@@ -120,6 +141,41 @@ namespace cajeta {
         // field isn't found in any enclosing scope, the mark is recorded here
         // as a best-effort signal.
         void markMoved(const string& name);
+
+        // As markMoved, additionally recording a note (the transfer site)
+        // that use-after-move diagnostics append.
+        void markMoved(const string& name, const string& note);
+
+        // Re-arm: a fresh assignment to a moved-out local clears its moved
+        // state (title-tracking §3.1.4). Erases on the declaring scope,
+        // mirroring markMoved's placement.
+        void clearMoved(const string& name);
+
+        // The note recorded with the move of `name`, or "".
+        string movedNoteOf(const string& name);
+
+        // Terminated-path retraction (see moveLog). Blocks capture the size
+        // before their children and retract the slice when they end in a
+        // return/throw.
+        size_t moveLogSize() const { return moveLog.size(); }
+        void retractMovesSince(size_t mark);
+
+        // Branch-arm move state (if/else): snapshot the marks an arm
+        // introduced (with their notes), restore the pre-branch state for
+        // the sibling arm, and reapply at the join for the conservative
+        // union — mirrors the definite-assignment snapshot/merge.
+        struct MoveMark { Scope* target; string name; string note; };
+        vector<MoveMark> snapshotMovesSince(size_t mark) const;
+        void reapplyMoves(const vector<MoveMark>& moves);
+
+        // 5.2.7 — record `holder` now holds a lend of the local owner `src`.
+        void recordLend(const string& holder, const string& src);
+        // The local owners `holder` holds lends of (empty when none).
+        set<string> lendsOf(const string& holder);
+
+        // The source path `name` borrows from (liveBorrows inverted, walked
+        // across ancestors), or "" when `name` is not a recorded borrower.
+        string borrowSourceOf(const string& name);
 
         // True iff `name` has been moved-out in this scope or any ancestor.
         bool isMoved(const string& name);

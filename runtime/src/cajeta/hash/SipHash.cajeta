@@ -68,6 +68,8 @@ public final class SipHash implements Hasher {
      * h.writeInt32(user.id);
      * int64 digest = h.finish();
      * ```
+     *
+     * @EntryPoint
      */
     public SipHash(int64 keyLow, int64 keyHigh) {
         this.k0 = keyLow;
@@ -133,6 +135,8 @@ public final class SipHash implements Hasher {
      * ```cajeta
      * int64 hash = SipHash.hashKeyed(bytes, bytes.count(), k0, k1);
      * ```
+     *
+     * @EntryPoint
      */
     @Inline
     public static int64 hashKeyed(int8[] data, int64 len, int64 keyLow, int64 keyHigh) {
@@ -145,10 +149,16 @@ public final class SipHash implements Hasher {
      * ```cajeta
      * int64 hash = SipHash.hashStringKeyed(user.name, k0, k1);
      * ```
+     *
+     * @EntryPoint
      */
     @Inline
     public static int64 hashStringKeyed(String s, int64 keyLow, int64 keyHigh) {
-        return SipHash.oneshot(s.bytes, (int64) s.byteLength, keyLow, keyHigh);
+        if (s.root() == null || s.byteOffset() != (int64) 0) {
+            int8[] w = s.toBytes();
+            return SipHash.oneshot(w, (int64) s.byteLength(), keyLow, keyHigh);
+        }
+        return SipHash.oneshot(s.root(), (int64) s.byteLength(), keyLow, keyHigh);
     }
 
     // --- Streaming surface ------------------------------------------
@@ -194,7 +204,12 @@ public final class SipHash implements Hasher {
     }
 
     public void writeString(String s) {
-        SipHash.updateNative(this.state, s.bytes, (int64) s.byteLength);
+        if (s.root() == null || s.byteOffset() != (int64) 0) {
+            int8[] w = s.toBytes();
+            SipHash.updateNative(this.state, w, (int64) s.byteLength());
+            return;
+        }
+        SipHash.updateNative(this.state, s.root(), (int64) s.byteLength());
     }
 
     /** Absorbs an `Object` by feeding its `hash()` value as 8 bytes. */

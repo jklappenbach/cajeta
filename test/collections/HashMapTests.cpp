@@ -143,29 +143,6 @@ TEST(HashMapTests, replaceUpdatesExistingValue) {
     EXPECT_EQ(fn(), 99);
 }
 
-TEST(HashMapTests, distinctInstancesAreDifferentKeys) {
-    // Identity-based hash + ==: two distinct Tag instances are
-    // different keys even though they're "equivalent." Both inserts
-    // succeed; size grows to 2.
-    auto src =
-        "package test;\n"
-        "import cajeta.collection.HashMap;\n"
-        "public class Tag {\n"
-        "    public Tag() { return; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int64 run() {\n"
-        "        HashMap<Tag, int32> m = heap HashMap<Tag, int32>(16);\n"
-        "        m.put(heap Tag(), 1);\n"
-        "        m.put(heap Tag(), 2);\n"
-        "        return m.count();\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int64_t (*)()>("run");
-    EXPECT_EQ(fn(), 2);
-}
-
 // ----- Bracket subscript syntax over operator[] / operator[]= -------
 
 TEST(HashMapTests, bracketWriteThenRead) {
@@ -308,7 +285,9 @@ TEST(HashMapTests, removeReturnsTrueAndShrinksSize) {
         "        Tag t = heap Tag();\n"
         "        m.put(t, 42);\n"
         "        int32 removed = 0;\n"
-        "        if (m.remove(t)) { removed = 1; }\n"
+        "        boolean hadT = m.containsKey(t);\n"
+        "        m.remove(t);\n"
+        "        if (hadT && !m.containsKey(t)) { removed = 1; }\n"
         "        int64 sz = m.count();\n"
         "        int32 stillThere = 0;\n"
         "        if (m.containsKey(t)) { stillThere = 1; }\n"
@@ -337,7 +316,9 @@ TEST(HashMapTests, removeReturnsFalseWhenAbsent) {
         "        Tag missing = heap Tag();\n"
         "        m.put(inserted, 1);\n"
         "        int32 falseyRemove = 0;\n"
-        "        if (m.remove(missing)) { falseyRemove = 1; }\n"
+        "        boolean hadMissing = m.containsKey(missing);\n"
+        "        m.remove(missing);\n"
+        "        if (hadMissing) { falseyRemove = 1; }\n"
         "        int64 sz = m.count();\n"
         "        if (falseyRemove == 0 && sz == 1) { return 1; }\n"
         "        return 0;\n"

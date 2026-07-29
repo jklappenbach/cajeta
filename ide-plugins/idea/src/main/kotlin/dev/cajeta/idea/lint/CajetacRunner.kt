@@ -22,22 +22,52 @@ object CajetacRunner {
 
     private val log = Logger.getInstance(CajetacRunner::class.java)
 
-    fun lint(filePath: String, bufferText: String): List<Diagnostic> {
+    fun lint(filePath: String, bufferText: String): List<Diagnostic> =
+        lintWithXref(filePath, bufferText, emitXref = false).diagnostics
+
+    /**
+     * One lint invocation, both record kinds (ide-symbol-index §1.5.2): the
+     * diagnostics the annotator paints AND — when [emitXref] — the buffer's xref
+     * records, demultiplexed off the same stderr by `kind`. One subprocess per
+     * edit, never two.
+     */
+    fun lintWithXref(
+        filePath: String,
+        bufferText: String,
+        emitXref: Boolean,
+        basePath: String? = null,
+    ): LintOutput {
         val compilerPath = CajetaSettings.instance.compilerPath
         if (compilerPath.isBlank() || !File(compilerPath).canExecute()) {
             log.debug("cajetac not configured or not executable at: $compilerPath")
-            return emptyList()
+            return LintOutput(emptyList(), XrefStream.EMPTY)
         }
 
-        val tempFile = stageBufferToTemp(filePath, bufferText) ?: return emptyList()
+        val tempFile = stageBufferToTemp(filePath, bufferText)
+            ?: return LintOutput(emptyList(), XrefStream.EMPTY)
         try {
             // Resolve cross-file references against the project: pass the source
             // root (derived from the file's package) and shadow the on-disk twin
             // so the staged buffer replaces it (lint-source-root-spec §5/§7).
             val sourceRoot = sourceRootOf(filePath, bufferText)
-            val stderr = runCompiler(compilerPath, tempFile, sourceRoot, filePath)
-                ?: return emptyList()
-            return parseDiagnostics(stderr, bufferText)
+            // Same dependency archives the whole-root rebuild passes, so the
+            // buffer's references into a dependency resolve and survive into the
+            // shard instead of being clobbered on the next edit (§8.3.1).
+            val classpath = dev.cajeta.idea.xref.CajetaSourceMountGlue
+                .dependencyArchives(basePath)
+            val stderr = runCompiler(compilerPath, tempFile, sourceRoot, filePath,
+                                     emitXref, classpath)
+                ?: return LintOutput(emptyList(), XrefStream.EMPTY)
+            val xref = if (emitXref) XrefStreamParser.demux(stderr)
+                       else XrefStream.EMPTY
+            if (!xref.supported) {
+                log.warn(
+                    "cajetac xref stream declares schema major " +
+                    "${xref.versionMajor} (supported: " +
+                    "${XrefStreamParser.SUPPORTED_MAJOR}); records refused " +
+                    "rather than misread")
+            }
+            return LintOutput(parseDiagnostics(stderr, bufferText), xref)
         } finally {
             runCatching { Files.deleteIfExists(tempFile) }
         }
@@ -87,12 +117,24 @@ object CajetacRunner {
         file: String,
         sourceRoot: String? = null,
         shadow: String? = null,
+        emitXref: Boolean = false,
+        classpath: List<Path> = emptyList(),
     ): List<String> {
         val args = mutableListOf(compilerPath, "--lint", file, "--diag-format=json")
         if (sourceRoot != null) {
             args += listOf("--source-root", sourceRoot)
             if (shadow != null) args += listOf("--shadow", shadow)
         }
+        // Dependency archives on the classpath so single-file lint resolves
+        // dependency types (§8.3.1). Without it the buffer's references to a
+        // dependency type are dropped as dangling, and this stream — which
+        // overwrites the whole-root shard — would erase every dependency
+        // Ctrl-click target the last rebuild produced.
+        if (classpath.isNotEmpty())
+            args += "--classpath=" + classpath.joinToString(",") { it.toString() }
+        // Bare (pathless) --emit-xref: the records ride the diagnostic stream as
+        // kind:"xref" NDJSON, reported against the --shadow original.
+        if (emitXref) args += "--emit-xref"
         return args
     }
 
@@ -101,9 +143,12 @@ object CajetacRunner {
         file: Path,
         sourceRoot: String? = null,
         shadow: String? = null,
+        emitXref: Boolean = false,
+        classpath: List<Path> = emptyList(),
     ): String? {
         return try {
-            val args = lintArgv(compilerPath, file.toString(), sourceRoot, shadow)
+            val args = lintArgv(compilerPath, file.toString(), sourceRoot, shadow,
+                                emitXref, classpath)
             val pb = ProcessBuilder(args).redirectErrorStream(false)
             val process = pb.start()
             process.outputStream.close()

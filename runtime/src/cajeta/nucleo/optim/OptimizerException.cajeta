@@ -1,0 +1,17 @@
+package cajeta.nucleo.optim;
+
+import cajeta.error.RecoverableException;
+import cajeta.lang.String;
+
+/**
+ * Thrown by `Optimizer.step` when the grad bag does not correspond to the
+ * optimizer's parameter set — wrong count or a shape mismatch at some
+ * position (spec §5.3). Thrown BEFORE any parameter is written, so a failed
+ * step never partially updates.
+ */
+public class OptimizerException extends RecoverableException {
+    public OptimizerException(String message) {
+        this.message = message;
+        this.cause = 0;
+    }
+}

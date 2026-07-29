@@ -120,6 +120,79 @@ public final class Ewise {
         return sum;
     }
 
+    /** Min-reduction kernel: `out[0] = min(out[0], in[i])` via a float atomic-min. */
+    @Kernel
+    public static void reduceMinF32(KernelBuffer<float32> out, KernelBuffer<float32> in, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) { out.atomicMin(0, in[i]); }
+    }
+
+    /** Max-reduction kernel: `out[0] = max(out[0], in[i])` via a float atomic-max. */
+    @Kernel
+    public static void reduceMaxF32(KernelBuffer<float32> out, KernelBuffer<float32> in, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) { out.atomicMax(0, in[i]); }
+    }
+
+    /**
+     * Full-array minimum of a contiguous `float32` tensor, routed on placement: on-device
+     * → the {@link #reduceMinF32} atomic-min reduction (accumulator seeded to `+FLT_MAX`
+     * so it's order-independent); otherwise the CPU loop. The Phase-4 min/max cross-check.
+     * (The seed is a large sentinel — valid for data within `±3.4e38`.)
+     */
+    public static float32 minF32(Tensor<float32> t) {
+        int64 n = t.size();
+        if (t.isOnGpu()) {
+            int64[] os = heap int64[1];
+            os[0] = 1;
+            Tensor<float32> acc = Tensor.zeros<float32>(os);
+            acc.set1(0, 3.4e38f);                      // +FLT_MAX sentinel
+            acc.gpu();
+            uint32 un = (uint32) n;
+            KernelStream s = KernelStream.current();
+            reduceMinF32.launch(s, grid: [(un + 63) / 64], block: [64])
+                (acc.deviceBuffer(), t.deviceBuffer(), un);
+            s.sync();
+            acc.cpu();
+            return acc.get1(0);
+        }
+        float32 m = t.flatGet(0);
+        int64 i = 1;
+        while (i < n) {
+            float32 v = t.flatGet(i);
+            if (v < m) { m = v; }
+            i = i + 1;
+        }
+        return m;
+    }
+
+    /** Full-array maximum (companion to {@link #minF32}; accumulator seeded to `-FLT_MAX`). */
+    public static float32 maxF32(Tensor<float32> t) {
+        int64 n = t.size();
+        if (t.isOnGpu()) {
+            int64[] os = heap int64[1];
+            os[0] = 1;
+            Tensor<float32> acc = Tensor.zeros<float32>(os);
+            acc.set1(0, -3.4e38f);                     // -FLT_MAX sentinel
+            acc.gpu();
+            uint32 un = (uint32) n;
+            KernelStream s = KernelStream.current();
+            reduceMaxF32.launch(s, grid: [(un + 63) / 64], block: [64])
+                (acc.deviceBuffer(), t.deviceBuffer(), un);
+            s.sync();
+            acc.cpu();
+            return acc.get1(0);
+        }
+        float32 m = t.flatGet(0);
+        int64 i = 1;
+        while (i < n) {
+            float32 v = t.flatGet(i);
+            if (v > m) { m = v; }
+            i = i + 1;
+        }
+        return m;
+    }
+
     /**
      * Gather kernel: `out[i] = in[idx[i]]` (numpy-porting Phase 5, 5e — the GPU
      * indexing primitive; each thread reads one source element through its index).
@@ -157,6 +230,88 @@ public final class Ewise {
             }
         }
         return #out;
+    }
+
+    /**
+     * Scatter kernel: `out[idx[i]] = in[i]` (numpy-porting Phase 5, 5e — the inverse of
+     * {@link #gatherF32}; each thread writes one source element to its target slot).
+     * Indices must be distinct (no two threads write the same slot) for a defined result.
+     */
+    @Kernel
+    public static void scatterF32(KernelBuffer<float32> out, KernelBuffer<float32> in,
+                                  KernelBuffer<int64> idx, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) { out[idx[i]] = in[i]; }
+    }
+
+    /**
+     * Scatter `values` into a fresh length-`outLen` `float32` tensor at positions `idx`
+     * (`out[idx[i]] = values[i]`; unwritten slots stay 0), routed on placement: both
+     * on-device → the {@link #scatterF32} GPU kernel; otherwise the CPU loop. The two
+     * agree (the Phase-5 scatter cross-check). Indices are assumed distinct.
+     */
+    public static #Tensor<float32> scatterF32Op(Tensor<float32> values, Tensor<int64> idx, int64 outLen) {
+        int64 m = values.size();
+        int64[] os = heap int64[1];
+        os[0] = outLen;
+        Tensor<float32> out = Tensor.zeros<float32>(os);
+        if (values.isOnGpu() && idx.isOnGpu()) {
+            out.gpu();                                 // uploads the zero-init buffer
+            uint32 um = (uint32) m;
+            KernelStream s = KernelStream.current();
+            scatterF32.launch(s, grid: [(um + 63) / 64], block: [64])
+                (out.deviceBuffer(), values.deviceBuffer(), idx.deviceBuffer(), um);
+            s.sync();
+        } else {
+            int64 i = 0;
+            while (i < m) {
+                out.flatSet(idx.flatGet(i), values.flatGet(i));
+                i = i + 1;
+            }
+        }
+        return #out;
+    }
+
+    /**
+     * Bincount kernel: `counts[vals[i]] += 1` via an atomic scatter (numpy-porting
+     * Phase 10 — the atomic-scatter primitive; concurrent threads hitting the same
+     * bin serialize through the atomic RMW, so the result is order-independent).
+     */
+    @Kernel
+    public static void bincountI32(KernelBuffer<int32> counts, KernelBuffer<int64> vals, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) { counts.atomicAdd(vals[i], 1); }
+    }
+
+    /**
+     * Count occurrences of each value in `[0, outLen)` of a non-negative `int64` tensor
+     * (numpy `bincount`) into an `int32` histogram, routed on placement: on-device → the
+     * {@link #bincountI32} atomic scatter; otherwise the CPU loop. The two agree (the
+     * Phase-10 atomic-scatter cross-check) — the atomic makes concurrent same-bin
+     * increments order-independent. Counts are `int32` (integer atomics are int32/uint32).
+     */
+    public static #Tensor<int32> bincountI32Op(Tensor<int64> t, int64 outLen) {
+        int64[] os = heap int64[1];
+        os[0] = outLen;
+        Tensor<int32> counts = Tensor.zeros<int32>(os);
+        int64 n = t.size();
+        if (t.isOnGpu()) {
+            counts.gpu();                              // uploads the zero-init histogram
+            uint32 un = (uint32) n;
+            KernelStream s = KernelStream.current();
+            bincountI32.launch(s, grid: [(un + 63) / 64], block: [64])
+                (counts.deviceBuffer(), t.deviceBuffer(), un);
+            s.sync();
+        } else {
+            int64 i = 0;
+            while (i < n) {
+                int64 v = t.flatGet(i);
+                int32 cur = counts.flatGet(v);
+                counts.flatSet(v, cur + 1);
+                i = i + 1;
+            }
+        }
+        return #counts;
     }
 
     /**
@@ -240,6 +395,78 @@ public final class Ewise {
     }
 
     /**
+     * Tiled **float64** GEMM — the {@link #matmulF32} cooperative-matrix kernel replicated
+     * for a second dtype (numpy-porting Phase 6.6, coop GEMM non-f32). The software
+     * cooperative-matrix tier is dtype-generic, so the same 16x16 tile / K-loop `mma`
+     * structure lowers for `float64` (a `note: [mma-tiering]` since f64 has no native
+     * config). `rows`/`cols`/`depth` multiples of 16.
+     */
+    @Kernel
+    public static void matmulF64(KernelBuffer<float64> c, KernelBuffer<float64> a,
+                                 KernelBuffer<float64> b, uint32 rows, uint32 cols, uint32 depth) {
+        uint32 ntiles = cols / 16;
+        uint32 wid = Workgroup.x();
+        uint32 mi = wid / ntiles;
+        uint32 nj = wid % ntiles;
+        uint32 ktiles = depth / 16;
+        CooperativeMatrix<float64,16,16,2> mc;
+        mc.splat(0.0);
+        CooperativeMatrix<float64,16,16,0> ma;
+        CooperativeMatrix<float64,16,16,1> mb;
+        uint32 kk = 0;
+        while (kk < ktiles) {
+            ma.load(a, mi * 16 * depth + kk * 16, 0, depth);
+            mb.load(b, kk * 16 * cols + nj * 16, 0, cols);
+            mc.mma(ma, mb);
+            kk = kk + 1;
+        }
+        mc.store(c, mi * 16 * cols + nj * 16, 0, cols);
+    }
+
+    /**
+     * 2-D **float64** matrix product routed on placement: both on-device → the
+     * {@link #matmulF64} coop GEMM; otherwise the CPU triple-loop. Agrees with the generic
+     * {@link Tensor#matmul} float64 floor (Phase-6.6 non-f32 coop cross-check). GPU path
+     * needs `m`/`n`/`k` multiples of 16.
+     */
+    public static #Tensor<float64> matmulF64Op(Tensor<float64> a, Tensor<float64> b) {
+        int64 m = a.shapeAt(0);
+        int64 k = a.shapeAt(1);
+        int64 n = b.shapeAt(1);
+        int64[] shp = heap int64[2];
+        shp[0] = m;
+        shp[1] = n;
+        Tensor<float64> out = Tensor.zeros<float64>(shp);
+        if (a.isOnGpu() && b.isOnGpu()) {
+            out.gpu();
+            uint32 um = (uint32) m;
+            uint32 un = (uint32) n;
+            uint32 uk = (uint32) k;
+            KernelStream s = KernelStream.current();
+            matmulF64.launch(s, grid: [(um / 16) * (un / 16)], block: [64])
+                (out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), um, un, uk);
+            s.sync();
+        } else {
+            int64 i = 0;
+            while (i < m) {
+                int64 j = 0;
+                while (j < n) {
+                    float64 acc = 0.0;
+                    int64 p = 0;
+                    while (p < k) {
+                        acc = acc + a.get2(i, p) * b.get2(p, j);
+                        p = p + 1;
+                    }
+                    out.flatSet(i * n + j, acc);
+                    j = j + 1;
+                }
+                i = i + 1;
+            }
+        }
+        return #out;
+    }
+
+    /**
      * One compare-exchange stage of a bitonic sort over `data` (numpy-porting Phase
      * 7, 7b — the GPU sort primitive). Each thread `i` pairs with `i ^ j`; the
      * partner with the higher index does the swap, ascending when `(i & k) == 0`
@@ -306,5 +533,176 @@ public final class Ewise {
             return #out;
         }
         return Tensor.sort<float32>(t, 0);
+    }
+
+    /**
+     * One Hillis-Steele inclusive-scan pass: `out[i] = in[i] + in[i-offset]` (or `in[i]`
+     * when `i < offset`), reading and writing *different* buffers so there's no race
+     * (numpy-porting Phase 4 — the GPU prefix-scan primitive; the host ping-pongs two
+     * buffers and doubles `offset` each of the `⌈log2 n⌉` passes).
+     */
+    @Kernel
+    public static void scanStepF32(KernelBuffer<float32> out, KernelBuffer<float32> in, uint32 n, uint32 offset) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            if (i >= offset) { out[i] = in[i] + in[i - offset]; }
+            else { out[i] = in[i]; }
+        }
+    }
+
+    /**
+     * Inclusive prefix sum of a 1-D `float32` tensor (numpy `cumsum`), routed on
+     * placement: on-device → the {@link #scanStepF32} Hillis-Steele scan (the host issues
+     * `⌈log2 n⌉` ping-ponged passes over two device buffers); otherwise the CPU running
+     * sum. The two agree (the Phase-4 scan cross-check). Returns a fresh 1-D tensor.
+     */
+    public static #Tensor<float32> cumsumF32Op(Tensor<float32> t) {
+        int64 n = t.size();
+        if (t.isOnGpu()) {
+            t.cpu();                                   // stage input to seed buffer A
+            int64[] sa = heap int64[1]; sa[0] = n;
+            Tensor<float32> a = Tensor.zeros<float32>(sa);
+            int64 c = 0;
+            while (c < n) { a.flatSet(c, t.flatGet(c)); c = c + 1; }
+            t.gpu();
+            a.gpu();
+            int64[] sb = heap int64[1]; sb[0] = n;
+            Tensor<float32> b = Tensor.zeros<float32>(sb);
+            b.gpu();
+            uint32 un = (uint32) n;
+            KernelStream s = KernelStream.current();
+            boolean srcIsA = true;                     // `a` holds the latest result
+            uint32 offset = 1;
+            while (offset < un) {
+                if (srcIsA) {
+                    scanStepF32.launch(s, grid: [(un + 63) / 64], block: [64])
+                        (b.deviceBuffer(), a.deviceBuffer(), un, offset);
+                } else {
+                    scanStepF32.launch(s, grid: [(un + 63) / 64], block: [64])
+                        (a.deviceBuffer(), b.deviceBuffer(), un, offset);
+                }
+                s.sync();
+                srcIsA = !srcIsA;                      // the just-written buffer is now src
+                offset = offset * 2;
+            }
+            if (srcIsA) { return #a; } else { return #b; }
+        }
+        int64[] os = heap int64[1]; os[0] = n;
+        Tensor<float32> out = Tensor.zeros<float32>(os);
+        float32 acc = 0.0f;
+        int64 i = 0;
+        while (i < n) {
+            acc = acc + t.flatGet(i);
+            out.flatSet(i, acc);
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /**
+     * Range-copy kernel: `out[i+dstOff] = in[i+srcOff]` for `i < n` (numpy-porting Phase
+     * 5c — the structural-op primitive that concatenate/stack/split all reduce to: each
+     * thread copies one element from a source window to a destination window).
+     */
+    @Kernel
+    public static void copyRangeF32(KernelBuffer<float32> out, KernelBuffer<float32> in,
+                                    uint32 n, uint32 srcOff, uint32 dstOff) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) { out[i + dstOff] = in[i + srcOff]; }
+    }
+
+    /**
+     * Concatenate two 1-D `float32` tensors (numpy `concatenate`), routed on placement:
+     * both on-device → two {@link #copyRangeF32} launches into one output buffer;
+     * otherwise the CPU loop. The two agree (the Phase-5c structural cross-check).
+     * `stack` of two rows is the same copy into a `(2, n)` output shape.
+     */
+    public static #Tensor<float32> concatF32Op(Tensor<float32> a, Tensor<float32> b) {
+        int64 na = a.size();
+        int64 nb = b.size();
+        int64[] os = heap int64[1];
+        os[0] = na + nb;
+        Tensor<float32> out = Tensor.zeros<float32>(os);
+        if (a.isOnGpu() && b.isOnGpu()) {
+            out.gpu();
+            uint32 una = (uint32) na;
+            uint32 unb = (uint32) nb;
+            KernelStream s = KernelStream.current();
+            copyRangeF32.launch(s, grid: [(una + 63) / 64], block: [64])
+                (out.deviceBuffer(), a.deviceBuffer(), una, 0, 0);
+            copyRangeF32.launch(s, grid: [(unb + 63) / 64], block: [64])
+                (out.deviceBuffer(), b.deviceBuffer(), unb, 0, una);
+            s.sync();
+        } else {
+            int64 i = 0;
+            while (i < na) { out.flatSet(i, a.flatGet(i)); i = i + 1; }
+            int64 j = 0;
+            while (j < nb) { out.flatSet(na + j, b.flatGet(j)); j = j + 1; }
+        }
+        return #out;
+    }
+
+    /**
+     * The `[start, start+len)` slice of a 1-D `float32` tensor (numpy slice / one half of
+     * `split`), routed on placement: on-device → a single {@link #copyRangeF32} from the
+     * source window; otherwise the CPU loop. Agrees CPU/GPU (Phase-5c). A `split` is two
+     * such slices.
+     */
+    public static #Tensor<float32> sliceF32Op(Tensor<float32> t, int64 start, int64 len) {
+        int64[] os = heap int64[1];
+        os[0] = len;
+        Tensor<float32> out = Tensor.zeros<float32>(os);
+        if (t.isOnGpu()) {
+            out.gpu();
+            uint32 ul = (uint32) len;
+            uint32 us = (uint32) start;
+            KernelStream s = KernelStream.current();
+            copyRangeF32.launch(s, grid: [(ul + 63) / 64], block: [64])
+                (out.deviceBuffer(), t.deviceBuffer(), ul, us, 0);
+            s.sync();
+        } else {
+            int64 i = 0;
+            while (i < len) { out.flatSet(i, t.flatGet(start + i)); i = i + 1; }
+        }
+        return #out;
+    }
+
+    /** Sum-of-squares reduction kernel: `out[0] += in[i]*in[i]` via a float atomic-add. */
+    @Kernel
+    public static void reduceSumSqF32(KernelBuffer<float32> out, KernelBuffer<float32> in, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) { out.atomicAdd(0, in[i] * in[i]); }
+    }
+
+    /**
+     * Frobenius norm `sqrt(Σ xᵢ²)` of a `float32` tensor (numpy `linalg.norm`; the norm
+     * behind `linalg.cond`/`lstsq`), routed on placement: on-device → the
+     * {@link #reduceSumSqF32} atomic sum-of-squares then a host `sqrt`; otherwise the CPU
+     * loop. The two agree (a Phase-11 linalg GPU cross-check — the reduction-shaped linalg
+     * primitives lower to the same atomic-reduction template as `sumF32`).
+     */
+    public static float32 normFroF32(Tensor<float32> t) {
+        int64 n = t.size();
+        if (t.isOnGpu()) {
+            int64[] os = heap int64[1];
+            os[0] = 1;
+            Tensor<float32> acc = Tensor.zeros<float32>(os);
+            acc.gpu();
+            uint32 un = (uint32) n;
+            KernelStream s = KernelStream.current();
+            reduceSumSqF32.launch(s, grid: [(un + 63) / 64], block: [64])
+                (acc.deviceBuffer(), t.deviceBuffer(), un);
+            s.sync();
+            acc.cpu();
+            return Math.sqrt(acc.get1(0));
+        }
+        float32 sum = 0.0f;
+        int64 i = 0;
+        while (i < n) {
+            float32 v = t.flatGet(i);
+            sum = sum + v * v;
+            i = i + 1;
+        }
+        return Math.sqrt(sum);
     }
 }

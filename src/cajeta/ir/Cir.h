@@ -2,7 +2,7 @@
 // Cajeta IR (CIR) — core data structures.
 //
 // CIR is a typed SSA CFG sitting between the type-checked / borrow-checked
-// AST and LLVM codegen (the MIR/SIL analog). See docs/specs/cajeta-ir-spec.md
+// AST and LLVM codegen (the MIR/SIL analog). See specs/archive/cajeta-ir-spec.md
 // §2. Phase A is analysis-only: CIR is built for a closed slice (a generic
 // function with a function-typed parameter, its callers, and the closures
 // passed) and probed for specializable closure calls; it does not replace

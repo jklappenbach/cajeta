@@ -1,0 +1,70 @@
+package tour.lang;
+
+import tour.DemoClass;
+
+// Static fields — one slot per CLASS, not per instance. Under the
+// hood each static becomes a module-level global named after the
+// class, so every instance (and every other class) reads and writes
+// the same storage. Initializers run at module load: literals,
+// arithmetic on literals, and references to earlier statics all work
+// (see test/parser/StaticFieldTests.cpp).
+//
+// `static final` gives you the classic named constant; a plain
+// `static` is shared mutable state — handy for counters and caches,
+// and exactly the thing to reach for sparingly.
+
+public class Odometer {
+    // Shared mutable state: every Odometer instance bumps the same
+    // counter. Uninitialized statics start at zero.
+    public static int32 built;
+
+    // Constants. The second initializer reads the first — statics
+    // initialize in declaration order.
+    public static final int32 WHEEL_MM = 2100;
+    public static final int32 TWO_TURNS_MM = WHEEL_MM * 2;
+
+    // Ordinary per-instance state, for contrast.
+    public int32 km;
+
+    public Odometer() {
+        this.km = 0;
+        Odometer.built = Odometer.built + 1;
+    }
+}
+
+public class StaticFieldsDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Static fields --");
+
+        // Constants: initialized at load, readable before any
+        // instance exists, computed initializers included.
+        System.stdout.println("  Odometer.WHEEL_MM     = " + Odometer.WHEEL_MM);
+        System.stdout.println("  Odometer.TWO_TURNS_MM = " + Odometer.TWO_TURNS_MM);
+        this.check(Odometer.WHEEL_MM == 2100, "static final literal constant");
+        this.check(Odometer.TWO_TURNS_MM == 4200,
+            "initializer may reference an earlier static");
+
+        // Shared mutable state: three instances, one counter. Reset
+        // first — the tour runs demos in sequence and globals persist.
+        Odometer.built = 0;
+        Odometer a = heap Odometer();
+        Odometer b = heap Odometer();
+        Odometer c = heap Odometer();
+        System.stdout.println("  after 3 ctors, Odometer.built = " + Odometer.built);
+        this.check(Odometer.built == 3, "every ctor bumped the one shared slot");
+
+        // The static is class state, not instance state: writing it
+        // through plain assignment is visible everywhere at once,
+        // while instance fields stay per-object.
+        a.km = 12;
+        b.km = 40;
+        Odometer.built = 100;
+        this.check(Odometer.built == 100, "static field is a plain assignable lvalue");
+        this.check(a.km + b.km + c.km == 52, "instance fields remain per-object");
+
+        // Read-modify-write works like any variable.
+        Odometer.built = Odometer.built + 1;
+        this.check(Odometer.built == 101, "read-modify-write on a static");
+    }
+}

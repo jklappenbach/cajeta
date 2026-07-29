@@ -1,5 +1,7 @@
 package cajeta.error;
 
+import cajeta.lang.Optional;
+
 /**
  * General-purpose thrown error and the base of the catchable exception
  * hierarchy. Extends `Throwable` (the hierarchy root, which carries the
@@ -31,9 +33,40 @@ public class Exception extends Throwable {
      * ```cajeta
      * throw heap Exception("invalid argument");
      * ```
+     *
+     * @EntryPoint
      */
     public Exception(#String message) {
         this.message = message;
-        this.cause = 0;
+        this.cause = null;
+    }
+
+    /**
+     * Construct an exception wrapping a lower-level `cause`; ownership of `cause`
+     * transfers into this exception's `cause` chain.
+     *
+     * ```cajeta
+     * throw heap Exception("config load failed", heap Exception("file missing"));
+     * ```
+     */
+    public Exception(#String message, #Throwable cause) {
+        this.message = message;
+        this.cause #= cause;
+    }
+
+    /**
+     * The underlying cause carried with this exception; empty when none.
+     * Wraps the borrowed field (no transfer) — the exception keeps ownership of
+     * its cause chain. Passing `this.cause` plainly (rather than `#this.cause`)
+     * is what makes this a borrow, so the Optional's drop leaves `cause` alone;
+     * surrendering at the call site (`#`) is what would hand ownership over.
+     * Ownership is decided per call, never by the Optional's type. See
+     * `specs/optional-borrow-ownership-spec.md`.
+     */
+    public Optional<Throwable> getCause() {
+        if (this.cause == null) {
+            return stack Optional<Throwable>(false, #null);
+        }
+        return stack Optional<Throwable>(true, this.cause);
     }
 }

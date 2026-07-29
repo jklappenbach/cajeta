@@ -10,7 +10,7 @@
 // This proves the noun (the BVH the portable cajeta RayQuery will walk) is correct
 // before any kernel-lowering integration. The cajeta @Device traversal (inc 1,
 // task 4) mirrors this same walk; the end-to-end cross-check against the Vulkan
-// native path is ToffeeSpatialIndexDeviceTests on the CPU backend (task 6).
+// native path is CarameloSpatialIndexDeviceTests on the CPU backend (task 6).
 //
 
 #include "gtest/gtest.h"
@@ -205,9 +205,9 @@ void expectMatchesBruteForce(const std::vector<float>& boxes, uint32_t count,
 
 } // namespace
 
-// The Toffee fixed-radius scene: 3 points along x, half-extent 0.5. The four query
-// points are the exact ones ToffeeSpatialIndexDeviceTests uses (expecting 1/0/1/1).
-TEST(SoftwareBvhBuilderTests, toffeeFixedRadiusScene) {
+// The Caramelo fixed-radius scene: 3 points along x, half-extent 0.5. The four query
+// points are the exact ones CarameloSpatialIndexDeviceTests uses (expecting 1/0/1/1).
+TEST(SoftwareBvhBuilderTests, carameloFixedRadiusScene) {
     std::vector<float> pts = {0.f,0.f,0.f, 10.f,0.f,0.f, 20.f,0.f,0.f};
     auto boxes = boxesAround(pts, 0.5f);
     std::vector<std::array<float,3>> q = {
@@ -225,7 +225,7 @@ TEST(SoftwareBvhBuilderTests, toffeeFixedRadiusScene) {
 }
 
 // Overlapping boxes: a query point inside several boxes must return ALL of them
-// (the over-count the exact-L2 refinement later prunes — Toffee radiusExact).
+// (the over-count the exact-L2 refinement later prunes — Caramelo radiusExact).
 TEST(SoftwareBvhBuilderTests, overlappingBoxesReturnAll) {
     // Three unit boxes all containing the origin (half-extent 1.0 around 3 points).
     std::vector<float> pts = {0.f,0.f,0.f, 0.9f,0.f,0.f, 0.6f,0.6f,0.f};

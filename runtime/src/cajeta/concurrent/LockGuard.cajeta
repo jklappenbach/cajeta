@@ -14,7 +14,7 @@ package cajeta.concurrent;
  * ```cajeta
  * stack lock = heap Lock();
  * {
- *     #LockGuard guard = lock.acquire();   // locked here
+ *     LockGuard guard = lock.acquire();   // locked here
  *     // ... critical section ...
  * }                                        // guard drops -> lock released
  * ```

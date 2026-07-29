@@ -22,6 +22,11 @@ package cajeta.math;
     public Vector<float32,3> origin;
     public Vector<float32,3> direction;
 
+    /**
+     * Build a ray from its origin and direction (direction stored as given).
+     *
+     * @EntryPoint
+     */
     public Ray(Vector<float32,3> origin, Vector<float32,3> direction) {
         this.origin = origin;
         this.direction = direction;

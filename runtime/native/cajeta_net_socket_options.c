@@ -269,3 +269,222 @@ int32_t __cajeta_net_set_only_v6(int32_t fd, int32_t on) {
 int32_t __cajeta_net_get_only_v6(int32_t fd) {
     return cajeta_opt_get_bool(fd, IPPROTO_IPV6, IPV6_V6ONLY);
 }
+
+// ===========================================================================
+// NET-14.1 — UDP multicast option intrinsics.
+//
+// Same doctrine as everything above: every platform constant (IP_ADD_MEMBERSHIP
+// vs IPV6_JOIN_GROUP naming, the u_char-vs-int payload width quirk, mreq struct
+// shapes) stays in C; the Cajeta surface passes only the AddressFamily-agnostic
+// pieces — network-order octets, an interface index, portable ints.
+//
+// Family split, deliberately asymmetric because the kernels are:
+//   - IPv4 selects the interface by ADDRESS (`struct ip_mreq.imr_interface`,
+//     INADDR_ANY = kernel default). `ip_mreqn`'s by-index form is Linux-only,
+//     so it is not offered.
+//   - IPv6 selects the interface by INDEX (`struct ipv6_mreq.ipv6mr_interface`,
+//     0 = kernel default). v6 interfaces have no single address to name.
+//
+// Payload-width quirk: IPv4's IP_MULTICAST_TTL and IP_MULTICAST_LOOP take a
+// `u_char` on the BSDs/macOS (an `int` payload fails EINVAL there); Linux
+// accepts either; Winsock wants a DWORD. IPv6's equivalents take an int
+// everywhere. The `#if` lives here, once.
+// ===========================================================================
+
+// Octet parameters cross the @Native bridge as cajeta int8[] HEADERS —
+// `{ i64 count, [N x i8] data }` — so the address bytes live at offset 8
+// (the `__cajeta_sha1_update` convention). NULL stays NULL.
+static const void* cajeta_octets_of(const void* hdr) {
+    return hdr ? ((const uint8_t*) hdr) + 8 : (const void*) 0;
+}
+
+// Join/leave an IPv4 group. `group_hdr` = int8[] header holding 4
+// network-order bytes; `iface_hdr` likewise for the interface address, or
+// NULL for the kernel default (INADDR_ANY). Returns 0 / -1.
+static int32_t cajeta_mcast_v4(int32_t fd, int optname,
+                               const void* group_hdr,
+                               const void* iface_hdr) {
+    const void* group_octets = cajeta_octets_of(group_hdr);
+    const void* iface_octets = cajeta_octets_of(iface_hdr);
+    if (fd < 0 || !group_octets) return -1;
+    struct ip_mreq mreq;
+    memset(&mreq, 0, sizeof(mreq));
+    memcpy(&mreq.imr_multiaddr, group_octets, 4);
+    if (iface_octets) {
+        memcpy(&mreq.imr_interface, iface_octets, 4);
+    }                                   // else zeroed = INADDR_ANY
+    int r = setsockopt(cajeta_net_from_fd(fd), IPPROTO_IP, optname,
+#if defined(_WIN32)
+                       (const char*) &mreq,
+#else
+                       &mreq,
+#endif
+                       (cajeta_socklen_t) sizeof(mreq));
+    return r == CAJETA_SOCKET_ERROR ? -1 : 0;
+}
+
+int32_t __cajeta_net_mcast_join_v4(int32_t fd, const void* group_hdr,
+                                   const void* iface_hdr) {
+    return cajeta_mcast_v4(fd, IP_ADD_MEMBERSHIP, group_hdr, iface_hdr);
+}
+int32_t __cajeta_net_mcast_leave_v4(int32_t fd, const void* group_hdr,
+                                    const void* iface_hdr) {
+    return cajeta_mcast_v4(fd, IP_DROP_MEMBERSHIP, group_hdr, iface_hdr);
+}
+
+// Join/leave an IPv6 group. `group_hdr` = int8[] header holding 16
+// network-order bytes; `iface_index` = interface index, 0 for the kernel
+// default. Returns 0 / -1.
+static int32_t cajeta_mcast_v6(int32_t fd, int optname,
+                               const void* group_hdr,
+                               int32_t iface_index) {
+    const void* group_octets = cajeta_octets_of(group_hdr);
+    if (fd < 0 || !group_octets || iface_index < 0) return -1;
+    struct ipv6_mreq mreq;
+    memset(&mreq, 0, sizeof(mreq));
+    memcpy(&mreq.ipv6mr_multiaddr, group_octets, 16);
+    mreq.ipv6mr_interface = (unsigned int) iface_index;
+    int r = setsockopt(cajeta_net_from_fd(fd), IPPROTO_IPV6, optname,
+#if defined(_WIN32)
+                       (const char*) &mreq,
+#else
+                       &mreq,
+#endif
+                       (cajeta_socklen_t) sizeof(mreq));
+    return r == CAJETA_SOCKET_ERROR ? -1 : 0;
+}
+
+int32_t __cajeta_net_mcast_join_v6(int32_t fd, const void* group_hdr,
+                                   int32_t iface_index) {
+    return cajeta_mcast_v6(fd, IPV6_JOIN_GROUP, group_hdr, iface_index);
+}
+int32_t __cajeta_net_mcast_leave_v6(int32_t fd, const void* group_hdr,
+                                    int32_t iface_index) {
+    return cajeta_mcast_v6(fd, IPV6_LEAVE_GROUP, group_hdr, iface_index);
+}
+
+// IPv4 u_char-payload option set/get (the TTL/LOOP width quirk — see header).
+static int32_t cajeta_mcast_set_v4_uchar(int32_t fd, int optname, int32_t value) {
+    if (fd < 0) return -1;
+#if defined(_WIN32)
+    return cajeta_opt_set_int(fd, IPPROTO_IP, optname, (int) value);
+#else
+    unsigned char v = (unsigned char) value;
+    int r = setsockopt(cajeta_net_from_fd(fd), IPPROTO_IP, optname,
+                       &v, (cajeta_socklen_t) sizeof(v));
+    return r == CAJETA_SOCKET_ERROR ? -1 : 0;
+#endif
+}
+static int32_t cajeta_mcast_get_v4_uchar(int32_t fd, int optname) {
+    if (fd < 0) return -1;
+#if defined(_WIN32)
+    int v = 0;
+    if (cajeta_opt_get_int(fd, IPPROTO_IP, optname, &v) != 0) return -1;
+    return (int32_t) v;
+#else
+    unsigned char v = 0;
+    cajeta_socklen_t len = (cajeta_socklen_t) sizeof(v);
+    int r = getsockopt(cajeta_net_from_fd(fd), IPPROTO_IP, optname, &v, &len);
+    return r == CAJETA_SOCKET_ERROR ? -1 : (int32_t) v;
+#endif
+}
+
+// Multicast TTL / hop limit for OUTBOUND multicast (distinct from the unicast
+// IP_TTL / IPV6_UNICAST_HOPS above). Default 1 = link-local, per the RFCs.
+int32_t __cajeta_net_set_mcast_ttl(int32_t fd, int32_t is_v6, int32_t ttl) {
+    if (ttl < 0 || ttl > 255) return -1;
+    if (is_v6) {
+        return cajeta_opt_set_int(fd, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, (int) ttl);
+    }
+    return cajeta_mcast_set_v4_uchar(fd, IP_MULTICAST_TTL, ttl);
+}
+int32_t __cajeta_net_get_mcast_ttl(int32_t fd, int32_t is_v6) {
+    if (is_v6) {
+        int v = 0;
+        if (cajeta_opt_get_int(fd, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, &v) != 0) return -1;
+        return (int32_t) v;
+    }
+    return cajeta_mcast_get_v4_uchar(fd, IP_MULTICAST_TTL);
+}
+
+// Multicast loopback — whether this host's own group sends are delivered back
+// to local members (OS default: on).
+int32_t __cajeta_net_set_mcast_loop(int32_t fd, int32_t is_v6, int32_t on) {
+    if (is_v6) {
+        return cajeta_opt_set_bool(fd, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, on);
+    }
+    return cajeta_mcast_set_v4_uchar(fd, IP_MULTICAST_LOOP, on ? 1 : 0);
+}
+int32_t __cajeta_net_get_mcast_loop(int32_t fd, int32_t is_v6) {
+    if (is_v6) {
+        return cajeta_opt_get_bool(fd, IPPROTO_IPV6, IPV6_MULTICAST_LOOP);
+    }
+    int32_t v = cajeta_mcast_get_v4_uchar(fd, IP_MULTICAST_LOOP);
+    return v < 0 ? -1 : (v != 0 ? 1 : 0);
+}
+
+// Outbound multicast interface. Same v4-by-address / v6-by-index split as the
+// membership calls.
+int32_t __cajeta_net_set_mcast_if_v4(int32_t fd, const void* iface_hdr) {
+    const void* iface_octets = cajeta_octets_of(iface_hdr);
+    if (fd < 0 || !iface_octets) return -1;
+    struct in_addr addr;
+    memset(&addr, 0, sizeof(addr));
+    memcpy(&addr, iface_octets, 4);
+    int r = setsockopt(cajeta_net_from_fd(fd), IPPROTO_IP, IP_MULTICAST_IF,
+#if defined(_WIN32)
+                       (const char*) &addr,
+#else
+                       &addr,
+#endif
+                       (cajeta_socklen_t) sizeof(addr));
+    return r == CAJETA_SOCKET_ERROR ? -1 : 0;
+}
+// Writes the 4 network-order octets of the current outbound interface into
+// the int8[] whose header is `iface_hdr_out` (0.0.0.0 = kernel default).
+// Returns 0 / -1.
+int32_t __cajeta_net_get_mcast_if_v4(int32_t fd, void* iface_hdr_out) {
+    void* iface_octets_out = iface_hdr_out ? ((uint8_t*) iface_hdr_out) + 8
+                                           : (void*) 0;
+    if (fd < 0 || !iface_octets_out) return -1;
+    struct in_addr addr;
+    memset(&addr, 0, sizeof(addr));
+    cajeta_socklen_t len = (cajeta_socklen_t) sizeof(addr);
+    int r = getsockopt(cajeta_net_from_fd(fd), IPPROTO_IP, IP_MULTICAST_IF,
+#if defined(_WIN32)
+                       (char*) &addr,
+#else
+                       &addr,
+#endif
+                       &len);
+    if (r == CAJETA_SOCKET_ERROR) return -1;
+    memcpy(iface_octets_out, &addr, 4);
+    return 0;
+}
+int32_t __cajeta_net_set_mcast_if_v6(int32_t fd, int32_t iface_index) {
+    if (iface_index < 0) return -1;
+    return cajeta_opt_set_int(fd, IPPROTO_IPV6, IPV6_MULTICAST_IF, (int) iface_index);
+}
+int32_t __cajeta_net_get_mcast_if_v6(int32_t fd) {
+    int v = 0;
+    if (cajeta_opt_get_int(fd, IPPROTO_IPV6, IPV6_MULTICAST_IF, &v) != 0) return -1;
+    return (int32_t) v;
+}
+
+// The socket's address family, read portably off the kernel via getsockname
+// (SO_DOMAIN is Linux-only). Returns 1 for AF_INET6, 0 for AF_INET, -1 on
+// error. The Cajeta option surface uses this for the is_v6 dispatch instead of
+// trusting wrapper-side state that does not exist (UdpSocket stores only fd).
+int32_t __cajeta_net_sockname_is_v6(int32_t fd) {
+    if (fd < 0) return -1;
+    struct sockaddr_storage ss;
+    memset(&ss, 0, sizeof(ss));
+    cajeta_socklen_t len = (cajeta_socklen_t) sizeof(ss);
+    if (getsockname(cajeta_net_from_fd(fd), (struct sockaddr*) &ss, &len)
+            == CAJETA_SOCKET_ERROR) {
+        return -1;
+    }
+    if (ss.ss_family == AF_INET6) return 1;
+    if (ss.ss_family == AF_INET)  return 0;
+    return -1;
+}

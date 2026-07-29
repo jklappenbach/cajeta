@@ -62,10 +62,15 @@ git push origin "v$(cat VERSION)"
 ```
 
 Once the tag lands, watch the workflow at
-`https://github.com/jklappenbach/cajeta/actions`. Five build jobs run
-in parallel (one per target), then a final `release` job collects all
-the artifacts and publishes them at
+`https://github.com/jklappenbach/cajeta/actions`. The build jobs run in
+parallel (one per target, plus the IDE plugin), then a final `release`
+job collects the artifacts and publishes them at
 `https://github.com/jklappenbach/cajeta/releases/tag/v<version>`.
+
+That last job only runs if **every** build leg succeeded — publishing is
+all-or-nothing, so a failed target means no Release at all rather than a
+partial one. A failed cut therefore costs no version number: fix forward
+and re-cut the same tag. See "When a tagged build fails for one target".
 
 If you'd rather cut releases entirely from the UI (no local `git tag`):
 bump VERSION + push to main, then Actions → release → Run workflow →
@@ -86,30 +91,93 @@ before you commit a version number. Inspect the failing job's log,
 push a fixup commit to main, re-trigger the dry-run from the UI. The
 VERSION number doesn't move until you cut a real tag.
 
-## When a published release fails to build for one target
+## When a tagged build fails for one target
 
-The build matrix is `fail-fast: false`, so one target failing doesn't
-abort the others. The `release` job still runs and attaches whichever
-artifacts did build. The Release page then has a partial set of
-binaries.
+**Publishing is all-or-nothing.** The build matrix is `fail-fast: false`,
+so one target failing doesn't abort the others — but the `release` job is
+gated on `needs.build.result == 'success'`, which is true only when
+*every* leg passed. One failed target means **no Release is created at
+all**, not a partial one. That gate is deliberate: a tag with a missing
+binary is worse than no tag, because `cvm` would resolve a manifest with
+partial artifacts.
 
-To fix: push a commit that addresses the failure, bump VERSION to the
-next patch (`v0.1.0` → `v0.1.1`), and cut a new tag. The original
-Release stays as a record of the partial-success cut.
+So a failed tag build **burns no version number**. The tag ref exists on
+origin, but nothing public was produced and nothing downstream can
+consume it — a consumer pinned to that version fails with `release not
+found` exactly as if it had never been cut.
 
-For a tag that's been pushed but the workflow hasn't picked up yet
-(seconds-scale race), or hasn't been pulled by any downstream consumer,
-you can force-re-tag — but only do this if you're certain no one has
-downloaded the partial release yet:
+### The rule
+
+> **Bump VERSION only when a Release was actually published.**
+> If the cut failed, fix forward and re-cut the *same* version.
+
+Don't burn a patch number on a build that produced nothing. Version
+numbers describe what shipped; an unpublished tag shipped nothing.
+
+Check which case you're in — this is the whole decision:
 
 ```sh
-git tag -d v<x.y.z>
-git push origin :refs/tags/v<x.y.z>
-gh release delete v<x.y.z> --yes   # if a partial Release was created
-# (re-push the tag from the fixed HEAD)
-git tag v<x.y.z>
-git push origin v<x.y.z>
+gh release view "v$(cat VERSION)" --json name,assets
+#   "release not found"  -> nothing published; re-cut the same version (below)
+#   a Release with assets -> it shipped; fix forward and bump VERSION
 ```
+
+### Re-cutting the same version (nothing was published)
+
+Safe because there is no Release, no assets, and nothing to have been
+downloaded. Push the fixes to main first, then move the tag:
+
+```sh
+git push origin main                        # fixes must be on main first
+git tag -d "v$(cat VERSION)"
+git push origin ":refs/tags/v$(cat VERSION)"
+git tag "v$(cat VERSION)"                   # from the fixed HEAD
+git push origin "v$(cat VERSION)"
+```
+
+Before re-pushing, prefer a **dry-run scoped to the targets that failed**
+— it skips publishing entirely and costs one leg instead of the full
+matrix:
+
+```text
+Actions → release → Run workflow
+  mode    = dry-run
+  targets = aarch64-apple-darwin,x86_64-w64-mingw32
+```
+
+Iterate there until green, and only then move the tag. Expect to go a
+few rounds: each fix can uncover the next failure on that platform, since
+the build stops at the first error.
+
+### When a Release *did* publish
+
+Then the version is spent — it exists publicly and may already be
+resolved by `cvm` or a downstream project's `CAJETA_VERSION` pin. Push
+the fix, bump VERSION to the next patch, and cut a new tag. The original
+Release stays as the record.
+
+## Why non-Linux breakage tends to arrive all at once
+
+Only the tag-triggered workflows build macOS and Windows; there is no CI
+on pushes to `main`. Everything merged between two releases is therefore
+Linux-only in practice, and a release cut is the first time those targets
+see the accumulated diff. Symptoms cluster in a few families:
+
+- **libstdc++-only headers/extensions** on macOS (libc++), e.g.
+  `<ext/stdio_filebuf.h>` / `__gnu_cxx::*`. A bare `#ifndef _WIN32` guard
+  is not enough — that is "not Windows", not "is libstdc++".
+- **Transitively-included headers** that libstdc++ happens to pull in and
+  MinGW does not (`<algorithm>` for `std::replace`, and similar).
+- **POSIX-only libc calls** in tests — use `test/PortableEnv.h`, which
+  maps `setenv`/`unsetenv`/`getpid` onto the Windows CRT equivalents.
+- **Mach-O symbol prefixing.** Linker-level names carry an extra leading
+  underscore that ELF does not, so `-Wl,-u,<sym>` must be spelled
+  differently on Apple (see `debug-tests/CMakeLists.txt`).
+
+Because compilation stops at the first error, fixing one usually reveals
+the next. When you fix one of these, grep for the same pattern across the
+whole tree rather than only the file CI named — it is much cheaper than
+another 40-minute round trip.
 
 ## Notifications
 

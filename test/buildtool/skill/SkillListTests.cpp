@@ -1,6 +1,6 @@
 // Tests for the List core.
 // See src/cajeta/buildtool/skill/SkillSearch.h and
-// docs/specs/skill-discovery-spec.md §3.6 (plan unit D.5b).
+// specs/archive/skill-discovery-spec.md §3.6 (plan unit D.5b).
 
 #include "cajeta/buildtool/skill/SkillSearch.h"
 

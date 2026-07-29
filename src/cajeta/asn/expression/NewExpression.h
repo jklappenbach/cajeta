@@ -64,9 +64,23 @@ namespace cajeta {
         const CreatorRestPtr& getCreatorRest() const { return creatorRest; }
         const string& getTypeName() const { return typeName; }
 
+        // 7.2.4 — the creator-rest (and with it the ctor args / dims) is a
+        // private slot, not a child.
+        void forEachSubNode(
+                const std::function<void(const AbstractSyntaxNodePtr&)>& fn) override {
+            if (creatorRest) fn(creatorRest);
+            AbstractSyntaxNode::forEachSubNode(fn);
+        }
+
         NewExpression(antlr4::Token* token) : Expression(token) { }
 
         NewExpression(CajetaParser::CreatorContext* creatorContext, antlr4::Token* token) : Expression(token) {
+            // The leaf type-name token of `heap pkg.Point(...)` — the `Point`.
+            // Captured so the created type can be recorded as an xref reference
+            // at parse time (ide-symbol-index): lint stops before the codegen
+            // pass that otherwise resolves an allocation's type, so without this
+            // Ctrl-click on `heap Point(...)` would find no edge.
+            antlr4::Token* createdTypeToken = nullptr;
             if (creatorContext->createdName() != nullptr) {
                 if (creatorContext->createdName()->primitiveType()) {
                     typeName = creatorContext->createdName()->primitiveType()->getText();
@@ -76,6 +90,7 @@ namespace cajeta {
                     for (auto& identifierPart: creatorContext->createdName()->identifier()) {
                         if (n++ == count - 1) {
                             typeName = identifierPart->getText();
+                            createdTypeToken = identifierPart->getStart();
                         } else {
                             package.append(identifierPart->getText());
                         }
@@ -89,6 +104,10 @@ namespace cajeta {
                         auto* lastTad = tads.back();
                         if (auto* targs = lastTad->typeArguments()) {
                             for (auto* targ : targs->typeArgument()) {
+                                // A use-site `#` on a type argument carries no
+                                // meaning and is rejected below with
+                                // TYPE_TRANSFER_RETIRED. There is one monomorph
+                                // per type; ownership is decided per call.
                                 if (targ->integerLiteral() != nullptr) {
                                     // Non-type (integer) template argument —
                                     // the `N` in `new Vector<float32, 4>(...)`.
@@ -141,6 +160,19 @@ namespace cajeta {
                                     throw "unresolved template argument in `new`";
                                 }
                                 typeArguments.push_back(argType);
+                                // title-tracking §8.1 (plan 7.1.1) — creator
+                                // type-argument `#` is retired with the
+                                // declared-type form.
+                                if (targ->REFERENCE() != nullptr) {
+                                    throw Exception(
+                                        "`#` on a type argument is retired: "
+                                        "ownership is per-call under "
+                                        "title-tracking (specs/title-tracking-"
+                                        "spec.md §8.1) — spell it at the store "
+                                        "site and drop the `#` from `"
+                                        + argType->toCanonical() + "`",
+                                        "CAJETA_ERROR_TYPE_TRANSFER_RETIRED");
+                                }
                             }
                         } else {
                             // Diamond form: typeArgumentsOrDiamond has '<' '>'
@@ -160,13 +192,34 @@ namespace cajeta {
                     boundElementType = am->lookupTypeParameter(typeName);
                 }
             }
+            // Record the created type as an xref reference at its token (parse
+            // time, so lint captures it). No-op unless --emit-xref is on.
+            recordCreatedTypeXref(createdTypeToken);
         }
 
         const vector<CajetaTypePtr>& getTypeArguments() const { return typeArguments; }
         bool getIsDiamond() const { return isDiamond; }
 
+        // Synthetic construction (collection-literals §2): populate the fields a
+        // parsed `heap Name<args>(...)` would carry, so a target-typed
+        // collection literal can be rewritten into a real creator without a
+        // parse context. resolveTypes/generateCode then re-resolve `Name` and
+        // re-instantiate against `typeArguments` exactly as for the spelled form.
+        void setTypeName(string name) { typeName = std::move(name); }
+        void setPackage(string pkg) { package = std::move(pkg); }
+        void setTypeArguments(vector<CajetaTypePtr> args) { typeArguments = std::move(args); }
+        void setCreatorRest(CreatorRestPtr rest) { creatorRest = std::move(rest); }
+
         void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
+
+    private:
+        // ide-symbol-index: record the created type (`heap Point(...)`) as a
+        // type-reference edge at `tok`, resolving the name scoped like
+        // resolveTypes. Best-effort and gated on xref::captureEnabled(), so a
+        // normal compile never runs it; a resolution miss or throw records no
+        // edge rather than affecting the compile.
+        void recordCreatedTypeXref(antlr4::Token* tok);
     };
 
 } // code

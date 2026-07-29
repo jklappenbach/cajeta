@@ -2,9 +2,12 @@
 // Created by James Klappenbach on 4/8/23.
 //
 
+#include "../../error/Diagnostics.h"
 #include "BinaryOpExpression.h"
 #include "OperatorDispatch.h"
+#include "../LocalVariableDeclaration.h"
 #include "../../error/CajetaExceptions.h"
+#include "../../error/DiagnosticEngine.h"
 #include "../../error/Exception.h"
 #include "../../compile/CajetaModule.h"
 #include "../../type/CajetaClass.h"
@@ -21,6 +24,8 @@
 #include "DotExpression.h"
 #include "MethodCallExpression.h"
 #include "Identifier.h"
+#include "../../field/ParameterField.h"
+#include "../../type/FormalParameter.h"
 #include "AggregateInitializerExpression.h"
 #include "NewExpression.h"
 #include "LiteralExpression.h"
@@ -137,19 +142,60 @@ namespace cajeta {
                     module->getLlvmModule(), gv);
             }
             if (!vtableRef) {
+                // The implementer hasn't synthesized this per-(class,
+                // iface) vtable (an unresolved implements edge, or a pair
+                // never dispatched). The codegen fixed-point's flagged
+                // completion pass re-synthesizes classes whose interface
+                // was a lazy-package placeholder BEFORE body codegen runs,
+                // so by the time a real dispatch site compiles the lookup
+                // above succeeds; a null here only reaches dead slots.
                 vtableRef = llvm::ConstantPointerNull::get(
                     llvm::cast<llvm::PointerType>(ptrTy));
             }
             builder->CreateStore(vtableRef, vtSlot);
+            // `#=` / `#expr` RHS transfers ownership into the slot — the
+            // MoveExpression already deactivated the source's drop entry,
+            // so the fat body's kind must record OWNED or the instance
+            // leaks (and an owned store dropped as BORROWED would never
+            // free). Mirrors LocalVariableDeclaration's kind selection.
+            bool rhsIsMove =
+                std::dynamic_pointer_cast<MoveExpression>(rhsAst) != nullptr;
             builder->CreateStore(
-                llvm::ConstantInt::get(i64Ty, (uint64_t) IFACE_KIND_BORROWED_CLASS),
+                llvm::ConstantInt::get(i64Ty, (uint64_t) (rhsIsMove
+                    ? IFACE_KIND_OWNED_CLASS : IFACE_KIND_BORROWED_CLASS)),
                 kindSlot);
+        } else if (llvm::isa<llvm::ConstantPointerNull>(rhsVal)) {
+            // `arr[i] = null` (the assignment-based drop idiom): zero the
+            // 24-byte fat-pointer body (null vtable / borrowed) — do NOT memcpy
+            // from the null source, which faults. Mirrors the interface-FIELD
+            // null store.
+            const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
+            uint64_t bodyBytes = dl.getTypeAllocSize(bodyTy);
+            builder->CreateMemSet(slot, builder->getInt8(0), bodyBytes,
+                llvm::MaybeAlign(8));
         } else {
             // Interface → interface: rhsVal points at a 24-byte body; copy it in.
             const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
             uint64_t bodyBytes = dl.getTypeAllocSize(bodyTy);
             builder->CreateMemCpy(slot, llvm::MaybeAlign(8),
                 rhsVal, llvm::MaybeAlign(8), bodyBytes);
+            // A plain (non-move) copy is a BORROW: copying the source's
+            // OWNED kind verbatim would make two owners of one instance —
+            // both drops would free it. Downgrade the copy's kind unless
+            // the RHS transferred (`#=`).
+            if (!std::dynamic_pointer_cast<MoveExpression>(rhsAst)) {
+                llvm::Value* kindSlot = builder->CreateStructGEP(
+                    bodyTy, slot, 2, "iface_kind");
+                llvm::Value* dataSlot0 = builder->CreateStructGEP(
+                    bodyTy, slot, 0, "iface_data");
+                llvm::Value* dataVal = builder->CreateLoad(ptrTy, dataSlot0);
+                llvm::Value* isNull = builder->CreateIsNull(dataVal);
+                llvm::Value* kindVal = builder->CreateSelect(isNull,
+                    llvm::ConstantInt::get(i64Ty, 0),
+                    llvm::ConstantInt::get(i64Ty,
+                        (uint64_t) IFACE_KIND_BORROWED_CLASS));
+                builder->CreateStore(kindVal, kindSlot);
+            }
         }
     }
 
@@ -235,13 +281,22 @@ namespace cajeta {
                     return v;
                 }
                 llvm::Type* loadTy;
+                // Value-type (record / @ValueType) elements are stored INLINE in
+                // the array's data slot (their body sub-aggregate), so load the
+                // body struct by value — NOT as a pointer. Value types carry
+                // STRUCT_FLAG, so this must precede the class-ref/STRUCT_FLAG
+                // rule below or `Point p = pts[i]` loads {x,y} as a pointer and
+                // the caller dereferences it.
+                bool elemIsValueType = elemClass && elemClass->isValueType();
                 // Class-typed elements (CajetaArray, plain CajetaClass)
                 // are stored as pointers in the array's data slot.
                 // Loading the slot yields the heap reference, not the
                 // instance contents. CajetaArray inherits from CajetaClass,
                 // so the dynamic_cast catches both. Primitives load as
                 // their value type.
-                if (dynamic_pointer_cast<CajetaClass>(elemType) ||
+                if (elemIsValueType) {
+                    loadTy = elemType->getLlvmType();
+                } else if (dynamic_pointer_cast<CajetaClass>(elemType) ||
                     (elemType->getTypeFlags() & STRUCT_FLAG)) {
                     loadTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
                 } else {
@@ -290,9 +345,20 @@ namespace cajeta {
                 // type — handled by the catch-all `loadTy =
                 // resolved->getLlvmType()` after the explicit rejects.
                 llvm::Type* loadTy;
-                bool fieldIsClassRef = dynamic_pointer_cast<CajetaClass>(resolved) != nullptr
+                // A value-type (record / @ValueType) field is stored INLINE in
+                // the parent struct (its body sub-aggregate), NOT as a `ptr` to
+                // a heap instance — same as a view/interface field. So it is not
+                // a class-ref: load it as its body type (a struct-value load,
+                // matching how a value-type identifier is read), never as a
+                // pointer. Without this exclusion the first 8 bytes of the inline
+                // value get loaded AS a pointer and the caller dereferences them
+                // (e.g. `HashMap<K, value-type V>.get` returning `slots[i].val`).
+                auto resolvedValCls = dynamic_pointer_cast<CajetaClass>(resolved);
+                bool fieldIsValueType = resolvedValCls && resolvedValCls->isValueType();
+                bool fieldIsClassRef = resolvedValCls != nullptr
                     && !dynamic_pointer_cast<CajetaView>(resolved)
-                    && !dynamic_pointer_cast<CajetaArray>(resolved);
+                    && !dynamic_pointer_cast<CajetaArray>(resolved)
+                    && !fieldIsValueType;
                 bool fieldIsInterface = false;
                 if (auto rc = dynamic_pointer_cast<CajetaClass>(resolved)) {
                     fieldIsInterface = rc->isInterface();
@@ -399,6 +465,23 @@ namespace cajeta {
         // ctor / method call site. NewExpression has the same carve-
         // out for the same reason.
         if (dynamic_pointer_cast<MethodCallExpression>(ast)) {
+            return v;
+        }
+        // A cast's result is ALWAYS an r-value: primitive casts return the
+        // converted value, class casts return the (possibly guard-checked)
+        // instance pointer, and a record upcast returns the freshly sliced
+        // aggregate's alloca — the pointer IS the value (aggregate-init
+        // shape). The class-ref catch-all below would load through it and
+        // hand back the first field's bytes as a "pointer".
+        if (dynamic_pointer_cast<CastExpression>(ast)) {
+            return v;
+        }
+        // `base[a:b]` yields a freshly built Slice<T> VALUE — the returned
+        // alloca IS the aggregate (same shape as the record upcast above).
+        // The class-ref catch-all would load its first word (the store
+        // pointer — the backing array header) and treat THAT as the value:
+        // the exact double-deref that handed count() the header bytes.
+        if (dynamic_pointer_cast<ArraySliceExpression>(ast)) {
             return v;
         }
         // REFL-1.5 — `T.class` returns the address of the type's #ClassObject
@@ -548,6 +631,37 @@ namespace cajeta {
     // promotion pass, so the binary-op site does the minimum needed for the IR verifier
     // to accept the result. Strategy: if either is FP, both go to the wider FP; else if
     // both are integers, both go to the wider integer (signed).
+    // Arithmetic on two POINTER operands: the wildcard monomorph of a class
+    // template (`Column<?>::mean`) lowers T-typed values as opaque pointers,
+    // and its body is DEAD code — a wildcard receiver never executes it
+    // (objects are always concrete monomorphs; calls are direct) — but the
+    // body still lands in the module and must pass LLVM verify. `add ptr`
+    // has historically escaped through the string-concat fallback; `-`,
+    // `*`, `/` reached CreateSub/Mul/UDiv with pointer operands, which
+    // verify rejects. Round-trip through i64 — legal IR, never executed.
+    static llvm::Value* deadPtrArith(CajetaModulePtr module, llvm::Value* l,
+            llvm::Value* r, int op) {
+        auto* builder = module->getBuilder();
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(*module->getLlvmContext());
+        llvm::Value* li = builder->CreatePtrToInt(l, i64Ty, "deadptr.l");
+        llvm::Value* ri = builder->CreatePtrToInt(r, i64Ty, "deadptr.r");
+        llvm::Value* v = nullptr;
+        if (op == BINARY_OP_SUB) {
+            v = builder->CreateSub(li, ri);
+        } else if (op == BINARY_OP_MUL) {
+            v = builder->CreateMul(li, ri);
+        } else {
+            // Division: guard the divisor so even a stray execution cannot
+            // trap the process on udiv-by-zero.
+            llvm::Value* zero = llvm::ConstantInt::get(i64Ty, 0);
+            llvm::Value* isZero = builder->CreateICmpEQ(ri, zero);
+            llvm::Value* safe = builder->CreateSelect(isZero,
+                llvm::ConstantInt::get(i64Ty, 1), ri);
+            v = builder->CreateSDiv(li, safe);
+        }
+        return builder->CreateIntToPtr(v, l->getType(), "deadptr.res");
+    }
+
     static std::pair<llvm::Value*, llvm::Value*> coerceArithPair(
             CajetaModulePtr module, llvm::Value* l, llvm::Value* r) {
         auto* builder = module->getBuilder();
@@ -674,6 +788,45 @@ namespace cajeta {
         return nullptr;
     }
 
+    CajetaTypePtr BinaryOpExpression::comparisonResultType(CajetaModulePtr module) {
+        CajetaTypePtr boolTy = CajetaType::of("boolean");
+        if (children.size() < 2) return boolTy;
+        auto lhs = dynamic_pointer_cast<Expression>(children[0]);
+        auto rhs = dynamic_pointer_cast<Expression>(children[1]);
+        if (!lhs || !rhs) return boolTy;
+        CajetaTypePtr lt = lhs->getResolvedType();
+        CajetaTypePtr rt = rhs->getResolvedType();
+        // Pre-pass: operand types not yet known — do not stamp; the caller's
+        // later `if (!resolvedType) resolveTypes(...)` recomputes with them.
+        if (!lt && !rt) return nullptr;
+        const char* sym = nullptr;
+        switch (binaryOp) {
+            case BINARY_OP_LT: sym = "<";  break;
+            case BINARY_OP_LE: sym = "<="; break;
+            case BINARY_OP_GT: sym = ">";  break;
+            case BINARY_OP_GE: sym = ">="; break;
+            case BINARY_OP_EQ: sym = "=="; break;
+            case BINARY_OP_NE: sym = "!="; break;
+            default: return boolTy;
+        }
+        std::string name = std::string("operator") + sym;
+        for (const CajetaTypePtr& side : {lt, rt}) {
+            auto cls = dynamic_pointer_cast<CajetaClass>(side);
+            if (!cls || cls->isInterface()
+                    || (cls->getTypeFlags() & PRIMITIVE_FLAG)) {
+                continue;
+            }
+            vector<ParameterEntry> entries;
+            entries.push_back(ParameterEntry(lt ? lt : side, "", nullptr));
+            entries.push_back(ParameterEntry(rt ? rt : side, "", nullptr));
+            if (MethodPtr m = cls->resolveMethod(name, entries,
+                    /*isConstructor=*/false, /*floatingParams=*/false)) {
+                if (m->getReturnType()) return m->getReturnType();
+            }
+        }
+        return boolTy;
+    }
+
     llvm::Value* BinaryOpExpression::generateCode(CajetaModulePtr module) {
         auto* builder = module->getBuilder();
         if (std::getenv("CAJETA_TRACE_BINOP") || std::getenv("CAJETA_DEBUG_ICMP")) {
@@ -773,31 +926,123 @@ namespace cajeta {
                             llvm::Value* recvVal = recvAst->generateCode(module);
                             llvm::Value* idxVal  = idxAst->generateCode(module);
                             llvm::Value* valVal  = valAst->generateCode(module);
-                            if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(recvVal)) {
-                                recvVal = builder->CreateLoad(a->getAllocatedType(), a);
-                            }
-                            if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(idxVal)) {
-                                idxVal = builder->CreateLoad(a->getAllocatedType(), a);
-                            }
-                            if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(valVal)) {
-                                valVal = builder->CreateLoad(a->getAllocatedType(), a);
-                            }
+                            // loadIfLValue, not a bare AllocaInst unwrap: a
+                            // FIELD receiver (`this.sessions[id] = v`)
+                            // generates a GEP address, which the alloca cast
+                            // missed — the field's ADDRESS went out as `this`
+                            // and the callee's vtable load found garbage
+                            // (null fn-pointer call at dispatch). Mirrors the
+                            // read-side ArrayIndexExpression lowering.
+                            recvVal = loadIfLValue(module, recvVal, recvAst);
+                            idxVal = loadIfLValue(module, idxVal, idxAst);
+                            valVal = loadIfLValue(module, valVal, valAst);
                             std::vector<ParameterEntry> entries;
                             entries.push_back(ParameterEntry(idxType, "", idxVal));
                             entries.push_back(ParameterEntry(valType, "", valVal));
                             std::string opName = "operator[]=";
+                            // title-tracking 6.2.1 — the transfer word for the
+                            // lowered call. `m[k] = #v` previously passed NO
+                            // word: the MoveExpression deactivated the source
+                            // while the callee read all-borrow 0 and recorded
+                            // the entry BORROWED — a silent leak. Bit 0 = the
+                            // index arg, bit 1 = the value arg (the operator's
+                            // two user params); a runtime-owner source (`#s`
+                            // where s is a formal) forwards its captured flag,
+                            // per the MCE word-composition rule.
+                            llvm::Value* opxWord = builder->getInt64(0);
+                            {
+                                int64_t constBits = 0;
+                                llvm::Value* dynWord = nullptr;
+                                auto wordBit = [&](ExpressionPtr ast, int bit) {
+                                    auto mv = dynamic_pointer_cast<
+                                        MoveExpression>(ast);
+                                    if (!mv) return;
+                                    if (llvm::Value* rf =
+                                            mv->getRuntimeTitleFlag()) {
+                                        llvm::Value* b = builder->CreateShl(
+                                            builder->CreateAnd(rf,
+                                                builder->getInt64(1)),
+                                            builder->getInt64((uint64_t) bit));
+                                        dynWord = dynWord
+                                            ? builder->CreateOr(dynWord, b) : b;
+                                    } else {
+                                        constBits |= ((int64_t) 1) << bit;
+                                    }
+                                };
+                                wordBit(idxAst, 0);
+                                wordBit(valAst, 1);
+                                if (dynWord) {
+                                    opxWord = constBits
+                                        ? builder->CreateOr(dynWord,
+                                              builder->getInt64(
+                                                  (uint64_t) constBits))
+                                        : dynWord;
+                                } else if (constBits) {
+                                    opxWord = builder->getInt64(
+                                        (uint64_t) constBits);
+                                }
+                            }
                             if (auto m = recvClass->resolveMethod(opName,
                                     entries, /*isConstructor=*/false,
                                     /*floatingParams=*/false)) {
                                 recvClass->invokeMethod(opName, entries,
                                     /*isConstructor=*/false, recvVal,
-                                    /*callerModule=*/module);
+                                    /*callerModule=*/module,
+                                    /*forceDirectCall=*/false,
+                                    /*explicitMethodTypeArgs=*/{},
+                                    /*sretTarget=*/nullptr,
+                                    /*transferWord=*/opxWord);
                                 // The expression's value is the assigned r-value
                                 // (C/Java convention) so `if ((x = m[k]) ...)`
                                 // and `m[k] = n[k] = v` chain correctly.
                                 return valVal;
                             }
                         }
+                    }
+                }
+            }
+        }
+
+        // title-stores 6.2.1 — the loud-plain-store diagnostic (spec §2.4).
+        // A plain `=` retaining store (field or slot destination) whose RHS
+        // names a runtime-conditional owner (armed-capable formal, flagged
+        // local) borrows a value whose armed entry frees it at scope exit.
+        // WARNING at introduction; Phase 3 promotes to error. Sigil
+        // spellings are quiet by construction: their RHS is a
+        // MoveExpression, not a bare identifier.
+        if (binaryOp == BINARY_OP_ASSIGN && children.size() >= 2
+                && (dynamic_pointer_cast<DotExpression>(children[0])
+                    || dynamic_pointer_cast<ArrayIndexExpression>(children[0]))) {
+            if (auto rhsId = dynamic_pointer_cast<IdentifierExpression>(
+                    children[1])) {
+                auto psScope = module->getScopeStack().peek();
+                FieldPtr psSrc = psScope
+                    ? psScope->getField(rhsId->getTextValue()) : nullptr;
+                if (std::getenv("CAJETA_TRACE_PLAINSTORE")
+                        && psSrc && psSrc->isRuntimeConditionalOwner()) {
+                    auto psM = module->getCurrentMethod();
+                    std::string psCls;
+                    if (!module->getStructureStack().empty()
+                            && module->getStructureStack().back()) {
+                        psCls = module->getStructureStack().back()
+                            ->getQName()->toCanonical();
+                    }
+                    llvm::errs() << "[plainstore] " << psCls
+                        << ":" << getSourceLine()
+                        << " m=" << (psM ? psM->getName() : std::string("?"))
+                        << " rhs=" << rhsId->getTextValue()
+                        << " f=" << (const void*) psSrc.get() << "\n";
+                }
+                if (psSrc && psSrc->isRuntimeConditionalOwner()
+                        && !psSrc->isOwnershipAudited()) {
+                    if (DiagnosticEngine* eng = DiagnosticEngine::active()) {
+                        const std::string& n = rhsId->getTextValue();
+                        eng->report("warning", "CAJETA_WARN_PLAIN_RETAIN_STORE",
+                            "`" + n + "` may arrive owned on some calls; a "
+                            "plain store borrows it and the armed entry frees "
+                            "it at exit. Spell `dst #= " + n + "` to move its "
+                            "title, or store a copy (`dst = " + n + ".clone()`)",
+                            module->getSourcePath(), (int) getSourceLine(), -1);
                     }
                 }
             }
@@ -810,10 +1055,17 @@ namespace cajeta {
         // of an assignment is a write target, not a read. Marking
         // pre-eval lets the LHS slot fetch succeed; the assignment that
         // follows then writes the value into the slot.
+        bool lhsWasMoved = false;
         if (binaryOp == BINARY_OP_ASSIGN && !children.empty()) {
             if (auto lhsId = dynamic_pointer_cast<IdentifierExpression>(children[0])) {
                 if (auto sc = module->getScopeStack().peek()) {
                     sc->markAssigned(lhsId->getTextValue());
+                    // title-tracking §3.1.4 — reassignment re-arms a moved-out
+                    // binding. Clear before the LHS slot fetch (a write target,
+                    // same rationale as markAssigned above); the fresh-owner
+                    // entry retarget below keys on lhsWasMoved.
+                    lhsWasMoved = sc->isMoved(lhsId->getTextValue());
+                    if (lhsWasMoved) sc->clearMoved(lhsId->getTextValue());
                 }
             }
         }
@@ -836,6 +1088,96 @@ namespace cajeta {
         // Genuine use-after-`#`-move reads are still caught in
         // Identifier.cpp / DotExpression.cpp via movedNames / movedPaths.
 
+        // title-stores §2.1 — fuse `dst[i] #= #src[j]` into a FORWARDING
+        // slot move before the RHS extraction codegen runs: the source bit
+        // transfers verbatim and the borrowed-take panic is suppressed.
+        if (binaryOp == BINARY_OP_ASSIGN && children.size() >= 2) {
+            auto fwdLhs = dynamic_pointer_cast<ArrayIndexExpression>(children[0]);
+            auto fwdMv = dynamic_pointer_cast<MoveExpression>(children[1]);
+            bool fwdDouble = false;
+            // The `#=` desugar wraps the parsed `#expr` Move again — walk
+            // to the INNERMOST Move (its codegen does the take). The double
+            // wrap IS the fused signature.
+            while (fwdMv && !fwdMv->getChildren().empty()) {
+                auto deeper = dynamic_pointer_cast<MoveExpression>(
+                    fwdMv->getChildren()[0]);
+                if (!deeper) break;
+                fwdMv = deeper;
+                fwdDouble = true;
+            }
+            if (fwdLhs && fwdMv && !fwdMv->getChildren().empty()) {
+                if (auto fwdSrc = dynamic_pointer_cast<ArrayIndexExpression>(
+                        fwdMv->getChildren()[0])) {
+                    auto fwdL = dynamic_pointer_cast<Expression>(children[0]);
+                    auto fwdS = dynamic_pointer_cast<Expression>(
+                        fwdMv->getChildren()[0]);
+                    if (fwdL && !fwdL->getResolvedType()) fwdL->resolveTypes(module);
+                    if (fwdS && !fwdS->getResolvedType()) fwdS->resolveTypes(module);
+                    if (fwdL && fwdS
+                            && CajetaClass::arrayElementCarriesSlotBits(
+                                   fwdL->getResolvedType())
+                            && CajetaClass::arrayElementCarriesSlotBits(
+                                   fwdS->getResolvedType())) {
+                        fwdMv->setForwardingSlotMove(true);
+                    }
+                }
+            }
+            // title-stores §3.3.2 — member-to-member forwarding
+            // (`dst[i].m #= #src[j].m`, the HashMap rehash shape): a
+            // DOUBLE-Move over a Dot source forwards that member's bit
+            // verbatim through the field-detach path. The mark is inert
+            // for String/primitive members (their Moves don't consult
+            // it), so gating on the shape alone is safe.
+            if (fwdDouble && fwdMv && !fwdMv->getChildren().empty()
+                    && dynamic_pointer_cast<DotExpression>(
+                           fwdMv->getChildren()[0])) {
+                fwdMv->setForwardingSlotMove(true);
+            }
+        }
+        // array-literals §3.2 — for `lhs = [...]`, target-type the RHS literal
+        // from the LHS array element type BEFORE the operands generate below
+        // (both are generated up-front here), so `int64[] xs; xs = [1,2,3];`
+        // widens per the LHS rather than the narrower unify result.
+        if (binaryOp == BINARY_OP_ASSIGN) {
+            if (auto arrLit =
+                    dynamic_pointer_cast<ArrayLiteralExpression>(children[1])) {
+                if (auto lhsE = dynamic_pointer_cast<Expression>(children[0])) {
+                    if (!lhsE->getResolvedType()) lhsE->resolveTypes(module);
+                    CajetaTypePtr lt = lhsE->getResolvedType();
+                    if (auto at = dynamic_pointer_cast<CajetaArray>(lt)) {
+                        arrLit->setElementType(at->getElementType());
+                    } else if (auto ctor =
+                                   collectionLiteralFromArray(lt, arrLit)) {
+                        // collection-literals §2 — `xs = [...]` on a collection
+                        // local rewrites to a from-array ctor call.
+                        children[1] = ctor;
+                    }
+                }
+            } else if (auto agg = dynamic_pointer_cast<
+                           AggregateInitializerExpression>(children[1])) {
+                // collection-literals §4 — `p = {…}` infers the LHS type (only
+                // a class LHS; a primitive leaves it uninferred → NO_TYPE).
+                if (auto lhsE = dynamic_pointer_cast<Expression>(children[0])) {
+                    if (!lhsE->getResolvedType()) lhsE->resolveTypes(module);
+                    CajetaTypePtr lt = lhsE->getResolvedType();
+                    if (dynamic_pointer_cast<CajetaClass>(lt)
+                            && !dynamic_pointer_cast<CajetaArray>(lt)) {
+                        agg->setExpectedType(lt);
+                    }
+                }
+            } else if (auto mapLit = dynamic_pointer_cast<
+                           MapLiteralExpression>(children[1])) {
+                // collection-literals §3 — `m = [k: v]` infers the LHS map type.
+                if (auto lhsE = dynamic_pointer_cast<Expression>(children[0])) {
+                    if (!lhsE->getResolvedType()) lhsE->resolveTypes(module);
+                    CajetaTypePtr lt = lhsE->getResolvedType();
+                    if (dynamic_pointer_cast<CajetaClass>(lt)
+                            && !dynamic_pointer_cast<CajetaArray>(lt)) {
+                        mapLit->setExpectedType(lt);
+                    }
+                }
+            }
+        }
         llvm::Value* lhs = children[0]->generateCode(module);
         llvm::Value* rhs = children[1]->generateCode(module);
         ExpressionPtr lhsAst = dynamic_pointer_cast<Expression>(children[0]);
@@ -852,13 +1194,38 @@ namespace cajeta {
             std::string side = (lhs == nullptr && rhs == nullptr) ? "both operands"
                              : (lhs == nullptr ? "the left operand"
                                                : "the right operand");
-            throw Exception(
+            throw locatedException(
+                getSourceLine(), getSourceColumn() + 1,
                 std::string("binary operator '") + (opSym ? opSym : "?")
                 + "' has no value for " + side
                 + " (a sub-expression did not resolve to a value — e.g. a member"
                   " or method that does not exist on that type, such as `.length`"
                   " on an array, where the size accessor is `count()`)",
                 "CAJETA_ERROR_NULL_OPERAND");
+        }
+        // A `void` call is PRESENT but valueless, so the null guard above misses
+        // it — an assignment RHS then hung the compiler rather than diagnosing (1.2.3).
+        {
+            auto isVoidOperand = [](const ExpressionPtr& e) {
+                return e && e->getResolvedType()
+                    && e->getResolvedType()->toCanonical() == "void";
+            };
+            bool lVoid = isVoidOperand(lhsAst);
+            bool rVoid = isVoidOperand(rhsAst);
+            if (lVoid || rVoid) {
+                const char* opSym = opdispatch::binaryOpSymbol(binaryOp);
+                std::string what = opSym
+                    ? (std::string("binary operator '") + opSym + "'")
+                    : std::string("assignment");
+                std::string side = (lVoid && rVoid) ? "both operands"
+                                 : (lVoid ? "the left operand"
+                                          : "the right-hand side");
+                throw locatedException(
+                    getSourceLine(), getSourceColumn() + 1,
+                    what + " has a 'void' expression as " + side
+                    + " (a void call produces no value to use here)",
+                    "CAJETA_ERROR_NULL_OPERAND");
+            }
         }
 
         // B1: Matrix binary ops, intercepted before the built-in/vector path.
@@ -909,7 +1276,7 @@ namespace cajeta {
                             ? builder->CreateFCmpOEQ(l, r, "mat.cmp")
                             : builder->CreateICmpEQ(l, r, "mat.cmp"); break;
                         case BINARY_OP_NE: cmp = isFloat
-                            ? builder->CreateFCmpONE(l, r, "mat.cmp")
+                            ? builder->CreateFCmpUNE(l, r, "mat.cmp")
                             : builder->CreateICmpNE(l, r, "mat.cmp"); break;
                         case BINARY_OP_LT: cmp = isFloat
                             ? builder->CreateFCmpOLT(l, r, "mat.cmp")
@@ -1009,7 +1376,7 @@ namespace cajeta {
                             ? builder->CreateFCmpOEQ(l, r, "vec.cmp")
                             : builder->CreateICmpEQ(l, r, "vec.cmp"); break;
                         case BINARY_OP_NE: cmp = isFloat
-                            ? builder->CreateFCmpONE(l, r, "vec.cmp")
+                            ? builder->CreateFCmpUNE(l, r, "vec.cmp")
                             : builder->CreateICmpNE(l, r, "vec.cmp"); break;
                         case BINARY_OP_LT: cmp = isFloat
                             ? builder->CreateFCmpOLT(l, r, "vec.cmp")
@@ -1163,6 +1530,32 @@ namespace cajeta {
                     if (disp.first) {
                         return disp.second;
                     }
+                    // nucleo-frame U1 — an ORDERING comparison between a
+                    // CLASS and a NUMERIC primitive with no matching operator
+                    // override has no meaning: the builtin path would
+                    // silently compare a POINTER against the number. Fail
+                    // loud, naming the type and operator (`ColStr > 0.0` is
+                    // the canonical mis-typed-DSL case). Class-vs-class
+                    // ordering (String < String rides a downstream builtin)
+                    // and EQ/NE (pointer identity) fall through unchanged.
+                    if ((binaryOp == BINARY_OP_LT || binaryOp == BINARY_OP_LE
+                            || binaryOp == BINARY_OP_GT
+                            || binaryOp == BINARY_OP_GE)
+                            && rhsType
+                            && (rhsType->getTypeFlags() & PRIMITIVE_FLAG)
+                            && (rhsType->getTypeFlags() & NUMBER_FLAG)) {
+                        throw Exception(
+                            "no 'operator" + std::string(opSym) + "' on '"
+                                + lhsClass->getQName()->toCanonical()
+                                + "' accepts a '"
+                                + (rhsType ? rhsType->toCanonical()
+                                           : std::string("?"))
+                                + "' operand — ordering comparisons on class "
+                                  "types require an operator override "
+                                  "(pointer ordering is not a comparison)",
+                            "CAJETA_ERROR_NO_MATCHING_OVERLOAD",
+                            "", getSourceLine(), getSourceColumn());
+                    }
                 }
             }
         }
@@ -1181,6 +1574,63 @@ namespace cajeta {
         // target address and only rhs needs r-value coercion.
         switch (binaryOp) {
             case BINARY_OP_ASSIGN: {
+                // Record immutability (records-spec §3.2 / plan 3.2.1): a
+                // record field only initializes inside the record's own
+                // constructor (`this.f = v`); every other field write is a
+                // compile error. Statics stay assignable (immutability is a
+                // per-instance value property). Assigning TO a class field
+                // that merely HOLDS a record stays legal — the receiver
+                // there is the class, not the record.
+                if (auto recDotLhs = dynamic_pointer_cast<DotExpression>(lhsAst)) {
+                    auto& rch = recDotLhs->getChildren();
+                    auto recv = rch.empty() ? nullptr
+                        : dynamic_pointer_cast<Expression>(rch[0]);
+                    if (recv) {
+                        if (!recv->getResolvedType()) recv->resolveTypes(module);
+                        auto recvClass = dynamic_pointer_cast<CajetaClass>(
+                            recv->getResolvedType());
+                        if (recvClass && recvClass->isRecordType()) {
+                            bool ctorSelfInit = false;
+                            if (dynamic_pointer_cast<ThisExpression>(recv)) {
+                                auto cur = module->getCurrentMethod();
+                                ctorSelfInit = cur && cur->isConstructor()
+                                    && cur->getParent().get() == recvClass.get();
+                            }
+                            StructurePropertyPtr found;
+                            std::function<bool(const CajetaClassPtr&)> findP =
+                                [&](const CajetaClassPtr& cls) -> bool {
+                                    if (!cls) return false;
+                                    auto pit = cls->getProperties().find(
+                                        recDotLhs->getIdentifier());
+                                    if (pit != cls->getProperties().end()) {
+                                        found = pit->second;
+                                        return true;
+                                    }
+                                    for (auto& sup : cls->getSuperClasses()) {
+                                        if (findP(sup)) return true;
+                                    }
+                                    return false;
+                                };
+                            findP(recvClass);
+                            bool staticField = found && found->isStatic();
+                            // Per-field mutation opt-in (records-spec §3.4):
+                            // a `mut` field accepts in-place writes.
+                            bool mutField = found
+                                && found->getModifiers().count(MUT);
+                            if (!ctorSelfInit && !staticField && !mutField) {
+                                throw Exception(
+                                    "cannot assign to immutable field '"
+                                        + recDotLhs->getIdentifier()
+                                        + "' of record '"
+                                        + recvClass->getQName()->toCanonical()
+                                        + "' — records are immutable; use "
+                                          "with(" + recDotLhs->getIdentifier()
+                                        + ": value) to produce an updated copy",
+                                    "CAJETA_ERROR_RECORD_IMMUTABLE");
+                            }
+                        }
+                    }
+                }
                 // Matrix element assignment: `m[r][c] = e` (B1). The LHS is
                 // ArrayIndex(ArrayIndex(m, r), c) with m a CajetaMatrix. Writing
                 // through the row temporary (the vector path below) would drop the
@@ -1315,6 +1765,142 @@ namespace cajeta {
                         break;
                     }
                 }
+                // Value-type (record / @ValueType) FIELD assignment
+                // (`this.p = e`). The field stores the aggregate INLINE
+                // (CajetaClass::buildInstanceStructBody), while the RHS is
+                // usually an ADDRESS (aggregate-init alloca, value local
+                // slot, field-read GEP) — a plain store would write the
+                // pointer bits over the first field. Copy the whole body;
+                // a first-class struct value (by-value return) stores
+                // directly.
+                // An ARRAY ELEMENT takes the same copy path: a value-type element
+                // keeps its own layout inline (CajetaArray::getElementLlvmType), so
+                // `a[i] = stack Rec(..)` must copy the body — a plain pointer store
+                // wrote the address bits over the first field and the element read
+                // back uninitialized.
+                if (dynamic_pointer_cast<DotExpression>(lhsAst)
+                        || dynamic_pointer_cast<IdentifierExpression>(lhsAst)
+                        || dynamic_pointer_cast<ArrayIndexExpression>(lhsAst)) {
+                    if (!lhsAst->getResolvedType()) lhsAst->resolveTypes(module);
+                    auto lhsCls = dynamic_pointer_cast<CajetaClass>(lhsAst->getResolvedType());
+                    // Identifier LHS: only an inline value slot (alloca of the
+                    // body type) takes the copy path — a ptr-typed slot is a
+                    // reference and keeps the pointer store below.
+                    bool identInlineSlot = true;
+                    if (dynamic_pointer_cast<IdentifierExpression>(lhsAst)) {
+                        auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(lhs);
+                        identInlineSlot = a && !a->getAllocatedType()->isPointerTy();
+                    }
+                    if (lhsCls && lhsCls->isValueType()
+                            && identInlineSlot
+                            && !lhsCls->isInterface()
+                            && !dynamic_pointer_cast<CajetaView>(lhsAst->getResolvedType())) {
+                        if (rhsAst) {
+                            if (!rhsAst->getResolvedType()) rhsAst->resolveTypes(module);
+                            auto rhsCls = dynamic_pointer_cast<CajetaClass>(
+                                rhsAst->getResolvedType());
+                            if (rhsCls && rhsCls.get() != lhsCls.get()
+                                    && (rhsCls->isRecordType() || lhsCls->isRecordType())) {
+                                throw Exception(
+                                    "cannot implicitly convert '"
+                                        + rhsCls->toCanonical() + "' to '"
+                                        + lhsCls->toCanonical()
+                                        + "' — record upcasts slice; write an "
+                                          "explicit cast: ("
+                                        + lhsCls->getQName()->getTypeName()
+                                        + ") value",
+                                    "CAJETA_ERROR_RECORD_IMPLICIT_CAST");
+                            }
+                        }
+                        llvm::Type* bodyTy = lhsCls->getLlvmType();
+                        if (bodyTy && bodyTy->isStructTy()) {
+                            // slice-spec §6.1 copy/drop hooks: overwriting a
+                            // shared-capable value releases the OLD value's
+                            // stakes first; a copy from an LVALUE (identifier /
+                            // field / element / slice-cast) then retains the
+                            // new ones. Rvalue RHS (call result, aggregate-
+                            // init) carries its stakes with the bytes — no
+                            // retain. Syntactic self-assign (`v = v`) skips
+                            // the pair (release could free at rc==1 and the
+                            // retain would resurrect a dead buffer).
+                            bool hooked = lhsCls->isSharedCapableValue();
+                            bool selfAssign = false;
+                            if (hooked) {
+                                auto lId = dynamic_pointer_cast<IdentifierExpression>(lhsAst);
+                                auto rId = dynamic_pointer_cast<IdentifierExpression>(rhsAst);
+                                selfAssign = lId && rId
+                                    && lId->getTextValue() == rId->getTextValue();
+                            }
+                            bool rhsLvalue = rhsAst
+                                && (dynamic_pointer_cast<IdentifierExpression>(rhsAst)
+                                    || dynamic_pointer_cast<DotExpression>(rhsAst)
+                                    || dynamic_pointer_cast<ArrayIndexExpression>(rhsAst)
+                                    || dynamic_pointer_cast<CastExpression>(rhsAst));
+                            llvm::Module* hookModule =
+                                builder->GetInsertBlock()->getModule();
+                            if (hooked && !selfAssign) {
+                                lhsCls->emitValueSharedOp(*builder, lhs, module,
+                                    hookModule, /*retain=*/false);
+                            }
+                            if (rhs->getType() == bodyTy) {
+                                builder->CreateStore(rhs, lhs);
+                            } else if (rhs->getType()->isPointerTy()) {
+                                const llvm::DataLayout& dl =
+                                    module->getLlvmModule()->getDataLayout();
+                                llvm::Value* size = llvm::ConstantInt::get(
+                                    llvm::Type::getInt64Ty(*module->getLlvmContext()),
+                                    dl.getTypeAllocSize(bodyTy));
+                                llvm::Align align(dl.getABITypeAlign(bodyTy));
+                                builder->CreateMemCpy(lhs, align, rhs, align, size);
+                            } else {
+                                builder->CreateStore(rhs, lhs);
+                            }
+                            // Slice<T> FIELD stores resolve in place per the
+                            // §4.2 table (slice-spec §7.2): arena / <=256 B
+                            // payload copies into a fresh field-owned root,
+                            // larger windows take a stake — for BOTH lvalue
+                            // and rvalue RHS (a fresh `arr[a:b]` is a borrow
+                            // of the array too). Local Slice assigns keep
+                            // borrow semantics (the generic retain arm's
+                            // sign-bit gate makes copies of resolved values
+                            // retain and borrow copies free).
+                            bool lhsIsSliceField = hooked && !selfAssign
+                                && dynamic_pointer_cast<DotExpression>(lhsAst)
+                                && lhsCls->getQName()
+                                && lhsCls->getQName()->getPackageName() == "cajeta.lang"
+                                && lhsCls->getQName()->getTypeName().rfind("Slice", 0) == 0;
+                            if (lhsIsSliceField) {
+                                int64_t elemSize = 8;
+                                auto& props = lhsCls->getProperties();
+                                auto pit = props.find("store");
+                                if (pit != props.end()) {
+                                    if (auto arrT = dynamic_pointer_cast<CajetaArray>(
+                                            pit->second->getType())) {
+                                        if (auto et = arrT->getElementType()) {
+                                            if (llvm::Type* lt = et->getLlvmType()) {
+                                                elemSize = (int64_t) module
+                                                    ->getLlvmModule()->getDataLayout()
+                                                    .getTypeAllocSize(lt);
+                                            }
+                                        }
+                                    }
+                                }
+                                if (llvm::Function* resolveSliceFn =
+                                        module->getRuntimeFunction("__cajeta_slice_resolve")) {
+                                    builder->CreateCall(resolveSliceFn, {lhs,
+                                        llvm::ConstantInt::get(
+                                            llvm::Type::getInt64Ty(*module->getLlvmContext()),
+                                            (uint64_t) elemSize)});
+                                }
+                            } else if (hooked && !selfAssign && rhsLvalue) {
+                                lhsCls->emitValueSharedOp(*builder, lhs, module,
+                                    hookModule, /*retain=*/true);
+                            }
+                            result = lhs;
+                            break;
+                        }
+                    }
+                }
                 // Interface-typed FIELD assignment (`this.enc = e`). An
                 // interface field stores the 24-byte {data, vtable, kind}
                 // body INLINE in the parent struct (S9.5.4 / CajetaClass::
@@ -1335,25 +1921,221 @@ namespace cajeta {
                     if (lhsCls && lhsCls->isInterface()) {
                         llvm::Type* ifaceTy = lhsAst->getResolvedType()->getLlvmType();
                         if (ifaceTy && ifaceTy->isStructTy()) {
-                            const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
-                            llvm::Value* size = llvm::ConstantInt::get(
-                                llvm::Type::getInt64Ty(*module->getLlvmContext()),
-                                dl.getTypeAllocSize(ifaceTy));
-                            llvm::Align align(dl.getABITypeAlign(ifaceTy));
-                            llvm::Value* srcBody = loadR(rhs);
-                            if (llvm::isa<llvm::ConstantPointerNull>(srcBody)) {
-                                builder->CreateMemSet(lhs,
-                                    llvm::ConstantInt::get(
-                                        llvm::Type::getInt8Ty(*module->getLlvmContext()), 0),
-                                    size, align);
-                            } else {
-                                builder->CreateMemCpy(lhs, align, srcBody, align, size);
-                            }
+                            // storeInterfaceInlineBody handles all three RHS
+                            // shapes: a concrete class instance ASSEMBLES the
+                            // fat body in place (data/vtable/kind — a memcpy
+                            // from an 8-byte class object read 16 bytes of
+                            // heap garbage as vtable+kind and dispatch
+                            // jumped into it), an interface value copies its
+                            // body, and null zeroes the field.
+                            storeInterfaceInlineBody(module, lhs, loadR(rhs),
+                                lhsCls, rhsAst);
                             result = lhs;
                             break;
                         }
                     }
                 }
+                // Escape resolution at the String field-store site (slice-spec
+                // §4.2; slices plan Unit 4). A plain `obj.f = w` where w is a
+                // scope-owned String LVALUE stored the BORROWED WRAPPER pointer
+                // — the declaring scope frees that wrapper at exit and the
+                // field dangles (UAF). Resolve instead: store a FRESH wrapper
+                // the field owns (copy ≤ threshold / stake on a large heap
+                // root / free alias of a static root — the runtime decides).
+                // Rvalue RHS (call result, concat, `#`-move) transfers its
+                // wrapper as before — no resolve.
+                if (auto dotLhs2 = dynamic_pointer_cast<DotExpression>(lhsAst)) {
+                    if (lhsAst && !lhsAst->getResolvedType()) lhsAst->resolveTypes(module);
+                    auto lhsCls2 = dynamic_pointer_cast<CajetaClass>(
+                        lhsAst->getResolvedType());
+                    bool lhsIsString = lhsCls2 && lhsCls2->getQName()
+                        && lhsCls2->getQName()->getTypeName() == "String"
+                        && lhsCls2->getQName()->getPackageName() == "cajeta.lang";
+                    if (lhsIsString && rhsAst) {
+                        if (!rhsAst->getResolvedType()) rhsAst->resolveTypes(module);
+                        auto rhsCls2 = dynamic_pointer_cast<CajetaClass>(
+                            rhsAst->getResolvedType());
+                        bool rhsIsString = rhsCls2 && rhsCls2->getQName()
+                            && rhsCls2->getQName()->getTypeName() == "String"
+                            && rhsCls2->getQName()->getPackageName() == "cajeta.lang";
+                        // A string-literal RHS is a String even when its
+                        // resolvedType is a null/placeholder (the unqualified
+                        // CajetaType::of("String") path) — detect structurally
+                        // so literal stores (`obj.f = "x"`) still old-drop.
+                        if (!rhsIsString) {
+                            if (auto lit = dynamic_pointer_cast<TextLiteralExpression>(rhsAst)) {
+                                LiteralType lt = lit->getLiteralType();
+                                rhsIsString = (lt == LITERAL_TYPE_STRING
+                                               || lt == LITERAL_TYPE_TEXT_BLOCK);
+                            }
+                        }
+                        bool rhsIsLvalue =
+                            dynamic_pointer_cast<IdentifierExpression>(rhsAst)
+                            || dynamic_pointer_cast<DotExpression>(rhsAst)
+                            || dynamic_pointer_cast<ArrayIndexExpression>(rhsAst);
+                        // element-ownership §6.1.1 / plan 3.2.1 — gate the
+                        // resolution on statically-known SOURCE ownership. A
+                        // bare identifier bound to a `#`-transfer parameter is
+                        // an OWNED source: storing it MOVES the wrapper into the
+                        // field, exactly like an explicit `#`-move rvalue. It
+                        // must NOT resolve — a fresh copy would strand the
+                        // moved-in source (leak 15.12.1: `this.f = param` on a
+                        // `#String param`). The `#` on the formal is the static
+                        // proof of ownership; no runtime moveMask read is
+                        // needed. Demote such an identifier out of the lvalue
+                        // (borrow-resolve) class so it transfers as-is below.
+                        // element-ownership 3C — a PLAIN formal source may
+                        // still be a runtime transfer (`m.put(#k, v)` on a
+                        // `K key` formal: the dual-role moveMask contract).
+                        // Its mask bit (index among non-`this` formals)
+                        // decides move-vs-resolve at RUNTIME — the ungated
+                        // copy was the 15.12.1 strand (slot got a copy, the
+                        // transferred original's drop was already
+                        // deactivated at the call). Unit 4/8's static `#K`
+                        // formals retire the runtime branch.
+                        int maskBit = -1;
+                        if (rhsIsLvalue) {
+                            if (auto idRhs = dynamic_pointer_cast<
+                                    IdentifierExpression>(rhsAst)) {
+                                if (auto sc = module->getScopeStack().peek()) {
+                                    FieldPtr srcField =
+                                        sc->getField(idRhs->getTextValue());
+                                    if (auto pf = dynamic_pointer_cast<
+                                            ParameterField>(srcField)) {
+                                        auto fp = pf->getFormalParameter();
+                                        if (fp && fp->isTransferred()) {
+                                            rhsIsLvalue = false;
+                                        } else if (fp) {
+                                            if (auto cm = module->getCurrentMethod()) {
+                                                int idx = 0;
+                                                for (auto& p : cm->getParameterList()) {
+                                                    if (!p || p->getName() == "this") continue;
+                                                    if (p->getName() == fp->getName()) {
+                                                        maskBit = idx;
+                                                        break;
+                                                    }
+                                                    idx++;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if (rhsIsString) {
+                            llvm::Function* resolveFn = rhsIsLvalue
+                                ? module->getRuntimeFunction("__cajeta_string_resolve")
+                                : nullptr;
+                            // 7.2.2 — the mask is the enclosing
+                            // function's ABI transfer word (TLS retired).
+                            llvm::Value* maskWord = nullptr;
+                            if (rhsIsLvalue && resolveFn && maskBit >= 0) {
+                                if (auto cmw = module->getCurrentMethod()) {
+                                    maskWord = cmw->getTransferWordArg();
+                                }
+                            }
+                            llvm::Value* srcWrapper = loadR(rhs);
+                            // Lvalue RHS: the source keeps its wrapper — the
+                            // field takes a FRESH resolved one (copy ≤
+                            // threshold / stake on a large heap root / static
+                            // alias). Rvalue RHS (literal, call result,
+                            // concat, `#`-move): the wrapper transfers as-is.
+                            // Plain-formal lvalue: runtime moveMask branch —
+                            // move when the caller transferred, resolve
+                            // otherwise.
+                            llvm::Value* fresh = nullptr;
+                            if (maskWord) {
+                                auto& lctx = *module->getLlvmContext();
+                                llvm::Value* bit = builder->CreateAnd(
+                                    builder->CreateLShr(maskWord, maskBit),
+                                    llvm::ConstantInt::get(
+                                        llvm::Type::getInt64Ty(lctx), 1));
+                                llvm::Value* isMove = builder->CreateICmpNE(
+                                    bit, llvm::ConstantInt::get(
+                                        llvm::Type::getInt64Ty(lctx), 0),
+                                    "fld_is_move");
+                                llvm::Function* fnOwner =
+                                    builder->GetInsertBlock()->getParent();
+                                auto* bbResolve = llvm::BasicBlock::Create(
+                                    lctx, "fld_resolve", fnOwner);
+                                auto* bbStore = llvm::BasicBlock::Create(
+                                    lctx, "fld_store", fnOwner);
+                                auto* bbFrom = builder->GetInsertBlock();
+                                builder->CreateCondBr(isMove, bbStore, bbResolve);
+                                builder->SetInsertPoint(bbResolve);
+                                llvm::Value* resolved = builder->CreateCall(
+                                    resolveFn, {srcWrapper}, "fld_resolved");
+                                builder->CreateBr(bbStore);
+                                builder->SetInsertPoint(bbStore);
+                                llvm::PHINode* phi = builder->CreatePHI(
+                                    llvm::PointerType::get(lctx, 0), 2, "fld_fresh");
+                                phi->addIncoming(srcWrapper, bbFrom);
+                                phi->addIncoming(resolved, bbResolve);
+                                fresh = phi;
+                            } else {
+                                fresh = (rhsIsLvalue && resolveFn)
+                                    ? builder->CreateCall(resolveFn, {srcWrapper},
+                                                          "str_resolve")
+                                    : srcWrapper;
+                            }
+                            // 4.2.3 visibility lint: each silent resolution
+                            // is reported as a NOTE (never an error) so the
+                            // copy/share cost is visible; `#`-transfer makes
+                            // the store free. No-op without an active engine.
+                            // Stdlib-internal stores (the cajeta.* namespace,
+                            // which user code cannot extend) never lint into
+                            // user diagnostics.
+                            bool inStdlibClass = false;
+                            if (!module->getStructureStack().empty()) {
+                                auto owner = module->getStructureStack().back();
+                                if (owner && owner->getQName()) {
+                                    const std::string& pkg =
+                                        owner->getQName()->getPackageName();
+                                    inStdlibClass = pkg == "cajeta"
+                                        || pkg.rfind("cajeta.", 0) == 0;
+                                }
+                            }
+                            if (rhsIsLvalue && resolveFn && !inStdlibClass) {
+                                if (DiagnosticEngine* eng = DiagnosticEngine::active()) {
+                                    eng->report("note", "CAJETA_LINT_SLICE_RESOLVED",
+                                        "String store resolves silently (copies when "
+                                        "<= 256 B or arena/SSO-backed, otherwise takes "
+                                        "a shared stake); a `#` transfer of the source "
+                                        "would make this store free",
+                                        module->getSourcePath(),
+                                        (int) getSourceLine(), -1);
+                                }
+                            }
+                            // The field OWNS its wrapper (both arms), so
+                            // dropping the previous value on overwrite is safe
+                            // and closes the String-field overwrite leak.
+                            // SKIPPED inside constructors: stack-class bodies
+                            // aren't zero-initialized — a ctor's first store
+                            // would read garbage as the "old" wrapper (heap
+                            // bodies are zeroed; the skip costs at most a leak
+                            // on a ctor double-store).
+                            bool inCtor = false;
+                            if (auto cm = module->getCurrentMethod()) {
+                                inCtor = cm->isConstructor();
+                            }
+                            if (!inCtor) {
+                                llvm::Value* oldVal = builder->CreateLoad(
+                                    llvm::PointerType::get(*module->getLlvmContext(), 0),
+                                    lhs, "str_old");
+                                if (llvm::Function* dropFn =
+                                        module->getRuntimeFunction("__cajeta_string_drop")) {
+                                    builder->CreateCall(dropFn, {oldVal});
+                                }
+                            }
+                            builder->CreateStore(fresh, lhs);
+                            result = fresh;
+                            break;
+                        }
+                    }
+                }
+                // title-tracking §8.1 (plan 7.2.1) — the borrow→owning
+                // materialize at owning-monomorph element stores was retired
+                // with owning instantiations.
                 llvm::Value* rhsVal = loadR(rhs);
                 // Coerce rhs to the destination's element type. Two slot shapes need
                 // this: (a) plain local-variable allocas, where the alloca carries the
@@ -1509,6 +2291,244 @@ namespace cajeta {
                             module, rhsVal, srcClass, dstClass);
                     }
                 }
+                // title-tracking §5 (Unit 3) — field ownership bits. A store
+                // into a bit-carrying field (class-ref / heap-array slot)
+                // resolves its declaring class, locates the hidden ownership
+                // word at a FIXED byte delta from the field slot (both live
+                // in the declaring class's sub-object region, so the delta
+                // from the standalone layout holds inside any descendant),
+                // classifies the store's spelling, and — BEFORE the store —
+                // releases a displaced owned value (§5.1.3: the overwrite is
+                // its scope exit). The bit itself is written after the store.
+                llvm::Value* fobWordPtr = nullptr;
+                int fobBitIdx = -1;
+                bool fobOwnedSpelling = false;
+                bool fobFieldIsArray = false;
+                // 5.2.2 — non-null when the `#x` source is a runtime owner
+                // (formal): the bit written below is this flag, not const 1.
+                llvm::Value* fobRuntimeFlag = nullptr;
+                if (auto fobDot = dynamic_pointer_cast<DotExpression>(lhsAst)) {
+                    auto& fch = fobDot->getChildren();
+                    auto fobRecv = fch.empty() ? nullptr
+                        : dynamic_pointer_cast<Expression>(fch[0]);
+                    // title-stores §3.3.2 (Unit 4) — ARRAY-ELEMENT receivers
+                    // participate when the element struct carries per-member
+                    // bits (`slots[i].val #= v` writes the slot's inline
+                    // ownership word). The 6.2.6b blanket exemption is
+                    // lifted for exactly that family: it existed because
+                    // HashMap's manual owned[] fought the hidden word
+                    // (remove() handed the occupant out flagged but could
+                    // never clear the word — a tombstone-reuse put then
+                    // displaced-released the STALE val pointer; the DnsCache
+                    // third-eviction SIGSEGV). Under Unit 4 the honest
+                    // spelling exists (`#slots[i].val` extraction CLEARS the
+                    // word) and HashMap converts in the same unit. Elements
+                    // WITHOUT member bits keep the exemption.
+                    if (auto fobAix = dynamic_pointer_cast<ArrayIndexExpression>(
+                            fch.empty() ? nullptr : fch[0])) {
+                        if (!fobAix->getResolvedType()) {
+                            fobAix->resolveTypes(module);
+                        }
+                        if (!CajetaClass::arrayElementCarriesMemberBits(
+                                fobAix->getResolvedType())) {
+                            fobRecv = nullptr;
+                        }
+                    }
+                    if (fobRecv && !fobRecv->getResolvedType()) {
+                        fobRecv->resolveTypes(module);
+                    }
+                    auto fobRecvClass = fobRecv
+                        ? dynamic_pointer_cast<CajetaClass>(
+                              fobRecv->getResolvedType())
+                        : nullptr;
+                    StructurePropertyPtr fobProp;
+                    CajetaClassPtr fobDecl;
+                    if (fobRecvClass) {
+                        std::function<bool(const CajetaClassPtr&)> fobFind =
+                            [&](const CajetaClassPtr& cls) -> bool {
+                                if (!cls) return false;
+                                auto pit = cls->getProperties().find(
+                                    fobDot->getIdentifier());
+                                if (pit != cls->getProperties().end()) {
+                                    fobProp = pit->second;
+                                    fobDecl = cls;
+                                    return true;
+                                }
+                                for (auto& sup : cls->getSuperClasses()) {
+                                    if (fobFind(sup)) return true;
+                                }
+                                return false;
+                            };
+                        fobFind(fobRecvClass);
+                    }
+                    if (fobProp && fobDecl
+                            && CajetaClass::fieldHasOwnershipBit(fobProp)
+                            && lhs && lhs->getType()->isPointerTy()) {
+                        int fieldIdx = fobDecl->getFieldLlvmIndex(fobProp);
+                        int wordIdx = fobDecl->getOwnershipWordLlvmIndex();
+                        auto* declTy = llvm::dyn_cast_or_null<llvm::StructType>(
+                            fobDecl->getLlvmType());
+                        if (fieldIdx >= 0 && wordIdx >= 0 && declTy
+                                && !declTy->isOpaque()) {
+                            const llvm::DataLayout& fobDl =
+                                module->getLlvmModule()->getDataLayout();
+                            const llvm::StructLayout* sl =
+                                fobDl.getStructLayout(declTy);
+                            int64_t delta =
+                                (int64_t) sl->getElementOffset((unsigned) wordIdx)
+                                - (int64_t) sl->getElementOffset((unsigned) fieldIdx);
+                            auto& fobCtx = *module->getLlvmContext();
+                            llvm::Type* i8Ty = llvm::Type::getInt8Ty(fobCtx);
+                            llvm::Type* i64Ty = llvm::Type::getInt64Ty(fobCtx);
+                            fobWordPtr = builder->CreateInBoundsGEP(
+                                i8Ty, lhs,
+                                llvm::ConstantInt::get(i64Ty, delta),
+                                "own_bits_addr");
+                            fobBitIdx = fobDecl->ownershipBitIndexOf(fobProp);
+                            fobFieldIsArray = (bool) dynamic_pointer_cast<
+                                CajetaArray>(fobProp->getType());
+                            // Spelling → title in: `= #x`, a fresh heap
+                            // construction, a `#`-returning call, or a
+                            // `#`-formal source (the Exception-ctor idiom —
+                            // statically owned, 7.1.3's move gate).
+                            if (auto mv = dynamic_pointer_cast<
+                                    MoveExpression>(rhsAst)) {
+                                fobOwnedSpelling = true;
+                                // RHS codegen already ran; a formal source
+                                // stashed its pre-deactivation flag there.
+                                fobRuntimeFlag = mv->getRuntimeTitleFlag();
+                            } else if (auto rn = dynamic_pointer_cast<
+                                           NewExpression>(rhsAst)) {
+                                fobOwnedSpelling = !rn->getStackAlloc();
+                            } else if (auto rc = dynamic_pointer_cast<
+                                           MethodCallExpression>(rhsAst)) {
+                                fobOwnedSpelling =
+                                    rc->isResolvedReturnsOwnership();
+                            } else if (auto ri = dynamic_pointer_cast<
+                                           IdentifierExpression>(rhsAst)) {
+                                if (auto sc = module->getScopeStack().peek()) {
+                                    auto pf = std::dynamic_pointer_cast<
+                                        ParameterField>(
+                                            sc->getField(ri->getTextValue()));
+                                    if (pf && pf->getFormalParameter()
+                                            && pf->getFormalParameter()
+                                                   ->isTransferred()) {
+                                        fobOwnedSpelling = true;
+                                    }
+                                }
+                            }
+                            // Displaced-value release (pre-store).
+                            llvm::PointerType* ptrTy =
+                                llvm::PointerType::get(fobCtx, 0);
+                            llvm::Value* oldWord = builder->CreateLoad(
+                                i64Ty, fobWordPtr, "own_bits_old");
+                            llvm::Value* oldBit = builder->CreateAnd(
+                                builder->CreateLShr(oldWord,
+                                    llvm::ConstantInt::get(i64Ty, fobBitIdx)),
+                                llvm::ConstantInt::get(i64Ty, 1));
+                            llvm::Value* oldVal = builder->CreateLoad(
+                                ptrTy, lhs, "own_old_val");
+                            llvm::Value* wasOwned = builder->CreateICmpNE(
+                                oldBit, llvm::ConstantInt::get(i64Ty, 0));
+                            llvm::Function* relFn = module->getRuntimeFunction(
+                                fobFieldIsArray ? "__cajeta_free_array"
+                                                : "__cajeta_class_virtual_drop");
+                            if (relFn) {
+                                llvm::Function* fobFn =
+                                    builder->GetInsertBlock()->getParent();
+                                llvm::BasicBlock* relBB =
+                                    llvm::BasicBlock::Create(fobCtx,
+                                        "own_displace", fobFn);
+                                llvm::BasicBlock* contBB =
+                                    llvm::BasicBlock::Create(fobCtx,
+                                        "own_displace_cont", fobFn);
+                                builder->CreateCondBr(wasOwned, relBB, contBB);
+                                builder->SetInsertPoint(relBB);
+                                // title-stores Unit 5 — element walk on a
+                                // displaced owned array, RE-ENABLED: the
+                                // stdlib is pure-tail now (the 3.2.5 audit's
+                                // mixed-owned[] grow loops respelled to
+                                // forwarding moves, whose takes clear the
+                                // source bits — the walk then finds only
+                                // slots the old array still genuinely owns).
+                                if (fobFieldIsArray) {
+                                    auto fobArr = dynamic_pointer_cast<
+                                        CajetaArray>(fobProp->getType());
+                                    if (fobArr) {
+                                        const llvm::DataLayout& fobADl =
+                                            module->getLlvmModule()
+                                                ->getDataLayout();
+                                        uint64_t fobHs = fobADl
+                                            .getTypeAllocSize(
+                                                fobArr->getLlvmType());
+                                        if (CajetaClass::
+                                                arrayElementCarriesSlotBits(
+                                                    fobArr->getElementType())) {
+                                            if (llvm::Function* fobWalk =
+                                                    module->getRuntimeFunction(
+                                                        "__cajeta_tail_elem_drop_walk")) {
+                                                builder->CreateCall(fobWalk,
+                                                    {oldVal,
+                                                     llvm::ConstantInt::get(
+                                                         i64Ty, fobHs),
+                                                     llvm::ConstantInt::get(
+                                                         i64Ty,
+                                                         fobArr->elementStrideBytes(
+                                                             fobADl,
+                                                             module->getLlvmContext()))});
+                                            }
+                                        } else if ([&]{
+                                            auto sc = dynamic_pointer_cast<
+                                                CajetaClass>(
+                                                    fobArr->getElementType());
+                                            return sc && sc->getQName()
+                                                && sc->getQName()->getTypeName()
+                                                       == "String"
+                                                && sc->getQName()
+                                                       ->getPackageName()
+                                                       == "cajeta.lang";
+                                        }()) {
+                                            if (llvm::Function* fobSw =
+                                                    module->getRuntimeFunction(
+                                                        "__cajeta_string_elem_drop_walk")) {
+                                                builder->CreateCall(fobSw,
+                                                    {oldVal,
+                                                     llvm::ConstantInt::get(
+                                                         i64Ty, fobHs),
+                                                     llvm::ConstantInt::get(
+                                                         i64Ty,
+                                                         fobArr->elementStrideBytes(
+                                                             fobADl,
+                                                             module->getLlvmContext()))});
+                                            }
+                                        } else if (CajetaClass::
+                                                arrayElementCarriesMemberBits(
+                                                    fobArr->getElementType())) {
+                                            if (llvm::Function* fobMw =
+                                                    CajetaClass::getOrCreateMemberWalk(
+                                                        module,
+                                                        builder->GetInsertBlock()
+                                                            ->getParent()->getParent(),
+                                                        dynamic_pointer_cast<CajetaClass>(
+                                                            fobArr->getElementType()),
+                                                        fobHs,
+                                                        fobArr->elementStrideBytes(
+                                                            fobADl,
+                                                            module->getLlvmContext()),
+                                                        /*withFree=*/false)) {
+                                                builder->CreateCall(fobMw,
+                                                                    {oldVal});
+                                            }
+                                        }
+                                    }
+                                }
+                                builder->CreateCall(relFn, {oldVal});
+                                builder->CreateBr(contBB);
+                                builder->SetInsertPoint(contBB);
+                            }
+                        }
+                    }
+                }
                 // Interface-typed array element: the slot is an INLINE 24-byte
                 // fat-pointer body, so a plain store would write only the data
                 // word and leave the vtable garbage. Build/copy the body in place
@@ -1528,7 +2548,196 @@ namespace cajeta {
                         storedInterfaceInline = true;
                     }
                 }
-                if (!storedInterfaceInline) {
+                // slices 9.2.1 — String-element store into an OWNING local
+                // array routes through the sidecar helpers so the slot's
+                // per-element ownership tracks the store shape: sources the
+                // array TAKES (identifier lvalue — the deactivation block
+                // below strips its entry; `#`-move; fresh owned temp) mark
+                // the slot; alias sources (field/element reads, literals,
+                // borrow-returning calls) leave it unmarked so the walk
+                // never steals a value owned elsewhere. Both helpers
+                // release a previously-owned occupant (the overwrite leak).
+                bool storedViaElemOwn = false;
+                bool storedViaClassElem = false;
+                if (!storedInterfaceInline && lhsAst && rhsAst
+                        && lhs && lhs->getType()->isPointerTy()
+                        && rhsVal && rhsVal->getType()->isPointerTy()) {
+                    if (auto aixLhs = dynamic_pointer_cast<ArrayIndexExpression>(lhsAst)) {
+                        llvm::Value* sidecar = nullptr;
+                        if (!aixLhs->getChildren().empty()) {
+                            if (auto idBase = dynamic_pointer_cast<IdentifierExpression>(
+                                    aixLhs->getChildren()[0])) {
+                                if (auto sc = module->getScopeStack().peek()) {
+                                    if (FieldPtr baseField = sc->getField(
+                                            idBase->getTextValue())) {
+                                        sidecar = baseField->getElemOwnSidecar();
+                                    }
+                                }
+                            }
+                        }
+                        // title-stores §3.2 — bit-capable class elements
+                        // route through the TAIL BITMAP (header-addressed:
+                        // one mechanism for field arrays and locals; the
+                        // local sidecar retires for class elements). The
+                        // slot bit records the store's actual title: a
+                        // MoveExpression's captured runtime flag forwards
+                        // verbatim (`#=` of a formal stores what the caller
+                        // did); static spellings classify as before.
+                        bool elemTitled =
+                            CajetaClass::arrayElementCarriesSlotBits(
+                                lhsAst->getResolvedType());
+                        // The tail helper needs the array HEADER. Regenerate
+                        // the receiver only for side-effect-free shapes
+                        // (identifier / field path) — the container-author
+                        // shapes; anything else conservatively keeps the
+                        // plain store.
+                        llvm::Value* tailHdr = nullptr;
+                        if (elemTitled) {
+                            auto recvAst2 = aixLhs->getChildren().empty()
+                                ? nullptr
+                                : dynamic_pointer_cast<Expression>(
+                                      aixLhs->getChildren()[0]);
+                            if (recvAst2
+                                    && (dynamic_pointer_cast<
+                                            IdentifierExpression>(recvAst2)
+                                        || dynamic_pointer_cast<DotExpression>(
+                                               recvAst2))) {
+                                llvm::Value* rv = recvAst2->generateCode(module);
+                                tailHdr = loadIfLValue(module, rv, recvAst2);
+                            }
+                        }
+                        if (elemTitled && tailHdr) {
+                            llvm::LLVMContext& tsCtx = *module->getLlvmContext();
+                            llvm::Type* tsI64 = llvm::Type::getInt64Ty(tsCtx);
+                            llvm::Value* ownedVal = nullptr;
+                            if (auto mv = dynamic_pointer_cast<MoveExpression>(
+                                    rhsAst)) {
+                                ownedVal = mv->getRuntimeTitleFlag()
+                                    ? mv->getRuntimeTitleFlag()
+                                    : (llvm::Value*) llvm::ConstantInt::get(
+                                          tsI64, 1);
+                            } else if (auto rn = dynamic_pointer_cast<
+                                           NewExpression>(rhsAst)) {
+                                ownedVal = llvm::ConstantInt::get(tsI64,
+                                    rn->getStackAlloc() ? 0 : 1);
+                            } else if (auto rc = dynamic_pointer_cast<
+                                           MethodCallExpression>(rhsAst)) {
+                                ownedVal = llvm::ConstantInt::get(tsI64,
+                                    rc->isResolvedReturnsOwnership() ? 1 : 0);
+                            } else {
+                                ownedVal = llvm::ConstantInt::get(tsI64, 0);
+                            }
+                            const llvm::DataLayout& tsDl =
+                                module->getLlvmModule()->getDataLayout();
+                            auto recvArr = dynamic_pointer_cast<CajetaArray>(
+                                dynamic_pointer_cast<Expression>(
+                                    aixLhs->getChildren()[0])->getResolvedType());
+                            uint64_t tsHs = 8, tsEs = 8;
+                            if (recvArr) {
+                                tsHs = tsDl.getTypeAllocSize(
+                                    recvArr->getLlvmType());
+                                tsEs = recvArr->elementStrideBytes(
+                                    tsDl, &tsCtx);
+                            }
+                            // idx = (slot - hdr - hs) / es, from the already-
+                            // emitted slot address (no index re-generation).
+                            llvm::Value* slotInt = builder->CreatePtrToInt(
+                                lhs, tsI64);
+                            llvm::Value* hdrInt = builder->CreatePtrToInt(
+                                tailHdr, tsI64);
+                            llvm::Value* tsIdx = builder->CreateSDiv(
+                                builder->CreateSub(
+                                    builder->CreateSub(slotInt, hdrInt),
+                                    llvm::ConstantInt::get(tsI64, tsHs)),
+                                llvm::ConstantInt::get(tsI64, tsEs));
+                            if (llvm::Function* storeFn =
+                                    module->getRuntimeFunction(
+                                        "__cajeta_tail_elem_store")) {
+                                builder->CreateCall(storeFn,
+                                    {tailHdr,
+                                     llvm::ConstantInt::get(tsI64, tsHs),
+                                     llvm::ConstantInt::get(tsI64, tsEs),
+                                     tsIdx, rhsVal, ownedVal});
+                                storedViaElemOwn = true;
+                                storedViaClassElem = true;
+                            }
+                        } else if (sidecar) {
+                            // An identifier RHS hands its wrapper over only
+                            // when the local actually HOLDS TITLE (it has a
+                            // drop entry the deactivation block below will
+                            // strip). A borrow-holding local (`String n =
+                            // s.outNameOf(); arr[i] = n;`) owns nothing to
+                            // hand over — taking its wrapper double-titles
+                            // the source's string and the array teardown
+                            // frees it under the real owner (the nucleo-frame
+                            // U7 Exec.apply schema UAF). Those route to the
+                            // alias/resolve-copy store instead.
+                            bool takesOwnership =
+                                dynamic_pointer_cast<MoveExpression>(rhsAst)
+                                || MethodCallExpression::freshOwnedStringTemp(rhsAst);
+                            if (!takesOwnership) {
+                                if (auto rid = dynamic_pointer_cast<
+                                        IdentifierExpression>(rhsAst)) {
+                                    if (auto sc2 = module->getScopeStack().peek()) {
+                                        FieldPtr srcF = sc2->getField(
+                                            rid->getTextValue());
+                                        takesOwnership = srcF
+                                            && srcF->getDropEntry() != nullptr;
+                                    }
+                                }
+                            }
+                            llvm::Function* setFn = module->getRuntimeFunction(
+                                takesOwnership
+                                    ? "__cajeta_string_array_elem_set_owned"
+                                    : "__cajeta_string_array_elem_set_alias");
+                            if (setFn) {
+                                builder->CreateCall(setFn, {sidecar, lhs, rhsVal});
+                                storedViaElemOwn = true;
+                            }
+                        } else if ([&]{
+                            auto selc = dynamic_pointer_cast<CajetaClass>(
+                                lhsAst->getResolvedType());
+                            return selc && selc->getQName()
+                                && selc->getQName()->getTypeName() == "String"
+                                && selc->getQName()->getPackageName()
+                                       == "cajeta.lang";
+                        }()) {
+                            // 6.3.2 — field-held / parameter String arrays
+                            // (no local sidecar): the raw store aliased the
+                            // wrapper, violating the always-own slot
+                            // contract (teardown + displacement walks free
+                            // every resident wrapper — Headers.grow UAF).
+                            // Same title gate as the sidecar branch above: an
+                            // identifier hands over its wrapper only when it
+                            // holds title; borrow-holding locals alias-copy.
+                            bool seTakes =
+                                dynamic_pointer_cast<MoveExpression>(rhsAst)
+                                || MethodCallExpression::freshOwnedStringTemp(rhsAst);
+                            if (!seTakes) {
+                                if (auto rid = dynamic_pointer_cast<
+                                        IdentifierExpression>(rhsAst)) {
+                                    if (auto sc2 = module->getScopeStack().peek()) {
+                                        FieldPtr srcF = sc2->getField(
+                                            rid->getTextValue());
+                                        seTakes = srcF
+                                            && srcF->getDropEntry() != nullptr;
+                                    }
+                                }
+                            }
+                            if (llvm::Function* seFn = module->getRuntimeFunction(
+                                    "__cajeta_string_elem_store")) {
+                                builder->CreateCall(seFn,
+                                    {lhs, rhsVal,
+                                     llvm::ConstantInt::get(
+                                         llvm::Type::getInt64Ty(
+                                             *module->getLlvmContext()),
+                                         seTakes ? 1 : 0)});
+                                storedViaElemOwn = true;
+                            }
+                        }
+                    }
+                }
+                if (!storedInterfaceInline && !storedViaElemOwn) {
                     builder->CreateStore(rhsVal, lhs);
                 }
                 // Ownership transfer into a class-typed array slot.
@@ -1540,7 +2749,14 @@ namespace cajeta {
                 // dangling). Mirrors AggregateInitializer's
                 // ownership-into-field move and the lambda
                 // #-capture transfer paths.
-                if (lhsAst && dynamic_pointer_cast<ArrayIndexExpression>(lhsAst)
+                // title-tracking §5.1.2 (Unit 4): a slot-bit store already
+                // recorded the spelling — a plain store there is a BORROW
+                // and the source keeps its books, so this implicit
+                // deactivation is skipped. Field-held / param arrays (no
+                // sidecar) keep the legacy transfer until Unit 6 sweeps
+                // the containers.
+                if (!storedViaClassElem && lhsAst
+                        && dynamic_pointer_cast<ArrayIndexExpression>(lhsAst)
                         && rhsAst) {
                     if (!rhsAst->getResolvedType()) rhsAst->resolveTypes(module);
                     CajetaTypePtr elemType = lhsAst->getResolvedType();
@@ -1588,24 +2804,22 @@ namespace cajeta {
                         }
                     }
                 }
-                // Ownership transfer into a class-typed FIELD slot.
-                // `this.field = local` (or `recv.field = local`) storing a
-                // heap-owned class/array pointer hands the reference to the
-                // field; the source local's drop must NOT fire at end-of-scope
-                // (which would free the instance the field still points at,
-                // leaving it dangling). This is the field-store twin of the
-                // array-slot transfer above and AggregateInitializer's
-                // ownership-into-field move — without it a `LinkedListNode`
-                // linked in via `this.tailNode = node` is freed when the
-                // enclosing method returns, and the list reads freed memory.
-                // Like the array case, we deactivate the dropEntry but do NOT
-                // markMoved (the local may be reassigned on the next loop
-                // iteration or read again on an unrelated path); deactivation
-                // is the necessary half. Fields stored INLINE (primitives,
-                // views, interface fat pointers) aren't owned pointers and
-                // are skipped.
-                if (lhsAst && dynamic_pointer_cast<DotExpression>(lhsAst)
-                        && rhsAst) {
+                // title-tracking Unit 4 close-out discovery — STATIC fields
+                // sit outside the bit system (fieldHasOwnershipBit excludes
+                // them: there is no per-instance word for a global), so a
+                // plain store into `Reg.shared` records no spelling; without
+                // this block the source local's drop fires at scope exit and
+                // the singleton `instance()` shape returns a freed object
+                // (the IfxRegistry/Ws/Https SIGSEGVs — poisoned reads
+                // through the static). Restore the pre-3A implicit transfer
+                // for exactly the STATIC-field shape. Non-static bit-less /
+                // fob-disengaged stores keep 3A borrow semantics — a broader
+                // !fobWordPtr gate deactivated borrow sources inside stream
+                // template monomorphs (opaque layouts disengage the fob
+                // machinery) and crashed ParallelStreamP1. Statics get a
+                // real owner story with the Unit 5 `#?` ABI.
+                if (!fobWordPtr && lhsAst && rhsAst
+                        && dynamic_pointer_cast<DotExpression>(lhsAst)) {
                     if (!lhsAst->getResolvedType()) lhsAst->resolveTypes(module);
                     CajetaTypePtr fieldType = lhsAst->getResolvedType();
                     auto fieldClass = dynamic_pointer_cast<CajetaClass>(fieldType);
@@ -1616,7 +2830,37 @@ namespace cajeta {
                         dynamic_pointer_cast<CajetaView>(fieldType) != nullptr;
                     bool fieldStoresAsPointer =
                         fieldIsArr || (fieldClass && !fieldIsView && !fieldIsIface);
+                    bool fieldIsStatic = false;
                     if (fieldStoresAsPointer) {
+                        auto legDot = dynamic_pointer_cast<DotExpression>(lhsAst);
+                        auto& lch = legDot->getChildren();
+                        auto legRecv = lch.empty() ? nullptr
+                            : dynamic_pointer_cast<Expression>(lch[0]);
+                        if (legRecv && !legRecv->getResolvedType()) {
+                            legRecv->resolveTypes(module);
+                        }
+                        auto legRecvClass = legRecv
+                            ? dynamic_pointer_cast<CajetaClass>(
+                                  legRecv->getResolvedType())
+                            : nullptr;
+                        std::function<bool(const CajetaClassPtr&)> legFind =
+                            [&](const CajetaClassPtr& cls) -> bool {
+                                if (!cls) return false;
+                                auto pit = cls->getProperties().find(
+                                    legDot->getIdentifier());
+                                if (pit != cls->getProperties().end()) {
+                                    fieldIsStatic = pit->second
+                                        && pit->second->isStatic();
+                                    return true;
+                                }
+                                for (auto& sup : cls->getSuperClasses()) {
+                                    if (legFind(sup)) return true;
+                                }
+                                return false;
+                            };
+                        legFind(legRecvClass);
+                    }
+                    if (fieldStoresAsPointer && fieldIsStatic) {
                         if (auto idExpr =
                                 dynamic_pointer_cast<IdentifierExpression>(rhsAst)) {
                             if (auto sc = module->getScopeStack().peek()) {
@@ -1636,6 +2880,77 @@ namespace cajeta {
                         }
                     }
                 }
+                // title-tracking §5.1.2 (Unit 3) — the field bit records the
+                // store's spelling. The pre-store block above computed the
+                // word address, bit index, spelling, and released a displaced
+                // owned value; here the new bit lands. The IMPLICIT transfer
+                // on plain field stores (the old deactivate-the-source-entry
+                // block) is REMOVED for BIT-CARRYING fields: a plain store
+                // there is a borrow store — the source keeps its books (spec
+                // §1.2 problem 2). Owned spellings carry their own bookkeeping
+                // (`#x` deactivates via MoveExpression; fresh rvalues have no
+                // local entry). Bit-less fields keep legacy transfer (block
+                // above).
+                if (fobWordPtr && fobBitIdx >= 0) {
+                    auto& fobCtx2 = *module->getLlvmContext();
+                    llvm::Type* i64Ty2 = llvm::Type::getInt64Ty(fobCtx2);
+                    llvm::Value* w = builder->CreateLoad(
+                        i64Ty2, fobWordPtr, "own_bits");
+                    uint64_t mask = 1ULL << fobBitIdx;
+                    if (fobOwnedSpelling && fobRuntimeFlag) {
+                        // 5.2.2 — `#formal` source: the field's bit is the
+                        // formal's flag (surrendered → owned, lent → borrow).
+                        w = builder->CreateAnd(w,
+                            llvm::ConstantInt::get(i64Ty2, ~mask));
+                        llvm::Value* fb = builder->CreateShl(
+                            builder->CreateAnd(fobRuntimeFlag,
+                                llvm::ConstantInt::get(i64Ty2, 1)),
+                            llvm::ConstantInt::get(i64Ty2, fobBitIdx));
+                        w = builder->CreateOr(w, fb);
+                    } else if (fobOwnedSpelling) {
+                        w = builder->CreateOr(w,
+                            llvm::ConstantInt::get(i64Ty2, mask));
+                    } else {
+                        w = builder->CreateAnd(w,
+                            llvm::ConstantInt::get(i64Ty2, ~mask));
+                    }
+                    builder->CreateStore(w, fobWordPtr);
+                    // 5.2.7 — a PLAIN store LENDS: the field borrows, the
+                    // source local keeps the title and dies at scope exit. If
+                    // the receiver later escapes, it carries a dangling
+                    // pointer. Record the edge (receiver -> lent local); the
+                    // escape sites check it. `#x` spellings own -> no edge.
+                    if (!fobOwnedSpelling) {
+                        if (auto lendDot = dynamic_pointer_cast<DotExpression>(
+                                lhsAst)) {
+                            auto& lch = lendDot->getChildren();
+                            auto recvId = lch.empty() ? nullptr
+                                : dynamic_pointer_cast<IdentifierExpression>(
+                                      lch[0]);
+                            auto srcId = dynamic_pointer_cast<
+                                IdentifierExpression>(rhsAst);
+                            if (recvId && srcId) {
+                                if (auto sc = module->getScopeStack().peek()) {
+                                    FieldPtr srcF = sc->getField(
+                                        srcId->getTextValue());
+                                    bool srcIsLocalOwner = srcF
+                                        && srcF->getDropEntry()
+                                        && !dynamic_pointer_cast<ParameterField>(
+                                               srcF);
+                                    if (srcIsLocalOwner) {
+                                        sc->recordLend(recvId->getTextValue(),
+                                                       srcId->getTextValue());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // An owned spelling from a `#`-formal source is the
+                    // Exception-ctor idiom: the formal's title moves into
+                    // the field. The formal has no local drop entry, so no
+                    // deactivation is needed; a `#x` local source already
+                    // deactivated in MoveExpression.
+                }
                 // P3 — definite-assignment: if the LHS is a bare identifier,
                 // mark it assigned. Subsequent reads no longer trip the
                 // CAJETA_ERROR_VARIABLE_NOT_ASSIGNED check. Compound LHS
@@ -1644,6 +2959,71 @@ namespace cajeta {
                 if (auto lhsId = dynamic_pointer_cast<IdentifierExpression>(lhsAst)) {
                     if (auto sc = module->getScopeStack().peek()) {
                         sc->markAssigned(lhsId->getTextValue());
+                    }
+                }
+                // 9.3.1 — a move-assign transfers ownership INTO the local:
+                // `String d; d = #t;` needs the value dropped at d's scope
+                // exit. The runtime drop chain is strict LIFO (pop-mismatch
+                // aborts), so pushing a NEW entry here would land it in the
+                // ASSIGNING block's frame — freed too early when d is
+                // declared in an outer scope (`String keep; { keep = #t; }`,
+                // the substringOutlivesSource shape). Instead
+                // LocalVariableDeclaration registers a null-obj entry at the
+                // DECLARATION (drop of null no-ops), and the move RETARGETS
+                // it in place: e->obj = moved ptr, e->active = 1. No chain
+                // mutation, so LIFO and frame membership hold. A repeated
+                // move-assign orphans the prior value (the documented
+                // reassign-leak family); borrow-initialized locals have no
+                // entry and keep today's behavior.
+                // Retarget fires for: a move-assign RHS (`d = #t`, String per
+                // 9.3.1 and class refs per title-tracking 2.2.4), or a FRESH-
+                // owner RHS re-arming a moved-out binding (title-tracking
+                // §3.1.4 — `piece = heap Cell(...)` after `take(#piece)`;
+                // keyed on lhsWasMoved so a never-moved binding keeps its
+                // entry on the displaced value, today's behavior).
+                {
+                    bool rhsIsMove =
+                        (bool) dynamic_pointer_cast<MoveExpression>(rhsAst);
+                    bool rhsIsFreshOwner = false;
+                    if (auto rhsNew = dynamic_pointer_cast<NewExpression>(rhsAst)) {
+                        rhsIsFreshOwner = !rhsNew->getStackAlloc();
+                    } else if (auto rhsCall =
+                            dynamic_pointer_cast<MethodCallExpression>(rhsAst)) {
+                        rhsIsFreshOwner = rhsCall->isResolvedReturnsOwnership();
+                    }
+                    if (rhsIsMove || (lhsWasMoved && rhsIsFreshOwner)) {
+                    if (auto lhsId = dynamic_pointer_cast<IdentifierExpression>(lhsAst)) {
+                        auto lhsClass = dynamic_pointer_cast<CajetaClass>(
+                            lhsAst->getResolvedType());
+                        bool lhsIsString = lhsClass && lhsClass->getQName()
+                            && lhsClass->getQName()->getTypeName() == "String"
+                            && lhsClass->getQName()->getPackageName() == "cajeta.lang";
+                        bool lhsIsClassRef = lhsClass && !lhsIsString
+                            && !lhsClass->isValueType()
+                            && !lhsClass->isSharedCapableValue()
+                            && !lhsClass->isInterface();
+                        if (lhsIsString || lhsIsClassRef) {
+                            if (auto sc = module->getScopeStack().peek()) {
+                                FieldPtr dstField = sc->getField(lhsId->getTextValue());
+                                if (dstField && dstField->getDropEntry()
+                                        && rhsVal && rhsVal->getType()->isPointerTy()) {
+                                    llvm::Value* entry = dstField->getDropEntry();
+                                    auto& ectx = *module->getLlvmContext();
+                                    builder->CreateStore(rhsVal, entry);
+                                    llvm::Value* activeSlot =
+                                        builder->CreateInBoundsGEP(
+                                            llvm::Type::getInt8Ty(ectx), entry,
+                                            llvm::ConstantInt::get(
+                                                llvm::Type::getInt64Ty(ectx), 24),
+                                            "mvassign.active");
+                                    builder->CreateStore(
+                                        llvm::ConstantInt::get(
+                                            llvm::Type::getInt8Ty(ectx), 1),
+                                        activeSlot);
+                                }
+                            }
+                        }
+                    }
                     }
                 }
                 // The expression's value is the assigned r-value (C/Java convention),
@@ -1700,21 +3080,19 @@ namespace cajeta {
                             && cls->getQName()->getTypeName() == "String"
                             && cls->getQName()->getPackageName() == "cajeta.lang";
                     };
-                    // Unwrap class String → char* via the bytes field's data
-                    // region. The bytes field at struct slot 1 points at a
-                    // CajetaArray-shaped header { i64 count, [N x i8] data };
-                    // skip 8 bytes past the count to land on the data pointer.
-                    // Literal codegen guarantees null termination so any
-                    // strlen-based concat helper sees the right end.
+                    // Unwrap class String → char* via the mode-aware runtime
+                    // accessor (6.2.2 tagged core: Inline and windowed forms
+                    // materialize into a per-thread ring scratch; full-window
+                    // owned/static roots hand out their NUL-terminated data
+                    // directly).
                     auto extractCStr = [&](llvm::Value* sptr) -> llvm::Value* {
                         if (!stringStructTy) return sptr;
-                        llvm::Value* bytesSlot = builder->CreateStructGEP(
-                            stringStructTy, sptr, 1, "concat.bytes_slot");
-                        llvm::Value* bytesPtr = builder->CreateLoad(
-                            ptrTy, bytesSlot, "concat.bytes_ptr");
-                        return builder->CreateInBoundsGEP(i8Ty, bytesPtr,
-                            llvm::ConstantInt::get(i64Ty, 8),
-                            "concat.cstr");
+                        llvm::FunctionType* cstrTy = llvm::FunctionType::get(
+                            ptrTy, {ptrTy}, false);
+                        llvm::FunctionCallee cstrFn =
+                            module->getLlvmModule()->getOrInsertFunction(
+                                "__cajeta_string_cstr", cstrTy);
+                        return builder->CreateCall(cstrFn, {sptr}, "concat.cstr");
                     };
 
                     auto stringify = [&](llvm::Value* v, CajetaTypePtr vt) -> llvm::Value* {
@@ -1782,8 +3160,58 @@ namespace cajeta {
                                 return { true, iv, buf, len };
                             }
                         }
+                        if (isClassStringType(vt) && stringStructTy) {
+                            // 6.2.2 tagged core: Inline text lives at the aux
+                            // slot's address (12 in-struct bytes); pointer
+                            // forms read base + 8 + aux. Selects, no branches
+                            // (the unselected arm's GEP is plain, not
+                            // inbounds, so a garbage base can't poison).
+                            llvm::Value* lt = builder->CreateLoad(i32Ty,
+                                builder->CreateStructGEP(stringStructTy, v, 1,
+                                    "cat.lentag"));
+                            llvm::Value* blen = builder->CreateAnd(lt,
+                                llvm::ConstantInt::get(i32Ty, 0x1FFFFFFF),
+                                "cat.blen");
+                            llvm::Value* isInl = builder->CreateICmpULE(blen,
+                                llvm::ConstantInt::get(i32Ty, 12), "cat.isinl");
+                            llvm::Value* inlPtr = builder->CreateStructGEP(
+                                stringStructTy, v, 2, "cat.inl");
+                            llvm::Value* off = builder->CreateIntCast(
+                                builder->CreateLoad(i32Ty,
+                                    builder->CreateStructGEP(stringStructTy, v, 2,
+                                        "cat.aux")),
+                                i64Ty, /*isSigned=*/false, "cat.off");
+                            llvm::Value* basePtr = builder->CreateLoad(
+                                builder->getPtrTy(),
+                                builder->CreateStructGEP(stringStructTy, v, 3,
+                                    "cat.basep"));
+                            llvm::Value* winPtr = builder->CreateGEP(i8Ty, basePtr,
+                                builder->CreateAdd(builder->getInt64(8), off,
+                                    "cat.winoff"),
+                                "cat.win");
+                            llvm::Value* data = builder->CreateSelect(
+                                isInl, inlPtr, winPtr, "cat.data");
+                            llvm::Value* lenI64 = builder->CreateIntCast(
+                                blen, i64Ty, /*isSigned=*/false, "cat.len");
+                            return { false, nullptr, data, lenI64 };
+                        }
                         llvm::Value* cstr = stringify(v, vt);
-                        llvm::Value* len = builder->CreateCall(strlenFn, {cstr}, "concat.clen");
+                        // Class String: take byteLength (slot 2) — bytes.data is
+                        // NUL-terminated only for literals; a String wrapped over
+                        // a bare byte array (String(#arr, n)) has no terminator
+                        // and strlen reads past its logical end.
+                        llvm::Value* len;
+                        if (isClassStringType(vt) && stringStructTy) {
+                            llvm::Value* lt2 = builder->CreateLoad(i32Ty,
+                                builder->CreateStructGEP(stringStructTy, v, 1,
+                                    "concat.lentag_slot"), "concat.lentag");
+                            llvm::Value* bl32 = builder->CreateAnd(lt2,
+                                llvm::ConstantInt::get(i32Ty, 0x1FFFFFFF),
+                                "concat.bytelen");
+                            len = builder->CreateSExt(bl32, i64Ty, "concat.bytelen64");
+                        } else {
+                            len = builder->CreateCall(strlenFn, {cstr}, "concat.clen");
+                        }
                         return { false, nullptr, cstr, len };
                     };
                     ConcatOp opL = classify(l, lhsRT);
@@ -1804,16 +3232,14 @@ namespace cajeta {
                     }
 
                     // Direct concat: write both operands straight into the result
-                    // String's byte storage — no intermediate __cajeta_str_concat
-                    // malloc/copy/free. Short results (<= SSO_CAP) live INLINE in
-                    // the wrapper's SSO region with NO separate buffer allocation
-                    // (the small-string fast path that keeps `"key" + i` and other
-                    // short builds off the heap). The String struct embed order is
-                    //   { vtable, bytes, byteLength, mode, cachedCpLength,
-                    //     ssoCount, ssoData }  (indices 0..6); the inline region
-                    //   {ssoCount, ssoData} is shaped like a CajetaArray header so
-                    //   `bytes` can point at it and every reader works unchanged.
-                    const int64_t SSO_CAP = 23;   // sizeof(ssoData) - 1 (NUL room)
+                    // String's storage — no intermediate __cajeta_str_concat
+                    // malloc/copy/free. Results <= 12 B build the INLINE form
+                    // (6.2.2 tagged core: the text bytes live in the aux+base
+                    // slots, no buffer at all — the small-string fast path that
+                    // keeps `"key" + i` off the heap; the old 23-byte SSO region
+                    // is gone). Longer results build an OWNED root
+                    // {count word, text, NUL} with lenTag = total (no tag bits).
+                    const int64_t SSO_CAP = 12;   // Inline capacity
                     // Arena routing (frame-arena-plan U2): when the escape pre-pass
                     // proved this concat's result is a non-escaping local, allocate
                     // the wrapper (and any heap byte buffer) from the frame arena —
@@ -1857,29 +3283,27 @@ namespace cajeta {
                         builder->CreateStructGEP(stringStructTy, sPtr, 0,
                             "concat.s_vtable"));
 
-                    // SSO vs heap branch.
+                    // Inline vs heap branch.
                     llvm::Function* curFn = builder->GetInsertBlock()->getParent();
                     llvm::BasicBlock* ssoBB =
-                        llvm::BasicBlock::Create(llvmCtx, "concat.sso", curFn);
+                        llvm::BasicBlock::Create(llvmCtx, "concat.inl", curFn);
                     llvm::BasicBlock* heapBB =
                         llvm::BasicBlock::Create(llvmCtx, "concat.heap", curFn);
                     llvm::BasicBlock* copyBB =
                         llvm::BasicBlock::Create(llvmCtx, "concat.copy", curFn);
                     llvm::Value* isSso = builder->CreateICmpULE(
-                        total, llvm::ConstantInt::get(i64Ty, SSO_CAP), "concat.is_sso");
+                        total, llvm::ConstantInt::get(i64Ty, SSO_CAP), "concat.is_inl");
                     builder->CreateCondBr(isSso, ssoBB, heapBB);
 
-                    // Inline: bytes -> &ssoCount (struct index 5); count = total;
-                    // data = ssoCount + 8 (= &ssoData). No buffer allocation.
+                    // Inline: the text destination IS the aux slot's address
+                    // (12 in-struct bytes spanning aux + base); no buffer.
                     builder->SetInsertPoint(ssoBB);
-                    llvm::Value* ssoHdr = builder->CreateStructGEP(
-                        stringStructTy, sPtr, 5, "concat.sso_hdr");
-                    builder->CreateStore(total, ssoHdr);
-                    llvm::Value* ssoData = builder->CreateInBoundsGEP(
-                        i8Ty, ssoHdr, llvm::ConstantInt::get(i64Ty, 8), "concat.sso_data");
+                    llvm::Value* inlDst = builder->CreateStructGEP(
+                        stringStructTy, sPtr, 2, "concat.inl_dst");
                     builder->CreateBr(copyBB);
 
-                    // Heap: alloc { i64 count; data; NUL }; count = total; data = +8.
+                    // Heap: alloc { i64 count; data; NUL }; count = total; the
+                    // wrapper adopts it as its OWNED root (aux = 0, base = hdr).
                     builder->SetInsertPoint(heapBB);
                     llvm::Value* arrSize = builder->CreateAdd(
                         total, llvm::ConstantInt::get(i64Ty, 9), "concat.arr_size");
@@ -1893,19 +3317,29 @@ namespace cajeta {
                     builder->CreateStore(total, arrPtr);
                     llvm::Value* heapData = builder->CreateInBoundsGEP(
                         i8Ty, arrPtr, llvm::ConstantInt::get(i64Ty, 8), "concat.heap_data");
+                    builder->CreateStore(llvm::ConstantInt::get(i32Ty, 0),
+                        builder->CreateStructGEP(stringStructTy, sPtr, 2,
+                            "concat.s_aux"));
+                    builder->CreateStore(arrPtr,
+                        builder->CreateStructGEP(stringStructTy, sPtr, 3,
+                            "concat.s_base"));
                     builder->CreateBr(copyBB);
 
-                    // Merge: pick the bytes-field value + data destination.
+                    // Merge on the text destination.
                     builder->SetInsertPoint(copyBB);
-                    llvm::PHINode* bytesVal = builder->CreatePHI(ptrTy, 2, "concat.bytes");
-                    bytesVal->addIncoming(ssoHdr, ssoBB);
-                    bytesVal->addIncoming(arrPtr, heapBB);
                     llvm::PHINode* dataPtr = builder->CreatePHI(ptrTy, 2, "concat.data");
-                    dataPtr->addIncoming(ssoData, ssoBB);
+                    dataPtr->addIncoming(inlDst, ssoBB);
                     dataPtr->addIncoming(heapData, heapBB);
+                    llvm::PHINode* isInlPhi = builder->CreatePHI(
+                        llvm::Type::getInt1Ty(llvmCtx), 2, "concat.was_inl");
+                    isInlPhi->addIncoming(llvm::ConstantInt::getTrue(llvmCtx), ssoBB);
+                    isInlPhi->addIncoming(llvm::ConstantInt::getFalse(llvmCtx), heapBB);
 
                     // Copy both operands (already reduced to (ptr,len), ints
-                    // pre-formatted into stack scratch) + NUL-terminate.
+                    // pre-formatted into stack scratch), then NUL-terminate.
+                    // For the Inline arm total <= 12, so the NUL at data[total]
+                    // can land at most on cachedCpLength's first byte — which
+                    // the unconditional ccp store below rewrites.
                     builder->CreateMemCpy(dataPtr, llvm::MaybeAlign(1),
                         opL.ptr, llvm::MaybeAlign(1), lenL);
                     llvm::Value* dstR = builder->CreateInBoundsGEP(
@@ -1915,17 +3349,13 @@ namespace cajeta {
                     llvm::Value* nulSlot = builder->CreateInBoundsGEP(
                         i8Ty, dataPtr, total, "concat.nul");
                     builder->CreateStore(llvm::ConstantInt::get(i8Ty, 0), nulSlot);
+                    (void) isInlPhi;
 
-                    // Remaining String fields.
-                    builder->CreateStore(bytesVal,
-                        builder->CreateStructGEP(stringStructTy, sPtr, 1,
-                            "concat.s_bytes"));
+                    // lenTag = total (Inline <= 12 and OWNED roots both carry
+                    // no tag bits); cachedCpLength = -1.
                     builder->CreateStore(totalI32,
-                        builder->CreateStructGEP(stringStructTy, sPtr, 2,
-                            "concat.s_byteLength"));
-                    builder->CreateStore(llvm::ConstantInt::get(i32Ty, 0),
-                        builder->CreateStructGEP(stringStructTy, sPtr, 3,
-                            "concat.s_mode"));
+                        builder->CreateStructGEP(stringStructTy, sPtr, 1,
+                            "concat.s_lentag"));
                     builder->CreateStore(llvm::ConstantInt::get(i32Ty, -1),
                         builder->CreateStructGEP(stringStructTy, sPtr, 4,
                             "concat.s_cachedCpLength"));
@@ -1959,6 +3389,10 @@ namespace cajeta {
             }
             case BINARY_OP_SUB: {
                 auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
+                if (l->getType()->isPointerTy() && r->getType()->isPointerTy()) {
+                    result = deadPtrArith(module, l, r, BINARY_OP_SUB);
+                    break;
+                }
                 auto signedFromAst = [](ExpressionPtr a, ExpressionPtr b) -> bool {
                     return binaryOverflowIsSigned(a, b);
                 };
@@ -1976,6 +3410,10 @@ namespace cajeta {
             }
             case BINARY_OP_MUL: {
                 auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
+                if (l->getType()->isPointerTy() && r->getType()->isPointerTy()) {
+                    result = deadPtrArith(module, l, r, BINARY_OP_MUL);
+                    break;
+                }
                 auto signedFromAst = [](ExpressionPtr a, ExpressionPtr b) -> bool {
                     return binaryOverflowIsSigned(a, b);
                 };
@@ -1993,6 +3431,10 @@ namespace cajeta {
             }
             case BINARY_OP_DIV: {
                 auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
+                if (l->getType()->isPointerTy() && r->getType()->isPointerTy()) {
+                    result = deadPtrArith(module, l, r, BINARY_OP_DIV);
+                    break;
+                }
                 if (l->getType()->isFPOrFPVectorTy()) {
                     result = emitFpBinOp(module, l, r, llvm::Instruction::FDiv);
                 } else {
@@ -2291,7 +3733,7 @@ namespace cajeta {
                         case BINARY_OP_GT: result = builder->CreateFCmpOGT(l, r); break;
                         case BINARY_OP_GE: result = builder->CreateFCmpOGE(l, r); break;
                         case BINARY_OP_EQ: result = builder->CreateFCmpOEQ(l, r); break;
-                        case BINARY_OP_NE: result = builder->CreateFCmpONE(l, r); break;
+                        case BINARY_OP_NE: result = builder->CreateFCmpUNE(l, r); break;  // UNE: NaN != NaN is TRUE (IEEE; the self-compare NaN idiom)
                         default: break;
                     }
                 } else {

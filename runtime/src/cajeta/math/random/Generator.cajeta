@@ -20,6 +20,11 @@ public final class Generator {
     uint32 key0;
     uint32 key1;
 
+    /**
+     * Build a generator keyed by `seed`; the same seed reproduces the same stream.
+     *
+     * @EntryPoint
+     */
     public Generator(uint64 seed) {
         this.key0 = (uint32) seed;
         this.key1 = (uint32) (seed >>> 32);
@@ -81,6 +86,8 @@ public final class Generator {
      * `n` samples from the uniform distribution over `[0, 1)` (numpy `random`): a 1-D
      * `Tensor<float32>` where element `i` is the top 24 bits of `philox(i, key)[0]`
      * scaled to `[0, 1)`. Reproducible for a given seed; each element is independent.
+     *
+     * @EntryPoint
      */
     public #Tensor<float32> uniform(int64 n) {
         int64[] sh = heap int64[1];
@@ -143,5 +150,82 @@ public final class Generator {
             i = i + 1;
         }
         return #t;
+    }
+
+    /**
+     * A random permutation of `[0, n)` (numpy `permutation`) as a `Tensor<int64>`, by a
+     * Fisher-Yates shuffle whose swap targets are drawn from the Philox stream (draw
+     * `d` uses counter `d`). Reproducible for a seed; not bit-identical to numpy's own
+     * permutation (a different algorithm), but a uniform permutation all the same.
+     */
+    public #Tensor<int64> permutation(int64 n) {
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<int64> t = Tensor.zeros<int64>(sh);
+        int64 s = 0;
+        while (s < n) { t.set1(s, s); s = s + 1; }
+        int64 ctr = 0;
+        int64 j = n - 1;
+        while (j >= 1) {
+            uint32 w = this.bits(ctr);
+            int64 k = (int64) w % (j + 1);              // target in [0, j]
+            int64 tj = t.get1(j);
+            int64 tk = t.get1(k);
+            t.set1(j, tk);
+            t.set1(k, tj);
+            ctr = ctr + 1;
+            j = j - 1;
+        }
+        return #t;
+    }
+
+    /**
+     * In-place Fisher-Yates shuffle of a 1-D `float32` tensor (numpy `shuffle`), same
+     * Philox draw sequence as {@link #permutation}. Permutes `t`'s elements in place; the
+     * multiset is preserved. Reproducible for a seed.
+     */
+    public void shuffle(Tensor<float32> t) {
+        int64 n = t.size();
+        int64 ctr = 0;
+        int64 j = n - 1;
+        while (j >= 1) {
+            uint32 w = this.bits(ctr);
+            int64 k = (int64) w % (j + 1);
+            float32 tj = t.get1(j);
+            float32 tk = t.get1(k);
+            t.set1(j, tk);
+            t.set1(k, tj);
+            ctr = ctr + 1;
+            j = j - 1;
+        }
+    }
+
+    /**
+     * `k` samples from `[0, nPop)` (numpy `choice`) as a `Tensor<int64>`. `replace`
+     * true → with replacement (each draw independent, `philox(i) mod nPop`); false →
+     * without replacement (the first `k` of a {@link #permutation}, so all distinct).
+     */
+    public #Tensor<int64> choice(int64 nPop, int64 k, boolean replace) {
+        int64[] sh = heap int64[1];
+        sh[0] = k;
+        Tensor<int64> t = Tensor.zeros<int64>(sh);
+        if (replace) {
+            int64 i = 0;
+            while (i < k) {
+                uint32 w = this.bits(i);
+                int64 v = (int64) w % nPop;
+                t.set1(i, v);
+                i = i + 1;
+            }
+        } else {
+            Tensor<int64> perm = this.permutation(nPop);
+            int64 i = 0;
+            while (i < k) {
+                int64 v = perm.get1(i);
+                t.set1(i, v);
+                i = i + 1;
+            }
+        }
+        return #t;                                      // single move (both branches fill t)
     }
 }

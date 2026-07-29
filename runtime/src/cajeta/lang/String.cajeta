@@ -3,9 +3,7 @@ package cajeta.lang;
 /**
  * Immutable UTF-8 text, the single string type for Cajeta.
  *
- * See `docs/specification/lang/String.md` for the full design — this
- * file is the load-bearing data definition; method implementations land
- * in subsequent phases (Phase 2c+).
+ * See `docs/specification/lang/String.md` for the full design.
  *
  * ## Usage
  *
@@ -16,199 +14,172 @@ package cajeta.lang;
  * `startsWith`, `codepointAt`, ...) read without allocating.
  *
  * ```cajeta
- * heap String s = "  Hello, World  ";
- * #String clean = s.trim();              // "Hello, World"
+ * String s = "  Hello, World  ";         // a literal is a static view
+ * String clean = s.trim();               // "Hello, World"
  * if (clean.startsWith("Hello") && clean.contains("World")) {
- *     #String loud = clean.toUpperCase(); // "HELLO, WORLD"
+ *     String loud = clean.toUpperCase(); // "HELLO, WORLD"
  *     int64 codepoints = clean.count();   // 12 (codepoints, not bytes)
  *     int64 firstComma = clean.indexOf(","); // 5
  * }
  * ```
  *
- * Equality is content-based: `Object`'s `==` dispatches through the
- * `hash()` override below, and `equals(String)` is the explicit
- * byte-for-byte check. Hashing keys cleanly into `HashMap` and
- * `HashSet`.
+ * ## Storage model — the tagged Utf8 core (slice-spec §8; slices plan 6.2.2)
  *
- * ## Phase 2b-α scope
+ * The storage is the 16-byte tagged core the `Utf8` value type pioneered,
+ * discriminated by the length in `lenTag` (mask 0x1FFFFFFF):
  *
- * What's here today:
- *   - The four-field storage layout (see below)
- *   - A no-arg constructor that leaves bytes null and the discriminator
- *     fields at safe defaults (mode = 0 owned, cachedCpLength = -1 not
- *     computed). This is the JIT-test surface that pins the layout.
+ *   len <= 12   Inline — the text bytes live directly in {aux, base}'s
+ *               16 - 4 = 12 bytes; self-contained, no buffer, no rc.
+ *               Every <= 12 B result is built Inline (the normalization
+ *               rule), so pointer forms are unambiguous.
+ *   len >  12   pointer form: `aux` = window byte offset, `base` = the
+ *               ROOT CajetaArray header (count word + data); the text is
+ *               base[8 + aux ..]. Tag bits:
+ *                 bit31  wrapper holds one rc stake on base (drop
+ *                        releases, copies retain).
+ *                 bit30  BORROW — stakeless view of a heap root (the
+ *                        compiler's scope-proven substring downgrade).
+ *                 bit29  STATIC root (literals + views of them); no rc.
+ *                 none   OWNED sole root — drop frees it through the
+ *                        owner-drop seam.
  *
- * What's NOT yet wired:
- *   - String literals still emit `i8*` via the legacy primitive alias
- *     (see CajetaType.cpp:130 — the alias coexists with this class for
- *     now and is removed in Phase 2b-β when literal codegen materializes
- *     view-mode `String` instances pointing at static storage).
- *   - No methods (`size`, `getBytes`, `fromBytes`, comparison, ...) —
- *     each lands in its own phase, paired with JIT tests.
+ * The legacy `mode` field and the 24-byte SSO region collapsed into the
+ * tag; byte-level operations live in the C natives (cajeta_rt_string.c)
+ * so the form dispatch is written exactly once. `byteLength` is a method
+ * now — the length rides `lenTag`.
  *
- * ## Storage model
- *
- *   - `bytes`           : UTF-8 payload. Owner of the bytes when
- *                         `mode == 0`; borrowed view into static or
- *                         externally-owned storage when `mode == 1`.
- *   - `byteLength`      : number of valid bytes in `bytes`. Distinct
- *                         from any underlying array length so view
- *                         mode (which slices into shared storage) can
- *                         carry a length independent of the host
- *                         buffer.
- *   - `mode`            : 0 = owned, 1 = view. The drop chain checks
- *                         this to decide whether to reclaim `bytes`.
- *   - `cachedCpLength`  : lazy codepoint count. `-1` = not yet
- *                         computed; first call to a codepoint-counting
- *                         method walks the bytes once and caches the
- *                         result. Cheap (4 bytes) and removes the
- *                         O(N) cost from repeated `length` calls on
- *                         the same String.
- *
- * Field visibility is `public` for Phase 2b-α so the JIT tests can
- * pin layout directly. Once methods land, visibility narrows and the
- * pinning shifts to behaviour-level assertions.
+ * Equality is content-based; `hash()` is XXH3 over the window bytes, in
+ * parity with `Utf8.hash()` across every form.
  */
 public final class String {
-    public int8[] bytes;
-    public int32  byteLength;
-    public int32  mode;
-    public int32  cachedCpLength;
-    // Small-string optimization (SSO). For short owned strings the compiler
-    // points `bytes` at this inline region instead of a separate heap buffer,
-    // so a build like `"key" + i` costs no buffer allocation. The two fields
-    // are contiguous and shaped exactly like a CajetaArray header
-    // ({ i64 count; i8 data[] }), so every `bytes` reader works unchanged:
-    // ssoCount is the count word, ssoData is the data. ssoData length is the
-    // SSO capacity (compiler caps inline at length-1 to leave room for a NUL).
-    // Untouched (left zero) for view-mode literals and heap-buffer strings.
-    private int64    ssoCount;
-    private int8[24] ssoData;
+    int32 lenTag;
+    int32 aux;
+    int8[] base;
+    public int32 cachedCpLength;
 
     /**
-     * Constructs the empty String — `bytes` null, `byteLength` 0,
-     * `mode` 0 (owned), `cachedCpLength` -1 (not yet computed). The
-     * empty literal `""` produces an equivalent value.
+     * Constructs the empty String (Inline form, zero bytes).
      *
      * ```cajeta
-     * heap String s = String();
+     * String s = heap String();
      * boolean blank = s.isEmpty();   // true
      * int64 n = s.count();           // 0
      * ```
+     *
+     * @EntryPoint
      */
     public String() {
-        this.bytes = null;
-        this.byteLength = 0;
-        this.mode = 0;
+        this.lenTag = 0;
+        this.aux = 0;
+        this.base = null;
         this.cachedCpLength = -1;
     }
 
+    // Ownership-transfer core of the (#int8[], int32) ctor: <= 12 B copies
+    // Inline and frees the buffer; longer adopts it as this wrapper's OWNED
+    // root. Consumes the buffer on both arms (the `#` at the call site
+    // deactivated the caller's drop entry).
+    @Native("__cajeta_string_adopt")
+    private void adopt(#int8[] buf, int32 n);
+
     /**
-     * View-mode constructor — borrows the caller's byte buffer without
-     * claiming ownership. The drop chain will NOT reclaim `bytes` when
-     * this String is dropped; the underlying buffer's lifetime is the
-     * caller's responsibility.
+     * Ownership-transfer constructor — takes the caller's byte buffer
+     * (`#`: the caller's drop entry deactivates). Short payloads
+     * (<= 12 B) copy Inline and the buffer is freed immediately; longer
+     * payloads adopt the buffer as this String's owned root. This is the
+     * builder path — every `return heap String(#out, n)` in the stdlib
+     * (Number/Boolean/Guid/StringBuilder/Utf8.toString) routes here.
      *
-     * This is the path string literals will eventually go through
-     * (Phase 2b-β.3): literal codegen will materialize an instance
-     * pointing at a static byte buffer in the process's data segment,
-     * with mode = 1 so the drop chain doesn't try to free static
-     * storage.
-     *
-     * `cachedCpLength` is initialized to -1 (not yet computed); the
-     * first `count()` call walks `bytes` and caches the result.
-     *
-     * ```cajeta
-     * int8[] buf = heap int8[3];
-     * buf[0] = (int8) 0x61;  buf[1] = (int8) 0x62;  buf[2] = (int8) 0x63;
-     * heap String s = String(#buf, 3);   // view over "abc"
-     * int64 bytes = s.size();             // 3
-     * ```
+     * @EntryPoint
      */
     public String(#int8[] bytes, int32 byteLength) {
-        this.bytes = bytes;
-        this.byteLength = byteLength;
-        this.mode = 1;
         this.cachedCpLength = -1;
+        this.adopt(#bytes, byteLength);
     }
 
     /**
-     * Content-based hash overriding Object's identity hash.
-     *
-     * Two distinct String instances with identical UTF-8 bytes hash
-     * equally, which gives `==` (inherited from Object via virtual
-     * dispatch through hash()) automatic value-equality semantics on
-     * String. String does NOT override operator== — the semantic shift
-     * is carried entirely by this hash() override.
-     *
-     * Backed by the runtime XXH3-64 (seeded with the per-process hash-
-     * flood seed) via the Cajeta.hashBytes intrinsic — multi-GB/s vs the
-     * old byte-at-a-time FNV-1a dependency chain, and the same DoS-
-     * resistant seeded construction the primitive and cajeta.hash hashers
-     * use.
-     *
-     * The empty/null-bytes case hashes via the len == 0 path (a stable
-     * seed-derived value), so `heap String()` and `heap String(b, 0)`
-     * agree.
+     * Content-based hash overriding Object's identity hash — XXH3-64
+     * (seeded with the per-process hash-flood seed) over the window
+     * bytes, representation-independent across every form and in parity
+     * with `Utf8.hash()`.
      */
-    public int64 hash() {
-        // bytes==null implies byteLength==0 (both ctors), and the XXH3
-        // len==0 path never dereferences the data pointer, so the null
-        // and empty cases yield the same seed-derived value with no guard.
-        return Cajeta.hashBytes(this.bytes, (int64) this.byteLength);
+    @Native("__cajeta_string_hash")
+    public int64 hash();
+
+    /**
+     * Byte size of the text window, as int32. Replaces the retired
+     * `byteLength` FIELD — the length rides `lenTag` now.
+     */
+    @Inline
+    public int32 byteLength() {
+        return this.lenTag & 0x1FFFFFFF;
     }
 
     /**
-     * Number of Unicode characters (codepoints) in this String.
-     *
-     * Walks the UTF-8 payload counting codepoints — O(N) on first call,
-     * then O(1) on subsequent calls (cached in `cachedCpLength`; -1
-     * means not yet computed). Counting by ASCII fast-path skips
-     * continuation bytes (10xxxxxx) and only increments on leader
-     * bytes (0xxxxxxx or 11xxxxxx).
-     *
-     * Distinct from byte length (`byteLength` field) — UTF-8 encodes
-     * codepoints in 1..4 bytes, so an n-codepoint String has between
-     * n and 4n bytes. For ASCII the two are equal.
-     *
-     * Returns int64 for forward-compatibility with very large strings;
-     * the in-memory cache uses int32 (`cachedCpLength`) because a
-     * String exceeding 2 billion codepoints is implausible in practice
-     * and the 4-byte field keeps the header compact.
-     *
-     * Malformed UTF-8 input (continuation byte where a leader is
-     * expected) is skipped silently — the count is "best effort" for
-     * invalid input. Use String.fromBytes with EncodingErrorPolicy.FAIL
-     * at the ingestion boundary if you need malformed-input rejection.
+     * Byte size of the text window. Distinct from `count()` (codepoints).
+     */
+    @Inline
+    public int64 size() {
+        return (int64) (this.lenTag & 0x1FFFFFFF);
+    }
+
+    /** True when this String carries zero bytes. */
+    @Inline
+    public boolean isEmpty() {
+        return (this.lenTag & 0x1FFFFFFF) == 0;
+    }
+
+    /**
+     * Byte offset of this String's window within its root buffer — 0 for
+     * Inline/owned/static full-window strings, the window offset for
+     * views. With `root()` this is the zero-copy window contract for
+     * consumers that pass the raw root buffer to natives.
+     */
+    @Inline
+    public int64 byteOffset() {
+        if ((this.lenTag & 0x1FFFFFFF) <= 12) {
+            return (int64) 0;
+        }
+        return (int64) this.aux;
+    }
+
+    /**
+     * The ROOT buffer backing this String as a borrowed int8[] handle —
+     * null for Inline strings (they have no root; use `toBytes()`).
+     * The window is `root()[byteOffset() .. byteOffset()+byteLength())`.
+     * Zero-copy fast-path companion to `toBytes()` for audited consumers.
+     */
+    @Inline
+    public int8[] root() {
+        if ((this.lenTag & 0x1FFFFFFF) <= 12) {
+            return null;
+        }
+        return this.base;
+    }
+
+    /**
+     * Number of Unicode codepoints. O(N) on first call, then O(1)
+     * (cached in `cachedCpLength`; -1 = not yet computed). Malformed
+     * UTF-8 is counted best-effort (stray continuation bytes skipped).
      */
     public int64 count() {
         if (this.cachedCpLength >= 0) {
             return (int64) this.cachedCpLength;
         }
-        if (this.bytes == null) {
-            this.cachedCpLength = 0;
-            return 0;
-        }
+        int32 n = this.lenTag & 0x1FFFFFFF;
         int32 cps = 0;
         int32 i = 0;
-        while (i < this.byteLength) {
-            int32 b = ((int32) this.bytes[i]) & 0xff;
+        while (i < n) {
+            int32 b = ((int32) this.byteAt(i)) & 0xff;
             if ((b & 0x80) == 0) {
-                // ASCII byte — one codepoint, one byte.
                 cps = cps + 1;
                 i = i + 1;
             } else if ((b & 0xC0) == 0x80) {
-                // Stray continuation byte at a leader-expected position;
-                // skip without counting (malformed input is best-effort).
                 i = i + 1;
             } else {
-                // Leader byte (0xC0-0xFF). Count one codepoint, then
-                // skip all following continuation bytes for this
-                // codepoint.
                 cps = cps + 1;
                 i = i + 1;
-                while (i < this.byteLength
-                        && (((int32) this.bytes[i]) & 0xC0) == 0x80) {
+                while (i < n && ((((int32) this.byteAt(i)) & 0xff) & 0xC0) == 0x80) {
                     i = i + 1;
                 }
             }
@@ -217,84 +188,26 @@ public final class String {
         return (int64) cps;
     }
 
-    /**
-     * Byte size of the underlying data buffer. Returns `byteLength`
-     * as int64.
-     *
-     * Distinct from `count()` (which returns the codepoint count).
-     * For ASCII the two coincide; for multibyte UTF-8 they diverge.
-     * Naming convention (2026-05-19):
-     *   - `count()` = number of logical elements (codepoints here,
-     *     entries for collections).
-     *   - `size()`  = byte size of the storage buffer.
-     * `length()` is intentionally absent — ambiguous in practice
-     * (capacity vs element count depending on the reader's
-     * background) and the universal-`count()` convention removes it.
-     */
-    @Inline
-    public int64 size() {
-        return (int64) this.byteLength;
-    }
+    // boolean routed through int32 at the native boundary (0/1) — the
+    // @Native ABI doesn't coerce i1 yet (same workaround as cajeta.hash).
+    @Native("__cajeta_string_equals")
+    private int32 equalsNative(String other);
 
     /**
-     * True when this String carries zero bytes — equivalent to
-     * `byteLength == 0`. The empty literal `""` and the no-arg ctor
-     * both produce empty strings.
+     * Byte-for-byte equality over the windows — representation-
+     * independent (an Inline "abc" equals a windowed view of "abc").
      */
     @Inline
-    public boolean isEmpty() {
-        return this.byteLength == 0;
-    }
-
-    /**
-     * Byte-for-byte equality. Two Strings are equal iff they have the
-     * same byteLength and identical UTF-8 payloads. Distinct from
-     * Object.operator==, which falls through to hash() comparison;
-     * for collision-sensitive callers, equals() is the explicit
-     * byte-walk.
-     *
-     * Phase 2b-β note: this overload's signature is `(String)`, not
-     * `(Object)`, so it does NOT override Object.operator==. It IS
-     * the canonical content-equality entry point — call it directly
-     * when you want byte-for-byte semantics; the operator== path
-     * still works via hash() and is enough for hash-keyed
-     * collections.
-     */
     public boolean equals(String other) {
         if (other == null) {
             return false;
         }
-        if (this.byteLength != other.byteLength) {
-            return false;
-        }
-        int32 i = 0;
-        while (i < this.byteLength) {
-            if (this.bytes[i] != other.bytes[i]) {
-                return false;
-            }
-            i = i + 1;
-        }
-        return true;
+        return this.equalsNative(other) != 0;
     }
 
     /**
-     * Value `==` for Strings: null-safe, BYTE-EXACT equality. Two non-null
-     * Strings are equal iff they have identical UTF-8 payloads (delegates to
-     * equals()). This is a more-specific overload of the inherited
-     * Object.operator==(Object,Object) (resolveMethod prefers it for two String
-     * operands; `String == Object` still falls through to Object's hash form).
-     *
-     * Byte-exact, not the inherited hash-only compare, for two reasons:
-     *   1. Correctness — hash equality admits collisions, so hash-based `==`
-     *      could report two distinct strings equal. Hash-keyed collections
-     *      confirm a probe with `==`, so a collision there returned the WRONG
-     *      value; the byte walk closes that latent hole.
-     *   2. Speed — both params are statically `String` (a `final` class), so the
-     *      equals() call (and the byteLength/byte loop inside it) devirtualizes
-     *      to a direct, inlinable call. The old hash form recomputed BOTH
-     *      operands' XXH3 every comparison — in a map probe the key was hashed
-     *      for the bucket and then re-hashed twice more inside `==` (~3 XXH3 per
-     *      lookup); a short-key byte compare is far cheaper.
+     * Value `==` for Strings: null-safe, byte-exact equality (delegates
+     * to equals()). More-specific overload of Object.operator==.
      */
     public static boolean operator== (String a, String b) {
         if (a == null || b == null) {
@@ -304,484 +217,218 @@ public final class String {
     }
 
     /**
-     * Returns the byte at the given byte index, or 0 if the index is
-     * out of range. v1 charAt is byte-indexed and returns int8
-     * (ASCII-equivalent code unit), matching the legacy intrinsic-
-     * dispatch behavior — codepoint-indexed access goes through
-     * `codepointAt`. The Java-style `char` (codepoint) variant lands
-     * if the design expands later; for now the two cover distinct
-     * use cases (raw byte vs Unicode scalar).
+     * Raw byte at the given byte index, or 0 out of range. Byte-indexed;
+     * codepoint access goes through `codepointAt`.
      */
-    @Inline
-    public int8 charAt(int32 idx) {
-        if (idx < 0 || idx >= this.byteLength) {
-            return (int8) 0;
-        }
-        return this.bytes[idx];
-    }
+    @Native("__cajeta_string_byte_at")
+    public int8 charAt(int32 idx);
 
     /**
-     * First byte-index at which `needle`'s payload appears as a
-     * contiguous run in this String, or -1 if not found. Returns 0
-     * for an empty needle (matches the standard "every string
-     * contains the empty string at position 0" convention).
-     *
-     * O(N×M) naive byte-walk — sufficient for v1; KMP / Boyer-Moore
-     * is a follow-up once the search/replace path becomes a hotspot.
+     * Raw byte at the given byte index, or 0 out of range. Same native
+     * as charAt (the bounds check costs one compare).
      */
+    @Native("__cajeta_string_byte_at")
+    public int8 byteAt(int32 index);
+
+    /**
+     * First byte-index at which `needle`'s window appears in this
+     * String's window, or -1. Empty needle matches at 0.
+     */
+    @Inline
     public int64 indexOf(String needle) {
-        return this.indexOfFrom(needle, 0);
+        return this.indexOfFrom(needle, (int64) 0);
     }
 
-    // SWAR substring search starting at byte offset `start`. `indexOf` is
-    // `indexOfFrom(needle, 0)`. (`replace` does NOT use this per-match — it inlines
-    // one continuous SWAR scan so the setup is hoisted out of the match loop.)
-    public int64 indexOfFrom(String needle, int64 start) {
-        if (needle == null) {
-            return (int64) -1;
-        }
-        int32 nlen = needle.byteLength;
-        if (nlen == 0) {
-            return start;
-        }
-        if ((int64) nlen > (int64) this.byteLength - start) {
-            return (int64) -1;
-        }
-        int64 hlen = (int64) this.byteLength;
-        int64 lim = hlen - (int64) nlen;          // last valid start offset
-        int8 first = needle.bytes[0];
-        int8 last = needle.bytes[nlen - 1];
-        // SIMD memmem (two-byte prefilter, 32 bytes/iter -> AVX2 under cpu=native).
-        // For each block, vector-compare the first-byte window bytes[i..i+31] to
-        // `first` AND the last-byte window bytes[i+nlen-1..+31] to `last`; only
-        // positions matching BOTH (cand) get a full verify. A needle whose first
-        // and last bytes rarely co-occur (the common case) clears `cand` to 0 most
-        // iterations, so the loop runs at vector-load bandwidth. nlen==1 reduces to
-        // a single-window scan (last==first, both windows alias) automatically.
-        int64 i = start;
-        int64 blockEnd = lim - 31;                 // last i with both 32-byte loads in bounds
-        int64 nm1 = (int64) nlen - 1;
-        while (i <= blockEnd) {
-            Vector<int8,32> va = this.bytes.vload<32>(i);
-            Vector<int8,32> vb = this.bytes.vload<32>(i + nm1);
-            int32 cand = va.eqMask(first) & vb.eqMask(last);
-            while (cand != 0) {
-                int64 at = i + (int64) Cajeta.ctz64((int64) cand);
-                if (this.regionMatches(at, needle, nlen)) {
-                    return at;
-                }
-                cand = cand & (cand - 1);          // clear this candidate, find the next
-            }
-            i = i + 32;
-        }
-        // Tail (short haystacks, or the final < 32-byte window): scalar scan.
-        while (i <= lim) {
-            if (this.bytes[i] == first && this.regionMatches(i, needle, nlen)) {
-                return i;
-            }
-            i = i + 1;
-        }
-        return (int64) -1;
-    }
+    /** indexOf starting the scan at byte offset `start`. */
+    @Native("__cajeta_string_index_of")
+    public int64 indexOfFrom(String needle, int64 start);
 
-    // Verify `needle[0..nlen)` occurs at byte offset `at`. (The first byte is
-    // already known to match at SWAR candidates, but we re-check all bytes so
-    // the scalar tail and any SWAR false positive are handled uniformly.)
+    @Native("__cajeta_string_starts_with")
+    private int32 startsWithNative(String prefix);
+
+    /** True iff `prefix`'s window starts this String's window. */
     @Inline
-    private boolean regionMatches(int64 at, String needle, int32 nlen) {
-        int32 j = 0;
-        while (j < nlen) {
-            if (this.bytes[at + (int64) j] != needle.bytes[j]) {
-                return false;
-            }
-            j = j + 1;
-        }
-        return true;
-    }
-
-    /**
-     * True iff `prefix`'s bytes appear at the start of this String's
-     * payload. Empty prefix is always a prefix; null is treated as
-     * the absence of a prefix (returns false).
-     */
     public boolean startsWith(String prefix) {
         if (prefix == null) {
             return false;
         }
-        if (prefix.byteLength > this.byteLength) {
-            return false;
-        }
-        int32 i = 0;
-        while (i < prefix.byteLength) {
-            if (this.bytes[i] != prefix.bytes[i]) {
-                return false;
-            }
-            i = i + 1;
-        }
-        return true;
+        return this.startsWithNative(prefix) != 0;
     }
 
-    /**
-     * True iff `suffix`'s bytes appear at the end of this String's
-     * payload. Mirrors startsWith on the trailing side.
-     */
+    @Native("__cajeta_string_ends_with")
+    private int32 endsWithNative(String suffix);
+
+    /** True iff `suffix`'s window ends this String's window. */
+    @Inline
     public boolean endsWith(String suffix) {
         if (suffix == null) {
             return false;
         }
-        if (suffix.byteLength > this.byteLength) {
-            return false;
-        }
-        int32 off = this.byteLength - suffix.byteLength;
-        int32 i = 0;
-        while (i < suffix.byteLength) {
-            if (this.bytes[off + i] != suffix.bytes[i]) {
-                return false;
-            }
-            i = i + 1;
-        }
-        return true;
+        return this.endsWithNative(suffix) != 0;
     }
 
-    /**
-     * True iff `needle`'s bytes appear anywhere in this String's
-     * payload. Delegates to indexOf and tests for non-negative
-     * result.
-     */
+    /** True iff `needle` appears anywhere in this String. */
     @Inline
     public boolean contains(String needle) {
-        return this.indexOf(needle) >= (int64) 0;
+        return this.indexOfFrom(needle, (int64) 0) >= (int64) 0;
     }
 
     /**
-     * Returns a half-open byte-indexed slice `[begin, end)` of this
-     * String. Indices are clamped to [0, byteLength]; if end < begin
-     * after clamping the result is empty. Substring allocates a
-     * fresh byte buffer and copies — view-mode slicing is a planned
-     * follow-up that needs pointer arithmetic on `int8[]` (today the
-     * language has no surface syntax for `&this.bytes[begin]`).
+     * Returns a half-open byte-indexed window `[begin, end)` of this
+     * String. Indices clamp to [0, byteLength]. ZERO-COPY for > 12 B
+     * results (a stake-carrying view of this String's root buffer,
+     * slice-spec §7.1); <= 12 B results are Inline (the normalization
+     * rule — cheaper than any pointer chase, no lifetime at all).
      */
     public #String substring(int32 begin, int32 end) {
+        int32 n = this.lenTag & 0x1FFFFFFF;
         if (begin < 0) {
             begin = 0;
         }
-        if (end > this.byteLength) {
-            end = this.byteLength;
+        if (end > n) {
+            end = n;
         }
         if (end < begin) {
             end = begin;
         }
-        int32 len = end - begin;
-        int8[] out = Cajeta.allocBytes((int64) len);   // fully written below
-        int32 i = 0;
-        while (i < len) {
-            out[i] = this.bytes[begin + i];
-            i = i + 1;
-        }
-        return heap String(#out, len);
-    }
-
-    // 0x80 in each byte of `v` whose value lies in [lo, hi]. Valid only when
-    // every byte of `v` is < 0x80 (no inter-byte carry): byte+0x80-lo sets the
-    // high bit iff byte >= lo, and the same for hi+1 gives byte > hi.
-    @Inline
-    private static uint64 asciiRangeMask(uint64 v, uint64 lo, uint64 hi) {
-        uint64 high = (uint64) 0x8080808080808080;
-        uint64 ones = (uint64) 0x0101010101010101;
-        uint64 ge = (v + ones * ((uint64) 0x80 - lo)) & high;
-        uint64 gt = (v + ones * ((uint64) 0x80 - (hi + (uint64) 1))) & high;
-        return ge & ~gt;
-    }
-
-    // Uppercase/lowercase an all-ASCII 8-byte word. The bit-5 mask is confined
-    // with & 0x2020..20 so the result is correct regardless of >> signedness.
-    @Inline
-    private static uint64 swarUpper(uint64 v) {
-        uint64 m = String.asciiRangeMask(v, (uint64) 0x61, (uint64) 0x7A);
-        return v & ~((m >> 2) & (uint64) 0x2020202020202020);
-    }
-    @Inline
-    private static uint64 swarLower(uint64 v) {
-        uint64 m = String.asciiRangeMask(v, (uint64) 0x41, (uint64) 0x5A);
-        return v | ((m >> 2) & (uint64) 0x2020202020202020);
+        return Cajeta.stringSlice(this, begin, end - begin);
     }
 
     /**
-     * Returns a new String with all ASCII lowercase letters mapped
-     * to uppercase. Non-ASCII bytes pass through unchanged — full
-     * Unicode case folding (locale-aware, multi-byte) is a planned
-     * follow-up tied to the cajeta.text.Locale rollout.
+     * INTERNAL (slices plan 4.2.2): borrow-mode substring — identical
+     * window semantics, zero rc. The compiler rewrites `substring` calls
+     * to this when the receiving local provably never escapes.
      */
-    public #String toUpperCase() {
-        int32 n = this.byteLength;
-        int8[] out = Cajeta.allocBytes((int64) n);   // every byte written below
-        int8[] src = this.bytes;
-        uint64 high = (uint64) 0x8080808080808080;
-        int32 k = 0;
-        // 32 bytes/iter (4 words, one ASCII guard); clears bit 5 ([a-z]->[A-Z]).
-        while (k + 32 <= n) {
-            uint64 v0 = (uint64) Cajeta.loadU64(src, (int64) k);
-            uint64 v1 = (uint64) Cajeta.loadU64(src, (int64) (k + 8));
-            uint64 v2 = (uint64) Cajeta.loadU64(src, (int64) (k + 16));
-            uint64 v3 = (uint64) Cajeta.loadU64(src, (int64) (k + 24));
-            if ((((v0 | v1) | (v2 | v3)) & high) == (uint64) 0) {
-                Cajeta.storeU64(out, (int64) k, (int64) String.swarUpper(v0));
-                Cajeta.storeU64(out, (int64) (k + 8), (int64) String.swarUpper(v1));
-                Cajeta.storeU64(out, (int64) (k + 16), (int64) String.swarUpper(v2));
-                Cajeta.storeU64(out, (int64) (k + 24), (int64) String.swarUpper(v3));
-            } else {
-                int32 j = 0;
-                while (j < 32) {
-                    int32 b = ((int32) src[k + j]) & 0xff;
-                    out[k + j] = (b >= 0x61 && b <= 0x7A) ? (int8) (b - 32) : src[k + j];
-                    j = j + 1;
-                }
-            }
-            k = k + 32;
+    public #String substringView(int32 begin, int32 end) {
+        int32 n = this.lenTag & 0x1FFFFFFF;
+        if (begin < 0) {
+            begin = 0;
         }
-        while (k + 8 <= n) {
-            uint64 v = (uint64) Cajeta.loadU64(src, (int64) k);
-            if ((v & high) == (uint64) 0) {
-                Cajeta.storeU64(out, (int64) k, (int64) String.swarUpper(v));
-            } else {
-                int32 j = 0;
-                while (j < 8) {
-                    int32 b = ((int32) src[k + j]) & 0xff;
-                    out[k + j] = (b >= 0x61 && b <= 0x7A) ? (int8) (b - 32) : src[k + j];
-                    j = j + 1;
-                }
-            }
-            k = k + 8;
+        if (end > n) {
+            end = n;
         }
-        while (k < n) {
-            int32 b = ((int32) src[k]) & 0xff;
-            out[k] = (b >= 0x61 && b <= 0x7A) ? (int8) (b - 32) : src[k];
-            k = k + 1;
+        if (end < begin) {
+            end = begin;
         }
-        return heap String(#out, n);
+        return Cajeta.stringSliceBorrow(this, begin, end - begin);
     }
 
     /**
-     * Returns a new String with all ASCII uppercase letters mapped
-     * to lowercase. Non-ASCII bytes pass through unchanged. Same
-     * deferred Unicode-folding caveat as toUpperCase.
+     * Returns a new String with ASCII lowercase mapped to uppercase.
+     * Non-ASCII bytes pass through (Unicode folding is a Locale-rollout
+     * follow-up, as before).
      */
-    public #String toLowerCase() {
-        int32 n = this.byteLength;
-        int8[] out = Cajeta.allocBytes((int64) n);   // every byte written below
-        int8[] src = this.bytes;
-        uint64 high = (uint64) 0x8080808080808080;
-        int32 k = 0;
-        // 32 bytes/iter (4 words, one ASCII guard); sets bit 5 ([A-Z]->[a-z]).
-        while (k + 32 <= n) {
-            uint64 v0 = (uint64) Cajeta.loadU64(src, (int64) k);
-            uint64 v1 = (uint64) Cajeta.loadU64(src, (int64) (k + 8));
-            uint64 v2 = (uint64) Cajeta.loadU64(src, (int64) (k + 16));
-            uint64 v3 = (uint64) Cajeta.loadU64(src, (int64) (k + 24));
-            if ((((v0 | v1) | (v2 | v3)) & high) == (uint64) 0) {
-                Cajeta.storeU64(out, (int64) k, (int64) String.swarLower(v0));
-                Cajeta.storeU64(out, (int64) (k + 8), (int64) String.swarLower(v1));
-                Cajeta.storeU64(out, (int64) (k + 16), (int64) String.swarLower(v2));
-                Cajeta.storeU64(out, (int64) (k + 24), (int64) String.swarLower(v3));
-            } else {
-                int32 j = 0;
-                while (j < 32) {
-                    int32 b = ((int32) src[k + j]) & 0xff;
-                    out[k + j] = (b >= 0x41 && b <= 0x5A) ? (int8) (b + 32) : src[k + j];
-                    j = j + 1;
-                }
-            }
-            k = k + 32;
-        }
-        while (k + 8 <= n) {
-            uint64 v = (uint64) Cajeta.loadU64(src, (int64) k);
-            if ((v & high) == (uint64) 0) {
-                Cajeta.storeU64(out, (int64) k, (int64) String.swarLower(v));
-            } else {
-                int32 j = 0;
-                while (j < 8) {
-                    int32 b = ((int32) src[k + j]) & 0xff;
-                    out[k + j] = (b >= 0x41 && b <= 0x5A) ? (int8) (b + 32) : src[k + j];
-                    j = j + 1;
-                }
-            }
-            k = k + 8;
-        }
-        while (k < n) {
-            int32 b = ((int32) src[k]) & 0xff;
-            out[k] = (b >= 0x41 && b <= 0x5A) ? (int8) (b + 32) : src[k];
-            k = k + 1;
-        }
-        return heap String(#out, n);
-    }
+    @Native("__cajeta_string_upper")
+    public #String toUpperCase();
+
+    /** ASCII uppercase mapped to lowercase; same caveats as toUpperCase. */
+    @Native("__cajeta_string_lower")
+    public #String toLowerCase();
 
     /**
-     * Strips leading and trailing ASCII whitespace (byte values 0
-     * through 0x20 inclusive) and returns the resulting view. v1
-     * matches Java's `String.trim()` semantics — full Unicode
-     * whitespace (codepoints in Z*, plus 0085/2028/2029, etc.) is
-     * the planned `strip()` companion once Locale lands.
+     * Strips leading and trailing ASCII whitespace (bytes 0..0x20) and
+     * returns the resulting window — zero-copy for > 12 B results.
      */
     public #String trim() {
+        int32 n = this.lenTag & 0x1FFFFFFF;
         int32 start = 0;
-        int32 end = this.byteLength;
-        while (start < end && (((int32) this.bytes[start]) & 0xff) <= 0x20) {
+        int32 end = n;
+        while (start < end && (((int32) this.byteAt(start)) & 0xff) <= 0x20) {
             start = start + 1;
         }
-        while (end > start && (((int32) this.bytes[end - 1]) & 0xff) <= 0x20) {
+        while (end > start && (((int32) this.byteAt(end - 1)) & 0xff) <= 0x20) {
             end = end - 1;
         }
-        int32 len = end - start;
-        int8[] out = Cajeta.allocBytes((int64) len);   // fully written below
-        int32 i = 0;
-        while (i < len) {
-            out[i] = this.bytes[start + i];
-            i = i + 1;
-        }
-        return heap String(#out, len);
+        return Cajeta.stringSlice(this, start, end - start);
     }
+
+    /** INTERNAL (slices plan 4.2.2): borrow-mode trim — see substringView. */
+    public #String trimView() {
+        int32 n = this.lenTag & 0x1FFFFFFF;
+        int32 start = 0;
+        int32 end = n;
+        while (start < end && (((int32) this.byteAt(start)) & 0xff) <= 0x20) {
+            start = start + 1;
+        }
+        while (end > start && (((int32) this.byteAt(end - 1)) & 0xff) <= 0x20) {
+            end = end - 1;
+        }
+        return Cajeta.stringSliceBorrow(this, start, end - start);
+    }
+
+    // Native replace core: NULL result = "no change" (no match, empty or
+    // null pattern) so this side can hand back the receiver unchanged.
+    @Native("__cajeta_string_replace")
+    private String replaceNative(String from, String repl);
 
     /**
      * Returns a new String with every non-overlapping occurrence of
-     * `from`'s bytes replaced by `to`'s bytes. Two-pass naive
-     * implementation: first pass counts occurrences and sizes the
-     * output buffer; second pass walks bytes copying through.
-     * Empty or null `from` returns this String unchanged.
+     * `from` replaced by `repl`. No match (or empty/null `from`)
+     * returns this String unchanged.
      */
     public #String replace(String from, String repl) {
-        if (from == null || repl == null) {
+        String out = this.replaceNative(from, repl);
+        if (out == null) {
             return this;
         }
-        int32 flen = from.byteLength;
-        if (flen == 0) {
-            return this;
-        }
-        int64 tlen = (int64) repl.byteLength;
-        int64 hlen = (int64) this.byteLength;
-        int64 flen64 = (int64) flen;
-        // Pass 1: count occurrences with the fast SWAR indexOfFrom (no copying)
-        // to size the output EXACTLY — one allocation, no growth churn, no final
-        // copy, and no over-allocation slack in the returned String. (A
-        // StringBuilder is slower here: replace is copy-bound, and its growth +
-        // toString copy cost more than this second SWAR scan, which is cheap.)
-        int64 count = 0;
-        int64 p = this.indexOfFrom(from, 0);
-        while (p >= (int64) 0) {
-            count = count + 1;
-            p = this.indexOfFrom(from, p + flen64);
-        }
-        if (count == 0) {
-            return this;        // no match — hand back the receiver unchanged
-        }
-        int64 outLen = hlen + count * (tlen - flen64);
-        int8[] out = Cajeta.allocBytes(outLen);   // every byte written below
-        // Pass 2: walk matches with the SWAR indexOfFrom, bulk-copying each
-        // segment + replacement into the exact buffer (8-byte stores via the
-        // @Inline copyRange). (A hand-inlined continuous SWAR scan here measured
-        // SLOWER — its jump-and-reload control flow optimizes worse than this
-        // simple walk — so the per-match indexOfFrom call is kept.)
-        int64 src = 0;
-        int64 dst = 0;
-        int64 at = this.indexOfFrom(from, 0);
-        while (at >= (int64) 0) {
-            int64 seg = at - src;
-            String.copyRange(out, dst, this.bytes, src, seg);
-            dst = dst + seg;
-            String.copyRange(out, dst, repl.bytes, 0, tlen);
-            dst = dst + tlen;
-            src = at + flen64;
-            at = this.indexOfFrom(from, src);
-        }
-        String.copyRange(out, dst, this.bytes, src, hlen - src);
-        return heap String(#out, (int32) outLen);
-    }
-
-    // Copy `len` bytes from `src[s..]` to `dst[d..]`, 8 bytes per store (the
-    // 8-byte chunk window never exceeds `len`, so neither buffer is overrun) with
-    // a scalar tail. Static — takes both arrays explicitly.
-    @Inline
-    private static void copyRange(int8[] dst, int64 d, int8[] src, int64 s, int64 len) {
-        int64 k = 0;
-        while (k + 8 <= len) {
-            Cajeta.storeU64(dst, d + k, Cajeta.loadU64(src, s + k));
-            k = k + 8;
-        }
-        while (k < len) {
-            dst[d + k] = src[s + k];
-            k = k + 1;
-        }
+        return #out;
     }
 
     /**
-     * Raw byte at the given byte index. Byte-indexed (not codepoint-
-     * indexed) — for the codepoint variant use codepointAt. Out-of-
-     * range index is the caller's responsibility; v1 doesn't bounds-
-     * check (matches the int8[] array-access convention with
-     * --bounds=off).
+     * The effective byte window as a fresh caller-owned array — the
+     * view-safe replacement for raw buffer reads (same contract as
+     * before the re-core).
      */
-    @Inline
-    public int8 byteAt(int32 index) {
-        return this.bytes[index];
-    }
+    @Native("__cajeta_string_to_bytes")
+    public #int8[] toBytes();
 
     /**
-     * Unicode codepoint at the given codepoint index. O(N) walk —
-     * the UTF-8 layout doesn't permit O(1) codepoint indexing.
-     * Callers who need to iterate codepoints should use a single
-     * pass rather than repeated codepointAt calls.
-     *
-     * Returns the decoded codepoint as a 32-bit int (Cajeta `char`).
-     * Malformed UTF-8 in the byte stream is decoded best-effort:
-     * stray continuation bytes are skipped without advancing the
-     * codepoint count, and a leader byte missing its full
-     * complement of continuation bytes produces a value derived
-     * from whatever bytes ARE present.
+     * Unicode codepoint at the given codepoint index. O(N) walk;
+     * malformed UTF-8 decoded best-effort. Out-of-range returns 0.
      */
     public char codepointAt(int32 cpIdx) {
+        int32 n = this.lenTag & 0x1FFFFFFF;
         int32 i = 0;       // byte cursor
         int32 cp = 0;      // current codepoint index
-        while (i < this.byteLength) {
-            int32 b0 = ((int32) this.bytes[i]) & 0xff;
+        while (i < n) {
+            int32 b0 = ((int32) this.byteAt(i)) & 0xff;
             int32 width = 1;
             int32 decoded = 0;
             if ((b0 & 0x80) == 0) {
-                // 1-byte ASCII.
                 decoded = b0;
                 width = 1;
             } else if ((b0 & 0xE0) == 0xC0) {
-                // 2-byte (110xxxxx 10xxxxxx).
-                int32 b1 = (i + 1 < this.byteLength)
-                    ? (((int32) this.bytes[i + 1]) & 0xff) : 0;
+                int32 b1 = (i + 1 < n) ? (((int32) this.byteAt(i + 1)) & 0xff) : 0;
                 decoded = ((b0 & 0x1F) << 6) | (b1 & 0x3F);
                 width = 2;
             } else if ((b0 & 0xF0) == 0xE0) {
-                // 3-byte.
-                int32 b1 = (i + 1 < this.byteLength)
-                    ? (((int32) this.bytes[i + 1]) & 0xff) : 0;
-                int32 b2 = (i + 2 < this.byteLength)
-                    ? (((int32) this.bytes[i + 2]) & 0xff) : 0;
+                int32 b1 = (i + 1 < n) ? (((int32) this.byteAt(i + 1)) & 0xff) : 0;
+                int32 b2 = (i + 2 < n) ? (((int32) this.byteAt(i + 2)) & 0xff) : 0;
                 decoded = ((b0 & 0x0F) << 12)
                         | ((b1 & 0x3F) << 6)
                         |  (b2 & 0x3F);
                 width = 3;
             } else if ((b0 & 0xF8) == 0xF0) {
-                // 4-byte.
-                int32 b1 = (i + 1 < this.byteLength)
-                    ? (((int32) this.bytes[i + 1]) & 0xff) : 0;
-                int32 b2 = (i + 2 < this.byteLength)
-                    ? (((int32) this.bytes[i + 2]) & 0xff) : 0;
-                int32 b3 = (i + 3 < this.byteLength)
-                    ? (((int32) this.bytes[i + 3]) & 0xff) : 0;
+                int32 b1 = (i + 1 < n) ? (((int32) this.byteAt(i + 1)) & 0xff) : 0;
+                int32 b2 = (i + 2 < n) ? (((int32) this.byteAt(i + 2)) & 0xff) : 0;
+                int32 b3 = (i + 3 < n) ? (((int32) this.byteAt(i + 3)) & 0xff) : 0;
                 decoded = ((b0 & 0x07) << 18)
                         | ((b1 & 0x3F) << 12)
                         | ((b2 & 0x3F) << 6)
                         |  (b3 & 0x3F);
                 width = 4;
-            } else {
-                // Stray continuation or invalid leader — skip without
-                // counting.
+            } else if ((b0 & 0xC0) == 0x80) {
+                // Stray continuation byte — skip without counting (count() skips
+                // these too, so the two stay in lockstep).
                 i = i + 1;
                 continue;
+            } else {
+                // Invalid leader (0xF8-0xFF) — count it as a one-byte codepoint
+                // carrying the raw byte, matching count()'s leader classification
+                // so `for i in [0,count())` codepointAt iteration never yields a
+                // spurious trailing 0.
+                decoded = b0;
+                width = 1;
             }
             if (cp == cpIdx) {
                 return (char) decoded;
@@ -789,8 +436,6 @@ public final class String {
             cp = cp + 1;
             i = i + width;
         }
-        // cpIdx out of range — v1 doesn't bounds-check; return 0 as a
-        // best-effort placeholder rather than throw.
         return (char) 0;
     }
 }

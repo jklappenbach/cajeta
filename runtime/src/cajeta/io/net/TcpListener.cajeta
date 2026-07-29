@@ -53,8 +53,21 @@ public class TcpListener {
      * `__cajeta_net_socket` → `__cajeta_net_set_reuseaddr` →
      * `__cajeta_net_sockaddr_pack` → `__cajeta_net_bind` →
      * `__cajeta_net_listen`, returning an owned, listening `TcpListener`.
+     *
+     * @EntryPoint
      */
     public static #TcpListener bind(SocketAddress addr) {
+        return heap TcpListener(-1);
+    }
+
+    /**
+     * Bind and listen as [`bind`](#bind), but with an explicit accept-queue
+     * `backlog` instead of the default 128 (NET-4.4). Same intrinsic lowering,
+     * passing `backlog` to `__cajeta_net_listen`.
+     *
+     * @EntryPoint
+     */
+    public static #TcpListener bindWithBacklog(SocketAddress addr, int32 backlog) {
         return heap TcpListener(-1);
     }
 
@@ -155,7 +168,7 @@ public class TcpListener {
      * **Placeholder** pending the object-materializing `getsockname` lowering
      * (the increment that resolves the kernel-assigned address/port into a
      * fresh `SocketAddress`). Until then this returns the IPv4 wildcard
-     * `0.0.0.0:0` so the `Server` / `HttpServer` `localAddress()` accessors
+     * `0.0.0.0:0` so the `Server` (and protocol servers over it, e.g. `dev.cajeta.http`) `localAddress()` accessors
      * that read through to it stay constructible and type-stable. The
      * lightweight port-only query the b1 loopback echo needs is
      * [`boundPort`](#boundPort), which is intrinsic-lowered today.

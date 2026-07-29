@@ -32,15 +32,23 @@ namespace cajeta {
         // heap path also initializes the vtable slot if the target is a
         // CajetaClass with one.
         bool stackAlloc = true;
+        // collection-literals §4 — target type pushed by the surrounding
+        // context for the prefixless `{…}` form (declared/assigned/returned
+        // type, or an enclosing array's element type). Ignored when an explicit
+        // `typeName` prefix was written (that always wins).
+        CajetaTypePtr expectedType;
     public:
         void setStackAlloc(bool v) { stackAlloc = v; }
         bool getStackAlloc() const { return stackAlloc; }
+        void setExpectedType(CajetaTypePtr t) { expectedType = std::move(t); }
 
         AggregateInitializerExpression(
                 CajetaParser::AggregateInitializerContext* ctx,
                 antlr4::Token* token)
             : Expression(token) {
-            typeName = ctx->identifier()->getText();
+            // Prefixless form (`{ x: 1, y: 2 }`) has no identifier; typeName
+            // stays empty and the type is inferred from expectedType.
+            typeName = ctx->identifier() ? ctx->identifier()->getText() : "";
             if (ctx->parameterList()) {
                 for (auto& entryCtx : ctx->parameterList()->parameterEntry()) {
                     MethodCallParameter b;

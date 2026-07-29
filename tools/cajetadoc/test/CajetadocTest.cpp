@@ -443,3 +443,74 @@ TEST(Golden, InlineMarkdownSnippet) {
     expectGolden(produced, fs::path(CAJETADOC_FIXTURES_DIR).parent_path() / "golden" /
                                "inline_snippet.html");
 }
+
+// ---- @EntryPoint (docs-refactor plan 3.1.1, 3.1.2) ----------------------
+
+namespace {
+const char* kEntrySrc =
+    "package cajeta.demo;\n"
+    "public class Api {\n"
+    "    /**\n"
+    "     * Front door.\n"
+    "     *\n"
+    "     * @EntryPoint\n"
+    "     */\n"
+    "    public static void open() {}\n"
+    "    /** Internal helper. */\n"
+    "    public static void helperOnly() {}\n"
+    "}\n";
+} // namespace
+
+// 3.1.1 — tag parses, reaches the model JSON, and renders a badge.
+TEST(EntryPoint, TagParsesEmitsJsonAndBadge) {
+    IngestResult r;
+    ingestSource(kEntrySrc, "Api.cajeta", IngestOptions{}, r);
+    const Type* api = findType(r.model, "cajeta.demo.Api");
+    ASSERT_NE(api, nullptr);
+    const Member* open = findMember(*api, "open");
+    ASSERT_NE(open, nullptr);
+    ASSERT_TRUE(open->doc != nullptr);
+    EXPECT_FALSE(open->doc->tags("EntryPoint").empty());
+
+    std::string json = toJson(r.model);
+    EXPECT_NE(json.find("\"name\": \"EntryPoint\""), std::string::npos);
+
+    const Package* pkg = r.model.findPackage("cajeta.demo");
+    std::string html = renderTypePage(*api, "cajetadoc.css", nullptr, pkg);
+    EXPECT_NE(html.find("badge-entry"), std::string::npos);
+}
+
+// 3.1.2 — site-wide entry-points index aggregates tagged methods per
+// package; untagged members stay out.
+TEST(EntryPoint, IndexPageAggregatesPerPackage) {
+    IngestResult r;
+    ingestSource(kEntrySrc, "Api.cajeta", IngestOptions{}, r);
+    ingestSource(
+        "package cajeta.other;\n"
+        "public class Tool {\n"
+        "    /**\n"
+        "     * Start here.\n"
+        "     *\n"
+        "     * @EntryPoint\n"
+        "     */\n"
+        "    public static void begin() {}\n"
+        "}\n",
+        "Tool.cajeta", IngestOptions{}, r);
+
+    std::string html = renderEntryPointsIndex(r.model, "cajetadoc.css");
+    EXPECT_NE(html.find("cajeta.demo"), std::string::npos);
+    EXPECT_NE(html.find("open"), std::string::npos);
+    EXPECT_NE(html.find("cajeta.other"), std::string::npos);
+    EXPECT_NE(html.find("begin"), std::string::npos);
+    EXPECT_EQ(html.find("helperOnly"), std::string::npos);
+
+    // generateSite writes it at the site root.
+    fs::path out = fs::temp_directory_path() / "cajetadoc-entry-test";
+    fs::remove_all(out);
+    std::string err;
+    SiteMeta meta;
+    int pages = generateSite(r.model, out.string(), err, meta);
+    ASSERT_GT(pages, 0) << err;
+    EXPECT_TRUE(fs::exists(out / "entry-points.html"));
+    fs::remove_all(out);
+}

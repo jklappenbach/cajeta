@@ -71,7 +71,7 @@ import cajeta.lang.Optional;
 import cajeta.lang.stream.ArrayStream;
 import cajeta.lang.stream.Stream;
 
-heap String greeting = "  Hello, World  ";
+String greeting = "  Hello, World  ";        // a literal is a static view
 #String clean = greeting.trim();              // owned: "Hello, World"
 if (clean.contains("World")) {
     int64 cps = clean.count();                // 12 codepoints (not bytes)

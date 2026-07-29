@@ -13,9 +13,14 @@ namespace cajeta {
     // FNV-1a 64-bit; matches the runtime's __cajeta_signature_hash so the
     // compile-time hash of a method's canonical signature equals the runtime
     // lookup hash at dispatch time.
+    //
+    // `#` is skipped (mode-erased dispatch, element-ownership §5.1.4) — see
+    // the note on CajetaClass.cpp's signatureHash; the three copies (here,
+    // there, and the runtime C function) must stay in lockstep.
     static int64_t signatureHash(const std::string& s) {
         uint64_t h = 0xcbf29ce484222325ULL;
         for (unsigned char c : s) {
+            if (c == '#') continue;
             h ^= c;
             h *= 0x100000001b3ULL;
         }
@@ -667,8 +672,34 @@ namespace cajeta {
 
         // --- 4. fill initializers (all handles now exist) ---------------------
         if (initVtable) {
+            vtableNullSlots.clear();
             structure->getVirtualTableGlobal()->setInitializer(
                 createVirtualTableConstant(structure));
+            // Raise HERE, not inside the builder: the global now has its
+            // initializer, so unwinding leaves no half-built state. A null slot
+            // means dispatch through it would jump to null, so refuse to emit it
+            // rather than ship a binary that faults at the call.
+            if (!vtableNullSlots.empty()) {
+                std::string slots;
+                for (auto& s : vtableNullSlots) {
+                    if (!slots.empty()) slots += ", ";
+                    slots += s;
+                }
+                vtableNullSlots.clear();
+                throw Exception(
+                    "vtable for `"
+                        + (structure->getQName()
+                            ? structure->getQName()->toCanonical()
+                            : std::string("<anonymous>"))
+                        + "` has no function for " + slots
+                        + ". The method is registered but was never prototyped, so"
+                          " dispatch through the slot would jump to null. This is a"
+                          " COMPILER bug, not a source error. Known trigger: an"
+                          " incremental build reaching a vtable before the method is"
+                          " prototyped. Workaround: build clean (remove"
+                          " `.cajeta/cache`) — a full build does not reproduce it.",
+                    "CAJETA_ERROR_VTABLE_SLOT_UNRESOLVED");
+            }
         }
         if (initRtti) {
             vector<llvm::Constant*> args;
@@ -849,12 +880,35 @@ namespace cajeta {
             int64_t hash = (hashIdx < slotHashes.size())
                 ? slotHashes[hashIdx]
                 : signatureHash(method->toCanonical(/*labeled=*/false));
+            // getLlvmFunction() is a RAW accessor — null until the method has
+            // been prototyped. A replayed method-template instantiation reaches
+            // the vtable before Phase 1 prototypes it, so ask for the type
+            // first: getLlvmFunctionType() lazily runs generatePrototype (both
+            // are idempotent — Phase 1 revisits them for free), leaving a
+            // declaration the slot can reference and Phase 2's generateCode
+            // fills in.
+            if (!method->getLlvmFunction() && !method->isMethodTemplate()) {
+                method->getLlvmFunctionType();
+            }
             llvm::Function* fn = method->getLlvmFunction();
             llvm::Function* resolved = CajetaModule::ensureFunctionInModule(
                 hostModule, fn);
+            // A raw nullptr here goes into the constant as-is and LLVM's
+            // AsmPrinter dereferences it walking the initializer at
+            // doFinalization — a SIGSEGV deep in codegen naming nothing. Emit a
+            // real `ptr null` so the constant completes, and record the slot;
+            // populate raises it once the global is whole (see vtableNullSlots).
+            llvm::Constant* fnConst = resolved;
+            if (!fnConst) {
+                vtableNullSlots.push_back(
+                    "slot " + std::to_string(hashIdx) + " `"
+                    + method->toCanonical(/*labeled=*/false) + "`");
+                fnConst = llvm::ConstantPointerNull::get(
+                    llvm::cast<llvm::PointerType>(llvmPointerType));
+            }
             entryConstants.push_back(llvm::ConstantStruct::get(entryTy, {
                 llvm::ConstantInt::get(i64Ty, llvm::APInt(64, (uint64_t) hash, false)),
-                resolved,
+                fnConst,
             }));
             ++hashIdx;
         }

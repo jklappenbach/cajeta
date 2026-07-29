@@ -37,6 +37,7 @@ namespace cajeta {
 
         void initParameters();
         void generateCode() override;
+        bool emitsReturnFlag() override { return false; }  // raw-IR body: never stores the return flag
 
     private:
         std::shared_ptr<SynthesizedConstructorMethod> ctor;

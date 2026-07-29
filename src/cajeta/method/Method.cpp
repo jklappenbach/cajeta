@@ -2,6 +2,7 @@
 // Created by James Klappenbach on 2/19/22.
 //
 
+#include "../error/Diagnostics.h"
 #include "Method.h"
 #include <functional>
 #include <unordered_set>
@@ -17,15 +18,18 @@
 #include "../asn/Statement.h"
 #include "../asn/expression/Expression.h"
 #include "../asn/expression/MethodCallExpression.h"
+#include "../asn/expression/CreatorRest.h"
 #include "../asn/expression/NewExpression.h"
 #include "../asn/expression/AggregateInitializerExpression.h"
 #include "../asn/expression/BinaryOpExpression.h"
 #include "../asn/expression/Identifier.h"
+#include "../asn/expression/DotExpression.h"
 #include "../asn/LocalVariableDeclaration.h"
 #include "../type/FormalParameter.h"
 #include "../field/ParameterField.h"
 #include "../field/BoundClosureField.h"
 #include "cajeta/dbg/DebugCodegen.h"
+#include "cajeta/dbg/LineInfoCodegen.h"
 #include "../util/Printer.h"
 #include "../xpu/core/KernelArgTrait.h"
 #include "../xpu/core/XpuAttributes.h"
@@ -350,7 +354,7 @@ namespace cajeta {
         // Per-method dedupe: with method-level templates the same Method
         // can be instantiated many times. Key on parent canonical +
         // method's labeled canonical so each declaration warns once.
-        static std::unordered_set<std::string> warned;
+        static thread_local std::unordered_set<std::string> warned;
         // Dedupe by source-canonical (template args trimmed): the same
         // source-level method warning shouldn't repeat for each
         // template instantiation (Stream<int32>.next, Stream<int64>.next
@@ -380,6 +384,152 @@ namespace cajeta {
             << "allocation per call. Suppress with @HeapReturn when "
             << "the caller really needs heap ownership."
             << std::endl;
+    }
+
+    // title-tracking Unit 5 (spec §4.4) — hidden-ABI participation. Both
+    // predicates must be derivable purely from the declaration so every
+    // consumer (concrete prototype, abstract mirror, call sites) computes the
+    // same answer; that is what keeps the trailing hidden param consistent
+    // across overrides and interface dispatch.
+    bool Method::needsTransferWord() {
+        // Keep the plain C ABI for boundaries the cajeta compiler doesn't own
+        // both sides of: device code, the exe entry stub, and @Native methods
+        // (their forwarding wrapper derives the C extern's type from the
+        // wrapper's own signature — a word here mis-declares the C symbol).
+        if (findAnnotation("Kernel") || findAnnotation("Device")
+                || findAnnotation("Native")) {
+            return false;
+        }
+        bool staticMethod = modifiers.find(STATIC) != modifiers.end();
+        if (staticMethod && name == "main") {
+            return false;
+        }
+        for (auto& formalParameter : parameterList) {
+            if (!formalParameter || formalParameter->getName() == "this") {
+                continue;
+            }
+            CajetaTypePtr pt = formalParameter->getType();
+            bool isArr = dynamic_pointer_cast<CajetaArray>(pt) != nullptr;
+            bool isClassLike = dynamic_pointer_cast<CajetaClass>(pt) != nullptr;
+            bool isPrim = pt && (pt->getTypeFlags() & PRIMITIVE_FLAG);
+            // Same pass-by-pointer shape generatePrototype uses for the
+            // formal's LLVM type.
+            if (isClassLike && (isArr || !isPrim) && !pt->isValueType()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool Method::returnsClassPointer() {
+        // @Native bodies are C — they never store the return flag, so callers
+        // must not expect one (a class-pointer result from a native method is
+        // always a borrow at the flag layer until wrapped in cajeta code).
+        if (findAnnotation("Kernel") || findAnnotation("Device")
+                || findAnnotation("Native")) {
+            return false;
+        }
+        CajetaTypePtr rt = returnType;
+        bool isArrR = rt && dynamic_pointer_cast<CajetaArray>(rt) != nullptr;
+        auto rtClass = dynamic_pointer_cast<CajetaClass>(rt);
+        bool isPrimR = rt && (rt->getTypeFlags() & PRIMITIVE_FLAG);
+        bool isInterfaceR = rtClass && rtClass->isInterface();
+        bool isValueTypeR = rt && rt->isValueType();
+        return rtClass != nullptr && (isArrR || !isPrimR) && !isInterfaceR
+            && !isValueTypeR && !returnsStackValue();
+    }
+
+    // title-tracking 5.2.2 — runtime-owner formals. Each droppable class-typed
+    // formal gets a drop entry whose armed state is its transfer-word bit
+    // (bit i = i-th non-`this` formal, the moveMask contract): surrendered →
+    // the callee owns and drops on any exit unless a `#v` store/forward or
+    // Cajeta.dropValue deactivates it; lent → disarmed, teardown skips.
+    // Skipped shapes keep today's behavior: shared-capable values (String —
+    // share-bump transfer, not title move), interfaces/views/value types
+    // (no virtual-drop shape), inline arrays. Runs at prologue, so entries
+    // sit below every body frame (LIFO) and before any try-frame watermark.
+    void Method::emitFormalDropEntries(CajetaModulePtr module) {
+        llvm::Value* word = getTransferWordArg();
+        if (!word) return;
+        auto* builder = module->getBuilder();
+        auto& ctx = *module->getLlvmContext();
+        llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+        llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
+        bool debug = module->getFlags().sourceTags;
+        llvm::Function* pushFn = module->getRuntimeFunction(
+            debug ? "__cajeta_drop_push_debug" : "__cajeta_drop_push");
+        llvm::Function* setFlagFn = module->getRuntimeFunction(
+            "__cajeta_drop_set_flag");
+        if (!pushFn || !setFlagFn) return;
+        unsigned entryBytes = debug ? 40 : 32;
+        auto scope = module->getScopeStack().peek();
+        if (!scope) return;
+        int bit = -1;
+        for (auto& formalParameter : parameterList) {
+            if (!formalParameter || formalParameter->getName() == "this") {
+                continue;
+            }
+            if (++bit >= 64) break;
+            CajetaTypePtr pt = formalParameter->getType();
+            auto arr = dynamic_pointer_cast<CajetaArray>(pt);
+            auto klass = dynamic_pointer_cast<CajetaClass>(pt);
+            const char* dropFnName = nullptr;
+            if (arr) {
+                if (!arr->isInlineArray()) dropFnName = "__cajeta_free_array";
+            } else if (klass && !dynamic_pointer_cast<CajetaView>(pt)
+                    && !klass->isInterface() && !pt->isValueType()
+                    && !klass->isSharedCapableValue()
+                    && klass->hasVtablePointerAtSlotZero()) {
+                // String needs its OWN exclusion: isSharedCapableValue is a
+                // value-type predicate and MISSES String-the-class (the Unit-3
+                // §5 discovery, re-learned here the hard way). In a template
+                // instantiation (Cache<String,V>.put's #K key) the String
+                // formal seeded a __cajeta_class_virtual_drop entry, the
+                // caller's word bit armed it, nothing consumed it, and the
+                // exit pop VIRTUAL-dropped a live String — the map's canonical
+                // key and the node's alias both dangled (the DnsCache LRU
+                // crash). Strings transfer by share/resolve, never by entry.
+                bool isLangString = klass->getQName()
+                    && klass->getQName()->getTypeName() == "String"
+                    && klass->getQName()->getPackageName() == "cajeta.lang";
+                if (!isLangString) {
+                    klass->patchVirtualTableDropFn();
+                    dropFnName = "__cajeta_class_virtual_drop";
+                }
+            }
+            if (!dropFnName) continue;
+            llvm::Function* dropFn = module->getRuntimeFunction(dropFnName);
+            if (!dropFn) continue;
+            FieldPtr pf = scope->getField(formalParameter->getName());
+            if (!pf || pf->getDropEntry()) continue;
+            llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+            llvm::IRBuilder<> entryBuilder(&parentFn->getEntryBlock(),
+                parentFn->getEntryBlock().begin());
+            llvm::Value* entryPtr = entryBuilder.CreateAlloca(
+                llvm::ArrayType::get(i8Ty, entryBytes));
+            llvm::Value* obj = builder->CreateLoad(
+                ptrTy, pf->getOrCreateAllocation());
+            if (debug) {
+                llvm::Constant* fileConst =
+                    module->getOrCreateSourceFileConstant(
+                        module->getSourcePath());
+                llvm::Constant* lineConst = llvm::ConstantInt::get(i32Ty, 0);
+                builder->CreateCall(pushFn,
+                    {entryPtr, obj, dropFn, fileConst, lineConst});
+            } else {
+                builder->CreateCall(pushFn, {entryPtr, obj, dropFn});
+            }
+            llvm::Value* flag = builder->CreateAnd(
+                builder->CreateLShr(word,
+                    llvm::ConstantInt::get(i64Ty, bit)),
+                llvm::ConstantInt::get(i64Ty, 1), "formal_title");
+            builder->CreateCall(setFlagFn, {entryPtr, flag});
+            pf->setDropEntry(entryPtr);
+            pf->setRuntimeConditionalOwner(true);
+            registerDropEntry(entryPtr);
+        }
     }
 
     bool Method::returnsStackValue() {
@@ -673,6 +823,13 @@ namespace cajeta {
         llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
         llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
 
+        // sret (value-returning) methods prepend a hidden result pointer at
+        // LLVM arg 0, so parameterList index i maps to LLVM arg i+1 — the same
+        // shift generateCode applies when building ParameterFields. Without
+        // this, a @NonNull check reads the wrong argument (e.g. `this` instead
+        // of the annotated formal) and silently passes on null.
+        unsigned sretOffset = returnsStackValue() ? 1u : 0u;
+
         for (size_t i = 0; i < parameterList.size(); ++i) {
             auto& p = parameterList[i];
             if (!p) continue;
@@ -695,8 +852,9 @@ namespace cajeta {
             // can return placeholder shapes for forward-declared / not-
             // yet-built types and trip "Invalid size request" / opaque-
             // pointer surprises. Only pointer-typed args can be null.
-            if (i >= llvmFunction->arg_size()) continue;
-            llvm::Value* argVal = llvmFunction->getArg((unsigned) i);
+            unsigned argIdx = (unsigned) i + sretOffset;
+            if (argIdx >= llvmFunction->arg_size()) continue;
+            llvm::Value* argVal = llvmFunction->getArg(argIdx);
             if (!argVal->getType()->isPointerTy()) continue;
 
             llvm::Value* isNull = b->CreateICmpEQ(
@@ -879,7 +1037,7 @@ namespace cajeta {
         // Their formals/return types include placeholder T-vars and the
         // actual function signature isn't known until a concrete
         // instantiation pins each T to a real type. See
-        // docs/specification/lang/MethodLevelTemplate.md.
+        // docs/specification/lang/templates/MethodLevelTemplate.md.
         if (isMethodTemplate()) return;
         auto& llvmFunction = llvmFunctionRef();          // U6.3b: frozen-aware
         auto& llvmFunctionType = llvmFunctionTypeRef();  // U6.3b
@@ -990,6 +1148,13 @@ namespace cajeta {
                     ptLlvm = llvm::PointerType::get(*module->getLlvmContext(), 0);
                 }
                 llvmTypes.push_back(ptLlvm);
+            }
+            // title-tracking Unit 5: mirror the concrete path's trailing
+            // hidden transfer word so indirect calls through an interface
+            // vtable carry the same signature as every implementer.
+            if (needsTransferWord()) {
+                llvmTypes.push_back(
+                    llvm::Type::getInt64Ty(*module->getLlvmContext()));
             }
             // Mirror the non-abstract path's return-by-pointer rule so
             // the indirect call type through the iface vtable matches
@@ -1143,6 +1308,14 @@ namespace cajeta {
             }
             llvmTypes.push_back(ptLlvm);
         }
+        // title-tracking Unit 5 (spec §4.4): trailing hidden i64 transfer
+        // word — bit i set iff user-arg i surrendered a title. Trailing so
+        // every existing index (sret 0, `this`, user args) is undisturbed;
+        // never part of parameterList, so toCanonical/signatureHash and
+        // vtable dispatch are untouched.
+        if (needsTransferWord()) {
+            llvmTypes.push_back(llvm::Type::getInt64Ty(*module->getLlvmContext()));
+        }
         // Apply the same pass-by-pointer rule to the return type so
         // class instances, arrays, AND views all travel as `ptr`. The
         // view case is the live one — a returned view is a typed pointer
@@ -1199,7 +1372,7 @@ namespace cajeta {
         // Two-layer naming: instantiations of a same-canonical template
         // get distinct LLVM symbols via getLlvmSymbolName() (= canonical
         // + method-arg suffix). Ordinary methods get plain canonical.
-        // See docs/specification/lang/MethodLevelTemplate.md § two-layer naming.
+        // See docs/specification/lang/templates/MethodLevelTemplate.md § two-layer naming.
         string canonical = getLlvmSymbolName();
         // Generate-prototype runs multiple times on the same method
         // (CajetaClass::generatePrototype iterates, visitClassBody
@@ -1380,6 +1553,11 @@ namespace cajeta {
                 arenaWalk(ret->getExpression(), escaping, candidates, arrayCandidates);
                 return;
             }
+            // #name inside a THROWN expression escapes to the handler frame.
+            if (auto th = std::dynamic_pointer_cast<ThrowStatement>(node)) {
+                arenaWalk(th->getExpression(), escaping, candidates, arrayCandidates);
+                return;
+            }
             // x = name / this.f = name / arr[i] = name → name is stored.
             if (auto bo = std::dynamic_pointer_cast<BinaryOpExpression>(node)) {
                 if (bo->getBinaryOp() == BINARY_OP_ASSIGN
@@ -1414,17 +1592,18 @@ namespace cajeta {
                 return;
             }
             if (auto mc = std::dynamic_pointer_cast<MethodCallExpression>(node)) {
-                for (auto& c : mc->getChildren()) arenaWalk(c, escaping, candidates, arrayCandidates);
+                // A `#arg` call argument is recorded as callerTransferred on the
+                // parameter (the callee takes ownership) — the named value
+                // escapes the frame. This is the bench's `m.put(#k, i)` shape.
                 for (auto& p : mc->getParameters()) {
-                    // A `#arg` call argument is recorded as callerTransferred on the
-                    // parameter (the callee takes ownership) — the named value
-                    // escapes the frame. This is the bench's `m.put(#k, i)` shape.
                     if (p.callerTransferred) {
                         std::string n = arenaLeftmostId(p.expression);
                         if (!n.empty()) escaping.insert(n);
                     }
-                    arenaWalk(p.expression, escaping, candidates, arrayCandidates);
                 }
+                node->forEachSubNode([&](const AbstractSyntaxNodePtr& sub) {
+                    arenaWalk(sub, escaping, candidates, arrayCandidates);
+                });
                 return;
             }
             if (auto ne = std::dynamic_pointer_cast<NewExpression>(node)) {
@@ -1444,49 +1623,113 @@ namespace cajeta {
                             std::string n = arenaLeftmostId(p.expression);
                             if (!n.empty()) escaping.insert(n);
                         }
-                        arenaWalk(p.expression, escaping, candidates, arrayCandidates);
                     }
                 }
-                for (auto& c : ne->getChildren())
-                    arenaWalk(c, escaping, candidates, arrayCandidates);
+                node->forEachSubNode([&](const AbstractSyntaxNodePtr& sub) {
+                    arenaWalk(sub, escaping, candidates, arrayCandidates);
+                });
                 return;
             }
-            if (auto es = std::dynamic_pointer_cast<ExpressionStatement>(node)) {
-                arenaWalk(es->getExpression(), escaping, candidates, arrayCandidates);
-                return;
-            }
-            if (auto ifs = std::dynamic_pointer_cast<IfStatement>(node)) {
-                arenaWalk(ifs->getCondition(), escaping, candidates, arrayCandidates);
-                arenaWalk(ifs->getThenBranch(), escaping, candidates, arrayCandidates);
-                arenaWalk(ifs->getElseBranch(), escaping, candidates, arrayCandidates);
-                return;
-            }
-            if (auto ls = std::dynamic_pointer_cast<LabelStatement>(node)) {
-                arenaWalk(ls->getBlock(), escaping, candidates, arrayCandidates); return;
-            }
-            if (auto ss = std::dynamic_pointer_cast<ScopeStatement>(node)) {
-                arenaWalk(ss->getBlock(), escaping, candidates, arrayCandidates); return;
-            }
-            if (auto ws = std::dynamic_pointer_cast<WhileStatement>(node)) {
-                arenaWalk(ws->getCondition(), escaping, candidates, arrayCandidates);
-                arenaWalk(ws->getBody(), escaping, candidates, arrayCandidates); return;
-            }
-            if (auto dos = std::dynamic_pointer_cast<DoStatement>(node)) {
-                arenaWalk(dos->getBody(), escaping, candidates, arrayCandidates);
-                arenaWalk(dos->getCondition(), escaping, candidates, arrayCandidates); return;
-            }
-            if (auto fs = std::dynamic_pointer_cast<ForStatement>(node)) {
-                arenaWalk(fs->getInit(), escaping, candidates, arrayCandidates);
-                arenaWalk(fs->getCondition(), escaping, candidates, arrayCandidates);
-                for (auto& u : fs->getUpdate()) arenaWalk(u, escaping, candidates, arrayCandidates);
-                arenaWalk(fs->getBody(), escaping, candidates, arrayCandidates); return;
-            }
-            if (auto efs = std::dynamic_pointer_cast<EnhancedForStatement>(node)) {
-                arenaWalk(efs->getIterableExpr(), escaping, candidates, arrayCandidates);
-                arenaWalk(efs->getBody(), escaping, candidates, arrayCandidates); return;
-            }
-            for (auto& c : node->getChildren()) arenaWalk(c, escaping, candidates, arrayCandidates);
+            // 7.2.4 — everything else (control statements, try/switch —
+            // which the old hand-list MISSED — and plain expressions)
+            // descends through forEachSubNode.
+            node->forEachSubNode([&](const AbstractSyntaxNodePtr& sub) {
+                arenaWalk(sub, escaping, candidates, arrayCandidates);
+            });
         }
+    }
+
+    // 5.2.7 — retention walk. True when the body assigns `formalName` (plain or
+    // `#`-spelled) into a field (`this.c = v`) or an element (`a[i] = v`), or
+    // hands it to a constructor (which stores it by definition). Deliberately
+    // NOT transitive through further calls: the spec scopes this check to a
+    // single hop, and a transitive walk would re-introduce the false-positive
+    // blast radius (every read-only helper poisoning its receiver).
+    bool Method::retainsFormal(const std::string& formalName) {
+        auto cached = retainsFormalCache.find(formalName);
+        if (cached != retainsFormalCache.end()) return cached->second;
+        bool retained = false;
+        std::function<void(const AbstractSyntaxNodePtr&)> walk =
+            [&](const AbstractSyntaxNodePtr& node) {
+                if (!node || retained) return;
+                if (auto bin = std::dynamic_pointer_cast<BinaryOpExpression>(node)) {
+                    auto& kids = bin->getChildren();
+                    if (kids.size() >= 2) {
+                        auto lhs = kids[0];
+                        auto rhs = kids[1];
+                        bool lhsIsPlace =
+                            std::dynamic_pointer_cast<DotExpression>(lhs)
+                            || std::dynamic_pointer_cast<ArrayIndexExpression>(lhs);
+                        // `= v` or `= #v`
+                        auto rhsInner = rhs;
+                        if (auto mv = std::dynamic_pointer_cast<MoveExpression>(rhs)) {
+                            auto& mk = mv->getChildren();
+                            if (!mk.empty()) rhsInner = mk[0];
+                        }
+                        auto rhsId =
+                            std::dynamic_pointer_cast<IdentifierExpression>(rhsInner);
+                        if (lhsIsPlace && rhsId
+                                && rhsId->getTextValue() == formalName) {
+                            retained = true;
+                            return;
+                        }
+                    }
+                }
+                // 7.2.4 — descend through forEachSubNode: statements and
+                // calls keep payloads in private fields, and getChildren()
+                // alone silently misses them (this walker missed retention
+                // inside `if` branches until it was routed through here).
+                node->forEachSubNode(walk);
+            };
+        walk(block);
+        retainsFormalCache[formalName] = retained;
+        return retained;
+    }
+
+    // 5.2.8 — last-use pre-pass. Walks the body once, recording the latest
+    // (line, column) each identifier is read at, and parking any name read
+    // inside a loop body (its "last" textual use runs again next iteration, so
+    // it is not a last use in any useful sense).
+    void Method::computeLastUses() {
+        if (lastUsesComputed) return;
+        lastUsesComputed = true;
+        if (!block) return;
+        std::function<void(const AbstractSyntaxNodePtr&, bool)> walk =
+            [&](const AbstractSyntaxNodePtr& node, bool inLoop) {
+                if (!node) return;
+                bool loopHere = inLoop
+                    || std::dynamic_pointer_cast<WhileStatement>(node)
+                    || std::dynamic_pointer_cast<DoStatement>(node)
+                    || std::dynamic_pointer_cast<ForStatement>(node)
+                    || std::dynamic_pointer_cast<EnhancedForStatement>(node);
+                if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(node)) {
+                    const std::string& n = id->getTextValue();
+                    if (loopHere) {
+                        loopUsedNames.insert(n);
+                    }
+                    pair<int, int> at{id->getSourceLine(), id->getSourceColumn()};
+                    auto it = lastUseAt.find(n);
+                    if (it == lastUseAt.end() || at > it->second) {
+                        lastUseAt[n] = at;
+                    }
+                }
+                // 7.2.4 — descend through forEachSubNode so private
+                // payloads (if/loop bodies, return exprs, call/ctor args) are
+                // all seen; this walker missed every read inside control flow
+                // until it was routed through here.
+                node->forEachSubNode([&](const AbstractSyntaxNodePtr& sub) {
+                    walk(sub, loopHere);
+                });
+            };
+        walk(block, false);
+    }
+
+    bool Method::isFinalUseOfLocal(const std::string& name, int line, int column) {
+        computeLastUses();
+        if (loopUsedNames.find(name) != loopUsedNames.end()) return false;
+        auto it = lastUseAt.find(name);
+        if (it == lastUseAt.end()) return false;
+        return it->second == pair<int, int>{line, column};
     }
 
     void Method::computeArenaEligibility() {
@@ -1508,6 +1751,50 @@ namespace cajeta {
         }
         // U3: non-escaping single-dim primitive-array locals take the same gate.
         for (auto& cand : arrayCandidates) {
+            if (escaping.find(cand.first) != escaping.end()) continue;
+            cand.second->setArenaEligible(true);
+            arenaEligibleNames.insert(cand.first);
+            methodUsesArena = true;
+        }
+        // array-literals §4: `stack [1,2,3]` LITERALS take the same non-escape
+        // gate as arena creators. `escaping` (built above) already covers a
+        // literal-bound name — escape is tracked by name, not by initializer
+        // kind. Collect stack-flagged primitive-element literal initializers and
+        // arena-route the ones whose local never escapes; the rest fall back to
+        // heap (generateCode reads isArenaEligible()).
+        auto arenaPrimitiveElem = [](const CajetaTypePtr& elem) -> bool {
+            return elem
+                && !std::dynamic_pointer_cast<CajetaClass>(elem)
+                && !std::dynamic_pointer_cast<CajetaArray>(elem)
+                && !std::dynamic_pointer_cast<CajetaView>(elem)
+                && !std::dynamic_pointer_cast<CajetaFunctionType>(elem);
+        };
+        std::vector<std::pair<std::string,
+            std::shared_ptr<ArrayLiteralExpression>>> literalCandidates;
+        std::function<void(const AbstractSyntaxNodePtr&)> collectStackLiterals =
+            [&](const AbstractSyntaxNodePtr& node) {
+                if (!node) return;
+                if (auto lvd =
+                        std::dynamic_pointer_cast<LocalVariableDeclaration>(node)) {
+                    auto arr = std::dynamic_pointer_cast<CajetaArray>(lvd->getType());
+                    if (arr && arenaPrimitiveElem(arr->getElementType())) {
+                        for (auto& d : lvd->getVariableDeclarators()) {
+                            if (!d || !d->getInitializer()) continue;
+                            auto& kids = d->getInitializer()->getChildren();
+                            if (kids.empty()) continue;
+                            if (auto lit = std::dynamic_pointer_cast<
+                                    ArrayLiteralExpression>(kids[0])) {
+                                if (lit->isStackAlloc())
+                                    literalCandidates.emplace_back(
+                                        d->getIdentifier(), lit);
+                            }
+                        }
+                    }
+                }
+                node->forEachSubNode(collectStackLiterals);
+            };
+        collectStackLiterals(block);
+        for (auto& cand : literalCandidates) {
             if (escaping.find(cand.first) != escaping.end()) continue;
             cand.second->setArenaEligible(true);
             arenaEligibleNames.insert(cand.first);
@@ -1584,6 +1871,57 @@ namespace cajeta {
         // kernel. The llvmBasicBlock guard above means this runs once
         // per method, not once per generateCode invocation.
         cajeta::xpu::validateKernelParams(shared_from_this());
+
+        // Template-instantiation substitution for the BODY. When this method
+        // belongs to an instantiated generic class (e.g. `Box<RfTick>`), its
+        // body may name the class type parameters — a `T`-typed local, or a
+        // `T.class` reflection literal. Declaration types were substituted
+        // during the instantiation walk (TemplateInstantiator pushes {T->arg}
+        // around visitClassBody), but the body's IR and its resolveTypes
+        // pre-pass run HERE, after that walk popped its frame. Re-establish
+        // {T -> arg} for the duration of body lowering so nodes that resolve
+        // lazily at codegen (ClassLiteralExpression consults
+        // module->lookupTypeParameter) see the concrete argument. RAII-popped
+        // on every exit path. No-op for non-instantiated methods.
+        // Per-function control-flow stack isolation. This body may be lowered
+        // NESTED inside another method's codegen (a method-template
+        // instantiated on-reference at its call site, e.g. `Column.of<int64>`
+        // referenced inside a caller's try body). The module's tryFinally/
+        // tryCatch/loop stacks are per-FUNCTION state: without detaching them,
+        // a `return` in this body sees the CALLER's open try frames and emits
+        // their unwind (__cajeta_exc_pop with no matching push in this
+        // function) — popping the caller's live try frame, so its next throw
+        // reports "uncaught" despite the enclosing catch. Same discipline as
+        // the lambda body's takeTryFinally in Expression.cpp, for all stacks.
+        struct FunctionStacksGuard {
+            CajetaModulePtr mod;
+            CajetaModule::FunctionCodegenStacks saved;
+            explicit FunctionStacksGuard(CajetaModulePtr m)
+                : mod(std::move(m)), saved(mod->takeFunctionCodegenStacks()) {}
+            ~FunctionStacksGuard() {
+                mod->restoreFunctionCodegenStacks(std::move(saved));
+            }
+        } functionStacksGuard{module};
+
+        struct SubstFrameGuard {
+            CajetaModulePtr mod; bool pushed = false;
+            ~SubstFrameGuard() { if (pushed) mod->popTypeSubstitution(); }
+        } substGuard{module};
+        if (parent && parent->isInstantiation()) {
+            const auto& tparams = parent->getTypeParameters();
+            const auto& targs = parent->getTypeArguments();
+            if (!tparams.empty() && tparams.size() == targs.size()) {
+                std::map<std::string, CajetaTypePtr> frame;
+                if (auto inherited = module->getCurrentTypeSubstitution()) {
+                    frame = *inherited;
+                }
+                for (size_t i = 0; i < tparams.size(); ++i) {
+                    frame[tparams[i].name] = targs[i];
+                }
+                module->pushTypeSubstitution(std::move(frame));
+                substGuard.pushed = true;
+            }
+        }
 
         // CajetaXPU: a @Kernel — or a @Device helper — taking Buffer<T>
         // arguments operates on device memory and cannot execute on the host:
@@ -1752,6 +2090,15 @@ namespace cajeta {
             FieldPtr parameterField = make_shared<ParameterField>(module, parameter, bodyFn, i++);
             module->getScopeStack().peek()->putField(parameterField);
         }
+        // title-tracking Unit 5: the hidden transfer word rides as the LAST
+        // llvm arg (after all formals); stash it for callee-side consumers
+        // (runtime-owner formal entries, 5.2.2).
+        if (needsTransferWord() && bodyFn->arg_size() > 0) {
+            setTransferWordArg(bodyFn->getArg(bodyFn->arg_size() - 1));
+        } else {
+            setTransferWordArg(nullptr);
+        }
+        emitFormalDropEntries(module);
 
         // cajeta-ir Unit 4 (closure specialization): a specialized instance had
         // its function-typed parameter(s) dropped from the signature above and
@@ -1805,7 +2152,35 @@ namespace cajeta {
         // Debugger CP5: push a debug frame for this method (no-op unless
         // --debug-info). Paired with __cajeta_dbg_frame_leave on every return
         // path (emitScopeExitToWatermark + the synthetic fall-through below).
-        dbg::emitDbgFrameEnter(module, getLlvmSymbolName());
+        // 9.1: node-paired — the enter's node lands in an entry slot and
+        // every leave unlinks exactly it, immune to fiber-context changes.
+        dbgFrameSlot = nullptr;
+        if (llvm::Value* dbgNode =
+                dbg::emitDbgFrameEnter(module, getLlvmSymbolName())) {
+            llvm::IRBuilder<>* b = module->getBuilder();
+            dbgFrameSlot = b->CreateAlloca(
+                llvm::PointerType::get(b->getContext(), 0), nullptr,
+                "__dbg_frame_slot");
+            b->CreateStore(dbgNode, dbgFrameSlot);
+        }
+
+        // diagnostic-exceptions U3: push a line-info shadow frame carrying this
+        // method's type/method/file (no-op unless --line-info). Paired with
+        // __cajeta_line_leave on every return path (emitScopeExitToWatermark).
+        {
+            std::string typeName = (parent && parent->getQName())
+                ? parent->getQName()->toCanonical() : std::string();
+            // The DECLARING class's file, not the module's: the stdlib parses
+            // every file into one module whose source path is empty, so the
+            // module answer rendered every stdlib frame as `(:268)`
+            // (external-debug §6). Both forms are remapped — frame descriptors
+            // are IR-embedded and must be byte-identical across build roots
+            // (docs-refactor 15.12.2).
+            std::string fileName = parent ? parent->getDeclaringFile()
+                                          : std::string();
+            if (fileName.empty()) fileName = module->remappedSourcePath();
+            dbg::emitLineEnter(module, typeName, getName(), fileName);
+        }
 
         // Register the parameters as locals in the debug frame. Materializing
         // their slots here (getOrCreateAllocation) is the same store-arg-to-
@@ -1829,8 +2204,18 @@ namespace cajeta {
                 dbg::FieldFacetInputs facetIn;
                 facetIn.isStackField = isPrim;
                 facetIn.isHeapField  = !isPrim;
-                facetIn.ownsDrop     = parameter->isTransferred()
-                                       || pf->getDropEntry() != nullptr;
+                // A parameter's STATIC ownership role is set by the calling
+                // form: `#`-transfer takes ownership (Owner); any other
+                // non-primitive param is a borrow the caller still owns. Under
+                // the runtime-bits ownership model a borrowed reference param
+                // now also carries a GATED drop entry (it fires only if the
+                // param dynamically received the title), so a non-null drop
+                // entry is NOT a static-ownership signal — keying `ownsDrop` off
+                // it misclassifies every borrow as an Owner (and thence, with an
+                // inactive entry, moved-out). Key off the transfer form alone;
+                // the dynamic side is reflected by the live drop-active flag in
+                // the lifetime facet.
+                facetIn.ownsDrop     = parameter->isTransferred();
                 facetIn.isReference  = !isPrim && !parameter->isTransferred();
                 dbg::emitDbgLocal(module, pf->getName(),
                                   pt->toCanonical(),
@@ -2182,7 +2567,17 @@ namespace cajeta {
                     int idx = parent->getFieldLlvmIndex(prop);
                     if (idx < 0) continue;
                     llvm::Value* initVal = init->generateCode(module);
-                    if (!initVal) continue;
+                    if (!initVal) {
+                        // The field HAS an initializer and it lowered to nothing.
+                        // `continue` here silently left the field zero — the
+                        // initializer-not-checked hole (silent-resolution
+                        // diagnostics 3.1.3).
+                        throw locatedException(
+                            init->getSourceLine(), init->getSourceColumn() + 1,
+                            "initializer for field '" + prop->getName()
+                                + "' did not resolve to a value",
+                            "CAJETA_ERROR_UNRESOLVED_EXPRESSION");
+                    }
                     llvm::Value* fp = builder->CreateStructGEP(
                         parent->getLlvmType(), thisPtr, (unsigned) idx,
                         std::string("user_ctor.init.") + prop->getName());
@@ -2275,7 +2670,11 @@ namespace cajeta {
             // Debugger CP5: pop this method's debug frame on the fall-through
             // return path (mirrors the explicit-return path in
             // emitScopeExitToWatermark). No-op unless --debug-info.
-            dbg::emitDbgFrameLeave(module);
+            dbg::emitDbgFrameLeave(module, dbgFrameSlot);
+            // U3: pop the line-info shadow frame on this fall-through return too
+            // (else a fall-through method — e.g. a constructor — leaks its frame
+            // and pollutes the next throw's trace). No-op unless --line-info.
+            dbg::emitLineLeave(module);
             // Fire scope-end drops before the synthetic return so the chain is
             // unwound the same way an explicit `return` would do it.
             emitOwnerDrops(module);
@@ -2607,6 +3006,11 @@ namespace cajeta {
                 if (!sc->containsField(name) || sc->isMoved(name)) continue;
                 FieldPtr f = sc->getField(name);
                 if (!f || !f->getDropEntry()) continue;
+                // title-tracking Unit 8: formals are RUNTIME owners now and
+                // carry flag-armed entries — but the documented K02 rule
+                // ("borrowed params are skipped") predates that; keep params
+                // out of the static gate (a lent buffer never drops here).
+                if (dynamic_pointer_cast<ParameterField>(f)) continue;
                 CajetaTypePtr t = f->getType();
                 if (!t) continue;
                 // Every borrowed device resource — Buffer, Texture2D, and
@@ -2638,7 +3042,7 @@ namespace cajeta {
     }
 
 
-    // Two-layer naming helpers (docs/specification/lang/MethodLevelTemplate.md
+    // Two-layer naming helpers (docs/specification/lang/templates/MethodLevelTemplate.md
     // § Status / Known limitations). For instantiations of a method-
     // template, append the concrete method-level type args so the map
     // key and LLVM symbol disambiguate two instantiations that would

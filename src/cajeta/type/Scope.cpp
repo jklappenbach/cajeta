@@ -39,17 +39,106 @@ namespace cajeta {
     }
 
     void Scope::markMoved(const string& name) {
+        markMoved(name, "");
+    }
+
+    // 5.2.7 — lend edges live on the HOLDER's declaring scope (same placement
+    // rule markMoved uses), so a lend recorded inside a nested block is still
+    // visible at the outer return that escapes the holder.
+    void Scope::recordLend(const string& holder, const string& src) {
+        Scope* target = this;
+        while (target) {
+            if (target->fields.find(holder) != target->fields.end()) break;
+            target = target->parent ? target->parent.get() : nullptr;
+        }
+        if (!target) target = this;
+        target->lendEdges[holder].insert(src);
+    }
+
+    set<string> Scope::lendsOf(const string& holder) {
+        Scope* target = this;
+        while (target) {
+            auto it = target->lendEdges.find(holder);
+            if (it != target->lendEdges.end()) return it->second;
+            target = target->parent ? target->parent.get() : nullptr;
+        }
+        return {};
+    }
+
+    void Scope::markMoved(const string& name, const string& note) {
         // Find the scope where the name was declared and record the move there;
         // otherwise record it locally so later checks still see it.
         Scope* target = this;
         while (target) {
-            if (target->fields.find(name) != target->fields.end()) {
-                target->movedNames.insert(name);
+            if (target->fields.find(name) != target->fields.end()) break;
+            target = target->parent ? target->parent.get() : nullptr;
+        }
+        if (!target) target = this;
+        if (target->movedNames.insert(name).second) {
+            moveLog.emplace_back(target, name);
+        }
+        if (!note.empty()) target->movedNotes[name] = note;
+    }
+
+    void Scope::retractMovesSince(size_t mark) {
+        while (moveLog.size() > mark) {
+            auto& entry = moveLog.back();
+            entry.first->movedNames.erase(entry.second);
+            entry.first->movedNotes.erase(entry.second);
+            moveLog.pop_back();
+        }
+    }
+
+    vector<Scope::MoveMark> Scope::snapshotMovesSince(size_t mark) const {
+        vector<MoveMark> out;
+        for (size_t i = mark; i < moveLog.size(); ++i) {
+            auto& e = moveLog[i];
+            auto nit = e.first->movedNotes.find(e.second);
+            out.push_back({e.first, e.second,
+                nit == e.first->movedNotes.end() ? string() : nit->second});
+        }
+        return out;
+    }
+
+    void Scope::reapplyMoves(const vector<MoveMark>& moves) {
+        for (auto& m : moves) {
+            if (m.target->movedNames.insert(m.name).second) {
+                moveLog.emplace_back(m.target, m.name);
+            }
+            if (!m.note.empty()) m.target->movedNotes[m.name] = m.note;
+        }
+    }
+
+    void Scope::clearMoved(const string& name) {
+        Scope* target = this;
+        while (target) {
+            if (target->movedNames.erase(name)) {
+                target->movedNotes.erase(name);
                 return;
             }
             target = target->parent ? target->parent.get() : nullptr;
         }
-        movedNames.insert(name);
+    }
+
+    string Scope::movedNoteOf(const string& name) {
+        Scope* target = this;
+        while (target) {
+            auto it = target->movedNotes.find(name);
+            if (it != target->movedNotes.end()) return it->second;
+            target = target->parent ? target->parent.get() : nullptr;
+        }
+        return "";
+    }
+
+    string Scope::borrowSourceOf(const string& name) {
+        Scope* target = this;
+        while (target) {
+            for (auto& entry : target->liveBorrows) {
+                if (entry.second.count(name)) return entry.first;
+            }
+            target = target->parent ? target->parent.get() : nullptr;
+        }
+        return "";
     }
 
     bool Scope::isMoved(const string& name) {

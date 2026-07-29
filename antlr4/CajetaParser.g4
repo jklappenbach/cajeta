@@ -48,7 +48,7 @@ importDeclaration
 
 typeDeclaration
     : classOrInterfaceModifier*
-      (classDeclaration | viewDeclaration | enumDeclaration | interfaceDeclaration | annotationTypeDeclaration)
+      (classDeclaration | recordDeclaration | viewDeclaration | enumDeclaration | interfaceDeclaration | annotationTypeDeclaration)
     | ';'
     ;
 
@@ -57,6 +57,7 @@ modifier
     | NATIVE
     | TRANSIENT
     | VOLATILE
+    | MUT  // record per-field mutation opt-in (records-spec §3.4)
     ;
 
 classOrInterfaceModifier
@@ -97,12 +98,28 @@ viewDeclaration
       classBody
     ;
 
+// Value-type record (docs/specification/nucleo/records-spec.md): lowers to a
+// @ValueType final class with no vtable. EXTENDS = static non-virtual
+// inheritance (single base, Unit 4). IMPLEMENTS parses only so the visitor
+// can reject it with a proper diagnostic — records never carry a
+// vtable/itable. Body reuses classBody.
+recordDeclaration
+    : RECORD identifier typeParameters?
+      (EXTENDS typeList)?
+      (IMPLEMENTS typeList)?
+      classBody
+    ;
+
 typeParameters
     : '<' typeParameter (',' typeParameter)* '>'
     ;
 
+// As with the type-argument `#` below, this prefix carries no meaning: a must-own
+// edge is spelled on the FORMAL (`f(#K x)`), which with `#T` returns is where `#`
+// legitimately appears. Parsed only so the compiler can reject it with
+// CAJETA_ERROR_TYPE_TRANSFER_RETIRED and name that fix.
 typeParameter
-    : annotation* identifier (EXTENDS annotation* typeBound)? (ASSIGN typeType)?
+    : annotation* REFERENCE? identifier (EXTENDS annotation* typeBound)? (ASSIGN typeType)?
     | primitiveType identifier
     ;
 
@@ -232,6 +249,12 @@ operatorOverloadDeclaration
     // grammar permits it; the type-check enforces the semantic
     // shape elsewhere.
     | typeTypeOrVoid OPERATOR LBRACK RBRACK ASSIGN? formalParameters methodBody
+    // title-tracking §6.3 — `operator#[]`, the title-extracting index.
+    // Distinct canonical name because dispatch is mode-erased: a `#`-only
+    // overload of operator[] would collide (TRANSFER_MODE_OVERLOAD). The
+    // REFERENCE here is a direct child (the one between OPERATOR and
+    // LBRACK); a `#V` return's REFERENCE lives inside typeTypeOrVoid.
+    | typeTypeOrVoid OPERATOR REFERENCE LBRACK RBRACK formalParameters methodBody
     ;
 
 /* We use rule this even for void methods which cannot have [] after parameters.
@@ -348,7 +371,7 @@ variableDeclarators
     ;
 
 variableDeclarator
-    : variableDeclaratorId ('=' variableInitializer)?
+    : variableDeclaratorId (('=' | '#=') variableInitializer)?
     ;
 
 variableDeclaratorId
@@ -369,8 +392,15 @@ classOrInterfaceType
     : identifier typeArguments? ('.' identifier typeArguments?)*
     ;
 
+// The optional REFERENCE ('#') prefix is NOT a feature — ownership is per-call in
+// Cajeta, spelled at the call or store site (`m.put(#k, #v)`, `xs.add(#x)`), never
+// in a type. It is parsed here for one reason: so the compiler can reject it with
+// CAJETA_ERROR_TYPE_TRANSFER_RETIRED and point at the fix, instead of failing with
+// "no viable alternative". Do not give it meaning — a type that declares ownership
+// still permits transfer OUT of the instance, which is why it does not exist.
+// The `#` is never infix, so this stays unambiguous.
 typeArgument
-    : typeType
+    : REFERENCE? typeType
     | primitiveType
     | integerLiteral
     | annotation* '?' ((EXTENDS | SUPER) typeType)?
@@ -459,10 +489,17 @@ elementValuePair
     : identifier ('=' | ':') elementValue
     ;
 
+// The array form is listed FIRST, ahead of `expression`. collection-literals 2
+// gave `aggregateInitializer` a prefixless `'{' parameterList '}'` alternative,
+// and `parameterEntry`'s label is optional — so `{"a", "b"}` also matches an
+// aggregate expression. With `expression` first, every annotation array argument
+// (`@SuppressLint({"a","b"})`, `@JsonAlias({...})`, `@Profile({...})`) parsed as
+// an aggregate and silently lost its elements — no diagnostic, just an empty
+// list. Ordering the specific form ahead of the general one restores it.
 elementValue
-    : expression
+    : elementValueArrayInitializer
     | annotation
-    | elementValueArrayInitializer
+    | expression
     ;
 
 elementValueArrayInitializer
@@ -525,7 +562,11 @@ blockStatement
     ;
 
 localVariableDeclaration
-    : variableModifier* (typeType variableDeclarators | VAR identifier '=' expression)
+    // Optional REFERENCE ('#') prefix mirrors parameter/return positions: an
+    // owned-transfer binding (`#String t = s.trim();`). Documented syntax that
+    // previously only parsed via ANTLR error recovery (single-token deletion) —
+    // the strict syntax gate made it a hard error, so it is now grammatical.
+    : variableModifier* (REFERENCE? typeType variableDeclarators | VAR identifier '=' expression)
     ;
 
 identifier
@@ -560,6 +601,9 @@ identifier
     // tree -> bad any_cast at AST-build time. (Unlike its placement siblings
     // HEAP/STACK, which are reserved, `shared` collides with real user code.)
     | SHARED
+    // `mut` is likewise contextual: meaningful only as a record field
+    // modifier; everywhere else it stays a plain identifier.
+    | MUT
     ;
 
 localTypeDeclaration
@@ -670,7 +714,23 @@ parameterList
 // never colliding with the postfix index form `expression '[' expression ']'`,
 // which requires a preceding expression. See CajetaXPU.md §3.1.3 (`grid: [...]`).
 arrayLiteral
-    : '[' expressionList? ']'
+    : '[' arrayLiteralEntries? ']'
+    ;
+
+// collection-literals §3 — the bracket list is either a sequence (`[1, 2, 3]`)
+// or a map (`[k1: v1, k2: v2]`, and the empty `[:]`). A single leading COLON is
+// the empty map; otherwise each entry is an expression optionally followed by
+// `: value`. The colon inside a ternary (`[cond ? a : b]`) is consumed by the
+// ternary expression, so that stays a one-element sequence (the visitor decides
+// map-vs-sequence per entry). The postfix slice `arr[a:b]` never reaches here —
+// it has a preceding expression (`expression '[' expression COLON expression ']'`).
+arrayLiteralEntries
+    : COLON                                             // empty map `[:]`
+    | arrayLiteralEntry (',' arrayLiteralEntry)* ','?
+    ;
+
+arrayLiteralEntry
+    : expression (COLON expression)?
     ;
 
 // Method-level template call-site form: `identifier<TypeArgs>(args)`.
@@ -727,6 +787,9 @@ expression
        | HEAP nonWildcardTypeArguments? innerCreator
        | SUPER superSuffix
       )
+    // Array/slice window (slice-spec §7.2): `arr[a:b]` yields Slice<T>.
+    // Listed before the plain index form so the longer bracketed shape wins.
+    | expression '[' expression COLON expression ']'
     | expression '[' expression ']'
     // XPU: postfix call applied to the result of an expression — the
     // `(args)` that follows `kernel.launch(stream, grid:, block:)`. General
@@ -743,13 +806,13 @@ expression
     // forms wrap either a constructor call (via `creator`) or an aggregate-
     // init expression. `heap` is the sole heap allocator; `stack` lowers to
     // a stack alloca + ctor call.
-    | HEAP  (creator | aggregateInitializer)
-    | STACK (creator | aggregateInitializer)
+    | HEAP  (creator | aggregateInitializer | arrayLiteral)
+    | STACK (creator | aggregateInitializer | arrayLiteral)
     // `shared` is a third placement (GPU workgroup-shared memory, NV addrspace
     // 3). Device-only: legal only inside an @Kernel body, where the device
     // lowerer (NvptxKernelLowering) turns `shared T[N]` into one per-block
     // addrspace(3) global. The host codegen path rejects it. See CajetaXPU.md.
-    | SHARED (creator | aggregateInitializer)
+    | SHARED (creator | aggregateInitializer | arrayLiteral)
     | '(' annotation* typeType ('&' typeType)* ')' expression
     | expression postfix=('++' | '--')
     | prefix=('+'|'-'|'++'|'--') expression
@@ -779,7 +842,7 @@ expression
     | expression bop='||' expression
     | <assoc=right> expression bop='?' expression ':' expression
     | <assoc=right> expression
-      bop=('=' | '+=' | '-=' | '*=' | '/=' | '&=' | '|=' | '^=' | '>>=' | '>>>=' | '<<=' | '%=')
+      bop=('=' | '#=' | '+=' | '-=' | '*=' | '/=' | '&=' | '|=' | '^=' | '>>=' | '>>>=' | '<<=' | '%=')
       expression
     | lambdaExpression // Java8
     | switchExpression // Java17
@@ -850,6 +913,12 @@ primary
 // back to the identifier alternative cleanly.
 aggregateInitializer
     : identifier '{' parameterList? '}'
+    // collection-literals §4 — the prefixless, type-inferred form `{ x: 1,
+    // y: 2 }`: the aggregate type comes from context (declared / assigned /
+    // returned type, or an enclosing array's element type). A parameterList is
+    // required so a bare `{}` never shadows an empty block in the (unreached-
+    // by-primary) statement position.
+    | '{' parameterList '}'
     ;
 
 // Java17

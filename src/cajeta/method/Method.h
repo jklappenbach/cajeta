@@ -94,12 +94,26 @@ namespace cajeta {
     protected:
         static thread_local map<string, MethodPtr> archive;  // per-compile (U3)
         string name;
+        // Declaration name-token position; see getDeclLine(). 0 = synthesized.
+        int declLine = 0;
+        // See getDbgLineDelta() — snippet-line -> file-line correction for
+        // template-instantiated bodies (9.2).
+        int dbgLineDelta = 0;
+        int declColumn = 0;
         CajetaClassPtr parent;
         CajetaTypePtr returnType;
         // True iff the return type is prefixed with `#`, meaning the method
         // transfers ownership of the returned value to its caller. See
         // `MemoryModel.md` § Function signatures.
         bool returnsOwnership = false;
+        // True when this method was injected by a registered member
+        // synthesizer (source-synthesis facility). Consulted by checks that
+        // distinguish compiler-generated members from user-authored ones —
+        // e.g. the record add-but-not-redefine shadow ban exempts a shadow of
+        // a SYNTHESIZED parent method (each record level gets its own typed
+        // `clone()`; static dispatch picks by declared type, so the shadow is
+        // benign).
+        bool synthesizedMember = false;
         // Cached result of the value-return body scan. -1 = not computed,
         // 0 = false, 1 = true. A method "returns a stack value" iff (it does
         // not transfer ownership and) a return statement hands back a `stack`
@@ -109,6 +123,11 @@ namespace cajeta {
         // scan is the single source of truth — there is no `stack T` return
         // type. See docs/specification/lang/ValueReturns.md.
         int returnsStackValueCache = -1;
+        // title-tracking Unit 5: the incoming hidden transfer-word argument
+        // (trailing i64), stashed at prologue binding so callee-side codegen
+        // (runtime-owner formals, 5.2.2) can read per-formal bits. Null when
+        // needsTransferWord() is false or before body codegen.
+        llvm::Value* transferWordArg = nullptr;
         BlockPtr block;
         bool constructor;
         // Abstract method — has no body, no LLVM function declaration.
@@ -136,7 +155,7 @@ namespace cajeta {
         vector<QualifiedNamePtr> throwsList;
         int virtualTableIndex;
 
-        // Method-level templates (docs/specification/lang/MethodLevelTemplate.md).
+        // Method-level templates (docs/specification/lang/templates/MethodLevelTemplate.md).
         // `methodTypeParameters` non-empty AND `methodTypeArguments` empty =
         // a method-template declaration (no LLVM function emitted; body source
         // captured for re-parse at call sites that instantiate it). Both non-
@@ -160,6 +179,15 @@ namespace cajeta {
         // cache holds instantiations bound to a freed user emit module and is
         // cleared on next use. Unused (epoch never bumps) in production.
         uint64_t methodInstantiationCacheEpoch = 0;
+
+        // resident-debug-server 9.1: entry-block slot holding this
+        // method's debug-frame NODE (the prolog's frame_enter result);
+        // every frame_leave (returns + fall-through) loads it so leave
+        // unlinks exactly this invocation's frame. Reset per generateCode.
+        llvm::Value* dbgFrameSlot = nullptr;
+    public:
+        llvm::Value* getDbgFrameSlot() const { return dbgFrameSlot; }
+    protected:
 
         // Stack of drop frames. Each Block::generateCode pushes a frame
         // at entry, registers any owned locals declared inside into the
@@ -490,12 +518,84 @@ namespace cajeta {
 
         map<string, FormalParameterPtr> getParameters() { return parameters; }
 
+        /**
+         * Prepend an explicit `this` parameter of type `t`, unless one is
+         * already at slot 0.
+         *
+         * For enum bodies: an enum value is an i32 ordinal, not an object, so
+         * the receiver must be typed as the enum itself. generatePrototype's
+         * own injection would otherwise splice in a `pointer` `this` — it
+         * skips precisely when `this` already occupies slot 0, which is what
+         * this call arranges — and a pointer receiver is meaningless for an
+         * ordinal.
+         */
+        void prependThisParameter(const CajetaTypePtr& t) {
+            if (!parameterList.empty() && parameterList.front()
+                    && parameterList.front()->getName() == "this") {
+                return;
+            }
+            auto p = make_shared<FormalParameter>(string("this"), t);
+            p->setParent(shared_from_this());
+            parameterList.insert(parameterList.begin(), p);
+            parameters[p->getName()] = p;
+        }
+
         CajetaTypePtr getReturnType() { return returnType; }
 
         CajetaClassPtr getParent() const { return parent; }
 
         bool isReturnsOwnership() const { return returnsOwnership; }
         void setReturnsOwnership(bool v) { returnsOwnership = v; }
+
+        // title-tracking Unit 5 (spec §4.4) — the per-call transfer ABI.
+        // needsTransferWord(): this method's LLVM signature carries a hidden
+        // TRAILING i64 whose bit i mirrors the moveMask contract (user-arg i
+        // surrendered a title). True iff any user formal passes by pointer;
+        // @Kernel/@Device methods and static `main` keep the plain C ABI.
+        // returnsClassPointer(): the method returns a raw class pointer
+        // (`ret ptr`, not sret/interface/value-type) and so participates in
+        // the paired return-flag protocol (__cajeta_return_flag_set).
+        bool needsTransferWord();
+        bool returnsClassPointer();
+        // Callers may trust the return-flag TLS right after calling this
+        // method: its body runs through the statement pipeline, which pairs
+        // every class-pointer return with __cajeta_return_flag_set. Raw-IR
+        // synthesized bodies (generateCode overrides) never store the flag
+        // and override this to false — callers fall back to static mode.
+        virtual bool emitsReturnFlag() { return returnsClassPointer(); }
+        llvm::Value* getTransferWordArg() const { return transferWordArg; }
+        void setTransferWordArg(llvm::Value* v) { transferWordArg = v; }
+        // 5.2.2 — seed a drop entry per droppable class-typed formal, armed
+        // from its transfer-word bit; prologue-only, no-op without the word.
+        void emitFormalDropEntries(CajetaModulePtr module);
+
+        // 5.2.7 — does this method RETAIN the named formal, i.e. store it into
+        // a field or an element? Only a retaining callee can leave its receiver
+        // holding a lend of the caller's local (the dangling-lend hazard); a
+        // read-only callee (`sb.append(s)`, `list.contains(x)`) cannot, and
+        // must not poison its receiver. Cached; false for bodyless methods.
+        bool retainsFormal(const std::string& formalName);
+
+        // 5.2.8 (spec §7.1) — last-use advisory. True when the identifier `name`
+        // has no later read in this body than (line, column), i.e. the site is
+        // its FINAL use and lending there is probably meant as a transfer. Uses
+        // inside a loop body never qualify: a textual last use still runs again
+        // on the next iteration, so advising `#` there would be wrong. Advisory
+        // only — the compiler cannot know intent (spec §4.6.4 rejects inferring
+        // it), so this reports a WARNING with a `#` fixit and never an error.
+        bool isFinalUseOfLocal(const std::string& name, int line, int column);
+    private:
+        map<std::string, bool> retainsFormalCache;
+        // name -> last (line, column) it is read at; names used inside any loop
+        // are parked in loopUsedNames and never advised.
+        map<std::string, pair<int, int>> lastUseAt;
+        set<std::string> loopUsedNames;
+        bool lastUsesComputed = false;
+        void computeLastUses();
+    public:
+
+        bool isSynthesizedMember() const { return synthesizedMember; }
+        void setSynthesizedMember(bool v) { synthesizedMember = v; }
 
         // True iff this method returns a `stack`-constructed value by copy
         // (lowered via the sret + NRVO ABI). Computed lazily by scanning the
@@ -572,6 +672,27 @@ namespace cajeta {
         // observe the terminator and skip its own fire on the way out.
         void emitOwnerDrops(CajetaModulePtr module);
 
+        // Position of the declaration's NAME token (1-based line, 0-based col).
+        // Set by the visitor at each method/constructor declaration site; 0 means
+        // synthesized (drop methods, mocks, template instantiations). Consumed by
+        // the xref export (ide-symbol-index §2).
+        // resident-debug-server 9.2: instantiated bodies are re-parsed from a
+        // SYNTHETIC wrapper snippet, so their token lines are snippet-relative
+        // (they merely look plausible — a long preamble puts them in range of
+        // the real file). This delta maps snippet line -> true file line and
+        // is derived from the template's own declLine vs the snippet's, so it
+        // is independent of preamble size. 0 = ordinary (non-instantiated).
+        int getDbgLineDelta() const { return dbgLineDelta; }
+        void setDbgLineDelta(int d) { dbgLineDelta = d; }
+
+        int getDeclLine() const { return declLine; }
+        int getDeclColumn() const { return declColumn; }
+
+        void setDeclPosition(int line, int column) {
+            declLine = line;
+            declColumn = column;
+        }
+
         const string& getName() const {
             return name;
         }
@@ -623,7 +744,7 @@ namespace cajeta {
         // and T=String thereby get distinct keys even though their
         // value-param signatures (and so their `toCanonical()`) are
         // identical — which is what lets addMethod's duplicate-static
-        // check accept both. See docs/specification/lang/MethodLevelTemplate.md
+        // check accept both. See docs/specification/lang/templates/MethodLevelTemplate.md
         // § two-layer naming.
         //
         // resolveMethod looks up ordinary methods by their plain

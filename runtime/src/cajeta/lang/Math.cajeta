@@ -82,6 +82,15 @@ public class Math {
      * Math.max(1.5, 2.5)   // 2.5 (max<float64>)
      * ```
      * (For an element-wise vector max use `a.max(b)` on a `Vector<T,N>`.)
+     *
+     * **NaN is comparison-based, not propagated.** For a float `T`, `a > b` is
+     * false when either operand is NaN, so a NaN operand never wins:
+     * `Math.max(NaN, 5.0) == 5.0` and `Math.max(5.0, NaN) == NaN` (the raw `b`
+     * fallthrough) — the result depends on argument order and a NaN in the data
+     * can be silently dropped by a reduction. Guard with `Float64.isNaN` first if
+     * you need NaN to short-circuit. Same for {@link #min} / {@link #clamp}.
+     *
+     * @EntryPoint
      */
     public static T max<T>(T a, T b) {
         if (a > b) { return a; }
@@ -93,6 +102,8 @@ public class Math {
      * ```
      * Math.min(3, 7)   // 3
      * ```
+     *
+     * @EntryPoint
      */
     public static T min<T>(T a, T b) {
         if (a < b) { return a; }
@@ -107,6 +118,8 @@ public class Math {
      * Math.clamp(-5, 0, 10)   // 0   (below)
      * Math.clamp(5,  0, 10)   // 5   (in range)
      * ```
+     *
+     * @EntryPoint
      */
     public static T clamp<T>(T x, T lo, T hi) {
         return Math.max(lo, Math.min(hi, x));

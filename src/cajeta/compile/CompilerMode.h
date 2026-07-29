@@ -97,6 +97,17 @@ namespace cajeta {
     // bodies so the linker drops their native deps, e.g. OpenSSL). Default Off.
     enum class TreeShake { Off, Report, On };
 
+    // --debug-info=off|line|full (specs/external-debug-spec.md §2). One switch
+    // over the two independent codegen toggles below it:
+    //   Off  — nothing: no shadow stack, no safepoints, no local records.
+    //   Line — the shadow stack + #FrameDesc only, so a captured trace still
+    //          resolves to Type.method(File.cajeta:NN). Cheapest useful level,
+    //          and the default.
+    //   Full — adds __cajeta_dbg_safepoint / __cajeta_dbg_local, the embedded
+    //          location table, and forced RTTI retention. What an external
+    //          debugger needs.
+    enum class DebugInfo { Off, Line, Full };
+
     struct CompilerFlags {
         // ----- safety nets (runtime checks) -----
         BoundsCheck     bounds              = BoundsCheck::On;
@@ -136,6 +147,13 @@ namespace cajeta {
         // --keepset-json=<path>: write the generated keep-set + provenance to this
         // JSON file (empty = off; lean builds only).
         std::string     keepsetJson         = "";
+        // --emit-xref=<path>: write the compiler's RESOLVED cross-reference index
+        // (declarations, inheritance, references, overrides, calls) to this JSON
+        // file (empty = off). Opt-in: a build that does not ask for it pays nothing.
+        // The IDE consumes this instead of reimplementing Cajeta's resolution in
+        // Kotlin — see specs/ide-symbol-index-spec.md §2 and
+        // specs/schemas/cajeta-xref-v1.schema.json.
+        std::string     emitXref            = "";
 
         // ----- tree-shaking (Tier-1 RTA; plans/compiler/stdlib-tree-shaking.md) -----
         // --tree-shake=off|report|on. On (Phase B/C + Tier-1.5) prunes unreachable
@@ -146,12 +164,27 @@ namespace cajeta {
         TreeShake       treeShake           = TreeShake::Off;
 
         // ----- debugging -----
+        // The requested level. `debugInfo` and `lineInfo` below are the derived
+        // bools the codegen guards read; applyDebugInfo() keeps all three in
+        // step. They remain independently settable (--line-info=off after a
+        // --debug-info=line, say) — last flag on the command line wins.
+        DebugInfo       debugInfoLevel      = DebugInfo::Line;
+
         // Emit __cajeta_dbg_safepoint(loc_id) at each statement boundary so the
         // in-process debugger (`cajeta dap`) can park the executing fiber at a
-        // breakpoint. Opt-in via --debug-info / -g; OFF for every mode by
+        // breakpoint. Opt-in via --debug-info=full / -g; OFF for every mode by
         // default (it changes codegen and only matters under a debugger), so
         // ordinary builds and the existing test suite are unaffected.
         bool            debugInfo           = false;
+
+        // Emit the line-info shadow-stack calls (__cajeta_line_enter/mark/leave)
+        // + a per-method #FrameDesc so a captured stack trace resolves to
+        // Package.Class.method(File.cajeta:NN) with NO debug info (diagnostic-
+        // exceptions §5/§8). Default ON in every flavor (semantic traces are the
+        // ergonomic default); --line-info=off drops all of it for zero cost.
+        // Perf: v1 marks each statement with a call — measure before relying on
+        // default-on in release (see the plan's Unit 3 perf note).
+        bool            lineInfo            = true;
 
         // ----- experimental perf -----
         // Skip the per-method prologue __cajeta_scope_enter() (the implicit
@@ -231,5 +264,35 @@ namespace cajeta {
             return f;
         }
     };
+
+    // --debug-info=off|line|full → the level plus the two derived bools. Returns
+    // false on an unknown value, leaving `f` untouched and (when given) filling
+    // `error` with a message naming the accepted set.
+    inline bool applyDebugInfo(const std::string& value, CompilerFlags& f,
+                               std::string* error) {
+        DebugInfo level;
+        if      (value == "off")  level = DebugInfo::Off;
+        else if (value == "line") level = DebugInfo::Line;
+        else if (value == "full") level = DebugInfo::Full;
+        else {
+            if (error)
+                *error = "unrecognized value for --debug-info: " + value +
+                         " (expected off|line|full)";
+            return false;
+        }
+        f.debugInfoLevel = level;
+        f.debugInfo      = (level == DebugInfo::Full);
+        f.lineInfo       = (level != DebugInfo::Off);
+        return true;
+    }
+
+    inline const char* debugInfoName(DebugInfo level) {
+        switch (level) {
+            case DebugInfo::Off:  return "off";
+            case DebugInfo::Line: return "line";
+            case DebugInfo::Full: return "full";
+        }
+        return "line";
+    }
 
 }

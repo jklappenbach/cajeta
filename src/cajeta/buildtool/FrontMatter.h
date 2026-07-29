@@ -1,6 +1,6 @@
 //
 // Front-matter Markdown splitting + parsing.
-// See docs/specs/yaml-frontmatter-spec.md.
+// See specs/archive/yaml-frontmatter-spec.md.
 //
 #pragma once
 

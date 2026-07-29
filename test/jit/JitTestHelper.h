@@ -7,6 +7,7 @@
 #pragma once
 
 #include <map>
+#include "cajeta/error/DiagnosticEngine.h"
 #include <memory>
 #include <optional>
 #include <string>
@@ -27,6 +28,18 @@ namespace cajeta_test {
 
 class CajetaJit {
 public:
+    // title-tracking 5.1.11 / 5.2.8 — warning capture. The compiler reports
+    // recoverable diagnostics to the active DiagnosticEngine; the CLI installs
+    // one, but the JIT harness never did, so every WARNING was silently
+    // dropped and no test could assert on one. compile() now installs an
+    // engine and parks the diagnostics it collected here (cleared at the start
+    // of each compile), so a test can assert an advisory fired without the
+    // build going red.
+    static const std::vector<cajeta::CollectedDiagnostic>& lastDiagnostics();
+    // Convenience: was a diagnostic with this code reported by the last
+    // compile? (Any severity — the code is the identity.)
+    static bool sawDiagnostic(const std::string& code);
+
     struct Options {
         bool boundsCheckEnabled = true;
         // Signed-overflow trap (--overflow-checks=on). On by default
@@ -62,6 +75,14 @@ public:
         // throw records its native stack via backtrace(3)); tests
         // verifying the off path explicitly opt out.
         bool stackTraceCaptureEnabled = true;
+        // Line-info shadow-stack emission (--line-info). Default true (the
+        // compiler default), so getStackTrace() yields semantic frames. Tests
+        // exercising the address-only fallback set this false.
+        bool lineInfoEnabled = true;
+        // --debug-info=full: statement safepoints, local records, and the
+        // embedded location table (external-debug §2/§3). Off by default — it
+        // changes codegen and only matters under a debugger.
+        bool debugInfoEnabled = false;
         // XPU device backend(s) to register @Kernels for and bundle in the
         // runtime manifest. Empty defaults to {Nvptx} (the legacy NVIDIA
         // host-launch path). The CPU dispatcher tests set {Cpu} to exercise

@@ -1,18 +1,20 @@
 package cajeta.lang;
 
+import cajeta.error.NoOptionalValueException;
+
 /**
  * Value-typed sum: present or empty. Stack-allocated by default;
  * `T` may be any type — primitive, class reference, struct, even
  * another Optional.
  *
  * ```cajeta
- * stack Optional<int> hit = Optional<int>(true, 42);
- * stack Optional<int> miss = Optional<int>(false, 0);
+ * Optional<int32> hit = stack Optional<int32>(true, 42);
+ * Optional<int32> miss = stack Optional<int32>(false, 0);
  * if (hit.isPresent()) {
- *     int v = hit.get();          // 42
+ *     int32 v = hit.get();          // 42
  * }
  * if (miss.isEmpty()) {
- *     int v = miss.orElse(-1);    // -1
+ *     int32 v = miss.orElse(-1);    // -1
  * }
  * ```
  *
@@ -28,10 +30,9 @@ package cajeta.lang;
  *
  * ## get() on None
  *
- * v1 returns the unset value (zero-initialized) rather than throwing
- * — exception integration with stdlib-side throw machinery is its
- * own piece. Callers are expected to guard with isPresent() until
- * the throw lands.
+ * Throws `NoOptionalValueException` (recoverable — an unwrap miss is
+ * catchable; Unrecoverable is reserved for panic). Guard with
+ * isPresent()/isEmpty() or use orElse() when a fallback exists.
  *
  * ## Storage
  *
@@ -57,17 +58,32 @@ public final class Optional<T> {
      * syntax lands.
      *
      * ```cajeta
-     * stack Optional<int> some = Optional<int>(true, 42);
-     * stack Optional<int> none = Optional<int>(false, 0);
+     * Optional<int32> some = stack Optional<int32>(true, 42);
+     * Optional<int32> none = stack Optional<int32>(false, 0);
      * if (some.isPresent()) {
-     *     int v = some.get();      // 42
+     *     int32 v = some.get();      // 42
      * }
-     * int fallback = none.orElse(-1); // -1
+     * int32 fallback = none.orElse(-1); // -1
      * ```
+     *
+     * @EntryPoint
      */
-    public Optional(boolean present, #T value) {
+    public Optional(boolean present, T value) {
         this.present = present;
-        this.value = value;
+        this.value #= value;
+    }
+
+    /**
+     * Empty-case constructor: `present` only; the `value` slot keeps its
+     * zero-init. Replaces the two-arg `(false, null)` idiom, which never
+     * resolved when `T` was a primitive (a `null` arg cannot match a scalar
+     * value formal) and silently relied on the pre-ctor memset — the exact
+     * footgun the no-matching-constructor error now rejects.
+     *
+     * @EntryPoint
+     */
+    public Optional(boolean present) {
+        this.present = present;
     }
 
     @Inline
@@ -81,15 +97,14 @@ public final class Optional<T> {
     }
 
     /**
-     * Extract the value. Throws on empty (Q11 — CAJETA_ERROR_NONE_UNWRAP
-     * encoded as int 1, matching the error-model #205 throw shape that
-     * user code already uses; specific exception class lands when
-     * stdlib-side exception types are wired).
+     * Extract the value. Throws `NoOptionalValueException` on empty
+     * (optional-absence spec §2) — catchable by type or via
+     * `catch (Throwable t)`; guard with isPresent() or use orElse().
      */
     @Inline
     public T get() {
         if (!this.present) {
-            throw 1;
+            throw heap NoOptionalValueException("Optional.get: unwrap of an empty Optional (guard with isPresent() or use orElse())");
         }
         return this.value;
     }

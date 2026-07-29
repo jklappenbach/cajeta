@@ -54,7 +54,7 @@ TEST(UseAfterMoveTests, moveIsLastUse) {
     // Moving `s` into `t` and never reading `s` again is fine.
     auto src = makeSource(
         "String s = \"hello\";\n"
-        "String t = #s;\n"
+        "String t #= s;\n"
         "return 0;");
     EXPECT_NO_THROW(CajetaJit::compile(src, "test.U"));
 }
@@ -64,8 +64,8 @@ TEST(UseAfterMoveTests, multipleMovesOfDifferentVariables) {
     auto src = makeSource(
         "String a = \"x\";\n"
         "String b = \"y\";\n"
-        "String c = #a;\n"
-        "String d = #b;\n"
+        "String c #= a;\n"
+        "String d #= b;\n"
         "return 0;");
     EXPECT_NO_THROW(CajetaJit::compile(src, "test.U"));
 }
@@ -76,7 +76,7 @@ TEST(UseAfterMoveTests, useBeforeMoveIsFine) {
     auto src = makeSource(
         "String s = \"hello\";\n"
         "int32 n = (int32) s.size();\n"
-        "String t = #s;\n"
+        "String t #= s;\n"
         "return n;");
     EXPECT_NO_THROW(CajetaJit::compile(src, "test.U"));
 }
@@ -116,7 +116,7 @@ TEST(UseAfterMoveTests, moveOnReturnExpression) {
 TEST(UseAfterMoveTests, readAfterMoveOnAssignment) {
     auto src = makeSource(
         "String s = \"hello\";\n"
-        "String t = #s;\n"
+        "String t #= s;\n"
         "int32 n = (int32) s.size();\n"   // s was moved into t — error
         "return n;");
     expectUseAfterMove(src, "s");
@@ -125,7 +125,7 @@ TEST(UseAfterMoveTests, readAfterMoveOnAssignment) {
 TEST(UseAfterMoveTests, readAfterMoveByPrintln) {
     auto src = makeSource(
         "String s = \"hello\";\n"
-        "String t = #s;\n"
+        "String t #= s;\n"
         "System.stdout.println(s);\n"     // s was moved
         "return 0;");
     expectUseAfterMove(src, "s");
@@ -138,7 +138,7 @@ TEST(UseAfterMoveTests, readAfterMoveAsIntrinsicArgument) {
     // use-after-move check.
     auto src = makeSource(
         "String s = \"hi\";\n"
-        "String t = #s;\n"
+        "String t #= s;\n"
         "int32 n = Integer.parseInt(s);\n"   // s was moved
         "return n;");
     expectUseAfterMove(src, "s");
@@ -149,8 +149,8 @@ TEST(UseAfterMoveTests, doubleMove) {
     // reading a moved identifier.
     auto src = makeSource(
         "String s = \"hello\";\n"
-        "String a = #s;\n"
-        "String b = #s;\n"                // double-move on s
+        "String a #= s;\n"
+        "String b #= s;\n"                // double-move on s
         "return 0;");
     expectUseAfterMove(src, "s");
 }
@@ -161,7 +161,7 @@ TEST(UseAfterMoveTests, moveThenReturnSource) {
         "public final class U {\n"
         "    public static #String run() {\n"
         "        String s = \"hi\";\n"
-        "        String t = #s;\n"
+        "        String t #= s;\n"
         "        return #s;\n"            // s already moved into t
         "    }\n"
         "}\n";

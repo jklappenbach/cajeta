@@ -164,6 +164,16 @@ namespace cajeta {
 
     bool operator<(const TypeKey& a, const TypeKey& b);
 
+    // Source position of an enum CONSTANT. The enum-constant registry stores only
+    // the ordinal, so without this an IDE could find `Color` but not `Color.GREEN`
+    // — Ctrl-click on a constant would land on the enum, or on nothing.
+    // See specs/ide-symbol-index-spec.md §2.
+    struct EnumConstantPos {
+        string file;
+        int line = 0;
+        int col = 0;
+    };
+
 class CajetaType : public Modifiable, public Annotatable,
         public std::enable_shared_from_this<CajetaType> {
     protected:
@@ -175,6 +185,21 @@ class CajetaType : public Modifiable, public Annotatable,
         static thread_local map<string, CajetaTypePtr> canonicalMap;
         static thread_local map<TypeKey, CajetaTypePtr> typeMap;
         static thread_local map<llvm::Type::TypeID, CajetaTypePtr> llvmTypeIdMap;
+
+        // Where this type is DECLARED (remapped path; 1-based line, 0-based col —
+        // the ANTLR convention). Lives on CajetaType rather than CajetaClass because
+        // an ENUM is a CajetaType (i32-backed, ENUM_FLAG) and not a CajetaClass, so
+        // a class-only field left every enum unlocatable. 0/"" = synthesized (mock,
+        // template placeholder, primitive) — such a type has no source an IDE could
+        // open, and the xref export skips it rather than emit a record pointing
+        // nowhere. See specs/ide-symbol-index-spec.md §2.
+        string declaringFile;
+        int declLine = 0;
+        int declColumn = 0;
+        // Enum-constant positions, parallel to `enumConstants`. See
+        // registerEnumConstantPosition().
+        static thread_local map<string, map<string, EnumConstantPos>>
+            enumConstantPositions;
         // Enum constant registry. Keyed by the enum's short typeName
         // ("Direction") and then by constant name ("NORTH" / "SOUTH" / ...).
         // The value is the constant's int32 ordinal. DotExpression consults
@@ -305,9 +330,43 @@ class CajetaType : public Modifiable, public Annotatable,
 
         static CajetaTypePtr of(string typeName);
 
+        // The name-keyed core of declared-type resolution: substitution,
+        // scoped tiers (own package -> imports -> global), archive-vouched
+        // placeholder synthesis. For resolution sites that hold only a NAME
+        // (no parser context) — resolves identically to a declared type.
+        // Null when the name resolves nowhere; the caller owns the miss.
+        static CajetaTypePtr resolveNamed(QualifiedNamePtr qName,
+                                          CajetaModulePtr module);
+
         static CajetaTypePtr of(string typeName, string package);
 
         static CajetaTypePtr of(QualifiedNamePtr qName);
+
+        // Scoped short-name lookup for a BARE class name written in source
+        // (class-name receivers of static calls, static-field LHS, bare
+        // allocations). Mirrors fromContext's bare-name tier order:
+        //   1. the module's own package,
+        //   2. the module's explicit imports — when the import names the
+        //      class but its canonical isn't materialized yet, returns
+        //      nullptr rather than letting the global key answer wrongly,
+        //   3. the global canonical/short-name key (legacy behavior).
+        // The global short key is last-writer-wins across packages, so a
+        // same-named class elsewhere (e.g. a user class shadowing a stdlib
+        // name) poisons any call site that consults it directly; resolve
+        // source-written bare names through here instead.
+        static CajetaTypePtr ofScoped(const string& shortName,
+                                      CajetaModulePtr module);
+
+        // The canonical FQN a scoped bare name denotes, as a STRING — mirroring
+        // ofScoped's tiers (own package → imports → global) but tolerant of a
+        // FORWARD reference: a name that is only prescan-registered (in the
+        // archive) and not yet built into canonicalMap still resolves. Used by
+        // the xref reference capture for `heap Point(...)` created types, where
+        // the whole-root export's directory-order parse routinely reaches an
+        // allocation before its target's declaration is built. Returns "" when
+        // the name names nothing known. Position-free — the caller supplies it.
+        static std::string canonicalNameScoped(const string& shortName,
+                                               CajetaModulePtr module);
 
         // Find a generic (template) class registered under the bare short
         // name `shortName`, scanning the process-global canonicalMap. Used to
@@ -329,6 +388,17 @@ class CajetaType : public Modifiable, public Annotatable,
         static CajetaTypePtr fromContext(CajetaParser::TypeTypeOrVoidContext* ctx, CajetaModulePtr module);
 
         static CajetaTypePtr fromContext(CajetaParser::TypeTypeContext* ctx, CajetaModulePtr module);
+
+        // The resolution itself. `fromContext` above is a thin wrapper that also
+        // records the resolved type as an xref reference edge (ide-symbol-index
+        // 2.1.5), so every type name in the language is indexed at one point rather
+        // than at each of its dozens of syntactic homes.
+        //
+        // The resolver's own recursive calls (a type argument, a function type's
+        // parameter and return slots) go back through the WRAPPER, which is what we
+        // want: in `ArrayList<Point>` both `ArrayList` and `Point` are names a
+        // developer Ctrl-clicks, and each records at its own token.
+        static CajetaTypePtr fromContextImpl(CajetaParser::TypeTypeContext* ctx, CajetaModulePtr module);
 
         static map<string, CajetaTypePtr>& getCanonicalMap();
 
@@ -366,6 +436,13 @@ class CajetaType : public Modifiable, public Annotatable,
         // registerArchive(canonical, shortName).
         static void markArchiveEnum(const string& canonical);
         static bool isArchiveEnum(const string& canonical);
+
+        // Mark / query a prescan-noted VIEW declaration. Read by
+        // fromContext's placeholder synthesis so a forward reference to a
+        // view gets a CajetaView placeholder (view classification and
+        // member lookup dynamic_cast the type), not a class shell.
+        static void markArchiveView(const string& canonical);
+        static bool isArchiveView(const string& canonical);
 
         // Mark a previously-registered archive entry as an @ValueType
         // class. Read by fromContext's placeholder-synthesis path so a
@@ -429,6 +506,15 @@ class CajetaType : public Modifiable, public Annotatable,
         // reuse path (production never calls them).
         static void captureBaseline();
         static void restoreBaseline();
+        // lint-server sibling-context reuse (spec §4): a SECOND baseline slot
+        // holding "stdlib + the sibling sweep", captured after
+        // registerLintContext and restored (independently of the pristine
+        // stdlib baseline) on a warm request so it skips the sweep.
+        // invalidate clears it so the next request resweeps. No-ops until a
+        // context is captured (production one-shot never captures one).
+        static void captureContextBaseline();
+        static void restoreContextBaseline();
+        static void invalidateContextBaseline();
         // Test stdlib-reuse support: free the shared-context LLVM struct NAMES of
         // the transient user types a THROWING compile left behind (a test whose
         // compile threw never reached its normal end-of-compile struct-name
@@ -449,13 +535,11 @@ class CajetaType : public Modifiable, public Annotatable,
         // by name in `ctx` if present, else creates a fresh opaque one.
         static llvm::StructType* getOrCreateLlvmStructNoRegister(llvm::LLVMContext* ctx, const string& name);
 
-        static CajetaTypePtr create() {
-            return CajetaType::create();
-        }
-
         static CajetaTypePtr create(QualifiedNamePtr qName) {
             CajetaTypePtr result = make_shared<CajetaType>(qName);
-            typeMap[TypeKey(result->llvmType)] = result;
+            // Guard: a qName-only CajetaType has no llvmType yet, and
+            // TypeKey(nullptr) dereferences it — only index by type when present.
+            if (result->llvmType) typeMap[TypeKey(result->llvmType)] = result;
             result->rank = canonicalMap.size();
             canonicalMap[result->canonical] = result;
 
@@ -574,6 +658,28 @@ class CajetaType : public Modifiable, public Annotatable,
         static void registerEnumConstant(const string& enumName,
             const string& constName, int32_t ordinal) {
             enumConstants[enumName][constName] = ordinal;
+        }
+
+        // Where this type is declared. Only meaningful for types that came from a
+        // parsed declaration; see the field comments.
+        const string& getDeclaringFile() const { return declaringFile; }
+        void setDeclaringFile(const string& file) { declaringFile = file; }
+        int getDeclLine() const { return declLine; }
+        int getDeclColumn() const { return declColumn; }
+        void setDeclPosition(int line, int column) {
+            declLine = line;
+            declColumn = column;
+        }
+
+        static void registerEnumConstantPosition(const string& enumName,
+                const string& constName, const string& file, int line, int col) {
+            enumConstantPositions[enumName][constName] = EnumConstantPos{file, line, col};
+        }
+        static map<string, map<string, EnumConstantPos>>& getEnumConstantPositions() {
+            return enumConstantPositions;
+        }
+        static map<string, map<string, int32_t>>& getEnumConstants() {
+            return enumConstants;
         }
         static bool isEnumName(const string& enumName) {
             return enumConstants.find(enumName) != enumConstants.end();

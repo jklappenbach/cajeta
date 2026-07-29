@@ -186,7 +186,9 @@ namespace cajeta {
         // installed hook is a no-op for non-lazy packages. Lives here (not
         // on Compiler) so the resolver / onImportDeclaration can fire it
         // without a Compiler dependency. See Compiler's lazy stdlib loader.
-        static std::function<void(const std::string&)> stdlibImportHook;
+        // Per-compile (each thread installs its own during setup); thread_local
+        // so concurrent compiles don't race on the std::function.
+        static thread_local std::function<void(const std::string&)> stdlibImportHook;
     private:
         static thread_local vector<ComponentDescriptorPtr> componentClasses;
         static thread_local vector<FactoryDescriptorPtr> factoryClasses;
@@ -243,11 +245,13 @@ namespace cajeta {
         map<string, map<string, QualifiedNamePtr>> imports;
         QualifiedNamePtr qName;
         string sourcePath;
+        string currentSourceFile_;   // see currentSourceFile()
         string sourceRoot;
         string archiveRoot;
         string archivePath;
 
         map<string, CajetaClassPtr> structures;
+        bool lambdaClassPtrReturn = false;
         MethodPtr currentMethod;
         StructureMetadataPtr structureMetadata;
 
@@ -261,6 +265,19 @@ namespace cajeta {
         // sidecar ordering. Same-module instantiations are NOT recorded (they
         // travel with the module's own IR).
         std::set<std::string> instantiationObligations;
+
+        // Incremental compilation (Phase 3): manifest-designated state for
+        // this module. A clean module is parsed for declarations (+ Phase-1
+        // prototypes) but codegen-skipped: no generateCode, no reflect-body /
+        // clinit / sidecar emission; at emit time its llvm::Module is
+        // REPLACED by the cached `.bc` from cacheBcSlot, and the obligations
+        // recorded at cacheObligationsSlot are replayed into stdlib before
+        // the codegen loop. Slots are also set on DIRTY modules (write
+        // targets); both empty when no manifest is active.
+        bool incrementalClean = false;
+        string cacheBcSlot;
+        string cacheObligationsSlot;
+        string cacheObjSlot;   // optional (Phase 6-alt .o cache)
 
         // Compiler-level options that codegen consults. Set on the module by the
         // Compiler at creation time (so each module produces IR consistent with the
@@ -459,6 +476,21 @@ namespace cajeta {
             this->sourcePath = sourcePath;
         }
 
+        // The file currently being parsed INTO this module, in remapped
+        // (build-root-independent) form. A user module is one file, so this is
+        // just remappedSourcePath(). The stdlib is many files parsed into one
+        // synthetic module with an empty source path — parseStdlibInto sets this
+        // per file so each class can record where it was actually declared.
+        // Without it every stdlib frame renders as `Type.method(:268)`.
+        string currentSourceFile() const {
+            return currentSourceFile_.empty() ? remappedSourcePath()
+                                              : currentSourceFile_;
+        }
+
+        void setCurrentSourceFile(const string& file) {
+            currentSourceFile_ = file;
+        }
+
         const string& getArchiveRoot() const {
             return archiveRoot;
         }
@@ -620,6 +652,12 @@ namespace cajeta {
         // validation sweep, between parse and Phase 1.
         static void buildPendingPrototypes();
 
+        // Re-run per-(class, iface) vtable synthesis for classes that
+        // skipped a then-placeholder interface (lazy-package drain order).
+        // Idempotent; every codegen fixed-point loop calls it per pass,
+        // before method bodies emit. Implemented in CajetaModule.cpp.
+        void completePendingInterfaceVTables();
+
         // Post-parse validation: scan canonicalMap for any
         // CajetaClass with placeholderFlag still set. A placeholder
         // marks a name that fromContext synthesized when the archive
@@ -699,6 +737,19 @@ namespace cajeta {
         static llvm::Module* getCurrentEmitLlvmModule() { return currentEmitLlvmModule; }
         static void setCurrentEmitLlvmModule(llvm::Module* m) { currentEmitLlvmModule = m; }
 
+        // Per-module debug-loc id range (resident-debug-server 3.2.1).
+        // Assigned by the JIT host before codegen from a name-keyed,
+        // append-only registry so unchanged modules keep their bases across
+        // edits (stable -g IR = pooled objects survive). -1 = unranged: the
+        // AOT/lint paths keep the dense global allocator.
+        static constexpr int32_t kDbgLocRange = 1 << 20;
+        int32_t dbgLocBase = -1;
+        int32_t dbgLocUsed = 0;
+        int32_t takeDbgLocId() {
+            if (dbgLocBase < 0 || dbgLocUsed >= kDbgLocRange) return -1;
+            return dbgLocBase + dbgLocUsed++;
+        }
+
         static CajetaModulePtr getStdlibModule() { return stdlibModule; }
         static void setStdlibModule(CajetaModulePtr m) { stdlibModule = m; }
 
@@ -718,6 +769,12 @@ namespace cajeta {
         // active/codegen module pointers. No-ops in production.
         static void captureBaseline();
         static void restoreBaseline();
+        // lint-server sibling-context reuse (spec §4): a second baseline slot
+        // for "stdlib + sibling sweep", restored independently of the pristine
+        // stdlib baseline on a warm request. See CajetaType's matching set.
+        static void captureContextBaseline();
+        static void restoreContextBaseline();
+        static void invalidateContextBaseline();
 
         llvm::IRBuilder<>* getBuilder() const;
 
@@ -753,6 +810,16 @@ namespace cajeta {
         // a machine-independent form so the same source yields byte-identical
         // bitcode across hosts. No-op for synthetic modules (empty sourcePath).
         void canonicalizeSourceFileName();
+
+        // The module's source path in its machine-independent form — what
+        // every IR-embedded path must use (source_filename, line-info frame
+        // descriptors, source-tagged drop entries), so emitted IR is
+        // byte-identical across build roots (docs-refactor 15.12.2).
+        // Compile-time DIAGNOSTICS keep the raw absolute path (clickable).
+        std::string remappedSourcePath() const {
+            return remapSourcePath(sourcePath, sourceRoot,
+                                   compilerFlags.debugPrefixMap);
+        }
 
         // Pure mapping behind canonicalizeSourceFileName(), exposed for tests.
         // Applies a `--debug-prefix-map=<from>=<to>` (split on the first '=',
@@ -792,6 +859,33 @@ namespace cajeta {
         // the set is empty, so a module that drops its last cross-module use
         // doesn't leave a misleading file behind.
         void writeObligationsSidecar() const;
+
+        // Incremental compilation (Phase 3) — manifest-designated state.
+        bool isIncrementalClean() const { return incrementalClean; }
+        void setIncrementalClean(bool clean) { incrementalClean = clean; }
+        const string& getCacheBcSlot() const { return cacheBcSlot; }
+        const string& getCacheObligationsSlot() const {
+            return cacheObligationsSlot;
+        }
+        void setCacheSlots(string bc, string obligations, string obj = "") {
+            cacheBcSlot = std::move(bc);
+            cacheObligationsSlot = std::move(obligations);
+            cacheObjSlot = std::move(obj);
+        }
+        const string& getCacheObjSlot() const { return cacheObjSlot; }
+        // Write this module's obligations to the manifest slot (unlike the
+        // archive-root sidecar, ALWAYS written — explicitly empty when the
+        // set is: slot absence must mean "never built", not "no obligations").
+        // Returns false on I/O failure.
+        bool writeObligationsToSlot() const;
+        // Serialize the module's current llvm::Module to the .bc slot
+        // (atomic temp+rename). Returns false on I/O failure.
+        bool writeBitcodeToSlot() const;
+        // Replace this module's llvm::Module with the bitcode at the .bc
+        // slot, parsed into the SAME LLVMContext (the emit-time swap for a
+        // clean module). Returns false (module untouched) on read/parse
+        // failure — caller falls back to treating the module dirty.
+        bool loadBitcodeFromSlot();
 
         // Intern a source-file path as a module-global constant `const char*`
         // for the debug-mode source-tagging machinery. Subsequent calls with
@@ -863,6 +957,41 @@ namespace cajeta {
             tryFinallyStack = std::move(saved);
         }
 
+        // Full per-function codegen-stack detach: tryFinally + tryCatch (lint)
+        // + loop contexts + the pending loop label. Method bodies can be
+        // generated NESTED inside another method's codegen (a method-template
+        // instantiated on-reference at its call site — Method::generateCode),
+        // and none of the enclosing function's control-flow stacks may bleed
+        // into the nested body: a `return` there would otherwise emit the
+        // CALLER's try-frame unwind (__cajeta_exc_pop with no matching push —
+        // the popped frame is the caller's live try, so its later throw is
+        // "uncaught"). The lambda path isolates tryFinally via takeTryFinally;
+        // this is the same discipline for every per-function stack at once.
+        struct FunctionCodegenStacks {
+            std::vector<std::shared_ptr<void>> tryFinally;
+            std::vector<std::vector<CajetaTypePtr>> tryCatch;
+            std::vector<LoopContext> loops;
+            std::string pendingLabel;
+        };
+        FunctionCodegenStacks takeFunctionCodegenStacks() {
+            FunctionCodegenStacks saved;
+            saved.tryFinally = std::move(tryFinallyStack);
+            saved.tryCatch = std::move(tryCatchStack);
+            saved.loops = std::move(loopContextStack);
+            saved.pendingLabel = std::move(pendingLoopLabel);
+            tryFinallyStack.clear();
+            tryCatchStack.clear();
+            loopContextStack.clear();
+            pendingLoopLabel.clear();
+            return saved;
+        }
+        void restoreFunctionCodegenStacks(FunctionCodegenStacks saved) {
+            tryFinallyStack = std::move(saved.tryFinally);
+            tryCatchStack = std::move(saved.tryCatch);
+            loopContextStack = std::move(saved.loops);
+            pendingLoopLabel = std::move(saved.pendingLabel);
+        }
+
         void processMetadata(CajetaClassPtr structure);
 
         // Parse the embedded cajeta_runtime bitcode and Linker::linkModules-merge it
@@ -903,15 +1032,23 @@ namespace cajeta {
 
             string targetDirs = targetPath.substr(0, targetPath.rfind("/"));
             std::filesystem::create_directories(targetDirs);
-            llvm::raw_ostream* out = new llvm::raw_fd_ostream(targetPath, ec, llvm::sys::fs::CD_CreateAlways);
-            printf("\n\n");
-            llvmModule->print(llvm::outs(), nullptr);
-            llvmModule->print(*out, nullptr);
+            // Stack ostream (RAII): flushes + closes on scope exit. The old
+            // heap-allocated raw_fd_ostream was never deleted or flushed —
+            // leaking the fd and risking an unflushed/truncated .ll.
+            llvm::raw_fd_ostream out(targetPath, ec, llvm::sys::fs::CD_CreateAlways);
+            llvmModule->print(out, nullptr);
         }
 
         void setCurrentMethod(MethodPtr method) {
             this->currentMethod = method;
         }
+
+        // 7.2.5 — true while emitting a lambda body whose synthesized
+        // function returns a class POINTER (non-sret). Lambdas have no
+        // Method context, so the return-flag protocol reads this instead
+        // of Method::returnsClassPointer().
+        void setLambdaClassPtrReturn(bool v) { lambdaClassPtrReturn = v; }
+        bool isLambdaClassPtrReturn() const { return lambdaClassPtrReturn; }
 
         MethodPtr getCurrentMethod() {
             return currentMethod;

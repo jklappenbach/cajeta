@@ -9,6 +9,7 @@
 #include "llvm/TargetParser/Triple.h"
 #include "../error/Exception.h"
 #include "../error/DiagnosticEngine.h"
+#include "../xref/XrefIndex.h"
 
 #include "CajetaModule.h"
 #include "../logging/CajetaLogger.h"
@@ -21,6 +22,7 @@
 #include "../runtime/EmbeddedRuntime.h"
 
 #include "llvm/Bitcode/BitcodeReader.h"
+#include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/MDBuilder.h"
@@ -40,7 +42,7 @@ namespace cajeta {
     thread_local llvm::Module* CajetaModule::currentEmitLlvmModule = nullptr;
     thread_local uint64_t CajetaModule::reuseEpoch = 0;
     thread_local CajetaModulePtr CajetaModule::stdlibModule;
-    std::function<void(const std::string&)> CajetaModule::stdlibImportHook;
+    thread_local std::function<void(const std::string&)> CajetaModule::stdlibImportHook;
     thread_local map<string, CajetaModulePtr> CajetaModule::moduleVariables;
     thread_local vector<CajetaClassPtr> CajetaModule::aspectClasses;
     thread_local vector<CajetaModule::ComponentDescriptorPtr> CajetaModule::componentClasses;
@@ -232,6 +234,67 @@ namespace cajeta {
         }
     }
 
+    bool CajetaModule::writeObligationsToSlot() const {
+        if (cacheObligationsSlot.empty()) return true;
+        std::error_code ec;
+        std::filesystem::create_directories(
+            std::filesystem::path(cacheObligationsSlot).parent_path(), ec);
+        std::ofstream out(cacheObligationsSlot, std::ios::trunc);
+        if (!out) return false;
+        // Unlike the archive-root sidecar, an empty set still writes the
+        // (empty) file: slot absence must mean "never built".
+        for (const auto& name : instantiationObligations) {
+            out << name << "\n";
+        }
+        return static_cast<bool>(out);
+    }
+
+    bool CajetaModule::writeBitcodeToSlot() const {
+        if (cacheBcSlot.empty()) return true;
+        std::error_code ec;
+        std::filesystem::create_directories(
+            std::filesystem::path(cacheBcSlot).parent_path(), ec);
+        // Atomic: temp in the same dir, then rename over the slot.
+        std::string tmp = cacheBcSlot + ".tmp";
+        {
+            std::error_code fec;
+            llvm::raw_fd_ostream os(tmp, fec);
+            if (fec) return false;
+            llvm::WriteBitcodeToFile(*llvmModule, os);
+            os.close();
+            if (os.has_error()) return false;
+        }
+        std::filesystem::rename(tmp, cacheBcSlot, ec);
+        return !ec;
+    }
+
+    bool CajetaModule::loadBitcodeFromSlot() {
+        if (cacheBcSlot.empty()) return false;
+        auto buf = llvm::MemoryBuffer::getFile(cacheBcSlot);
+        if (!buf) return false;
+        auto parsed = llvm::parseBitcodeFile((*buf)->getMemBufferRef(),
+                                             *llvmContext);
+        if (!parsed) {
+            cerr << "cajeta: [incremental] failed to parse cached bitcode "
+                 << cacheBcSlot << ": "
+                 << llvm::toString(parsed.takeError()) << std::endl;
+            return false;
+        }
+        delete llvmModule;
+        llvmModule = parsed->release();
+        // Every cached llvm handle below pointed INTO the module just deleted.
+        // The swap runs POST-codegen (Compiler.cpp, "Dirty modules snapshot
+        // post-codegen"), so they are populated by now, and codegen does still
+        // reach a swapped module afterwards (a dirty module's replay/lowering
+        // can instantiate into it). Drop them so the next use rebuilds against
+        // the NEW module instead of handing out a freed pointer.
+        // NOT cleared: the tbaa MDNode* members — metadata is owned by the
+        // LLVMContext, which outlives the swap.
+        sourceFileConstants.clear();
+        tbaaProvenance.clear();
+        return true;
+    }
+
     llvm::IRBuilder<>* CajetaModule::getBuilder() const {
         return builder;
     }
@@ -287,6 +350,29 @@ namespace cajeta {
     void CajetaModule::onImportDeclaration(CajetaParser::ImportDeclarationContext* ctx) {
         auto qName = QualifiedName::fromContext(ctx->qualifiedName());
         imports[qName->getTypeName()][qName->getPackageName()] = qName;
+        // xref (ide-symbol-index): record the imported type as a reference at
+        // its name token, so Ctrl-click on `import a.b.Gzip;` navigates to the
+        // type. Imports resolve here, not through CajetaType::fromContext, so
+        // without this they carry no edge. Gated on --emit-xref; a wildcard
+        // (`a.b.*`) or an unresolved name records nothing (prune drops the
+        // rest). Positioned at the LEAF identifier — the type name a developer
+        // Ctrl-clicks.
+        if (xref::captureEnabled() && !qName->getTypeName().empty()
+                && qName->getTypeName() != "*" && ctx->qualifiedName()) {
+            const auto& ids = ctx->qualifiedName()->identifier();
+            if (!ids.empty()) {
+                if (auto* tok = ids.back()->getStart()) {
+                    if (tok->getInputStream()) {
+                        if (const std::string* file = xref::internSourceFile(
+                                tok->getInputStream()->getSourceName())) {
+                            xref::noteTypeReference(qName->toCanonical(), *file,
+                                (int) tok->getLine(),
+                                (int) tok->getCharPositionInLine());
+                        }
+                    }
+                }
+            }
+        }
         // Lazy stdlib: an import of an on-demand package (e.g. cajeta.math)
         // triggers that package's prescan + enqueue so its types resolve
         // during this parse and are fully parsed at the next drain point.
@@ -308,6 +394,17 @@ namespace cajeta {
         } catch (const std::bad_any_cast&) {
             // Not a CajetaClass — caller didn't return one (e.g. enum
             // declaration). Nothing to register on the module here.
+        }
+    }
+
+    void CajetaModule::completePendingInterfaceVTables() {
+        for (auto& [canon, structure] : structures) {
+            auto klass = std::dynamic_pointer_cast<CajetaClass>(structure);
+            if (klass && klass->hasPendingIfaceVTables()
+                    && !klass->isPlaceholder()) {
+                klass->resolveImplementedInterfaces();
+                klass->synthesizeInterfaceVTables();
+            }
         }
     }
 
@@ -364,19 +461,39 @@ namespace cajeta {
             CajetaModulePtr stdlibModule;
         };
         ModuleGlobalsBaseline g_moduleBaseline;
+        // lint-server sibling context (spec §4): a SECOND slot holding the
+        // module registries after the sibling sweep, restored independently of
+        // the pristine g_moduleBaseline on a warm request. See CajetaType's
+        // matching context baseline.
+        ModuleGlobalsBaseline g_moduleContextBaseline;
+
+        void captureModuleBaselineInto(
+                ModuleGlobalsBaseline& b,
+                const map<string, MethodPtr>& methods,
+                const map<string, CajetaModulePtr>& strutureToModule,
+                const map<string, CajetaModulePtr>& moduleVariables,
+                const vector<CajetaClassPtr>& aspectClasses,
+                const vector<CajetaModule::ComponentDescriptorPtr>& componentClasses,
+                const vector<CajetaModule::FactoryDescriptorPtr>& factoryClasses,
+                const string& activeProfile,
+                const CajetaModulePtr& stdlibModule) {
+            b.methods = methods;
+            b.strutureToModule = strutureToModule;
+            b.moduleVariables = moduleVariables;
+            b.aspectClasses = aspectClasses;
+            b.componentClasses = componentClasses;
+            b.factoryClasses = factoryClasses;
+            b.activeProfile = activeProfile;
+            b.methodArchive = Method::getArchive();
+            b.stdlibModule = stdlibModule;
+            b.valid = true;
+        }
     }
 
     void CajetaModule::captureBaseline() {
-        g_moduleBaseline.methods = methods;
-        g_moduleBaseline.strutureToModule = strutureToModule;
-        g_moduleBaseline.moduleVariables = moduleVariables;
-        g_moduleBaseline.aspectClasses = aspectClasses;
-        g_moduleBaseline.componentClasses = componentClasses;
-        g_moduleBaseline.factoryClasses = factoryClasses;
-        g_moduleBaseline.activeProfile = activeProfile;
-        g_moduleBaseline.methodArchive = Method::getArchive();
-        g_moduleBaseline.stdlibModule = stdlibModule;
-        g_moduleBaseline.valid = true;
+        captureModuleBaselineInto(g_moduleBaseline, methods, strutureToModule,
+            moduleVariables, aspectClasses, componentClasses, factoryClasses,
+            activeProfile, stdlibModule);
     }
 
     void CajetaModule::restoreBaseline() {
@@ -393,6 +510,31 @@ namespace cajeta {
         // Transient per-compile pointers must not leak across tests.
         activeModule.reset();
         currentCodegenModule.reset();
+    }
+
+    void CajetaModule::captureContextBaseline() {
+        captureModuleBaselineInto(g_moduleContextBaseline, methods,
+            strutureToModule, moduleVariables, aspectClasses, componentClasses,
+            factoryClasses, activeProfile, stdlibModule);
+    }
+
+    void CajetaModule::restoreContextBaseline() {
+        if (!g_moduleContextBaseline.valid) return;
+        methods = g_moduleContextBaseline.methods;
+        strutureToModule = g_moduleContextBaseline.strutureToModule;
+        moduleVariables = g_moduleContextBaseline.moduleVariables;
+        aspectClasses = g_moduleContextBaseline.aspectClasses;
+        componentClasses = g_moduleContextBaseline.componentClasses;
+        factoryClasses = g_moduleContextBaseline.factoryClasses;
+        activeProfile = g_moduleContextBaseline.activeProfile;
+        Method::getArchive() = g_moduleContextBaseline.methodArchive;
+        stdlibModule = g_moduleContextBaseline.stdlibModule;
+        activeModule.reset();
+        currentCodegenModule.reset();
+    }
+
+    void CajetaModule::invalidateContextBaseline() {
+        g_moduleContextBaseline = ModuleGlobalsBaseline{};
     }
 
     // Walks the registered aspects, identifies each advice method by
@@ -633,17 +775,22 @@ namespace cajeta {
         // Type → descriptor map built from the filtered + override-
         // applied set. Used by the @Inject resolver below.
         vector<ComponentDescriptorPtr> active;
-        // Test-mode override: when we see @TestComponent and we're
-        // compiling for tests, this descriptor's class type masks any
-        // same-class non-test @Component.
-        set<string> testOverriddenTypes;
+        // Test-mode override: an active @TestComponent masks every
+        // non-test @Component that implements an interface the double
+        // also implements, so the double stands in at that interface's
+        // injection sites. Keyed on interface canonical names. A double
+        // with no interface masks nothing — it is injectable only by its
+        // own concrete type (preserves the own-type stub behavior).
+        set<string> testOverriddenInterfaces;
         if (testMode) {
             for (auto& c : componentClasses) {
                 if (!c || !c->klass) continue;
                 if (!c->isTestComponent) continue;
                 if (!profileMatches(c)) continue;
-                if (c->klass->getQName()) {
-                    testOverriddenTypes.insert(c->klass->getQName()->toCanonical());
+                for (auto& iface : c->klass->getImplementedInterfaces()) {
+                    if (iface && iface->getQName()) {
+                        testOverriddenInterfaces.insert(iface->getQName()->toCanonical());
+                    }
                 }
             }
         }
@@ -651,11 +798,19 @@ namespace cajeta {
             if (!c || !c->klass) continue;
             if (!profileMatches(c)) continue;
             if (c->isTestComponent && !testMode) continue;
-            // In test mode, drop the non-test @Component whose type
-            // is overridden by a @TestComponent of the same type.
-            if (testMode && !c->isTestComponent && c->klass->getQName()
-                    && testOverriddenTypes.count(c->klass->getQName()->toCanonical())) {
-                continue;
+            // In test mode, drop a non-test @Component that shares an
+            // interface with an active @TestComponent.
+            if (testMode && !c->isTestComponent) {
+                bool masked = false;
+                for (auto& iface : c->klass->getImplementedInterfaces()) {
+                    if (iface && iface->getQName()
+                            && testOverriddenInterfaces.count(
+                                   iface->getQName()->toCanonical())) {
+                        masked = true;
+                        break;
+                    }
+                }
+                if (masked) continue;
             }
             active.push_back(c);
         }
@@ -1271,7 +1426,14 @@ namespace cajeta {
         return ensureFunctionInModule(target, defFn);
     }
 
-    llvm::Constant* CajetaModule::getOrCreateSourceFileConstant(const std::string& path) {
+    llvm::Constant* CajetaModule::getOrCreateSourceFileConstant(const std::string& rawPath) {
+        // Reproducible IR (docs-refactor 15.12.2): every IR-embedded source
+        // path routes through --debug-prefix-map / the sourceRoot-relative
+        // fallback, exactly like source_filename. Remap before the cache
+        // lookup so the constants (and their dedup keys) are the
+        // machine-independent form.
+        const std::string path =
+            remapSourcePath(rawPath, sourceRoot, compilerFlags.debugPrefixMap);
         auto it = sourceFileConstants.find(path);
         if (it != sourceFileConstants.end()) return it->second;
 

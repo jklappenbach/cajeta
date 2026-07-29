@@ -141,8 +141,8 @@ TEST(DnsExceptionTests, unknownHostMessageNamesHost) {
         "} catch (UnknownHostException e) {\n"
         "    String m = e.message;\n"
         "    if (m == null) { return -2; }\n"
-        "    if (m.byteLength < 1) { return -3; }\n"
-        "    return ((int32) m.bytes[0]) & 0xff;\n"   // 'f' == 102
+        "    if (m.byteLength() < 1) { return -3; }\n"
+        "    return ((int32) m.byteAt(0)) & 0xff;\n"   // 'f' == 102
         "}")), 102);
 }
 

@@ -27,7 +27,7 @@ import cajeta.collection.HashMap;
  *
  * Builder shape:
  *
- *     ActionResult r = #heap ActionResult();
+ *     ActionResult r #= heap ActionResult();
  *     r.output("path", artifact.toString());
  *     r.findings(#findings);
  *     return r.error(  // fluent fail path
@@ -48,8 +48,8 @@ public class ActionResult {
     String                  errorMessage;
 
     public ActionResult() {
-        this.outputsMap   = #heap HashMap<String, String>();
-        this.findingsList = #heap ArrayList<Finding>();
+        this.outputsMap   #= heap HashMap<String, String>();
+        this.findingsList #= heap ArrayList<Finding>();
         this.errorMessage = "";
     }
 
@@ -93,7 +93,7 @@ public class ActionResult {
      * without the temporary.
      */
     public static ActionResult error(String message) {
-        ActionResult r = #heap ActionResult();
+        ActionResult r #= heap ActionResult();
         r.errorMessage = message;
         return #r;
     }

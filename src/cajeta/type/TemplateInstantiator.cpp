@@ -24,6 +24,7 @@
 //  - No constraint enforcement — TPL-6.
 //
 
+#include "CajetaArray.h"
 #include "CajetaClass.h"
 #include "QualifiedName.h"
 #include "../asn/ClassBodyDeclaration.h"
@@ -31,6 +32,7 @@
 #include "../compile/CajetaLlvmVisitor.h"
 #include "../compile/Compiler.h"   // Compiler::getSharedContext() — reuse-mode gate
 #include "../error/Exception.h"
+#include "cajeta/xref/XrefIndex.h"
 #include "CajetaParser.h"
 #include "CajetaLexer.h"
 
@@ -348,6 +350,21 @@ namespace cajeta {
         }
 
         // Cache key: full canonical name with args, e.g. `pkg.Box<cajeta.int32>`.
+        // HISTORICAL — superseded by the title-tracking note below, kept only
+        // because it describes the shape of the gate that was removed:
+        // element-ownership §8.1 (plan 2.1.4) — the value-semantics gate. `#`
+        // demands a separable ownership story from the argument: a primitive
+        // carries none (§8.1.1); a value type owns heap payload only when
+        // shared-capable — Utf8/Slice or a transitive embedder (§8.1.2).
+        // Checked after default-fill normalization and before the cache key so
+        // both source-level threading (via fromContext / NewExpression) and
+        // direct instantiate() callers hit it. Wildcards
+        // and still-unfilled forward-ref placeholders skip — their shape isn't
+        // known yet; arrays own their elements and pass.
+        // title-tracking §8.1 (plan 7.2.1) — the declaration-`#`
+        // owning-required gate and the `#`-type-argument agreement/confinement
+        // gates (value-type/primitive `#`, BORROW_MODE_OWNED) were retired:
+        // type-position `#` errors at parse (TYPE_TRANSFER_RETIRED).
         string suffix = buildArgSuffix(args);
         string instCanonical = qName->toCanonical() + suffix;
 
@@ -458,6 +475,11 @@ namespace cajeta {
                 return static_pointer_cast<CajetaClass>(shared_from_this());
             }
 
+            // The snippet's positions refer to the snippet, not to any file — mask
+            // the parse and the walk so the instantiated body's callees are not
+            // attributed to the user call site that triggered it (2.2.8).
+            xref::SyntheticSourceScope xrefMask;
+
             string ifInput = synthesizePreamble(module) + templateSource + "\n";
             antlr4::ANTLRInputStream ifStream(ifInput);
             CajetaLexer ifLexer(&ifStream);
@@ -514,6 +536,9 @@ namespace cajeta {
             auto ifInst = make_shared<CajetaClass>(
                 module, ifInstQName, ifExtended, ifImplemented);
             ifInst->setIsInterface(true);
+            // The instantiation happens at the use site, but the code lives in
+            // the template's file — that is what its frames must name.
+            ifInst->setDeclaringFile(getDeclaringFile());
             if (emitOwner != module) ifInst->setEmitModule(emitOwner);
             ifInst->setTypeParameters(typeParameters);
             ifInst->setTypeArguments(args);
@@ -591,6 +616,8 @@ namespace cajeta {
         // parser's lifetime so we don't retain parse trees across compilation
         // phases — we re-parse on demand. The result of this expensive work
         // is cached above; re-parsing only runs once per unique arg list.
+        xref::SyntheticSourceScope xrefMask;   // synthesized snippet — see 2.2.8
+
         string input = synthesizePreamble(module) + templateSource + "\n";
 
         antlr4::ANTLRInputStream inputStream(input);
@@ -600,17 +627,16 @@ namespace cajeta {
         CajetaParser parser(&tokens);
         auto* compUnit = parser.compilationUnit();
 
-        // The synthesized input wraps one class declaration. Find it; bail
-        // loudly if the snippet structure is somehow wrong (would mean the
-        // capture in the visitor produced bad text).
+        // The synthesized input wraps one class (or record) declaration. Find
+        // it; bail loudly if the snippet structure is somehow wrong (would
+        // mean the capture in the visitor produced bad text).
         CajetaParser::ClassDeclarationContext* classDecl = nullptr;
+        CajetaParser::RecordDeclarationContext* recordDecl = nullptr;
         for (auto* td : compUnit->typeDeclaration()) {
-            if (auto* cd = td->classDeclaration()) {
-                classDecl = cd;
-                break;
-            }
+            if ((classDecl = td->classDeclaration())) break;
+            if ((recordDecl = td->recordDeclaration())) break;
         }
-        if (!classDecl) {
+        if (!classDecl && !recordDecl) {
             throw "template snippet does not contain a classDeclaration";
         }
 
@@ -651,10 +677,12 @@ namespace cajeta {
         auto kwIdx = [](antlr4::tree::TerminalNode* n) -> ssize_t {
             return n && n->getSymbol() ? (ssize_t) n->getSymbol()->getTokenIndex() : -1;
         };
-        ssize_t extKw = kwIdx(classDecl->EXTENDS());
-        ssize_t implKw = kwIdx(classDecl->IMPLEMENTS());
-        ssize_t permKw = kwIdx(classDecl->PERMITS());
-        for (auto* tl : classDecl->typeList()) {
+        ssize_t extKw = kwIdx(classDecl ? classDecl->EXTENDS() : recordDecl->EXTENDS());
+        ssize_t implKw = classDecl ? kwIdx(classDecl->IMPLEMENTS()) : -1;
+        ssize_t permKw = classDecl ? kwIdx(classDecl->PERMITS()) : -1;
+        std::vector<CajetaParser::TypeListContext*> declTypeLists =
+            classDecl ? classDecl->typeList() : recordDecl->typeList();
+        for (auto* tl : declTypeLists) {
             ssize_t tlIdx = tl->getStart()
                 ? (ssize_t) tl->getStart()->getTokenIndex() : -1;
             ssize_t best = -1;
@@ -743,6 +771,24 @@ namespace cajeta {
         // body walk emits method IR (prototype-on-reference), so the emit target
         // must already be in place.
         auto inst = make_shared<CajetaClass>(module, instQName, instExtended, instImplemented);
+        // The instantiation happens at the use site, but the code lives in the
+        // template's file — that is what its frames must name.
+        inst->setDeclaringFile(getDeclaringFile());
+        // 9.2: this class body was re-parsed from a synthetic snippet, so every
+        // method's token lines are SNIPPET lines (they merely look plausible —
+        // the preamble puts them in the file's range; live symptom: F7 into
+        // ArrayList::add landed 10 lines off, in the doc comment). The whole
+        // snippet shifts uniformly, so one delta — the template's true class
+        // declLine minus the snippet's — corrects every method in it.
+        if (declLine > 0 && classDecl && classDecl->getStart()) {
+            const int snippetClassLine = (int) classDecl->getStart()->getLine();
+            if (snippetClassLine > 0) {
+                // Stored on the CLASS: methods do not exist yet here (the
+                // body walk runs later), and the shift is uniform anyway.
+                inst->setDbgLineDelta(declLine - snippetClassLine);
+            }
+        }
+        if (recordDecl) inst->setRecordType(true);
         if (emitOwner != module) inst->setEmitModule(emitOwner);
         // Carry the template's class-level annotations onto the instantiation —
         // they describe the class shape, which the instantiation shares (e.g.
@@ -804,9 +850,80 @@ namespace cajeta {
         // returns a ClassBodyDeclarationPtr we hand to inst->setClassBody, then
         // generatePrototype lowers the class to LLVM types + functions exactly
         // as it would for a non-templated class.
+        //
+        // The walk / synthesis / generatePrototype can throw (e.g.
+        // CAJETA_ERROR_VTABLE_SLOT_UNRESOLVED in an incremental build). Guard so
+        // the substitution frame, active-module, and structure stack are
+        // restored on a throw — otherwise a caught-and-continued compile runs
+        // with a corrupted module state.
+        try {
         CajetaLlvmVisitor visitor(module);
-        auto bodyAny = visitor.visitClassBody(classDecl->classBody());
+        auto bodyAny = visitor.visitClassBody(
+            classDecl ? classDecl->classBody() : recordDecl->classBody());
         inst->setClassBody(std::any_cast<ClassBodyDeclarationPtr>(bodyAny));
+
+        // Field→type-param linkage: the walk above resolved every field
+        // type through the substitution stack, so a bare `P` field no longer
+        // knows it CAME FROM a type parameter. Record the index on the
+        // instantiated property so the drop walk can pick the bit-guarded
+        // T-origin branch (emitDropBodyInline).
+        if (classDecl && classDecl->classBody()) {
+            for (auto* bodyDecl : classDecl->classBody()->classBodyDeclaration()) {
+                auto* member = bodyDecl->memberDeclaration();
+                if (!member || !member->fieldDeclaration()) continue;
+                auto* fieldDecl = member->fieldDeclaration();
+                if (!fieldDecl->typeType() || !fieldDecl->variableDeclarators()) continue;
+                const string declared = fieldDecl->typeType()->getText();
+                int scalarParamIndex = -1;
+                for (size_t k = 0; k < typeParameters.size(); k++) {
+                    if (declared == typeParameters[k].name) {
+                        scalarParamIndex = (int) k;
+                        break;
+                    }
+                }
+                if (scalarParamIndex < 0) continue;
+                for (auto* vd : fieldDecl->variableDeclarators()->variableDeclarator()) {
+                    if (!vd->variableDeclaratorId()) continue;
+                    auto it = inst->getProperties().find(
+                        vd->variableDeclaratorId()->getText());
+                    if (it != inst->getProperties().end() && it->second) {
+                        it->second->setOriginTypeParamIndex(scalarParamIndex);
+                    }
+                }
+            }
+        }
+
+        // Record templates skip the declaration-time body walk, so the
+        // no-abstract-method gate re-runs here per instantiation.
+        if (recordDecl) {
+            for (auto& kv : inst->getMethods()) {
+                if (kv.second && kv.second->isAbstract()) {
+                    throw Exception(
+                        "record '" + instQName->toCanonical()
+                            + "' declares abstract method '"
+                            + kv.second->getName()
+                            + "' — records have no vtable; every record "
+                              "method needs a body",
+                        "CAJETA_ERROR_RECORD_ABSTRACT_METHOD");
+                }
+            }
+        }
+
+        // Instantiation-time member synthesis (source-synthesis facility,
+        // spec §1.5 member/instantiation-time cell). The declaration-time seam
+        // in visitClassDeclaration never ran for this concrete class — the
+        // instantiation body is walked via visitClassBody above — so run the
+        // registered member synthesizers here, with type args now bound. This
+        // is where `Table<Tick>` reflects Tick's fields and injects one typed
+        // column accessor per field (Unit 5). The substitution frame is still
+        // pushed (popped below), and it runs BEFORE generatePrototype so the
+        // injected members are laid out and lowered like any other. The
+        // instantiation cache above makes this fire once per monomorphization,
+        // which is the memoization the accessor set needs (spec §8.3).
+        visitor.runMemberSynthesizers(inst);
+        // Companion classes ride the same instantiation-time hook (the
+        // `<Record>Cols` builder a Table<Record>'s lambdas receive).
+        visitor.runCompanionSynthesizers(inst);
 
         // Emit target was set on `inst` before the walk and propagated to each
         // method at construction (Method ctor reads parent->getEmitModule()), so
@@ -814,6 +931,13 @@ namespace cajeta {
         // after-the-fact reparent. generatePrototype emits the class's own
         // vtable/RTTI/struct into the emit module via its own swap.
         inst->generatePrototype();
+        } catch (...) {
+            CajetaModule::setActiveModule(prevActive);
+            stack.clear();
+            stack.swap(savedStack);
+            module->popTypeSubstitution();
+            throw;
+        }
 
         CajetaModule::setActiveModule(prevActive);
         stack.clear();
@@ -917,6 +1041,8 @@ namespace cajeta {
         // Re-parse the captured snippet to walk constructor declarations.
         // Same machinery as instantiate, just used for inspection — we
         // don't push substitutions or emit IR here.
+        xref::SyntheticSourceScope xrefMask;   // synthesized snippet — see 2.2.8
+
         string input = synthesizePreamble(module) + templateSource + "\n";
         antlr4::ANTLRInputStream inputStream(input);
         CajetaLexer lexer(&inputStream);
@@ -925,14 +1051,18 @@ namespace cajeta {
         CajetaParser parser(&tokens);
         auto* compUnit = parser.compilationUnit();
 
-        CajetaParser::ClassDeclarationContext* classDecl = nullptr;
+        CajetaParser::ClassBodyContext* declBody = nullptr;
         for (auto* td : compUnit->typeDeclaration()) {
             if (auto* cd = td->classDeclaration()) {
-                classDecl = cd;
+                declBody = cd->classBody();
+                break;
+            }
+            if (auto* rd = td->recordDeclaration()) {
+                declBody = rd->classBody();
                 break;
             }
         }
-        if (!classDecl) {
+        if (!declBody) {
             throw Exception(
                 "diamond inference: template snippet missing classDeclaration",
                 "CAJETA_ERROR_TYPE_INFERENCE");
@@ -949,7 +1079,7 @@ namespace cajeta {
         // slot consistently.
         vector<std::map<string, CajetaTypePtr>> viableBindings;
 
-        for (auto* bdCtx : classDecl->classBody()->classBodyDeclaration()) {
+        for (auto* bdCtx : declBody->classBodyDeclaration()) {
             auto* md = bdCtx->memberDeclaration();
             if (!md) continue;
             auto* ctorDecl = md->constructorDeclaration();

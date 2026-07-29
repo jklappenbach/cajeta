@@ -126,6 +126,7 @@ public final class Dns {
      *         least one element; a zero-address lookup raises instead).
      * @throws NetException on any resolution failure (NET-2.5 narrows
      *         this to `UnknownHost` / `ResolutionFailed`).
+     * @EntryPoint
      */
     public static #SocketAddress[] resolve(String host) {
         return Dns.resolve(host, 0, ResolveFamily.BOTH);
@@ -140,6 +141,7 @@ public final class Dns {
      *             [`SocketAddress`](../SocketAddress.cajeta).
      * @return a freshly owned, non-empty array of endpoints.
      * @throws NetException on any resolution failure.
+     * @EntryPoint
      */
     public static #SocketAddress[] resolve(String host, int32 port) {
         return Dns.resolve(host, port, ResolveFamily.BOTH);
@@ -164,6 +166,7 @@ public final class Dns {
      *         zero-address result (the native layer returns a NULL
      *         handle for all three; the resolve ordinal is carried in
      *         `kind`).
+     * @EntryPoint
      */
     public static #SocketAddress[] resolve(String host, int32 port,
                                            ResolveFamily family) {
@@ -171,8 +174,8 @@ public final class Dns {
             throw heap NetException("cannot resolve a null host",
                 NetException.KIND_INVALID);
         }
-        int8[] hostBytes = host.bytes;
-        int32 hostLen = host.byteLength;
+        int8[] hostBytes = host.toBytes();
+        int32 hostLen = host.byteLength();
         int32 filter = Dns.nativeFilter(family);
 
         pointer handle = Dns.getaddrinfoNative(hostBytes, hostLen, port, filter);
@@ -274,8 +277,8 @@ public final class Dns {
         prefix[16] = (int8) 101;  // 'e'
         prefix[17] = (int8) 32;   // ' '
 
-        int8[] hostBytes = host.bytes;
-        int32 hostLen = host.byteLength;
+        int8[] hostBytes = host.toBytes();
+        int32 hostLen = host.byteLength();
         int32 total = 18 + hostLen;
         int8[] msg = heap int8[total];
         int32 i = 0;

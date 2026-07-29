@@ -1,0 +1,60 @@
+package cajeta.nucleo.frame;
+
+/**
+ * Sel — one selection item (nucleo-frame U5): an output column of `select`
+ * or `with`, pairing an output name with its source — a float64 expression
+ * ({@link ColF64}, arithmetic or reference), an exact-integer reference
+ * ({@link ColI64}), or a utf8 reference ({@link ColStr}). Bare references
+ * pass their column through zero-copy under the referenced name; computed
+ * expressions materialize float64 and MUST be `.alias("...")`-named.
+ * Items chain (`next`) — {@link Sels} collects them in order.
+ */
+public class Sel {
+    String outName;
+    ColF64 expr;      // owned; float64 expression or reference
+    ColI64 iRef;      // owned; exact-integer passthrough reference
+    ColStr strRef;    // owned; utf8 passthrough reference
+    Sel next;         // owned chain link (Sels appends)
+
+    Sel(String outName) {
+        this.outName = outName;
+    }
+
+    /** Package factory (the `.alias` builders call this cross-class). */
+    static #Sel named(String outName) {
+        return heap Sel(outName);
+    }
+
+    void bindExpr(ColF64 e) { this.expr = e; }
+    void bindI(ColI64 e) { this.iRef = e; }
+    void bindStr(ColStr e) { this.strRef = e; }
+
+    /** Append `s` after this node (the Sels collector calls this). */
+    void chain(#Sel s) {
+        this.next #= s;
+    }
+
+    public static #Sel of(#ColF64 e, String outName) {
+        Sel s = heap Sel(outName);
+        s.expr #= e;
+        return #s;
+    }
+
+    public static #Sel ofI64(#ColI64 e, String outName) {
+        Sel s = heap Sel(outName);
+        s.iRef #= e;
+        return #s;
+    }
+
+    public static #Sel ofStr(#ColStr e, String outName) {
+        Sel s = heap Sel(outName);
+        s.strRef #= e;
+        return #s;
+    }
+
+    public String outNameOf() { return this.outName; }
+    public ColF64 exprOf() { return this.expr; }
+    public ColI64 iRefOf() { return this.iRef; }
+    public ColStr strRefOf() { return this.strRef; }
+    public Sel nextOf() { return this.next; }
+}

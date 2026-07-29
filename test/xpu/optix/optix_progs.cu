@@ -1,4 +1,4 @@
-// M0 OptiX device programs — AABB candidate-count (the Toffee spatial-index /
+// M0 OptiX device programs — AABB candidate-count (the Caramelo spatial-index /
 // RTNN pattern). Reproduces cajeta's kRqMinDriver semantics on the RT cores:
 // a degenerate ray at each query point; count the AABB primitives the point is
 // inside (anyhit accumulates + ignores so traversal visits every overlapping box).

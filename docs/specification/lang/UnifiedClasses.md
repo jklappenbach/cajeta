@@ -103,7 +103,7 @@ The borrow checker handles lifetime as metadata — stack instances can't outliv
 - Pass `MyClass m` → pointer to the instance.
 - Return `MyClass` → pointer to the instance.
 - Assign `MyClass b = a` → pointer alias (a borrow).
-- `MyClass b = #a` → ownership transfer (a's drop entry deactivated; b takes over).
+- `MyClass b #= a` → ownership transfer (a's drop entry deactivated; b takes over).
 
 There is no by-value copy of a class instance. If you want a copy, write an explicit copy factory or aggregate-init from another instance.
 
@@ -244,7 +244,7 @@ The `#` operator transfers ownership of a class instance:
 
 ```cajeta
 MyClass a = heap MyClass();
-MyClass b = #a;                   // b takes ownership; a's drop entry deactivated
+MyClass b #= a;                   // b takes ownership; a's drop entry deactivated
 // `a` is moved-from; subsequent reads of `a` are a compile error (CAJETA_ERROR_USE_AFTER_MOVE)
 ```
 

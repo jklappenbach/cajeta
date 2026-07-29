@@ -20,7 +20,7 @@ import cajeta.lang.Comparable;
  * stack LocalTime start = LocalTime.of(9, 30);          // 09:30
  * stack LocalTime end = start.plusMinutes(90);          // 11:00
  * if (start.isBefore(end)) {
- *     #String label = end.iso();                        // "11:00"
+ *     String label = end.iso();                        // "11:00"
  * }
  * ```
  *
@@ -54,6 +54,8 @@ public final class LocalTime implements Comparable<LocalTime> {
      * ```cajeta
      * stack LocalTime t = LocalTime.ofHmsn(23, 59, 59, 999999999);
      * ```
+     *
+     * @EntryPoint
      */
     @NoInline
     public static LocalTime ofHmsn(int32 hour, int32 minute, int32 second, int32 nano) {
@@ -82,6 +84,8 @@ public final class LocalTime implements Comparable<LocalTime> {
      * ```cajeta
      * stack LocalTime t = LocalTime.of(9, 30);   // 09:30
      * ```
+     *
+     * @EntryPoint
      */
     @NoInline
     public static LocalTime of(int32 hour, int32 minute) {
@@ -101,6 +105,8 @@ public final class LocalTime implements Comparable<LocalTime> {
      * ```cajeta
      * stack LocalTime t = LocalTime.ofHms(14, 30, 15);   // 14:30:15
      * ```
+     *
+     * @EntryPoint
      */
     @NoInline
     public static LocalTime ofHms(int32 hour, int32 minute, int32 second) {
@@ -292,8 +298,8 @@ public final class LocalTime implements Comparable<LocalTime> {
      * overriding `Object.toString` — the toString surface isn't stable yet.
      *
      * ```cajeta
-     * #String a = LocalTime.of(9, 30).iso();              // "09:30"
-     * #String b = LocalTime.ofHms(9, 30, 15).iso();       // "09:30:15"
+     * String a = LocalTime.of(9, 30).iso();              // "09:30"
+     * String b = LocalTime.ofHms(9, 30, 15).iso();       // "09:30:15"
      * ```
      */
     public #String iso() {

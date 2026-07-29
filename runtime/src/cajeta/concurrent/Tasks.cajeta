@@ -112,6 +112,8 @@ public class Tasks {
      * Optional<int32> r = Tasks.withTimeout(Duration.ofMillis(50), t);
      * if (r.isPresent()) { use(r.get()); } else { handleTimeout(); }
      * ```
+     *
+     * @EntryPoint
      */
     public static Optional<R> withTimeout<R>(Duration d, Task<R> t) {
         int64 deadline = Cajeta.currentTimeNanos() + d.toNanos();
@@ -134,7 +136,7 @@ public class Tasks {
         // Body raised after cancel — task->value not safely readable.
         // `null` codegens as zero for primitive R, null ptr for class R;
         // the slot is unused on the empty path either way.
-        return stack Optional<R>(false, null);
+        return stack Optional<R>(false);
     }
 
     /**
@@ -166,7 +168,7 @@ public class Tasks {
             return stack Optional<R>(false, drained);
         } catch (Exception e) {
         }
-        return stack Optional<R>(false, null);
+        return stack Optional<R>(false);
     }
 
     /**
@@ -186,6 +188,8 @@ public class Tasks {
      * ```cajeta
      * int32 result = Tasks.runBlocking(() -> compute());
      * ```
+     *
+     * @EntryPoint
      */
     public static R runBlocking<R>(() -> R body) {
         Task<R> t = spawn body();
@@ -222,7 +226,7 @@ public class Tasks {
      * quirk where `heap T<int32>(literal, null)` mis-positions the
      * primitive arg when T's second constructor parameter is primitive
      * and the user passes `null`. Wrapping in `Optional` means the
-     * "no value" branch is `heap Optional<SelectResult<T>>(false, null)`
+     * "no value" branch is `heap Optional<SelectResult<T>>(false)`
      * — SelectResult<T> is a class so `null` is type-natural here.
      *
      * Operates over `Channel` inputs and reports the winner as a
@@ -233,6 +237,8 @@ public class Tasks {
      * if (r.isPresent()) { handle(r.get()); }
      * else { ... every channel closed and drained ... }
      * ```
+     *
+     * @EntryPoint
      */
     public static Optional<SelectResult<T>> selectReceive<T>(Channel<T>[] channels) {
         int64 backoff = 100000;
@@ -250,12 +256,32 @@ public class Tasks {
                 }
             }
             if (!any_open) {
-                return stack Optional<SelectResult<T>>(false, null);
+                return stack Optional<SelectResult<T>>(false);
             }
             Cajeta.fiberSleepNanos(backoff);
             if (backoff < 10000000) {
                 backoff = backoff * 2;
             }
         }
+    }
+
+    /** Native cooperative sleep: parks the FIBER (main-thread callers
+     *  cond_timedwait) for up to `nanos` — the timer-wheel path
+     *  (`__cajeta_fiber_sleep_nanos`), same primitive Channel.select's
+     *  polling backoff uses. */
+    @Native("__cajeta_fiber_sleep_nanos")
+    private static void sleepNanosNative(int64 nanos);
+
+    /**
+     * Cooperative sleep for `millis` milliseconds — parks the calling
+     * fiber (never the carrier). Non-positive durations return
+     * immediately. The building block for bounded polling waits (e.g. a
+     * timed channel drain) until cancellable parks land.
+     */
+    public static void sleepMillis(int64 millis) {
+        if (millis <= 0) {
+            return;
+        }
+        Tasks.sleepNanosNative(millis * 1000000);
     }
 }

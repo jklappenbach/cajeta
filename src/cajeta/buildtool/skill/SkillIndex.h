@@ -39,7 +39,7 @@ namespace cajeta::buildtool::skill {
 
     class SkillIndex {
     public:
-        // The index.json schema version (see docs/specs/schema-versioning.md).
+        // The index.json schema version (see specs/schemas/schema-versioning.md).
         static constexpr llvm::StringLiteral kSchemaVersion = "skill-index-v1";
 
         // Build an index from validated skill documents. Duplicate skill ids are

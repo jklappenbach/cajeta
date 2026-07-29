@@ -31,6 +31,8 @@ public class RecoverableException extends Exception {
      * ```cajeta
      * throw RecoverableException("record not found");
      * ```
+     *
+     * @EntryPoint
      */
     public RecoverableException(#String message) {
         this.message = message;

@@ -68,7 +68,27 @@ void __cajeta_scope_register(int32_t* done_addr, void** exception_addr,
     f->entries[f->count].done_addr = done_addr;
     f->entries[f->count].exception_addr = exception_addr;
     f->entries[f->count].fiber_slot = fiber_slot;
+    f->entries[f->count].owned_task = NULL;
     f->count++;
+}
+
+// Register a DISCARDED spawn's task: same join bookkeeping as
+// __cajeta_scope_register, plus the scope takes ownership of freeing
+// `task` after the join (see cajeta_scope_entry.owned_task). Codegen
+// emits this instead of register + drop_push for a `spawn f(...);`
+// statement whose Task is not bound to a local — the drop-entry
+// alternative is a per-SITE stack slot that cannot represent N
+// simultaneously-live tasks from a loop, and its wait-on-drop joined at
+// the innermost brace instead of the scope (serializing spawn loops,
+// contra Concurrency.md's own `scope { for { spawn } }` example).
+void __cajeta_scope_register_owned(int32_t* done_addr, void** exception_addr,
+                                   void** fiber_slot, void* task) {
+    struct cajeta_scope_frame** top = __cajeta_scope_top_ptr();
+    struct cajeta_scope_frame* f = *top;
+    if (!f) return;
+    __cajeta_scope_register(done_addr, exception_addr, fiber_slot);
+    // register can't fail short of abort; the entry just appended is ours.
+    f->entries[f->count - 1].owned_task = task;
 }
 
 // Remove any scope_register entries whose done_addr falls inside the given
@@ -89,6 +109,7 @@ void __cajeta_scope_deregister_task(void* task_ptr, uint64_t task_size) {
                 f->entries[i].done_addr = NULL;
                 f->entries[i].exception_addr = NULL;
                 f->entries[i].fiber_slot = NULL;
+                f->entries[i].owned_task = NULL;
             }
         }
     }
@@ -103,6 +124,16 @@ void __cajeta_scope_deregister_task(void* task_ptr, uint64_t task_size) {
 // When R5-C lands, the loop becomes: on first non-null exception,
 // cancel the rest, wait for them, then re-raise.
 static void __cajeta_scope_release(struct cajeta_scope_frame* f) {
+    // Free the tasks this scope owns (discarded spawns). Every caller
+    // has already joined the frame's entries, so each owned task's
+    // fiber is done and nothing else references the struct: the bound
+    // case is freed by its local's drop instead (owned_task NULL), and
+    // an await-rethrow path deregisters before its own free.
+    for (int i = 0; i < f->count; i++) {
+        if (f->entries[i].owned_task) {
+            __cajeta_free(f->entries[i].owned_task);
+        }
+    }
     free(f->entries);
     free(f);
 }
@@ -118,6 +149,7 @@ void __cajeta_scope_exit(void) {
     // scope still joins everything before unwinding upward.
     void* trigger = NULL;
     for (int i = 0; i < f->count; i++) {
+        if (!f->entries[i].done_addr) continue;   // deregistered (task freed)
         __cajeta_task_wait(f->entries[i].done_addr);
         if (!trigger && f->entries[i].exception_addr
                 && *f->entries[i].exception_addr) {
@@ -167,6 +199,7 @@ void __cajeta_scope_exit_to(void* watermark) {
         if (!f) break;
         void* frame_trigger = NULL;
         for (int i = 0; i < f->count; i++) {
+            if (!f->entries[i].done_addr) continue;   // deregistered (task freed)
             __cajeta_task_wait(f->entries[i].done_addr);
             if (!frame_trigger && f->entries[i].exception_addr
                     && *f->entries[i].exception_addr) {

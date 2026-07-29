@@ -34,6 +34,8 @@ public final class Csv {
      * argument; the synthesizer replaces this captured body per-T.
      *
      * Throws `CsvParseException` if the synthesizer fails to engage.
+     *
+     * @EntryPoint
      */
     public static T parse<T>(int8[] bytes, int64 length) {
         throw heap CsvParseException(
@@ -44,8 +46,14 @@ public final class Csv {
      * Tier-1 `String` convenience — forwards to the byte-buffer variant. Its
      * `(String)` shape does not match the synthesizer's `(int8[], int64)`
      * signature, so this delegation body is preserved verbatim.
+     *
+     * @EntryPoint
      */
     public static T parse<T>(String s) {
-        return Csv.parse<T>(s.bytes, (int64) s.byteLength);
+        if (s.root() == null || s.byteOffset() != (int64) 0) {
+            int8[] w = s.toBytes();
+            return Csv.parse<T>(w, (int64) s.byteLength());
+        }
+        return Csv.parse<T>(s.root(), (int64) s.byteLength());
     }
 }

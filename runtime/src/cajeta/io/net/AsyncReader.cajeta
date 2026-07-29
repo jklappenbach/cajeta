@@ -295,7 +295,7 @@ public class AsyncReader implements AsyncIterator<int8[]> {
      * end-of-stream, the same terminate-on-`0` contract as [`read`](#read).
      * A non-positive `timeoutMs` is the unbounded [`read`](#read).
      *
-     * The [`HttpServer`](http/HttpServer.cajeta) head-read loop drives this
+     * The HTTP head-read loop (external `dev.cajeta.http`) drives this
      * per byte under a per-request wall-clock budget so a client that
      * dribbles a partial head is evicted instead of pinning a worker.
      */
@@ -368,7 +368,7 @@ public class AsyncReader implements AsyncIterator<int8[]> {
                     grown[i] = acc[i];
                     i = i + 1;
                 }
-                acc = #grown;
+                acc #= grown;
                 accCap = newCap;
             }
             acc[accLen] = one[0];
@@ -420,7 +420,7 @@ public class AsyncReader implements AsyncIterator<int8[]> {
             // as ArrayStream/Channel do — a `heap` allocation here would need a
             // `#`-marked return the interface doesn't have
             // (CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER).
-            return stack Optional<int8[]>(false, null);   // terminal: stream exhausted
+            return stack Optional<int8[]>(false);   // terminal: stream exhausted
         }
         int8[] piece = AsyncReader.copyExact(chunk, n);
         return stack Optional<int8[]>(true, #piece);

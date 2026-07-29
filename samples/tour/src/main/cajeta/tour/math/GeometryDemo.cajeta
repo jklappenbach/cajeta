@@ -1,0 +1,104 @@
+package tour.math;
+
+import tour.DemoClass;
+import cajeta.lang.Math;
+import cajeta.math.Rotation;
+import cajeta.math.Transform;
+import cajeta.math.Camera;
+import cajeta.math.Ray;
+import cajeta.math.Color;
+
+// cajeta.math geometry — the renderer-facing value types layered over the
+// builtin Vector/Quaternion/Matrix (see LinearAlgebraDemo/QuaternionDemo for
+// the builtins themselves):
+//
+//   * Rotation  — BUILD a unit quaternion from axis+angle / Euler angles
+//                 (the builtin Quaternion supplies the algebra, not the
+//                 construction ergonomics).
+//   * Transform — a TRS transform: scale, then rotate, then translate.
+//   * Camera    — projection/view matrix builders (right-handed, clip depth
+//                 [0,1] — the Vulkan/D3D convention).
+//   * Ray       — origin + t * direction.
+//   * Color     — RGBA with the IEC 61966-2-1 sRGB <-> linear transfer.
+//
+// Every value is pinned with a float-tolerance self-check.
+public class GeometryDemo extends DemoClass {
+    // |a - b| within a float32 tolerance.
+    static boolean close(float32 a, float32 b) {
+        float32 d = Math.abs(a - b);
+        return d < 0.0001f;
+    }
+
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- cajeta.math geometry (Rotation/Transform/Camera/Ray/Color) --");
+
+        // 1. Rotation.fromAxisAngle: 90 deg about +z takes (1,0,0) to (0,1,0).
+        Vector<float32,3> zAxis = stack Vector<float32,3>(0.0f, 0.0f, 1.0f);
+        Quaternion<float32> q90 = Rotation.fromAxisAngle(zAxis, 1.5707964f);
+        Vector<float32,3> xAxis = stack Vector<float32,3>(1.0f, 0.0f, 0.0f);
+        Vector<float32,3> rx = q90 * xAxis;
+        System.stdout.println("  fromAxisAngle(z, pi/2) on (1,0,0) -> ("
+            + (int32)(rx.x + 0.5f) + "," + (int32)(rx.y + 0.5f) + ","
+            + (int32)(rx.z + 0.5f) + ")   (expect (0,1,0))");
+        this.check(close(rx.x, 0.0f) && close(rx.y, 1.0f) && close(rx.z, 0.0f),
+            "fromAxisAngle(z, pi/2) rotates (1,0,0) to (0,1,0)");
+
+        // 2. Transform applies SCALE, then ROTATE, then TRANSLATE:
+        //    p=(1,0,0), scale 2 -> (2,0,0), rotate 90/z -> (0,2,0), +(0,0,5).
+        Vector<float32,3> tr = stack Vector<float32,3>(0.0f, 0.0f, 5.0f);
+        Vector<float32,3> sc = stack Vector<float32,3>(2.0f, 2.0f, 2.0f);
+        Transform t = stack Transform(tr, q90, sc);
+        Vector<float32,3> p = stack Vector<float32,3>(1.0f, 0.0f, 0.0f);
+        Vector<float32,3> w = t.transformPoint(p);
+        this.check(close(w.x, 0.0f) && close(w.y, 2.0f) && close(w.z, 5.0f),
+            "TRS transformPoint (1,0,0) -> (0,2,5)");
+
+        // 2b. inverse() undoes it (exact for uniform scale).
+        Transform inv = t.inverse();
+        Vector<float32,3> back = inv.transformPoint(w);
+        this.check(close(back.x, 1.0f) && close(back.y, 0.0f) && close(back.z, 0.0f),
+            "inverse().transformPoint round-trips");
+
+        // 2c. compose: parent.compose(child) applies child FIRST.
+        Transform id = Transform.identity();
+        Transform composed = t.compose(id);
+        Vector<float32,3> w2 = composed.transformPoint(p);
+        this.check(close(w2.x, w.x) && close(w2.y, w.y) && close(w2.z, w.z),
+            "compose(identity) leaves the transform unchanged");
+
+        // 3. Camera.perspective sanity: fovy=pi/2 -> f=1/tan(pi/4)=1, so
+        //    m[1][1]=1 and m[0][0]=f/aspect=0.5; the projective row m[3] is
+        //    (0,0,-1,0) — the -1 makes clip-w the view-space depth.
+        //    (Elements are read into float32 locals first: a Matrix m[r][c]
+        //    used directly as a call argument crashes host codegen today.)
+        Matrix<float32,4,4> proj = Camera.perspective(1.5707964f, 2.0f, 0.1f, 100.0f);
+        float32 m00 = proj[0][0];
+        float32 m11 = proj[1][1];
+        float32 m32 = proj[3][2];
+        float32 m33 = proj[3][3];
+        this.check(close(m11, 1.0f) && close(m00, 0.5f),
+            "perspective(pi/2, 2.0): m11 == 1, m00 == 0.5");
+        this.check(close(m32, -1.0f) && close(m33, 0.0f),
+            "perspective w-row is (0,0,-1,0)");
+
+        // 4. Ray.at(t) = origin + t * direction.
+        Vector<float32,3> ro = stack Vector<float32,3>(1.0f, 2.0f, 3.0f);
+        Vector<float32,3> rd = stack Vector<float32,3>(0.0f, 0.0f, 2.0f);
+        Ray ray = stack Ray(ro, rd);
+        Vector<float32,3> hit = ray.at(2.5f);
+        System.stdout.println("  ray(o=(1,2,3), d=(0,0,2)).at(2.5) -> (1,2,"
+            + (int32)(hit.z + 0.5f) + ")   (expect (1,2,8))");
+        this.check(close(hit.x, 1.0f) && close(hit.y, 2.0f) && close(hit.z, 8.0f),
+            "ray.at(2.5) == origin + 2.5 * direction");
+
+        // 5. Color: sRGB 0.5 decodes to ~0.21404 linear (the gamma curve),
+        //    and toLinear().toSrgb() round-trips within float tolerance.
+        Color srgb = stack Color(0.5f, 0.25f, 0.1f, 1.0f);
+        Color lin = srgb.toLinear();
+        this.check(close(lin.r, 0.2140411f), "sRGB 0.5 -> linear ~0.21404");
+        Color rt = lin.toSrgb();
+        this.check(close(rt.r, 0.5f) && close(rt.g, 0.25f) && close(rt.b, 0.1f)
+            && close(rt.a, 1.0f), "sRGB -> linear -> sRGB round-trips");
+    }
+}

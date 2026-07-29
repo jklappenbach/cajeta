@@ -20,17 +20,26 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <unordered_set>
 
 namespace cajeta::dbg {
+
+    // dap-stepping: the three step verbs. A pending step is armed at resume
+    // time (resumeWithStep) and satisfied by the first qualifying safepoint on
+    // the origin fiber — see spec 2.1.
+    enum class StepKind { In, Over, Out };
 
     struct StopEvent {
         // Why the program parked. Breakpoint = an armed statement safepoint
         // (CP3); Exception = an armed throw caught at the __cajeta_throw
         // chokepoint (CP6f-3, before the stack unwinds, so the throwing frame
         // is still inspectable).
-        enum class StopReason { Breakpoint, Exception };
+        // Entry = a one-shot stop at the first safepoint the program reaches,
+        // i.e. the entry method's first executable statement (DAP stopOnEntry).
+        // Step = a pending step (resumeWithStep) matched this safepoint.
+        enum class StopReason { Breakpoint, Exception, Entry, Step };
 
         int32_t locId = -1;
         long fiberId = 0;
@@ -55,6 +64,22 @@ namespace cajeta::dbg {
     class DebugController {
     public:
         // --- arming (debugger/DAP thread) ---
+        // Step-decision trace (live line-132 hunt, 2026-07-22): the last
+        // pending-step evaluations, recorded under the existing lock at
+        // negligible cost. The DAP layer drains + prints on each step stop
+        // so a misbehaving live step explains itself in stderr.
+        struct StepDecision {
+            int32_t locId;
+            long fiberId;
+            int depth;
+            int originDepth;
+            int kind;      // StepKind as int
+            bool stopped;
+            int reason;    // 0=evaluated 1=fiber-mismatch 2=same-line
+                           // 3=chain-mismatch (9.1 diagnostics)
+        };
+        std::vector<StepDecision> drainStepTrace();
+
         void arm(int32_t locId);
         void disarm(int32_t locId);
         void clearArmed();
@@ -66,6 +91,14 @@ namespace cajeta::dbg {
         void armException();
         void disarmException();
         bool isExceptionArmed() const;
+
+        // DAP stopOnEntry: park at the FIRST safepoint reached, whatever its
+        // locId, then clear itself. One-shot by construction — a sticky flag
+        // would re-park at every later statement, which is a step, not an
+        // entry stop. Arm before the program thread starts.
+        void armEntry();
+        void disarmEntry();
+        bool isEntryArmed() const;
 
         // --- executing (carrier) thread ---
         // At a statement safepoint. If locId is armed, record the stop, wake
@@ -91,6 +124,29 @@ namespace cajeta::dbg {
         // Release the parked safepoint so the carrier thread continues.
         void resume();
 
+        // dap-stepping: resume with a pending step. The origin (fiber, frame
+        // depth, line) is captured by the caller at the stop; onSafepoint
+        // parks with reason Step at the first safepoint on `fiberId` whose
+        // line differs from `originLine` and whose depth satisfies the verb
+        // (In: any; Over: <= originDepth; Out: < originDepth). Any park —
+        // step, breakpoint, exception, entry — clears the pending step, so a
+        // step can never wedge the controller.
+        // originFrame (9.1): the frame NODE the step was armed on. A
+        // candidate safepoint must carry it on its own chain — a foreign
+        // carrier's chain never does, so parallel-share safepoints can no
+        // longer steal the stop even if their reported fiber id lies.
+        void resumeWithStep(StepKind kind, long fiberId, int originDepth,
+                            int originLine, void* originFrame = nullptr);
+
+        // Injected seams for step matching: depth of a safepoint's frame-chain
+        // head and line of a locId. The controller stays free of frame-walking
+        // and loc-table knowledge; the DAP layer wires the real ones. With no
+        // providers set, a pending step never matches (safe default).
+        void setStepProviders(std::function<int(void*)> depthOfFrame,
+                              std::function<int(int32_t)> lineOfLoc,
+                              std::function<bool(void*, void*)> containsFrame
+                                  = {});
+
         // Non-blocking: is a safepoint currently parked?
         bool isStopped() const;
 
@@ -110,11 +166,24 @@ namespace cajeta::dbg {
         std::condition_variable stoppedCv;   // signaled when a safepoint parks
         std::condition_variable resumeCv;    // signaled by resume()
         std::unordered_set<int32_t> armed;
+        std::vector<StepDecision> stepTrace;   // ring, capped at 64
+        void* stepOriginFrame = nullptr;       // 9.1 chain-identity anchor
+        std::function<bool(void*, void*)> containsFrame;
         bool exceptionArmed = false;
+        bool entryArmed = false;
         bool stopped = false;
         bool resumeRequested = false;
         StopEvent current;
         std::chrono::milliseconds quiesceTimeout{500};
+
+        // dap-stepping: pending-step state (guarded by `mutex`).
+        bool stepPending = false;
+        StepKind stepKind = StepKind::In;
+        long stepFiber = 0;
+        int stepOriginDepth = 0;
+        int stepOriginLine = -1;
+        std::function<int(void*)> depthOfFrame;
+        std::function<int(int32_t)> lineOfLoc;
     };
 
 } // namespace cajeta::dbg

@@ -17,7 +17,7 @@ import cajeta.lang.String;
  *
  * ```cajeta
  * try {
- *     #File f = File.open("/tmp/lock", OpenMode.CREATE_NEW);
+ *     File f = File.open("/tmp/lock", OpenMode.CREATE_NEW);
  *     // ... we won the race; we own the file
  * } catch (AlreadyExistsException e) {
  *     // someone else already created it — back off

@@ -23,6 +23,17 @@ class CajetaDebugSession(private val client: DapClient) {
         val entryMethod: String,
         val sourceRoot: String,
         val stopOnEntry: Boolean = false,
+        val envVars: Map<String, String> = emptyMap(),
+        val inheritSystemEnv: Boolean = true,
+        /** Whole-program JIT cache root (fast-debug-launch 5.2.2). Blank =
+         *  not sent = the server compiles from scratch, as before. */
+        val cacheDir: String = "",
+        /** The binary the plugin launched (resident-debug-server 5.2.1).
+         *  Sent on initialize so a stale/wrong server refuses cleanly. */
+        val compilerPath: String = "",
+        /** Ask the server to keep its compiled world across sessions
+         *  (resident-debug-server 4.2.1). */
+        val resident: Boolean = false,
     )
 
     /** A line breakpoint, optionally conditional (CP6f). A blank condition is
@@ -34,7 +45,12 @@ class CajetaDebugSession(private val client: DapClient) {
     @Volatile var onStopped: ((Json) -> Unit)? = null
     @Volatile var onTerminated: (() -> Unit)? = null
     @Volatile var onExited: ((Int) -> Unit)? = null
-    @Volatile var onOutput: ((String) -> Unit)? = null
+    /**
+     * `output` event text plus its DAP category ("stdout", "stderr", or
+     * "console" for the server's own launch narration). The category drives the
+     * console color, so it has to survive the hop.
+     */
+    @Volatile var onOutput: ((String, String) -> Unit)? = null
     @Volatile var onClosed: (() -> Unit)? = null
 
     fun start() {
@@ -45,7 +61,11 @@ class CajetaDebugSession(private val client: DapClient) {
             onExited?.invoke(code)
         }
         client.onEvent("output") { ev ->
-            ev.opt("body")?.opt("output")?.let { onOutput?.invoke(it.asString()) }
+            val body = ev.opt("body")
+            body?.opt("output")?.let {
+                val category = body.opt("category")?.asString() ?: "console"
+                onOutput?.invoke(it.asString(), category)
+            }
         }
         client.onClosed = { onClosed?.invoke() }
         client.start()
@@ -67,9 +87,12 @@ class CajetaDebugSession(private val client: DapClient) {
         breakpoints: List<LineBreakpoint> = emptyList(),
         exceptionBreakpoints: Boolean = false,
     ): CompletableFuture<Void> {
+        val initArgs = Json.obj("adapterID" to Json.of("cajeta"))
+        if (params.compilerPath.isNotBlank())
+            initArgs["compilerPath"] = Json.of(params.compilerPath)
         var chain = client.sendRequest(
             "initialize",
-            Json.obj("adapterID" to Json.of("cajeta")),
+            initArgs,
         ).thenCompose {
             client.sendRequest("launch", launchArgs(params))
         }
@@ -104,6 +127,20 @@ class CajetaDebugSession(private val client: DapClient) {
 
     /** DAP `continue` — resume the parked program. */
     fun resume(): CompletableFuture<Json> = client.sendRequest("continue")
+
+    /** DAP `next` — step over: stop at [threadId]'s next line, skipping any
+     *  frames the current statement calls into (dap-stepping §3). */
+    fun stepOver(threadId: Int): CompletableFuture<Json> =
+        client.sendRequest("next", Json.obj("threadId" to Json.of(threadId)))
+
+    /** DAP `stepIn` — step into the call at the current line (stdlib included;
+     *  the mounted sources make those frames navigable). */
+    fun stepInto(threadId: Int): CompletableFuture<Json> =
+        client.sendRequest("stepIn", Json.obj("threadId" to Json.of(threadId)))
+
+    /** DAP `stepOut` — run to the caller's next line after the call. */
+    fun stepOut(threadId: Int): CompletableFuture<Json> =
+        client.sendRequest("stepOut", Json.obj("threadId" to Json.of(threadId)))
 
     /**
      * Replace the breakpoints for one source file (DAP setBreakpoints is
@@ -184,16 +221,44 @@ class CajetaDebugSession(private val client: DapClient) {
         }
 
     /** DAP `disconnect`, then tear down the client transport. */
+    /** Under the resident lifecycle the DapClient belongs to the project
+     *  service and OUTLIVES this session — closing it here killed the shared
+     *  reader thread and every later session hung on unanswered requests
+     *  (found live, 2026-07-22). The owner closes it; a standalone session
+     *  (tests, one-shot use) keeps the old behavior. */
+    @Volatile
+    var ownsClient: Boolean = true
+
     fun disconnect(): CompletableFuture<Void?> =
         client.sendRequest("disconnect")
             .handle { _, _ -> null as Void? } // succeed even if the server is already gone
-            .whenComplete { _, _ -> client.close() }
+            .whenComplete { _, _ -> if (ownsClient) client.close() }
 
-    private fun launchArgs(p: LaunchParams): Json = Json.obj(
-        "entry-method" to Json.of(p.entryMethod),
-        "sourceRoot" to Json.of(p.sourceRoot),
-        "stopOnEntry" to Json.of(p.stopOnEntry),
-    )
+    /**
+     * The environment fields are emitted only when they DIVERGE from the
+     * default (spec 4.1.6): no entries and inheritance on produces exactly the
+     * request this sent before §4 existed. Absence therefore means "unspecified"
+     * rather than "empty environment" — a distinction the server depends on,
+     * since an `env: {}` read as the latter would blank the debuggee's
+     * environment on every default launch.
+     */
+    private fun launchArgs(p: LaunchParams): Json {
+        val args = Json.obj(
+            "entry-method" to Json.of(p.entryMethod),
+            "sourceRoot" to Json.of(p.sourceRoot),
+            "stopOnEntry" to Json.of(p.stopOnEntry),
+        )
+        if (p.envVars.isNotEmpty()) {
+            val env = Json.obj()
+            for ((k, v) in p.envVars) env[k] = Json.of(v)
+            args["env"] = env
+        }
+        if (!p.inheritSystemEnv) args["inheritSystemEnv"] = Json.of(false)
+        // Blank stays off the wire (absence = unspecified, like env above).
+        if (p.cacheDir.isNotBlank()) args["cacheDir"] = Json.of(p.cacheDir)
+        if (p.resident) args["resident"] = Json.of(true)
+        return args
+    }
 
     private fun breakpointArgs(file: String, breakpoints: List<LineBreakpoint>): Json {
         val bps = Json.arr()

@@ -15,7 +15,7 @@ package cajeta.process;
  * `launched() == false` and `code() == -1` — never a throw (spec §8.2).
  *
  * ```cajeta
- * Command cmd = heap Command(argv);
+ * Command cmd = heap Command(#argv);
  * cmd.captureStdout();
  * ProcessResult r = cmd.run();
  * if (r.launched() && r.code() == 0) {

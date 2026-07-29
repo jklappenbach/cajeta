@@ -261,7 +261,7 @@ public final class ByteBuffer {
         // `#grown` moves the fresh array's ownership into the field;
         // without it the local's scope-exit drop would free the
         // array we just installed (same pattern as ArrayList.add).
-        this.data = #grown;
+        this.data #= grown;
         this.cap = newCap;
     }
 }

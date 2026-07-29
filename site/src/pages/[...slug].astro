@@ -1,0 +1,179 @@
+---
+import { getCollection, render } from 'astro:content';
+import Base from '../layouts/Base.astro';
+import Toc from '../components/react/Toc.tsx';
+import GuideReader from '../components/GuideReader.astro';
+import manifest from '../data/manifest.json';
+import { splitChapters } from '../lib/chapters.mjs';
+import { fileChapters, sectionNav } from '../../scripts/lib/extract.mjs';
+import RefIndex from '../components/RefIndex.astro';
+
+export const REF_SECTIONS = ['specification', 'stdlib', 'benchmarks'];
+
+export async function getStaticPaths() {
+  const entries = [...(await getCollection('docs')), ...(await getCollection('bench'))];
+
+  // sections whose root files are numbered chapters (e.g. guide/00-…21-…)
+  const fileChaptersBySection = new Map(
+    manifest.sections
+      .map((s) => [s.name, fileChapters(manifest.docs.filter((d) => d.section === s.name))])
+      .filter(([, ch]) => ch !== null)
+  );
+
+  // reference sections: grouped left index shared by all their pages
+  const navBySection = new Map(
+    manifest.sections
+      .filter((s) => REF_SECTIONS.includes(s.name))
+      .map((s) => [
+        s.name,
+        sectionNav(manifest.docs.filter((d) => d.section === s.name), s.url),
+      ])
+  );
+
+  const paths = [];
+  for (const entry of entries) {
+    // loose docs/ files live under /guides/, directory docs keep their path
+    const baseSlug = entry.id.includes('/') ? entry.id : `guides/${entry.id}`;
+    const section = entry.id.includes('/') ? entry.id.split('/')[0] : 'guides';
+
+    if (navBySection.has(section)) {
+      paths.push({
+        params: { slug: baseSlug },
+        props: { entry, mode: 'ref', chapters: null, index: 0, nav: navBySection.get(section) },
+      });
+      continue;
+    }
+
+    // chapters-as-files: this entry is one chapter of its section's guide
+    const sectionChapters = fileChaptersBySection.get(section);
+    const fileIndex = sectionChapters?.findIndex((c) => c.slug === entry.id) ?? -1;
+    if (sectionChapters && fileIndex !== -1) {
+      paths.push({
+        params: { slug: baseSlug },
+        props: { entry, mode: 'file', chapters: sectionChapters, index: fileIndex },
+      });
+      continue;
+    }
+
+    // chapters-as-numbered-H2s: single loose doc split into chapter pages
+    const h2Chapters = !entry.id.includes('/')
+      ? splitChapters(
+          entry.rendered?.html ?? '',
+          entry.rendered?.metadata?.headings ?? [],
+          `/${baseSlug}/`
+        )
+      : null;
+    if (h2Chapters) {
+      h2Chapters.forEach((chapter, index) => {
+        paths.push({
+          params: { slug: chapter.slug ? `${baseSlug}/${chapter.slug}` : baseSlug },
+          props: { entry, mode: 'h2', chapters: h2Chapters, index },
+        });
+      });
+      continue;
+    }
+
+    paths.push({ params: { slug: baseSlug }, props: { entry, mode: 'doc', chapters: null, index: 0 } });
+  }
+  return paths;
+}
+
+const { entry, mode, chapters, index, nav } = Astro.props;
+
+const meta = manifest.docs.find((d) => d.slug === entry.id);
+const section = manifest.sections.find((s) => s.name === meta?.section);
+const title = meta?.title ?? entry.id;
+const crumbs = (meta?.path ?? entry.id).split('/');
+
+let Content = null;
+let headings = [];
+if (mode !== 'h2') {
+  ({ Content, headings } = await render(entry));
+}
+const chapter = chapters?.[index];
+const pageTitle = chapter && index > 0 ? `${chapter.title} · ${title}` : title;
+
+// file-mode guides are named for the section ("The Cajeta Guide" README title)
+const guideTitle =
+  mode === 'file'
+    ? (manifest.docs.find((d) => d.slug === chapters[0].slug)?.title ?? section?.label)
+    : title;
+---
+
+<Base
+  title={`${mode === 'file' ? title : pageTitle} — Cajeta documentation`}
+  description={meta?.description}
+  activeSection={section?.name}
+>
+  {
+    mode === 'h2' ? (
+      <GuideReader guideTitle={title} guideMeta={meta} section={section} chapters={chapters} index={index}>
+        <Fragment set:html={chapter.html} />
+      </GuideReader>
+    ) : mode === 'file' ? (
+      <GuideReader guideTitle={guideTitle} guideMeta={meta} section={section} chapters={chapters} index={index}>
+        <Content />
+      </GuideReader>
+    ) : mode === 'ref' ? (
+      <div class="guide-shell">
+        <RefIndex
+          sectionLabel={section?.label ?? ''}
+          sectionUrl={section?.url ?? '/'}
+          nav={nav}
+          activeSlug={entry.id}
+        />
+        <article class="prose guide-panel">
+          <p class="kicker">
+            <a href="/">docs</a>
+            <span class="sep">/</span>
+            <a href={section?.url}>{section?.name}</a>
+            {crumbs.length > 2 && (
+              <>
+                <span class="sep">/</span>
+                {crumbs.slice(1, -1).join(' / ')}
+              </>
+            )}
+          </p>
+          <RefIndex
+            sectionLabel={section?.label ?? ''}
+            sectionUrl={section?.url ?? '/'}
+            nav={nav}
+            activeSlug={entry.id}
+            variant="mobile"
+          />
+          <Content />
+          <p class="doc-meta">
+            Source: <code>{meta?.src}</code> · {meta?.minutes} min read · {meta?.words} words
+          </p>
+        </article>
+      </div>
+    ) : (
+      <div class="doc-shell">
+        <article class="prose">
+          <p class="kicker">
+            <a href="/">docs</a>
+            {section && (
+              <>
+                <span class="sep">/</span>
+                <a href={section.url}>{section.name}</a>
+              </>
+            )}
+            {crumbs.length > 2 && (
+              <>
+                <span class="sep">/</span>
+                {crumbs.slice(1, -1).join(' / ')}
+              </>
+            )}
+          </p>
+          <Content />
+          <p class="doc-meta">
+            Source: <code>{meta?.src}</code> · {meta?.minutes} min read · {meta?.words} words
+          </p>
+        </article>
+        <aside class="toc-rail" aria-label="Table of contents">
+          <Toc client:idle headings={headings} />
+        </aside>
+      </div>
+    )
+  }
+</Base>

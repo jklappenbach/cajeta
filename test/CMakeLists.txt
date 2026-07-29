@@ -110,6 +110,14 @@ if(NOT WIN32)
         target_link_options(${BINARY} PRIVATE
                 "-Wl,--exclude-libs,${CAJETA_LLVM_EXCLUDE_LIBS}")
     endif()
+    # --exclude-libs only reaches ARCHIVES; LLVM's headers also emit vague-linkage
+    # template instantiations into cajeta's own objects, which the script localizes.
+    if(CAJETA_LLVM_VERSION_SCRIPT AND NOT APPLE)
+        target_link_options(${BINARY} PRIVATE
+                "-Wl,--version-script=${CAJETA_LLVM_VERSION_SCRIPT}")
+        set_property(TARGET ${BINARY} APPEND PROPERTY
+                LINK_DEPENDS "${CAJETA_LLVM_VERSION_SCRIPT}")
+    endif()
 endif()
 
 # The build-tool HTTP test server (test/buildtool/TestHttpServer.h) speaks
@@ -136,6 +144,37 @@ if(WIN32 AND LLVM_DIR)
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
                         ${CAJETA_TEST_LLVM_DLLS} "$<TARGET_FILE_DIR:${BINARY}>"
                 COMMENT "Refreshing libLLVM DLL beside ${BINARY} (prevents stale-DLL shadowing)")
+    else()
+        # STATIC fork LLVM (no libLLVM DLL in the toolchain bin — the release
+        # runner's cajeta-llvm windows-x64 asset ships static archives only).
+        # cajeta_test then embeds ALL of LLVM 23 + lld, and with -g the DWARF
+        # pushes the PE past what the Windows loader accepts (PE section file
+        # offsets are 32-bit; a multi-GB image fails CreateProcess with
+        # ERROR_BAD_EXE_FORMAT — CMake/gtest surface it as "inappropriate file
+        # type or format" and --gtest_list_tests returns nothing). Strip debug
+        # sections at link (keeps the symbol table; gtest and the runtime's own
+        # stack traces don't need host DWARF). The dylib branch above keeps
+        # full -g: with libLLVM as a DLL the exe stays ~1 GB and loads fine.
+        target_link_options(${BINARY} PRIVATE -Wl,--strip-debug)
+        message(STATUS "cajeta_test: static LLVM toolchain on Windows — stripping debug from test exe link (PE size limit)")
+    endif()
+
+    # The prebuilt LLVM/lld archives are built with a different GCC than the
+    # MSYS2 g++ on the runner (MSYS2 rolls forward; the fork is rebuilt rarely).
+    # Where both sides instantiate the same libstdc++ inline template, the two
+    # GCCs can place its function-local statics in DIFFERENT COMDAT sections —
+    # e.g. `std::__detail::_AnyMatcher<...>::operator()(char) const::__nul`
+    # landing in `.bss$sym` in liblldCommon.a but `.data$sym` here — and ld
+    # reports "multiple definition" instead of folding them. The definitions are
+    # the same entity from the same header, so letting the linker keep one is
+    # sound; it only bites TUs that pull in <regex>, which several tests do.
+    #
+    # This does NOT paper over an ODR bug in our code: cajeta.exe links the same
+    # archives cleanly, and the colliding symbols are libstdc++'s, not ours. The
+    # real fix is rebuilding the LLVM fork against the current toolchain (or
+    # pinning the MSYS2 gcc), both of which live outside this repo.
+    if(MINGW)
+        target_link_options(${BINARY} PRIVATE -Wl,--allow-multiple-definition)
     endif()
 endif()
 
@@ -150,8 +189,26 @@ include(GoogleTest)
 # Per-test timeout: individual tests should finish in well under 10s
 # (JIT compile + run); 120s catches a hang (e.g. async / spawn deadlock
 # under -j$(nproc) contention) without false-positiving on slow tests.
-gtest_discover_tests(${BINARY}
-        PROPERTIES TIMEOUT 120)
+#
+# DISCOVERY_MODE: on Windows the test exe links the monolithic libLLVM DLL
+# plus the mingw-runtime / antlr4 / zstd / glog / openssl / curl / libxml2
+# DLLs, which are only assembled onto PATH by the test runner scripts
+# (cajeta_tests.ps1 / release_tests.cmd) — NOT during the build. The default
+# POST_BUILD discovery launches the exe at link time to enumerate tests; in
+# that bare build environment Windows can't load the dependent DLLs, so the
+# process fails to start (ERROR_BAD_EXE_FORMAT, surfaced by CMake as
+# "inappropriate file type or format" with empty output) and breaks the build.
+# Defer discovery to test time on Windows so enumeration runs under the
+# runner's curated PATH. Linux/macOS resolve their .so deps at build time, so
+# keep the default (build-time) discovery there.
+if(WIN32)
+    gtest_discover_tests(${BINARY}
+            DISCOVERY_MODE PRE_TEST
+            PROPERTIES TIMEOUT 120)
+else()
+    gtest_discover_tests(${BINARY}
+            PROPERTIES TIMEOUT 120)
+endif()
 
 # `release_tests` target — runs the curated cross-compilation subset (see
 # release_filter.txt + release_tests.sh) instead of the full battery. It

@@ -48,7 +48,7 @@ public class Instrument {
         ArrayList<String> excludes = params.getStringArray("exclude");
 
         // ── Build the compiler argv ──────────────────────────────
-        ProcessBuilder pb = #heap ProcessBuilder();
+        ProcessBuilder pb #= heap ProcessBuilder();
         pb.command("cajeta");
         pb.arg("build");
         pb.arg("--flavor=" + flavor);
@@ -97,7 +97,7 @@ public class Instrument {
         }
 
         // ── Result ───────────────────────────────────────────────
-        ActionResult r = #heap ActionResult();
+        ActionResult r #= heap ActionResult();
         r.output("path",        artifact.toString());
         r.output("probe-count", String.valueOf(probeCount));
         r.output("grain",       grain.toName());

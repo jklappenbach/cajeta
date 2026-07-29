@@ -76,4 +76,4 @@ int32  prim  = boxed.value();          // unbox back to a Numeric-satisfying pri
 - You do not add primitives to the intrinsic table — extend the hierarchy only via nominal `implements`.
 - `Boolean`/`Char`/`bool` are not numbers anywhere in this tower.
 
-See `docs/specification/cajeta-templates/numeric-bounds-spec.md`, `cajeta.math.DType` (runtime face), and `plans/lang/wrapper-types-plan.md` (the box tower).
+See `docs/specification/lang/templates/numeric-bounds-spec.md`, `cajeta.math.DType` (runtime face), and `plans/lang/wrapper-types-plan.md` (the box tower).

@@ -399,7 +399,7 @@ TEST(LambdaInstanceMethodReproTests, enhancedForBodyInstanceCallOnCapturedClass)
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        Counter c = heap Counter();\n"
-        "        int32[] xs = { 10, 20, 12 };\n"
+        "        int32[] xs = [ 10, 20, 12 ];\n"
         "        () -> void fn = () -> {\n"
         "            for (int32 x : xs) {\n"
         "                c.add(x);\n"

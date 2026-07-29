@@ -23,6 +23,8 @@ public final class Device {
      * example, `supports(Capability.RayQueryNative)` is true on a GPU with
      * hardware inline ray query and false on the CPU backend — where a `RayQuery`
      * still runs, via the software BVH walk.
+     *
+     * @EntryPoint
      */
     public static boolean supports(Capability cap) {
         // The enum constant resolves to its i32 ordinal (the stable Capability

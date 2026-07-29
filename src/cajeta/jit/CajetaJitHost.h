@@ -11,11 +11,14 @@
 //
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "cajeta/dbg/DebugController.h"
+
+namespace llvm { class DataLayout; }
 
 namespace cajeta::jit {
 
@@ -32,6 +35,50 @@ namespace cajeta::jit {
         std::vector<std::string> programArgs;
         // Reserved for CP2+: emit __cajeta_dbg_safepoint polls + debug frames.
         bool debugInfo = false;
+        // Resident-world mode (resident-debug-server 4.2.1): reuse the
+        // primed stdlib front-end (StdlibReuseCore) across builds in this
+        // process. Set by the DAP server when the launch request asks;
+        // one-shot paths (jit-run) leave it off and keep full isolation.
+        bool resident = false;
+        // Whole-program JIT cache root (fast-debug-launch 4.2.1). Non-empty
+        // enables the cache: a slot keyed on compiler version+flags+entry+
+        // source digests holds the MERGED program bitcode + sidecars, and a
+        // launch whose key matches loads it without constructing a Compiler.
+        // Empty = today's full compile, unconditionally.
+        std::string cacheDir;
+        // Optional build-progress callback (fast-debug-launch 1.2.2). Invoked
+        // from the calling thread at phase boundaries — phase is one of
+        // "collect", "parse", "codegen", "finalize", "merge", "jit" — and once
+        // per source during "parse" with detail = the source's root-relative
+        // path and current/total = 1-based source counts. Boundary events
+        // carry current = total = 0. Unset = no calls, no behavior change.
+        std::function<void(const std::string& phase, const std::string& detail,
+                           int current, int total)> onProgress;
+    };
+
+    // Wall-clock breakdown of one buildJit run (fast-debug-launch 1.2.1).
+    // The named phases are disjoint segments of the same interval, so their
+    // sum never exceeds totalSeconds (loop bookkeeping between segments is
+    // deliberately unattributed). Codegen is split by module owner: the one
+    // process-wide stdlib module vs everything else — the split that decides
+    // whether stdlib cache slots (plan Unit 7) are worth building.
+    struct JitBuildPhases {
+        double collectSeconds = 0;        // fs walk + compiler setup + prescan
+        double parseSeconds = 0;          // per-source parse (incl. lazy stdlib)
+        double codegenStdlibSeconds = 0;  // method codegen, stdlib module
+        double codegenUserSeconds = 0;    // method codegen, user modules
+        double finalizeSeconds = 0;       // REFL-2 + drop backfill/pin
+        double mergeSeconds = 0;          // linkModules donor merge
+        double jitSeconds = 0;            // verify + LLJIT build/initialize
+        double totalSeconds = 0;          // whole buildJit wall time
+
+        // Sub-phase splits (fast-debug-launch 7.2.1) — each a SUBSET of the
+        // parent segment above, measured inside it. They locate the
+        // edit-relaunch cost the Stage-B rescope targets.
+        double parseStdlibSeconds = 0;    // ensureStdlibModule + lazy pkg parses
+        double jitSerializeSeconds = 0;   // WriteBitcodeToFile (cold only)
+        double jitReparseSeconds = 0;     // parseBitcodeFile round-trip/load
+        double jitMaterializeSeconds = 0; // LLJIT initialize (incl. codegen)
     };
 
     // Optional diagnostics filled by runJit when a non-null result is passed.
@@ -44,6 +91,19 @@ namespace cajeta::jit {
         // module's counter, reset immediately before invoking the entry so it
         // measures only the entry's execution, not global ctors).
         long safepointsExecuted = 0;
+        // Build-phase wall-clock breakdown (fast-debug-launch 1.2.1).
+        JitBuildPhases phases;
+        // True when this launch was served from the whole-program cache slot
+        // (fast-debug-launch 4.1.1) — no Compiler was constructed.
+        bool cacheHit = false;
+        // True when EVERY module materialized from the content-addressed
+        // object pool (fast-debug-launch 6.1.1) — no instruction selection.
+        bool objectCacheHit = false;
+        // Per-module delivery counters (resident-debug-server 2.1.3):
+        // objects served from the pool vs compiled this launch. Zero when
+        // cacheDir is unset (no pools).
+        int moduleObjectsServed = 0;
+        int moduleObjectsCompiled = 0;
     };
 
     // Compile + JIT + run. Returns the process-style exit code (0 on success,
@@ -88,6 +148,11 @@ namespace cajeta::jit {
         // lifetime. Arm/disarm + waitForStop/resume go through here.
         cajeta::dbg::DebugController& controller();
 
+        // The JIT's DataLayout — the layout the running program's memory uses.
+        // ValueInspector decodes stopped-state values against this
+        // (debugger-variable-inspection §1.5). Valid for the session's life.
+        const llvm::DataLayout& dataLayout() const;
+
         // True once the program thread has finished.
         bool isFinished() const;
 
@@ -122,10 +187,20 @@ namespace cajeta::jit {
     // BEFORE the program thread starts, so a program that throws/hits a bp
     // immediately can't race past the arm. Returns null on a compile/JIT failure
     // (with a message in *error when non-null).
+    // `stopOnEntry` parks at the first safepoint (the entry method's first
+    // executable statement) — armed before the thread starts, like exceptions.
+    // `beforeRun` runs after the program is built and armed but before the
+    // program thread starts. That window is where process-global state the
+    // DEBUGGEE should see — but the COMPILER should not — belongs: the DAP
+    // server's launch environment overlay is applied here, so a configuration
+    // that suppresses inherited variables cannot strip the environment the
+    // in-process build itself depends on (PATH, HOME, TMPDIR, ROCM_PATH).
     std::unique_ptr<JitDebugSession> startDebugSession(
         const JitRunOptions& opts,
         const std::vector<Breakpoint>& breakpoints,
         std::string* error = nullptr,
-        bool armExceptions = false);
+        bool armExceptions = false,
+        bool stopOnEntry = false,
+        const std::function<void()>& beforeRun = {});
 
 } // namespace cajeta::jit

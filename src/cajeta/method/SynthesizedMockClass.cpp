@@ -11,6 +11,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include "cajeta/xref/XrefIndex.h"
 
 using namespace std;
 
@@ -125,6 +126,11 @@ namespace cajeta {
                                                    const string& wrapperName,
                                                    const string& body,
                                                    const CajetaModulePtr& module) {
+        // Nothing walked here has a source file — the snippet's line numbers refer
+        // to the snippet. Mask the region so no xref edge is attributed to whatever
+        // real call site this synthesis is nested inside (ide-symbol-index 2.2.8).
+        xref::SyntheticSourceScope xrefMask;
+
         string src = "class " + wrapperName + " {\n" + body + "}\n";
 
         antlr4::ANTLRInputStream input(src);

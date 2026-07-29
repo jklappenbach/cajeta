@@ -180,6 +180,23 @@ public final class Reactor {
     private static int32 pollFdNative(int32 fd, int32 interest,
                                       int32 timeoutMs);
 
+    /**
+     * Deadline-bounded **fiber-parking** readable wait: parks the calling
+     * fiber (freeing its carrier) until `fd` is readable or `timeoutMs`
+     * elapses. On a non-fiber caller it blocks the thread, same contract.
+     * Returns [`READY`](#READY) / [`TIMEOUT`](#TIMEOUT) / [`ERROR`](#ERROR).
+     * The carrier-freeing property is load-bearing: the blocking
+     * [`pollFdNative`](#pollFdNative) probe on a fiber stalls every fiber
+     * co-hosted on that carrier for the whole budget — the peer that would
+     * have made `fd` ready may itself be one of them.
+     */
+    @Native("__cajeta_net_await_readable_timed")
+    private static int32 awaitReadableTimedNative(int32 fd, int32 timeoutMs);
+
+    /** Writable twin of [`awaitReadableTimedNative`](#awaitReadableTimedNative). */
+    @Native("__cajeta_net_await_writable_timed")
+    private static int32 awaitWritableTimedNative(int32 fd, int32 timeoutMs);
+
     // --- internal reactor surface (NET-3.3 socket ops call these) -------
 
     /**
@@ -397,7 +414,13 @@ public final class Reactor {
         Reactor.register(fd, Reactor.READ);
         int32 r = Reactor.ERROR;
         try {
-            r = Reactor.pollFdNative(fd, Reactor.READ, timeoutMs);
+            // Fiber-parking timed wait (NET-3.4). The previous body ran the
+            // blocking pollFdNative probe, which stalls the whole CARRIER
+            // for up to `timeoutMs` on a fiber — starving every co-hosted
+            // fiber, including the peer whose bytes are being awaited (the
+            // cajeta-http loopback head-read flake). The native parks the
+            // fiber instead; non-fiber callers still block, same contract.
+            r = Reactor.awaitReadableTimedNative(fd, timeoutMs);
         } finally {
             Reactor.deregister(fd);
         }
@@ -421,7 +444,8 @@ public final class Reactor {
         Reactor.register(fd, Reactor.WRITE);
         int32 r = Reactor.ERROR;
         try {
-            r = Reactor.pollFdNative(fd, Reactor.WRITE, timeoutMs);
+            // Fiber-parking timed wait — see awaitReadableTimed's note.
+            r = Reactor.awaitWritableTimedNative(fd, timeoutMs);
         } finally {
             Reactor.deregister(fd);
         }

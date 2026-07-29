@@ -1,0 +1,39 @@
+/*
+ * Localize the fork LLVM's symbols so ROCm comgr's bundled LLVM can't bind to them.
+ *
+ * HIP dlopens libamd_comgr.so, which carries its OWN ABI-incompatible LLVM (22.x vs
+ * our fork's 23). Our binaries link LLVM statically and export via -rdynamic, so the
+ * loader resolves comgr's INTERNAL llvm::* calls to our copies — LLVM 23 code then
+ * runs against LLVM 22 Module/Function objects -> heap corruption ("free(): invalid
+ * pointer" in every AMD-device test). --exclude-libs handles the LLVM archives, but
+ * the vague-linkage template instantiations LLVM's headers emit into cajeta's OWN
+ * objects (PassModel<...>::run, ...) live in libcajeta_lib.a and escape it.
+ *
+ * Only `local:` patterns are listed, so this SUBTRACTS from -rdynamic rather than
+ * replacing it: __cajeta_* (the JIT dlsym's them via the process-symbol generator)
+ * and cajeta::* (the crash handler's backtrace_symbols names native frames with
+ * them) both stay exported. Patterns are anchored on the Itanium mangling of
+ * namespace llvm (`4llvm` = the length-prefixed name), so cajeta symbols that merely
+ * MENTION an llvm type — cajeta::CajetaLlvmVisitor, PackageAction::run(llvm::json::
+ * Object const&) — mangle as _ZN6cajeta... and are untouched. .symtab is unaffected,
+ * so gdb / CAJETA_JIT_GDB still symbolize LLVM frames fully.
+ *
+ * NOTE: ld version scripts take C-style comments only — `//` is a syntax error.
+ */
+{
+  local:
+    _ZN4llvm*;
+    _ZNK4llvm*;
+    _ZNR4llvm*;
+    _ZZN4llvm*;
+    _ZTVN4llvm*;
+    _ZTIN4llvm*;
+    _ZTSN4llvm*;
+    _ZTIZN4llvm*;
+    _ZTSZN4llvm*;
+    _ZGVN4llvm*;
+    _ZGVZN4llvm*;
+    _ZTTN4llvm*;
+    _ZThn*_N4llvm*;
+    _ZTv0_n*_N4llvm*;
+};

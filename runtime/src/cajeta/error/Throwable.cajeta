@@ -1,5 +1,7 @@
 package cajeta.error;
 
+import cajeta.lang.Optional;
+
 /**
  * Root of the cajeta exception hierarchy — every throwable type derives
  * from `Throwable`, carrying a human-readable `message`. Subtypes split the
@@ -8,7 +10,7 @@ package cajeta.error;
  * `UnrecoverableException`.
  *
  * ```cajeta
- * heap Throwable err = Throwable("disk is full");
+ * Throwable err = heap Throwable("disk is full");
  * String why = err.message;
  * ```
  *
@@ -26,10 +28,276 @@ public class Throwable {
      * Wrap a message into a throwable.
      *
      * ```cajeta
-     * heap Throwable err = Throwable("unexpected end of input");
+     * Throwable err = heap Throwable("unexpected end of input");
      * ```
+     *
+     * @EntryPoint
      */
     public Throwable(#String message) {
         this.message = message;
+    }
+
+    /**
+     * The human-readable message this throwable was constructed with.
+     */
+    public String getMessage() {
+        return this.message;
+    }
+
+    @Native("__cajeta_get_trace")
+    private static int32 getTraceNative(Object throwable, int64[] outAddrs, int32 max);
+    @Native("__cajeta_print_trace")
+    private static void printTraceNative(Object throwable, int32 fd);
+    @Native("__cajeta_print_trace_one")
+    private static void printTraceOneNative(Object throwable, int32 fd, int32 causedBy);
+    @Native("__cajeta_trace_shadow_count") private static int32 shadowCount(Object t);
+    @Native("__cajeta_trace_shadow_desc")  private static int64 shadowDesc(Object t, int32 i);
+    @Native("__cajeta_trace_shadow_line")  private static int32 shadowLine(Object t, int32 i);
+    @Native("__cajeta_desc_type_len")    private static int32 descTypeLen(int64 d);
+    @Native("__cajeta_desc_type_into")   private static void  descTypeInto(int64 d, int8[] out);
+    @Native("__cajeta_desc_method_len")  private static int32 descMethodLen(int64 d);
+    @Native("__cajeta_desc_method_into") private static void  descMethodInto(int64 d, int8[] out);
+    @Native("__cajeta_desc_file_len")    private static int32 descFileLen(int64 d);
+    @Native("__cajeta_desc_file_into")   private static void  descFileInto(int64 d, int8[] out);
+    @Native("__cajeta_desc_role")        private static int32 descRole(int64 d);
+
+    private static #String descType(int64 d) {
+        int32 len = descTypeLen(d);
+        int8[] out = heap int8[len];
+        descTypeInto(d, out);
+        return heap String(#out, len);
+    }
+    private static #String descMethod(int64 d) {
+        int32 len = descMethodLen(d);
+        int8[] out = heap int8[len];
+        descMethodInto(d, out);
+        return heap String(#out, len);
+    }
+    private static #String descFile(int64 d) {
+        int32 len = descFileLen(d);
+        int8[] out = heap int8[len];
+        descFileInto(d, out);
+        return heap String(#out, len);
+    }
+    private static FrameRole roleOf(int32 r) {
+        if (r == 1) { return FrameRole.Stdlib; }
+        if (r == 2) { return FrameRole.Runtime; }
+        return FrameRole.User;
+    }
+    private static String roleName(FrameRole r) {
+        if (r == FrameRole.Stdlib) { return "Stdlib"; }
+        if (r == FrameRole.Runtime) { return "Runtime"; }
+        return "User";
+    }
+    @Native("__cajeta_diag_code_len")    private static int32 diagCodeLen(Object o);
+    @Native("__cajeta_diag_code_into")   private static void  diagCodeInto(Object o, int8[] out);
+    @Native("__cajeta_json_escape_len")  private static int32 jsonEscapeLen(String s);
+    @Native("__cajeta_json_escape_into") private static void  jsonEscapeInto(String s, int8[] out);
+    @Native("__cajeta_diag_fields_len")  private static int32 diagFieldsLen(Object o);
+    @Native("__cajeta_diag_fields_into") private static void  diagFieldsInto(Object o, int8[] out);
+
+    /**
+     * The stable diagnostic `code`. Defaults to this throwable's canonical type
+     * name (e.g. `cajeta.error.Exception`); Unit 2 lets `@DiagnosticCode` override.
+     */
+    public #String code() {
+        int32 len = diagCodeLen(this);
+        int8[] out = heap int8[len];
+        diagCodeInto(this, out);
+        return heap String(#out, len);
+    }
+
+    /**
+     * The underlying cause; empty when there is none (the error package's
+     * one absence idiom — optional-absence spec §3). `Exception` overrides
+     * this to wrap its `cause` field; the bare hierarchy root never has one.
+     */
+    public Optional<Throwable> getCause() {
+        return stack Optional<Throwable>(false, #null);
+    }
+
+    // Category affordances (diagnostic-exceptions §3). Overridable; the base
+    // defaults are conservative (a bare throwable claims nothing). They serialize
+    // into the JSON `category` object so a caller/agent can decide retry vs bail.
+
+    /** Whether retrying the failed operation may succeed. Default `false`. */
+    public boolean isRetryable() { return false; }
+    /** Whether the failure is transient (environmental, likely self-clearing). Default `false`. */
+    public boolean isTransient() { return false; }
+    /** Whether a human/agent action is required to resolve this. Default `false`. */
+    public boolean isUserActionable() { return false; }
+
+    // Remediation (diagnostic-exceptions §3). Overridable; `null` = unset, in
+    // which case the JSON `remediation` object is omitted entirely.
+
+    /** A short human/agent-readable fix hint; empty when none. */
+    public Optional<String> hint() { return stack Optional<String>(false, #null); }
+    /** A documentation URL for this error, or `null` when none. */
+    public Optional<String> docUrl() { return stack Optional<String>(false, #null); }
+
+    /** JSON-string-escape `s` (shared escaping with the compiler emitter). */
+    private static #String jsonEscape(String s) {
+        int32 len = jsonEscapeLen(s);
+        int8[] out = heap int8[len];
+        jsonEscapeInto(s, out);
+        return heap String(#out, len);
+    }
+
+    /**
+     * Render this throwable as a single NDJSON diagnostic object — a superset of
+     * the compiler's `--diag-format=json` shape (`severity`/`code`/`message`)
+     * plus `causeChain` (outer→inner) and `frames`. Built lazily, on call.
+     *
+     * @EntryPoint
+     */
+    public #String toJson() {
+        String m = this.message;
+        String j = "{\"severity\":\"error\",\"code\":\"" + this.code() + "\"";
+        j = j + ",\"message\":\"" + jsonEscape(m) + "\"";
+        int32 flen = diagFieldsLen(this);
+        if (flen > 0) {
+            int8[] fout = heap int8[flen];
+            diagFieldsInto(this, fout);
+            String fstr = heap String(#fout, flen);
+            j = j + fstr;
+        }
+        j = j + ",\"category\":{\"retryable\":" + this.isRetryable()
+              + ",\"transient\":" + this.isTransient()
+              + ",\"userActionable\":" + this.isUserActionable() + "}";
+        Optional<String> oh = this.hint();
+        Optional<String> odu = this.docUrl();
+        if (oh.isPresent() || odu.isPresent()) {
+            j = j + ",\"remediation\":{";
+            boolean firstR = true;
+            if (oh.isPresent()) {
+                j = j + "\"hint\":\"" + jsonEscape(oh.get()) + "\"";
+                firstR = false;
+            }
+            if (odu.isPresent()) {
+                if (!firstR) { j = j + ","; }
+                j = j + "\"docUrl\":\"" + jsonEscape(odu.get()) + "\"";
+            }
+            j = j + "}";
+        }
+        Optional<Throwable> oc = this.getCause();
+        if (oc.isPresent()) {
+            j = j + ",\"causeChain\":[";
+            boolean first = true;
+            Throwable c = oc.get();
+            boolean walking = true;
+            int32 depth = 0;
+            // Bounded: a user-built cause cycle must not spin forever (matches printStackTrace).
+            while (walking && depth < 64) {
+                if (!first) { j = j + ","; }
+                String cm = c.message;
+                j = j + "{\"code\":\"" + c.code() + "\",\"message\":\"" + jsonEscape(cm) + "\"}";
+                first = false;
+                depth = depth + 1;
+                Optional<Throwable> nxt = c.getCause();
+                if (nxt.isPresent()) {
+                    c = nxt.get();
+                } else {
+                    walking = false;
+                }
+            }
+            j = j + "]";
+        }
+        StackFrame[] frames = this.getStackTrace();
+        int64 fn = frames.count();
+        j = j + ",\"frames\":[";
+        int64 i = 0;
+        while (i < fn) {
+            if (i > 0) { j = j + ","; }
+            StackFrame f = frames[i];
+            String dt = f.declaringType;
+            String mn = f.method;
+            String fl = f.file;
+            int32 ln = f.line;
+            int64 addr = f.nativeAddress;
+            j = j + "{\"declaringType\":\"" + jsonEscape(dt) + "\""
+                  + ",\"method\":\"" + jsonEscape(mn) + "\""
+                  + ",\"file\":\"" + jsonEscape(fl) + "\""
+                  + ",\"line\":" + ln
+                  + ",\"role\":\"" + roleName(f.role) + "\""
+                  + ",\"nativeAddress\":" + addr + "}";
+            i = i + 1;
+        }
+        j = j + "]}";
+        return j;
+    }
+
+    /**
+     * The captured stack frames, throw-site first. Empty when capture was off
+     * (`--stack-trace-capture=off`, the Release default) or on a context that
+     * doesn't capture (Windows, in-fiber throws). When the line-info shadow
+     * snapshot is available a frame carries the resolved semantic location
+     * (declaring type, method, file, line, role); otherwise frames fall back
+     * to the raw native return address only.
+     *
+     * @EntryPoint
+     */
+    public StackFrame[] getStackTrace() {
+        // Preferred: semantic frames from the line-info shadow snapshot.
+        int32 sc = shadowCount(this);
+        if (sc > 0) {
+            StackFrame[] frames = heap StackFrame[sc];
+            int32 i = 0;
+            while (i < sc) {
+                int64 d = shadowDesc(this, i);
+                int32 ln = shadowLine(this, i);
+                String t = descType(d);
+                String m = descMethod(d);
+                String f = descFile(d);
+                FrameRole role = roleOf(descRole(d));
+                frames[i] = heap StackFrame(#t, #m, #f, ln, role, 0);
+                i = i + 1;
+            }
+            return frames;
+        }
+        // Fallback: raw return-address frames (line-info off / fiber / Windows).
+        int64[] addrs = heap int64[64];
+        int32 n = getTraceNative(this, addrs, 64);
+        StackFrame[] frames = heap StackFrame[n];
+        int32 i = 0;
+        while (i < n) {
+            frames[i] = heap StackFrame("", "", "", 0, FrameRole.Runtime, addrs[i]);
+            i = i + 1;
+        }
+        return frames;
+    }
+
+    /**
+     * Print this throwable's message and stack trace to stderr, then each link of
+     * the cause chain prefixed with `Caused by: `. Frames are omitted for a link
+     * with no captured trace — capture happens at the throw site, so a cause that
+     * was constructed but never thrown carries none.
+     *
+     * ```
+     * outer failure
+     *   at test.App.deep(App.cajeta:12)
+     * Caused by: root cause
+     * ```
+     *
+     * @EntryPoint
+     */
+    public void printStackTrace() {
+        printTraceOneNative(this, 2, 0);
+        Optional<Throwable> oc = this.getCause();
+        if (oc.isPresent()) {
+            Throwable c = oc.get();
+            boolean walking = true;
+            int32 depth = 0;
+            // Bounded: a user-built cause cycle must not spin forever.
+            while (walking && depth < 64) {
+                printTraceOneNative(c, 2, 1);
+                depth = depth + 1;
+                Optional<Throwable> nxt = c.getCause();
+                if (nxt.isPresent()) {
+                    c = nxt.get();
+                } else {
+                    walking = false;
+                }
+            }
+        }
     }
 }

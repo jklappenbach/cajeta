@@ -73,6 +73,11 @@ public final class Sha256 implements Hasher {
      */
     public pointer state;
 
+    /**
+     * Construct a fresh streaming SHA-256 hasher.
+     *
+     * @EntryPoint
+     */
     public Sha256() {
         this.state = Sha256.allocState();
     }
@@ -133,6 +138,8 @@ public final class Sha256 implements Hasher {
     /**
      * One-shot 32-byte digest of `data[0..len)`. Allocates a fresh
      * `int8[32]` and transfers ownership to the caller.
+     *
+     * @EntryPoint
      */
     public static #int8[] hash(int8[] data, int64 len) {
         int8[] out = heap int8[32];
@@ -143,6 +150,8 @@ public final class Sha256 implements Hasher {
     /**
      * One-shot lowercase 64-char hex digest of `data[0..len)`. The
      * common shape for checksum comparison against a published string.
+     *
+     * @EntryPoint
      */
     public static #String hashHex(int8[] data, int64 len) {
         int8[] hex = heap int8[64];
@@ -154,14 +163,22 @@ public final class Sha256 implements Hasher {
      * One-shot 32-byte digest of a String's UTF-8 bytes.
      */
     public static #int8[] hashString(String s) {
-        return Sha256.hash(s.bytes, (int64) s.byteLength);
+        if (s.root() == null || s.byteOffset() != (int64) 0) {
+            int8[] w = s.toBytes();
+            return Sha256.hash(w, (int64) s.byteLength());
+        }
+        return Sha256.hash(s.root(), (int64) s.byteLength());
     }
 
     /**
      * One-shot lowercase hex digest of a String's UTF-8 bytes.
      */
     public static #String hashStringHex(String s) {
-        return Sha256.hashHex(s.bytes, (int64) s.byteLength);
+        if (s.root() == null || s.byteOffset() != (int64) 0) {
+            int8[] w = s.toBytes();
+            return Sha256.hashHex(w, (int64) s.byteLength());
+        }
+        return Sha256.hashHex(s.root(), (int64) s.byteLength());
     }
 
     // --- Streaming surface ------------------------------------------
@@ -232,7 +249,12 @@ public final class Sha256 implements Hasher {
     }
 
     public void writeString(String s) {
-        Sha256.updateNative(this.state, s.bytes, (int64) s.byteLength);
+        if (s.root() == null || s.byteOffset() != (int64) 0) {
+            int8[] w = s.toBytes();
+            Sha256.updateNative(this.state, w, (int64) s.byteLength());
+            return;
+        }
+        Sha256.updateNative(this.state, s.root(), (int64) s.byteLength());
     }
 
     public void writeObject(Object obj) {

@@ -37,8 +37,8 @@ public final class DateTimeFormatter {
      * they return an owned `#DateTimeFormatter`:
      *
      * ```cajeta
-     * #DateTimeFormatter fmt = DateTimeFormatter.ofPattern("%Y-%m-%d %H:%M:%S");
-     * #DateTimeFormatter iso = DateTimeFormatter.ofStandard(FormatStyle.ISO_LOCAL_DATE_TIME);
+     * DateTimeFormatter fmt = DateTimeFormatter.ofPattern("%Y-%m-%d %H:%M:%S");
+     * DateTimeFormatter iso = DateTimeFormatter.ofStandard(FormatStyle.ISO_LOCAL_DATE_TIME);
      * ```
      */
     public DateTimeFormatter(String pattern) {
@@ -49,9 +49,11 @@ public final class DateTimeFormatter {
      * A formatter for a strftime-style pattern (see class docs for codes).
      *
      * ```cajeta
-     * #DateTimeFormatter fmt = DateTimeFormatter.ofPattern("%a, %d %b %Y %H:%M");
-     * #String out = fmt.formatDateTime(dt);   // "Fri, 05 Jun 2026 13:07"
+     * DateTimeFormatter fmt = DateTimeFormatter.ofPattern("%a, %d %b %Y %H:%M");
+     * String out = fmt.formatDateTime(dt);   // "Fri, 05 Jun 2026 13:07"
      * ```
+     *
+     * @EntryPoint
      */
     public static #DateTimeFormatter ofPattern(String pattern) {
         return heap DateTimeFormatter(pattern);
@@ -61,9 +63,11 @@ public final class DateTimeFormatter {
      * A formatter for a standard `FormatStyle`.
      *
      * ```cajeta
-     * #DateTimeFormatter iso = DateTimeFormatter.ofStandard(FormatStyle.ISO_LOCAL_DATE_TIME);
-     * #String out = iso.formatDateTime(dt);    // "2026-06-05T13:07:00"
+     * DateTimeFormatter iso = DateTimeFormatter.ofStandard(FormatStyle.ISO_LOCAL_DATE_TIME);
+     * String out = iso.formatDateTime(dt);    // "2026-06-05T13:07:00"
      * ```
+     *
+     * @EntryPoint
      */
     public static #DateTimeFormatter ofStandard(FormatStyle style) {
         String p = "%Y-%m-%d";
@@ -100,12 +104,12 @@ public final class DateTimeFormatter {
      * than throwing.
      *
      * ```cajeta
-     * #DateTimeFormatter fmt = DateTimeFormatter.ofPattern("%Y-%m-%d");
-     * #String out = fmt.format(DateTimeFields.ofDate(d));
+     * DateTimeFormatter fmt = DateTimeFormatter.ofPattern("%Y-%m-%d");
+     * String out = fmt.format(DateTimeFields.ofDate(d));
      * ```
      */
     public #String format(DateTimeFields f) {
-        int32 n = this.pattern.byteLength;
+        int32 n = this.pattern.byteLength();
         // Generous upper bound: each '%X' can expand to a name/year (<=16),
         // each literal byte is itself. Oversized; the String length is exact.
         int32 cap = n * 16 + 16;
@@ -113,13 +117,13 @@ public final class DateTimeFormatter {
         int32 p = 0;
         int32 i = 0;
         while (i < n) {
-            int32 c = ((int32) this.pattern.bytes[i]) & 0xff;
+            int32 c = ((int32) this.pattern.byteAt(i)) & 0xff;
             if (c == 37 && i + 1 < n) { // '%'
-                int32 code = ((int32) this.pattern.bytes[i + 1]) & 0xff;
+                int32 code = ((int32) this.pattern.byteAt(i + 1)) & 0xff;
                 p = DateTimeFormatter.emit(buf, p, code, f);
                 i = i + 2;
             } else {
-                buf[p] = this.pattern.bytes[i];
+                buf[p] = this.pattern.byteAt(i);
                 p = p + 1;
                 i = i + 1;
             }
@@ -131,7 +135,7 @@ public final class DateTimeFormatter {
      * Format a `LocalDate` (date fields only).
      *
      * ```cajeta
-     * #String out = DateTimeFormatter.ofStandard(FormatStyle.US_DATE).formatDate(d);
+     * String out = DateTimeFormatter.ofStandard(FormatStyle.US_DATE).formatDate(d);
      * ```
      */
     @Inline
@@ -144,7 +148,7 @@ public final class DateTimeFormatter {
      * Format a `LocalTime` (time-of-day fields only).
      *
      * ```cajeta
-     * #String out = DateTimeFormatter.ofPattern("%H:%M:%S").formatTime(t);
+     * String out = DateTimeFormatter.ofPattern("%H:%M:%S").formatTime(t);
      * ```
      */
     @Inline
@@ -157,7 +161,7 @@ public final class DateTimeFormatter {
      * Format a zone-naive `LocalDateTime` (date and time fields, no offset).
      *
      * ```cajeta
-     * #String out = DateTimeFormatter.ofStandard(FormatStyle.SQL_TIMESTAMP).formatDateTime(t);
+     * String out = DateTimeFormatter.ofStandard(FormatStyle.SQL_TIMESTAMP).formatDateTime(t);
      * ```
      */
     @Inline
@@ -170,7 +174,7 @@ public final class DateTimeFormatter {
      * Format a `ZonedDateTime` — the offset codes `%z` / `%Z` become available.
      *
      * ```cajeta
-     * #String out = DateTimeFormatter.ofPattern("%Y-%m-%dT%H:%M:%S%Z").formatZoned(z);
+     * String out = DateTimeFormatter.ofPattern("%Y-%m-%dT%H:%M:%S%Z").formatZoned(z);
      * ```
      */
     @Inline
@@ -229,20 +233,26 @@ public final class DateTimeFormatter {
             return Fmt.writeUint(buf, p, (int64) doy, 3);
         }
         if (code == 98 || code == 104) { // b / h short month
+            // 6.2.2: short names are Inline literals (no root array) —
+            // materialize the window for the bulk write.
             String mn = DateTimeFormatter.monthShort(f.month);
-            return Fmt.writeBytes(buf, p, mn.bytes, mn.byteLength);
+            int8[] mb = mn.toBytes();
+            return Fmt.writeBytes(buf, p, mb, mn.byteLength());
         }
         if (code == 66) { // B full month
             String mn = DateTimeFormatter.monthLong(f.month);
-            return Fmt.writeBytes(buf, p, mn.bytes, mn.byteLength);
+            int8[] mb = mn.toBytes();
+            return Fmt.writeBytes(buf, p, mb, mn.byteLength());
         }
         if (code == 97) { // a short weekday
             String dn = DateTimeFormatter.dowShort(f.dayOfWeek);
-            return Fmt.writeBytes(buf, p, dn.bytes, dn.byteLength);
+            int8[] db = dn.toBytes();
+            return Fmt.writeBytes(buf, p, db, dn.byteLength());
         }
         if (code == 65) { // A full weekday
             String dn = DateTimeFormatter.dowLong(f.dayOfWeek);
-            return Fmt.writeBytes(buf, p, dn.bytes, dn.byteLength);
+            int8[] db = dn.toBytes();
+            return Fmt.writeBytes(buf, p, db, dn.byteLength());
         }
         if (code == 122) { // z  +HHMM
             return DateTimeFormatter.writeOffset(buf, p, f.offsetSeconds, false);

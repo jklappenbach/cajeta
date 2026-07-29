@@ -21,6 +21,7 @@
 #include <functional>
 #include <istream>
 #include <map>
+#include <mutex>
 #include <memory>
 #include <ostream>
 #include <string>
@@ -32,6 +33,7 @@
 #include "cajeta/dbg/DebugLocTable.h"
 #include "cajeta/dbg/DebugVars.h"
 #include "cajeta/jit/CajetaJitHost.h"
+#include "cajeta/util/Environment.h"
 
 namespace cajeta::dap {
 
@@ -77,7 +79,38 @@ namespace cajeta::dap {
         // debuggee's exit code (0 if it never launched).
         int run(std::istream& in, std::ostream& out);
 
+        // The `cajeta dap` entry (resident-debug-server Unit 8): run over
+        // REAL stdio with the debuggee's stdout isolated from the protocol.
+        // The JIT'd program writes fd 1 — the same fd the frames use — and a
+        // print landing mid-frame corrupts the channel (observed: tour's
+        // self-check output desyncs the client). POSIX: the protocol moves
+        // to a private dup of stdout, fd 1 becomes a pipe pumped back as
+        // `output` events (category "stdout"). Elsewhere: plain run().
+        int runOverStdio();
+
+        // Identity handshake test seams (resident-debug-server 5.1.1):
+        // pretend the startup snapshot was taken before a rebuild, and
+        // expose the resolved self-exe path so a test can send a MATCHING
+        // compilerPath.
+        void overrideSelfIdentityForTest(std::string identity) {
+            selfIdentityAtStart_ = std::move(identity);
+        }
+        static std::string selfExePathForTest();
+
     private:
+        // Compiler-identity handshake (resident-debug-server 5.2.1): refuse
+        // the session and end the loop when the running image no longer
+        // matches its on-disk binary, or when the client expects a different
+        // binary (`compilerPath` on initialize). Returns true when the
+        // session may proceed.
+        bool verifyCompilerIdentity(const Json& args, const Emit& emit,
+                                    int requestSeq);
+        std::string selfIdentityAtStart_;   // "" until the first initialize
+        // Serializes frame writes between the request loop and the debuggee-
+        // stdout pump (Unit 8) — a frame is atomic on the wire or the client
+        // desyncs. Also guards seq_ for pump-emitted events.
+        std::mutex emitMutex_;
+
         // Drive the running program until it next stops at a breakpoint or
         // terminates; emit the matching `stopped` / `terminated` event.
         void runToStopOrExit(const Emit& emit);
@@ -103,6 +136,18 @@ namespace cajeta::dap {
 
         int seq_ = 1;                          // outbound seq counter
         cajeta::jit::JitRunOptions launchOpts_;
+        // DAP launch `stopOnEntry`. The plugin has always sent this; until now
+        // nothing read it, so the IDE checkbox did nothing.
+        bool stopOnEntry_ = false;
+        // The launch environment overlay, and whether the shell's environment
+        // is inherited under it (spec §4). Applied at configurationDone.
+        std::map<std::string, std::string> launchEnv_;
+        bool inheritSystemEnv_ = true;
+        // Undoes that overlay. The JIT runs IN-PROCESS, so applying the
+        // environment mutates this server; restoring on destruction is what
+        // keeps one session out of the next (spec 4.1.4) even when the session
+        // never ends cleanly.
+        cajeta::util::EnvironmentScope envScope_;
         std::vector<cajeta::jit::Breakpoint> breakpoints_;
         // CP6f: per-breakpoint condition keyed by (file basename, line). Empty
         // or absent entry means an unconditional breakpoint.

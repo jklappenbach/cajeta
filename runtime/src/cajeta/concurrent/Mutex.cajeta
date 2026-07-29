@@ -47,11 +47,13 @@ public class Mutex<T> {
      * ```cajeta
      * Mutex<int> guarded = heap Mutex(0);
      * ```
+     *
+     * @EntryPoint
      */
-    public Mutex(#T initial) {
+    public Mutex(T initial) {
         this.handle = Cajeta.lockNew();
         this.cond = Cajeta.condvarNew();
-        this.value = initial;
+        this.value #= initial;
     }
 
     public ~Mutex() {

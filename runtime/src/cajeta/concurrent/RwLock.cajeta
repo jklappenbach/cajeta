@@ -36,10 +36,12 @@ public class RwLock<T> {
      * ```cajeta
      * RwLock<i32> hits = heap RwLock(0);
      * ```
+     *
+     * @EntryPoint
      */
-    public RwLock(#T initial) {
+    public RwLock(T initial) {
         this.handle = Cajeta.rwlockNew();
-        this.value = initial;
+        this.value #= initial;
     }
 
     public ~RwLock() {

@@ -95,6 +95,7 @@ std::string structuredBadges(const DocComment* doc) {
     };
     for (const BlockTag* t : doc->tags("Complexity"))
         add("complexity", t->body.empty() ? std::string("Complexity") : t->body);
+    if (!doc->tags("EntryPoint").empty()) add("entry", "entry point");
     if (!doc->tags("FiberSafe").empty()) add("fiber", "fiber-safe");
     if (!doc->tags("FiberUnsafe").empty()) add("fiber-unsafe", "fiber-unsafe");
     if (!doc->tags("Blocks").empty()) add("blocks", "blocks");
@@ -438,6 +439,48 @@ std::string renderOverview(const Model& model, const std::string& cssHref,
     return os.str();
 }
 
+std::string renderEntryPointsIndex(const Model& model, const std::string& cssHref,
+                                   const SymbolIndex* index, const SiteMeta& meta) {
+    std::ostringstream os;
+    os << htmlHead("Entry Points", cssHref);
+    os << topbar(meta, /*depth=*/0, breadcrumbs("", "", 0));
+    os << "<div class=\"doc-body\">\n";
+    os << "<main class=\"content\">\n";
+    os << "<header class=\"type-header\"><h1>Entry Points</h1></header>\n";
+    os << "<p>Methods tagged <code>@EntryPoint</code> — each package's front door.</p>\n";
+
+    std::vector<const Package*> pkgs;
+    for (const auto& p : model.packages) if (!p.types.empty()) pkgs.push_back(&p);
+    std::sort(pkgs.begin(), pkgs.end(),
+              [](const Package* a, const Package* b) { return a->name < b->name; });
+
+    for (const Package* p : pkgs) {
+        MarkdownOptions opts = pageOpts(index, p->name);
+        std::string path = pkgPath(p->name);
+        std::ostringstream body;
+        auto emitMember = [&](const Type& t, const Member& m) {
+            if (!m.doc || m.doc->tags("EntryPoint").empty()) return;
+            body << "<tr><td class=\"msig\"><a href=\"" << htmlEscape(path) << "/"
+                 << htmlEscape(t.name) << ".html#" << htmlEscape(memberAnchor(m.name))
+                 << "\"><code>" << htmlEscape(t.name) << "." << htmlEscape(m.name)
+                 << "</code></a></td><td>" << renderSummary(m.doc.get(), opts)
+                 << "</td></tr>\n";
+        };
+        for (const auto& t : p->types) {
+            for (const auto& m : t.members) emitMember(t, m);
+            for (const auto& n : t.nested)
+                for (const auto& m : n.members) emitMember(n, m);
+        }
+        std::string rows = body.str();
+        if (rows.empty()) continue;
+        os << "<h2><code>" << htmlEscape(p->name.empty() ? "(default)" : p->name)
+           << "</code></h2>\n<table class=\"summary\">\n" << rows << "</table>\n";
+    }
+
+    os << "</main>\n</div>\n" << htmlFoot();
+    return os.str();
+}
+
 int generateSite(const Model& model, const std::string& outDir, std::string& error,
                  const SiteMeta& meta) {
     std::error_code ec;
@@ -457,6 +500,11 @@ int generateSite(const Model& model, const std::string& outDir, std::string& err
     {
         std::ofstream f(fs::path(outDir) / "index.html");
         f << renderOverview(model, "cajetadoc.css", &index, meta);
+        ++pages;
+    }
+    {
+        std::ofstream f(fs::path(outDir) / "entry-points.html");
+        f << renderEntryPointsIndex(model, "cajetadoc.css", &index, meta);
         ++pages;
     }
 

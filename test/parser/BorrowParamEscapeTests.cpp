@@ -19,6 +19,13 @@
 // Two other shapes land in a follow-up (3b/3c): field-store of borrow,
 // and capture of borrow in a returned closure.
 //
+// title-tracking rev 2 respell (plan 5.2.4 / 7.2.1): for CLASS-typed
+// formals the static rejections above are RETIRED — a plain formal is a
+// runtime owner whose title is the caller's flag, so `return f` through a
+// `#`-return and `#p` forwarding both just forward that flag (a lend
+// forwards 0; no double free, the caller keeps ownership). The two
+// "Rejected" pins below now pin the runtime pass-through behavior instead.
+//
 
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
@@ -39,10 +46,10 @@ int32_t runI32(const std::string& src) {
 
 } // namespace
 
-// (1) Return shape: `#T` return + plain-T borrow param + `return param;`.
-// Rejected: callee promises ownership transfer but returns a borrow it
-// doesn't own.
-TEST(BorrowParamEscapeTests, returnBorrowParamThroughOwnershipSignatureRejected) {
+// (1) Return shape: `#T` return + plain-T formal + `return param;`.
+// rev 2: the formal's runtime flag forwards through the return — a lent
+// argument comes back still owned by the caller; no throw, no free.
+TEST(BorrowParamEscapeTests, returnBorrowParamThroughOwnershipSignatureForwardsFlag) {
     auto src =
         "package test;\n"
         "public class Foo {\n"
@@ -59,7 +66,7 @@ TEST(BorrowParamEscapeTests, returnBorrowParamThroughOwnershipSignatureRejected)
         "        return b.v;\n"
         "    }\n"
         "}\n";
-    EXPECT_THROW(runI32(src), cajeta::Exception);
+    EXPECT_EQ(runI32(src), 7);
 }
 
 // Control: `#T` return + `#T` formal + `return p;` works. The caller
@@ -107,9 +114,10 @@ TEST(BorrowParamEscapeTests, returnBorrowParamThroughBorrowSignatureAccepted) {
     EXPECT_EQ(runI32(src), 13);
 }
 
-// (2) `#`-transfer shape: caller writes `#p` where p is a borrow param.
-// Rejected: caller is claiming to transfer something they don't own.
-TEST(BorrowParamEscapeTests, transferBorrowParamViaSharpRejected) {
+// (2) `#`-transfer shape: caller writes `#p` where p is a plain formal.
+// rev 2: `#p` forwards the formal's runtime flag — a lend forwards 0, so
+// Sink stores a borrow and the original owner frees exactly once.
+TEST(BorrowParamEscapeTests, transferBorrowParamViaSharpForwardsFlag) {
     auto src =
         "package test;\n"
         "public class Foo {\n"
@@ -118,11 +126,11 @@ TEST(BorrowParamEscapeTests, transferBorrowParamViaSharpRejected) {
         "}\n"
         "public class Sink {\n"
         "    public Foo f;\n"
-        "    public Sink(#Foo f) { this.f = f; }\n"  // requires #
+        "    public Sink(#Foo f) { this.f #= f; }\n"
         "}\n"
         "public final class D {\n"
-        "    public static int32 useBorrow(Foo p) {\n"  // borrow formal
-        "        Sink s = heap Sink(#p);\n"             // escape via #p — rejected
+        "    public static int32 useBorrow(Foo p) {\n"  // plain formal (lend)
+        "        Sink s = heap Sink(#p);\n"             // forwards flag 0
         "        return s.f.v;\n"
         "    }\n"
         "    public static int32 run() {\n"
@@ -130,7 +138,7 @@ TEST(BorrowParamEscapeTests, transferBorrowParamViaSharpRejected) {
         "        return useBorrow(a);\n"
         "    }\n"
         "}\n";
-    EXPECT_THROW(runI32(src), cajeta::Exception);
+    EXPECT_EQ(runI32(src), 17);
 }
 
 // Control: when the outer param IS `#T`, transferring it onward via `#p`
@@ -144,7 +152,7 @@ TEST(BorrowParamEscapeTests, transferTransferredParamViaSharpAccepted) {
         "}\n"
         "public class Sink {\n"
         "    public Foo f;\n"
-        "    public Sink(#Foo f) { this.f = f; }\n"
+        "    public Sink(#Foo f) { this.f #= f; }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 hand(#Foo p) {\n"  // outer #Foo formal

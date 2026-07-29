@@ -5,6 +5,10 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>   // std::replace, used ONLY in the _WIN32 branch below.
+                       // Non-Windows builds preprocess that branch away, so they
+                       // can never catch a missing include for it — only the
+                       // release matrix's mingw target does.
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>

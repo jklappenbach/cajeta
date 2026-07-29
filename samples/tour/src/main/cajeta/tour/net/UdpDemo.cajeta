@@ -1,0 +1,104 @@
+package tour.net;
+
+import tour.DemoClass;
+
+// cajeta.io.net.UdpSocket — the connectionless datagram peer of the
+// TCP classes NetDemo walks. UDP has no handshake and no stream: each
+// send is one datagram, each receive reports who sent it. Two shapes:
+//
+//   unconnected — sendTo(data, off, len, dest) names the destination
+//     per datagram; recvFrom(buf, off, cap) returns a RecvResult
+//     carrying the byte count AND the sender's SocketAddress.
+//   connected   — connect(peer) stores a default peer (no packets
+//     exchanged), unlocking the address-less send()/recv() pair; the
+//     kernel then filters out datagrams from anyone else.
+//
+// No handshake means a single fiber can drive both ends on loopback:
+// a datagram sent to a bound socket sits in its receive buffer until
+// read, so send-then-receive is deterministic here.
+
+import cajeta.io.net.IpAddress;
+import cajeta.io.net.RecvResult;
+import cajeta.io.net.SocketAddress;
+import cajeta.io.net.UdpSocket;
+
+public class UdpDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Networking: UDP datagrams (cajeta.io.net.UdpSocket) --");
+
+        // Bind two sockets on 127.0.0.1:0 — the kernel assigns each an
+        // ephemeral port, read back through localAddress().
+        IpAddress aIp = IpAddress.loopbackV4();
+        SocketAddress aBind = SocketAddress.of(#aIp, 0);
+        UdpSocket a = UdpSocket.bind(aBind);
+        SocketAddress aLocal = a.localAddress();
+        int32 aPort = aLocal.getPort();
+
+        IpAddress bIp = IpAddress.loopbackV4();
+        SocketAddress bBind = SocketAddress.of(#bIp, 0);
+        UdpSocket b = UdpSocket.bind(bBind);
+        SocketAddress bLocal = b.localAddress();
+        int32 bPort = bLocal.getPort();
+
+        this.check(aPort > 0 && bPort > 0,
+            "bind :0 resolves kernel-assigned ports");
+        System.stdout.println("  two sockets bound (ports > 0 = "
+            + (aPort > 0 && bPort > 0) + ")");
+
+        // Unconnected path: A sends "ping" to B's port, naming the
+        // destination on the call.
+        int8[] ping = heap int8[4];
+        ping[0] = (int8) 112;   // 'p'
+        ping[1] = (int8) 105;   // 'i'
+        ping[2] = (int8) 110;   // 'n'
+        ping[3] = (int8) 103;   // 'g'
+        IpAddress destIp = IpAddress.loopbackV4();
+        SocketAddress dest = SocketAddress.of(#destIp, bPort);
+        int32 sent = a.sendTo(ping, 0, 4, dest);
+        this.check(sent == 4, "sendTo hands 4 bytes to the kernel");
+
+        // B receives it. The RecvResult pairs the count with the
+        // sender's address — that's how a UDP server knows where to
+        // reply, since every datagram can come from a different peer.
+        int8[] rbuf = heap int8[16];
+        RecvResult rr = b.recvFrom(rbuf, 0, 16);
+        this.check(rr.getCount() == 4, "recvFrom reports the datagram size");
+        boolean payloadOk = rbuf[0] == (int8) 112 && rbuf[1] == (int8) 105
+            && rbuf[2] == (int8) 110 && rbuf[3] == (int8) 103;
+        this.check(payloadOk, "payload survives the loopback hop");
+        SocketAddress from = rr.getFrom();
+        this.check(from.getPort() == aPort,
+            "RecvResult names the sender's port");
+        System.stdout.println("  A -> B: " + rr.getCount()
+            + " bytes; sender port matches A = " + (from.getPort() == aPort));
+
+        // Connected path: B stores A as its default peer (connect on
+        // UDP sends nothing — it just records the address), then replies
+        // with the address-less send().
+        IpAddress peerIp = IpAddress.loopbackV4();
+        SocketAddress peer = SocketAddress.of(#peerIp, aPort);
+        b.connect(peer);
+        int8[] pong = heap int8[4];
+        pong[0] = (int8) 112;   // 'p'
+        pong[1] = (int8) 111;   // 'o'
+        pong[2] = (int8) 110;   // 'n'
+        pong[3] = (int8) 103;   // 'g'
+        int32 replied = b.send(pong, 0, 4);
+        this.check(replied == 4, "connected send takes no address");
+
+        // A reads the reply with the plain recv() — count only, since a
+        // connected socket already knows its peer.
+        int8[] back = heap int8[16];
+        int32 got = a.recv(back, 0, 16);
+        boolean pongOk = got == 4 && back[0] == (int8) 112
+            && back[1] == (int8) 111 && back[2] == (int8) 110
+            && back[3] == (int8) 103;
+        this.check(pongOk, "reply round-trips as \"pong\"");
+        System.stdout.println("  B -> A (connected): " + got
+            + " bytes; matches \"pong\" = " + pongOk);
+
+        a.close();
+        b.close();
+    }
+}

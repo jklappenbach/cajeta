@@ -22,7 +22,8 @@ import cajeta.lang.String;
  * The handshake's correctness — not its security — depends on SHA-1
  * here; the algorithm is a protocol constant, so SHA-1's collision
  * weakness is irrelevant to it. This class exists to satisfy that
- * single caller (`cajeta.io.net` WebSocket handshake) and is flagged
+ * single caller (the WebSocket opening handshake, now in the external
+ * `dev.cajeta.http` library) and is flagged
  * accordingly.
  *
  * ## Surface
@@ -65,6 +66,11 @@ public final class Sha1 implements Hasher {
      */
     public pointer state;
 
+    /**
+     * Construct a fresh streaming SHA-1 hasher.
+     *
+     * @EntryPoint
+     */
     public Sha1() {
         this.state = Sha1.allocState();
     }
@@ -122,6 +128,8 @@ public final class Sha1 implements Hasher {
     /**
      * One-shot 20-byte digest of `data[0..len)`. Allocates a fresh
      * `int8[20]` and transfers ownership to the caller.
+     *
+     * @EntryPoint
      */
     public static #int8[] hash(int8[] data, int64 len) {
         int8[] out = heap int8[20];
@@ -131,6 +139,8 @@ public final class Sha1 implements Hasher {
 
     /**
      * One-shot lowercase 40-char hex digest of `data[0..len)`.
+     *
+     * @EntryPoint
      */
     public static #String hashHex(int8[] data, int64 len) {
         int8[] hex = heap int8[40];
@@ -142,14 +152,22 @@ public final class Sha1 implements Hasher {
      * One-shot 20-byte digest of a String's UTF-8 bytes.
      */
     public static #int8[] hashString(String s) {
-        return Sha1.hash(s.bytes, (int64) s.byteLength);
+        if (s.root() == null || s.byteOffset() != (int64) 0) {
+            int8[] w = s.toBytes();
+            return Sha1.hash(w, (int64) s.byteLength());
+        }
+        return Sha1.hash(s.root(), (int64) s.byteLength());
     }
 
     /**
      * One-shot lowercase hex digest of a String's UTF-8 bytes.
      */
     public static #String hashStringHex(String s) {
-        return Sha1.hashHex(s.bytes, (int64) s.byteLength);
+        if (s.root() == null || s.byteOffset() != (int64) 0) {
+            int8[] w = s.toBytes();
+            return Sha1.hashHex(w, (int64) s.byteLength());
+        }
+        return Sha1.hashHex(s.root(), (int64) s.byteLength());
     }
 
     // --- Streaming surface ------------------------------------------
@@ -206,7 +224,12 @@ public final class Sha1 implements Hasher {
     }
 
     public void writeString(String s) {
-        Sha1.updateNative(this.state, s.bytes, (int64) s.byteLength);
+        if (s.root() == null || s.byteOffset() != (int64) 0) {
+            int8[] w = s.toBytes();
+            Sha1.updateNative(this.state, w, (int64) s.byteLength());
+            return;
+        }
+        Sha1.updateNative(this.state, s.root(), (int64) s.byteLength());
     }
 
     public void writeObject(Object obj) {

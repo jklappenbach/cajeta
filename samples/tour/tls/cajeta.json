@@ -1,0 +1,60 @@
+{
+    // Cajeta TLS tour — a full TLS 1.2+ loopback handshake + echo over
+    // 127.0.0.1 with a run-time-generated self-signed certificate.
+    //   cajeta.json                  ← this manifest
+    //   src/tour/tls/TlsTour.cajeta  ← the demo (package tour.tls)
+    //   build/tls-tour               ← built binary (gitignored)
+    //   build/certs/                 ← cert.pem + key.pem (run-tls.sh writes)
+    //
+    // Build + run from this directory:
+    //   cajeta build     → build/tls-tour
+    //   ./run-tls.sh     → generate cert (openssl) + build + execute
+
+    "details": {
+        "name":                "tls-tour",
+        "version":             "0.1.0",
+        "description":         "Cajeta TLS tour — loopback TlsListener/TlsStream handshake + echo",
+        "license":             "Apache-2.0",
+        "authors":             ["cajeta"],
+        "cajeta-lang-version": "1.0"
+    },
+
+    "settings": {
+        // network: loopback sockets (TcpListener/TcpStream under TLS).
+        // filesystem: the demo reads build/certs/{cert,key}.pem.
+        "capabilities": ["network", "filesystem"],
+
+        "dependencies": {},
+
+        "build": {
+            "source-root":  "src",
+            "target":       "host",
+            "entry-method": "tour.tls.TlsTour::main"
+        }
+    },
+
+    "tasks": {
+        "build": {
+            "description": "Build the TLS tour to a native binary (build/tls-tour)",
+            "actions": [
+                { "action": "build", "flavor": "debug",
+                  "output-path": "build/tls-tour", "id": "art" }
+            ],
+            "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
+        },
+
+        "run": {
+            "description": "Build the TLS tour and run it (certs must exist; use run-tls.sh)",
+            "actions": [
+                { "action": "build", "flavor": "debug",
+                  "output-path": "build/tls-tour", "id": "art" },
+                { "action": "exec", "command": "${art.path}" }
+            ]
+        },
+
+        "clean": {
+            "description": "Wipe build outputs",
+            "actions": [ { "action": "clean" } ]
+        }
+    }
+}

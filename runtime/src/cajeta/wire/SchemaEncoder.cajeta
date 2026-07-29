@@ -13,14 +13,22 @@ package cajeta.wire;
  *
  * ```cajeta
  * SchemaEncoder<Order> codec = AvroEncoder<Order>();
- * #int8[] bytes = codec.encode(order, schema);
- * #Order  back  = codec.decode(bytes, schema);
+ * int8[] bytes = codec.encode(order, schema);
+ * Order  back  = codec.decode(bytes, schema);
  * ```
  */
 public interface SchemaEncoder<T> {
-    /** Serializes `value` under `schema` into a caller-owned byte buffer. */
+    /**
+     * Serializes `value` under `schema` into a caller-owned byte buffer.
+     *
+     * @EntryPoint
+     */
     #int8[] encode(T value, Schema schema);
 
-    /** Reconstructs a `T` from `bytes` under `schema`. Inverse of `encode`. */
+    /**
+     * Reconstructs a `T` from `bytes` under `schema`. Inverse of `encode`.
+     *
+     * @EntryPoint
+     */
     #T decode(int8[] bytes, Schema schema);
 }

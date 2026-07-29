@@ -1094,7 +1094,7 @@ TEST(XpuHipDispatchDeviceTests, mipmapFetchAndSampleLodRoutesToHipOnDevice) {
     ASSERT_NE(fn, nullptr);
     int r = fn();
     // HIP's hipMallocMipmappedArray returns hipErrorNotSupported(801) on gfx1151
-    // (a durable ROCm gap, ROCm 7.2.2 + 7.11.0). cajeta EMULATES mip Texture2D on
+    // (a durable ROCm gap, ROCm 7.11.0). cajeta EMULATES mip Texture2D on
     // AMD (option B): a hand-built gfx11 image SRD over an addrlib-tiled hipMalloc,
     // sampled via __ockl_image_sample_lod_2D — proven bit-exact on-device
     // (plans/gpu/xpu/probes/mipprobe.cpp). So on gfx1151 this now PASSES (r==777).
@@ -1370,7 +1370,7 @@ TEST(XpuHipDispatchDeviceTests, textureCubeSampleRoutesToHipOnDevice) {
     ASSERT_NE(fn, nullptr);
     int r = fn();
     // TextureCube on AMD is EMULATED: hipArrayCubemap is unsupported by the HIP
-    // runtime on gfx1151 (invalid-arg, ROCm 7.2.2 + 7.11.0), so the 6 faces are
+    // runtime on gfx1151 (invalid-arg, ROCm 7.11.0), so the 6 faces are
     // stored as a 6-LAYER layered array and the major-axis face projection runs
     // in-kernel (AmdgpuKernelLowering::sampleTextureCube) → __ockl_image_sample_2Da.
     // Result bit-matches the CPU oracle + the Vulkan twin (textureCubeSampleOnDevice).

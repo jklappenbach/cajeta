@@ -10,7 +10,7 @@ import cajeta.lang.String;
  *
  * ```cajeta
  * try {
- *     #File f = File.open(path, OpenMode.READ);
+ *     File f = File.open(path, OpenMode.READ);
  * } catch (IsDirectoryException e) {
  *     log.warn(e.message);
  * }

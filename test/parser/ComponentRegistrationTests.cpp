@@ -345,3 +345,261 @@ TEST(ComponentRegistrationTests, testComponentExcludedInProdMode) {
         EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_MISSING_COMPONENT");
     }
 }
+
+// --- Unit 1 (di-profile-selection §2): @TestComponent masks a same-
+// --- interface @Component under --profile=test, by shared interface. ---
+
+namespace {
+// Short type name of the resolved target for a consumer's first
+// @Inject field ("" if unresolved). Used to assert which provider won.
+std::string resolvedTargetName(const std::string& consumerShort) {
+    auto d = findDescriptor(consumerShort);
+    if (!d || d->resolvedFields.empty()) return "";
+    auto& rd = d->resolvedFields[0];
+    if (!rd.target || !rd.target->klass || !rd.target->klass->getQName()) return "";
+    return rd.target->klass->getQName()->getTypeName();
+}
+} // namespace
+
+// In test mode a @TestComponent implementing an interface masks the
+// non-test @Component implementing that same interface: @Inject Sink
+// resolves to the double, not ambiguous.
+TEST(ComponentRegistrationTests, testComponentMasksSameInterfaceComponent) {
+    auto src =
+        "package test;\n"
+        "public interface Sink {\n"
+        "    public int32 tag();\n"
+        "}\n"
+        "@Component public class RealSink implements Sink {\n"
+        "    public RealSink() { return; }\n"
+        "    public int32 tag() { return 1; }\n"
+        "}\n"
+        "@TestComponent public class FakeSink implements Sink {\n"
+        "    public FakeSink() { return; }\n"
+        "    public int32 tag() { return 2; }\n"
+        "}\n"
+        "@Component public class App {\n"
+        "    @Inject Sink s;\n"
+        "    public App() { return; }\n"
+        "}\n";
+    Compiler compiler;
+    compileForInspection(compiler, src, "test.App");
+    CajetaModule::setActiveProfile("test");
+    EXPECT_NO_THROW(CajetaModule::resolveDependencyGraph());
+    EXPECT_EQ(resolvedTargetName("App"), "FakeSink");
+    CajetaModule::setActiveProfile("prod");
+}
+
+// Same source, prod profile: the @TestComponent is filtered out and
+// the real interface impl is wired.
+TEST(ComponentRegistrationTests, prodKeepsRealInterfaceComponent) {
+    auto src =
+        "package test;\n"
+        "public interface Sink {\n"
+        "    public int32 tag();\n"
+        "}\n"
+        "@Component public class RealSink implements Sink {\n"
+        "    public RealSink() { return; }\n"
+        "    public int32 tag() { return 1; }\n"
+        "}\n"
+        "@TestComponent public class FakeSink implements Sink {\n"
+        "    public FakeSink() { return; }\n"
+        "    public int32 tag() { return 2; }\n"
+        "}\n"
+        "@Component public class App {\n"
+        "    @Inject Sink s;\n"
+        "    public App() { return; }\n"
+        "}\n";
+    Compiler compiler;
+    compileForInspection(compiler, src, "test.App");
+    CajetaModule::setActiveProfile("prod");
+    EXPECT_NO_THROW(CajetaModule::resolveDependencyGraph());
+    EXPECT_EQ(resolvedTargetName("App"), "RealSink");
+}
+
+// Multiple real impls of one interface plus a @TestComponent: in test
+// mode all reals are masked and the double is the sole provider (no
+// DI_AMBIGUOUS despite three would-be candidates).
+TEST(ComponentRegistrationTests, multipleRealImplsAllMaskedInTest) {
+    auto src =
+        "package test;\n"
+        "public interface Sink {\n"
+        "    public int32 tag();\n"
+        "}\n"
+        "@Component public class DiskSink implements Sink {\n"
+        "    public DiskSink() { return; }\n"
+        "    public int32 tag() { return 1; }\n"
+        "}\n"
+        "@Component public class NetSink implements Sink {\n"
+        "    public NetSink() { return; }\n"
+        "    public int32 tag() { return 2; }\n"
+        "}\n"
+        "@TestComponent public class FakeSink implements Sink {\n"
+        "    public FakeSink() { return; }\n"
+        "    public int32 tag() { return 3; }\n"
+        "}\n"
+        "@Component public class App {\n"
+        "    @Inject Sink s;\n"
+        "    public App() { return; }\n"
+        "}\n";
+    Compiler compiler;
+    compileForInspection(compiler, src, "test.App");
+    CajetaModule::setActiveProfile("test");
+    EXPECT_NO_THROW(CajetaModule::resolveDependencyGraph());
+    EXPECT_EQ(resolvedTargetName("App"), "FakeSink");
+    CajetaModule::setActiveProfile("prod");
+}
+
+// A @TestComponent that implements no interface masks nothing: an
+// unrelated real interface impl still resolves in test mode. Guards
+// against over-masking.
+TEST(ComponentRegistrationTests, noInterfaceDoubleMasksNothing) {
+    auto src =
+        "package test;\n"
+        "public interface Sink {\n"
+        "    public int32 tag();\n"
+        "}\n"
+        "@Component public class RealSink implements Sink {\n"
+        "    public RealSink() { return; }\n"
+        "    public int32 tag() { return 1; }\n"
+        "}\n"
+        "@TestComponent public class StubOnly {\n"
+        "    public StubOnly() { return; }\n"
+        "}\n"
+        "@Component public class App {\n"
+        "    @Inject Sink s;\n"
+        "    public App() { return; }\n"
+        "}\n";
+    Compiler compiler;
+    compileForInspection(compiler, src, "test.App");
+    CajetaModule::setActiveProfile("test");
+    EXPECT_NO_THROW(CajetaModule::resolveDependencyGraph());
+    EXPECT_EQ(resolvedTargetName("App"), "RealSink");
+    CajetaModule::setActiveProfile("prod");
+}
+
+// --- Unit 2 (di-profile-selection §3.3): @Profile multi-value (any-of). ---
+
+namespace {
+bool profilesContain(const CajetaModule::ComponentDescriptorPtr& d,
+                     const std::string& p) {
+    return d && std::find(d->profiles.begin(), d->profiles.end(), p)
+                    != d->profiles.end();
+}
+} // namespace
+
+// Array-literal form @Profile({"dev","test"}) captures every listed name
+// (StringList under the implicit "value" key).
+TEST(ComponentRegistrationTests, profileListCapturedFromArrayForm) {
+    auto src =
+        "package test;\n"
+        "@Component @Profile({\"dev\", \"test\"}) public class MultiDb {\n"
+        "    public MultiDb() { return; }\n"
+        "}\n";
+    Compiler compiler;
+    compileForInspection(compiler, src, "test.MultiDb");
+    auto desc = findDescriptor("MultiDb");
+    ASSERT_NE(desc, nullptr);
+    EXPECT_EQ(desc->profiles.size(), 2u);
+    EXPECT_TRUE(profilesContain(desc, "dev"));
+    EXPECT_TRUE(profilesContain(desc, "test"));
+}
+
+// Repeated @Profile annotations still accumulate (the pre-existing
+// single-string path must keep working).
+TEST(ComponentRegistrationTests, repeatedProfileStillCaptured) {
+    auto src =
+        "package test;\n"
+        "@Component @Profile(\"dev\") @Profile(\"test\") public class RepeatDb {\n"
+        "    public RepeatDb() { return; }\n"
+        "}\n";
+    Compiler compiler;
+    compileForInspection(compiler, src, "test.RepeatDb");
+    auto desc = findDescriptor("RepeatDb");
+    ASSERT_NE(desc, nullptr);
+    EXPECT_EQ(desc->profiles.size(), 2u);
+    EXPECT_TRUE(profilesContain(desc, "dev"));
+    EXPECT_TRUE(profilesContain(desc, "test"));
+}
+
+// Any-of filtering: a component @Profile({"dev","test"}) is included
+// under either "dev" or "test", and excluded under "prod" (the @Inject
+// then goes unsatisfied).
+TEST(ComponentRegistrationTests, profileListFiltersUnderEither) {
+    auto src =
+        "package test;\n"
+        "public interface Store {\n"
+        "    public int32 kind();\n"
+        "}\n"
+        "@Component @Profile({\"dev\", \"test\"}) public class MemStore implements Store {\n"
+        "    public MemStore() { return; }\n"
+        "    public int32 kind() { return 1; }\n"
+        "}\n"
+        "@Component public class App {\n"
+        "    @Inject Store s;\n"
+        "    public App() { return; }\n"
+        "}\n";
+    Compiler compiler;
+    compileForInspection(compiler, src, "test.App");
+    CajetaModule::setActiveProfile("dev");
+    EXPECT_NO_THROW(CajetaModule::resolveDependencyGraph());
+    CajetaModule::setActiveProfile("test");
+    EXPECT_NO_THROW(CajetaModule::resolveDependencyGraph());
+    CajetaModule::setActiveProfile("prod");
+    try {
+        CajetaModule::resolveDependencyGraph();
+        FAIL() << "expected CAJETA_ERROR_MISSING_COMPONENT under prod";
+    } catch (Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_MISSING_COMPONENT");
+    }
+    CajetaModule::setActiveProfile("prod");
+}
+
+// --- Unit 3 (di-profile-selection §3): shipped cajeta.aot annotation types. ---
+
+// Using the annotations with the shipped declarations imported compiles
+// and captures their profile / test-component data. (Imports are lenient —
+// an unresolved import is ignored — so this guards that the shipped types
+// coexist with the by-short-name recognition, not import resolution.)
+TEST(ComponentRegistrationTests, aotAnnotationImportsCompileAndCapture) {
+    auto src =
+        "package test;\n"
+        "import cajeta.aot.Profile;\n"
+        "import cajeta.aot.TestComponent;\n"
+        "@Component @Profile(\"prod\") public class ImportedProd {\n"
+        "    public ImportedProd() { return; }\n"
+        "}\n"
+        "@TestComponent public class ImportedStub {\n"
+        "    public ImportedStub() { return; }\n"
+        "}\n";
+    Compiler compiler;
+    EXPECT_NO_THROW(compileForInspection(compiler, src, "test.ImportedProd"));
+    auto desc = findDescriptor("ImportedProd");
+    ASSERT_NE(desc, nullptr);
+    ASSERT_EQ(desc->profiles.size(), 1u);
+    EXPECT_EQ(desc->profiles[0], "prod");
+    auto stub = findDescriptor("ImportedStub");
+    ASSERT_NE(stub, nullptr);
+    EXPECT_TRUE(stub->isTestComponent);
+}
+
+// Bare short-name usage (no import) still compiles and captures — shipping
+// the declarations must not break the recognize-by-short-name path.
+TEST(ComponentRegistrationTests, bareShortNameAnnotationsStillCompile) {
+    auto src =
+        "package test;\n"
+        "@Component @Profile(\"prod\") public class BareProd {\n"
+        "    public BareProd() { return; }\n"
+        "}\n"
+        "@TestComponent public class BareStub {\n"
+        "    public BareStub() { return; }\n"
+        "}\n";
+    Compiler compiler;
+    EXPECT_NO_THROW(compileForInspection(compiler, src, "test.BareProd"));
+    auto desc = findDescriptor("BareProd");
+    ASSERT_NE(desc, nullptr);
+    EXPECT_EQ(desc->profiles.size(), 1u);
+    auto stub = findDescriptor("BareStub");
+    ASSERT_NE(stub, nullptr);
+    EXPECT_TRUE(stub->isTestComponent);
+}

@@ -31,7 +31,7 @@ TEST(SortTests, sortAscending) {
     std::string src = std::string(PRE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] a = { 5, 3, 8, 1, 9, 2, 7 };\n"
+        "        int32[] a = [ 5, 3, 8, 1, 9, 2, 7 ];\n"
         "        Sort.sort<int32>(a, 7);\n"
         "        int32 i = 1;\n"
         "        while (i < 7) {\n"
@@ -71,7 +71,7 @@ TEST(SortTests, sortStableAscending) {
     std::string src = std::string(PRE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] a = { 5, 3, 8, 1, 9, 2, 7, 4, 6 };\n"
+        "        int32[] a = [ 5, 3, 8, 1, 9, 2, 7, 4, 6 ];\n"
         "        Sort.sortStable<int32>(a, 9);\n"
         "        int32 i = 1;\n"
         "        while (i < 9) {\n"
@@ -91,7 +91,7 @@ TEST(SortTests, stableSortPreservesEqualKeyOrder) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         // keys: 2,1,2,1,2,1  tags ascending per insertion: enc = key*256 + tag
-        "        int32[] a = { 512, 256, 513, 257, 514, 258 };\n"
+        "        int32[] a = [ 512, 256, 513, 257, 514, 258 ];\n"
         "        Sort.sortStable<int32>(a, 6, (x, y) -> {\n"
         "            int32 kx = x / 256;\n"
         "            int32 ky = y / 256;\n"
@@ -117,7 +117,7 @@ TEST(SortTests, comparatorDescending) {
     std::string src = std::string(PRE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] a = { 5, 3, 8, 1, 9 };\n"
+        "        int32[] a = [ 5, 3, 8, 1, 9 ];\n"
         "        Sort.sort<int32>(a, 5, (x, y) -> {\n"
         "            if (x > y) { return -1; }\n"
         "            if (x < y) { return 1; }\n"
@@ -134,7 +134,7 @@ TEST(SortTests, searchBounds) {
     std::string src = std::string(PRE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] a = { 1, 2, 2, 2, 5, 8 };\n"
+        "        int32[] a = [ 1, 2, 2, 2, 5, 8 ];\n"
         "        int32 lb = Sort.lowerBound<int32>(a, 6, 2);\n"    // 1
         "        int32 ub = Sort.upperBound<int32>(a, 6, 2);\n"    // 4
         "        int32 bs = Sort.binarySearch<int32>(a, 6, 5);\n"  // 4
@@ -168,7 +168,7 @@ TEST(SortTests, sortFloat32) {
     std::string src = std::string(PRE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        float32[] f = { 3.5f, 1.2f, 2.8f };\n"
+        "        float32[] f = [ 3.5f, 1.2f, 2.8f ];\n"
         "        Sort.sort<float32>(f, 3);\n"
         "        if (f[0] > f[1]) { return 0; }\n"
         "        if (f[1] > f[2]) { return 0; }\n"

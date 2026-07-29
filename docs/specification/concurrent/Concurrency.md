@@ -510,7 +510,7 @@ the user passed in. v1 restricts to heap-ownership / primitive return.
 
 Surface classes `Fiber` and `Thread` haven't been declared in
 cajeta-source form yet (the runtime is shipped; the wrappers are
-designed). Tracked in `Features.md` as S-804.
+designed). Tracked in `specs/Features.md` as S-804.
 
 V2 candidates listed as known gaps but not yet scheduled: a
 `for (T x in iter)` syntactic desugaring over `AsyncIterator<T>` and

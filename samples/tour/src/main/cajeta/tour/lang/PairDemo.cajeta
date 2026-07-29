@@ -1,0 +1,49 @@
+package tour.lang;
+
+import tour.DemoClass;
+import cajeta.lang.Pair;
+
+// cajeta.lang.Pair<K, V> — the two-field generic value type. It is
+// the stdlib's standard "two things together": HashMap.entries()
+// streams Pair<K, V>, graph code pairs source/target, and any method
+// that wants to return two values returns one Pair.
+//
+// The surface is deliberately tiny (runtime/src/cajeta/lang/Pair.cajeta):
+// a two-argument ctor plus first() / second() getters. The fields are
+// immutable through the API — need a different pair, build a new one.
+public class PairDemo extends DemoClass {
+
+    // "Return two values": quotient and remainder in one result. The
+    // pair escapes this frame, so it is heap-allocated; ownership
+    // moves out through the `#` return type.
+    public #Pair<int32, int32> divMod(int32 n, int32 d) {
+        return heap Pair<int32, int32>(n / d, n % d);
+    }
+
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Pair --");
+
+        // Mixed type arguments — K and V are independent parameters.
+        Pair<String, int32> age = stack Pair<String, int32>("ada", 36);
+        System.stdout.println("  Pair<String,int32>(\"ada\", 36): first="
+            + age.first() + " second=" + age.second());
+        this.check(age.first().equals("ada"), "first() returns the K component");
+        this.check(age.second() == 36, "second() returns the V component");
+
+        // Pairs are ordinary values: pass them, store them, nest them.
+        Pair<int32, int32> qr = this.divMod(47, 5);
+        System.stdout.println("  divMod(47, 5) -> quotient=" + qr.first()
+            + " remainder=" + qr.second());
+        this.check(qr.first() == 9, "pair carries the quotient out of the method");
+        this.check(qr.second() == 2, "pair carries the remainder out of the method");
+        this.check(qr.first() * 5 + qr.second() == 47,
+            "the two components reassemble the dividend");
+
+        // Nesting: a Pair is just a type, so it can be a component.
+        Pair<int32, Pair<int32, int32>> tagged =
+            stack Pair<int32, Pair<int32, int32>>(1, qr);
+        this.check(tagged.second().first() == 9,
+            "pairs nest — second().first() reaches the inner component");
+    }
+}

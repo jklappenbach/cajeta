@@ -12,7 +12,7 @@ package cajeta.lang.stream;
  *
  * ## Usage
  * ```cajeta
- * int32[] data = { 10, 20, 30, 40 };
+ * int32[] data = [ 10, 20, 30, 40 ];
  * ArrayStream<int32> s = heap ArrayStream<int32>(data, 4);
  *
  * Optional<int32> o = s.next();
@@ -36,12 +36,14 @@ public final class ArrayStream<T> extends Stream<T> implements Splittable<T> {
      * is shared, not copied; the stream reads elements `data[0 .. limit)`.
      *
      * ```cajeta
-     * int32[] data = { 1, 2, 3 };
+     * int32[] data = [ 1, 2, 3 ];
      * ArrayStream<int32> s = heap ArrayStream<int32>(data, 3);
      * ```
+     *
+     * @EntryPoint
      */
     public ArrayStream(T[] data, int32 limit) {
-        this.data = data;
+        this.data #= data;
         this.idx = 0;
         this.limit = limit;
     }
@@ -54,7 +56,7 @@ public final class ArrayStream<T> extends Stream<T> implements Splittable<T> {
     @Inline
     public Optional<T> next() {
         if (this.idx >= this.limit) {
-            return stack Optional<T>(false, null);
+            return stack Optional<T>(false);
         }
         T v = this.data[this.idx];
         this.idx = this.idx + 1;

@@ -56,6 +56,7 @@ class CajetaDebugSessionTest {
      */
     private fun runServer(
         respondBody: (String, Json) -> Json = { _, _ -> Json.obj() },
+        stopOnDisconnect: Boolean = true,
         onCommand: (String, DapTransport) -> Unit = { _, _ -> },
     ) {
         val t = Thread({
@@ -67,7 +68,7 @@ class CajetaDebugSessionTest {
                     lastRequestByCommand[command] = req
                     serverTransport.write(ok(req, respondBody(command, req)))
                     onCommand(command, serverTransport)
-                    if (command == "disconnect") break
+                    if (command == "disconnect" && stopOnDisconnect) break
                 }
             } catch (_: Exception) {
                 // pipe closed on teardown
@@ -111,6 +112,144 @@ class CajetaDebugSessionTest {
             .get(5, TimeUnit.SECONDS)
 
         assertEquals(listOf("initialize", "launch", "configurationDone"), received.toList())
+    }
+
+    /** 5.1.2 — configured entries reach the server as the standard DAP `env`. */
+    @Test
+    fun launchCarriesEnvironmentEntries() {
+        connect()
+        runServer()
+        session.start()
+
+        session.launch(
+            CajetaDebugSession.LaunchParams(
+                "demo.Calc.main", "/tmp/root",
+                envVars = linkedMapOf("FOO" to "1", "BAR" to "two"),
+            ),
+        ).get(5, TimeUnit.SECONDS)
+
+        val env = lastRequestByCommand["launch"]!!.at("arguments").at("env")
+        assertEquals("1", env.at("FOO").asString())
+        assertEquals("two", env.at("BAR").asString())
+    }
+
+    /** 5.1.3 — inheritance is a separate fact from the entries themselves;
+     *  the server cannot infer it from an empty map. */
+    @Test
+    fun launchCarriesInheritFlag() {
+        connect()
+        runServer()
+        session.start()
+
+        session.launch(
+            CajetaDebugSession.LaunchParams(
+                "demo.Calc.main", "/tmp/root", inheritSystemEnv = false,
+            ),
+        ).get(5, TimeUnit.SECONDS)
+
+        assertEquals(
+            false,
+            lastRequestByCommand["launch"]!!.at("arguments")
+                .at("inheritSystemEnv").asBool(),
+        )
+    }
+
+    /**
+     * 5.1.4 — the no-regression guard. Unit 5 is inert by design: until the
+     * server reads these fields (Unit 6), a default configuration must produce
+     * the request it produced before (spec 4.1.6). Asserting on the exact key
+     * set is deliberate — an `env: {}` that a future server treated as "empty
+     * environment" rather than "unspecified" would silently blank the debuggee's
+     * environment, so absence must stay absence on the wire.
+     */
+    @Test
+    fun launchWithNoEnvironmentIsUnchanged() {
+        connect()
+        runServer()
+        session.start()
+
+        session.launch(CajetaDebugSession.LaunchParams("demo.Calc.main", "/tmp/root"))
+            .get(5, TimeUnit.SECONDS)
+
+        val args = lastRequestByCommand["launch"]!!.at("arguments") as Json.Obj
+        assertEquals(
+            setOf("entry-method", "sourceRoot", "stopOnEntry"),
+            args.entries.keys,
+        )
+    }
+
+    /** resident-debug-server (found live 2026-07-22): a resident session
+     *  must NOT close the shared client on disconnect — the next session
+     *  reuses it. Pin: disconnect with ownsClient=false, then a full second
+     *  handshake on the SAME client completes. */
+    @Test
+    fun residentDisconnectLeavesClientUsableForNextSession() {
+        connect()
+        runServer(stopOnDisconnect = false)   // resident: server outlives sessions
+        session.start()
+        session.ownsClient = false
+
+        session.launch(CajetaDebugSession.LaunchParams("demo.Calc.main", "/tmp/root"))
+            .get(5, TimeUnit.SECONDS)
+        session.disconnect().get(5, TimeUnit.SECONDS)
+
+        received.clear()
+        session.launch(CajetaDebugSession.LaunchParams("demo.Calc.main", "/tmp/root"))
+            .get(5, TimeUnit.SECONDS)
+        assertEquals(
+            listOf("initialize", "launch", "configurationDone"),
+            received.toList(),
+        )
+    }
+
+    /** resident-debug-server 5.1.2 — the handshake carries the binary the
+     *  plugin launched (initialize.compilerPath) and the residency ask
+     *  (launch.resident), so a stale or wrong server refuses cleanly. */
+    @Test
+    fun launchCarriesCompilerPathAndResident() {
+        connect()
+        runServer()
+        session.start()
+
+        session.launch(
+            CajetaDebugSession.LaunchParams(
+                "demo.Calc.main", "/tmp/root",
+                compilerPath = "/opt/cajeta/bin/cajeta",
+                resident = true,
+            ),
+        ).get(5, TimeUnit.SECONDS)
+
+        assertEquals(
+            "/opt/cajeta/bin/cajeta",
+            lastRequestByCommand["initialize"]!!.at("arguments")
+                .at("compilerPath").asString(),
+        )
+        assertTrue(
+            lastRequestByCommand["launch"]!!.at("arguments")
+                .at("resident").asBool(),
+        )
+    }
+
+    /** fast-debug-launch 5.1.2 — a run config with a cache dir sends it on the
+     *  launch request, so the server can serve the whole-program slot. */
+    @Test
+    fun launchCarriesCacheDir() {
+        connect()
+        runServer()
+        session.start()
+
+        session.launch(
+            CajetaDebugSession.LaunchParams(
+                "demo.Calc.main", "/tmp/root",
+                cacheDir = "/proj/.cajeta/cache",
+            ),
+        ).get(5, TimeUnit.SECONDS)
+
+        assertEquals(
+            "/proj/.cajeta/cache",
+            lastRequestByCommand["launch"]!!.at("arguments")
+                .at("cacheDir").asString(),
+        )
     }
 
     @Test
@@ -190,6 +329,73 @@ class CajetaDebugSessionTest {
         // Conditional line carries the expression.
         assertEquals(6, bps[1].at("line").asInt())
         assertEquals("a == 6", bps[1].at("condition").asString())
+    }
+
+    // --- stepping (dap-stepping 3.1.1 / 3.1.2) ---
+
+    @Test
+    fun stepOverSendsNextWithThreadId() {
+        connect()
+        runServer()
+        session.start()
+
+        session.stepOver(3).get(5, TimeUnit.SECONDS)
+
+        assertEquals(3, lastRequestByCommand["next"]!!.at("arguments").at("threadId").asInt())
+    }
+
+    @Test
+    fun stepIntoSendsStepInWithThreadId() {
+        connect()
+        runServer()
+        session.start()
+
+        session.stepInto(0).get(5, TimeUnit.SECONDS)
+
+        assertEquals(0, lastRequestByCommand["stepIn"]!!.at("arguments").at("threadId").asInt())
+    }
+
+    @Test
+    fun stepOutSendsStepOutWithThreadId() {
+        connect()
+        runServer()
+        session.start()
+
+        session.stepOut(7).get(5, TimeUnit.SECONDS)
+
+        assertEquals(7, lastRequestByCommand["stepOut"]!!.at("arguments").at("threadId").asInt())
+    }
+
+    /** 3.1.2 — a `stopped` with reason "step" arrives through the SAME
+     *  onStopped callback as a breakpoint stop, with its threadId intact, so
+     *  the platform layer's position update needs no reason-specific path. */
+    @Test
+    fun stepStopRoutesThroughOnStoppedLikeABreakpoint() {
+        connect()
+        val stops = Collections.synchronizedList(mutableListOf<Pair<String, Int>>())
+        val twoStops = CountDownLatch(2)
+        session.onStopped = { body ->
+            stops.add(body.at("reason").asString() to body.at("threadId").asInt())
+            twoStops.countDown()
+        }
+
+        runServer { command, srv ->
+            when (command) {
+                "configurationDone" ->
+                    srv.write(event("stopped", Json.obj("reason" to Json.of("breakpoint"), "threadId" to Json.of(2))))
+                "next" ->
+                    srv.write(event("stopped", Json.obj("reason" to Json.of("step"), "threadId" to Json.of(2))))
+            }
+        }
+        session.start()
+        session.launch(
+            CajetaDebugSession.LaunchParams("demo.Calc.main", "/tmp/root"),
+            listOf(CajetaDebugSession.LineBreakpoint("Calc.cajeta", 6)),
+        ).get(5, TimeUnit.SECONDS)
+        session.stepOver(2).get(5, TimeUnit.SECONDS)
+
+        assertTrue("expected breakpoint + step stops", twoStops.await(5, TimeUnit.SECONDS))
+        assertEquals(listOf("breakpoint" to 2, "step" to 2), stops.toList())
     }
 
     @Test

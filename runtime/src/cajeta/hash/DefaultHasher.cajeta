@@ -63,6 +63,8 @@ public final class DefaultHasher implements Hasher {
      * hasher.writeObject(payload);
      * int64 digest = hasher.finish();
      * ```
+     *
+     * @EntryPoint
      */
     public DefaultHasher() {
         this.backing = heap XXHash3();
@@ -79,6 +81,8 @@ public final class DefaultHasher implements Hasher {
      * replay.writeObject(payload);
      * int64 digest = replay.finish();
      * ```
+     *
+     * @EntryPoint
      */
     public DefaultHasher(int64 seedArg) {
         this.backing = heap XXHash3(seedArg);

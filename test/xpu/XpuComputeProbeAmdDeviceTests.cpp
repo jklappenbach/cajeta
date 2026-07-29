@@ -67,7 +67,7 @@ TEST(XpuComputeProbeAmdDeviceTests, torchMatmulAtomicScatterOnAmd) {
         << " (100+idx: matmul mismatch; 200+bin: scatter-add mismatch)";
 }
 
-// Target 3: Toffee/SPELA — fused forward + local-loss + weight update, on gfx1151.
+// Target 3: Caramelo/SPELA — fused forward + local-loss + weight update, on gfx1151.
 TEST(XpuComputeProbeAmdDeviceTests, spelaFusedLayerOnAmd) {
     if (!HipDriver::available()) {
         GTEST_SKIP() << "no AMD HIP device available";

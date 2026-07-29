@@ -1,0 +1,81 @@
+package tour.math;
+
+import tour.DemoClass;
+import cajeta.lang.Math;
+import cajeta.math.Tensor;
+import cajeta.math.fft.Fft;
+
+// cajeta.math.fft.Fft — the discrete Fourier transform (radix-2 Cooley-Tukey,
+// length a power of two). Complex signals are an INTERLEAVED float32 tensor:
+// a length-N complex signal is a Tensor<float32> of length 2N with [2i] the
+// real part and [2i+1] the imaginary part (the byte layout a future complex64
+// dtype would use).
+//
+// Pinned against numpy: fft([1,2,3,4]) = [10, -2+2j, -2, -2-2j], a constant
+// signal puts ALL its energy in bin 0, and ifft(fft(x)) round-trips.
+public class FftDemo extends DemoClass {
+    static boolean close(float32 a, float32 b) {
+        float32 d = Math.abs(a - b);
+        return d < 0.0001f;
+    }
+
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- cajeta.math.fft (DFT round-trip + known bins) --");
+
+        // Constant signal [1,1,1,1]: the DFT of a constant is an impulse —
+        // bin 0 carries the whole sum (4), every other bin is 0.
+        int64[] s8 = heap int64[1];
+        s8[0] = 8;
+        Tensor<float32> con = Tensor.zeros<float32>(s8);
+        int64 i = 0;
+        while (i < 4) {
+            con.set1(2 * i, 1.0f);
+            i = i + 1;
+        }
+        Tensor<float32> fc = Fft.fft(con);
+        System.stdout.println("  fft([1,1,1,1]) bin0 = " + (int32)(fc.get1(0) + 0.5f)
+            + "   (expect 4 — all energy in DC)");
+        this.check(close(fc.get1(0), 4.0f) && close(fc.get1(1), 0.0f),
+            "constant signal: bin 0 == (4, 0)");
+        boolean rest = true;
+        i = 2;
+        while (i < 8) {
+            if (!close(fc.get1(i), 0.0f)) { rest = false; }
+            i = i + 1;
+        }
+        this.check(rest, "constant signal: bins 1..3 are zero");
+
+        // Known DFT: numpy fft([1,2,3,4]) = [10, -2+2j, -2, -2-2j].
+        Tensor<float32> x = Tensor.zeros<float32>(s8);
+        x.set1(0, 1.0f);
+        x.set1(2, 2.0f);
+        x.set1(4, 3.0f);
+        x.set1(6, 4.0f);
+        Tensor<float32> fx = Fft.fft(x);
+        this.check(close(fx.get1(0), 10.0f) && close(fx.get1(1), 0.0f),
+            "fft([1,2,3,4]) bin 0 == 10");
+        this.check(close(fx.get1(2), -2.0f) && close(fx.get1(3), 2.0f),
+            "fft([1,2,3,4]) bin 1 == -2+2i");
+        this.check(close(fx.get1(4), -2.0f) && close(fx.get1(5), 0.0f),
+            "fft([1,2,3,4]) bin 2 == -2");
+
+        // Inverse round-trip: ifft conjugates the twiddles and scales by 1/N,
+        // so ifft(fft(x)) reproduces the signal to float tolerance.
+        Tensor<float32> rt = Fft.ifft(fx);
+        boolean same = true;
+        i = 0;
+        while (i < 8) {
+            if (!close(rt.get1(i), x.get1(i))) { same = false; }
+            i = i + 1;
+        }
+        this.check(same, "ifft(fft(x)) round-trips the signal");
+
+        // fftfreq(4, 1): non-negative frequencies first, then the negative
+        // ones (numpy order): [0, 0.25, -0.5, -0.25].
+        Tensor<float32> fr = Fft.fftfreq(4, 1.0f);
+        this.check(close(fr.get1(0), 0.0f) && close(fr.get1(1), 0.25f)
+            && close(fr.get1(2), -0.5f) && close(fr.get1(3), -0.25f),
+            "fftfreq(4, 1) == [0, 0.25, -0.5, -0.25]");
+    }
+}

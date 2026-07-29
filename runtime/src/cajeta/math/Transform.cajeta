@@ -37,6 +37,11 @@ package cajeta.math;
     public Quaternion<float32> rotation;
     public Vector<float32,3> scale;
 
+    /**
+     * Build a transform from its translation, rotation, and scale components.
+     *
+     * @EntryPoint
+     */
     public Transform(Vector<float32,3> translation, Quaternion<float32> rotation,
                      Vector<float32,3> scale) {
         this.translation = translation;
@@ -44,7 +49,11 @@ package cajeta.math;
         this.scale = scale;
     }
 
-    /** The identity transform: no translation, no rotation, unit scale. */
+    /**
+     * The identity transform: no translation, no rotation, unit scale.
+     *
+     * @EntryPoint
+     */
     public static Transform identity() {
         Vector<float32,3> zero = stack Vector<float32,3>(0.0f, 0.0f, 0.0f);
         Quaternion<float32> rot = stack Quaternion<float32>(1.0f, 0.0f, 0.0f, 0.0f);

@@ -56,6 +56,94 @@ TEST(OwnershipLeakProbe, borrowAliasNotDoubleFreed) {
     EXPECT_EQ(fn(), 5890);
 }
 
+// 15.13 regression (element-ownership 3.1.2): an OWNING instantiation
+// (`ArrayList<String>`) drops its elements when the list drops — `#`-marked
+// storage joins the field-drop walk, bounded by the @ElementCount field (the
+// array header word is capacity, not live count). Pre-fix baseline: +1006.
+TEST(OwnershipLeakProbe, arrayListOwnedElementsDropped) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.collection.ArrayList;\n"
+        "public final class E {\n"
+        "    public static void fill(int32 n) {\n"
+        "        ArrayList<String> a = heap ArrayList<String>();\n"
+        "        int32 i = 0;\n"
+        "        while (i < n) { String s = \"elem\" + i; a.add(#s); i = i + 1; }\n"
+        "    }\n"
+        "    public static int64 run(int32 n) {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        fill(n);\n"
+        "        return Cajeta.liveCount() - base;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.E");
+    auto fn = jit->lookup<int64_t (*)(int32_t)>("run");
+    int64_t delta = fn(1000);
+    EXPECT_GE(delta, 0);
+    EXPECT_LT(delta, 20) << "owned ArrayList elements leaked: +" << delta;
+}
+
+// title-tracking §8.1 (plan 7.1.2) — the borrow→owning-slot MATERIALIZE
+// tests were RETIRED with owning instantiations: under rev 2 a plain add is
+// a borrow (entry bit 0), nothing materializes, and reading a stored borrow
+// after its source scope is the ordinary §7.4 hazard. Borrow-store semantics
+// are pinned by arrayListBorrowElementsUntouched below and
+// ContainerTitleTests.indexedBorrowStoreLeavesOwnerAlive.
+
+// Balance check for the materialize path (element-ownership 3.1.5 slice):
+// borrow-add ×N into an owning list, drop everything → liveCount returns to
+// baseline (materialized wrappers dropped by the 3B walk, sources by scope).
+TEST(OwnershipLeakProbe, borrowIntoOwningSlotBalances) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.collection.ArrayList;\n"
+        "public final class H {\n"
+        "    public static void fill(int32 n) {\n"
+        "        ArrayList<String> a = heap ArrayList<String>();\n"
+        "        int32 i = 0;\n"
+        "        while (i < n) { String s = \"elem\" + i; a.add(s); i = i + 1; }\n"
+        "    }\n"
+        "    public static int64 run(int32 n) {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        fill(n);\n"
+        "        return Cajeta.liveCount() - base;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.H");
+    auto fn = jit->lookup<int64_t (*)(int32_t)>("run");
+    int64_t delta = fn(1000);
+    EXPECT_GE(delta, 0);
+    EXPECT_LT(delta, 20) << "borrow->owning materialize leaked: +" << delta;
+}
+
+// title-tracking §8.1 (plan 7.1.2) — viewIntoOwningSlotPromotesToShared
+// RETIRED with the materialize family (no owning slots to promote into);
+// the String view/share machinery itself stays pinned by the String suites.
+
+
+// Borrow-instantiation control: `ArrayList<String>` (no `#`) must NOT drop
+// elements — they belong to the enclosing scope; a premature free would
+// poison `keep` before the trailing read (element-ownership §7.1.4 gate).
+TEST(OwnershipLeakProbe, arrayListBorrowElementsUntouched) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.collection.ArrayList;\n"
+        "public final class F {\n"
+        "    public static int64 run() {\n"
+        "        String keep = \"keep\" + 7;\n"
+        "        if (true) {\n"
+        "            ArrayList<String> a = heap ArrayList<String>();\n"
+        "            a.add(keep);\n"
+        "            a.add(keep);\n"
+        "        }\n"
+        "        return (int64) keep.count();\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.F");
+    auto fn = jit->lookup<int64_t (*)()>("run");
+    EXPECT_EQ(fn(), 5) << "borrow-instantiated list touched elements it does not own";
+}
+
 // Bench-faithful: build a #-keyed HashMap<String,int32> AND do n lookups (each a
 // throwaway borrowed "key"+j), repeated over many iterations. The live-set must
 // stay BOUNDED — owned keys reclaimed on map drop, lookup temps on loop exit.

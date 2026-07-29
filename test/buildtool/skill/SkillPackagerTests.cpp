@@ -1,6 +1,6 @@
 // Tests for build-time skill packaging.
 // See src/cajeta/buildtool/skill/SkillPackager.h and
-// docs/specs/skill-discovery-spec.md §4.2 (plan unit D.3).
+// specs/archive/skill-discovery-spec.md §4.2 (plan unit D.3).
 
 #include "cajeta/buildtool/skill/SkillPackager.h"
 

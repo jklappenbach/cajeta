@@ -1,6 +1,6 @@
 // Tests for the front-matter document splitter.
 // See src/cajeta/buildtool/FrontMatter.h and
-// docs/specs/yaml-frontmatter-spec.md §2 (plan unit D.Y1).
+// specs/archive/yaml-frontmatter-spec.md §2 (plan unit D.Y1).
 
 #include "cajeta/buildtool/FrontMatter.h"
 

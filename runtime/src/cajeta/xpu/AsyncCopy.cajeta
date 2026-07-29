@@ -7,7 +7,7 @@ import cajeta.xpu.Shared;
  * AsyncCopy — direct global→workgroup-shared (LDS) transfers that do NOT pass
  * through registers and retire asynchronously, plus group commit/wait so a kernel
  * can run an N-stage software prefetch pipeline. Only meaningful inside @Kernel /
- * @Device functions. See docs/specs/xpu-pipelined-gemm-primitives-spec.md §2.
+ * @Device functions. See specs/xpu-pipelined-gemm-primitives-spec.md §2.
  *
  * The shipped double-buffered GEMM stages global→registers→LDS (two hops, register
  * pressure, a barrier on the critical path). `AsyncCopy.copy` issues the transfer

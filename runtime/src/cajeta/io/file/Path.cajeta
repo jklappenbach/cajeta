@@ -13,12 +13,12 @@ import cajeta.lang.String;
  *
  * ## Usage
  * ```cajeta
- * #Path p = Path.of("/foo/bar/baz.txt");
+ * Path p = Path.of("/foo/bar/baz.txt");
  * String leaf = p.name();        // "baz.txt"
  * String base = p.stem();        // "baz"
  * String ext  = p.extension();   // "txt"
- * #Path dir   = p.parent();      // "/foo/bar"
- * #Path child = p.resolve("note.md");  // "/foo/bar/baz.txt/note.md"
+ * Path dir   = p.parent();      // "/foo/bar"
+ * Path child = p.resolve("note.md");  // "/foo/bar/baz.txt/note.md"
  * ```
  *
  * Phase B: pure-path manipulation only (no syscalls). Stat-touching
@@ -43,11 +43,15 @@ public class Path {
      *
      * ```cajeta
      * int8[] raw = encodeOsBytes("/tmp/x");
-     * #Path p = heap Path(#raw);  // ownership of raw moves in
+     * Path p = heap Path(#raw);  // ownership of raw moves in
      * ```
      */
     public Path(int8[] bytes) {
-        this.bytes = bytes;
+        // title-tracking (Unit 8 sweep): every call site surrenders (#raw /
+        // #out) — the consuming spelling keeps the buffer alive on the
+        // field; a plain store left the armed formal to free it at ctor
+        // exit (parent()/resolve() then read freed bytes).
+        this.bytes #= bytes;
     }
 
     /**
@@ -57,17 +61,18 @@ public class Path {
      * String can drop independently.
      *
      * ```cajeta
-     * #Path home = Path.of("/home/julian");
-     * #Path cfg  = Path.of(".config");  // relative
+     * Path home = Path.of("/home/julian");
+     * Path cfg  = Path.of(".config");  // relative
      * ```
+     *
+     * @EntryPoint
      */
     public static #Path of(String s) {
-        int32 n = s.byteLength;
+        int32 n = s.byteLength();
         int8[] copy = heap int8[n];
-        int8[] src = s.bytes;
         int32 i = 0;
         while (i < n) {
-            copy[i] = src[i];
+            copy[i] = s.byteAt(i);
             i = i + 1;
         }
         // `#copy` transfers ownership of the freshly allocated
@@ -135,12 +140,11 @@ public class Path {
      */
     public #String stem() {
         String fullName = this.name();
-        int32 nameLen = fullName.byteLength;
-        int8[] src = fullName.bytes;
+        int32 nameLen = fullName.byteLength();
         int32 lastDot = -1;
         int32 i = 0;
         while (i < nameLen) {
-            if (src[i] == (int8) 46) {  // '.' = 0x2E = 46
+            if (fullName.byteAt(i) == (int8) 46) {  // '.' = 0x2E = 46
                 lastDot = i;
             }
             i = i + 1;
@@ -149,7 +153,7 @@ public class Path {
         int8[] out = heap int8[outLen];
         int32 j = 0;
         while (j < outLen) {
-            out[j] = src[j];
+            out[j] = fullName.byteAt(j);
             j = j + 1;
         }
         return heap String(#out, outLen);
@@ -164,12 +168,11 @@ public class Path {
      */
     public #String extension() {
         String fullName = this.name();
-        int32 nameLen = fullName.byteLength;
-        int8[] src = fullName.bytes;
+        int32 nameLen = fullName.byteLength();
         int32 lastDot = -1;
         int32 i = 0;
         while (i < nameLen) {
-            if (src[i] == (int8) 46 && i > 0) {
+            if (fullName.byteAt(i) == (int8) 46 && i > 0) {
                 lastDot = i;
             }
             i = i + 1;
@@ -182,7 +185,7 @@ public class Path {
         int8[] out = heap int8[outLen];
         int32 j = 0;
         while (j < outLen) {
-            out[j] = src[lastDot + 1 + j];
+            out[j] = fullName.byteAt(lastDot + 1 + j);
             j = j + 1;
         }
         return heap String(#out, outLen);
@@ -350,7 +353,7 @@ public class Path {
      * Intrinsic-lowered to `__cajeta_path_canonical(bytes, len)`.
      *
      * ```cajeta
-     * #Path real = Path.of("./logs/../bin/app").canonical();
+     * Path real = Path.of("./logs/../bin/app").canonical();
      * ```
      */
     public #Path canonical() {
@@ -367,14 +370,14 @@ public class Path {
      * surface for the spec's `operator/` join.
      *
      * ```cajeta
-     * #Path src = Path.of("src");
-     * #Path f   = src.resolve("lang").resolve("Type.cajeta");
+     * Path src = Path.of("src");
+     * Path f   = src.resolve("lang").resolve("Type.cajeta");
      * // "src/lang/Type.cajeta"
      * ```
      */
     public #Path resolve(String segment) {
         int32 pLen = (int32) this.bytes.count();
-        int32 sLen = segment.byteLength;
+        int32 sLen = segment.byteLength();
         boolean needsSep = pLen > 0
             && this.bytes[pLen - 1] != (int8) 47
             && sLen > 0;
@@ -391,10 +394,9 @@ public class Path {
             out[j] = (int8) 47;
             j = j + 1;
         }
-        int8[] segBytes = segment.bytes;
         k = 0;
         while (k < sLen) {
-            out[j] = segBytes[k];
+            out[j] = segment.byteAt(k);
             j = j + 1;
             k = k + 1;
         }

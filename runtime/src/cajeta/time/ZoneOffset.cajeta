@@ -20,7 +20,7 @@ import cajeta.lang.Comparable;
  * stack ZoneOffset ist = ZoneOffset.ofHoursMinutes(5, 30);  // +05:30
  * stack ZoneOffset pst = ZoneOffset.ofHours(-8);            // -08:00
  * boolean east = ist.compareTo(pst) > 0;                    // true
- * #String id = ist.iso();                                   // "+05:30"
+ * String id = ist.iso();                                   // "+05:30"
  * ```
  */
 public final class ZoneOffset implements Comparable<ZoneOffset> {
@@ -45,6 +45,8 @@ public final class ZoneOffset implements Comparable<ZoneOffset> {
      * ```cajeta
      * stack ZoneOffset z = ZoneOffset.ofTotalSeconds(-28800);  // -08:00
      * ```
+     *
+     * @EntryPoint
      */
     @NoInline
     public static ZoneOffset ofTotalSeconds(int32 totalSeconds) {
@@ -61,6 +63,8 @@ public final class ZoneOffset implements Comparable<ZoneOffset> {
      * ```cajeta
      * stack ZoneOffset z = ZoneOffset.ofHours(2);  // +02:00
      * ```
+     *
+     * @EntryPoint
      */
     @NoInline
     public static ZoneOffset ofHours(int32 hours) {
@@ -78,6 +82,8 @@ public final class ZoneOffset implements Comparable<ZoneOffset> {
      * ```cajeta
      * stack ZoneOffset z = ZoneOffset.ofHoursMinutes(-3, -30);  // -03:30
      * ```
+     *
+     * @EntryPoint
      */
     @NoInline
     public static ZoneOffset ofHoursMinutes(int32 hours, int32 minutes) {
@@ -106,6 +112,8 @@ public final class ZoneOffset implements Comparable<ZoneOffset> {
      * ```cajeta
      * stack ZoneOffset z = ZoneOffset.utc();  // iso() == "Z"
      * ```
+     *
+     * @EntryPoint
      */
     @Inline
     public static ZoneOffset utc() {
@@ -146,7 +154,7 @@ public final class ZoneOffset implements Comparable<ZoneOffset> {
      * only when the offset has a nonzero seconds part).
      *
      * ```cajeta
-     * #String s = ZoneOffset.ofHoursMinutes(5, 30).iso();  // "+05:30"
+     * String s = ZoneOffset.ofHoursMinutes(5, 30).iso();  // "+05:30"
      * ```
      */
     public #String iso() {

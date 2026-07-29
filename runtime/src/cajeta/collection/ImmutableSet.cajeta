@@ -67,6 +67,7 @@ public final class ImmutableSet<T> {
      * ```
      *
      * @Param src the values to snapshot.
+     * @EntryPoint
      */
     public ImmutableSet(ArrayList<T> src) {
         int32 n = src.count();
@@ -109,8 +110,56 @@ public final class ImmutableSet<T> {
             }
             i = i + 1;
         }
-        this.elements = #elems;
-        this.table = #tab;
+        this.elements #= elems;
+        this.table #= tab;
+        this.elemCount = count;
+        this.tableCap = cap;
+    }
+
+    /**
+     * Build a frozen, de-duplicated set directly from an array literal
+     * (array-literals §6): `ImmutableSet<int32> s = heap ImmutableSet<int32>([1,2,2,3])`.
+     * First occurrence of each `==`-equal value wins; the set holds {1, 2, 3}.
+     */
+    public ImmutableSet(T[] items) {
+        int32 n = (int32) items.count();
+        int64 cap = 8;
+        while (cap < (int64) n * 2) {
+            cap = cap * 2;
+        }
+        T[] elems = heap T[n];
+        int64[] tab = heap int64[cap];
+        int32 count = 0;
+
+        int32 i = 0;
+        while (i < n) {
+            T e = items[i];
+            int64 h = e.hash();
+            int64 idx = h & (cap - 1);
+            boolean dup = false;
+            boolean scanning = true;
+            while (scanning) {
+                if (tab[idx] == 0) {
+                    scanning = false;
+                } else {
+                    int32 ei = (int32) (tab[idx] - 1);
+                    if (elems[ei] == e) {
+                        dup = true;
+                        scanning = false;
+                    } else {
+                        idx = (idx + 1) & (cap - 1);
+                    }
+                }
+            }
+            if (dup == false) {
+                elems[count] = e;
+                tab[idx] = (int64) (count + 1);
+                count = count + 1;
+            }
+            i = i + 1;
+        }
+        this.elements #= elems;
+        this.table #= tab;
         this.elemCount = count;
         this.tableCap = cap;
     }

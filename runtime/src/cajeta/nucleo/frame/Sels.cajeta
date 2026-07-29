@@ -1,0 +1,75 @@
+package cajeta.nucleo.frame;
+
+/**
+ * Sels — the selection collector a `select` lambda receives (nucleo-frame
+ * U5): the typed builder and the collector arrive as the lambda's two
+ * parameters, and each `add` appends one output column, in order:
+ *
+ * ```cajeta
+ * Table<?> r = ticks.select((TickCols c, Sels s) -> {
+ *     s.add(c.price());                                // passthrough
+ *     s.add((c.price() * c.size()).alias("notional")); // computed, named
+ * });
+ * ```
+ *
+ * A bare column reference passes through under its own name; a COMPUTED
+ * expression has no name of its own, so adding one unnamed is a loud
+ * {@link FrameException} pointing at `.alias("...")`.
+ */
+public class Sels {
+    Sel head;      // owned chain
+    Sel tail;      // borrow of the last node
+    int32 n;
+
+    public Sels() {
+        this.n = 0;
+    }
+
+    void append(#Sel s) {
+        if (this.head == null) {
+            this.head #= s;
+            this.tail = this.head;
+        } else {
+            this.tail.chain(#s);
+            this.tail = this.tail.nextOf();
+        }
+        this.n = this.n + 1;
+    }
+
+    /** A float64 column reference (passthrough) — computed expressions must
+     *  come through {@link ColF64#alias} instead. */
+    public void add(#ColF64 e) {
+        if (e.kind() != 0) {
+            throw heap FrameException(
+                "select: a computed column needs a name - use .alias(\"...\")");
+        }
+        String name = e.name();
+        this.append(Sel.of(#e, name));
+    }
+
+    /** An exact-integer column reference (passthrough). */
+    public void add(#ColI64 e) {
+        String name = e.name();
+        this.append(Sel.ofI64(#e, name));
+    }
+
+    /** A utf8 column reference (passthrough). */
+    public void add(#ColStr e) {
+        String name = e.name();
+        this.append(Sel.ofStr(#e, name));
+    }
+
+    /** A named selection ({@link ColF64#alias} / {@link ColStr#alias}). */
+    public void add(#Sel s) {
+        this.append(#s);
+    }
+
+    public int32 count() { return this.n; }
+
+    /** Detach the collected chain (the collector is single-use). */
+    public #Sel take() {
+        this.tail = null;
+        Sel h #= this.head;
+        return #h;
+    }
+}

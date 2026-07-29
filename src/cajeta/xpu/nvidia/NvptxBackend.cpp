@@ -147,15 +147,18 @@ std::vector<uint8_t> assembleCubin(const std::string& ptx,
     // ptxas works on files; round-trip through temporaries. unique paths
     // avoid collisions across concurrent compiles.
     llvm::SmallString<128> ptxPath, cubinPath;
+    // Guard by reference and construct BEFORE creating the temp files: if the
+    // ptx file is created but the cubin file then fails, the dtor still removes
+    // the orphaned ptx (remove on an empty/absent path is a harmless no-op).
+    struct Cleanup {
+        llvm::SmallString<128> &a, &b;
+        ~Cleanup() { llvm::sys::fs::remove(a); llvm::sys::fs::remove(b); }
+    } cleanup{ptxPath, cubinPath};
     if (llvm::sys::fs::createTemporaryFile("cajeta_xpu", "ptx", ptxPath) ||
         llvm::sys::fs::createTemporaryFile("cajeta_xpu", "cubin", cubinPath)) {
         llvm::errs() << "cajeta.xpu.nvidia: could not create temp files\n";
         return {};
     }
-    struct Cleanup {
-        llvm::SmallString<128> a, b;
-        ~Cleanup() { llvm::sys::fs::remove(a); llvm::sys::fs::remove(b); }
-    } cleanup{ptxPath, cubinPath};
 
     {
         std::error_code ec;

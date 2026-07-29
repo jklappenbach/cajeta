@@ -1,19 +1,15 @@
-// String Phase 2b-β.2: view-mode constructor —
-// `String(int8[] bytes, int32 byteLength)` constructs a view-mode
-// String that borrows the caller's bytes without claiming ownership.
+// String buffer constructor — `String(#int8[] bytes, int32 byteLength)`
+// takes FULL ownership of the caller's byte buffer (the `#` formal
+// transfers; the caller's drop entry deactivates). Under the 6.2.2
+// tagged core: <= 12 B copies Inline and the buffer is freed
+// immediately; longer payloads adopt the buffer as this String's OWNED
+// root (drop frees it). This is the builder path every stdlib
+// `return heap String(#out, n)` routes through.
 //
-// This is the precursor to literal codegen flip (Phase 2b-β.3): once
-// literal strings can be materialized as view-mode String instances
-// pointing at static byte storage, every existing string-literal site
-// can shift from i8* (primitive alias) to String class instance. The
-// view-mode ctor exposed here is the user-callable surface; the
-// compiler-side literal codegen will eventually synthesize equivalent
-// initialization without going through this ctor.
-//
-// Mode = 1 = view ⇒ drop chain does NOT reclaim the bytes (caller
-// owns them). For literal-backed strings the "caller" is the
-// process's static-data segment; for user-constructed views the
-// caller is whatever Cajeta-allocated buffer is on the heap.
+// History: this ctor originally set the old mode field to 1 (view)
+// while still taking `#` — the signature transferred ownership the body
+// then declined, so every transferred buffer leaked (slices plan 9.1
+// fixed it to owned). Literal-backed strings never route here.
 
 #include <gtest/gtest.h>
 #include "../jit/JitTestHelper.h"
@@ -35,10 +31,9 @@ int32_t runI32(const std::string& src) {
 }
 } // namespace
 
-// View-mode ctor stores the caller's byteLength argument into the
-// header's byteLength field — proves the int32 parameter reaches the
-// field assignment.
-TEST(StringViewCtorTests, viewCtorPopulatesByteLength) {
+// Buffer ctor carries the caller's byteLength into the core's lenTag —
+// proves the int32 parameter reaches the tag.
+TEST(StringViewCtorTests, bufferCtorPopulatesByteLength) {
     auto src =
         "package test;\n"
         "import cajeta.lang.String;\n"
@@ -46,17 +41,17 @@ TEST(StringViewCtorTests, viewCtorPopulatesByteLength) {
         "    public static int32 run() {\n"
         "        int8[] b = heap int8[5];\n"
         "        String s = heap String(#b, 5);\n"
-        "        return s.byteLength;\n"
+        "        return s.byteLength();\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 5);
 }
 
-// View-mode ctor sets the mode discriminator to 1 (view). This is the
-// load-bearing semantic difference vs. the no-arg ctor (which sets
-// mode = 0 owned): pin it explicitly so refactors can't silently
-// flip the default.
-TEST(StringViewCtorTests, viewCtorSetsModeToView) {
+// A <= 12 B adoption normalizes to the Inline form (no root, offset 0)
+// and a > 12 B adoption keeps the buffer as the OWNED root — pin both so
+// a refactor can't silently flip the ctor back to the leaky borrow
+// behavior slices 9.1 removed.
+TEST(StringViewCtorTests, bufferCtorNormalizesForms) {
     auto src =
         "package test;\n"
         "import cajeta.lang.String;\n"
@@ -64,16 +59,22 @@ TEST(StringViewCtorTests, viewCtorSetsModeToView) {
         "    public static int32 run() {\n"
         "        int8[] b = heap int8[3];\n"
         "        String s = heap String(#b, 3);\n"
-        "        return s.mode;\n"
+        "        int32 r = 0;\n"
+        "        if (s.root() == null) { r = r + 1; }\n"
+        "        int8[] c = heap int8[20];\n"
+        "        String t = heap String(#c, 20);\n"
+        "        if (t.root() != null) { r = r + 10; }\n"
+        "        if (t.byteOffset() == (int64) 0) { r = r + 100; }\n"
+        "        return r;\n"
         "    }\n"
         "}\n";
-    EXPECT_EQ(runI32(src), 1);
+    EXPECT_EQ(runI32(src), 111);
 }
 
-// View-mode ctor leaves cachedCpLength = -1 (not yet computed), so the
+// Buffer ctor leaves cachedCpLength = -1 (not yet computed), so the
 // first count() call walks the bytes correctly. Pins both ctor
-// initialization and end-to-end view-ctor + count() integration.
-TEST(StringViewCtorTests, viewCtorPlusCountEndToEnd) {
+// initialization and end-to-end ctor + count() integration.
+TEST(StringViewCtorTests, bufferCtorPlusCountEndToEnd) {
     auto src =
         "package test;\n"
         "import cajeta.lang.String;\n"

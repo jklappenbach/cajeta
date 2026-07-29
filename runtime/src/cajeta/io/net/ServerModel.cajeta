@@ -175,7 +175,7 @@ public class ServerModel {
      * [`shutdown`](Server.cajeta#shutdown) seam, so a caller holding the base
      * type drives whichever model was selected through one polymorphic
      * surface. That is precisely how
-     * [`HttpServer`](http/HttpServer.cajeta) runs the *same* per-connection
+     * `dev.cajeta.http`'s `HttpServer` runs the *same* per-connection
      * handler on either accept model — the **NET-9.2** deliverable — and the
      * model-selection surface a future
      * [`ServerBuilder`](ServerBuilder.cajeta) (NET-4.5) wires.

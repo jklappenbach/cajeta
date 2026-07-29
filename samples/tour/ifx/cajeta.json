@@ -1,0 +1,60 @@
+{
+    // Cajeta ifx tour — the windowing/input/audio backend contract, driven
+    // headlessly against the Null backend floor. A standard cajeta project:
+    //   cajeta.json                  ← this manifest
+    //   src/tour/ifx/IfxTour.cajeta  ← the demo (package tour.ifx)
+    //   build/ifx-tour               ← built binary (gitignored)
+    //
+    // Build + run from this directory:
+    //   cajeta build     → build/ifx-tour
+    //   ./run-ifx.sh     → build + execute
+
+    "details": {
+        "name":                "ifx-tour",
+        "version":             "0.1.0",
+        "description":         "Cajeta ifx (window/input/audio backend) tour — headless Null backend",
+        "license":             "Apache-2.0",
+        "authors":             ["cajeta"],
+        "cajeta-lang-version": "1.0"
+    },
+
+    "settings": {
+        // BackendRegistry.select* consults CAJETA_IFX_WINDOW/INPUT/AUDIO via
+        // System.env, hence `env`. Nothing else: the Null floor needs no
+        // display, no network, no filesystem.
+        "capabilities": ["env"],
+
+        "dependencies": {},
+
+        "build": {
+            "source-root":  "src",
+            "target":       "host",
+            "entry-method": "tour.ifx.IfxTour::main"
+        }
+    },
+
+    "tasks": {
+        "build": {
+            "description": "Build the ifx tour to a native binary (build/ifx-tour)",
+            "actions": [
+                { "action": "build", "flavor": "debug",
+                  "output-path": "build/ifx-tour", "id": "art" }
+            ],
+            "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
+        },
+
+        "run": {
+            "description": "Build the ifx tour and run it",
+            "actions": [
+                { "action": "build", "flavor": "debug",
+                  "output-path": "build/ifx-tour", "id": "art" },
+                { "action": "exec", "command": "${art.path}" }
+            ]
+        },
+
+        "clean": {
+            "description": "Wipe build outputs",
+            "actions": [ { "action": "clean" } ]
+        }
+    }
+}

@@ -96,7 +96,7 @@ The verb follows the noun: the recorded impl, not the active backend, drives whi
   `of` does not accept triangle geometry.
 - Does not take ownership of the input vertex/AABB array.
 
-## Worked example (mirrors ToffeeSpatialIndexDeviceTests)
+## Worked example (mirrors CarameloSpatialIndexDeviceTests)
 
 ```cajeta
 import cajeta.xpu.AccelerationStructure;

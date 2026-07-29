@@ -46,13 +46,56 @@ void* __cajeta_object_to_string(void* self) {
     return NULL;
 }
 
-// Placeholder clone — same stub-with-NULL pattern as toString. The
-// field-walking memcpy/shallow-ref-copy implementation lands with the
-// synthesizer; until then, manual clone() overrides (or just avoiding
-// the call) are the workaround.
+// clone() — live as of the slices plan Unit 5 (slice-spec §6.4): the explicit
+// sibling of the implicit value-copy. Shallow copy (memcpy of the instance)
+// plus per-heap-field fixup: a String field becomes a FRESH STAKE on the same
+// buffer (wrapper-per-stake — cajeta has no GC, so aliasing one wrapper would
+// UAF when either owner drops); other class-reference fields stay aliased
+// (Java-shallow; override clone() to deep-copy, exactly as Object.md says).
+// A String receiver DETACHES: the window is materialized into an owned buffer
+// (the retention-amplification valve, slice-spec §4.4).
 void* __cajeta_object_clone(void* self) {
-    (void) self;
-    return NULL;
+    if (!self) return NULL;
+    CajetaRtti* r = (CajetaRtti*) cajeta_rtti_from_obj(self);
+    if (!r || r->allocationSize <= 0) return NULL;
+    if (r->typeName && strcmp(r->typeName, "cajeta.lang.String") == 0) {
+        cajeta_string_layout* s = (cajeta_string_layout*) self;
+        int32_t len = caj_str_len(s);
+        cajeta_string_layout* out =
+            (cajeta_string_layout*) __cajeta_alloc(sizeof(cajeta_string_layout));
+        out->vtable = s->vtable;
+        out->cachedCpLength = s->cachedCpLength;
+        // Detach (spec Â§4.4 amplification valve): materialize the window
+        // into a fresh Inline-or-owned core; the clone holds no stake.
+        if (len <= CAJ_STR_INLINE_CAP) {
+            caj_str_set_inline(out, caj_str_ptr(s), len);
+        } else {
+            void* buf = caj_str_new_root(caj_str_ptr(s), len);
+            caj_str_set_window(out, len, 0, buf);
+        }
+        return out;
+    }
+    void* out = __cajeta_alloc((uint64_t) r->allocationSize);
+    memcpy(out, self, (size_t) r->allocationSize);
+    for (int32_t i = 0; i < (int32_t) r->propertyCount; i++) {
+        const CajetaFieldDesc* f = &r->properties[i];
+        if (f->byteOffset < 0 || !f->type) continue;
+        if (strcmp(f->type, "cajeta.lang.String") == 0) {
+            void** slot = (void**) ((char*) out + f->byteOffset);
+            void* src = *slot;
+            if (src) {
+                cajeta_string_layout* fs = (cajeta_string_layout*) src;
+                *slot = __cajeta_string_slice(src, 0, caj_str_len(fs));
+            }
+        } else if (strcmp(f->type, "cajeta.lang.Utf8") == 0) {
+            // Inline value field: the memcpy duplicated the 16 bytes —
+            // a Shared form needs its own stake (no-op for Inline/Static).
+            // (Direct Utf8 fields only; a nested value-aggregate field's
+            // inner Utf8s aren't walked — RTTI lists direct fields.)
+            __cajeta_utf8_retain((char*) out + f->byteOffset);
+        }
+    }
+    return out;
 }
 
 // --- parsing helpers --------------------------------------------------------
@@ -113,6 +156,28 @@ char* __cajeta_str_fromChar(int8_t c) {
     if (!out) return NULL;
     out[0] = (char) c;
     out[1] = '\0';
+    return out;
+}
+
+// Wrap a malloc'd C string into a fresh owned cajeta.lang.String whose
+// vtable the caller supplies (the synthesized-@ToString tail). Frees the
+// input: the legacy __cajeta_str_concat chain hands over its final buffer,
+// and downstream code receives a REAL String object — so String methods,
+// println, and field stores all work on a toString() result.
+void* __cajeta_string_wrap_cstr(char* cstr, void* vtable, int32_t freeIt) {
+    size_t len = cstr ? strlen(cstr) : 0;
+    cajeta_string_layout* out =
+        (cajeta_string_layout*) __cajeta_alloc(sizeof(cajeta_string_layout));
+    out->vtable = vtable;
+    out->cachedCpLength = -1;
+    if (len <= (size_t) CAJ_STR_INLINE_CAP) {
+        caj_str_set_inline(out, cstr, (int32_t) len);
+    } else {
+        void* buf = caj_str_new_root(cstr, (int32_t) len);
+        caj_str_set_window(out, (int32_t) len, 0, buf);
+    }
+    // freeIt=0 marks a `.rodata` cstr (bool literals etc.) — never free those.
+    if (cstr && freeIt) free(cstr);
     return out;
 }
 

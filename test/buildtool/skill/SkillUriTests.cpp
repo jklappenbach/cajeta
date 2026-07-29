@@ -1,6 +1,6 @@
 // Tests for the cja-skill:// URI scheme + lockfile resolver.
 // See src/cajeta/buildtool/skill/SkillUri.h and
-// docs/specs/skill-discovery-spec.md §2.2 (plan unit D.4).
+// specs/archive/skill-discovery-spec.md §2.2 (plan unit D.4).
 
 #include "cajeta/buildtool/skill/SkillUri.h"
 

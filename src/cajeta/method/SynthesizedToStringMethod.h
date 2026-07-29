@@ -60,6 +60,7 @@ namespace cajeta {
                                    bool callSuper = false);
 
         void generateCode() override;
+        bool emitsReturnFlag() override { return false; }  // raw-IR body: never stores the return flag
 
     private:
         ToStringFormat format;

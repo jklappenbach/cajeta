@@ -38,16 +38,28 @@ public class Guid extends Object {
 
     public Guid(uint128 value) { this.value = value; return; }
 
-    /** Box an existing 128-bit value. */
+    /**
+     * Box an existing 128-bit value.
+     *
+     * @EntryPoint
+     */
     public static #Guid of(uint128 value) { return heap Guid(value); }
 
-    /** Compose from a high and low 64-bit half (high bits are the most significant). */
+    /**
+     * Compose from a high and low 64-bit half (high bits are the most significant).
+     *
+     * @EntryPoint
+     */
     public static #Guid fromHalves(uint64 hi, uint64 lo) {
         uint128 v = ((uint128) hi << 64) | (uint128) lo;
         return heap Guid(v);
     }
 
-    /** A fresh random (version-4) UUID. */
+    /**
+     * A fresh random (version-4) UUID.
+     *
+     * @EntryPoint
+     */
     public static #Guid random() {
         int64[] out = heap int64[2];
         randomFill(out);
@@ -113,9 +125,11 @@ public class Guid extends Object {
      * Parse a canonical 36-character `8-4-4-4-12` hex GUID. Accepts upper or
      * lowercase hex; the separators must be hyphens at the canonical positions.
      * Throws `GuidFormatException` on any deviation.
+     *
+     * @EntryPoint
      */
     public static #Guid parse(#String s) {
-        if (s == null || s.byteLength != 36) {
+        if (s == null || s.byteLength() != 36) {
             throw heap GuidFormatException(
                 "Guid.parse: expected a 36-character 8-4-4-4-12 hex GUID");
         }

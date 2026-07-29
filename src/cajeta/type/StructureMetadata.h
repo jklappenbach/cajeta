@@ -82,6 +82,14 @@ namespace cajeta {
         llvm::Type* llvmInt64Type;
         llvm::Type* llvmPointerType;
         llvm::StructType* llvmRttiType;
+        // Methods whose vtable slot had no llvm::Function when the constant was
+        // built. createVirtualTableConstant records them here and emits `ptr null`
+        // so the constant COMPLETES; populate throws once the global is whole.
+        // It cannot throw mid-build: the vtable global is forward-declared (the
+        // VTable/Rtti/ClassObject references are cyclic), so unwinding out of the
+        // constant leaves it initializer-less and the next getInitializer()
+        // asserts — trading a diagnosable bug for an opaque SIGABRT.
+        vector<std::string> vtableNullSlots;
 
     public:
         /**

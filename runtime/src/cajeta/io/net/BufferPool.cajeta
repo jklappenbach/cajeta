@@ -142,7 +142,7 @@ public class BufferPool {
         if (this.idleCount < this.maxIdle) {
             if (buf.capacity() == this.slabSize) {
                 buf.clear();
-                this.freeList[this.idleCount] = buf;
+                this.freeList[this.idleCount] #= buf;
                 this.idleCount = this.idleCount + 1;
                 return;
             }

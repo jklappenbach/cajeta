@@ -19,7 +19,7 @@
 // Targets covered:
 //   1. Numerics (NumPy/SciPy) — broadcast-shaped element-wise + atomic reduction.
 //   2. PyTorch — matmul + atomic grad-scatter (scatter-add with collisions).
-//   3. Toffee/SPELA — fused forward + local-loss + weight update in one pass.
+//   3. Caramelo/SPELA — fused forward + local-loss + weight update in one pass.
 //
 
 #include "gtest/gtest.h"
@@ -68,7 +68,7 @@ TEST(XpuComputeProbeTests, torchMatmulAtomicScatterOnCpu) {
         << " (100+idx: matmul mismatch; 200+bin: scatter-add mismatch)";
 }
 
-// Target 3: Toffee/SPELA — fuse a layer's forward + local loss + weight update
+// Target 3: Caramelo/SPELA — fuse a layer's forward + local loss + weight update
 // into ONE device pass (one thread per output neuron owns its W row).
 TEST(XpuComputeProbeTests, spelaFusedLayerOnCpu) {
     int r = runProbe(cajeta_test_probes::kSpelaFusedLayer(), "test.SpelaProbe");

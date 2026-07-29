@@ -2,7 +2,7 @@
 // XpuAccelContractTests — cajeta-accel plan unit 1: the acceleration-structure
 // contract + header tag + Reference adapter (cajeta.xpu.Bvh + cajeta.xpu.Strategy).
 //
-// Spec docs/specs/cajeta-accel-spec.md §2 (contract) + §3.4-3.5 (the Reference
+// Spec specs/archive/cajeta-accel-spec.md §2 (contract) + §3.4-3.5 (the Reference
 // = Exact@2 oracle). The Bvh facade wraps a frozen BVH block tagged with its
 // encoding STRATEGY and branching WIDTH; with no override, build() delegates to
 // the existing Lbvh (the binary full-float block) and tags it Exact/2 — the

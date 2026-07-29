@@ -40,9 +40,9 @@ public class FileEvent {
      * ```
      */
     public FileEvent(Path path, int32 kind, int64 timestampNanos, Path renameTarget) {
-        this.path = path;
+        this.path #= path;
         this.kind = kind;
         this.timestampNanos = timestampNanos;
-        this.renameTarget = renameTarget;
+        this.renameTarget #= renameTarget;
     }
 }

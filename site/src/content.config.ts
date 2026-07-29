@@ -1,71 +1,32 @@
 import { defineCollection } from 'astro:content';
-import { z } from 'astro/zod';
 import { glob } from 'astro/loaders';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+// @ts-ignore -- plain mjs helpers shared with the manifest generator
+import { slugForPath } from '../scripts/lib/extract.mjs';
+// @ts-ignore
+import { docsRoot } from '../scripts/lib/docs-root.mjs';
 
-const metadataDefinition = () =>
-  z
-    .object({
-      title: z.string().optional(),
-      ignoreTitleTemplate: z.boolean().optional(),
-
-      canonical: z.url().optional(),
-
-      robots: z
-        .object({
-          index: z.boolean().optional(),
-          follow: z.boolean().optional(),
-        })
-        .optional(),
-
-      description: z.string().optional(),
-
-      openGraph: z
-        .object({
-          url: z.string().optional(),
-          siteName: z.string().optional(),
-          images: z
-            .array(
-              z.object({
-                url: z.string(),
-                width: z.number().optional(),
-                height: z.number().optional(),
-              })
-            )
-            .optional(),
-          locale: z.string().optional(),
-          type: z.string().optional(),
-        })
-        .optional(),
-
-      twitter: z
-        .object({
-          handle: z.string().optional(),
-          site: z.string().optional(),
-          cardType: z.string().optional(),
-        })
-        .optional(),
-    })
-    .optional();
-
-const postCollection = defineCollection({
-  loader: glob({ pattern: ['*.md', '*.mdx'], base: 'src/data/post' }),
-  schema: z.object({
-    publishDate: z.date().optional(),
-    updateDate: z.date().optional(),
-    draft: z.boolean().optional(),
-
-    title: z.string(),
-    excerpt: z.string().optional(),
-    image: z.string().optional(),
-
-    category: z.string().optional(),
-    tags: z.array(z.string()).optional(),
-    author: z.string().optional(),
-
-    metadata: metadataDefinition(),
+// The docs tree is read *in place* (see scripts/lib/docs-root.mjs for how
+// the root is chosen). Ids match the manifest slugs exactly because both
+// derive from the same slugForPath().
+const docs = defineCollection({
+  loader: glob({
+    pattern: '**/*.md',
+    base: docsRoot(),
+    generateId: ({ entry }) => slugForPath(entry),
   }),
 });
 
-export const collections = {
-  post: postCollection,
-};
+// The benchmarks live beside the docs tree in bench/; their ids get the
+// 'benchmarks/' pseudo-section prefix to match the manifest.
+const benchRoot = join(docsRoot(), '..', 'bench');
+const bench = defineCollection({
+  loader: glob({
+    pattern: existsSync(benchRoot) ? '**/*.md' : '!**',
+    base: existsSync(benchRoot) ? benchRoot : docsRoot(),
+    generateId: ({ entry }) => 'benchmarks/' + slugForPath(entry),
+  }),
+});
+
+export const collections = { docs, bench };

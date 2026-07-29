@@ -21,7 +21,7 @@ import cajeta.lang.Comparable;
  * stack ZonedDateTime zdt = ZonedDateTime.ofLocal(ldt, off);
  * stack int32 hour = zdt.getHour();          // 9 (wall-clock, at -05:00)
  * zdt = zdt.plus(Duration.ofHours(3));        // same offset, advanced 3h
- * #String text = zdt.iso();                   // "2026-06-05T12:30-05:00"
+ * String text = zdt.iso();                   // "2026-06-05T12:30-05:00"
  * ```
  */
 public class ZonedDateTime implements Comparable<ZonedDateTime> {
@@ -50,6 +50,8 @@ public class ZonedDateTime implements Comparable<ZonedDateTime> {
      * stack ZonedDateTime zdt =
      *     ZonedDateTime.ofInstant(Instant.ofEpochSecond(1780000000), ZoneOffset.utc());
      * ```
+     *
+     * @EntryPoint
      */
     public static ZonedDateTime ofInstant(Instant instant, ZoneOffset offset) {
         return stack ZonedDateTime(instant.getEpochSecond(), instant.getNano(),
@@ -63,6 +65,8 @@ public class ZonedDateTime implements Comparable<ZonedDateTime> {
      * stack ZonedDateTime zdt = ZonedDateTime.ofLocal(
      *     LocalDateTime.of(2026, 6, 5, 9, 30), ZoneOffset.ofHoursMinutes(5, 30));
      * ```
+     *
+     * @EntryPoint
      */
     public static ZonedDateTime ofLocal(LocalDateTime ldt, ZoneOffset offset) {
         return stack ZonedDateTime(ldt.toEpochSecond(offset), ldt.getNano(),
@@ -222,7 +226,7 @@ public class ZonedDateTime implements Comparable<ZonedDateTime> {
      * ```cajeta
      * stack ZonedDateTime zdt =
      *     ZonedDateTime.ofLocal(LocalDateTime.of(2026, 6, 5, 12, 30), ZoneOffset.utc());
-     * #String text = zdt.iso();   // "2026-06-05T12:30Z"
+     * String text = zdt.iso();   // "2026-06-05T12:30Z"
      * ```
      */
     public #String iso() {

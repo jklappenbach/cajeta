@@ -189,7 +189,7 @@ TEST(TlsLoopbackTest, crossCarrierFiberHolderDropRegression) {
         "import cajeta.concurrent.Tasks;\n"
         "public class Pipe {\n"
         "    TcpStream stream;\n"
-        "    private Pipe(#TcpStream s) { this.stream = #s; }\n"
+        "    private Pipe(#TcpStream s) { this.stream #= s; }\n"
         "    public static #Pipe wrap(#TcpStream s) { return heap Pipe(#s); }\n"
         "}\n"
         "public final class M {\n"

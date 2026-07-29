@@ -1,0 +1,51 @@
+---
+import '@fontsource-variable/fraunces';
+import '@fontsource-variable/source-serif-4';
+import '@fontsource-variable/inter';
+import '@fontsource-variable/jetbrains-mono';
+import '../styles/global.css';
+import '../styles/prose.css';
+import Header from '../components/Header.astro';
+import Footer from '../components/Footer.astro';
+
+interface Props {
+  title: string;
+  description?: string;
+  activeSection?: string;
+}
+
+const { title, description, activeSection } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    {description && <meta name="description" content={description} />}
+    <meta name="generator" content={Astro.generator} />
+    <link
+      rel="icon"
+      href={'data:image/svg+xml,' +
+        encodeURIComponent(
+          '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">&#127851;</text></svg>'
+        )}
+    />
+    <script is:inline>
+      // theme before first paint — no flash
+      (() => {
+        const saved = localStorage.getItem('cajeta-theme');
+        const dark = saved ? saved === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+        document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+      })();
+    </script>
+  </head>
+  <body>
+    <Header activeSection={activeSection} />
+    <main>
+      <slot />
+    </main>
+    <Footer />
+  </body>
+</html>

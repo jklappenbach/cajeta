@@ -46,7 +46,7 @@ TEST(OwnedArrayReturnProbe, multiParamOwnedClassArrayReturn) {
         "    }\n"
         "    public static int32 run() {\n"
         "        String[] x = T.make(\"hi\", \"yo\");\n"
-        "        return x[0].byteLength;\n"
+        "        return x[0].byteLength();\n"
         "    }\n"
         "}\n";
     auto jit = CajetaJit::compile(src, "test.T");

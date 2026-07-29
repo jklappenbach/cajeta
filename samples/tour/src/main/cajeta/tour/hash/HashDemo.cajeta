@@ -3,6 +3,8 @@ package tour.hash;
 import tour.DemoClass;
 import cajeta.hash.XXHash3;
 import cajeta.hash.Sha256;
+import cajeta.hash.Sha1;
+import cajeta.hash.SipHash;
 import cajeta.hash.Blake3;
 import cajeta.hash.MD5;
 import cajeta.lang.String;
@@ -14,19 +16,26 @@ import cajeta.lang.String;
 //   * 128-bit fingerprint, the MD5 drop-in replacement    -> XXHash3.hash128
 //   * cryptographic fingerprint / content-addressing      -> SHA-256 or BLAKE3
 //   * BLAKE3 also yields an extendable output (XOF) of any length
+//   * attacker-controlled keys into an in-process table   -> SipHash (keyed)
+//   * SHA-1 exists for ONE caller — the WebSocket handshake constant
 //   * MD5 is kept ONLY for legacy interop (S3 Content-MD5, existing ETags) —
 //     never reach for it in new code.
 //
 // All of these are @Native bridges to vetted C (fair: every language's hashes
 // are native/asm). XXHash3's bulk path and BLAKE3's hash-16 path are AVX-512.
+//
+// Every digest below is pinned by a self-check: the input is fixed and the
+// seeds/keys are fixed, so the outputs are deterministic across runs and
+// machines. The one thing NOT pinnable is the bare XXHash3.hash()/
+// hashString() pair — those are per-process-seeded on purpose.
 public class HashDemo extends DemoClass {
     public void execute() {
         System.stdout.println("");
         System.stdout.println("-- cajeta.hash: choosing the right hash --");
 
         String msg = "the quick brown fox";
-        int8[] bytes = msg.bytes;
-        int64 len = (int64) msg.byteLength;
+        int8[] bytes = msg.toBytes();
+        int64 len = (int64) msg.byteLength();
 
         // 1) Non-crypto fingerprint: XXHash3 — multi-GB/s, the algorithm behind
         //    the compiler-synthesized Object.hash()/String.hash(). hashSeeded()
@@ -35,27 +44,38 @@ public class HashDemo extends DemoClass {
         //    maps + DoS resistance, NOT for persisted fingerprints).
         int64 xx = XXHash3.hashSeeded(bytes, len, 0L);
         System.stdout.println("  XXHash3  (64-bit, non-crypto)   = " + xx);
+        this.check(xx == 8136938508107280505L, "XXHash3.hashSeeded(msg, 0) pinned");
 
         // 2) 128-bit fingerprint — the direct replacement for MD5 in new code
         //    (cache keys, ETags, content fingerprints): far lower collision odds
         //    and ~170x faster. Canonical lowercase hex, here under a fixed seed.
         String xx128 = XXHash3.hash128HexSeeded(bytes, len, 0L);
         System.stdout.println("  XXHash3.hash128 (MD5 replacement)= " + xx128);
+        this.check(xx128.equals("2830e9c6299d0ff9ab2ec4cf7e8d85d2"),
+            "XXHash3.hash128HexSeeded(msg, 0) pinned");
 
         // 3) Cryptographic fingerprint / content-addressing. SHA-256 is the
         //    ubiquitous interop choice; BLAKE3 is the modern, much faster one.
+        //    Both hex digests match the reference implementations
+        //    (sha256sum / b3sum agree on these exact strings).
         String sha = Sha256.hashStringHex(msg);
         System.stdout.println("  SHA-256  (crypto, interop)      = " + sha);
+        this.check(sha.equals(
+            "9ecb36561341d18eb65484e833efea61edc74b84cf5e6ae1b81c63533e25fc8f"),
+            "SHA-256 digest matches the reference value");
 
         String b3 = Blake3.hashStringHex(msg);
         System.stdout.println("  BLAKE3   (fast crypto)          = " + b3);
+        this.check(b3.equals(
+            "6589539add86d80ad66e9a12104dc414cdeaf3f2e20486ca63cba42324af4856"),
+            "BLAKE3 digest matches the reference value");
 
         // 4) BLAKE3 extendable output (XOF): ask for ANY number of bytes — the
         //    first 32 always equal the standard digest. Handy for deriving
         //    multiple keys / a wide stream from one hash.
         int8[] wide = heap int8[64];
         Blake3.hashXof(bytes, len, wide);
-        #int8[] digest = Blake3.hash(bytes, len);
+        int8[] digest = Blake3.hash(bytes, len);
         boolean prefixMatches = true;
         int32 i = 0;
         while (i < 32) {
@@ -63,11 +83,57 @@ public class HashDemo extends DemoClass {
             i = i + 1;
         }
         System.stdout.println("  BLAKE3 XOF(64) first 32 == digest = " + prefixMatches);
+        this.check(prefixMatches, "BLAKE3 XOF(64) first 32 bytes == 32-byte digest");
 
-        // 5) MD5 — LEGACY INTEROP ONLY. Computed here for an existing protocol
+        // 5) SipHash-2-4 — the KEYED hash for attacker-controlled input feeding
+        //    an in-process table or cache. The 128-bit key (two int64 halves)
+        //    is what an attacker doesn't have, so colliding inputs can't be
+        //    precomputed against your HashMap. For internal keys prefer
+        //    XXHash3 (~10x faster per byte). Fixed key here -> pinnable.
+        int64 sip = SipHash.hashKeyed(bytes, len, 1234567890123L, 9876543210987L);
+        System.stdout.println("  SipHash  (keyed, DoS-resistant) = " + sip);
+        this.check(sip == 2588451263159520923L, "SipHash.hashKeyed(msg, fixed key) pinned");
+        this.check(sip == SipHash.hashStringKeyed(msg, 1234567890123L, 9876543210987L),
+            "SipHash byte and String one-shots agree");
+
+        // SipHash also implements the streaming Hasher contract: absorb the
+        // same bytes through update(), and finish() must land on the same
+        // 64-bit digest as the one-shot.
+        SipHash sipStream = heap SipHash(1234567890123L, 9876543210987L);
+        sipStream.update(bytes, len);
+        int64 sipStreamed = sipStream.finish();
+        this.check(sipStreamed == sip, "SipHash streaming finish() == one-shot");
+
+        // 6) SHA-1 — NOT for security (collisions are practical since 2017).
+        //    It survives in the stdlib for exactly one caller: RFC 6455 fixes
+        //    Sec-WebSocket-Accept as base64(SHA-1(key + GUID)), where SHA-1 is
+        //    a protocol constant, not a security boundary. Shown here with
+        //    both the one-shot and the streaming surface.
+        String sha1 = Sha1.hashStringHex(msg);
+        System.stdout.println("  SHA-1    (WebSocket handshake)  = " + sha1);
+        this.check(sha1.equals("ced71fa7235231bed383facfdc41c4ddcc22ecf1"),
+            "SHA-1 digest matches the reference value (sha1sum agrees)");
+
+        // Streaming SHA-1: update() then digest() yields the full 20-byte
+        // digest — byte-for-byte the same as the one-shot hash().
+        Sha1 sha1Stream = heap Sha1();
+        sha1Stream.update(bytes, len);
+        int8[] streamed = sha1Stream.digest();
+        int8[] oneShot = Sha1.hash(bytes, len);
+        boolean sha1Agrees = true;
+        int32 j = 0;
+        while (j < 20) {
+            if (streamed[j] != oneShot[j]) { sha1Agrees = false; }
+            j = j + 1;
+        }
+        this.check(sha1Agrees, "SHA-1 streaming digest() == one-shot hash()");
+
+        // 7) MD5 — LEGACY INTEROP ONLY. Computed here for an existing protocol
         //    that fixes MD5 (e.g. an S3 Content-MD5 header); do not pick it for
         //    new work — use XXHash3.hash128 (non-crypto) or SHA-256/BLAKE3.
         String md5 = MD5.hashHex(bytes, len);
         System.stdout.println("  MD5      (legacy interop only)  = " + md5);
+        this.check(md5.equals("30f3c93e46436deb58ba70816a8ec124"),
+            "MD5 digest matches the reference value (md5sum agrees)");
     }
 }

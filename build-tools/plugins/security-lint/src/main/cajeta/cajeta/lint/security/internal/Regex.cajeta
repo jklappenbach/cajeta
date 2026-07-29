@@ -78,7 +78,7 @@ public class Regex {
      * Default impl loops `find` + advances past each match.
      */
     public ArrayList<Match> findAll(String input) {
-        ArrayList<Match> out = #heap ArrayList<Match>();
+        ArrayList<Match> out #= heap ArrayList<Match>();
         int32 cursor = 0;
         while (cursor < input.count()) {
             String tail = input.substring(cursor);

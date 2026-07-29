@@ -29,9 +29,16 @@
 #   PARALLEL=1   force parallel run even with filters
 #   PARALLEL=N   use N workers (same as shard=N; shard=N takes precedence)
 #   VERBOSE=1    in parallel mode, dump each shard's full gtest output
-#   TEST_TIMEOUT=N  per-test wall-clock timeout in seconds (default 120). A test
+#   TEST_TIMEOUT=N  per-test wall-clock FLOOR in seconds (default 120). A test
 #                that runs longer is killed and reported as a timeout; the rest
-#                of its worker's tests continue.
+#                of its worker's tests continue. This is a HANG bound, not a
+#                speed limit: a test with measured history (the durations TSV)
+#                gets max(TEST_TIMEOUT, measured * BATCH_SLACK), so a slow-but-
+#                healthy test is not reported as a timeout. BATCH_CAP bounds it.
+#   BATCH_SLACK=N  multiplier on a test's/chunk's MEASURED duration when deriving
+#                its timeout (default 3). Covers sweep contention vs a quiet
+#                measurement. WEIGHTED=0 disables the duration-aware path and
+#                restores the flat count-based budgets.
 #   KEEP_LOGS=dir  (parallel mode only) persist each shard's raw output —
 #                the full per-test gtest text including assertion detail and
 #                the synthetic >>> CRASH / >>> TIMEOUT markers — into `dir`
@@ -237,6 +244,31 @@ fi
 # per-shard cap — a worker runs until its whole bucket is exhausted.
 TEST_TIMEOUT="${TEST_TIMEOUT:-120}"
 
+# Duration-weighted scheduling (perf). Persist per-test wall-clock (ms) across
+# runs and pack shards by MEASURED time instead of test count, so a cluster of
+# slow tests (e.g. device/GPU suites) doesn't become the long pole that bounds
+# the whole sweep. The file is a plain `Suite.test<TAB>ms` TSV, gitignored,
+# updated after every run (tests not run this time keep their prior value).
+# Opt out with WEIGHTED=0.
+#
+# COLD START: a fresh clone and every CI runner have no local history, which
+# silently degraded packing back to count-based (every test = DEFAULT_TEST_MS)
+# — the very long-pole imbalance this scheduler exists to remove. So reads fall
+# back to a CHECKED-IN seed of measured per-test times. Writes always go to the
+# local file, which starts as `seed + this run's timings` and drifts toward the
+# host's own measurements. Refresh the seed with scripts/update-test-durations.sh.
+DURATIONS_FILE="${CAJETA_TEST_DURATIONS:-$SCRIPT_DIR/.test-durations.tsv}"
+DURATIONS_SEED="${CAJETA_TEST_DURATIONS_SEED:-$SCRIPT_DIR/test/test-durations.seed.tsv}"
+if [ -s "$DURATIONS_FILE" ]; then
+    DURATIONS_READ="$DURATIONS_FILE"
+elif [ -s "$DURATIONS_SEED" ]; then
+    DURATIONS_READ="$DURATIONS_SEED"
+else
+    DURATIONS_READ="/dev/null"
+fi
+DEFAULT_TEST_MS="${DEFAULT_TEST_MS:-1500}"
+WEIGHTED="${WEIGHTED:-1}"
+
 # Portable per-test timeout wrapper. GNU coreutils `timeout` is standard on
 # Linux and MSYS2 but ABSENT on macOS (where coreutils, if brew-installed,
 # ships it as `gtimeout`). Without this detection every test invocation on
@@ -320,6 +352,13 @@ BATCH="${BATCH:-1}"
 # (n * TEST_TIMEOUT) but never exceeds this, so one stuck test can't strand a
 # worker for the full n*TEST_TIMEOUT.
 BATCH_CAP="${BATCH_CAP:-1800}"
+# Multiplier applied to a test's/chunk's MEASURED duration when deriving its
+# timeout (see run_one_test / run_suite_batch). Covers the gap between a quiet
+# measurement and sweep load: the sweep oversubscribes (32 shards' worth of
+# processes on nproc threads), so a test measured at 150s idle legitimately takes
+# longer under contention. 3x is empirical headroom, not a hang allowance —
+# BATCH_CAP still bounds anything genuinely stuck.
+BATCH_SLACK="${BATCH_SLACK:-3}"
 # Max tests per batched chunk. A suite with more than this many selected tests is
 # split into ceil(n/BATCH_MAX) contiguous chunks that bin-pack across shards and
 # run concurrently — so one oversized suite is no longer a single-shard long pole
@@ -410,28 +449,56 @@ fi
 if [ "$BATCH" = "1" ]; then unit_count=$num_chunks; else unit_count=$num_tests; fi
 if [ "$shards" -gt "$unit_count" ]; then shards=$unit_count; fi
 
-# Distribute work into per-shard buckets. shard_total tracks how many TESTS each
-# shard owns (the live display denominator), regardless of unit granularity.
+# Per-chunk WEIGHT = sum of member tests' last-known durations (ms), the
+# quantity the LPT packer balances. With no history a test contributes
+# DEFAULT_TEST_MS, so a first run (or WEIGHTED=0) degrades to count-based
+# packing (every test equal). One awk pass loads the durations TSV and sums per
+# chunk (bash 3.2 has no associative arrays, so the map lives in awk).
+declare -a chunk_weight
+for ((i=0; i<num_chunks; i++)); do chunk_weight[$i]=0; done
+if [ "$WEIGHTED" != "0" ]; then
+    _wtmp="$(mktemp)"
+    for ((i=0; i<num_chunks; i++)); do
+        while IFS= read -r _t; do
+            [ -n "$_t" ] && printf '%s\t%s\n' "$i" "$_t"
+        done <<< "${chunk_list[$i]}"
+    done | awk -v durfile="$DURATIONS_READ" -v def="$DEFAULT_TEST_MS" '
+        BEGIN { while ((getline l < durfile) > 0) { if (split(l,a,"\t") >= 2) d[a[1]] = a[2] } }
+        { w[$1] += (($2) in d) ? d[$2] : def }
+        END { for (c in w) printf "%s\t%s\n", c, w[c] }
+    ' > "$_wtmp"
+    while IFS=$'\t' read -r _ci _cw; do
+        [ -n "$_ci" ] && chunk_weight[$_ci]=$_cw
+    done < "$_wtmp"
+    rm -f "$_wtmp"
+else
+    for ((i=0; i<num_chunks; i++)); do chunk_weight[$i]=$(( chunk_count[$i] * DEFAULT_TEST_MS )); done
+fi
+
+# Distribute work into per-shard buckets. shard_weight is the packing load
+# (summed ms) the LPT balances; shard_total tracks TEST COUNT (the live-display
+# denominator) alongside it.
 declare -a shard_list
 declare -a shard_total
-for ((s=0; s<shards; s++)); do shard_list[$s]=""; shard_total[$s]=0; done
-# Longest-processing-time first over CHUNKS: assign each chunk (largest test-count
-# first) to the currently least-loaded shard, so workers get balanced test totals
-# even though chunks vary in size. Buckets carry the chunk INDEX; the worker looks
-# up its exact test list via chunk_list[] (no associative array needed). Both modes
-# pack chunks: in BATCH=1 a chunk is a suite-slice; in BATCH=0 each chunk is one
-# test (count 1), so this LPT reduces to the old round-robin for equal weights.
+declare -a shard_weight
+for ((s=0; s<shards; s++)); do shard_list[$s]=""; shard_total[$s]=0; shard_weight[$s]=0; done
+# Longest-processing-time first over CHUNKS: assign each chunk (heaviest by
+# measured time first) to the shard with the least accumulated time, so workers
+# get balanced WALL-CLOCK totals — a slow device suite no longer piles onto an
+# already-long shard just because another shard has more (fast) tests. Buckets
+# carry the chunk INDEX; the worker looks up its test list via chunk_list[].
 sorted_chunks=$(for ((i=0; i<num_chunks; i++)); do
-    printf '%s\t%s\n' "${chunk_count[$i]}" "$i"
+    printf '%s\t%s\n' "${chunk_weight[$i]}" "$i"
 done | sort -rn -k1,1 -s)
-while IFS=$'\t' read -r cnt idx; do
+while IFS=$'\t' read -r wt idx; do
     [ -z "$idx" ] && continue
-    min_s=0; min_v=${shard_total[0]}
+    min_s=0; min_v=${shard_weight[0]}
     for ((s=1; s<shards; s++)); do
-        if [ "${shard_total[$s]}" -lt "$min_v" ]; then min_v=${shard_total[$s]}; min_s=$s; fi
+        if [ "${shard_weight[$s]}" -lt "$min_v" ]; then min_v=${shard_weight[$s]}; min_s=$s; fi
     done
     shard_list[$min_s]+="${idx}"$'\n'
-    shard_total[$min_s]=$(( shard_total[$min_s] + cnt ))
+    shard_weight[$min_s]=$(( shard_weight[$min_s] + wt ))
+    shard_total[$min_s]=$(( shard_total[$min_s] + chunk_count[$idx] ))
 done <<< "$sorted_chunks"
 
 # PLAN_ONLY: emit the chunk->shard assignment and exit before spawning anything.
@@ -444,11 +511,12 @@ if [ -n "${PLAN_ONLY:-}" ]; then
     printf 'PLAN shards=%s batch=%s batch_max=%s chunks=%s tests=%s\n' \
         "$shards" "$BATCH" "$BATCH_MAX" "$num_chunks" "$num_tests"
     for ((s=0; s<shards; s++)); do
+        printf 'SHARD %s weight=%s tests=%s\n' "$s" "${shard_weight[$s]}" "${shard_total[$s]}"
         while IFS= read -r ci; do
             [ -z "$ci" ] && continue
             _csv=$(printf '%s' "${chunk_list[$ci]}" | grep -v '^$' | paste -sd, -)
-            printf 'CHUNK %s shard=%s count=%s name=%s tests=%s\n' \
-                "$ci" "$s" "${chunk_count[$ci]}" "${chunk_name[$ci]}" "$_csv"
+            printf 'CHUNK %s shard=%s count=%s weight=%s name=%s tests=%s\n' \
+                "$ci" "$s" "${chunk_count[$ci]}" "${chunk_weight[$ci]}" "${chunk_name[$ci]}" "$_csv"
         done <<< "${shard_list[$s]}"
     done
     exit 0
@@ -468,7 +536,13 @@ live=0
 if [ -t 1 ] && [ "${TUI:-1}" != "0" ] && [ "${VERBOSE:-}" != "1" ]; then
     live=1
 fi
-if [ "$live" = "1" ]; then shard_brief="--gtest_brief=0"; else shard_brief="--gtest_brief=1"; fi
+# Always emit full per-test output (`--gtest_brief=0`) to the shard tmp files:
+# the live dashboard needs the `[ RUN ]`/`[ OK ]` lines, and the duration-metrics
+# recorder needs the per-test `[ OK ] Suite.test (N ms)` timings (brief=1
+# suppresses them). It only enlarges the temp shard logs (deleted at exit); the
+# `[ PASSED ]/[ FAILED ]` lines the aggregator counts print either way, and the
+# console still shows only the compact summary in non-live mode.
+shard_brief="--gtest_brief=0"
 
 # Run ONE test in its own process, appending its output + a synthetic
 # >>> CRASH / >>> TIMEOUT marker (counted by the aggregator) to $1. This is the
@@ -484,11 +558,28 @@ if [ "$live" = "1" ]; then shard_brief="--gtest_brief=0"; else shard_brief="--gt
 # gtest [ PASSED ]/[ FAILED ] lines and the >>> markers, so counting is
 # unaffected; full gtest output still follows for forensics.
 run_one_test() {
-    local out_file="$1" t="$2" tf trc
+    local out_file="$1" t="$2" tf trc tmo
     tf="${out_file}.t"
+    # Duration-aware per-test budget, same rationale as run_suite_batch's floor:
+    # TEST_TIMEOUT is a HANG bound, not a speed limit, and several real tests
+    # measure past it (npyNumpyInteropDtypes ~240s, stressManyConcurrentCompiles
+    # ~150s). Give a test with measured history max(TEST_TIMEOUT, measured*SLACK)
+    # so a slow-but-healthy test isn't reported as a timeout. One awk per test is
+    # noise next to a multi-second test, and keeps this bash-3.2 safe (no assoc
+    # arrays — see the durations TSV note above).
+    tmo="$TEST_TIMEOUT"
+    if [ "${WEIGHTED:-1}" != "0" ] && [ -s "$DURATIONS_READ" ]; then
+        local _ms
+        _ms=$(awk -F'\t' -v k="$t" '$1==k { print $2; exit }' "$DURATIONS_READ")
+        if [ -n "$_ms" ]; then
+            local _scaled=$(( _ms / 1000 * BATCH_SLACK ))
+            [ "$_scaled" -gt "$tmo" ] && tmo=$_scaled
+        fi
+    fi
+    [ "$tmo" -gt "$BATCH_CAP" ] && tmo=$BATCH_CAP
     printf '>> %s ... ' "$t" >> "$out_file"
     if [ -n "$TIMEOUT_CMD" ]; then
-        "$TIMEOUT_CMD" --kill-after=10 "$TEST_TIMEOUT" \
+        "$TIMEOUT_CMD" --kill-after=10 "$tmo" \
             env CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" \
             "--gtest_filter=$t" "$shard_brief" > "$tf" 2>&1
     else
@@ -498,7 +589,7 @@ run_one_test() {
     trc=$?
     case "$trc" in
         0)       printf 'PASS\n'              >> "$out_file" ;;
-        124|137) printf 'TIMEOUT (%ss)\n' "$TEST_TIMEOUT" >> "$out_file" ;;
+        124|137) printf 'TIMEOUT (%ss)\n' "$tmo" >> "$out_file" ;;
         *) if grep -qE '^\[  FAILED  \]' "$tf"; then
                printf 'FAIL\n'               >> "$out_file"
            else
@@ -508,7 +599,7 @@ run_one_test() {
     cat "$tf" >> "$out_file"
     if [ "$trc" -ne 0 ]; then
         case "$trc" in
-            124|137) printf '>>> TIMEOUT %s (killed after %ss)\n' "$t" "$TEST_TIMEOUT" >> "$out_file" ;;
+            124|137) printf '>>> TIMEOUT %s (killed after %ss)\n' "$t" "$tmo" >> "$out_file" ;;
             *) if ! grep -qE '^\[  FAILED  \]' "$tf"; then
                    printf '>>> CRASH %s (exit %s)\n' "$t" "$trc" >> "$out_file"
                fi ;;
@@ -537,6 +628,18 @@ run_suite_batch() {
     n="${chunk_count[$idx]}"
     list="${chunk_list[$idx]}"
     deadline=$(( n * TEST_TIMEOUT ))
+    # Duration-aware floor. The count-based deadline assumes every test fits in
+    # TEST_TIMEOUT; a chunk holding a genuinely slow test (ConcurrentCompileTests
+    # measures ~150s) blows it, gets treated as HUNG, and drops to the per-test
+    # fallback — where the flat TEST_TIMEOUT kills the slow test outright and
+    # reports a timeout that is really just a too-tight budget. chunk_weight is
+    # the summed MEASURED ms the packer already computed, so spend it here too:
+    # take whichever of count-based / measured*SLACK is larger. BATCH_CAP still
+    # bounds a truly stuck chunk.
+    if [ "${WEIGHTED:-1}" != "0" ]; then
+        local wsec=$(( ${chunk_weight[$idx]:-0} / 1000 * BATCH_SLACK ))
+        [ "$wsec" -gt "$deadline" ] && deadline=$wsec
+    fi
     [ "$deadline" -gt "$BATCH_CAP" ] && deadline=$BATCH_CAP
     [ "$deadline" -lt "$TEST_TIMEOUT" ] && deadline=$TEST_TIMEOUT
     filter="${list//$'\n'/:}"; filter="${filter%:}"
@@ -755,6 +858,42 @@ for ((s=0; s<shards; s++)); do
     done < <(grep -E '^>>> CRASH ' "$out_file" 2>/dev/null || true)
 done
 
+# Record per-test durations for the next run's weighted packing. Pull the
+# `[ OK ] Suite.test (N ms)` / `[ FAILED ] Suite.test (N ms)` lines from every
+# shard (the `[^ ]+ (N ms)` shape excludes gtest's count-summary lines), then
+# MERGE onto the existing TSV: tests run this time get their fresh time, tests
+# NOT run (a filtered invocation) keep their prior value, so the history
+# accumulates across partial runs. Best-effort — a metrics hiccup never changes
+# the run's verdict.
+if [ "$WEIGHTED" != "0" ]; then
+    _newdur="$tmpdir/durations.new"
+    : > "$_newdur" 2>/dev/null || true
+    for ((s=0; s<shards; s++)); do
+        # `|| true` honors the best-effort contract below: GNU sed exits 4
+        # on an I/O error (tmpfs momentarily full), and under `set -e` that
+        # killed the whole driver AFTER the shards finished but BEFORE the
+        # summary printed — a full sweep's verdict lost to a metrics write
+        # (three times, 2026-07-16).
+        sed -nE 's/^\[ *OK *\] ([^ ]+) \(([0-9]+) ms\)$/\1\t\2/p; s/^\[  FAILED  \] ([^ ]+) \(([0-9]+) ms\)$/\1\t\2/p' \
+            "$tmpdir/shard_${s}.out" 2>/dev/null >> "$_newdur" || true
+    done
+    if [ -s "$_newdur" ]; then
+        _merged="$tmpdir/durations.merged"
+        # dedup new (last wins per test), then overlay onto whatever we READ from
+        # (local history, else the checked-in seed). Overlaying onto DURATIONS_FILE
+        # would be wrong on a cold start: a filtered run would replace the seed with
+        # just the handful of tests it ran, and the next run would pack those few by
+        # time and everything else by count.
+        if awk -F'\t' '
+                NR==FNR { n[$1] = $2; next }                 # new durations
+                { if ($1 in n) { print $1"\t"n[$1]; delete n[$1] } else print }
+                END { for (k in n) print k"\t"n[k] }
+            ' "$_newdur" "$DURATIONS_READ" > "$_merged" 2>/dev/null; then
+            mv "$_merged" "$DURATIONS_FILE" 2>/dev/null || true
+        fi
+    fi
+fi
+
 num_timeouts=${#timeout_lines[@]}
 num_crashes=${#crash_lines[@]}
 # Anything discovered that neither passed, failed, timed out, nor crashed was
@@ -819,6 +958,15 @@ if [ -n "${KEEP_LOGS:-}" ]; then
 fi
 
 if [ "$total_failed" -gt 0 ] || [ "$num_timeouts" -gt 0 ] || [ "$num_crashes" -gt 0 ]; then
+    exit 1
+fi
+
+# Docstring example lint (docs-refactor 2.2.3): doc-comment examples in
+# the stdlib/samples must be valid syntax — guards the `#Type local =`
+# regression class. Fast (one grep) and tree-clean, so it gates the
+# full suite. The broader docs checks (scripts/check-docs.sh) join once
+# the tree's known link/snippet violations are fixed.
+if ! "$SCRIPT_DIR/scripts/check-docstring-examples.sh"; then
     exit 1
 fi
 exit 0

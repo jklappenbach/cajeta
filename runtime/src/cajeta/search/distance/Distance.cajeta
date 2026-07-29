@@ -27,6 +27,8 @@ public class Distance {
     /**
      * Levenshtein edit distance between `a` and `b` (insert/delete/substitute,
      * each cost 1). Two rolling rows → O(len(b)) space.
+     *
+     * @EntryPoint
      */
     public static int32 levenshtein(String a, String b) {
         int32 n = (int32) a.count();
@@ -81,6 +83,8 @@ public class Distance {
      * Optimal-string-alignment (Damerau) distance: like `levenshtein` but an
      * adjacent transposition costs 1. Three rolling rows (needs row i-2 for
      * the transposition term) → O(len(b)) space.
+     *
+     * @EntryPoint
      */
     public static int32 damerau(String a, String b) {
         int32 n = (int32) a.count();

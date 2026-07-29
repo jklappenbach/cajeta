@@ -1,6 +1,6 @@
 //
 // Per-package skill index build / serialize / query / candidate generation.
-// See SkillIndex.h and docs/specs/skill-discovery-spec.md §2.3, §3.
+// See SkillIndex.h and specs/archive/skill-discovery-spec.md §2.3, §3.
 //
 #include "cajeta/buildtool/skill/SkillIndex.h"
 

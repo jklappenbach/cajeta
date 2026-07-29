@@ -1,0 +1,70 @@
+package tour.codec;
+
+import tour.DemoClass;
+import cajeta.codec.csv.Csv;
+import cajeta.lang.String;
+
+// CSV codec — Tier 1 (`Csv.parse<T>`), the typed bind.
+//
+// Like Json.parse<T>, Csv.parse<T> is a method-level template whose
+// body is SYNTHESIZED per-T at the call site: the compiler walks T's
+// declared fields, matches them to the header row by name (order-
+// independent), and emits a two-pass row bind over CsvReader — no
+// value tree, no runtime reflection.
+//
+//   Trade[] rows = Csv.parse<Trade[]>(bytes, len);   // whole file -> T[]
+//
+// Supported field types: int32 / int64 / float64 / boolean / String.
+// A header column with no matching field is silently skipped
+// (projection); a field with no matching column keeps its default
+// (fail-loud is opt-in via @CsvRequired). Field-level @CsvColumn and a
+// class-level @CsvNamingStrategy rename the mapping when the header
+// names don't match the field names.
+
+// Plain class — the bind target. Public fields, no CSV-specific
+// machinery required; the synthesizer walks the declared fields.
+public class CsvTrade {
+    public int32 id;
+    public String symbol;
+    public float64 price;
+    public boolean open;
+}
+
+public class CsvDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- cajeta.codec.csv: typed Csv.parse<T> --");
+
+        // The first row is the header; each header name binds a column
+        // to the CsvTrade field of the same name. The `venue` column
+        // has no matching field, so it is projected away, and the
+        // header order (price before symbol) differs from the field
+        // declaration order — binding is by name, not position.
+        String src = "id,price,symbol,open,venue\n"
+            + "7,101.5,ACME,true,NYSE\n"
+            + "8,99.25,GLOBEX,false,CME\n";
+
+        CsvTrade[] rows = Csv.parse<CsvTrade[]>(src.toBytes(), (int64) src.byteLength());
+        System.stdout.println("  parsed rows              = " + rows.count());
+        this.check(rows.count() == 2L, "two data rows bind to CsvTrade[2]");
+
+        // Row 0 — every supported field type in one record.
+        System.stdout.println("  rows[0].id / symbol      = "
+            + rows[0].id + " / " + rows[0].symbol);
+        System.stdout.println("  rows[0].price / open     = "
+            + rows[0].price + " / " + rows[0].open);
+        this.check(rows[0].id == 7, "int32 column: rows[0].id == 7");
+        this.check(rows[0].symbol.equals("ACME"), "String column: rows[0].symbol == ACME");
+        this.check(rows[0].price == 101.5, "float64 column: rows[0].price == 101.5");
+        this.check(rows[0].open, "boolean column: rows[0].open == true");
+
+        // Row 1 — and the ignored `venue` column never surfaced: the
+        // typed bind only records columns that map to declared fields.
+        System.stdout.println("  rows[1].id / symbol      = "
+            + rows[1].id + " / " + rows[1].symbol);
+        this.check(rows[1].id == 8 && !rows[1].open,
+            "rows[1] bound independently (id 8, open false)");
+        this.check(rows[1].symbol.equals("GLOBEX"),
+            "unmapped venue column projected away, symbol still binds");
+    }
+}

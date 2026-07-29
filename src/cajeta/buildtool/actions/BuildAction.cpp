@@ -21,9 +21,17 @@
 #include "cajeta/buildtool/Action.h"
 #include "cajeta/buildtool/DiagnosticFormat.h"
 #include "cajeta/buildtool/Flavor.h"
+#include "cajeta/buildtool/IrCache.h"
+#include "cajeta/error/Diagnostics.h"
+#include "cajeta/buildtool/Lockfile.h"   // sha256Hex
 #include "cajeta/buildtool/Manifest.h"
 #include "cajeta/buildtool/Reproducibility.h"
 #include "cajeta/buildtool/Resolver.h"
+#include "cajeta/buildtool/SourceDigest.h"
+
+#include <algorithm>
+#include <llvm/Support/JSON.h>
+#include <llvm/Support/raw_ostream.h>
 
 #include <llvm/Support/Error.h>
 
@@ -361,6 +369,178 @@ namespace cajeta::buildtool {
                                projectRootFromManifest(*ctx.manifest()));
             }
 
+            // Incremental compilation (incremental-compilation plan Phase 4;
+            // DEFAULT-ON per Phase 5 — `incremental: false` opts out).
+            // Authors a cache-manifest-v1 for the compiler: per-source
+            // transitive digest → IrCache slot; clean when both slots exist.
+            // The discriminator comes from the compiler itself
+            // (--print-cache-discriminator probe on the exact flag set built
+            // above) so flag resolution is never re-derived here.
+            // Layered in FRONT (Phase 0): the whole-artifact cache — same
+            // digests folded into one whole-build key; a hit re-publishes
+            // the cached artifact without any compile at all.
+            // `no-cache: true` bypasses both layers.
+            bool noCache = false;
+            if (auto v = params.getBoolean("no-cache")) noCache = *v;
+            bool incremental = !noCache;
+            bool incrementalExplicit = false;
+            if (!noCache) {
+                if (auto v = params.getBoolean("incremental")) {
+                    incremental = *v;
+                    incrementalExplicit = true;
+                }
+            }
+            std::string projectRoot = ctx.manifest()
+                ? projectRootFromManifest(*ctx.manifest()) : std::string(".");
+            IrCache irCache((fs::path(projectRoot) / ".cajeta" / "cache"
+                             / "ir").string());
+            int cleanCount = 0, sourceCount = 0;
+            std::string probeOut;
+            if (incremental) {
+                std::vector<std::string> probeArgv = argv;
+                probeArgv.push_back("--print-cache-discriminator");
+                SubprocessOptions probeOpt;
+                probeOpt.argv = probeArgv;
+                probeOpt.outData = &probeOut;
+                SubprocessResult probeRes = runSubprocess(probeOpt);
+                bool probeOk = probeRes.launched && probeRes.code() == 0;
+                if (probeOk) {
+                    while (!probeOut.empty() && (probeOut.back() == '\n'
+                                                 || probeOut.back() == '\r'))
+                        probeOut.pop_back();
+                    probeOk = !probeOut.empty();
+                }
+                if (!probeOk) {
+                    // Explicitly requested → fail loud. Default-on → a full
+                    // (non-incremental) build is always sound; degrade so
+                    // e.g. an older toolchain on PATH can't brick builds.
+                    if (incrementalExplicit) {
+                        return err("build: cache-discriminator probe failed"
+                                   " (--print-cache-discriminator)");
+                    }
+                    llvm::errs() << "warning: build: cache-discriminator"
+                                    " probe failed — building without the"
+                                    " IR cache\n";
+                    incremental = false;
+                }
+            }
+            fs::path artifactSlot;   // set when the whole-artifact layer is live
+            if (incremental) {
+                SourceDigestRegistry digests({sourceRoot});
+                std::vector<std::pair<std::string, std::string>> perSource;
+                std::error_code ec2;
+                for (auto& e : fs::recursive_directory_iterator(
+                                   sourceRoot, ec2)) {
+                    if (!e.is_regular_file()
+                        || e.path().extension() != ".cajeta") continue;
+                    auto digest = digests.digestOf(e.path().string());
+                    if (!digest) return digest.takeError();
+                    perSource.emplace_back(
+                        fs::relative(e.path(), sourceRoot).generic_string(),
+                        *digest);
+                }
+                sourceCount = static_cast<int>(perSource.size());
+                std::sort(perSource.begin(), perSource.end());
+
+                // Phase 0 whole-artifact layer — single-file artifacts only
+                // (exe/cja); exploded-ir has no one artifact to re-publish.
+                // Key = discriminator ⊕ entry ⊕ every (path, digest): the
+                // discriminator already folds flags/emit/target/profile/
+                // classpath, but NOT the entry method (positional).
+                if (!outputPath.empty()) {
+                    std::string wholeInput = probeOut;
+                    wholeInput.push_back('\0');
+                    wholeInput += *entry;
+                    wholeInput.push_back('\0');
+                    for (auto& [rel, digest] : perSource) {
+                        wholeInput += rel + "=" + digest + "\n";
+                    }
+                    std::string wholeDigest = sha256Hex(wholeInput);
+                    const std::string pre = "sha256:";
+                    if (wholeDigest.rfind(pre, 0) == 0)
+                        wholeDigest = wholeDigest.substr(pre.size());
+                    artifactSlot = fs::path(projectRoot) / ".cajeta"
+                                 / "cache" / "artifact" / wholeDigest
+                                 / outputPath.filename();
+                    if (fs::exists(artifactSlot)) {
+                        fs::create_directories(outputPath.parent_path(), ec2);
+                        fs::copy_file(
+                            artifactSlot, outputPath,
+                            fs::copy_options::overwrite_existing, ec2);
+                        if (!ec2) {
+                            fs::permissions(outputPath,
+                                fs::perms::owner_exec | fs::perms::group_exec
+                                    | fs::perms::others_exec,
+                                fs::perm_options::add, ec2);
+                            // Direct line (not just an action output): task
+                            // output echo depends on the task DECLARING
+                            // outputs, and the skip must be visible always.
+                            llvm::outs() << "[cache] hit — re-published "
+                                         << outputPath.string() << "\n";
+                            // A cached build spawns no compiler, so it emits no
+                            // phase records — the IDE would show an instant green
+                            // check under an empty tree. Say, structurally, that
+                            // the output came from cache.
+                            if (diagnosticFormat() == DiagFormat::Json) {
+                                emitJsonCacheHit(outputPath.string());
+                            }
+                            ActionResult hit;
+                            hit.outputs["format"] = formatLabel;
+                            hit.outputs["flavor"] = flavor;
+                            if (!profile.empty())
+                                hit.outputs["profile"] = profile;
+                            hit.outputs["cache"] = "hit";
+                            hit.outputs["path"] = outputPath.string();
+                            hit.outputs["sha256"] =
+                                sha256OfFile(outputPath.string());
+                            std::error_code szEc;
+                            hit.outputs["size"] = std::to_string(
+                                fs::file_size(outputPath, szEc));
+                            return hit;
+                        }
+                        // Unreadable slot → fall through to a real build.
+                    }
+                }
+
+                llvm::json::Array sources;
+                for (auto& [rel, digest] : perSource) {
+                    std::string bcSlot = fs::absolute(
+                        irCache.keyFor(probeOut, digest)).string();
+                    // Obligations + native object ride beside the .bc under
+                    // the same key (the .o slot is Phase 6-alt: clean modules
+                    // skip target lowering when it's populated).
+                    std::string stem = bcSlot.substr(0, bcSlot.size() - 3);
+                    std::string oblSlot = stem + ".obligations";
+                    bool clean = fs::exists(bcSlot) && fs::exists(oblSlot);
+                    if (clean) cleanCount++;
+                    sources.push_back(llvm::json::Object{
+                        {"path", rel},
+                        {"clean", clean},
+                        {"bc", bcSlot},
+                        {"obligations", oblSlot},
+                        {"obj", stem + ".o"}});
+                }
+                llvm::json::Object manifestJson{
+                    {"version", "cache-manifest-v1"},
+                    {"discriminator", probeOut},
+                    {"sources", std::move(sources)}};
+                fs::path manifestPath = fs::path(outputDir)
+                                      / "cache-manifest.json";
+                fs::create_directories(manifestPath.parent_path(), ec2);
+                {
+                    std::error_code fec;
+                    llvm::raw_fd_ostream os(manifestPath.string(), fec);
+                    if (fec) {
+                        return err("build: cannot write cache manifest '"
+                                   + manifestPath.string() + "': "
+                                   + fec.message());
+                    }
+                    os << llvm::json::Value(std::move(manifestJson));
+                }
+                argv.push_back("--cache-manifest="
+                               + fs::absolute(manifestPath).string());
+            }
+
             // Positional args: <entry-method> <source-root> <archive-root>
             argv.push_back(entry->empty() ? std::string("*") : *entry);
             argv.push_back(sourceRoot);
@@ -381,10 +561,44 @@ namespace cajeta::buildtool {
                            std::to_string(exitCode));
             }
 
+            // Phase 0: record (whole digest → artifact) so the next
+            // no-change build re-publishes without compiling.
+            if (!artifactSlot.empty() && !outputPath.empty()) {
+                std::error_code ec3;
+                if (fs::exists(outputPath, ec3)) {
+                    fs::create_directories(artifactSlot.parent_path(), ec3);
+                    fs::path tmp = artifactSlot;
+                    tmp += ".tmp";
+                    fs::copy_file(outputPath, tmp,
+                                  fs::copy_options::overwrite_existing, ec3);
+                    if (!ec3) fs::rename(tmp, artifactSlot, ec3);
+                }
+            }
+
+            // Post-build cache eviction per settings.build.cache. Runs only
+            // after a successful incremental build (the compiler just wrote
+            // fresh slots; oldest-first LRU trims to policy).
+            if (incremental && ctx.manifest()) {
+                auto sb = parseSettingsBuild(*ctx.manifest());
+                if (!sb) return sb.takeError();
+                if (sb->cacheMaxBytes > 0 || sb->cacheMaxAgeSeconds > 0) {
+                    IrCache::EvictionPolicy policy;
+                    policy.maxBytes = sb->cacheMaxBytes;
+                    policy.maxAge =
+                        std::chrono::seconds(sb->cacheMaxAgeSeconds);
+                    auto evicted = irCache.evict(policy);
+                    if (!evicted) return evicted.takeError();
+                }
+            }
+
             // Capture output.
             ActionResult r;
             r.outputs["format"] = formatLabel;
             r.outputs["flavor"] = flavor;
+            if (incremental) {
+                r.outputs["cache-clean"] = std::to_string(cleanCount) + "/"
+                                         + std::to_string(sourceCount);
+            }
             if (!profile.empty()) r.outputs["profile"] = profile;
             if (!outputPath.empty()) {
                 r.outputs["path"] = outputPath.string();

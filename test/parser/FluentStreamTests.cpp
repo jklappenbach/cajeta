@@ -15,7 +15,7 @@ TEST(FluentStreamTests, filterCount) {
         "package test;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] xs = {1, 2, 3, 4, 5, 6};\n"
+        "        int32[] xs = [1, 2, 3, 4, 5, 6];\n"
         "        return xs.stream().filter((x) -> x > 3).count();\n"
         "    }\n"
         "}\n";
@@ -29,7 +29,7 @@ TEST(FluentStreamTests, takeCount) {
         "package test;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] xs = {1, 2, 3, 4, 5, 6};\n"
+        "        int32[] xs = [1, 2, 3, 4, 5, 6];\n"
         "        return xs.stream().take(4).count();\n"
         "    }\n"
         "}\n";
@@ -43,7 +43,7 @@ TEST(FluentStreamTests, skipCount) {
         "package test;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] xs = {1, 2, 3, 4, 5, 6};\n"
+        "        int32[] xs = [1, 2, 3, 4, 5, 6];\n"
         "        return xs.stream().skip(2).count();\n"
         "    }\n"
         "}\n";
@@ -58,7 +58,7 @@ TEST(FluentStreamTests, skipTakeSlice) {
         "package test;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] xs = {1, 2, 3, 4, 5, 6, 7, 8};\n"
+        "        int32[] xs = [1, 2, 3, 4, 5, 6, 7, 8];\n"
         "        return xs.stream().skip(2).take(3).count();\n"
         "    }\n"
         "}\n";
@@ -73,7 +73,7 @@ TEST(FluentStreamTests, filterTakeCount) {
         "package test;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] xs = {1, 2, 3, 4, 5, 6, 7, 8};\n"
+        "        int32[] xs = [1, 2, 3, 4, 5, 6, 7, 8];\n"
         "        return xs.stream().filter((x) -> x > 2).take(3).count();\n"
         "    }\n"
         "}\n";
@@ -88,7 +88,7 @@ TEST(FluentStreamTests, mapReduce) {
         "package test;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] xs = {1, 2, 3, 4};\n"
+        "        int32[] xs = [1, 2, 3, 4];\n"
         "        return xs.stream().map<int32>((x) -> x * 10).reduce(0, (a, b) -> a + b);\n"
         "    }\n"
         "}\n";
@@ -108,7 +108,7 @@ TEST(FluentStreamTests, peekCountsSideEffect) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] xs = {1, 2, 3, 4, 5};\n"
+        "        int32[] xs = [1, 2, 3, 4, 5];\n"
         "        Counter c = heap Counter();\n"
         "        xs.stream().peek((x) -> c.inc()).count();\n"
         "        return c.n;\n"
@@ -129,7 +129,7 @@ TEST(FluentStreamTests, flatMapCount) {
         "import cajeta.lang.stream.Stream;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] xs = {1, 2, 3};\n"
+        "        int32[] xs = [1, 2, 3];\n"
         "        (int32) -> #Stream<int32> mk = (int32 v) -> {\n"
         "            int32[] one = heap int32[1];\n"
         "            one[0] = v * 10;\n"
@@ -150,7 +150,7 @@ TEST(FluentStreamTests, fourStageChain) {
         "package test;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int32[] xs = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};\n"
+        "        int32[] xs = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];\n"
         "        return xs.stream()\n"
         "                 .filter((x) -> x > 3)\n"   // 4..10
         "                 .map<int32>((x) -> x * 2)\n"  // 8,10,12,..20

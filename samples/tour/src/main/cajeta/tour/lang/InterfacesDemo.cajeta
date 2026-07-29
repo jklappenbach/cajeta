@@ -1,0 +1,86 @@
+package tour.lang;
+
+import tour.DemoClass;
+
+// Interfaces: a contract of method signatures, no state, no bodies.
+// A class lists the interfaces it satisfies after `implements`, and a
+// variable typed as the interface dispatches through the object's
+// vtable to whichever class is really behind the reference.
+//
+// v1 scope (see test/parser/InterfaceTests.cpp): abstract signatures
+// only — no default methods, no interface-extends-interface, no
+// interface constants. When you want inherited *behavior*, reach for
+// multiple inheritance of classes instead (MultiInheritanceDemo).
+
+// The contract: anything that can make a sound.
+public interface Instrument {
+    public int32 play();
+}
+
+// A second, unrelated contract.
+public interface Tunable {
+    public int32 tune(int32 pitch);
+}
+
+// One implementer.
+public class Piano implements Instrument {
+    public Piano() { return; }
+    public int32 play() { return 88; }
+}
+
+// A second implementer of the same interface — same contract,
+// different behavior behind it.
+public class Drum implements Instrument {
+    public Drum() { return; }
+    public int32 play() { return 2; }
+}
+
+// A class may implement several interfaces at once; it just has to
+// provide every method each contract demands.
+public class Guitar implements Instrument, Tunable {
+    public int32 pitch;
+    public Guitar() { this.pitch = 440; }
+    public int32 play() { return 6; }
+    public int32 tune(int32 pitch) {
+        this.pitch = pitch;
+        return this.pitch;
+    }
+}
+
+public class InterfacesDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Interfaces --");
+
+        // Direct call on the concrete class — the interface machinery
+        // doesn't disturb ordinary dispatch.
+        Piano p = heap Piano();
+        System.stdout.println("  Piano.play() (direct)        = " + p.play());
+        this.check(p.play() == 88, "direct call on an implementing class");
+
+        // The point of interfaces: an interface-typed variable. The
+        // call site names only the contract; the object behind the
+        // reference decides which body runs.
+        Instrument a = heap Piano();
+        Instrument b = heap Drum();
+        System.stdout.println("  Instrument a = Piano; a.play() = " + a.play());
+        System.stdout.println("  Instrument b = Drum;  b.play() = " + b.play());
+        this.check(a.play() == 88, "interface-typed reference dispatches to Piano");
+        this.check(b.play() == 2, "same interface type, different impl behind it");
+
+        // Two implementers side by side — one call site, two behaviors.
+        int32 both = a.play() + b.play();
+        this.check(both == 90, "two implementers dispatch independently");
+
+        // One class, two interfaces: a Guitar is usable wherever an
+        // Instrument OR a Tunable is expected.
+        Guitar g = heap Guitar();
+        Instrument gi = heap Guitar();
+        this.check(gi.play() == 6, "Guitar viewed as Instrument");
+        Tunable gt = heap Guitar();
+        int32 tuned = gt.tune(432);
+        System.stdout.println("  Guitar as Tunable: tune(432)   = " + tuned);
+        this.check(tuned == 432, "Guitar viewed as Tunable");
+        this.check(g.play() + g.tune(440) == 446, "one class satisfying two contracts");
+    }
+}

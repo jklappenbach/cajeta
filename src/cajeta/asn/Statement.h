@@ -71,6 +71,8 @@ namespace cajeta {
         // explicitly so the type-resolver pre-pass visits every Expression in the tree.
         // Body in Statement.cpp because Expression is forward-declared here.
         void resolveTypes(CajetaModulePtr module) override;
+        void forEachSubNode(
+            const std::function<void(const AbstractSyntaxNodePtr&)>& fn) override;
 
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
@@ -96,6 +98,8 @@ namespace cajeta {
         BlockPtr getBlock() const { return block; }
 
         void resolveTypes(CajetaModulePtr module) override;
+        void forEachSubNode(
+            const std::function<void(const AbstractSyntaxNodePtr&)>& fn) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
@@ -116,6 +120,8 @@ namespace cajeta {
         BlockPtr getBlock() const { return block; }
 
         void resolveTypes(CajetaModulePtr module) override;
+        void forEachSubNode(
+            const std::function<void(const AbstractSyntaxNodePtr&)>& fn) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
@@ -143,6 +149,9 @@ namespace cajeta {
         StatementPtr getElseBranch() const { return elseBranch; }
 
         void resolveTypes(CajetaModulePtr module) override;
+        void forEachSubNode(
+            const std::function<void(const AbstractSyntaxNodePtr&)>& fn) override;
+
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
@@ -170,6 +179,8 @@ namespace cajeta {
         StatementPtr getBody() const { return body; }
 
         void resolveTypes(CajetaModulePtr module) override;
+        void forEachSubNode(
+            const std::function<void(const AbstractSyntaxNodePtr&)>& fn) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
@@ -214,6 +225,9 @@ namespace cajeta {
         const string& getIteratorName() const { return iteratorName; }
 
         void resolveTypes(CajetaModulePtr module) override;
+        void forEachSubNode(
+            const std::function<void(const AbstractSyntaxNodePtr&)>& fn) override;
+
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
@@ -232,6 +246,9 @@ namespace cajeta {
         StatementPtr getBody() const { return body; }
 
         void resolveTypes(CajetaModulePtr module) override;
+        void forEachSubNode(
+            const std::function<void(const AbstractSyntaxNodePtr&)>& fn) override;
+
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
@@ -250,6 +267,9 @@ namespace cajeta {
         ExpressionPtr getCondition() const { return condition; }
 
         void resolveTypes(CajetaModulePtr module) override;
+        void forEachSubNode(
+            const std::function<void(const AbstractSyntaxNodePtr&)>& fn) override;
+
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
@@ -258,6 +278,10 @@ namespace cajeta {
     // the runtime accessor.
     struct CatchClause {
         CajetaTypePtr type;       // exception type (primitives + classes for now)
+        string typeNameText;      // the type name AS WRITTEN — re-resolved
+                                  // scoped at resolveTypes (a parse-time bare
+                                  // registry hit can miss sibling-file/archive
+                                  // classes, or land a same-named shadow)
         string variableName;       // bound name in the catch body
         BlockPtr body;
     };
@@ -280,7 +304,14 @@ namespace cajeta {
             : Statement(token), tryBlock(tryBlock),
               catchClauses(std::move(catches)), finallyBlock(finallyBlock) { }
 
+        BlockPtr getTryBlock() const { return tryBlock; }
+        const std::vector<CatchClause>& getCatchClauses() const { return catchClauses; }
+        BlockPtr getFinallyBlock() const { return finallyBlock; }
+
         void resolveTypes(CajetaModulePtr module) override;
+        void forEachSubNode(
+            const std::function<void(const AbstractSyntaxNodePtr&)>& fn) override;
+
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
@@ -315,7 +346,13 @@ namespace cajeta {
                         std::vector<SwitchGroup> groups)
             : Statement(token), subject(subject), groups(std::move(groups)) { }
 
+        ExpressionPtr getSubject() const { return subject; }
+        const std::vector<SwitchGroup>& getGroups() const { return groups; }
+
         void resolveTypes(CajetaModulePtr module) override;
+        void forEachSubNode(
+            const std::function<void(const AbstractSyntaxNodePtr&)>& fn) override;
+
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
@@ -349,6 +386,8 @@ namespace cajeta {
         // scan) can reach the returned expression that isn't in `children`.
         ExpressionPtr getExpression() const { return expression; }
 
+        void forEachSubNode(
+            const std::function<void(const AbstractSyntaxNodePtr&)>& fn) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
@@ -362,7 +401,11 @@ namespace cajeta {
         ThrowStatement(antlr4::Token* token, ExpressionPtr expression = nullptr)
             : Statement(token), expression(expression) { }
 
+        ExpressionPtr getExpression() const { return expression; }
+
         void resolveTypes(CajetaModulePtr module) override;
+        void forEachSubNode(
+            const std::function<void(const AbstractSyntaxNodePtr&)>& fn) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 

@@ -617,6 +617,43 @@ static void caj_kpool_join(void) {
     pthread_mutex_unlock(&g_caj_kpool.mu);
 }
 
+// Join and dismantle the persistent pool — the runtime-teardown hook, called
+// from __cajeta_task_shutdown. A JIT'd module's pool workers park between
+// launches on g_caj_kpool.go, a condvar in MODULE memory; leaving them parked
+// past module unload lets a later allocation recycle that address and corrupt
+// the futex (glibc's "The futex facility returned an unexpected error code"
+// abort mid-suite). Same hazard class as the carrier/timer/reactor joins
+// (R9.1/R9.4); the pool was the one thread family without a teardown. No-op
+// when the pool never started; the state reset lets a subsequent launch in
+// the SAME module (shutdown is also safe to call more than once) lazily
+// rebuild a fresh pool via caj_kpool_ensure.
+void __cajeta_xpu_kpool_shutdown(void) {
+    pthread_mutex_lock(&g_caj_kpool.mu);
+    if (!g_caj_kpool.started) {
+        pthread_mutex_unlock(&g_caj_kpool.mu);
+        return;
+    }
+    __atomic_store_n(&g_caj_kpool.shutdown, 1, __ATOMIC_RELEASE);
+    pthread_cond_broadcast(&g_caj_kpool.go);
+    int n = g_caj_kpool.nthreads;
+    pthread_mutex_unlock(&g_caj_kpool.mu);
+    for (int i = 0; i < n; ++i)
+        pthread_join(g_caj_kpool.threads[i], NULL);
+    // Reset for a clean lazy restart: no workers exist now, so clearing the
+    // dispatch bookkeeping (generation included — a fresh worker's seen=0
+    // baseline must not "see" a stale generation and re-run stale slices)
+    // races nothing.
+    pthread_mutex_lock(&g_caj_kpool.mu);
+    g_caj_kpool.nthreads = 0;
+    g_caj_kpool.started = 0;
+    g_caj_kpool.njobs = 0;
+    g_caj_kpool.slices = NULL;
+    __atomic_store_n(&g_caj_kpool.active, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_caj_kpool.generation, (uint64_t) 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_caj_kpool.shutdown, 0, __ATOMIC_RELEASE);
+    pthread_mutex_unlock(&g_caj_kpool.mu);
+}
+
 static void cajeta_xpu_launch_cpu(const char* name,
                                   int32_t gridX, int32_t gridY, int32_t gridZ,
                                   int32_t blockX, int32_t blockY, int32_t blockZ,

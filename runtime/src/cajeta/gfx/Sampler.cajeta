@@ -19,6 +19,12 @@ public final class Sampler {
     int32 filterMode;
     int32 addressMode;
 
+    /**
+     * Build a sampler from its filter mode (0 = nearest, 1 = linear) and
+     * address mode (0 = clamp-to-edge, 1 = repeat).
+     *
+     * @EntryPoint
+     */
     public Sampler(int32 filterMode, int32 addressMode) {
         this.filterMode = filterMode;
         this.addressMode = addressMode;

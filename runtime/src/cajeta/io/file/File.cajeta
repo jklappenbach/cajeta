@@ -19,10 +19,10 @@ import cajeta.lang.String;
  *
  * ```cajeta
  * // Whole-file one-shot.
- * #int8[] all = File.readAllBytes("/etc/hostname");
+ * int8[] all = File.readAllBytes("/etc/hostname");
  *
  * // Seekable random-access handle.
- * #File f = File.open("/tmp/db.bin", OpenMode.READ_WRITE);
+ * File f = File.open("/tmp/db.bin", OpenMode.READ_WRITE);
  * f.seek(4096);
  * int8[] page = heap int8[512];
  * f.read(page, 0, 512);
@@ -68,8 +68,10 @@ public class File {
      * `__cajeta_file_read_all(path)`.
      *
      * ```cajeta
-     * #int8[] bytes = File.readAllBytes("/etc/hostname");
+     * int8[] bytes = File.readAllBytes("/etc/hostname");
      * ```
+     *
+     * @EntryPoint
      */
     public static #int8[] readAllBytes(String path) {
         int8[] empty = heap int8[0];
@@ -85,6 +87,8 @@ public class File {
      * int8[] data = heap int8[3];
      * File.writeAllBytes("/tmp/out.bin", data, 3);
      * ```
+     *
+     * @EntryPoint
      */
     public static void writeAllBytes(String path, int8[] data, int32 len) {
         return;
@@ -94,10 +98,12 @@ public class File {
      * Open `path` for reading; return a streaming `FileReader`.
      *
      * ```cajeta
-     * #FileReader r = File.openRead("/var/log/app.log");
-     * #String line = r.readString(256);
+     * FileReader r = File.openRead("/var/log/app.log");
+     * String line = r.readString(256);
      * r.close();
      * ```
+     *
+     * @EntryPoint
      */
     public static #FileReader openRead(String path) {
         return heap FileReader(-1);
@@ -109,10 +115,12 @@ public class File {
      * `WRITE`, `APPEND`, or `CREATE_NEW`.
      *
      * ```cajeta
-     * #FileWriter w = File.openWrite("/tmp/out.txt", OpenMode.APPEND);
+     * FileWriter w = File.openWrite("/tmp/out.txt", OpenMode.APPEND);
      * w.writeString("hello\n");
      * w.close();
      * ```
+     *
+     * @EntryPoint
      */
     public static #FileWriter openWrite(String path, OpenMode mode) {
         return heap FileWriter(-1);
@@ -127,12 +135,14 @@ public class File {
      * destructor) when done.
      *
      * ```cajeta
-     * #File f = File.open("/tmp/db.bin", OpenMode.READ_WRITE);
+     * File f = File.open("/tmp/db.bin", OpenMode.READ_WRITE);
      * f.seek(1024);
      * int8[] buf = heap int8[64];
      * f.read(buf, 0, 64);
      * f.close();
      * ```
+     *
+     * @EntryPoint
      */
     public static #File open(String path, OpenMode mode) {
         return heap File(-1);
@@ -145,7 +155,7 @@ public class File {
      * with read/write access.
      *
      * ```cajeta
-     * #File lock = File.openExclusive("/tmp/run.lock");
+     * File lock = File.openExclusive("/tmp/run.lock");
      * lock.close();
      * ```
      */

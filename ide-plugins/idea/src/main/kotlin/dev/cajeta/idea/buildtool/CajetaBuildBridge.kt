@@ -28,10 +28,19 @@ interface BuildTaskProcess {
     fun cancel()
 }
 
-/** Parses one complete output line into a problem event for the build tree
- *  (spec §4); wired in U4 from `BuildProblemParser` (U3). Default: no problems. */
+/**
+ * Parses one complete output line into build-tree events (spec §4); wired in U4
+ * from `BuildProblemParser` (U3). An empty list means "not structured" — the
+ * bridge then echoes the line as plain console output.
+ *
+ * A line may yield SEVERAL events: the first compile phase both opens the
+ * "Compile" grouping node and opens itself under it. [close] is called once the
+ * process has exited, so a parser can shut any node it left open (the grouping
+ * node) before the build finishes — an unclosed node renders as still-running.
+ */
 fun interface LineParser {
-    fun parse(line: String, parentId: Any): ParsedProblem?
+    fun parse(line: String, parentId: Any): List<ParsedProblem>
+    fun close(parentId: Any): List<ParsedProblem> = emptyList()
 }
 
 data class ParsedProblem(val event: BuildEvent, val isError: Boolean)
@@ -56,7 +65,7 @@ object CajetaBuildBridge {
         startTime: Long,
         preflight: () -> String?,
         process: BuildTaskProcess,
-        lineParser: LineParser = LineParser { _, _ -> null },
+        lineParser: LineParser = LineParser { _, _ -> emptyList() },
         decorate: (DefaultBuildDescriptor) -> com.intellij.build.BuildDescriptor = { it },
     ): Result {
         val descriptor = decorate(DefaultBuildDescriptor(buildId, title, workDir, startTime))
@@ -72,25 +81,39 @@ object CajetaBuildBridge {
         val outBuf = StringBuilder()
         val errBuf = StringBuilder()
 
-        fun drainLines(buf: StringBuilder) {
+        // A line the parser claims (an NDJSON diagnostic or compile-phase record)
+        // is surfaced as its structured event ONLY — echoing it too would spill
+        // raw JSON into the console the user reads. Everything else is echoed
+        // verbatim. Echo is therefore line-buffered: a chunk without a newline
+        // is held until its line completes (and flushed at exit below), since we
+        // cannot know whether a partial line is structured.
+        fun emitLine(line: String, stdout: Boolean) {
+            val parsed = lineParser.parse(line, buildId)
+            if (parsed.isEmpty()) {
+                listener.onEvent(buildId, OutputBuildEventImpl(buildId, line + "\n", stdout))
+                return
+            }
+            for (p in parsed) {
+                listener.onEvent(buildId, p.event)
+                if (p.isError) errorCount++
+            }
+        }
+
+        fun drainLines(buf: StringBuilder, stdout: Boolean) {
             var nl = buf.indexOf("\n")
             while (nl >= 0) {
                 val line = buf.substring(0, nl)
                 buf.delete(0, nl + 1)
-                lineParser.parse(line, buildId)?.let {
-                    listener.onEvent(buildId, it.event)
-                    if (it.isError) errorCount++
-                }
+                emitLine(line, stdout)
                 nl = buf.indexOf("\n")
             }
         }
 
         val sink = object : OutputSink {
             override fun append(text: String, stdout: Boolean) = synchronized(lock) {
-                listener.onEvent(buildId, OutputBuildEventImpl(buildId, text, stdout))
                 val buf = if (stdout) outBuf else errBuf
                 buf.append(text)
-                drainLines(buf)
+                drainLines(buf, stdout)
             }
         }
 
@@ -101,14 +124,16 @@ object CajetaBuildBridge {
             return Result.FAILURE
         }
 
-        // Flush any trailing partial lines through the parser.
+        // Flush trailing partial lines (output not terminated by a newline):
+        // parse them like any other line, echo them when they aren't structured.
         synchronized(lock) {
-            for (buf in listOf(outBuf, errBuf)) if (buf.isNotEmpty()) {
-                lineParser.parse(buf.toString(), buildId)?.let {
-                    listener.onEvent(buildId, it.event)
-                    if (it.isError) errorCount++
-                }
-            }
+            if (outBuf.isNotEmpty()) emitLine(outBuf.toString(), stdout = true)
+            if (errBuf.isNotEmpty()) emitLine(errBuf.toString(), stdout = false)
+            outBuf.clear()
+            errBuf.clear()
+            // Close nodes the parser still holds open (the "Compile" group) BEFORE
+            // the build's own finish event, or they render as forever-running.
+            for (p in lineParser.close(buildId)) listener.onEvent(buildId, p.event)
         }
 
         val result = when {

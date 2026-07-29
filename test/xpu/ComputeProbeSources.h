@@ -194,7 +194,7 @@ inline const char* kTorchMatmulScatter() {
     "}\n";
 }
 
-// Target 3: Toffee/SPELA — fused forward + local-loss + per-neuron weight update
+// Target 3: Caramelo/SPELA — fused forward + local-loss + per-neuron weight update
 // in ONE device pass (no atomics; one thread per output neuron owns its W row).
 inline const char* kSpelaFusedLayer() {
     return

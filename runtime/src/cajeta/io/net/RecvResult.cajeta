@@ -54,7 +54,7 @@ public class RecvResult {
     public static #RecvResult of(int32 count, #SocketAddress from) {
         RecvResult r = heap RecvResult();
         r.count = count;
-        r.from = from;
+        r.from #= from;
         return #r;
     }
 

@@ -97,6 +97,20 @@ namespace cajeta {
         llvm::Value* cstr, const char* namePrefix,
         bool freeAfterWrap = true);
 
+    // collection-literals §2 (Unit 1) — target-typed collection literal.
+    // When a class target (e.g. `ArrayList<int32>`) is initialized/assigned/
+    // returned with a bare `[...]` literal, rewrite the literal as a from-array
+    // constructor call `heap Target([...])`: the literal's element type is set
+    // from the target's first type argument (so it builds the `T[]` the ctor
+    // expects), and any `stack`/`shared` prefix on the literal carries to the
+    // instance construction. Returns the synthesized creator, or nullptr when
+    // `target` is not a rewritable class target (an array/primitive/value type
+    // — the caller keeps the literal on its existing path). The three
+    // target-type push sites (LocalVariableDeclaration, ReturnStatement,
+    // BinaryOpExpression ASSIGN) share this one helper.
+    ExpressionPtr collectionLiteralFromArray(CajetaTypePtr target,
+                                             const ExpressionPtr& literal);
+
     // Expression is a sibling of Statement under AbstractSyntaxNode. When an expression
     // appears in statement position (e.g. `foo();`), wrap it in ExpressionStatement
     // rather than relying on inheritance — see Statement::fromContext.
@@ -251,6 +265,22 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
+    // Array/slice window: `base[a:b]` (slice-spec §2/§7.2; slices plan Unit 7).
+    // children = [base, from, to]. Yields a `Slice<E>` VALUE (an alloca of the
+    // 3-word {store, off, len} body):
+    //   - array base:  {arr, a, b-a} windowing the root (from/to clamped to
+    //     [0, count] like String.substring);
+    //   - slice base:  {base.store, base.off + a, b-a} — O(1) composition
+    //     attributing to the ROOT.
+    class ArraySliceExpression : public Expression {
+    public:
+        ArraySliceExpression(CajetaParser::ExpressionContext* ctx, antlr4::Token* token);
+
+        void resolveTypes(CajetaModulePtr module) override;
+
+        llvm::Value* generateCode(CajetaModulePtr module) override;
+    };
+
     // List literal: `[e1, e2, ...]` (and the empty `[]`). Grammar:
     // `arrayLiteral : '[' expressionList? ']'`, reachable from `primary`
     // (CajetaParser.g4). Introduced for the XPU launch dimensions
@@ -261,16 +291,85 @@ namespace cajeta {
     // standalone use for now.
     class ArrayLiteralExpression : public Expression {
     public:
-        ArrayLiteralExpression(CajetaParser::ArrayLiteralContext* ctx, antlr4::Token* token);
+        // Sequence literal built from pre-parsed element expressions. The
+        // bracket-list parse (sequence-vs-map discrimination) lives in
+        // arrayOrMapLiteralFromContext; the map lowering also builds one of
+        // these to hold its `Pair<K,V>[]`.
+        ArrayLiteralExpression(vector<ExpressionPtr> elems, antlr4::Token* token);
 
         // Element expressions in source order (also mirrored into children).
         const vector<ExpressionPtr>& getElements() const { return elements; }
 
+        // Push a target element type (array-literals §3.2). When set before
+        // resolveTypes, it overrides the unify fallback. Unused until Unit 2.
+        void setElementType(CajetaTypePtr t) { elementType = t; }
+
+        // Placement (array-literals §4): heap (default), stack (frame arena),
+        // or shared (device workgroup memory). Set by Expression::fromContext
+        // from a `stack`/`shared` prefix; drives allocator selection in
+        // generateCode. At most one is true.
+        void setStackAlloc(bool v) { stackAlloc = v; }
+        void setSharedAlloc(bool v) { sharedAlloc = v; }
+        bool isStackAlloc() const { return stackAlloc; }
+        bool isSharedAlloc() const { return sharedAlloc; }
+
+        // Set by Method::computeArenaEligibility when a `stack [...]` literal's
+        // bound local proves non-escaping and primitive-element (array-literals
+        // §4). Only then does generateCode route to the frame-arena allocator;
+        // an escaping or non-primitive `stack [...]` falls back to heap, exactly
+        // as the escape-driven arena path does for creators.
+        void setArenaEligible(bool v) { arenaEligible = v; }
+        bool isArenaEligible() const { return arenaEligible; }
+
+        void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
     private:
+        // Least-upper-bound of the element types (array-literals §3.3): numeric
+        // widest, reference nearest-common-superclass; throws on an empty
+        // literal or no common type when no target was pushed.
+        CajetaTypePtr unifyElementType(CajetaModulePtr module);
+
         vector<ExpressionPtr> elements;
+        CajetaTypePtr elementType;  // target (§3.2) or unified (§3.3)
+        bool stackAlloc = false;    // `stack [...]` — frame arena (§4)
+        bool sharedAlloc = false;   // `shared [...]` — device workgroup (§4)
+        bool arenaEligible = false; // stack + proven non-escaping (§4)
     };
 
+    // Map literal: `[k1: v1, k2: v2]` (and the empty `[:]`) — collection-
+    // literals §3. Each entry is a (key, value) expression pair. Lowers, at
+    // generateCode, to a `Pair<K,V>[]` (one `heap Pair<K,V>(k, v)` per entry)
+    // passed to `HashMap<K,V>(Pair<K,V>[])`. K and V come from a pushed target
+    // map type (`HashMap<String,int32> m = [...]`) or, with no target, unify
+    // over the entries defaulting to `HashMap` (§3.4). The parser routes a
+    // bracket list here when any entry carries a `:` (else it's a sequence
+    // ArrayLiteralExpression).
+    class MapLiteralExpression : public Expression {
+    public:
+        MapLiteralExpression(vector<pair<ExpressionPtr, ExpressionPtr>> entries,
+                             antlr4::Token* token);
+
+        // Target map type pushed by context (a `HashMap<K,V>` instantiation).
+        void setExpectedType(CajetaTypePtr t) { expectedType = std::move(t); }
+        void setStackAlloc(bool v) { stackAlloc = v; }
+        void setSharedAlloc(bool v) { sharedAlloc = v; }
+
+        void resolveTypes(CajetaModulePtr module) override;
+        llvm::Value* generateCode(CajetaModulePtr module) override;
+    private:
+        vector<pair<ExpressionPtr, ExpressionPtr>> entries;
+        CajetaTypePtr expectedType;  // pushed target `HashMap<K,V>` (§3.1)
+        bool stackAlloc = false;
+        bool sharedAlloc = false;
+    };
+
+    // collection-literals §3 — parse an `arrayLiteral` bracket list into either
+    // a sequence (ArrayLiteralExpression) or a map (MapLiteralExpression) by the
+    // per-entry colon, applying any `stack`/`shared` placement prefix. Shared by
+    // the four bracket-literal construction sites (bare + heap/stack/shared).
+    ExpressionPtr arrayOrMapLiteralFromContext(
+        CajetaParser::ArrayLiteralContext* ctx, antlr4::Token* token,
+        bool stackAlloc, bool sharedAlloc);
 
     /**
      * '(' annotation* typeType ('&' typeType)* ')' expression
@@ -484,11 +583,34 @@ namespace cajeta {
      * `dynamic_pointer_cast` and act accordingly.
      */
     class MoveExpression : public Expression {
+    private:
+        // 5.2.2 — when the moved-out source is a runtime owner (a formal
+        // whose title is a transfer-word bit), its entry flag is captured
+        // here BEFORE deactivation; store/return sites seed their bit from
+        // it. Null for static owners (compile-time truth stands).
+        llvm::Value* runtimeTitleFlag = nullptr;
     public:
         MoveExpression(antlr4::Token* token) : Expression(token) { }
 
         void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
+        llvm::Value* getRuntimeTitleFlag() const { return runtimeTitleFlag; }
+        // title-stores §2.1 (fused slot-to-slot forwarding) — set by the
+        // enclosing `dst[i] #= #src[j]` store BEFORE codegen: the slot
+        // extraction forwards the source bit verbatim (borrow stays
+        // borrow, NO panic) instead of claiming ownership.
+        void setForwardingSlotMove(bool v) { forwardingSlotMove = v; }
+        bool isForwardingSlotMove() const { return forwardingSlotMove; }
+        // title-stores §2.3 Phase 2 (plan 7.2.2) — set by the enclosing site
+        // when this move was spelled the legacy way, `dst = #v`. It cannot be
+        // recovered later: `dst = #v` and `dst #= v` build the SAME node (the
+        // `#=` desugar wraps the RHS in a Move of its own), so the spelling is
+        // only visible while the parse context is in hand.
+        void setLegacyTransferAssign(bool v) { legacyTransferAssign = v; }
+        bool isLegacyTransferAssign() const { return legacyTransferAssign; }
+    private:
+        bool forwardingSlotMove = false;
+        bool legacyTransferAssign = false;
     };
 
     // Structured-concurrency expressions (docs/specification/concurrent/Concurrency.md). All three wrap a
@@ -525,6 +647,16 @@ namespace cajeta {
         // before calling generateCode through this same trampoline path
         // — single source of truth for the spawn/detach lowering.
         bool detachMode = false;
+        // Statement-position spawn whose Task is never bound to a local
+        // (`spawn f(x);` as a statement). Set by ExpressionStatement before
+        // generateCode. The lowering then registers the task with the scope
+        // frame as SCOPE-OWNED (__cajeta_scope_register_owned) instead of
+        // emitting a drop entry: a per-site drop-entry alloca cannot
+        // represent N live tasks from a loop, and its wait-on-drop joined at
+        // the innermost brace — serializing spec-legal spawn loops (the
+        // Concurrency.md `scope { for { spawn } }` example). The scope both
+        // joins (as before, via scope_register bookkeeping) and frees.
+        bool discardedMode = false;
     public:
         SpawnExpression(antlr4::Token* token) : Expression(token) { }
         void resolveTypes(CajetaModulePtr module) override;
@@ -532,6 +664,8 @@ namespace cajeta {
         llvm::Value* getDropEntry() const { return dropEntry; }
         void setDetachMode(bool v) { detachMode = v; }
         bool getDetachMode() const { return detachMode; }
+        void setDiscardedMode(bool v) { discardedMode = v; }
+        bool getDiscardedMode() const { return discardedMode; }
     };
 
     class DetachExpression : public Expression {
@@ -621,6 +755,13 @@ namespace cajeta {
         const std::vector<std::string>& getParamNames() const { return paramNames; }
         const std::vector<CajetaTypePtr>& getParamTypes() const { return paramTypes; }
         AbstractSyntaxNodePtr getBody() const { return body; }
+
+        // 7.2.4 — the body lives in a private slot, not `children`.
+        void forEachSubNode(
+                const std::function<void(const AbstractSyntaxNodePtr&)>& fn) override {
+            if (body) fn(body);
+            AbstractSyntaxNode::forEachSubNode(fn);
+        }
 
         // Target-type hint from the surrounding context (e.g. a LHS
         // function-typed declaration). When set, codegen uses this as the

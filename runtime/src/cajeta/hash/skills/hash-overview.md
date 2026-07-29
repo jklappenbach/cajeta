@@ -28,7 +28,7 @@ hash, a checksum/digest, or to compose extra context into a structural hash.
 | Hash **attacker-controlled** keys feeding a map/cache (DoS resistance) | `SipHash` (keyed, ~10× slower than XXH3) |
 | Compose a structural object hash with extra context, in the compiler's family | `DefaultHasher` (XXH3 + process seed) |
 | ETag / Content-MD5 / asset or row fingerprint (NOT security) | `MD5` |
-| WebSocket `Sec-WebSocket-Accept` handshake (the ONLY sanctioned SHA-1 use) | `Sha1` |
+| WebSocket `Sec-WebSocket-Accept` handshake (the ONLY sanctioned SHA-1 use; lives in external `dev.cajeta.http`) | `Sha1` |
 | Real integrity: TLS cert fingerprint, download/release checksum | `Sha256` (the one cryptographic hash here) |
 
 Negative rows — not provided here, don't hunt for it:

@@ -165,6 +165,19 @@ and no per-instance header. **Overriding — not having methods — is the vtabl
   semantics (copying the record would alias the shared object). Composition is one-way: classes
   contain records, never the reverse.
 
+> **AMENDED (2026-07-03, per the approved `lang/slice-spec.md`):** the rule is not "no
+> pointers" but **"no owning/mutable heap identity."** Two refinements:
+> 1. **Text fields**: `String` (a heap class) stays rejected — the blessed text field is
+>    **`Utf8`** (`cajeta.lang.Utf8`, slice-spec §8): a 16-byte value type. Its Inline form
+>    (≤ 12 B — SHIPPED) is pure POD; its Shared form (a stake on an immutable shared buffer)
+>    is value-copy-clean because the bytes are immutable (share ≡ copy). Immutable slices
+>    (`Utf8`, later `Slice<T>`) are record-field-eligible.
+> 2. **Value semantics, not necessarily memcpy**: a record is trivially memcpy-copyable **iff
+>    all its fields are trivial**. A record holding a Shared-capable slice is a **non-trivial
+>    value type** whose copy/drop are compiler-synthesized (retain/release the stake —
+>    slice-spec §6.1); `with(...)` runs the same copy hook. Memcpy is the all-trivial-fields
+>    *optimization*, not the definition of value semantics.
+
 ## 3. Value semantics and immutability
 
 **Use cases**

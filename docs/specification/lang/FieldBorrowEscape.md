@@ -76,6 +76,26 @@ escaping via a different door: the **field-store edge** instead of the
 return edge. The design intent is to extend the *existing* escape
 analysis to this edge, not to build a parallel system.
 
+The call-edge checks report through this same escape/ownership family:
+
+```
+CAJETA_ERROR_TRANSFER_REQUIRED      // owned local into a `#T` formal without `#`
+CAJETA_ERROR_TYPE_TRANSFER_RETIRED  // `#` in a TYPE position (type argument, `#Type` local,
+                                    // `#V` type parameter) — ownership is per-call; spell it
+                                    // at the call/store site (title-tracking spec §8.1)
+```
+
+> **Retired with title-tracking rev 2 (Unit 7).** The element-ownership
+> type-argument layer — per-instantiation ownership modes, the 4B
+> call-agreement and extractor gates (`ELEMENT_TRANSFER_MODE` /
+> `ELEMENT_EXTRACT_MODE`), borrow-mode confinement
+> (`BORROW_MODE_CONFINED` / `BORROW_MODE_OWNED`), and the §4.2 formal
+> dissolution — no longer exists. Every instantiation is plain; an
+> authored `#T` formal is a hard must-own edge in every instantiation;
+> per-value titles ride the hidden per-call transfer word.
+> `BORROW_PARAM_ESCAPES` is likewise retired for class-typed formals
+> (they are runtime owners; `#x` forwards the flag they actually hold).
+
 ## What is statically knowable
 
 At an assignment `target.field = src` we classify two things:
@@ -133,11 +153,11 @@ borrow-overlap check — that is the natural hook point.
 
 Transfer moves *ownership*, not *storage location*. A `stack Widget`'s
 bytes live in the frame and are gone at frame exit no matter who owns
-them. So `this.w = #local` where `local` is stack-allocated is **also
+them. So `this.w #= local` where `local` is stack-allocated is **also
 unsound** — `#` is not the fix here. The honest fixes are:
 
 - **Allocate on the heap to begin with** — `Widget local = heap
-  Widget(...)` then `this.w = #local`, or auto-promote a fresh
+  Widget(...)` then `this.w #= local`, or auto-promote a fresh
   `this.w = heap Widget(...)` straight into the field. Independent
   storage that outlives the frame.
 - **Clone into a fresh instance** — `this.w = local.clone()` (see
@@ -171,7 +191,7 @@ terminate). The project already chose this: shallow default, manual
 
 `clone()` is **deferred**. The default returns `null` today; the
 synthesizer that walks field layouts isn't built yet (Object.md §
-"clone() — deferred", tracked in Features.md). Consequences:
+"clone() — deferred", tracked in specs/Features.md). Consequences:
 
 - Until clone lands, the fix-it must **not** advertise `.clone()` — it
   would trade a dangling pointer for a null deref. Lead with the
@@ -222,7 +242,7 @@ dropped):
 ```cajeta
 this.data = someParam;          // source is caller-owned, outlives `this`
 this.value = heap Widget(9);    // fresh heap, auto-promoted to ownership
-this.w = #heapLocal;            // heap source, ownership transferred
+this.w #= heapLocal;            // heap source, ownership transferred
 this.w = src.clone();           // independent fresh instance  (once clone lands)
 ```
 

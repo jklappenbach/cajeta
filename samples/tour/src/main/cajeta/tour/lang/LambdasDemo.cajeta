@@ -10,7 +10,7 @@ public class LambdasDemo extends DemoClass {
     public void execute() {
         System.stdout.println("");
         System.stdout.println("-- Lambdas --");
-        int32[] xs = {1, 2, 3, 4};
+        int32[] xs = [1, 2, 3, 4];
         // Closure over a local — `accum` is captured by borrow.
         Counter accum = stack Counter();
         xs.stream().forEach((x) -> accum.bumpBy(x));

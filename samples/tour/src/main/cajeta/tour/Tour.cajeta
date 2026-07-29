@@ -17,6 +17,8 @@ import tour.net.*;
 import tour.io.*;
 import tour.codec.*;
 import tour.hash.*;
+import tour.process.*;
+import tour.search.*;
 
 // Cajeta language tour. Every load-bearing feature of the language
 // has a demo class extending DemoClass; this entry point puts one
@@ -70,6 +72,7 @@ public final class Tour {
         demos.add(heap StringDemo());
         demos.add(heap ControlFlowDemo());
         demos.add(heap MathDemo());
+        demos.add(heap AutogradDemo());
         demos.add(heap FormatStringDemo());
         demos.add(heap ViewsDemo());
         demos.add(heap ParallelStreamsDemo());
@@ -82,25 +85,62 @@ public final class Tour {
         demos.add(heap FactoryDemo());
         demos.add(heap WildcardsDemo());
         demos.add(heap SwitchTernaryDemo());
+        demos.add(heap InterfacesDemo());
+        demos.add(heap EncodingDemo());
+        demos.add(heap StaticNestedDemo());
+        demos.add(heap StaticFieldsDemo());
+        demos.add(heap OptionalDemo());
+        demos.add(heap PairDemo());
+        demos.add(heap CollectDemo());
+        demos.add(heap ProcessDemo());
+        demos.add(heap SearchDemo());
+        demos.add(heap BufferDemo());
         demos.add(heap FileIoDemo());
+        demos.add(heap PathDemo());
+        demos.add(heap UdpDemo());
+        demos.add(heap ServerDemo());
+        demos.add(heap UriDemo());
+        demos.add(heap DnsDemo());
         demos.add(heap OperatorOverloadDemo());
         demos.add(heap LinearAlgebraDemo());
         demos.add(heap QuaternionDemo());
+        demos.add(heap TensorDemo());
+        demos.add(heap GeometryDemo());
+        demos.add(heap FftDemo());
+        demos.add(heap RandomDemo());
+        demos.add(heap StatsDemo());
+        demos.add(heap PolyDemo());
+        demos.add(heap LinAlgDemo());
+        demos.add(heap NpyDemo());
         demos.add(heap ImmutableListDemo());
         demos.add(heap ImmutableSetDemo());
         demos.add(heap ImmutableMapDemo());
         demos.add(heap HeapDemo());
         demos.add(heap RedBlackTreeDemo());
         demos.add(heap BPlusTreeDemo());
+        demos.add(heap CacheDemo());
+        demos.add(heap CollectorsDemo());
+        demos.add(heap SortDemo());
         demos.add(heap LtmBPlusTreeDemo());
         demos.add(heap HashDemo());
+        demos.add(heap Base64Demo());
+        demos.add(heap CsvDemo());
+        demos.add(heap SchemaDemo());
 
         // Stream over the list — virtual dispatch lands each
         // subclass's execute() override.
         demos.stream().forEach((d) -> d.execute());
 
         System.stdout.println("");
-        System.stdout.println("=== tour complete ===");
+        if (DemoClass.failures > 0) {
+            System.stdout.println("=== tour FAILED: " + DemoClass.failures
+                + " of " + DemoClass.checks + " self-checks ===");
+            return 1;
+        }
+        System.stdout.println("=== tour complete: " + DemoClass.checks
+            + " self-checks passed ===");
+        System.stdout.println("separate tours: samples/tour/xpu (GPU kernels), "
+            + "samples/tour/ifx (windowing, headless), samples/tour/tls (TLS loopback)");
         return 0;
     }
 }

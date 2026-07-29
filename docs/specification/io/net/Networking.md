@@ -296,4 +296,4 @@ normalizes `WSAGetLastError`.
 
 Transport order (the HTTP layer is now cajeta-http's plan): sockets + reactor →
 addresses + DNS → TLS → UDP/multicast → framing strategies → URI. Phased build:
-[`../../../agents/cajeta/net/cajeta-net-plan.md`](../../../agents/cajeta/net/cajeta-net-plan.md).
+`../../../agents/cajeta/net/cajeta-net-plan.md`.

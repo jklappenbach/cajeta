@@ -132,7 +132,7 @@ TEST(XpuComputeProbeAmdEmitTests, torchScatterAddEmitsAmdIsa) {
                                 << isa;
 }
 
-// Target 3: Toffee/SPELA — the fused forward+loss+update kernel lowers to gfx1151.
+// Target 3: Caramelo/SPELA — the fused forward+loss+update kernel lowers to gfx1151.
 TEST(XpuComputeProbeAmdEmitTests, spelaFusedLayerEmitsAmdIsa) {
     emitKernelIsa(cajeta_test_probes::kSpelaFusedLayer(), "test.SpelaProbe",
                   "test.SpelaProbe.fusedLayer", "fusedLayer");

@@ -1,6 +1,6 @@
 //
 // Fuzzy skill matcher. See SkillMatcher.h and
-// docs/specs/skill-discovery-spec.md §3.5.
+// specs/archive/skill-discovery-spec.md §3.5.
 //
 #include "cajeta/buildtool/skill/SkillMatcher.h"
 

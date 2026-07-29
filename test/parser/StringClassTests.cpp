@@ -1,28 +1,28 @@
-// String Phase 2b: `cajeta.lang.String` becomes a real class (replacing
-// the opaque i8* primitive alias). Phase 2b-α pins the class skeleton —
-// fields exist, can be instantiated, fields read back. String-literal
-// codegen and method surface come in later phases.
+// String storage pinning — 6.2.2 tagged core (slice-spec §8.2).
 //
-// Per docs/specification/lang/String.md § Storage model:
+// Per docs/specification/lang/String.md § Storage model, the wrapper is:
 //
-//     class String {
-//         int8[] bytes;          // UTF-8 payload (owner of the bytes
-//                                // when mode = 0; borrowed view when 1)
-//         int32  byteLength;     // length in bytes
-//         int32  mode;           // 0 = owned, 1 = view
-//         int32  cachedCpLength; // -1 = not yet computed
+//     class String {                    // C view (offsets on x86-64)
+//         int32 lenTag;                 // @8  — len | tag bits
+//         int32 aux;                    // @12 — Inline text 0..3 / window off
+//         int8[] base;                  // @16 — Inline text 4..11 / root hdr
+//         public int32 cachedCpLength;  // @24 — -1 = not yet computed
 //     }
 //
-// These tests intentionally avoid string literals (those still emit i8*
-// during Phase 2b-α — the literal-codegen flip is Phase 2b-β).
+//   len <= 12          Inline: text in aux+base's 12 bytes; no root.
+//   len >  12          pointer form: {off = aux, root header = base};
+//                      bit31 = holds-stake, bit30 = borrow, bit29 = static.
 //
-// All tests pin the *field layout* of the class — if any field is
-// renamed/reordered/dropped, these break loudly.
+// These tests pin the physical layout (a C-struct probe over both literal
+// forms) and the public surface that replaced the old fields (byteLength()
+// method; root()/byteOffset() window contract). Renames / reorders / size
+// changes break loudly here.
 
 #include <gtest/gtest.h>
 #include "../jit/JitTestHelper.h"
 
 #include <cstdint>
+#include <string>
 
 using cajeta_test::CajetaJit;
 
@@ -32,56 +32,55 @@ int32_t runI32(const std::string& src) {
     auto fn = jit->lookup<int32_t (*)()>("run");
     return fn();
 }
+
+struct TaggedStringLayout {
+    const void* vtable;
+    int32_t lenTag;
+    int32_t aux;
+    const char* base;
+    int32_t cachedCpLength;
+};
 } // namespace
 
-// String can be instantiated as a heap class. Today `String` is a
-// primitive alias for i8* and cannot be `heap`-allocated — this test
-// fails until cajeta.lang.String is a real class.
-TEST(StringClassTests, canHeapInstantiate) {
+// byteLength is a METHOD over lenTag now (the field is gone).
+TEST(StringClassTests, byteLengthMethodReadsLenTag) {
     auto src =
         "package test;\n"
         "import cajeta.lang.String;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        String s = heap String();\n"
-        "        return 0;\n"
+        "        String s = \"hello\";\n"
+        "        String t = \"a much longer literal, no doubt\";\n"
+        "        return s.byteLength() * 100 + t.byteLength();\n"
         "    }\n"
         "}\n";
-    EXPECT_EQ(runI32(src), 0);
+    EXPECT_EQ(runI32(src), 5 * 100 + 31);
 }
 
-// String.byteLength field is reachable as int32 and round-trips a write.
-TEST(StringClassTests, byteLengthFieldRoundTrips) {
+// The window contract that replaced `mode`: Inline strings (<= 12 B) have
+// no root; pointer forms expose {root, byteOffset}.
+TEST(StringClassTests, rootAndOffsetReplaceMode) {
     auto src =
         "package test;\n"
         "import cajeta.lang.String;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        String s = heap String();\n"
-        "        s.byteLength = 12345;\n"
-        "        return s.byteLength;\n"
+        "        String inl = \"tiny\";\n"
+        "        String big = \"0123456789abcdefghijklmnop\";\n"
+        "        int32 r = 0;\n"
+        "        if (inl.root() == null) { r = r + 1; }\n"
+        "        if (inl.byteOffset() == (int64) 0) { r = r + 10; }\n"
+        "        if (big.root() != null) { r = r + 100; }\n"
+        "        if (big.byteOffset() == (int64) 0) { r = r + 1000; }\n"
+        "        String w = big.substring(10, 26);\n"
+        "        if (w.byteOffset() == (int64) 10) { r = r + 10000; }\n"
+        "        return r;\n"
         "    }\n"
         "}\n";
-    EXPECT_EQ(runI32(src), 12345);
+    EXPECT_EQ(runI32(src), 11111);
 }
 
-// String.mode is the owned/view discriminator: 0 = owned, 1 = view.
-TEST(StringClassTests, modeFieldOwnedVsView) {
-    auto src =
-        "package test;\n"
-        "import cajeta.lang.String;\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        String s = heap String();\n"
-        "        s.mode = 1;\n"
-        "        return s.mode;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 1);
-}
-
-// String.cachedCpLength is the lazy codepoint-count cache; -1 = not yet
-// computed. Pin that the field exists and round-trips a sentinel.
+// cachedCpLength stays a public field; -1 = not yet computed.
 TEST(StringClassTests, cachedCpLengthRoundTrips) {
     auto src =
         "package test;\n"
@@ -96,24 +95,37 @@ TEST(StringClassTests, cachedCpLengthRoundTrips) {
     EXPECT_EQ(runI32(src), -1);
 }
 
-// The four fields are independently addressable — write all, read all
-// back, fold into a single int32. Pins that no field overlap or
-// reordering broke layout.
-TEST(StringClassTests, allFieldsIndependentlyAddressable) {
+// Physical layout probe: read literals through the C-struct view. Pins
+// offsets {lenTag@8, aux@12, base@16, cachedCpLength@24} and both literal
+// forms (Inline packing; Static root with the bit29 tag).
+TEST(StringClassTests, taggedCoreLayoutProbe) {
     auto src =
         "package test;\n"
         "import cajeta.lang.String;\n"
         "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        String s = heap String();\n"
-        "        s.byteLength = 7;\n"
-        "        s.mode = 0;\n"
-        "        s.cachedCpLength = 5;\n"
-        "        return s.byteLength * 1000\n"
-        "             + s.mode * 100\n"
-        "             + s.cachedCpLength;\n"
+        "    public static String small() { return \"abc\"; }\n"
+        "    public static String large() {\n"
+        "        return \"the quick brown fox jumps over\";\n"
         "    }\n"
         "}\n";
-    // 7*1000 + 0*100 + 5 = 7005
-    EXPECT_EQ(runI32(src), 7005);
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto smallFn = jit->lookup<const TaggedStringLayout* (*)()>("small");
+    auto largeFn = jit->lookup<const TaggedStringLayout* (*)()>("large");
+
+    const TaggedStringLayout* s = smallFn();
+    ASSERT_NE(s, nullptr);
+    EXPECT_EQ(s->lenTag & 0x1FFFFFFF, 3);
+    EXPECT_EQ(s->lenTag >> 29, 0);              // Inline: no tag bits
+    const char* inlineText = (const char*) &s->aux;
+    EXPECT_EQ(std::string(inlineText, 3), "abc");
+    EXPECT_EQ(s->cachedCpLength, -1);
+
+    const TaggedStringLayout* l = largeFn();
+    ASSERT_NE(l, nullptr);
+    EXPECT_EQ(l->lenTag & 0x1FFFFFFF, 30);
+    EXPECT_NE(l->lenTag & (1 << 29), 0);        // Static root bit
+    EXPECT_EQ(l->aux, 0);                       // full window
+    ASSERT_NE(l->base, nullptr);
+    EXPECT_EQ(*(const int64_t*) l->base, 30);
+    EXPECT_EQ(std::string(l->base + 8, 30), "the quick brown fox jumps over");
 }

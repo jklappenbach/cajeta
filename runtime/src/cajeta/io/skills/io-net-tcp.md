@@ -42,7 +42,7 @@ SocketAddress ──#──> TcpStream.connect ──> #TcpStream  (impl ByteCha
                      /connectAsync                 ▲
                                                    │ also returned by accept*
 AsyncReader/AsyncWriter ── read/write through ──> ByteChannel ──┬─ TcpStream (plaintext)
-   (→ HttpServer/HttpClient, WebSocket)                         └─ TlsStream (TLS)
+   (→ dev.cajeta.http HttpServer/HttpClient, WebSocket)                         └─ TlsStream (TLS)
 ```
 
 - `TcpStream.connect(#SocketAddress)` / `connectAsync(#SocketAddress)` **take ownership**

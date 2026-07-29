@@ -213,13 +213,18 @@ public class Uri {
             || c == 43 || c == 45 || c == 46;
     }
 
-    /** Read byte `i` of `b` as an unsigned 0..255 int32. */
-    private static int32 byteAt(int8[] b, int32 i) {
+    /** Read byte `i` of `b` as an unsigned 0..255 int32 (view-aware). */
+    private static int32 byteAt(String b, int32 i) {
+        return ((int32) b.byteAt(i)) & 0xff;
+    }
+
+    /** Raw-array twin for helpers that scan a locally built buffer. */
+    private static int32 rawByteAt(int8[] b, int32 i) {
         return ((int32) b[i]) & 0xff;
     }
 
     /** Slice `[begin, end)` of `b` into a fresh owned String. */
-    private static #String slice(int8[] b, int32 begin, int32 end) {
+    private static #String slice(String b, int32 begin, int32 end) {
         int32 len = end - begin;
         if (len < 0) {
             len = 0;
@@ -227,7 +232,7 @@ public class Uri {
         int8[] out = heap int8[len];
         int32 i = 0;
         while (i < len) {
-            out[i] = b[begin + i];
+            out[i] = b.byteAt(begin + i);
             i = i + 1;
         }
         return heap String(#out, len);
@@ -268,16 +273,18 @@ public class Uri {
      *
      * The returned `Uri` owns its component strings; the source
      * `input` may drop independently afterward.
+     *
+     * @EntryPoint
      */
     public static #Uri parse(String input) {
         if (input == null) {
             throw heap MalformedUriException("null URI input", (int64) -1);
         }
-        int32 n = input.byteLength;
+        int32 n = input.byteLength();
         if (n == 0) {
             throw heap MalformedUriException("empty URI", (int64) -1);
         }
-        int8[] b = input.bytes;
+        String b = input;
 
         Uri u = heap Uri();
 
@@ -418,7 +425,7 @@ public class Uri {
      * bracket form is detected first so a ':' inside `[::1]` is not
      * mistaken for the port delimiter.
      */
-    private static void parseAuthority(Uri u, int8[] b, int32 start, int32 end) {
+    private static void parseAuthority(Uri u, String b, int32 start, int32 end) {
         int32 hostStart = start;
 
         // userinfo: up to the LAST '@' in the authority (an '@' may
@@ -495,7 +502,7 @@ public class Uri {
      * non-digit or an out-of-range value (> 65535) is a malformed
      * URI.
      */
-    private static void parsePort(Uri u, int8[] b, int32 start, int32 end) {
+    private static void parsePort(Uri u, String b, int32 start, int32 end) {
         if (start >= end) {
             // Empty port — leave hasExplicitPort false; scheme default
             // is applied by the caller.
@@ -524,7 +531,7 @@ public class Uri {
 
     /**
      * Copy `src`'s payload into `dst` starting at `at`, returning the
-     * heap cursor (`at + src.byteLength`). A tiny "append a String into
+     * heap cursor (`at + src.byteLength()`). A tiny "append a String into
      * a pre-sized int8[]" primitive — the language has no String
      * concatenation operator yet (NET-6.4 predates the `cajeta.text`
      * builders), so recomposition pre-computes the total length then
@@ -532,9 +539,9 @@ public class Uri {
      */
     private static int32 copyInto(int8[] dst, int32 at, String src) {
         int32 i = 0;
-        int32 m = src.byteLength;
+        int32 m = src.byteLength();
         while (i < m) {
-            dst[at + i] = src.bytes[i];
+            dst[at + i] = src.byteAt(i);
             i = i + 1;
         }
         return at + m;
@@ -598,28 +605,28 @@ public class Uri {
         // Two-pass: size the buffer, then fill it.
         int32 len = 0;
         if (this.hasScheme) {
-            len = len + this.scheme.byteLength + 1;          // scheme ":"
+            len = len + this.scheme.byteLength() + 1;          // scheme ":"
         }
         if (this.hasAuthority) {
             len = len + 2;                                   // "//"
             if (this.hasUserinfo) {
-                len = len + this.userinfo.byteLength + 1;    // userinfo "@"
+                len = len + this.userinfo.byteLength() + 1;    // userinfo "@"
             }
             if (this.hostIsIpv6) {
-                len = len + this.host.byteLength + 2;        // "[" host "]"
+                len = len + this.host.byteLength() + 2;        // "[" host "]"
             } else {
-                len = len + this.host.byteLength;
+                len = len + this.host.byteLength();
             }
             if (this.hasExplicitPort && this.port >= 0) {
                 len = len + 1 + Uri.digits(this.port);       // ":" port
             }
         }
-        len = len + this.path.byteLength;
+        len = len + this.path.byteLength();
         if (this.hasQuery) {
-            len = len + this.query.byteLength + 1;           // "?" query
+            len = len + this.query.byteLength() + 1;           // "?" query
         }
         if (this.hasFragment) {
-            len = len + this.fragment.byteLength + 1;        // "#" fragment
+            len = len + this.fragment.byteLength() + 1;        // "#" fragment
         }
 
         int8[] out = heap int8[len];
@@ -674,12 +681,12 @@ public class Uri {
      * `/./`/`/..`/`/.` into a bare `/` in place before re-testing.
      */
     private static #String removeDotSegments(String path) {
-        int32 n = path.byteLength;
+        int32 n = path.byteLength();
         // Mutable working copy of the input (steps B/C rewrite it).
         int8[] in = heap int8[n];
         int32 z = 0;
         while (z < n) {
-            in[z] = path.bytes[z];
+            in[z] = path.byteAt(z);
             z = z + 1;
         }
         // Output is never larger than the (possibly grown-by-one via the
@@ -700,8 +707,8 @@ public class Uri {
                 i = i + 2;
             } else if (Uri.startsAt(in, n, i, 47, 46, 47)) { // B: "/./"
                 i = i + 2;                                    // leave one '/'
-            } else if (i + 2 == n && Uri.byteAt(in, i) == 47
-                    && Uri.byteAt(in, i + 1) == 46) {         // B: "/." end
+            } else if (i + 2 == n && Uri.rawByteAt(in, i) == 47
+                    && Uri.rawByteAt(in, i + 1) == 46) {         // B: "/." end
                 in[i + 1] = (int8) 47;                        // -> "/"
                 i = i + 1;
             } else if (Uri.startsAt(in, n, i, 47, 46, 46)
@@ -710,17 +717,17 @@ public class Uri {
                 i = i + 2;
                 olen = Uri.popSegment(out, olen);
             } else if (Uri.startsAt(in, n, i, 47, 46, 46)
-                    && Uri.byteAt(in, i + 3) == 47) {         // C: "/../"
+                    && Uri.rawByteAt(in, i + 3) == 47) {         // C: "/../"
                 i = i + 3;                                    // leave one '/'
                 olen = Uri.popSegment(out, olen);
             } else if (Uri.isDot(in, n, i)) {                // D: "." or ".."
                 i = n;
             } else {                                          // E: move segment
                 int32 start = i;
-                if (Uri.byteAt(in, i) == 47) {
+                if (Uri.rawByteAt(in, i) == 47) {
                     i = i + 1;
                 }
-                while (i < n && Uri.byteAt(in, i) != 47) {
+                while (i < n && Uri.rawByteAt(in, i) != 47) {
                     i = i + 1;
                 }
                 int32 k = start;
@@ -744,26 +751,26 @@ public class Uri {
     private static boolean startsAt(int8[] b, int32 n, int32 i,
                                     int32 a, int32 c, int32 d) {
         return i + 2 < n
-            && Uri.byteAt(b, i) == a
-            && Uri.byteAt(b, i + 1) == c
-            && Uri.byteAt(b, i + 2) == d;
+            && Uri.rawByteAt(b, i) == a
+            && Uri.rawByteAt(b, i + 1) == c
+            && Uri.rawByteAt(b, i + 2) == d;
     }
 
     /** True iff bytes at `i` are the two given ASCII codes. */
     private static boolean startsAt2(int8[] b, int32 n, int32 i,
                                      int32 a, int32 c) {
         return i + 1 < n
-            && Uri.byteAt(b, i) == a
-            && Uri.byteAt(b, i + 1) == c;
+            && Uri.rawByteAt(b, i) == a
+            && Uri.rawByteAt(b, i + 1) == c;
     }
 
     /** True iff the remainder from `i` is exactly "." or "..". */
     private static boolean isDot(int8[] b, int32 n, int32 i) {
-        if (i + 1 == n && Uri.byteAt(b, i) == 46) {
+        if (i + 1 == n && Uri.rawByteAt(b, i) == 46) {
             return true;
         }
-        if (i + 2 == n && Uri.byteAt(b, i) == 46
-                && Uri.byteAt(b, i + 1) == 46) {
+        if (i + 2 == n && Uri.rawByteAt(b, i) == 46
+                && Uri.rawByteAt(b, i + 1) == 46) {
             return true;
         }
         return false;
@@ -777,7 +784,7 @@ public class Uri {
     private static int32 popSegment(int8[] out, int32 olen) {
         int32 j = olen;
         // back over the last segment's chars
-        while (j > 0 && Uri.byteAt(out, j - 1) != 47) {
+        while (j > 0 && Uri.rawByteAt(out, j - 1) != 47) {
             j = j - 1;
         }
         // back over the preceding '/' too
@@ -796,8 +803,8 @@ public class Uri {
      * last `/`, followed by `ref`.
      */
     private static #String merge(Uri base, String refPath) {
-        if (base.hasAuthority && base.path.byteLength == 0) {
-            int32 len = refPath.byteLength + 1;
+        if (base.hasAuthority && base.path.byteLength() == 0) {
+            int32 len = refPath.byteLength() + 1;
             int8[] out = heap int8[len];
             out[0] = (int8) 47;                              // '/'
             Uri.copyInto(out, 1, refPath);
@@ -806,19 +813,19 @@ public class Uri {
         // last '/' in base.path
         int32 lastSlash = -1;
         int32 i = 0;
-        int32 bn = base.path.byteLength;
+        int32 bn = base.path.byteLength();
         while (i < bn) {
-            if (Uri.byteAt(base.path.bytes, i) == 47) {
+            if (Uri.byteAt(base.path, i) == 47) {
                 lastSlash = i;
             }
             i = i + 1;
         }
         int32 keep = lastSlash + 1;                          // 0 if none
-        int32 len = keep + refPath.byteLength;
+        int32 len = keep + refPath.byteLength();
         int8[] out = heap int8[len];
         int32 k = 0;
         while (k < keep) {
-            out[k] = base.path.bytes[k];
+            out[k] = base.path.byteAt(k);
             k = k + 1;
         }
         Uri.copyInto(out, keep, refPath);
@@ -849,7 +856,7 @@ public class Uri {
         // (a default Uri() already has empty path and all flags false) rather
         // than parsing it.
         Uri ref = heap Uri();
-        if (reference != null && reference.byteLength > 0) {
+        if (reference != null && reference.byteLength() > 0) {
             ref = Uri.parse(reference);
         }
         Uri t = heap Uri();
@@ -874,7 +881,7 @@ public class Uri {
                 t.hasQuery = ref.hasQuery;
             } else {
                 Uri.copyAuthority(t, base);
-                if (ref.path.byteLength == 0) {
+                if (ref.path.byteLength() == 0) {
                     // Empty reference path: keep base path; query is the
                     // reference's if it has one, else the base's.
                     t.path = Uri.cloneStr(base.path);
@@ -886,7 +893,7 @@ public class Uri {
                         t.hasQuery = base.hasQuery;
                     }
                 } else {
-                    if (Uri.byteAt(ref.path.bytes, 0) == 47) {  // absolute
+                    if (Uri.byteAt(ref.path, 0) == 47) {  // absolute
                         t.path = Uri.removeDotSegments(ref.path);
                     } else {
                         String merged = Uri.merge(base, ref.path);
@@ -911,11 +918,11 @@ public class Uri {
      * aliasing would double-free when both source and result drop.
      */
     private static #String cloneStr(String s) {
-        int32 n = s.byteLength;
+        int32 n = s.byteLength();
         int8[] out = heap int8[n];
         int32 i = 0;
         while (i < n) {
-            out[i] = s.bytes[i];
+            out[i] = s.byteAt(i);
             i = i + 1;
         }
         return heap String(#out, n);
@@ -957,6 +964,8 @@ public class Uri {
      * Setting a `host` implies an authority. `port` is recorded as an
      * explicit port (it will be serialized); leave it unset to omit the
      * `:port` (the scheme default is *not* auto-emitted on build).
+     *
+     * @EntryPoint
      */
     public static #UriBuilder builder() {
         return heap UriBuilder();
@@ -971,6 +980,11 @@ public class Uri {
 public class UriBuilder {
     private Uri u;
 
+    /**
+     * A fresh builder with no components set.
+     *
+     * @EntryPoint
+     */
     public UriBuilder() {
         this.u = heap Uri();
     }
@@ -986,7 +1000,7 @@ public class UriBuilder {
     public UriBuilder userinfo(String userinfo) {
         // Clone so the builder's Uri owns the bytes independently of the
         // caller's argument (bare assignment is a borrow in this model).
-        this.u.userinfo = userinfo.substring(0, userinfo.byteLength);
+        this.u.userinfo = userinfo.substring(0, userinfo.byteLength());
         this.u.hasUserinfo = true;
         return this;
     }
@@ -997,7 +1011,7 @@ public class UriBuilder {
      * `toString` re-brackets it.
      */
     public UriBuilder host(String host) {
-        this.u.host = host.substring(0, host.byteLength);
+        this.u.host = host.substring(0, host.byteLength());
         this.u.hasAuthority = true;
         this.u.hostIsIpv6 = host.contains(":");
         return this;
@@ -1013,20 +1027,20 @@ public class UriBuilder {
 
     /** Set the path component (always present; "" is valid). */
     public UriBuilder path(String path) {
-        this.u.path = path.substring(0, path.byteLength);
+        this.u.path = path.substring(0, path.byteLength());
         return this;
     }
 
     /** Set the raw (already-encoded) query; marks query present. */
     public UriBuilder query(String query) {
-        this.u.query = query.substring(0, query.byteLength);
+        this.u.query = query.substring(0, query.byteLength());
         this.u.hasQuery = true;
         return this;
     }
 
     /** Set the fragment; marks fragment present. */
     public UriBuilder fragment(String fragment) {
-        this.u.fragment = fragment.substring(0, fragment.byteLength);
+        this.u.fragment = fragment.substring(0, fragment.byteLength());
         this.u.hasFragment = true;
         return this;
     }
@@ -1041,19 +1055,19 @@ public class UriBuilder {
         Uri r = heap Uri();
         // Clone each owned String so the returned Uri's lifetime is
         // independent of this builder (which still owns this.u).
-        r.scheme = this.u.scheme.substring(0, this.u.scheme.byteLength);
+        r.scheme = this.u.scheme.substring(0, this.u.scheme.byteLength());
         r.hasScheme = this.u.hasScheme;
         r.hasAuthority = this.u.hasAuthority;
-        r.userinfo = this.u.userinfo.substring(0, this.u.userinfo.byteLength);
+        r.userinfo = this.u.userinfo.substring(0, this.u.userinfo.byteLength());
         r.hasUserinfo = this.u.hasUserinfo;
-        r.host = this.u.host.substring(0, this.u.host.byteLength);
+        r.host = this.u.host.substring(0, this.u.host.byteLength());
         r.hostIsIpv6 = this.u.hostIsIpv6;
         r.port = this.u.port;
         r.hasExplicitPort = this.u.hasExplicitPort;
-        r.path = this.u.path.substring(0, this.u.path.byteLength);
-        r.query = this.u.query.substring(0, this.u.query.byteLength);
+        r.path = this.u.path.substring(0, this.u.path.byteLength());
+        r.query = this.u.query.substring(0, this.u.query.byteLength());
         r.hasQuery = this.u.hasQuery;
-        r.fragment = this.u.fragment.substring(0, this.u.fragment.byteLength);
+        r.fragment = this.u.fragment.substring(0, this.u.fragment.byteLength());
         r.hasFragment = this.u.hasFragment;
         return #r;
     }

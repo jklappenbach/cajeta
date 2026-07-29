@@ -11,7 +11,7 @@ package cajeta.codec.json;
  *
  * ## Usage
  * ```cajeta
- * #JsonArray arr = heap JsonArray();
+ * JsonArray arr = heap JsonArray();
  * arr.add(heap JsonValue().setNumber(1));
  * arr.add(heap JsonValue().setString("two"));
  *
@@ -35,7 +35,7 @@ public final class JsonArray {
      * automatically on `add`.
      *
      * ```cajeta
-     * #JsonArray arr = heap JsonArray();
+     * JsonArray arr = heap JsonArray();
      * arr.add(heap JsonValue().setNull());
      * ```
      */
@@ -62,7 +62,7 @@ public final class JsonArray {
      * exhausted.
      *
      * ```cajeta
-     * #JsonArray arr = heap JsonArray();
+     * JsonArray arr = heap JsonArray();
      * arr.add(heap JsonValue().setBoolean(true));
      * arr.add(heap JsonValue().setNumber(42));
      * ```
@@ -71,7 +71,7 @@ public final class JsonArray {
         if (this.sizeCount >= this.cap) {
             this.grow();
         }
-        this.data[this.sizeCount] = v;
+        this.data[this.sizeCount] #= v;
         this.sizeCount = this.sizeCount + 1;
     }
 
@@ -85,7 +85,7 @@ public final class JsonArray {
             dst[i] = this.data[i];
             i = i + 1;
         }
-        this.data = dst;
+        this.data #= dst;
         this.cap = newCap;
     }
 }

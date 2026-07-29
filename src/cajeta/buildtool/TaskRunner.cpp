@@ -242,6 +242,37 @@ namespace cajeta::buildtool {
             return llvm::Error::success();
         }
 
+        // A `-p name=value` value arrives as a string, but action params are typed
+        // JSON: `params.getBoolean("keep-cache")` returns nothing for the STRING
+        // "true", so an uncoerced overlay would look like it worked and change
+        // nothing. Coerce the shapes an action can ask for; anything else stays a
+        // string (getString sees it unchanged).
+        llvm::json::Value coerceCliParam(const std::string& raw) {
+            if (raw == "true")  return llvm::json::Value(true);
+            if (raw == "false") return llvm::json::Value(false);
+            llvm::StringRef s(raw);
+            long long i = 0;
+            if (!s.empty() && !s.getAsInteger(10, i)) {
+                return llvm::json::Value(static_cast<int64_t>(i));
+            }
+            double d = 0;
+            if (!s.empty() && !s.getAsDouble(d)) return llvm::json::Value(d);
+            return llvm::json::Value(raw);
+        }
+
+        // Overlay the invoked task's CLI `-p` params onto an action's params.
+        // The CLI wins over the manifest: an override that the task definition
+        // already pins is exactly what a user is trying to change.
+        //
+        // Every action in the task sees every override. Names are namespaced by
+        // the action catalog (each action reads only the params it documents), so
+        // an unrelated action simply never asks for the key.
+        void applyCliParamOverrides(llvm::json::Object& params, const TaskContext& ctx) {
+            for (const auto& [name, value] : ctx.cliParams()) {
+                params[name] = coerceCliParam(value);
+            }
+        }
+
         // Plain action invocation execution.
         llvm::Error runOneInvocation(
             const ActionInvocation& inv,
@@ -263,6 +294,7 @@ namespace cajeta::buildtool {
 
             auto resolvedParams = substituteParams(inv.params, breadcrumb, ctx);
             if (!resolvedParams) return resolvedParams.takeError();
+            applyCliParamOverrides(*resolvedParams, ctx);
 
             auto result = action->run(*resolvedParams, ctx);
             if (!result) {
@@ -410,6 +442,11 @@ namespace cajeta::buildtool {
             if (auto e = bindParams(task, cliParams, ctx)) {
                 return std::move(e);
             }
+            // Beyond the task's declared params, `-p` also reaches the params of
+            // the actions this task runs — so a builtin action's documented params
+            // (e.g. `clean -p keep-cache=true`) work without the project having to
+            // re-declare them in cajeta.json. See TaskContext::setCliParams.
+            ctx.setCliParams(cliParams.values);
 
             // Duplicate id check across this task's top-level
             // actions (parallel groups themselves have no id, but

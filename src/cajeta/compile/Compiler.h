@@ -5,6 +5,7 @@
 #pragma once
 
 #include <iostream>
+#include <mutex>
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Support/InitLLVM.h>
 #include <llvm/IR/LLVMContext.h>
@@ -20,6 +21,9 @@
 #include "CajetaParser.h"
 #include "CompilerMode.h"
 #include "CompilationContext.h"
+#include "CacheManifest.h"
+#include <optional>
+#include <functional>
 #include <string>
 #include <set>
 #include <vector>
@@ -123,15 +127,19 @@ namespace cajeta {
         // non-null, newly constructed Compilers bind to it and SKIP the
         // global-state reset/init (the StdlibCache owns that lifecycle).
         // nullptr in production — every Compiler is fully self-contained.
-        static llvm::LLVMContext* s_sharedContext;
+        // thread_local: the shared-context reuse is single-threaded by
+        // construction (JIT harness), so per-thread state makes off-owner
+        // threads take the fresh path automatically and removes the data race
+        // on these globals under concurrent compiles.
+        static thread_local llvm::LLVMContext* s_sharedContext;
         // One-time guard: the FIRST Compiler built under a shared context
         // resets + inits the global type tables in that context (priming);
         // every Compiler after reuses them. Reset to false when the shared
         // context is cleared so a later priming starts clean.
-        static bool s_sharedInitialized;
+        static thread_local bool s_sharedInitialized;
         // Armed only during a JIT-harness stdlib-reuse attempt; see
         // setReuseHazardArmed / ReuseHazardAbort. Always false in production.
-        static bool s_reuseHazardArmed;
+        static thread_local bool s_reuseHazardArmed;
         string cpu = "generic";
         string features = "";
         llvm::TargetMachine* targetMachine;
@@ -187,6 +195,19 @@ namespace cajeta {
 
         // Collected .o paths from Obj/Exe emissions, fed to the linker for Exe mode.
         std::vector<string> objectFiles;
+
+        // Incremental compilation (--cache-manifest=<path>): the build tool's
+        // clean/dirty designation + cache slots. Loaded and discriminator-
+        // checked at compile start; an empty optional afterwards means "no
+        // manifest / manifest rejected" — the full-rebuild path.
+        string cacheManifestPath;
+        std::optional<CacheManifest> cacheManifest;
+
+        // Load + validate the manifest, force the v1 interaction guards
+        // (treeShake=Off, linkMode=Full), and run the discriminator check.
+        // Returns false only on a hard manifest error (malformed file) —
+        // a discriminator mismatch just warns and drops the manifest.
+        bool setupCacheManifest();
 
         // --classpath archive paths. Set via CLI (one or more
         // --classpath=a.cja,b.cja args; comma-separates and repeats both
@@ -294,10 +315,16 @@ namespace cajeta {
         Compiler(int argc, const char* argv[]) : Compiler() { }
 
         Compiler() {
-            llvm::InitializeAllTargets();
-            llvm::InitializeAllTargetMCs();
-            llvm::InitializeAllAsmPrinters();
-            llvm::InitializeAllAsmParsers();
+            // LLVM target registration writes process-global registries
+            // (getTheX86Target() &c.); running it in every ctor races when
+            // Compilers are constructed concurrently. Do it exactly once.
+            static std::once_flag llvmTargetInitOnce;
+            std::call_once(llvmTargetInitOnce, [] {
+                llvm::InitializeAllTargets();
+                llvm::InitializeAllTargetMCs();
+                llvm::InitializeAllAsmPrinters();
+                llvm::InitializeAllAsmParsers();
+            });
             targetTriple = llvm::sys::getDefaultTargetTriple();
             if (s_sharedContext) {
                 // Stdlib-reuse path (tests): a process-global context + the
@@ -345,8 +372,33 @@ namespace cajeta {
         // codegen/emit. No entry method. Diagnostics surface as the compile
         // path's do (syntax via the JSON/console listener; semantic via thrown
         // cajeta::Exception caught by the caller).
+        // skipContextRegistration (lint-server §4): the sibling context is
+        // already warm in the global registries (restored from the context
+        // baseline), so skip the registerLintContext sweep and lint only the
+        // target. afterContextRegistration, when set, is invoked right after a
+        // sweep actually runs and BEFORE the target is parsed — the warm-lint
+        // resweep path captures the context baseline there so the snapshot
+        // excludes the target.
         void lint(const string& file, const string& sourceRoot = "",
-                  const string& shadow = "");
+                  const string& shadow = "",
+                  bool skipContextRegistration = false,
+                  const std::function<void()>& afterContextRegistration = {});
+
+        // Whole-root xref export (ide-symbol-index §2.0.3): parse every .cajeta
+        // under `root` — continuing past broken files — run the resolution
+        // passes lint runs, and write ONE xref document to flags.emitXref. For
+        // cold indexing of a project, a dependency's sources, or the stdlib; no
+        // entry method, no codegen. Returns how many files failed to parse.
+        int lintRoot(const string& root);
+
+        // Lint-mode xref stream (ide-symbol-index §2.0.2): emit the records
+        // captured for the linted file as NDJSON on stderr — the diagnostic
+        // channel — so the plugin's per-edit invocation gets diagnostics AND
+        // xref from one subprocess (§1.5.2). `shadow`, when set, is the
+        // ORIGINAL path the staged buffer stands in for; records are reported
+        // against it. No-op unless flags.emitXref asked for the stream ("-").
+        void emitLintXrefStream(const string& file, const string& sourceRoot,
+                                const string& shadow);
 
         // Ensure the Compiler's dedicated stdlib module exists and is
         // parsed + prototype-built. Idempotent — created lazily on
@@ -365,6 +417,34 @@ namespace cajeta {
         static bool stdlibPackageParsed(const std::string& pkg);
         static const std::set<std::string>& stdlibParsedPackages();
         static void resetLazyStdlibState();
+
+        // lint-server sibling-context reuse (spec §4): snapshot/restore the
+        // lazy-stdlib bookkeeping so the context baseline can reinstate a
+        // sibling-triggered lazy parse (e.g. a `cajeta.math` importer) rather
+        // than resetLazyStdlibState's roll-back-to-eager-floor. Opaque handle.
+        struct LazyStdlibState {
+            std::set<std::string> parsedPackages;
+            std::set<std::string> prescanned;
+            std::set<std::string> parsed;
+            std::vector<std::string> queue;
+        };
+        static LazyStdlibState captureLazyStdlibState();
+        static void restoreLazyStdlibState(const LazyStdlibState& s);
+
+        // compile-cache Unit 2 (spec §2/§4) — the persistent stdlib-PRIME
+        // cache key. discriminator = compiler version + the stdlib-
+        // codegen-affecting flag set (sorted; order-insensitive);
+        // digest = content hash of the EMBEDDED stdlib table + the
+        // eager/lazy prelude split. Any stdlib source edit, version bump,
+        // codegen-flag change, or prelude change re-keys. Pure and cheap
+        // (one pass over the embedded bytes); callers are the prime seam
+        // (test harness) and, later, the prime-once step + `cajeta clean`.
+        struct PrimeCacheKey {
+            std::string discriminator;
+            std::string digest;
+        };
+        static PrimeCacheKey stdlibPrimeCacheKey(
+            const CompilerFlags& flags = CompilerFlags{});
 
         const string& getCpu() const {
             return cpu;
@@ -477,6 +557,15 @@ namespace cajeta {
         // scan can't see.
         void setPruneUber(bool v) { pruneUber = v; }
         void setSkillRootOverride(string s) { skillRootOverride = std::move(s); }
+        void setCacheManifestPath(string p) { cacheManifestPath = std::move(p); }
+
+        // The compiler's cache discriminator for the current configuration:
+        // CAJETA_VERSION + cacheFlagPairs + active profile + a content hash
+        // per classpath archive (a changed dep must re-key the cache — source
+        // digests don't see dep edits). Valid once flags/emit/target/
+        // classpath/profile are final; `--print-cache-discriminator` exposes
+        // it so the build tool never re-derives flag resolution.
+        string computeOwnCacheDiscriminator() const;
         bool getPruneUber() const { return pruneUber; }
 
         const string& getOutputPath() const { return outputPath; }

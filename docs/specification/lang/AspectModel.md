@@ -26,10 +26,12 @@ core. (cazo was renamed primavera; the policy layer it owns is unchanged.)
 | Compile-time graph resolution, generated bootstrap, ownership integration | **core** |
 | `@PostConstruct` / `@PreDestroy` lifecycle | **core** |
 | Aspect weaving (`@Aspect` / advice / `@Order` / `@Original`) | **core** |
-| Test override seam (`@Inject` runtime override) | **core** — see [`../../DI-override-hook.md`](../../DI-override-hook.md) |
+| Test override seam (`@Inject` runtime override) | **core** — see [`../../DI-override-hook.md`](DI-override-hook.md) |
+| `@Profile` — deployment-profile component filtering (`--profile=<name>`) | **core** (`cajeta.aot`) |
+| `@TestComponent` — compile-time test-double masking (`--profile=test`) | **core** (`cajeta.aot`) |
 | Request / session scope | **primavera** policy |
 | Web request/response model, `@RestServer`, handler API, pluggable executor | **primavera** policy |
-| Stereotypes (`@Repository`, `@Service`), deployment `@Profile`, `@TestComponent` | **primavera** policy |
+| Stereotypes (`@Repository`, `@Service`) | **primavera** policy |
 
 ## Goals
 
@@ -163,7 +165,22 @@ container — direct calls.
 seam (`--profile=test`) lets a harness substitute a mock per type, keyed on the
 type's `reflect.Class` pointer identity, with production builds emitting the
 unchanged zero-cost path. This seam is core (any framework or test harness can use
-it). Full design: [`../../DI-override-hook.md`](../../DI-override-hook.md).
+it). Full design: [`../../DI-override-hook.md`](DI-override-hook.md).
+
+### Profiles and test-component masking
+
+`@Profile("name", ...)` scopes a `@Component` to one or more deployment profiles
+(any-of): the resolver includes it only when `--profile=<name>` matches one of them;
+a component with no `@Profile` is profile-neutral (always included).
+
+`@TestComponent` declares a test double. Under `--profile=test` it is included and
+**masks every non-test `@Component` that implements an interface the double also
+implements** — the double takes over that interface's `@Inject` sites. Masking is
+interface-scoped: a double with no interface masks nothing (it is injectable only by
+its own concrete type), and a `@Component` injected by concrete type is not masked.
+Outside test mode, `@TestComponent`s are dropped. Both annotations are declared in
+`cajeta.aot`; the compiler recognizes them by short name. Worked end-to-end example:
+`samples/profile-di/` (one source built under `--profile=prod`/`dev`/`test`).
 
 ---
 

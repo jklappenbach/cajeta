@@ -20,13 +20,13 @@ import cajeta.io.file.FileWriter;
  *
  * ## Usage
  * ```cajeta
- * #JsonWriter w = heap JsonWriter();
+ * JsonWriter w = heap JsonWriter();
  * w.beginObject()
  *  .key("name").writeString("Ada")
  *  .key("age").writeNumber((int64) 36)
  *  .key("admin").writeBoolean(true)
  *  .endObject();
- * #int8[] json = w.toBytes();      // {"name":"Ada","age":36,"admin":true}
+ * int8[] json = w.toBytes();      // {"name":"Ada","age":36,"admin":true}
  * ```
  */
 public final class JsonWriter {
@@ -43,9 +43,9 @@ public final class JsonWriter {
      * Create an empty writer with a 64-byte buffer that grows on demand.
      *
      * ```cajeta
-     * #JsonWriter w = heap JsonWriter();
+     * JsonWriter w = heap JsonWriter();
      * w.beginArray().writeNumber((int64) 1).writeNumber((int64) 2).endArray();
-     * #int8[] json = w.toBytes();   // [1,2]
+     * int8[] json = w.toBytes();   // [1,2]
      * ```
      */
     public JsonWriter() {
@@ -67,7 +67,7 @@ public final class JsonWriter {
      * call with `endObject` and emit members as `key`/value pairs.
      *
      * ```cajeta
-     * #JsonWriter w = heap JsonWriter();
+     * JsonWriter w = heap JsonWriter();
      * w.beginObject().key("ok").writeBoolean(true).endObject();   // {"ok":true}
      * ```
      */
@@ -91,7 +91,7 @@ public final class JsonWriter {
      * call with `endArray`; separators between elements are automatic.
      *
      * ```cajeta
-     * #JsonWriter w = heap JsonWriter();
+     * JsonWriter w = heap JsonWriter();
      * w.beginArray().writeString("a").writeString("b").endArray();   // ["a","b"]
      * ```
      */
@@ -144,7 +144,7 @@ public final class JsonWriter {
      * Emit a signed integer in base-10 (e.g. `-42`).
      *
      * ```cajeta
-     * #JsonWriter w = heap JsonWriter();
+     * JsonWriter w = heap JsonWriter();
      * w.writeNumber((int64) -42);   // -42
      * ```
      */
@@ -184,7 +184,7 @@ public final class JsonWriter {
      * round-trips as a float (not an int) through any JSON parser.
      *
      * ```cajeta
-     * #JsonWriter w = heap JsonWriter();
+     * JsonWriter w = heap JsonWriter();
      * w.writeNumber(3.5);   // 3.5
      * ```
      *
@@ -261,16 +261,20 @@ public final class JsonWriter {
 
     /**
      * Emit a quoted, escaped JSON string from a `String` (delegates
-     * to the byte-buffer form against `.bytes` + `.byteLength`).
+     * to the byte-buffer form against `.bytes` + `.byteLength()`).
      * Preferred for hand-written user code.
      *
      * ```cajeta
-     * #JsonWriter w = heap JsonWriter();
+     * JsonWriter w = heap JsonWriter();
      * w.writeString("hi \"there\"");   // "hi \"there\""
      * ```
      */
     public JsonWriter writeString(String s) {
-        return this.writeString(s.bytes, s.byteLength);
+        if (s.root() == null || s.byteOffset() != (int64) 0) {
+            int8[] w = s.toBytes();
+            return this.writeString(w, s.byteLength());
+        }
+        return this.writeString(s.root(), s.byteLength());
     }
 
     /**
@@ -293,12 +297,16 @@ public final class JsonWriter {
      * `String` `writeString` overload.
      *
      * ```cajeta
-     * #JsonWriter w = heap JsonWriter();
+     * JsonWriter w = heap JsonWriter();
      * w.beginObject().key("id").writeNumber((int64) 7).endObject();   // {"id":7}
      * ```
      */
     public JsonWriter key(String name) {
-        return this.key(name.bytes, name.byteLength);
+        if (name.root() == null || name.byteOffset() != (int64) 0) {
+            int8[] w = name.toBytes();
+            return this.key(w, name.byteLength());
+        }
+        return this.key(name.root(), name.byteLength());
     }
 
     /**
@@ -355,9 +363,9 @@ public final class JsonWriter {
      * forgiving.
      *
      * ```cajeta
-     * #JsonWriter w = heap JsonWriter();
+     * JsonWriter w = heap JsonWriter();
      * w.writeValue(parsed);            // re-emits the tree as JSON
-     * #int8[] json = w.toBytes();
+     * int8[] json = w.toBytes();
      * ```
      */
     public JsonWriter writeValue(JsonValue v) {
@@ -411,9 +419,9 @@ public final class JsonWriter {
      * transfers to the caller.
      *
      * ```cajeta
-     * #JsonWriter w = heap JsonWriter();
+     * JsonWriter w = heap JsonWriter();
      * w.beginArray().writeBoolean(true).endArray();
-     * #int8[] json = w.toBytes();   // [true]  — w is now empty again
+     * int8[] json = w.toBytes();   // [true]  — w is now empty again
      * ```
      */
     public #int8[] toBytes() {
@@ -438,7 +446,7 @@ public final class JsonWriter {
      * would dominate.
      *
      * ```cajeta
-     * #JsonWriter w = heap JsonWriter();
+     * JsonWriter w = heap JsonWriter();
      * w.beginObject().key("ok").writeBoolean(true).endObject();
      * w.writeTo(sink);   // {"ok":true} written; w is empty again
      * ```
@@ -518,7 +526,7 @@ public final class JsonWriter {
             dst[i] = this.buf[i];
             i = i + 1;
         }
-        this.buf = dst;
+        this.buf #= dst;
         this.cap = newCap;
     }
 }

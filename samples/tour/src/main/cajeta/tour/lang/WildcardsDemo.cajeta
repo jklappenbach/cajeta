@@ -136,8 +136,15 @@ public class WildcardsDemo extends DemoClass {
     // upcast through a bespoke base class. The body uses field-read
     // projection to call `.tag()` against the Animal bound.
     public void wildcardParameterPolymorphism() {
-        WildBox<Dog> bDog = heap WildBox<Dog>(heap Dog());
-        WildBox<Cat> bCat = heap WildBox<Cat>(heap Cat());
+        // The boxed values are bound to locals that OUTLIVE the boxes: the
+        // WildBox ctor borrow-stores its argument (`this.value = v`), so an
+        // inline `heap Dog()` temporary would be dropped at ctor exit and
+        // leave `value` dangling — the deferred-soundness trap
+        // (borrow field-stores are accepted until reference types land).
+        Dog wd = heap Dog();
+        Cat wc = heap Cat();
+        WildBox<Dog> bDog = heap WildBox<Dog>(wd);
+        WildBox<Cat> bCat = heap WildBox<Cat>(wc);
         int32 dogTag = WildcardsDemo.inspect(bDog);
         int32 catTag = WildcardsDemo.inspect(bCat);
         System.stdout.println("  inspect(WildBox<Dog>) = " + dogTag

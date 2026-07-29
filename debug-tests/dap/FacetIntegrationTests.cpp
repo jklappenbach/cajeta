@@ -49,9 +49,9 @@ struct Facets { std::string alloc, ownership, lifetime; };
 // 6 public class Demo {
 // 7     public static int32 main() {
 // 8         int32 n = 5;
-// 9         Box owned = new Box(1);
+// 9         Box owned = heap Box(1);
 // 10        Box alias = owned;
-// 11        Box gone = new Box(2);
+// 11        Box gone = heap Box(2);
 // 12        Box taken = #gone;
 // 13        int32 here = 0;
 // 14        return n + owned.v + alias.v + taken.v + here;   <-- breakpoint
@@ -66,12 +66,37 @@ const char* kProg =
     "public class Demo {\n"
     "    public static int32 main() {\n"
     "        int32 n = 5;\n"
-    "        Box owned = new Box(1);\n"
+    "        Box owned = heap Box(1);\n"
     "        Box alias = owned;\n"
-    "        Box gone = new Box(2);\n"
+    "        Box gone = heap Box(2);\n"
     "        Box taken = #gone;\n"
     "        int32 here = 0;\n"
     "        return n + owned.v + alias.v + taken.v + here;\n"
+    "    }\n"
+    "}\n";
+
+// `stack C(...)` allocates the instance in the caller's frame, but the local's
+// slot is still a pointer, so the StackField/HeapField split — a statement about
+// the SLOT — reported `onStack` as heap in the Variables view (live report
+// 2026-07-22, tour's AllocationDemo). The facet describes the allocation site,
+// so the creator's stack flag has to win. Both creator forms are covered:
+// `stack Box(1)` (NewExpression) and `stack Box { v: 2 }` (aggregate).
+// 7        Box onStack = stack Box(1);
+// 8        Box onStackAgg = stack Box { v: 2 };
+// 9        Box onHeap = heap Box(3);
+// 10       return onStack.v + onStackAgg.v + onHeap.v;   <-- breakpoint
+const char* kStackAllocProg =
+    "package demo;\n"
+    "public class Box {\n"
+    "    int32 v;\n"
+    "    Box(int32 x) { this.v = x; }\n"
+    "}\n"
+    "public class Demo {\n"
+    "    public static int32 main() {\n"
+    "        Box onStack = stack Box(1);\n"
+    "        Box onStackAgg = stack Box { v: 2 };\n"
+    "        Box onHeap = heap Box(3);\n"
+    "        return onStack.v + onStackAgg.v + onHeap.v;\n"
     "    }\n"
     "}\n";
 
@@ -91,7 +116,7 @@ const char* kBorrowProg =
     "        return r;\n"
     "    }\n"
     "    public static int32 main() {\n"
-    "        Box owned = new Box(8);\n"
+    "        Box owned = heap Box(8);\n"
     "        return peek(owned);\n"
     "    }\n"
     "}\n";
@@ -189,6 +214,31 @@ TEST(FacetIntegration, AllAxesAtAStop) {
 
 // The borrow ownership role, exercised via a non-primitive parameter (the
 // callee borrows it; the caller keeps ownership).
+TEST(FacetIntegration, StackCreatorReportsStackAlloc) {
+    TempProgram p("demo", "Demo.cajeta", kStackAllocProg);
+    auto f = facetsAtStop(p, /*line=*/11);
+
+    std::cout << "=== facets at stop (stack alloc) ===\n";
+    for (auto& [name, fc] : f) {
+        std::cout << "  " << name << ": alloc=" << fc.alloc
+                  << " ownership=" << fc.ownership
+                  << " lifetime=" << fc.lifetime << "\n";
+    }
+
+    ASSERT_FALSE(f.empty()) << "no variables captured at the stop";
+
+    ASSERT_TRUE(f.count("onStack"));
+    EXPECT_EQ(f["onStack"].alloc, "stack");
+
+    ASSERT_TRUE(f.count("onStackAgg"));
+    EXPECT_EQ(f["onStackAgg"].alloc, "stack");
+
+    // The heap sibling must be unaffected — the fix keys off the creator, not
+    // off the class-ness of the type.
+    ASSERT_TRUE(f.count("onHeap"));
+    EXPECT_EQ(f["onHeap"].alloc, "heap");
+}
+
 TEST(FacetIntegration, BorrowParameter) {
     TempProgram p("demo", "Demo.cajeta", kBorrowProg);
     auto f = facetsAtStop(p, /*line=*/8);

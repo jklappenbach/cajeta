@@ -1,5 +1,7 @@
 #include "cajeta/dbg/DebugController.h"
 
+#include <iostream>
+
 // CP6f-2d: the process-global stop coordinator lives in the C runtime
 // (cajeta_runtime.c). The controller drives it: open a stop round before the
 // primary blocks so the other carriers quiesce at their safepoints/hand-off,
@@ -50,6 +52,21 @@ namespace cajeta::dbg {
         return exceptionArmed;
     }
 
+    void DebugController::armEntry() {
+        std::lock_guard<std::mutex> lock(mutex);
+        entryArmed = true;
+    }
+
+    void DebugController::disarmEntry() {
+        std::lock_guard<std::mutex> lock(mutex);
+        entryArmed = false;
+    }
+
+    bool DebugController::isEntryArmed() const {
+        std::lock_guard<std::mutex> lock(mutex);
+        return entryArmed;
+    }
+
     void DebugController::onSafepoint(int32_t locId, long fiberId) {
         onSafepoint(locId, fiberId, nullptr);
     }
@@ -57,7 +74,52 @@ namespace cajeta::dbg {
     void DebugController::onSafepoint(int32_t locId, long fiberId,
                                      void* frameTop) {
         std::unique_lock<std::mutex> lock(mutex);
-        if (armed.count(locId) == 0) return;
+        // stopOnEntry: the first safepoint reached IS the entry method's first
+        // executable statement, so an entry stop needs no line resolution.
+        // Consumed here under the lock so it fires exactly once.
+        const bool entryStop = entryArmed;
+        if (entryStop) entryArmed = false;
+        const bool breakpointStop = armed.count(locId) != 0;
+
+        // dap-stepping: does this safepoint satisfy the pending step? Only on
+        // the origin fiber, only at a different line (multi-statement lines
+        // stop once), depth per verb. An armed breakpoint at this safepoint
+        // wins over the step (checked first below). No providers -> never.
+        bool stepStop = false;
+        if (!entryStop && !breakpointStop && stepPending && depthOfFrame
+            && lineOfLoc) {
+            // Every candidate is traced with WHY it was rejected — a silent
+            // gate is how 9.1 hid (no trace at all meant no candidate ever
+            // reached evaluation).
+            const int depth = depthOfFrame(frameTop);
+            int reason = 0;
+            if (fiberId != stepFiber) reason = 1;
+            else if (lineOfLoc(locId) == stepOriginLine) reason = 2;
+            // Chain identity guards against a FOREIGN chain stealing the stop
+            // — but only while we are still at or below the origin frame. A
+            // step that RETURNS PAST the origin (step-out, or step-over whose
+            // method returns) legitimately leaves that frame behind, so
+            // demanding containment there made those steps unsatisfiable: the
+            // program ran to exit and the session died (found live 2026-07-22,
+            // "stepping up crashes debug"). Same-fiber is already required,
+            // and carriers no longer impersonate fiber 0, so a shallower
+            // candidate on this fiber is genuinely our caller.
+            else if (containsFrame && stepOriginFrame
+                     && depth >= stepOriginDepth
+                     && !containsFrame(frameTop, stepOriginFrame)) reason = 3;
+            if (reason == 0) {
+                switch (stepKind) {
+                    case StepKind::In:   stepStop = true; break;
+                    case StepKind::Over: stepStop = depth <= stepOriginDepth; break;
+                    case StepKind::Out:  stepStop = depth < stepOriginDepth; break;
+                }
+            }
+            if (stepTrace.size() >= 64) stepTrace.erase(stepTrace.begin());
+            stepTrace.push_back(StepDecision{locId, fiberId, depth,
+                                             stepOriginDepth, (int) stepKind,
+                                             stepStop, reason});
+        }
+        if (!entryStop && !breakpointStop && !stepStop) return;
 
         // CP6f-2d: open the cross-carrier stop round BEFORE blocking so every
         // other carrier observes it (__cajeta_stop_is_requested) at its next
@@ -67,7 +129,12 @@ namespace cajeta::dbg {
         // an armed safepoint first this round), request() returns 0 — we are NOT
         // the primary. Don't publish a competing stop; return so the runtime
         // safepoint parks us as an ordinary secondary (__cajeta_stop_park).
-        if (__cajeta_stop_request() == 0) return;
+        if (__cajeta_stop_request() == 0) {
+            // Not the primary this round, so we did NOT take the stop. Put the
+            // entry arm back rather than swallowing it.
+            if (entryStop) entryArmed = true;
+            return;
+        }
         // How many carriers must quiesce before inspection: every OTHER carrier
         // in the pool (this primary parks here, in the controller, not the
         // coordinator). <=0 (single carrier / no pool) makes the barrier a
@@ -75,12 +142,25 @@ namespace cajeta::dbg {
         __cajeta_stop_set_expected(__cajeta_carrier_count_get() - 1);
 
         // Park: publish the stop, wake the debugger thread, wait for resume.
+        // Any park consumes the pending step (breakpoint/entry parks clear it;
+        // a step park is it completing).
+        stepPending = false;
         stopped = true;
         resumeRequested = false;
         current = StopEvent{locId, fiberId, frameTop};
+        current.reason = entryStop        ? StopEvent::StopReason::Entry
+                         : breakpointStop ? StopEvent::StopReason::Breakpoint
+                                          : StopEvent::StopReason::Step;
         stoppedCv.notify_all();
         resumeCv.wait(lock, [this] { return resumeRequested; });
         stopped = false;
+    }
+
+    std::vector<DebugController::StepDecision> DebugController::drainStepTrace() {
+        std::lock_guard<std::mutex> lock(mutex);
+        std::vector<StepDecision> out;
+        out.swap(stepTrace);
+        return out;
     }
 
     void DebugController::onException(void* throwable, long fiberId,
@@ -101,6 +181,7 @@ namespace cajeta::dbg {
 
         // Park with reason=Exception. locId is -1 (no safepoint loc); the DAP
         // layer reads the throwing line from the innermost frame's current_loc.
+        stepPending = false;   // an exception park clears any pending step
         stopped = true;
         resumeRequested = false;
         current = StopEvent{-1, fiberId, frameTop,
@@ -162,11 +243,44 @@ namespace cajeta::dbg {
         // stale stop is seen again, manifesting as a phantom second `stopped`).
         stopped = false;
         resumeRequested = true;
+        // A plain continue cancels any pending step (a park already cleared
+        // it in the normal flow; this covers a continue issued in between).
+        stepPending = false;
         resumeCv.notify_all();
         // CP6f-2d: release every secondary/hand-off-parked carrier together
         // (resume-all, spec §2.5). Clears stop_requested so no carrier re-parks
         // at its next safepoint, and wakes all parked carriers.
         __cajeta_stop_clear();
+    }
+
+    void DebugController::resumeWithStep(StepKind kind, long fiberId,
+                                         int originDepth, int originLine,
+                                         void* originFrame) {
+        std::lock_guard<std::mutex> lock(mutex);
+        stepPending = true;
+        stepKind = kind;
+        stepFiber = fiberId;
+        stepOriginDepth = originDepth;
+        stepOriginLine = originLine;
+        stepOriginFrame = originFrame;
+        std::cerr << "[step-armed] kind=" << (int) kind << " fiber=" << fiberId
+                  << " originDepth=" << originDepth
+                  << " originFrame=" << originFrame << "\n";
+        // Same release sequence as resume() (which we can't call here — it
+        // would clear the step we just armed).
+        stopped = false;
+        resumeRequested = true;
+        resumeCv.notify_all();
+        __cajeta_stop_clear();
+    }
+
+    void DebugController::setStepProviders(
+        std::function<int(void*)> depthFn, std::function<int(int32_t)> lineFn,
+        std::function<bool(void*, void*)> containsFn) {
+        std::lock_guard<std::mutex> lock(mutex);
+        depthOfFrame = std::move(depthFn);
+        lineOfLoc = std::move(lineFn);
+        containsFrame = std::move(containsFn);
     }
 
     bool DebugController::isStopped() const {

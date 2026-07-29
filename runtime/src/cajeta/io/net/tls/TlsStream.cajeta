@@ -27,8 +27,8 @@ public class TlsStream implements ByteChannel {
     int8[] buf;
 
     private TlsStream(#TcpStream stream, #TlsConnection tls) {
-        this.stream = #stream;
-        this.tls = #tls;
+        this.stream #= stream;
+        this.tls #= tls;
         this.buf = heap int8[16384];
     }
 

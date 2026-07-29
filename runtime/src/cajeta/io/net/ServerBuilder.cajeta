@@ -114,6 +114,8 @@ public class ServerBuilder {
      * [`Server.builder()`](Server.cajeta#builder). Starts with the
      * default model (fiber-per-connection), no address, no handler, and
      * the unset (platform-default) backlog.
+     *
+     * @EntryPoint
      */
     public ServerBuilder() {
         this.address = null;
@@ -148,7 +150,7 @@ public class ServerBuilder {
      * @return `this`, for chaining.
      */
     public ServerBuilder bindAddress(SocketAddress addr) {
-        this.address = addr;
+        this.address #= addr;
         return this;
     }
 
@@ -164,7 +166,7 @@ public class ServerBuilder {
      */
     public ServerBuilder model(ServerModel m) {
         if (m != null) {
-            this.serverModel = m;
+            this.serverModel #= m;
         }
         return this;
     }
@@ -231,6 +233,7 @@ public class ServerBuilder {
      *
      * @return an owned, bound — but not yet serving — server of the
      *         selected model.
+     * @EntryPoint
      */
     public #Server build() {
         if (this.address == null) {

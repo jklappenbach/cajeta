@@ -17,6 +17,22 @@ package tour;
 // work: real abstract-method support so forgetting an override is a
 // compile-time error.
 public class DemoClass {
+    // Self-check counters, shared by every demo. check() below is the
+    // tour's assertion: demos verify their own output instead of only
+    // printing it, and Tour.main() turns any failure into a nonzero
+    // exit code — so `cajeta run` doubles as the tour's test run.
+    public static int32 checks = 0;
+    public static int32 failures = 0;
+
     public void execute() {
+    }
+
+    // Assert `cond`; quiet when it holds, loud when it doesn't.
+    public void check(boolean cond, String what) {
+        DemoClass.checks = DemoClass.checks + 1;
+        if (!cond) {
+            DemoClass.failures = DemoClass.failures + 1;
+            System.stdout.println("  FAIL: " + what);
+        }
     }
 }

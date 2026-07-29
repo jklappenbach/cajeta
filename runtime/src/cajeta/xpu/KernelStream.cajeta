@@ -32,6 +32,8 @@ public final class KernelStream {
     /**
      * The per-thread default stream (handle 0). Always returns the same
      * stream for the same thread; safe to retain across launches.
+     *
+     * @EntryPoint
      */
     public static #KernelStream current() {
         KernelStream s = heap KernelStream(nativeCurrent());
@@ -43,6 +45,8 @@ public final class KernelStream {
      * hipStream) on CUDA/HIP, the default stream elsewhere. Async copies and
      * launches submitted to it queue independently of other streams; the caller
      * owns it and must `destroy()` it when done.
+     *
+     * @EntryPoint
      */
     public static #KernelStream create() {
         KernelStream s = heap KernelStream(nativeCreate());

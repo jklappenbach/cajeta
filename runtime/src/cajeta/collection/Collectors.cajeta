@@ -20,7 +20,7 @@ package cajeta.collection;
  * ## Example
  * ```cajeta
  * // Stream → collect → owned list:
- * int32[] data = { 3, 1, 2 };
+ * int32[] data = [ 3, 1, 2 ];
  * #ArrayList<int32> xs = (heap ArrayStream<int32>(data, 3))
  *     .collect(Collectors.toList<int32>());
  * ```
@@ -38,7 +38,7 @@ public class Collectors {
      *
      * ```cajeta
      * // Drain a `Stream` into an owned list:
-     * int32[] data = { 3, 1, 2 };
+     * int32[] data = [ 3, 1, 2 ];
      * #ArrayList<int32> xs = (heap ArrayStream<int32>(data, 3))
      *     .collect(Collectors.toList<int32>());
      *
@@ -48,6 +48,8 @@ public class Collectors {
      *     .map<int64>((x) -> x * 2L)
      *     .collect(Collectors.toList<int64>());
      * ```
+     *
+     * @EntryPoint
      */
     public static #Collector<T, ArrayList<T>> toList<T>() {
         return heap Collector<T, ArrayList<T>>(

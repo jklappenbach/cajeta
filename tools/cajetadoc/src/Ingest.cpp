@@ -191,6 +191,8 @@ private:
 
         if (td->classDeclaration()) {
             buildClassLike(td->classDeclaration(), pkg, TypeKind::Class, out);
+        } else if (td->recordDeclaration()) {
+            buildRecord(td->recordDeclaration(), pkg, out);
         } else if (td->interfaceDeclaration()) {
             buildInterface(td->interfaceDeclaration(), pkg, out);
         } else if (td->enumDeclaration()) {
@@ -222,6 +224,29 @@ private:
         fillSourceRef(cls, relPath_, out.loc);
         collectExtendsImplements(cls, out);
         if (cls->classBody()) buildClassBody(cls->classBody(), out);
+    }
+
+    // Records (records-spec) reuse classBody; EXTENDS/IMPLEMENTS are typeLists,
+    // walked generically the same way collectExtendsImplements does for classes.
+    void buildRecord(CajetaParser::RecordDeclarationContext* r, const std::string&, Type& out) {
+        out.kind = TypeKind::Record;
+        out.name = r->identifier() ? r->identifier()->getText() : "";
+        out.typeParams = collectTypeParams(r->typeParameters());
+        fillSourceRef(r, relPath_, out.loc);
+        std::string mode;
+        for (auto* child : r->children) {
+            if (auto* term = dynamic_cast<antlr4::tree::TerminalNode*>(child)) {
+                size_t ty = term->getSymbol()->getType();
+                if (ty == CajetaParser::EXTENDS) mode = "extends";
+                else if (ty == CajetaParser::IMPLEMENTS) mode = "implements";
+            } else if (auto* tl = dynamic_cast<CajetaParser::TypeListContext*>(child)) {
+                for (auto* tt : tl->typeType()) {
+                    if (mode == "extends") out.extends.push_back(sourceText(tt));
+                    else if (mode == "implements") out.implements.push_back(sourceText(tt));
+                }
+            }
+        }
+        if (r->classBody()) buildClassBody(r->classBody(), out);
     }
 
     void buildView(CajetaParser::ViewDeclarationContext* v, const std::string&, Type& out) {

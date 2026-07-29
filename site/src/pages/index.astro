@@ -1,97 +1,151 @@
 ---
-import Layout from '~/layouts/PageLayout.astro';
-import HeroText from '~/components/widgets/HeroText.astro';
-import Features from '~/components/widgets/Features.astro';
-import CallToAction from '~/components/widgets/CallToAction.astro';
-import { getPermalink } from '~/utils/permalinks';
+// The site root. When the docs tree has a chaptered guide/ section, the
+// default view IS the Guide tab (reader at the introduction). Trees without
+// one (e.g. this repo's own docs/) fall back to the landing page below.
+import { getCollection, render } from 'astro:content';
+import Base from '../layouts/Base.astro';
+import DocCard from '../components/DocCard.astro';
+import GuideReader from '../components/GuideReader.astro';
+import CorpusCharts from '../components/react/CorpusCharts.tsx';
+import DocFilter from '../components/react/DocFilter.tsx';
+import manifest from '../data/manifest.json';
+import { fileChapters } from '../../scripts/lib/extract.mjs';
 
-const metadata = {
-  title: 'Cajeta — language, library, toolchain',
-  ignoreTitleTemplate: true,
-};
+// --- first choice: a home/ section in the docs tree ----------------------
+const homeDoc = manifest.docs.find((d) => d.section === 'home' && /(^|\/)readme$/.test(d.slug));
+let HomeContent = null;
+if (homeDoc) {
+  const entries = await getCollection('docs', (e) => e.id === homeDoc.slug);
+  if (entries[0]) ({ Content: HomeContent } = await render(entries[0]));
+}
+
+// --- next: the guide reader -----------------------------------------------
+const guideSection = manifest.sections.find((s) => s.name === 'guide');
+const guideDocs = guideSection ? manifest.docs.filter((d) => d.section === 'guide') : [];
+const chapters = guideSection ? fileChapters(guideDocs) : null;
+const introSlug = chapters?.[0]?.slug ?? null;
+const introMeta = introSlug ? manifest.docs.find((d) => d.slug === introSlug) : null;
+let IntroContent = null;
+if (introSlug) {
+  const entries = await getCollection('docs', (e) => e.id === introSlug);
+  if (entries[0]) ({ Content: IntroContent } = await render(entries[0]));
+}
+
+// --- fallback landing -----------------------------------------------------
+const sectionStats = manifest.sections.map((s) => ({
+  label: s.label,
+  url: s.url,
+  count: s.count,
+  words: s.words,
+}));
+const buckets = [
+  { label: 'Under 5 min', test: (m: number) => m < 5 },
+  { label: '5–15 min', test: (m: number) => m >= 5 && m < 15 },
+  { label: '15–30 min', test: (m: number) => m >= 15 && m < 30 },
+  { label: '30 min +', test: (m: number) => m >= 30 },
+];
+const minuteBuckets = buckets.map((b) => {
+  const count = manifest.docs.filter((d) => b.test(d.minutes)).length;
+  return { label: b.label, count, share: Math.round((count / manifest.docs.length) * 100) };
+});
+const labelBySection = Object.fromEntries(manifest.sections.map((s) => [s.name, s.label]));
+const filterDocs = manifest.docs.map((d) => ({
+  url: d.url,
+  title: d.title,
+  description: d.description,
+  section: d.section,
+  sectionLabel: labelBySection[d.section],
+  minutes: d.minutes,
+}));
+const starters = [
+  'languageguide',
+  'buildtool',
+  'compilation',
+  'specification/lang/memorymodel',
+  'debugging',
+  'operatoroverloading',
+];
+const starterDocs = starters
+  .map((slug) => manifest.docs.find((d) => d.slug === slug))
+  .filter((d) => d !== undefined)
+  .slice(0, 6);
 ---
 
-<Layout metadata={metadata}>
-  <HeroText
-    tagline="Cajeta"
-    title="A hybrid Java / C++ / Rust-style language."
-    subtitle="Single-owner memory model. AoT aspect weaving. High-throughput async runtime. LLVM-backed compilation, period."
-    callToAction={{ text: 'Read the docs', href: getPermalink('/docs'), icon: 'tabler:book' }}
-    callToAction2={{ text: 'GitHub', href: 'https://github.com/jklappenbach/cajeta', target: '_blank', icon: 'tabler:brand-github' }}
-  />
+{
+  HomeContent ? (
+    <Base
+      title="Cajeta — a systems language with borrow-checked memory"
+      description={homeDoc?.description}
+      activeSection="home"
+    >
+      <div class="page">
+        <article class="prose home-prose">
+          <HomeContent />
+        </article>
+      </div>
+    </Base>
+  ) : chapters && IntroContent ? (
+    <Base
+      title="Cajeta — a systems language with borrow-checked memory"
+      description={introMeta?.description}
+      activeSection="guide"
+    >
+      <GuideReader
+        guideTitle={introMeta?.title ?? 'The Cajeta Guide'}
+        guideMeta={introMeta}
+        section={guideSection}
+        chapters={chapters}
+        index={0}
+      >
+        <IntroContent />
+      </GuideReader>
+    </Base>
+  ) : (
+    <Base
+      title="Cajeta — a systems language with borrow-checked memory"
+      description="Documentation for the Cajeta programming language."
+    >
+      <div class="page">
+        <section class="hero">
+          <p class="kicker">The Cajeta programming language</p>
+          <h1>
+            Familiar syntax.
+            <br />
+            <em>Borrowed</em> discipline.
+          </h1>
+          <p>
+            Cajeta blends the ergonomics of Java and C++ with Rust-style borrow-checked memory —
+            compiled ahead of time, from embedded targets to GPU kernels. Everything on this site
+            is rendered directly from the repository's <code>docs/</code> tree.
+          </p>
+        </section>
 
-  <Features
-    id="features"
-    tagline="What's in the box"
-    title="Where to start"
-    subtitle="Five reading paths into the specification. Pick the one that matches what you're trying to build."
-    columns={2}
-    items={[
-      {
-        title: 'Memory model',
-        description:
-          'Single-owner heap, # for ownership transfer, scope-based drops, path-based borrow tracking. The load-bearing design.',
-        icon: 'tabler:shield-check',
-        callToAction: { text: 'Read', href: getPermalink('/docs/MemoryModel') },
-      },
-      {
-        title: 'Structs',
-        description:
-          'Stack-allocated value aggregates. Can hold class refs. Implement interfaces via tagged fat pointers. No vtable, no heap.',
-        icon: 'tabler:layout-grid',
-        callToAction: { text: 'Read', href: getPermalink('/docs/Structs') },
-      },
-      {
-        title: 'Views',
-        description:
-          'Zero-copy memory overlay onto byte buffers. Read + write through to bytes. Length-prefixed variable fields, nested views, borrow or owning.',
-        icon: 'tabler:database',
-        callToAction: { text: 'Read', href: getPermalink('/docs/Views') },
-      },
-      {
-        title: 'Threading & async',
-        description:
-          'Fiber runtime, work-stealing scheduler, structured concurrency. Designed for high-throughput servers.',
-        icon: 'tabler:bolt',
-        callToAction: { text: 'Read', href: getPermalink('/docs/ThreadModel') },
-      },
-      {
-        title: 'Standard library',
-        description:
-          'Collections, iterators, primitives. Trait-dispatched, monomorphized through generic call sites.',
-        icon: 'tabler:package',
-        callToAction: { text: 'Read', href: getPermalink('/docs/StandardLibrary') },
-      },
-      {
-        title: 'Build, compile, debug',
-        description:
-          'Single `cajeta` binary covers init, build, test, doc, lint. LLVM backend, DAP + LSP for editors.',
-        icon: 'tabler:tools',
-        callToAction: { text: 'Read', href: getPermalink('/docs/BuildTool') },
-      },
-      {
-        title: 'Implementation status',
-        description:
-          'Live progress trackers for the memory-model + wire-format rollout, and the async runtime R1–R5 work.',
-        icon: 'tabler:progress',
-        callToAction: { text: 'Read', href: getPermalink('/docs/ImplementationStatus') },
-      },
-    ]}
-  />
+        <DocFilter client:idle docs={filterDocs} placeholder="Filter all documents…" />
 
-  <CallToAction
-    actions={[
-      {
-        variant: 'primary',
-        text: 'Browse all 24 documents',
-        href: getPermalink('/docs'),
-        icon: 'tabler:arrow-right',
-      },
-    ]}
-  >
-    <Fragment slot="title">Full documentation index</Fragment>
-    <Fragment slot="subtitle">
-      Specifications, implementation notes, and process documents — grouped by language, stdlib, tooling, process, and status.
-    </Fragment>
-  </CallToAction>
-</Layout>
+        {starterDocs.length > 0 && (
+          <>
+            <h2 class="section-title">Start here</h2>
+            <div class="card-grid">
+              {starterDocs.map((d) => (
+                <DocCard
+                  url={d.url}
+                  title={d.title}
+                  description={d.description}
+                  minutes={d.minutes}
+                  metaPrefix={labelBySection[d.section]}
+                />
+              ))}
+            </div>
+          </>
+        )}
+
+        <h2 class="section-title">The corpus at a glance</h2>
+        <p class="section-sub">
+          {manifest.stats.totalDocs} documents · {Math.round(manifest.stats.totalWords / 1000)}k
+          words, regenerated from <code>docs/</code> on every build.
+        </p>
+        <CorpusCharts client:visible sections={sectionStats} minuteBuckets={minuteBuckets} />
+      </div>
+    </Base>
+  )
+}

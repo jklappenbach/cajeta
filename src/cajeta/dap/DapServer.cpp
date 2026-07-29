@@ -2,6 +2,14 @@
 
 #include <chrono>
 #include <filesystem>
+#include <cstdio>
+#include <iostream>
+#include <thread>
+#ifndef _WIN32
+#include <cerrno>
+#include <streambuf>
+#include <unistd.h>
+#endif
 
 #include "cajeta/dap/DapProtocol.h"
 #include "cajeta/dbg/DebugLocTable.h"
@@ -84,6 +92,123 @@ Json variableJson(const cajeta::dbg::DbgVar& v, const std::string& renderedValue
     return var;
 }
 
+// dap-stepping: chain-length accessor from the C runtime — a pure pointer
+// chase, cheap enough to run per candidate safepoint while a step is pending
+// (walkFrames would decode every local of every frame).
+extern "C" int __cajeta_dbg_frame_depth(void* top);
+// 9.1: chain-containment probe (same pure pointer chase family).
+extern "C" int __cajeta_dbg_frame_contains(void* top, void* node);
+
+namespace {
+// dap-stepping: the controller compares the step origin's "line" as an opaque
+// key. Fold the file into it so a coincidental line-number match in another
+// source file doesn't read as "same line" (the same-line skip is per
+// (file, line)). -1 = unknown loc; the masked hash can never produce it.
+int lineKeyForLoc(int32_t locId) {
+    const auto& table = globalDbgLocTable();
+    if (locId < 0 || static_cast<size_t>(locId) >= table.size()) return -1;
+    const auto& loc = table.at(locId);
+    size_t h = std::hash<std::string>{}(loc.file) * 31u
+             + static_cast<size_t>(loc.line);
+    return static_cast<int>(h & 0x7fffffff);
+}
+} // namespace
+
+namespace {
+// The running server's own executable path (Linux: /proc/self/exe). Empty
+// when unresolvable — identity checks then never refuse (fail-open: a
+// missing /proc must not brick debugging on exotic hosts).
+std::string selfExePath() {
+    std::error_code ec;
+    auto p = std::filesystem::read_symlink("/proc/self/exe", ec);
+    return ec ? std::string() : p.string();
+}
+
+// size:mtime of the on-disk binary — cheap, and a rebuild always changes it.
+std::string diskIdentity(const std::string& path) {
+    if (path.empty()) return {};
+    std::error_code ec;
+    auto size = std::filesystem::file_size(path, ec);
+    if (ec) return {};
+    auto mtime = std::filesystem::last_write_time(path, ec);
+    if (ec) return {};
+    return std::to_string((unsigned long long) size) + ":"
+         + std::to_string(
+               (long long) mtime.time_since_epoch().count());
+}
+
+// Step-decision trace: for each safepoint reached while a step was pending,
+// why it was accepted or rejected. Invaluable when stepping lands somewhere
+// unexpected — it is what settled the four-bug parallel step-over stack and
+// the template line attribution.
+//
+// OFF unless CAJETA_STEP_TRACE is set to something other than 0/empty. It
+// writes to stderr, which the IDE console paints red, so leaving it on buries
+// the user's own output under a flood of red diagnostics (reported live
+// 2026-07-22). The recording ring in DebugController is always armed — it is
+// bounded at 64 entries and drained here — so enabling the variable is enough
+// to get a trace, with no rebuild.
+bool stepTraceEnabled() {
+    static const bool on = [] {
+        const char* v = ::getenv("CAJETA_STEP_TRACE");
+        return v != nullptr && *v != '\0' && std::string(v) != "0";
+    }();
+    return on;
+}
+
+void dumpStepTrace(
+    const std::vector<cajeta::dbg::DebugController::StepDecision>& trace) {
+    const auto& table = globalDbgLocTable();
+    for (const auto& d : trace) {
+        const auto& loc = table.at(d.locId);
+        std::cerr << "[step-trace] loc=" << d.locId << " "
+                  << loc.file << ":" << loc.line
+                  << " fiber=" << d.fiberId
+                  << " depth=" << d.depth
+                  << " origin=" << d.originDepth
+                  << " kind=" << d.kind
+                  << " why=" << (d.reason == 0 ? "eval"
+                               : d.reason == 1 ? "FIBER-MISMATCH"
+                               : d.reason == 2 ? "same-line"
+                                               : "CHAIN-MISMATCH")
+                  << (d.stopped ? "  << STOP" : "") << "\n";
+    }
+}
+} // namespace
+
+std::string DapServer::selfExePathForTest() { return selfExePath(); }
+
+bool DapServer::verifyCompilerIdentity(const Json& args, const Emit& emit,
+                                       int requestSeq) {
+    const std::string exe = selfExePath();
+    const std::string now = diskIdentity(exe);
+    auto refuse = [&](const std::string& why) {
+        Json body = Json::object();
+        body["category"] = "console";
+        body["output"] = "cajeta: " + why + "; restarting debug server\n";
+        emit(makeEvent(seq_++, "output", std::move(body)));
+        emit(makeResponse(seq_++, requestSeq, "initialize", false, Json(why)));
+        return false;
+    };
+    // Self-check: the on-disk binary changed under this running image
+    // (a compiler rebuild). First initialize snapshots; later ones compare.
+    if (!now.empty()) {
+        if (selfIdentityAtStart_.empty()) selfIdentityAtStart_ = now;
+        else if (selfIdentityAtStart_ != now)
+            return refuse("compiler binary changed on disk");
+    }
+    // Client expectation: the binary the plugin LAUNCHED (or now intends).
+    // A different path means the compilerPath setting moved — this server
+    // is the wrong compiler entirely.
+    const std::string expected = args.at("compilerPath").asString();
+    if (!expected.empty() && !exe.empty()) {
+        std::error_code ec;
+        if (!std::filesystem::equivalent(expected, exe, ec) || ec)
+            return refuse("debug server is not the configured compiler");
+    }
+    return true;
+}
+
 DapServer::DapServer() = default;
 
 DapServer::~DapServer() {
@@ -114,10 +239,28 @@ void DapServer::runToStopOrExit(const Emit& emit) {
             // CP6f-2b-ii: build the cross-thread frame table for this stop.
             rebuildFrameTable(std::move(frames));
             Json body = Json::object();
-            // CP6f-3: reason reflects breakpoint vs exception stop.
-            body["reason"] =
-                ev.reason == cajeta::dbg::StopEvent::StopReason::Exception
-                    ? "exception" : "breakpoint";
+            if (stepTraceEnabled()
+                && ev.reason == cajeta::dbg::StopEvent::StopReason::Step) {
+                // The stopped chain itself: length + innermost functions. A
+                // depth=1 verdict beside a deep walk = detached chain.
+                auto walked = cajeta::dbg::walkFrames(ev.frameTop);
+                std::cerr << "[step-trace] STOP chain len=" << walked.size();
+                for (size_t i = 0; i < walked.size() && i < 3; ++i)
+                    std::cerr << " [" << i << "]=" << walked[i].func;
+                std::cerr << "\n";
+                dumpStepTrace(session_->controller().drainStepTrace());
+            }
+            // CP6f-3: reason reflects breakpoint vs exception vs step stop.
+            switch (ev.reason) {
+                case cajeta::dbg::StopEvent::StopReason::Exception:
+                    body["reason"] = "exception"; break;
+                case cajeta::dbg::StopEvent::StopReason::Entry:
+                    body["reason"] = "entry"; break;
+                case cajeta::dbg::StopEvent::StopReason::Step:
+                    body["reason"] = "step"; break;
+                default:
+                    body["reason"] = "breakpoint"; break;
+            }
             // CP6f-2b: the real stopped fiber id (0 = entry/main thread, >=1 a
             // spawned fiber) instead of a hard-coded 1.
             body["threadId"] = static_cast<int>(ev.fiberId);
@@ -130,6 +273,17 @@ void DapServer::runToStopOrExit(const Emit& emit) {
             return;
         }
         if (session_->isFinished()) {
+            // A step that never landed leaves its evidence here — the step-stop
+            // dump above never runs when the program runs away instead.
+            if (stepTraceEnabled()) {
+                auto trace = session_->controller().drainStepTrace();
+                if (!trace.empty()) {
+                    std::cerr << "[step-trace] program EXITED with a pending "
+                                 "step; last " << trace.size()
+                              << " candidates:\n";
+                    dumpStepTrace(trace);
+                }
+            }
             exitCode_ = session_->join();
             terminated_ = true;
             haveStop_ = false;
@@ -203,6 +357,9 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
     const Json& args = request.at("arguments");
 
     if (command == "initialize") {
+        if (!verifyCompilerIdentity(args, emit, requestSeq))
+            return false;   // clean refusal; the launcher respawns fresh
+
         Json caps = Json::object();
         caps["supportsConfigurationDoneRequest"] = true;
         caps["supportsSetVariable"] = true;
@@ -234,6 +391,30 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         launchOpts_.sourceRoot = args.at("sourceRoot").asString();
         if (launchOpts_.sourceRoot.empty())
             launchOpts_.sourceRoot = args.at("source-root").asString();
+        // fast-debug-launch 5.2.1: whole-program cache root. Absence (or
+        // empty) = unspecified = full compile — the same convention as `env`,
+        // so every pre-cache client keeps today's behavior.
+        launchOpts_.cacheDir = args.at("cacheDir").asString();
+        if (launchOpts_.cacheDir.empty())
+            launchOpts_.cacheDir = args.at("cache-dir").asString();
+        // resident-debug-server 4.2.1: reuse the primed stdlib world across
+        // this server's sessions. Absence = off (one-shot behavior).
+        launchOpts_.resident = args.at("resident").isBool()
+                                   ? args.at("resident").asBool()
+                                   : false;
+        stopOnEntry_ = args.at("stopOnEntry").asBool();
+        // Environment (spec §4). Absence of "env" means UNSPECIFIED, not
+        // "empty environment" — every launch sent before this feature existed
+        // omits it, and reading that as an empty environment would blank the
+        // debuggee's. Same for the inherit flag, which defaults to on.
+        launchEnv_.clear();
+        const Json& env = args.at("env");
+        if (env.isObject())
+            for (const auto& kv : env.items())
+                launchEnv_[kv.first] = kv.second.asString();
+        inheritSystemEnv_ = args.at("inheritSystemEnv").isBool()
+                                ? args.at("inheritSystemEnv").asBool()
+                                : true;
         emit(makeResponse(seq_++, requestSeq, command, true, Json::object()));
         return true;
     }
@@ -282,11 +463,68 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
 
     if (command == "configurationDone") {
         std::string err;
+        // The launch environment is applied through startDebugSession's
+        // beforeRun hook: after the build, before the program thread starts.
+        // The debuggee's first System.env.get therefore sees it (spec 4.1.3)
+        // while the in-process compile still runs under the real environment —
+        // which matters because an inheritSystemEnv=false configuration
+        // suppresses every undeclared variable, and the build needs PATH and
+        // friends. envScope_ remembers what it displaced and restores from its
+        // destructor (4.1.4).
+        auto applyEnv = [this]() {
+            if (!launchEnv_.empty() || !inheritSystemEnv_)
+                envScope_.apply(launchEnv_, inheritSystemEnv_);
+        };
+        // fast-debug-launch 2.2.1: narrate the in-process compile as `output`
+        // events so a working launch never reads as a hang. buildJit runs on
+        // THIS thread inside startDebugSession, so emitting through `emit` is
+        // safe and ordered; the callback is cleared right after because it
+        // captures the stack-scoped `emit`.
+        launchOpts_.onProgress = [this, &emit](const std::string& phase,
+                                               const std::string& detail,
+                                               int current, int total) {
+            std::string line;
+            if (phase == "collect") line = "cajeta: compile started\n";
+            else if (phase == "parse" && detail == "resident-world")
+                line = "cajeta: resident world reused\n";
+            else if (phase == "parse" && total > 0)
+                line = "cajeta: compiling [" + std::to_string(current) + "/"
+                     + std::to_string(total) + "] " + detail + "\n";
+            else if (phase == "codegen") line = "cajeta: generating code\n";
+            else if (phase == "merge") line = "cajeta: linking modules\n";
+            else if (phase == "jit")
+                line = detail == "cached" ? "cajeta: using cached build\n"
+                                          : "cajeta: preparing JIT\n";
+            if (line.empty()) return;
+            Json body = Json::object();
+            body["category"] = "console";
+            body["output"] = std::move(line);
+            emit(makeEvent(seq_++, "output", std::move(body)));
+        };
         // CP6f-3: arm break-on-throw inside startDebugSession (before the
         // program thread starts) so an immediate throw can't race past it.
         session_ = cajeta::jit::startDebugSession(launchOpts_, breakpoints_,
-                                                  &err, exceptionsArmed_);
+                                                  &err, exceptionsArmed_,
+                                                  stopOnEntry_, applyEnv);
+        launchOpts_.onProgress = nullptr;
         bool ok = session_ != nullptr;
+        if (ok) {
+            Json body = Json::object();
+            body["category"] = "console";
+            body["output"] = "cajeta: compile finished\n";
+            emit(makeEvent(seq_++, "output", std::move(body)));
+            // dap-stepping: give the controller its depth/line seams. Depth is
+            // the carrier's own frame-chain length at the safepoint (the
+            // carrier is executing the chase, so the chain is stable); line is
+            // the (file, line) key. Only consulted while a step is pending,
+            // and depth only once the line already differs.
+            session_->controller().setStepProviders(
+                [](void* frameTop) { return __cajeta_dbg_frame_depth(frameTop); },
+                [](int32_t locId) { return lineKeyForLoc(locId); },
+                [](void* frameTop, void* origin) {
+                    return __cajeta_dbg_frame_contains(frameTop, origin) != 0;
+                });
+        }
         emit(makeResponse(seq_++, requestSeq, command, ok,
                           ok ? Json::object() : Json(err)));
         if (ok) runToStopOrExit(emit);
@@ -298,7 +536,7 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         // fiber from the JIT registry is an additional thread keyed by its
         // stable dbg id.
         //
-        // FIXME(CP6f-2d, docs/specs/carrier-quiesce-spec.md): this enumeration
+        // FIXME(CP6f-2d, specs/archive/carrier-quiesce-spec.md): this enumeration
         // is NOT yet safe under the multi-carrier scheduler. Only the carrier
         // that hit the breakpoint is parked (DebugController::onSafepoint blocks
         // one thread); the other __cajeta_carriers[] keep running fibers, so the
@@ -454,14 +692,84 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         return true;
     }
 
+    if (command == "next" || command == "stepIn" || command == "stepOut") {
+        // dap-stepping spec §3: only valid against the currently stopped
+        // fiber. While running (or after termination) fail with a message —
+        // never crash, never disturb the session.
+        if (!session_ || terminated_ || !haveStop_) {
+            emit(makeResponse(seq_++, requestSeq, command, false,
+                              Json(std::string("cannot step: no stopped "
+                                               "thread (program running or "
+                                               "terminated)"))));
+            return true;
+        }
+        const int stoppedTid = static_cast<int>(currentStop_.fiberId);
+        const int threadId =
+            args.has("threadId") ? args.at("threadId").asInt() : stoppedTid;
+        if (threadId != stoppedTid) {
+            emit(makeResponse(
+                seq_++, requestSeq, command, false,
+                Json("cannot step thread " + std::to_string(threadId) +
+                     ": the stopped thread is " + std::to_string(stoppedTid))));
+            return true;
+        }
+        // Origin: the stopped fiber's frame count and (file, line) key. An
+        // exception stop has locId -1 — its line comes from the innermost
+        // frame's recorded current loc.
+        int originDepth = 0;
+        int32_t originLoc = currentStop_.locId;
+        for (const auto& fe : frameTable_) {
+            if (fe.threadId != stoppedTid) continue;
+            if (originDepth == 0 && originLoc < 0) originLoc = fe.info.locId;
+            ++originDepth;
+        }
+        const cajeta::dbg::StepKind kind =
+            command == "next"     ? cajeta::dbg::StepKind::Over
+            : command == "stepIn" ? cajeta::dbg::StepKind::In
+                                  : cajeta::dbg::StepKind::Out;
+        emit(makeResponse(seq_++, requestSeq, command, true, Json::object()));
+        haveStop_ = false;
+        session_->controller().resumeWithStep(kind, currentStop_.fiberId,
+                                              originDepth,
+                                              lineKeyForLoc(originLoc),
+                                              currentStop_.frameTop);
+        runToStopOrExit(emit);
+        return true;
+    }
+
     if (command == "disconnect" || command == "terminate") {
         if (session_) {
             // Let the program finish if it's parked.
             if (!terminated_) session_->controller().resume();
-            session_->join();
+            session_->join();  // also detaches handlers + active controller
         }
+        // The program thread has joined, so nothing can read the environment
+        // any more: put back what the launch displaced (spec 4.1.4). The scope
+        // also restores from its destructor, which covers the abnormal exits
+        // that never reach this line.
+        envScope_.restore();
+        // Resident lifecycle (resident-debug-server 1.2.1): this ends the
+        // SESSION, not the process — reset every per-session member so the
+        // next initialize/launch starts exactly like a fresh process would.
+        // The PROCESS ends at stdin EOF (run()'s read loop) or on the
+        // launcher killing it; a lingering idle server costs only memory.
+        session_.reset();
+        launchOpts_ = cajeta::jit::JitRunOptions{};
+        stopOnEntry_ = false;
+        launchEnv_.clear();
+        inheritSystemEnv_ = true;
+        breakpoints_.clear();
+        conditions_.clear();
+        exceptionsArmed_ = false;
+        currentStop_ = {};
+        frameTable_.clear();
+        varRefToFrame_.clear();
+        nextVarRef_ = 1;
+        haveStop_ = false;
+        terminated_ = false;
+        exitCode_ = 0;
         emit(makeResponse(seq_++, requestSeq, command, true, Json::object()));
-        return false;  // end the loop
+        return true;
     }
 
     // Unknown request: reply unsuccessfully but keep going.
@@ -471,12 +779,96 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
 }
 
 int DapServer::run(std::istream& in, std::ostream& out) {
-    Emit emit = [&out](const Json& msg) { writeMessage(out, msg); };
+    Emit emit = [this, &out](const Json& msg) {
+        std::lock_guard<std::mutex> lock(emitMutex_);
+        writeMessage(out, msg);
+    };
     Json request;
     while (readMessage(in, &request)) {
         if (!handle(request, emit)) break;
     }
     return exitCode_;
+}
+
+#ifndef _WIN32
+namespace {
+// Write-only streambuf over a raw fd. Replaces __gnu_cxx::stdio_filebuf, which
+// is a libstdc++ extension: libc++ (macOS) has no <ext/stdio_filebuf.h>, so the
+// old include broke the aarch64-apple-darwin build outright.
+class FdOutBuf : public std::streambuf {
+public:
+    explicit FdOutBuf(int fd) : fd_(fd) {}
+
+protected:
+    std::streamsize xsputn(const char* s, std::streamsize n) override {
+        std::streamsize done = 0;
+        while (done < n) {
+            ssize_t w = ::write(fd_, s + done, (size_t) (n - done));
+            if (w <= 0) {
+                if (w < 0 && errno == EINTR) { continue; }
+                break;
+            }
+            done += w;
+        }
+        return done;
+    }
+
+    int_type overflow(int_type c) override {
+        if (c == traits_type::eof()) { return traits_type::not_eof(c); }
+        char ch = traits_type::to_char_type(c);
+        return xsputn(&ch, 1) == 1 ? c : traits_type::eof();
+    }
+
+private:
+    int fd_;
+};
+}  // namespace
+#endif
+
+int DapServer::runOverStdio() {
+#ifndef _WIN32
+    int protoFd = ::dup(STDOUT_FILENO);
+    int pfd[2] = {-1, -1};
+    if (protoFd >= 0 && ::pipe(pfd) == 0) {
+        // fd 1 now feeds the pump; the protocol owns a private descriptor.
+        ::dup2(pfd[1], STDOUT_FILENO);
+        ::close(pfd[1]);
+        // The debuggee prints through FILE* stdout, and libc picks its
+        // buffering from what fd 1 IS at first use: a TTY gets line
+        // buffering, a PIPE gets 4KB block buffering. Redirecting to the
+        // pump turned it into a pipe, so output sat in the buffer instead of
+        // reaching the console until the buffer filled or the process ended
+        // (live 2026-07-22: tour printed nothing to the Console). Force line
+        // buffering before any I/O touches the stream — the JIT runs
+        // in-process, so this is the same stdout the debuggee uses.
+        ::setvbuf(stdout, nullptr, _IOLBF, 0);
+        static FdOutBuf protoBuf(protoFd);
+        static std::ostream protoStream(&protoBuf);
+
+        // Pump: everything the debuggee (or stray host code) prints becomes
+        // a DAP output event, category "stdout" — frame-atomic under the
+        // emit lock. Detached: it blocks in read() for the process lifetime
+        // (our own fd 1 keeps the pipe writable, so no EOF before exit).
+        int rd = pfd[0];
+        std::thread([this, rd]() {
+            char buf[4096];
+            for (;;) {
+                ssize_t n = ::read(rd, buf, sizeof buf);
+                if (n <= 0) break;
+                Json body = Json::object();
+                body["category"] = "stdout";
+                body["output"] = std::string(buf, (size_t) n);
+                std::lock_guard<std::mutex> lock(emitMutex_);
+                writeMessage(protoStream, makeEvent(seq_++, "output",
+                                                    std::move(body)));
+            }
+        }).detach();
+
+        return run(std::cin, protoStream);
+    }
+    if (protoFd >= 0) ::close(protoFd);
+#endif
+    return run(std::cin, std::cout);
 }
 
 } // namespace cajeta::dap

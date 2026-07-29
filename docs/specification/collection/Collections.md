@@ -367,7 +367,7 @@ types stay generic.
 
 ## Open items
 
-Tracked in Features.md:
+Tracked in specs/Features.md:
 
 - `Deque<T>` / `Stack<T>` (still designed-only); delete on the ordered
   trees; the `ltm` disk-backed variants.

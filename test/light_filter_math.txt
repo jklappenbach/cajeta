@@ -1,0 +1,36 @@
+# Light sweep, math extension — opt in with `./light_tests.sh --math`.
+#
+# These are the cajeta.math / gfx-math tests the audit nominated as light-sweep
+# core but which light_filter.txt defers. Each costs 61-84s (they instantiate
+# and lazily parse the whole cajeta.math package), and together they are 687s
+# of CPU — 43% of the base light tier's entire budget, for one subsystem.
+#
+# The trade, measured over test-durations.seed.tsv:
+#     32 workers   adding these costs +5.5s wall (78.5s -> 84.0s)
+#     16 workers   adding these costs +47s wall (102.4s -> 149.2s)
+#      8 workers   adding these costs +92s wall (203.6s -> 296.1s)
+#
+# So on the 32-core reference host they are nearly free and you may as well run
+# them; on a laptop or a contended machine they are a 31% tax. Hence: opt-in
+# rather than default, and MANDATORY (see light_tests.sh --math) for any phase
+# that touched cajeta.math, cajeta.gfx, Tensor, DType, Cast, or the broadcast /
+# reduction / matmul / strided-view machinery.
+#
+# TensorTests.tensorConstructionAndShape is NOT here — it lives in the base
+# light_filter.txt as the single always-on math representative.
+
+DTypeTests.promotionMatchesNep50
+CastTests.roundToIntModes
+TensorTests.structuralOpsAreViews
+NumpyOpsTests.elementwiseArithmeticMatchesNumpy
+NumpyOpsTests.reductionsFullMatchNumpy
+NumpyOpsTests.matmulDotMatchNumpy
+NumpyOpsTests.shapeViewOpsMatchNumpy
+GfxFrustumTests.intersectsSphere
+GfxTransformTests.composeWithInverseIsIdentity
+
+# Ordered-tree breadth. Not math, but the same trade: 52.9s for the only
+# red-black rotation/recolour path in the tier. The audit itself said "drop it
+# first if the tier must shrink", so it did. Re-add it for any phase touching
+# cajeta.collection tree containers.
+NewCollectionsTests.redBlackManyInsertsLookup

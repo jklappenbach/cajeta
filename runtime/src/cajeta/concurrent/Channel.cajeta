@@ -57,6 +57,8 @@ public class Channel<T> {
      * ```cajeta
      * Channel<int32> ch = heap Channel<int32>(2);   // capacity-2 MPMC queue
      * ```
+     *
+     * @EntryPoint
      */
     public Channel(int32 capacity) {
         this.handle = Cajeta.lockNew();
@@ -92,7 +94,12 @@ public class Channel<T> {
             Cajeta.lockRelease(this.handle);
             throw 1;
         }
-        this.buf[this.tail] = item;
+        // borrow-alias: the channel LENDS its slots (receive() reads the item
+        // out and re-lends it; senders keep ownership). An owning channel —
+        // `#=` here + a fused claim in receive() — is a deliberate future
+        // conversion, not a respell.
+        T lent = item;
+        this.buf[this.tail] = lent;
         this.tail = (this.tail + 1) % this.capacity;
         this.size = this.size + 1;
         Cajeta.condvarNotifyAll(this.cond);

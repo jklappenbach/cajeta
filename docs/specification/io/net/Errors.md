@@ -3,7 +3,7 @@
 The complete networking error hierarchy, rooted at
 [`cajeta.io.net.NetException`](../../../../runtime/src/cajeta/io/net/NetException.cajeta).
 This is the networking peer of
-[`cajeta.io.file`'s `Errors.md`](../io/file/Errors.md) — same shape,
+[`cajeta.io.file`'s `Errors.md`](../file/Errors.md) — same shape,
 same throws-clause discipline, a parallel-but-separate tree (file I/O
 and network I/O share the fiber model but nothing else; see
 [`Networking.md`](Networking.md) §Design principles).
@@ -155,7 +155,7 @@ below.
 | `OTHER` (99) | anything else | anything else | `NetException` | 99 |
 
 ¹ **`WouldBlock` is surfaced as a *value*, not thrown, on the reactor
-/ non-blocking hot path** (see [`docs/Net.md`](../../Net.md)
+/ non-blocking hot path** (see [`docs/Net.md`](Networking.md)
 §Sockets and NET-1.7): a non-blocking `recv` on an empty socket returns
 a distinct "would block" result so the reactor can drive its readiness
 loop without a throw. `WouldBlockException` exists so the taxonomy is
@@ -235,7 +235,7 @@ chaining for `Throwable` subtypes — see
 ## Recoverable, not Unrecoverable
 
 `NetException extends RecoverableException` (see
-[`docs/specification/error/ErrorModel.md`](../ErrorModel.md)) — and so does
+[`docs/specification/error/ErrorModel.md`](../../error/ErrorModel.md)) — and so does
 **every** subtype above, transitively. Every networking call site
 either:
 
@@ -281,11 +281,11 @@ caller decides whether to `throw` it (the throwing path) or inspect it
 
 ## See also
 
-- [`docs/Net.md`](../../Net.md) §Error model — the spec table
+- [`docs/Net.md`](Networking.md) §Error model — the spec table
   this chart consolidates.
-- [`docs/specification/io/file/Errors.md`](../io/file/Errors.md) — the
+- [`docs/specification/io/file/Errors.md`](../file/Errors.md) — the
   sibling file-I/O taxonomy this mirrors.
-- [`docs/specification/error/ErrorModel.md`](../ErrorModel.md) —
+- [`docs/specification/error/ErrorModel.md`](../../error/ErrorModel.md) —
   `Recoverable` / `Unrecoverable` semantics, throws-clause rules.
 - [`runtime/native/cajeta_net_socket.c`](../../../../runtime/native/cajeta_net_socket.c)
   — `enum cajeta_net_err` + `cajeta_net_map_errno` (stage 1).

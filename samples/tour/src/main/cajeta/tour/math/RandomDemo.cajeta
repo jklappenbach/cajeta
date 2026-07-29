@@ -1,0 +1,85 @@
+package tour.math;
+
+import tour.DemoClass;
+import cajeta.lang.Math;
+import cajeta.math.Tensor;
+import cajeta.math.random.Generator;
+
+// cajeta.math.random.Generator — a COUNTER-BASED bit generator
+// (Philox4x32-10): each output is a stateless function philox(counter, key)
+// of its index and the seed. That buys two properties a sequential PRNG
+// (PCG64, Mersenne) can't offer together: the stream is reproducible for a
+// seed, AND element i is computable independently of all others (identical
+// on CPU and GPU, embarrassingly parallel).
+//
+// The first draw for seed 42 is pinned: counter 0 under key 42 yields the
+// 24-bit mantissa 15396947, i.e. uniform[0] = 15396947/2^24 ~ 0.9177296
+// (verified against an independent Philox4x32-10 implementation).
+public class RandomDemo extends DemoClass {
+    static boolean close(float32 a, float32 b) {
+        float32 d = Math.abs(a - b);
+        return d < 0.000001f;
+    }
+
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- cajeta.math.random (Philox4x32-10, counter-based) --");
+
+        // Seeded determinism: two generators with the same seed produce the
+        // same stream, draw for draw.
+        Generator g1 = heap Generator(42);
+        Generator g2 = heap Generator(42);
+        Tensor<float32> u1 = g1.uniform(8);
+        Tensor<float32> u2 = g2.uniform(8);
+        this.check(u1.ndim() == 1 && u1.size() == 8, "uniform(8): 1-D, 8 samples");
+        boolean same = true;
+        int64 i = 0;
+        while (i < 8) {
+            if (u1.get1(i) != u2.get1(i)) { same = false; }
+            i = i + 1;
+        }
+        this.check(same, "same seed -> identical stream (deterministic)");
+
+        // The pinned first draw for seed 42 (independent Philox reference).
+        System.stdout.println("  Generator(42).uniform(8)[0] ~ 0.9177296 (pinned)");
+        this.check(close(u1.get1(0), 0.9177296f),
+            "seed 42, counter 0 pinned to 15396947/2^24");
+
+        // A different seed lands on a different stream.
+        Generator g3 = heap Generator(43);
+        Tensor<float32> u3 = g3.uniform(8);
+        boolean differs = false;
+        i = 0;
+        while (i < 8) {
+            if (u1.get1(i) != u3.get1(i)) { differs = true; }
+            i = i + 1;
+        }
+        this.check(differs, "different seed -> different stream");
+
+        // Range property: every uniform draw lies in [0, 1).
+        boolean inRange = true;
+        i = 0;
+        while (i < 8) {
+            float32 u = u1.get1(i);
+            if (u < 0.0f || u >= 1.0f) { inRange = false; }
+            i = i + 1;
+        }
+        this.check(inRange, "uniform draws lie in [0, 1)");
+
+        // integers(low, high, n): int64 draws in the half-open [low, high).
+        Generator g4 = heap Generator(7);
+        Tensor<int64> ints = g4.integers(10, 20, 16);
+        this.check(ints.size() == 16, "integers(10, 20, 16): 16 draws");
+        boolean intsOk = true;
+        i = 0;
+        while (i < 16) {
+            int64 v = ints.get1(i);
+            if (v < 10 || v >= 20) { intsOk = false; }
+            i = i + 1;
+        }
+        this.check(intsOk, "integer draws lie in [10, 20)");
+        // First three draws for seed 7, pinned against the same reference.
+        this.check(ints.get1(0) == 17 && ints.get1(1) == 17 && ints.get1(2) == 10,
+            "seed 7 integers pinned: 17, 17, 10");
+    }
+}

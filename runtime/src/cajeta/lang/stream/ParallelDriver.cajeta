@@ -133,14 +133,16 @@ public class ParallelDriver {
             if (piece == null) {
                 break;
             }
-            shares[si] = piece;
+            shares[si] #= piece;
             shareCount = shareCount + 1;
             si = si + 1;
         }
         T[] partials = heap T[shareCount + 1];
+        // borrow-alias: every partial starts from the same lent seed
+        T seedRef = seed;
         int32 pi = 0;
         while (pi < shareCount + 1) {
-            partials[pi] = seed;
+            partials[pi] = seedRef;
             pi = pi + 1;
         }
         // Fork each worker as its own fiber inside a scope; the
@@ -226,7 +228,7 @@ public class ParallelDriver {
             if (piece == null) {
                 break;
             }
-            shares[si] = piece;
+            shares[si] #= piece;
             shareCount = shareCount + 1;
             si = si + 1;
         }
@@ -282,7 +284,7 @@ public class ParallelDriver {
             if (piece == null) {
                 break;
             }
-            shares[si] = piece;
+            shares[si] #= piece;
             shareCount = shareCount + 1;
             si = si + 1;
         }
@@ -337,7 +339,7 @@ public class ParallelDriver {
             if (piece == null) {
                 break;
             }
-            shares[si] = piece;
+            shares[si] #= piece;
             shareCount = shareCount + 1;
             si = si + 1;
         }
@@ -508,9 +510,11 @@ public class ParallelDriver {
             si = si + 1;
         }
         T[] partials = heap T[shareCount + 1];
+        // borrow-alias: every partial starts from the same lent seed
+        T seedRef = seed;
         int32 pi = 0;
         while (pi < shareCount + 1) {
-            partials[pi] = seed;
+            partials[pi] = seedRef;
             pi = pi + 1;
         }
         scope {
@@ -601,9 +605,11 @@ public class ParallelDriver {
             si = si + 1;
         }
         R[] partials = heap R[shareCount + 1];
+        // borrow-alias: every partial starts from the same lent seed
+        R seedRef = seed;
         int32 pi = 0;
         while (pi < shareCount + 1) {
-            partials[pi] = seed;
+            partials[pi] = seedRef;
             pi = pi + 1;
         }
         scope {
@@ -985,7 +991,7 @@ public class ParallelDriver {
                 }
                 oY = head.next();
             }
-            return stack Optional<T>(false, null);
+            return stack Optional<T>(false);
         }
         Stream<T>[] shares = heap Stream<T>[nSplits - 1];
         int32 shareCount = 0;
@@ -1015,10 +1021,15 @@ public class ParallelDriver {
         // CajetaClass::getLlvmType to return ptr for bare templates
         // — same fallback the placeholder and wildcard cases use.
         Optional<T>[] result = heap Optional<T>[1];
+        // `claimed` gates the single result slot so exactly one worker writes
+        // it — the payload is a value (not the idempotent flag findHit/findFail
+        // carry), so a double store would leak the first Optional or race its
+        // overwrite-drop. Same R8.3 cancel-flag role, plus a write-claim.
+        AtomicInt32 claimed = heap AtomicInt32(0);
         scope {
             int32 wi = 0;
             while (wi < shareCount) {
-                spawn findAnyWorker<T>(shares[wi], predicate, result);
+                spawn findAnyWorker<T>(shares[wi], predicate, result, claimed);
                 wi = wi + 1;
             }
         }
@@ -1035,25 +1046,28 @@ public class ParallelDriver {
             }
             ot = head.next();
         }
-        return stack Optional<T>(false, null);
+        return stack Optional<T>(false);
     }
 
     /**
      * Worker for findAny. Drains `share`; on each iteration first
-     * checks the shared `result[0]` cancel flag (any non-null entry
-     * means another worker already found a match), then runs the
-     * predicate. First worker to find a match writes a freshly
-     * constructed Optional<T> into result[0]. Race on the slot
-     * itself is benign — findAny only requires SOME match.
+     * checks the shared `claimed` cancel flag (non-zero means another
+     * worker already found a match), then runs the predicate. The
+     * first worker to atomically claim the slot (compareAndSet 0->1)
+     * writes a freshly constructed Optional<T> into result[0]; any
+     * later matcher loses the claim and skips the write, so the slot
+     * is stored exactly once (no leak / no overwrite-drop race).
      */
-    public static async int32 findAnyWorker<T>(Stream<T> share, (T) -> boolean predicate, Optional<T>[] result) {
+    public static async int32 findAnyWorker<T>(Stream<T> share, (T) -> boolean predicate, Optional<T>[] result, AtomicInt32 claimed) {
         Optional<T> o = share.next();
         while (o.isPresent()) {
-            if (result[0] != null) {
+            if (claimed.load() != 0) {
                 return 0;
             }
             if (predicate(o.get())) {
-                result[0] = heap Optional<T>(true, o.get());
+                if (claimed.compareAndSet(0, 1)) {
+                    result[0] = heap Optional<T>(true, o.get());
+                }
                 return 0;
             }
             o = share.next();

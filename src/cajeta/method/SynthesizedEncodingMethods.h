@@ -50,6 +50,7 @@ namespace cajeta {
                                     CajetaClassPtr encoder);
 
         void generateCode() override;
+        bool emitsReturnFlag() override { return false; }  // raw-IR body: never stores the return flag
 
     private:
         CajetaClassPtr encoder;

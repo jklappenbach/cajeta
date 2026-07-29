@@ -27,7 +27,7 @@ int32_t runReader(const std::string& csv, const std::string& body) {
         "import cajeta.codec.csv.CsvReader;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int8[] buf = {" + bytes + "};\n"
+        "        int8[] buf = [" + bytes + "];\n"
         "        CsvReader r = heap CsvReader(buf, (int64) " + n + ");\n"
         "        " + body + "\n"
         "    }\n"

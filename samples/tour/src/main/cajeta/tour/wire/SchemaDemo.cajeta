@@ -1,0 +1,213 @@
+package tour.wire;
+
+import tour.DemoClass;
+import cajeta.wire.Compressor;
+import cajeta.wire.Decompressor;
+import cajeta.wire.Schema;
+import cajeta.wire.SchemaEncoder;
+import cajeta.lang.String;
+
+// cajeta.wire contracts — the interfaces a wire format is assembled
+// from. The stdlib ships the CONTRACTS; concrete codecs are supplied
+// by the format (or, here, by the demo):
+//
+//   Compressor / Decompressor  byte->byte block codec, an inverse pair.
+//                              Format-agnostic, carries no T — a Class C
+//                              container (Parquet, ORC, Avro) frames its
+//                              payload as independently compressed blocks.
+//   Schema                     opaque owned carrier of a format's raw
+//                              schema bytes (for Avro: the JSON schema
+//                              text embedded in the container header).
+//   SchemaEncoder<T>           value<->bytes codec for UNTAGGED formats,
+//                              where the bytes are undecodable without
+//                              the schema that produced them. Tagged
+//                              formats use the thinner Encoder<T>
+//                              (see Int32Encoder in tour.collection).
+//
+// This demo implements each contract minimally — a run-length block
+// codec and an 8-byte point codec — and round-trips real bytes
+// through them.
+
+// One class, both directions. A compressed block is NOT
+// self-describing about its output size: the caller records the
+// original length at compress time (a container puts it in the block
+// header) and supplies it back as `expandedLen`. Both inputs are
+// borrowed; both results are fresh caller-owned buffers.
+public class TourRle implements Compressor, Decompressor {
+    public TourRle() { return; }
+
+    // Run-length encode: each run of equal bytes (max 127) becomes a
+    // (count, byte) pair.
+    public #int8[] compress(int8[] src) {
+        int32 n = (int32) src.count();
+        // Worst case (no runs) is 2 output bytes per input byte;
+        // encode into a scratch buffer, then shrink to the exact size.
+        int8[] tmp = heap int8[n * 2];
+        int32 o = 0;
+        int32 i = 0;
+        while (i < n) {
+            int8 b = src[i];
+            int32 run = 1;
+            while (i + run < n && src[i + run] == b && run < 127) {
+                run = run + 1;
+            }
+            tmp[o] = (int8) run;
+            tmp[o + 1] = b;
+            o = o + 2;
+            i = i + run;
+        }
+        int8[] out = heap int8[o];
+        int32 j = 0;
+        while (j < o) {
+            out[j] = tmp[j];
+            j = j + 1;
+        }
+        return #out;
+    }
+
+    // Inverse: expand each (count, byte) pair. `expandedLen` sizes the
+    // output in one allocation — that is the whole point of taking it.
+    public #int8[] decompress(int8[] src, int64 expandedLen) {
+        int8[] out = heap int8[(int32) expandedLen];
+        int32 n = (int32) src.count();
+        int32 i = 0;
+        int32 o = 0;
+        while (i + 2 <= n) {
+            int32 run = ((int32) src[i]) & 0xff;
+            int8 b = src[i + 1];
+            int32 r = 0;
+            while (r < run) {
+                out[o] = b;
+                o = o + 1;
+                r = r + 1;
+            }
+            i = i + 2;
+        }
+        return #out;
+    }
+}
+
+// The value a SchemaEncoder round-trips below.
+public class WirePoint {
+    public int32 x;
+    public int32 y;
+}
+
+// A toy untagged codec: 8 bytes, little-endian x then y. A real
+// untagged format (Avro) would resolve field order and types from the
+// schema; this one only asserts the schema is present — enough to show
+// the contract's shape: every call takes the Schema alongside the
+// bytes, because without it the bytes are meaningless.
+public class WirePointCodec implements SchemaEncoder<WirePoint> {
+    public WirePointCodec() { return; }
+
+    public #int8[] encode(WirePoint value, Schema schema) {
+        int8[] out = heap int8[8];
+        int32 v = value.x;
+        out[0] = (int8) (v & 0xff);
+        out[1] = (int8) ((v >> 8) & 0xff);
+        out[2] = (int8) ((v >> 16) & 0xff);
+        out[3] = (int8) ((v >> 24) & 0xff);
+        v = value.y;
+        out[4] = (int8) (v & 0xff);
+        out[5] = (int8) ((v >> 8) & 0xff);
+        out[6] = (int8) ((v >> 16) & 0xff);
+        out[7] = (int8) ((v >> 24) & 0xff);
+        return #out;
+    }
+
+    public #WirePoint decode(int8[] bytes, Schema schema) {
+        WirePoint p = heap WirePoint();
+        p.x = (((int32) bytes[0]) & 0xff)
+            | ((((int32) bytes[1]) & 0xff) << 8)
+            | ((((int32) bytes[2]) & 0xff) << 16)
+            | ((((int32) bytes[3]) & 0xff) << 24);
+        p.y = (((int32) bytes[4]) & 0xff)
+            | ((((int32) bytes[5]) & 0xff) << 8)
+            | ((((int32) bytes[6]) & 0xff) << 16)
+            | ((((int32) bytes[7]) & 0xff) << 24);
+        return #p;
+    }
+}
+
+public class SchemaDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- cajeta.wire: Schema/SchemaEncoder + block compression --");
+
+        // 1. Block compression through the interface pair. Hold the
+        //    codec as the interface type on each side — writer sees a
+        //    Compressor, reader a Decompressor; virtual dispatch lands
+        //    TourRle's implementations.
+        String text = "aaaaaaaabbbbcc";
+        int8[] plain = text.toBytes();
+        Compressor c = heap TourRle();
+        Decompressor d = heap TourRle();
+
+        // Writer side: compress, and record the original length — the
+        // block does not carry it (a container writes it in the block
+        // header next to the bytes).
+        int64 expandedLen = plain.count();
+        int8[] block = c.compress(plain);
+        System.stdout.println("  RLE " + expandedLen + " bytes -> "
+            + block.count() + " (3 runs, 2 bytes each)");
+        this.check(block.count() == 6L, "aaaaaaaabbbbcc packs to 3 (count,byte) pairs");
+        this.check(block.count() < plain.count(), "compressed block is smaller");
+
+        // Reader side: the recorded length comes back as expandedLen,
+        // sizing the output buffer in one allocation.
+        int8[] restored = d.decompress(block, expandedLen);
+        this.check(restored.count() == plain.count(),
+            "decompress returns exactly expandedLen bytes");
+        this.check(this.sameBytes(restored, plain),
+            "decompress(compress(plain)) == plain");
+
+        // 2. Schema — v1 is an opaque carrier: it owns the raw
+        //    descriptor bytes (# transfers ownership in) and lends
+        //    them back out (definition() is a borrow).
+        String defText = "record WirePoint { x: int32, y: int32 }";
+        int8[] defBytes = heap int8[(int32) defText.byteLength()];
+        int32 k = 0;
+        while (k < (int32) defText.byteLength()) {
+            defBytes[k] = defText.byteAt(k);
+            k = k + 1;
+        }
+        Schema schema = heap Schema(#defBytes);
+        System.stdout.println("  schema.definition().count() = "
+            + schema.definition().count());
+        this.check(schema.definition().count() == (int64) defText.byteLength(),
+            "Schema carries the raw descriptor bytes it was given");
+
+        // 3. SchemaEncoder<T> — encode and decode are inverses, and
+        //    BOTH take the schema: an untagged wire format cannot
+        //    decode its bytes without the schema that produced them.
+        //    One Schema drives both calls (it is only borrowed).
+        SchemaEncoder<WirePoint> codec = heap WirePointCodec();
+        WirePoint p = heap WirePoint();
+        p.x = 7;
+        p.y = -40;
+        int8[] bytes = codec.encode(p, schema);
+        WirePoint back = codec.decode(bytes, schema);
+        System.stdout.println("  point (" + p.x + "," + p.y + ") -> "
+            + bytes.count() + " bytes -> (" + back.x + "," + back.y + ")");
+        this.check(bytes.count() == 8L, "WirePoint encodes to 8 bytes");
+        this.check(back.x == 7 && back.y == -40,
+            "decode(encode(p, schema), schema) == p (sign preserved)");
+    }
+
+    // Byte-for-byte equality of two buffers (both borrowed).
+    public boolean sameBytes(int8[] a, int8[] b) {
+        if (a.count() != b.count()) {
+            return false;
+        }
+        int32 n = (int32) a.count();
+        int32 i = 0;
+        while (i < n) {
+            if (a[i] != b[i]) {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+}

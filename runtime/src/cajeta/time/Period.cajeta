@@ -15,7 +15,7 @@ package cajeta.time;
  * ```cajeta
  * stack Period p = Period.of(1, 2, 3);     // 1 year, 2 months, 3 days
  * stack Period q = p.plus(Period.ofWeeks(2));
- * #String text = q.normalized().iso();     // "P1Y2M17D"
+ * String text = q.normalized().iso();     // "P1Y2M17D"
  * boolean none = Period.zero().isZero();   // true
  * ```
  *
@@ -47,6 +47,8 @@ public final class Period {
      * ```cajeta
      * stack Period p = Period.of(1, 2, 3); // 1 year, 2 months, 3 days
      * ```
+     *
+     * @EntryPoint
      */
     @Inline
     public static Period of(int32 years, int32 months, int32 days) {
@@ -59,6 +61,8 @@ public final class Period {
      * ```cajeta
      * stack Period decade = Period.ofYears(10);
      * ```
+     *
+     * @EntryPoint
      */
     @Inline
     public static Period ofYears(int32 years) {
@@ -71,6 +75,8 @@ public final class Period {
      * ```cajeta
      * stack Period quarter = Period.ofMonths(3);
      * ```
+     *
+     * @EntryPoint
      */
     @Inline
     public static Period ofMonths(int32 months) {
@@ -95,6 +101,8 @@ public final class Period {
      * ```cajeta
      * stack Period week = Period.ofDays(7);
      * ```
+     *
+     * @EntryPoint
      */
     @Inline
     public static Period ofDays(int32 days) {
@@ -194,7 +202,7 @@ public final class Period {
      * caller.
      *
      * ```cajeta
-     * #String s = Period.of(1, 2, 3).iso(); // "P1Y2M3D"
+     * String s = Period.of(1, 2, 3).iso(); // "P1Y2M3D"
      * ```
      */
     public #String iso() {

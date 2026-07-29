@@ -1,6 +1,6 @@
 // Tests for the per-package skill index.
 // See src/cajeta/buildtool/skill/SkillIndex.h and
-// docs/specs/skill-discovery-spec.md §2.3, §3 (plan unit D.2).
+// specs/archive/skill-discovery-spec.md §2.3, §3 (plan unit D.2).
 
 #include "cajeta/buildtool/skill/SkillIndex.h"
 

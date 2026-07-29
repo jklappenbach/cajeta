@@ -61,9 +61,64 @@ first-class function types, closures, **closure specialization**, method-level t
 - **Autodiff:** mid-level-IR pass (the moat); one VJP rule-set, two drivers (compiled `Grad` + eager tape).
 
 ## Status & next step
-All specs are **drafts for review** (2026-06-23). The foundation-first progression
-(`language-foundations.md` §3) sets the order: **records + source-synthesis** first, then the
-transform intrinsics, then núcleo core (column → expr → autograd → nn/optim → frame →
-sparse/linalg), then the façades, with the splat flagship as the first integration milestone.
-Each spec becomes a **plan** (`agents/cajeta/nucleo/<name>-plan.md`) via the design skill, at
-which point its `TBD (plan-time)` markers are resolved.
+The foundation-first progression (`language-foundations.md` §3) sets the order: **records +
+source-synthesis** first, then the transform intrinsics, then núcleo core (column → expr →
+autograd → nn/optim → frame → sparse/linalg), then the façades, with the splat flagship as the
+first integration milestone. Each spec becomes a **plan** (`agents/cajeta/nucleo/<name>-plan.md`)
+via the design skill, at which point its `TBD (plan-time)` markers are resolved.
+
+Progress:
+- **records** — ✅ complete (`records-plan.md`, 48/48).
+- **source-synthesis** — ✅ complete (`source-synthesis-plan.md`, 42/42).
+- **transform-intrinsics** — ✅ complete (`transform-intrinsics-plan.md`, 63/63, 2026-07-19).
+  ML-spine slice: VJP registry + `Grad` (Tier-A backward) + `@NoGrad` + `Vmap` + `Jit` +
+  `@Grad`/`@Vmap`/`@Jit` sugar. `Pmap`, Tier-B fusion, `@Checkpoint`/`@Autocast`, and the
+  higher-order rule slot are deferred to follow-ups; the real tensor-op rule content + eager tape
+  are `nucleo-autograd-spec.md`.
+- **nucleo-autograd** — ✅ v1 increment complete (`nucleo-autograd-plan.md`, 2026-07-19):
+  widened VJP rules (div/exp/log/sqrt/mean, scalar + tensor spellings), the scalar eager tape
+  (`cajeta.nucleo.autograd.{Tape,Var}` — define-by-run, runtime-bounded loops, stopGrad), and
+  the eager==compiled agreement bar. Deferred: tensor tape ops, literal registry sharing
+  (generate tape source from the registry), `Diff<T>`, `@Checkpoint` remat, conv/softmax rules.
+- **nucleo-expr** — ✅ v1 tensor increment complete (`nucleo-expr-plan.md`, 2026-07-20):
+  `Fuse` intrinsic + `@Fuse` sugar fuse an N-op elementwise tensor chain into ONE loop
+  allocating only the result (the headline bar, measured); reductions stage with the
+  elementwise tail fused; the CALL is the force point (no `.eval` — X5 narrowed it away);
+  autograd seam closed (`Grad(Fuse(f))` / `@Grad @Fuse` — one DAG, two consumers; the
+  backward is ordinary Jit-fusable IR) and the column seam pinned (`elementExpr` is the
+  single dense-buffer site, contract-tested for the [X7] null-aware variant). Deferred:
+  operator-spelled bodies (`a * b` needs a type-system decision — plan 4.2.2), the
+  relational half (§4 pushdown, §7 column sharing, X7 nulls) with nucleo-column/frame,
+  GPU lowering (X6), and the §3.4 fuse-vs-materialize heuristic.
+- **nucleo-column** — ✅ v1 complete (`nucleo-column-plan.md`, 2026-07-21): the
+  Arrow-laid-out columnar substrate. `Column<T>`/`NullableColumn<T>`/`StringColumn`/
+  `MxColumn` — tensor-bit-identical when non-null with zero-copy views both ways;
+  64-byte-aligned owned buffers (aligned start offset); matched-struct C Data Interface
+  with no `libarrow`: zero-copy export (live-buffer borrow, shells-only release) and
+  zero-copy import (foreign-backed columns, releases exactly once, `materialize()` at
+  the compute boundary); utf8 ("u") both directions; `cajeta.mxfp4` extension carry with
+  physical-bytes degradation. The package is LAZY (it pulls cajeta.math). Deferred,
+  recorded in-plan: Storage native mode (zero-copy tensor over foreign memory), boolean
+  columns, 64-bit offsets, null-carrying utf8 import, nullable narrowing, the live
+  pyarrow probe (needs the embedding seam — C-ABI conformance is consumer-tested
+  in-tree), MX scales/kernels, codec readers, device story.
+- **nucleo-nn-optim** — ✅ v1 complete (`nucleo-nn-optim-plan.md`, 2026-07-21):
+  the neural-net spine. `GradAll<K>` (one closure returning ordered grads for the
+  leading K args) + `Tensor.relu` VJP + broadcast-aware `add`/`sub` backward
+  (`Tensor.sumTo`); `Module`/`Parameter` with reflection collection (declared
+  order, dotted names, buffers); `Linear`; the optimizer protocol with
+  SGD/Adam/AdamW (explicit positional grads, fail-loud, lazy state); pure
+  `lr(step)` schedules + thin wrapper; `Losses.mse*` (Grad inlines qualified
+  statics); FiberLocal train/eval + seeded Dropout. THE BAR: a 2-layer relu MLP
+  trains end-to-end under each optimizer (TrainEndToEndTests). v1 core is
+  float32/non-generic. Deferred, recorded in-plan: crossEntropy + axis
+  reductions, BatchNorm, generic Module<T> (two compiler gaps), call sugar,
+  clip/accumulate wrappers, SSA-locals backward, serialization.
+- **nucleo-frame** — 🔨 ACTIVE (`nucleo-frame-plan.md`, approved 2026-07-21, COMPLETE
+  scope — no milestone split): typed `Table<T>` + accessor/DSL synthesis, the lazy
+  relational plan (filter/select/with/groupBy/agg/sort/join/resample/rolling/pivot/melt),
+  pushdown optimization, gradual `Table<?>` typing, SQL/Polars nulls, the index interface
+  with zone-maps + B+ + Z-order, CSV/Arrow boundaries, and full-fidelity parquet via
+  cajeta-codec. Two compiler spikes lead (operator cross-type returns; wildcard-receiver
+  member resolution).
+- Everything below nucleo-frame — **draft** (specs written 2026-06-23; no plan yet).

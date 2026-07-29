@@ -11,10 +11,11 @@
 //        pointer bytes instead of the struct contents and the caller
 //        SIGSEGVs on the first method call.
 //
-//   (O2) `return stack Optional<int32>(false, null)` — primitive second
-//        arg with a null literal. The earlier `heap`-form had a silent-
-//        skip quirk (#61); confirm the stack form correctly zero-inits
-//        the primitive when the present flag is false.
+//   (O2) `return stack Optional<int32>(false)` — the empty-case ctor.
+//        (Was the two-arg `(false, null)` idiom, retired by title-tracking
+//        Unit 1: a null arg can never match a primitive `T` formal, and the
+//        no-matching-constructor hard error now rejects it.) Confirm the
+//        stack form correctly zero-inits the primitive value slot.
 //
 //   (O3) Subclass overrides an sret-shaped base method even though its
 //        own body has no `return stack X(...)` (e.g. PeekStream.next
@@ -56,7 +57,7 @@ void runWithRethrow(const std::string& src, int32_t expected) {
 
 } // namespace
 
-// O2 isolated: base Stream-shape returning `stack Optional<int32>(false, null)`
+// O2 isolated: base Stream-shape returning `stack Optional<int32>(false)`
 // from an explicit terminator. Smallest possible repro for the primitive-null
 // stack-ctor path.
 TEST(StackOptionalStreamShapeProbe, primitiveNullStackCtorReturnsEmpty) {
@@ -65,7 +66,7 @@ TEST(StackOptionalStreamShapeProbe, primitiveNullStackCtorReturnsEmpty) {
         "import cajeta.lang.Optional;\n"
         "public class Src {\n"
         "    public Optional<int32> next() {\n"
-        "        return stack Optional<int32>(false, null);\n"
+        "        return stack Optional<int32>(false);\n"
         "    }\n"
         "}\n"
         "public final class D {\n"
@@ -97,7 +98,7 @@ TEST(StackOptionalStreamShapeProbe, primitiveStackCtorBothBranches) {
         "            this.i = this.i + 1;\n"
         "            return stack Optional<int32>(true, v);\n"
         "        }\n"
-        "        return stack Optional<int32>(false, null);\n"
+        "        return stack Optional<int32>(false);\n"
         "    }\n"
         "}\n"
         "public final class D {\n"
@@ -132,7 +133,7 @@ TEST(StackOptionalStreamShapeProbe, returnLocalOptionalFromSretMethodCompile) {
         "            this.i = this.i + 1;\n"
         "            return stack Optional<int32>(true, v);\n"
         "        }\n"
-        "        return stack Optional<int32>(false, null);\n"
+        "        return stack Optional<int32>(false);\n"
         "    }\n"
         "}\n"
         "public class Filter {\n"
@@ -224,7 +225,7 @@ TEST(StackOptionalStreamShapeProbe, returnLocalOptionalFromSretMethod) {
         "            this.i = this.i + 1;\n"
         "            return stack Optional<int32>(true, v);\n"
         "        }\n"
-        "        return stack Optional<int32>(false, null);\n"
+        "        return stack Optional<int32>(false);\n"
         "    }\n"
         "}\n"
         "public class Filter {\n"
@@ -266,7 +267,7 @@ TEST(StackOptionalStreamShapeProbe, virtualSretReturnLocalFromOverride) {
         "import cajeta.lang.Optional;\n"
         "public class Src {\n"
         "    public Optional<int32> next() {\n"
-        "        return stack Optional<int32>(false, null);\n"
+        "        return stack Optional<int32>(false);\n"
         "    }\n"
         "}\n"
         "public class Filter extends Src {\n"
@@ -278,7 +279,7 @@ TEST(StackOptionalStreamShapeProbe, virtualSretReturnLocalFromOverride) {
         "            this.i = this.i + 1;\n"
         "            return stack Optional<int32>(true, v);\n"
         "        }\n"
-        "        Optional<int32> o = stack Optional<int32>(false, null);\n"
+        "        Optional<int32> o = stack Optional<int32>(false);\n"
         "        return o;\n"  // return local through sret
         "    }\n"
         "}\n"

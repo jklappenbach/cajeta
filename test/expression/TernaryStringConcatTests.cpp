@@ -15,18 +15,25 @@ using cajeta_test::CajetaJit;
 
 namespace {
 
-// Run a String-returning `run()` and compare its bytes against `expected`.
-// String layout: { ptr vtable, ptr bytes, i32 byteLength, ... }; bytes points at
-// a { i64 count, [N x i8] data } header (data starts 8 bytes in).
+// Run a String-returning `run()` and compare its window against `expected`.
+// 6.2.2 tagged core: { vtable@0, i32 lenTag@8, i32 aux@12, ptr base@16,
+// i32 cachedCpLength@24 } — Inline text at +12 for len <= 12, else
+// base + 8 + aux.
 void expectString(CajetaJit* jit, const char* sym, const char* expected) {
     auto fn = jit->lookup<void* (*)()>(sym);
     ASSERT_NE(fn, nullptr) << sym;
-    void* s = fn();
+    char* s = reinterpret_cast<char*>(fn());
     ASSERT_NE(s, nullptr) << sym << " returned null";
-    void* bytesHeader = *reinterpret_cast<void**>(reinterpret_cast<char*>(s) + 8);
-    ASSERT_NE(bytesHeader, nullptr) << sym << " has null bytes";
-    const char* data = reinterpret_cast<char*>(bytesHeader) + 8;
-    int32_t byteLen = *reinterpret_cast<int32_t*>(reinterpret_cast<char*>(s) + 16);
+    int32_t lenTag = *reinterpret_cast<int32_t*>(s + 8);
+    int32_t byteLen = lenTag & 0x1FFFFFFF;
+    const char* data;
+    if (byteLen <= 12) {
+        data = s + 12;
+    } else {
+        char* base = *reinterpret_cast<char**>(s + 16);
+        ASSERT_NE(base, nullptr) << sym << " has null root";
+        data = base + 8 + *reinterpret_cast<int32_t*>(s + 12);
+    }
     EXPECT_EQ(std::string(data, data + byteLen), std::string(expected)) << sym;
 }
 

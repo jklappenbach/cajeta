@@ -43,10 +43,17 @@ fs::path mcpProject() { return buildDir().parent_path() / "tools" / "mcp"; }
 std::string mcpExe() { return (mcpProject() / "build" / "cajeta-mcp").string(); }
 
 // Build the cajeta server once for the whole suite.
+//
+// Always run `cajeta build` (once per test-process, cached in `state`) rather
+// than short-circuiting when the binary merely EXISTS. `cajeta build` is
+// incremental — a no-op when the sources are unchanged — so this stays cheap,
+// but it guarantees the tests exercise the CURRENT tools/mcp source instead of
+// a stale cajeta-mcp left over from an older build. A stale binary previously
+// made lifecycleAndErrors fail after the server's `instructions` text gained
+// "searchSkills": the source had it, the reused binary did not.
 bool ensureServerBuilt() {
     static int state = -1;   // -1 unknown, 0 fail, 1 ok
     if (state >= 0) return state == 1;
-    if (fs::exists(mcpExe())) { state = 1; return true; }
     std::string cwd = mcpProject().string();
     std::string out, err;
     SubprocessOptions opt;

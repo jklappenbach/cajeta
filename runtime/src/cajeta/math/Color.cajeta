@@ -4,8 +4,9 @@ import cajeta.lang.Math;
 
 /**
  * Color — an RGBA color, the value type a renderer passes between sRGB-encoded
- * texture/UI space and linear light space (cajeta-gfx plan §1.d). A value type
- * over four `float32` channels (r, g, b, a), each in [0,1].
+ * texture/UI space and linear light space (cajeta-gfx plan §1.d). A record —
+ * a value type over four `float32` channels (r, g, b, a), each in [0,1] —
+ * with structural equality and the flat no-header layout (records-spec §1.4).
  *
  * sRGB is a non-linear encoding: shading must happen in LINEAR light, but
  * textures and UI colors are usually sRGB-encoded. `toLinear()` decodes sRGB ->
@@ -19,12 +20,17 @@ import cajeta.lang.Math;
  * Color out = lit.toSrgb();                             // encode for the display
  * ```
  */
-@ValueType public final class Color {
+public record Color {
     public float32 r;
     public float32 g;
     public float32 b;
     public float32 a;
 
+    /**
+     * Build a color from its r, g, b, a channels, each in [0,1].
+     *
+     * @EntryPoint
+     */
     public Color(float32 r, float32 g, float32 b, float32 a) {
         this.r = r;
         this.g = g;

@@ -13,13 +13,16 @@
 #include "../type/CajetaView.h"
 #include "../type/CajetaFunctionType.h"
 #include "expression/Expression.h"
+#include "Statement.h"
 #include "expression/LiteralExpression.h"
 #include "expression/DotExpression.h"
 #include "expression/Identifier.h"
 #include "expression/MethodCallExpression.h"
+#include "expression/CallExpression.h"
 #include "../method/Method.h"
 #include "expression/BinaryOpExpression.h"
 #include "expression/NewExpression.h"
+#include "expression/CreatorRest.h"
 #include "expression/AggregateInitializerExpression.h"
 #include "../method/Method.h"
 #include "../error/CajetaExceptions.h"
@@ -100,6 +103,198 @@ namespace cajeta {
         if (auto m = module->getCurrentMethod()) m->registerDropEntry(entryPtr);
     }
 
+    // title-stores §3.2 — per-stride walk+free wrapper for local
+    // bit-array drop entries. Element slots stride by the element
+    // STRUCT's alloc size (a pre-existing class-element array layout
+    // convention), so the stride is a per-type constant the one-arg
+    // drop-entry ABI can't carry — synthesize a tiny fn per (hs, es).
+    static llvm::Function* getOrCreateTailDropFree(CajetaModulePtr module,
+            uint64_t hs, uint64_t es) {
+        llvm::Module* m =
+            module->getBuilder()->GetInsertBlock()->getParent()->getParent();
+        std::string name = "cajeta_tail_dropfree_hs" + std::to_string(hs)
+            + "_es" + std::to_string(es);
+        if (llvm::Function* f = m->getFunction(name)) return f;
+        auto& fctx = m->getContext();
+        auto* fptrTy = llvm::PointerType::get(fctx, 0);
+        auto* fnTy = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(fctx), {fptrTy}, false);
+        auto* f = llvm::Function::Create(fnTy,
+            llvm::Function::InternalLinkage, name, m);
+        auto* bb = llvm::BasicBlock::Create(fctx, "entry", f);
+        llvm::IRBuilder<> fb(bb);
+        llvm::Function* walk = module->getRuntimeFunction(
+            "__cajeta_tail_elem_drop_walk");
+        llvm::Function* freeA = module->getRuntimeFunction(
+            "__cajeta_free_array");
+        auto* fi64 = llvm::Type::getInt64Ty(fctx);
+        if (walk) fb.CreateCall(walk, {f->getArg(0),
+            llvm::ConstantInt::get(fi64, hs),
+            llvm::ConstantInt::get(fi64, es)});
+        if (freeA) fb.CreateCall(freeA, {f->getArg(0)});
+        fb.CreateRetVoid();
+        return f;
+    }
+
+    // Public bridge for post-declaration ownership creation (9.3.1
+    // move-assign into a bare-declared local). Same wiring; binds the
+    // slot's CURRENT value, so callers invoke it after their store.
+    void LocalVariableDeclaration::emitOwnerDropEntry(CajetaModulePtr module,
+            FieldPtr field, const std::string& dropFnName, int allocLine) {
+        emitDropEntryFor(module, field, dropFnName, allocLine);
+    }
+
+    // slices 9.2.1 / title-tracking Unit 4 — one extra chain entry per
+    // OWNING element-tracked array local (String[] via the 9.2.1 family,
+    // plain class elements via the Unit 4 slot-bit family), pushed right
+    // after the storage (free_array) entry so LIFO runs the element walk
+    // BEFORE the buffer frees. obj = a stack sidecar {arr_slot,
+    // storage_entry, owned_bits, owned_cap, stride, header} the
+    // element-store helpers and the walk share; store sites reach it via
+    // field->getElemOwnSidecar(). Pushed in the DECLARING frame (the 9.3.1
+    // placement rule) so loop-body / inner-block stores can't be freed at
+    // the wrong scope exit. `walkDropFn` picks the element family:
+    // __cajeta_string_array_owned_drop or __cajeta_class_array_owned_drop.
+    static void emitArrayElemDropEntry(CajetaModulePtr module,
+            FieldPtr field, const shared_ptr<CajetaArray>& arrType,
+            const char* walkDropFn, int allocLine = 0) {
+        DropPushChoice push = pickDropPush(module);
+        llvm::Function* dropFn = module->getRuntimeFunction(walkDropFn);
+        if (!push.pushFn || !dropFn) return;
+        auto* builder = module->getBuilder();
+        auto& ctx = *module->getLlvmContext();
+        llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+
+        llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+        llvm::IRBuilder<> entryBuilder(&parentFn->getEntryBlock(),
+            parentFn->getEntryBlock().begin());
+        llvm::Value* entryPtr = entryBuilder.CreateAlloca(
+            llvm::ArrayType::get(i8Ty, push.entryBytes));
+        llvm::Value* sidecar = entryBuilder.CreateAlloca(
+            llvm::ArrayType::get(i64Ty, 6), nullptr, "str_arr_sidecar");
+
+        const llvm::DataLayout& dl =
+            module->getLlvmModule()->getDataLayout();
+        uint64_t strideBytes = dl.getTypeAllocSize(
+            arrType->getElementLlvmType(&ctx));
+        uint64_t headerBytes = dl.getTypeAllocSize(arrType->getLlvmType());
+        auto slotAt = [&](unsigned i, const char* nm) -> llvm::Value* {
+            return builder->CreateInBoundsGEP(i64Ty, sidecar,
+                llvm::ConstantInt::get(i64Ty, i), nm);
+        };
+        builder->CreateStore(field->getOrCreateAllocation(),
+            slotAt(0, "sc.arrslot"));
+        llvm::Value* storageEntry = field->getDropEntry();
+        llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
+        builder->CreateStore(storageEntry
+                ? storageEntry
+                : (llvm::Value*) llvm::ConstantPointerNull::get(ptrTy),
+            slotAt(1, "sc.storage"));
+        builder->CreateStore(llvm::ConstantInt::get(i64Ty, 0),
+            slotAt(2, "sc.bits"));
+        builder->CreateStore(llvm::ConstantInt::get(i64Ty, 0),
+            slotAt(3, "sc.cap"));
+        builder->CreateStore(llvm::ConstantInt::get(i64Ty, strideBytes),
+            slotAt(4, "sc.stride"));
+        builder->CreateStore(llvm::ConstantInt::get(i64Ty, headerBytes),
+            slotAt(5, "sc.header"));
+
+        if (push.debug) {
+            llvm::Constant* fileConst = module->getOrCreateSourceFileConstant(
+                module->getSourcePath());
+            llvm::Constant* lineConst = llvm::ConstantInt::get(i32Ty, allocLine);
+            builder->CreateCall(push.pushFn,
+                {entryPtr, sidecar, dropFn, fileConst, lineConst});
+        } else {
+            builder->CreateCall(push.pushFn, {entryPtr, sidecar, dropFn});
+        }
+        if (auto m = module->getCurrentMethod()) m->registerDropEntry(entryPtr);
+        field->setElemOwnSidecar(sidecar);
+    }
+
+    // title-tracking 5.2.3 — runtime-owner LOCALS. A class-typed call result
+    // carries its title in the return-flag TLS, so the receiving local's drop
+    // entry is ARMED FROM THAT FLAG rather than from a compile-time fact: a
+    // `#`-forwarded value drops here, a lent one leaves the entry disarmed and
+    // the original owner keeps its single drop. `flag` must be read at the
+    // earliest point after the call (see generateCode) — any intervening cajeta
+    // call would overwrite the thread-local.
+    static void emitFlaggedDropEntryFor(CajetaModulePtr module, FieldPtr field,
+                                         const std::string& dropFnName,
+                                         llvm::Value* flag,
+                                         int allocLine = 0) {
+        DropPushChoice push = pickDropPush(module);
+        llvm::Function* dropFn = module->getRuntimeFunction(dropFnName);
+        llvm::Function* setFlagFn = module->getRuntimeFunction(
+            "__cajeta_drop_set_flag");
+        if (!push.pushFn || !dropFn || !setFlagFn || !flag) return;
+        auto* builder = module->getBuilder();
+        auto& ctx = *module->getLlvmContext();
+        llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
+
+        llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+        llvm::IRBuilder<> entryBuilder(&parentFn->getEntryBlock(),
+            parentFn->getEntryBlock().begin());
+        llvm::Value* entryPtr = entryBuilder.CreateAlloca(
+            llvm::ArrayType::get(i8Ty, push.entryBytes));
+
+        llvm::Value* ownerPtr = builder->CreateLoad(
+            ptrTy, field->getOrCreateAllocation());
+        if (push.debug) {
+            llvm::Constant* fileConst = module->getOrCreateSourceFileConstant(
+                module->getSourcePath());
+            llvm::Constant* lineConst = llvm::ConstantInt::get(i32Ty, allocLine);
+            builder->CreateCall(push.pushFn,
+                {entryPtr, ownerPtr, dropFn, fileConst, lineConst});
+        } else {
+            builder->CreateCall(push.pushFn, {entryPtr, ownerPtr, dropFn});
+        }
+        builder->CreateCall(setFlagFn, {entryPtr, flag});
+
+        field->setDropEntry(entryPtr);
+        if (auto m = module->getCurrentMethod()) m->registerDropEntry(entryPtr);
+    }
+
+    // Variant for shared-capable VALUE locals (slice-spec §6.1 drop hook):
+    // the drop entry's obj is the value's stack slot ITSELF (the alloca is
+    // the storage, not a pointer to be loaded), and the drop fn is the
+    // class's synthesized per-field release walk.
+    static void emitValueDropEntryFor(CajetaModulePtr module, FieldPtr field,
+                                       llvm::Function* releaseFn,
+                                       int allocLine = 0) {
+        DropPushChoice push = pickDropPush(module);
+        if (!push.pushFn || !releaseFn) return;
+        releaseFn = CajetaModule::ensureFunctionInModule(
+            module->getLlvmModule(), releaseFn);
+        auto* builder = module->getBuilder();
+        auto& ctx = *module->getLlvmContext();
+        llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+
+        llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+        llvm::IRBuilder<> entryBuilder(&parentFn->getEntryBlock(),
+            parentFn->getEntryBlock().begin());
+        llvm::Value* entryPtr = entryBuilder.CreateAlloca(
+            llvm::ArrayType::get(i8Ty, push.entryBytes));
+
+        llvm::Value* ownerPtr = field->getOrCreateAllocation();
+        if (push.debug) {
+            llvm::Constant* fileConst = module->getOrCreateSourceFileConstant(
+                module->getSourcePath());
+            llvm::Constant* lineConst = llvm::ConstantInt::get(i32Ty, allocLine);
+            builder->CreateCall(push.pushFn, {entryPtr, ownerPtr, releaseFn, fileConst, lineConst});
+        } else {
+            builder->CreateCall(push.pushFn, {entryPtr, ownerPtr, releaseFn});
+        }
+
+        field->setDropEntry(entryPtr);
+        if (auto m = module->getCurrentMethod()) m->registerDropEntry(entryPtr);
+    }
+
     // Variant for class-instance locals — same drop-chain wiring, but
     // takes an already-resolved drop function (the class's synthesized
     // wrapper) directly instead of a runtime-helper name. The wrapper
@@ -142,6 +337,135 @@ namespace cajeta {
         if (auto m = module->getCurrentMethod()) m->registerDropEntry(entryPtr);
     }
 
+    // slices plan 4.2.1 — the LOCAL classification for the borrow downgrade.
+    //
+    // The default AbstractSyntaxNode child walk is NOT enough here: most
+    // statement types keep their subtrees in private members, not in
+    // `children` (ExpressionStatement's own comment: "The wrapped expression
+    // isn't in `children` so the default walk skips it"), and method-call /
+    // constructor arguments live in MethodCallParameter vectors. An analysis
+    // whose safe direction is over-approximation (slice-spec §4.3) must see
+    // ALL of them — missing a use meant the borrow downgrade fired on views
+    // that escape via `out.add(#g)` (NgramIndexTests regression). This
+    // collector enumerates children plus every hidden subtree.
+    static void collectSubNodes(const AbstractSyntaxNodePtr& node,
+                                std::vector<AbstractSyntaxNodePtr>& out) {
+        for (auto& child : node->getChildren()) out.push_back(child);
+        if (auto es = dynamic_pointer_cast<ExpressionStatement>(node)) {
+            if (es->getExpression()) out.push_back(es->getExpression());
+        }
+        if (auto ls = dynamic_pointer_cast<LabelStatement>(node)) {
+            if (ls->getBlock()) out.push_back(ls->getBlock());
+        }
+        if (auto sc = dynamic_pointer_cast<ScopeStatement>(node)) {
+            if (sc->getBlock()) out.push_back(sc->getBlock());
+        }
+        if (auto is = dynamic_pointer_cast<IfStatement>(node)) {
+            if (is->getCondition()) out.push_back(is->getCondition());
+            if (is->getThenBranch()) out.push_back(is->getThenBranch());
+            if (is->getElseBranch()) out.push_back(is->getElseBranch());
+        }
+        if (auto fs = dynamic_pointer_cast<ForStatement>(node)) {
+            if (fs->getInit()) out.push_back(fs->getInit());
+            if (fs->getCondition()) out.push_back(fs->getCondition());
+            for (auto& u : fs->getUpdate()) if (u) out.push_back(u);
+            if (fs->getBody()) out.push_back(fs->getBody());
+        }
+        if (auto efs = dynamic_pointer_cast<EnhancedForStatement>(node)) {
+            if (efs->getIterableExpr()) out.push_back(efs->getIterableExpr());
+            if (efs->getBody()) out.push_back(efs->getBody());
+        }
+        if (auto ws = dynamic_pointer_cast<WhileStatement>(node)) {
+            if (ws->getCondition()) out.push_back(ws->getCondition());
+            if (ws->getBody()) out.push_back(ws->getBody());
+        }
+        if (auto ds = dynamic_pointer_cast<DoStatement>(node)) {
+            if (ds->getBody()) out.push_back(ds->getBody());
+            if (ds->getCondition()) out.push_back(ds->getCondition());
+        }
+        if (auto ts = dynamic_pointer_cast<TryStatement>(node)) {
+            if (ts->getTryBlock()) out.push_back(ts->getTryBlock());
+            for (auto& c : ts->getCatchClauses()) if (c.body) out.push_back(c.body);
+            if (ts->getFinallyBlock()) out.push_back(ts->getFinallyBlock());
+        }
+        if (auto sw = dynamic_pointer_cast<SwitchStatement>(node)) {
+            if (sw->getSubject()) out.push_back(sw->getSubject());
+            for (auto& g : sw->getGroups()) {
+                for (auto& v : g.caseValues) if (v) out.push_back(v);
+                for (auto& st : g.statements) if (st) out.push_back(st);
+            }
+        }
+        if (auto rs = dynamic_pointer_cast<ReturnStatement>(node)) {
+            if (rs->getExpression()) out.push_back(rs->getExpression());
+        }
+        if (auto th = dynamic_pointer_cast<ThrowStatement>(node)) {
+            if (th->getExpression()) out.push_back(th->getExpression());
+        }
+        if (auto mc = dynamic_pointer_cast<MethodCallExpression>(node)) {
+            for (auto& pm : mc->getParameters())
+                if (pm.expression) out.push_back(pm.expression);
+        }
+        if (auto ne = dynamic_pointer_cast<NewExpression>(node)) {
+            if (ne->getCreatorRest()) out.push_back(ne->getCreatorRest());
+        }
+        if (auto cr = dynamic_pointer_cast<ClassCreatorRest>(node)) {
+            for (auto& pm : cr->getParameters())
+                if (pm.expression) out.push_back(pm.expression);
+        }
+    }
+
+    // A name's use BLOCKS the downgrade when it appears under a return, a
+    // `#`-move, a lambda (capture), or a `#`-TRANSFERRED call/ctor argument:
+    // those carry the VIEW itself out of the scope. Plain (borrow) call args
+    // and field stores do NOT block — the value resolves at its own escape
+    // site (4.2.2 (a)). Name-based and conservative.
+    static bool subtreeUsesName(const AbstractSyntaxNodePtr& node,
+                                const std::string& name) {
+        if (!node) return false;
+        if (auto id = dynamic_pointer_cast<IdentifierExpression>(node)) {
+            if (id->getTextValue() == name) return true;
+        }
+        std::vector<AbstractSyntaxNodePtr> subs;
+        collectSubNodes(node, subs);
+        for (auto& child : subs) {
+            if (subtreeUsesName(child, name)) return true;
+        }
+        return false;
+    }
+    static bool nameEscapesScope(const AbstractSyntaxNodePtr& node,
+                                 const std::string& name) {
+        if (!node) return false;
+        bool blocking = dynamic_pointer_cast<ReturnStatement>(node)
+            || dynamic_pointer_cast<MoveExpression>(node)
+            || dynamic_pointer_cast<LambdaExpression>(node);
+        if (blocking) return subtreeUsesName(node, name);
+        // A `#name` transfer at argument position is a move, but lands as
+        // MethodCallParameter.callerTransferred with a plain identifier
+        // expression rather than a MoveExpression node — treat it as
+        // blocking or the callee receives a stakeless borrow whose root
+        // dies with this scope.
+        if (auto mc = dynamic_pointer_cast<MethodCallExpression>(node)) {
+            for (const auto& pm : mc->getParameters()) {
+                if (pm.callerTransferred && subtreeUsesName(pm.expression, name)) {
+                    return true;
+                }
+            }
+        }
+        if (auto cr = dynamic_pointer_cast<ClassCreatorRest>(node)) {
+            for (const auto& pm : cr->getParameters()) {
+                if (pm.callerTransferred && subtreeUsesName(pm.expression, name)) {
+                    return true;
+                }
+            }
+        }
+        std::vector<AbstractSyntaxNodePtr> subs;
+        collectSubNodes(node, subs);
+        for (auto& child : subs) {
+            if (nameEscapesScope(child, name)) return true;
+        }
+        return false;
+    }
+
     /**
      * If we have a primitive variable, we can store in on the stack and will immediately create an currentRegister.
      * Otherwise, we will create an currentRegister for a structure reference.  If the variable receives a new operator,
@@ -169,6 +493,57 @@ namespace cajeta {
                     if (auto arrType = dynamic_pointer_cast<CajetaArray>(type)) {
                         arrInit->setElementType(arrType->getElementType());
                     }
+                } else if (auto varInit =
+                        dynamic_pointer_cast<VariableInitializer>(initializer)) {
+                    // `int32[] xs = [1, 2, 3]` — the `[...]` literal is wrapped
+                    // in a VariableInitializer. Push the declared element type
+                    // as the target (array-literals §3.2) so it wins over the
+                    // unify fallback (widening) and gives an empty `[]` its type.
+                    auto& kids = varInit->getChildren();
+                    if (!kids.empty()) {
+                        if (auto arrLit =
+                                dynamic_pointer_cast<ArrayLiteralExpression>(kids[0])) {
+                            if (auto arrType = dynamic_pointer_cast<CajetaArray>(type)) {
+                                arrLit->setElementType(arrType->getElementType());
+                            }
+                        }
+                    }
+                }
+            }
+            // collection-literals §2 (Unit 1) — a bare `[...]` literal against a
+            // class target (a collection) rewrites to a from-array constructor
+            // call `heap Target([...])`, so `ArrayList<int32> xs = [1,2,3]`
+            // builds the list. Runs before getOrCreateAllocation generates the
+            // initializer. Array targets are handled by the isArray block above.
+            if (!isArray) {
+                if (auto varInit =
+                        dynamic_pointer_cast<VariableInitializer>(initializer)) {
+                    auto& kids = varInit->getChildren();
+                    if (!kids.empty()) {
+                        if (auto expr =
+                                dynamic_pointer_cast<Expression>(kids[0])) {
+                            if (auto ctor =
+                                    collectionLiteralFromArray(type, expr)) {
+                                kids[0] = ctor;
+                            } else if (auto agg = dynamic_pointer_cast<
+                                    AggregateInitializerExpression>(expr)) {
+                                // collection-literals §4 — prefixless `{…}`
+                                // infers the declared type (only a class target
+                                // can back an aggregate; a primitive target
+                                // leaves it uninferred → clean NO_TYPE error).
+                                if (dynamic_pointer_cast<CajetaClass>(type)) {
+                                    agg->setExpectedType(type);
+                                }
+                            } else if (auto mapLit = dynamic_pointer_cast<
+                                    MapLiteralExpression>(expr)) {
+                                // collection-literals §3 — `[k: v]` infers the
+                                // declared map type (K,V from HashMap<K,V>).
+                                if (dynamic_pointer_cast<CajetaClass>(type)) {
+                                    mapLit->setExpectedType(type);
+                                }
+                            }
+                        }
+                    }
                 }
             }
             // Function-typed initializer with a lambda RHS: push the LHS's
@@ -190,6 +565,49 @@ namespace cajeta {
                     }
                 }
             }
+            // slices plan 4.2.2 — local-borrow downgrade. A String local
+            // initialized from `recv.substring(...)` / `recv.trim()` whose
+            // name never appears under a return / `#`-move / lambda in this
+            // method gets the BORROW slice (zero rc): rewrite the call to
+            // the *View twin before the initializer generates. Escapes of
+            // the VALUE (field stores, args) resolve at their own sites.
+            {
+                auto declClass = dynamic_pointer_cast<CajetaClass>(type);
+                bool declIsString = declClass && declClass->getQName()
+                    && declClass->getQName()->getTypeName() == "String"
+                    && declClass->getQName()->getPackageName() == "cajeta.lang";
+                if (declIsString && initializer) {
+                    if (auto varInit = dynamic_pointer_cast<VariableInitializer>(initializer)) {
+                        auto& kids = varInit->getChildren();
+                        auto mc = kids.empty() ? nullptr
+                            : dynamic_pointer_cast<MethodCallExpression>(kids[0]);
+                        const std::string mcName = mc ? mc->getMethodCallName() : "";
+                        if (mc && (mcName == "substring" || mcName == "trim")) {
+                            auto& mck = mc->getChildren();
+                            auto recv = mck.empty() ? nullptr
+                                : dynamic_pointer_cast<Expression>(mck[0]);
+                            if (recv) {
+                                if (!recv->getResolvedType()) recv->resolveTypes(module);
+                                auto recvCls = dynamic_pointer_cast<CajetaClass>(
+                                    recv->getResolvedType());
+                                bool recvIsString = recvCls && recvCls->getQName()
+                                    && recvCls->getQName()->getTypeName() == "String"
+                                    && recvCls->getQName()->getPackageName() == "cajeta.lang";
+                                if (recvIsString) {
+                                    auto m = module->getCurrentMethod();
+                                    BlockPtr body = m ? m->getBlock() : nullptr;
+                                    if (body && !nameEscapesScope(body,
+                                            declarator->getIdentifier())) {
+                                        mc->setMethodCallName(
+                                            mcName == "substring" ? "substringView"
+                                                                  : "trimView");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             FieldPtr field;
             if (wantsInlineSlot) {
                 field = make_shared<StackField>(module, declarator->getIdentifier(), type,
@@ -198,8 +616,97 @@ namespace cajeta {
                 field = make_shared<HeapField>(module, declarator->getIdentifier(), type,
                     declarator->isReference(), modifiers, annotations, initializer);
             }
+            // title-stores §2.1 — `T x #= #src[i]` (the DOUBLE-Move shape
+            // the #= desugar produces over a parsed slot extraction) is a
+            // FORWARDING CLAIM: the local arms from the slot's actual bit,
+            // no panic. Single-Move `T x = #src[i]` keeps the guarded panic.
+            if (auto fwdVi = dynamic_pointer_cast<VariableInitializer>(
+                    declarator->getInitializer())) {
+                auto& fwdKids = fwdVi->getChildren();
+                if (!fwdKids.empty()) {
+                    if (auto outerMv = dynamic_pointer_cast<MoveExpression>(
+                            fwdKids[0])) {
+                        if (!outerMv->getChildren().empty()) {
+                            if (auto innerMv = dynamic_pointer_cast<
+                                    MoveExpression>(outerMv->getChildren()[0])) {
+                                if (!innerMv->getChildren().empty()
+                                        && (dynamic_pointer_cast<
+                                                ArrayIndexExpression>(
+                                                innerMv->getChildren()[0])
+                                            // §3.3.2 — member claims
+                                            // (`V out #= #slots[i].val`)
+                                            // forward the member bit the
+                                            // same way.
+                                            || dynamic_pointer_cast<
+                                                   DotExpression>(
+                                                   innerMv->getChildren()[0]))) {
+                                    innerMv->setForwardingSlotMove(true);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             module->getScopeStack().peek()->putField(field);
             field->getOrCreateAllocation();
+
+            // 5.2.3 — the initializer's IR (including the call) was emitted by
+            // getOrCreateAllocation just above, so THIS is the only point where
+            // the return-flag TLS still holds this call's title bit. Capture it
+            // now; the drop-wiring section below decides whether to arm an entry
+            // with it. Only class-typed call initializers can carry a title.
+            llvm::Value* callResultFlag = nullptr;
+            if (auto varInit = dynamic_pointer_cast<VariableInitializer>(
+                    initializer)) {
+                auto& kids = varInit->getChildren();
+                // 7.2.5 — closure invocations (CallExpression) ride the same
+                // paired return flag as method calls.
+                if (!kids.empty()
+                        && (dynamic_pointer_cast<MethodCallExpression>(kids[0])
+                            || dynamic_pointer_cast<CallExpression>(kids[0]))) {
+                    if (llvm::Function* getFlagFn = module->getRuntimeFunction(
+                            "__cajeta_return_flag_get")) {
+                        callResultFlag = module->getBuilder()->CreateCall(
+                            getFlagFn, {}, "ret_flag");
+                    }
+                }
+            }
+
+            // slice-spec §6.1 copy/drop hooks for shared-capable VALUE locals
+            // (Utf8 / value aggregates embedding it). The init copy already
+            // happened inside getOrCreateAllocation:
+            //   - init from an LVALUE (identifier / field / element / record
+            //     slice-cast) duplicated existing stakes -> retain each.
+            //   - init from an RVALUE (call result, aggregate-init, stack
+            //     ctor) carries its stakes with the bytes -> no retain.
+            // Every such local registers a release drop entry (obj = the
+            // slot itself); return-of-local deactivates it (move-out).
+            if (wantsInlineSlot) {
+                auto vClass = dynamic_pointer_cast<CajetaClass>(type);
+                if (vClass && vClass->isSharedCapableValue()) {
+                    bool initFromLvalue = false;
+                    if (auto varInit = dynamic_pointer_cast<VariableInitializer>(initializer)) {
+                        auto& kids = varInit->getChildren();
+                        if (!kids.empty()) {
+                            initFromLvalue =
+                                dynamic_pointer_cast<IdentifierExpression>(kids[0])
+                                || dynamic_pointer_cast<DotExpression>(kids[0])
+                                || dynamic_pointer_cast<ArrayIndexExpression>(kids[0])
+                                || dynamic_pointer_cast<CastExpression>(kids[0]);
+                        }
+                    }
+                    auto* builder = module->getBuilder();
+                    if (initFromLvalue) {
+                        vClass->emitValueSharedOp(*builder,
+                            field->getOrCreateAllocation(), module,
+                            builder->GetInsertBlock()->getModule(),
+                            /*retain=*/true);
+                    }
+                    emitValueDropEntryFor(module, field,
+                        vClass->getOrCreateValueReleaseFunction(),
+                        getSourceLine());
+                }
+            }
 
             // Debugger CP5/CP7-1b: this local is registered in the current
             // debug frame at the END of this method (see emitDbgLocal below),
@@ -233,6 +740,18 @@ namespace cajeta {
                         }
                     }
                     auto srcClass = dynamic_pointer_cast<CajetaClass>(srcType);
+                    // Record conversions are never implicit — an upcast
+                    // SLICES (data loss stays visible at the cast site).
+                    if (srcClass && srcClass.get() != dstClass.get()
+                            && (srcClass->isRecordType() || dstClass->isRecordType())) {
+                        throw Exception(
+                            "cannot implicitly convert '" + srcClass->toCanonical()
+                                + "' to '" + dstClass->toCanonical()
+                                + "' — record upcasts slice; write an explicit "
+                                  "cast: (" + dstClass->getQName()->getTypeName()
+                                + ") value",
+                            "CAJETA_ERROR_RECORD_IMPLICIT_CAST");
+                    }
                     if (srcClass && srcClass.get() != dstClass.get()
                             && !srcClass->isInterface()) {
                         uint64_t off = srcClass->getSubObjectByteOffset(
@@ -505,6 +1024,9 @@ namespace cajeta {
             // (fresh malloc) and most other initializers retain
             // their ownership-transfer semantics.
             bool initIsBorrow = false;
+            // 5.2.3 — the initializer is a call whose class-pointer result
+            // carries a runtime title flag (armed below, not statically).
+            bool initIsFlaggedCall = false;
             // P2a — `stack MyClass(args)` produces an instance owned by
             // the current frame (alloca-backed body); the class's heap
             // destructor would free a stack pointer if we registered the
@@ -542,6 +1064,21 @@ namespace cajeta {
                     if (auto aggExpr = dynamic_pointer_cast<AggregateInitializerExpression>(children[0])) {
                         if (aggExpr->getStackAlloc()) {
                             initIsStackAlloc = true;
+                        }
+                    }
+                    // 7.2.5 — bare-name closure invocation: no Method to
+                    // resolve, but the synthesized callee sets the paired
+                    // return flag; arm a flag-fed entry for class-ptr
+                    // returns.
+                    if (auto ce = dynamic_pointer_cast<CallExpression>(children[0])) {
+                        if (!ce->getResolvedType()) ce->resolveTypes(module);
+                        auto ceCls = dynamic_pointer_cast<CajetaClass>(
+                            ce->getResolvedType());
+                        if (ceCls && !dynamic_pointer_cast<CajetaView>(
+                                ce->getResolvedType())
+                                && !ceCls->isValueType()) {
+                            initIsBorrow = true;       // static owner path off
+                            initIsFlaggedCall = true;  // the flag decides
                         }
                     }
                     if (auto mc = dynamic_pointer_cast<MethodCallExpression>(children[0])) {
@@ -628,6 +1165,14 @@ namespace cajeta {
                                         mcName, mcEntries,
                                         /*isConstructor=*/false, floatingAll);
                                 if (resolved && !resolved->isReturnsOwnership()) {
+                                    // 5.2.3 — a plain class-pointer return is
+                                    // NOT statically a borrow any more: the
+                                    // callee's flag decides. Keep initIsBorrow
+                                    // so the static owner paths stay off, and
+                                    // arm a flag-fed entry in the drop wiring.
+                                    if (resolved->returnsClassPointer()) {
+                                        initIsFlaggedCall = true;
+                                    }
                                     if (resolved->returnsStackValue()) {
                                         // Value-return (sret + NRVO): the callee
                                         // constructed a stack instance into the
@@ -676,6 +1221,18 @@ namespace cajeta {
                                     }
                                     if (fnTy && fnTy->usesSret()) {
                                         initIsStackAlloc = true;
+                                    } else if (fnTy) {
+                                        // 7.2.5 — non-sret closure member
+                                        // call (`c.supplier()`): the
+                                        // synthesized callee sets the
+                                        // paired return flag; arm a
+                                        // flag-fed entry for class-ptr
+                                        // returns.
+                                        if (dynamic_pointer_cast<CajetaClass>(
+                                                fnTy->getReturnType())) {
+                                            initIsBorrow = true;
+                                            initIsFlaggedCall = true;
+                                        }
                                     }
                                 }
                             }
@@ -756,7 +1313,81 @@ namespace cajeta {
             // `T[] xs = obj.field`) already has an owner upstream;
             // duplicating the drop here double-frees at scope exit.
             if (isArray && !initIsBorrow && !arenaEligible) {
-                emitDropEntryFor(module, field, "__cajeta_free_array", getSourceLine());
+                // title-stores §3.2 — bit-capable-element arrays use ONE
+                // walk+free entry so a move-out disarms both behaviors.
+                shared_ptr<CajetaArray> arrT0 =
+                    dynamic_pointer_cast<CajetaArray>(type);
+                bool lvdElemTitled = arrT0 && !arrT0->isInlineArray()
+                    && CajetaClass::arrayElementCarriesSlotBits(
+                           arrT0->getElementType());
+                bool lvdMemberBits = arrT0 && !arrT0->isInlineArray()
+                    && CajetaClass::arrayElementCarriesMemberBits(
+                           arrT0->getElementType());
+                if (lvdElemTitled) {
+                    const llvm::DataLayout& ldl =
+                        module->getLlvmModule()->getDataLayout();
+                    llvm::Function* wf = getOrCreateTailDropFree(module,
+                        ldl.getTypeAllocSize(arrT0->getLlvmType()),
+                        arrT0->elementStrideBytes(ldl,
+                            module->getLlvmContext()));
+                    emitDropEntryForFn(module, field, wf, getSourceLine());
+                } else if (lvdMemberBits) {
+                    // title-stores §3.3.2 — value-struct elements: ONE
+                    // member-walk+free entry (same fused shape as the
+                    // tail family, same move-out disarm reason).
+                    const llvm::DataLayout& ldl =
+                        module->getLlvmModule()->getDataLayout();
+                    llvm::Module* lm = module->getBuilder()
+                        ->GetInsertBlock()->getParent()->getParent();
+                    llvm::Function* wf = CajetaClass::getOrCreateMemberWalk(
+                        module, lm,
+                        dynamic_pointer_cast<CajetaClass>(
+                            arrT0->getElementType()),
+                        ldl.getTypeAllocSize(arrT0->getLlvmType()),
+                        arrT0->elementStrideBytes(ldl,
+                            module->getLlvmContext()),
+                        /*withFree=*/true);
+                    if (wf) {
+                        emitDropEntryForFn(module, field, wf, getSourceLine());
+                    } else {
+                        emitDropEntryFor(module, field,
+                            "__cajeta_free_array", getSourceLine());
+                    }
+                } else {
+                    emitDropEntryFor(module, field, "__cajeta_free_array",
+                        getSourceLine());
+                }
+                // slices 9.2.1 — a local String[] owns what its stores TOOK
+                // (the array-slot store already deactivates an identifier
+                // source's drop entry); register the element walk that
+                // finally reclaims them.
+                // title-tracking Unit 4 — plain class elements get the same
+                // sidecar with title semantics: the store's SPELLING marks
+                // the slot bit (`a[i] = #x` owned, plain store borrowed),
+                // the walk releases marked slots via the vtable drop.
+                if (auto arrT = dynamic_pointer_cast<CajetaArray>(type)) {
+                    auto elemCls = dynamic_pointer_cast<CajetaClass>(
+                        arrT->getElementType());
+                    bool elemIsString = elemCls
+                        && !dynamic_pointer_cast<CajetaView>(arrT->getElementType())
+                        && elemCls->getQName()
+                        && elemCls->getQName()->getTypeName() == "String"
+                        && elemCls->getQName()->getPackageName() == "cajeta.lang";
+                    bool elemTitled = !elemIsString
+                        && CajetaClass::arrayElementCarriesSlotBits(
+                               arrT->getElementType());
+                    if (elemTitled && !arrT->isInlineArray()) {
+                        // title-stores §3.2 — the walk rides the single
+                        // walk+free entry registered above; just make sure
+                        // the element class's vtable drop is patched. The
+                        // class-element sidecar retires; Strings keep it.
+                        elemCls->patchVirtualTableDropFn();
+                    } else if (elemIsString && !arrT->isInlineArray()) {
+                        emitArrayElemDropEntry(module, field, arrT,
+                            "__cajeta_string_array_owned_drop",
+                            getSourceLine());
+                    }
+                }
             }
 
             // Gap 4 — record a live read-borrow on the scope so a later
@@ -906,8 +1537,41 @@ namespace cajeta {
             // local regardless of what it holds. ReturnStatement
             // deactivates the entry when the local is returned so
             // ownership transfers to the caller without a double-free.
+            //
+            // ...but ONLY the OWNING binding may drop. A function-typed
+            // local that merely ALIASES an existing closure — `f = other`
+            // (an identifier) or `f = obj.field` (a stored handler, e.g.
+            // `h = srv.handler`) — is a BORROW: the original binding still
+            // owns the shared heap record. Registering a second drop here
+            // double-frees a CAPTURING closure's record when both fire
+            // (the escaping-closure-in-a-server crash: the server stores
+            // the handler, several locals/copies alias it, and each freed
+            // the one record). A fresh `(x) -> …` lambda OWNS; a `#move`
+            // (MoveExpression, not a bare identifier/dot) transfers
+            // ownership and OWNS; a call returning an owned `#` closure
+            // (e.g. MiddlewareChain.compose) OWNS. Only a bare
+            // identifier / dot borrow is skipped — the exact borrow rule
+            // Strings use (initIsBorrow) for the same aliasing hazard.
             if (dynamic_pointer_cast<CajetaFunctionType>(type)) {
-                emitDropEntryFor(module, field, "__cajeta_closure_drop", getSourceLine());
+                bool closureIsBorrow = false;
+                if (auto varInit =
+                        dynamic_pointer_cast<VariableInitializer>(initializer)) {
+                    auto& kids = varInit->getChildren();
+                    if (!kids.empty()) {
+                        auto rhs = kids[0];
+                        // A bare identifier or field/dot read aliases an
+                        // existing closure — borrow. `#x` parses as a
+                        // MoveExpression (not an IdentifierExpression), so a
+                        // move still OWNS and keeps its drop entry.
+                        if (dynamic_pointer_cast<IdentifierExpression>(rhs)
+                                || dynamic_pointer_cast<DotExpression>(rhs)) {
+                            closureIsBorrow = true;
+                        }
+                    }
+                }
+                if (!closureIsBorrow) {
+                    emitDropEntryFor(module, field, "__cajeta_closure_drop", getSourceLine());
+                }
             }
 
             // User-defined-drop wiring for class-instance locals.
@@ -970,6 +1634,43 @@ namespace cajeta {
                     && !initIsBorrow && !initIsStackAlloc && initializer
                     && !arenaEligible) {
                 emitDropEntryFor(module, field, "__cajeta_string_drop", getSourceLine());
+            }
+            // 9.3.1 — a BARE String declaration (`String d;`) registers a
+            // NULL-obj entry in its OWN frame so a later move-assign —
+            // possibly in an inner block — can retarget it in place
+            // (BinaryOpExpression stores the moved ptr into e->obj). The
+            // drop chain is strict LIFO, so the entry must be registered at
+            // the declaration, never at the assignment. If no move ever
+            // lands, the drop of the null obj no-ops. The slot is nulled
+            // first so the entry captures a well-defined obj (bare class
+            // slots are otherwise uninitialized; definite-assignment still
+            // gates reads).
+            if (isCajetaString && !isArray && !isStructType && !initializer) {
+                auto* b = module->getBuilder();
+                auto& lctx2 = *module->getLlvmContext();
+                b->CreateStore(
+                    llvm::ConstantPointerNull::get(
+                        llvm::PointerType::get(lctx2, 0)),
+                    field->getOrCreateAllocation());
+                emitDropEntryFor(module, field, "__cajeta_string_drop", getSourceLine());
+            }
+            // title-tracking 2.2.4 — the same null-obj entry for a BARE
+            // class-typed declaration (`Cell keep;`), so an inner-block
+            // move-assign can retarget it in the declaring frame. Virtual
+            // drop of null no-ops (generalizes the String-only 9.3.1 fix).
+            if (klass && !isCajetaString && !isArray && !isStructType
+                    && !initializer && !klass->isInterface()
+                    && !klass->isValueType()
+                    && klass->hasVtablePointerAtSlotZero()) {
+                auto* b = module->getBuilder();
+                auto& lctx2 = *module->getLlvmContext();
+                b->CreateStore(
+                    llvm::ConstantPointerNull::get(
+                        llvm::PointerType::get(lctx2, 0)),
+                    field->getOrCreateAllocation());
+                klass->patchVirtualTableDropFn();
+                emitDropEntryFor(module, field,
+                    "__cajeta_class_virtual_drop", getSourceLine());
             }
             // @ValueType locals are Copy PODs living inline in their slot —
             // never heap-backed, no owned fields, no destructor. They must NOT
@@ -1039,6 +1740,48 @@ namespace cajeta {
             // stack-drop path via klass->getOrCreateStackDropFunction()
             // wired earlier in this method.
 
+            // 5.2.3 — runtime-owner local from a call result. Drops iff the
+            // callee surrendered the title (return-flag TLS, captured at the
+            // call site above). Same skip list as the formal entries (5.2.2):
+            // shared-capable values, interfaces, views, value types.
+            if (initIsFlaggedCall && callResultFlag && klass && !isArray
+                    && !isStructType && !isCajetaString
+                    && !klass->isInterface() && !klass->isValueType()
+                    && !klass->isSharedCapableValue()
+                    && klass->hasVtablePointerAtSlotZero()
+                    && !field->getDropEntry()) {
+                klass->patchVirtualTableDropFn();
+                emitFlaggedDropEntryFor(module, field,
+                    "__cajeta_class_virtual_drop", callResultFlag,
+                    getSourceLine());
+                field->setRuntimeConditionalOwner(true);
+            }
+
+            // 7.2.5 — `T x = #src` where src is a RUNTIME owner (formal /
+            // flagged local): forward src's stashed flag onto x's entry.
+            // The unconditional owner push above armed it statically, which
+            // hands a LENT source back as owned (double free at the next
+            // hop). MoveExpression stashed the flag before deactivation.
+            if (field->getDropEntry()) {
+                if (auto varInit = dynamic_pointer_cast<VariableInitializer>(
+                        initializer)) {
+                    auto& mvKids = varInit->getChildren();
+                    if (!mvKids.empty()) {
+                        if (auto mvInit = dynamic_pointer_cast<MoveExpression>(
+                                mvKids[0])) {
+                            if (llvm::Value* rtf = mvInit->getRuntimeTitleFlag()) {
+                                if (llvm::Function* sf = module->getRuntimeFunction(
+                                        "__cajeta_drop_set_flag")) {
+                                    module->getBuilder()->CreateCall(
+                                        sf, {field->getDropEntry(), rtf});
+                                    field->setRuntimeConditionalOwner(true);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // Interface local drop entry. Pushes a drop entry
             // pointing at __cajeta_iface_drop, the kind-tag dispatcher.
             // The helper reads the fat pointer's kind word and either
@@ -1060,8 +1803,15 @@ namespace cajeta {
             // stay deferred (CP7 defers XPU placement + move tracking).
             if (type) {
                 dbg::FieldFacetInputs facetIn;
-                facetIn.isStackField = dynamic_pointer_cast<StackField>(field) != nullptr;
-                facetIn.isHeapField  = dynamic_pointer_cast<HeapField>(field) != nullptr;
+                // The StackField/HeapField split describes the SLOT (inline
+                // value vs pointer), which for a class local is always a
+                // pointer — so `stack Point p = stack Point(3,4)` reported
+                // heap. The alloc facet describes where the INSTANCE lives, so
+                // a `stack` creator wins over the slot kind.
+                facetIn.isStackField = initIsStackAlloc
+                    || dynamic_pointer_cast<StackField>(field) != nullptr;
+                facetIn.isHeapField  = !initIsStackAlloc
+                    && dynamic_pointer_cast<HeapField>(field) != nullptr;
                 facetIn.isReference  = field->isReference();
                 facetIn.ownsDrop     = field->getDropEntry() != nullptr;
                 dbg::emitDbgLocal(module, field->getName(),

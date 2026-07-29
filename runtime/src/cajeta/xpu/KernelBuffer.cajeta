@@ -4,7 +4,7 @@ package cajeta.xpu;
  * KernelBuffer<T> — unified handle to device memory.
  *
  * The cross-cutting type higher-level libraries (cajeta.math,
- * Toffee, Torch, cajeta.render) write against. Backends tag the
+ * Caramelo, Torch, cajeta.render) write against. Backends tag the
  * underlying storage handle (CUdeviceptr / hipDeviceptr_t /
  * VkBuffer); from the user's perspective it's one opaque type
  * with a length and the standard upload/download/free operations.
@@ -67,6 +67,8 @@ public final class KernelBuffer<T> {
      *     s.sync();
      *     x.download(hx);
      *     // device memory freed automatically when x leaves scope
+     *
+     * @EntryPoint
      */
     public KernelBuffer(uint64 elementCount) {
         this.elementCount = elementCount;
@@ -147,6 +149,8 @@ public final class KernelBuffer<T> {
      * handle would be rejected by the escape checker. For same-scope
      * allocations prefer `stack KernelBuffer<T>(...)` + `allocate()` at the use
      * site.
+     *
+     * @EntryPoint
      */
     public static #KernelBuffer<T> alloc(uint64 n) {
         KernelBuffer<T> buf = heap KernelBuffer<T>(n);   // RAII ctor allocates device memory

@@ -11,7 +11,7 @@ package cajeta.lang;
  * StringBuilder sb = stack StringBuilder();
  * sb.append("Hello, ");
  * sb.append("world");
- * #String s = sb.toString();        // "Hello, world"
+ * String s = sb.toString();        // "Hello, world"
  * ```
  *
  * Small-string optimization (SSO): the first 64 bytes live in an inline buffer
@@ -36,7 +36,10 @@ public final class StringBuilder {
     boolean spilled;  // false => bytes in `small`; true => bytes in `large`
 
     /** Create an empty builder. No heap allocation — the inline buffer is used
-     *  until/unless the build exceeds 64 bytes. */
+     *  until/unless the build exceeds 64 bytes.
+     *
+     * @EntryPoint
+     */
     public StringBuilder() {
         this.len = 0;
         this.cap = 64;
@@ -60,7 +63,7 @@ public final class StringBuilder {
      */
     @Inline
     public void append(String s) {
-        int32 add = s.byteLength;
+        int32 add = s.byteLength();
         if (add == 0) {
             return;
         }
@@ -68,14 +71,28 @@ public final class StringBuilder {
             this.grow(this.len + add);
         }
         if (this.spilled) {
-            StringBuilder.blit(this.large, (int64) this.len, s.bytes, 0, (int64) add);
+            // ONE native memcpy per append (all forms) — a per-byte byteAt
+            // walk here measured 1.7x slower on the 4000-byte build bench.
+            StringBuilder.copyIn(s, this.large, this.len);
         } else {
-            int8[] src = s.bytes;
+            // Inline (< 64 B) builds only ever pay this before the spill:
+            // the fixed int8[64] field can't decay to an int8[] argument,
+            // so it stays a scalar loop (rooted forms read the root
+            // directly; Inline forms go through byteAt).
+            int8[] src = s.root();
             int32 base = this.len;
             int32 i = 0;
-            while (i < add) {
-                this.small[base + i] = src[i];
-                i = i + 1;
+            if (src != null) {
+                int64 o = s.byteOffset();
+                while (i < add) {
+                    this.small[base + i] = src[o + i];
+                    i = i + 1;
+                }
+            } else {
+                while (i < add) {
+                    this.small[base + i] = s.byteAt(i);
+                    i = i + 1;
+                }
             }
         }
         this.len = this.len + add;
@@ -106,6 +123,11 @@ public final class StringBuilder {
         }
         this.len = this.len + len;
     }
+
+    // One-call window copy into a heap buffer's data at byte offset `dstOff`
+    // (the spilled-path append primitive; the runtime memcpys any form).
+    @Native("__cajeta_string_copy_to")
+    private static int32 copyIn(String s, int8[] dst, int32 dstOff);
 
     // Copy `len` bytes src[s..] -> dst[d..], 8 bytes per store (the 8-byte chunk
     // window never exceeds `len`, so neither buffer is overrun) + scalar tail.
@@ -156,7 +178,7 @@ public final class StringBuilder {
         // ArrayList.grow / HashMap.rehash; without it the local's scope-exit
         // drop would free the buffer we just installed. One-way: once spilled,
         // the build stays on the heap buffer.
-        this.large = #grown;
+        this.large #= grown;
         this.cap = newCap;
         this.spilled = true;
     }

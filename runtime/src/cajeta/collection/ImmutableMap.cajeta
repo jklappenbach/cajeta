@@ -55,6 +55,8 @@ public final class ImmutableMap<K, V> {
     /**
      * Build a frozen map from `src` (last-wins on duplicate keys). The source
      * list is untouched.
+     *
+     * @EntryPoint
      */
     public ImmutableMap(ArrayList<Pair<K, V>> src) {
         int32 n = src.count();
@@ -129,10 +131,10 @@ public final class ImmutableMap<K, V> {
             }
             i = i + 1;
         }
-        this.keyArr = #keys;
-        this.valArr = #vals;
-        this.ctrl = #ct;
-        this.slotEntry = #se;
+        this.keyArr #= keys;
+        this.valArr #= vals;
+        this.ctrl #= ct;
+        this.slotEntry #= se;
         this.cap = c;
         this.entryCount = count;
     }

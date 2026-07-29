@@ -23,11 +23,16 @@
 namespace cajeta::dbg {
 
     // Push a debug frame for `func` (the cajeta-mangled enclosing function name).
-    void emitDbgFrameEnter(cajeta::CajetaModulePtr module, const std::string& func);
+    // Returns the frame NODE (to be stored in an entry-block slot) or null
+    // when frames are off — the paired leave consumes it.
+    llvm::Value* emitDbgFrameEnter(cajeta::CajetaModulePtr module,
+                                   const std::string& func);
 
     // Pop the current debug frame. Call beside the scope/drop teardown on every
     // return path.
-    void emitDbgFrameLeave(cajeta::CajetaModulePtr module);
+    // Node-paired (9.1): leave loads the frame node the prolog's enter stored
+    // in `nodeSlot` and unlinks exactly that node from its own chain.
+    void emitDbgFrameLeave(cajeta::CajetaModulePtr module, llvm::Value* nodeSlot);
 
     // Register a named local/parameter in the current debug frame. `slot` is the
     // local's alloca (primitives: holds the value; objects: holds the heap ptr).
@@ -40,5 +45,12 @@ namespace cajeta::dbg {
     void emitDbgLocal(cajeta::CajetaModulePtr module, const std::string& name,
                       const std::string& type, llvm::Value* slot,
                       MemoryFacets facets, llvm::Value* dropEntry);
+
+    // external-debug §3: serialize the compiler's DbgLocTable into `module` as a
+    // constant array, plus a global ctor registering it with the runtime, so an
+    // external debugger can resolve loc_id <-> (file, line) with no compiler
+    // present. Call ONCE, at end of codegen, after every safepoint has claimed
+    // its id. No-op unless --debug-info=full or the table is empty.
+    void emitDbgLocTable(cajeta::CajetaModulePtr module);
 
 } // namespace cajeta::dbg

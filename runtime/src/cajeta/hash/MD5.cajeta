@@ -80,6 +80,8 @@ public final class MD5 implements Hasher {
      * m.writeString(record.title);
      * int64 fingerprint = m.finish();
      * ```
+     *
+     * @EntryPoint
      */
     public MD5() {
         this.state = MD5.allocState();
@@ -141,8 +143,10 @@ public final class MD5 implements Hasher {
      * `int8[16]` and transfers ownership to the caller.
      *
      * ```cajeta
-     * #int8[] digest = MD5.hash(bytes, bytes.count());
+     * int8[] digest = MD5.hash(bytes, bytes.count());
      * ```
+     *
+     * @EntryPoint
      */
     public static #int8[] hash(int8[] data, int64 len) {
         int8[] out = heap int8[16];
@@ -158,6 +162,8 @@ public final class MD5 implements Hasher {
      * ```cajeta
      * String etag = MD5.hashHex(bytes, bytes.count());
      * ```
+     *
+     * @EntryPoint
      */
     public static #String hashHex(int8[] data, int64 len) {
         int8[] hex = heap int8[32];
@@ -169,11 +175,15 @@ public final class MD5 implements Hasher {
      * One-shot 16-byte digest of a `String`'s UTF-8 bytes.
      *
      * ```cajeta
-     * #int8[] d = MD5.hashString(name);
+     * int8[] d = MD5.hashString(name);
      * ```
      */
     public static #int8[] hashString(String s) {
-        return MD5.hash(s.bytes, (int64) s.byteLength);
+        if (s.root() == null || s.byteOffset() != (int64) 0) {
+            int8[] w = s.toBytes();
+            return MD5.hash(w, (int64) s.byteLength());
+        }
+        return MD5.hash(s.root(), (int64) s.byteLength());
     }
 
     /**
@@ -184,7 +194,11 @@ public final class MD5 implements Hasher {
      * ```
      */
     public static #String hashStringHex(String s) {
-        return MD5.hashHex(s.bytes, (int64) s.byteLength);
+        if (s.root() == null || s.byteOffset() != (int64) 0) {
+            int8[] w = s.toBytes();
+            return MD5.hashHex(w, (int64) s.byteLength());
+        }
+        return MD5.hashHex(s.root(), (int64) s.byteLength());
     }
 
     // --- Streaming surface ------------------------------------------
@@ -247,7 +261,12 @@ public final class MD5 implements Hasher {
     }
 
     public void writeString(String s) {
-        MD5.updateNative(this.state, s.bytes, (int64) s.byteLength);
+        if (s.root() == null || s.byteOffset() != (int64) 0) {
+            int8[] w = s.toBytes();
+            MD5.updateNative(this.state, w, (int64) s.byteLength());
+            return;
+        }
+        MD5.updateNative(this.state, s.root(), (int64) s.byteLength());
     }
 
     /**

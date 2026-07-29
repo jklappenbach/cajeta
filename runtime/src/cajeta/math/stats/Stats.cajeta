@@ -15,6 +15,8 @@ public final class Stats {
      * `histogram` counts): a `Tensor<int64>` of length `bins`. Values outside `[lo, hi]`
      * are dropped; a value equal to `hi` falls in the last bin (numpy's closed-right
      * final edge). Flattens the input in C-order.
+     *
+     * @EntryPoint
      */
     public static #Tensor<int64> histogram<E extends Numeric>(Tensor<E> t, int32 bins, E lo, E hi) {
         int64[] sh = heap int64[1];
@@ -195,6 +197,8 @@ public final class Stats {
      * The `q`-th quantile of the flattened input (`q` in `[0,1]`, numpy `quantile`
      * with the default linear interpolation): sorts, then linearly interpolates at
      * position `q·(n-1)`. Returns a scalar `E` (`Floating`).
+     *
+     * @EntryPoint
      */
     public static E quantile<E extends Floating>(Tensor<E> t, E q) {
         int64 n = t.size();
