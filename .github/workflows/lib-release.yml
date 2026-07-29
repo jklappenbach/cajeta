@@ -41,13 +41,18 @@ on:
         type: string
         required: false
         default: '30'
+    # NOT required: only the two tag-gated publish steps use these, and
+    # `required: true` fails the call at EVALUATION time — so a repo without
+    # publish credentials couldn't even build+test on a main push (cajeta-gossip
+    # died exactly this way). A tag push without them still fails, correctly and
+    # loudly, in the Publish to Olla step itself.
     secrets:
       OLLA_TOKEN:
-        required: true
+        required: false
       OLLA_SIGNING_KEY_PEM:
-        required: true
+        required: false
       OLLA_SIGNING_KEY_ID:
-        required: true
+        required: false
 
 permissions:
   contents: write
