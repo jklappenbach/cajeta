@@ -1,5 +1,9 @@
 package cajeta.io.net;
 
+import cajeta.io.net.AddressFamily;
+import cajeta.io.net.IpAddress;
+import cajeta.io.net.MalformedAddressException;
+import cajeta.io.net.NetErrors;
 import cajeta.io.net.RecvResult;
 import cajeta.io.net.WouldBlockException;
 import cajeta.io.net.reactor.Reactor;
@@ -182,6 +186,245 @@ public class UdpSocket {
      *  `__cajeta_net_get_sendbuf(this.fd)`. */
     public int32 getSendBufferSize() {
         return 0;
+    }
+
+    // -- multicast (NET-14) ---------------------------------------------------
+    //
+    // Real bodies over `@Native` bridges (the `recvFromAsync` pattern), NOT
+    // call-site intrinsic lowering: family dispatch and argument validation are
+    // ordinary Cajeta logic, and only the platform constants live in C
+    // (`cajeta_net_socket_options.c` § NET-14.1).
+    //
+    // The interface argument is deliberately asymmetric because the kernels
+    // are: IPv4 names an interface by ADDRESS (`ip_mreq.imr_interface`), IPv6
+    // by INDEX (`ipv6_mreq.ipv6mr_interface`). The default-interface forms work
+    // for both families.
+
+    @Native("__cajeta_net_mcast_join_v4")
+    private static int32 mcastJoinV4(int32 fd, int8[] group, int8[] iface);
+    @Native("__cajeta_net_mcast_leave_v4")
+    private static int32 mcastLeaveV4(int32 fd, int8[] group, int8[] iface);
+    @Native("__cajeta_net_mcast_join_v6")
+    private static int32 mcastJoinV6(int32 fd, int8[] group, int32 ifaceIndex);
+    @Native("__cajeta_net_mcast_leave_v6")
+    private static int32 mcastLeaveV6(int32 fd, int8[] group, int32 ifaceIndex);
+    @Native("__cajeta_net_set_mcast_ttl")
+    private static int32 mcastSetTtl(int32 fd, int32 isV6, int32 ttl);
+    @Native("__cajeta_net_get_mcast_ttl")
+    private static int32 mcastGetTtl(int32 fd, int32 isV6);
+    @Native("__cajeta_net_set_mcast_loop")
+    private static int32 mcastSetLoop(int32 fd, int32 isV6, int32 on);
+    @Native("__cajeta_net_get_mcast_loop")
+    private static int32 mcastGetLoop(int32 fd, int32 isV6);
+    @Native("__cajeta_net_set_mcast_if_v4")
+    private static int32 mcastSetIfV4(int32 fd, int8[] iface);
+    @Native("__cajeta_net_get_mcast_if_v4")
+    private static int32 mcastGetIfV4(int32 fd, int8[] ifaceOut);
+    @Native("__cajeta_net_set_mcast_if_v6")
+    private static int32 mcastSetIfV6(int32 fd, int32 ifaceIndex);
+    @Native("__cajeta_net_get_mcast_if_v6")
+    private static int32 mcastGetIfV6(int32 fd);
+    @Native("__cajeta_net_sockname_is_v6")
+    private static int32 socknameIsV6(int32 fd);
+    @Native("__cajeta_net_last_error")
+    private static int32 mcastLastError();
+
+    /**
+     * This socket's family as an `is_v6` flag, read off the kernel via
+     * `getsockname` — the wrapper stores only `fd`, and the multicast option
+     * pairs (`IP_MULTICAST_*` vs `IPV6_MULTICAST_*`) live at different levels.
+     */
+    int32 isV6Flag() {
+        int32 v = UdpSocket.socknameIsV6(this.fd);
+        if (v < (int32) 0) {
+            throw NetErrors.fromErrno(UdpSocket.mcastLastError(),
+                                      "multicast: socket family probe");
+        }
+        return v;
+    }
+
+    /**
+     * Join the multicast group `group` on the kernel-default interface. The
+     * group's family (`V4`/`V6`) picks the membership call; it must match the
+     * family this socket was bound with.
+     */
+    public void joinGroup(IpAddress group) {
+        int32 r;
+        if (group.isV6()) {
+            r = UdpSocket.mcastJoinV6(this.fd, group.getOctets(), 0);
+        } else {
+            r = UdpSocket.mcastJoinV4(this.fd, group.getOctets(), null);
+        }
+        if (r != (int32) 0) {
+            throw NetErrors.fromErrno(UdpSocket.mcastLastError(),
+                                      "joinGroup " + group.toString());
+        }
+    }
+
+    /** Leave `group` (joined via the default interface). */
+    public void leaveGroup(IpAddress group) {
+        int32 r;
+        if (group.isV6()) {
+            r = UdpSocket.mcastLeaveV6(this.fd, group.getOctets(), 0);
+        } else {
+            r = UdpSocket.mcastLeaveV4(this.fd, group.getOctets(), null);
+        }
+        if (r != (int32) 0) {
+            throw NetErrors.fromErrno(UdpSocket.mcastLastError(),
+                                      "leaveGroup " + group.toString());
+        }
+    }
+
+    /**
+     * Join an IPv4 `group` via the interface whose address is `ifaceV4`.
+     * IPv4-only by construction — IPv6 selects interfaces by index; use
+     * [`joinGroupOnIndex`](#joinGroupOnIndex).
+     */
+    public void joinGroupOn(IpAddress group, IpAddress ifaceV4) {
+        if (!group.isV4() || !ifaceV4.isV4()) {
+            throw heap MalformedAddressException(
+                "joinGroupOn is v4-by-address; v6 joins select by index",
+                (int64) -1);
+        }
+        if (UdpSocket.mcastJoinV4(this.fd, group.getOctets(),
+                                  ifaceV4.getOctets()) != (int32) 0) {
+            throw NetErrors.fromErrno(UdpSocket.mcastLastError(),
+                                      "joinGroupOn " + group.toString());
+        }
+    }
+
+    /** Leave an IPv4 `group` joined via the interface addressed `ifaceV4`. */
+    public void leaveGroupOn(IpAddress group, IpAddress ifaceV4) {
+        if (!group.isV4() || !ifaceV4.isV4()) {
+            throw heap MalformedAddressException(
+                "leaveGroupOn is v4-by-address; v6 leaves select by index",
+                (int64) -1);
+        }
+        if (UdpSocket.mcastLeaveV4(this.fd, group.getOctets(),
+                                   ifaceV4.getOctets()) != (int32) 0) {
+            throw NetErrors.fromErrno(UdpSocket.mcastLastError(),
+                                      "leaveGroupOn " + group.toString());
+        }
+    }
+
+    /**
+     * Join an IPv6 `group` via interface index `ifaceIndex` (0 = kernel
+     * default). IPv6-only by construction — IPv4 selects interfaces by
+     * address; use [`joinGroupOn`](#joinGroupOn).
+     */
+    public void joinGroupOnIndex(IpAddress group, int32 ifaceIndex) {
+        if (!group.isV6()) {
+            throw heap MalformedAddressException(
+                "joinGroupOnIndex is v6-by-index; v4 joins select by address",
+                (int64) -1);
+        }
+        if (UdpSocket.mcastJoinV6(this.fd, group.getOctets(), ifaceIndex)
+                != (int32) 0) {
+            throw NetErrors.fromErrno(UdpSocket.mcastLastError(),
+                                      "joinGroupOnIndex " + group.toString());
+        }
+    }
+
+    /** Leave an IPv6 `group` joined via interface index `ifaceIndex`. */
+    public void leaveGroupOnIndex(IpAddress group, int32 ifaceIndex) {
+        if (!group.isV6()) {
+            throw heap MalformedAddressException(
+                "leaveGroupOnIndex is v6-by-index; v4 leaves select by address",
+                (int64) -1);
+        }
+        if (UdpSocket.mcastLeaveV6(this.fd, group.getOctets(), ifaceIndex)
+                != (int32) 0) {
+            throw NetErrors.fromErrno(UdpSocket.mcastLastError(),
+                                      "leaveGroupOnIndex " + group.toString());
+        }
+    }
+
+    /**
+     * Set the TTL / hop limit for OUTBOUND multicast sends (distinct from the
+     * unicast [`setTtl`](#setTtl)). Default 1 = link-local, per the RFCs.
+     */
+    public void setMulticastTtl(int32 ttl) {
+        if (UdpSocket.mcastSetTtl(this.fd, this.isV6Flag(), ttl) != (int32) 0) {
+            throw NetErrors.fromErrno(UdpSocket.mcastLastError(),
+                                      "setMulticastTtl");
+        }
+    }
+
+    /** The current outbound multicast TTL / hop limit. */
+    public int32 getMulticastTtl() {
+        int32 v = UdpSocket.mcastGetTtl(this.fd, this.isV6Flag());
+        if (v < (int32) 0) {
+            throw NetErrors.fromErrno(UdpSocket.mcastLastError(),
+                                      "getMulticastTtl");
+        }
+        return v;
+    }
+
+    /**
+     * Whether this host's own group sends are looped back to local members
+     * (OS default: on). `setMulticastLoopback(false)` suppresses self-delivery.
+     */
+    public void setMulticastLoopback(boolean on) {
+        int32 flag = on ? (int32) 1 : (int32) 0;
+        if (UdpSocket.mcastSetLoop(this.fd, this.isV6Flag(), flag) != (int32) 0) {
+            throw NetErrors.fromErrno(UdpSocket.mcastLastError(),
+                                      "setMulticastLoopback");
+        }
+    }
+
+    /** Read the multicast-loopback flag back. */
+    public boolean getMulticastLoopback() {
+        int32 v = UdpSocket.mcastGetLoop(this.fd, this.isV6Flag());
+        if (v < (int32) 0) {
+            throw NetErrors.fromErrno(UdpSocket.mcastLastError(),
+                                      "getMulticastLoopback");
+        }
+        return v != (int32) 0;
+    }
+
+    /**
+     * Select the OUTBOUND interface for multicast sends by its IPv4 address
+     * (v4 sockets only — v6 selects by index via
+     * [`setMulticastInterfaceIndex`](#setMulticastInterfaceIndex)).
+     */
+    public void setMulticastInterface(IpAddress ifaceV4) {
+        if (!ifaceV4.isV4()) {
+            throw heap MalformedAddressException(
+                "setMulticastInterface is v4-by-address; v6 selects by index",
+                (int64) -1);
+        }
+        if (UdpSocket.mcastSetIfV4(this.fd, ifaceV4.getOctets()) != (int32) 0) {
+            throw NetErrors.fromErrno(UdpSocket.mcastLastError(),
+                                      "setMulticastInterface");
+        }
+    }
+
+    /** The current v4 outbound multicast interface (0.0.0.0 = kernel default). */
+    public #IpAddress getMulticastInterface() {
+        int8[] octets = heap int8[4];
+        if (UdpSocket.mcastGetIfV4(this.fd, octets) != (int32) 0) {
+            throw NetErrors.fromErrno(UdpSocket.mcastLastError(),
+                                      "getMulticastInterface");
+        }
+        return IpAddress.fromOctets(octets, 4);
+    }
+
+    /** Select the OUTBOUND v6 multicast interface by index (0 = kernel default). */
+    public void setMulticastInterfaceIndex(int32 ifaceIndex) {
+        if (UdpSocket.mcastSetIfV6(this.fd, ifaceIndex) != (int32) 0) {
+            throw NetErrors.fromErrno(UdpSocket.mcastLastError(),
+                                      "setMulticastInterfaceIndex");
+        }
+    }
+
+    /** The current v6 outbound multicast interface index. */
+    public int32 getMulticastInterfaceIndex() {
+        int32 v = UdpSocket.mcastGetIfV6(this.fd);
+        if (v < (int32) 0) {
+            throw NetErrors.fromErrno(UdpSocket.mcastLastError(),
+                                      "getMulticastInterfaceIndex");
+        }
+        return v;
     }
 
     // -- lifecycle ----------------------------------------------------------
