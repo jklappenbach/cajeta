@@ -1333,8 +1333,10 @@ public final class LinAlg {
     }
 
     /**
-     * Rank of a square `A` (numpy `linalg.matrix_rank`): the count of singular values
-     * above `tol = σmax·1e-4`. Detects rank deficiency / singularity.
+     * Rank of a `(m,n)` matrix (numpy `linalg.matrix_rank`): the count of singular
+     * values above `tol = σmax·max(m,n)·ε` (numpy's tolerance semantics — the
+     * bidiagonal svd's accuracy earns the tight cutoff). Detects rank deficiency /
+     * singularity.
      */
     public static int64 matrixRank<E extends Floating>(Tensor<E> a) {
         int64 m = a.shapeAt(0);

@@ -44,6 +44,6 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [xpu-build-ergonomics](xpu-build-ergonomics-spec.md) | — | draft |
 | [simd-numeric-kernels](simd-numeric-kernels-spec.md) | — | draft |
 | [quaternion-vector-stdlib](quaternion-vector-stdlib-spec.md) | [plan](../agents/quaternion-vector-stdlib-plan.md) | draft |
-| [linalg-solvers](linalg-solvers-spec.md) | [plan](../agents/linalg-solvers-plan.md) | active — approved 2026-07-29; Unit 1 in progress |
+| [linalg-solvers](linalg-solvers-spec.md) | [plan](../agents/linalg-solvers-plan.md) | active — Units 1-5 delivered green 2026-07-30 (triangular/multi-RHS solves, Householder QR, bidiagonal SVD, QR lstsq + min-norm, slogdet/norms); U6 docs done, sweep at release gate |
 | [cajeta-ml](cajeta-ml-spec.md) | [plan](../agents/cajeta-ml-plan.md) | active — approved 2026-07-29; Units 4-7 depend on linalg-solvers |
 | [ternary-int-codegen](ternary-int-codegen-spec.md) | — | draft |

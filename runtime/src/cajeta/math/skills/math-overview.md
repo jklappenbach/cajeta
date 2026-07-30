@@ -27,6 +27,10 @@ in *first* — the rules below differ between them:
 | float→int with an explicit rounding policy | `Cast.roundToInt<I>(x, RoundingMode.…)` | Tensor |
 | Zero-copy hand a tensor to/from an external lib | `Tensor.protocol()` ↔ `Tensor.fromProtocol(p)` | Tensor |
 | Move a tensor to/from GPU | `Tensor.gpu()` / `cpu()` / `isOnGpu()` | Tensor |
+| Solve `A·x=B` (square, multi-RHS) / apply a factor | `LinAlg.solve`, `solveTriangular`, `choSolve`, `luSolve` (`cajeta.math.linalg`) | Tensor |
+| Factor a matrix (rectangular OK) | `LinAlg.qr` (Householder, reduced), `svd` (Golub–Kahan bidiagonal), `lu`, `cholesky`, `eigh` | Tensor |
+| Least squares / regression fit | `LinAlg.lstsq` (QR fast path, svd min-norm fallback; multi-RHS) | Tensor |
+| Determinant / rank / conditioning / norms | `LinAlg.det`, `slogdet` (log-space, no overflow), `matrixRank` (numpy ε-tol), `cond`, `normFro`/`norm1`/`normInf`, `normVec`/`normInfVec` | Tensor |
 | A small fixed matrix with `+ - * [r][c]`, `transpose`, `inverse` | `Matrix<T,R,C>` | gfx |
 | Build a rotation (axis/angle, Euler) | `Rotation.fromAxisAngle` / `fromEuler` → `Quaternion<float32>` | gfx |
 | TRS placement / model transform | `Transform` (stack) | gfx |
@@ -99,6 +103,11 @@ Quaternion<float32> yaw = Rotation.fromAxisAngle(up, 0.7853982f);
 ```
 
 ## Hazards
+
+- **`cajeta.math.linalg` throws `LinAlgException`** (a `RecoverableException`) on
+  shape violations and singular input (zero triangular diagonal); catch it rather
+  than pre-validating shapes. `solve`/`solveTriangular`/`lstsq` accept `(n,)` or
+  `(n,k)` RHS by rank-dispatch — there is no separate multi-RHS overload.
 
 - **Compound `Vector`/`Matrix`/`Quaternion` expressions crash host codegen today.**
   Write **one operator (or one method call) per statement**, binding each
