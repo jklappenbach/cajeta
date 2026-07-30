@@ -77,13 +77,16 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          # Git for Windows materializes CRLF; the patch is LF. Convert just
-          # the target file, then apply.
-          $target = 'xgboost-src\src\tree\gpu_hist\evaluate_splits.cu'
-          [IO.File]::WriteAllText($target, [IO.File]::ReadAllText($target).Replace("`r`n", "`n"))
-          git -C xgboost-src apply ..\tools\gpuprobe\instrument_eval_3.1.2.patch
-          if ($LASTEXITCODE -ne 0) { throw 'instrumentation patch failed to apply' }
-          Select-String -Path $target -Pattern '\[tile\]' -Quiet | Out-Null
+          # Bootstrap uv first — its python applies the instrumentation
+          # (EOL-agnostic string replacement; git apply kept fighting CRLF).
+          Invoke-WebRequest -Uri 'https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip' -OutFile uv.zip
+          Expand-Archive uv.zip -DestinationPath uvbin -Force
+          $env:UV_PYTHON_INSTALL_DIR = "$PWD\uv-pythons"
+          $env:UV_CACHE_DIR = "$PWD\uv-cache"
+          & uvbin\uv.exe python install 3.12
+          & uvbin\uv.exe venv xgbenv --python 3.12
+          & xgbenv\Scripts\python.exe tools/gpuprobe/apply_instrumentation.py xgboost-src
+          if ($LASTEXITCODE -ne 0) { throw 'instrumentation failed to apply' }
           # cmake ships inside VS; the service PATH has no cmake.
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $vspath = & $vswhere -latest -property installationPath
@@ -99,12 +102,6 @@ jobs:
           $dll = Get-ChildItem xgboost-src -Recurse -Filter xgboost.dll | Select-Object -First 1
           Write-Host ">> built: $($dll.FullName)"
 
-          Invoke-WebRequest -Uri 'https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip' -OutFile uv.zip
-          Expand-Archive uv.zip -DestinationPath uvbin -Force
-          $env:UV_PYTHON_INSTALL_DIR = "$PWD\uv-pythons"
-          $env:UV_CACHE_DIR = "$PWD\uv-cache"
-          & uvbin\uv.exe python install 3.12
-          & uvbin\uv.exe venv xgbenv --python 3.12
           & uvbin\uv.exe pip install --python xgbenv\Scripts\python.exe --quiet 'xgboost==3.1.2' numpy
           $wheeldll = Get-ChildItem xgbenv -Recurse -Filter xgboost.dll | Select-Object -First 1
           Write-Host ">> replacing wheel dll: $($wheeldll.FullName)"
