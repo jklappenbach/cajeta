@@ -7,6 +7,7 @@ import com.intellij.openapi.ui.ComboBox
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBTextField
+import com.intellij.util.Alarm
 import com.intellij.util.ui.FormBuilder
 import com.intellij.util.ui.UIUtil
 import dev.cajeta.idea.buildtool.CajetaManifest
@@ -63,30 +64,51 @@ class CajetaRunConfigurationEditor : SettingsEditor<CajetaRunConfiguration>() {
         loadCandidates(configuration)
     }
 
+    // Retry scheduling for the first-open race (2026-07-30): parented to this
+    // editor, so pending retries die with the dialog.
+    private val rescanAlarm = Alarm(Alarm.ThreadToUse.POOLED_THREAD, this)
+
     /**
      * Populate the dropdown off the EDT (3.2.5) — reading the index must never
      * freeze the settings dialog. The typed text is preserved across the swap,
      * so an in-flight edit is not clobbered when candidates arrive.
+     *
+     * First-open fix: the dialog used to query ONCE, racing project indexing —
+     * a dumb-mode throw was even swallowed silently — so a fresh project
+     * showed an empty dropdown until closed and reopened. Now an empty or
+     * failed scan announces itself and retries while the index warms
+     * ([EntryMethodCandidates.needsRetry]), and the open dialog fills in.
      */
-    private fun loadCandidates(configuration: CajetaRunConfiguration) {
+    private fun loadCandidates(configuration: CajetaRunConfiguration, attempt: Int = 0) {
         val project = configuration.project
         ApplicationManager.getApplication().executeOnPooledThread {
             val result = runCatching { EntryMethodCandidates.forProject(project) }
-                .getOrNull() ?: return@executeOnPooledThread
+                .getOrNull()
             ApplicationManager.getApplication().invokeLater {
-                val keep = editorText
-                entryMethodCombo.model =
-                    DefaultComboBoxModel(result.candidates.map { it.fqn }.toTypedArray())
-                editorText = keep.ifBlank {
-                    // Nothing chosen yet: preselect the first DECLARED candidate,
-                    // so a manifest project launches with no typing (spec 2.2.1).
-                    result.candidates.firstOrNull { it.declared }?.fqn
-                        ?: result.candidates.firstOrNull()?.fqn.orEmpty()
+                if (result != null) {
+                    val keep = editorText
+                    entryMethodCombo.model =
+                        DefaultComboBoxModel(result.candidates.map { it.fqn }.toTypedArray())
+                    editorText = keep.ifBlank {
+                        // Nothing chosen yet: preselect the first DECLARED candidate,
+                        // so a manifest project launches with no typing (spec 2.2.1).
+                        result.candidates.firstOrNull { it.declared }?.fqn
+                            ?: result.candidates.firstOrNull()?.fqn.orEmpty()
+                    }
                 }
-                // "Index unavailable" and "index warm, found nothing" are
-                // different facts and must not read alike (spec 6.1.3).
-                entryMethodHint.text = result.emptyMessage()
-                    ?: declaredHint(result)
+                if (EntryMethodCandidates.needsRetry(result, attempt)) {
+                    entryMethodHint.text = "Scanning for entry methods…"
+                    rescanAlarm.cancelAllRequests()
+                    rescanAlarm.addRequest(
+                        { loadCandidates(configuration, attempt + 1) }, RESCAN_DELAY_MS)
+                } else {
+                    // "Index unavailable" and "index warm, found nothing" are
+                    // different facts and must not read alike (spec 6.1.3).
+                    entryMethodHint.text = when {
+                        result == null -> "Entry-method scan failed — type pkg.Class::main."
+                        else -> result.emptyMessage() ?: declaredHint(result)
+                    }
+                }
             }
         }
     }
@@ -113,4 +135,8 @@ class CajetaRunConfigurationEditor : SettingsEditor<CajetaRunConfiguration>() {
     }
 
     override fun createEditor(): JComponent = panel
+
+    companion object {
+        private const val RESCAN_DELAY_MS = 2000
+    }
 }

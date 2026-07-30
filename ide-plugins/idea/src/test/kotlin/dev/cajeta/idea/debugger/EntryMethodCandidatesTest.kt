@@ -133,4 +133,23 @@ class EntryMethodCandidatesTest {
         assertTrue("the two empty states must not read alike",
             out.emptyMessage() != cold.emptyMessage())
     }
+
+    // First-open fix (Julian, 2026-07-30): the dialog must keep looking while
+    // the index warms instead of settling on an empty dropdown — retry while
+    // the scan failed or found nothing, up to the budget; stop the moment a
+    // candidate lands.
+    @Test
+    fun retriesWhileEmptyOrFailedWithinBudgetStopsOnCandidates() {
+        val empty = EntryMethodCandidates.merge(
+            CajetaManifest.BuildSettings(), emptyList(), indexAvailable = false)
+        val found = EntryMethodCandidates.merge(
+            CajetaManifest.BuildSettings(entryMethod = "a.B::main"),
+            emptyList(), indexAvailable = true)
+
+        assertTrue(EntryMethodCandidates.needsRetry(null, 0))       // scan threw
+        assertTrue(EntryMethodCandidates.needsRetry(empty, 0))      // nothing yet
+        assertFalse(EntryMethodCandidates.needsRetry(found, 0))     // done
+        assertFalse("budget bounds the retries",
+            EntryMethodCandidates.needsRetry(empty, EntryMethodCandidates.MAX_SCAN_ATTEMPTS))
+    }
 }

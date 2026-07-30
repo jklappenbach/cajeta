@@ -49,6 +49,19 @@ object EntryMethodCandidates {
     fun persistedValueFor(text: String): String =
         CajetaManifest.normalizeEntryMethod(text.trim())
 
+    /** Scan retries the dialog will attempt while the index warms. */
+    const val MAX_SCAN_ATTEMPTS = 5
+
+    /**
+     * Whether the dialog should look again (first-open fix, 2026-07-30): the
+     * first open races project indexing and shard writes, and settling on an
+     * empty dropdown forced a close/reopen. Retry while the scan failed
+     * ([result] null — e.g. dumb mode threw) or found nothing, up to the
+     * budget; stop the moment anything is offerable.
+     */
+    fun needsRetry(result: Result?, attempt: Int): Boolean =
+        attempt < MAX_SCAN_ATTEMPTS && (result == null || result.candidates.isEmpty())
+
     /**
      * Merge declared and discovered candidates. [indexRecords] are xref
      * declaration records; only static methods whose simple name is `main`
