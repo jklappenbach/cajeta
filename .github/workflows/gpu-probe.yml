@@ -3,29 +3,48 @@
 # are per-repo, which is why the workflow lives here while the probe source
 # lives in cajeta-xgboost/tools/gpuprobe).
 #
-# gpu-numeric-fidelity 1.1.2: the xgboost fixtures' grad.npy rounds >= 1 are
-# a numpy reconstruction, not a device dump. probe_device_grads.cu runs the
-# verbatim 3.1.2 objective kernels over the committed fixture margins on the
-# real GPU (expf = the SFU libdevice sequence) and this uploads the resulting
-# device_grad/device_hess npys — the ground truth the multi-round parity
-# tests were missing. Authorized by Julian 2026-07-29.
+# Probes (select with the `probe` input):
 #
-# Later rounds on the same harness: the Unit 2 evaluate-kernel gain probe,
-# the Unit 3 scan probe.
+# device-grads (gpu-numeric-fidelity 1.1.2): the xgboost fixtures' grad.npy
+# rounds >= 1 are a numpy reconstruction, not a device dump.
+# probe_device_grads.cu runs the verbatim 3.1.2 objective kernels over the
+# committed fixture margins on the real GPU (expf = the SFU libdevice
+# sequence) and this uploads the resulting device_grad/device_hess npys —
+# the ground truth the multi-round parity tests were missing. Authorized by
+# Julian 2026-07-29.
+#
+# evaluate-gain (gpu-numeric-fidelity 2.2.1): replay ONE node's split
+# evaluation with a verbatim transcription of the evaluate agent
+# (probe_evaluate_gain.cu) over a committed TreeBuilder dump
+# (tools/gpuprobe/<dump>/), dumping every boundary's gain bits. Decides
+# whether tiny_reg_mcw10 node 14's feature-4 pick is device arithmetic or
+# something upstream of the evaluate kernel.
+#
+# Later rounds on the same harness: the Unit 3 scan probe.
 
 name: gpu-probe
 
 on:
   workflow_dispatch:
     inputs:
+      probe:
+        description: 'Which probe to run'
+        required: true
+        type: choice
+        options: [device-grads, evaluate-gain]
+        default: device-grads
       xgboost-ref:
         description: 'cajeta-xgboost ref to check out'
         required: true
         default: 'main'
       fixtures:
-        description: 'Comma-separated fixture dirs under tools/fixtures (names containing "multi" run the softmax kernel)'
-        required: true
+        description: 'device-grads only: comma-separated fixture dirs under tools/fixtures (names containing "multi" run the softmax kernel)'
+        required: false
         default: 'tiny_binary,tiny_multi'
+      dump:
+        description: 'evaluate-gain only: dump dir under tools/gpuprobe'
+        required: false
+        default: 'node14'
 
 jobs:
   probe:
@@ -50,10 +69,15 @@ jobs:
         run: |
           for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set "VSPATH=%%i"
           call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat"
-          nvcc -arch=native -O2 tools\gpuprobe\probe_device_grads.cu -o probe_device_grads.exe
+          if "${{ inputs.probe }}"=="evaluate-gain" (
+            nvcc -arch=native -O2 tools\gpuprobe\probe_evaluate_gain.cu -o probe_evaluate_gain.exe
+          ) else (
+            nvcc -arch=native -O2 tools\gpuprobe\probe_device_grads.cu -o probe_device_grads.exe
+          )
           if errorlevel 1 exit /b 1
 
-      - name: Run over the requested fixtures
+      - name: Run device-grads over the requested fixtures
+        if: ${{ inputs.probe == 'device-grads' }}
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -67,9 +91,19 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "probe failed for $f" }
           }
 
+      - name: Run evaluate-gain over the dump
+        if: ${{ inputs.probe == 'evaluate-gain' }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = "captures/${{ inputs.dump }}"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          ./probe_evaluate_gain.exe "tools/gpuprobe/${{ inputs.dump }}" $out
+          if ($LASTEXITCODE -ne 0) { throw "evaluate-gain probe failed" }
+
       - name: Upload captures
         uses: actions/upload-artifact@v4
         with:
-          name: device-grad-captures
+          name: ${{ inputs.probe == 'evaluate-gain' && 'evaluate-gain-captures' || 'device-grad-captures' }}
           path: captures/
           if-no-files-found: error
