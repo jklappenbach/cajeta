@@ -553,7 +553,7 @@ ValueStructArrayProbe.genericValueStructArrayFieldLValue
 
 # --- buildtool — build tool: manifest, resolver, lockfile, tasks, plugins ---
 BuildActionTests.projectRootIsManifestDirNotSourceRoot
-CleanActionTests.deepCleanLeavesOllaUntouched
+CleanActionTests.cleanLeavesOllaUntouched
 DependencyTests.artifactCacheRoundTrips
 DependencyTests.compareVersionsOrders
 DependencyTests.mvsRejectsGitOverrideMissingRev
@@ -628,4 +628,4 @@ FuseLaziness.reductionOperandStagesAndBroadcasts
 FiberArenaIsolation.parkedFiberArenaBlockSurvivesCoHostedReset
 
 # --- synth — source synthesizers ----------------------------------
-TableColumnSynthesisTests.columnTypoIsCaughtAtCompileTime
+TableCoreTests.accessorTypoFailsCompileAndSetIsDeterministic
